@@ -24204,6 +24204,50 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
 - *The room* its orchestrator's budget leaves the run: init's `builtin::ROOM`, told through
   the run host (D241).
 - *Stop.* The VM process killed at once, as `Guest::stop`.
+- *A stop for a boot under way* (2026-11-13, kiln plan 01a1cd8e862e7169a074db3d5fa33f3d,
+  step 17, for Hex's delete of a microVM still booting): `Images::boot_stoppable(spec,
+  patience, &BootStop)`, a default trait method, so that every `Images` keeps compiling (its
+  default, for one with no run host to end, honours the stop as its boot returns, the guest
+  stopped). `BootStop::stop`, from any thread, kills the run host the boot holds and every
+  process the host started; the boot returns `ImageRefusal::Ended(RunEnd::Stopped)` once
+  they are gone; a stop before the boot boots nothing; a stop after it has returned is the
+  guest's own `stop`'s.
+  - *Its shape.* Of the two Hex's lead offered, (a), a stop handle the boot takes, over (b),
+    a two-step boot handing the caller the host before its run starts: the boot already owns
+    the run host until its run starts, and every way that wait ends (its patience, a refusal,
+    the host gone) already ends the host there (`Begun::started`); a stop is one more end of
+    that wait. (b) would add a public booting type with its own lifecycle, drop and
+    patience, that each `Images` (ImageShards, ImagePools' warm and fresh hosts) implements
+    again, and move that wait's states to every caller, for one event (R05, R13).
+  - *An event, not a flag.* `BootStop` is a mutex over its states (R04): `Armed`, `Booting`
+    while a boot holds its host there, `Stopped`, terminal. The stop kills the held host at
+    once; the boot, waiting on its session's condvar, wakes as the host's exit watcher sees
+    it end (`Child::ended`: pidfd, kqueue, WaitForSingleObject) and its answers end. Nothing
+    looks at the stop on a clock. A boot that holds a host after the stop kills it at once.
+    One boot holds a stop at a time; a second is refused `Spec`. The host's `Child` is
+    already shared by the boot's session and its exit watcher (an `Arc`); the stop holds a
+    clone only while the boot waits, as a borrow cannot reach the stopping thread from the
+    boot's frame.
+  - *The whole tree.* On Unix the run host now leads a session and process group of its own
+    (`POSIX_SPAWN_SETSID`), and shards-api's every kill of a host (a stop, its patience, its
+    pools, a `stop` whose host cannot be asked) is SIGKILL to that group: its VM, network and
+    share processes are its children in it (api-run starts none detached), so none outlives
+    it, not even a VM booting that has not yet looked at its link. On Windows the host
+    alone is ended, and its job, whose last handle it holds with
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, ends them as it ends (D141, D197). A terminal's
+    signals to the orchestrator's process group no longer reach its run hosts; a run still
+    ends with its orchestrator, its stdin closing.
+  - *Followed, not timed* (D215, D217): the boot returns once the host has exited and been
+    reaped, its answers ended, and its diagnostics' pipe closed by every process holding it,
+    the VM, network and share processes among them, as their stderr.
+  - *Tested* (unit, stand-in run hosts, `image::session`'s tests): one that starts a VM of its
+    own that never looks at its host and never says its run started, stopped mid-boot,
+    returns `Ended(Stopped)` well within its bound, its host and that VM gone; one never
+    answering is refused as before (`Boot`, not started within its patience); one stopped
+    first ends `Stopped`. Red on 83db267f2 (each boot waited out its bound, the VM outlived
+    it), green with the stop. **Owed** (ROOT): a stop mid-boot of a real microVM on KVM,
+    Hypervisor.framework and WHP (`crates/shards/tests/api_image.rs`), with no VM, network
+    or share process left; the Windows stand-in (the unit tests are Unix's).
 - *The run's own command* is the orchestrator's, or `builtin::ATTEND`: the standby holds,
   the members start.
 - *Its end* (`RunEnd`): `Exited` with the status its own command or `ATTEND`'s holder ended

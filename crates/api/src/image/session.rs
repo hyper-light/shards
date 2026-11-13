@@ -501,7 +501,11 @@ fn start_host(program: &Path, args: &[&OsStr], env: &[(OsString, OsString)]) -> 
             (child_err.as_handle(), 2),
         ]
     };
-    let process = shards_ipc::spawn_with(&found, args, &ends, false, &set).map_err(boot)?;
+    // On Unix it leads a session and a process group of its own, which `kill` ends whole; a
+    // terminal's signals to this process's group no longer reach it, and its run ends with
+    // this process all the same, its stdin closing. On Windows `detach` would take it out of
+    // this process's job, so it is not asked.
+    let process = shards_ipc::spawn_with(&found, args, &ends, cfg!(unix), &set).map_err(boot)?;
     // The host holds its ends now; this process's go, so that each pipe ends with it.
     drop((child_in, child_out, child_err));
     Ok(Host {
@@ -538,9 +542,12 @@ fn on_path(program: &Path) -> io::Result<PathBuf> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "in no directory of PATH"))
 }
 
-/// Kills the host at once, unless it is reaped (`shards_ipc::Child::kill`).
-fn kill(host: &shards_ipc::Child) {
-    let _ = host.kill(shards_ipc::signal::SIGKILL);
+/// Kills the host at once, and every process it started, unless it is reaped: on Unix its
+/// process group, which it leads (`start_host`), and which its VM, network and share
+/// processes are in (api_run.rs starts each in it); on Windows the host alone, whose job,
+/// whose last handle it holds, ends them as it ends (D141, D197).
+pub(super) fn kill(host: &shards_ipc::Child) {
+    let _ = host.kill_group(shards_ipc::signal::SIGKILL);
 }
 
 /// One image run, as its client holds it.
@@ -696,11 +703,14 @@ impl Begun {
 
     /// Waits at most `patience` for the start of the run `request` it was sent: the run's
     /// session; else why not, the host ended, and whether it refused the run as one of
-    /// another microVM's than its warm one (`Cause::Unfit`, D253's pools).
+    /// another microVM's than its warm one (`Cause::Unfit`, D253's pools). `stop` holds the
+    /// host meanwhile: stopped, it kills the host and all the host started, and the run is
+    /// `Ended(Stopped)` once they are gone.
     pub(super) fn started(
         mut self,
         request: &wire::Request,
         patience: Duration,
+        stop: &super::BootStop,
     ) -> Result<Session, (ImageRefusal, bool)> {
         // The host is the session's from here, ended by it, or here where its run does not
         // start.
@@ -712,6 +722,10 @@ impl Begun {
             lock(&shared.to_host).take();
         };
         let unfit = |shared: &Shared| lock(&shared.state).unfit;
+        if let Err(e) = stop.hold(&host) {
+            end_it(&shared);
+            return Err((e, false));
+        }
         // Started, refused, or gone: whichever comes first, within the caller's patience. A
         // refusal is the host's last word, told once it has exited and said all it will.
         let outcome = shared.wait(patience, |s| {
@@ -737,6 +751,14 @@ impl Begun {
                 )))
             })
         });
+        if stop.release() {
+            end_it(&shared);
+            // Followed to its end, never timed (D215, D217): the host exited and reaped by its
+            // watcher, its answers ended, and its diagnostics, which the VM, network and share
+            // processes it started hold as their stderr, closed by every one of them.
+            shared.wait(Duration::MAX, |s| (s.gone() && s.said_all).then_some(()));
+            return Err((ImageRefusal::Ended(RunEnd::Stopped), false));
+        }
         let started = match outcome {
             Some(Ok(started)) => started,
             Some(Err(e)) => {
@@ -837,13 +859,14 @@ impl super::pool::Hosts for ShardsHosts {
         spec: &ImageSpec,
         request: &wire::Request,
         patience: Duration,
+        stop: &super::BootStop,
     ) -> Result<Box<dyn ImageGuest>, super::pool::Taken> {
         use super::pool::Taken;
         if let Err(e) = warm.create(spec.lessor.clone(), request) {
             warm.end();
             return Err(Taken::Refused(e));
         }
-        match warm.started(request, patience) {
+        match warm.started(request, patience, stop) {
             Ok(session) => Ok(Box::new(session)),
             Err((_, true)) => Err(Taken::Unfit),
             Err((refused, false)) => Err(Taken::Refused(refused)),
@@ -855,13 +878,9 @@ impl super::pool::Hosts for ShardsHosts {
         spec: &ImageSpec,
         request: &wire::Request,
         patience: Duration,
+        stop: &super::BootStop,
     ) -> Result<Box<dyn ImageGuest>, ImageRefusal> {
-        Ok(Box::new(Session::start(
-            spec,
-            request,
-            patience,
-            &super::BootStop::new(),
-        )?))
+        Ok(Box::new(Session::start(spec, request, patience, stop)?))
     }
 }
 
@@ -885,11 +904,9 @@ impl Session {
     ) -> Result<Session, ImageRefusal> {
         let begun = Begun::begin(spec.binary.as_deref(), &spec.env)?;
         begun.create(spec.lessor.clone(), request)?;
-        let session = begun.started(request, patience).map_err(|(refused, _)| refused)?;
-        if stop.is_stopped() {
-            return Err(ImageRefusal::Ended(RunEnd::Stopped));
-        }
-        Ok(session)
+        begun
+            .started(request, patience, stop)
+            .map_err(|(refused, _)| refused)
     }
 
     /// Its running members' outputs ([`pumped`]).

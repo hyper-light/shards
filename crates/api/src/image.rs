@@ -318,17 +318,25 @@ pub trait Images: Send + Sync {
     }
 }
 
-/// A stop for a boot under way ([`Images::boot_stoppable`], D231): its caller's, given to the
-/// boot by reference and stopped from any other thread. Once stopped it stays stopped.
+/// A stop for a boot under way ([`Images::boot_stoppable`], D231): its caller's, given to one
+/// boot at a time by reference and stopped from any other thread. Its stop is an event, never
+/// a flag a boot looks at: it kills the run host the boot holds here at once, every process
+/// that host started with it, and the boot, which waits on that host's end, returns as the
+/// host is followed to its end. Once stopped it stays stopped.
 #[derive(Debug, Default)]
 pub struct BootStop(Mutex<Stopping>);
 
-/// A [`BootStop`]'s state (R04).
+/// A [`BootStop`]'s state (R04): `Armed` to `Booting` as a boot holds its run host here and
+/// back as the boot lets go of it; either to `Stopped`, killing a host held, which a boot
+/// holding a host after finds and kills at once.
 #[derive(Debug, Default)]
 enum Stopping {
     /// Not stopped, and no boot holds a run host here.
     #[default]
     Armed,
+    /// A boot holds its run host here while its run starts: the host the boot's own
+    /// session and its exit watcher already share.
+    Booting(Arc<shards_ipc::Child>),
     /// Stopped: terminal.
     Stopped,
 }
@@ -338,14 +346,46 @@ impl BootStop {
         BootStop::default()
     }
 
-    /// Stops the boot under way, or the next one given it. Never refused; once is enough.
+    /// Stops the boot under way, killing its run host and all the host started, or the next
+    /// boot given it. Never refused; once is enough. Returns at once: the boot returns
+    /// `Ended(Stopped)` once they are gone.
     pub fn stop(&self) {
-        *self.state() = Stopping::Stopped;
+        let mut state = self.state();
+        if let Stopping::Booting(host) = std::mem::replace(&mut *state, Stopping::Stopped) {
+            session::kill(&host);
+        }
     }
 
     /// Whether it has been stopped.
     pub fn is_stopped(&self) -> bool {
         matches!(*self.state(), Stopping::Stopped)
+    }
+
+    /// A boot's run `host`, held here until [`release`](Self::release): killed at once where
+    /// the stop has come. Refused where another boot holds one here.
+    fn hold(&self, host: &Arc<shards_ipc::Child>) -> Result<(), ImageRefusal> {
+        let mut state = self.state();
+        match *state {
+            Stopping::Armed => *state = Stopping::Booting(host.clone()),
+            Stopping::Booting(_) => {
+                return Err(ImageRefusal::Spec {
+                    what: "the boot's stop",
+                    why: "another boot under way holds it".into(),
+                });
+            }
+            Stopping::Stopped => session::kill(host),
+        }
+        Ok(())
+    }
+
+    /// Lets go of the host a boot held here: whether the stop came first.
+    fn release(&self) -> bool {
+        let mut state = self.state();
+        if matches!(*state, Stopping::Stopped) {
+            return true;
+        }
+        *state = Stopping::Armed;
+        false
     }
 
     fn state(&self) -> MutexGuard<'_, Stopping> {
@@ -497,14 +537,21 @@ impl Images for ImageShards {
     }
 
     fn boot(&self, spec: &ImageSpec, patience: Duration) -> Result<Box<dyn ImageGuest>, ImageRefusal> {
+        self.boot_stoppable(spec, patience, &BootStop::new())
+    }
+
+    fn boot_stoppable(
+        &self,
+        spec: &ImageSpec,
+        patience: Duration,
+        stop: &BootStop,
+    ) -> Result<Box<dyn ImageGuest>, ImageRefusal> {
+        if stop.is_stopped() {
+            return Err(ImageRefusal::Ended(RunEnd::Stopped));
+        }
         crate::backend().map_err(no_backend)?;
         let request = request(spec)?;
-        Ok(Box::new(session::Session::start(
-            spec,
-            &request,
-            patience,
-            &BootStop::new(),
-        )?))
+        Ok(Box::new(session::Session::start(spec, &request, patience, stop)?))
     }
 }
 
@@ -538,9 +585,21 @@ impl Images for ImagePools {
     }
 
     fn boot(&self, spec: &ImageSpec, patience: Duration) -> Result<Box<dyn ImageGuest>, ImageRefusal> {
+        self.boot_stoppable(spec, patience, &BootStop::new())
+    }
+
+    fn boot_stoppable(
+        &self,
+        spec: &ImageSpec,
+        patience: Duration,
+        stop: &BootStop,
+    ) -> Result<Box<dyn ImageGuest>, ImageRefusal> {
+        if stop.is_stopped() {
+            return Err(ImageRefusal::Ended(RunEnd::Stopped));
+        }
         crate::backend().map_err(no_backend)?;
         let request = request(spec)?;
-        self.0.boot(spec, &request, patience)
+        self.0.boot(spec, &request, patience, stop)
     }
 }
 
