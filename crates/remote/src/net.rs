@@ -3016,6 +3016,138 @@ mod tests {
         newcomer.send(Command::Handler(Ask::Vanish)).unwrap();
     }
 
+    /// A bounded endpoint's one place, held by a handshake in flight (a client whose server's
+    /// flight never reached it): a handshake holding a place is judged as any holder is (ROOT's
+    /// ruling on #72's handshakes). While its client answers each newcomer's ask, it keeps its
+    /// place, over three of the probe timeouts its endpoint has before any RTT sample (RFC 9002
+    /// §6.2.2: the initial RTT's 333 ms, 999 ms; the client acknowledges nothing, so none comes);
+    /// once its client is silent, a newcomer takes its place, as that handshake goes unheard past
+    /// its probe timeout since the newcomer asked. Red with only established holders asked: the
+    /// newcomer refused at every attempt.
+    #[test]
+    fn a_handshake_unheard_past_its_probe_timeout_gives_its_place_and_one_heard_keeps_it() {
+        let server = crate::identity::Identity::generate().unwrap();
+        let config = |of: &crate::identity::Identity| {
+            crate::tls::client(of, server.fingerprint(), crate::tls::Known::Never).unwrap()
+        };
+        let any: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let tls = crate::tls::server(&server).unwrap();
+        let limits = DriverLimits {
+            connections: 1,
+            command_slots: 8,
+            queued_datagram_bytes: DATAGRAM * 8,
+        };
+        let (endpoint, at_endpoint, address, serving) =
+            party(|p| Driver::bind_bounded(any, Some(tls), p, limits));
+        let (newcomer, at_newcomer, _, _coming) =
+            party(|p| Driver::bind(any, None, p, crate::tls::Known::Never));
+        let (holder_id, newcomer_id) = (
+            crate::identity::Identity::generate().unwrap(),
+            crate::identity::Identity::generate().unwrap(),
+        );
+
+        // The holder: a client endpoint driven by hand, which reads nothing of its server's, so
+        // that its handshake never ends. It answers as this test says with its first datagram
+        // again, which its endpoint routes to its handshake (by the Initial's destination
+        // connection ID) and hears, as it would a resend or a network's duplicate; a PING of its
+        // own, never acknowledged, its congestion window soon holds back.
+        let socket = UdpSocket::bind(any).unwrap();
+        let mut client = Endpoint::new(EndpointConfig::default(), None, true, None).unwrap();
+        let handle = client.insert_client_config(config(&holder_id)).unwrap();
+        let (_, mut quic) = client
+            .connect(Instant::now(), handle, address, crate::tls::SERVER_NAME, None)
+            .unwrap();
+        let mut first = Vec::new();
+        let sent = quic
+            .poll_transmit(Instant::now(), 1, &mut first, client.configs())
+            .unwrap();
+        first.truncate(sent.size);
+        socket.send_to(&first, address).unwrap();
+        // Its endpoint took it, and answered with its flight.
+        socket.set_read_timeout(Some(Duration::from_secs(60))).unwrap();
+        let mut datagram = vec![0; DATAGRAM];
+        socket.recv_from(&mut datagram).unwrap();
+
+        let attempt = || {
+            newcomer
+                .send(Command::Handler(Ask::Connect(
+                    address,
+                    Box::new(config(&newcomer_id)),
+                )))
+                .unwrap();
+            next_heard(&at_newcomer, |h| {
+                matches!(h, Heard::Lost(..) | Heard::Connected(_))
+            })
+        };
+        // Heard after each ask: it keeps its place.
+        let answering = Instant::now() + Duration::from_secs(3);
+        let mut attempts = 0;
+        while Instant::now() < answering {
+            attempts += 1;
+            let refused = attempt();
+            assert!(
+                matches!(refused, Heard::Lost(..)),
+                "attempt {attempts}: a handshake heard after the ask gave its place: {refused:?}"
+            );
+            socket.send_to(&first, address).unwrap();
+        }
+        assert!(
+            at_endpoint.try_recv().is_err(),
+            "the endpoint let a handshake go that answered"
+        );
+
+        // Silent: the next newcomer takes its place.
+        let patience = Duration::from_secs(20);
+        let until = Instant::now() + patience;
+        let mut attempts = 0;
+        loop {
+            attempts += 1;
+            match attempt() {
+                Heard::Connected(_) => break,
+                refused => assert!(
+                    Instant::now() < until,
+                    "refused {attempts} times over {patience:?}: {refused:?}"
+                ),
+            }
+        }
+        assert!(attempts >= 2, "its first attempt asks the holder");
+        assert!(
+            matches!(next_heard(&at_endpoint, |_| true), Heard::Lost(..)),
+            "its handshake was let go first"
+        );
+        assert!(matches!(next_heard(&at_endpoint, |_| true), Heard::Connected(_)));
+        endpoint.send(Command::Stop).unwrap();
+        serving.join().unwrap().unwrap();
+        newcomer.send(Command::Handler(Ask::Vanish)).unwrap();
+    }
+
+    /// A handshake asked for an answer is judged by its own spaces' probe timeout, which counts
+    /// no `max_ack_delay` (RFC 9002 §6.2.1; its transport's application-data one, less its peer's
+    /// `max_ack_delay`): unheard past that since the ask, it gives way; heard since, it keeps its
+    /// place. Established, the application-data one judges it.
+    #[test]
+    fn a_handshake_asked_is_judged_by_its_handshakes_probe_timeout() {
+        let t0 = Instant::now();
+        let mut shaking = Liveness::new(t0, None, Duration::ZERO);
+        shaking.heard(t0);
+        shaking.peer_ack_delay(ms(25));
+        // Before any RTT sample: the initial RTT's 999 ms, and its peer's 25 ms.
+        shaking.probe_timeout(ms(1024));
+        shaking.ask(t0 + ms(1));
+        assert!(!shaking.unanswering(t0 + ms(1000)), "within its handshake's");
+        assert!(
+            shaking.unanswering(t0 + ms(1001)),
+            "past its handshake's, though within the application data's"
+        );
+        shaking.heard(t0 + ms(1002));
+        assert!(!shaking.unanswering(t0 + ms(5000)), "heard since the ask");
+        let mut established = shaking;
+        established.connected(t0 + ms(1003), 0, 0);
+        established.ask(t0 + ms(1004));
+        assert!(!established.unanswering(t0 + ms(2028)));
+        assert!(established.unanswering(t0 + ms(2029)));
+    }
+
     /// Under contention a holder is judged by its liveness (ROOT's ruling on #72): asked for an
     /// answer, one unheard past its own probe timeout gives way, warm or cold, stalled or not;
     /// one heard since the ask keeps its place, within its probe timeout or later.
