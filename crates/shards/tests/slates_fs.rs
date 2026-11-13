@@ -44,15 +44,12 @@ use std::io::Write;
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
+use common::Patience;
+
 #[cfg(unix)]
 use common::{TempDir, guest_init, run_shards_env, served};
 use common::{as_tests_run, cannot_run_vms, kernel, run_command, shards, test_guest};
 
-/// The host bounds the run; the guest's own waits are unbounded (it powers off on done).
-const TIMEOUT: Duration = Duration::from_secs(90);
-/// How long slates' anchor gets to serve and settle: seconds on a quiet host, and a verb refused meanwhile (`slates`
-/// exits 3, no daemon yet) is asked again.
-const START: Duration = Duration::from_secs(60);
 /// `slates`' exit code when no daemon answers at the instance (its usage notes).
 const NO_DAEMON: i32 = 3;
 /// What the volume holds for the guest to read, as the testguest expects it.
@@ -86,16 +83,15 @@ impl Drop for Reaped {
 }
 
 /// Runs `cmd` (given [`as_tests_run`]'s environment) with its stdout read line by line as it comes: `on_line` sees each
-/// line on this thread, so the test can act on the host while the VM waits for it. Killed, failing the test, after
-/// `timeout`; `asked` names it then. Its exit and everything it printed.
-fn run_watching(
-    mut cmd: Command,
-    asked: &[String],
-    timeout: Duration,
-    mut on_line: impl FnMut(&str),
-) -> common::Run {
+/// line on this thread, so the test can act on the host while the VM waits for it. Waited on as the tests' commands are
+/// ([`common::Wait`], D209): its kind its call site, its party the command and the VM process under it, each line its
+/// progress; killed, failing the test, where its judge refuses it, `asked` naming it then. Its exit and everything it
+/// printed.
+#[track_caller]
+fn run_watching(mut cmd: Command, asked: &[String], mut on_line: impl FnMut(&str)) -> common::Run {
     use std::io::{BufRead, BufReader, Read};
     use std::sync::mpsc::{RecvTimeoutError, channel};
+    let kind = common::WaitKind::at(std::panic::Location::caller());
     let start = Instant::now();
     let mut child = Reaped(
         cmd.env("SHARDS_TIMING", "1")
@@ -123,32 +119,33 @@ fn run_watching(
         String::from_utf8_lossy(&got).into_owned()
     });
     let mut stdout = String::new();
-    let late = |stdout: &str| -> ! {
-        panic!(
-            "{} did not exit within {timeout:?}\n--- stdout so far\n{stdout}",
-            asked.join(" ")
-        )
+    let mut wait = common::Wait::begin(kind, child.0.id(), None, &asked.join(" "));
+    let late = |wait: &common::Wait, stall: &shards_api::Stall, stdout: &str| -> ! {
+        panic!("{}\n--- stdout so far\n{stdout}", wait.refused(stall))
     };
-    // Each line as it comes, until its stdout ends; then its exit, waited for, not polled.
+    // Each line as it comes, until its stdout ends; then its exit.
     loop {
-        let left = timeout
-            .checked_sub(start.elapsed())
-            .unwrap_or_else(|| late(&stdout));
-        match lines.recv_timeout(left) {
+        let said = match lines.recv_timeout(wait.next_look()) {
             Ok(line) => {
                 on_line(line.trim_end());
                 stdout.push_str(&line);
+                true
             }
             Err(RecvTimeoutError::Disconnected) => break,
-            Err(RecvTimeoutError::Timeout) => late(&stdout),
+            Err(RecvTimeoutError::Timeout) => false,
+        };
+        if let Err(stall) = wait.look(said) {
+            late(&wait, &stall, &stdout);
         }
     }
+    // Its exit after its stdout's end, seen within a poll's 50 ms (no bound: its judge's).
     let status = loop {
         if let Some(status) = child.0.try_wait().unwrap() {
+            wait.answered();
             break status;
         }
-        if start.elapsed() > timeout {
-            late(&stdout);
+        if let Err(stall) = wait.look(false) {
+            late(&wait, &stall, &stdout);
         }
         std::thread::sleep(Duration::from_millis(50));
     };
@@ -176,10 +173,12 @@ impl Drop for Anchor {
     }
 }
 
-/// `slates --instance INSTANCE ARGS…` with `input` on its stdin, asked again while no daemon answers (exit 3) within
-/// [`START`]; what it said.
+/// `slates --instance INSTANCE ARGS…` with `input` on its stdin, asked again while no daemon answers (exit 3) as slates'
+/// anchor starts one: a wait on every process this test started ([`Patience::started`], D209), the anchor and its daemon
+/// among them, its kind its caller's call site; what it said, the last refusal's where its wait is refused.
+#[track_caller]
 fn slates(bin: &OsStr, instance: &str, args: &[&str], input: &[u8]) -> Output {
-    let start = Instant::now();
+    let mut patience = Patience::started();
     loop {
         let mut child = Command::new(bin)
             .args(["--instance", instance])
@@ -191,14 +190,19 @@ fn slates(bin: &OsStr, instance: &str, args: &[&str], input: &[u8]) -> Output {
             .expect("spawning slates");
         child.stdin.take().unwrap().write_all(input).unwrap();
         let out = child.wait_with_output().unwrap();
-        if out.status.code() != Some(NO_DAEMON) || start.elapsed() > START {
+        if out.status.code() != Some(NO_DAEMON) {
+            patience.done();
             return out;
         }
-        std::thread::sleep(Duration::from_millis(100));
+        if !patience.holds() {
+            return out;
+        }
+        std::thread::sleep(patience.next_look());
     }
 }
 
 /// [`slates`], which must succeed; the value of its `KEY: value` line `key`, or its whole stdout for an empty key.
+#[track_caller]
 fn slates_ok(bin: &OsStr, instance: &str, args: &[&str], input: &[u8], key: &str) -> String {
     let out = slates(bin, instance, args, input);
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -426,7 +430,7 @@ fn a_microvm_maps_a_slates_file_with_dax_and_each_side_sees_the_others_writes() 
     ];
     let mut visible_after = None;
     let mut changed: Option<Vec<u8>> = None;
-    let run = run_watching(vm, &asked, TIMEOUT, |line| {
+    let run = run_watching(vm, &asked, |line| {
         if line.contains("SLATES-DAX SEEN") {
             let whole = changed.as_ref().expect("the guest saw the change the host made");
             write(&bin, &instance, &id, "big", &whole[..CUT]);
@@ -485,8 +489,8 @@ const MOUNTED_AT: usize = 3 << 20;
 #[cfg(unix)]
 const MOUNTED_VM: &str = "slatesmount";
 
-/// A volume mounted on this host with `slates mount` at a directory, unmounted when dropped (asked until slates answers,
-/// then forced), so that slates' daemon never dies under a live mount: declared after the anchor, it is dropped before.
+/// A volume mounted on this host with `slates mount` at a directory, unmounted when dropped (asked while slates' anchor
+/// and what this test started go on, a [`Patience::started`], then forced), so that slates' daemon never dies under a live mount: declared after the anchor, it is dropped before.
 #[cfg(unix)]
 struct Mounted<'a> {
     bin: &'a OsStr,
@@ -511,15 +515,19 @@ impl<'a> Mounted<'a> {
 impl Drop for Mounted<'_> {
     fn drop(&mut self) {
         let at = self.point.to_str().unwrap_or_default();
-        let deadline = Instant::now() + START;
-        while Instant::now() < deadline {
+        let mut patience = Patience::started();
+        loop {
             if slates(self.bin, &self.instance, &["unmount", at], b"")
                 .status
                 .success()
             {
+                patience.done();
                 return;
             }
-            std::thread::sleep(Duration::from_millis(200));
+            if !patience.holds() {
+                break;
+            }
+            std::thread::sleep(patience.next_look());
         }
         let _ = Command::new("umount").args(["-f", at]).status();
     }
@@ -542,9 +550,9 @@ impl Drop for Removed<'_> {
 /// loopback on macOS); run a microVM under a Shards daemon whose volume is that mount, with a DAX window of its own (`-v
 /// MOUNT:/v`, `SHARDS_SHARE_WINDOW_MIB`, D189). That is the host-share route: Shards' own server shares the host
 /// directory, and slates is the file system beneath it. Then rewrite one byte of `big` through another slates attachment.
-/// Expect: the guest's kernel maps `big` into the window (`dax /v/big yes`) and reads it whole through it; and a fresh
-/// open and read in the guest shows the host's byte within `TIMEOUT`, since each open makes Shards' server open the host
-/// file, which revalidates it on the host side.
+/// Expect: the guest's kernel maps `big` into the window (`dax /v/big yes`) and reads it whole through it; and the first
+/// fresh open and read in the guest after the host's write returned shows the host's byte, since each open makes
+/// Shards' server open the host file, which revalidates it on the host side.
 #[cfg(unix)]
 #[test]
 fn a_microvm_maps_a_slates_mount_file_through_its_own_dax_window() {
@@ -607,24 +615,20 @@ fn a_microvm_maps_a_slates_mount_file_through_its_own_dax_window() {
     changed[MOUNTED_AT] = changed[MOUNTED_AT].wrapping_add(1);
     write(&bin, &instance, &id, "big", &changed);
     let want = format!("peek /v/big {MOUNTED_AT} {}\n", changed[MOUNTED_AT]);
-    let started = Instant::now();
-    let (followed, last) = loop {
-        let got = exec(&["fs", &format!("peek:/v/big:{MOUNTED_AT}")]);
-        if got == want {
-            break (Some(started.elapsed()), got);
-        }
-        if started.elapsed() >= TIMEOUT {
-            break (None, got);
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    };
-    // Measured, not asserted: the goal is the map; whether a change through another path reaches the window is the
+    // Ordered after the write: it returned, then the guest opens afresh. Each open revalidates the host file, so this
+    // one open says whether the change reached it; a wait for a later one would be a claim of speed with no event to end
+    // it, its own execs the progress that holds it.
+    let asked = Instant::now();
+    let got = exec(&["fs", &format!("peek:/v/big:{MOUNTED_AT}")]);
+    let took = asked.elapsed();
+    // Recorded, not asserted: the goal is the map; whether a change through another path reaches the window is the
     // finding this run records (Shards' M193: a range replaced in the host alone keeps the old pages at stage 2).
     eprintln!(
-        "SLATES MOUNT WINDOW: dax yes, digest whole; after the host's write, {}",
-        followed.map_or_else(
-            || format!("the guest kept the old byte for {TIMEOUT:?} ({})", last.trim()),
-            |took| format!("a fresh open and read in the guest saw the new byte after {took:?}"),
-        )
+        "SLATES MOUNT WINDOW: dax yes, digest whole; the first fresh open and read after the host's write ({took:?}) {}",
+        if got == want {
+            "saw the new byte".to_string()
+        } else {
+            format!("kept the old byte ({})", got.trim())
+        }
     );
 }

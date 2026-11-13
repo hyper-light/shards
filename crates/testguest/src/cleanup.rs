@@ -1,25 +1,17 @@
-//! Bounded ordinary-child lifecycle fixture; no foreign process is signalled here.
+//! Ordinary-child lifecycle fixture; no foreign process is signalled here. Its waits take no
+//! deadline of their own: its host's wait on it is judged (D209), and ends its microVM where
+//! its judge refuses it.
 use std::io::{self, Read as _, Write as _};
 use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-fn deadline(milliseconds: &str) -> io::Result<Instant> {
-    let milliseconds = milliseconds.parse::<u64>().map_err(io::Error::other)?;
-    Instant::now()
-        .checked_add(Duration::from_millis(milliseconds))
-        .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))
-}
-fn wait(fds: &mut [libc::pollfd], until: Instant) -> io::Result<()> {
+fn wait(fds: &mut [libc::pollfd]) -> io::Result<()> {
     loop {
-        let left = until.saturating_duration_since(Instant::now());
-        if left.is_zero() {
-            return Err(io::Error::from(io::ErrorKind::TimedOut));
-        }
-        let milliseconds = i32::try_from(left.as_millis()).unwrap_or(i32::MAX).max(1);
-        // SAFETY: poll borrows only the fixture's live descriptors and fills revents.
-        let n = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, milliseconds) };
+        // SAFETY: poll borrows only the fixture's live descriptors and fills revents; -1
+        // waits until one of them is ready.
+        let n = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, -1) };
         if n > 0 {
             return Ok(());
         }
@@ -28,13 +20,13 @@ fn wait(fds: &mut [libc::pollfd], until: Instant) -> io::Result<()> {
         }
     }
 }
-fn readable(fd: i32, until: Instant) -> io::Result<()> {
+fn readable(fd: i32) -> io::Result<()> {
     let mut fds = [libc::pollfd {
         fd,
         events: libc::POLLIN,
         revents: 0,
     }];
-    wait(&mut fds, until)?;
+    wait(&mut fds)?;
     let [ready] = fds;
     if ready.revents & libc::POLLIN == 0 {
         return Err(io::Error::from(io::ErrorKind::UnexpectedEof));
@@ -50,10 +42,9 @@ fn finish(result: io::Result<()>) -> i32 {
         }
     }
 }
-pub fn main(socket: &str, token: &str, count: &str, milliseconds: &str) -> i32 {
+pub fn main(socket: &str, token: &str, count: &str) -> i32 {
     finish((|| {
         let n = count.parse::<usize>().map_err(io::Error::other)?;
-        let until = deadline(milliseconds)?;
         let listener = UnixListener::bind(socket)?;
         for _ in 0..n {
             let child = Command::new(std::env::current_exe()?)
@@ -62,9 +53,8 @@ pub fn main(socket: &str, token: &str, count: &str, milliseconds: &str) -> i32 {
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .spawn()?;
-            readable(listener.as_raw_fd(), until)?;
+            readable(listener.as_raw_fd())?;
             let (mut ready, _) = listener.accept()?;
-            ready.set_read_timeout(Some(until.saturating_duration_since(Instant::now())))?;
             let mut pid = [0; 4];
             ready.read_exact(&mut pid)?;
             if u32::from_be_bytes(pid) != child.id() {
@@ -73,9 +63,8 @@ pub fn main(socket: &str, token: &str, count: &str, milliseconds: &str) -> i32 {
             drop(child); // Deliberately leave these known children for init's real cleanup.
         }
         writeln!(io::stdout(), "ready")?;
-        readable(listener.as_raw_fd(), until)?;
+        readable(listener.as_raw_fd())?;
         let (mut release, _) = listener.accept()?;
-        release.set_read_timeout(Some(until.saturating_duration_since(Instant::now())))?;
         let mut pid = [0; 4];
         release.read_exact(&mut pid)?;
         let controller = pidfd(u32::from_be_bytes(pid))?;
@@ -87,7 +76,7 @@ pub fn main(socket: &str, token: &str, count: &str, milliseconds: &str) -> i32 {
             events: 0,
             revents: 0,
         }];
-        wait(&mut terminal, until)?;
+        wait(&mut terminal)?;
         let [terminal] = terminal;
         if terminal.revents & libc::POLLHUP == 0 {
             return Err(io::Error::from(io::ErrorKind::InvalidData));
@@ -119,13 +108,12 @@ pub fn control(args: &[String]) -> i32 {
             }
             Ok(())
         })(),
-        "watch" => watch(arg(1), arg(2), arg(3)),
+        "watch" => watch(arg(1), arg(2)),
         _ => Err(io::Error::from(io::ErrorKind::InvalidInput)),
     })
 }
-fn watch(token: &str, count: &str, milliseconds: &str) -> io::Result<()> {
+fn watch(token: &str, count: &str) -> io::Result<()> {
     let count = count.parse::<usize>().map_err(io::Error::other)?;
-    let until = deadline(milliseconds)?;
     let mut owned = Vec::<(u32, OwnedFd)>::new();
     // One discovery snapshot after all children acknowledged readiness; no /proc polling.
     for entry in std::fs::read_dir("/proc")? {
@@ -161,7 +149,7 @@ fn watch(token: &str, count: &str, milliseconds: &str) -> io::Result<()> {
         .collect();
     let mut reaped = 0;
     while reaped < count {
-        if let Err(error) = wait(&mut pending, until) {
+        if let Err(error) = wait(&mut pending) {
             for (pid, _) in &owned {
                 let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"));
                 writeln!(io::stderr(), "remaining {pid} {stat:?}")?;

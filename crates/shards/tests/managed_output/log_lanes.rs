@@ -151,9 +151,8 @@ impl Home {
         Home { home, owner }
     }
 
-    /// `shards ARGS` in its home, waited on as long as it goes on (`common::run_command`):
-    /// `_until`, its case's end, bounds it no more.
-    fn command(&self, args: &[&str], _until: Instant) -> common::Run {
+    /// `shards ARGS` in its home, waited on as long as it goes on (`common::run_command`).
+    fn command(&self, args: &[&str]) -> common::Run {
         common::run_shards_env(
             &[],
             args,
@@ -167,7 +166,7 @@ impl Home {
 
     /// Builds `tag`: the tests' own image (never a registry's beyond this host) with agents
     /// `a` and `b`, the test guest each, run with `a_options` and `b_options`.
-    fn image(&self, tag: &str, a_options: &[&str], b_options: &[&str], until: Instant) {
+    fn image(&self, tag: &str, a_options: &[&str], b_options: &[&str]) {
         let context = common::TempDir::new("lanes-ctx");
         let (image, _) = common::served();
         for (name, options) in [("a", a_options), ("b", b_options)] {
@@ -192,13 +191,13 @@ impl Home {
             format!("FROM {image}\nAGENT a FROM ./a\nAGENT b FROM ./b\n"),
         )
         .unwrap();
-        let built = self.command(&["build", "image", "-t", tag, context.to_str().unwrap()], until);
+        let built = self.command(&["build", "image", "-t", tag, context.to_str().unwrap()]);
         assert_eq!(built.status, Some(0), "{built}");
     }
 
     /// Starts `image` detached as `name`, its agent-control endpoint asked for and agent `a`
     /// owned, with `options` beside, its command `command`.
-    fn run(&self, name: &str, options: &[&str], image: &str, command: &[&str], until: Instant) -> Started {
+    fn run(&self, name: &str, options: &[&str], image: &str, command: &[&str]) -> Started {
         let mut args = vec![
             "run",
             "vm",
@@ -213,7 +212,7 @@ impl Home {
         args.extend_from_slice(options);
         args.push(image);
         args.extend_from_slice(command);
-        let started = self.command(&args, until);
+        let started = self.command(&args);
         assert_eq!(started.status, Some(0), "{started}");
         let id = started.stdout.trim();
         assert!(
@@ -226,10 +225,9 @@ impl Home {
     }
 
     /// Stops its daemon, which ends its runs, and checks it let go of its home.
-    fn stop(&self, until: Instant) -> Result<(), String> {
-        let stopped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.command(&["stop", "daemon"], until)
-        }));
+    fn stop(&self) -> Result<(), String> {
+        let stopped =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.command(&["stop", "daemon"])));
         match stopped {
             Ok(stopped) if stopped.status != Some(0) => Err(format!("stop daemon: {stopped}")),
             Ok(_) if !daemon_gone(&self.home) => {
@@ -248,7 +246,7 @@ impl Home {
         }
         let home = Home::new(name);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| test(&home)));
-        let stopped = home.stop(Instant::now() + WITHIN);
+        let stopped = home.stop();
         if let Err(error) = result {
             let _ = writeln!(std::io::stderr(), "log lanes cleanup: {stopped:?}");
             std::panic::resume_unwind(error);
@@ -258,12 +256,14 @@ impl Home {
 }
 
 /// Drives a dialed controller while `body` runs with its execs and agent `a`'s outputs, then
-/// hangs it up. Should `until` pass first, it is hung up then, so that every read of its lanes
-/// ends with the connection's end and the test fails at that read rather than waiting on.
+/// hangs it up. Should its wait on `home`'s run be refused first (a `Patience`, D209: past the
+/// slowest of its kind, a whole window with no progress of its daemon or microVMs), it is hung
+/// up then, so that every read of its lanes ends with the connection's end and the test fails
+/// at that read rather than waiting on.
 fn controlled<T>(
     controller: Controller,
     dialed: Dialed,
-    until: Instant,
+    home: &Path,
     body: impl FnOnce(&Execs, Vec<Output>) -> T,
 ) -> T {
     let Dialed {
@@ -277,12 +277,22 @@ fn controlled<T>(
     std::thread::scope(|scope| {
         let driver = scope.spawn(move || controller.run());
         scope.spawn(move || {
-            let left = until.saturating_duration_since(Instant::now());
-            if let Err(mpsc::RecvTimeoutError::Timeout) = finished.recv_timeout(left) {
-                let _ = writeln!(
-                    std::io::stderr(),
-                    "log lanes: the test's patience passed; its controller hung up"
-                );
+            let mut patience = common::Patience::of(home);
+            loop {
+                match finished.recv_timeout(patience.next_look()) {
+                    Err(mpsc::RecvTimeoutError::Timeout) if patience.holds() => {}
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        let _ = writeln!(
+                            std::io::stderr(),
+                            "log lanes: its wait on the run refused; its controller hung up"
+                        );
+                        break;
+                    }
+                    Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        patience.done();
+                        break;
+                    }
+                }
             }
             drop(hangup);
         });
@@ -402,16 +412,14 @@ fn written(name: &str) -> [Vec<u8>; 2] {
 #[test]
 fn log_lanes_read_a_runs_command_and_each_agents_log_at_its_place_and_go_on_from_a_cursor() {
     Home::with("lanes", |home| {
-        let until = Instant::now() + WITHIN;
         home.image(
             "lanes:1",
             &["managed-capture", "a", "exit"],
             &["managed-capture", "b", "exit"],
-            until,
         );
-        let run = home.run("lanes", &[], "lanes:1", &["managed-capture", "cmd"], until);
+        let run = home.run("lanes", &[], "lanes:1", &["managed-capture", "cmd"]);
         let (controller, dialed) = run.control.dial(&home.owner);
-        controlled(controller, dialed, until, |execs, outputs| {
+        controlled(controller, dialed, &home.home, |execs, outputs| {
             std::thread::scope(|scope| {
                 // Agent `a`'s output is its owner's to read: its channels end as it is read.
                 let owned: Vec<_> = outputs
@@ -528,7 +536,7 @@ fn log_lanes_read_a_runs_command_and_each_agents_log_at_its_place_and_go_on_from
 
         // 5. `shards read logs`: the command's own, then each agent's lines after its label,
         // the owned agent's as the drained one's.
-        let logs = home.command(&["read", "logs", "lanes"], until);
+        let logs = home.command(&["read", "logs", "lanes"]);
         assert_eq!(logs.status, Some(0), "{logs}");
         let shown = format!("{}{}", logs.stdout, logs.stderr);
         for line in [
@@ -550,12 +558,10 @@ fn log_lanes_read_a_runs_command_and_each_agents_log_at_its_place_and_go_on_from
 #[test]
 fn log_lanes_are_refused_typed_where_a_run_keeps_no_log_or_no_copy() {
     Home::with("unlogged", |home| {
-        let until = Instant::now() + WITHIN;
         home.image(
             "unlogged:1",
             &["managed-capture", "a", "exit"],
             &["managed-capture", "b", "exit"],
-            until,
         );
         // Where the shipped log goes: a socket of the test's, on loopback, that nothing reads.
         let syslog = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
@@ -586,9 +592,9 @@ fn log_lanes_are_refused_typed_where_a_run_keeps_no_log_or_no_copy() {
             ),
         ];
         for (name, options, refused) in cases {
-            let run = home.run(name, &options, "unlogged:1", &["managed-capture", "cmd"], until);
+            let run = home.run(name, &options, "unlogged:1", &["managed-capture", "cmd"]);
             let (controller, dialed) = run.control.dial(&home.owner);
-            controlled(controller, dialed, until, |execs, _| {
+            controlled(controller, dialed, &home.home, |execs, _| {
                 for (source, why) in refused {
                     for follow in [false, true] {
                         assert_eq!(
@@ -621,13 +627,11 @@ fn the_runs_one_log_cap_is_said_by_logs_and_by_a_lane_from_the_oldest_and_holds_
     let bound = segment * files;
     let each = bound + segment;
     Home::with("capped", |home| {
-        let until = Instant::now() + WITHIN;
         let (a_bytes, b_bytes) = (each.to_string(), each.to_string());
         home.image(
             "capped:1",
             &["bulk", a_bytes.as_str(), "1"],
             &["bulk", b_bytes.as_str(), "2"],
-            until,
         );
         let (size, count) = (format!("max-size={segment}"), format!("max-file={files}"));
         let run = home.run(
@@ -642,10 +646,9 @@ fn the_runs_one_log_cap_is_said_by_logs_and_by_a_lane_from_the_oldest_and_holds_
             ],
             "capped:1",
             &["managed-capture", "cmd"],
-            until,
         );
         let (controller, dialed) = run.control.dial(&home.owner);
-        let capped = controlled(controller, dialed, until, |execs, outputs| {
+        let capped = controlled(controller, dialed, &home.home, |execs, outputs| {
             // Both agents' output written whole: `a`'s read by its owner to its end, `b`'s
             // followed in its log to its channels' end.
             let owned: usize = std::thread::scope(|scope| {
@@ -740,7 +743,7 @@ fn the_runs_one_log_cap_is_said_by_logs_and_by_a_lane_from_the_oldest_and_holds_
         );
 
         // `logs` says the cap's losses first, each of whose log it cut.
-        let logs = home.command(&["read", "logs", "capped"], until);
+        let logs = home.command(&["read", "logs", "capped"]);
         assert_eq!(logs.status, Some(0), "{}", logs.stderr);
         for member in capped {
             let whose = format!(
