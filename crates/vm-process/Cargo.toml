@@ -26,7 +26,6 @@ gpu = ["shards-vmm/gpu"]
 shards-abi = { path = "../abi" }
 shards-cmdline = { path = "../cmdline" }
 shards-ipc = { path = "../ipc" }
-shards-net = { path = "../net" }
 shards-vmm = { path = "../vmm" }
 
 [target.'cfg(unix)'.dependencies]

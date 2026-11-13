@@ -2063,6 +2063,11 @@ impl Ended {
     }
 }
 
+/// The injector's cost, measured (#74 step 10 part B): ignored tests ROOT runs, its README beside it.
+#[cfg(test)]
+#[path = "../../../docs/research/measurements/s33-injector-ab/ab.rs"]
+mod ab;
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {

@@ -2868,6 +2868,23 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 return 1;
             }
         };
+        // What the run's one log cap, shared by its command and its members, let go of each log
+        // (D240): said first, on stderr, each where it let some go.
+        let owners =
+            std::iter::once((None, &log)).chain(members.iter().map(|(label, log)| (Some(label), log)));
+        for (label, kept) in owners {
+            let whose = label.map_or_else(|| "its".to_string(), |label| format!("[{label}]'s"));
+            match super::managed::capped(kept.dir()) {
+                Ok(capped) if capped.segments > 0 => reply.err(&format!(
+                    "shards: {reference}: {whose} older output went to its run's one log cap, shared by its command and its members: {} bytes, {} segments",
+                    capped.bytes, capped.segments
+                )),
+                Ok(_) => {}
+                Err(e) => reply.err(&format!(
+                    "shards: {reference}: {whose} log cap's record: {e}"
+                )),
+            }
+        }
         let show = |label: Option<&str>| Show {
             reply,
             shown: shown.clone(),

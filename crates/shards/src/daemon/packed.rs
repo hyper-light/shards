@@ -386,7 +386,8 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// Has the rotated segments compressed that a daemon before this one left as they
-    /// were written: those of each microVM whose log compresses them.
+    /// were written: those of each microVM whose log compresses them, and of its members'
+    /// logs, which are compressed as its own (D240).
     pub(super) fn pack_left(&self) {
         let left: Vec<(String, PathBuf)> = {
             let registry = lock(&self.containers);
@@ -397,6 +398,19 @@ impl<D: Disk> Daemon<D> {
                 .collect()
         };
         for (id, dir) in left {
+            let members = match super::managed::member_dirs(&dir) {
+                Ok(members) => members,
+                Err(e) => {
+                    log(format!("container {id}: its members' logs: {e}"));
+                    Vec::new()
+                }
+            };
+            for (_, member) in members {
+                self.pack_soon(Job::Rotated {
+                    id: id.clone(),
+                    dir: member,
+                });
+            }
             self.pack_soon(Job::Rotated { id, dir });
         }
     }
