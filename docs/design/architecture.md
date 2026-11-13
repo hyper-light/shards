@@ -6435,7 +6435,8 @@ stateless reset (§10.3), which ends the connection for that peer as its close w
 connection, its handshake's or established, keeps its place: a vanished owner's is freed only
 as its successor contends for it and it has not answered, within its probe timeout, the PING
 an earlier attempt sent it (`Driver::reclaim`, below), its successor refused and dialing again meanwhile; a stranger's
-handshake in flight holds it too, and gives it up the same way. Every bounded endpoint shares the driver, so an
+handshake in flight holds it too, and gives it up the same way, or by making no progress for a whole window
+(`Liveness::unfinished`, below). Every bounded endpoint shares the driver, so an
 output endpoint's observer resubscribing after its close is taken at once, and so is the
 agent-control endpoint's third connection while the older drains (D238's `CONNECTIONS`). No
 literal: the places are the caller's admission, the close period the transport's own. Red at
@@ -6572,9 +6573,10 @@ replaced by:
   the reclaim as a newcomer contends (`Driver::reclaim`): it asks each holder, its handshake in
   flight or ended, for an answer (a PING) and refuses the newcomer, and at a later attempt lets go of the holder
   unheard longest of those that have not answered that PING within their own probe timeout
-  (`Liveness::unanswering`), its handler told as QUIC's `TimedOut`; a holder that answers,
-  however late, keeps its place, and newcomers dialing again put off no judgement, as an ask
-  still unanswered stands (`Liveness::ask`). ROOT's ruling on #72 (2026-11-13): under
+  (`Liveness::unanswering`), or of the handshakes that made no progress for a whole window
+  (`Liveness::unfinished`, below), its handler told as QUIC's `TimedOut`; an established holder
+  that answers, however late, keeps its place, and so does a handshake that keeps advancing,
+  however slowly; newcomers dialing again put off no judgement, as an ask still unanswered stands (`Liveness::ask`). ROOT's ruling on #72 (2026-11-13): under
   contention a holder is judged by its liveness, warm or cold, stalled or not. Before, a
   holder had to be stalled as well, and one whose path never showed an answer (an owner gone
   before its handshake's last frames were acknowledged) has no window and never stalls, so its
@@ -6612,10 +6614,45 @@ replaced by:
   ACK_FREQUENCY frame, which raises the former, is sent before the handshake ends); before its
   first RTT sample it is the initial RTT's (§6.2.2: 333 ms, so 999 ms), and a client that
   acknowledges nothing gives none. No deadline of the handshake's own, and no idle timeout. A
-  handshake heard since the ask keeps its place, the test's client answering each ask over
-  three such probe timeouts while newcomers were refused. Its failure is typed as an
-  established holder's: a live client whose answer comes later than that loses its place, its
-  handler told `TimedOut`, and dials again. Owed: the memory a connection holds, measured, as
+  handshake heard since the ask is not let go for want of an answer, the test's client
+  answering each ask over three such probe timeouts while newcomers were refused. Its failure is
+  typed as an established holder's: a live client whose answer comes later than that loses its
+  place, its handler told `TimedOut`, and dials again. ROOT's ruling on #72's unfinished
+  handshakes (2026-11-13): an established holder's answer is its liveness, but a handshake's
+  goal is to end, so a handshake shows progress only by advancing. N clients that answered every
+  ask and never finished held a listener's descriptor-bound places for good, strangers bounded
+  by invitations only after their handshakes (found by the implementer of the ruling above;
+  `a_handshake_that_answers_but_never_advances_gives_its_place_after_a_window_without_progress`,
+  red so at 9ebbdbcff: the newcomer refused 23,979 times over 30 s on macOS arm64). Progress is
+  hyper-quic's `Connection::handshake_progress` (patch Q35, its VENDORED.md §51, on hyper-raft's
+  branch `p/q35-handshake-progress-v1`, e0613f524): CRYPTO bytes newly read in order, this
+  side's CRYPTO bytes the peer newly acknowledged in the Initial and Handshake spaces, and keys
+  installed for the next space; a datagram or CRYPTO frame repeated, a PING answered and any
+  other acknowledgement move it not at all (`ConnectionStats` counts all of those, so cannot tell
+  them apart). The driver notes it as each connection is fed (`Liveness::advance`), and as a
+  newcomer needs a place lets go of a handshake that has made no progress for a whole window
+  (`Liveness::unfinished`). The window is learned where it runs: the slowest handshake this
+  endpoint has completed (`Driver::slowest`, an online maximum from the first completed
+  handshake on, each from its first datagram to its end), no shorter than the handshake's
+  probe timeout, before which QUIC declares no loss. Cold, before any handshake has completed
+  here, it is the time QUIC's own recovery takes to give up on a silent path: RFC 9002's
+  kPersistentCongestionThreshold of 3 probe timeouts in a row (§7.6.1, "approximately
+  equivalent to having two TLPs before an RTO in TCP"), each backed off (§6.2.1: PTO, 2 PTO,
+  4 PTO), 7 handshake probe timeouts in all, within which a live client that is advancing
+  acknowledges the server's flight or one of its two probes; before any RTT sample, 6.993 s.
+  No value of shards' own enters either. A handshake that keeps advancing keeps its place
+  however slowly (`a_handshake_that_advances_slowly_keeps_its_place`: its client acknowledging
+  the server's Initial 4 s in and finishing 4 s later, past the cold window from its start),
+  and the window grows with a slow completed handshake
+  (`the_learned_window_grows_with_a_slow_completed_handshake`: after one of 3 s, a handshake
+  that never advanced kept its place for no less than 2.5 s and gave it within the cold window).
+  Its failure is typed (`GiveWay::Unfinished`, beside `GiveWay::Unanswered`): the client gets a
+  CONNECTION_CLOSE whose reason says its handshake made no progress for a whole window, as the
+  unanswered reclaim's does (an application close, which RFC 9000 §10.2.3 has a server clear of
+  its reason in Initial and Handshake packets), its handler told `TimedOut` and the window and
+  whether it was cold; a live client slower than every handshake this endpoint has completed
+  loses its place to a contender only while it advances nothing, and dials again, its slower
+  handshake then teaching the endpoint a longer window once it ends. Owed: the memory a connection holds, measured, as
   its second term. No wait is
   judged sooner than QUIC's own loss recovery judges its send, at its probe timeout (§6.2.1,
   the smoothed RTT, four times its variation and the peer's `max_ack_delay`;
