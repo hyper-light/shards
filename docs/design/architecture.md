@@ -8505,7 +8505,8 @@ user's host as Docker's.
   or the daemon's own stop, its VM process is looked at after a slice and each slice after,
   and waited on while it goes on with its end: it ran any CPU at all, held less than it did
   (its host freeing it), or its host held it from running (D215's readers,
-  `shards_api::Watch`: a thread runnable or waiting on memory, a cgroup's pressure grown),
+  `shards_api::Watch`: a thread runnable or waiting on memory, its threads' run-queue wait
+  or its own cgroup's pressure grown),
   which is no stall of its own. Its VM is killed only once it did none of these for a whole
   slice, or is stopped or frozen. It was PM M357's idle CPU (`Progress`, 63 ms in 10 s),
   which ended a teardown that ran slower than an idle microVM (red at 2b89e8504:
@@ -24114,13 +24115,40 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
       `TH_STATE_RUNNING`, Windows ready, running, standby or transition) or waiting on its
       host's memory (macOS `TH_STATE_UNINTERRUPTIBLE`, which macOS keeps no pressure record
       of; Windows' KWAIT_REASON FreePage, PageIn, PoolAllocation and their Wr forms); nor, on
-      Linux, its cgroup's CPU or memory pressure grown since the look before (cpu.pressure's
-      and memory.pressure's `some` totals, Documentation/accounting/psi.rst; a task held over
-      `memory.high` is a memory stall, mm/memcontrol.c). One stopped or frozen is refused
-      whatever else shows: Linux's leader `T` or `t` or a frozen cgroup (`cgroup.events`),
-      macOS's `SSTOP`, Windows' every thread suspended. Read where each OS keeps it, with no
-      privilege: `/proc/<pid>/task/*/stat` and the process's cgroup v2 files (the root's
-      pressure is `/proc/pressure`); libproc's `PROC_PIDTBSDINFO`, `PROC_PIDLISTTHREADS` and
+      Linux, its threads' wait for a CPU grown since the look before (each thread's
+      `/proc/<pid>/task/<tid>/schedstat` `run_delay`, summed, Documentation/scheduler/
+      sched-stats.rst), nor its own cgroup's CPU or memory pressure (cpu.pressure's and
+      memory.pressure's `some` totals, Documentation/accounting/psi.rst; a task held over
+      `memory.high` is a memory stall, mm/memcontrol.c).
+      - A hold counts only where it is the process's own (ROOT, 2026-11-13). A cgroup's
+        pressure is read only where its `cgroup.procs` is this process alone, as a daemon's
+        VM process in its slice (D209); a shared cgroup's, the root's (`/proc/pressure`, the
+        host's) among them, is its neighbours' wait too. Main's judge had read any: in CI a
+        followed process shares the test runner's cgroup, or a container's namespace root
+        whose pressure is the host's, so a `/bin/sleep 60` beside busy tests was found
+        `Held` at every look and waited on for ever (main's CI at 5af644eab, run
+        43474661701: ends.rs's `an_end_goes_on_at_any_rate_and_not_asleep_or_stopped` on
+        three Linux targets, and daemon waits that never ended on Alpine; red at 790320602,
+        `a_sleeper_is_still_whatever_its_cgroups_others_wait_for`, two spinners pinned to
+        one CPU beside the sleeper).
+      - The kernel adds a thread's wait to `run_delay` as it reaches a CPU or leaves the
+        queue (Linux 7.2 kernel/sched/stats.h `sched_info_arrive`, `sched_info_dequeue`), so
+        a thread that waited the whole time between two looks shows by its `R` sample
+        instead. A kernel built without CONFIG_SCHED_INFO keeps no schedstat, and one where
+        `sched_info_on()` is false reads it as zeros (fs/proc/base.c): `Queued::Unread`, and
+        its looks are judged by CPU and the `R` sample alone. No number is chosen: growth is
+        any nanosecond.
+      - So a sleeping (`S`) process with no wait of its own grown is still, whatever its
+        neighbours do; one stopped or frozen is refused whatever else shows, the CPU its stop
+        ran included (a stop signal wakes a sleeper to stop itself, kernel/signal.c
+        `do_signal_stop`: ends.rs's stopped teardown went on at ba81cd9d2, red at b665a2e61,
+        `a_process_stopped_since_the_look_before_is_still_though_its_stop_ran_it`): Linux's
+        leader `T` or `t` or a frozen cgroup (`cgroup.events`), macOS's `SSTOP`, Windows'
+        every thread suspended. Only an end under way outranks a stop. macOS and Windows read each thread of the followed process (or,
+        on Windows, of its tree) alone, no group's, and are unchanged.
+      Read where each OS keeps it, with no
+      privilege: `/proc/<pid>/task/*/stat`, `/proc/<pid>/task/*/schedstat` and the process's
+      cgroup v2 files; libproc's `PROC_PIDTBSDINFO`, `PROC_PIDLISTTHREADS` and
       `PROC_PIDTHREADINFO`, which need no task port (`task_threads` would, and `task_for_pid`
       is refused for a hardened process not built to allow it); NtQuerySystemInformation's
       SystemProcessInformation records, each thread's state and wait reason. What cannot be
