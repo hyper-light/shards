@@ -2724,6 +2724,9 @@ mod tests {
         Say(ConnKey),
         /// Ends its driver without a word to its peers, as a killed process's ends.
         Vanish,
+        /// Ends its driver as its next connection's handshake ends, once what ends it is sent:
+        /// nothing of its endpoint's is answered after, as of an owner gone at its handshake.
+        VanishAtConnect,
     }
 
     /// A bounded endpoint or a client of one, on the real transport: it tells what its driver
@@ -2731,11 +2734,13 @@ mod tests {
     struct Party {
         heard: mpsc::Sender<Heard>,
         vanished: bool,
+        vanish_at_connect: bool,
     }
 
     impl Handler for Party {
         type Command = Ask;
         fn connected(&mut self, _: &mut Io<'_>, conn: ConnKey, _: &[u8]) -> Result<(), Close> {
+            self.vanished |= self.vanish_at_connect;
             let _ = self.heard.send(Heard::Connected(conn));
             Ok(())
         }
@@ -2781,6 +2786,7 @@ mod tests {
                     io.finish(conn, stream).unwrap();
                 }
                 Ask::Vanish => self.vanished = true,
+                Ask::VanishAtConnect => self.vanish_at_connect = true,
             }
         }
         fn done(&self) -> bool {
@@ -2805,6 +2811,7 @@ mod tests {
         let (mut driver, asks) = bound(Party {
             heard,
             vanished: false,
+            vanish_at_connect: false,
         })
         .unwrap();
         let at = driver.local().unwrap();
@@ -2922,6 +2929,109 @@ mod tests {
         endpoint.send(Command::Stop).unwrap();
         serving.join().unwrap().unwrap();
         newcomer.send(Command::Handler(Ask::Vanish)).unwrap();
+    }
+
+    /// A holder gone as its handshake ended, nothing of its endpoint's answered after (an owner
+    /// gone before the handshake's last frames were acknowledged), is cold: its path showed no
+    /// answer, so it has no window and never stalls. Under contention a holder is judged by its
+    /// liveness (ROOT's ruling on #72): asked for an answer (a PING), it gives its place to a
+    /// later attempt once unheard past its probe timeout. Red with a stall the only way to
+    /// give it up: the newcomer refused at every attempt.
+    #[test]
+    fn a_cold_holder_unheard_past_its_probe_timeout_gives_its_place_to_a_newcomer() {
+        let server = crate::identity::Identity::generate().unwrap();
+        let config = |of: &crate::identity::Identity| {
+            Box::new(crate::tls::client(of, server.fingerprint(), crate::tls::Known::Never).unwrap())
+        };
+        let any: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let tls = crate::tls::server(&server).unwrap();
+        let limits = DriverLimits {
+            connections: 1,
+            command_slots: 8,
+            queued_datagram_bytes: DATAGRAM * 8,
+        };
+        let (endpoint, at_endpoint, address, serving) =
+            party(|p| Driver::bind_bounded(any, Some(tls), p, limits));
+        let bind = |p: Party| Driver::bind(any, None, p, crate::tls::Known::Never);
+        let (holder, _at_holder, _, holding) = party(bind);
+        let (newcomer, at_newcomer, _, _coming) = party(bind);
+        let (holder_id, newcomer_id) = (
+            crate::identity::Identity::generate().unwrap(),
+            crate::identity::Identity::generate().unwrap(),
+        );
+        holder.send(Command::Handler(Ask::VanishAtConnect)).unwrap();
+        holder
+            .send(Command::Handler(Ask::Connect(address, config(&holder_id))))
+            .unwrap();
+        let Heard::Connected(held) = next_heard(&at_endpoint, |h| matches!(h, Heard::Connected(_))) else {
+            panic!("not connected")
+        };
+        holding.join().unwrap().unwrap();
+        let patience = Duration::from_secs(20);
+        let until = Instant::now() + patience;
+        let mut attempts = 0;
+        loop {
+            attempts += 1;
+            newcomer
+                .send(Command::Handler(Ask::Connect(address, config(&newcomer_id))))
+                .unwrap();
+            match next_heard(&at_newcomer, |h| {
+                matches!(h, Heard::Lost(..) | Heard::Connected(_))
+            }) {
+                Heard::Connected(_) => break,
+                refused => assert!(
+                    Instant::now() < until,
+                    "refused {attempts} times over {patience:?}: {refused:?}"
+                ),
+            }
+        }
+        assert!(attempts >= 2, "its first attempt asks the holder");
+        let Heard::Lost(gone, _) = next_heard(&at_endpoint, |h| matches!(h, Heard::Lost(..))) else {
+            panic!("its holder was not let go");
+        };
+        assert_eq!(gone, held);
+        endpoint.send(Command::Stop).unwrap();
+        serving.join().unwrap().unwrap();
+        newcomer.send(Command::Handler(Ask::Vanish)).unwrap();
+    }
+
+    /// Under contention a holder is judged by its liveness (ROOT's ruling on #72): asked for an
+    /// answer, one unheard past its own probe timeout gives way, warm or cold, stalled or not;
+    /// one heard since the ask keeps its place, within its probe timeout or later.
+    #[test]
+    fn a_holder_asked_gives_way_unheard_past_its_probe_timeout_warm_or_cold() {
+        let t0 = Instant::now();
+        // Cold: no answer seen on its path, so no window and no stall.
+        let mut cold = Liveness::new(t0, None, Duration::ZERO);
+        cold.heard(t0);
+        cold.connected(t0, 0, 0);
+        cold.peer_ack_delay(ms(5));
+        cold.probe_timeout(ms(10));
+        assert_eq!(cold.look(t0, 1, 0), Look::Fine);
+        assert!(!cold.unanswering(t0 + ms(100_000)), "never asked");
+        cold.ask(t0 + ms(1));
+        assert!(!cold.stalled(t0 + ms(100_000)), "cold: no window");
+        assert!(!cold.unanswering(t0 + ms(11)), "within its probe timeout");
+        assert!(cold.unanswering(t0 + ms(12)), "unheard past it");
+        // Warm, within its window: not stalled, but unheard past its probe timeout.
+        let mut warm = Liveness::new(t0, None, ms(50));
+        warm.heard(t0);
+        warm.connected(t0, 0, 0);
+        warm.peer_ack_delay(ms(5));
+        warm.probe_timeout(ms(10));
+        warm.ask(t0 + ms(1));
+        assert!(!warm.stalled(t0 + ms(12)));
+        assert!(warm.unanswering(t0 + ms(12)));
+        // Heard within its probe timeout: kept, however long after.
+        warm.heard(t0 + ms(5));
+        assert!(!warm.unanswering(t0 + ms(1000)));
+        // Asked again, heard past its probe timeout but before it was judged: kept.
+        warm.ask(t0 + ms(20));
+        assert_eq!(warm.asked, Some(t0 + ms(20)));
+        warm.ask(t0 + ms(25));
+        assert_eq!(warm.asked, Some(t0 + ms(20)), "the ask unanswered stands");
+        warm.heard(t0 + ms(40));
+        assert!(!warm.unanswering(t0 + ms(1000)));
     }
 
     /// A handshake past the slots its driver's owner holds takes the place of the oldest still
