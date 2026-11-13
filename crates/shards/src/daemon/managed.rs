@@ -19,6 +19,7 @@ use shards_abi::run::{
 use shards_ipc::Stream;
 use shards_ipc::fd::AsRawFd as _;
 use shards_remote::{
+    control,
     identity::{self, Fingerprint},
     managed::{Admitted, Control, Endpoint, Producer, Progress, Rejected, RunId, Scope, State, input},
 };
@@ -88,6 +89,31 @@ pub(super) fn input_members(
     }
     members.sort_unstable();
     Ok(members)
+}
+
+/// The run's annotation asking for its agent-control endpoint (D238, plan step 11): `true`
+/// serves every managed stream of the run as a lane of one endpoint of the microVM's own key, in
+/// place of step 5's endpoint per stream, which `false`, or no such annotation, keeps. shards'
+/// own key, as `shards.stdin` is ([`STDIN_ANNOTATION`]).
+pub(super) const CONTROL_ANNOTATION: &str = "shards.control";
+
+/// Whether a run's annotations ask for its agent-control endpoint: the key's last value, as
+/// Docker's MapOpts keeps it, `true` or `false`, any other refused.
+pub(super) fn control_asked(annotations: &[String]) -> Result<bool, String> {
+    let last = annotations
+        .iter()
+        .filter_map(|kv| {
+            let (key, value) = kv.split_once('=').unwrap_or((kv.as_str(), ""));
+            (key == CONTROL_ANNOTATION).then_some(value)
+        })
+        .next_back();
+    match last {
+        None | Some("false") => Ok(false),
+        Some("true") => Ok(true),
+        Some(value) => Err(format!(
+            "--annotation {CONTROL_ANNOTATION}={value}: neither true nor false"
+        )),
+    }
 }
 
 #[derive(Debug)]
@@ -507,13 +533,48 @@ struct Owner {
     outputs: Vec<Option<Arc<Output>>>,
     /// Each member's input, by its index, where its owner asked for it.
     inputs: Vec<Option<Arc<Input>>>,
+    /// The run's agent-control endpoint, where the run asked for it ([`CONTROL_ANNOTATION`]).
+    agent: Option<Agent>,
     stream: Stream,
     credits: Arc<Credits>,
     _charge: Arc<Charge>,
 }
 
+/// A run's agent-control endpoint as its owner holds it: where it is bound, and what ends it.
+/// Its driver runs on a thread of its own; its key is the endpoint's alone ([`bind_agent`]).
+struct Agent {
+    address: std::net::SocketAddr,
+    revoke: control::Revoke,
+}
+
+/// The run's agent-control endpoint (D238, plan step 11): a key of the microVM's own, made for
+/// this run as its scope begins, which no template carries and only the endpoint holds; serving
+/// `outputs` and `inputs` as lanes of one connection to the run's owner `key` alone, bound on
+/// loopback as step 5's endpoints are.
+fn bind_agent(
+    key: Fingerprint,
+    outputs: &[(Scope, Admitted)],
+    inputs: &[(input::Scope, Admitted)],
+) -> Result<(control::Endpoint, control::Served), Failure> {
+    let vm = identity::Identity::generate().map_err(|e| Failure::Endpoint(e.into()))?;
+    control::Endpoint::bind(
+        &vm,
+        key,
+        std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
+        control::Streams {
+            outputs,
+            inputs,
+            execs: None,
+        },
+    )
+    .map_err(Failure::Endpoint)
+}
+
 impl Owner {
     fn abort(&self) {
+        if let Some(agent) = &self.agent {
+            agent.revoke.revoke();
+        }
         self.credits.close();
         shards_ipc::end(&self.stream);
         for output in self.outputs.iter().flatten() {
@@ -925,6 +986,17 @@ impl Outputs {
 
     pub(super) fn published(&self, id: &str) -> Vec<[String; 3]> {
         match lock(&self.runs).get(id) {
+            Some(Entry::Serving(owner)) if owner.agent.is_some() => owner
+                .agent
+                .iter()
+                .map(|agent| {
+                    [
+                        "agent-control/udp".into(),
+                        agent.address.to_string(),
+                        "authenticated agent control".into(),
+                    ]
+                })
+                .collect(),
             Some(Entry::Serving(owner)) => owner
                 .outputs
                 .iter()
@@ -1041,10 +1113,12 @@ impl<D: Disk> Daemon<D> {
         labels: &[String],
         active: &[u32],
         inputs: &[u32],
+        agent_control: bool,
         setup: &mut Vec<Vec<u8>>,
     ) -> Result<Stream, Failure> {
         self.managed.begin(id)?;
-        let result = self.start_managed_capture(threads, id, client, labels, active, inputs, setup);
+        let result =
+            self.start_managed_capture(threads, id, client, labels, active, inputs, agent_control, setup);
         if result.is_err() {
             self.managed.end(id);
         }
@@ -1060,6 +1134,7 @@ impl<D: Disk> Daemon<D> {
         labels: &[String],
         active: &[u32],
         inputs: &[u32],
+        agent_control: bool,
         setup: &mut Vec<Vec<u8>>,
     ) -> Result<Stream, Failure> {
         let members = u32::try_from(labels.len()).map_err(io::Error::other)?;
@@ -1148,32 +1223,6 @@ impl<D: Disk> Daemon<D> {
             datagram_bytes: shards_remote::managed::DATAGRAM_BYTES,
             patience: shards_remote::tls::QUIET,
         };
-        let mut staged = Vec::new();
-        staged.try_reserve_exact(active_count).map_err(io::Error::other)?;
-        for &member in active {
-            for channel in [Channel::Stdout, Channel::Stderr] {
-                let scope = Scope {
-                    run,
-                    generation,
-                    member,
-                    channel,
-                };
-                let (endpoint, producer, control) =
-                    Endpoint::bind(&identity, key, scope, admitted).map_err(Failure::Endpoint)?;
-                let kernel = endpoint
-                    .kernel_buffer_bytes()
-                    .map_err(io::Error::other)?
-                    .checked_add(control.kernel_buffer_bytes().map_err(Failure::Endpoint)?)
-                    .ok_or_else(|| io::Error::other("capture kernel queue overflow"))?;
-                charge.grow(kernel)?;
-                let excess = u64::try_from(producer.storage_capacity().saturating_sub(capacity))
-                    .map_err(io::Error::other)?;
-                if excess > 0 {
-                    charge.grow(excess)?;
-                }
-                staged.push((scope, endpoint, producer, control));
-            }
-        }
         let input_admitted = Admitted {
             record_bytes: INPUT_ROOM,
             transport_bytes: u64::try_from(input::TAKEN_BYTES).map_err(io::Error::other)?,
@@ -1181,25 +1230,110 @@ impl<D: Disk> Daemon<D> {
             datagram_bytes: shards_remote::managed::DATAGRAM_BYTES,
             patience: shards_remote::tls::QUIET,
         };
+        // Each stream with where it is served, and its own endpoint where it has one; the run's
+        // agent-control endpoint serves them all where the run asked for it.
+        let mut staged = Vec::new();
+        staged.try_reserve_exact(active_count).map_err(io::Error::other)?;
         let mut staged_inputs = Vec::new();
         staged_inputs
             .try_reserve_exact(inputs.len())
             .map_err(io::Error::other)?;
-        for &member in inputs {
-            let scope = input::Scope {
-                run,
-                generation,
-                member,
-            };
-            let (endpoint, relay, control) =
-                input::Endpoint::bind(&identity, key, scope, input_admitted).map_err(Failure::Endpoint)?;
-            let kernel = endpoint
-                .kernel_buffer_bytes()
-                .map_err(io::Error::other)?
-                .checked_add(control.kernel_buffer_bytes().map_err(Failure::Endpoint)?)
-                .ok_or_else(|| io::Error::other("input kernel queue overflow"))?;
+        let mut agent = None;
+        if agent_control {
+            let mut lanes = Vec::new();
+            lanes.try_reserve_exact(active_count).map_err(io::Error::other)?;
+            for &member in active {
+                for channel in [Channel::Stdout, Channel::Stderr] {
+                    let scope = Scope {
+                        run,
+                        generation,
+                        member,
+                        channel,
+                    };
+                    lanes.push((scope, admitted));
+                }
+            }
+            let mut input_lanes = Vec::new();
+            input_lanes
+                .try_reserve_exact(inputs.len())
+                .map_err(io::Error::other)?;
+            for &member in inputs {
+                let scope = input::Scope {
+                    run,
+                    generation,
+                    member,
+                };
+                input_lanes.push((scope, input_admitted));
+            }
+            let (endpoint, served) = bind_agent(key, &lanes, &input_lanes)?;
+            // One driver's socket, and the waker every stream's control shares.
+            let mut kernel = endpoint.kernel_buffer_bytes().map_err(Failure::Endpoint)?;
+            if let Some((_, control)) = served.outputs.first() {
+                kernel = kernel
+                    .checked_add(control.kernel_buffer_bytes().map_err(Failure::Endpoint)?)
+                    .ok_or_else(|| io::Error::other("agent control kernel queue overflow"))?;
+            }
             charge.grow(kernel)?;
-            staged_inputs.push((scope, endpoint, relay, control));
+            let control::Served {
+                outputs: served_outputs,
+                inputs: served_inputs,
+                revoke,
+                // The daemon admits no exec yet: `bind_agent`'s streams carry none.
+                execs: _,
+            } = served;
+            for ((scope, _), (producer, control)) in lanes.into_iter().zip(served_outputs) {
+                let excess = u64::try_from(producer.storage_capacity().saturating_sub(capacity))
+                    .map_err(io::Error::other)?;
+                if excess > 0 {
+                    charge.grow(excess)?;
+                }
+                staged.push((scope, endpoint.address, None, producer, control));
+            }
+            for ((scope, _), (relay, control)) in input_lanes.into_iter().zip(served_inputs) {
+                staged_inputs.push((scope, endpoint.address, None, relay, control));
+            }
+            agent = Some((endpoint, revoke));
+        } else {
+            for &member in active {
+                for channel in [Channel::Stdout, Channel::Stderr] {
+                    let scope = Scope {
+                        run,
+                        generation,
+                        member,
+                        channel,
+                    };
+                    let (endpoint, producer, control) =
+                        Endpoint::bind(&identity, key, scope, admitted).map_err(Failure::Endpoint)?;
+                    let kernel = endpoint
+                        .kernel_buffer_bytes()
+                        .map_err(io::Error::other)?
+                        .checked_add(control.kernel_buffer_bytes().map_err(Failure::Endpoint)?)
+                        .ok_or_else(|| io::Error::other("capture kernel queue overflow"))?;
+                    charge.grow(kernel)?;
+                    let excess = u64::try_from(producer.storage_capacity().saturating_sub(capacity))
+                        .map_err(io::Error::other)?;
+                    if excess > 0 {
+                        charge.grow(excess)?;
+                    }
+                    staged.push((scope, endpoint.address, Some(endpoint), producer, control));
+                }
+            }
+            for &member in inputs {
+                let scope = input::Scope {
+                    run,
+                    generation,
+                    member,
+                };
+                let (endpoint, relay, control) = input::Endpoint::bind(&identity, key, scope, input_admitted)
+                    .map_err(Failure::Endpoint)?;
+                let kernel = endpoint
+                    .kernel_buffer_bytes()
+                    .map_err(io::Error::other)?
+                    .checked_add(control.kernel_buffer_bytes().map_err(Failure::Endpoint)?)
+                    .ok_or_else(|| io::Error::other("input kernel queue overflow"))?;
+                charge.grow(kernel)?;
+                staged_inputs.push((scope, endpoint.address, Some(endpoint), relay, control));
+            }
         }
         #[cfg(unix)]
         let (stream, peer) = Stream::pair()?;
@@ -1221,21 +1355,32 @@ impl<D: Disk> Daemon<D> {
             generation,
             capacity
         )?;
-        for (scope, endpoint, _, _) in &staged {
-            writeln!(
+        match &agent {
+            // Its controller dials the one endpoint and pins its key (D238).
+            Some((endpoint, _)) => writeln!(
                 metadata,
-                "member {} channel {} address {}",
-                scope.member, scope.channel as u8, endpoint.address
-            )?;
-        }
-        for (scope, endpoint, _, _) in &staged_inputs {
-            writeln!(
-                metadata,
-                "member {} channel {} address {}",
-                scope.member,
-                input::CHANNEL,
-                endpoint.address
-            )?;
+                "control {}\nvm {}",
+                endpoint.address,
+                identity::hex(&endpoint.fingerprint)
+            )?,
+            None => {
+                for (scope, address, ..) in &staged {
+                    writeln!(
+                        metadata,
+                        "member {} channel {} address {}",
+                        scope.member, scope.channel as u8, address
+                    )?;
+                }
+                for (scope, address, ..) in &staged_inputs {
+                    writeln!(
+                        metadata,
+                        "member {} channel {} address {}",
+                        scope.member,
+                        input::CHANNEL,
+                        address
+                    )?;
+                }
+            }
         }
         metadata.sync_all()?;
         let metadata = shared_metadata(metadata)?;
@@ -1263,7 +1408,7 @@ impl<D: Disk> Daemon<D> {
             }),
             changed: Condvar::new(),
         });
-        for (scope, endpoint, producer, control) in staged {
+        for (scope, address, endpoint, producer, control) in staged {
             let index = route_index(scope.member, scope.channel)?;
             *lock(&credits.state)
                 .slots
@@ -1274,7 +1419,7 @@ impl<D: Disk> Daemon<D> {
             let quantum = capture_quantum(capacity)?;
             let output = Arc::new(Output {
                 scope,
-                address: endpoint.address,
+                address,
                 control,
                 metadata: Arc::clone(&metadata),
                 life: Mutex::new(Life::Serving),
@@ -1298,7 +1443,9 @@ impl<D: Disk> Daemon<D> {
             *producers
                 .get_mut(index)
                 .ok_or_else(|| io::Error::other("active producer index"))? = Some(producer);
-            endpoints.push((endpoint, output));
+            if let Some(endpoint) = endpoint {
+                endpoints.push((endpoint, output));
+            }
         }
         let reading = stream.try_clone()?;
         let writing = stream.try_clone()?;
@@ -1311,10 +1458,10 @@ impl<D: Disk> Daemon<D> {
         input_workers
             .try_reserve_exact(staged_inputs.len())
             .map_err(io::Error::other)?;
-        for (scope, endpoint, relay, control) in staged_inputs {
+        for (scope, address, endpoint, relay, control) in staged_inputs {
             let input = Arc::new(Input {
                 scope,
-                address: endpoint.address,
+                address,
                 control,
                 guest: Mutex::new(Guest::Awaited),
                 arrived: Condvar::new(),
@@ -1334,9 +1481,20 @@ impl<D: Disk> Daemon<D> {
                 .ok_or_else(|| io::Error::other("input member index"))? = Some(Arc::clone(&input));
             input_workers.push((endpoint, relay, input));
         }
+        let (agent, agent_endpoint) = match agent {
+            Some((endpoint, revoke)) => (
+                Some(Agent {
+                    address: endpoint.address,
+                    revoke,
+                }),
+                Some(endpoint),
+            ),
+            None => (None, None),
+        };
         let owner = Arc::new(Owner {
             outputs,
             inputs: input_slots,
+            agent,
             stream,
             credits,
             _charge: charge,
@@ -1366,6 +1524,9 @@ impl<D: Disk> Daemon<D> {
             std::thread::Builder::new()
                 .name("managed-stdin".into())
                 .spawn_scoped(threads, move || relay_input(&relaying, &relay))?;
+            let Some(endpoint) = endpoint else {
+                continue;
+            };
             std::thread::Builder::new()
                 .name("managed-input".into())
                 .spawn_scoped(threads, move || {
@@ -1374,6 +1535,33 @@ impl<D: Disk> Daemon<D> {
                     }
                     input.control.abort();
                     input.close();
+                })?;
+        }
+        if let Some(endpoint) = agent_endpoint {
+            // What it serves, ended with it as each stream's own endpoint ends its stream.
+            let mut agent_outputs = Vec::new();
+            agent_outputs
+                .try_reserve_exact(owner.outputs.len())
+                .map_err(io::Error::other)?;
+            agent_outputs.extend(owner.outputs.iter().flatten().map(Arc::clone));
+            let mut agent_inputs = Vec::new();
+            agent_inputs
+                .try_reserve_exact(owner.inputs.len())
+                .map_err(io::Error::other)?;
+            agent_inputs.extend(owner.inputs.iter().flatten().map(Arc::clone));
+            std::thread::Builder::new()
+                .name("agent-control".into())
+                .spawn_scoped(threads, move || {
+                    if let Err(e) = endpoint.run() {
+                        log(format!("agent-control endpoint: {e}"));
+                    }
+                    for output in &agent_outputs {
+                        output.abort();
+                    }
+                    for input in &agent_inputs {
+                        input.control.abort();
+                        input.close();
+                    }
                 })?;
         }
         let writer_owner = Arc::clone(&owner);
@@ -2323,6 +2511,89 @@ mod tests {
         out
     }
 
+    /// A run asks for its agent-control endpoint with `shards.control=true`; `false`, or no
+    /// such annotation, keeps step 5's endpoints; Docker's last value of a key wins, and any
+    /// other value is refused by name.
+    #[test]
+    fn agent_control_is_asked_for_by_its_annotation_alone() {
+        let asked = |values: &[&str]| {
+            let annotations: Vec<String> = values
+                .iter()
+                .map(|v| format!("{CONTROL_ANNOTATION}={v}"))
+                .collect();
+            control_asked(&annotations)
+        };
+        assert_eq!(control_asked(&[]), Ok(false));
+        assert_eq!(control_asked(&["other=true".into()]), Ok(false));
+        assert_eq!(asked(&["true"]), Ok(true));
+        assert_eq!(asked(&["false"]), Ok(false));
+        assert_eq!(asked(&["true", "false"]), Ok(false));
+        assert_eq!(asked(&["maybe", "true"]), Ok(true));
+        for value in ["", "1", "yes", "TRUE"] {
+            let refused = asked(&[value]).unwrap_err();
+            assert!(refused.contains(CONTROL_ANNOTATION), "{refused}");
+        }
+    }
+
+    /// The run's agent-control endpoint has a key of its own, made for this run: two runs' are
+    /// two keys. It serves the run's owner alone, its lanes the run's streams: the owner's
+    /// controller reads a member's record through it, and a stranger reaches nothing.
+    #[test]
+    fn a_runs_agent_control_endpoint_has_its_own_key_and_serves_its_owner_alone() {
+        use shards_remote::control::{Controller, Ended, Fault, Got, Subscriptions};
+        let owner = identity::Identity::generate().unwrap();
+        let scope = Scope {
+            run: RunId([3; 32]),
+            generation: 1,
+            member: 0,
+            channel: Channel::Stdout,
+        };
+        let out = admitted(64, shards_remote::tls::QUIET);
+        let (endpoint, served) = bind_agent(owner.fingerprint(), &[(scope, out)], &[]).unwrap();
+        let (other, _other_served) = bind_agent(owner.fingerprint(), &[(scope, out)], &[]).unwrap();
+        assert_ne!(endpoint.fingerprint, other.fingerprint, "two runs share a key");
+        assert_ne!(endpoint.fingerprint, owner.fingerprint());
+        let (vm, address) = (endpoint.fingerprint, endpoint.address);
+        let serving = std::thread::spawn(move || endpoint.run());
+        let subscriptions = [(scope, out, 0)];
+        let dial = |own: &identity::Identity| {
+            let (controller, dialed) = Controller::dial(
+                own,
+                vm,
+                address,
+                Subscriptions {
+                    outputs: &subscriptions,
+                    inputs: &[],
+                },
+            )
+            .unwrap();
+            let driver = std::thread::spawn(move || controller.run());
+            (dialed, driver)
+        };
+        let stranger = identity::Identity::generate().unwrap();
+        let (mut refused, driver) = dial(&stranger);
+        assert!(matches!(
+            refused.outputs[0].next_record(),
+            Err(Fault::Lost(Ended::NotEnrolled(_)))
+        ));
+        driver.join().unwrap().unwrap();
+        let (mut dialed, _driver) = dial(&owner);
+        let (producer, _control) = &served.outputs[0];
+        producer.wait_capacity().unwrap();
+        let mut record = producer.take_buffer().unwrap().unwrap();
+        record.extend_from_slice(b"{\"type\":\"result\"}\xff");
+        producer.submit(record).unwrap();
+        assert_eq!(
+            dialed.outputs[0].next_record().unwrap(),
+            Got::Record {
+                at: 0,
+                bytes: b"{\"type\":\"result\"}\xff".to_vec()
+            }
+        );
+        served.revoke.revoke();
+        serving.join().unwrap().unwrap();
+    }
+
     /// The run's annotation names its input members by kind and name, each one that runs a
     /// program, once; a member it does not name has none. Docker's last value of a key wins.
     #[test]
@@ -2971,6 +3242,7 @@ mod tests {
         let owner_side = Owner {
             outputs,
             inputs: Vec::new(),
+            agent: None,
             stream,
             credits,
             _charge: Arc::clone(&charge),

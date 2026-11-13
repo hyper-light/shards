@@ -482,6 +482,19 @@ impl Io<'_> {
         }
     }
 
+    /// Sets what `conn`'s peer may have open and send, and what this side keeps unacknowledged,
+    /// as streams come and go (RFC 9000 §4.1, §4.6): its concurrent bidirectional streams, the
+    /// connection's receive window, and this side's send window.
+    pub fn limit(&mut self, conn: ConnKey, streams: u64, receive: u64, send: u64) -> Result<(), Error> {
+        let window = |n: u64| VarInt::from_u64(n).map_err(|_| Error::new("a limit past QUIC's"));
+        let (streams, receive) = (window(streams)?, window(receive)?);
+        let conn = self.conn(conn)?;
+        conn.quic.set_max_concurrent_streams(Dir::Bi, streams);
+        conn.quic.set_receive_window(receive);
+        conn.quic.set_send_window(send);
+        Ok(())
+    }
+
     /// Closes `conn`, saying `why` to its peer.
     pub fn close(&mut self, conn: ConnKey, code: u32, why: &str) {
         let now = self.now;

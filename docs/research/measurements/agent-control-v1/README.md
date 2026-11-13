@@ -31,7 +31,9 @@ speculative abstraction (R05).
 | A lane's first frame; a lane's refusal | built, slice 1 | `control::{lane, refused, read_refused}` |
 | The lanes' service: stdio lanes on step 5's streams, one connection of the controller's at a time | built, slice 2 | `control::{Endpoint, Streams, Served, Revoke}` over step 5's `managed::Service`, `managed::input::Service` |
 | The controller's side: kiln's and Hex's client of the stdio lanes (attach included), typed faults, cursors to resume at | built, goal #58's plan step 2 | `control::{Controller, Subscriptions, Output, Input, Fault, Got, Hangup}` (`control/drive.rs`), `net::Handler::cause` |
-| Control (exec, signal, inspect) and terminal (attach, TTY) lanes | held for step 6 | — |
+| The daemon's endpoint per run: `shards.control=true`, a key per run, `control`/`vm` metadata, revoked with the run's scope | built, goal #58's plan step 3 | `daemon::managed::{CONTROL_ANNOTATION, control_asked, bind_agent, Agent}` |
+| Exec lanes, the endpoint's side (design (B)): the ask, its streams, its host's start and replies, its steering, its exit | built, goal #58's plan step 4 slice (a) | `control::exec`, `net::Io::limit` |
+| The exec host in the daemon; the controller's exec handle; signal, inspect, terminal and log lanes | goal #58's plan steps 4 (b, c) to 7 | — |
 | Log lane; where the endpoint runs and how its key's SHA-256 reaches the controller | held for step 10 | — |
 
 ## Decision (R02, R03, R05, R12)
@@ -152,6 +154,19 @@ macOS 26.2 arm64 (adas-mac-studio.local, M4 Max, rustc 1.98.1), `cargo test -p s
 --lib` 68 passed (24 `control::tests`, seven of them the controller's), `--test loopback` 17
 passed, `cargo clippy -p shards-remote --all-targets -- -D warnings` clean, rustfmt clean. CI on
 main covers the other targets.
+
+The daemon's endpoint per run (plan step 3), the same host and toolchain, on `a8eee1382` with the
+change applied: `cargo test -p shards-remote --lib control::` 24 passed; `cargo test -p shards
+--bin shards -- daemon::managed` (`SHARDS_HELPERS=skip`, placeholder guest binaries) 27 passed,
+6 ignored (ROOT's native fixtures, as before), the two new among them; `cargo clippy -p
+shards-remote -p shards --all-targets -- -D warnings` clean; rustfmt clean.
+
+Exec lanes' endpoint side, the same host and toolchain, on `17ed8a2e5` with the change applied:
+`cargo test -p shards-remote --lib control::` 32 passed (8 new: the ask, steering and told
+frames, exec scopes; an exec over its lanes with a stand-in host; asks refused and an exec not
+started; an endpoint with no exec; a connection gone hanging its exec up); `cargo test -p
+shards --bin shards -- daemon::managed::tests` 12 passed; `cargo clippy -p shards-remote -p
+shards --all-targets -- -D warnings` clean.
 
 ## R01–R16
 

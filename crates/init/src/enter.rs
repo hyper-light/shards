@@ -346,7 +346,7 @@ enum Ours {
 /// peer, opened through the master (TIOCGPTPEER, Linux 4.13) so that no path is looked up
 /// in a mount namespace other than the master's, and owned by uid `id`, as runc gives a
 /// command its stdio (libcontainer/init_linux.go, fixStdioPermissions).
-fn terminal(size: Size, id: u32) -> io::Result<(OwnedFd, OwnedFd)> {
+pub(crate) fn terminal(size: Size, id: u32) -> io::Result<(OwnedFd, OwnedFd)> {
     // SAFETY: posix_openpt(3) returns a new descriptor, or -1.
     let fd = unsafe { libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC) };
     if fd < 0 {

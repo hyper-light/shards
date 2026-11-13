@@ -727,6 +727,11 @@ pub mod builtin {
     /// [`NOTICE_ID`](crate::NOTICE_ID), which its server answers without changing anything;
     /// one gone, its directory.
     pub const NOTICE: u8 = 20;
+    /// A member's own terminal sized (plan step 6, D244), its arguments
+    /// [`members::resize_args`](super::members::resize_args)': its index, rows and
+    /// columns. TIOCSWINSZ on the terminal init holds for it, which tells the terminal's
+    /// foreground process group SIGWINCH where its size changed (TIOCSWINSZ(2const)).
+    pub const RESIZE: u8 = 21;
 
     /// [`STATS`]'s one argument, whose cgroup it reads (D231): none for the workload's, as
     /// `stats` reads it; [`RUN`](stats::RUN) for the run's, its command's and every
