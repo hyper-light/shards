@@ -372,6 +372,10 @@ and is untouched here.
    then that host's command for the pins test. Expected: refused "1 vCPUs: the setup's slots freed: N
    pages pinned, not M, after …: none released over the last …, its window …", one to two windows after
    the setup, where before it waited 600 s. Then `git checkout crates/init/src/ring.rs`.
+   Superseded by "Cures, goal 71" below: a kind's first settle now follows its microVM's liveness
+   alone, so with every slot kept the pins test is refused nowhere. Its first settle goes on, its
+   looks ever further apart, and its told line ("1 vCPUs: the setup's slots: N pages pinned, not M, …")
+   names its home. This run's evidence is that line and the count staying while the microVM answers.
 3. **F3's test on Linux arm64** (CI on main runs it), and R14's measure of how long the lock is held.
 
 ## Cures, F5 (goal 52's agent, 2026-11-13)
