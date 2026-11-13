@@ -623,6 +623,14 @@ pub mod kind {
     /// exits with for it (125, as `docker run` exits for dockerd's own failures), which no
     /// command gave: the run failed, in these words.
     pub const UNSERVED: u8 = 101;
+    /// A VM → its owner, unprompted: a connection a member made to its MCP socket (D254), its
+    /// guest's relay having carried it to the VM: the lane's number (8, big-endian, at or above
+    /// 2^63, `shards_abi::run::mcp::ACCEPTED_FIRST`, apart from every number its owner
+    /// chose), then the member's declared index (4, big-endian), as its guest's relay said it.
+    /// On Unix the connection beside it, held by the VM until its owner says it has it with
+    /// [`LANE_HELD`] (M24); on Windows none, its owner answering [`LANE_HELD`] with the socket
+    /// the VM relays it onto, or none for one it closes.
+    pub const LANE_ACCEPTED: u8 = 102;
 
     /// Whether a network process's control message of `kind` hands it sockets: published
     /// ports' (`PUBLISH`, `NET_PUBLISHED`) and a peer's link (`NET_PEER`). Beside the
@@ -772,6 +780,35 @@ impl Attach {
             daemon: r.identity()?,
         };
         r.0.is_empty().then_some(attach)
+    }
+}
+
+/// A member's MCP connection as its VM hands it to its owner ([`kind::LANE_ACCEPTED`], D254):
+/// its lane's number, the VM's own, and the member its guest's relay said it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Accepted {
+    /// At or above `shards_abi::run::mcp::ACCEPTED_FIRST`, apart from every lane its owner
+    /// opens.
+    pub number: u64,
+    /// The member's declared index.
+    pub member: u32,
+}
+
+impl Accepted {
+    pub fn encode(&self) -> [u8; 12] {
+        let [a, b, c, d, e, f, g, h] = self.number.to_be_bytes();
+        let [i, j, k, l] = self.member.to_be_bytes();
+        [a, b, c, d, e, f, g, h, i, j, k, l]
+    }
+
+    /// `None` for anything but a whole one whose number is a VM's own.
+    pub fn decode(bytes: &[u8]) -> Option<Accepted> {
+        let (number, member) = bytes.split_first_chunk::<8>()?;
+        let accepted = Accepted {
+            number: u64::from_be_bytes(*number),
+            member: u32::from_be_bytes(<[u8; 4]>::try_from(member).ok()?),
+        };
+        (accepted.number >= shards_abi::run::mcp::ACCEPTED_FIRST).then_some(accepted)
     }
 }
 
@@ -2296,7 +2333,8 @@ pub use windows::*;
 /// written to must be (an invitation, a home's identity): mode 0600 on Unix; on Windows a
 /// DACL that grants this process's user, and no one else, all of it, protected from what
 /// its directory would give it, where an ACL inherited is whatever the directory's is.
-/// Refused where a file is there already.
+/// Refused where a file is there already. Another open of its user's reads it while this one
+/// holds it, on every host.
 pub fn create_private(path: &std::path::Path) -> std::io::Result<std::fs::File> {
     #[cfg(unix)]
     {
@@ -2451,6 +2489,27 @@ impl Latch {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
+    /// A private file its maker still holds is read by another open of its user's, on every
+    /// host, and none is made over it: a run's managed-output record, which the daemon holds
+    /// for the run's life, is how its owner finds the run, and Windows refused the owner's
+    /// read of it as long as the daemon held it (ERROR_SHARING_VIOLATION, CI run 43435318858's
+    /// code_mode_runs_a_program_with_the_callers_grants on windows-2022).
+    #[test]
+    fn a_private_file_its_maker_holds_is_read_by_its_user() {
+        use std::io::Write as _;
+        let dir = shards_testdir::TempDir::new("private").unwrap();
+        let path = dir.join("record");
+        let mut held = super::create_private(&path).unwrap();
+        held.write_all(b"shards managed output 1\n").unwrap();
+        held.flush().unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"shards managed output 1\n");
+        assert_eq!(
+            super::create_private(&path).unwrap_err().kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
+        drop(held);
+    }
+
     /// A run's request to its warm VM goes in one message however long its command's spec,
     /// up to what the run protocol carries in one frame: before, a spec at that bound
     /// could not go.
@@ -2593,6 +2652,43 @@ mod tests {
     }
 
     use super::*;
+
+    /// D254: a member's MCP connection reads back as its VM wrote it; one cut short, longer,
+    /// or numbered as its owner numbers its own lanes, is refused.
+    #[test]
+    fn an_accepted_mcp_connection_reads_back_as_written() {
+        let first = shards_abi::run::mcp::ACCEPTED_FIRST;
+        for accepted in [
+            Accepted {
+                number: first,
+                member: 0,
+            },
+            Accepted {
+                number: u64::MAX,
+                member: u32::MAX,
+            },
+        ] {
+            assert_eq!(Accepted::decode(&accepted.encode()), Some(accepted));
+        }
+        let written = Accepted {
+            number: first + 1,
+            member: 3,
+        }
+        .encode();
+        assert_eq!(&written[8..], &[0, 0, 0, 3]);
+        assert_eq!(Accepted::decode(&written[..11]), None);
+        assert_eq!(Accepted::decode(&[&written[..], &[0]].concat()), None);
+        assert_eq!(
+            Accepted::decode(
+                &Accepted {
+                    number: first - 1,
+                    member: 3
+                }
+                .encode()
+            ),
+            None
+        );
+    }
 
     /// A run's head reads back as written, with what follows it; one cut short, or of a
     /// mode no build writes, is refused.

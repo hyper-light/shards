@@ -1,0 +1,23 @@
+# gemini 0.68.0: its pinned linux/amd64 files' strings (gemini.json; each file held to its pin's sha256)
+NODE_EXTRA_CA_CERTS: 22
+    node/LICENSE/node-v24.22.3-linux-x64/bin/node: ...elp.openssl_conf.OPENSSL_CONF.OpenSSL configuration error:..NODE_EXTRA_CA_CERTS.internal/main/mksnapshot.internal/main/embedding.Break on s...
+SSL_CERT_FILE: 10
+    node/LICENSE/node-v24.22.3-linux-x64/bin/node: ...tes when used in conjunction with --use-openssl-ca' }],.  ['SSL_CERT_FILE', { helpText: 'sets OpenSSL\'s trusted certificate file ' +...
+SSL_CERT_DIR: 10
+    node/LICENSE/node-v24.22.3-linux-x64/bin/node: ... { helpText: 'load OpenSSL configuration from file' }],.  ['SSL_CERT_DIR', { helpText: 'sets OpenSSL\'s directory of trusted ' +.   ...
+CODEX_CA_CERTIFICATE: 0
+NODE_USE_SYSTEM_CA / --use-system-ca: 32
+    node/LICENSE/node-v24.22.3-linux-x64/CHANGELOG.md: ...ub.com/nodejs/node/commit/ff485a9410)] - **crypto**: make --use-system-ca per-env rather than per-process (Aditi) [#60678](https://gi...
+REQUESTS_CA_BUNDLE / CURL_CA_BUNDLE: 0
+the system bundle's path: 0
+rustls-native-certs / openssl-probe: 0
+webpki-roots (roots of its own): 0
+Bun (its runtime): 0
+Node (its runtime): 0
+Go (its runtime): 0
+certificate or key pins: 0
+checkServerIdentity (its own name check): 58
+    node/LICENSE/node-v24.22.3-linux-x64/bin/node: ....const kPerRequestCheckServerIdentity = Symbol('per-request checkServerIdentity');.let perRequestCheckServerIdentityIndex = 0;.const tlsPol...
+at_hash: 0
+ID token verification: 54
+    package/bundle/chunk-2OHBIZ5H.js: ...  }.          }.          throw e2;.        }.      }.      verifyIdToken(options, callback) {.        if (callback && typeof callbac...

@@ -7346,7 +7346,21 @@ Decided by the user on 2026-10-14 ("so long as they apply appropriately to micro
     (`a_microvm_under_a_group_is_held_to_its_budget`, M355): 1,254 MiB held under a
     `memory.high` of 998 MiB, given back to 281; past a `memory.max` of 793 MiB, the
     microVM that held 679 MiB of 960 stopped, 137 and OOM-killed, the other running on.
-    Mutation-checked: no give-back; no stop.
+    Mutation-checked: no give-back; no stop. A microVM that may swap (D159: as much again
+    as its memory by default) is held within its room by its guest, whose kernel swaps
+    what passes its run's `memory.high` to its swap window, a file of the host's, whose
+    pages are no part of a footprint (XNU's `phys_footprint` counts anonymous memory and
+    what the compressor holds of it at full size, osfmk/kern/task.c and arm64's pmap.c,
+    xnu f6217f891ac0): its group stays within `memory.max`, and it runs on, as a cgroup's
+    process swaps rather than meet its OOM killer. M355's second microVM had swap, and was
+    stopped only as it held 679 MiB where its group left it at most 512: init holds a run
+    at what it uses as its room is told and that room (`hold_within`), so its first room
+    came after it had grown. At dc7f45bc6 (HVF, 2026-11-13) the same microVM, `-m 1g` and
+    so 1 GiB of swap, held its 768 MiB and slept, the daemon never said its group past its
+    budget again, and no stop came. The test's second microVM has no swap
+    (`--memory-swap` its memory): its guest's `memory.high` slows it and refuses it nothing
+    (cgroup-v2.rst), so it passes `memory.max` whether its room comes before its growth or
+    after, as nothing it holds can go to swap.
   - **Windows** (built): every process of a microVM under NAME is made in a job object of
     NAME's, nested above the VM process's own (PROC_THREAD_ATTRIBUTE_JOB_LIST, the
     group's first; Job Objects, "Nested Jobs", Windows 8 on), its warm VMs too: a VM
@@ -8356,6 +8370,47 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   Xeon 8573C and 8370C), 2.07 times at most, its slice refaulting none at p50; none of its
   336 ran away, where 7 of 126 did with the share's copy kept within its reads' room alone
   and 31 of 144 on the tree.
+- **Less what its host's own reads need below it** (goal 71's cluster 8). On adacachy2
+  (KVM x86_64, CachyOS, Linux 7.3.3, 32 CPUs, so 32 vCPUs; 237f3ebe7) the FUSE budget
+  E2E's first read held within the least room ran 28 minutes until it was ended: from 60 s
+  to 1,710 s its slice held 127 to 134 MB against a `memory.high` of 123,101,184, 110 to
+  118 MB of it anonymous, under 2.1 MB of files and 15 to 16.5 MB neither; its vCPU threads
+  and its share's reading thread asleep in `__mem_cgroup_handle_over_high`, its reclaim
+  scanning 62 to 247 million pages and its major faults 114,000 to 566,000. Its kernel
+  charges a cgroup ahead of the pages its processes take: a charge takes a batch of 64
+  pages from its counter and leaves what it did not use on its CPU, up to
+  `MEMCG_STOCK_HIGH`, 64 pages a memcg on each CPU (mm/memcontrol.c `try_charge_memcg`,
+  `refill_stock`, Linux 7.4-rc2, 2026-11-12), which `memory.current` counts; reclaim at
+  `memory.high` takes back pages and drains no such stock (`reclaim_high`,
+  `__mem_cgroup_handle_over_high`), which only a write of `memory.high` or `memory.max`
+  below what it holds, or a charge past `memory.max`, does (`memory_high_write`,
+  `try_charge_memcg`). A share's request in flight and its read-ahead are page cache charged
+  to the budget too. The share kept its copy only past that room (`fs::headroom`
+  `reads_room`: 64 pages a host CPU, a request, two read-ahead windows), but every room the
+  daemon told gave it all to the guest, whose run filled it, and what the host's kernel and
+  share charged then had only the guest's own RAM to take back: 2.25 MiB so told on CI's
+  4-CPU runners, which hid it, and 9.25 MiB on 32 CPUs. So the room a budget leaves its
+  microVMs, and a build's builders, is less that room, the share's own derivation shared
+  (`Holding::reads`, read at each count from the host's CPUs online and its page size), and
+  a budget's word says it ("leaves N KiB below it for its host's own reads"). It is a kernel
+  and protocol bound, not a learned value, and has no cold start; it is an upper bound,
+  what its kernel had already charged ahead as the budget was read being counted in what
+  it holds too. One daemon's microVMs under a parent are one spawner's scope (D183), one
+  memcg, counted once. Tested (light): daemon/budget.rs
+  `a_budgets_room_leaves_its_hosts_own_reads_their_room`, a slice whose budget leaves its
+  reads' room past all it holds and the inactive pages beside its mapped ones telling its
+  microVM none, and the rooms of the other budget tests less it; tests/budget.rs's budget
+  short of a lone run counts it as the daemon does. Red at 377d49ca7 with the test
+  (adacachy2, Linux 7.3.3-1-cachyos x86_64, 32 CPUs, rustc 1.98.1): its microVM told
+  9,699,328 bytes, 32 CPUs' reads' room, where none was left; green with the change:
+  shards-vmm's `headroom` tests 4 of 4, shards' `daemon::budget` 8 of 8, clippy of both
+  `--all-targets -D warnings` clean. Not run: the E2E and every real VM, ROOT's. Not
+  settled without a real VM: what else of that slice's overage was the guest's own least
+  room (10.25 MiB on 32 vCPUs, init's `working_room_of`), which a budget short of what its
+  run holds leaves its host to find in what its microVM holds cold, and what was its
+  guest's free pages on its CPUs' lists, which may grow to an eighth of each zone
+  (mm/page_alloc.c `zone_highsize`) and which no report gives back (D151): the
+  measurement is ROOT's.
 - **The share's copy of what its guest reads, kept only within its budgets' room** (PM
   M318). What a share reads for its guest its guest keeps in its own page cache, so the
   copy its host's page cache keeps beside it is a second one, under a budget charged to
@@ -8805,7 +8860,11 @@ stores.
   goes through FUSE: below 64 KiB a mapping's round trip to the share process and host
   mmap cost a first read more than it saves, and a 4 KiB file's mapping held 23 to 28 KiB
   more of its VM's memory than FUSE's page. Linux on arm64 is unmeasured: no host here
-  runs KVM on it. FUSE_INIT says the host's page size (map_alignment).
+  runs KVM on it. FUSE_INIT says the host's page size (map_alignment). The guest's kernel
+  decides a file's DAX as it makes the file's inode (fs/fuse/dax.c `fuse_dax_inode_init`)
+  and, told another later, lets the inode go once unused (`fuse_dax_dontcache`): a file the
+  host makes while its guest runs, looked up by its notice (D235) before it is 1 MiB long,
+  goes through FUSE until its inode is made again (PM M550).
 - On Linux each of a VM's windows (its shares' and its join share's) is no longer than
   lets every range of them be mapped at once within the host's `vm.max_map_count`
   (`share_window_bound_mib`): a range of a file shorter than it takes two of its VM
@@ -8829,15 +8888,24 @@ stores.
   gives zeros there, and a vCPU that spun there runs on. HVF's abort and arm64 KVM's
   EFAULT have the window follow the file at once. Until the guest asks the file's size
   again it reads zeros there, as through FUSE it may read stale bytes from its page cache.
+  A cut beneath a directory its share watches is a notice (D235): the guest's init touches
+  the file, and the SETATTR's reply tells its kernel the size, so that a reader there reads
+  zeros only until the notice lands, and then the file's end; a file moved out of the share
+  and then cut is told as its name goes, its cut never, and its guest reads zeros there
+  until it asks (PM M550).
 - An OPEN of a file the window maps, and a CREATE that opens one there already, is told
   to keep what the guest has of it (FOPEN_KEEP_CACHE): Linux drops a file's cached pages at
   each open, and for a mapped file those are DAX entries its processes may still map, which
   it lets go of first and unmaps after, its 2 MiB pages' counts going wrong, and every build
   of the benchmark's cargo workload ended in SIGBUS (M274). A mapped file has no page cache
   of the guest's to go stale. A size change another process makes, seen in the file's
-  attributes, takes the same path in the guest kernel, which shards' kernel's patch 0007
-  closes (resources/kernel/patches): a DAX file's entries left to its layouts' own
-  breaking.
+  attributes or in the reply to a SETATTR that sets no size (each notice's touch, D235),
+  takes the same path in the guest kernel, which shards' kernel's patch 0007 closes
+  (resources/kernel/patches): a DAX file's entries left to its layouts' own breaking. The
+  SETATTR's is closed from the kernel inputs 54fba99afaee on, whose release and pin are owed:
+  until then a notice of a size change to a file a guest process maps in 2 MiB pages lets
+  go of entries the process still maps, `fs/dax.c:415 dax_folio_put` in its guest's log
+  (PM M550).
 - A mapping is charged its file's bytes in its range against the microVM's I/O limits
   (D178) as it is made, once its file's size says them: a 5,000-byte file's range 5,000
   bytes, not the range's 2 MiB, which every file's last range was charged before, and a
@@ -9960,20 +10028,34 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
   holds who is looked at and the slice (a sixth of `READY_TIMEOUT`), and
   `a_busy_process_is_seen_running_with_its_cpu_and_faults` the look on the host's own
   process times.
-- **Amended (2026-11-13, ROOT's R03 ruling): a microVM's heartbeat is no progress of a
-  test's subject.** A nesting test whose runc hung waited on it to Linux CI's 56-minute
-  limit (8a50a9742, run 43391975331), and HVF's past its own bound (fafe35efc): the daemon
-  says it each `READY_STALL` while that microVM's CPU runs, whatever it runs, and the guest
-  of a runtime that hangs runs. Past its bound a wait goes on only while its subject
-  progresses: `common::Said` takes each whole line its home's daemon says but that heartbeat
-  (`common::HEARTBEAT`) for progress, a microVM's start said slowly among them, as liveness
-  governs a cold start, which the daemon gives up on itself past `READY_TIMEOUT`. The daemon
-  still logs it, a slow workload's durable evidence; a test's client is waited on past its
-  deadline through what the daemon says of its run, never through its microVM's CPU alone.
-  Held by tests/harness.rs's stand-ins: `a_daemons_heartbeat_is_no_progress_and_its_other_lines_are`,
-  `a_wait_whose_daemon_says_only_its_heartbeat_ends_at_its_bound`, red before the change and
-  red again with the heartbeat's distinction taken out. `common::Ran`, which judges a client's
-  own microVMs by their CPU, is unchanged.
+- **Amended (2026-11-13, ROOT's R03 rulings): a microVM's heartbeat counts by what it did,
+  as D215's judge judges a wait.** A nesting test whose runc hung waited on its microVM's
+  heartbeat to Linux CI's 56-minute limit (8a50a9742, run 43391975331), and HVF's past its
+  own bound (fafe35efc): the daemon says it each `READY_STALL` while that microVM's CPU runs
+  past an idle one's (`progressed`), and a hung runtime's guest's timers run that much
+  (63-110 ms in 10 s on HVF). First ruling (c06854111): past a wait's bound, `common::Said`
+  takes each whole line its home's daemon says but that heartbeat (`common::HEARTBEAT`) for
+  progress, a start said slowly among them, as liveness governs a cold start. Second ruling,
+  which replaces "never counts": a heartbeat counts by its deltas. `common::Floor` learns, for
+  each microVM the test process follows (by its home, its run's container and VM process; or
+  by its VM process), the least CPU rate at which its run still answered (a
+  `shards_api::Record`'s R*, taught by each window its run answered within: its client's
+  output, which `run_command` tells `Said` and `Ran` as it comes, or a daemon line naming its
+  container). During its cold start, before its run has answered, a slice counts by liveness
+  alone; past it, only where its rate is not below that floor (`Rate::below`,
+  cross-multiplication): an idle microVM's timer ticks are no progress, and a workload's CPU
+  past what its run answered at is. `common::Ran` judges each VM process's slice the same way,
+  so a build step that prints nothing for a while but works stays waited on. On HVF's nesting
+  microVM the floor its first heartbeat taught once its run had answered was 110 ms in 10 s,
+  and every idle heartbeat after it fell below. Held by tests/harness.rs's stand-ins:
+  `a_cold_heartbeat_and_a_daemons_other_lines_are_progress`,
+  `a_wait_on_idle_heartbeats_ends_at_its_bound_and_one_on_work_goes_on` (HVF's heartbeats as
+  its runc hung) and `a_vm_processes_slices_count_past_its_cold_start_only_above_its_floor`,
+  red before the judge and red again with it removed. What would falsify it: a wait held past
+  its bound by a microVM idling below its floor, or one refused while its microVM works at or
+  above it. Not caught: a run that never answers keeps its cold start, and its heartbeats count
+  by liveness, as a wait begun before its kind's first answer does; and a workload that, silent,
+  works below every rate its run answered at is taken for idle.
 - **A test's own waits on pools and microVMs follow them too** (M424). daemon.rs' rerun at
   b57cad27 failed 7 of 38, each a wait of the test's own past a fixed minute (a pool
   filled, a restored run's VM up) while its daemon's log showed templates saved, 264 MiB
@@ -24155,6 +24237,13 @@ virtio 1.3 §5.11's `VIRTIO_FS_F_NOTIFICATION` unused), and what a FUSE server n
   - *Echoes:* on Linux and Windows the share process's own writes for the guest are watched
     too, each told back as one `IN_MODIFY` more (macOS's `IgnoreSelf` leaves them out), as
     Docker's osxfs delivers "some events multiple times".
+  - *A DAX file's guest* (D189, PM M550): a touch's SETATTR reply tells the guest's kernel
+    the file's size as the host has it, so a reader past a host's cut reads the file's end
+    once the notice lands; the kernel dropped a DAX file's entries there unbroken
+    (`fuse_do_setattr`) until shards' patch 0007 covered it (kernel inputs 54fba99afaee,
+    release and pin owed); and a file the host is still writing, looked up by its notice
+    before it is 1 MiB long, is no DAX file until its guest makes its inode again (owed:
+    weighed with how a notice tells of a name the guest has not looked up).
   - *Linux's instances:* one inotify instance a share process (a run that shares any
     directory, and each plug), of the user's 128 by default, of which a desktop's programs
     held 101 (PM M257); a share process given none tells nothing, and says so in its log.
@@ -25227,7 +25316,7 @@ memory its guest holds before its guest drops its page cache (D188's measure, PM
 image run); an orchestrator that needs D188's pressure give-back through its run host to keep
 its runs within its budget.
 
-### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; the injector and the real-VM runs owed)
+### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; the injector and the real-VM runs owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 33: every kiln harness runs in a
 Shards microVM, and a harness needs its model-provider credential without the credential
@@ -25594,11 +25683,22 @@ Owed: none beyond CI on main.
 - *Owed.* Hex answering a run's lease asks from the broker, and telling it of a move (step 6);
   Shards' run host asking them (step 4). ROOT's real runs (step 10).
 
-**Owed (later slices of step 33, this plan's steps 3 and 6–10).** The injector that
+**Built: step 9, every harness's trust and token checks surveyed** (docs/research/s33-veil-creds/
+harness-survey.md, its evidence `evidence/survey/<harness>.txt`). Each of kiln's ten harnesses was read from its own
+build: its pinned linux/amd64 files, held to their pins' sha256, searched for the strings that say how it trusts and
+checks, with no vendor CLI run. Every build reaches the run's CA, through a variable step 2 sets
+(`NODE_EXTRA_CA_CERTS` for Claude Code, Gemini CLI, opencode, Amp, Cursor and pi; `SSL_CERT_FILE` or
+`SSL_CERT_DIR` for goose and Antigravity; `CODEX_CA_CERTIFICATE` or `SSL_CERT_FILE` for Codex) or through the system
+bundle step 2 lays it in (Devin's alone). None carries a pinning API's names. So no harness is tmpfs-fallback on its
+trust, and each is injected. Claude Code's bundle carries an OIDC `at_hash` check, the hazard of a placeholder access
+token beside a real ID token; whether its Anthropic sign-in runs it is step 8's to settle from its source, as are
+sender-constrained tokens. A string found says the build carries the code, not that every path runs it; ROOT's real
+runs (step 10) confirm each harness's trust of the run's CA.
+
+**Owed (later slices of step 33, this plan's steps 3, 6–8 and 10).** The injector that
 terminates TLS and fills HTTP/1.1 then HTTP/2 headers (steps 3, 7); Hex wiring the grants
 and answering a run's leases from kiln's broker (step 6); the Claude Code and Codex
-sign-in/refresh profiles (step 8); the survey of each harness's trust and token checks and
-the tmpfs-fallback list (step 9); and ROOT's real-VM runs on KVM, HVF and WHP with a
+sign-in/refresh profiles (step 8); and ROOT's real-VM runs on KVM, HVF and WHP with a
 whole-guest-memory leak scan and the injector's measured cost (step 10).
 
 **Literals.** None of its own: this slice adds no numeric bound. A credential's `reference`
@@ -26601,7 +26701,7 @@ tests unchanged.
 on HVF, KVM x86_64 and WHP; R14's start of a warm run against a restored one, the warm host's
 resident memory, and its start's time from `WARMED`.
 
-### D254. kiln's MCP rides the agent-control link: a stdio bridge in the harness's member, one lane of the link per connection, no network grant (decided; its asks built at the endpoint and the controller; the member's listener and bridge, the run hosts' pairing, kiln's side and every real-VM run owed)
+### D254. kiln's MCP rides the agent-control link: a stdio bridge in the harness's member, one lane of the link per connection, no network grant (decided; its asks built at the endpoint and the controller, the member's listener and bridge and its VM's hand-off built; the run hosts' pairing, kiln's side and every real-VM run owed)
 
 **Why.** A harness kiln drives in a microVM calls kiln's MCP server (kiln serves `/api/mcp`
 in-process). ROOT's first call was plain HTTP from the microVM to the runner's loopback
@@ -26684,6 +26784,10 @@ one form all nine take, and no other.
 | An `Mcp` ask's payload, 44 bytes | an exec ask's scope: the run (32), its generation (8), the member (4) |
 | `/run/shards/mcp`, `/run/shards/mcp.sock` | shards' own guest paths, beside D234's `/run/shards/notify` |
 | `mcp=TOKEN` | the run-wide token, as `engine=` carries it (D181) |
+| `member-mcp=INDEX` | the member by its declared index, as D231's `member-*` entries name one |
+| vsock port 1031 | the next after the run's (1024, 1025, 1027, 1029) and the builder's (1026, 1028, 1030) |
+| Preamble, 4 bytes | the member's declared index, a big-endian u32, as `member-*` entries count members |
+| `LANE_ACCEPTED` 102, numbers from 2^63 | the next shards_ipc kind above main's (`UNSERVED` 101); D251's split of lane numbers, a VM's own at or above 2^63 |
 
 **Built** (step 11). The endpoint's `Mcp` asks, on the exec lanes' machinery (`exec::Kind::Mcp`:
 one stream each way, no stderr, any steering let go by its host), and the controller's
@@ -26699,16 +26803,58 @@ controller's bytes and the harness's exact, its end told, a member with no bridg
 typed), `daemon::managed::tests` (the daemon's host refusing an MCP ask before its VM process
 hears of it).
 
-**Owed.** The listener, the bridge and `LANE_ACCEPTED` (D251's agent, building them; ipc kind
-101); the daemon's and the orchestrator's hosts pairing each connection with its ask, and the
-asking (the daemon's annotation, the orchestrator's MemberSpec field), goal 58's; kiln's harness
-configs naming the bridge. kiln's in-process server over the two streams is built (kiln main
-`dace992a6`, `reach::mcp::serve_lane`: one `Execs::mcp(member)` connection's newline-delimited
-JSON-RPC read from `McpConnection::from` and answered on `to`, in the runner's own process, no
-socket, on Windows too), its connection to a launch waiting on kiln's next re-vendor of Shards
-and this pairing (kiln's step 18, goal 61). Every real-VM run, ROOT's: each
-harness that takes MCP calling kiln's server through the bridge, on KVM, HVF and WHP, with the
-microVM and the kiln runner on one machine and on two.
+**Built** (the listen half). A run asks with two setup entries (`shards_abi::run::mcp`,
+registered in D257's `run::setup::KEYS`): `mcp=TOKEN`, the run-wide token in lowercase hex, and
+`member-mcp=INDEX` for each member that gets a bridge, each member once; init refuses members
+named without a token, or a token or a member entry malformed, typed, before the run starts,
+and a run naming a member its image starts no program for.
+- *In the member* (`crates/init/src/mcp.rs`, `domains::start`). Init binds `mcp.sock` in the
+  member's directory of `/run/shards`, which that member's domain alone sees (`SERVER_AT`),
+  owned by the member's identity, mode 0600, and an empty file `mcp` beside it, mode 0444, on
+  which the member's view mounts a copy of init's own binary (`open_tree` of
+  `/proc/self/exe`, read only, nosuid, nodev, runnable; `bridge_mount`). Run by that name, as no
+  PID 1, the binary is the bridge: its stdin to the socket and the socket to its stdout, its
+  stdin's end the socket's half-close, done once both ways have ended.
+- *The relay.* Each connection to the socket, on a thread of its own, dials port 1031, says
+  `HELLO` with the run's token and then the member's declared index, and carries the bytes each
+  way, each way's end that way's half-close (`native_relay::pump`, `EndPolicy::Independent`).
+  The member never holds the token.
+- *The VM process* (warm.rs `serve_mcp`). A warm VM serves port 1031 as it serves its engine's:
+  its connections wait for the run, which takes them where its spec carries `mcp=`, else lets
+  the port go, which then refuses. A connection whose hello says the token is read for its
+  member on a thread of its own, then handed to the run's owner unprompted (`LANE_ACCEPTED`,
+  `shards_ipc::Accepted`: its number, from 2^63 up, then its member), the connection beside it
+  on Unix and a copy held until its owner says `LANE_HELD` (M24); on Windows held until the
+  owner's `LANE_HELD` brings the socket it is relayed onto, as D251's lanes are. A hello that
+  offers a ring, which the relay never does on this port, is closed.
+- *The hosts, until goal 58's pairing.* The daemon's inbox and api-run's `follow` answer each
+  `LANE_ACCEPTED` with `LANE_HELD` and let the connection go, which ends the member's bridge;
+  one numbered below 2^63, as its owner numbers its own lanes, is let go unanswered.
+
+Tested: `shards_abi::run::mcp` (its entries read back; a member twice, a token malformed or
+twice refused), `run::setup` (both keys registered), `shards_ipc` (`Accepted` read back; one
+cut short, longer or numbered as its owner's refused), shards-init's `mcp::tests` (an ask is
+members and token together; the socket the member's, 0600, beside its mount point, a template's
+stale one replaced; the relay's token and member said before the member's bytes, each way's end
+its own; the bridge's copy each way), warm.rs's `mcp` tests (a member's connection handed as
+its relay named it, held until its owner has it; one ended before its member, or offering a
+ring, closed, its owner told nothing; the port's connections through its hellos), and the
+hosts' stubs (`daemon` through a stand-in VM, api-run's `mcp_accepted`).
+
+**Owed.** The daemon's and the orchestrator's hosts pairing each connection with its ask, and
+the runs' asking (goal 58: the daemon's annotation, the member spec's field, their tokens);
+a resumed run's members' connections (D176): its request brings the save's tokens in place of a
+spec, so its port refuses them until a save keeps the run's MCP token beside its engine's
+(`Resume::engine`) and its resumed request brings it; kiln's harness configs naming the bridge.
+kiln's in-process server over the two streams is built (kiln main `dace992a6`,
+`reach::mcp::serve_lane`: one `Execs::mcp(member)` connection's newline-delimited JSON-RPC read
+from `McpConnection::from` and answered on `to`, in the runner's own process, no socket, on
+Windows too), its connection to a launch waiting on kiln's next re-vendor of Shards and this
+pairing (kiln's step 18, goal 61). Every real-VM run, ROOT's: the bridge's mount of init's
+binary in a member's view (`open_tree` of an initramfs file, unproven on a real guest), a
+member's MCP connection reaching its host and its end, each harness that takes MCP calling
+kiln's server through the bridge, on KVM, HVF and WHP, with the microVM and the kiln runner on
+one machine and on two.
 
 **What would falsify it.** A harness that takes MCP and no stdio server; a byte of an MCP
 connection reaching the microVM's network; a member's connection told to the controller as
@@ -27033,8 +27179,12 @@ seen on real runs:
   (by its kind's name and the wire's words), a kind that is no ask, an input past its room,
   after its end, or for a member with no stdin, an input ended twice, and a lease's answer the
   run cannot take end it `Failed("its orchestrator's channel broke: …")`. An answer the host
-  could not send its orchestrator, or a credit it could not pass to its VM's capture, ends it
-  `Failed`, saying so. Each failed end is said on the host's stderr too. An end the VM said
+  could not send its orchestrator ends it `Failed`, saying so. A credit it could not pass to
+  its VM's capture ends nothing: that capture closes as its VM ends, before its `DONE` can
+  come, and killing the VM for it put a failure where the VM's own end belonged (WHP at
+  3a05bc3f1). The host says the first such credit on its stderr, which shows why a run whose
+  output stops while its VM runs on stopped; its `STOP` still ends that run. Each failed end is
+  said on the host's stderr too. An end the VM said
   first (its `DONE` came) stands, whatever the asks did meanwhile. Frames are read in place
   and wiped as they go (D242's channel), and a lease's answer is served from its frame.
 - *A VM that could not serve its run tells why* (`shards_ipc::kind::UNSERVED`, 101), before

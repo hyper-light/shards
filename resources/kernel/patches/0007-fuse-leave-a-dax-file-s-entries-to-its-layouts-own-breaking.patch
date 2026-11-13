@@ -3,8 +3,10 @@ fuse: leave a DAX file's entries to its layouts' own breaking
 Since 6.15 a DAX page is counted by its mappings (fs/dax: properly refcount
 fs dax pages). FUSE drops a regular file's cached pages at each open
 without FOPEN_KEEP_CACHE (fuse_open(), fuse_create_open()), and as its
-attributes show its size changed (fuse_change_attributes_i()); for a DAX
-file those are its DAX entries. invalidate_inode_pages2() lets each entry
+attributes show its size changed (fuse_change_attributes_i(), and
+fuse_do_setattr() for a SETATTR that sets no size, whose reply shows the
+size another client left: a utimensat(2) of a file the host grew or cut);
+for a DAX file those are its DAX entries. invalidate_inode_pages2() lets each entry
 go (__dax_invalidate_entry()) before it unmaps the page tables that map it,
 after its loop, and truncate_pagecache() finds entries no one broke the
 layouts of. A 2 MiB entry still mapped is split into small pages that
@@ -21,7 +23,9 @@ window gets, as one process opens a file another maps:
   Call Trace: dax_fault_iter <- dax_iomap_pte_fault <- __fuse_dax_fault
 
 and the processes that fault there get SIGBUS: 5 of 5 cargo builds of
-rust-analyzer on a shards volume with a window.
+rust-analyzer on a shards volume with a window. The first warning comes
+too as the host grows a file a guest process maps in 2 MiB pages and the
+guest touches it, its server answering the SETATTR with the file as it is.
 
 A DAX file has no page cache to go stale: its bytes are the host's,
 through the window. So drop nothing of a DAX file as it is opened, nor as
@@ -43,6 +47,15 @@ v7.2-rc4.
  		if (fm->fc->atomic_o_trunc && trunc)
  			truncate_pagecache(inode, 0);
  		else if (!(ff->open_flags & FOPEN_KEEP_CACHE))
+@@ -2095,7 +2095,7 @@
+ 	 * Only call invalidate_inode_pages2() after removing
+ 	 * FUSE_NOWRITE, otherwise fuse_launder_folio() would deadlock.
+ 	 */
+-	if ((is_truncate || !is_wb) &&
++	if ((is_truncate || (!is_wb && !FUSE_IS_DAX(inode))) &&
+ 	    S_ISREG(inode->i_mode) && oldsize != outarg.attr.size) {
+ 		truncate_pagecache(inode, outarg.attr.size);
+ 		invalidate_inode_pages2(mapping);
 --- a/fs/fuse/file.c
 +++ b/fs/fuse/file.c
 @@ -289,7 +289,7 @@

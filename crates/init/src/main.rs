@@ -55,6 +55,8 @@ mod linux;
 #[cfg(target_os = "linux")]
 mod managed;
 #[cfg(target_os = "linux")]
+mod mcp;
+#[cfg(target_os = "linux")]
 mod members;
 #[cfg(target_os = "linux")]
 mod metrics;
@@ -100,6 +102,12 @@ mod tree;
 mod trust;
 
 fn main() {
+    // A member's MCP bridge (D254), run by its name from its view, before anything else of
+    // init's: it is nothing but the bridge, whatever it is given.
+    #[cfg(target_os = "linux")]
+    if mcp::is_bridge() {
+        std::process::exit(mcp::bridge());
+    }
     #[cfg(target_os = "linux")]
     if std::env::args_os().nth(1).is_some_and(|a| a == "managed-reaper") {
         managed::reaper();

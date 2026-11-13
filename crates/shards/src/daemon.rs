@@ -6096,6 +6096,23 @@ impl<D: Disk> Daemon<D> {
                         }
                     }
                 }
+                // A member's MCP connection its VM handed over unprompted (D254): no
+                // controller's ask is paired with one yet, so it is let go, its VM's copy
+                // with it (M24), which ends its member's bridge. One its VM did not number
+                // as its own is let go alone.
+                kind::LANE_ACCEPTED => {
+                    drop(m.fds);
+                    if let Some(accepted) = shards_ipc::Accepted::decode(&m.payload)
+                        && let Err(e) =
+                            inbox
+                                .socket
+                                .send(kind::LANE_HELD, &accepted.number.to_be_bytes(), &[])
+                    {
+                        log(format!(
+                            "container {id}: letting go of a member's MCP connection: {e}"
+                        ));
+                    }
+                }
                 // Its VM's answer to a save (D176), before anything after it: a microVM the
                 // save stops ends as saved.
                 kind::SAVED => snapshots::answered(inbox, &m.payload),
@@ -12171,33 +12188,42 @@ mod tests {
     /// microVM in turn gave back 3 times in 600 s). Its give-back ends as D215's judge ends
     /// a wait whose kind has been answered (6fc62c231): at a look, past the slowest give-back
     /// answered, that finds its VM process ran no CPU since the look before. A wait begun
-    /// before its kind's first answer follows liveness alone, whatever it learns meanwhile.
+    /// before its kind's first answer follows liveness alone, whatever it learns meanwhile,
+    /// so the daemon learns a give-back's answer from a microVM that answers before it asks
+    /// the one that never does.
     #[test]
     fn a_microvm_that_does_not_give_back_keeps_no_other_waiting() {
         let t = Test::new("give-back");
         t.run(|t| {
-            // A give-back answered before, its microVM running a thousandth of it: a fixture's
-            // record, long beside how soon a played VM answers on a loaded host, so that the
-            // one that answers is never cut.
-            let slowest = PATIENCE / 4;
-            t.t.daemon.answers.reclaim.teach(slowest, slowest / 1000);
-            let (stalled, _stalled, vm) = running(t, "stalled");
             let (answers, _answers, other) = running(t, "answers");
-            let t0 = Instant::now();
-            t.t.daemon.give_back_cold(t.threads);
-            let held = heard_whole(&vm);
-            assert_eq!(held.kind, kind::EXEC_RUN);
-            for pass in 0..2 {
-                if pass > 0 {
-                    t.t.daemon.give_back_cold(t.threads);
-                }
+            // One pass of the give-back, answered by the microVM that answers.
+            let answered = |t: &In<'_, '_, Real>| {
                 let asked = heard_whole(&other);
                 assert_eq!(asked.kind, kind::EXEC_RUN);
                 answer_exec(&asked, b"1048576 0", 0);
                 drop(asked);
                 t.until("its answer taken", |d| !d.watching.giving(&answers));
+            };
+            // What the daemon learns of a give-back's answer, from its own answers alone.
+            for _ in 0..2 {
+                t.t.daemon.give_back_cold(t.threads);
+                answered(t);
             }
-            assert!(t0.elapsed() < slowest, "{:?}", t0.elapsed());
+            let shards_api::Seen::Learned { slowest, .. } = t.t.daemon.answers.reclaim.seen() else {
+                panic!("no give-back's answer learned from two answered");
+            };
+            let (stalled, _stalled, vm) = running(t, "stalled");
+            let t0 = Instant::now();
+            t.t.daemon.give_back_cold(t.threads);
+            let held = heard_whole(&vm);
+            assert_eq!(held.kind, kind::EXEC_RUN);
+            // The one that answers is asked and served beside it, pass after pass.
+            for pass in 0..2 {
+                if pass > 0 {
+                    t.t.daemon.give_back_cold(t.threads);
+                }
+                answered(t);
+            }
             // The one still asked is asked nothing more meanwhile.
             assert!(t.t.daemon.watching.giving(&stalled));
             vm.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
@@ -12212,10 +12238,14 @@ mod tests {
             // ended on its exec's connection, as its VM says once it has ended it; then it may
             // be asked again.
             let conn = stream_of(&held.fds[0]);
-            conn.set_read_timeout(Some(slowest + PATIENCE)).unwrap();
+            conn.set_read_timeout(Some(PATIENCE)).unwrap();
             let ended = shards_ipc::recv(&conn).unwrap().unwrap();
             assert_eq!((ended.kind, ended.payload), signal(9));
-            assert!(t0.elapsed() >= slowest, "{:?}", t0.elapsed());
+            assert!(
+                t0.elapsed() >= slowest,
+                "{:?} into it, past {slowest:?}",
+                t0.elapsed()
+            );
             shards_ipc::send(&conn, kind::EXIT, &[137], &[]).unwrap();
             drop((conn, held));
             t.until("its give-back ended", |d| !d.watching.giving(&stalled));
@@ -13661,6 +13691,66 @@ mod tests {
                 }
                 say(&vm, kind::DONE, &[0]);
             }
+        });
+    }
+
+    /// D254: a member's MCP connection its VM hands over unprompted is answered as taken
+    /// (M24) and let go, no controller's ask being paired with one yet: its far end reads its
+    /// end. One its VM did not number as its own is let go unanswered.
+    #[cfg(unix)]
+    #[test]
+    fn a_members_mcp_connection_is_answered_and_let_go_until_its_pairing() {
+        use std::io::Read as _;
+        let t = Test::new("mcp-accepted");
+        t.run(|t| {
+            let id = t.create("mcp");
+            let (ready, vm) = t.warm_vm(None);
+            let keep = Keep {
+                detached: None,
+                options: crate::spec::Options::default(),
+                health: None,
+                published: Vec::new(),
+                named: None,
+                restarted: false,
+                layer_pending: false,
+                layer_over: None,
+                layer_way: None,
+                log_files: DEFAULT_LOGS.files,
+                log_compress: false,
+                visit: false,
+                egress: None,
+                agentfile: None,
+                nested: false,
+                mac: None,
+                link_local: Vec::new(),
+                engine: None,
+            };
+            let _inbox = t.daemon.register(ready, &id, keep);
+            say(&vm, kind::STARTED, &[]);
+            vm.set_read_timeout(Some(PATIENCE)).unwrap();
+            let (ours, theirs) = UnixStream::pair().unwrap();
+            // Before its far end may close: XNU sets no option on a socket closed both ways
+            // (sosetoptlock).
+            ours.set_read_timeout(Some(PATIENCE)).unwrap();
+            let first = shards_abi::run::mcp::ACCEPTED_FIRST;
+            let owners = shards_ipc::Accepted {
+                number: first - 1,
+                member: 1,
+            };
+            say(&vm, kind::LANE_ACCEPTED, &owners.encode());
+            let accepted = shards_ipc::Accepted {
+                number: first,
+                member: 1,
+            };
+            shards_ipc::send(&vm, kind::LANE_ACCEPTED, &accepted.encode(), &[theirs.as_fd()]).unwrap();
+            t.daemon.settle();
+            // Held until the daemon has it (M24).
+            drop(theirs);
+            assert_eq!(heard(&vm), (kind::LANE_HELD, first.to_be_bytes().to_vec()));
+            let mut rest = Vec::new();
+            (&ours).read_to_end(&mut rest).unwrap();
+            assert_eq!(rest, b"");
+            say(&vm, kind::DONE, &[0]);
         });
     }
 

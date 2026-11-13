@@ -931,7 +931,7 @@ mod tree {
 /// A copy of the mount of directory `dir`, attached nowhere, with `attr` set: a mount of
 /// init's own, as `open_tree` has copied since Linux 5.2, and `mount_setattr` changes since
 /// 5.12.
-fn copy_of(dir: &str, attr: u64) -> io::Result<OwnedFd> {
+pub(crate) fn copy_of(dir: &str, attr: u64) -> io::Result<OwnedFd> {
     let path = CString::new(dir).map_err(io::Error::other)?;
     // SAFETY: open_tree(2) of a NUL-terminated path.
     let fd = unsafe {
@@ -1995,6 +1995,22 @@ pub fn start(
             "a terminal is asked for member {member}, which this image starts no program for"
         ));
     }
+    // The members with an MCP bridge and socket (D254): each one that starts here, else the
+    // run is refused, as a terminal is.
+    let mcp = crate::mcp::Asked::read(setup)?;
+    if let Some(member) = mcp
+        .iter()
+        .flat_map(|a| &a.members)
+        .find(|m| !domains.iter().any(|d| d.id.checked_sub(FIRST_ID) == Some(**m)))
+    {
+        return Err(format!(
+            "an MCP bridge is asked for member {member}, which this image starts no program for"
+        ));
+    }
+    // Their sockets, carried once every member has started, and their bridges' mounts, held
+    // until each member's view has its own.
+    let mut mcp_listeners = Vec::new();
+    let mut bridges = Vec::new();
     let mut started = Vec::new();
     for (i, d) in domains.iter().enumerate() {
         let member =
@@ -2124,11 +2140,27 @@ pub fn start(
             &peers,
             scratch.as_ref().map(AsRawFd::as_raw_fd),
         )?;
+        // Its MCP socket and its bridge's mount point beside the server's (D254), where its run
+        // asks for them: in its own directory, which no other member sees.
+        let bridged = mcp.as_ref().is_some_and(|a| a.members.contains(&member));
+        if bridged {
+            let listener = crate::mcp::listen(std::path::Path::new(&dir), d.id)
+                .map_err(|e| format!("{}: its MCP socket: {e}", d.label))?;
+            mcp_listeners.push((listener, member));
+        }
         let quiet = libc::MOUNT_ATTR_NOSUID | libc::MOUNT_ATTR_NODEV | libc::MOUNT_ATTR_NOEXEC;
         let copy = copy_of(&dir, quiet | libc::MOUNT_ATTR_RDONLY)
             .map_err(|e| format!("{}: the in-VM server: {e}", d.label))?;
         sockets.push((copy.as_raw_fd(), cstr_of(SERVER_AT)?));
         copies.push((copy, cstr_of(SERVER_AT.trim_start_matches('/'))?));
+        // Its bridge, this binary, mounted on the empty file beside its socket, after the
+        // directory it lies in: runnable, where that directory is not.
+        if bridged {
+            let bridge =
+                crate::mcp::bridge_mount().map_err(|e| format!("{}: its MCP bridge: {e}", d.label))?;
+            sockets.push((bridge.as_raw_fd(), cstr_of(shards_abi::run::mcp::BRIDGE)?));
+            bridges.push(bridge);
+        }
         // Its volumes, each a copy of the run's mount of it, at its mount point.
         let mut volumes = Vec::new();
         let mut volume_rules = Vec::new();
@@ -2371,6 +2403,15 @@ pub fn start(
         });
     }
     drop(joined);
+    drop(bridges);
+    // Each member's MCP connections carried to its host from here on, every member started
+    // (D254).
+    if let Some(asked) = &mcp {
+        for (listener, member) in mcp_listeners {
+            crate::mcp::serve(listener, member, asked.token)
+                .map_err(|e| format!("member {member}'s MCP socket: {e}"))?;
+        }
+    }
     Ok(started)
 }
 
