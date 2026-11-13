@@ -25801,7 +25801,8 @@ exec's, and making no stream: the member's own are step 5's already.
   (runtime-spec runtime.md, "kill"), and Hex's `signal` of a member maps onto that (Hex
   `docs/design/shards-image-class.md` §2, `Awaits(MemberSignal)`); init refuses such a signal
   typed, and the refusal reaches the controller.
-- *Its end, as it comes*: `Exit`, with the member's status, once its init says its population
+- *Its end, as it comes*: `Exit`, with the member's exit status, or `Signaled`, with the signal
+  that killed its command (below, *A member's end, typed*), once its init says its population
   has ended (D231's `MEMBER_ENDED`). It is told only after any steer its host was handed has
   been answered. The member's life is its run's: a lane let go (its exit told, or its
   connection gone) closes its host's steering and ends nothing.
@@ -25815,12 +25816,75 @@ exec's, and making no stream: the member's own are step 5's already.
   was due, adas-mac-studio-3.local, macOS arm64), green after.
 
 *The controller's members* (`Execs::member`, `Member`, `MemberControl`). `Execs::member` gives
-`Member::Running(MemberControl { steering, end })`, or `Member::Ended(status)` for a member that
+`Member::Running(MemberControl { steering, end })`, or `Member::Ended(end)` for a member that
 ended before its lane asked, or a fault, typed. Steering and end are separate handles, so that a
 caller can wait for the end on one thread and steer from another.
 `MemberSteering::signal` refuses a signal outside `1..=NSIG` before sending it; it and `resize`
 each wait for the answer, with `Fault::Unsteered` for a refusal and `Unsteered::Ended` for every
-steer once the end has come. `MemberEnd::wait` gives the member's status.
+steer once the end has come. `MemberEnd::wait` gives the member's end, `exec::End`.
+
+*A member's end, typed* (plan step 11; the Hex lead's ask 3, which makes kiln's interrupt and
+stop real signals: Hex sends INT and TERM to an image member over the orchestrator run's
+endpoint). A member's end was a status as `docker run` reports one, 128 plus the signal for a
+command a signal killed, so that Hex could not tell `exit 143` from a death by TERM. It is typed
+now, end to end: `shards_abi::run::members::End { Exited(code), Signaled(signal) }`, its
+`status()` the one Docker reports.
+- *Where it is known.* A member's command is PID 2 of its own namespace, and its reaper, the
+  namespace's PID 1, is its parent: only the reaper's `wait4(2)` sees `WIFSIGNALED`, and it
+  told init only its own exit, `128 + WTERMSIG` (init `managed.rs`, `reaping`), an exit of 143
+  either way.
+- *Its alternatives* (R02). (a) The reaper's exit code: eight bits (`WEXITSTATUS`, wait(2)),
+  which hold every exit 0 to 255 and so no signal beside them. (b) The reaper killing itself
+  with the signal: a namespace's init takes from its own namespace only signals it handles
+  (pid_namespaces(7), "Only signals for which the init process has established a signal
+  handler can be sent to the init process by other members of the PID namespace"; kernel/
+  signal.c `sig_task_ignored` with `SIGNAL_UNKILLABLE`), and the reaper's seccomp filter allows
+  no kill(2). (c) Init reading the command's status itself: no process but a parent reaps a
+  child (wait(2)), and the reaper is its parent. (d) Chosen: the reaper says the command's end,
+  typed, on its readiness pipe (kept open past `READY`; `write` is in its filter) before it
+  exits, as it says a failure there before its readiness (`raw_fail`).
+- *How init takes it* (`Owned::reaped`, `told_end`). Init reads the pipe without waiting once
+  it has reaped the reaper, which wrote first; it holds the told end only where it agrees with
+  the reaper's own exit (an `Exited(c)` with `c` its `status()`), else the reaper's own end
+  (`ended`): a reaper killed by a stop's SIGKILL says `Signaled(9)`, one that failed before
+  telling `Exited(125)`. So no end is told that the reaper's exit does not bear out.
+- *On the wires*, each change typed and refused by an older peer, never read in an old meaning.
+  The guest's `MEMBER_ENDED` is `[member u32, tag u8 (0 exited, 1 signaled), code or signal
+  u32]` (`members::Ended`, 9 bytes), and abi changed, so D28's identity moved and an older
+  shards-init is refused before the run. The image channel's `MemberEnded` carries it the same
+  (`end`, version 27; a signal out of `1..=NSIG` refused `WireError::Signal`, another tag
+  `WireError::Tag`), and shards-api's `MemberEnd` gains `Signaled(signal)` beside `Exited(code)`
+  and `WithRun`. On a member's lane the endpoint's `Signaled` frame (shards-remote tag 46, the
+  signal a big-endian u32 in `1..=NSIG`, else `Protocol`) stands in place of its `Exit`
+  (`Reply::Signaled`, `Told::Signaled`), and the controller's `Member::Ended` and
+  `MemberEnd::wait` give `exec::End { Exited(status), Signaled(signal) }`; a controller of an
+  older build reads tag 46 as no tag (`frame::Tag::of`), its lane broken, never an exit. An
+  exec's lane keeps its status (`ExecControl::wait`; an exec's host that said `Signaled` is told
+  as 128 plus it).
+- *Its literals* (R03): the tags 0 and 1, this encoding's own; `NSIG` 64, Linux's `_NSIG` (as
+  D238's steering bounds a signal); 128, Docker's convention for a signal's status
+  (`status()` alone).
+- *Tested* (unit; real VMs owed below): init's
+  `managed::tests::a_term_killed_members_end_is_signaled_and_exit_143_stays_exited` (a fixture
+  reaper ends through the reaper's own `finish` over a command that exits 143 or dies by TERM,
+  both exiting 143: read as init reads it, `Exited(143)` and `Signaled(15)`; a told end that
+  disagrees with the reaper's exit, or none, leaves the reaper's own); abi's
+  `a_members_end_tells_a_signal_from_its_status`; shards-remote's `told` round trip and
+  `the_controller_controls_a_member_its_state_steering_and_end` (TERM's end `Signaled(15)`,
+  `exit 143` still `Exited(143)`, a member ended by KILL before its lane asked
+  `Member::Ended(Signaled(9))`); shards-api's wire round trip (version 27, its refusals typed);
+  the daemon's `members::tests::a_lane_tells_a_signal_apart_from_an_exit` and its member host's
+  lane, its end told `Signaled(15)`; api-run's hosted lanes (`Signaled(15)`, `Signaled(9)`) and
+  its relay of a typed `MEMBER_ENDED` to the orchestrator.
+- *The first real-VM test of an orchestrator's member lanes* (written for ROOT, not run here):
+  `api_image::an_orchestrators_members_are_signaled_and_their_mcp_connections_reached_on_its_endpoint`.
+  shards-api boots an image of two harnesses under a control ask; the controller, subscribed to
+  exec lanes, reads `codex`'s MCP `initialize` through `Execs::mcp` (testguest's `mcp-hello`,
+  D254), waits for `claude`'s `ready`, then signals `codex` 15 (`Signaled(15)`, a steer after it
+  refused `Ended`) and `claude` 9 (`Signaled(9)`), each end the same on the image channel
+  (`wait_member`), and asks `codex`'s lane anew (`Member::Ended(Signaled(15))`). Every wait on
+  the guest is judged (`common::within_own`: D209's judge on the test's own VM processes,
+  `Party::own`).
 
 *The daemon's member host* (`daemon/managed/members.rs`).
 - *Its ends*: a run that asks for agent control asks `member-ends` (abi `run::members::ENDS`,
@@ -28859,7 +28923,12 @@ member's MCP connection reaching its host and its end, each harness that takes M
 kiln's server through the bridge, in a daemon's run (`--annotation shards.control=true`,
 `--annotation shards.mcp=harness:NAME`) and an orchestrator's (`MemberSpec::mcp`, its spec's
 `control`), on KVM, HVF and WHP, with the microVM and the kiln runner on one machine and on two;
-a harness that restarts its MCP server, its old connection let go before the next ask.
+a harness that restarts its MCP server, its old connection let go before the next ask. The
+first such run of an orchestrator's is written (`api_image::an_orchestrators_members_are_signaled_and_their_mcp_connections_reached_on_its_endpoint`:
+a harness's `initialize` through its bridge, read exactly by `Execs::mcp`; D238's *A member's
+end, typed*), and shards-api's `control` now re-exports what `Execs::mcp` gives
+(`McpConnection`, `Output`, `Input`, `Got`, `ExecControl`), so that an orchestrator reads a
+connection through shards-api alone (`tests/control_lanes.rs`).
 
 **What would falsify it.** A harness that takes MCP and no stdio server; a byte of an MCP
 connection reaching the microVM's network; a member's connection told to the controller as

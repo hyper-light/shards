@@ -4213,6 +4213,43 @@ pub fn within<T: Send + 'static>(what: &str, vm: &Vm, f: impl FnOnce() -> T + Se
     }
 }
 
+/// Runs `f`, failing where this test's own VM processes (an api-run host's among them,
+/// [`Party::own`]) and `home`'s stop progressing before it ends: a wait judged as
+/// [`run_command`]'s is ([`Wait`]), its kind its call site. For a call that blocks on what a
+/// guest does (a controller's lane, its member's end), so that a test that stalls says where
+/// rather than holding the whole binary, and one its host runs slowly is waited on as it runs.
+#[track_caller]
+pub fn within_own<T: Send>(what: &str, home: &Path, f: impl FnOnce() -> T + Send) -> T {
+    let mut wait = Wait::on(
+        WaitKind::at(std::panic::Location::caller()),
+        Party::own(Some(home)),
+        what,
+    );
+    std::thread::scope(|scope| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = scope.spawn(move || {
+            let _ = tx.send(f());
+        });
+        loop {
+            match rx.recv_timeout(wait.next_look()) {
+                Ok(v) => {
+                    wait.answered();
+                    return v;
+                }
+                // Ended without sending: it panicked, and says why.
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => match worker.join() {
+                    Err(panic) => std::panic::resume_unwind(panic),
+                    Ok(()) => panic!("{what}: ended with no result"),
+                },
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            }
+            if let Err(stall) = wait.look(false) {
+                panic!("{what}: {}", wait.refused(&stall));
+            }
+        }
+    })
+}
+
 impl Vm {
     pub fn spawn<S: AsRef<std::ffi::OsStr>>(args: &[S]) -> Vm {
         Vm::spawn_env(args, &[])
