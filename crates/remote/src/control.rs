@@ -355,6 +355,14 @@ impl Endpoint {
         ))
     }
 
+    /// The kernel's buffers of its socket, which its caller's budget holds, as for step 5's
+    /// endpoints (`managed::Endpoint::kernel_buffer_bytes`).
+    pub fn kernel_buffer_bytes(&self) -> Result<u64, managed::Error> {
+        self.driver
+            .kernel_buffer_bytes()
+            .map_err(managed::Error::Transport)
+    }
+
     /// Serves until revoked; then every output not finished is aborted and every input not
     /// ended let go, as step 5's endpoints leave theirs.
     pub fn run(mut self) -> Result<(), managed::Error> {

@@ -74,6 +74,39 @@ fn permit_amx() {
 #[derive(Debug, Clone)]
 pub struct VmConfig {
     pub vcpus: u32,
+    /// The CPU baseline its vCPUs are told (D176 part 6, [`cpuid::within`]), as its
+    /// feature leaves: none for the host's own, and for a restore, whose vCPUs are told
+    /// their snapshot's CPUID.
+    pub baseline: Vec<[u32; 7]>,
+}
+
+/// What KVM gives a guest of this host (KVM_GET_SUPPORTED_CPUID), less the tile
+/// configuration where it offers no tile data ([`cpuid::without_lone_tile_config`]): every
+/// vCPU's CPUID before its VM's shape is written into it ([`cpuid::for_vcpu`]).
+fn template(kvm: &sys::Kvm) -> Result<Vec<cpuid::Leaf>> {
+    let mut cpuid: Vec<cpuid::Leaf> = kvm
+        .supported_cpuid()
+        .map_err(call("KVM_GET_SUPPORTED_CPUID"))?
+        .into_iter()
+        .map(|e| cpuid::Leaf {
+            function: e.function,
+            index: e.index,
+            flags: e.flags,
+            eax: e.eax,
+            ebx: e.ebx,
+            ecx: e.ecx,
+            edx: e.edx,
+        })
+        .collect();
+    cpuid::without_lone_tile_config(&mut cpuid);
+    Ok(cpuid)
+}
+
+/// This host's CPU as KVM shows a guest (D176 part 6): its vendor and feature leaves
+/// ([`cpuid::identity`]), which a CPU baseline is the meet of across a fleet.
+pub fn host_cpu_id() -> Result<Vec<[u32; 7]>> {
+    let kvm = kvm().map_err(Error::Guest)?;
+    Ok(cpuid::identity(&template(kvm)?))
 }
 
 /// The VM. It must outlive every [`Vcpu`], and guest memory must outlive it.
@@ -127,21 +160,8 @@ impl Vm {
         fd.set_identity_map_addr(layout::IDENTITY_MAP)
             .map_err(call("KVM_SET_IDENTITY_MAP_ADDR"))?;
         fd.create_irqchip().map_err(call("KVM_CREATE_IRQCHIP"))?;
-        let mut cpuid: Vec<cpuid::Leaf> = kvm
-            .supported_cpuid()
-            .map_err(call("KVM_GET_SUPPORTED_CPUID"))?
-            .into_iter()
-            .map(|e| cpuid::Leaf {
-                function: e.function,
-                index: e.index,
-                flags: e.flags,
-                eax: e.eax,
-                ebx: e.ebx,
-                ecx: e.ecx,
-                edx: e.edx,
-            })
-            .collect();
-        cpuid::without_lone_tile_config(&mut cpuid);
+        let mut cpuid = template(kvm)?;
+        cpuid::within(&mut cpuid, &config.baseline);
         let tsc_deadline = kvm
             .check_extension(sys::CAP_TSC_DEADLINE_TIMER)
             .map_err(call("KVM_CHECK_EXTENSION"))?
@@ -664,7 +684,7 @@ impl Vcpu {
         // found is given the guest's CPUID, which the guest goes on believing; one short of
         // any is refused, naming what it lacks.
         if !same_cpu(&st.cpuid, &self.cpuid) {
-            cpuid::covers(&self.cpuid, &st.cpuid).map_err(Error::Guest)?;
+            cpuid::covers(&self.cpuid, &st.cpuid).map_err(|lacks| Error::Guest(lacks.to_string()))?;
             let leaves: Vec<sys::kvm_cpuid_entry2> = st
                 .cpuid
                 .iter()
@@ -885,7 +905,11 @@ mod tests {
             eprintln!("SKIP: no KVM here");
             return;
         }
-        let vm = Vm::new(VmConfig { vcpus: 1 }).unwrap();
+        let vm = Vm::new(VmConfig {
+            vcpus: 1,
+            baseline: Vec::new(),
+        })
+        .unwrap();
         let irqs = vm.irqs();
         const GSI: u32 = 20;
         let coalesced = std::sync::atomic::AtomicUsize::new(0);
@@ -903,6 +927,55 @@ mod tests {
             }
         });
         assert_eq!(coalesced.into_inner(), 0);
+    }
+
+    /// A VM told a CPU baseline (D176 part 6) gives each vCPU no feature bit the baseline
+    /// has not, and the rest as KVM gives it, the bits of the VM's shape its own: told this
+    /// host's CPU less every feature of leaf 7, a vCPU's CPUID, which KVM took and a
+    /// snapshot keeps, has none of them, its leaf 1 the host's, its HYPERVISOR bit set.
+    #[test]
+    fn a_vm_told_a_baseline_gives_its_vcpus_no_more() {
+        if super::super::check_host().is_err() {
+            eprintln!("SKIP: no KVM here");
+            return;
+        }
+        // Leaf 1 ECX's bits of the VM's shape (cpuid::for_vcpu), none a host's.
+        const SHAPE: u32 = 1 << 31 | 1 << 24;
+        let host = host_cpu_id().unwrap();
+        let leaf =
+            |table: &[[u32; 7]], f: u32, i: u32| *table.iter().find(|l| l[0] == f && l[1] == i).unwrap();
+        assert_ne!(
+            leaf(&host, 7, 0)[4..],
+            [0, 0, 0],
+            "leaf 7 has features here to mask"
+        );
+        let baseline: Vec<[u32; 7]> = host
+            .iter()
+            .map(|&l| {
+                if (l[0], l[1]) == (7, 0) {
+                    [7, 0, 0, l[3], 0, 0, 0]
+                } else {
+                    l
+                }
+            })
+            .collect();
+        let vm = |baseline: &[[u32; 7]]| {
+            Vm::new(VmConfig {
+                vcpus: 2,
+                baseline: baseline.to_vec(),
+            })
+            .unwrap()
+        };
+        let (told, own) = (vm(&baseline), vm(&[]));
+        let (told, own) = (told.create_vcpu(1).unwrap(), own.create_vcpu(1).unwrap());
+        assert_eq!(leaf(&told.cpuid, 7, 0)[4..], [0, 0, 0]);
+        assert_eq!(leaf(&own.cpuid, 7, 0)[4..], leaf(&host, 7, 0)[4..]);
+        let ecx = leaf(&told.cpuid, 1, 0)[5];
+        assert_eq!(ecx & !SHAPE, leaf(&host, 1, 0)[5] & !SHAPE);
+        assert_ne!(ecx & 1 << 31, 0, "its HYPERVISOR bit");
+        // A vCPU of this host untold runs a guest told the baseline; one told, not one untold.
+        assert!(cpuid::covers(&own.cpuid, &told.cpuid).is_ok());
+        assert!(cpuid::covers(&told.cpuid, &own.cpuid).is_err());
     }
 
     /// Guests are permitted AMX's tile data exactly where the host has it, once the
