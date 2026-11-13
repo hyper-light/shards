@@ -4309,15 +4309,18 @@ fn a_signal_connection_never_made_fails_execs_and_kills_at_once() {
     let ended = exit(&mut run, &home);
     let killed = t.elapsed();
     let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
-    // Each looked at, whatever another shows, so that a failure shows them all.
+    // Each looked at, whatever another shows, so that a failure shows them all. The kill's
+    // end is its VM process's own stop, never its daemon's fallback, which kills a microVM
+    // whose end has gone on no further for a slice (daemon/commands.rs `end_all`, D217).
     assert_eq!(
         (
             exec.status,
             exec.stderr.as_str(),
             log.contains("SIGKILL for its command, which no signal reaches"),
+            log.contains("its microVM killed"),
             log.matches(lost).count()
         ),
-        (Some(1), format!("shards: {lost}\n").as_str(), true, 1),
+        (Some(1), format!("shards: {lost}\n").as_str(), true, false, 1),
         "the exec: {exec}; the kill ended its run ({ended:?}) in {killed:?}: {log}"
     );
 }

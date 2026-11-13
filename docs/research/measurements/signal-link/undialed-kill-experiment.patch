@@ -1,0 +1,35 @@
+--- a/crates/shards/tests/containers.rs
++++ b/crates/shards/tests/containers.rs
+@@ -4288,6 +4288,32 @@
+     }
+     let _ = gone.kill();
+     let _ = gone.wait();
++}
++
++/// Item 3's kill half, measured once on each side (docs/research/measurements/signal-link,
++/// undialed-kill.sh): a run whose guest cannot make its signal connection, killed with nothing
++/// asked of it before; how long `kill` took, how its run ended, and what its daemon's log says
++/// of the kill.
++#[test]
++fn undialed_kill_alone() {
++    let Some((home, image)) = home("containers-undialed-kill") else {
++        return;
++    };
++    let mut run = start_with(&home, &image, &["--name", "undialed"], common::undialing_init());
++    let t = Instant::now();
++    let kill = shards_in(&home, &["kill", "undialed"]);
++    let answered = t.elapsed();
++    let ended = exit(&mut run, &home);
++    let over = t.elapsed();
++    let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
++    println!(
++        "KILL answered {:?} after {answered:?}; its run ended {ended:?} after {over:?}",
++        kill.status
++    );
++    let said = ["SIGKILL", "killed", "signal connection", "not ended", "not yet ended", "no end heard"];
++    for line in log.lines().filter(|l| said.iter().any(|w| l.contains(w))) {
++        println!("KILL-LOG {line}");
++    }
+ }
+ 
+ /// A run's guest that cannot make its signal connection, its dial refused (an init built to
