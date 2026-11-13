@@ -22758,3 +22758,77 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   | R09, R10 | The hang: CI's snapshot, fixed by 86f3c87b2; the new test red before that order, green after. `WithRun`: not reproduced, its cause not named; the test now says it. |
   | R11 | The test is Unix's (the door is Unix's; Windows' shares go with its job). |
   | R15, R16 | No agents started for this; `~/g51-carrier/src-s6b` and `~/g51-s2-target` on adalundhe-macbook-pro are removed after. |
+
+### M545. A request's rest waited for while its client goes on with it, never a doubled cutoff (D185)
+
+- **Question.** fb1f28d42 (11-09) waited for the rest of a request by D222's restart cutoff:
+  a second at least before any cut, drawn from [t, 2t), and doubled for each cut in a row
+  (RFC 6298 §5.5). On macOS the doubled wait passed what one select(2) takes (PM M542). The
+  person ruled on 2026-11-13 that there is no ×2: a wait follows the party's liveness and
+  progress, then the slowest answer seen. For a request, what is its client's progress, and
+  what is the slowest answer?
+- **Found, from the code.**
+  - A client writes its request in one write (`shards_ipc::slots::Client::ask`). Its first
+    byte, which the slot's wait reads (`Slot::wait`), and its rest come together. So a rest
+    is read whole within microseconds of its first byte, and a client that sends nothing
+    past it is none of shards' own.
+  - A request can be larger than a FIFO or pipe holds: a run's spec, up to `MAX_PAYLOAD`
+    (6 MiB, `run::ARGS_MOST`). Its rest then comes in parts, each as the daemon reads and its
+    client is next run. `a_closed_daemon_waits_for_its_clients_to_take_their_answers` asks
+    with a 300 KiB name. The gap between parts is its client's scheduling, which no rest
+    written whole measures. A window learned from those (microseconds) would cut such a
+    request every time it was asked, for ever, with no doubling now to let one through.
+- **Decision** (`slots::Seen::request_stall`; D185's "Admission").
+  - A client that sends nothing past its first byte is waited for as long as the slowest
+    rest the daemon has read whole, from its first byte, and then cut. As before, it is told
+    RESTART, or finds its `say` gone as it writes, and asks again.
+  - Before any rest has come whole, nothing bounds the wait: it follows the client alone,
+    its end (its FIFO's or pipe's) or the daemon ending its clients. A daemon is mostly
+    started by a client's request, which teaches it the first rest.
+  - Once its rest has begun, a request is read until it is whole or its client ends.
+    shards_ipc's slot readers (`Within`, fifo.rs and named.rs) keep their deadline until the
+    rest's first byte, then none.
+  - Its cost: a client stopped mid-request holds its slot's descriptors, and keeps an idle
+    daemon up, until it goes on or ends; a closing daemon still lets it go after its
+    answer's wait. The slowest rest is the daemon's own, in memory. A client of the home's
+    own user can lengthen it by writing slowly, which only lengthens the wait on a silent
+    client.
+- **Tests.**
+  - `shards_ipc` `slots::fifo::tests::a_requests_rest_is_waited_for_while_its_client_goes_on`
+    (and its Windows twin in named.rs): a first byte alone is `Late` once the stall has
+    passed; a rest begun and paused past the stall is taken whole; with no stall, a first
+    byte alone is waited on until its client ends.
+  - `daemon::tests::a_request_is_waited_for_while_its_client_goes_on_with_it`: a whole
+    request is answered, and a rest is learned; a client whose rest has begun hears nothing
+    for 2.5 s (past the old cutoff's longest draw), then RESTART as the daemon ends its
+    clients.
+  - `daemon::tests::a_requests_wait_is_learned_from_its_clients`: none before any rest, then
+    the slowest.
+  - tests/daemon.rs's `a_daemon_out_of_descriptors_waits_for_room` now starts its daemon
+    with `shards daemon --detached`, with no request served, so that its silent clients
+    hold their slots (`start_idle_daemon`).
+- **Checked** (one host, adalundhe-macbook-pro, macOS arm64, at 5023a273f over main
+  e1995061f, helpers carried; kiln run r360):
+  - `cargo test -p shards-ipc --lib -- slots`: 15 passed.
+  - `cargo test -p shards --bin shards --` the two daemon tests above, the
+    `a_closed_daemon_*` slot tests and the spare test: 8 passed in 12.6 s.
+  - `cargo test -p shards --test daemon -- a_daemon_out_of_descriptors_waits_for_room`:
+    passed in 5.0 s.
+  - Red, with the reader's deadline kept after the rest began (`/tmp/g51/carrier/red-r03a.sh`):
+    the ipc test failed (`Late` for a rest begun), and the daemon test failed (its client
+    heard RESTART within the 2.5 s).
+  - `cargo clippy -p shards-ipc -p shards --all-targets -- -D warnings` (aarch64-apple-darwin)
+    was clean.
+- **Owed.** CI's: the named.rs twin on Windows, and Linux. ROOT's: the daemon and CLI suites
+  on every backend, where every request goes through a slot.
+- **Rules** (policy df2acf47, role implementer):
+
+  | rule | proof, result, gap |
+  |---|---|
+  | R01 | No unwrap, index or panic added to production code. |
+  | R02, R03 | The client's own writes and end are the evidence; the one learned value is the slowest rest read whole, none before any. The doubling and RFC 6298's floor go. |
+  | R04 | `Requested`'s outcomes unchanged: `Asked`, `Gone`, `Late` (none of the rest within its stall), `Ended`. |
+  | R05 | The wait is on the FIFO's or pipe's readiness and its end, no probe. |
+  | R09, R10 | Red with the guard removed, green after: above. |
+  | R11 | fifo.rs and named.rs alike; macOS arm64 run, Windows' twin and Linux owed to CI. |
+  | R15, R16 | Implementer; the targets on adalundhe-macbook-pro and adas-mac-studio.local are removed after. |
