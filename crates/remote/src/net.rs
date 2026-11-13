@@ -3098,6 +3098,355 @@ mod tests {
         newcomer.send(Command::Handler(Ask::Vanish)).unwrap();
     }
 
+    /// A client driven by hand on a socket of its own, its handshake advanced as a test says:
+    /// its first flight sent (its first datagram sent again, which its server hears and which advances
+    /// nothing), its server's datagrams read, and what it has to send held, split into its
+    /// packets, so that its Initial packets (acknowledging its server's Initial CRYPTO) and the
+    /// rest (its Handshake CRYPTO, its Finished) go each when the test says.
+    struct Hand {
+        socket: UdpSocket,
+        endpoint: Endpoint,
+        quic: Connection,
+        to: SocketAddr,
+        first: Vec<u8>,
+    }
+
+    impl Hand {
+        fn connect(to: SocketAddr, config: ClientConfig) -> Hand {
+            let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+            let mut endpoint = Endpoint::new(EndpointConfig::default(), None, true, None).unwrap();
+            let handle = endpoint.insert_client_config(config).unwrap();
+            let (_, mut quic) = endpoint
+                .connect(Instant::now(), handle, to, crate::tls::SERVER_NAME, None)
+                .unwrap();
+            // Its whole first flight (a ClientHello may take more than a datagram), the first
+            // datagram kept to send again.
+            let mut first = Vec::new();
+            loop {
+                let mut out = Vec::new();
+                let Some(sent) = quic.poll_transmit(Instant::now(), 1, &mut out, endpoint.configs()) else {
+                    break;
+                };
+                socket.send_to(&out[..sent.size], to).unwrap();
+                if first.is_empty() {
+                    first = out[..sent.size].to_vec();
+                }
+            }
+            Hand {
+                socket,
+                endpoint,
+                quic,
+                to,
+                first,
+            }
+        }
+
+        /// Its first datagram again: heard, and no progress.
+        fn again(&self) {
+            self.socket.send_to(&self.first, self.to).unwrap();
+        }
+
+        /// Reads what its server sent within `within` of quiet, and returns the packets it has to
+        /// send in answer: its Initial packets, and the rest.
+        fn read(&mut self, within: Duration) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
+            self.socket.set_read_timeout(Some(within)).unwrap();
+            let mut datagram = vec![0; DATAGRAM];
+            while let Ok((n, from)) = self.socket.recv_from(&mut datagram) {
+                let mut response = Vec::new();
+                let bytes = BytesMut::from(&datagram[..n]);
+                if let Some(DatagramEvent::ConnectionEvent(_, event)) =
+                    self.endpoint
+                        .handle(Instant::now(), from, None, None, bytes, &mut response)
+                {
+                    self.quic.handle_event(event, self.endpoint.configs_mut());
+                }
+            }
+            while self.quic.poll_endpoint_events().is_some() {}
+            let (mut initial, mut rest) = (Vec::new(), Vec::new());
+            loop {
+                let mut out = Vec::new();
+                let Some(sent) =
+                    self.quic
+                        .poll_transmit(Instant::now(), 1, &mut out, self.endpoint.configs())
+                else {
+                    break;
+                };
+                out.truncate(sent.size);
+                for packet in coalesced(&out) {
+                    match packet.first().is_some_and(|b| b & 0xb0 == 0x80) {
+                        true => initial.push(packet),
+                        false => rest.push(packet),
+                    }
+                }
+            }
+            (initial, rest)
+        }
+
+        fn send(&self, packets: &[Vec<u8>]) {
+            for packet in packets {
+                self.socket.send_to(packet, self.to).unwrap();
+            }
+        }
+
+        /// Ends its connection, once it is established, with a word to its server.
+        fn close(&mut self) {
+            self.quic
+                .close(Instant::now(), VarInt::from_u32(0), bytes::Bytes::new());
+            let mut out = Vec::new();
+            if let Some(sent) = self
+                .quic
+                .poll_transmit(Instant::now(), 1, &mut out, self.endpoint.configs())
+            {
+                self.socket.send_to(&out[..sent.size], self.to).unwrap();
+            }
+        }
+    }
+
+    /// A datagram's QUIC packets (RFC 9000 §12.2): each long-header packet up to its Length's end
+    /// (§17.2), and a short-header one, which is last, to the datagram's end.
+    fn coalesced(datagram: &[u8]) -> Vec<Vec<u8>> {
+        fn varint(b: &[u8], at: &mut usize) -> usize {
+            let len = 1 << (b[*at] >> 6);
+            let mut v = (b[*at] & 0x3f) as usize;
+            for i in 1..len {
+                v = (v << 8) | b[*at + i] as usize;
+            }
+            *at += len;
+            v
+        }
+        let mut packets = Vec::new();
+        let mut rest = datagram;
+        while let Some(&first) = rest.first() {
+            if first & 0x80 == 0 {
+                packets.push(rest.to_vec());
+                break;
+            }
+            let mut at = 5;
+            at += 1 + rest[at] as usize;
+            at += 1 + rest[at] as usize;
+            if first & 0x30 == 0 {
+                let token = varint(rest, &mut at);
+                at += token;
+            }
+            let length = varint(rest, &mut at);
+            let end = (at + length).min(rest.len());
+            packets.push(rest[..end].to_vec());
+            rest = &rest[end..];
+        }
+        packets
+    }
+
+    /// A bounded endpoint of one place, with a newcomer that dials it as the test says.
+    struct Contended {
+        endpoint: Sender<Ask>,
+        at_endpoint: mpsc::Receiver<Heard>,
+        address: SocketAddr,
+        serving: std::thread::JoinHandle<Result<(), Error>>,
+        newcomer: Sender<Ask>,
+        at_newcomer: mpsc::Receiver<Heard>,
+        server: crate::identity::Identity,
+        newcomer_id: crate::identity::Identity,
+    }
+
+    impl Contended {
+        fn new() -> Contended {
+            let server = crate::identity::Identity::generate().unwrap();
+            let any: SocketAddr = "127.0.0.1:0".parse().unwrap();
+            let tls = crate::tls::server(&server).unwrap();
+            let limits = DriverLimits {
+                connections: 1,
+                command_slots: 8,
+                queued_datagram_bytes: DATAGRAM * 8,
+            };
+            let (endpoint, at_endpoint, address, serving) =
+                party(|p| Driver::bind_bounded(any, Some(tls), p, limits));
+            let (newcomer, at_newcomer, _, _) =
+                party(|p| Driver::bind(any, None, p, crate::tls::Known::Never));
+            Contended {
+                endpoint,
+                at_endpoint,
+                address,
+                serving,
+                newcomer,
+                at_newcomer,
+                server,
+                newcomer_id: crate::identity::Identity::generate().unwrap(),
+            }
+        }
+
+        fn config(&self, of: &crate::identity::Identity) -> ClientConfig {
+            crate::tls::client(of, self.server.fingerprint(), crate::tls::Known::Never).unwrap()
+        }
+
+        fn hand(&self) -> Hand {
+            Hand::connect(
+                self.address,
+                self.config(&crate::identity::Identity::generate().unwrap()),
+            )
+        }
+
+        /// The newcomer's attempt: refused (`Lost`) or connected.
+        fn attempt(&self) -> Heard {
+            self.newcomer
+                .send(Command::Handler(Ask::Connect(
+                    self.address,
+                    Box::new(self.config(&self.newcomer_id)),
+                )))
+                .unwrap();
+            next_heard(&self.at_newcomer, |h| {
+                matches!(h, Heard::Lost(..) | Heard::Connected(_))
+            })
+        }
+
+        /// Attempts until `until`, the holder answering each as `answer` says: each refused.
+        fn refused_until(&self, until: Instant, answer: impl Fn()) {
+            let mut attempts = 0;
+            while Instant::now() < until {
+                attempts += 1;
+                let heard = self.attempt();
+                assert!(
+                    matches!(heard, Heard::Lost(..)),
+                    "attempt {attempts}: the holder gave its place: {heard:?}"
+                );
+                answer();
+            }
+        }
+
+        /// Attempts, the holder answering each as `answer` says, until one connects within
+        /// `patience`: when it did.
+        fn connects_within(&self, patience: Duration, answer: impl Fn()) -> Instant {
+            let until = Instant::now() + patience;
+            let mut attempts = 0;
+            loop {
+                attempts += 1;
+                match self.attempt() {
+                    Heard::Connected(_) => return Instant::now(),
+                    refused => assert!(
+                        Instant::now() < until,
+                        "refused {attempts} times over {patience:?}: {refused:?}"
+                    ),
+                }
+                answer();
+            }
+        }
+
+        fn end(self) {
+            self.endpoint.send(Command::Stop).unwrap();
+            self.serving.join().unwrap().unwrap();
+            self.newcomer.send(Command::Handler(Ask::Vanish)).unwrap();
+        }
+    }
+
+    /// A handshake whose client answers every newcomer's ask (its first datagram again) but
+    /// never advances it gives its place to a newcomer once it has made no progress for a whole
+    /// window (ROOT's ruling on #72's unfinished handshakes). No handshake has completed at this
+    /// endpoint, so the window is the cold one: the first kPersistentCongestionThreshold (3) of
+    /// its handshake's probe timeouts, each backed off (RFC 9002 §6.2.1, §7.6.1), 7 of them, the
+    /// initial RTT's 999 ms each before any RTT sample (§6.2.2), its client acknowledging nothing.
+    /// Red with a handshake held by its answers alone: the newcomer refused at every attempt.
+    #[test]
+    fn a_handshake_that_answers_but_never_advances_gives_its_place_after_a_window_without_progress() {
+        let c = Contended::new();
+        let began = Instant::now();
+        let holder = c.hand();
+        let mut datagram = vec![0; DATAGRAM];
+        holder
+            .socket
+            .set_read_timeout(Some(Duration::from_secs(60)))
+            .unwrap();
+        holder.socket.recv_from(&mut datagram).unwrap();
+
+        let took = c.connects_within(Duration::from_secs(30), || holder.again());
+        let waited = took - began;
+        assert!(
+            waited >= Duration::from_millis(6_993),
+            "let go within the cold window of seven backed-off probe timeouts: {waited:?}"
+        );
+        match next_heard(&c.at_endpoint, |_| true) {
+            Heard::Lost(_, why) => assert!(why.contains("no progress"), "{why}"),
+            other => panic!("its handshake was let go first: {other:?}"),
+        }
+        assert!(matches!(
+            next_heard(&c.at_endpoint, |_| true),
+            Heard::Connected(_)
+        ));
+        c.end();
+    }
+
+    /// A handshake that advances slowly keeps its place however long it takes in all: its client
+    /// answers each newcomer's ask, acknowledges its server's Initial 4 s in (within the cold
+    /// window of 7 s), and sends its Finished 4 s after that, past the cold window from its
+    /// start, which a handshake that never advanced would have given way at.
+    #[test]
+    fn a_handshake_that_advances_slowly_keeps_its_place() {
+        let c = Contended::new();
+        let mut holder = c.hand();
+        let step = Duration::from_secs(4);
+        let (initial, rest) = holder.read(Duration::from_millis(300));
+        assert!(
+            !initial.is_empty() && !rest.is_empty(),
+            "{} {}",
+            initial.len(),
+            rest.len()
+        );
+        let start = Instant::now();
+        c.refused_until(start + step, || holder.again());
+        holder.send(&initial);
+        c.refused_until(start + step * 2, || holder.again());
+        holder.send(&rest);
+        assert!(
+            matches!(next_heard(&c.at_endpoint, |_| true), Heard::Connected(_)),
+            "the slow handshake ended"
+        );
+        c.end();
+    }
+
+    /// The window is the slowest handshake completed at this endpoint, learned as they end: after
+    /// one that took 3 s, a handshake that answers but never advances keeps its place for 3 s
+    /// without progress, past its 999 ms probe timeout, and gives it way within the cold window
+    /// of 7 s. Red with a handshake held by its answers alone: the newcomer refused at every
+    /// attempt.
+    #[test]
+    fn the_learned_window_grows_with_a_slow_completed_handshake() {
+        let c = Contended::new();
+        // A fast one first, then a slow one, each closed after.
+        let quick = Duration::from_millis(300);
+        for slow in [Duration::ZERO, Duration::from_secs(3)] {
+            let mut hand = c.hand();
+            let (mut initial, rest) = hand.read(quick);
+            std::thread::sleep(slow);
+            initial.extend(rest);
+            hand.send(&initial);
+            assert!(matches!(
+                next_heard(&c.at_endpoint, |_| true),
+                Heard::Connected(_)
+            ));
+            let _ = hand.read(quick);
+            assert!(!hand.quic.is_handshaking());
+            hand.close();
+            assert!(matches!(next_heard(&c.at_endpoint, |_| true), Heard::Lost(..)));
+        }
+
+        let began = Instant::now();
+        let holder = c.hand();
+        let mut datagram = vec![0; DATAGRAM];
+        holder
+            .socket
+            .set_read_timeout(Some(Duration::from_secs(60)))
+            .unwrap();
+        holder.socket.recv_from(&mut datagram).unwrap();
+        let took = c.connects_within(Duration::from_secs(30), || holder.again()) - began;
+        assert!(
+            took >= Duration::from_millis(2_500),
+            "let go before the slowest handshake's window: {took:?}"
+        );
+        assert!(
+            took < Duration::from_millis(6_500),
+            "held to the cold window: {took:?}"
+        );
+        c.end();
+    }
+
     /// A handshake asked for an answer is judged by its own spaces' probe timeout, which counts
     /// no `max_ack_delay` (RFC 9002 §6.2.1; its transport's application-data one, less its peer's
     /// `max_ack_delay`): unheard past that since the ask, it gives way; heard since, it keeps its
