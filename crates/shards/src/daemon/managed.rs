@@ -43,6 +43,7 @@ pub(super) fn vm_key(dir: &Path) -> Option<Fingerprint> {
         .find_map(|l| l.strip_prefix("vm "))
         .and_then(|hex| crate::context::unhex32(hex.trim()))
 }
+
 const GENERATION: &str = "managed-generation";
 // RFC 8446 §4: Handshake's uint24 length and four-byte type/length head.
 const HANDSHAKE_BYTES: usize = (1 << 24) - 1 + 4;
