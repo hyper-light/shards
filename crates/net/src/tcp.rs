@@ -1877,6 +1877,9 @@ mod tests {
         let mut sent = Sent::default();
         let (mut c, mut client) = opened(&mut sent);
         c.inject = Some(Box::default());
+        // A guest that scales its window, as Linux's does, so that this side's is not held at
+        // an unscaled window's 65535.
+        c.scaled = true;
         sent.take();
         let (_, bytes) = hello(credentials.ca.der(), "free.example.test");
         let (first, second) = bytes.split_at(bytes.len() / 2);
