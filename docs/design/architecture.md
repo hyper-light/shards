@@ -24945,9 +24945,10 @@ Until step 10 decided, only what both arms share was built (ROOT, 2026-11-12): t
 the microVM's identity, who is refused, and what a lane says. The control lane (exec, signal,
 inspect) and the terminal lane (attach, TTY) wait on step 6's member exec, attach and TTY. Step
 10 has decided for the host (above). The endpoint runs in the daemon and holds each microVM's
-own key, and the key's SHA-256 reaches the controller in the run's managed metadata. The log
-lane, which also waited on step 10, is step 11's to build. Exec lanes and members' own lanes
-(signal, inspect, a terminal's size) are built now, below.
+own key, and the key's SHA-256 reaches the controller in the run's managed metadata. Exec lanes,
+members' own lanes (signal, inspect, a terminal's size) and the log lane, which also waited on
+step 10, are built now, below; a log lane of an owned member waits on the daemon keeping that
+member's output (D240).
 
 *The connection.* QUIC over D180's driver and TLS (`net.rs`, `tls.rs`): TLS 1.3 alone, D239's
 provider (TLS13_AES_256_GCM_SHA384 alone, the hybrid ML-KEM groups), early data off, on an
