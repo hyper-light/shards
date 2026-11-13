@@ -41,8 +41,10 @@ pub use shards_abi::run::nesting::Ready;
 /// endpoint ([`Request::control`], [`Started::control`]; D238, D251, D252), so that a side that
 /// binds none refuses the run as it is asked; 16, the host GPUs the run names
 /// ([`Request::gpu_devices`], D232, D234's `gpus=`), so that a side that binds none starts no
-/// run without them.
-pub const VERSION: u8 = 16;
+/// run without them; 17, the period the run's governor holds its rate over
+/// ([`Started::rate_period`], D191, D247), so that its orchestrator derives its window from
+/// the run's own period, never from a number of its own.
+pub const VERSION: u8 = 17;
 
 /// What the orchestrator's side sends.
 pub mod to_host {
@@ -472,6 +474,10 @@ pub struct Started {
     /// Where the run's endpoint is bound, where it asked for one (D252); appended in version
     /// 15.
     pub control: Option<ControlAt>,
+    /// The period its VM's governor holds a rate over (D191, D247), as its host's build
+    /// holds one: on the channel in nanoseconds, never none; appended in
+    /// version 17.
+    pub rate_period: std::time::Duration,
 }
 
 /// Why the run host will not run it, typed by what failed: the client maps each to its
@@ -1631,6 +1637,8 @@ impl Started {
                 w.0.extend_from_slice(&at.vm);
             }
         }
+        // The rate's period, appended in version 17 (D247).
+        w.u64(u64::try_from(self.rate_period.as_nanos()).map_err(|_| WireError::TooLong)?);
         w.done()
     }
 
@@ -1684,11 +1692,19 @@ impl Started {
         } else {
             None
         };
+        // A governor holds over some time: a period of none is no period.
+        let rate_period = NonZeroU64::new(r.u64()?)
+            .map(|ns| std::time::Duration::from_nanos(ns.get()))
+            .ok_or(WireError::Tag {
+                what: "a rate period",
+                tag: 0,
+            })?;
         r.end()?;
         Ok(Started {
             members,
             published,
             control,
+            rate_period,
         })
     }
 }
@@ -2483,6 +2499,7 @@ mod tests {
                 },
             ],
             control: None,
+            rate_period: std::time::Duration::from_millis(100),
         };
         assert_eq!(Started::decode(&started.encode().unwrap()).unwrap(), started);
         let bytes = started.encode().unwrap();
@@ -2755,6 +2772,11 @@ mod tests {
         v15.truncate(v15.len() - 4);
         v15[0] = 15;
         assert_eq!(Request::decode(&v15), Err(WireError::Version(15)));
+        // One of version 16 asks what version 17 does, but its host tells no rate's period as
+        // the run starts: refused by its version, so no orchestrator waits on one (D247).
+        let mut v16 = request().encode().unwrap();
+        v16[0] = 16;
+        assert_eq!(Request::decode(&v16), Err(WireError::Version(16)));
         // The nesting flag, before the deadline's tag, the destinations', the one member's
         // working directory's and input's, the credential grants' count (version 8), the
         // member's terminal's (version 11) and the members' reach (version 12): no flag.
@@ -3072,6 +3094,46 @@ mod tests {
         assert_eq!(long.encode(), Err(WireError::TooLong));
     }
 
+    /// The period a run's rate is held over reads back as its host said it, from a
+    /// nanosecond to the most a u64 counts (D247), its eight bytes last; a period of none, or
+    /// one past what a u64 counts in nanoseconds, is no period, refused each way.
+    #[test]
+    fn a_runs_rate_period_reads_back_as_its_host_said_it() {
+        use std::time::Duration;
+        let started = |rate_period| Started {
+            members: Vec::new(),
+            published: Vec::new(),
+            control: None,
+            rate_period,
+        };
+        for period in [
+            Duration::from_nanos(1),
+            Duration::from_millis(100),
+            Duration::from_nanos(u64::MAX),
+        ] {
+            let said = started(period);
+            let bytes = said.encode().unwrap();
+            let last = bytes.get(bytes.len() - 8..).unwrap();
+            assert_eq!(last, u64::try_from(period.as_nanos()).unwrap().to_be_bytes());
+            assert_eq!(Started::decode(&bytes).unwrap(), said);
+        }
+        let mut none = started(Duration::from_millis(100)).encode().unwrap();
+        let at = none.len() - 8;
+        none.get_mut(at..).unwrap().fill(0);
+        assert_eq!(
+            Started::decode(&none),
+            Err(WireError::Tag {
+                what: "a rate period",
+                tag: 0
+            })
+        );
+        assert_eq!(
+            started(Duration::from_nanos(u64::MAX) + Duration::from_nanos(1)).encode(),
+            Err(WireError::TooLong)
+        );
+        assert_eq!(started(Duration::MAX).encode(), Err(WireError::TooLong));
+    }
+
     /// The run's stats carry what its microVM costs its host and what its vCPUs ran of its
     /// guest (D241) as its run host read them: either part unread and why, a vCPU unread and
     /// why, the largest numbers a u64 holds. vCPUs out of index order, a part's unknown tag, a count
@@ -3260,6 +3322,7 @@ mod tests {
                 members: Vec::new(),
                 published: Vec::new(),
                 control,
+                rate_period: std::time::Duration::from_millis(100),
             };
             assert_eq!(Started::decode(&started.encode().unwrap()).unwrap(), started);
         }

@@ -544,7 +544,8 @@ fn the_orchestrators_room_holds_its_run_within_it() {
 /// host: a run spinning its one vCPU, held to a quarter of its CPU, runs its guest a quarter
 /// of the time passing, but what a period may overrun and a period's share where the window
 /// and the periods do not line up, and is let go each period; held to its vCPU's whole CPU,
-/// nothing holds it, and the answer says so; told none, its hold is lifted.
+/// nothing holds it, and the answer says so; told none, its hold is lifted. The period it is
+/// held over is the one its host said as the run started, its build's hold's.
 #[test]
 fn the_orchestrators_rate_holds_its_run_to_it() {
     if cannot_run_vms() {
@@ -555,6 +556,8 @@ fn the_orchestrators_rate_holds_its_run_to_it() {
     let guest = ImageShards::new()
         .boot(&spec(&home, "api-rate:1"), TIMEOUT)
         .unwrap();
+    let period = guest.rate_period();
+    assert_eq!(period, shards_vmm::vm::hold_period());
     let quarter = NonZeroU64::new(250).unwrap();
     assert_eq!(guest.rate(Some(quarter), TIMEOUT).unwrap(), Some(quarter));
     let ran = || {
@@ -564,9 +567,9 @@ fn the_orchestrators_rate_holds_its_run_to_it() {
     let (start, before) = (Instant::now(), ran());
     std::thread::sleep(Duration::from_secs(2));
     let (used, wall) = (ran() - before, u64::try_from(start.elapsed().as_nanos()).unwrap());
-    // D191's period, 100 ms: a quarter of it the share, and the period's whole share and
-    // what one vCPU overruns before its governor reads at the window's two ends.
-    let most = wall / 4 + 200_000_000;
+    // A quarter of each period the share, and a period's whole share and what one vCPU
+    // overruns before its governor reads at the window's two ends: two periods.
+    let most = wall / 4 + 2 * u64::try_from(period.as_nanos()).unwrap();
     assert!(
         used <= most,
         "{used} ns of guest in {wall} ns, held to a quarter CPU"

@@ -124,6 +124,9 @@ pub struct Builder {
     /// Where its home records what its builds needed of memory (D133), which it adds its
     /// own build's to as it ends.
     needs: Option<PathBuf>,
+    /// Its home's record of this host's ends, by which its network process is followed to
+    /// its end (`netproc::reap`, D217).
+    ends: crate::daemon::ends::Ends,
 }
 
 /// A builder's give-back connection, as its build's memory pressure watcher asks through it
@@ -951,6 +954,7 @@ impl Builder {
             attach,
             attached: HashMap::new(),
             needs: boot.needs.map(Path::to_path_buf),
+            ends: crate::daemon::ends::Ends::kept_in(boot.home),
         };
         if let Some((_, architectures)) = boot.emulators {
             let device = u32::try_from(boot.bases.len()).map_err(|_| "too many base images")?;
@@ -1560,7 +1564,7 @@ impl Drop for Builder {
         }
         // The network process goes with its VM; its directory and AppContainer, fields,
         // after this.
-        crate::netproc::reap(&self.net);
+        crate::netproc::reap(&self.net, &self.ends);
     }
 }
 

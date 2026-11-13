@@ -12,6 +12,10 @@
 //! over the network its Agentfile grants. Where a key is needed for a request to be made at
 //! all, it is a placeholder given at run time, never in the image and never a real one.
 //! `SHARDS_HARNESS_RECORDS`, an absolute directory, keeps what each test saw.
+//!
+//! The tests that need no VM, binaries or network hold the cases' checks to v1's and v2's
+//! committed records: a recorded turn passes its case, and the same turn less its tool fails
+//! it (R10, with no prompt sent).
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 mod common;
@@ -19,19 +23,35 @@ mod common;
 #[path = "common/managed_capture.rs"]
 mod managed_capture;
 
+use std::io::{BufRead as _, BufReader};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::RecvTimeoutError;
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-use common::{TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, workspace};
+use common::{TempDir, cannot_run_vms, command, guest_init, kernel, run_shards_env, workspace};
 use managed_capture::{Ask, Event, Metadata, Observer};
 use shards_abi::run::managed::{Channel, Event as CaptureEvent, Record, StreamState};
 use shards_remote::identity::Identity;
 use shards_remote::net::Command;
 
-// Test patience for a base image's pull, a build of a few hundred megabytes, a boot and a
-// provider's answer on a loaded host; never runtime policy.
-const WITHIN: Duration = Duration::from_secs(600);
+/// No clock (R03): the longest wait that a patience finite by contract can be given, u64's
+/// most nanoseconds, which no run reaches, as D215's real-VM tests give theirs. Every wait here
+/// ends at its fact: a command's exit, a channel's end record or its connection's typed end,
+/// the harness's exit in the kernel's record. A build, a boot or a model's turn takes what it
+/// takes on the host that runs it.
+const NO_CLOCK: Duration = Duration::from_nanos(u64::MAX);
+
+/// [`NO_CLOCK`] from now, for a fixture that takes an instant; run_shards_env adds it to one
+/// too, so this also says where this platform's `Instant` holds no such instant.
+fn no_clock() -> Instant {
+    Instant::now().checked_add(NO_CLOCK).unwrap_or_else(|| {
+        panic!(
+            "{} {}: its Instant holds no instant u64's most nanoseconds away",
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        )
+    })
+}
 
 /// A key no provider issued, given at run time where a harness needs one to send a request.
 const PLACEHOLDER: &str = "sk-shards-placeholder-not-a-key";
@@ -120,15 +140,16 @@ fn example(name: &str, file: &str) -> String {
 
 /// Builds the case's context: the example's, or its Agentfile and harness.json, with the
 /// binaries of the directory its variable names as its harness's `bin`. Runs it detached,
-/// the base image's `sleep` as its command; reads the harness's stdout, then its stderr,
-/// from the run's owner endpoint; then the kernel's record of the microVM's processes. None
-/// where this host runs no VMs.
+/// the base image's `sleep infinity` as its command, so that the microVM outlives the harness
+/// however long it runs, until the test removes it; reads the harness's stdout, then its
+/// stderr, from the run's owner endpoint; then the kernel's record of the microVM's processes.
+/// None where this host runs no VMs.
 fn bring_up(case: &Case<'_>) -> Option<Seen> {
     if cannot_run_vms() {
         return None;
     }
     let name = case.name;
-    let until = Instant::now() + WITHIN;
+    let until = no_clock();
     let kept = records(case.record);
     let save = |file: &str, bytes: &[u8]| {
         if let Some(dir) = &kept {
@@ -177,11 +198,7 @@ fn bring_up(case: &Case<'_>) -> Option<Seen> {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| {
-        let left = until.saturating_duration_since(Instant::now());
-        assert!(!left.is_zero(), "within the test's patience");
-        run_shards_env(&[], args, &env, left)
-    };
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, NO_CLOCK);
     let image = format!("harness-{name}:1");
     let built = shards(&[
         "build",
@@ -197,7 +214,8 @@ fn bring_up(case: &Case<'_>) -> Option<Seen> {
     let owned = format!("shards.output=harness:{name}");
     let mut args = vec!["run", "vm", "-d", "--annotation", &owned];
     args.extend(case.run.iter().map(String::as_str));
-    args.extend(["--name", name, &image, "sleep", "600"]);
+    // busybox's sleep, as GNU's, takes "inf" for no end (busybox edca770d11, 1.31.0 on).
+    args.extend(["--name", name, &image, "sleep", "infinity"]);
     let started = shards(&args);
     save(
         "run.log",
@@ -215,9 +233,11 @@ fn bring_up(case: &Case<'_>) -> Option<Seen> {
         [(0, 1), (0, 2)]
     );
 
-    // Each channel is subscribed as it is read: an owner's subscription that hears nothing
-    // for its transport's idle bound ends (README, finding H1), and stderr may say nothing
-    // while stdout is read.
+    // Each channel is subscribed as it is read, as stderr may say nothing while stdout is
+    // read, and read with no deadline of the owner's own: its subscription ends at its end
+    // record or at its connection's typed end, held to the endpoint's own liveness. While the
+    // fixture takes a patience it is `until`'s, past any endpoint's, and a connection takes
+    // the lesser of its two sides' idle timeouts (RFC 9000 §10.1).
     let subscribe = |channel: Channel| {
         Observer::start(
             &owner,
@@ -230,14 +250,14 @@ fn bring_up(case: &Case<'_>) -> Option<Seen> {
     let label = format!("harness {name}");
     let reading = Instant::now();
     let mut observers = vec![subscribe(Channel::Stdout)];
-    let (stdout, out_end) = read(&observers[0], &label, until, case.until_said);
+    let (stdout, out_end) = read(&observers[0], &label, case.until_said);
     let out_for = reading.elapsed();
     save("stdout.bin", &stdout);
     let ended = out_end == "End";
     let reading = Instant::now();
     let (stderr, err_end) = if ended {
         observers.push(subscribe(Channel::Stderr));
-        read(&observers[1], &label, until, None)
+        read(&observers[1], &label, None)
     } else {
         (Vec::new(), "not read: its stdout did not end".into())
     };
@@ -249,18 +269,16 @@ fn bring_up(case: &Case<'_>) -> Option<Seen> {
     );
 
     // The record holds the harness's exit once its process has ended, which its output's
-    // ends come before: read again until it does, or the patience runs out.
+    // ends come before: followed as it grows until it does, then read whole.
     let program = case
         .exec
         .map_or_else(|| format!("/harness/{name}/bin/{name} "), str::to_string);
-    let processes = loop {
-        let read = shards(&["read", "processes", name]);
-        assert_eq!(read.status, Some(0), "{read}");
-        if !ended || row(&read.stdout, &program, "exit").is_some() || Instant::now() >= until {
-            break read.stdout;
-        }
-        std::thread::sleep(Duration::from_millis(200));
-    };
+    if ended {
+        follow(&env, name, &program);
+    }
+    let read = shards(&["read", "processes", name]);
+    assert_eq!(read.status, Some(0), "{read}");
+    let processes = read.stdout;
     save("processes.log", processes.as_bytes());
     let ports = shards(&["read", "ports", name]);
     save("ports.log", ports.to_string().as_bytes());
@@ -291,21 +309,14 @@ fn bring_up(case: &Case<'_>) -> Option<Seen> {
 
 /// One channel's bytes, each record acknowledged as it comes: to its end (`End`, or
 /// `Aborted <errno>`), until they say `said` (`Said`), or until its subscription ends
-/// (`transport <event>`, or `Disconnected` where its driver is gone).
-fn read(observer: &Observer, label: &str, until: Instant, said: Option<&str>) -> (Vec<u8>, String) {
+/// (`transport <event>`, or `Disconnected` where its driver is gone). No clock: each of those
+/// is a fact the wait returns at.
+fn read(observer: &Observer, label: &str, said: Option<&str>) -> (Vec<u8>, String) {
     let mut state = StreamState::New;
     let (mut wire, mut bytes) = (0u64, Vec::new());
     loop {
-        let event = match observer
-            .events
-            .recv_timeout(until.saturating_duration_since(Instant::now()))
-        {
-            Ok(event) => event,
-            Err(RecvTimeoutError::Timeout) => panic!(
-                "past the test's patience; the harness said:\n{}",
-                String::from_utf8_lossy(&bytes)
-            ),
-            Err(RecvTimeoutError::Disconnected) => return (bytes, "Disconnected".into()),
+        let Ok(event) = observer.events.recv() else {
+            return (bytes, "Disconnected".into());
         };
         let Event::Record(offset, chunk) = event else {
             return (bytes, format!("transport {event:?}"));
@@ -335,6 +346,40 @@ fn read(observer: &Observer, label: &str, until: Instant, said: Option<&str>) ->
             return (bytes, "Said".into());
         }
     }
+}
+
+/// Follows microVM `name`'s record of processes as it grows (`shards watch processes`, D123)
+/// until [`followed_far_enough`], or until the record ends with the run. No clock: each row,
+/// or the record's end, is a fact the wait returns at.
+fn follow(env: &[(&str, &std::ffi::OsStr)], name: &str, program: &str) {
+    let mut watch = command()
+        .args(["watch", "processes", name])
+        .envs(env.iter().copied())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut rows = String::new();
+    for line in BufReader::new(watch.stdout.take().unwrap()).lines() {
+        rows.push_str(&line.unwrap());
+        rows.push('\n');
+        if followed_far_enough(&rows, program) {
+            break;
+        }
+    }
+    let _ = watch.kill();
+    let _ = watch.wait();
+}
+
+/// Whether the record's rows, as far as they have come, end a follow: they hold the exit of
+/// `program`'s exec, by that exec's PID ([`row`]), not a child's; or a `lost` row (init's,
+/// member `-` and PID 0), past which the record waits for no process's end (D123).
+fn followed_far_enough(rows: &str, program: &str) -> bool {
+    row(rows, program, "exit").is_some()
+        || rows.lines().any(|line| {
+            line.split_once("  lost   ")
+                .is_some_and(|(head, _)| head.split_whitespace().last() == Some("0"))
+        })
 }
 
 /// What a test saw, printed for its record and kept for its failure message.
@@ -748,12 +793,13 @@ fn quiet_for(silence: u64, record: &str) -> Option<Seen> {
     })
 }
 
-/// Finding H1, red: an owner's subscription outlives a harness that writes nothing for
-/// longer than the owner endpoint's idle bound (`shards_remote::tls::QUIET`, which its
-/// transport's `max_idle_timeout` is) by a keep-alive interval (a quarter of it, as
-/// `tls.rs` keeps its other connections alive). A model's long turn is such a silence.
+/// Finding H1: an owner's subscription outlives a harness that writes nothing for longer than
+/// the owner endpoint's idle bound (`shards_remote::tls::QUIET`, its transport's
+/// `max_idle_timeout`) by a quarter of it. A model's long turn is such a silence. Red at v1
+/// (records/probe-quiet: lost at 102.9 s); fixed on main since owner-keepalive-v1 (D180's
+/// managed output), so expected green.
 #[test]
-#[ignore = "red: finding H1, the owner endpoint's transport keeps no quiet subscription alive"]
+#[ignore = "real VM: finding H1's live check, red at v1, fixed since owner-keepalive-v1"]
 fn an_owners_subscription_outlives_a_quiet_harness() {
     let quiet = shards_remote::tls::QUIET.as_secs();
     let Some(seen) = quiet_for(quiet + quiet / 4, "probe-quiet") else {
@@ -764,10 +810,10 @@ fn an_owners_subscription_outlives_a_quiet_harness() {
     assert_eq!(seen.text(), "after-quiet\n", "{all}");
 }
 
-/// H1's twin: a silence a keep-alive interval short of the idle bound, which the same
-/// subscription outlives today.
+/// H1's twin: a silence a quarter of the idle bound short of it, which the same subscription
+/// outlived at v1 too.
 #[test]
-#[ignore = "H1's control: a silence within the owner endpoint's idle bound"]
+#[ignore = "real VM: H1's control, a silence within the owner endpoint's idle bound"]
 fn an_owners_subscription_outlives_a_silence_within_its_idle_bound() {
     let quiet = shards_remote::tls::QUIET.as_secs();
     let Some(seen) = quiet_for(quiet - quiet / 4, "probe-within") else {
@@ -808,13 +854,71 @@ fn project() -> TempDir {
 /// Whether the kernel saw the harness `name` exec `program` itself (its command line's
 /// first word, bare or a path), whatever shell started it.
 fn ran_in_domain(seen: &Seen, name: &str, program: &str) -> bool {
-    seen.processes.lines().any(|line| {
-        line.split_once("  exec   ").is_some_and(|(head, what)| {
-            let first = what.split_whitespace().next().unwrap_or_default();
-            head.contains(&format!("harness {name} "))
-                && (first == program || first.ends_with(&format!("/{program}")))
-        })
+    seen.processes.lines().any(|line| execs(line, name, program))
+}
+
+/// Whether a row of the kernel's record is the harness `name`'s exec of `program`.
+fn execs(line: &str, name: &str, program: &str) -> bool {
+    line.split_once("  exec   ").is_some_and(|(head, what)| {
+        let first = what.split_whitespace().next().unwrap_or_default();
+        head.contains(&format!("harness {name} "))
+            && (first == program || first.ends_with(&format!("/{program}")))
     })
+}
+
+/// Codex's signed-in case on what its turn left: its JSONL ends with its turn completed, an
+/// `ls` it ran exited 0 with both of the project's names in its output, its answer holds both,
+/// and the kernel saw `ls` exec'd in its domain.
+fn codex_ran_its_tool(seen: &Seen, all: &str) {
+    let events = json_lines(seen, all);
+    assert_eq!(events.last().unwrap()["type"], "turn.completed", "{all}");
+    let items: Vec<&serde_json::Value> = events
+        .iter()
+        .filter(|e| e["type"] == "item.completed")
+        .map(|e| &e["item"])
+        .collect();
+    let ran = items
+        .iter()
+        .find(|i| i["type"] == "command_execution" && i["command"].as_str().is_some_and(|c| c.contains("ls")))
+        .unwrap_or_else(|| panic!("no ls ran\n{all}"));
+    assert_eq!(ran["exit_code"], 0, "{all}");
+    let answer = items
+        .iter()
+        .rev()
+        .find(|i| i["type"] == "agent_message")
+        .unwrap_or_else(|| panic!("no answer\n{all}"));
+    for file in PROJECT {
+        assert!(ran["aggregated_output"].as_str().unwrap().contains(file), "{all}");
+        assert!(answer["text"].as_str().unwrap().contains(file), "{all}");
+    }
+    assert!(
+        ran_in_domain(seen, "codex", "ls"),
+        "the kernel saw no ls in codex's domain\n{all}"
+    );
+}
+
+/// Claude Code's signed-in case on what its turn left: its result is no error, it asked its
+/// Bash tool to run, its answer holds both of the project's names, and the kernel saw `ls`
+/// exec'd in its domain.
+fn claude_ran_its_tool(seen: &Seen, all: &str) {
+    let events = claude_events(seen, all);
+    let result = events.last().unwrap();
+    assert_eq!(result["is_error"], false, "{all}");
+    assert!(
+        events.iter().any(|e| e["type"] == "assistant"
+            && e["message"]["content"]
+                .as_array()
+                .is_some_and(|c| c.iter().any(|p| p["type"] == "tool_use" && p["name"] == "Bash"))),
+        "no Bash tool ran\n{all}"
+    );
+    let answer = result["result"].as_str().unwrap();
+    for file in PROJECT {
+        assert!(answer.contains(file), "{all}");
+    }
+    assert!(
+        ran_in_domain(seen, "claude", "ls"),
+        "the kernel saw no ls in claude's domain\n{all}"
+    );
 }
 
 /// Codex signed in with this machine's user's own login, given at run time as a private
@@ -845,28 +949,7 @@ fn a_real_codex_signed_in_runs_a_tool_and_answers() {
     };
     let all = shown(&seen);
     whole(&seen, &all);
-    let events = json_lines(&seen, &all);
-    assert_eq!(events.last().unwrap()["type"], "turn.completed", "{all}");
-    let items: Vec<&serde_json::Value> = events
-        .iter()
-        .filter(|e| e["type"] == "item.completed")
-        .map(|e| &e["item"])
-        .collect();
-    let ran = items
-        .iter()
-        .find(|i| i["type"] == "command_execution" && i["command"].as_str().is_some_and(|c| c.contains("ls")))
-        .unwrap_or_else(|| panic!("no ls ran\n{all}"));
-    assert_eq!(ran["exit_code"], 0, "{all}");
-    let answer = items
-        .iter()
-        .rev()
-        .find(|i| i["type"] == "agent_message")
-        .unwrap_or_else(|| panic!("no answer\n{all}"));
-    for file in PROJECT {
-        assert!(ran["aggregated_output"].as_str().unwrap().contains(file), "{all}");
-        assert!(answer["text"].as_str().unwrap().contains(file), "{all}");
-    }
-    assert!(ran_in_domain(&seen, "codex", "ls"), "{all}");
+    codex_ran_its_tool(&seen, &all);
 }
 
 /// Claude Code signed in with this machine's user's own login, given at run time as a
@@ -896,19 +979,130 @@ fn a_real_claude_code_signed_in_answers() {
     };
     let all = shown(&seen);
     whole(&seen, &all);
-    let events = claude_events(&seen, &all);
-    let result = events.last().unwrap();
-    assert_eq!(result["is_error"], false, "{all}");
-    assert!(
-        events.iter().any(|e| e["type"] == "assistant"
+    claude_ran_its_tool(&seen, &all);
+}
+
+/// A turn as harness-bringup-v2 recorded it (`records/<record>`): the owner's stdout and
+/// stderr, each read to its end, and the kernel's record of the microVM's processes.
+fn recorded(record: &str) -> Seen {
+    let dir = workspace()
+        .join("docs/research/measurements/harness-bringup-v2/records")
+        .join(record);
+    let read = |file: &str| std::fs::read(dir.join(file)).unwrap();
+    Seen {
+        stdout: read("stdout.bin"),
+        stderr: read("stderr.bin"),
+        ends: ["End".into(), "End".into()],
+        read_for: [Duration::ZERO; 2],
+        drivers: Vec::new(),
+        processes: String::from_utf8(read("processes.log")).unwrap(),
+    }
+}
+
+/// `seen` less the lines of the harness's own stream that `drop` picks, as a turn that left
+/// none of them would have it.
+fn without_lines(mut seen: Seen, drop: impl Fn(&serde_json::Value) -> bool) -> Seen {
+    let text = String::from_utf8(seen.stdout).unwrap();
+    seen.stdout = text
+        .lines()
+        .filter(|line| !drop(&serde_json::from_str(line).unwrap()))
+        .map(|line| format!("{line}\n"))
+        .collect::<String>()
+        .into_bytes();
+    seen
+}
+
+/// `seen` less the kernel's rows of the harness `name`'s execs of `program`.
+fn without_execs(mut seen: Seen, name: &str, program: &str) -> Seen {
+    seen.processes = seen
+        .processes
+        .lines()
+        .filter(|line| !execs(line, name, program))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    seen
+}
+
+/// v2's two real signed-in turns, as recorded, pass their cases.
+#[test]
+fn the_recorded_signed_in_turns_pass_their_cases() {
+    codex_ran_its_tool(&recorded("codex-signed-in"), "");
+    claude_ran_its_tool(&recorded("claude-signed-in"), "");
+}
+
+/// R10's guard of the real turns, with no prompt sent: Codex's recorded turn less its tool's
+/// events, as a turn that ran no tool would leave it, fails its case, though its answer still
+/// names the project's files.
+#[test]
+#[should_panic(expected = "no ls ran")]
+fn a_codex_turn_that_ran_no_tool_fails_its_case() {
+    let seen = without_lines(recorded("codex-signed-in"), |e| {
+        e["item"]["type"] == "command_execution"
+    });
+    codex_ran_its_tool(&seen, "");
+}
+
+/// Claude Code's recorded turn less its call of its Bash tool fails its case.
+#[test]
+#[should_panic(expected = "no Bash tool ran")]
+fn a_claude_turn_that_ran_no_tool_fails_its_case() {
+    let seen = without_lines(recorded("claude-signed-in"), |e| {
+        e["type"] == "assistant"
             && e["message"]["content"]
                 .as_array()
-                .is_some_and(|c| c.iter().any(|p| p["type"] == "tool_use" && p["name"] == "Bash"))),
-        "{all}"
+                .is_some_and(|c| c.iter().any(|p| p["type"] == "tool_use"))
+    });
+    claude_ran_its_tool(&seen, "");
+}
+
+/// A turn whose stream says its tool ran, but whose `ls` the kernel never saw exec'd in the
+/// harness's domain, fails its case: Codex's recorded turn less that row.
+#[test]
+#[should_panic(expected = "the kernel saw no ls in codex's domain")]
+fn a_codex_tool_the_kernel_never_saw_fails_its_case() {
+    codex_ran_its_tool(&without_execs(recorded("codex-signed-in"), "codex", "ls"), "");
+}
+
+/// The same of Claude Code's turn.
+#[test]
+#[should_panic(expected = "the kernel saw no ls in claude's domain")]
+fn a_claude_tool_the_kernel_never_saw_fails_its_case() {
+    claude_ran_its_tool(&without_execs(recorded("claude-signed-in"), "claude", "ls"), "");
+}
+
+/// A follow of the kernel's record ends at the harness's own exit: row by row, the record v1
+/// kept of Codex's run (records/codex/processes.log), whose children exit before it, ends it
+/// at Codex's exit, by its exec's PID. A `lost` row ends it too.
+#[test]
+fn a_follow_ends_at_the_harness_own_exit() {
+    let record = std::fs::read_to_string(
+        workspace().join("docs/research/measurements/harness-bringup-v1/records/codex/processes.log"),
+    )
+    .unwrap();
+    let program = "/harness/codex/bin/codex ";
+    let mut rows = String::new();
+    let at = record
+        .lines()
+        .position(|line| {
+            rows.push_str(line);
+            rows.push('\n');
+            followed_far_enough(&rows, program)
+        })
+        .unwrap_or_else(|| panic!("the follow never ended:\n{record}"));
+    let (pid, _) = row(&record, program, "exec").unwrap();
+    let last = record.lines().nth(at).unwrap();
+    let (head, what) = last.split_once("  exit   ").unwrap_or_else(|| panic!("{last}"));
+    assert_eq!(
+        (head.split_whitespace().last(), what),
+        (Some(pid.as_str()), "code 1"),
+        "{last}"
     );
-    let answer = result["result"].as_str().unwrap();
-    for file in PROJECT {
-        assert!(answer.contains(file), "{all}");
-    }
-    assert!(ran_in_domain(&seen, "claude", "ls"), "{all}");
+    assert!(
+        record.lines().take(at).any(|line| line.contains("  exit   ")),
+        "a child exits before the harness"
+    );
+    let heading = record.lines().next().unwrap();
+    let lost =
+        format!("{heading}\n2026-11-12T03:10:34.5Z  -  0  lost   events the guest's queue could not hold\n");
+    assert!(followed_far_enough(&lost, program));
 }

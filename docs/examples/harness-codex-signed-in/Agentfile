@@ -6,7 +6,7 @@
 # run time give it a private copy of a signed-in Codex home, and a project:
 #   shards build image -t harness-codex-signed-in:1 docs/examples/harness-codex-signed-in
 #   shards run vm -d -v PRIVATE_CODEX_HOME:/run/codex-home -v PROJECT:/work:ro \
-#     --name codex harness-codex-signed-in:1 sleep 600
+#     --name codex harness-codex-signed-in:1 sleep infinity
 # The harness reads and writes that copy (it refreshes its tokens there): copy back what
 # it refreshed (docs/research/measurements/harness-bringup-v2/credentials.py settle).
 FROM alpine:3.24.4@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
