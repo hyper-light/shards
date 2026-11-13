@@ -440,7 +440,7 @@ fn steer_on(steer: mpsc::Receiver<Steer>, conn: Stream, replies: Replies, ended:
 /// went told.
 fn serve(start: Start, admissions: exec::Admissions, charge: &Charge, launch: &Launch<'_>) {
     let Start {
-        ask: exec::Ask { member, spec, .. },
+        ask: exec::Ask { member, kind, .. },
         exec: number,
         stdout,
         stderr,
@@ -452,6 +452,17 @@ fn serve(start: Start, admissions: exec::Admissions, charge: &Charge, launch: &L
     let refuse = |why: Unstarted, what: &str| {
         say(what);
         replies.tell(Reply::Unstarted(why));
+    };
+    let spec = match kind {
+        exec::Kind::Exec(spec) => *spec,
+        // A member's MCP bridge is made only where its run asks for one (D254), which no run
+        // of this daemon's can yet: its member has none to connect to.
+        exec::Kind::Mcp => {
+            return refuse(
+                Unstarted::Refused,
+                "an MCP connection: its member has no MCP bridge",
+            );
+        }
     };
     let argv: Vec<String> = spec
         .argv

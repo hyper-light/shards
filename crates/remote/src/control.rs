@@ -43,8 +43,8 @@ pub mod exec;
 pub mod unix;
 pub use crate::tls::Negotiated;
 pub use drive::{
-    Controller, Dialed, Exec, ExecControl, Execs, Fault, Got, Hangup, Input, Link, Linked, Output, Socket,
-    SocketReader, SocketWriter, Sockets, Subscriptions,
+    Controller, Dialed, Exec, ExecControl, Execs, Fault, Got, Hangup, Input, Link, Linked, McpConnection,
+    Output, Socket, SocketReader, SocketWriter, Sockets, Subscriptions,
 };
 pub use unix::Admission as SocketAdmission;
 
@@ -818,8 +818,8 @@ impl Lanes {
             self.begin_socket(io, conn, stream, came.unwrap_or_default(), len, ended);
             return;
         }
-        // An exec's ask: read on as long as it is (exec.rs).
-        if let Ok(Some((Tag::MemberExec, len))) = frame::peek(head) {
+        // An exec's ask, or an MCP connection's (D254): read on as long as it is (exec.rs).
+        if let Ok(Some((Tag::MemberExec | Tag::Mcp, len))) = frame::peek(head) {
             let mut came = [0; LANE_MOST];
             let came = came.get_mut(..head.len()).map(|c| {
                 c.copy_from_slice(head);
@@ -1106,6 +1106,10 @@ mod tests {
     use super::*;
     use crate::handshake::{Side, connect};
 
+    /// How long a test waits for what it awaits: a patience of its own, shorter than
+    /// [`tls::QUIET`].
+    const PATIENCE: std::time::Duration = std::time::Duration::from_secs(10);
+
     fn transport(serves: bool) -> TransportConfig {
         let mut transport = TransportConfig::default();
         transport.max_concurrent_uni_streams(hyper_quic::VarInt::from_u32(0));
@@ -1187,7 +1191,7 @@ mod tests {
         let (vm, kiln) = (Identity::generate().unwrap(), Identity::generate().unwrap());
         let (endpoint, client) = connect(
             endpoint(&vm, kiln.fingerprint(), transport(true)).unwrap(),
-            tls::client(&kiln, vm.fingerprint()).unwrap(),
+            tls::client(&kiln, vm.fingerprint(), tls::Rtt::Unmeasured).unwrap(),
         );
         assert!(!endpoint.connected && !client.connected);
         assert_eq!(why(&endpoint), Ended::Protocol(By::This));
@@ -1404,7 +1408,7 @@ mod tests {
                 // RFC 8446 §4: a handshake message's uint24 length and its four-byte head.
                 handshake_bytes: (1 << 24) - 1 + 4,
                 datagram_bytes: managed::DATAGRAM_BYTES,
-                patience: tls::IDLE,
+                patience: PATIENCE,
             }
         }
 
@@ -1692,7 +1696,7 @@ mod tests {
                         connections: 1,
                         command_slots: 16,
                         queued_datagram_bytes: managed::DATAGRAM_BYTES,
-                        handshake_patience: tls::IDLE,
+                        handshake_patience: PATIENCE,
                     },
                 )
                 .unwrap();
@@ -1716,7 +1720,7 @@ mod tests {
             /// Takes the next thing heard into what is kept of it; whether it was the
             /// connection made.
             fn hear(&mut self) -> bool {
-                match self.heard.recv_timeout(tls::IDLE * 2).unwrap() {
+                match self.heard.recv_timeout(PATIENCE * 2).unwrap() {
                     Heard::Connected => return true,
                     Heard::Bytes(lane, bytes) => self.bytes[lane].extend_from_slice(&bytes),
                     Heard::End(lane) => self.ends[lane] = Some(Heard::End(lane)),
@@ -1833,7 +1837,7 @@ mod tests {
             let mut frame = Vec::new();
             input::record(0, line, &mut frame).unwrap();
             live.send(STDIN, &frame);
-            assert_eq!(serving.records.recv_timeout(tls::IDLE).unwrap(), line.to_vec());
+            assert_eq!(serving.records.recv_timeout(PATIENCE).unwrap(), line.to_vec());
             let at = line.len() as u64;
             assert_eq!(live.take(STDIN, said), Said::Taken { accepted: at, room });
             live.send(STDIN, &input::end(at, 0));
@@ -2082,7 +2086,7 @@ mod tests {
                     streams: 3,
                 }
             );
-            assert_eq!(link.patience, tls::IDLE);
+            assert_eq!(link.patience, PATIENCE);
             assert_eq!(link.handshake_bytes, out.handshake_bytes);
             assert!(matches!(
                 super::super::admitted(Streams {
@@ -2220,11 +2224,14 @@ mod tests {
                 run: run(),
                 generation: GENERATION,
                 member: 0,
-                spec: spec.clone(),
+                kind: exec::Kind::Exec(Box::new(spec.clone())),
             };
             live.open(0, &ask.frame().unwrap());
-            let start = starts.recv_timeout(tls::IDLE).unwrap();
-            assert_eq!((start.exec, &start.ask.spec), (0, &spec));
+            let start = starts.recv_timeout(PATIENCE).unwrap();
+            assert_eq!(
+                (start.exec, &start.ask.kind),
+                (0, &exec::Kind::Exec(Box::new(spec.clone())))
+            );
             assert!(start.stderr.is_some() && start.stdin.is_some());
             let host = std::thread::spawn(move || stand_in(start));
             assert_eq!(live.take(0, told), exec::Told::Started(0));
@@ -2281,7 +2288,7 @@ mod tests {
                     run,
                     generation,
                     member,
-                    spec: shards_abi::run::Spec::default(),
+                    kind: exec::Kind::Exec(Box::default()),
                 }
                 .frame()
                 .unwrap()
@@ -2299,7 +2306,7 @@ mod tests {
                 assert_eq!(live.end(lane), Heard::End(lane));
             }
             live.open(3, &asked(run(), GENERATION, 0));
-            let start = starts.recv_timeout(tls::IDLE).unwrap();
+            let start = starts.recv_timeout(PATIENCE).unwrap();
             start
                 .replies
                 .tell(exec::Reply::Unstarted(exec::Unstarted::Capacity));
@@ -2321,7 +2328,7 @@ mod tests {
                 run: run(),
                 generation: GENERATION,
                 member: 0,
-                spec: shards_abi::run::Spec::default(),
+                kind: exec::Kind::Exec(Box::default()),
             };
             live.open(0, &ask.frame().unwrap());
             assert_eq!(live.take(0, refusal), Reason::Scope);
@@ -2338,15 +2345,15 @@ mod tests {
                 run: run(),
                 generation: GENERATION,
                 member: 0,
-                spec: shards_abi::run::Spec::default(),
+                kind: exec::Kind::Exec(Box::default()),
             };
             live.open(0, &ask.frame().unwrap());
-            let start = starts.recv_timeout(tls::IDLE).unwrap();
+            let start = starts.recv_timeout(PATIENCE).unwrap();
             start.replies.tell(exec::Reply::Started);
             assert_eq!(live.take(0, told), exec::Told::Started(0));
             let newer = Live::dial(&kiln, vm.fingerprint(), serving.address);
             assert_eq!(
-                start.steer.recv_timeout(tls::IDLE),
+                start.steer.recv_timeout(PATIENCE),
                 Err(mpsc::RecvTimeoutError::Disconnected)
             );
             drop(newer);
@@ -2379,8 +2386,8 @@ mod tests {
             let execs = dialed.execs.as_ref().unwrap();
             // Its host: the first exec it runs, the second it says did not start.
             let host = std::thread::spawn(move || {
-                stand_in(starts.recv_timeout(tls::IDLE).unwrap());
-                let refused = starts.recv_timeout(tls::IDLE).unwrap();
+                stand_in(starts.recv_timeout(PATIENCE).unwrap());
+                let refused = starts.recv_timeout(PATIENCE).unwrap();
                 refused
                     .replies
                     .tell(exec::Reply::Unstarted(exec::Unstarted::Refused));
@@ -2431,6 +2438,107 @@ mod tests {
             assert_eq!(control.wait(), Ok(0));
             assert_eq!(
                 execs.exec(0, spec).map(|_| ()),
+                Err(Fault::Unstarted(exec::Unstarted::Refused))
+            );
+            host.join().unwrap();
+        }
+
+        /// A stand-in for a host's MCP connection (D254): says it started as its harness
+        /// connected, the harness echoing every byte it is sent; as what it is sent ends,
+        /// finishes its output and says it ended, keeping its streams' controls until its
+        /// steering closes (`exec::Start::steer`).
+        fn mcp_stand_in(start: exec::Start) {
+            let exec::Start {
+                stdout,
+                stdin,
+                steer,
+                replies,
+                ..
+            } = start;
+            replies.tell(exec::Reply::Started);
+            let (relay, input) = stdin.unwrap();
+            let mut written = 0u64;
+            loop {
+                match relay.next() {
+                    Next::Record { bytes, .. } => {
+                        written += bytes.len() as u64;
+                        submit_to(&stdout, &bytes);
+                        relay.delivered(bytes);
+                    }
+                    Next::End => {
+                        input.ended(written, InputEnd::Closed);
+                        break;
+                    }
+                    Next::Abort(errno) => {
+                        input.ended(written, InputEnd::Aborted(errno));
+                        break;
+                    }
+                    Next::Gone => break,
+                }
+            }
+            stdout.1.finish().unwrap();
+            replies.tell(exec::Reply::Exited(0));
+            while steer.recv().is_ok() {}
+            drop((stdout, input));
+        }
+
+        /// An MCP connection (D254) is an exec in all but its start: the controller's ask is
+        /// handed its host as an MCP ask, one stream each way and no stderr; what the
+        /// controller sends reaches the harness exactly and what the harness sends comes back
+        /// exactly; its end is told once its bytes are consumed; and a member whose run asked
+        /// for no bridge refuses it, typed.
+        #[test]
+        fn the_controller_takes_a_members_mcp_connection_as_an_exec() {
+            let (vm, kiln) = (Identity::generate().unwrap(), Identity::generate().unwrap());
+            let (serving, starts) = Serving::with_execs(&vm, kiln.fingerprint());
+            let (outputs, inputs) = all(0);
+            let admissions = exec::Admissions {
+                output: out_admitted(),
+                input: in_admitted(),
+            };
+            let (dialed, _driver) = drive(
+                &kiln,
+                vm.fingerprint(),
+                serving.address,
+                Subscriptions {
+                    outputs: &outputs,
+                    inputs: &inputs,
+                    execs: Some(admissions),
+                    sockets: None,
+                },
+            );
+            let execs = dialed.execs.as_ref().unwrap();
+            // Its host: the first, a harness that echoes; the second, a member with no bridge.
+            let host = std::thread::spawn(move || {
+                let start = starts.recv_timeout(PATIENCE).unwrap();
+                assert_eq!((start.exec, &start.ask.kind), (0, &exec::Kind::Mcp));
+                assert!(start.stderr.is_none() && start.stdin.is_some());
+                mcp_stand_in(start);
+                let refused = starts.recv_timeout(PATIENCE).unwrap();
+                assert_eq!(refused.ask.kind, exec::Kind::Mcp);
+                refused
+                    .replies
+                    .tell(exec::Reply::Unstarted(exec::Unstarted::Refused));
+            });
+            let McpConnection {
+                mut from,
+                mut to,
+                mut end,
+            } = execs.mcp(0).unwrap();
+            let request = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}\n";
+            assert_eq!(to.write(request).unwrap(), request.len());
+            assert_eq!(
+                from.next_record().unwrap(),
+                Got::Record {
+                    at: 0,
+                    bytes: request.to_vec()
+                }
+            );
+            assert_eq!(to.end().unwrap(), (request.len() as u64, InputEnd::Closed));
+            assert_eq!(from.next_record().unwrap(), Got::Finished);
+            assert_eq!(end.wait(), Ok(0));
+            assert_eq!(
+                execs.mcp(0).map(|_| ()),
                 Err(Fault::Unstarted(exec::Unstarted::Refused))
             );
             host.join().unwrap();
@@ -2526,7 +2634,7 @@ mod tests {
             }
             let mut relayed = Vec::new();
             while relayed.len() < line.len() {
-                let record = serving.records.recv_timeout(tls::IDLE).unwrap();
+                let record = serving.records.recv_timeout(PATIENCE).unwrap();
                 assert!(record.len() <= RECORD);
                 relayed.extend_from_slice(&record);
             }
@@ -2659,7 +2767,7 @@ mod tests {
                 accepted: 5,
                 consumed: 0,
             };
-            std::thread::sleep(tls::IDLE / 10);
+            std::thread::sleep(PATIENCE / 10);
             assert_eq!(
                 serving.outputs[STDOUT].1.progress(),
                 held,
@@ -2672,8 +2780,8 @@ mod tests {
             });
             let asked = std::time::Instant::now();
             while serving.outputs[STDOUT].1.progress().consumed != 5 {
-                assert!(asked.elapsed() < tls::IDLE, "never acknowledged");
-                std::thread::sleep(tls::IDLE / 100);
+                assert!(asked.elapsed() < PATIENCE, "never acknowledged");
+                std::thread::sleep(PATIENCE / 100);
             }
             serving.submit(STDOUT, b"second");
             let (stdout, next) = reader.join().unwrap();
@@ -2841,8 +2949,8 @@ mod tests {
                 Err(Fault::Lost(Ended::Closed(By::Peer, Reason::Stale)))
             );
             assert_eq!(newer.inputs[0].write(b"more").unwrap(), 4);
-            assert_eq!(serving.records.recv_timeout(tls::IDLE).unwrap(), b"in");
-            assert_eq!(serving.records.recv_timeout(tls::IDLE).unwrap(), b"more");
+            assert_eq!(serving.records.recv_timeout(PATIENCE).unwrap(), b"in");
+            assert_eq!(serving.records.recv_timeout(PATIENCE).unwrap(), b"more");
             // Asking for the next acknowledges "once", which makes the endpoint's room for it.
             let mut stdout = newer.outputs.remove(0);
             let reader = std::thread::spawn(move || stdout.next_record());
@@ -2926,7 +3034,7 @@ mod tests {
                     streams: 0,
                 }
             );
-            assert_eq!(link.patience, tls::IDLE);
+            assert_eq!(link.patience, PATIENCE);
             assert!(matches!(
                 super::super::drive::windows(Subscriptions {
                     outputs: &[],

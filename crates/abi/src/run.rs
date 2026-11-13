@@ -15,6 +15,7 @@ pub mod notice;
 pub mod plug;
 pub mod quiesce;
 pub mod socket;
+pub mod trust;
 
 /// The host port the guest dials for its workload.
 pub const PORT: u32 = 1024;

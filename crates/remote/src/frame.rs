@@ -33,6 +33,10 @@ pub enum Tag {
     /// Controller, on an agent-control endpoint (D238): open the connection's control lane,
     /// which the endpoint first answers with what its TLS negotiated ([`Tag::Negotiated`]).
     Control = 6,
+    /// Controller, on an agent-control endpoint (D254): take the next connection a member's
+    /// harness makes to its MCP bridge, as an exec lane takes its exec
+    /// (`control::exec::Kind::Mcp`).
+    Mcp = 7,
     /// Client: bytes of the command's stdin.
     Stdin = 16,
     /// Client: the end of the command's stdin.
@@ -77,6 +81,7 @@ impl Tag {
             4 => Tag::MemberExec,
             5 => Tag::UnixConnect,
             6 => Tag::Control,
+            7 => Tag::Mcp,
             16 => Tag::Stdin,
             17 => Tag::StdinEnd,
             18 => Tag::Resize,

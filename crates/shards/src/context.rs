@@ -645,11 +645,12 @@ impl Context {
         })
     }
 
-    /// Where its daemon is.
+    /// Where its daemon is, its handshake starting as a daemon never measured's.
     pub(crate) fn remote(&self) -> Remote {
         Remote {
             address: self.address,
             daemon: self.daemon,
+            rtt: shards_remote::tls::Rtt::Unmeasured,
         }
     }
 }

@@ -376,11 +376,37 @@ impl Execs {
     /// [`Fault::Unstarted`], or the connection's end.
     pub fn exec(&self, member: u32, spec: Spec) -> Result<Exec, Fault> {
         let (stderr, stdin) = (spec.tty.is_none(), spec.stdin);
+        self.ask(member, exec::Kind::Exec(Box::new(spec)), stderr, stdin)
+    }
+
+    /// The next connection the harness in member `member` makes to its MCP bridge (D254),
+    /// waited for until it comes: what the harness sends, what it is sent, and its end. Why
+    /// there is none, typed as an exec's: the endpoint's refusal of its lane, the host's
+    /// [`Fault::Unstarted`] (`Refused` for a member whose run asked for no bridge), or the
+    /// connection's end.
+    pub fn mcp(&self, member: u32) -> Result<McpConnection, Fault> {
+        let Exec {
+            stdout,
+            stdin,
+            control,
+            ..
+        } = self.ask(member, exec::Kind::Mcp, false, true)?;
+        let to = stdin.ok_or(Fault::Refused(Reason::Protocol))?;
+        Ok(McpConnection {
+            from: stdout,
+            to,
+            end: control,
+        })
+    }
+
+    /// Asks for `kind` in `member` on a lane of its own, and waits until it has started, its
+    /// stdio's lanes made for an exec of `stderr` and `stdin`.
+    fn ask(&self, member: u32, kind: exec::Kind, stderr: bool, stdin: bool) -> Result<Exec, Fault> {
         let ask = exec::Ask {
             run: self.run,
             generation: self.generation,
             member,
-            spec,
+            kind,
         };
         let frame = ask.frame().map_err(|_| Fault::Refused(Reason::Protocol))?;
         let (tell, heard) = mpsc::channel();
@@ -414,6 +440,21 @@ impl Execs {
             },
         })
     }
+}
+
+/// An MCP connection a member's harness made to its bridge (D254): its bytes, in records as a
+/// member's output; the controller's to it, as a member's stdin; and its end, told as an exec's
+/// once the harness's side has ended and every byte of it is consumed. A server reads [`from`]
+/// and writes [`to`] as one byte stream each way.
+///
+/// [`from`]: McpConnection::from
+/// [`to`]: McpConnection::to
+#[derive(Debug)]
+pub struct McpConnection {
+    pub from: Output,
+    pub to: Input,
+    /// Its end: [`ExecControl::wait`]. It takes no resize or signal: its host lets them go.
+    pub end: ExecControl,
 }
 
 /// A command running in a member: its stdout, its stderr (none on a terminal, whose output is

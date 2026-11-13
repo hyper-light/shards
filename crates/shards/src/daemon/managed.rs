@@ -3002,6 +3002,12 @@ mod tests {
                 execs.exec(0, spec).map(|_| ()),
                 Err(Fault::Unstarted(Unstarted::Capacity))
             );
+            // An MCP connection (D254): no run of the daemon's asks for a bridge yet, so its
+            // member has none, refused before anything reaches its VM process.
+            assert_eq!(
+                execs.mcp(0).map(|_| ()),
+                Err(Fault::Unstarted(Unstarted::Refused))
+            );
             served.revoke.revoke();
             serving.join().unwrap().unwrap();
             hosting.join().unwrap();

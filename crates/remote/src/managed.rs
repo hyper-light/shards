@@ -1216,6 +1216,10 @@ mod tests {
 
     use super::*;
 
+    /// How long a test waits for what it awaits: a patience of its own, shorter than
+    /// [`tls::QUIET`].
+    const PATIENCE: Duration = Duration::from_secs(10);
+
     fn waiting(at: u64) -> Slot {
         Slot::Waiting {
             at,
@@ -1694,7 +1698,12 @@ mod tests {
     #[test]
     fn three_keep_alives_fall_within_every_idle_bound_quic_carries() {
         let most = Duration::from_millis(VarInt::MAX.into_inner());
-        for bound in [Duration::from_millis(1), tls::IDLE, tls::QUIET, most] {
+        for bound in [
+            Duration::from_millis(1),
+            tls::Rtt::Unmeasured.handshake_bound(),
+            tls::QUIET,
+            most,
+        ] {
             let interval = tls::keep_alive(bound);
             assert!(interval > Duration::ZERO, "{bound:?}");
             assert!(interval * 3 < bound, "{bound:?}: {interval:?}");
@@ -1974,18 +1983,17 @@ mod tests {
     /// Finding H1 (docs/research/measurements/harness-bringup-v1): a channel quiet past its
     /// endpoint's patience keeps its owner's subscription, the endpoint's keep-alive holding
     /// it, as the daemon's endpoint (patience `QUIET`) must for an owner as patient as the
-    /// harness test's. The bound is [`tls::IDLE`], the shortest shards' transports hold a peer
-    /// to, which no stall of a loaded host was found to reach (tls.rs), the other side's
-    /// [`tls::QUIET`].
+    /// harness test's. The bound is [`PATIENCE`], a test's patience shorter than the other
+    /// side's [`tls::QUIET`].
     #[test]
     fn a_quiet_subscription_outlives_its_endpoints_patience() {
-        outlives_a_silence_past_its_bound(tls::IDLE, tls::QUIET);
+        outlives_a_silence_past_its_bound(PATIENCE, tls::QUIET);
     }
 
     /// An owner less patient than its endpoint holds its subscription by its own keep-alive.
     #[test]
     fn a_quiet_subscription_outlives_its_owners_patience() {
-        outlives_a_silence_past_its_bound(tls::QUIET, tls::IDLE);
+        outlives_a_silence_past_its_bound(tls::QUIET, PATIENCE);
     }
 
     /// A keep-alive keeps no dead owner: one that vanishes without a word is let go by its
@@ -1995,7 +2003,7 @@ mod tests {
     /// endpoint's turn.
     #[test]
     fn a_vanished_owner_is_let_go_within_its_endpoints_patience() {
-        let patience = tls::IDLE;
+        let patience = PATIENCE;
         let mut pair = Pair::subscribed(patience, tls::QUIET);
         pair.owner.send(Command::Handler(Ask::Vanish)).unwrap();
         pair.owner_driver.take().unwrap().join().unwrap().unwrap();
