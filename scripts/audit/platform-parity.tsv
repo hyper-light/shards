@@ -546,3 +546,5 @@ crates/api/src/taken.rs	mod macos	crates/api/src/taken.rs	mod windows [windows]	
 crates/api/src/taken.rs	mod windows	crates/api/src/taken.rs	mod linux [linux]	as mod linux
 crates/api/src/taken.rs	mod windows	crates/api/src/taken.rs	mod macos [macos]	as mod linux
 crates/api/src/client.rs	mod borrowed_windows	crates/api/src/taken.rs	struct Held [linux,macos]	a borrowed connection's guest process held for its one dial (D233): on Unix by taken::Held; on Windows by a handle of query and synchronize rights alone, as a borrowed connection ends nothing
+crates/api/src/taken.rs	fn started	crates/api/src/taken.rs	fn created [windows]	a process's start as its OS counts it (D215): by pid on Unix (/proc stat, proc_pid_rusage); on Windows through a handle held to it (GetProcessTimes), a booted guest's its Child's, one taken back its own
+crates/api/src/taken.rs	fn check	crates/api/src/client.rs	mod borrowed_windows [windows]	a borrowed connection's second look at its guest's process (D233): on Unix through taken::Held; Windows' borrowed_windows holds it with query and synchronize rights alone

@@ -38,7 +38,10 @@ pub(crate) use windows::created;
 /// The start of process `pid`, as its OS counts it, set as it is made and kept through
 /// exec: Linux's `/proc/<pid>/stat` starttime (clock ticks after boot, proc(5)); macOS's
 /// `proc_pid_rusage` `ri_proc_start_abstime` (Mach absolute time); Windows'
-/// GetProcessTimes creation time (100 ns units since 1601).
+/// GetProcessTimes creation time (100 ns units since 1601). Read by pid on Unix; on Windows
+/// a booted guest's start is read through its Child's handle and a taken one's through its
+/// own (`created`), so this is its tests' there.
+#[cfg(any(unix, test))]
 pub(crate) fn started(pid: u32) -> Result<u64, ProcessFailure> {
     os::started(pid)
 }
@@ -82,7 +85,9 @@ impl Held {
         self.os.exited(true).map(drop)
     }
 
-    /// A second observation of the same held process, without waiting or ownership transfer.
+    /// A second observation of the same held process, without waiting or ownership transfer:
+    /// a borrowed connection's on Unix (Windows' holds its own, `client::borrowed_windows`).
+    #[cfg(unix)]
     pub(crate) fn check(&self) -> Result<(), ProcessFailure> {
         if self.os.exited(false)? {
             Err(ProcessFailure::Exited)
@@ -409,6 +414,7 @@ mod windows {
         Ok(unsafe { OwnedHandle::from_raw_handle(handle) })
     }
 
+    #[cfg(test)]
     pub(super) fn started(pid: u32) -> Result<u64, ProcessFailure> {
         let held = opened(pid, PROCESS_QUERY_LIMITED_INFORMATION)?;
         created(held.as_raw_handle()).map_err(|e| io_failure(ProcessOperation::GetProcessTimes, e))
