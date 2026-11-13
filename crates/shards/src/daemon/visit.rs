@@ -16,10 +16,7 @@ use shards_ipc::Stream as UnixStream;
 use shards_ipc::fd::{AsFd as _, BorrowedFd};
 use shards_ipc::{Run, kind};
 
-use super::{
-    Daemon, Inbox, Keep, LAYER_NEW, READY_STALL, READY_TIMEOUT, REQUEST, RunState, Threads, lock, log,
-    network, open_layer,
-};
+use super::{Daemon, Inbox, Keep, LAYER_NEW, REQUEST, RunState, Threads, lock, log, network, open_layer};
 
 impl<D: crate::containers::Disk> Daemon<D> {
     /// Starts a visit to the files of the stopped microVM that command `argv` reads
@@ -275,64 +272,64 @@ impl<D: crate::containers::Disk> Daemon<D> {
     }
 
     /// Takes run `id`'s messages until its VM says it holds: the built-ins' requests then
-    /// find its files in place. Waited for as long as its VM's process runs its start, as a
-    /// warm VM's is (`ready`, PM M357): given up once it has run nothing a start does
-    /// ([`shards_vmm::platform::progressed`]) for [`READY_TIMEOUT`], judged each
-    /// [`READY_STALL`]; one whose CPU time cannot be read, [`READY_TIMEOUT`] from its start.
-    fn await_holding(&self, id: &str, inbox: &Arc<Mutex<Inbox>>) -> Result<(), String> {
-        #[cfg(unix)]
-        let fd = {
-            use std::os::fd::AsRawFd as _;
-            lock(inbox).socket.stream.as_raw_fd()
-        };
-        // Its end, the inbox's still: what a read of it waits on.
-        #[cfg(windows)]
+    /// find its files in place. Waited for by D215's judge on this daemon's record of holds
+    /// (`Answers::held`), as a warm VM's READY is (`ready`): before its first, the VM's
+    /// liveness alone, its connection's end; then past W*, the slowest hold seen, looked at
+    /// each W* and given up on where a whole W* shows its process ran no CPU, its host not the
+    /// reason. A hold there as its wait begins teaches nothing (D222's wait of nothing). It
+    /// was `READY_STALL`'s 10 s looks and `READY_TIMEOUT`'s 60 s, picked (ROOT's (3)).
+    pub(super) fn await_holding(&self, id: &str, inbox: &Arc<Mutex<Inbox>>) -> Result<(), String> {
+        // Its end, the inbox's still: what a wait for its messages polls.
         let stream = lock(inbox)
             .socket
             .stream
             .try_clone()
             .map_err(|e| format!("its VM's connection: {e}"))?;
         let pid = lock(inbox).pid;
-        let mut progress = shards_vmm::platform::Progress::of(pid);
-        let mut ran_last = Instant::now();
+        let began = Instant::now();
+        // Begun once its first look finds it not holding yet.
+        let mut follow: Option<Option<shards_api::Follow<'_>>> = None;
         loop {
             let ended = self.take_messages(id, inbox);
             {
                 let held = lock(inbox);
                 if held.started && !held.ended {
+                    if let Some(Some(follow)) = follow.as_mut() {
+                        follow.answered();
+                    }
                     return Ok(());
                 }
                 if ended || held.ended {
                     return Err("its VM ended before it held".into());
                 }
             }
-            if progress.since() >= READY_STALL {
-                let look = progress.look();
-                if look.ran {
-                    ran_last = Instant::now();
-                }
-                if ran_last.elapsed() >= READY_TIMEOUT {
-                    return Err(format!(
-                        "its VM ran nothing of its start for {READY_TIMEOUT:?}: {look}"
-                    ));
-                }
+            let follow = follow.get_or_insert_with(|| {
+                shards_api::Followed::of_pid(pid)
+                    .ok()
+                    .flatten()
+                    .and_then(|f| shards_api::Follow::begin(&self.answers.held, f).ok().flatten())
+            });
+            let wait = follow
+                .as_ref()
+                .and_then(shards_api::Follow::due)
+                .map(|due| due.saturating_duration_since(Instant::now()));
+            if super::readable_within(&stream, wait) {
+                continue;
             }
-            let left = READY_STALL.saturating_sub(progress.since());
-            #[cfg(unix)]
-            {
-                let mut polled = libc::pollfd {
-                    fd,
-                    events: libc::POLLIN,
-                    revents: 0,
-                };
-                let ms = libc::c_int::try_from(left.as_millis().max(1)).unwrap_or(libc::c_int::MAX);
-                super::timed(super::poll_timeout(ms), || {
-                    // SAFETY: poll(2) on one pollfd of a descriptor the inbox holds open.
-                    unsafe { libc::poll(&raw mut polled, 1, ms) }
-                });
-            }
-            #[cfg(windows)]
-            let _ = stream.wait_readable(None, Instant::now().checked_add(left));
+            let Some(followed) = follow.as_mut() else {
+                continue;
+            };
+            followed.look().map_err(|why| match why {
+                shards_api::Unfollowed::Stalled(stall) => format!(
+                    "its VM ran nothing of its start for {:?}, past the slowest hold seen ({:?}), {:?} after it began",
+                    stall.over(),
+                    stall.slowest(),
+                    began.elapsed()
+                ),
+                shards_api::Unfollowed::Process { failure, .. } => {
+                    format!("its VM's process could not be read: {failure}")
+                }
+            })?;
         }
     }
 }

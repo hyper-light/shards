@@ -146,6 +146,12 @@ pub(super) struct Answers {
     pub metrics: Record,
     /// A starting VM's READY (`daemon::ready`).
     pub ready: Record,
+    /// A visit's VM holding its files, its STARTED after its RUN (`visit::await_holding`).
+    pub held: Record,
+    /// Each request for access a starting VM makes, from the answer before or its spawn
+    /// (`daemon::grant`, macOS).
+    #[cfg(target_os = "macos")]
+    pub grants: Record,
     /// Each of init's builtins its quiet work asks (`exec_answered`: `STAT`, `TOP`,
     /// `STATS`, a member's ports, a network's switch, a layer's size, an update), by its
     /// byte.
@@ -159,6 +165,9 @@ impl Default for Answers {
             room: Record::new(),
             metrics: Record::new(),
             ready: Record::new(),
+            held: Record::new(),
+            #[cfg(target_os = "macos")]
+            grants: Record::new(),
             builtins: Box::new([const { Record::new() }; 256]),
         }
     }

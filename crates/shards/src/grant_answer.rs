@@ -251,16 +251,17 @@ fn dial(listening: Option<&Path>, port: u32) -> Result<std::os::unix::net::UnixS
 /// names, making the directories it writes in first. A path that cannot be granted ends
 /// the answers with why.
 pub fn serve(link: &std::os::unix::net::UnixStream, template: Option<&Path>) -> Result<(), String> {
-    serve_waiting(link, template, &mut |_| {})
+    serve_waiting(link, template, &mut |_| Ok(()))
 }
 
 #[cfg(target_os = "macos")]
 /// [`serve`], calling `wait` with how many messages the VM has sent before each wait for
-/// its next: a caller's watch on a VM that goes quiet (the daemon's, `grant`).
+/// its next: a caller's watch on a VM that goes quiet (the daemon's, `grant`), which ends
+/// the answers with why where it gives the VM up.
 pub fn serve_waiting(
     link: &std::os::unix::net::UnixStream,
     template: Option<&Path>,
-    wait: &mut dyn FnMut(usize),
+    wait: &mut dyn FnMut(usize) -> Result<(), String>,
 ) -> Result<(), String> {
     use shards_ipc::kind;
     use std::os::fd::AsFd as _;
@@ -278,7 +279,7 @@ pub fn serve_waiting(
     let mut started = false;
     let mut sent = 0usize;
     loop {
-        wait(sent);
+        wait(sent)?;
         sent = sent.saturating_add(1);
         let asked = shards_ipc::recv(link).map_err(|e| format!("a VM's request for access: {e}"))?;
         held.clear();
@@ -1128,7 +1129,12 @@ mod tests {
         let (vm, spawner) = std::os::unix::net::UnixStream::pair().unwrap();
         let mut waits = Vec::new();
         std::thread::scope(|scope| {
-            let serving = scope.spawn(|| serve_waiting(&spawner, None, &mut |sent| waits.push(sent)));
+            let serving = scope.spawn(|| {
+                serve_waiting(&spawner, None, &mut |sent| {
+                    waits.push(sent);
+                    Ok(())
+                })
+            });
             for _ in 0..2 {
                 obtain(&vm, &[(Access::Read, kernel.clone())]).unwrap();
             }

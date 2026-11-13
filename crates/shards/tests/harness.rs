@@ -9,13 +9,13 @@ use std::time::{Duration, Instant};
 
 use common::{Patience, Said, TempDir};
 
-/// A daemon's heartbeat, as it says it each `READY_STALL` while a microVM a client waits on
-/// runs (daemon.rs `log_progress`, D209): the nesting probe's VM on HVF at fafe35efc, whose
+/// A daemon's heartbeat, as it says it while a microVM a client waits on runs, its looks
+/// paced by its record of starts (daemon.rs `log_progress`, D209): the nesting probe's VM on HVF at fafe35efc, whose
 /// test waited on it to its own bound and past.
 const HEARTBEAT: &str = "shards daemon 70625: container 212eb2365f9391311256a9c21cb9db1788808fd36abb04c7d64ddae90d121858: VM 70650 runs as its client waits: its CPU time 304 ms (+110 ms in 10s), 23390 page faults (+1342)\n";
 
-/// A microVM's start said slowly (daemon.rs `ready`), as the daemon says it each
-/// `READY_STALL` until the microVM is ready or it gives up on it.
+/// A microVM's start said slowly (daemon.rs `ready`), as the daemon said it at each look
+/// before D215's judge (it says once now, as a start first outlasts the slowest seen).
 const STARTING: &str = "shards daemon 7268: VM 7282: not ready in 10s: its CPU time 3265 ms (+3265 ms in 10s), 2101 page faults (+2101)\n";
 
 fn say(home: &TempDir, what: &str) {

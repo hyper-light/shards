@@ -10490,9 +10490,29 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
   idle microVM's CPU, 63 ms in 10 s, `IDLE_VM_CPU`, given up on after `READY_TIMEOUT`'s
   minute): before this daemon's first READY, its liveness alone; then past W*, the slowest
   start it has seen (`Answers::ready`, which each READY teaches), looked at each W* and given
-  up on where a whole W* shows it ran no CPU, its host not the reason. A claim of a pool whose VM is starting waits for it
-  past its minute, its watcher waking it; and a builder's boot is judged so, past
-  `BOOT_PATIENCE`'s 30 s. Not caught: a guest that spins before it is ready (a panic
+  up on where a whole W* shows it ran no CPU, its host not the reason. Every other wait on a
+  starting microVM is judged so, each by a record of its own kind kept beside `ready`'s
+  (#77's ready-judged slice, 2026-11-13, R03: "we do not tolerate arbitrary constants");
+  each refusal still says what the VM was doing and for how long:
+  - *A claim* (`claim`) waits while a VM of its pool starts, its watcher waking it as that
+    VM is ready or given up, with no deadline of its own; with none starting and none
+    planned (its template collected, its root filesystem unrecorded or replaced), none
+    comes, and it is refused at once: "no warm VM of … was ready in …: none is starting for
+    it". It was `READY_TIMEOUT`'s minute, which it waited out for nothing
+    (`a_claim_none_can_start_for_is_refused_at_once`).
+  - *A visit's VM holding its files* (`visit::await_holding`, its STARTED after RUN) is
+    judged on `Answers::held`: "its VM ran nothing of its start for …, past the slowest hold
+    seen (…), … after it began". It was `READY_STALL`'s 10 s looks and `READY_TIMEOUT`'s
+    60 s (`a_visits_vm_is_waited_for_while_it_starts_and_refused_once_still_past_the_slowest_hold`:
+    a busy stand-in holding 1.5 s on is taken; a stopped one past it is refused).
+  - *A VM's requests for access* (macOS, `grant`) are judged each on `Answers::grants`,
+    taught by each request that came after a wait, never by the link's end; a VM first
+    quiet past W* is sampled once (sample(1)), or logged as not yet started by the host
+    (PM M166). It was `GRANT_STALL`'s 10 s and a 60 s read timeout of `READY_TIMEOUT`'s.
+  - *A builder's dial* (`builder::dialed`) is judged on its own `BOOTED`, as its `NEEDED`
+    and `ENDED` are. It was `BOOT_PATIENCE`'s 30 s, judged each `READY_STALL`.
+  Each is cold before its kind's first answer: the VM's liveness alone, its connection's
+  end or its process's exit, typed as D215's `Seen::Cold`. Not caught: a guest that spins before it is ready (a panic
   resets it, `panic=-1`, which ends its VM). A READY there as its wait begins teaches
   nothing, as it was waited for not at all (D222's wait of nothing, read as D185's
   `Asked::waited` is): on macOS the wait begins once the VM has its grants, which a quick
@@ -10510,8 +10530,7 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
   (a 64-vCPU storm, a 3 GiB build step, a 2.4 GiB allocation, two 1 GiB execs), where the
   daemon said nothing while a workload ran, so that no test could tell slow from stuck.
   Now its listener looks at each microVM a client waits on, an attached run's own client
-  until its run ends or an exec's (none detached) until it ends (`EXEC_ENDED`), each
-  `READY_STALL`, and logs its CPU time and page faults and what each grew by where it ran
+  until its run ends or an exec's (none detached) until it ends (`EXEC_ENDED`), and logs its CPU time and page faults and what each grew by where it ran
   more than an idle microVM takes in as long (`shards_vmm::platform::progressed`, the
   basis `ready` judges a start by, moved beside `process_usage`, which counts each
   process's page faults now on every host). An idle or stalled microVM is said nothing
@@ -10521,8 +10540,13 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
   builders), the test judges the VM processes under its client itself, by the same basis
   and slice (`common::Ran`, until W6's slice 2b part 2), while they start. Detached runs are not looked at:
   a busy server run with `-d` logs nothing. Not caught, as of a start: a guest that spins
-  for ever, which its CI job's limit ends. `a_microvm_is_followed_while_a_client_waits_on_it`
-  holds who is looked at and the slice (a sixth of `READY_TIMEOUT`), and
+  for ever, which its CI job's limit ends. Its looks were each `READY_STALL`'s 10 s; they
+  are paced by `Answers::ready` now (#77's ready-judged slice): the first W*, the slowest
+  start seen, after the client began to wait, each next twice as long after the one before,
+  so that what one wait says grows with the logarithm of its length however small W* is
+  (RFC 6298 §5.5's doubling of a retransmission timer), and none before the daemon's first
+  READY, as a heartbeat is a diagnostic: a client's own wait reads the microVM's process.
+  `a_microvm_is_followed_while_a_client_waits_on_it` holds who is looked at and the pace, and
   `a_busy_process_is_seen_running_with_its_cpu_and_faults` the look on the host's own
   process times.
 - **Amended (2026-11-13, ROOT's R03 rulings): a microVM's heartbeat counts by what it did,
@@ -17997,7 +18021,11 @@ progress; D222's estimators).
 | `ENTRY_MOST` (ship/gcplogs.rs) | 256 KiB | cited | https://cloud.google.com/logging/quotas, read 2026-11-08 |
 | `MAX_RESUME` (daemon/snapshots.rs) | 4 KiB | `max_resume()` | the longest record this build writes |
 | `UNLIMITED`, `PIDMAX` (daemon/top/specs.rs) | 4, 0x10 | cited | procps-ng 4.0.2 src/ps/common.h l. 243-258 |
-| `START_LIMIT` (daemon/visit.rs) | 30 s | none: while its VM runs its start | `READY_TIMEOUT` judged each `READY_STALL` (PM M357) |
+| `START_LIMIT` (daemon/visit.rs) | 30 s | none: while its VM runs its start | D215's judge on `Answers::held` (`await_holding`; it was `READY_TIMEOUT` judged each `READY_STALL`, PM M357) |
+| `READY_TIMEOUT` (daemon.rs) | 60 s | none: a start judged by D215 on `Answers::ready` (`ready`); a claim waits while a VM of its pool starts, refused at once where none is or can be planned | the VM process's CPU (`shards_api::Follow`), D209 |
+| `READY_STALL` (daemon.rs) | 10 s | none: a visit's hold judged on `Answers::held`; the heartbeat's looks at W* of `Answers::ready`, doubling, none while cold | RFC 6298 §5.5's doubling, D209 |
+| `GRANT_STALL` (daemon.rs, macOS) | 10 s | none: each request for access judged on `Answers::grants`; the stacks sampled at the first look past W* | the VM process's CPU, D209 |
+| `BOOT_PATIENCE` (build/builder.rs) | 30 s | none: a builder's dial judged on `BOOTED` | the VM process's CPU, D209 |
 | `TCP_MOST` (logging/gelf.rs) | 2 MiB | cited | graylog2-server 3d2aea59 TcpTransport.java l. 50, 68 |
 | `BROWSER_WAIT` (oidc.rs) | 120 s | cited | sigstore v1.10.8 pkg/oauthflow/interactive.go l. 225 (cosign v3.1.3's flow, its texts) |
 | `PROGRESS_EVERY` (pull.rs) | 100 ms | `cli::show::TICK` | a frame the client paints |
