@@ -26664,7 +26664,8 @@ docs/research/s33-veil-creds/STEP3.md).
   (`Leases::ask`, the connection's token its waiter); held, it is filled in now; asked, the
   request is parked (`Request::Parked`, R04) and its flow resumed by the answer
   (`Stack::resume_flows`, which with `ask_run_host` runs until no flow resumes and nothing more is
-  asked); refused, the guest is answered 503 naming the refusal. The head goes out as it came but
+  asked); refused, the guest is answered 503 naming the refusal (a refusal of the ask it waited on carried to it as
+  it resumes, below). The head goes out as it came but
   for its placeholders and its hop-by-hop fields, written once into a buffer made to its length,
   wiped as it drops. A body is never read for a placeholder (f27) and streams as it comes.
 - *Hop-by-hop fields (RFC 9110 §7.6.1).* Each field a connection option names, with the option,
@@ -27098,7 +27099,8 @@ record docs/research/s33-veil-creds/STEP7.md).
   held given back to its peers' windows.
 - *Requests* go through `http2::request`. `Misdirected` is answered 421 on its stream alone, and `Malformed` gets a
   RST_STREAM PROTOCOL_ERROR. `Go` asks each reference of `Leases::ask` with the connection's waiter, the stream parked
-  until `Leases::resumed` resumes the flow, then encodes on the host's hop (`Go::encode`) as its HEADERS go. Each fill is
+  until `Leases::resumed` resumes the flow (a refusal carried with it, below), then encodes on the host's hop
+  (`Go::encode`) as its HEADERS go. Each fill is
   audited (`Did::Filled`). A refused or lapsed lease is answered 503, an endpoint that mints a key in the clear 403
   (`mints`), and a host gone 502. Answers carry the HTTP/1.1 path's statuses and texts (`Refusal`). A response answered
   before its request ended ends the stream with RST_STREAM NO_ERROR (§8.1).
@@ -27182,6 +27184,35 @@ docs/research/s33-veil-creds/STEP7.md and STEP8.md).
 - *Owed.* ROOT: CI's matrix on main; the guard-removal mutations in STEP8.md; the real-VM runs (a sign-in's CLI over
   HTTP/2 in a microVM, under step 10's leak scan). A flow that ends with an ask under way leaves its answer in
   `SignIns` until the run's end, for HTTP/1.1 as for HTTP/2 (each stream let go of forgets its own).
+
+**Built: a refused lease answered on what asked it, step 7** (`crates/net/src/lib.rs` `resume_flows`,
+`crates/net/src/lease.rs` `refused`, `crates/net/src/inject.rs` `Run::resumed` and `Run::ask`; STEP7.md's "A refused
+lease answered 503").
+- *The defect (R09).* A refusal reached `Leases` as a `Resumed` whose outcome `resume_flows` dropped, keeping its
+  waiter alone; `Leases::answered` had removed the lease, so the resumed flow asked again, a new ask went out, the
+  broker refused it again, and so on: a livelock, the request never answered. Seen live by the HTTP/2 coverage lane
+  (kiln run r963, adas-mac-studio.local: its test ran past kiln's hour). Reproduced here by two light tests that fail
+  at the second ask, one on each path: HTTP/2's `H2::go` and HTTP/1.1's `Ended::go` ask alike on resume.
+- *Decision.* The refusal travels with the resume, to the flow that asked. `lease::refused` picks the refusals of the
+  asks a flow waited on out of `Leases::resumed`; `resume_flows` serves the flow with them (`Run::resumed`, `Run`'s
+  `refused`); `Run::ask`, which both paths call in place of `Leases::ask`, answers an ask of a refused reference with
+  its refusal, and each path answers that as it answers any `Asked::Refused`: `Unleased`, 503 naming it, on its stream
+  alone for HTTP/2, with `Connection: close` for HTTP/1.1. Every stream of a connection that waited on the refused ask
+  is answered by it.
+  - Refused: `Leases` keeping each refusal for its asker until taken. A lease's waiters are flows, not requests:
+    a refusal kept past its resume (its stream reset while it waited, its flow gone) would answer a later request's
+    ask, a ban rather than an answer, and would need a let-go at each end of a flow and stream, as `SignIns` has
+    (`forget`, `gone`). Carried with the resume, it lives for that resume's pass alone and nothing is kept.
+- *A refusal answers its own ask alone.* A later request, on that connection or another, asks anew, as `Leases`' own
+  refusals have always held nothing (`a_refusal_reaches_its_flows_typed_and_holds_nothing`).
+- *Literals.* None: no timer, no retry bound, no count. The loop ends because a refused ask is answered.
+- *Tests (macOS arm64, adas-mac-studio.local; STEP7.md).* `an_h2_stream_whose_lease_is_refused_is_answered_503_while_another_completes`,
+  `a_request_whose_lease_is_refused_is_answered_503_and_a_later_one_asks_anew` and
+  `a_resume_carries_each_flows_refusals_to_it`: red at 853456f78 (58 passed, 2 failed, each at its second ask), green
+  at 310cbf3b7 (61 passed, 0 failed, 2 ignored); clippy of shards-net clean on aarch64-apple-darwin, x86_64-unknown-linux-gnu and
+  x86_64-pc-windows-msvc.
+- *Owed.* ROOT: CI's matrix on main; the guard-removal mutations in STEP7.md; a real-VM run with a credential grant
+  whose broker refuses its lease (an api run on KVM, HVF and WHP, the guest answered 503 once, on HTTP/1.1 and HTTP/2).
 
 **Owed (later slices of step 33, this plan's steps 7, 8 and 10).** Kiln's broker answering the sign-ins' words (step 8's third slice;
 the network process telling its run host of a capture, a refresh and a revocation, the run host its
