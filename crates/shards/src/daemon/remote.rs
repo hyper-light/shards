@@ -49,6 +49,18 @@ fn owners(args: &[String]) -> Option<String> {
 }
 
 impl Host for Machine {
+    /// Said once a stall in the daemon's log: the client's connection waits on with no window,
+    /// and its commands run to their own end (D180, ROOT's ruling A).
+    fn unheard(&self, client: Option<&str>, at: std::net::SocketAddr, unheard: std::time::Duration) {
+        let who = client.map_or_else(
+            || "a client not yet enrolled".to_string(),
+            |name| format!("client {name}"),
+        );
+        super::log(format!(
+            "{who} at {at} hasn't been heard for {unheard:.1?}; still waiting (it may be busy or gone; its commands run on)"
+        ));
+    }
+
     fn enrolled(&self, spki: &[u8]) -> Option<String> {
         crate::context::clients(&self.home)
             .into_iter()
