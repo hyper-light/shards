@@ -16567,14 +16567,27 @@ fn a_failing_step_cites_its_build_file_lines() {
     if cannot_run_vms() {
         return;
     }
+    // A home of its own, and alpine:3.22 as Docker 29.3.1 ran it for D115 (Docker Hub,
+    // 2026-10-15) from the tests' own registry.
+    let home = TempDir::new("excerpt-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let alpine = common::hub(
+        "alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8",
+        TIMEOUT,
+    );
     let ctx = context(
         "excerpt-ctx",
-        "FROM alpine:3.22 as base\nRUN echo one\nRUN echo hi && \\\n  exit 3\n",
+        &format!("FROM {alpine} as base\nRUN echo one\nRUN echo hi && \\\n  exit 3\n"),
     );
-    let out = common::run_shards_in(
+    let out = common::run_shards_env_in(
         &ctx,
         &[],
         &["build", "--progress=plain", "--no-cache", "."],
+        &env,
         TIMEOUT,
     );
     assert_eq!(out.status, Some(1), "{}", out.stderr);
@@ -16616,11 +16629,15 @@ fn a_failing_step_cites_its_build_file_lines() {
     // A source the context lacks: the step's error is the checksum's, the build's the
     // cache key's that failed to load (BuildKit names its internal reference where shards
     // names the context).
-    let ctx = context("excerpt-copy-ctx", "FROM alpine:3.22\nCOPY missing.txt /m\n");
-    let out = common::run_shards_in(
+    let ctx = context(
+        "excerpt-copy-ctx",
+        &format!("FROM {alpine}\nCOPY missing.txt /m\n"),
+    );
+    let out = common::run_shards_env_in(
         &ctx,
         &[],
         &["build", "--progress=plain", "--no-cache", "."],
+        &env,
         TIMEOUT,
     );
     assert_eq!(out.status, Some(1), "{}", out.stderr);
@@ -16631,9 +16648,9 @@ fn a_failing_step_cites_its_build_file_lines() {
         out.stderr
     );
     assert!(
-        out.stderr.ends_with(
-            "------\n > [2/2] COPY missing.txt /m:\n------\nDockerfile:2\n--------------------\n   1 |     FROM alpine:3.22\n   2 | >>> COPY missing.txt /m\n   3 |     \n--------------------\nERROR: failed to build: failed to solve: failed to compute cache key: failed to calculate checksum of ref context: \"/missing.txt\": not found\n"
-        ),
+        out.stderr.ends_with(&format!(
+            "------\n > [2/2] COPY missing.txt /m:\n------\nDockerfile:2\n--------------------\n   1 |     FROM {alpine}\n   2 | >>> COPY missing.txt /m\n   3 |     \n--------------------\nERROR: failed to build: failed to solve: failed to compute cache key: failed to calculate checksum of ref context: \"/missing.txt\": not found\n"
+        )),
         "{}",
         out.stderr
     );
