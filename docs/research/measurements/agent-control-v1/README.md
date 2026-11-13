@@ -184,7 +184,10 @@ host through the run's endpoint and a stand-in VM process; a member's exec takes
 stdio alone; a guest's refusal typed by its class; a pipe's buffer measured or bounded); `cargo
 test -p shards-vm-process --bin shards-vm -- workload::tests::a_told_exec` 1 passed; `cargo clippy
 -p shards-ipc -p shards-remote -p shards -p shards-vm-process --all-targets -- -D warnings` clean;
-rustfmt clean.
+rustfmt clean. Again on the tree that lands, origin/main `f8d5a4913` with the change merged (its
+kind `EXEC_UNSTARTED` 96, as D247 took 94 and 95), the same host: `control::` 33 passed; `cargo
+test -p shards --bin shards -- daemon::managed daemon::health` 38 passed, 6 ignored (health.rs's
+`send_exec`, split for the host, among them); `a_told_exec` 1 passed; the same clippy clean.
 
 ## R01–R16
 
