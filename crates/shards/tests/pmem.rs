@@ -6,11 +6,9 @@
 mod common;
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use common::{TempDir, cannot_run_vms, cannot_snapshot, kernel, run_shards, test_guest, vm_run};
 
-const TIMEOUT: Duration = Duration::from_secs(60);
 const MIB: u64 = 1 << 20;
 
 struct Image {
@@ -78,7 +76,7 @@ fn guests_read_pmem_files_exactly() {
     }
     let dir = TempDir::new("pmem");
     let images = images(&dir);
-    let r = vm_run(&args(&images, ""), TIMEOUT);
+    let r = vm_run(&args(&images, ""));
     assert!(r.stdout.contains("SHARDS-TEST PASS"), "{r}");
     assert_unchanged(&images);
 }
@@ -93,10 +91,10 @@ fn restored_copies_map_the_same_files() {
     let snap = dir.join("snap");
     let mut a = args(&images, " shards_snapshot=1");
     a.extend(["--snapshot-dir".into(), snap.clone().into()]);
-    let original = vm_run(&a, TIMEOUT);
+    let original = vm_run(&a);
     assert_eq!(original.status, Some(0), "{original}");
     for _ in 0..2 {
-        let r = run_shards(&["restore"], &[&snap], TIMEOUT);
+        let r = run_shards(&["restore"], &[&snap]);
         assert!(r.stdout.contains("SHARDS-TEST PASS"), "{r}");
     }
     assert_unchanged(&images);

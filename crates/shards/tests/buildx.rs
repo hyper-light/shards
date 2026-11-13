@@ -14,7 +14,6 @@ use std::time::Duration;
 
 use common::{TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, served};
 
-const TIMEOUT: Duration = Duration::from_secs(60);
 /// A client's call past this is taken for hung, and fails its test with what it said
 /// (`common::output_within`).
 const CLIENT: Duration = Duration::from_secs(600);
@@ -90,7 +89,7 @@ fn buildx_builds_with_its_own_builder_in_a_microvm() {
         ("SHARDS_KERNEL", kernel.as_os_str()),
         ("SHARDS_INIT", init.as_os_str()),
     ];
-    let pulled = run_shards_env(&["pull"], &["-q", image.as_str()], &env, TIMEOUT);
+    let pulled = run_shards_env(&["pull"], &["-q", image.as_str()], &env);
     assert_eq!(pulled.status, Some(0), "{pulled}");
     let context = home.join("ctx");
     std::fs::create_dir_all(&context).unwrap();

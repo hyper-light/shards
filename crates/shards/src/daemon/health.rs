@@ -331,8 +331,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                         None => c.changed.wait(due).unwrap_or_else(PoisonError::into_inner),
                         Some(Reverse((at, _))) if *at > now => {
                             let wait = at.saturating_duration_since(now);
-                            c.changed
-                                .wait_timeout(due, wait)
+                            super::timed(Some(wait), || c.changed.wait_timeout(due, wait))
                                 .unwrap_or_else(PoisonError::into_inner)
                                 .0
                         }

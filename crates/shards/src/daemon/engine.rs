@@ -157,7 +157,7 @@ impl<D: Disk> Drop for Relaying<'_, D> {
 /// [`RELAY_WAIT`] has passed: once its run has ended, what the relay waits for before it
 /// drops its [`Relaying`].
 fn copied(copies: &std::sync::mpsc::Receiver<()>) {
-    let _ = copies.recv_timeout(RELAY_WAIT);
+    let _ = super::timed(Some(RELAY_WAIT), || copies.recv_timeout(RELAY_WAIT));
 }
 
 impl<D: Disk> Daemon<D> {

@@ -63,7 +63,7 @@ fn a_microvm_held_to_a_budget_reads_through_fuse_at_the_pace_of_reads_held_to_no
         return;
     }
     let (image, _) = served();
-    let home = home_with("daemon-budget-fuse", TIMEOUT);
+    let home = home_with("daemon-budget-fuse");
     let vol = TempDir::new("budget-fuse-vol");
     std::fs::File::create(vol.join("big"))
         .unwrap()
@@ -166,7 +166,6 @@ fn a_microvm_held_to_a_budget_reads_through_fuse_at_the_pace_of_reads_held_to_no
             "0",
         ],
         &env,
-        TIMEOUT,
     );
     assert_eq!(first.status, Some(0), "{first}\nthe daemon's log:\n{}", said());
     let templates = home.join("templates").to_string_lossy().into_owned();
@@ -227,7 +226,6 @@ fn a_microvm_held_to_a_budget_reads_through_fuse_at_the_pace_of_reads_held_to_no
             "sleep",
         ],
         &env,
-        TIMEOUT,
     );
     assert_eq!(
         started.status,
@@ -251,7 +249,7 @@ fn a_microvm_held_to_a_budget_reads_through_fuse_at_the_pace_of_reads_held_to_no
         .collect();
     // Its VM process, which `rm -f` leaves ending once its run has: until it has, the
     // slice still holds its guest's page cache of the read, as its own memory.
-    let pid = run_shards_env(&["inspect"], &["-f", "{{.State.Pid}}", "held"], &env, TIMEOUT);
+    let pid = run_shards_env(&["inspect"], &["-f", "{{.State.Pid}}", "held"], &env);
     let pid: u32 = pid.stdout.trim().parse().unwrap_or_else(|_| panic!("{pid}"));
     // Its state and start (proc_pid_stat(5) fields 3 and 22), past its name's parentheses.
     let stat_of_pid = || {
@@ -268,7 +266,7 @@ fn a_microvm_held_to_a_budget_reads_through_fuse_at_the_pace_of_reads_held_to_no
             })
     };
     let (_, started) = stat_of_pid().unwrap_or_else(|| panic!("held's VM process {pid} is not running"));
-    let _ = run_shards_env(&["rm"], &["-f", "held"], &env, TIMEOUT);
+    let _ = run_shards_env(&["rm"], &["-f", "held"], &env);
     let mut patience = Patience::of(&home, TIMEOUT);
     while let Some((state, start)) = stat_of_pid()
         && !matches!(state.as_str(), "Z" | "X")
@@ -295,7 +293,7 @@ fn a_microvm_held_to_a_budget_reads_through_fuse_at_the_pace_of_reads_held_to_no
     // slice's statistics have caught up with its counter, which a microVM just ended leaves
     // them behind (they counted 1.1 GB of one a second after it ended, PM M309): no more
     // anonymous and file memory than it holds.
-    let _ = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    let _ = run_shards_env(&["daemon"], &["stop"], &env);
     let pool_of_none: [(&str, &OsStr); 3] = [env[0], env[1], ("SHARDS_POOL", "0".as_ref())];
     budget("infinity");
     std::fs::write(vol.join("small"), vec![1u8; 1 << 20]).unwrap();
@@ -313,7 +311,6 @@ fn a_microvm_held_to_a_budget_reads_through_fuse_at_the_pace_of_reads_held_to_no
             "sleep",
         ],
         &pool_of_none,
-        TIMEOUT,
     );
     assert_eq!(
         started.status,
@@ -325,7 +322,6 @@ fn a_microvm_held_to_a_budget_reads_through_fuse_at_the_pace_of_reads_held_to_no
         &["exec"],
         &["short", "/bin/testguest", "read", "/vol/small"],
         &pool_of_none,
-        TIMEOUT,
     );
     assert_eq!(warmed.status, Some(0), "{warmed}\nthe daemon's log:\n{}", said());
     let stat_of = |stat: &str, key: &str| -> u64 {
@@ -398,14 +394,14 @@ fn a_microvm_held_to_a_budget_reads_through_fuse_at_the_pace_of_reads_held_to_no
             .unwrap_or_default()
         })
         .collect();
-    let _ = run_shards_env(&["rm"], &["-f", "short"], &pool_of_none, TIMEOUT);
+    let _ = run_shards_env(&["rm"], &["-f", "short"], &pool_of_none);
     // Each phase's reads, for a run's record (.github/workflows/budget-e2e.yml).
     eprintln!(
         "reads in ms: under none {unbudgeted:?}; under {} MiB {budgeted:?}; under it set as its run went {late:?}; held within the least room under {} MiB {held_short:?}; judged by {record}",
         held >> 20,
         short >> 20
     );
-    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env);
     assert_eq!(stopped.status, Some(0), "{stopped}");
 }
 

@@ -106,7 +106,7 @@ impl Home {
     }
 
     fn shards(&self, command: &[&str], args: &[&str]) -> Run {
-        run_shards_env(command, args, &self.env(), TIMEOUT)
+        run_shards_env(command, args, &self.env())
     }
 
     /// Builds the test image with runc at /usr/local/bin/runc, its command run as root, then
@@ -148,7 +148,7 @@ impl Home {
 
 impl Drop for Home {
     fn drop(&mut self) {
-        let _ = run_shards_env(&["stop", "daemon"], &[] as &[&str], &self.env(), TIMEOUT);
+        let _ = run_shards_env(&["stop", "daemon"], &[] as &[&str], &self.env());
     }
 }
 

@@ -67,12 +67,7 @@ fn build(home: &TempDir, tag: &str, options: &[&str], agentfile: &str) {
         format!("FROM {image}\nAGENT helper FROM ./helper\nHARNESS codex FROM ./harness.tar\n{agentfile}"),
     )
     .unwrap();
-    let built = run_shards_env(
-        &["build", "image"],
-        &["-t", tag, ctx.to_str().unwrap()],
-        &env,
-        TIMEOUT,
-    );
+    let built = run_shards_env(&["build", "image"], &["-t", tag, ctx.to_str().unwrap()], &env);
     assert_eq!(built.status, Some(0), "{}", built.stderr);
 }
 
@@ -651,7 +646,7 @@ fn build_example(home: &TempDir, tag: &str) {
     let ctx = TempDir::new("api-example-ctx");
     std::fs::create_dir_all(ctx.join("codex/bin")).unwrap();
     let agentfile = std::fs::read_to_string(example.join("Agentfile")).unwrap();
-    std::fs::write(ctx.join("Agentfile"), common::hub_bases(&agentfile, TIMEOUT)).unwrap();
+    std::fs::write(ctx.join("Agentfile"), common::hub_bases(&agentfile)).unwrap();
     std::fs::copy(example.join("codex/harness.json"), ctx.join("codex/harness.json")).unwrap();
     std::fs::copy(common::test_guest(), ctx.join("codex/bin/codex")).unwrap();
     // A context's files keep their modes on a Unix host, as fsutil walks them; a Windows
@@ -670,12 +665,7 @@ fn build_example(home: &TempDir, tag: &str) {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let built = run_shards_env(
-        &["build", "image"],
-        &["-t", tag, ctx.to_str().unwrap()],
-        &env,
-        TIMEOUT,
-    );
+    let built = run_shards_env(&["build", "image"], &["-t", tag, ctx.to_str().unwrap()], &env);
     assert_eq!(built.status, Some(0), "{}", built.stderr);
 }
 
@@ -715,7 +705,7 @@ fn an_images_next_run_restores_the_template_its_first_saved() {
     if cannot_run_vms() {
         return;
     }
-    let home = common::home_with("api-tmpl-home", TIMEOUT);
+    let home = common::home_with("api-tmpl-home");
     build_example(&home, "api-tmpl:1");
     let mut given = spec(&home, "api-tmpl:1");
     given.command = Some(["/bin/sh", "-c", "exit 3"].map(String::from).to_vec());
@@ -768,7 +758,7 @@ fn an_images_next_run_takes_a_warm_host_of_its_pool() {
     if cannot_run_vms() {
         return;
     }
-    let home = common::home_with("api-pool-home", TIMEOUT);
+    let home = common::home_with("api-pool-home");
     build_example(&home, "api-pool:1");
     let mut s = spec(&home, "api-pool:1");
     s.command = Some(["/bin/sh", "-c", "exit 3"].map(String::from).to_vec());
@@ -1012,9 +1002,10 @@ fn still_running(pids: &[u32], group: Option<u32>) -> Vec<u32> {
 /// its run with it. Do boot an image whose VM process is held as it starts ([`Gate`]), and
 /// stop the boot from this thread as it reaches the gate. Expect: `Ended(Stopped)`; none of
 /// the processes the run host had started by then running, nor, on Unix, any of its
-/// process group, a VM, network or share process it started after among them; and each
+/// process group, a VM, network or share process it started after among them; each
 /// record of a run the home keeps (a writable layer's file in `layers`, named by the pid of
-/// the run host that made it) naming no process that runs.
+/// the run host that made it) naming no process that runs; and no file of its run host's
+/// left in `layers` at all, its run host having ended before its microVM held its layer.
 #[test]
 fn a_stop_mid_boot_ends_the_run_host_and_every_process_of_its_run() {
     if cannot_run_vms() {
@@ -1082,6 +1073,10 @@ fn a_stop_mid_boot_ends_the_run_host_and_every_process_of_its_run() {
     let named = records();
     let running = still_running(&named, None);
     assert!(running.is_empty(), "the home's layers name {running:?}, running");
+    assert!(
+        !named.contains(&host),
+        "its run host {host}'s layer outlived it: the home's layers name {named:?}"
+    );
 }
 
 /// Plan step 5 through the orchestrator's path: a harness whose stdin its spec asks for

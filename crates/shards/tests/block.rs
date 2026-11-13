@@ -4,12 +4,10 @@
 mod common;
 
 use std::path::PathBuf;
-use std::time::Duration;
 
 use common::{cannot_run_vms, kernel, test_guest, vm_run};
 use shards_testguest::{fill, first_mismatch};
 
-const TIMEOUT: Duration = Duration::from_secs(120);
 const RO_SALT: u64 = 1;
 const RW_SALT: u64 = 2;
 
@@ -62,7 +60,7 @@ fn run_test(disks: &Disks, test: &str, extra: &str) -> common::Run {
         "--cmdline",
         &cmdline,
     ];
-    vm_run(&args, TIMEOUT)
+    vm_run(&args)
 }
 
 #[test]

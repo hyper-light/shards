@@ -734,9 +734,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
                     let heard = match until {
                         Some(u) => {
                             let left = u.saturating_sub(crate::spec::now() as i128).max(0);
-                            match from
-                                .recv_timeout(Duration::from_nanos(u64::try_from(left).unwrap_or(u64::MAX)))
-                            {
+                            let left = Duration::from_nanos(u64::try_from(left).unwrap_or(u64::MAX));
+                            match super::timed(Some(left), || from.recv_timeout(left)) {
                                 Ok(h) => h,
                                 Err(_) => break,
                             }

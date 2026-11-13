@@ -88,7 +88,9 @@ impl Fixture {
         }
     }
 
-    fn command(&self, args: &[&str], within: Duration) -> common::Run {
+    /// `shards ARGS` in its home, waited on as long as it goes on (`common::run_command`):
+    /// `_within`, its callers' share of their case's time, bounds it no more.
+    fn command(&self, args: &[&str], _within: Duration) -> common::Run {
         common::run_shards_env(
             &[],
             args,
@@ -97,7 +99,6 @@ impl Fixture {
                 ("SHARDS_KERNEL", common::kernel().as_os_str()),
                 ("SHARDS_INIT", common::guest_init().as_os_str()),
             ],
-            within,
         )
     }
 

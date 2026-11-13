@@ -43,7 +43,7 @@ fn shards_with(home: &Path, args: &[&str], more: &[(&str, &OsStr)]) -> Run {
         ("SHARDS_INIT", init.as_os_str()),
     ];
     env.extend_from_slice(more);
-    run_shards_env(&[], args, &env, TIMEOUT)
+    run_shards_env(&[], args, &env)
 }
 
 /// A home whose daemon runs, the test image pulled into it.

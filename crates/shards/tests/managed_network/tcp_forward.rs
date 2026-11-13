@@ -165,7 +165,7 @@ fn managed_engine_half_close_records_actual_host_finish() {
         stopped: false,
     };
     let (image, _server) = common::served();
-    let pulled = common::run_shards_env(&[], &["pull", "-q", &image], &env, input.boot);
+    let pulled = common::run_shards_env(&[], &["pull", "-q", &image], &env);
     assert_eq!(pulled.status, Some(0), "{pulled}");
     let memory = format!("{}m", input.memory_mib);
     let cpus = input.cpus.to_string();
@@ -194,7 +194,6 @@ fn managed_engine_half_close_records_actual_host_finish() {
             &late_arg,
         ],
         &env,
-        input.boot,
     );
     std::fs::write(input.records.join("engine.stdout"), &run.stdout).unwrap();
     std::fs::write(input.records.join("engine.stderr"), &run.stderr).unwrap();
@@ -248,7 +247,7 @@ struct Daemon<'a> {
 impl Daemon<'_> {
     fn stop(&mut self) -> common::Run {
         self.stopped = true;
-        let stop = common::run_shards_env(&[], &["stop", "daemon"], self.env, self.input.boot);
+        let stop = common::run_shards_env(&[], &["stop", "daemon"], self.env);
         let record = json!({"status":stop.status,"stdout":stop.stdout,"stderr":stop.stderr,"test_unwinding":std::thread::panicking()});
         if let Err(error) = std::fs::write(
             self.input.records.join("engine.daemon-stop.json"),
