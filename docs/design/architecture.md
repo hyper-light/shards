@@ -25385,7 +25385,7 @@ memory its guest holds before its guest drops its page cache (D188's measure, PM
 image run); an orchestrator that needs D188's pressure give-back through its run host to keep
 its runs within its budget.
 
-### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; each grant's placeholder carried, step 3's first slice; the injector and the real-VM runs owed)
+### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; the injector built, step 3: TLS ended for granted hosts, HTTP/1.1 heads filled in, echoes masked; HTTP/2 and the real-VM runs owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 33: every kiln harness runs in a
 Shards microVM, and a harness needs its model-provider credential without the credential
@@ -25803,6 +25803,106 @@ stands (above, "Who"), so it must know which placeholder stands for which creden
 - *Owed.* Hex fills each grant's placeholder as it stages the credential into its member (step
   6), with its vendored shards-api at version 22.
 
+**Built: step 3's second slice, the injector** (`crates/net/src/inject.rs`, its handoff in
+`tcp.rs` and `lib.rs`; research f16, f20, f21, f26, f27, f32–f34, f42–f44, f56, f65; record
+docs/research/s33-veil-creds/STEP3.md).
+- *Which flows.* Every TCP flow of a run whose network process holds credentials begins in the
+  injector (`inject::Flow`, beside `Conn.dns`), which reads the guest's first bytes as a
+  ClientHello (rustls's `Acceptor`), keeping them as they came. A server name no grant names, none,
+  bytes that are no TLS it reads, or a host that speaks first: the flow passes, its bytes to the
+  host as they came, the injector let go of; such a flow carries no credential (f32, f33). Names
+  are held by the ClientHello, never the address the guest chose: D236 holds names by address,
+  and TLS names its server by name alone (RFC 6066 §3).
+- *Its TLS, both ways (f21).* The guest's ends under a leaf `Ca::leaf` mints for the SNI as its
+  ClientHello comes (f34), one per connection, none kept (R05: a cache nothing measured); the
+  host's is made from here to the address the guest chose and verified as the registry's client
+  verifies (f20, D19). Both TLS 1.3 under TLS13_AES_256_GCM_SHA384 alone, groups X25519MLKEM768
+  (which the providers negotiated, f21) then X25519, secp256r1 and secp384r1 (RFC 8446 §9.1:
+  secp256r1 must be implemented, so every TLS 1.3 client has one in common), ALPN `http/1.1`
+  alone (HTTP/2 is step 7's), no session kept and no ticket sent (R05). D239's own provider is a
+  type of hyper-quic's rustls fork (`hyper-tls`), which crates.io's rustls, the verifier's,
+  cannot take, so the injector narrows aws-lc-rs's as the in-VM server does. A request's head is
+  written to the host only once its TLS is up, its certificate verified: a host refused gets
+  nothing, and its guest a 502 naming why.
+- *An HTTP/1.1 gateway (RFC 9110 §3.7), one request at a time* (a pipelined head waits within the
+  window). A head is read whole, its lines in CRLF alone: a lone LF or CR is refused 400, so that
+  no host that takes one (RFC 9112 §2.2 lets it) reads another message than this side passed on.
+  Its framing is RFC 9112 §6.3's (f43): Transfer-Encoding beside Content-Length, a last coding
+  other than chunked, chunked twice, a coding in HTTP/1.0 and lengths that disagree are refused
+  400; a chunk's size line is §7.1's alone, a control in its extensions refused. Its host is its
+  absolute target's authority, else its one `Host` (none or two: 400), without its port.
+- *The fill.* `decide` with no token first: `Misdirected` is answered 421 (RFC 9110 §7.4, f44)
+  and the connection closed. Then each `Authorization: Bearer` token (the scheme of any case) and
+  `x-api-key` value, the harnesses' fields (f56, f65): `With(reference)` asks its lease
+  (`Leases::ask`, the connection's token its waiter); held, it is filled in now; asked, the
+  request is parked (`Request::Parked`, R04) and its flow resumed by the answer
+  (`Stack::resume_flows`, which with `ask_run_host` runs until no flow resumes and nothing more is
+  asked); refused, the guest is answered 503 naming the refusal. The head goes out as it came but
+  for its placeholders and its hop-by-hop fields, written once into a buffer made to its length,
+  wiped as it drops. A body is never read for a placeholder (f27) and streams as it comes.
+- *Hop-by-hop fields (RFC 9110 §7.6.1).* Each field a connection option names, with the option,
+  and `Proxy-Connection` go, from requests and responses alike; `close`, `keep-alive` and
+  `upgrade` stay, as the injector keeps one connection each way for one and applies them to both
+  hops, so that they are its own options for the other hop too. A head that names none stays byte
+  for byte.
+- *Responses* are read by §6.3's framing (a HEAD's, 1xx, 204 and 304: no body; chunked; a length;
+  else to the host's end), a 1xx passed on before its final response, a 101 to an upgrade or a
+  2xx to CONNECT making a tunnel; a broken one resets the connection.
+- *The echo mask (f16): a same-length mask, never reframing.* Each value filled into a request is
+  sought in its response's head and data (a chunked body's framing passed over, so that an echo
+  split across chunks is found; Knuth–Morris–Pratt's matching, 1977) and replaced by its
+  placeholder's bytes, cycled to the value's length. No length changes, so no framing is
+  recomputed and nothing of a body is held to recompute it (RFC 9112 §6.3; reframing as chunked
+  would rewrite every response). Bytes from where a value may still begin wait until it completes
+  or fails, the rest going at once; a message's end lets everything go. Not masked, and recorded
+  as the residuals: a value inside a compressed body (Content-Encoding) or a compressed WebSocket
+  message; a part of a value (OpenAI's 401 echoes a masked prefix and suffix, f16); a value echoed
+  after its lease ended, which this process no longer holds; a response's plaintext in rustls's own
+  buffer, which rustls does not wipe. A tunnel's pause after a value's proper prefix holds that
+  prefix until its next bytes or its end.
+- *Audit (f26).* `shards-net: credential <reference> filled in toward <host> at <s>.<ns> (Unix
+  time)`, on the network process's stderr (its run host's diagnostics); never the value or the
+  placeholder.
+- *Bounds (R03): none of its own.* What the injector holds of the guest's bytes (a ClientHello
+  coming, a head, a parked request, a pipelined one) is a part of its connection's window
+  (`Conn::held`, within `TO_HOST`), so the guest sends no more; a ClientHello past rustls's
+  handshake bound (64 KiB, `MAX_HANDSHAKE_SIZE`, which RFC 8446 §4 lets a receiver set below its
+  2^24 bytes) passes as none it reads; a head past the window is refused 431 (RFC 6585 §5), a
+  chunk's line or a trailer section past it breaks the message; the mask holds less than the
+  longest value filled. rustls's own queues are the connection's rings (`set_buffer_limit(None)`,
+  drained into them at each turn), whose window bounds them.
+- *Made before the process confines itself.* `shards_net::Prepared`, the CA's key and the
+  injector's host-side TLS (`inject::Upstream`), for a run with grants (`--credentials`): on Linux
+  the verifier reads the system's roots as it is made, before Landlock; macOS's asks trustd as it
+  verifies, which App Sandbox allows (`com.apple.trustd` and `com.apple.trustd.agent` in
+  `/System/Library/Sandbox/Profiles/system.sb`, which application.sb imports; macOS 26.4.1);
+  Windows' asks CryptoAPI in its AppContainer (unverified here).
+- *The verifier shared (R12).* `crates/verify` (shards-verify): the registry's verifier
+  (`apple.rs`, rustls-platform-verifier elsewhere, the refusal of a host with no roots) moved into
+  a crate the registry's client and the network process both use. Refused: the network process
+  depending on shards-registry, whose image store, regex and JSON would enter its build and the VM
+  process's (each built again into `target/helpers`).
+- *Refusals, typed (R04).* `inject::Refusal`: `Malformed` 400, `TooLarge` 431, `Misdirected` 421,
+  `Unleased` 503, `Upstream` 502, each answered with `Connection: close` and the flow closed; the
+  guest's TLS failing (AES-256-GCM refused, say) gets its alert, the flow closed.
+- *Tests (macOS arm64, adas-mac-studio.local; STEP3.md).* A real rustls guest, the injector, and a
+  real HTTPS echo server over TCP that trusts a test root: a granted host's request parked until
+  its lease is answered, then arriving byte for byte but for the value in its placeholder's place,
+  `x-api-key` and a bearer token of another case, its echo masked and no value reaching the guest,
+  each fill audited without the value, AES-256-GCM both ways; an ungranted host's flow passed as it
+  came with its placeholder, and a granted host's request carrying another host's placeholder
+  arriving with it, nothing leased; a Host that is not the SNI answered 421, nothing reaching the
+  host; 8 MiB through a window of 256 KiB to a host that reads slowly arriving and coming back
+  unchanged, the injector holding none of it; a guest offering AES-128-GCM alone refused. Units:
+  framing's smuggling shapes, lines in CRLF alone, chunks strict, hop-by-hop fields, the mask
+  across pieces and framing. tcp.rs: the handoff, the held ClientHello out of the window, a
+  granted flow's handshake through segments. Each of 12 guards removed in turn fails its test.
+- *Owed (ROOT).* A real run with a credential grant through `shards api-run` on KVM x86_64 (under
+  the seccomp filter), HVF (App Sandbox, trustd) and WHP (AppContainer, CryptoAPI): a member's
+  request with its placeholder to a granted host filled in, an ungranted host's passing, the audit
+  in the run host's diagnostics. The injector's cost per connection (a leaf minted, two handshakes)
+  and per request, measured (step 10). HTTP/2 (step 7).
+
 **Built: step 9, every harness's trust and token checks surveyed** (docs/research/s33-veil-creds/
 harness-survey.md, its evidence `evidence/survey/<harness>.txt`). Each of kiln's ten harnesses was read from its own
 build: its pinned linux/amd64 files, held to their pins' sha256, searched for the strings that say how it trusts and
@@ -25815,8 +25915,8 @@ token beside a real ID token; whether its Anthropic sign-in runs it is step 8's 
 sender-constrained tokens. A string found says the build carries the code, not that every path runs it; ROOT's real
 runs (step 10) confirm each harness's trust of the run's CA.
 
-**Owed (later slices of step 33, this plan's steps 3, 6–8 and 10).** The injector that
-terminates TLS and fills HTTP/1.1 then HTTP/2 headers (step 3's second slice, and 7); Hex wiring the grants
+**Owed (later slices of step 33, this plan's steps 6–8 and 10).** The injector that
+fills HTTP/2 headers (step 7); Hex wiring the grants
 and answering a run's leases from kiln's broker (step 6); the Claude Code and Codex
 sign-in/refresh profiles (step 8); and ROOT's real-VM runs on KVM, HVF and WHP with a
 whole-guest-memory leak scan and the injector's measured cost (step 10).
