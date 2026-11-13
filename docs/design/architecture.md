@@ -7514,6 +7514,21 @@ Decided by the user on 2026-10-14 ("so long as they apply appropriately to micro
     other group, and its own group's stop comes once its word has run past the slowest
     room answered (the same test: each group's largest stopped, OOM-killed). A group whose
     budget goes tells each member it told a room that it has none, its hold let go of.
+  - **A member's room as of the footprint it was read with** (built, macOS and Windows).
+    The groups' thread read what each member's VM process held, then told each its room,
+    and init held its run at what it used as the word came plus that room: a member that
+    grew between the read and the word had that growth counted twice, its group past
+    `memory.max` or not as the two came in one order or the other
+    (`a_members_room_holds_as_of_the_footprint_it_was_read_with`, red at 1dc8eeff8: a member
+    of 400 MiB beside 300 under 1000, grown to 600 before its word came, held to 900). Now
+    its room goes with the footprint its VM process held as it was read (`ROOM`'s second
+    word), and init holds it as of what that process holds now, read from its VMM
+    (`control::FOOTPRINT`: the VM process's own footprint as the daemon reads one,
+    proc_pid_rusage's on macOS, its private working set on Windows) just before its hold
+    reads what the run uses: `run::room_now`, the room less what it came to hold since, all
+    of it read values. So it grows into its room once, whichever comes first. Where its VMM
+    cannot say its footprint, init holds the room as told and says so (`ROOM_UNREAD`),
+    which the daemon logs. A one-word `ROOM`, a budget's (D188), holds as it did.
   - **Windows** (built): every process of a microVM under NAME is made in a job object of
     NAME's, nested above the VM process's own (PROC_THREAD_ATTRIBUTE_JOB_LIST, the
     group's first; Job Objects, "Nested Jobs", Windows 8 on), its warm VMs too: a VM
@@ -10203,11 +10218,12 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
   were nearly all microVMs given up on as they booted, each running its start the whole
   wait: their least 10 s of it, 3.3 s of CPU. The deadline was a wall clock's, a minute
   held to by CI's runners, where a cold boot takes 1.6 to 2.2 s (M357), which this host's
-  speed sets past it. Now the daemon judges a starting microVM by its process each
-  `READY_STALL` (10 s): one that took more CPU than an idle microVM takes in as long (63 ms
-  in 10 s, M357's most, `IDLE_VM_CPU`) ran its start, and is waited for; one given up on
-  has run no more than that for `READY_TIMEOUT`, as one that never runs is given up on a
-  minute after its start, as before. A claim of a pool whose VM is starting waits for it
+  speed sets past it. Now the daemon follows a starting microVM's process by D215's judge
+  (`ready`, ROOT's (3) slice 2, 2026-11-13; it was each `READY_STALL`'s 10 s, judged by an
+  idle microVM's CPU, 63 ms in 10 s, `IDLE_VM_CPU`, given up on after `READY_TIMEOUT`'s
+  minute): before this daemon's first READY, its liveness alone; then past W*, the slowest
+  start it has seen (`Answers::ready`, which each READY teaches), looked at each W* and given
+  up on where a whole W* shows it ran no CPU, its host not the reason. A claim of a pool whose VM is starting waits for it
   past its minute, its watcher waking it; and a builder's boot is judged so, past
   `BOOT_PATIENCE`'s 30 s. Not caught: a guest that spins before it is ready (a panic
   resets it, `panic=-1`, which ends its VM). Each slice is logged, the durable evidence by
@@ -17262,6 +17278,7 @@ download.
 | `MAX_TRAILER` (http.rs) | 4096, uncited | 4096, cited | go1.26.1 net/http/transfer.go l. 925-935, transport.go l. 326 |
 | `MAX_REDIRECTS` (http.rs) | 10, uncited | 10, cited | go1.26.1 net/http/client.go l. 834 |
 | `SLACK` (registry.rs tests) | 1.5 s | none: the waits the client chose (`Client::paused`) | the test's own record |
+| a scripted server's read (testing.rs `route`), and a test's read of the connection it held | 10 s, 5 s | none: its client's end, or the server's drop, which shuts its connections down (2026-11-13) | the person's rule: liveness alone where nothing is learned; `a_scripted_server_waits_for_its_client_as_long_as_it_lives` |
 
 #### DNS/dial completion and cancellation are events (D222, continued)
 
@@ -17356,7 +17373,7 @@ progress; D222's estimators).
 | `MAX_PLAN` (daemon/moves.rs) | 16 MiB | `shards_remote::frame::MAX_FRAME` | the `ready` step's request frame (cli/moves.rs) |
 | `MAX_XATTRS` (daemon/moves.rs) | 65536 | `XATTR_LIST_MAX / 6` = 10922 | limits.h l. 17; xattr.h l. 33 (`os2.`); listxattr(2) |
 | `MAX_XATTR` (daemon/moves.rs) | 64 KiB | cited | limits.h l. 16 (and the name's 255, l. 15) |
-| `EMPTIED` (daemon/parents.rs) | 10 s | none: while the leaf's processes run | `platform::IDLE_VM_CPU`, `progressed` (PM M357) |
+| `EMPTIED` (daemon/parents.rs) | 10 s | D215's judge on its record (`EMPTIED`, learned): cold, while the leaf's processes live; past W*, a look each W* (ROOT's (3) slice 4) | the leaf's processes' CPU (`shards_api::Watch`); it was `platform::IDLE_VM_CPU`, `progressed` (PM M357) |
 | `RENEW` (ship/awslogs.rs, ship/gcplogs.rs) | 5 min | `Renewal::margin()`, learned | the requests' own times and expiries |
 | `MOST_WAIT` (ship/fluentd.rs) | 60 s | cited, with its 1.5 | moby v28.5.1 daemon/logger/fluentd/fluentd.go l. 263-277; fluent-logger-golang v1.9.0 fluent/fluent.go l. 34, 36, 496-498 |
 | `ACK_MOST` (ship/fluentd.rs) | 1024 | `ID_LEN` = 24 | the chunk ID sent (16 bytes, RFC 4648 §4); Forward Protocol v1, Response |
@@ -27888,8 +27905,17 @@ carrier: a bundle over origin/main in a blobless clone):
     Its VM is played on the link's other end, and the link is followed as a run's is.
 - shards: `daemon::snapshots::tests::a_saves_ask_reads_as_its_vm_reads_it`.
 - The scan: `scan_test.py`, 7 tests; credentials.py's `credentials_test.py`, 15, unchanged.
-- Each guard was removed in turn and its test failed: the records are in the scan's README and
-  below.
+- R10, each guard removed by hand in turn, its focused test run, the tree restored (13 of 13
+  failed):
+  - the run host's: the VM's answer taken unasked; two saves at once; a save outside the home;
+    one where a guest reaches; one into a taken name; a failed save's directory left;
+  - the scan's: every 8th offset alone looked up (f18's stride); placeholders not public; no
+    base64 forms; no UTF-16LE form; a shape inside a longer word; no entropy floor; a run one
+    shorter.
+  - The run one shorter survived first: the scan's test took its bound from the scan itself. It
+    now holds the scan to credentials.py's run (d1d50e7f8). The failed save's directory, left,
+    first hung its test; the test's VM now bounds its reads, so the test fails rather than
+    hangs.
 
 **Owed** (ROOT).
 - `api_image`'s `a_saved_runs_memory_holds_what_its_harness_was_given_and_the_scan_finds_it` on

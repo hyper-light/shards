@@ -8549,7 +8549,9 @@ impl<D: Disk> Daemon<D> {
         // A VM the host had not let run yet asked nothing and failed nothing of its own:
         // no fault of its template's (PM M166).
         let unstarted = matches!(&granted, Err(e) if !e.started);
-        let ready = granted.map_err(|e| e.why).and_then(|()| ready(&socket, pid));
+        let ready = granted
+            .map_err(|e| e.why)
+            .and_then(|()| ready(&socket, pid, &self.answers.ready));
         // Said with what its process says, which may take a second: before the daemon's
         // state is held.
         let ready = ready.map_err(|e| with_its_process(&child, e));
@@ -9203,13 +9205,13 @@ struct GrantError {
 /// vms`), which only what its process did meanwhile can tell apart.
 pub(crate) const READY_STALL: Duration = Duration::from_secs(10);
 
-/// Whether `socket` has something to read, or has closed, within `wait`; an error is
-/// taken for something to read, for the read that follows to say.
-fn readable_within(socket: &UnixStream, wait: Duration) -> bool {
+/// Whether `socket` has something to read, or has closed, within `wait` (none: until it
+/// has); an error is taken for something to read, for the read that follows to say.
+fn readable_within(socket: &UnixStream, wait: Option<Duration>) -> bool {
     #[cfg(windows)]
     {
         socket
-            .wait_readable(None, Some(Instant::now() + wait))
+            .wait_readable(None, wait.map(|w| Instant::now() + w))
             .unwrap_or(true)
     }
     #[cfg(unix)]
@@ -9219,54 +9221,64 @@ fn readable_within(socket: &UnixStream, wait: Duration) -> bool {
             events: libc::POLLIN,
             revents: 0,
         };
-        let ms = i32::try_from(wait.as_millis()).unwrap_or(i32::MAX);
+        // Whole milliseconds, rounded up, so that a wait never ends before its time.
+        let ms = wait.map_or(-1, |w| {
+            i32::try_from(w.as_nanos().div_ceil(1_000_000)).unwrap_or(i32::MAX)
+        });
         // SAFETY: poll(2) of one pollfd of ours.
         unsafe { libc::poll(&raw mut next, 1, ms) != 0 }
     }
 }
 
-/// Waits for a starting VM to say it is ready, as long as its process runs its start: a
+/// Waits for a starting VM to say it is ready while its process goes on with its start: a
 /// boot's cost is its host's, 1.6 s alone on CI's windows-2022 and 52 s eight at once (PM
 /// M357), and over 60 s on an arm64 Windows host nested under QEMU's TCG, its process
-/// running a CPU flat out (the parity plan's step 10). A VM is given up on once it has run
-/// nothing a boot does ([`shards_vmm::platform::progressed`]) for [`READY_TIMEOUT`], judged
-/// each [`READY_STALL`]: at most that past its start where it never runs, as before; one
-/// whose CPU time cannot be read is held to [`READY_TIMEOUT`] from its start.
-fn ready(socket: &UnixStream, pid: u32) -> Result<(), String> {
+/// running a CPU flat out (the parity plan's step 10). Followed by D215's judge on `record`,
+/// this daemon's VMs' starts (`Answers::ready`): before its first, its liveness alone, its
+/// socket's end; then past W*, the slowest start seen, looked at each W* and given up on
+/// where a whole W* shows it ran no CPU, its host not the reason. Its READY teaches the
+/// record. It was `READY_STALL`'s 10 s looks and `READY_TIMEOUT`'s 60 s, picked, judged by PM
+/// M357's idle microVM (ROOT's (3), 2026-11-13).
+fn ready(socket: &UnixStream, pid: u32, record: &shards_api::Record) -> Result<(), String> {
     let began = Instant::now();
-    let mut progress = Progress::of(pid);
-    let mut ran_last = began;
-    while !readable_within(socket, READY_STALL) {
-        let look = progress.look();
-        let (ran, now_at) = (look.ran, Instant::now());
-        if ran {
-            ran_last = now_at;
+    let mut follow = shards_api::Followed::of_pid(pid)
+        .ok()
+        .flatten()
+        .and_then(|followed| shards_api::Follow::begin(record, followed).ok().flatten());
+    loop {
+        let wait = follow
+            .as_ref()
+            .and_then(shards_api::Follow::due)
+            .map(|due| due.saturating_duration_since(Instant::now()));
+        if readable_within(socket, wait) {
+            break;
         }
-        #[cfg(windows)]
-        let did = shards_ipc::process_activity(pid);
-        #[cfg(not(windows))]
-        let did = look.to_string();
-        let stalled = now_at.saturating_duration_since(ran_last);
+        let Some(followed) = follow.as_mut() else {
+            continue;
+        };
+        followed.look().map_err(|why| match why {
+            shards_api::Unfollowed::Stalled(stall) => format!(
+                "VM {pid} was not ready: it ran nothing for {:?}, past the slowest start seen ({:?}), {:?} after it began",
+                stall.over(),
+                stall.slowest(),
+                Duration::from_secs(began.elapsed().as_secs())
+            ),
+            shards_api::Unfollowed::Process { failure, .. } => {
+                format!("VM {pid} was not ready: its process could not be read: {failure}")
+            }
+        })?;
         log(format!(
-            "VM {pid}: not ready in {:?}{}: {did}",
-            Duration::from_secs(now_at.saturating_duration_since(began).as_secs()),
-            if ran { "" } else { ", running nothing of its start" }
+            "VM {pid}: not ready in {:?}, going on with its start",
+            Duration::from_secs(began.elapsed().as_secs())
         ));
-        if stalled >= READY_TIMEOUT {
-            return Err(format!(
-                "VM {pid} was not ready: it ran nothing of its start for {READY_TIMEOUT:?}, \
-                 {:?} after it began",
-                Duration::from_secs(now_at.saturating_duration_since(began).as_secs())
-            ));
-        }
     }
-    socket
-        .set_read_timeout(Some(READY_TIMEOUT))
-        .map_err(|e| format!("VM {pid}: {e}"))?;
-    let said = shards_ipc::recv(socket);
-    let _ = socket.set_read_timeout(None);
-    match said {
-        Ok(Some(m)) if m.kind == kind::READY => Ok(()),
+    match shards_ipc::recv(socket) {
+        Ok(Some(m)) if m.kind == kind::READY => {
+            if let Some(followed) = follow.as_mut() {
+                followed.answered();
+            }
+            Ok(())
+        }
         Ok(Some(m)) => Err(format!("VM {pid} said message kind {} instead of READY", m.kind)),
         Ok(None) => Err(format!("VM {pid} ended before it was ready")),
         Err(e) => Err(format!("VM {pid} was not ready: {e}")),
@@ -9529,6 +9541,53 @@ mod tests {
         );
         // A stall is judged in slices, each a sixth of the time a VM may run nothing.
         assert_eq!(READY_TIMEOUT, 6 * READY_STALL);
+    }
+
+    /// A starting VM is waited for while its process goes on with its start, its READY
+    /// teaching the daemon's record of starts (D215's judge): a stand-in that runs a CPU and
+    /// says READY 1.5 s on is taken, and the record has learned it; past a learned W*, one
+    /// that runs nothing is given up on a whole W* on, said so. Before, `READY_STALL`'s 10 s
+    /// looks and `READY_TIMEOUT`'s 60 s, picked, learned nothing (ROOT's (3), 2026-11-13).
+    #[cfg(unix)]
+    #[test]
+    fn a_starting_vm_is_waited_for_while_it_goes_on_with_its_start() {
+        let late = Duration::from_millis(1500);
+        let record = shards_api::Record::new();
+        let busy = shards_ipc::spawn(
+            Path::new("/bin/sh"),
+            &[OsStr::new("-c"), OsStr::new("while :; do :; done")],
+            &[],
+            false,
+        )
+        .unwrap();
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                std::thread::sleep(late);
+                shards_ipc::send(&theirs, kind::READY, &[], &[]).unwrap();
+            });
+            ready(&ours, busy.id(), &record).unwrap();
+        });
+        let _ = busy.kill(shards_ipc::signal::SIGKILL);
+        let _ = busy.wait();
+        assert!(
+            matches!(record.seen(), shards_api::Seen::Learned { slowest, .. } if slowest >= late),
+            "{:?}",
+            record.seen()
+        );
+        // Its W* learned (taught here): one that runs nothing, given up on past it.
+        let slowest = Duration::from_millis(200);
+        let record = shards_api::Record::new();
+        record.teach(slowest, Duration::from_millis(1));
+        let asleep = sleeper(60);
+        std::thread::sleep(slowest);
+        let (ours, _theirs) = UnixStream::pair().unwrap();
+        let began = Instant::now();
+        let refused = ready(&ours, asleep.id(), &record).unwrap_err();
+        assert!(began.elapsed() >= slowest, "{:?}", began.elapsed());
+        assert!(refused.contains("ran nothing for"), "{refused}");
+        let _ = asleep.kill(shards_ipc::signal::SIGKILL);
+        let _ = asleep.wait();
     }
 
     /// The basis as the daemon reads it of a VM's process, on this host: a process that
@@ -12538,6 +12597,72 @@ mod tests {
                 t.until(
                     "group one's largest, past its memory.max, was never stopped",
                     stopped(&stuck),
+                );
+            });
+        });
+    }
+
+    /// A group's member is held as of the footprint its room was read with (D183): told the
+    /// footprint its VM process held as the daemon read its room, its guest holds it at what
+    /// it used then and that room (`room_now`), whenever the word comes. So it grows into its
+    /// room once whether it grew before its footprint was read or after, before its word
+    /// came, and its group stays within its memory.max either way. Held at what it uses as
+    /// the word comes and that room, as a room told alone is, one that grew between the two
+    /// counts its growth twice: red so. Here a member of 400 MiB beside one of 300, under 1000,
+    /// grows to 600 after its room is read, and is then read again: each room holds it to 700.
+    #[cfg(any(target_os = "macos", windows))]
+    #[test]
+    fn a_members_room_holds_as_of_the_footprint_it_was_read_with() {
+        let t = Test::new("group-room");
+        t.run(|t| {
+            let mib = |n: u64| n << 20;
+            let dir = groups::made(&t.daemon.home, "g").unwrap();
+            for file in ["memory.high", "memory.max"] {
+                std::fs::write(dir.join(file), format!("{}\n", mib(1000))).unwrap();
+            }
+            t.t.daemon.start_groups(t.threads);
+            let (_, _b_run, b_vm, _) = running_under(t, "beside", "g", mib(300));
+            let (_, _a_run, a_vm, a_pid) = running_under(t, "grows", "g", mib(400));
+            let _ends = Ends {
+                held: None,
+                vms: vec![(&a_vm, 0), (&b_vm, 0)],
+            };
+            // What its guest holds it to, once told its room `m`, as its init holds one: past
+            // what it uses as the word comes, its footprint `now` then, the room as of it
+            // where the word says the footprint it was read with, else the room as said.
+            let reach = |m: shards_ipc::Message, now: u64| -> u64 {
+                let spec = m
+                    .payload
+                    .get(9..)
+                    .and_then(shards_abi::run::Spec::decode)
+                    .unwrap();
+                assert_eq!(spec.builtin, shards_abi::run::builtin::ROOM);
+                let word = |i: usize| std::str::from_utf8(&spec.argv[i]).unwrap().to_string();
+                let room: i64 = word(0).parse().unwrap();
+                let held = match spec.argv.len() {
+                    1 => room,
+                    _ => shards_abi::run::room_now(room, word(1).parse().unwrap(), now).unwrap(),
+                };
+                // Answered, its descriptors let go of: its output ends, and so its exec.
+                answer_exec(&m, b"0", 0);
+                drop(m);
+                now.saturating_add_signed(held)
+            };
+            let done = AtomicBool::new(false);
+            std::thread::scope(|s| {
+                let _done = Done(&done);
+                s.spawn(|| answering(&b_vm, &done));
+                // Its room read as it held 400 MiB; it grows to 600 before the word comes.
+                let first = heard_whole(&a_vm);
+                t.daemon.groups.play(a_pid, mib(600));
+                let grew_after = reach(first, mib(600));
+                // Its room read again, as it holds 600 MiB.
+                let next = heard_whole(&a_vm);
+                let grew_before = reach(next, mib(600));
+                assert_eq!(
+                    (grew_after >> 20, grew_before >> 20),
+                    (700, 700),
+                    "held past 700 MiB, its group past its memory.max of 1000 with the other's 300"
                 );
             });
         });
