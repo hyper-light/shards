@@ -101,6 +101,7 @@ fn boot_member(home: &TempDir, image: &str, terminal: bool, stdin: bool) -> Box<
             workdir: None,
             stdin,
             terminal,
+            args: Vec::new(),
         }],
         publish: Vec::new(),
         egress: Narrowing::default(),

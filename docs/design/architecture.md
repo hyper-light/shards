@@ -25867,6 +25867,101 @@ the period from the first answer.
 its own read as a `RATE` line); a managed guest held to a rate whose CPU over a window passes it
 by more than a period's share, its vCPUs' overrun and its VMM's own.
 
+### D256. A member's run-time arguments: its run's flags after its own command, on its command line (built: an orchestrator's runs; real-VM runs owed)
+
+**Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d step 17 launches kiln's harnesses through
+Hex, each a member of its Agentfile's image. A harness runs by its image's command
+(`harness.json`'s `run.command`), and what its session adds (its model, its mode, the
+conversation it resumes) are arguments past that command (kiln `docs/isolation.md` at
+`522f14c31`, "Its harness is a member of the image"). Claude Code, Antigravity and pi take
+theirs as flags (`--resume`, `--session-id`, `--model`, `--permission-mode`); Codex and the ACP
+harnesses take theirs over their protocols. shards-api's `MemberSpec` took a member's
+environment, files, working directory, stdin and terminal, and no arguments, so those three
+could not start as their sessions ask (goal 67's inventory, `docs/research/s37-decision-inventory.md`
+row 17; kiln `docs/isolation.md`, "A member's run-time arguments"). ROOT's decision,
+2026-11-13: `MemberSpec` takes them, as without them those harnesses break.
+
+**Alternatives** (R02):
+- OCI's and Docker's: a run's arguments replace the image's `Cmd`, the default arguments to its
+  `Entrypoint` ("These values act as defaults and may be replaced by any specified when
+  creating a container": OCI image-spec v1.1.0 config.md, `Cmd`), as `shards run IMAGE ARG…`
+  composes them (run.rs `compose`, moby's merge). A member's descriptor has no `Cmd`: its
+  `options` are its adapter's base arguments, which kiln holds each image's command to (kiln
+  `kinds::tests::s17_each_images_command_runs_its_harness_as_its_adapter_drives_it`). A run
+  that replaced them would drop the arguments its harness is built to be driven by.
+- A variable the member's program reads its arguments from: no harness kiln runs reads one;
+  each takes its flags on its command line.
+- Decided: appended. A member's command line is its config's `run.command` (its entrypoint's
+  words, then its options), then its run's arguments in their order. None given, its command
+  alone, as before.
+
+**Decided and built.**
+- *Asked.* `MemberSpec::args`, each a UTF-8 string. shards-api refuses one holding a NUL, which
+  no command line exec'd holds, before any run host starts (`ImageRefusal::Spec`, "a member's
+  argument"), naming its place, never its bytes.
+- *Carried.* `MemberStage::args`, appended to the image channel's request at version 18: each
+  member's count, then each argument as text, in the members' order. A side of version 17
+  refuses the run by its version, so no run host starts a member without the flags its
+  orchestrator asked.
+- *Bounded.* By the channel's own bound, with the rest of the request: `run::MAX_PAYLOAD`,
+  Linux's own on a command line and environment (`ARGS_MOST`, D16). Past it the request is
+  refused as it is written (`WireError::TooLong`; `ImageRefusal::Spec { what: "the spec" }`
+  before any run host starts), never cut to fit. The run host holds the run's spec, the
+  arguments staged in its setup among the rest, to the same bound (`spec::fits`), refused as
+  `Cause::Request`.
+- *Staged.* The run host gives the guest one `member-arg=<index>\0<argument>` setup entry each
+  (abi `run::members::ARG_KEY`), in order, after the member's other entries. It refuses one
+  holding a NUL, and arguments in two of one member's stages, which have no order between
+  them (`Cause::Request`). An argument stages into its member: the guest refuses one for a
+  member it starts no program for, as it refuses a variable (`staged::check`).
+- *Run.* Init reads them again (`staged::args`), refusing one holding a NUL. The member's
+  command line is its program as found, the rest of its config's `run.command`, then its
+  arguments (domains.rs `command_line`), made before its process is cloned, as nothing may
+  allocate after. A command line Linux does not exec (its strings with their NULs and
+  pointers, beside its environment's, past `ARGS_MOST`: fs/exec.c `bprm_stack_limits`) fails
+  its exec with `E2BIG`, which its launch reports (`managed::Step::Exec`): its run ends failed
+  in its init's words, the member never started without them.
+- *No secret.* A command line is read by whatever sees the member's processes (proc(5),
+  `/proc/PID/cmdline`), and its arguments print in `Debug`: a credential goes in the member's
+  environment or files, which `Secret` keeps out of `Debug`.
+
+**Literals** (none chosen):
+
+| Literal | Source |
+|---|---|
+| `member-arg=` | this wire's own, beside D231's `member-*=` entries |
+| the channel's version 18 | the next above main's 17 (D247's `rate_period`), ROOT's reservation |
+| `run::MAX_PAYLOAD` | the channel's own bound, `ARGS_MOST` (D16) |
+| 4, an argument's least bytes | its text's u32 length, the channel's encoding |
+
+**Cold start** (R03). Nothing is learned: a member's arguments are its orchestrator's, and none
+are none.
+
+**Tested** (light):
+- abi `run::members::tests::a_members_arguments_are_its_own_in_order`.
+- shards-api `wire::tests::each_members_arguments_ride_the_request_last`, `messages_round_trip`
+  and `unknown_versions_and_tags_are_refused` (a request of version 17 refused);
+  `image::tests::a_members_arguments_ride_its_request_in_order`,
+  `what_the_guest_refuses_is_refused_first` and `a_spec_past_the_bound_is_refused`.
+- The run host's `a_members_arguments_are_staged_after_its_own_in_order`.
+- init `staged::tests::a_members_arguments_are_read_again_in_the_guest` and
+  `staging_into_no_running_member_is_refused`;
+  `domains::tests::a_members_command_line_is_its_command_then_its_runs_arguments`.
+
+**Owed** (ROOT).
+- A real-VM test: a member whose command prints its own arguments (a test guest mode that
+  writes each with its NUL), booted through `ImageShards` with `MemberSpec::args` of `--resume`,
+  `s 1` and an empty one, its stdout its own options then those three, on HVF, KVM and WHP.
+- Guard-removal mutants, each of which must fail its test: init `command_line` without its
+  arguments, the run host's `member-arg=` entries unstaged, the wire's arguments unwritten, and
+  `arg_ok`'s NUL check.
+- These light tests on Linux and Windows (CI), and `scripts/lint` on the 7 targets.
+- Hex's re-vendor of the image channel at version 18; kiln's launch passing each harness's flags.
+
+**What would falsify it.** A member started without the arguments its spec gave, with them
+before its own options, or with one split, joined or cut; a request past the bound started
+with its arguments cut.
+
 ## 4. Start path (≤ 5 ms budget)
 
 The target: a user's `shards run IMAGE COMMAND` to its command executing in its microVM
