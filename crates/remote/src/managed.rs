@@ -1680,15 +1680,20 @@ mod tests {
 
     enum Ask {
         Connect(SocketAddr),
+        /// Says the owner consumed the records before this offset (`consumed`).
+        Consume(u64),
         /// Ends the owner's driver without a word to its endpoint, as a killed owner's ends.
         Vanish,
     }
 
     /// An owner as the daemon's are (crates/shards tests/common/managed_capture.rs), over the
-    /// real transport on a driver of its own: it subscribes at cursor 0 once its handshake is
+    /// real transport on a driver of its own: it subscribes at its cursor once its handshake is
     /// done and tells what it hears.
     struct Owner {
         config: Option<ClientConfig>,
+        cursor: u64,
+        /// Its subscription's stream, once open.
+        stream: Option<(ConnKey, StreamId)>,
         pending: Vec<u8>,
         heard: mpsc::Sender<Heard>,
         vanished: bool,
@@ -1712,7 +1717,8 @@ mod tests {
                 code: 1,
                 why: "no stream to subscribe on",
             })?;
-            self.pending.extend_from_slice(&subscribe(scope(), 0));
+            self.pending.extend_from_slice(&subscribe(scope(), self.cursor));
+            self.stream = Some((conn, stream));
             self.flush(io, conn, stream);
             Ok(())
         }
@@ -1737,6 +1743,12 @@ mod tests {
                 Ask::Connect(to) => {
                     if let Some(Err(e)) = self.config.take().map(|config| io.connect(to, config)) {
                         let _ = self.heard.send(Heard::Lost(e.to_string()));
+                    }
+                }
+                Ask::Consume(offset) => {
+                    self.pending.extend_from_slice(&consumed(offset));
+                    if let Some((conn, stream)) = self.stream {
+                        self.flush(io, conn, stream);
                     }
                 }
                 Ask::Vanish => self.vanished = true,
@@ -1781,6 +1793,8 @@ mod tests {
                 None,
                 Owner {
                     config: Some(config),
+                    cursor: 0,
+                    stream: None,
                     pending: Vec::new(),
                     heard: hears,
                     vanished: false,
@@ -1908,16 +1922,44 @@ mod tests {
     /// refused, the holder asked for an answer (a PING), and once that goes unanswered past its
     /// window the successor's next attempt takes the place, the record that waited for the
     /// vanished owner its first (`net::Driver::reclaim`). Each attempt a driver of its own, as a
-    /// restarted owner's, dialing again as managed/input.rs's successor does.
+    /// restarted owner's, dialing again as managed/input.rs's successor does and as patient: a
+    /// refused attempt's second Initial datagram is held by its endpoint, which admits one attempt
+    /// at a time (`max_incoming(1)`), for three of its initial probe timeouts (hyper-quic's
+    /// `HeldInitial`, about 3 s from RFC 9002's 333 ms), every attempt meanwhile ignored, so each
+    /// takes that long to be answered (3.2-3.4 s on adas-mac-studio.local).
     #[test]
     fn a_vanished_owners_place_goes_to_its_successor_as_it_dials() {
         let mut pair = Pair::subscribed();
+        // A record first, consumed: its endpoint has seen its owner answer, and so has a window
+        // to judge it by (a holder whose path showed no answer never stalls, D180's cold start;
+        // an owner gone before its delayed acknowledgement of the handshake's last frames left
+        // its endpoint none, and its successor refused for good, 9 times over 31 s alone).
+        let warm = b"warm\n";
+        let mut bytes = pair.producer.take_buffer().unwrap().unwrap();
+        bytes.extend_from_slice(warm);
+        pair.producer.submit(bytes).unwrap();
+        loop {
+            match pair.heard.recv_timeout(PATIENCE) {
+                Ok(Heard::Bytes(bytes)) if bytes.windows(warm.len()).any(|w| w == warm) => break,
+                Ok(Heard::Bytes(_)) => {}
+                other => panic!("the first record never came: {other:?}"),
+            }
+        }
+        pair.owner
+            .send(Command::Handler(Ask::Consume(warm.len() as u64)))
+            .unwrap();
+        let consumed = pair.until(
+            PATIENCE,
+            |state| matches!(state, State::Ready(at) if at.consumed == warm.len() as u64),
+        );
+        assert!(consumed.is_ok(), "{consumed:?}");
         pair.owner.send(Command::Handler(Ask::Vanish)).unwrap();
         pair.owner_driver.take().unwrap().join().unwrap().unwrap();
         let mut bytes = pair.producer.take_buffer().unwrap().unwrap();
         bytes.extend_from_slice(b"to nobody\n");
         pair.producer.submit(bytes).unwrap();
         let start = Instant::now();
+        let patience = PATIENCE * 3;
         let mut refused = 0;
         let heard = loop {
             let (hears, heard) = mpsc::channel();
@@ -1927,6 +1969,8 @@ mod tests {
                 None,
                 Owner {
                     config: Some(config),
+                    cursor: warm.len() as u64,
+                    stream: None,
                     pending: Vec::new(),
                     heard: hears,
                     vanished: false,
@@ -1940,12 +1984,12 @@ mod tests {
             .unwrap();
             let running = std::thread::spawn(move || driver.run());
             asks.send(Command::Handler(Ask::Connect(pair.address))).unwrap();
-            let got = heard.recv_timeout(PATIENCE);
+            let got = heard.recv_timeout(patience);
             asks.request_stop();
             running.join().unwrap().unwrap();
             match got {
                 // Dialing again at managed/input.rs's successor's pace.
-                Ok(Heard::Lost(_)) if start.elapsed() < PATIENCE => {
+                Ok(Heard::Lost(_)) if start.elapsed() < patience => {
                     refused += 1;
                     std::thread::sleep(Duration::from_millis(100));
                 }

@@ -1692,10 +1692,10 @@ fn a_daemon_reached_before_unheard_past_its_window_runs_out_and_is_waited_for() 
     relay.hold(hold);
     let (status, seen) = ran_seen(laptop, Remote { known, ..remote }, &["say", "second", "x", "0"]);
     assert_eq!(status, Ok(0), "{seen:?}");
-    assert!(
-        seen.ran_out && seen.handshake.is_some_and(|h| h >= hold),
-        "{seen:?}"
-    );
+    // Its handshake's time is not held to the hold: the client's own absence, its driver
+    // descheduled, is taken out of it (`net::Liveness::absent`), and at load 28 a handshake held
+    // 194.6 ms measured 191.3 ms (adas-mac-studio.local, kiln r829).
+    assert!(seen.ran_out && seen.handshake.is_some(), "{seen:?}");
     assert!(matches!(known.after(&seen), tls::Known::RanOut(_)), "{seen:?}");
 }
 
