@@ -190,15 +190,15 @@ master. Design, alternatives and literals: D244.
 
 ### Light results
 
-At 225e13850 (then formatted by rustfmt alone): init's on Linux, where alone it runs, the
-rest on macOS, as the person's rule of 2026-11-13 has it.
+At 8149cebab, this step on main: init's on Linux, where alone it runs, the rest on macOS,
+as the person's rule of 2026-11-13 has it (an earlier round at 225e13850 passed the same).
 
 | host | what ran | result |
 | --- | --- | --- |
 | Linux x86_64 (adacachy2, rustc 1.98.1) | `cargo clippy -p shards-init -p shards-abi --all-targets -- -D warnings` | clean |
 | the same | `cargo test -p shards-init` | 237 passed, 1 ignored (`capture::tests::a_terminals_master_ends_its_channel_as_its_last_other_end_closes`, `input::tests::a_terminals_input_is_typed_into_it_and_its_hangup_ends_it` and `enter::tests::a_terminal_is_of_its_size_and_its_peer_the_members` on real ptys among them) |
 | the same | `cargo test -p shards-abi` | 60 passed (`a_member_has_one_terminal_at_most`, `a_resize_says_its_member_and_size` among them) |
-| macOS arm64 (adas-mac-studio-3, M4 Max) | `cargo clippy -p shards-abi -p shards-api -p shards --all-targets -- -D warnings` | clean |
+| macOS arm64 (adas-mac-studio-3, M4 Max) | `cargo fmt --all --check`; `cargo clippy -p shards-abi -p shards-api -p shards --all-targets -- -D warnings` | clean |
 | the same | `cargo test -p shards-abi -p shards-api` | all pass (api's `resizes_and_their_answers_read_back_as_said`, `a_resizes_answer_is_kept_for_its_awaited_ask_alone` and the request's version tests among them) |
 | the same | `cargo test -p shards --bin shards -- api_run::` | 12 passed (`a_terminal_is_a_running_members_once` among them) |
 
