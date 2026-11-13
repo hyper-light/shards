@@ -18611,8 +18611,15 @@ notify_socket.go `run`, signals.go `forward`): `run --detach` until the box says
 grant's readiness socket is the command's to answer for, as systemd's is a service's, and a
 nested runtime keeps it from the children that do not answer for it (sd_notify(3),
 `unset_environment`): the test's runtime now runs runc without it (testguest nesting.rs
-`runc`), and gives each runc a bound past which SIGQUIT has Go write where its goroutines
-wait (e613ff4d7). Hex's node, as a granted command, meets the same rule.
+`runc`), and gives each runc a bound past which the runtime says where runc waits, as the
+kernel shows it (each of its threads' wait channel and system call, each descriptor it holds,
+a socket by its name: its notify socket, where it waits for a `READY=1`), then kills it.
+SIGQUIT, its first ask (e613ff4d7), asked nothing: runc takes every signal it can catch for
+its own before it starts its box (signals.go `signal.Notify(s)`, from utils_linux.go
+`runner.run`), and relays them to the box once it runs, so the runtime waited on runc past
+the host test's bound (HVF at fafe35efc). With both, nesting.rs passed whole on KVM x86_64
+(ROOT, adacachy2, e72239dd3) and on HVF (ROOT, macOS 26 arm64, 2b89e8504): 11 of 11, one
+ignored. Hex's node, as a granted command, meets the same rule.
 
 **Evidence owed** (ROOT):
 - the real-VM E2E (`crates/shards/tests/nesting.rs`, plan step 5): its green at 231bbdf6d
