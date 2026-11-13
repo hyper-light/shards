@@ -1,0 +1,53 @@
+# Q8 transport searches on BIN=$B = linux-x64 claude 2.1.311 (sha256 86dc1fcc69498159eaf15f446613e847010f9036bfbbdffd4c49350be8489ada), searched only, never executed.
+# B=/var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/tmp.cvKZio0ayi/claude
+# GG=/opt/homebrew/bin/ggrep
+## command: LC_ALL=C $GG -a -o -b -E 'experimental-http[23]-fetch|BUN_FEATURE_FLAG_EXPERIMENTAL_HTTP[23]_CLIENT' "$B" | awk -F: '{print $1":"$2, ($1<115363840?"native":"app")}'
+501908:experimental-http3-fetch native
+501935:experimental-http2-fetch native
+877081:BUN_FEATURE_FLAG_EXPERIMENTAL_HTTP3_CLIENT native
+877124:BUN_FEATURE_FLAG_EXPERIMENTAL_HTTP2_CLIENT native
+14528693:BUN_FEATURE_FLAG_EXPERIMENTAL_HTTP2_CLIENT native
+14528737:experimental-http2-fetch native
+14528821:BUN_FEATURE_FLAG_EXPERIMENTAL_HTTP3_CLIENT native
+14528865:experimental-http3-fetch native
+15336695:experimental-http2-fetch native
+15336721:experimental-http3-fetch native
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'Offer h2 in fetch\(\) TLS ALPN\. Same as BUN_FEATURE_FLAG_EXPERIMENTAL_HTTP2_CLIENT=1' "$B"
+14528655:Offer h2 in fetch() TLS ALPN. Same as BUN_FEATURE_FLAG_EXPERIMENTAL_HTTP2_CLIENT=1
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'Honor Alt-Svc: h3 in fetch\(\) and upgrade to HTTP/3\. Same as BUN_FEATURE_FLAG_EXPERIMENTAL_HTTP3_CLIENT=1' "$B"
+14528761:Honor Alt-Svc: h3 in fetch() and upgrade to HTTP/3. Same as BUN_FEATURE_FLAG_EXPERIMENTAL_HTTP3_CLIENT=1
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'protocol:"(http1\.1|http2|http3|h2|h3)"|allowH2|ALPNProtocols:\["h2"' "$B" | awk -F: '{print ($1<115363840?"native":"app"), $2}' | sort | uniq -c
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'text/event-stream' "$B" | awk -F: '{print ($1<115363840?"native":"app")}' | sort | uniq -c
+  58 app
+   1 native
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'wss://[A-Za-z0-9.-]+' "$B" | awk -F: '$1>=238000000 {print $2":"$3}' | sort | uniq -c
+   2 wss://bridge-staging.claudeusercontent.com
+   2 wss://bridge.claudeusercontent.com
+   1 wss://events.example.com
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'let n=typeof Bun>"u"\?void 0:Bun\.FetchSession;' "$B"
+240731816:let n=typeof Bun>"u"?void 0:Bun.FetchSession;
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'if\(n\.options\.stream\)return Y_\(e\)\.debug\("response",r\.status,r\.url,r\.headers,r\.body\),_t\.fromSSEResponse\(r,n\.controller,e\)' "$B"
+243701554:if(n.options.stream)return Y_(e).debug("response",r.status,r.url,r.headers,r.body),_t.fromSSEResponse(r,n.controller,e)
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'return this\._client\.post\("/v1/messages\?beta=true",\{body:S,timeout:v\?\?600000' "$B"
+243785500:return this._client.post("/v1/messages?beta=true",{body:S,timeout:v??600000
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'a\.ALPNProtocols=\["h2"\],i\["grpc\.ssl_target_name_override"\]' "$B"
+282405424:a.ALPNProtocols=["h2"],i["grpc.ssl_target_name_override"]
+## end
+## command: LC_ALL=C $GG -a -o -b -E '"/api/ws/speech_to_text/voice_stream"' "$B"
+279264829:"/api/ws/speech_to_text/voice_stream"
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'function H\(e\)\{if\(i\.ANTHROPIC_UNIX_SOCKET\)return"unix_socket";.{0,330}' "$B" | LC_ALL=C tr -c '[:print:]\n' '.'
+243626285:function H(e){if(i.ANTHROPIC_UNIX_SOCKET)return"unix_socket";if(Hm()!==void 0&&!Yy(e))return"proxy";let r=CA();if(r?.cert!==void 0||r?.key!==void 0)return"mtls";if(i.NODE_EXTRA_CA_CERTS){let s=lm();if(!(Dn()||i.CLAUDE_CODE_ENTRYPOINT==="local-agent"&&(s===void 0||s.NODE_EXTRA_CA_CERTS!==void 0)))return"custom_ca"}return}function Ztt(e){return Buffer.isBuffer(e)&&ti().gzipRequestBody.seria
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'var L="tengu_gentle_hammock",D="tengu_golden_popcorn",j=4096,M=1024' "$B"
+243625931:var L="tengu_gentle_hammock",D="tengu_golden_popcorn",j=4096,M=1024
+## end

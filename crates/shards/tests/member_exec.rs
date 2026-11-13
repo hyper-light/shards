@@ -95,6 +95,7 @@ fn boot(home: &TempDir, image: &str) -> Box<dyn ImageGuest> {
         }],
         publish: Vec::new(),
         egress: Narrowing::default(),
+        credentials: Vec::new(),
         shares: Vec::new(),
         nesting: false,
         ready_by: None,

@@ -2621,6 +2621,7 @@ mod tests {
             shares: Vec::new(),
             nesting: false,
             ready_by: None,
+            credentials: Vec::new(),
         }
     }
 

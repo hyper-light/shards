@@ -1,0 +1,38 @@
+# Q2 credential storage/supply searches on BIN=$B = linux-x64 claude 2.1.311 (sha256 86dc1fcc69498159eaf15f446613e847010f9036bfbbdffd4c49350be8489ada), searched only, never executed.
+# B=/var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/tmp.cvKZio0ayi/claude
+# GG=/opt/homebrew/bin/ggrep
+## command: LC_ALL=C $GG -a -o -b -E 'function g\(\)\{let e=Z0\(\),r="\.credentials\.json";return\{storageDir:e,storagePath:Z\(e,"\.credentials\.json"\)\}\}' "$B"
+241605977:function g(){let e=Z0(),r=".credentials.json";return{storageDir:e,storagePath:Z(e,".credentials.json")}}
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'var rJr="Warning: Storing credentials in plaintext\."' "$B"
+241606126:var rJr="Warning: Storing credentials in plaintext."
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'async write\(e\)\{try\{let\{storageDir:r,storagePath:n\}=g\(\);return await ie\(\)\.mkdir\(r\),await Mn\(n,_\(e\),384\),await J\(n,384\),\{success:!0,warning:rJr\}' "$B"
+241606673:async write(e){try{let{storageDir:r,storagePath:n}=g();return await ie().mkdir(r),await Mn(n,_(e),384),await J(n,384),{success:!0,warning:rJr}
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'await hte\(r,_\(e\),\{mode:384,exactMode:384\}\)' "$B"
+243112134:await hte(r,_(e),{mode:384,exactMode:384})
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'function Z0\(\)\{let e=process\.env\.CLAUDE_SECURESTORAGE_CONFIG_DIR;.{0,90}' "$B" | LC_ALL=C tr -c '[:print:]\n' '.'
+241600683:function Z0(){let e=process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR;if(e!==void 0)return(e||u(o(),".claude")).normalize("NFC");return Ne()}function DPe(){retu
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'function hxi\(\)\{let e=i\.CLAUDE_CODE_API_KEY_HELPER_TTL_MS;.{0,190}' "$B" | LC_ALL=C tr -c '[:print:]\n' '.'
+242326679:function hxi(){let e=i.CLAUDE_CODE_API_KEY_HELPER_TTL_MS;if(e!==void 0){if(e>=0)return e;t(`Found CLAUDE_CODE_API_KEY_HELPER_TTL_MS env var, but it was not a valid number. Got ${e}`,{level:"error"})}return _$}var Ovn=new W(()=>({cache:null,infligh
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'var _\$=300000' "$B"
+242309950:var _$=300000
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'function Qy\(e,n\)\{.{0,280}' "$B" | LC_ALL=C tr -c '[:print:]\n' '.'
+239811362:function Qy(e,n){if(!("hooks"in e))return[];if(e.hooks===null||typeof e.hooks!=="object"||Array.isArray(e.hooks)){let a=Se(e.hooks);if(Array.isArray(e.hooks)&&(e.hooks.some(D)||Qq(e.hooks)))return[{file:n,path:"hooks",message:`"hooks" must be an object mapping event names to matcher arrays; recei
+243943999:function Qy(e,n){let r=Sr()&&Pp({skipRetrievingKeyFromApiKeyHelper:!0}).source==="none",h=qv()&&!r?void 0:i.ANTHROPIC_AUTH_TOKEN,y=h||await Pot(n);if(y)return e.Authorization=`Bearer ${y}`,h?"ANTHROPIC_AUTH_TOKEN":"apiKeyHelper";return null}function Zy(e,n,r){switch(e){case"bedrock":return proces
+277282383:function Qy(e,n){try{n()}catch(r){m("artifact_durable_comment_wake",e),l(r)}}function pA(e,n){let r=i.CLAUDE_CODE_EXIT_AFTER_STOP_DELAY,s=r!==void 0&&r>0,h=null,y=null,S=0;return{start(){if(S+=1,h)clearTimeout(h),h=null;if(s){try{y=e()?Date.now():null}catch{y=null}let C=S,w=()=>{if(C!==S)return;t
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'oe==="CLAUDE_CODE_OAUTH_TOKEN"\|\|oe==="CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR"\|\|oe==="CCR_OAUTH_TOKEN_FILE"' "$B"
+243943430:oe==="CLAUDE_CODE_OAUTH_TOKEN"||oe==="CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR"||oe==="CCR_OAUTH_TOKEN_FILE"
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR:\(\)=>[A-Za-z]+,CLAUDE_CODE_API_KEY_HELPER_TTL_MS:\(\)=>[A-Za-z]+' "$B"
+238968867:CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR:()=>it,CLAUDE_CODE_API_KEY_HELPER_TTL_MS:()=>Zt
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'CLAUDE_CODE_OAUTH_REFRESH_TOKEN:\(\)=>[A-Za-z]+,CLAUDE_CODE_OAUTH_SCOPES:\(\)=>[A-Za-z]+,CLAUDE_CODE_OAUTH_TOKEN:\(\)=>[A-Za-z]+,CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR:\(\)=>[A-Za-z]+' "$B"
+238969519:CLAUDE_CODE_OAUTH_REFRESH_TOKEN:()=>Mt,CLAUDE_CODE_OAUTH_SCOPES:()=>Bt,CLAUDE_CODE_OAUTH_TOKEN:()=>et,CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR:()=>xt
+## end

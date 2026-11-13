@@ -1,0 +1,17 @@
+# Download of Claude Code 2.1.311 linux-x64 (gnu), never executed
+# command: curl -sSfL --proto '=https' -o $SCRATCH/claude https://downloads.claude.ai/claude-code-releases/2.1.311/linux-x64/claude
+# SCRATCH (mktemp -d): /var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/tmp.cvKZio0ayi
+http_code=200 size=293776752 url=https://downloads.claude.ai/claude-code-releases/2.1.311/linux-x64/claude
+download_start=2026-11-12T23:09:20Z download_end=2026-11-12T23:09:31Z
+# command: shasum -a 256 $SCRATCH/claude
+86dc1fcc69498159eaf15f446613e847010f9036bfbbdffd4c49350be8489ada  claude
+# pin.json linux/amd64 gnu sha256 (kiln origin/main 7a6827d8ee9be7bd10800d62132478f42d7412f5):
+86dc1fcc69498159eaf15f446613e847010f9036bfbbdffd4c49350be8489ada
+# pin.json size: 293776752
+# command: stat -f '%z bytes' $SCRATCH/claude
+293776752 bytes
+# command: file $SCRATCH/claude
+ELF 64-bit LSB executable, x86-64, version 1 (SYSV), dynamically linked, interpreter /lib64/ld-linux-x86-64.so.2, for GNU/Linux 3.2.0, BuildID[sha1]=3558b85fca20731b0430cca4a77049656336d0e6, not stripped
+MATCH
+# deletion: rm -rf of the binary scratch dir /var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/tmp.cvKZio0ayi at 2026-11-12T23:35:15Z; check: test -e afterwards -> absent
+# also deleted at 2026-11-12T23:35:15Z: scratch dirs /var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/tmp.FWyJVo8iwv (llms.txt first copy; the saved copy is docs/llms.txt) and /var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/tmp.ZhMZKnDzzX (GitHub API responses and the bun-v1.4.4 tree listing; the saved copies are re-fetched under bun-source/)

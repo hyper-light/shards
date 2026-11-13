@@ -1,0 +1,38 @@
+{
+  "draft": "draft-ietf-lamps-rfc8398bis-05",
+  "doc_id": "RFC9598",
+  "title": "Internationalized Email Addresses in X.509 Certificates",
+  "authors": [
+    "A. Melnikov",
+    "W. Chuang",
+    "C. Bonnell"
+  ],
+  "format": [
+    "XML",
+    "TEXT",
+    "HTML",
+    "PDF"
+  ],
+  "page_count": "12",
+  "pub_status": "PROPOSED STANDARD",
+  "status": "PROPOSED STANDARD",
+  "source": "Limited Additional Mechanisms for PKIX and SMIME",
+  "abstract": "This document defines a new name form for inclusion in the otherName field of an X.509 Subject Alternative Name and Issuer Alternative Name extension that allows a certificate subject to be associated with an internationalized email address.\n\n This document updates RFC 5280 and obsoletes RFC 8398.",
+  "pub_date": "May 2024",
+  "keywords": [
+    "EAI",
+    "PKIX",
+    "email address"
+  ],
+  "obsoletes": [
+    "RFC8398"
+  ],
+  "obsoleted_by": [],
+  "updates": [
+    "RFC5280"
+  ],
+  "updated_by": [],
+  "see_also": [],
+  "doi": "10.17487/RFC9598",
+  "errata_url": null
+}

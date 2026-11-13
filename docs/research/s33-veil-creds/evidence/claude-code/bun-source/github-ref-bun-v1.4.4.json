@@ -1,0 +1,10 @@
+{
+  "ref": "refs/tags/bun-v1.4.4",
+  "node_id": "MDM6UmVmMzU3NzI4OTY5OnJlZnMvdGFncy9idW4tdjEuNC40",
+  "url": "https://api.github.com/repos/oven-sh/bun/git/refs/tags/bun-v1.4.4",
+  "object": {
+    "sha": "38afee6c84fcf48c0edb2466aa4b27d287a59c30",
+    "type": "commit",
+    "url": "https://api.github.com/repos/oven-sh/bun/git/commits/38afee6c84fcf48c0edb2466aa4b27d287a59c30"
+  }
+}

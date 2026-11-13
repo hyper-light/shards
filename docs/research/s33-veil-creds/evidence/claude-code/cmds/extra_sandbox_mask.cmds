@@ -1,0 +1,8 @@
+LC_ALL=C $GG -a -o -b -E 'function IH\(e\)\{return e\.every\(\(n\)=>n\.sentinel\.length===n\.realValue\.length\)\}' "$B"
+LC_ALL=C $GG -a -o -b -E 'request body has Content-Encoding .{0,80}masked-credential .\+.substitution skipped .{0,90}' "$B" | LC_ALL=C tr -c '[:print:]\n' '.'
+LC_ALL=C $GG -a -o -b -E 'sentinelsForHost\(e,n\)\{let r=\[\];for\(let s of this\.bySentinel\.values\(\)\)\{if\(!s\.injectHosts\.some\(\(h\)=>n\(e,h\)\)\)continue;' "$B"
+LC_ALL=C $GG -a -o -b -E 'e\.leafKeyPair\?\?\(e\.leafKeyPair=Zm\.rsa\.generateKeyPair\(2048\)\)' "$B"
+LC_ALL=C $GG -a -o -b -E 'h\.setExtensions\(\[\{name:"basicConstraints",cA:!1,critical:!0\}' "$B"
+LC_ALL=C $GG -a -o -b -E 'Credential injection only runs on TLS-terminated connections' "$B" | awk -F: '$1>=115363840' | head -2
+LC_ALL=C $GG -a -o -b -E 'CLAUDE_CODE_HOST_AUTH_ENV_VAR:\(\)=>[A-Za-z]+,CLAUDE_CODE_HOST_AUTH_REFRESH_TIMEOUT_MS:\(\)=>[A-Za-z]+,CLAUDE_CODE_HOST_CREDS_FILE:\(\)=>[A-Za-z]+' "$B"
+LC_ALL=C $GG -a -o -b -E 'readHostCredsFile failed' "$B" | awk -F: '$1>=238000000' | head -1
