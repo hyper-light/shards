@@ -94,12 +94,13 @@ the observers are started and joined with `until` = now + `NO_CLOCK`, u64's most
 because those fixtures take a deadline that is finite by contract (D215's tests give theirs
 the same; `checked_add`, so a platform whose `Instant` can't hold it fails with its name).
 An observer's subscription still ends at its connection's typed end, held to the endpoint's
-own liveness. Today the owner's patience is `until`'s, far past the endpoint's `tls::QUIET`,
-and a connection takes the lesser of its two sides' idle timeouts (RFC 9000 §10.1). Goal 58's
-call C (D180, not on main at this review) drops `Admitted.patience` and
-`DriverLimits.handshake_patience`: neither side then advertises an idle timeout, and the
-driver ends a connection that stops making progress as `TimedOut`. Its agent was told this
-test's two call sites. No QUIET-based value was put in their place, as ROOT asked.
+own liveness. When this landed, the owner's patience was `until`'s, far past the endpoint's
+`tls::QUIET`, and a connection took the lesser of its two sides' idle timeouts (RFC 9000
+§10.1). No QUIET-based value was put in their place, as ROOT asked. Since goal 58's call C
+(`212301f98`, D180's liveness at use) neither side has an idle timeout or a keep-alive:
+`until` is the observer's own deadline alone, the far instant none. A connection that stops
+making progress ends `TimedOut`, and a vanished owner is let go at its endpoint's next send.
+Call C kept `Observer::start`'s signature and reworded this test's comment to say so.
 
 ### F3. The test polled the process record every 200 ms (R03, R05): fixed
 
@@ -144,9 +145,11 @@ checked.
 endpoint's transport keeps no quiet subscription alive". H1 is fixed on main
 (owner-keepalive-v1, `4e291dfc3`'s merge; D180's managed-output paragraph), so the test is
 expected green. Its text now says so, and both of H1's tests say they need a real VM (ROOT's).
-After goal 58's call C the managed transport keeps no idle timeout at all. The silences these
-tests take from `tls::QUIET` are then goal 58's to restate; the tests' claim, that a quiet
-subscription lives, stands.
+Goal 58's call C (`212301f98`) then removed the managed transport's idle timeout and
+`tls::QUIET` with it. It restated the pair's silences from `H1_BOUND`, 100 s, the endpoint's
+bound when H1 was found (v1's `records/probe-quiet`, lost at 102.9 s): still 125 s and 75 s. That
+number is the record's own, kept to bracket where H1 was, not a bound anything holds to now.
+The tests' claim, that a quiet subscription lives, stands.
 
 ### F7. R10's owed check of the signed-in turns, with no prompt sent: done
 
@@ -317,12 +320,12 @@ O6's red is not on this host: here main's literal modes are the host's own. On W
 is owed below. `a_shared_files_mode_is_the_hosts_own` runs on CI's Windows legs as a light
 test.
 
-### Owed, with their evidence (not fixed here)
+### O7, goal 58's: done
 
-- **O7. Goal 58's call C.** It removes `tls::QUIET`'s fixed window from the managed transport.
-  H1's two cases take their silences from `tls::QUIET` (`QUIET ± QUIET/4`). When call C
-  lands, goal 58 restates them, and it carries the observers' call sites (F2) if
-  `Observer::start` changes.
+- **O7. Goal 58's call C.** It removed `tls::QUIET`'s fixed window from the managed transport:
+  landed as `212301f98` (pushed `ed0088495..e72239dd3`). H1's two cases now take their
+  silences from `H1_BOUND` (F6), and the observers' call sites stand unchanged (F2). No O-item
+  of this review remains owed; the real-VM and other-host runs below do.
 
 Also observed, and left as recorded: the signed-in Codex example runs
 `--dangerously-bypass-approvals-and-sandbox` (Codex's own sandbox off, "the microVM and its
@@ -355,7 +358,7 @@ show where the harnesses connect.
 |---|---|
 | R01 | No production code in this lane. The test may panic. `no_clock` panics with the platform's name where an `Instant` can't hold the far instant: every supported platform's can (std's `Instant` is a `Timespec` on Unix and a `Duration` on Windows). |
 | R02 | No architecture decided. Sources: D215 (the no-clock idiom), D123 (`watch processes`), RFC 9000 §10.1, busybox `edca770d11`, Alpine's package index, GnuPG's `mainproc.c`, GitHub's release digests and sigstore's checksums file, v1's records. |
-| R03 | F1 to F5 removed every chosen number in the lane's test and scripts: `WITHIN`, the 200 ms and 2 s polls, the 300 s deadline, `sleep 600`, the 16/24/8 of the leak check. What stays is derived: the leak run (one longer than a provider shows of a key, from v1's record), `NO_CLOCK` (u64's bound, D215's idiom), H1's silences (`QUIET ± QUIET/4`, the transport's own; O7). |
+| R03 | F1 to F5 removed every chosen number in the lane's test and scripts: `WITHIN`, the 200 ms and 2 s polls, the 300 s deadline, `sleep 600`, the 16/24/8 of the leak check. What stays is derived: the leak run (one longer than a provider shows of a key, from v1's record), `NO_CLOCK` (u64's bound, D215's idiom), H1's silences (`H1_BOUND ± H1_BOUND/4`: 100 s, the endpoint's bound when H1 was found, v1's records, kept to bracket that finding; F6). |
 | R04 | No state machine added. The follow ends at one of three named facts; settle's outcomes are named in its output (unchanged, format only, refresh written back, conflict); fetch.sh's signature refusals are typed by GnuPG's own statuses, an exit and words each (F8). |
 | R05 | Waits: the 200 ms and 2 s polls of the record became a follow of its change stream (F3, F5); every other wait ends at its fact (F2). No cache. Abstractions: two check functions serve the real cases and the light tests; `follow` and `followed_far_enough` serve one caller each, the second also the light test. |
 | R06, R07, R13 | Small functions; comments carry sources and derivations. H1's stale "red" text corrected (F6). |
@@ -387,7 +390,8 @@ CLI.
 | `8bccab8ad` | F8: fetch.sh's O1 to O3, `fetch-test.sh` and its recordings |
 | `c8decf253`, merge `3c9920fef` | F8 here, O1 to O3 moved from owed |
 | `bfb46e2c4` | F9: O4 to O6, `signed-in-test.sh` |
-| this commit | F9 here, O4 to O6 moved from owed |
+| `32f492c2b`, merges `60767b3c7`, `6d5661377`, `e38695b92`, `e3b5cf0b3` | F9 here, O4 to O6 moved from owed |
+| this commit | O7 done by goal 58's call C (`212301f98`); F2, F6 and R03 say so |
 
 ## Owed to ROOT
 
