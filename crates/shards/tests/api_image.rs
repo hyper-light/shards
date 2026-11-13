@@ -101,9 +101,30 @@ fn codex() -> MemberName {
     MemberName::harness("codex")
 }
 
+/// Where the diagnostics of the run hosts a test boots in `home` are kept whole
+/// (`ImageGuest::keep_diagnostics`), each appended after the last: a `.stderr` of the home's,
+/// which a failing test shows as its home goes (`common::TempDir`).
+fn diagnostics(home: &TempDir) -> std::path::PathBuf {
+    home.join("run-hosts.stderr")
+}
+
+/// `s` booted, its run host's diagnostics kept whole in [`diagnostics`] from its start.
+fn boot(home: &TempDir, s: &ImageSpec) -> Box<dyn ImageGuest> {
+    let guest = ImageShards::new().boot(s, TIMEOUT).unwrap();
+    let kept = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(diagnostics(home))
+        .unwrap();
+    guest.keep_diagnostics(kept).unwrap();
+    guest
+}
+
 /// The harness's end, held to `expected`; where it is not, the run's own end is said beside
 /// it, which tells a run that ended first (`WithRun`) as stopped, failed in its host's words or
-/// exited (CI run 43303186680: `WithRun` where `Exited(3)` was expected, its cause unsaid).
+/// exited (CI run 43303186680: `WithRun` where `Exited(3)` was expected, its cause unsaid),
+/// and the home shows its run hosts' diagnostics, their VMs' among them, as it goes ([`boot`]:
+/// HVF at 2b89e8504, `WithRun` and `Exited(125)`, nothing more said).
 fn assert_ended(guest: &dyn ImageGuest, expected: MemberEnd) {
     let ended = guest.wait_member(&codex(), TIMEOUT).unwrap();
     assert_eq!(
@@ -163,7 +184,7 @@ fn staged_credentials_reach_the_harness_and_its_output_and_end_come_back() {
         terminal: false,
         args: Vec::new(),
     }];
-    let guest = ImageShards::new().boot(&s, TIMEOUT).unwrap();
+    let guest = boot(&home, &s);
     let members: Vec<(MemberKind, &str, bool)> = guest
         .members()
         .iter()
@@ -331,7 +352,7 @@ fn a_share_at_a_granted_volume_reaches_the_harness() {
         at: "/work".into(),
         read_only: true,
     }];
-    let guest = ImageShards::new().boot(&s, TIMEOUT).unwrap();
+    let guest = boot(&home, &s);
     let said = String::from_utf8(read_all(&*guest, Channel::Stdout)).unwrap();
     assert_eq!(said, "== /work/hello.txt\nfrom the host\n");
     assert_ended(&*guest, MemberEnd::Exited(0));
@@ -615,7 +636,7 @@ fn a_run_keeping_nothing_the_image_grants_boots_and_its_harness_runs() {
         dns: false,
         members: None,
     };
-    let guest = ImageShards::new().boot(&s, TIMEOUT).unwrap();
+    let guest = boot(&home, &s);
     assert_ended(&*guest, MemberEnd::Exited(0));
     guest.stop().unwrap();
 }
@@ -829,7 +850,7 @@ fn a_harness_reads_its_orchestrators_stdin_exactly_and_its_close_is_its_end() {
         terminal: false,
         args: Vec::new(),
     }];
-    let guest = ImageShards::new().boot(&s, TIMEOUT).unwrap();
+    let guest = boot(&home, &s);
     let mut input = Vec::new();
     input.extend_from_slice(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}\n");
     input.extend_from_slice(b"\0\xff\x80\x1b[2Jno-newline\xc3\x28");
