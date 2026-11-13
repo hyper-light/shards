@@ -1395,6 +1395,8 @@ mod tests {
             state: Mutex::new(State::asking(&[stage("codex", true), stage("other", false)])),
             changed: Condvar::new(),
             to_host: Mutex::new(None),
+            lessor: None,
+            granted: Vec::new(),
         };
         let info = |index, name: &str| MemberInfo {
             index,
