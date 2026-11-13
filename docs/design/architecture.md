@@ -1333,11 +1333,17 @@ for the exit status.
   - A client of another build, told apart by its binary's file identity, gets
     `RESTART`. The daemon removes its socket, ends its runs as `shards daemon stop`
     does, and exits; the client starts its own, which takes the home once the old one
-    has gone. A daemon ending its runs names itself in `daemon.stopping` first, as it
-    closes for any reason, and the new daemon and the client wait while that process
-    lives, however long its runs' stop timeouts make it; otherwise a daemon waits 20 s
-    for another's lock, and a client 30 s for its daemon to listen. `daemon stop` waits on
-    the lock it holds beside it until it has let go of the home (D185, *A stop's wait*).
+    has gone. The client asks again after a RESTART where it came from another daemon
+    than the last it asked again after, each the one `daemon.pid` named as its request was
+    asked (its ID and start): a takeover is the old daemon's RESTART, then its successor's
+    answer. The same daemon answering so again as itself, nothing about it changed, would
+    answer so for ever, and the client fails naming it; a count bounded it before
+    (`RESTARTS`, 4; D185, *A request asked again*). A daemon ending its runs names itself
+    in `daemon.stopping` first, as it closes for any reason, and the new daemon and the
+    client wait while that process lives, however long its runs' stop timeouts make it;
+    otherwise a daemon waits 20 s for another's lock, and a client 30 s for its daemon to
+    listen. `daemon stop` waits on the lock it holds beside it until it has let go of the
+    home (D185, *A stop's wait*).
   - It follows each run to its end. The warm VM tells the daemon of its command's start
     (`STARTED`) before its client has any of the command's output, and of its end
     (`DONE`) before its client has the status; a Unix socket's send puts a message in
@@ -7802,7 +7808,9 @@ descriptors.
   at once but its request waits its turn, and no slot is offered, so that further clients
   wait on their list and cost the daemon nothing. A closing daemon unlinks its lists at
   once, so that a client looking for a slot asks the next daemon, and answers RESTART to a
-  client that took a slot meanwhile; a client asks again as often as that can happen.
+  client that took a slot meanwhile; a client asks again after each RESTART that is another
+  daemon's than the one whose RESTART it last asked again after (*A request asked again*,
+  below).
 - The client asks through a slot for every command: the catalog's, its streams (`save`,
   `export`, `import`, `load`, `cp`) copied by the client to and from the slot's (`cli::Stream`:
   what the daemon writes, what it reads); a run's, an exec's and an attach's, its stdin
@@ -7927,6 +7935,35 @@ descriptors.
   that answers every stop RESTART as itself: asked twice, then named; red before, asked four
   times); and on real VMs by
   `a_stop_while_another_stops_its_daemon_waits_for_its_home_let_go_of` (tests/daemon.rs).
+- **A request asked again** (2026-11-13, R03). A run's, an exec's and an attach's client
+  (`serve`) and a command's (`container`, `ask`, `ask_here`) asked again after a RESTART,
+  or a socket an older build shut unread, within `RESTARTS` (`slots::OFFERED` + 2 = 4): a
+  count derived in its comment alone, for one takeover's RESTARTs (the step-aside
+  request's, each slot the closing daemon had offered of the kind asked, an older build's
+  socket), and in no D-entry. No count bounds it now. The client reads `daemon.pid`
+  (`shards_ipc::Named`: ID and start) as it takes its slot or connects, before it asks, and
+  after a RESTART asks again only where the daemon so named is another than the one whose
+  RESTART it last asked again after (`cli::client::Again`): the same one answering so again
+  as itself, nothing about it changed, would answer so for ever, and the client fails
+  naming it (`Untaken`: "the daemon (process N) answered again without taking the request;
+  see <daemon.log>"), as `stop` does through the same `Again` (*A stop's wait*). The name
+  read is the slot's daemon's: a daemon names itself before it offers any slot, and holds
+  its home until each slot it offered has its last word (*What it said last*), so no
+  successor names itself between a client's take and its ask. Cold start: nothing has
+  answered yet, so the first RESTART is asked again whoever said it, and a takeover is two
+  answers, the stepping-aside daemon's RESTART and its successor's. A `daemon.pid` naming
+  none is `None`, so two such RESTARTs in a row fail the client. Nothing is counted, timed
+  or learned, so nothing overflows; a writer of `daemon.pid`, a process its home lets in
+  (0700 on Unix), keeps a client asking only by naming another daemon each time, as a real
+  succession does.
+  Held by `a_request_its_daemon_answers_again_as_itself_without_taking_it_fails_naming_it`
+  (each client in a process of its own, its daemon a stand-in, this process, serving real
+  slots and answering every request RESTART as `4242 1`: asked twice, then named; red
+  before, asked four times, "the daemon kept asking for a restart"; red with the identity
+  check removed, asked to the stand-in's limit) and
+  `a_request_its_daemon_stepped_aside_from_goes_to_the_daemon_after_it` (RESTART as
+  `4242 1`, then `4343 2` answers: asked twice, status 0). On real VMs, owed: a takeover's
+  `a_rebuilt_binary_replaces_the_daemon` (tests/daemon.rs).
 - **Whose end a run's client heard** (PM M530). A run's, an exec's and an attach's slot
   passes on what its VM says, so the slot ends both where the VM's connection closes with no
   last word and where the daemon itself ends: a killed daemon closes every slot it served.
