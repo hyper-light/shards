@@ -1012,9 +1012,10 @@ fn still_running(pids: &[u32], group: Option<u32>) -> Vec<u32> {
 /// its run with it. Do boot an image whose VM process is held as it starts ([`Gate`]), and
 /// stop the boot from this thread as it reaches the gate. Expect: `Ended(Stopped)`; none of
 /// the processes the run host had started by then running, nor, on Unix, any of its
-/// process group, a VM, network or share process it started after among them; and each
+/// process group, a VM, network or share process it started after among them; each
 /// record of a run the home keeps (a writable layer's file in `layers`, named by the pid of
-/// the run host that made it) naming no process that runs.
+/// the run host that made it) naming no process that runs; and no file of its run host's
+/// left in `layers` at all, its run host having ended before its microVM held its layer.
 #[test]
 fn a_stop_mid_boot_ends_the_run_host_and_every_process_of_its_run() {
     if cannot_run_vms() {
@@ -1082,6 +1083,10 @@ fn a_stop_mid_boot_ends_the_run_host_and_every_process_of_its_run() {
     let named = records();
     let running = still_running(&named, None);
     assert!(running.is_empty(), "the home's layers name {running:?}, running");
+    assert!(
+        !named.contains(&host),
+        "its run host {host}'s layer outlived it: the home's layers name {named:?}"
+    );
 }
 
 /// Plan step 5 through the orchestrator's path: a harness whose stdin its spec asks for

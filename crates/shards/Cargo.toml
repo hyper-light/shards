@@ -123,7 +123,7 @@ windows-sys = { workspace = true, features = [
 
 [dev-dependencies]
 # Public QUIC callback types for the managed-output owner integration fixture.
-hyper-quic = { git = "https://github.com/hyper-light/hyper-raft", rev = "045cf3ff82e1d96d1f8c339d6e644d17afc998a3", default-features = false }
+hyper-quic = { git = "https://github.com/hyper-light/hyper-raft", rev = "e0613f524b0df198cc61dc1e82b33c22d604cf7b", default-features = false }
 shards-testdir = { path = "../testdir" }
 shards-testguest = { path = "../testguest" }
 # `load`'s archives of every compression (tests/containers.rs), written in-process.
