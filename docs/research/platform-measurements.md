@@ -18630,6 +18630,31 @@ revision before comparing a changed API/implementation.
   the VM process's major faults and the host's throttles of the scope (memory.events), and
   the least room the build told against the least its budget left as the kernel charges it
   (tables.py). To measure: `builder-pressure.yml` and `fedora.sh` at the commit that has it.
+- **The harness made again for 1145bd3f2, its run owed.** What a builder gives back has
+  changed since d9c42120 in three more ways, none measured yet: a builder whose grower asked
+  for memory or had memory come within the pressure window keeps all it has, as a run does
+  (PM M466: init's `shrink_run`, its give-back's process sharing the grower's page); its
+  answers are waited for a pressure window, not 10 s (`give::PATIENCE`); and what it gave
+  back is said as a pressure begins and doubles, not once a minute (`pressure::Saying`;
+  0bc518367). builder-cold's `cold.patch` no longer applied: the builder's console report
+  (D12) had moved the line its builder.rs hunk takes out, `--no-console`, which gives the
+  builder's console to the harness; it is made again, its content the same. `give.patch`
+  timed an answer from its pass's word and said only those its pass heard: with a pass's
+  patience a window, an answer heard by the next pass was timed from that pass's word, one
+  heard by `give::late` was not said at all, so tables.py would have counted it unanswered
+  and left what it freed out of its build's sum, and an ask a pass after pass heard out was
+  said unanswered at each. It now times each answer from its own ask (`Giver::asked`; a
+  give-back's ask goes at its word), says one that came past its pass's patience as it
+  comes (`late 1`) and each unanswered ask once; tables.py says how many came late.
+  Checked, not measured (adacachy2, CachyOS, Linux 7.3.3, x86_64): both patches apply to
+  1145bd3f2 in turn; the patched tree's `shards` and its musl `shards-init` compile; its
+  give-back unit tests pass (`build::give`'s 9, the giver's 3; the give-back port's
+  take-first test, whose 50 ms read must wait 40, failed once with the host's cores all
+  but 2 busy, then passed 30 of 30); tables.py gives the same tables of the 42 records it
+  read before, and of a record with an ask answered 3.5 s after it, "answers 1, unanswered
+  1, 1 of them answered later". To measure, at the commit that has this: `builder-pressure.yml`
+  (CI's four runners), `fedora.sh MIRROR REV 5` on a bare-metal Linux host, and `mac.sh
+  MIRROR REV 5` as a launchd job on a Mac (`launchd-run.sh`).
 
 ### M443. A restart over the kept layer file itself, and what the guest freed given back (D190)
 

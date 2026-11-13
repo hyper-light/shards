@@ -7760,9 +7760,9 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
 - **A budget falling short waits for its host's give-back** (PM M467): where a give-back
   of the host's pressure is under way in the microVM, the budget's own asks once it has
   ended, its room read again; and its word says what its host's pressure had it give back
-  and ask to unplug since the word before, which the host's own word says once a minute
-  at most: a budget set just after the host had taken what it held cold found nothing to
-  give back, and its word said nothing given back.
+  and ask to unplug since the word before, which the host's own word says only as its
+  pressure begins and as it doubles (below): a budget set just after the host had taken
+  what it held cold found nothing to give back, and its word said nothing given back.
 - **Ring pins come out of the room** (kiln plan 01a1cd8e862e7169a074db3d5fa33f3d:
   "Everything a VM holds, ring pins included, comes out of that room"). An engine ring's
   slots are guest RAM its guest's kernel pins for the host to reach (D230). Init's relay
@@ -7953,7 +7953,14 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   min watermarks, its guest's kernel throttling its own reclaim and its grower, woken
   only at the hold, plugging none: 5 of 384 past128 reads in the DAX budget job, and none
   of 288 since.
-- **Said in the daemon's log** at most once a minute, with what was given back since.
+- **Said in the daemon's log** with what was given back since, at no fixed while
+  (`pressure::Saying`): as a pressure begins, then each time it has gone on as long again
+  as it had when last said, one pressure window at the least, so that a pressure that goes
+  on for a time t is said about log2(t / window) times, its lines farther apart the longer
+  it goes on, as a doubling search past what is known has them (Baeza-Yates, Culberson and
+  Rawlins, "Searching in the plane", Inf. Comput. 106(2), 1993). A pressure that goes on is
+  heard once a window, so a word after a whole window with none begins another, said at
+  once. Before 0bc518367 it was once a minute, a while no measurement set.
 - **Idle, it costs nothing**: with no microVM running it waits for one, hearing no
   pressure meanwhile, whose trigger fires each window while the host stays short (on a CI
   runner short of memory it woke an idle daemon's thread every 2 s: job 118535098642);
@@ -7967,14 +7974,19 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   each `memory.high` and `memory.max` up its chain), and at each asks every builder on its
   give-back port (`build::GIVE_PORT`, build/give.rs) to give back what it holds cold of its
   files and what it holds plugged past twice what its build uses (init's `RECLAIM` and
-  unplug, as a run's), then tells each its share of the room the budget leaves (`ROOM`),
+  unplug, as a run's: what it keeps is counted as a run's, `shrink_run`, so a builder whose
+  grower asked for memory or had memory come within the pressure window keeps all it has,
+  PM M466), then tells each its share of the room the budget leaves (`ROOM`),
   counted as a run's is, which its guest holds the build within. A builder is told that
   room as it starts, before its first step; every builder is asked at once, one ask out
-  to each at a time, and one with no answer within 10 s is counted unanswered and asked
-  again only once it has answered, a late answer counted as it comes (a builder its host
-  throttled answered in 9 s and more, PM M350); what they gave back is said on the
-  build's plain output once a minute at most, as the daemon's log says its microVMs'
-  (`give::PATIENCE`, `SAY_EVERY`). While a budget holds the
+  to each at a time, its answer waited for until the next word can come, a pressure window
+  (`give::PATIENCE`, the window its host's pressure is measured over and a pressure that
+  goes on is heard again after, `platform::PRESSURE_WINDOW`), so that a pass never holds
+  up the next word's; one not come by then is counted unanswered, looked for once a window
+  after (`give::late`) and counted as it comes, and its builder asked again only once it
+  has answered (a builder its host throttled answered in 9 s and more, PM M350). What they
+  gave back is said on the build's plain output as the daemon's log says its microVMs'
+  (`pressure::Saying`, above). While a budget holds the
   build, its builders are told its room again each pressure window where it changed, and
   given a word of pressure where it is short: a guest holds its build within what it was
   last told past what the build used then, and what its host gets back of it outside the
@@ -8019,8 +8031,9 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   charge by what its builder held cold told its guest it was short by them besides, which
   holds its build at what it uses (init's `ROOM`): builds of 10 s took 246 to 622 s
   (573e4bf8). The harness now holds each build to its held arms' own peak in that count
-  less what its builder held cold, so that every held build is pressed; measured at the
-  commit that has it (PM M442).
+  less what its builder held cold, so that every held build is pressed. That, the room as
+  charged, the window's keep (PM M466) and the saying above are not yet measured: owed at
+  the commit that has them (PM M442, its last item).
   Before the writer (2d168658), held builds on CI's runners were 0.4 to 16 s slower in the
   steps that write to the host's disk, which the memory controller holds to the budget's
   share of dirty pages (`balance_dirty_pages`): the builder, held within room it never
@@ -15841,7 +15854,8 @@ given the rest as its build needs it, up to what it may have.
   can leave the kernel short with memory free (memory-hotplug.rst, "ZONE_MOVABLE Sizing
   Considerations"). At its build's word that its host is short of memory, a builder gives
   back what it holds cold of its files and the blocks it holds plugged past twice what its
-  build uses where its kernel holds none of a block, and holds its build within the room
+  build uses where its kernel holds none of a block (none where it grew within its host's
+  pressure window, as a run keeps them: PM M466), and holds its build within the room
   a budget over the build leaves it, told again each pressure window where it changed
   (D188's builders): under a budget short of its peak by what its builder held cold, an
   apt build's builder gave back up to 202 MiB of its files a build and unplugged up to
@@ -15850,7 +15864,8 @@ given the rest as its build needs it, up to what it may have.
   beyond its rounds' spread in 32 of 33 host and build pairs, the other 0.1 s longer as it
   read again what its budget took of its own files' page cache; since its caches are read
   and written outside the budget, by its writer (d9c42120), in all 27 pairs of eight of
-  CI's runners and Fedora (PM M442). The build's
+  CI's runners and Fedora (PM M442); what has changed since is owed its measurement (D188's
+  builders). The build's
   process asks, not the daemon: a builder is its build's, not a run of the daemon's.
 - **What the kernel sized by the memory it booted with** is raised to what it sizes by all
   of it, so that a step sees what it saw in a builder booted with all its memory: the
