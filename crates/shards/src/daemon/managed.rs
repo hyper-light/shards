@@ -93,7 +93,9 @@ fn named_members(
         let (kind, name) = entry
             .split_once(':')
             .filter(|(kind, name)| matches!(*kind, "agent" | "harness") && !name.is_empty())
-            .ok_or_else(|| format!("--annotation {annotation}={value}: {entry:?} is no agent:NAME or harness:NAME"))?;
+            .ok_or_else(|| {
+                format!("--annotation {annotation}={value}: {entry:?} is no agent:NAME or harness:NAME")
+            })?;
         let label = format!("{kind} {name}");
         let member = labels
             .iter()
@@ -101,7 +103,9 @@ fn named_members(
             .and_then(|i| u32::try_from(i).ok())
             .ok_or_else(|| format!("--annotation {annotation}: the image declares no {kind} {name}"))?;
         if !active.contains(&member) {
-            return Err(format!("--annotation {annotation}: {kind} {name} runs no program {purpose}"));
+            return Err(format!(
+                "--annotation {annotation}: {kind} {name} runs no program {purpose}"
+            ));
         }
         if members.contains(&member) {
             return Err(format!("--annotation {annotation}: {kind} {name} named twice"));
@@ -961,7 +965,10 @@ impl Outputs {
             .outputs
             .get(first..end)
             .ok_or_else(|| io::Error::other("unknown aborted member"))?;
-        let drained = owner.drain.as_ref().filter(|drain| drain.drains_member(abort.member));
+        let drained = owner
+            .drain
+            .as_ref()
+            .filter(|drain| drain.drains_member(abort.member));
         if outputs.iter().all(Option::is_none) && drained.is_none() {
             return Err(io::Error::other("aborted member is inactive"));
         }
@@ -1116,7 +1123,11 @@ impl<D: Disk> Daemon<D> {
         shown: Shown,
         setup: &mut Vec<Vec<u8>>,
     ) -> Result<Stream, Failure> {
-        let Members { active, inputs, owned } = members;
+        let Members {
+            active,
+            inputs,
+            owned,
+        } = members;
         let members = u32::try_from(labels.len()).map_err(io::Error::other)?;
         let count = labels
             .len()
@@ -1300,7 +1311,9 @@ impl<D: Disk> Daemon<D> {
         metadata.sync_all()?;
         let metadata = shared_metadata(metadata)?;
         let mut drained = Vec::new();
-        drained.try_reserve_exact(active.len()).map_err(io::Error::other)?;
+        drained
+            .try_reserve_exact(active.len())
+            .map_err(io::Error::other)?;
         drained.extend(active.iter().copied().filter(|member| !owned.contains(member)));
         let drain = if drained.is_empty() {
             None
@@ -1605,7 +1618,11 @@ fn send_credits(
                 drained.kept(index, bytes);
                 let mut state = lock(&owner.credits.state);
                 if let Some(slot @ CreditSlot::Sending) = state.slots.get_mut(index) {
-                    *slot = if ended { CreditSlot::Ended } else { CreditSlot::Waiting };
+                    *slot = if ended {
+                        CreditSlot::Ended
+                    } else {
+                        CreditSlot::Waiting
+                    };
                 }
             }
             Action::Grant(index) => {
@@ -1787,7 +1804,11 @@ fn bridge(
 /// The member and channel of credit route `index` ([`route_index`]).
 fn route_of(index: usize) -> io::Result<(u32, Channel)> {
     let member = u32::try_from(index / 2).map_err(io::Error::other)?;
-    let channel = if index % 2 == 0 { Channel::Stdout } else { Channel::Stderr };
+    let channel = if index % 2 == 0 {
+        Channel::Stdout
+    } else {
+        Channel::Stderr
+    };
     Ok((member, channel))
 }
 
@@ -3057,7 +3078,10 @@ mod tests {
         let run = shards_testdir::TempDir::new("drained-credit").unwrap();
         let labels: Vec<String> = vec!["agent main".into()];
         let capacity = record_capacity(&labels, &[0]).unwrap();
-        let keep = LogRetention { size: 1 << 20, files: 2 };
+        let keep = LogRetention {
+            size: 1 << 20,
+            files: 2,
+        };
         let drain = Arc::new(drain::Drain::open(&run, &labels, &[0], Some(keep), capacity).unwrap());
         let charge = Arc::new(Charge {
             budget: Arc::new(Mutex::new(Some(0))),
@@ -3110,7 +3134,8 @@ mod tests {
                     ended += 1;
                     encoded(0, granted.channel, offsets[at], Event::End)
                 };
-                vm.write_all(&run::header(run::kind::MANAGED, record.len() as u32)).unwrap();
+                vm.write_all(&run::header(run::kind::MANAGED, record.len() as u32))
+                    .unwrap();
                 vm.write_all(&record).unwrap();
             }
             (crediting.join().unwrap(), bridging.join().unwrap())
@@ -3128,7 +3153,10 @@ mod tests {
         reader.read(&log, &mut each).unwrap();
         reader.finish(&mut each).unwrap();
         assert_eq!(kept[0].len(), written[0].len());
-        assert!(kept == written, "the member's log keeps its channels' bytes whole and apart");
+        assert!(
+            kept == written,
+            "the member's log keeps its channels' bytes whole and apart"
+        );
     }
 
     /// A capture whose window climbed to its most is credited within one endpoint record,

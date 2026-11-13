@@ -20,10 +20,10 @@ use shards_vmm::platform::UnixStream;
 pub mod capture;
 #[path = "workload/hellos.rs"]
 mod hellos;
-pub use hellos::exec_port;
-use hellos::register;
 pub use crate::log_writer::NextSegment;
 use crate::log_writer::Writer;
+pub use hellos::exec_port;
+use hellos::register;
 
 use crate::spec::{LOG_STDERR, LOG_STDOUT, LogRetention};
 

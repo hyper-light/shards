@@ -96,8 +96,13 @@ impl Drain {
                 let next = Box::new(move |seq| new_segment(&held, seq, retention.files));
                 *logs
                     .get_mut(usize::try_from(member).map_err(io::Error::other)?)
-                    .ok_or_else(|| io::Error::other("drained member index"))? =
-                    Some(Writer::new(newest.log, newest.index, newest.seq, retention, next)?);
+                    .ok_or_else(|| io::Error::other("drained member index"))? = Some(Writer::new(
+                    newest.log,
+                    newest.index,
+                    newest.seq,
+                    retention,
+                    next,
+                )?);
             }
             for channel in [Channel::Stdout, Channel::Stderr] {
                 *streams
@@ -106,7 +111,9 @@ impl Drain {
             }
         }
         let mut drained = Vec::new();
-        drained.try_reserve_exact(members.len()).map_err(io::Error::other)?;
+        drained
+            .try_reserve_exact(members.len())
+            .map_err(io::Error::other)?;
         drained.extend_from_slice(members);
         let mut names = Vec::new();
         names.try_reserve_exact(labels.len()).map_err(io::Error::other)?;
@@ -142,15 +149,14 @@ impl Drain {
     /// its end as its stream's. Whether its stream has ended with it. One that comes after its
     /// stream ended (its member aborted under it) is nothing more.
     pub(super) fn keep(&self, record: &[u8]) -> io::Result<bool> {
-        let record = Record::decode(record).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+        let record =
+            Record::decode(record).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
         let route = route_index(record.member, record.channel)?;
         let mut kept = lock(&self.kept);
-        let stream = kept
-            .streams
-            .get(route)
-            .copied()
-            .flatten()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "a record of a channel not drained"))?;
+        let stream =
+            kept.streams.get(route).copied().flatten().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "a record of a channel not drained")
+            })?;
         if stream != Stream::Open {
             return Ok(true);
         }
@@ -290,7 +296,11 @@ impl Viewed {
 /// agent's: a line longer than a piece goes in pieces, each a line, and one cut short at
 /// its stream's end is ended. Whether to go on: not once `to` refuses it.
 fn line(to: &mut dyn Write, label: &str, piece: &Piece<'_>) -> io::Result<bool> {
-    let newline: &[u8] = if piece.bytes.last() == Some(&b'\n') { b"" } else { b"\n" };
+    let newline: &[u8] = if piece.bytes.last() == Some(&b'\n') {
+        b""
+    } else {
+        b"\n"
+    };
     let written = to
         .write_all(b"[")
         .and_then(|()| to.write_all(label.as_bytes()))
@@ -376,7 +386,9 @@ impl Windows {
             Some(buffer) if buffer.capacity() >= window.admitted => buffer,
             _ => {
                 let mut fresh = Vec::new();
-                fresh.try_reserve_exact(window.admitted).map_err(io::Error::other)?;
+                fresh
+                    .try_reserve_exact(window.admitted)
+                    .map_err(io::Error::other)?;
                 fresh
             }
         };
@@ -431,7 +443,10 @@ mod tests {
         vec!["agent files".into(), "agent main".into(), "harness drive".into()]
     }
 
-    const KEEP: LogRetention = LogRetention { size: 1 << 20, files: 2 };
+    const KEEP: LogRetention = LogRetention {
+        size: 1 << 20,
+        files: 2,
+    };
 
     /// A drained member's records are kept in its log, each channel apart, its bytes whole;
     /// its end ends its stream, and what comes after is nothing more; a member an owner reads
@@ -444,12 +459,32 @@ mod tests {
         assert!(!drain.drains(route_index(2, Channel::Stdout).unwrap()));
         assert!(drain.drains_member(1) && !drain.drains_member(2));
         let out = [b'a', 0, 0xff, b'\n'];
-        assert!(!drain.keep(&encoded(1, Channel::Stdout, 0, Event::Open("agent main"))).unwrap());
-        assert!(!drain.keep(&encoded(1, Channel::Stdout, 0, Event::Data(&out))).unwrap());
-        assert!(!drain.keep(&encoded(1, Channel::Stderr, 0, Event::Data(b"oops"))).unwrap());
+        assert!(
+            !drain
+                .keep(&encoded(1, Channel::Stdout, 0, Event::Open("agent main")))
+                .unwrap()
+        );
+        assert!(
+            !drain
+                .keep(&encoded(1, Channel::Stdout, 0, Event::Data(&out)))
+                .unwrap()
+        );
+        assert!(
+            !drain
+                .keep(&encoded(1, Channel::Stderr, 0, Event::Data(b"oops")))
+                .unwrap()
+        );
         assert!(drain.keep(&encoded(1, Channel::Stdout, 4, Event::End)).unwrap());
-        assert!(drain.keep(&encoded(1, Channel::Stdout, 4, Event::Data(b"late"))).unwrap());
-        assert!(drain.keep(&encoded(2, Channel::Stdout, 0, Event::Data(b"x"))).is_err());
+        assert!(
+            drain
+                .keep(&encoded(1, Channel::Stdout, 4, Event::Data(b"late")))
+                .unwrap()
+        );
+        assert!(
+            drain
+                .keep(&encoded(2, Channel::Stdout, 0, Event::Data(b"x")))
+                .is_err()
+        );
         drain.close();
         let log = LogFile::open(&member_dir(&run, 1)).unwrap();
         let mut reader = Reader::new();
@@ -476,8 +511,17 @@ mod tests {
                 drain.show(&mut to);
                 to
             });
-            drain.keep(&encoded(1, Channel::Stdout, 0, Event::Data(b"confined uid=200001\nhalf"))).unwrap();
-            drain.keep(&encoded(0, Channel::Stderr, 0, Event::Data(b"x\n"))).unwrap();
+            drain
+                .keep(&encoded(
+                    1,
+                    Channel::Stdout,
+                    0,
+                    Event::Data(b"confined uid=200001\nhalf"),
+                ))
+                .unwrap();
+            drain
+                .keep(&encoded(0, Channel::Stderr, 0, Event::Data(b"x\n")))
+                .unwrap();
             for member in [0, 1] {
                 for channel in [Channel::Stdout, Channel::Stderr] {
                     drain.keep(&encoded(member, channel, 0, Event::End)).unwrap();
@@ -490,7 +534,11 @@ mod tests {
         lines.sort_unstable();
         assert_eq!(
             lines,
-            ["[agent files] x", "[agent main] confined uid=200001", "[agent main] half"]
+            [
+                "[agent files] x",
+                "[agent main] confined uid=200001",
+                "[agent main] half"
+            ]
         );
     }
 
@@ -508,10 +556,16 @@ mod tests {
         }
         let run = shards_testdir::TempDir::new("drain-gone").unwrap();
         let drain = Drain::open(&run, &labels(), &[1], Some(KEEP), 64).unwrap();
-        drain.keep(&encoded(1, Channel::Stdout, 0, Event::Data(b"a\n"))).unwrap();
+        drain
+            .keep(&encoded(1, Channel::Stdout, 0, Event::Data(b"a\n")))
+            .unwrap();
         // It returns though no channel has ended.
         drain.show(&mut Gone);
-        assert!(!drain.keep(&encoded(1, Channel::Stdout, 2, Event::Data(b"b\n"))).unwrap());
+        assert!(
+            !drain
+                .keep(&encoded(1, Channel::Stdout, 2, Event::Data(b"b\n")))
+                .unwrap()
+        );
     }
 
     /// A run that keeps no log keeps none of its members': their records are taken all the
@@ -520,7 +574,11 @@ mod tests {
     fn a_run_that_keeps_no_log_keeps_none_of_its_members() {
         let run = shards_testdir::TempDir::new("drain-none").unwrap();
         let drain = Drain::open(&run, &labels(), &[1], None, 64).unwrap();
-        assert!(!drain.keep(&encoded(1, Channel::Stdout, 0, Event::Data(b"a\n"))).unwrap());
+        assert!(
+            !drain
+                .keep(&encoded(1, Channel::Stdout, 0, Event::Data(b"a\n")))
+                .unwrap()
+        );
         assert!(!member_dir(&run, 1).exists());
     }
 
@@ -530,7 +588,9 @@ mod tests {
         let run = shards_testdir::TempDir::new("drain-again").unwrap();
         for word in [&b"first\n"[..], b"second\n"] {
             let drain = Drain::open(&run, &labels(), &[1], Some(KEEP), 64).unwrap();
-            drain.keep(&encoded(1, Channel::Stdout, 0, Event::Data(word))).unwrap();
+            drain
+                .keep(&encoded(1, Channel::Stdout, 0, Event::Data(word)))
+                .unwrap();
             drain.close();
         }
         let log = LogFile::open(&member_dir(&run, 1)).unwrap();
