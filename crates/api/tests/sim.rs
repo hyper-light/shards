@@ -325,6 +325,16 @@ mod client {
                 .err(),
             Some(Refusal::GpuProbe(GpuProbeError::Pending))
         );
+        // A VM process that refuses its selection prints its refusal in place of a receipt and
+        // fails (D232): typed, where it was the guest's end alone.
+        let dir = shards_testdir::TempDir::new("api-gpu-refused").unwrap();
+        let bin = stand_in(&dir, "printf 'shards-gpu-refusal 1\\njoin missing\\n'; exit 1");
+        assert_eq!(
+            Shards.probe_gpu(&probing(bin), UNREACHED).err(),
+            Some(Refusal::GpuProbe(GpuProbeError::Refused(
+                shards_api::physical::GpuRefusal::Join(shards_api::physical::JoinError::Missing)
+            )))
+        );
     }
 
     /// `stop` ends a shards that runs on, as `Stopped`; a connect after is refused

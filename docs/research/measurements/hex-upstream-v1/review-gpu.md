@@ -15,6 +15,20 @@ comment, and the identity bridge's C and the renderer patches (resources/gpu).
 | `unsafe impl Send for Venus`'s SAFETY comment predates the held driver (6accac1e5), whose instance and loader pointers it did not cover. Now it says why they may drop on any thread (vkDestroyInstance's external synchronization; dlclose(3), FreeLibrary) | R07 | (comment) | | |
 | `selection::Properties`' 308 bytes, which native-identity.c's `_Static_assert` holds and the bridge writes through its pointer, were checked by one unit test; now as the crate compiles, on every target | R01, R07 | (no live defect: the layouts agree) | const assert | |
 
+## Cured after this review (goal 52, by ROOT's word)
+
+Goal 52's GPU-defects child cured the findings this review recorded as owed. D232's review paragraph lists them by
+SHA:
+- (5) `start_reported`'s writer, taken twice, says `ReportTaken`: cb8b92f1b.
+- (6) `--gpu-device`'s selection is checked once, after every flag: cfc504f25.
+- (3) said.rs reads a restore's words with restore's grammar: 5a377965a.
+- (2) `imports_host_memory`'s count is taken by `try_reserve`, and each name within its array: 2aabfeb7d.
+- (4) a selection's refusal is typed across the VM process: `GpuProbeError::Refused`/`Unreported`, read by the API.
+  That's 18f59d497, landed by merge ba9879a66.
+- (1) build.rs's bridge watch: given to ROOT as a hunk for its build.rs change (p/helpers-zig-v1).
+
+The "Owed" and "Outside this lane's paths" sections below are kept as this review found them.
+
 ## MAX_PHYSICAL_GPUS (R03)
 
 Its figure, 65,536, is the renderer's patches' `1 + UINT16_MAX`, from Hex's scheduler's u16 device index. The

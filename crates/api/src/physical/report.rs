@@ -269,6 +269,36 @@ mod tests {
         }
     }
 
+    /// D232: a selection its VM process refused reaches the client as that refusal, where it
+    /// read as a malformed receipt; and a report its writer closed unwritten as no report.
+    #[test]
+    fn a_refused_or_unwritten_report_is_said_as_such() {
+        use crate::physical::{GpuRefusal, JoinError};
+        let (request, _) = fixture();
+        let (mut receiver, mut writer) = Receiver::new(request).unwrap();
+        let frame = format!(
+            "shards-vmm-gpu 1 {}\nshards-gpu-refusal 1\njoin missing\n",
+            "03".repeat(16)
+        );
+        writer.write_all(frame.as_bytes()).unwrap();
+        drop(writer);
+        assert_eq!(
+            receiver.take(Duration::from_secs(1)),
+            Err(Refusal::GpuProbe(GpuProbeError::Refused(GpuRefusal::Join(
+                JoinError::Missing
+            ))))
+        );
+        receiver.finish().unwrap();
+        let (request, _) = fixture();
+        let (mut receiver, writer) = Receiver::new(request).unwrap();
+        drop(writer);
+        assert_eq!(
+            receiver.take(Duration::from_secs(1)),
+            Err(Refusal::GpuProbe(GpuProbeError::Unreported))
+        );
+        receiver.finish().unwrap();
+    }
+
     /// Write one complete frame and take it, the deadline seen to pass at `late`
     /// alone. The writer's EOF precedes the take, so the read itself never waits.
     fn take_expiring_at(late: Option<Recheck>) -> Result<GpuReport, Refusal> {
