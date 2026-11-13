@@ -250,6 +250,7 @@ SPIs of the GICv2m frame the VMM keeps (D154).
 | Keyless signing, its SPIFFE provider (D126) | yes | yes | yes | yes, by the Workload API's named pipe |
 | `--platform` for one platform's microVM, other CPUs' images emulated (D179) | yes | yes | yes | yes |
 | The build cache collected as its user's shares say (D212) | yes | yes | yes | yes |
+| Guests booted through `shards` for other programs (shards-api): a spec's boot, a stream to a port, every refusal typed, and `attach` taking back a guest its client lost (D215) | yes: boot.rs's shards-api tests on real guests, on CI's runners and fedora (PM M465), a guest taken back held by its pidfd; the attach case's reap fix not yet rerun on real guests, and its waits' bounds other hosts' records until they are learned where they run (PM M541) | built and linted, its real-VM tests amd64's code, not yet run there | yes: its conformance suite on real guests (PM M463, M464, M465), a guest taken back held by kqueue; the attach case's reap fix not yet rerun there (PM M541) | booted to its port and to its power-off on real guests (jupiter, PM M465); a guest taken back by a handle of its own to the `shards` that holds its VM in a Job (parity step 14, 43670dc18, b4548fcf6), unit-tested on jupiter, its conformance case on real guests not yet run |
 
 A Linux host runs VMs on Linux 6.10 or later with Landlock enabled (its `lsm=` list), whose
 ABI v5 is the first to govern `/dev/kvm`'s ioctls: a VM process starts under no weaker
