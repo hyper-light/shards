@@ -65,7 +65,6 @@ impl Scratch {
                 "--snapshot-then",
                 "stop",
             ],
-            TIMEOUT,
         )
     }
 }
@@ -100,7 +99,7 @@ fn cold_restores_side_by_side_go_on_apart() {
     let snapshot = s.snapshot();
     let runs: Vec<Run> = std::thread::scope(|scope| {
         let restores: Vec<_> = (0..3)
-            .map(|_| scope.spawn(|| run_shards(&["restore"], &[snapshot.to_str().unwrap()], TIMEOUT)))
+            .map(|_| scope.spawn(|| run_shards(&["restore"], &[snapshot.to_str().unwrap()])))
             .collect();
         restores.into_iter().map(|r| r.join().unwrap()).collect()
     });

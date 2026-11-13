@@ -375,7 +375,7 @@ fn wait(
         .into_iter()
         .flatten()
         .collect();
-    let ready = shards_ipc::await_any_within(&fds, within)?;
+    let ready = crate::daemon::timed(within, || shards_ipc::await_any_within(&fds, within))?;
     let mut at = ready.into_iter();
     let changed = watch.is_some() && at.next().unwrap_or(false);
     let ended = end_fd.is_some() && at.next().unwrap_or(false);
@@ -406,7 +406,8 @@ fn wait(
         .into_iter()
         .flatten()
         .collect();
-    let (streams_ready, events_ready) = shards_ipc::await_any(&streams, &events, deadline)?;
+    let (streams_ready, events_ready) =
+        crate::daemon::timed(within, || shards_ipc::await_any(&streams, &events, deadline))?;
     let mut at = events_ready.into_iter();
     let changed = watch.is_some() && at.next().unwrap_or(false);
     let member_ended = member.is_some() && at.next().unwrap_or(false);

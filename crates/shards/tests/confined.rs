@@ -219,7 +219,7 @@ fn the_vm_process_is_confined() {
         .join("containers")
         .join(&name);
     assert!(record.exists(), "{} left", record.display());
-    let next = vm_run(&["--kernel", "nonexistent-kernel"], TIMEOUT);
+    let next = vm_run(&["--kernel", "nonexistent-kernel"]);
     assert_ne!(next.status, Some(0), "{next}");
     assert!(!record.exists(), "{} swept", record.display());
     let profile = wide(&name);
@@ -283,7 +283,7 @@ fn the_network_process_is_confined() {
         ("SHARDS_KERNEL", kernel.as_os_str()),
         ("SHARDS_INIT", init.as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let pulled = shards(&["pull", "-q", &image]);
     assert_eq!(pulled.status, Some(0), "{pulled}");
     let ran = shards(&["run", "-d", "--pull", "never", "--name", "net", &image, "sleep"]);

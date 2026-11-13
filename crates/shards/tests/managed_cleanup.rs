@@ -27,7 +27,6 @@ fn call(home: &Path, args: &[&str]) -> Run {
             ("SHARDS_KERNEL", kernel().as_os_str()),
             ("SHARDS_INIT", guest_init().as_os_str()),
         ],
-        PATIENCE,
     )
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

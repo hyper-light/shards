@@ -55,17 +55,14 @@ fn boots_to_root_mount_without_a_root_device() {
         return;
     }
     let k = kernel().to_str().unwrap();
-    let r = vm_run(
-        &[
-            "--kernel",
-            k,
-            "--memory",
-            "256",
-            "--cmdline",
-            "console=ttyS0 panic=-1",
-        ],
-        TIMEOUT,
-    );
+    let r = vm_run(&[
+        "--kernel",
+        k,
+        "--memory",
+        "256",
+        "--cmdline",
+        "console=ttyS0 panic=-1",
+    ]);
     assert_eq!(r.status, Some(EXIT_RESET), "{r}");
     for line in machine_lines() {
         assert!(r.stdout.contains(&line), "missing {line:?}: {r}");
@@ -84,18 +81,15 @@ fn a_reset_with_no_console_says_its_guests_panic() {
     if cannot_run_vms() {
         return;
     }
-    let r = vm_run(
-        &[
-            "--kernel",
-            kernel().to_str().unwrap(),
-            "--memory",
-            "256",
-            "--no-console",
-            "--cmdline",
-            "console=ttyS0 panic=-1",
-        ],
-        TIMEOUT,
-    );
+    let r = vm_run(&[
+        "--kernel",
+        kernel().to_str().unwrap(),
+        "--memory",
+        "256",
+        "--no-console",
+        "--cmdline",
+        "console=ttyS0 panic=-1",
+    ]);
     assert_eq!(r.status, Some(EXIT_RESET), "{r}");
     assert!(
         r.stderr
@@ -125,23 +119,20 @@ fn a_dax_windows_page_structures_take_none_of_its_guests_memory() {
     let most_free = |window: &str| -> u64 {
         (0..3)
             .map(|_| {
-                let r = vm_run(
-                    &[
-                        "--kernel",
-                        k,
-                        "--init",
-                        guest,
-                        "--memory",
-                        "512",
-                        "--shares",
-                        "1",
-                        "--share-window",
-                        window,
-                        "--cmdline",
-                        "console=ttyS0 panic=-1 shards_test=memory",
-                    ],
-                    TIMEOUT,
-                );
+                let r = vm_run(&[
+                    "--kernel",
+                    k,
+                    "--init",
+                    guest,
+                    "--memory",
+                    "512",
+                    "--shares",
+                    "1",
+                    "--share-window",
+                    window,
+                    "--cmdline",
+                    "console=ttyS0 panic=-1 shards_test=memory",
+                ]);
                 assert_eq!(r.status, Some(0), "{r}");
                 // `SHARDS-TEST MEMORY <MemTotal> <MemFree> <MemAvailable> <uptime> <listed>`
                 let line = r.stdout.lines().find(|l| l.contains("SHARDS-TEST MEMORY"));
@@ -206,7 +197,6 @@ fn a_long_dax_window_costs_its_boot_next_to_nothing() {
                         "console=ttyS0 panic=-1 shards_test=memory",
                     ],
                     &[("SHARDS_TIMING", std::ffi::OsStr::new("1"))],
-                    TIMEOUT,
                 );
                 assert_eq!(r.status, Some(0), "{r}");
                 let peak = if cfg!(windows) {
@@ -237,18 +227,15 @@ fn a_pci_bus_reaches_its_function() {
         return;
     }
     let (k, g) = (kernel().to_str().unwrap(), test_guest().to_str().unwrap());
-    let r = vm_run(
-        &[
-            "--kernel",
-            k,
-            "--init",
-            g,
-            "--pci-test",
-            "--cmdline",
-            "console=ttyS0 panic=-1 shards_test=pci",
-        ],
-        TIMEOUT,
-    );
+    let r = vm_run(&[
+        "--kernel",
+        k,
+        "--init",
+        g,
+        "--pci-test",
+        "--cmdline",
+        "console=ttyS0 panic=-1 shards_test=pci",
+    ]);
     assert!(r.stdout.contains("SHARDS-TEST PASS"), "{r}");
     assert_eq!(r.status, Some(0), "{r}");
 }
@@ -262,19 +249,16 @@ fn brings_up_every_vcpu() {
     let k = kernel().to_str().unwrap();
     for n in [2u32, 7, 16] {
         let cpus = n.to_string();
-        let r = vm_run(
-            &[
-                "--kernel",
-                k,
-                "--cpus",
-                &cpus,
-                "--memory",
-                "512",
-                "--cmdline",
-                "console=ttyS0 panic=-1",
-            ],
-            TIMEOUT,
-        );
+        let r = vm_run(&[
+            "--kernel",
+            k,
+            "--cpus",
+            &cpus,
+            "--memory",
+            "512",
+            "--cmdline",
+            "console=ttyS0 panic=-1",
+        ]);
         assert!(
             r.stdout.contains(&format!("smp: Brought up 1 node, {n} CPUs")),
             "{n} vCPUs: {r}"
@@ -365,17 +349,14 @@ fn runs_init_as_pid_1_and_powers_off() {
         return;
     }
     let (k, init) = (kernel().to_str().unwrap(), guest_init().to_str().unwrap());
-    let r = vm_run(
-        &[
-            "--kernel",
-            k,
-            "--init",
-            init,
-            "--cmdline",
-            "console=ttyS0 quiet panic=-1",
-        ],
-        TIMEOUT,
-    );
+    let r = vm_run(&[
+        "--kernel",
+        k,
+        "--init",
+        init,
+        "--cmdline",
+        "console=ttyS0 quiet panic=-1",
+    ]);
     assert_eq!(r.status, Some(0), "{r}");
     assert!(r.stdout.contains("shards-init: pid 1 running"), "{r}");
     let (init_us, exit_us) = (
@@ -392,18 +373,15 @@ fn survives_back_to_back_boots() {
     }
     let (k, init) = (kernel().to_str().unwrap(), guest_init().to_str().unwrap());
     for i in 0..20 {
-        let r = vm_run(
-            &[
-                "--kernel",
-                k,
-                "--init",
-                init,
-                "--cmdline",
-                "quiet panic=-1",
-                "--no-console",
-            ],
-            TIMEOUT,
-        );
+        let r = vm_run(&[
+            "--kernel",
+            k,
+            "--init",
+            init,
+            "--cmdline",
+            "quiet panic=-1",
+            "--no-console",
+        ]);
         assert_eq!(r.status, Some(0), "boot {i}: {r}");
         assert!(r.marker_us(1).is_some(), "boot {i}: {r}");
     }
@@ -444,7 +422,7 @@ fn rejects_invalid_vm_configuration() {
         ),
     ];
     for (args, message) in cases {
-        let r = vm_run(args, TIMEOUT);
+        let r = vm_run(args);
         assert_ne!(r.status, Some(0), "{args:?} should fail: {r}");
         assert!(r.stderr.contains(message), "{args:?}: expected {message:?}: {r}");
     }
@@ -459,7 +437,7 @@ fn rejects_malformed_vm_arguments() {
         (&["--kernel", "k", "--cpus", "two"], "--cpus"),
     ];
     for (args, message) in cases {
-        let r = vm_run(args, TIMEOUT);
+        let r = vm_run(args);
         assert_eq!(r.status, Some(2), "{args:?}: {r}");
         assert!(r.stderr.contains(message), "{args:?}: expected {message:?}: {r}");
     }
@@ -484,7 +462,7 @@ fn explains_when_this_host_cannot_run_vms() {
     let Err(why) = shards_vmm::vm::check_host() else {
         return;
     };
-    let r = vm_run(&["--kernel", "k"], TIMEOUT);
+    let r = vm_run(&["--kernel", "k"]);
     assert_eq!(r.status, Some(1), "{r}");
     assert!(r.stderr.contains(&why), "{r}");
 }
@@ -492,11 +470,11 @@ fn explains_when_this_host_cannot_run_vms() {
 #[test]
 fn cli_reports_usage_and_rejects_unknown_commands() {
     let none: [&str; 0] = [];
-    let help = run_shards(&["--help"], &none, TIMEOUT);
+    let help = run_shards(&["--help"], &none);
     assert_eq!(help.status, Some(0), "{help}");
     assert!(help.stdout.contains("\n  run "), "{help}");
     // As docker/cli refuses one: status 1, its words.
-    let unknown = run_shards(&["frobnicate"], &none, TIMEOUT);
+    let unknown = run_shards(&["frobnicate"], &none);
     assert_eq!(unknown.status, Some(1), "{unknown}");
     assert!(
         unknown.stderr.contains("unknown command: shards frobnicate"),
@@ -506,21 +484,21 @@ fn cli_reports_usage_and_rejects_unknown_commands() {
     // starts it, and refuses to run without the build's connection: refused as unknown
     // there, every build held to a budget wrote under it (PM M442).
     if cfg!(target_os = "linux") {
-        let writer = run_shards(&["build-writer"], &none, TIMEOUT);
+        let writer = run_shards(&["build-writer"], &none);
         assert_eq!(writer.status, Some(1), "{writer}");
         assert!(writer.stderr.contains("shards: a build's writer: "), "{writer}");
     }
     // Piped, laid out as the scripts that read `version` parse it (cli/version.rs); the
     // server is this shards too.
-    let version = run_shards(&["version"], &none, TIMEOUT);
+    let version = run_shards(&["version"], &none);
     assert!(version.stdout.starts_with("Client:\n Version:"), "{version}");
     assert!(
         version.stdout.contains("\nServer: shards\n Engine:\n"),
         "{version}"
     );
-    let short = run_shards(&["--version"], &none, TIMEOUT);
+    let short = run_shards(&["--version"], &none);
     assert!(short.stdout.starts_with("shards version "), "{short}");
-    let server = run_shards(&["version", "-f", "{{.Server.Platform.Name}}"], &none, TIMEOUT);
+    let server = run_shards(&["version", "-f", "{{.Server.Platform.Name}}"], &none);
     assert_eq!(server.stdout, "shards\n", "{server}");
 }
 
@@ -533,23 +511,20 @@ fn a_nested_guest_is_a_kvm_host() {
     if cannot_run_vms() {
         return;
     }
-    let refused = vm_run(
-        &[
-            "--kernel",
-            kernel().to_str().unwrap(),
-            "--nested",
-            "--snapshot-dir",
-            "nowhere",
-        ],
-        TIMEOUT,
-    );
+    let refused = vm_run(&[
+        "--kernel",
+        kernel().to_str().unwrap(),
+        "--nested",
+        "--snapshot-dir",
+        "nowhere",
+    ]);
     assert_eq!(refused.status, Some(2), "{refused}");
     assert!(
         refused.stderr.contains("--nested with --snapshot-dir"),
         "{refused}"
     );
     let Some(nested) = common::nested_kernel() else {
-        let r = vm_run(&["--kernel", kernel().to_str().unwrap(), "--nested"], TIMEOUT);
+        let r = vm_run(&["--kernel", kernel().to_str().unwrap(), "--nested"]);
         let why = match (common::ARCH, std::env::consts::OS) {
             ("aarch64", "windows") => "Windows' hypervisor platform gives a guest no EL2 on arm64",
             ("x86_64", _) => "virtualization of a guest's own is not given on x86_64 yet",
@@ -559,22 +534,19 @@ fn a_nested_guest_is_a_kvm_host() {
         assert!(r.stderr.contains(why), "{r}");
         return;
     };
-    let r = vm_run(
-        &[
-            "--kernel",
-            nested.to_str().unwrap(),
-            "--init",
-            test_guest().to_str().unwrap(),
-            "--nested",
-            "--cpus",
-            "2",
-            "--memory",
-            "512",
-            "--cmdline",
-            "console=ttyS0 panic=-1 shards_test=kmsg",
-        ],
-        TIMEOUT,
-    );
+    let r = vm_run(&[
+        "--kernel",
+        nested.to_str().unwrap(),
+        "--init",
+        test_guest().to_str().unwrap(),
+        "--nested",
+        "--cpus",
+        "2",
+        "--memory",
+        "512",
+        "--cmdline",
+        "console=ttyS0 panic=-1 shards_test=kmsg",
+    ]);
     if r.stderr.contains("this Mac gives a guest no EL2") {
         eprintln!("SKIP: this Mac gives a guest no EL2");
         return;
@@ -624,21 +596,18 @@ fn a_pci_functions_interrupts_reach_the_guest() {
         eprintln!("SKIP: no pinned kernel with VFIO for {}", common::ARCH);
         return;
     };
-    let r = vm_run(
-        &[
-            "--kernel",
-            kernel.to_str().unwrap(),
-            "--init",
-            test_guest().to_str().unwrap(),
-            "--pci-test",
-            "--cmdline",
-            &format!(
-                "console=ttyS0 panic=-1 vfio.enable_unsafe_noiommu_mode=1{} shards_test=pci-irq",
-                unsafe_interrupts()
-            ),
-        ],
-        TIMEOUT,
-    );
+    let r = vm_run(&[
+        "--kernel",
+        kernel.to_str().unwrap(),
+        "--init",
+        test_guest().to_str().unwrap(),
+        "--pci-test",
+        "--cmdline",
+        &format!(
+            "console=ttyS0 panic=-1 vfio.enable_unsafe_noiommu_mode=1{} shards_test=pci-irq",
+            unsafe_interrupts()
+        ),
+    ]);
     assert_eq!(r.status, Some(0), "{r}");
     assert!(r.stdout.contains(INTERRUPTS), "{r}");
     assert!(
@@ -661,21 +630,18 @@ fn a_pci_functions_dma_goes_through_its_iommu() {
         eprintln!("SKIP: no pinned kernel with VFIO for {}", common::ARCH);
         return;
     };
-    let r = vm_run(
-        &[
-            "--kernel",
-            kernel.to_str().unwrap(),
-            "--init",
-            test_guest().to_str().unwrap(),
-            "--pci-test",
-            "--cmdline",
-            &format!(
-                "console=ttyS0 panic=-1{} shards_test=pci-dma",
-                unsafe_interrupts()
-            ),
-        ],
-        TIMEOUT,
-    );
+    let r = vm_run(&[
+        "--kernel",
+        kernel.to_str().unwrap(),
+        "--init",
+        test_guest().to_str().unwrap(),
+        "--pci-test",
+        "--cmdline",
+        &format!(
+            "console=ttyS0 panic=-1{} shards_test=pci-dma",
+            unsafe_interrupts()
+        ),
+    ]);
     assert_eq!(r.status, Some(0), "{r}");
     assert!(r.stdout.contains(DMA_THROUGH_IOMMU), "{r}");
     assert!(
@@ -743,7 +709,7 @@ fn a_nested_guest_runs_vms_of_its_own() {
             &cmdline,
         ];
         all.extend_from_slice(args);
-        vm_run(&all, TIMEOUT * 3)
+        vm_run(&all)
     };
     let passed = |r: &common::Run| {
         let line = |want: &str| r.stdout.lines().any(|l| l.trim_end() == want);
@@ -904,7 +870,7 @@ fn a_hosts_pci_function_is_refused_where_its_os_passes_none() {
         named.push("PCIROOT(0)#PCI(0202)#PCI(0000)");
     }
     for name in named {
-        let r = vm_run(&["--kernel", k, "--vfio", name], TIMEOUT);
+        let r = vm_run(&["--kernel", k, "--vfio", name]);
         assert_ne!(r.status, Some(0), "{name}: {r}");
         assert!(r.stderr.contains(&format!("{name}: {limit}")), "{name}: {r}");
     }
@@ -954,19 +920,16 @@ fn a_hosts_pci_function_is_assigned_where_its_hypervisor_assigns_one() {
         id("DEV_")
     );
     let (k, g) = (kernel().to_str().unwrap(), test_guest().to_str().unwrap());
-    let r = vm_run(
-        &[
-            "--kernel",
-            k,
-            "--init",
-            g,
-            "--vfio",
-            &function,
-            "--cmdline",
-            &cmdline,
-        ],
-        TIMEOUT,
-    );
+    let r = vm_run(&[
+        "--kernel",
+        k,
+        "--init",
+        g,
+        "--vfio",
+        &function,
+        "--cmdline",
+        &cmdline,
+    ]);
     assert!(r.stdout.contains("SHARDS-TEST PASS"), "{r}");
     assert_eq!(r.status, Some(0), "{r}");
 }
@@ -1004,24 +967,21 @@ fn a_run_is_given_a_hosts_vfio_group() {
     };
     let outer = |initrd: &std::path::Path, cmdline: &str| {
         let cmdline = format!("console=ttyS0 panic=-1 {cmdline}");
-        vm_run(
-            &[
-                "--kernel",
-                nested.to_str().unwrap(),
-                "--initrd",
-                initrd.to_str().unwrap(),
-                "--nested",
-                "--pci-tests",
-                "01.0,02.0,02.1",
-                "--cpus",
-                "2",
-                "--memory",
-                "2048",
-                "--cmdline",
-                &cmdline,
-            ],
-            TIMEOUT * 3,
-        )
+        vm_run(&[
+            "--kernel",
+            nested.to_str().unwrap(),
+            "--initrd",
+            initrd.to_str().unwrap(),
+            "--nested",
+            "--pci-tests",
+            "01.0,02.0,02.1",
+            "--cpus",
+            "2",
+            "--memory",
+            "2048",
+            "--cmdline",
+            &cmdline,
+        ])
     };
     // Whether this host gives a guest EL2, before shards is built for one.
     let probe = dir.join("probe.cpio");
@@ -1087,7 +1047,7 @@ fn snapshot_tests_pass_on_a_kvm_host_of_this_architecture() {
     // take them, whose MSIs its GICv2m frame does not isolate (D154; iommufd/device.c,
     // iommufd_device_bind, refused a node's bind with EPERM without it).
     let pci_tests = std::env::var("SHARDS_L1_PCI_TESTS").ok();
-    let outer = |initrd: &std::path::Path, cpus: &str, memory: &str, cmdline: &str, timeout| {
+    let outer = |initrd: &std::path::Path, cpus: &str, memory: &str, cmdline: &str| {
         let unsafe_msis = match &pci_tests {
             Some(_) => " vfio_iommu_type1.allow_unsafe_interrupts=1 iommufd.allow_unsafe_interrupts=1",
             None => "",
@@ -1109,12 +1069,12 @@ fn snapshot_tests_pass_on_a_kvm_host_of_this_architecture() {
         if let Some(places) = &pci_tests {
             args.extend(["--pci-tests", places.as_str()]);
         }
-        vm_run(&args, timeout)
+        vm_run(&args)
     };
     // Whether this host gives a guest EL2, before the tests are built for one.
     let probe = dir.join("probe.cpio");
     std::fs::write(&probe, shards_vmm::initramfs::with_init(&read(test_guest()))).unwrap();
-    let probed = outer(&probe, "1", "256", "shards_test=kmsg", TIMEOUT);
+    let probed = outer(&probe, "1", "256", "shards_test=kmsg");
     if probed.stderr.contains("gives a guest no EL2") {
         eprintln!("SKIP: this host gives a guest no EL2");
         return;
@@ -1250,13 +1210,7 @@ fn snapshot_tests_pass_on_a_kvm_host_of_this_architecture() {
         .file("e2e/env", 0o644, env.as_bytes());
     let initrd = dir.join("l1.cpio");
     std::fs::write(&initrd, cpio.finish()).unwrap();
-    let ran = outer(
-        &initrd,
-        "8",
-        "24576",
-        "shards_test=e2e",
-        Duration::from_secs(45 * 60),
-    );
+    let ran = outer(&initrd, "8", "24576", "shards_test=e2e");
     // SHARDS_L1_CONSOLE names a file its console is written to, passing or failing, for
     // what the tests in it say of themselves.
     if let Some(console) = std::env::var_os("SHARDS_L1_CONSOLE") {
@@ -1306,11 +1260,10 @@ fn a_snapshot_keeps_memory_to_plug() {
             "--snapshot-then",
             "resume",
         ],
-        TIMEOUT,
     );
     for run in [booted]
         .into_iter()
-        .chain((0..2).map(|_| run_shards(&["restore"], &[snapshot.to_str().unwrap()], TIMEOUT)))
+        .chain((0..2).map(|_| run_shards(&["restore"], &[snapshot.to_str().unwrap()])))
     {
         assert!(run.stdout.contains("SHARDS-TEST PLUGGED "), "{run}");
         assert!(run.stdout.contains("SHARDS-TEST PASS"), "{run}");
@@ -1346,11 +1299,10 @@ fn a_snapshot_keeps_the_memory_its_guest_plugged() {
             "--snapshot-then",
             "resume",
         ],
-        TIMEOUT,
     );
     for run in [booted]
         .into_iter()
-        .chain((0..2).map(|_| run_shards(&["restore"], &[snapshot.to_str().unwrap()], TIMEOUT)))
+        .chain((0..2).map(|_| run_shards(&["restore"], &[snapshot.to_str().unwrap()])))
     {
         assert!(run.stdout.contains("SHARDS-TEST KEPT 448"), "{run}");
         assert!(run.stdout.contains("SHARDS-TEST PASS"), "{run}");
@@ -1949,7 +1901,6 @@ fn cold_boots_profiled() {
                                 "console=ttyS0 panic=-1 quiet profile=4 initcall_debug log_buf_len=1M{told} shards_test=profile"
                             ),
                         ],
-                        Duration::from_secs(240),
                     )
                 })
             })
@@ -2059,7 +2010,6 @@ fn a_direct_boot_writes_through_a_share_and_not_through_a_read_only_one() {
             &read_only,
         ],
         &[("SHARDS_HOME", home.as_os_str())],
-        TIMEOUT,
     );
     assert_eq!(r.status, Some(0), "{r}");
     assert!(r.stdout.contains("SHARDS-TEST PASS"), "{r}");

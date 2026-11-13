@@ -1426,7 +1426,11 @@ fn control_receives() -> usize {
 }
 
 /// An output's lane, subscribed at `from`: what it sends (its subscription, one acknowledgment)
-/// and the largest frame it reads (a record and its head, or a refusal). A log lane's records
+/// and what it reads, room for its admitted record and its head, or a refusal, at first. A
+/// record may come larger: its endpoint grows a stream's record past the admission its
+/// subscriber was given (`managed::Producer::admit`, as the daemon's learner grows an owned
+/// output's), up to the managed wire's own bound, a frame's (`managed::RECORD_MOST`); the
+/// lane's buffer grows to what comes, and one past that bound is broken. A log lane's records
 /// are held to [`LogRecord::check`] (`log`).
 fn output_lane(
     id: u64,
@@ -1436,10 +1440,9 @@ fn output_lane(
     log: bool,
     tell: mpsc::Sender<Heard>,
 ) -> Result<Lane, managed::Error> {
-    let most = admitted
-        .record_bytes
-        .checked_add(DATA_HEAD)
-        .ok_or(managed::Error::Admission(AdmissionError::Window))?;
+    let window = || managed::Error::Admission(AdmissionError::Window);
+    let first = admitted.record_bytes.checked_add(DATA_HEAD).ok_or_else(window)?;
+    let most = managed::RECORD_MOST.checked_add(DATA_HEAD).ok_or_else(window)?;
     Lane::new(
         id,
         Carries::Output {
@@ -1450,7 +1453,7 @@ fn output_lane(
         },
         &managed::subscribe(scope, from),
         CONTROL_BYTES.saturating_add(ACK_BYTES),
-        most.max(REFUSED_BYTES),
+        first.max(REFUSED_BYTES),
         tell,
     )
 }
@@ -1919,17 +1922,29 @@ impl Lane {
         room
     }
 
-    /// Adds bytes read to the frame coming, within its largest.
-    fn queue_inbound(&mut self, bytes: &[u8]) -> bool {
-        let fits = self
+    /// The most its frames coming may hold: an output's, the largest record frame its stream
+    /// may grow to; any other's, what was reserved for it.
+    fn inbound_most(&self) -> usize {
+        match self.carries {
+            Carries::Output { most, .. } => most,
+            _ => self.inbound.capacity(),
+        }
+    }
+
+    /// Adds bytes read to the frame coming, within its largest: an output's buffer grows to
+    /// hold a record its endpoint grew; past the largest, the endpoint broke the protocol.
+    fn queue_inbound(&mut self, bytes: &[u8]) -> Result<(), Broken> {
+        let n = self
             .inbound
             .len()
             .checked_add(bytes.len())
-            .is_some_and(|n| n <= self.inbound.capacity());
-        if fits {
-            self.inbound.extend_from_slice(bytes);
+            .filter(|n| *n <= self.inbound_most())
+            .ok_or(Broken::Protocol)?;
+        if n > self.inbound.capacity() {
+            self.inbound.try_reserve(bytes.len()).map_err(|_| Broken::Local)?;
         }
-        fits
+        self.inbound.extend_from_slice(bytes);
+        Ok(())
     }
 }
 
@@ -2258,7 +2273,7 @@ impl Drive {
                     return Ok(None);
                 }
             }
-            let room = lane.inbound.capacity().saturating_sub(lane.inbound.len());
+            let room = lane.inbound_most().saturating_sub(lane.inbound.len());
             let (bytes, end) = match io.read_within(conn, stream, room).map_err(|_| Broken::Local)? {
                 Read::Bytes(bytes) => (bytes, false),
                 Read::End(bytes) => (bytes, true),
@@ -2270,9 +2285,7 @@ impl Drive {
                     return Ok(None);
                 }
             };
-            if !lane.queue_inbound(&bytes) {
-                return Err(Broken::Protocol);
-            }
+            lane.queue_inbound(&bytes)?;
             if end {
                 // Its frames first: then an output's lane is finished once every record is
                 // consumed, and any other only after its last word or a refusal (told).
