@@ -927,6 +927,18 @@ pub fn frame(kind: u8, payload: &[u8]) -> Result<Vec<u8>, WireError> {
 /// Reads one frame from `from`: its kind and payload, none at a clean end before a header,
 /// an error past the bound or cut short.
 pub fn read_frame(from: &mut impl std::io::Read) -> std::io::Result<Option<(u8, Vec<u8>)>> {
+    let mut payload = Vec::new();
+    Ok(read_frame_into(from, &mut payload)?.map(|(kind, _)| (kind, payload)))
+}
+
+/// Reads one frame from `from` as [`read_frame`] does, its payload into `buf[..length]`:
+/// its kind and length. `buf` is grown with zeros where it is shorter, and never shrunk or
+/// read past, so that a reader that wipes each payload as it lets it go of holds no frame's
+/// bytes between frames (the run host's channel, D242), and reads nothing past its frame.
+pub fn read_frame_into(
+    from: &mut impl std::io::Read,
+    buf: &mut Vec<u8>,
+) -> std::io::Result<Option<(u8, usize)>> {
     let mut h = [0u8; run::HEADER];
     let mut got = 0;
     while got < h.len() {
@@ -942,13 +954,18 @@ pub fn read_frame(from: &mut impl std::io::Read) -> std::io::Result<Option<(u8, 
     }
     let (kind, len) = run::parse_header(h)
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, WireError::TooLong))?;
-    let mut payload = Vec::new();
-    payload
-        .try_reserve_exact(len as usize)
-        .map_err(|_| std::io::Error::new(std::io::ErrorKind::OutOfMemory, "a frame's payload"))?;
-    payload.resize(len as usize, 0);
-    from.read_exact(&mut payload)?;
-    Ok(Some((kind, payload)))
+    let len = usize::try_from(len)
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, WireError::TooLong))?;
+    if let Some(more) = len.checked_sub(buf.len()).filter(|more| *more > 0) {
+        buf.try_reserve_exact(more)
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::OutOfMemory, "a frame's payload"))?;
+        buf.resize(len, 0);
+    }
+    let payload = buf
+        .get_mut(..len)
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::OutOfMemory, "a frame's payload"))?;
+    from.read_exact(payload)?;
+    Ok(Some((kind, len)))
 }
 
 struct Writer(Vec<u8>);
