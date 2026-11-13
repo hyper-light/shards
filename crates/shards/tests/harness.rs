@@ -244,3 +244,34 @@ fn a_stopped_process_is_its_hosts_hold_and_not_refused() {
     let _ = stopped.kill();
     let _ = stopped.wait();
 }
+
+/// A test's wait on a state its home's daemon comes to (`Patience`) goes on while its party
+/// works, as a command's wait does (the person's ruling of 2026-11-13, D209): its caller
+/// gives it no bound. daemon.rs' and containers.rs' waits on pools and runs were cut at
+/// their tests' `TIMEOUT` however their daemon worked, as run_command's were before W6's
+/// slice 2. Do: a stand-in busy for a second, named its home's daemon; wait for its end.
+/// Expect: the wait holds until it ends.
+#[test]
+fn a_patient_wait_goes_on_while_its_party_works() {
+    let home = TempDir::new("patient");
+    let busy = Duration::from_secs(1);
+    let mut daemon = stand_in_doing(&format!("busy {}", busy.as_millis()))
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    std::fs::write(home.join("daemon.pid"), format!("{}\n", daemon.id())).unwrap();
+    let began = Instant::now();
+    let mut patience = Patience::of(&home, Duration::from_millis(100));
+    while daemon.try_wait().unwrap().is_none() {
+        if !patience.holds() {
+            let _ = daemon.kill();
+            let _ = daemon.wait();
+            panic!(
+                "a daemon busy for {busy:?} did not end within its wait: cut {:?} in",
+                began.elapsed()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(began.elapsed() >= busy, "it ended {:?} in", began.elapsed());
+}
