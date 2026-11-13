@@ -8884,10 +8884,11 @@ stores.
   attributes or in the reply to a SETATTR that sets no size (each notice's touch, D235),
   takes the same path in the guest kernel, which shards' kernel's patch 0007 closes
   (resources/kernel/patches): a DAX file's entries left to its layouts' own breaking. The
-  SETATTR's is closed from the kernel inputs 54fba99afaee on, whose release and pin are owed:
-  until then a notice of a size change to a file a guest process maps in 2 MiB pages lets
-  go of entries the process still maps, `fs/dax.c:415 dax_folio_put` in its guest's log
-  (PM M550).
+  SETATTR's is closed from the kernel inputs 54fba99afaee on, released as
+  kernel-6.18.48-54fba99afaee (kernel.yml run 43459558423) and pinned in `src/kernel.rs` and
+  the tests' `common::kvm_kernel`, each artifact by the release's own name, size and SHA-256:
+  before it a notice of a size change to a file a guest process maps in 2 MiB pages let go of
+  entries the process still maps, `fs/dax.c:415 dax_folio_put` in its guest's log (PM M550).
 - A mapping is charged its file's bytes in its range against the microVM's I/O limits
   (D178) as it is made, once its file's size says them: a 5,000-byte file's range 5,000
   bytes, not the range's 2 MiB, which every file's last range was charged before, and a
@@ -24222,8 +24223,8 @@ virtio 1.3 §5.11's `VIRTIO_FS_F_NOTIFICATION` unused), and what a FUSE server n
   - *A DAX file's guest* (D189, PM M550): a touch's SETATTR reply tells the guest's kernel
     the file's size as the host has it, so a reader past a host's cut reads the file's end
     once the notice lands; the kernel dropped a DAX file's entries there unbroken
-    (`fuse_do_setattr`) until shards' patch 0007 covered it (kernel inputs 54fba99afaee,
-    release and pin owed); and a file the host is still writing, looked up by its notice
+    (`fuse_do_setattr`) until shards' patch 0007 covered it (kernel-6.18.48-54fba99afaee,
+    released and pinned); and a file the host is still writing, looked up by its notice
     before it is 1 MiB long, is no DAX file until its guest makes its inode again (owed:
     weighed with how a notice tells of a name the guest has not looked up).
   - *Linux's instances:* one inotify instance a share process (a run that shares any
