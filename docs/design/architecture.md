@@ -5360,13 +5360,12 @@ terminal that went away), and checks a client's enrollment again for each comman
 `shards remove client` ends its access at once. A join's refusal is the same whatever made
 it fail. The client's side (`client.rs`, `context.rs`) refuses here what a context does not
 carry yet, the client's terminal and files, read by shards' own parser of each command (a
-flag past another's value included); and where no daemon answers, it says so once its
-handshake has not ended within its bound, which its driver holds it to: RFC 1122's R1 at
-the handshake's first probe timeout, 15 s for a daemon never measured ("Its values
-derived", below). A
-connection that has done its handshake lives while its peer is heard, its transport's idle
-timeout 100 s since the last packet (D176 part 6, "Over a slow link": 10 s of silence ended
-2 of the first 20 moves over Wi-Fi). Tested: `crates/remote` (raw keys pinned and refused, the
+flag past another's value included); and where no daemon answers, it says so as each probe
+of its handshake goes, and waits on for as long as its user does, past the slowest handshake
+seen from a daemon reached before ("Its values derived", below). A connection that has done
+its handshake lives while its peer makes progress, its liveness checked as it is used, with
+no idle timeout (D176 part 6, "Over a slow link": 10 s of silence ended 2 of the first 20
+moves over Wi-Fi). Tested: `crates/remote` (raw keys pinned and refused, the
 frames, an invitation's file and proof, and `tests/loopback.rs`: a join, its refusals, and
 commands' output, stdin and 8 MiB crossing whole over loopback); `tests/context.rs`, two
 homes on this machine: no invitation without a listening daemon; an invitation private and
@@ -5428,9 +5427,9 @@ Reading the daemon's side for the same fault found four more, each fixed:
   not enrolled can join, and such a peer could hold its connection for good, its
   keep-alives keeping it, and open as many as it liked. A machine now takes as many such
   connections at once as it holds open invitations, as each invitation enrolls one client,
-  and none while it holds none: the rest are refused as their handshake ends. And it lets
-  each go that has not joined in as long as its connection waits for a peer that answers
-  nothing, from the probe timeout its handshake measured ("Its values derived", below). Its client says such a refusal in the words its stream would have said (the
+  and none while it holds none: where every place is taken, a stranger whose handshake ends
+  takes the place of the one that has held it longest without joining, which is let go
+  ("Its values derived", below). Its client says such a refusal in the words its stream would have said (the
   join's refusal for a join, `this machine has not enrolled you` for a command), so that
   what a stranger learns is whether an invitation is free, nothing of which or whose.
   focal has no such peers: its invitations issue a credential its TLS checks (../focal
@@ -6373,29 +6372,85 @@ owner, its end; and a member that ends, its input `EPIPE`).
 [Record](../research/measurements/member-stdin-v1/README.md).
 
 **Its values derived** (2026-11-13; R03: no value chosen). D180's transport and relays held
-values chosen by hand; each is now a protocol's bound, a cited system's, or follows from the
-connection itself:
-- *A handshake's bound* (was `IDLE`, 10 s). Each side waits for the other's handshake until RFC
-  1122 §4.2.3.5's R1, "at least 3 retransmissions, at the current RTO", each timeout twice the
-  last (RFC 6298 §5.5; RFC 9002 §6.2.1's backoff), 15 timeouts as Linux counts R1
-  (`tcp_retries1` 3, net/ipv4/tcp_timer.c `tcp_model_timeout`): there TCP "SHOULD inform the
-  application of the delivery problem", which "can close the connection (i.e., give up on the
-  open attempt) sooner" than R2. Its timeout is the handshake's first probe timeout (RFC 9002
-  §5.3, §6.2.1: three times the RTT it starts from), no shorter than RFC 6298 §2.4's 1 s, so
-  that a stalled host's late answer is not taken for none ([AP99]). The RTT is the peer's as
-  last measured or, for a peer never measured, RFC 9002 §6.2.2's 333 ms, a cold start typed
-  (`tls::Rtt::{Unmeasured, Measured}`): 15 s for a daemon never measured, or measured under a
-  third of a second (`Rtt::handshake_bound`, `tls::unanswered`). QUIC's loss recovery starts the
-  handshake from the same RTT (`initial_rtt`). A daemon, which knows no client's RTT before its
-  handshake, waits as for one never measured.
-- *A stranger's time to join* (was `IDLE` from its handshake): as long as its own connection
-  waits for a peer that answers nothing, from the probe timeout its handshake measured
-  (`Io::unanswered`); a join is one request and its answer.
-- *The keep-alive* (was a quarter of `IDLE`, 2.5 s): a quarter of `QUIET`, 25 s, three within
-  the idle bound (RFC 9000 §10.1) and under the 30 s RFC 9000 §10.1.2 finds "necessary to
-  prevent the majority of middleboxes from losing state for UDP flows" (Hätönen et al., IMC
-  2010). A peer of an earlier build, held to 10 s, keeps the connection alive by its own
-  keep-alive, at a quarter of its own bound: the lesser bound holds both ends (§10.1).
+values chosen by hand; each is now a protocol's bound, a cited system's, learned per peer, or
+follows from the connection itself. Its timing is the person's ruling of 2026-11-13: "No record
+seeds. The cold start, and every wait after a run-out, follows the party's liveness and
+progress. After that the bound is the slowest answer seen. No ×2. QUIC keeps RFC 9002's
+estimator, with the initial RTT learned per peer (§6.2.2)." A first build of these values (R1's
+fifteen timeouts for a handshake, `QUIET` and a quarter of it) held figures of its own, and is
+replaced by:
+- *What a home knows of a daemon's path* (`tls::Known`, R04). Never reached; reached, its last
+  waits answered (`Reached(Path)`); or a wait of its last connection ran out (`RanOut(Path)`).
+  A `Path` is the smoothed RTT its last connection ended with (RFC 9002 §5.3), the slowest
+  handshake and the slowest answer seen from it (the longest a send of this side's waited for
+  the peer to acknowledge any of it), and the shortest silence after which a connection on it
+  was found dead, none until one was (`Known::after`, from what each connection saw,
+  `net::Seen`). The client's home keeps it for each context (`peers/NAME`, context.rs `known`
+  and `keep`: written whole and renamed into place), for its daemon at its address alone, as
+  a path's RTT is its network's (§6.2.2: "Resumed connections over the same network MAY use
+  the previous connection's final smoothed RTT value"): another daemon or address, a record
+  that does not read, or none, is a daemon never reached. A context's join writes its first;
+  its removal takes it. Every command a context sends goes through it (`context::exec`), the
+  daemon's relays of its engine (relay.rs) and a move's steps (cli/moves.rs) too. A record not
+  kept leaves the next connection to start from the one kept before, and the CLI says nothing
+  of it, its stderr being the command's (a file size limit failing the write, in
+  `context_client`'s test of a save cut short, would otherwise have said so first).
+- *The cold start* (a daemon never reached). Its handshake starts from §6.2.2's 333 ms ("When no
+  previous RTT is available, the initial RTT SHOULD be set to 333 milliseconds"), the only
+  figure here, the protocol's own, and has no deadline: QUIC probes it as §6.2 does, its
+  backoff doubling each probe timeout, and each probe past its first flight, while nothing of
+  the daemon's has been heard, is told typed to whoever waits (`Handler::unanswered`,
+  `client::Unanswered { probes, waited }`). The CLI says each on stderr
+  (`shards: NAME: no answer yet from ADDR: N probes over T`) and waits as long as its user
+  does; a daemon's relay logs each, and waits until that daemon answers or this one stops,
+  which hangs it up at once from its start (`client::HangUp`), as a probe its backoff puts ever
+  further off would not. A host that answers its port unreachable refuses at once: the
+  client's socket is connected to its one peer (`Driver::aim`), so its ICMP reads as a refusal
+  (ECONNREFUSED; Windows' WSAECONNRESET), said so, and the record kept as it was. A connection
+  begins its waits from its handshake's answer.
+- *A handshake's bound, after that.* A daemon reached before, its last waits answered, is given
+  up past the slowest handshake seen from it (`Known::handshake_deadline`), told so ("no answer
+  ... within the slowest handshake seen from it"), and marked: the next waits as a cold start
+  does, as every wait after a run-out does, until a handshake ends again. QUIC's loss recovery
+  starts each handshake from the path's last RTT (`initial_rtt`).
+- *An established connection's liveness, at use* (was the idle timeout: `IDLE`, 10 s, then
+  `QUIET`, 100 s). Its transport has no idle timeout (`max_idle_timeout` none) and sends no
+  keep-alive of its own. A send that waits for its acknowledgment is held to a window, the slowest
+  answer seen on its path (the record's, and this connection's, from its handshake on) plus
+  the peer's own `max_ack_delay`, its declared transport parameter, as RFC 9002 §6.2.1's PTO
+  adds it (`Liveness::look`). Past the window, while the peer makes progress (acknowledges
+  more, or is heard at all), the wait has run out: told typed, once (`Handler::ran_out`), the
+  record marked, and the connection goes on; the answer that comes raises the slowest seen. A
+  whole window with no progress is its death (`Look::Dead`, told as QUIC's `TimedOut`), and the
+  silence before the send that went unanswered is recorded as the path's lost silence. The
+  daemon's commands for a vanished client end so too, at their own next send. No wait is
+  judged sooner than QUIC's own loss recovery judges its send, at its probe timeout (§6.2.1,
+  the smoothed RTT, four times its variation and the peer's `max_ack_delay`;
+  `Connection::probe_timeout`, hyper-quic's patch Q7): a run-out is past the window and that
+  timeout both, and a death a whole window with no progress past the later of its last
+  progress and that timeout. A peer acknowledges application data up to its `max_ack_delay`
+  late, and later as its timer fires late, where its handshake's packets it acknowledges at
+  once (RFC 9000 §13.2.1), so a window its handshake seeded alone took a peer's first delayed
+  acknowledgement for none: 10 of `tests/loopback.rs`'s 19 died so before (a send 28.9 ms
+  unanswered, its window 26.9 ms, its probe timeout 30.7 ms). What its handshake sent, answered
+  as it ends, is no wait (`Liveness::connected` takes its transport's counts then).
+- *The keep-alive* (was a quarter of `QUIET`): none on a path where no connection was found
+  dead. Where one was, after an idle silence, the next is kept alive within the shortest such
+  silence seen, a window before it (`keep_within`, `Liveness::keep_alive`), so that the first
+  expiry of a middlebox's state measures it; and where the peer negotiated an idle timeout of
+  its own (a build that still advertises one), within it, read from what was negotiated
+  (`Connection::idle_timeout`, hyper-quic patch Q30, on hyper-raft branch
+  `p/negotiated-idle-v1` until it lands there). No keep-alive goes while a send waits.
+- *A stranger's place* (was its time to join, from the probe timeout its handshake measured):
+  no deadline. A machine holds as many connections of clients it has not enrolled as it holds
+  open invitations, none while it holds none, and where every place is taken, a newer stranger
+  takes the place of the one that has held it longest without joining, which is let go
+  (server.rs `connected`).
+- *Handshakes held at once* (none before): a daemon holds as many handshakes from keys not yet
+  known as its descriptors allow (`Host::handshakes`: the process's limit,
+  `platform::descriptor_limit`, as each connection served may hold a command and its stdio),
+  and past them the newest takes the place of the oldest still unanswered (`Driver::hold_handshakes`).
+  Owed: the memory a handshake holds, measured, as its second term.
 - *Output's high-water mark* (was 1 MiB of frames held before a reader waited): none. A reader
   of a command's output (`server.rs`) or of a client's stdin (`client.rs`) reads again once the
   transport has taken all it read: the peer's flow control (RFC 9000 §4.1) is the only
@@ -6408,19 +6463,42 @@ connection itself:
   default 16 pages (`PIPE_DEF_BUFFERS`; pipe(7): 65536 bytes on 4 KiB pages) and macOS's
   `BIG_PIPE_SIZE`, as synced.rs's frames and the exec host's pipes cite them; a source that
   holds more gives the rest to the next read.
-- *The driver's wait* (was `IDLE` with nothing due, and at least 100 µs): until its next timer,
-  no shorter than a nanosecond, the least a socket's timeout takes; with none due, until a
-  datagram or a wake comes, which every command and stop sends (`net::Sender`).
+- *The driver's wait* (was `IDLE` with nothing due, and at least 100 µs): until its next timer;
+  with none due, until a datagram or a wake comes, which every command and stop sends
+  (`net::Sender`) to a wake socket of the driver's own, beside the one it serves on, both waited
+  on at once (poll(2); WSAPoll), as a socket aimed at its peer takes datagrams from that peer
+  alone (connect(2): Linux udp(7), XNU `udp_input`): a wake sent there never came, and a
+  client's resize waited for the daemon's next packet. poll waits whole milliseconds, a wait
+  under one taken as one, so that a timer is looked at no sooner than it is due.
 
 Left as hyper-quic sets them, and owed: quinn-proto's stream and connection receive windows,
 its send window, and the 100 streams a daemon's client may open at once (one command and its
 control stream, or one join, is all a connection opens; holding it there needs the raw test
-client in `tests/loopback.rs` to wait for stream credit). Tested: `tls::tests` (the bound for a
-peer never measured, one measured fast and one far, the keep-alive's place), `net::tests` (a
-handshake held to its bound alone), `tests/loopback.rs` (a stranger let go at its connection's
-bound, no daemon answering told at the handshake's, an enrolled client's command running past
-a stranger's bound, and the relays' backpressure as before: 8 MiB crossing whole, a command
-that reads no stdin holding up no other).
+client in `tests/loopback.rs` to wait for stream credit). Owed too: the same rule for step 5's
+and D238's endpoints, which still admit `QUIET` as their patience (managed.rs, control.rs,
+daemon/managed.rs), and goal 75's `unix::link()`; and a relay whose engine client leaves while
+its handshake waits on a daemon never reached is let go as that daemon answers or this one
+stops, not as its client leaves, as its client's input is read no further than its first
+chunk before the daemon's flow control lets it (a quiet managed connection's vanished owner
+is the same case). And a host's start runs on the daemon's driver (server.rs, `Host::start`),
+which answers nothing meanwhile: a start longer than a client's probe timeout and window ends
+that client's connection, every other client's waits held up with it. The tests' commands'
+program, built by cargo at its first start, did so to every test that started one first
+(`tests/loopback.rs` builds it before its daemon serves); the daemon's own starts' times are
+unmeasured (ROOT's), and starting off the driver is owed with them. Tested, each test red
+before its code: `tls::tests` (what is known of a
+peer follows what its path showed), `net::tests` (a handshake held to its deadline or probing
+on, its silences measured; a send's window, its run-out with progress and its death without;
+a wait judged no sooner than its probe timeout; what its handshake sent no wait; the keep-alive
+early by the window and none while a send waits; a handshake past its slots taking the oldest
+unanswered place), `context::tests` (a daemon's path read back for its
+daemon and address alone, kept only where it changed, removed with its context),
+`tests/loopback.rs` (a machine holding as many strangers as invitations, the oldest giving
+way; an enrolled client's silent command living with no keep-alive; no daemon answering
+probed until its caller gives up; a hang-up ending a command whose daemon never answered; a
+closed port refusing its client at once; a daemon reached before given up past its slowest
+handshake; and the relays' backpressure as before: 8 MiB crossing whole, a command that reads
+no stdin holding up no other).
 
 ### D181. `--use-api-socket`: a run's command reaches its own microVM's engine (slices 1 to 3 built)
 
@@ -12417,10 +12495,15 @@ peer", each going on here as it should. What changed for them:
   (`no_daemon_answering_is_told_at_the_handshakes_bound`, tests/loopback.rs), as is a
   stranger that has not joined (server.rs). The keep-alives stay at a quarter of 10 s, as
   §10.1.2 has a peer that awaits an answer send PINGs, more often than the 30 s it finds
-  most middleboxes keep a UDP flow's state for (since derived, D180's "Its values
-  derived": the handshake held to R1 at its first probe timeout, the keep-alives at a quarter
-  of `QUIET`). A connection takes the lesser of the two sides' bounds, so both machines need
-  this build. No other deadline is on the stream's
+  most middleboxes keep a UDP flow's state for (since replaced, D180's "Its values
+  derived": no idle timeout, each connection's liveness checked at use against the slowest
+  answer seen on its path, its death a whole window with no progress, and keep-alives only
+  where a connection on the path was found dead after a silence, or within an idle timeout a
+  peer of an earlier build negotiated). A send's death in a whole window with no progress
+  may end a move whose link goes silent longer than any answer its path has shown, as 10 s of
+  silence ended 2 of these 20: that move goes on here as these did, its path's record marked,
+  and the next move's connection starts as after a run-out (owed: the two-host Wi-Fi run under
+  this build, ROOT's). No other deadline is on the stream's
   path: the CLI's pipes and the daemons' reads and writes block as the link lets them
   (cli/moves.rs, daemon/moves.rs, daemon/remote.rs `copy_step`); asking whether a restore
   with no answer runs there (below) is after the stream, and leaves the microVM held here,
@@ -12438,24 +12521,26 @@ peer", each going on here as it should. What changed for them:
     the latest of its connections') longer than the longest it went unheard in this move and
     was heard again (`Seen::longest_silence`, the most of any connection the move made there:
     `ready`, the image's `load`, the import, the restore, these asks): its slowest answer.
-    Not known then. A connection ends at `QUIET` unheard, so that answer is less, and the
-    asking is never more patient than the link. The first ask goes out whatever that
+    Not known then. An ask's handshake waits on while that machine has gone unheard no longer
+    than that (`Heard::silent`, given `context::exec_with` as whether it waits), as a daemon
+    whose last wait ran out has no handshake deadline of its own (D180), and gives up past the
+    slowest handshake seen from it where it has one. The first ask goes out whatever that
     machine's silence, the wait after the restore's run-out following liveness alone, each
-    ask held to the link's own bounds (its handshake's, then `QUIET`). The cold start, a move
-    that heard nothing of that machine (none reaches this step, `ready` and the import having
-    answered), ends at its first ask that hears nothing.
+    ask held to the link's own bounds (its handshake's, then its liveness at use). The cold
+    start, a move that heard nothing of that machine (none reaches this step, `ready` and the
+    import having answered), ends at its first ask that hears nothing.
   - *A refusal* (`Answer::Refused`, typed on the wire): not known at once. That machine heard
     the ask and declined it (a client it no longer enrolls, a command it could not start);
     asking again asks it to decline again, nothing learned of when it would not, and a
     machine heard at each ask would be asked for ever.
   - *How often*: each ask begins a round trip after the last began, at least: the link's, as
     the connection that last heard that machine estimated it (RFC 9002 §5), the least time an
-    answer takes. An ask that heard nothing took its handshake's bound already, and one heard
-    a round trip, so only one that failed here, before the link, waits.
+    answer takes. An ask that heard nothing waited out that machine's silence already, and one
+    heard a round trip, so only one that failed here, before the link, waits.
   - *Its values' edges*: never heard, the silence is unbounded; the comparisons saturate
     (`Instant::elapsed`, `saturating_sub`), with no arithmetic to overflow. They are that
     machine's own showing, through connections authenticated both ways (D180): it can make a
-    move ask longer, only while it is heard and never past `QUIET` of silence, and never make
+    move ask longer, only while it is heard and never past its slowest answer of silence, and never make
     it take for an answer what it did not answer; not known keeps the copy held here. How long
     the asking runs on the links measured above is not measured: none of their moves left a
     restore unanswered.
