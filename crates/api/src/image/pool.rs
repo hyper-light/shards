@@ -538,6 +538,10 @@ impl<W: Send> ImageGuest for Pooled<W> {
     fn wait_for(&self, timeout: Duration) -> Result<Option<wire::RunEnd>, ImageRefusal> {
         self.guest.wait_for(timeout)
     }
+
+    fn keep_diagnostics(&self, to: std::fs::File) -> Result<(), ImageRefusal> {
+        self.guest.keep_diagnostics(to)
+    }
 }
 
 #[cfg(test)]
@@ -706,6 +710,9 @@ mod tests {
         }
         fn wait_for(&self, _: Duration) -> Result<Option<wire::RunEnd>, ImageRefusal> {
             Ok(None)
+        }
+        fn keep_diagnostics(&self, _: std::fs::File) -> Result<(), ImageRefusal> {
+            none()
         }
     }
 

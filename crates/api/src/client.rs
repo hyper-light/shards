@@ -1411,9 +1411,14 @@ fn handshake_until(
         HandshakeWait::Until(at) => stream::connect_until(vsock, Some(at)),
         HandshakeWait::Unbounded => stream::connect_until(vsock, None),
     };
+    // A dial its deadline passed in is expired, as a write's and a read's are, whatever the
+    // dial said: Windows' connect waits for its connection to complete, to the deadline, and
+    // says TimedOut there (shards_afunix), which was the dial's own failure.
     let mut s = connected.map_err(|source| {
         *cost = began.elapsed();
-        HandshakeError::io(Dial, source)
+        remaining(wait, Dial)
+            .err()
+            .unwrap_or_else(|| HandshakeError::io(Dial, source))
     })?;
     let mut request = [0; REQUEST];
     let mut unused = request.as_mut_slice();

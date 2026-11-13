@@ -1824,8 +1824,8 @@ fn lists_removed_by_hand_are_made_again_for_the_next_client() {
 }
 
 /// A daemon told to stop waits for a client that takes nothing of its answer no longer
-/// than its observed answer wait (at least RFC 1122 §4.2.3.5's R2, 100 s) from that
-/// write's start, says so, and exits; for one whose
+/// than the slowest take it has seen, from when that write began waiting on it (D185, PM
+/// M549), says so, and exits; for one whose
 /// answer is all written, not at all, and that client reads it whole once it reads, a FIFO
 /// keeping what was written as its writer goes. Here two clients of `inspect` whose stdout
 /// is a pipe nobody reads yet, as a pager's that waits: each has the answer's first message
@@ -1918,28 +1918,18 @@ fn a_stopping_daemon_waits_for_no_client_that_reads_nothing() {
             std::thread::sleep(Duration::from_millis(5));
         }
     }
-    // The daemon deliberately rides out a client that takes no answer for at least
-    // TCP's R2 (RFC 1122 §4.2.3.5), as its learned answer wait does. The ordinary command
-    // guard is shorter than this protocol floor; leave that floor plus the same guard
-    // for the shutdown itself, rather than killing a daemon still within its own wait.
-    let answer_floor = Duration::from_secs(100);
-    let stopped = run_shards_env(&["daemon"], &["stop"], &env, answer_floor + TIMEOUT);
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
     assert_eq!(stopped.status, Some(0), "{stopped}");
     // The slot whose write waited held the daemon its answer wait, and only it: unless
     // the stop came before the daemon had the error to write, and cut it off with the rest.
+    // The slots no client opened, and the one whose answer is all written, are no clients
+    // it leaves. Before, it said it left two slots whose client "went no further", 3.1 ms
+    // after its close, its slowest take (an HVF host at dc7f45bc6).
     let log = std::fs::read_to_string(home.join("daemon.log")).unwrap();
     let without: Vec<&str> = log.lines().filter(|l| l.contains("exiting without it")).collect();
     assert!(without.len() <= 1, "{log}");
     for line in &without {
         assert!(line.contains("took no more of its answer"), "{line}");
-        let held = line
-            .split(" in ")
-            .nth(1)
-            .and_then(|rest| rest.split(';').next())
-            .and_then(|d| d.strip_suffix('s'))
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or_default();
-        assert!(held >= answer_floor.as_secs_f64(), "{line}");
     }
     // Each read at last: all of what is written is read.
     let read =
