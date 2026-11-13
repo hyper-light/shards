@@ -1351,6 +1351,7 @@ fn compose(image: Option<&RunConfig>, asked: &Run) -> Result<Options, String> {
         interactive: asked.interactive,
         tty: asked.tty.map(|(rows, cols)| shards_abi::run::Size { rows, cols }),
         terms: asked.terms.clone(),
+        member: false,
     })
 }
 
