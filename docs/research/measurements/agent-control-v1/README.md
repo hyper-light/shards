@@ -237,6 +237,33 @@ then one, a resize never served, the client's wake datagrams dropped by its sock
 the daemon (two sockets waited on since); and `context_client`'s save cut short by a file size
 limit saying the record's failed write first (no word of it since).
 
+D180's link under load (ROOT's runs: `tests/context.rs` at 084891178, 8 of 21 on HVF and 1 on
+KVM, and at c1ef455c9, 6 on HVF, a daemon reached before given up within its slowest handshake;
+`tests/loopback.rs`'s closed port, 22 minutes on KVM at 237f3ebe7; `moved.rs`'s image left
+unnamed on KVM): a reached-before handshake judged by its window no sooner than its probe
+timeout; a driver's absence, the time its thread neither ran nor waited as planned, held against
+no peer; its socket read non-blocking; an aimed socket's refusal read from a send too; a moved
+image named there or its move failed. Over origin/main `084891178`, `SHARDS_HELPERS=skip`:
+adacachy2 (Linux 7.3.3-1-cachyos x86_64, rustc 1.98.1): `cargo clippy -p shards-remote
+--all-targets -- -D warnings` clean; `cargo test -p shards-remote --lib` `net::` 10, `tls::` 8,
+`control::` 45, `managed::` 27 passed; `--test loopback` 25 passed. adalundhe-macbook-pro (macOS
+26.5 arm64, rustc 1.98.1): `cargo clippy -p shards-remote -p shards --all-targets -- -D
+warnings` clean; the same lib suites (`net::` 9, the Linux signal test not built), `--test
+loopback` 25; `cargo test -p shards --bin shards -- daemon::managed context:: client_binds::
+cli::moves::` 61 passed, 6 ignored; `--test context_client` 6 passed, 1 ignored. Red first, each
+cure undone alone, on both hosts: the slowest handshake a deadline from its start (the window's
+unit test; the relay stand-in's slower second handshake given up at 1.2-1.7 ms); no absence
+taken (its unit test; the self-frozen process's command died in 5 of 5 rounds on each host,
+"closed by peer: unanswered past the slowest answer seen"); a moved image's naming answers let
+go (its unit test); and on Linux a send's refusal let go (the closed port given up by its caller
+at 63 s, 16 probes). Measured on adacachy2 under kiln: 400 sleeps of 2 ms took p50 2.105 ms,
+p90 2.113, p99 123.97, max 124.02 (Python's `time.sleep`, `perf_counter`; timer slack 100 µs,
+sched_ext off). On the way, two stand-in designs failed for the hosts' freezes and not the
+code: a relay holding every datagram of the daemon's slept 58 ms past its time (a 2.2 ms hold),
+its daemon taking a live client for dead; and a freeze test whose client sat in a jiffy's
+receive timeout each turn heard its daemon in it, so its red was luck (both replaced: the relay
+holds a handshake's answer alone, released at once; the socket is read non-blocking).
+
 ## R01–R16
 
 | Rule | Evidence / gap |
@@ -286,6 +313,10 @@ limit saying the record's failed write first (no word of it since).
   probe-timeout floor, the handshake's counts at its end, the first flight told as no probe,
   the wake socket, the record's address check, the reader's credit at an empty queue, the
   one-slot queue (none deadlocks).
+- D180's link (ROOT's): `cargo test -p shards --profile test-release --test context`, `--test
+  moved` and `--test context_client` on HVF and KVM. A driver's absence on Windows is its poll's
+  lateness past its timer alone, its thread times moving at the clock interrupt: a freeze in a
+  turn's midst there is not taken (the freeze test is Unix's, SIGSTOP).
 - The exec host's real-VM run, ROOT's: no E2E drives a run's agent-control endpoint yet. Its place
   is `crates/shards/tests/managed_output.rs` (Linux; a submodule beside `member_stdin.rs`): a run
   started with `--annotation shards.control=true`, its controller dialed at the metadata's

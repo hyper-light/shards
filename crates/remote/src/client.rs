@@ -8,7 +8,7 @@ use std::io::{Read, Write};
 use std::net::SocketAddr;
 use std::sync::mpsc;
 
-use hyper_quic::StreamId;
+use hyper_quic::{ConnectionError, StreamId};
 
 use crate::frame::{self, Request, Tag};
 use crate::identity::{Fingerprint, Identity};
@@ -156,6 +156,9 @@ struct Client<'a> {
     waits: Option<Waits<'a>>,
     answer: Option<Answer>,
     failed: Option<String>,
+    /// Its handshake was given up, the slowest seen from its daemon with nothing heard from it,
+    /// past its probe timeout (`net::Liveness::due`): told as QUIC's `TimedOut`.
+    given_up: bool,
     done: bool,
     /// What its connection saw of the path, as it ended.
     seen: Seen,
@@ -466,18 +469,22 @@ impl Handler for Client<'_> {
         }
         if self.answer.is_none() && self.failed.is_none() {
             let at = self.remote.address;
-            self.failed = Some(match (self.stream, self.remote.known.handshake_deadline()) {
-                (Some(_), _) => format!("the connection to {at} ended: {why}"),
-                // Its handshake never ended, past the slowest seen from this daemon.
-                (None, Some(slowest)) if self.seen.ran_out => format!(
-                    "no answer from the shards daemon at {at} within the slowest handshake seen from it, {slowest:?} ({why}): is it listening there (shards run daemon --listen ADDR:PORT)?"
+            self.failed = Some(match self.stream {
+                Some(_) => format!("the connection to {at} ended: {why}"),
+                // Its handshake given up: `why` says what was waited.
+                None if self.given_up => format!(
+                    "no answer from the shards daemon at {at}: {why}: is it listening there (shards run daemon --listen ADDR:PORT)?"
                 ),
-                (None, _) => format!(
+                None => format!(
                     "no shards daemon answered at {at} ({why}): is it listening there (shards run daemon --listen ADDR:PORT)?"
                 ),
             });
         }
         self.done = true;
+    }
+
+    fn cause(&mut self, _conn: ConnKey, error: &ConnectionError) {
+        self.given_up = self.stream.is_none() && matches!(error, ConnectionError::TimedOut);
     }
 
     fn unanswered(&mut self, io: &mut Io<'_>, _conn: ConnKey, probes: u64, waited: std::time::Duration) {
@@ -742,6 +749,7 @@ fn run(
             waits,
             answer: None,
             failed: None,
+            given_up: false,
             done: false,
             seen: Seen::default(),
         };
