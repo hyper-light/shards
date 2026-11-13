@@ -282,6 +282,15 @@ unit test, red before its cure, and both are cured in bae79bf1d.
   | restored | both green |
 
   The gates on the landing tree are in the landing merge's message.
+- Landing: the cures reached main in af7119c93. Its message says it merged main's docs alone and
+  that its code is the tree the gates ran on at f8fe8497b; that is not so. Another session's
+  fetch moved the worktrees' shared `origin/main` between this step's look at it and its merge,
+  which so took goal 75's 2415df6d0 as well (`run::settle_boot`: api_run.rs, daemon.rs, run.rs),
+  merged without conflict. The landed tree was checked after the push, at af7119c93 on
+  adas-mac-studio.local: `cargo fmt -p shards -- --check` clean; the focused tests above with
+  `run::`, 53 passed; clippy `-D warnings` clean for aarch64-apple-darwin,
+  aarch64-unknown-linux-musl, x86_64-pc-windows-msvc and aarch64-pc-windows-msvc. Later merges
+  in this lane take `FETCH_HEAD`, each worktree's own, not the shared ref.
 - Owed to ROOT: the two tests on Linux (CI's unit tests run them; they are Unix-only, their
   stand-ins Unix programs). On Windows the same code ends them, each a confined process, which
   its value's drop would end besides. A real builder whose boot fails is not run here: a builder's
