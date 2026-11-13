@@ -179,6 +179,7 @@ fn staged_credentials_reach_the_harness_and_its_output_and_end_come_back() {
         stdin: false,
         terminal: false,
         args: Vec::new(),
+        mcp: false,
     }];
     let guest = boot(&home, &s);
     let members: Vec<(MemberKind, &str, bool)> = guest
@@ -239,6 +240,7 @@ fn what_the_image_does_not_grant_is_refused_before_boot() {
         stdin: false,
         terminal: false,
         args: Vec::new(),
+        mcp: false,
     };
     let refused = |s: ImageSpec| match ImageShards::new().boot(&s, TIMEOUT) {
         Err(e) => e,
@@ -1100,6 +1102,7 @@ fn a_harness_reads_its_orchestrators_stdin_exactly_and_its_close_is_its_end() {
         stdin: true,
         terminal: false,
         args: Vec::new(),
+        mcp: false,
     }];
     let guest = boot(&home, &s);
     let mut input = Vec::new();
@@ -1168,6 +1171,7 @@ fn a_members_arguments_follow_its_images_command_in_order() {
             stdin: false,
             terminal: false,
             args,
+            mcp: false,
         }];
         s
     };
@@ -1278,6 +1282,7 @@ fn a_saved_runs_memory_holds_what_its_harness_was_given_and_the_scan_finds_it() 
         stdin: true,
         terminal: false,
         args: Vec::new(),
+        mcp: false,
     }];
     let guest = boot(&home, &s);
     let mut input = guest.take_input(&codex()).unwrap();

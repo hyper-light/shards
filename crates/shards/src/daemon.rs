@@ -69,7 +69,7 @@ mod layers;
 pub(crate) use layers::LayerFile;
 mod load;
 mod logs;
-mod managed;
+pub(crate) mod managed;
 mod metrics;
 mod moves;
 pub(crate) use moves::{Refused, home_baseline};
@@ -438,6 +438,13 @@ fn latest_deadline() -> Option<Instant> {
 /// The lines the daemons of a test process have logged ([`log`]), which tests count.
 #[cfg(test)]
 static LOGGED: AtomicU64 = AtomicU64::new(0);
+
+/// The setup entry carrying a microVM's own engine's token (D181), `engine=` and its bytes in
+/// lowercase hex, which init makes its command's socket by.
+fn engine_entry(token: &[u8; shards_abi::run::TOKEN]) -> Vec<u8> {
+    let hex: String = token.iter().map(|b| format!("{b:02x}")).collect();
+    format!("engine={hex}").into_bytes()
+}
 
 /// The host's hosts file, as a microVM on its network has it (D124): `/etc/hosts`, or
 /// Windows' own; none where it cannot be read.
@@ -3848,8 +3855,7 @@ impl<D: Disk> Daemon<D> {
                 }
                 // Its microVM's own engine (D181), whose socket init makes for its command.
                 if let Some(token) = &engine {
-                    let hex: String = token.iter().map(|b| format!("{b:02x}")).collect();
-                    prepared.spec.setup.push(format!("engine={hex}").into_bytes());
+                    prepared.spec.setup.push(engine_entry(token));
                 }
                 // Made through a microVM's own engine: it ends as that microVM's command does,
                 // and binds that command's files, which its init copies into its own (D181).
@@ -4185,15 +4191,21 @@ impl<D: Disk> Daemon<D> {
                     &agentfile.managed_labels,
                     &agentfile.active_members,
                 )?;
+                let mcps = managed::mcp_members(
+                    &run.annotations,
+                    &agentfile.managed_labels,
+                    &agentfile.active_members,
+                )?;
                 Ok((
                     inputs,
                     owned,
                     terminals,
+                    mcps,
                     managed::control_asked(&run.annotations)?,
                 ))
             })
             .map_err(managed::Failure::Refused)
-            .and_then(|(inputs, owned, terminals, agent_control)| {
+            .and_then(|(inputs, owned, terminals, mcps, agent_control)| {
                 // What the daemon reads of the members it is shown an attached client on its
                 // stderr, as an agent's output always was (D59); a detached run's is kept
                 // alone.
@@ -4212,6 +4224,7 @@ impl<D: Disk> Daemon<D> {
                         inputs: &inputs,
                         owned: &owned,
                         terminals: &terminals,
+                        mcps: &mcps,
                     },
                     managed::Shown {
                         retention: kept.map(|k| LogRetention {
@@ -4300,10 +4313,14 @@ impl<D: Disk> Daemon<D> {
         match &resuming {
             Some(r) => {
                 payload.extend_from_slice(&r.tokens);
-                // Its engine's, which its guest's relay says (D181).
-                if let Some(token) = &r.engine {
-                    payload.extend_from_slice(token);
-                }
+                // Then what its save kept of its tokens, as a fresh run's spec carries them: its
+                // engine's (D181) and its members' MCP connections' (D254), which its guest's
+                // relay says (warm.rs `resumed_tokens`).
+                let mut kept = shards_abi::run::Spec::default();
+                kept.setup.extend(r.engine.as_ref().map(engine_entry));
+                kept.setup
+                    .extend(r.mcp.as_ref().map(shards_abi::run::mcp::token_entry));
+                kept.encode_into(&mut payload);
             }
             None => prepared.spec.encode_into(&mut payload),
         }
@@ -6208,21 +6225,69 @@ impl<D: Disk> Daemon<D> {
                         }
                     }
                 }
-                // A member's MCP connection its VM handed over unprompted (D254): no
-                // controller's ask is paired with one yet, so it is let go, its VM's copy
-                // with it (M24), which ends its member's bridge. One its VM did not number
-                // as its own is let go alone.
+                // A member's MCP connection its VM handed over unprompted (D254): its VM's
+                // copy goes once the daemon has it (M24), and its run holds it for its
+                // controller's asks; one its run gave no bridge, or holds no more, is let go,
+                // which ends its member's bridge. One its VM did not number as its own is let
+                // go alone.
+                #[cfg(unix)]
                 kind::LANE_ACCEPTED => {
-                    drop(m.fds);
-                    if let Some(accepted) = shards_ipc::Accepted::decode(&m.payload)
+                    let accepted = shards_ipc::Accepted::decode(&m.payload);
+                    if let Some(accepted) = &accepted
                         && let Err(e) =
                             inbox
                                 .socket
                                 .send(kind::LANE_HELD, &accepted.number.to_be_bytes(), &[])
                     {
                         log(format!(
-                            "container {id}: letting go of a member's MCP connection: {e}"
+                            "container {id}: answering a member's MCP connection: {e}"
                         ));
+                    }
+                    if let (Some(accepted), Some(fd)) = (accepted, m.fds.into_iter().next())
+                        && let Err(why) = self.managed.mcp_accepted(id, accepted, UnixStream::from(fd))
+                    {
+                        log(format!(
+                            "container {id}: member {}'s MCP connection let go: {why}",
+                            accepted.member
+                        ));
+                    }
+                }
+                // On Windows a VM gives its daemon no handle: it holds the connection until
+                // its `LANE_HELD` brings a socket to relay it onto, as a member's input's
+                // (`MANAGED_INPUT`); one with none is closed.
+                #[cfg(windows)]
+                kind::LANE_ACCEPTED => {
+                    let Some(accepted) = shards_ipc::Accepted::decode(&m.payload) else {
+                        continue;
+                    };
+                    let held = accepted.number.to_be_bytes();
+                    let pair = match self.managed.bridged(id, accepted.member) {
+                        true => UnixStream::plain_pair().map_err(|e| e.to_string()),
+                        false => Err("a member its run gave no MCP bridge".to_string()),
+                    };
+                    let given = pair.and_then(|(ours, theirs)| {
+                        let shared = theirs.share().map_err(|e| e.to_string())?;
+                        inbox
+                            .socket
+                            .send(kind::LANE_HELD, &held, &[shared.as_fd()])
+                            .map_err(|e| format!("giving it its socket: {e}"))?;
+                        Ok(ours)
+                    });
+                    let held_here = given.map(|ours| self.managed.mcp_accepted(id, accepted, ours));
+                    match held_here {
+                        Ok(Ok(())) => {}
+                        Ok(Err(why)) => log(format!(
+                            "container {id}: member {}'s MCP connection let go: {why}",
+                            accepted.member
+                        )),
+                        Err(why) => {
+                            log(format!("container {id}: a member's MCP connection: {why}"));
+                            if let Err(e) = inbox.socket.send(kind::LANE_HELD, &held, &[]) {
+                                log(format!(
+                                    "container {id}: answering a member's MCP connection: {e}"
+                                ));
+                            }
+                        }
                     }
                 }
                 // Its VM's answer to a save (D176), before anything after it: a microVM the
@@ -14754,11 +14819,11 @@ mod tests {
     }
 
     /// D254: a member's MCP connection its VM hands over unprompted is answered as taken
-    /// (M24) and let go, no controller's ask being paired with one yet: its far end reads its
-    /// end. One its VM did not number as its own is let go unanswered.
+    /// (M24); one its run gave no bridge is let go: its far end reads its end. One its VM did
+    /// not number as its own is let go unanswered.
     #[cfg(unix)]
     #[test]
-    fn a_members_mcp_connection_is_answered_and_let_go_until_its_pairing() {
+    fn a_members_mcp_connection_its_run_gave_no_bridge_is_answered_and_let_go() {
         use std::io::Read as _;
         let t = Test::new("mcp-accepted");
         t.run(|t| {

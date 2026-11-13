@@ -560,3 +560,110 @@ the oldest after the cap's loss reads `six` alone where `rotated 2` comes first
   and a weighing of each segment), from the owner's side.
 - Hex and kiln: shards-remote's `control::Fault` gains `Unlogged`, and `Granted` gains `Log`; a
   re-vendored caller that matches either exhaustively must add the arm.
+
+## Goal 58: the run hosts' MCP pairing (D254)
+
+Goal 58's piece for kiln's goal 60: each connection a harness makes to its member's MCP bridge
+paired with its controller's `Execs::mcp(member)`, in the daemon's runs and an orchestrator's
+(api-run), and the runs' asking. D254's "Built (goal 58: the runs' asking and the run hosts'
+pairing)" records what was built; D238 its zero-run scope; D252 its amendment.
+
+### Identity
+
+| | |
+|---|---|
+| Policy | origin/main `74cc79d3c`: `docs/development-rules.md` `df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3`; role implementer, a child of goal 58's agent (`a5cbff00b30d2e4f0`), POLICY_READ sent to it |
+| Source | branch `p/s11-hosts-v1` (worktree `s11-hosts`), based on origin/main `74cc79d3c`; its WIP commits squashed at landing |
+| Owned | `crates/shards/src/api_run.rs` (hosted's MCP pairing, `bind_control`), `daemon.rs` (its inbox's `LANE_ACCEPTED`, the resumed request's kept tokens), `daemon/managed.rs` and `managed/{execs.rs,mcp.rs}`, `daemon/snapshots.rs` (`Resume::mcp`), `warm.rs`/`vm_run.rs` (a resumed run's kept tokens), shards-api's `MemberSpec::mcp` and `wire::MemberStage::mcp`; touched as the piece needed: `crates/remote/src/control{.rs,/exec.rs,/drive.rs,/unix.rs}` (the zero-run scope, landed first, `bdab2b2e4`), `managed/log_lanes.rs` (`Logs` visible to the shared exec host) |
+| Numbers | image channel version 25 (`MemberStage::mcp`, after step 8's sign-ins, 24); daemon annotation `shards.mcp`; no shards_ipc kind, frame tag, run kind or setup key (reservations.md) |
+
+### Decision (R02, R03, R05, R12)
+
+- *One pairing for both hosts* (R12): `daemon/managed/mcp.rs`'s `Bridges` and `carry`, which the
+  daemon's runs and api-run share; an MCP ask is an exec in all but its start (D254), so the exec
+  host hands it on (`execs::serve` to `mcp::carry`) and its output is the exec's pump
+  (`execs::pump`, now over any reader). No new seam, no cache.
+- *Held in the order they came, the oldest paired first*, its first read ahead on a thread of
+  its own (an event wait, no probe, R05) so that a connection whose harness ended before any ask
+  is let go rather than paired: a harness that restarts its MCP server would otherwise hand the
+  next ask its dead connection. `Started` once that first read is done: an MCP client speaks
+  first (its `initialize`, MCP 2025-06-18, Lifecycle).
+- *Bounded by the run's budget* (R03): each held connection charged its measured kernel queues
+  (`ipc_buffers`, as an exec's connection is), its first read's record and its entry; each lane
+  an exec's of one output and a stdin. The daemon charges its managed budget, api-run its own,
+  each held to the host's available memory (`build::host_available`). Goal 58's agent first
+  agreed the process's descriptor limit for api-run; api-run needs a budget for the shared exec
+  host anyway, so both hosts take the one bound.
+- *Its end*: the harness's side ended and every byte taken is the lane's `Exited(0)`, and the
+  connection is then ended both ways, which ends the member's bridge; the controller's end is a
+  half-close, its abort an end both ways, as D251's socket lanes' are.
+- *api-run's endpoint admits execs* (`managed::exec_admissions`, one source for both hosts), so
+  that an MCP ask reaches its host; an exec it runs none of yet is refused `Failed`, a member's
+  own lane `Closed` (left to goal 58's member-lanes slice). Its endpoint, of no member stream,
+  takes asks in the zero run (D238, landed first).
+- *D176*: a save keeps the MCP token beside the engine's; a resumed request brings both as a
+  fresh run's spec carries them (`engine=`, `mcp=`), so one parser reads either.
+
+### States and refusals (R01, R04, R06, R07, R13)
+
+A held connection: `First::Awaited`, `Came(bytes)` or `Ended`, `taken` by an ask or not; the
+run's table `over` or not. A connection let go is typed (`Unheld`: `NoBridge`, `Over`,
+`Capacity`, `Unmeasured`, `Unwatched`), an ask unpaired (`Unpaired`: `NoBridge`, `Gone`,
+`Over`, told `Refused` or `Failed`), a pump's end (`Pumped`: `Ended`, `Failed`, `Unread`). Every
+refusal to the controller is `Unstarted` (`Refused`, `Failed`, `Capacity`) or the endpoint's
+`Reason`. No `unwrap`, `expect`, index or unchecked arithmetic in production code (a `Vec`
+removal is at a position found under the same lock); clippy with the workspace's denied lints.
+
+### Light tests and results
+
+On kiln runner adas-mac-studio.local (Adas-Mac-Studio-3.local, macOS arm64), each from a clone of
+`a939a2b19` with this patch applied ([logs](logs/run-hosts-macos-arm64.log)):
+
+| Commands | Result |
+|---|---|
+| `cargo test -p shards-remote control::` (the zero-run slice, on `bdab2b2e4`'s tree) | 57 passed |
+| `cargo test -p shards --bin shards -- daemon::managed:: daemon::snapshots:: api_run:: a_members_mcp_connection` | 108 passed, 6 ignored (ROOT's native fixtures) |
+| `cargo test -p shards-api --lib image::` | 66 passed |
+| `cargo test -p shards-vm-process --bin shards-vm a_resumed_runs_tokens` | 1 passed |
+| `cargo clippy -p shards -p shards-api -p shards-vm-process --all-targets -- -D warnings` | clean |
+
+Red before green: the zero-run slice's test with `scoped()` reading the first output,
+`Err(Refused(Scope))` at `execs.mcp(5)`; the pairing's test with the exec host's hand-off to
+`mcp::carry` removed, `Err(Unstarted(Failed))` at `managed.rs:3851`, then held until its
+120 s alarm (exit 142).
+
+### R01–R16 (this piece)
+
+| Rule | Evidence / gap |
+| --- | --- |
+| R01 | No panic path in production code; clippy with the denied lints (shards, shards-api, shards-vm-process, shards-remote). |
+| R02 | MCP 2025-06-18 (Transports: stdio; Lifecycle: the client's `initialize` first); D251's lanes for each way's end; D254's evidence for the bridge itself. |
+| R03 | No chosen constant: measured kernel queues, the exec record (`run::CHUNK`), the host's available memory; the channel's next version. |
+| R04 | Held, paired, ended and refused states typed (above); callers match variants. |
+| R05 | One module at the existing exec seam; a watcher's read and a condvar, no probe, no cache. |
+| R06, R07, R13 | `mcp::carry` mirrors `execs::serve`; one pump for both; comments carry sources and invariants. |
+| R08, R14 | No performance claim; a held connection's thread and a lane's cost are unmeasured, owed to ROOT. |
+| R09, R10 | New behaviour, not a defect: its tests' reds (above). The zero-run scope's defect (an endpoint of no member stream refused every ask) reproduced red with its test. |
+| R11, R12 | One implementation for every target (Windows' leg as D251's lanes'); tested on macOS arm64; the rest of the seven targets owed to CI on main. |
+| R15 | Implementer: light tests only, no real VM. |
+| R16 | Build output under `~/g121-tmp/s11-hosts` on the runner, removed after landing. |
+
+### Owed
+
+- ROOT's real-VM runs, on Linux KVM, macOS HVF and WHP, the microVM and kiln's runner on one
+  machine and on two: a daemon's run with `--annotation shards.control=true
+  --annotation shards.output=harness:NAME --annotation shards.mcp=harness:NAME`, its controller
+  dialed at the metadata's `control` and `vm`, `Execs::mcp(member)` taking the harness's
+  connection to `/run/shards/mcp`, its `initialize` read and answered, its end as the harness
+  ends; an orchestrator's run through shards-api with `MemberSpec::mcp` and the spec's `control`,
+  its controller dialed in the zero run (`Subscriptions` with no output, `execs` the run's
+  admission); each harness that takes MCP calling kiln's server through the bridge; a harness
+  restarting its MCP server, its old connection let go before the next ask.
+- R14: a held connection's watcher thread and its charge against measured resident cost; a
+  lane's cost beside an exec's.
+- Guard mutations, ROOT's: `watch`'s let go of one ended before any ask, `take`'s return of one
+  whose ask went before its first read, `hold`'s budget refusal, `carry`'s hang-up on its
+  steering's close, `close` from the run's end.
+- A resumed daemon's run's members' connections, once managed scopes are restored (D254).
+- Hex and kiln: `MemberSpec` gains `mcp` (a struct literal must name it), the image channel is
+  version 25, and an endpoint of no member stream is asked in the zero run.

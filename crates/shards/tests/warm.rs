@@ -431,7 +431,7 @@ impl Warm {
     fn ends(mut self, status: u8, not_run: Option<&str>) {
         let started = not_run.is_none();
         // Within TIMEOUT, or past it while a VM process of this test's runs ([`Patience`]).
-        let mut patience = Patience::own(TIMEOUT);
+        let mut patience = Patience::own();
         let exited = loop {
             if let Some(exited) = self.child.try_wait().unwrap() {
                 break exited;

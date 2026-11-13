@@ -481,12 +481,18 @@ fn staged(request: &wire::Request, members: &[wire::MemberInfo]) -> Result<Vec<V
     Ok(entries)
 }
 
-/// The members whose stdin `request` asks to write, by their declared index: each one the
-/// image declares and runs, ascending; every other member's stdin is `/dev/null` (plan step
-/// 5, D231 decision §3.3).
-fn inputs(request: &wire::Request, members: &[wire::MemberInfo]) -> Result<Vec<u32>, No> {
-    let mut inputs = Vec::new();
-    for m in request.members.iter().filter(|m| m.input) {
+/// The members `request` asks `asked` of, by their declared index, ascending: each one of the
+/// image's that runs a program, each asked once, refused by name otherwise; `purpose` what one
+/// of files alone runs nothing for, `what` what is asked.
+fn asked_members(
+    request: &wire::Request,
+    members: &[wire::MemberInfo],
+    asked: impl Fn(&wire::MemberStage) -> bool,
+    purpose: &str,
+    what: &str,
+) -> Result<Vec<u32>, No> {
+    let mut found = Vec::new();
+    for m in request.members.iter().filter(|m| asked(m)) {
         let info = members
             .iter()
             .find(|i| i.kind == m.kind && i.name == m.name)
@@ -500,57 +506,57 @@ fn inputs(request: &wire::Request, members: &[wire::MemberInfo]) -> Result<Vec<u
             return Err(No(
                 Cause::Image,
                 format!(
-                    "{:?} {}: files alone, which run nothing to read a stdin",
+                    "{:?} {}: files alone, which run nothing {purpose}",
                     m.kind, m.name
                 ),
             ));
         }
-        if inputs.contains(&info.index) {
+        if found.contains(&info.index) {
             return Err(No(
                 Cause::Request,
-                format!("{:?} {}: its input asked for twice", m.kind, m.name),
+                format!("{:?} {}: its {what} asked for twice", m.kind, m.name),
             ));
         }
-        inputs.push(info.index);
+        found.push(info.index);
     }
-    inputs.sort_unstable();
-    Ok(inputs)
+    found.sort_unstable();
+    Ok(found)
+}
+
+/// The members whose stdin `request` asks to write, by their declared index: each one the
+/// image declares and runs, ascending; every other member's stdin is `/dev/null` (plan step
+/// 5, D231 decision §3.3).
+fn inputs(request: &wire::Request, members: &[wire::MemberInfo]) -> Result<Vec<u32>, No> {
+    asked_members(request, members, |m| m.input, "to read a stdin", "input")
 }
 
 /// The members whose stdio the request asks to be a terminal of their own (plan step 6,
 /// D244), by their declared index: each one of the image's that runs a program, each asked
 /// once, refused by name otherwise.
 fn terminals(request: &wire::Request, members: &[wire::MemberInfo]) -> Result<Vec<u32>, No> {
-    let mut terminals = Vec::new();
-    for m in request.members.iter().filter(|m| m.terminal) {
-        let info = members
-            .iter()
-            .find(|i| i.kind == m.kind && i.name == m.name)
-            .ok_or_else(|| {
-                No(
-                    Cause::Image,
-                    format!("{:?} {}: the image declares no such member", m.kind, m.name),
-                )
-            })?;
-        if !info.runs {
-            return Err(No(
-                Cause::Image,
-                format!(
-                    "{:?} {}: files alone, which run nothing to have a terminal",
-                    m.kind, m.name
-                ),
-            ));
-        }
-        if terminals.contains(&info.index) {
-            return Err(No(
-                Cause::Request,
-                format!("{:?} {}: its terminal asked for twice", m.kind, m.name),
-            ));
-        }
-        terminals.push(info.index);
+    asked_members(request, members, |m| m.terminal, "to have a terminal", "terminal")
+}
+
+/// The members the request gives an MCP bridge (D254), by their declared index, as
+/// [`terminals`] names them; refused where it asks the run's agent-control endpoint none,
+/// which alone carries their connections to its controller.
+fn mcps(request: &wire::Request, members: &[wire::MemberInfo]) -> Result<Vec<u32>, No> {
+    let mcps = asked_members(
+        request,
+        members,
+        |m| m.mcp,
+        "to reach an MCP bridge",
+        "MCP bridge",
+    )?;
+    if !mcps.is_empty() && request.control.is_none() {
+        return Err(No(
+            Cause::Request,
+            "a member's MCP bridge reaches its controller over the run's agent-control endpoint, \
+             which the request asks none of"
+                .into(),
+        ));
     }
-    terminals.sort_unstable();
-    Ok(terminals)
+    Ok(mcps)
 }
 
 /// What of `granted` the orchestrator keeps: all of it, or each it names, each one
@@ -2158,6 +2164,7 @@ mod hosted {
 
     use super::{Answers, No, no};
     use crate::daemon::ends::Ends;
+    use crate::daemon::managed::{self as hosts, Charge, execs, mcp};
     use crate::daemon::publish;
 
     fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -2193,6 +2200,8 @@ mod hosted {
         capture: Option<(u32, Vec<u32>)>,
         /// The members whose stdin its orchestrator writes, by their declared index.
         inputs: Vec<u32>,
+        /// Its members with an MCP bridge (D254), by their declared index.
+        mcps: Vec<u32>,
         /// Its domains' plug roots (D235), by name (`Users`), as its setup names them.
         roots: Vec<Vec<u8>>,
         /// Its agent-control endpoint's ask (D252), where its orchestrator made one.
@@ -2469,6 +2478,7 @@ mod hosted {
         let staged = super::staged(request, &members)?;
         let inputs = super::inputs(request, &members)?;
         let terminals = super::terminals(request, &members)?;
+        let mcps = super::mcps(request, &members)?;
         let mut nesting = super::nesting(agentfile.as_ref(), &run, &say)?;
         // The run's GPUs, its command's to read under the grant (D234's `gpus=`), as its VM
         // process binds them (D232).
@@ -2543,6 +2553,15 @@ mod hosted {
         setup.extend(staged);
         setup.extend(terminals.iter().map(|&m| protocol::members::terminal(m)));
         setup.push(protocol::members::ENDS.to_vec());
+        // Each member given an MCP bridge, and the run-wide token its connections are carried
+        // by (D254), made here, which its VM process holds them to and its members never see.
+        if !mcps.is_empty() {
+            let mut token = [0u8; protocol::TOKEN];
+            shards_vmm::platform::fill_random(&mut token)
+                .map_err(|e| No(Cause::Boot, format!("its MCP connections' token: {e}")))?;
+            setup.push(protocol::mcp::token_entry(&token));
+            setup.extend(mcps.iter().map(|&m| protocol::mcp::entry(m)));
+        }
         // The run's own command's socket directory its controller may reach (D251), held to
         // what shards-api holds it to, as init holds it again.
         if let Some(grant) = request.control.as_ref().and_then(|c| c.sockets.as_ref()) {
@@ -2590,6 +2609,7 @@ mod hosted {
             microvm,
             capture,
             inputs,
+            mcps,
             roots,
             control: request.control.clone(),
             // Each share's host directory as its guest reaches it, which no save is made in
@@ -3191,9 +3211,52 @@ mod hosted {
         saving: Mutex<super::Saving>,
         /// The host directories its shares give its guest, canonical (D259).
         reached: &'a [PathBuf],
+        /// What its own lanes of its agent-control endpoint are served with, where its
+        /// orchestrator asked for the endpoint (D238, D252, D254).
+        agent: Option<Agent>,
         /// On Windows the run's job, which each plug's share process is made in too.
         #[cfg(windows)]
         job: &'a shards_ipc::GroupJob,
+    }
+
+    /// What the run's own lanes of its agent-control endpoint are served with, as the daemon's
+    /// runs' are (daemon/managed): its members' MCP connections (D254), through the daemon's
+    /// exec host.
+    struct Agent {
+        /// What each exec's and MCP connection's streams are admitted, as the daemon's runs
+        /// admit them (`managed::exec_admissions`).
+        admissions: shards_remote::control::exec::Admissions,
+        /// The budget its lanes are charged to: this host's own, held to the host's available
+        /// memory as the daemon's runs' is.
+        charge: std::sync::Arc<Charge>,
+        /// Its members' MCP connections, where its request gave any a bridge.
+        bridges: Option<mcp::Bridges>,
+    }
+
+    impl Agent {
+        /// A run's, `plan`'s.
+        fn of(plan: &Plan) -> Result<Agent, String> {
+            let admissions = hosts::exec_admissions().map_err(|e| format!("its lanes' admissions: {e}"))?;
+            let budget = std::sync::Arc::new(Mutex::new(Some(0)));
+            let charge = Charge::reserve(&budget, 0).map_err(|e| format!("its lanes' budget: {e:?}"))?;
+            let charge = std::sync::Arc::new(charge);
+            let bridges = (!plan.mcps.is_empty()).then(|| {
+                let record = admissions.output.record_bytes;
+                mcp::Bridges::new(plan.mcps.clone(), record, std::sync::Arc::clone(&charge))
+            });
+            Ok(Agent {
+                admissions,
+                charge,
+                bridges,
+            })
+        }
+
+        /// The run is over: what its members' bridges held let go, and every ask waiting ends.
+        fn over(&self) {
+            if let Some(bridges) = &self.bridges {
+                bridges.close();
+            }
+        }
     }
 
     /// A device step asked of the VM: its number, and who waits for its answer.
@@ -3553,13 +3616,18 @@ mod hosted {
                 .unwrap_or_default();
             let published = super::published(&bound, receivers, &plan.members)?;
             // Its agent-control endpoint (D252), its key made now, past its VM's start, held by
-            // the endpoint alone: no template, and no other run, has it.
-            let control = plan
+            // the endpoint alone: no template, and no other run, has it; and what its own lanes
+            // are served with.
+            let agent = plan
                 .control
                 .as_ref()
-                .map(bind_control)
+                .map(|_| Agent::of(&plan))
                 .transpose()
                 .map_err(boot)?;
+            let control = match (plan.control.as_ref(), agent.as_ref()) {
+                (Some(ask), Some(agent)) => Some(bind_control(ask, agent.admissions).map_err(boot)?),
+                _ => None,
+            };
             let started = wire::Started {
                 members: plan.members.clone(),
                 published,
@@ -3613,6 +3681,7 @@ mod hosted {
                 leasing,
                 saving: Mutex::new(super::Saving::Idle),
                 reached: &plan.reached,
+                agent,
                 #[cfg(windows)]
                 job: &launched.job,
             };
@@ -3678,6 +3747,13 @@ mod hosted {
                         super::say(format_args!("its socket lanes have no thread: {e}"));
                     }
                 }
+                // Its members' MCP connections (D254), hosted as the daemon hosts its runs'
+                // until the endpoint that brings them ends. Its members' own lanes are hosted
+                // by none yet: let go, the endpoint refuses each `Closed`.
+                if let Some(agent) = &live.agent {
+                    host_lanes(agent, served.execs, scope);
+                }
+                drop(served.members);
                 served.revoke
             });
             let members: Vec<u32> = lock(&live.feeds).keys().copied().collect();
@@ -3712,12 +3788,12 @@ mod hosted {
             }
             let following = std::thread::Builder::new()
                 .name("api-run link".into())
-                .spawn_scoped(scope, || {
+                .spawn_scoped(scope, move || {
                     // Its clone taken and the lock let go of before it is read: a match's
                     // guard would be held through `follow`, and an exec's send wait out the run.
                     let link = lock(&live.link).try_clone();
                     let (end, said) = match link {
-                        Ok(link) => follow(live, &link),
+                        Ok(link) => follow(live, &link, scope),
                         Err(e) => (RunEnd::Failed(format!("the VM's link: {e}")), false),
                     };
                     let _ = launched.vm.kill(shards_ipc::signal::SIGKILL);
@@ -3731,6 +3807,9 @@ mod hosted {
                 // Nothing would say its end: the run is ended now, and said so.
                 let _ = launched.vm.kill(shards_ipc::signal::SIGKILL);
                 lock(&live.held).take();
+                if let Some(agent) = &live.agent {
+                    agent.over();
+                }
                 let end = RunEnd::Failed("the run host could not follow its VM".into());
                 super::end_run(live.answers, live.leasing.as_ref(), &end);
                 net_gone(live, launched);
@@ -3757,9 +3836,11 @@ mod hosted {
 
     /// The run's agent-control endpoint (D252), bound on loopback, as step 5's endpoints bind:
     /// its microVM's own key, made now, and the controller's key the one it takes; serving the
-    /// run's socket lanes where its ask grants them (D251).
+    /// run's socket lanes where its ask grants them (D251), and its execs, its members' MCP
+    /// connections (D254) and its members' own lanes, their streams admitted as `execs` says.
     pub(super) fn bind_control(
         ask: &wire::ControlAsk,
+        execs: shards_remote::control::exec::Admissions,
     ) -> Result<(shards_remote::control::Endpoint, shards_remote::control::Served), String> {
         let vm =
             shards_remote::identity::Identity::generate().map_err(|e| format!("its microVM's key: {e}"))?;
@@ -3777,7 +3858,7 @@ mod hosted {
             shards_remote::control::Streams {
                 outputs: &[],
                 inputs: &[],
-                execs: None,
+                execs: Some(execs),
                 sockets,
             },
         )
@@ -3882,23 +3963,118 @@ mod hosted {
     }
 
     /// A member's MCP connection its VM handed over unprompted on `link` (`LANE_ACCEPTED`,
-    /// D254): no controller's ask is paired with one yet, so it is let go, its VM's copy with
-    /// it (M24), which ends its member's bridge. One its VM did not number as its own is let
-    /// go alone.
-    fn mcp_accepted(link: &Stream, payload: &[u8], fds: Vec<OwnedFd>) {
-        drop(fds);
-        if let Some(accepted) = shards_ipc::Accepted::decode(payload)
-            && let Err(e) = shards_ipc::send(link, kind::LANE_HELD, &accepted.number.to_be_bytes(), &[])
-        {
-            super::say(format_args!("letting go of a member's MCP connection: {e}"));
+    /// D254): its VM's copy let go once this host has it (M24), and held in `bridges` for its
+    /// controller's asks, the number it is held by returned, its watcher its caller's to start
+    /// ([`mcp::Bridges::watch`]). On Windows its VM holds it until this host's `LANE_HELD`
+    /// brings a socket to relay it onto, as a socket lane's (D251). One its run gave no bridge,
+    /// or holds no more, is let go, which ends its member's bridge; one its VM did not number
+    /// as its own is let go alone.
+    fn mcp_accepted(
+        link: &Stream,
+        bridges: Option<&mcp::Bridges>,
+        payload: &[u8],
+        fds: Vec<OwnedFd>,
+    ) -> Option<u64> {
+        let accepted = shards_ipc::Accepted::decode(payload)?;
+        let held = accepted.number.to_be_bytes();
+        let let_go = |why: &dyn std::fmt::Display| {
+            super::say(format_args!(
+                "member {}'s MCP connection let go: {why}",
+                accepted.member
+            ));
+        };
+        #[cfg(unix)]
+        let conn = {
+            let conn = fds.into_iter().next().map(Stream::from);
+            if let Err(e) = shards_ipc::send(link, kind::LANE_HELD, &held, &[]) {
+                let_go(&format_args!("answering its VM: {e}"));
+            }
+            conn.ok_or_else(|| "its VM handed no descriptor".to_string())
+        };
+        #[cfg(windows)]
+        let conn = {
+            drop(fds);
+            let given = (|| -> Result<Stream, String> {
+                if !bridges.is_some_and(|b| b.bridged(accepted.member)) {
+                    return Err("its run gave it no MCP bridge".into());
+                }
+                let (ours, theirs) = handed_pair().map_err(|e| e.to_string())?;
+                let shared = theirs.share().map_err(|e| e.to_string())?;
+                shards_ipc::send(link, kind::LANE_HELD, &held, &[shared.as_fd()])
+                    .map_err(|e| format!("giving its VM the connection's socket: {e}"))?;
+                Ok(ours)
+            })();
+            if given.is_err() {
+                // Its VM's copy closed: nothing relays it.
+                let _ = shards_ipc::send(link, kind::LANE_HELD, &held, &[]);
+            }
+            given
+        };
+        let held_here = conn.and_then(|conn| match bridges {
+            Some(bridges) => bridges
+                .hold(accepted.number, accepted.member, conn)
+                .map_err(|why| why.to_string()),
+            None => {
+                shards_ipc::end(&conn);
+                Err("its run gave it no MCP bridge".into())
+            }
+        });
+        match held_here {
+            Ok(()) => Some(accepted.number),
+            Err(why) => {
+                let_go(&why);
+                None
+            }
+        }
+    }
+
+    /// Hosts its members' MCP connections each ask `execs` brings (D254) as the daemon hosts
+    /// its runs' (daemon/managed), on threads of their own, until the endpoint that brings them
+    /// has ended. An exec, which this host runs none of yet, is refused `Failed`; a member's
+    /// own lane, which it hosts none of yet, is refused by the endpoint (`Closed`), as no host
+    /// takes it.
+    fn host_lanes<'scope, 'env>(
+        agent: &'env Agent,
+        execs: Option<std::sync::mpsc::Receiver<shards_remote::control::exec::Start>>,
+        scope: &'scope std::thread::Scope<'scope, 'env>,
+    ) {
+        let Some(starts) = execs else {
+            return;
+        };
+        let hosting = std::thread::Builder::new()
+            .name("api-run mcp".into())
+            .spawn_scoped(scope, move || {
+                execs::host(
+                    &starts,
+                    &execs::Hosting {
+                        admissions: agent.admissions,
+                        charge: &agent.charge,
+                        launch: &|_, _, _, _, _| {
+                            Err(io::Error::other(
+                                "an orchestrator's run host runs no member's exec",
+                            ))
+                        },
+                        logs: None,
+                        bridges: agent.bridges.as_ref(),
+                        say: &|line| super::say(format_args!("{line}")),
+                    },
+                );
+            });
+        if let Err(e) = hosting {
+            super::say(format_args!("its members' MCP connections have no thread: {e}"));
         }
     }
 
     /// Reads the VM's link until it closes: each member's end and the command's readiness
     /// to the orchestrator as they come (`super::relayed`), each exec's client end let go of
-    /// as the VM takes it, the run's end from its `DONE` (`super::run_end`), and whether its
-    /// `DONE` came.
-    fn follow(live: &Live<'_>, link: &Stream) -> (RunEnd, bool) {
+    /// as the VM takes it, each member's MCP connection held for its controller's asks, its
+    /// watcher on a thread of `scope`'s (D254), the run's end from its `DONE`
+    /// (`super::run_end`), and whether its `DONE` came.
+    fn follow<'scope, 'env>(
+        live: &'env Live<'env>,
+        link: &Stream,
+        scope: &'scope std::thread::Scope<'scope, 'env>,
+    ) -> (RunEnd, bool) {
         let mut told = super::Told::default();
         let failed = loop {
             let m = match shards_ipc::recv(link) {
@@ -3942,7 +4118,17 @@ mod hosted {
             } else if m.kind == kind::LANE_OPEN {
                 lane_answered(live, m.payload, m.fds);
             } else if m.kind == kind::LANE_ACCEPTED {
-                mcp_accepted(&lock(&live.link), &m.payload, m.fds);
+                let bridges = live.agent.as_ref().and_then(|a| a.bridges.as_ref());
+                let held = mcp_accepted(&lock(&live.link), bridges, &m.payload, m.fds);
+                if let (Some(number), Some(bridges)) = (held, bridges) {
+                    let watching = std::thread::Builder::new()
+                        .name("api-run mcp".into())
+                        .spawn_scoped(scope, move || bridges.watch(number));
+                    if let Err(e) = watching {
+                        bridges.release(number);
+                        super::say(format_args!("a member's MCP connection has no thread: {e}"));
+                    }
+                }
             } else if let Some((answer, payload)) = super::relayed(m.kind, &m.payload) {
                 let _ = live.answers.send(answer, &[&payload]);
             }
@@ -3958,6 +4144,10 @@ mod hosted {
         lock(&live.saving).gone();
         // Socket lanes no answer will come for: their asks hear the VM has gone.
         lock(&live.lanes).take();
+        // Its VM gone: what its members' bridges held is let go, and every ask waiting ends.
+        if let Some(agent) = &live.agent {
+            agent.over();
+        }
         // Its VM gone: no input goes on.
         let members: Vec<u32> = lock(&live.feeds).keys().copied().collect();
         for member in members {
@@ -5027,6 +5217,7 @@ mod hosted {
                 leasing: None,
                 saving: Mutex::new(super::super::Saving::Idle),
                 reached: &[],
+                agent: None,
             }
         }
 
@@ -5127,33 +5318,177 @@ mod hosted {
             );
         }
 
-        /// D254: a member's MCP connection its VM hands over unprompted is answered as taken
-        /// (M24) and let go, no controller's ask being paired with one yet: its far end reads
-        /// its end. One its VM did not number as its own is let go unanswered.
+        /// D252, D254: an orchestrator's run carries its members' MCP connections as the
+        /// daemon's runs do. Through its endpoint, of no member stream, a controller asks in the
+        /// zero run: member 1's connection, held as its VM handed it over (`LANE_HELD` said), is
+        /// paired with its ask, the harness's bytes reaching the controller exactly and the
+        /// controller's the harness, its end told once the harness's side has ended; member 0,
+        /// given no bridge, is refused `Refused`; an exec, which this host runs none of, `Failed`;
+        /// a member's own lane, which it hosts none of, is refused by the endpoint (`Closed`); and
+        /// an ask after the run's end is refused `Failed`.
         #[test]
-        fn a_members_mcp_connection_is_answered_and_let_go_until_its_pairing() {
+        fn an_orchestrators_run_carries_its_members_mcp_connections() {
+            use shards_remote::control::exec::Unstarted;
+            use shards_remote::control::{Controller, Fault, Got, McpConnection, Subscriptions};
+            use shards_remote::managed::Reason;
+            use std::io::Read as _;
+            let dir = shards_testdir::TempDir::new("api-mcp").unwrap();
+            let answers = super::super::Answers(Mutex::new(Box::new(Vec::<u8>::new())));
+            let (link, vm) = Stream::pair().unwrap();
+            let kiln = shards_remote::identity::Identity::generate().unwrap();
+            let admissions = hosts::exec_admissions().unwrap();
+            let budget = std::sync::Arc::new(Mutex::new(Some(0)));
+            let charge = std::sync::Arc::new(Charge::reserve(&budget, 0).unwrap());
+            let agent = Agent {
+                admissions,
+                charge: std::sync::Arc::clone(&charge),
+                bridges: Some(mcp::Bridges::new(vec![1], protocol::CHUNK, charge)),
+            };
+            let live = Live {
+                agent: Some(agent),
+                ..live(&answers, dir.path(), link, None)
+            };
+            let agent = live.agent.as_ref().unwrap();
+            let ask = wire::ControlAsk {
+                controller: kiln.fingerprint(),
+                sockets: None,
+            };
+            let (endpoint, served) = bind_control(&ask, admissions).unwrap();
+            let (key, address) = (endpoint.fingerprint, endpoint.address);
+            let shards_remote::control::Served {
+                execs: starts,
+                members,
+                revoke,
+                ..
+            } = served;
+            // No host takes a member's own lane, as `serve` lets them go.
+            drop(members);
+            let request = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}\n";
+            std::thread::scope(|scope| {
+                let serving = scope.spawn(move || endpoint.run());
+                host_lanes(agent, starts, scope);
+                let (controller, dialed) = Controller::dial(
+                    &kiln,
+                    key,
+                    address,
+                    Subscriptions {
+                        outputs: &[],
+                        inputs: &[],
+                        execs: Some(admissions),
+                        sockets: None,
+                    },
+                )
+                .unwrap();
+                let driver = scope.spawn(move || controller.run());
+                let execs = dialed.execs.as_ref().unwrap();
+                // Member 1's connection, as its VM hands it over.
+                let (conn, mut harness) = Stream::pair().unwrap();
+                let first = shards_abi::run::mcp::ACCEPTED_FIRST;
+                let accepted = shards_ipc::Accepted {
+                    number: first,
+                    member: 1,
+                };
+                let bridges = agent.bridges.as_ref();
+                let held = mcp_accepted(
+                    &lock(&live.link),
+                    bridges,
+                    &accepted.encode(),
+                    vec![OwnedFd::from(conn)],
+                );
+                assert_eq!(held, Some(first));
+                let m = shards_ipc::recv(&vm).unwrap().unwrap();
+                assert_eq!(
+                    (m.kind, m.payload),
+                    (kind::LANE_HELD, first.to_be_bytes().to_vec())
+                );
+                scope.spawn(move || bridges.unwrap().watch(first));
+                std::io::Write::write_all(&mut harness, request).unwrap();
+                let McpConnection {
+                    mut from,
+                    mut to,
+                    mut end,
+                } = execs.mcp(1).unwrap();
+                assert_eq!(
+                    from.next_record().unwrap(),
+                    Got::Record {
+                        at: 0,
+                        bytes: request.to_vec()
+                    }
+                );
+                assert_eq!(to.write(b"{}\n").unwrap(), 3);
+                let mut came = [0; 3];
+                shards_ipc::Polled(&harness).read_exact(&mut came).unwrap();
+                assert_eq!(&came, b"{}\n");
+                harness.shutdown(std::net::Shutdown::Write).unwrap();
+                assert_eq!(from.next_record().unwrap(), Got::Finished);
+                assert_eq!(end.wait(), Ok(0));
+                assert_eq!(
+                    execs.mcp(0).map(|_| ()),
+                    Err(Fault::Unstarted(Unstarted::Refused))
+                );
+                let spec = protocol::Spec {
+                    argv: vec![b"true".to_vec()],
+                    ..Default::default()
+                };
+                assert_eq!(
+                    execs.exec(1, spec).map(|_| ()),
+                    Err(Fault::Unstarted(Unstarted::Failed))
+                );
+                assert_eq!(execs.member(1).map(|_| ()), Err(Fault::Refused(Reason::Closed)));
+                agent.over();
+                assert_eq!(execs.mcp(1).map(|_| ()), Err(Fault::Unstarted(Unstarted::Failed)));
+                revoke.revoke();
+                serving.join().unwrap().unwrap();
+                let _ = driver.join();
+            });
+            assert_eq!(*lock(&budget), Some(0), "an MCP connection's charge outlived it");
+        }
+
+        /// D254: a member's MCP connection its VM hands over unprompted is answered as taken
+        /// (M24) and held where its run gave the member a bridge, its far end open, for its
+        /// controller's asks; let go where it gave it none, or where the run gave no member one:
+        /// its far end reads its end. One its VM did not number as its own is let go unanswered.
+        #[test]
+        fn a_members_mcp_connection_is_held_where_its_run_gave_it_a_bridge() {
             use std::io::Read as _;
             let (link, vm) = Stream::pair().unwrap();
-            let (conn, mut far) = Stream::pair().unwrap();
             let first = shards_abi::run::mcp::ACCEPTED_FIRST;
+            let budget = std::sync::Arc::new(Mutex::new(Some(0)));
+            let charge = std::sync::Arc::new(Charge::reserve(&budget, 0).unwrap());
+            let bridges = mcp::Bridges::new(vec![1], protocol::CHUNK, charge);
             let owners = shards_ipc::Accepted {
                 number: first - 1,
-                member: 0,
+                member: 1,
             };
-            mcp_accepted(&link, &owners.encode(), Vec::new());
-            let accepted = shards_ipc::Accepted {
-                number: first,
-                member: 0,
-            };
-            mcp_accepted(&link, &accepted.encode(), vec![OwnedFd::from(conn)]);
-            let m = shards_ipc::recv(&vm).unwrap().unwrap();
             assert_eq!(
-                (m.kind, m.payload),
-                (kind::LANE_HELD, first.to_be_bytes().to_vec())
+                mcp_accepted(&link, Some(&bridges), &owners.encode(), Vec::new()),
+                None
             );
-            let mut rest = Vec::new();
-            far.read_to_end(&mut rest).unwrap();
-            assert_eq!(rest, b"");
+            for (number, member, bridges, held) in [
+                (first, 1, Some(&bridges), true),
+                (first + 1, 0, Some(&bridges), false),
+                (first + 2, 1, None, false),
+            ] {
+                let (conn, far) = Stream::pair().unwrap();
+                let accepted = shards_ipc::Accepted { number, member };
+                let said = mcp_accepted(&link, bridges, &accepted.encode(), vec![OwnedFd::from(conn)]);
+                assert_eq!(said, held.then_some(number), "member {member}");
+                let m = shards_ipc::recv(&vm).unwrap().unwrap();
+                assert_eq!(
+                    (m.kind, m.payload),
+                    (kind::LANE_HELD, number.to_be_bytes().to_vec())
+                );
+                far.set_nonblocking(true).unwrap();
+                let read = shards_ipc::Polled(&far).read(&mut [0; 1]);
+                match held {
+                    true => assert!(
+                        matches!(&read, Err(e) if e.kind() == io::ErrorKind::WouldBlock),
+                        "{read:?}"
+                    ),
+                    false => assert_eq!(read.unwrap(), 0, "member {member}: let go"),
+                }
+            }
+            bridges.close();
         }
 
         /// D259's run host, its VM played by the test on the VM's end of the link and the link
@@ -5186,7 +5521,8 @@ mod hosted {
                 return;
             }
             std::thread::scope(|scope| {
-                let following = scope.spawn(|| follow(&live, &followed));
+                let (watched, followed) = (&live, &followed);
+                let following = scope.spawn(move || follow(watched, followed, scope));
                 let playing = scope.spawn(|| {
                     // Its first save, filled; its second, refused; its third never answered.
                     let m = shards_ipc::recv(&vm).unwrap().unwrap();
@@ -5587,6 +5923,7 @@ mod tests {
             input: false,
             terminal: false,
             args: Vec::new(),
+            mcp: false,
         }
     }
 
@@ -5629,6 +5966,59 @@ mod tests {
         ] {
             assert!(
                 matches!(terminals(&request(asked.clone()), &members()), Err(No(c, _)) if c == cause),
+                "{asked:?}"
+            );
+        }
+    }
+
+    /// An MCP bridge (D254) goes to a member the image runs, by its index, each asked once, and
+    /// only in a run whose request asks its agent-control endpoint, which alone carries its
+    /// connections; one the image does not declare, one of files alone, one asked twice, or one
+    /// in a run with no endpoint is refused by name, and none asked is none.
+    #[test]
+    fn a_bridge_is_a_running_members_once_and_needs_the_runs_control() {
+        let bridged = |kind, name: &str| wire::MemberStage {
+            mcp: true,
+            ..stage(kind, name)
+        };
+        let controlled = |members| wire::Request {
+            control: Some(wire::ControlAsk {
+                controller: [7; 32],
+                sockets: None,
+            }),
+            ..request(members)
+        };
+        assert!(matches!(
+            mcps(&request(vec![stage(wire::MemberKind::Harness, "codex")]), &members()),
+            Ok(none) if none.is_empty()
+        ));
+        assert!(matches!(
+            mcps(&controlled(vec![bridged(wire::MemberKind::Harness, "codex")]), &members()),
+            Ok(asked) if asked == [1]
+        ));
+        for (asked, cause) in [
+            (
+                request(vec![bridged(wire::MemberKind::Harness, "codex")]),
+                Cause::Request,
+            ),
+            (
+                controlled(vec![bridged(wire::MemberKind::Harness, "nosuch")]),
+                Cause::Image,
+            ),
+            (
+                controlled(vec![bridged(wire::MemberKind::Agent, "helper")]),
+                Cause::Image,
+            ),
+            (
+                controlled(vec![
+                    bridged(wire::MemberKind::Harness, "codex"),
+                    bridged(wire::MemberKind::Harness, "codex"),
+                ]),
+                Cause::Request,
+            ),
+        ] {
+            assert!(
+                matches!(mcps(&asked, &members()), Err(No(c, _)) if c == cause),
                 "{asked:?}"
             );
         }
@@ -6665,10 +7055,13 @@ mod tests {
                 window: 4096,
             }),
         };
-        let (first, served) = hosted::bind_control(&ask).unwrap();
+        let execs = crate::daemon::managed::exec_admissions().unwrap();
+        let (first, served) = hosted::bind_control(&ask, execs).unwrap();
         assert!(first.address.ip().is_loopback(), "{:?}", first.address);
         assert!(served.sockets.is_some());
-        let (second, _) = hosted::bind_control(&ask).unwrap();
+        // Its execs, its members' MCP connections and its members' own lanes (D254, D238).
+        assert!(served.execs.is_some() && served.members.is_some());
+        let (second, _) = hosted::bind_control(&ask, execs).unwrap();
         assert_ne!(first.fingerprint, second.fingerprint, "two runs share one key");
     }
 
