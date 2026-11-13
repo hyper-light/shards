@@ -640,9 +640,10 @@ fn platform_refused(plan: &Plan, arch: &str, hypervisor: Option<&str>, format: u
     None
 }
 
-/// Why `ready` answers no [`Needs`]: it refuses the move, or it could not tell.
+/// Why `ready` answers no [`Needs`]: it refuses the move, or it could not tell. A refusal is
+/// boxed, as its variants carry what refused it whole and the answer is otherwise a string.
 enum Unready {
-    Refused(Refused),
+    Refused(Box<Refused>),
     Failed(String),
 }
 
@@ -654,7 +655,7 @@ impl From<String> for Unready {
 
 impl From<Refused> for Unready {
     fn from(refused: Refused) -> Unready {
-        Unready::Refused(refused)
+        Unready::Refused(Box::new(refused))
     }
 }
 
