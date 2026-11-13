@@ -421,24 +421,32 @@ impl super::Lanes {
         };
         match &mut lane.stage {
             Stage::Asking { frame, whole } => {
-                let room = whole.saturating_sub(frame.len());
-                let (bytes, ended) = match io.read_within(conn, stream, room) {
-                    Ok(Read::Bytes(bytes)) => (bytes, false),
-                    Ok(Read::End(bytes)) => (bytes, true),
-                    Ok(Read::Blocked) => return true,
-                    Ok(Read::Reset) | Err(_) => {
-                        self.sockets.lanes.swap_remove(at);
-                        super::end(io, conn, stream);
+                // An ask its first read took whole is decoded at once: a read of no room is
+                // `Blocked`, and would wait for what has already come.
+                let mut ended = false;
+                if frame.len() < *whole {
+                    let room = whole.saturating_sub(frame.len());
+                    let bytes = match io.read_within(conn, stream, room) {
+                        Ok(Read::Bytes(bytes)) => bytes,
+                        Ok(Read::End(bytes)) => {
+                            ended = true;
+                            bytes
+                        }
+                        Ok(Read::Blocked) => return true,
+                        Ok(Read::Reset) | Err(_) => {
+                            self.sockets.lanes.swap_remove(at);
+                            super::end(io, conn, stream);
+                            return true;
+                        }
+                    };
+                    frame.extend_from_slice(bytes.get(..room.min(bytes.len())).unwrap_or_default());
+                    if frame.len() < *whole {
+                        if ended {
+                            self.sockets.lanes.swap_remove(at);
+                            super::end(io, conn, stream);
+                        }
                         return true;
                     }
-                };
-                frame.extend_from_slice(bytes.get(..room.min(bytes.len())).unwrap_or_default());
-                if frame.len() < *whole {
-                    if ended {
-                        self.sockets.lanes.swap_remove(at);
-                        super::end(io, conn, stream);
-                    }
-                    return true;
                 }
                 let asked = frame.get(FRAME_HEAD..).map_or(Err(Reason::Protocol), read_ask);
                 let asked = if ended { Err(Reason::Protocol) } else { asked };
