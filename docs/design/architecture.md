@@ -6488,11 +6488,12 @@ their owners and controllers, goal 75's `unix::link()` among them, follow the sa
 (ROOT's call C): their admissions carry no patience, their bounded drivers no handshake
 deadline, their transports no idle timeout or keep-alive, `tls::QUIET` and its quarter gone;
 an endpoint whose one place a newcomer contends for asks each connection holding one for an
-answer (a PING), so that one whose owner vanished is found so at that use. Owed: a relay
-whose engine client leaves while
-its handshake waits on a daemon never reached is let go as that daemon answers or this one
-stops, not as its client leaves, as its client's input is read no further than its first
-chunk before the daemon's flow control lets it. A host's start runs on a worker of its own (server.rs `start_apart`,
+answer (a PING), so that one whose owner vanished is found so at that use. A relay whose
+engine client leaves while its handshake waits on a daemon never reached is let go at its
+next probe, its client's connection seen ended there (relay.rs `gone`: recv(2) with MSG_PEEK
+and MSG_DONTWAIT, which takes nothing and leaves the reader's descriptor blocking; on Windows,
+PeekNamedPipe's broken pipe), as its client's input is read no further than its first chunk
+before the daemon's flow control lets it. A host's start runs on a worker of its own (server.rs `start_apart`,
 `Event::Started`), apart from the driver, which acknowledges every client's packets
 meanwhile: what the client sends after its request, and on the control streams that steer the
 command, is read once the start has ended, its flow control holding it back. On the driver, a
