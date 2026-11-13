@@ -983,6 +983,12 @@ impl Stopper {
     pub fn stop(&self) -> Result<(), Error> {
         self.0.send(Command::Stop)
     }
+
+    /// What the daemon's driver has heard, and the window its connections have shown
+    /// ([`crate::net::View`]).
+    pub fn view(&self) -> crate::net::View {
+        self.0.view()
+    }
 }
 
 /// A daemon's listener on `at`, serving `host`'s clients until its [`Stopper`] stops it;

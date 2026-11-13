@@ -161,16 +161,19 @@ fn ended(child: &mut Child, stderr: Option<&Path>) -> String {
 }
 
 /// Waits for a child, a client of `home`'s daemon, failing the test rather than hanging it:
-/// within [`TIMEOUT`], or past it while the daemon or its microVMs progress ([`Patience`]).
+/// for as long as the daemon or its microVMs progress ([`Patience`], its kind its caller's
+/// call site).
+#[track_caller]
 fn exit(child: &mut Child, home: &Path) -> Option<i32> {
-    let mut patience = Patience::of(home, TIMEOUT);
+    let mut patience = Patience::of(home);
     loop {
         if let Some(status) = child.try_wait().unwrap() {
+            patience.done();
             return status.code();
         }
         if !patience.holds() {
             let _ = child.kill();
-            panic!("shards run did not exit within {TIMEOUT:?}");
+            panic!("shards run did not exit, its daemon and microVMs no longer progressing");
         }
         std::thread::sleep(Duration::from_millis(5));
     }
@@ -268,11 +271,12 @@ fn a_joiner_is_a_container_of_its_own() {
         &["trap", "TERM"],
     );
     assert_eq!(detached.status, Some(0), "{detached}");
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     while !shards(&["logs", "joiner"]).stdout.contains("ready") {
         assert!(patience.holds(), "the joiner never said it was ready");
         std::thread::sleep(Duration::from_millis(20));
     }
+    patience.done();
     let hostname = shards(&["inspect", "-f", "{{.Config.Hostname}}", "prov"]);
     let hostname = hostname.stdout.trim().to_string();
     assert_eq!(hostname.len(), 12, "the provider's hostname: {hostname:?}");
@@ -679,13 +683,14 @@ fn a_joiner_may_share_its_providers_pid_namespace() {
     let left = shards(&["exec", "-d", "joiner", "/bin/testguest", "fs", "sleep:600000"]);
     assert_eq!(left.status, Some(0), "{left}");
     let seen = || shards(&["exec", "prov", "/bin/testguest", "ps"]).stdout;
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     while !seen().contains("fs sleep:600000") {
         assert!(patience.holds(), "the exec never showed: {}", seen());
         std::thread::sleep(Duration::from_millis(20));
     }
+    patience.done();
     assert_eq!(shards(&["stop", "-t", "1", "joiner"]).status, Some(0));
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     while seen().contains("fs sleep:600000") {
         assert!(
             patience.holds(),
@@ -694,6 +699,7 @@ fn a_joiner_may_share_its_providers_pid_namespace() {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
+    patience.done();
     // The microVM's own, with `--pid host`: init its PID 1.
     let host = run_in(
         &home,
@@ -791,11 +797,12 @@ fn a_joiner_may_share_another_joiners_pid_namespace() {
     // j1's end is its namespace's: j2's command goes with it, killed.
     assert_eq!(shards(&["stop", "-t", "1", "j1"]).status, Some(0));
     let state = || shards(&["inspect", "-f", "{{.State.Status}} {{.State.ExitCode}}", "j2"]).stdout;
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     while state() != "exited 137\n" {
         assert!(patience.holds(), "j2 outlived its namespace: {}", state());
         std::thread::sleep(Duration::from_millis(20));
     }
+    patience.done();
     assert_eq!(shards(&["stop", "-t", "1", "j3"]).status, Some(0));
     assert_eq!(shards(&["stop", "-t", "1", "prov"]).status, Some(0));
     let _ = exit(&mut provider, &home);
@@ -1338,11 +1345,12 @@ fn a_command_is_pid_1_as_a_containers_is() {
         // neither handles nor blocks (kernel/signal.c, sig_task_ignored), as a container's
         // does under Docker, and a shell may not have run `trap` as `run -d` returns.
         if let Some(ready) = ready {
-            let mut patience = Patience::of(&home, TIMEOUT);
+            let mut patience = Patience::of(&home);
             while !shards(&["logs", name]).stdout.contains(ready) {
                 assert!(patience.holds(), "{name} never said {ready:?}");
                 std::thread::sleep(Duration::from_millis(20));
             }
+            patience.done();
         }
         let at = Instant::now();
         let stopped = shards(&["stop", "-t", timeout, name]);
@@ -1464,12 +1472,13 @@ fn a_command_is_pid_1_as_a_containers_is() {
         "echo $$; exit 3",
     ]);
     assert_eq!(started.status, Some(0), "{started}");
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     let format = "{{.RestartCount}} {{.State.ExitCode}} {{.State.Status}}";
     while shards(&["inspect", "-f", format, "again"]).stdout != "2 3 exited\n" {
         assert!(patience.holds(), "again did not end its restarts");
         std::thread::sleep(Duration::from_millis(100));
     }
+    patience.done();
     assert_eq!(shards(&["logs", "again"]).stdout, "1\n1\n1\n");
 
     // `--pid host`: the microVM's own namespace, in which kthreadd is PID 2, and whose
@@ -1844,7 +1853,7 @@ fn a_volumes_large_files_go_through_its_dax_window() {
             .unwrap();
         common::write_at(&odd_file, &[9], at as u64);
     }
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     loop {
         let r = shards(&[
             "exec",
@@ -1855,6 +1864,7 @@ fn a_volumes_large_files_go_through_its_dax_window() {
         ]);
         if r.status == Some(0) {
             assert_eq!(r.stdout, format!("peek /v/odd {at} 9\n"));
+            patience.done();
             break;
         }
         assert!(patience.holds(), "{r}");
@@ -1885,10 +1895,11 @@ fn a_volumes_large_files_go_through_its_dax_window() {
             "{cut}"
         );
         common::write_at(&odd_file, &[5], 3 << 20);
-        let mut patience = Patience::of(&home, TIMEOUT);
+        let mut patience = Patience::of(&home);
         loop {
             let r = shards(&["exec", "dax", "/bin/testguest", "fs", "peek:/v/odd:3145728"]);
             if r.stdout == "peek /v/odd 3145728 5\n" {
+                patience.done();
                 break;
             }
             assert!(
@@ -1926,11 +1937,12 @@ fn a_volumes_large_files_go_through_its_dax_window() {
             run_shards_env(&[], &hold, &env)
         })
     };
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     while !dir.join("held-go.ready").exists() {
         assert!(patience.holds(), "the holder never read the file");
         std::thread::sleep(Duration::from_millis(10));
     }
+    patience.done();
     // Moved out first on Unix. Windows refuses the cut wherever the file is, its window
     // mapping it, and the holder reads on (PM M412).
     let elsewhere = TempDir::new("containers-dax-o");
@@ -2027,11 +2039,12 @@ fn a_volumes_large_files_go_through_its_dax_window() {
             run_shards_env(&[], &map, &env)
         })
     };
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     while !dir.join("mapped-go.ready").exists() {
         assert!(patience.holds(), "the mapper never mapped the file");
         std::thread::sleep(Duration::from_millis(10));
     }
+    patience.done();
     {
         let file = std::fs::OpenOptions::new()
             .write(true)
@@ -2388,6 +2401,7 @@ fn a_microvm_is_made_under_the_slice_its_cgroup_parent_names() {
 /// [`a_microvm_is_made_under_the_slice_its_cgroup_parent_names`] on Linux, whose groups are
 /// its user's systemd manager's slices: a path refused as one.
 #[cfg(target_os = "linux")]
+#[track_caller]
 fn placed_under_slices(home: &Path, image: &str, path: &Run) {
     use std::io::Write as _;
     let shards = |args: &[&str]| shards_in(home, args);
@@ -2559,11 +2573,12 @@ fn placed_under_slices(home: &Path, image: &str, path: &Run) {
     // The scope goes with the daemon, each of its processes ended.
     let stopped = shards(&["stop", "daemon"]);
     assert_eq!(stopped.status, Some(0), "{stopped}");
-    let mut patience = Patience::of(home, TIMEOUT);
+    let mut patience = Patience::of(home);
     while scope_dir.exists() {
         assert!(patience.holds(), "{} outlived the daemon", scope_dir.display());
         std::thread::sleep(Duration::from_millis(50));
     }
+    patience.done();
     // The slice is the test's, stopped as its user would.
     let _ = std::process::Command::new("systemctl")
         .args(["--user", "stop", &slice])
@@ -2937,10 +2952,11 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
     };
     // The daemon's first line past `at` in its log with `words` in it.
     let first = |at: usize, words: &[&str]| -> String {
-        let mut patience = Patience::of(&home, TIMEOUT);
+        let mut patience = Patience::of(&home);
         loop {
             let after = said().get(at..).unwrap_or_default().to_string();
             if let Some(line) = after.lines().find(|l| words.iter().any(|w| l.contains(w))) {
+                patience.done();
                 return line.to_string();
             }
             assert!(patience.holds(), "none of {words:?} said:\n{}", said());
@@ -2978,7 +2994,7 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
     let booted = current();
     let grown = shards(&["exec", "budget", "/bin/testguest", "alloc-free", "1024", "0"]);
     assert_eq!(grown.status, Some(0), "{grown}");
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     while current() >= booted + (128 << 20) {
         assert!(
             patience.holds(),
@@ -2987,6 +3003,7 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
         );
         std::thread::sleep(Duration::from_millis(50));
     }
+    patience.done();
     // Half of them read with no budget, held in its guest's page cache; then a budget past
     // what the slice holds, whose first word says what the daemon counts it holding (what
     // its host may take back from its processes alone: not the page cache no process maps,
@@ -3010,7 +3027,7 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
         // Its host's own pressure has it give back what it read as it reads it on a busy
         // host (Fedora beside a CI job: 231 MiB given back of 512 read, and its slice never
         // held them): read again until it holds them.
-        let mut patience = Patience::of(&home, TIMEOUT);
+        let mut patience = Patience::of(&home);
         while current() <= 512 << 20 {
             assert!(
                 patience.holds(),
@@ -3021,6 +3038,7 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
             std::thread::sleep(Duration::from_millis(50));
             read(files.get(..512).unwrap());
         }
+        patience.done();
         let counting = said().len();
         set(&(current() + (1 << 30)).to_string());
         let counted = first(counting, &["held within its budget", "budget is short by"]);
@@ -3084,7 +3102,7 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
     if gave.contains("budget is short by") {
         let holds = mib_after(&gave, "MiB, holds ");
         set(&((holds + 128) << 20).to_string());
-        let mut patience = Patience::of(&home, TIMEOUT);
+        let mut patience = Patience::of(&home);
         loop {
             let log = said();
             let words = [
@@ -3097,6 +3115,7 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
                 .rfind(|l| words.iter().any(|w| l.contains(w)))
                 .unwrap_or_default();
             if !last.contains("budget is short by") {
+                patience.done();
                 break;
             }
             assert!(patience.holds(), "short still, its budget raised:\n{log}");
@@ -3527,11 +3546,12 @@ fn a_microvm_under_a_group_is_held_to_its_budget() {
             .unwrap_or(0)
     };
     let until = |what: &str, check: &dyn Fn() -> bool| {
-        let mut patience = Patience::of(&home, TIMEOUT);
+        let mut patience = Patience::of(&home);
         while !check() {
             assert!(patience.holds(), "{what}:\n{}", said());
             std::thread::sleep(Duration::from_millis(50));
         }
+        patience.done();
     };
     let mut read = vec!["exec", "held", "/bin/testguest", "read"];
     read.extend(files.iter().map(String::as_str));
@@ -3581,7 +3601,7 @@ fn a_microvm_under_a_group_is_held_to_its_budget() {
         assert_eq!(hog.status, Some(0), "{hog}");
         // Said as the daemon stops it. Where it never is: what its group held as its last
         // pass wrote it, and how long ago, beside what its guests run.
-        let mut patience = Patience::of(&home, TIMEOUT);
+        let mut patience = Patience::of(&home);
         while !said().contains("past its memory.max") {
             assert!(
                 patience.holds(),
@@ -3595,6 +3615,7 @@ fn a_microvm_under_a_group_is_held_to_its_budget() {
             );
             std::thread::sleep(Duration::from_millis(50));
         }
+        patience.done();
         let waited = shards(&["wait", "hog"]);
         assert_eq!(waited.stdout.trim(), "137", "{waited}\n{}", said());
         let oom = shards(&["inspect", "-f", "{{.State.OOMKilled}}", "hog"]);
@@ -3665,7 +3686,7 @@ fn what_a_joiner_reads_of_its_image_is_given_back_at_its_groups_budget() {
             .unwrap_or(0)
     };
     let until = |what: &str, check: &dyn Fn() -> bool| {
-        let mut patience = Patience::of(&home, TIMEOUT);
+        let mut patience = Patience::of(&home);
         while !check() {
             assert!(
                 patience.holds(),
@@ -3675,6 +3696,7 @@ fn what_a_joiner_reads_of_its_image_is_given_back_at_its_groups_budget() {
             );
             std::thread::sleep(Duration::from_millis(50));
         }
+        patience.done();
     };
     // What its VM process holds idle, as the daemon writes it each pressure window.
     until("its group's memory.current never written", &|| current() > 0);
@@ -3853,12 +3875,13 @@ fn what_a_microvm_holds_cold_is_given_back_at_its_hosts_word() {
     // pages active, which a give-back takes none of (`reclaim_cold`, `inactive_file`), and
     // an idle measured as it went on giving back had the file read twice and gave back
     // nothing of it on Fedora, once in 6.
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     let mut last = held();
     loop {
         std::thread::sleep(Duration::from_millis(500));
         let now = held();
         if now < booted + (128 << 20) && now.abs_diff(last) < 4 << 20 {
+            patience.done();
             break;
         }
         assert!(
@@ -3915,7 +3938,7 @@ fn what_a_microvm_holds_cold_is_given_back_at_its_hosts_word() {
     // Its VM process holds that much less, or half of it, once its guest has given it back:
     // what it reported free, and what its device unplugs as it was asked to, after the
     // give-back's answer (D148, D151).
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     while before.saturating_sub(held()) < (gave << 20) / 2 {
         assert!(
             patience.holds(),
@@ -3925,6 +3948,7 @@ fn what_a_microvm_holds_cold_is_given_back_at_its_hosts_word() {
         );
         std::thread::sleep(Duration::from_millis(50));
     }
+    patience.done();
     eprintln!(
         "a joiner's 512 MiB read: {idle} bytes held idle, {before} after {reads} reads, {} {:?} after its host's word, {gave} MiB given back",
         held(),
@@ -5615,7 +5639,7 @@ fn a_runs_link_local_addresses_are_its_own() {
         &["--name", "ll-client", "--network", "llnet6"],
         &["sleep"],
     );
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     loop {
         let table = shards(&[
             "exec",
@@ -5632,6 +5656,7 @@ fn a_runs_link_local_addresses_are_its_own() {
                     .is_some_and(|x| x & 0x40 == 0)
         });
         if checked {
+            patience.done();
             break;
         }
         assert!(
@@ -6023,11 +6048,12 @@ fn a_stopped_microvms_layer_stays_in_its_file() {
     };
     // Kept once its microVM has gone, after its end is told.
     let settled = |dir: &Path| {
-        let mut patience = Patience::of(&home, TIMEOUT);
+        let mut patience = Patience::of(&home);
         while !(dir.join("layer.ext4").exists() && !dir.join("layer.new").exists()) {
             assert!(patience.holds(), "no layer kept in {}", dir.display());
             std::thread::sleep(Duration::from_millis(20));
         }
+        patience.done();
     };
     let dir = dir_of("kept");
     settled(&dir);
@@ -6064,10 +6090,11 @@ fn a_stopped_microvms_layer_stays_in_its_file() {
         ],
     );
     assert_eq!(killed.status, Some(0), "{killed}");
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     loop {
         let logs = shards(&["logs", "killed"]);
         if logs.stdout == "two\n" {
+            patience.done();
             break;
         }
         assert!(patience.holds(), "the run never committed its file: {logs}");
@@ -7623,14 +7650,16 @@ fn untimed(text: &str) -> String {
         .collect()
 }
 
-/// Checks `check` until it holds, failing the test after TIMEOUT, or past it once `home`'s
-/// daemon and its microVMs have progressed no more for as long ([`Patience`]).
+/// Checks `check` until it holds, failing the test once `home`'s daemon and its microVMs
+/// progress no more ([`Patience`], its kind its caller's call site).
+#[track_caller]
 fn eventually(home: &Path, what: &str, mut check: impl FnMut() -> bool) {
-    let mut patience = Patience::of(home, TIMEOUT);
+    let mut patience = Patience::of(home);
     while !check() {
         assert!(patience.holds(), "{what}");
         std::thread::sleep(Duration::from_millis(20));
     }
+    patience.done();
 }
 
 /// An exec into a microVM whose command nests its own cgroups, as a nested runtime does
@@ -8095,14 +8124,16 @@ impl Going {
 }
 
 /// The ID of the one microVM in `home`, once it is there: created, its run pending.
+#[track_caller]
 fn created(gated: &Gated, home: &Path, run: &mut Going) -> String {
     let id = std::cell::RefCell::new(String::new());
     let last = std::cell::RefCell::new(String::new());
-    let mut patience = Patience::of(home, TIMEOUT);
+    let mut patience = Patience::of(home);
     loop {
         let listed = gated.shards(home, &["ps", "-a", "-q", "--no-trunc"]);
         *id.borrow_mut() = listed.stdout.clone();
         if !id.borrow().is_empty() {
+            patience.done();
             break;
         }
         *last.borrow_mut() = listed.to_string();
@@ -8124,7 +8155,7 @@ fn created(gated: &Gated, home: &Path, run: &mut Going) -> String {
                 Err(e) => format!("unknown: {e}"),
             };
             panic!(
-                "the run's container never showed in {TIMEOUT:?}; the last ps: {}\nthe run's client: {client}\ndaemon.log, last first:\n{}\nprocesses:\n{procs}",
+                "the run's container never showed while its daemon progressed; the last ps: {}\nthe run's client: {client}\ndaemon.log, last first:\n{}\nprocesses:\n{procs}",
                 last.borrow(),
                 tail.join("\n")
             );
@@ -8542,7 +8573,7 @@ fn a_log_keeps_its_newest_output_within_its_retention() {
                 .collect();
             stdin.write_all(lines.as_bytes()).unwrap();
             sent.extend_from_slice(lines.as_bytes());
-            let mut patience = Patience::of(&home, TIMEOUT);
+            let mut patience = Patience::of(&home);
             // Each chunk is followed before the next is written: only a follower woken by
             // appends, not only by segments' coming, gets there.
             while received.load(std::sync::atomic::Ordering::Acquire) < sent.len() {
@@ -8554,6 +8585,7 @@ fn a_log_keeps_its_newest_output_within_its_retention() {
                 );
                 std::thread::sleep(Duration::from_millis(1));
             }
+            patience.done();
         }
     }
     assert_eq!(exit(&mut run, &home), Some(0));
@@ -9770,10 +9802,11 @@ fn execs_at_once_each_end_with_their_commands_status() {
         .stderr(std::fs::File::create(&said).unwrap())
         .spawn()
         .unwrap();
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     let met = loop {
         let state = shards_in(&home, &["inspect", "-f", "{{.State.Status}}", "fresh"]);
         if state.status == Some(0) {
+            patience.done();
             break state.stdout;
         }
         if let Some(ended) = fresh.try_wait().unwrap().filter(|s| !s.success()) {
@@ -9826,12 +9859,13 @@ fn execs_at_once(home: &Path, name: &str, n: usize) -> Vec<(String, Child)> {
 /// exec's time into the same run, they would all end within their number of paces: one still
 /// waiting once that long has passed with none of them ending, since now or since the last
 /// that ended, fails the test, unless the daemon or its microVM still progresses
-/// ([`Patience`]), naming each still waiting with what it said. Gives how long after now the
-/// last ended.
+/// ([`Patience`], its kind its caller's call site), naming each still waiting with what it
+/// said. Gives how long after now the last ended.
+#[track_caller]
 fn each_ends(home: &Path, mut execs: Vec<(String, Child)>, pace: Duration) -> Duration {
     let (all, began) = (execs.len(), Instant::now());
     let bound = pace * u32::try_from(all).unwrap();
-    let mut patience = Patience::of(home, bound);
+    let mut patience = Patience::of(home);
     let (mut last, mut ended) = (began, Vec::with_capacity(all));
     let said = |mode: &str, of: &str| {
         std::fs::read_to_string(home.join(format!("{mode}.{of}"))).unwrap_or_else(|e| format!("({e})"))
@@ -9866,6 +9900,7 @@ fn each_ends(home: &Path, mut execs: Vec<(String, Child)>, pace: Duration) -> Du
         }
         std::thread::sleep(Duration::from_millis(5));
     }
+    patience.done();
     let wrong: Vec<String> = ended
         .iter()
         .map(|(mode, status)| (mode, *status, said(mode, "out"), said(mode, "err")))
@@ -12767,11 +12802,12 @@ fn restart_policies_start_microvms_again() {
     let inspect =
         |name: &str, format: &str| shards(&["inspect", "-f", format, name]).stdout.trim().to_string();
     let until = |what: &str, check: &dyn Fn() -> bool| {
-        let mut patience = Patience::of(&home, TIMEOUT);
+        let mut patience = Patience::of(&home);
         while !check() {
             assert!(patience.holds(), "{what}");
             std::thread::sleep(Duration::from_millis(20));
         }
+        patience.done();
     };
     let failing = run_in(
         &home,
@@ -12927,7 +12963,7 @@ fn a_run_past_its_pids_limit_says_so() {
     assert!(joined.stdout.contains("of 8 threads"), "{joined}");
     // Its microVM's word of the limit reached comes on its own, maybe after its command's
     // end on a loaded host: the home's events read again until it is there (D187).
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     let events = loop {
         let until = (now() + 1).to_string();
         let events = shards_in(
@@ -12944,7 +12980,11 @@ fn a_run_past_its_pids_limit_says_so() {
                 r#"{{.Actor.Attributes.name}} {{index .Actor.Attributes "pids.max"}}"#,
             ],
         );
-        if !events.stdout.is_empty() || !patience.holds() {
+        if !events.stdout.is_empty() {
+            patience.done();
+            break events;
+        }
+        if !patience.holds() {
             break events;
         }
     };
@@ -16522,7 +16562,7 @@ fn a_microvm_swaps_and_throttles_as_its_limits_say() {
     // Its end said in the daemon's log, as a run's is, as the daemon hears it, which may be
     // as its client has the exit: what its cgroup was allowed and held, none of it swap,
     // and what its kernel said of it.
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     let (log, said) = loop {
         let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
         let said = log
@@ -16531,6 +16571,7 @@ fn a_microvm_swaps_and_throttles_as_its_limits_say() {
             .find(|l| l.contains("a process ended for want of memory"))
             .map(str::to_string);
         if let Some(said) = said {
+            patience.done();
             break (log, said);
         }
         assert!(patience.holds(), "no kill said in the daemon's log:\n{log}");
@@ -16757,7 +16798,7 @@ fn a_microvm_takes_its_ipc_hostname_cgroups_umask_and_writable_layer() {
         all.extend(flags);
         let r = run_in(&home, &image, &all, &["ipc-hold", key]);
         assert_eq!(r.status, Some(0), "{name}: {r}");
-        let mut patience = Patience::of(&home, TIMEOUT);
+        let mut patience = Patience::of(&home);
         while !shards(&["logs", name]).stdout.contains("held") {
             assert!(
                 patience.holds(),
@@ -16766,6 +16807,7 @@ fn a_microvm_takes_its_ipc_hostname_cgroups_umask_and_writable_layer() {
             );
             std::thread::sleep(Duration::from_millis(20));
         }
+        patience.done();
     };
     held("owner", &["--ipc", "shareable", "--umask", "027"], "42");
     let exec = shards(&["exec", "owner", "/bin/testguest", "ipc", "42"]);

@@ -26,8 +26,6 @@ use std::time::{Duration, Instant};
 use common::{Patience, Run, TempDir, Told, cannot_run_vms, guest_init, kernel, run_shards_env, served};
 use shards_api::{Found, Judge, Record, Seen, Stall};
 
-const TIMEOUT: Duration = Duration::from_secs(600);
-
 fn shards_in(home: &Path, args: &[&str]) -> Run {
     shards_with(home, args, &[])
 }
@@ -76,14 +74,16 @@ fn prov(home: &Path, image: &str, run: &[&str]) {
 }
 
 /// Waits until `prov`'s engine answers.
+#[track_caller]
 fn answering(home: &Path) {
-    let mut patience = Patience::of(home, TIMEOUT);
+    let mut patience = Patience::of(home);
     loop {
         let out = shards_in(
             home,
             &["exec", "prov", "/bin/testguest", "api", "GET", "/_ping", ""],
         );
         if out.status == Some(0) && out.stdout == "api HTTP/1.1 200 OK\nOK" {
+            patience.done();
             return;
         }
         assert!(patience.holds(), "its engine never answered: {out}");
@@ -487,12 +487,14 @@ fn settled(
 }
 
 /// Waits until `ready` holds of the device's word.
+#[track_caller]
 fn await_rings(home: &Path, what: &str, ready: impl Fn(&Rings) -> bool) {
-    let mut patience = Patience::of(home, TIMEOUT);
+    let mut patience = Patience::of(home);
     while !ready(&rings(home)) {
         assert!(patience.holds(), "{what}: {:?}", rings(home));
         std::thread::sleep(Duration::from_millis(50));
     }
+    patience.done();
 }
 
 /// vCPU counts a microVM is run with: one, two and every CPU of the host (D230's V > 1).
@@ -765,14 +767,16 @@ impl Budget {
 
     /// What its runs hold now, its `memory.current`: waited for where the daemon has yet
     /// to write it (a group's, each pressure window).
+    #[track_caller]
     fn held(&self, home: &Path) -> u64 {
-        let mut patience = Patience::of(home, TIMEOUT);
+        let mut patience = Patience::of(home);
         loop {
             let read = std::fs::read_to_string(self.dir.join("memory.current"))
                 .ok()
                 .and_then(|t| t.trim().parse::<u64>().ok())
                 .filter(|&bytes| bytes > 0);
             if let Some(bytes) = read {
+                patience.done();
                 return bytes;
             }
             assert!(patience.holds(), "{}: no memory.current", self.dir.display());

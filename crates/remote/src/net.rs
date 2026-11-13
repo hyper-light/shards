@@ -8,7 +8,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -37,10 +37,69 @@ pub enum Command<C> {
     Stop,
 }
 
+/// What a driver has heard and the window its connections have shown, for another thread to
+/// judge a wait on it by, as the driver judges its own ([`Liveness`]): the datagrams it has taken
+/// in from peers, and the longest window any of its connections has been judged by, each no
+/// sooner than its probe timeout (RFC 9002 §6.2.1) and, cold, before any answer was seen on its
+/// path, its handshake's window of [`COLD_PROBE_TIMEOUTS`] probe timeouts ([`Liveness::bound`]);
+/// and apart from it the longest window learned from its connections' answers
+/// ([`Liveness::window`]), without which none of its sends is ever judged stalled. Each is none
+/// before the driver has looked at a connection.
+#[derive(Debug, Clone, Default)]
+pub struct View(Arc<Viewed>);
+
+#[derive(Debug, Default)]
+struct Viewed {
+    heard: AtomicU64,
+    /// Nanoseconds, saturated; zero before any connection was looked at.
+    window: AtomicU64,
+    /// Nanoseconds, saturated; zero before any connection's window was learned.
+    learned: AtomicU64,
+}
+
+impl View {
+    /// The datagrams its driver has taken in from peers.
+    pub fn heard(&self) -> u64 {
+        self.0.heard.load(Ordering::Relaxed)
+    }
+
+    /// The longest window its driver's connections have been judged by: none before it has
+    /// looked at one.
+    pub fn window(&self) -> Option<Duration> {
+        nonzero(self.0.window.load(Ordering::Relaxed))
+    }
+
+    /// The longest window learned from its driver's connections' answers: none while each is
+    /// cold, its sends then followed for as long as they take, never told stalled
+    /// ([`Liveness::look`]).
+    pub fn learned(&self) -> Option<Duration> {
+        nonzero(self.0.learned.load(Ordering::Relaxed))
+    }
+
+    fn heard_one(&self) {
+        self.0.heard.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn judged_by(&self, liveness: &Liveness) {
+        let nanos = |d: Duration| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX);
+        self.0
+            .window
+            .fetch_max(nanos(liveness.bound()), Ordering::Relaxed);
+        if let Some(learned) = liveness.window() {
+            self.0.learned.fetch_max(nanos(learned), Ordering::Relaxed);
+        }
+    }
+}
+
+fn nonzero(nanos: u64) -> Option<Duration> {
+    (nanos != 0).then(|| Duration::from_nanos(nanos))
+}
+
 /// Where another thread sends the driver [`Command`]s, waking it.
 pub struct Sender<C> {
     commands: Commands<C>,
     stopping: Arc<AtomicBool>,
+    view: View,
     waker: UdpSocket,
     to: SocketAddr,
 }
@@ -102,6 +161,11 @@ impl<C> Sender<C> {
         self.waker
             .local_addr()
             .map_err(|e| Error::new(format!("the driver's waker: {e}")))
+    }
+
+    /// What its driver has heard, and the window its connections have shown ([`View`]).
+    pub fn view(&self) -> View {
+        self.view.clone()
     }
 
     /// Idempotent owner revocation does not wait behind queued data.
@@ -185,6 +249,7 @@ impl<C> Sender<C> {
                 Commands::Bounded(to) => Commands::Bounded(to.clone()),
             },
             stopping: Arc::clone(&self.stopping),
+            view: self.view.clone(),
             waker: self
                 .waker
                 .try_clone()
@@ -567,6 +632,16 @@ impl Liveness {
         }
         self.probes = datagrams;
         Some((datagrams - flight, now.saturating_duration_since(self.began)))
+    }
+
+    /// What a wait of its is judged by, as another thread sees it ([`View`]): its window, no
+    /// sooner than its probe timeout; cold, before any answer was seen on its path, its
+    /// handshake's, [`COLD_PROBE_TIMEOUTS`] probe timeouts ([`Liveness::unfinished`]).
+    pub fn bound(&self) -> Duration {
+        self.window().map_or_else(
+            || self.pto.saturating_mul(COLD_PROBE_TIMEOUTS),
+            |window| window.max(self.pto),
+        )
     }
 
     /// Its window: the slowest answer seen and the peer's `max_ack_delay`; none, cold, before
@@ -1079,6 +1154,7 @@ pub struct Driver<H: Handler> {
     handler: H,
     stopping: bool,
     stop_requested: Arc<AtomicBool>,
+    view: View,
     limits: Option<DriverLimits>,
     /// The window each connection's handshake is judged by ([`Liveness::due`]): none, waited
     /// for as long as its probing goes on.
@@ -1208,6 +1284,7 @@ impl<H: Handler> Driver<H> {
             }
         };
         let stop_requested = Arc::new(AtomicBool::new(false));
+        let view = View::default();
         Ok((
             Driver {
                 socket,
@@ -1221,6 +1298,7 @@ impl<H: Handler> Driver<H> {
                 handler,
                 stopping: false,
                 stop_requested: Arc::clone(&stop_requested),
+                view: view.clone(),
                 limits,
                 handshake: held.handshake,
                 answer: held.answer,
@@ -1235,6 +1313,7 @@ impl<H: Handler> Driver<H> {
             Sender {
                 commands: commands_tx,
                 stopping: stop_requested,
+                view,
                 waker,
                 to,
             },
@@ -1535,6 +1614,7 @@ impl<H: Handler> Driver<H> {
 
     /// Feeds `bytes` from `from` to its connection, or to a new one: the connection fed, if any.
     fn receive(&mut self, now: Instant, from: SocketAddr, bytes: BytesMut) -> Result<Option<ConnKey>, Error> {
+        self.view.heard_one();
         let mut response = Vec::new();
         match self.endpoint.handle(now, from, None, None, bytes, &mut response) {
             Some(DatagramEvent::NewConnection(incoming)) => {
@@ -1780,6 +1860,7 @@ impl<H: Handler> Driver<H> {
             if !conn.connected {
                 conn.liveness.peer_ack_delay(conn.quic.peer_max_ack_delay());
             }
+            self.view.judged_by(&conn.liveness);
             let stats = conn.quic.stats();
             if let Some((probes, waited)) = conn.liveness.unanswered(now, stats.udp_tx.datagrams) {
                 let (mut io, handler) = self.io(now);

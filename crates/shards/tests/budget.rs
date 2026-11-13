@@ -169,7 +169,7 @@ fn a_microvm_held_to_a_budget_reads_through_fuse_at_the_pace_of_reads_held_to_no
     );
     assert_eq!(first.status, Some(0), "{first}\nthe daemon's log:\n{}", said());
     let templates = home.join("templates").to_string_lossy().into_owned();
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     while !processes_with(&templates).into_iter().any(|pid| {
         std::fs::read_to_string(format!("/proc/{pid}/cgroup"))
             .is_ok_and(|c| c.contains(&format!("/{slice}/")))
@@ -181,6 +181,7 @@ fn a_microvm_held_to_a_budget_reads_through_fuse_at_the_pace_of_reads_held_to_no
         );
         std::thread::sleep(Duration::from_millis(20));
     }
+    patience.done();
     // The reads held to none, which make the record every later read is judged by: the
     // first, with none before it, follows its microVM's liveness alone.
     let mut record = Record::default();
@@ -267,7 +268,7 @@ fn a_microvm_held_to_a_budget_reads_through_fuse_at_the_pace_of_reads_held_to_no
     };
     let (_, started) = stat_of_pid().unwrap_or_else(|| panic!("held's VM process {pid} is not running"));
     let _ = run_shards_env(&["rm"], &["-f", "held"], &env);
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     while let Some((state, start)) = stat_of_pid()
         && !matches!(state.as_str(), "Z" | "X")
         && start == started
@@ -279,6 +280,7 @@ fn a_microvm_held_to_a_budget_reads_through_fuse_at_the_pace_of_reads_held_to_no
         );
         std::thread::sleep(Duration::from_millis(20));
     }
+    patience.done();
     // A run held within the least room a run goes on in for its whole reads, not at what it
     // uses, which stalled a read of 1 MiB blocks at 140 KB/s (PM M309): a run of its own
     // alone in the slice, its daemon keeping no warm microVM there (a budget short of the
@@ -561,8 +563,8 @@ enum Phase {
 /// Runs `shards ARGS`, a `read-marked` read of the gigabyte, following its guest's marks as
 /// they come, judged by `record` ([`Record`]). Before its first mark it is waited on for the
 /// slowest start seen, and past it for as long as its daemon or a microVM shows progress
-/// ([`Patience`], never refused before each VM process has been judged over a whole slice)
-/// or the slice `cgroup` has been held by its host within [`DAEMON_QUIET`] ([`stalled`]); from its first mark, for the slowest read seen, and past that looked at
+/// ([`Patience`], judged as D215's judge judges a wait, its first mark its answer) or the
+/// slice `cgroup` has been held by its host within [`DAEMON_QUIET`] ([`stalled`]); from its first mark, for the slowest read seen, and past that looked at
 /// once each window as long, each having to read what the slowest MiB seen keeps over it
 /// ([`Record::judging`]); with nothing seen yet, until it ends. Each look past the slowest
 /// read seen says the slice `cgroup`'s state on stderr. Refused, its command is ended and
@@ -630,7 +632,8 @@ fn judge(
     record: &Record,
     cgroup: &Path,
 ) -> Result<Followed, Stalled> {
-    let mut patience = Patience::of(home, record.start.unwrap_or_default());
+    // Its start's wait, taught its answer by the first mark.
+    let mut patience = Some(Patience::of(home));
     // The slice's stall total when last looked at, and when it last grew: a hold.
     let mut stalls = (stalled(cgroup), None::<Instant>);
     let mut phase = Phase::Starting { looked: None };
@@ -666,6 +669,9 @@ fn judge(
                 if let Some(bytes) = line.strip_prefix("at ").and_then(|b| b.parse::<u64>().ok()) {
                     marks.push((at, bytes));
                     if matches!(phase, Phase::Starting { .. }) {
+                        if let Some(patience) = patience.take() {
+                            patience.done();
+                        }
                         phase = Phase::Reading {
                             first: at,
                             looked: None,
@@ -709,7 +715,7 @@ fn judge(
         let at = Instant::now();
         match &mut phase {
             Phase::Starting { looked } => {
-                let progresses = patience.holds();
+                let progresses = patience.as_mut().is_some_and(Patience::holds);
                 let now = stalled(cgroup);
                 if now > stalls.0 {
                     stalls = (now, Some(at));
