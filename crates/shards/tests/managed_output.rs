@@ -210,8 +210,9 @@ impl Fixture {
             "unexpected detached run identity"
         );
         let record = self.home.join("containers").join(id).join("managed-output");
-        let metadata = Metadata::parse(&std::fs::read_to_string(&record).unwrap())
-            .unwrap_or_else(|| panic!("published owner metadata"));
+        // Public fingerprints and loopback endpoints alone: shown whole where it is not one.
+        let text = std::fs::read_to_string(&record).unwrap();
+        let metadata = Metadata::parse(&text).unwrap_or_else(|| panic!("published owner metadata:\n{text}"));
         assert_eq!(metadata.run, id);
         assert_eq!(metadata.server, self.owner.fingerprint());
         assert_eq!(metadata.owner, self.owner.fingerprint());
@@ -310,6 +311,14 @@ impl Fixture {
             )
         })) {
             Ok(stopped) if stopped.status != Some(0) => errors.push(format!("owner stop: {stopped}")),
+            // A stop returns once its daemon has exited (cli/client.rs `stop`), which lets go
+            // of its home's lock last (daemon.rs `finish`), its runs and their managed records
+            // ended before. HVF at 4a426c367 found those records unwritten after a stop.
+            Ok(_) if !daemon_gone(&self.home) => errors.push(
+                "`stop daemon` returned while its daemon still held its home's lock: its runs, and their \
+                 managed records, not yet ended"
+                    .into(),
+            ),
             Err(_) => errors.push("owner-stop CLI helper panicked".into()),
             _ => {}
         }
@@ -365,7 +374,12 @@ impl Fixture {
         let terminal = record
             .lines()
             .find_map(|line| line.strip_prefix(&prefix))
-            .unwrap_or_else(|| panic!("terminal channel metadata"));
+            .unwrap_or_else(|| {
+                panic!(
+                    "terminal metadata of member {member} channel {}:\n{record}",
+                    channel as u8
+                )
+            });
         let fields: Vec<_> = terminal.split_whitespace().collect();
         let [
             "aborted",
@@ -414,6 +428,19 @@ fn declared_label(member: u32) -> &'static str {
         2 => "harness driver",
         _ => panic!("fixture has no runnable member {member}"),
     }
+}
+
+/// Whether `home`'s daemon has let go of it: its lock (`daemon.lock`), which a daemon holds
+/// from its start until the last of its exit (daemon.rs `finish`), free.
+fn daemon_gone(home: &std::path::Path) -> bool {
+    // A home no daemon took has no lock to hold.
+    let Ok(lock) = std::fs::File::open(home.join("daemon.lock")) else {
+        return true;
+    };
+    let free = lock.try_lock().is_ok();
+    // Let go of before its file closes (M244).
+    let _ = lock.unlock();
+    free
 }
 
 /// This process's open descriptors, counted as the coordinator's cost campaign counts the
@@ -572,6 +599,40 @@ fn metadata_requires_unique_scoped_loopback_endpoints() {
     assert!(Metadata::parse(&format!("{header}member 2 channel 3 address 127.0.0.1:12345\n")).is_none());
 }
 
+/// The record as the daemon goes on writing it (daemon/managed.rs): each channel's end
+/// appended after the endpoints, an output's `canonical` errno and `state`, an input's
+/// `state`. A member that ends at once has its input's end there before its owner reads the
+/// record, which was then no record (HVF at 4a426c367: "published owner metadata").
+#[test]
+fn metadata_keeps_its_endpoints_beside_the_ends_appended_after_them() {
+    let key = "01".repeat(32);
+    let header =
+        format!("shards managed output 1\nserver {key}\nowner {key}\nrun abc\ngeneration 9\ncapacity 64\n");
+    let endpoints =
+        "member 2 channel 0 address 127.0.0.1:12345\nmember 2 channel 1 address 127.0.0.1:12346\n";
+    let ends = "member 2 channel 0 state aborted written 0 errno 32\n\
+        member 2 channel 1 canonical aborted errno 5\n\
+        member 2 channel 1 state aborted accepted 20 consumed 20 tail unknown\n";
+    let metadata = Metadata::parse(&format!("{header}{endpoints}{ends}")).unwrap();
+    assert_eq!(
+        metadata.endpoints.keys().copied().collect::<Vec<_>>(),
+        [(2, 0), (2, 1)]
+    );
+    // An end of a channel it never published, an endpoint after an end, a word the daemon
+    // never writes, and an end that says nothing: none is a record of its.
+    for wrong in [
+        "member 1 channel 1 state ended accepted 7 consumed 7 tail complete\n",
+        "member 2 channel 0 state closed written 4 errno 0\nmember 2 channel 2 address 127.0.0.1:12347\n",
+        "member 2 channel 1 torn\n",
+        "member 2 channel 1 state\n",
+    ] {
+        assert!(
+            Metadata::parse(&format!("{header}{endpoints}{wrong}")).is_none(),
+            "{wrong:?}"
+        );
+    }
+}
+
 /// An observer whose endpoint never answers: a UDP socket on loopback, told apart from the
 /// observer's own as theirs are, by its whole address. 127.0.0.1, which every host's loopback
 /// serves: macOS's lo0 serves no other address of 127.0.0.0/8 without an alias its root adds.
@@ -629,9 +690,9 @@ fn a_lost_observer_stream_says_how_its_driver_ended() {
     let said = lost(&cancelled);
     assert!(said.contains("driver ended Ok"), "{said}");
     cancelled.join(Instant::now() + WITHIN).unwrap();
-    // A driver whose thread panics: a second Connect finds its client config taken.
-    let (silent, mut panicked) = unanswered_observer();
-    admit(&panicked, Ask::Connect(silent.local_addr().unwrap()));
+    // A driver whose thread panics, as it is asked to.
+    let (_silent, mut panicked) = unanswered_observer();
+    admit(&panicked, Ask::Panic);
     let said = lost(&panicked);
     assert!(said.contains("panicked"), "{said}");
     assert!(panicked.join(Instant::now() + WITHIN).is_err());
@@ -691,13 +752,23 @@ fn observer_sockets_are_checked_by_identity_beside_other_tests_descriptors() {
         held,
         "both open while it lives"
     );
-    // A leak: a second descriptor for one of its sockets, kept past the observer's end.
+    // A leak: a second descriptor for one of its sockets, kept past the observer's end. It is
+    // close-on-exec (F_DUPFD_CLOEXEC), as std makes its own: std starts a process with each
+    // descriptor that is not (posix_spawn, no POSIX_SPAWN_CLOEXEC_DEFAULT), and dup(2) clears
+    // the flag, so a process another test started meanwhile held the socket past the copy's
+    // end (HVF at 4a426c367).
     let leaked = held[0];
-    // SAFETY: dup(2) of a descriptor this live observer holds.
-    let copy = unsafe { libc::dup(leaked.fd) };
+    // SAFETY: fcntl(2) duplicating a descriptor this live observer holds.
+    let copy = unsafe { libc::fcntl(leaked.fd, libc::F_DUPFD_CLOEXEC, 0) };
     assert!(copy >= 0, "{}", std::io::Error::last_os_error());
-    // SAFETY: the descriptor dup(2) just returned, owned here once.
+    // SAFETY: the descriptor fcntl(2) just returned, owned here once.
     let copy = unsafe { std::os::fd::OwnedFd::from_raw_fd(copy) };
+    // As another test's would: a process started while the copy lives, until its stdin ends.
+    let mut started = std::process::Command::new("cat")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
     admit(&observer, Ask::Cancel);
     observer.join(Instant::now() + WITHIN).unwrap();
     drop((silent, observer, neighbor));
@@ -712,6 +783,8 @@ fn observer_sockets_are_checked_by_identity_beside_other_tests_descriptors() {
     assert_eq!(managed_capture::not_returned(&held), [leaked]);
     drop(copy);
     let returned = managed_capture::not_returned(&held);
+    drop(started.stdin.take());
+    started.wait().unwrap();
     assert!(returned.is_empty(), "{returned:?}");
 }
 
