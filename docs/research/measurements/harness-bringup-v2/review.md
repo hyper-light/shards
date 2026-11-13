@@ -79,4 +79,100 @@ label, and the leak check also runs over v1's and v2's committed records.
 | M3: an empty value taken for a secret | `test_an_empty_value_is_no_secret` failed: FOUND in every file |
 | this change again | 14 passed |
 
+### F2. The real-VM test kept a 600 s clock over every wait (R03, R05): fixed
+
+`harness_bringup.rs`'s `WITHIN` (line 34 at `ecd19d38c`) bounded every wait: each `shards`
+command (`run_shards_env`'s timeout), each channel's read (`recv_timeout`, failing "past the
+test's patience"), the owner observers' deadlines and their joins. v1's slowest case already
+read for 247.2 s (`claude-key-volume`), and a model's long turn has no bound of its own. ROOT
+ruled that the tests' bounds go (D215; s37 decision inventory, row 2): no clock, wait on
+facts.
+
+Now every wait ends at its fact. `read` waits on `recv()` alone: the channel's end record, its
+subscription's transport event, or its driver's end. A command is waited on to its exit, and
+the observers are started and joined with `until` = now + `NO_CLOCK`, u64's most nanoseconds,
+because those fixtures take a deadline that is finite by contract (D215's tests give theirs
+the same; `checked_add`, so a platform whose `Instant` can't hold it fails with its name).
+An observer's subscription still ends at its connection's typed end, held to the endpoint's
+own liveness. Today the owner's patience is `until`'s, far past the endpoint's `tls::QUIET`,
+and a connection takes the lesser of its two sides' idle timeouts (RFC 9000 §10.1). Goal 58's
+call C (D180, not on main at this review) drops `Admitted.patience` and
+`DriverLimits.handshake_patience`: neither side then advertises an idle timeout, and the
+driver ends a connection that stops making progress as `TimedOut`. Its agent was told this
+test's two call sites. No QUIET-based value was put in their place, as ROOT asked.
+
+### F3. The test polled the process record every 200 ms (R03, R05): fixed
+
+Once the harness's output had ended, the test read `shards read processes` again every 200 ms
+(line 262) until the harness's exit row came, or its patience ran out: a periodic probe of a
+record that announces its own growth. `shards watch processes` (D123) prints the record, then
+each row as the daemon's file watch sees it, until the run ends. The test now follows that
+stream until `followed_far_enough`: the exit of the harness's own exec, by that exec's PID
+(not a child's), or a `lost` row (init's, member `-` and PID 0, past which the record waits for
+no process's end). It also stops if the record ends with the run. Then it reads the record
+whole once, as the last poll did.
+
+### F4. The run's own command ended at 600 s (R03): fixed
+
+Every case ran its microVM's command as `sleep 600`, as did `bringup.sh` and the four
+examples' usage comments. The run ends with its command and its members with it, so that was
+a second 600 s bound on any harness. Now it is `sleep infinity`: busybox's `sleep` takes "inf"
+for no end, as GNU's does, since busybox `edca770d11` (2019-01-07, release 1.31.0). Alpine
+v3.24's main repository ships busybox 1.37.0-r31 (pkgs.alpinelinux.org, read 2026-11-13). The test or the script removes the run when it is done.
+
+### F5. bringup.sh's 300 s deadline, polled every 2 s (R03, R05), and its GNU-only clock (R11): fixed
+
+`bringup.sh` (lines 66–82) read `shards read processes` every 2 s for 300 s. It now follows
+`shards watch processes` through a FIFO, row by row, until the harness's exit by its exec's
+PID, or a `lost` row, or the record's end. Then it ends the follow it started and reads the
+record whole. Its `step` timed each command with `date +%s%N`, which BSD's `date` (macOS's)
+prints as a literal `N`, so the script failed in its first arithmetic there. It now times in
+milliseconds where `date` gives nanoseconds, and in whole seconds where it doesn't, saying
+which.
+
+`bringup-test.sh` holds it to v1's record of Codex's run, with no VM, binary or network. A
+stand-in `shards` gives that record through `watch processes`, then keeps the follow open as a
+real one does. Its `read processes` gives the record without Codex's exit, and a stand-in
+`date` moves 301 s at each call.
+
+### F6. H1's live test still said it was red (R07): fixed
+
+`an_owners_subscription_outlives_a_quiet_harness` was ignored as "red: finding H1, the owner
+endpoint's transport keeps no quiet subscription alive". H1 is fixed on main
+(owner-keepalive-v1, `4e291dfc3`'s merge; D180's managed-output paragraph), so the test is
+expected green. Its text now says so, and both of H1's tests say they need a real VM (ROOT's).
+After goal 58's call C the managed transport keeps no idle timeout at all. The silences these
+tests take from `tls::QUIET` are then goal 58's to restate; the tests' claim, that a quiet
+subscription lives, stands.
+
+### F7. R10's owed check of the signed-in turns, with no prompt sent: done
+
+v2 owed a mutation: "a prompt asking for no tool must fail a case". That costs a real turn,
+which is ROOT's to decide. The cases' checks now live in `codex_ran_its_tool` and
+`claude_ran_its_tool`, which the real cases call. Light tests hold them to v2's two recorded
+turns (`records/*-signed-in`): each recorded turn passes. Each fails with what a turn that ran
+no tool leaves: its stream without the tool's events (Codex's `command_execution` items,
+Claude Code's `tool_use` call), though the answer still names the project's files, or its
+kernel record without the `ls` exec in the harness's domain. A sixth light test holds the
+follow's end (F3) to v1's record of Codex's run: Codex's own exit ends it, at its exec's PID,
+after its children's exits, and a `lost` row ends it too.
+
+### Slice B's runs
+
+On the runner, at `4e53fcdfe` plus this slice (`~/g121-tmp/s2-8-slice-b.log`):
+
+| Check | Result |
+|---|---|
+| `cargo test -p shards --test harness_bringup` | 6 passed, 12 ignored (the 11 real-VM cases and `common::port_probe`) |
+| MT1: Codex's tool check takes any item | `a_codex_turn_that_ran_no_tool_fails_its_case` failed: its panic was not "no ls ran" |
+| MT2: Claude's tool check takes any content | `a_claude_turn_that_ran_no_tool_fails_its_case` failed: no panic |
+| MT3: Codex's domain check removed | `a_codex_tool_the_kernel_never_saw_fails_its_case` failed: no panic |
+| MT4: Claude's domain check removed | `a_claude_tool_the_kernel_never_saw_fails_its_case` failed: no panic |
+| MF: a row's event taken whatever its PID (`row`) | `a_follow_ends_at_the_harness_own_exit` failed |
+| `bringup-test.sh`, this slice's `bringup.sh` | the follow ended at Codex's own exit (86 rows), its watch ended. The first run exited 1 after its PASS: the test's own exit trap ran `kill` under `set -e` on a watch already ended. Fixed (`\|\| true`) before landing |
+| `bringup-test.sh`, main's `bringup.sh` | red: "the harness's process did not end within 300 s", no follow |
+| MB: `bringup.sh`'s exit taken whatever its PID | red: the follow ended at child 1741's exit (`code 127`) |
+| `cargo fmt -p shards -- --check` | clean |
+| `cargo clippy -p shards --all-targets -- -D warnings` | clean (aarch64-apple-darwin) |
+
 The other findings land in the slices that follow, and this record is extended at each.

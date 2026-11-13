@@ -434,13 +434,21 @@ fn terminal_lines(guest: &dyn ImageGuest) -> std::sync::mpsc::Receiver<String> {
     rx
 }
 
-/// The lines `lines` gives up to the first that begins with `last`, that one included.
-fn until(lines: &std::sync::mpsc::Receiver<String>, last: &str) -> Vec<String> {
+/// The lines `lines` gives up to the first that begins with `last`, that one included;
+/// where none comes, how the harness and the run ended is said beside what came: its end
+/// waited for where its terminal closed, which it follows.
+fn until(guest: &dyn ImageGuest, lines: &std::sync::mpsc::Receiver<String>, last: &str) -> Vec<String> {
     let mut said = Vec::new();
     loop {
-        let line = lines
-            .recv_timeout(TIMEOUT)
-            .unwrap_or_else(|e| panic!("no {last:?} in time ({e}) after:\n{}", said.join("\n")));
+        let line = lines.recv_timeout(TIMEOUT).unwrap_or_else(|e| {
+            let closed = matches!(e, std::sync::mpsc::RecvTimeoutError::Disconnected);
+            panic!(
+                "no {last:?} in time ({e}) after:\n{}\nthe harness's end: {:?}; the run's: {:?}",
+                said.join("\n"),
+                guest.wait_member(&codex(), if closed { TIMEOUT } else { Duration::ZERO }),
+                guest.wait_for(Duration::ZERO)
+            )
+        });
         let done = line.starts_with(last);
         said.push(line);
         if done {
@@ -466,7 +474,7 @@ fn a_harness_on_a_terminal_of_its_own_is_shown_and_sized_by_its_owner() {
     std::io::Read::read_to_end(&mut stderr, &mut rest).unwrap();
     assert!(rest.is_empty(), "its stderr is its terminal: {rest:?}");
     let lines = terminal_lines(&*guest);
-    let said = until(&lines, "ready");
+    let said = until(&*guest, &lines, "ready");
     for want in [
         "stdin tty true",
         "stdout tty true",
@@ -478,7 +486,7 @@ fn a_harness_on_a_terminal_of_its_own_is_shown_and_sized_by_its_owner() {
         assert!(said.iter().any(|l| l == want), "no {want:?} in {said:?}");
     }
     guest.resize(&codex(), 40, 120, TIMEOUT).unwrap();
-    let said = until(&lines, "resized");
+    let said = until(&*guest, &lines, "resized");
     assert_eq!(said.last().map(String::as_str), Some("resized 40 120"));
     guest.stop().unwrap();
     assert_eq!(guest.wait_for(TIMEOUT).unwrap(), Some(RunEnd::Stopped));
@@ -495,10 +503,10 @@ fn a_harness_on_a_terminal_of_its_own_reads_what_its_owner_types() {
     build(&home, "mx-keys:1", &["tty", "read"]);
     let guest = boot_member(&home, "mx-keys:1", true, true);
     let lines = terminal_lines(&*guest);
-    until(&lines, "ready");
+    until(&*guest, &lines, "ready");
     let mut keys = guest.take_input(&codex()).unwrap();
     std::io::Write::write_all(&mut keys, b"hello\n").unwrap();
-    let said = until(&lines, "read ");
+    let said = until(&*guest, &lines, "read ");
     assert_eq!(said.last().map(String::as_str), Some("read hello"));
     assert!(
         said.iter().any(|l| l == "hello"),
