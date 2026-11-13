@@ -905,7 +905,7 @@ impl super::Lanes {
                     .and_then(|n| n.checked_mul(super::CONNECTIONS))
                     .unwrap_or(0);
                 let _ = self.opening.try_reserve(streams);
-                let _ = self.refusing.try_reserve(streams);
+                let _ = self.answering.try_reserve(streams);
                 self.set_limits(io, conn);
                 let (stream, conn) = (self.execs.lanes.get(at).map(|l| l.stream), conn);
                 if let Some(stream) = stream {

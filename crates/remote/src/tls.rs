@@ -67,6 +67,37 @@ fn provider() -> &'static rustls::crypto::CryptoProvider {
     &PROVIDER
 }
 
+/// What one end's TLS 1.3 handshake negotiated, by IANA's codes: its cipher suite (RFC 8446
+/// §4.1.3; "TLS Cipher Suites", 0x1302 for TLS13_AES_256_GCM_SHA384, the one [`provider`]
+/// offers) and its key exchange group (§4.2.7; "TLS Supported Groups"), as that end's own TLS
+/// state says them once its handshake is done.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Negotiated {
+    pub suite: u16,
+    pub group: u16,
+}
+
+impl Negotiated {
+    /// Whether its suite is one [`provider`] offers: TLS13_AES_256_GCM_SHA384, every shards
+    /// link's (D180, D239).
+    pub fn is_provided(&self) -> bool {
+        provider()
+            .cipher_suites
+            .iter()
+            .any(|offered| u16::from(offered.suite()) == self.suite)
+    }
+
+    /// The suite's name as rustls says it, none for a code it does not know.
+    pub fn suite_name(&self) -> Option<&'static str> {
+        rustls::CipherSuite::from(self.suite).as_str()
+    }
+
+    /// The group's name as rustls says it, none for a code it does not know.
+    pub fn group_name(&self) -> Option<&'static str> {
+        rustls::NamedGroup::from(self.group).as_str()
+    }
+}
+
 fn certified(identity: &Identity) -> Result<CertifiedKey, Error> {
     let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(identity.pkcs8().to_vec()));
     let signing = provider()
@@ -423,6 +454,30 @@ mod tests {
         let managed = connect(owner.unwrap(), subscriber.unwrap());
         assert_aes_256_gcm(&context);
         assert_aes_256_gcm(&managed);
+    }
+
+    /// A negotiation is the provider's only for TLS13_AES_256_GCM_SHA384, by IANA's code, and
+    /// names its suite and group as rustls does; a code rustls does not know is named none.
+    #[test]
+    fn a_negotiation_is_the_providers_for_aes_256_gcm_alone() {
+        let named = |suite: SupportedCipherSuite| Negotiated {
+            suite: u16::from(suite.suite()),
+            group: u16::from(rustls::NamedGroup::X25519MLKEM768),
+        };
+        let aes256 = named(TLS13_AES_256_GCM_SHA384);
+        assert_eq!(aes256.suite, 0x1302);
+        assert!(aes256.is_provided());
+        assert_eq!(aes256.suite_name(), Some("TLS13_AES_256_GCM_SHA384"));
+        assert_eq!(aes256.group_name(), Some("X25519MLKEM768"));
+        for other in [TLS13_AES_128_GCM_SHA256, TLS13_CHACHA20_POLY1305_SHA256] {
+            assert!(!named(other).is_provided(), "{:?}", other.suite());
+        }
+        let unknown = Negotiated {
+            suite: 0xfefe,
+            group: 0xfefe,
+        };
+        assert!(!unknown.is_provided());
+        assert_eq!((unknown.suite_name(), unknown.group_name()), (None, None));
     }
 
     /// A peer that prefers ChaCha20-Poly1305 and AES-128-GCM and offers AES-256-GCM last is

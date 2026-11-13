@@ -26,6 +26,9 @@ pub enum Tag {
     /// Controller, on an agent-control endpoint's exec lane (D238): run a command in one of a
     /// microVM's members (`control::exec::Ask`).
     MemberExec = 4,
+    /// Controller, on an agent-control endpoint (D238): open the connection's control lane,
+    /// which the endpoint first answers with what its TLS negotiated ([`Tag::Negotiated`]).
+    Control = 6,
     /// Client: bytes of the command's stdin.
     Stdin = 16,
     /// Client: the end of the command's stdin.
@@ -51,6 +54,9 @@ pub enum Tag {
     /// Agent-control endpoint, on an exec lane (D238): the exec started, its streams numbered
     /// so (four bytes, big endian).
     Started = 38,
+    /// Agent-control endpoint, on the control lane (D238): the cipher suite and key exchange
+    /// group its own TLS handshake negotiated, IANA's codes (two bytes each, big endian).
+    Negotiated = 39,
 }
 
 impl Tag {
@@ -60,6 +66,7 @@ impl Tag {
             2 => Tag::Join,
             3 => Tag::Controls,
             4 => Tag::MemberExec,
+            6 => Tag::Control,
             16 => Tag::Stdin,
             17 => Tag::StdinEnd,
             18 => Tag::Resize,
@@ -71,6 +78,7 @@ impl Tag {
             36 => Tag::Joined,
             37 => Tag::Made,
             38 => Tag::Started,
+            39 => Tag::Negotiated,
             _ => return None,
         })
     }

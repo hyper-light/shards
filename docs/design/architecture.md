@@ -23311,7 +23311,7 @@ Shards carried and without (kiln's `docs/research/s16-vendor/`).
 `shards` runs from; a macOS that refuses a carrier's own identity the entitlements it allows ad
 hoc (then ad hoc, as shards signs them).
 
-### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends decided at the host from HVF's and KVM's runs, plan step 10, WHP owed; its endpoint building, step 11: its connection, refusals, stdio lanes, their controller, the daemon's endpoint per run, and exec lanes at the endpoint, the controller and the daemon built)
+### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends decided at the host from HVF's and KVM's runs, plan step 10, WHP owed; its endpoint building, step 11: its connection, refusals, stdio lanes, their controller, the daemon's endpoint per run, exec lanes at the endpoint, the controller and the daemon, and each end's word on its TLS built)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d runs every kiln harness in a microVM of
 its own, booted for Hex under shards-init (D231). The person decided how such a harness is
@@ -23740,6 +23740,21 @@ it, on a thread of its own:
   nothing it does waits on a controller that has gone. Its streams' controls are held until its
   steering closes.
 
+*Each end's word on its TLS* (ROOT, 2026-11-13: step 34 checks every link's negotiated suite
+from both its ends). The controller opens one lane on each connection whose first frame is
+`Control`, its tag alone; the endpoint answers `Negotiated`, the cipher suite and the key
+exchange group its own TLS handshake negotiated (IANA's TLS Cipher Suites and TLS Supported
+Groups codes, a u16 each), read from its TLS state (hyper-quic's `HandshakeData`, `Io::negotiated`),
+then the lane's end. A `Control` frame that carries anything is refused alone (`Protocol`), and
+the connection answers the next. The controller reads its own the same way as its handshake
+ends, and `Dialed::link` gives both: `Link { controller, endpoint }`, each a `tls::Negotiated`
+that names its suite and group as rustls does. kiln relays both on the session. Each end also
+holds its connection to the suite its provider offers, as it holds its peer's key: a connection
+that negotiated another is refused as its handshake ends, `Handshake` at the controller and
+`Auth` from the endpoint. The endpoint admits the lane as it admits an exec's ask (one more
+stream, its ask read through a stream's window, its report or a refusal sent), and the
+controller's windows add the same.
+
 Tested in `crates/remote` (`control::tests`, over the in-process exchange of `lib.rs`'s
 handshake tests): the enrolled controller and its pinned microVM connect,
 TLS13_AES_256_GCM_SHA384 and `shards-control/1` at both ends, each holding the other's key; a
@@ -23761,7 +23776,11 @@ sums. Through the controller over loopback:
 - a controller that is not enrolled, or that pinned another key, reaching no lane (`NotEnrolled`);
 - a newer dial superseding the older (`Stale`) and resuming at its cursors;
 - a revoked output and an aborted stdin each ending alone, and a hangup ending the rest (`Local`);
-- its windows its lanes' sums.
+- its windows its lanes' sums;
+- the control lane answered with the endpoint's own TLS13_AES_256_GCM_SHA384 and its group, an
+  ask of more than its tag refused alone and the next answered, and the controller's `Link` the
+  same at both ends, its member's lanes going on beside it (`tls::tests`: a negotiation the
+  provider's for that suite alone, AES-128-GCM and ChaCha20-Poly1305 not).
 
 In the daemon (`daemon::managed::tests`): the annotation asked for by its last value, any value
 but `true` or `false` refused; a run's endpoint of a key its own, two runs two keys, serving
@@ -23810,6 +23829,8 @@ buffer, chunk, keep-alive or idle value is set here: `control::endpoint` and
 | An output's acknowledgment, 13 bytes | step 5's `consumed` frame: a frame's head (5) and an offset (8) |
 | An errno under 4096 (`NonZeroU16`) | Linux's MAX_ERRNO, 4095 (`include/linux/err.h`) |
 | Frame tags `MemberExec` 4, `Started` 38 | this protocol's own, after D180's (`frame::Tag`) |
+| Frame tags `Control` 6, `Negotiated` 39 | this protocol's own, after `MemberExec` and `Started` |
+| The control lane's ask, 5 bytes; its report, 9 | a frame's head alone; a frame's head and two u16 codes (IANA's TLS Cipher Suites and TLS Supported Groups registries) |
 | An exec's ask, at most its scope (44) and `run::MAX_PAYLOAD` | the run protocol's bound, as large as Linux execs (D243) |
 | `Unstarted` 16, 17, 18 | this protocol's own, apart from `managed::Reason`'s 1 to 5 |
 | A told or steering frame, 9 bytes | a frame's head (5) and a u32 |
