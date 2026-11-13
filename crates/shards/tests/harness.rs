@@ -9,13 +9,13 @@ use std::time::{Duration, Instant};
 
 use common::{Patience, Said, TempDir};
 
-/// A daemon's heartbeat, as it says it each `READY_STALL` while a microVM a client waits on
-/// runs (daemon.rs `log_progress`, D209): the nesting probe's VM on HVF at fafe35efc, whose
+/// A daemon's heartbeat, as it says it while a microVM a client waits on runs, its looks
+/// paced by its record of starts (daemon.rs `log_progress`, D209): the nesting probe's VM on HVF at fafe35efc, whose
 /// test waited on it to its own bound and past.
 const HEARTBEAT: &str = "shards daemon 70625: container 212eb2365f9391311256a9c21cb9db1788808fd36abb04c7d64ddae90d121858: VM 70650 runs as its client waits: its CPU time 304 ms (+110 ms in 10s), 23390 page faults (+1342)\n";
 
-/// A microVM's start said slowly (daemon.rs `ready`), as the daemon says it each
-/// `READY_STALL` until the microVM is ready or it gives up on it.
+/// A microVM's start said slowly (daemon.rs `ready`), as the daemon said it at each look
+/// before D215's judge (it says once now, as a start first outlasts the slowest seen).
 const STARTING: &str = "shards daemon 7268: VM 7282: not ready in 10s: its CPU time 3265 ms (+3265 ms in 10s), 2101 page faults (+2101)\n";
 
 fn say(home: &TempDir, what: &str) {
@@ -294,4 +294,44 @@ fn a_streaming_guests_cpu_is_its_liveness_and_its_stop_its_hosts_hold() {
     }
     let _ = stopped.kill();
     let _ = stopped.wait();
+}
+
+/// A call that blocks until its answer or its run's end (`common::judged`: shards-api's calls
+/// given no bound, `Duration::MAX`, in api_image.rs, member_exec.rs and nesting.rs, and their
+/// reads of a run's channels) goes on while what this test's process started works, as a
+/// command's wait does (the person's ruling of 2026-11-13, D209): its caller gives it no
+/// bound, and past its cold start it is judged each W* of its call site's kind. Red at 95b653fb2 as
+/// `red_a_judged_call_goes_on_while_its_party_works`: api_image.rs' `read_within`, a channel
+/// read at its test's `TIMEOUT`, that bound scaled to 100 ms, cut a call on a stand-in busy
+/// for a second 0.1 s in. Do: a stand-in busy for a second, its end waited for through
+/// `judged`, twice from one call site. Expect: each wait holds until it ends, and the first's
+/// end teaches the second's kind.
+#[test]
+fn a_judged_call_goes_on_while_its_party_works() {
+    let busy = Duration::from_secs(1);
+    for round in 0..2 {
+        let mut party = stand_in_doing(&format!("busy {}", busy.as_millis()))
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let began = Instant::now();
+        let ended = judged_end(&mut party);
+        assert!(
+            ended.is_ok(),
+            "a party busy for {busy:?} cut {:?} into its wait, round {round}: {ended:?}",
+            began.elapsed()
+        );
+        assert!(began.elapsed() >= busy, "it ended {:?} in", began.elapsed());
+    }
+}
+
+/// `party`'s end through [`common::judged`] at one call site: one kind for every wait made
+/// through it. Nothing ends a busy stand-in early: refused, it is waited for to its end.
+fn judged_end(party: &mut std::process::Child) -> Result<std::process::ExitStatus, String> {
+    common::judged(
+        common::Party::started(None),
+        "a busy stand-in",
+        || {},
+        || party.wait().unwrap(),
+    )
 }

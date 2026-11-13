@@ -6,11 +6,9 @@ use std::io::{Read, Write};
 use std::os::windows::ffi::OsStrExt as _;
 use std::path::Path;
 use std::process::Command;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use super::{as_tests_run, guest_init, kernel};
-
-const TIMEOUT: Duration = Duration::from_secs(60);
 
 /// The user's terminal on Windows: a pseudo console (CreatePseudoConsole) the test holds,
 /// whose "shell" is this test binary in [`shell_if_asked`]'s part, started on it as a
@@ -351,15 +349,25 @@ impl Terminal {
         assert_eq!(unsafe { ResizePseudoConsole(self.console, size) }, 0);
     }
 
-    /// The console's modes now, as its shell last wrote them.
+    /// The console's modes now, as its shell last wrote them: a wait judged as
+    /// [`wait_for`](Self::wait_for)'s, its kind its call site.
+    #[track_caller]
     pub fn settings(&self) -> Modes {
-        let deadline = Instant::now() + TIMEOUT;
+        let kind = super::WaitKind::at(std::panic::Location::caller());
+        let mut wait = super::Wait::begin(kind, self.shell.id(), Some(&self.home), "its shell's modes");
         loop {
             if let Some(modes) = modes(&self.dir, &["now", "before"]) {
+                wait.answered();
                 return modes;
             }
-            assert!(Instant::now() < deadline, "the shell wrote no modes");
-            std::thread::sleep(Duration::from_millis(5));
+            if let Err(stall) = wait.look(false) {
+                panic!("the shell wrote no modes: {}", wait.refused(&stall));
+            }
+            assert!(
+                self.shell.exited().is_none(),
+                "the shell ended with no modes written"
+            );
+            std::thread::sleep(wait.next_look());
         }
     }
 
@@ -370,16 +378,23 @@ impl Terminal {
         let shown = shown.strip_suffix("exit ").unwrap_or_default().to_string();
         let status = self.wait_for(".");
         let restored = modes(&self.dir, &["after"]) == modes(&self.dir, &["before"]);
-        // The shell waits for a line, read as a console in its modes reads Return.
+        // The shell waits for a line, read as a console in its modes reads Return: a wait
+        // judged as `wait_for`'s, its answer the shell's end.
         self.type_in(b"\r");
-        let deadline = Instant::now() + TIMEOUT;
+        let kind = super::WaitKind::at(std::panic::Location::caller());
+        let mut wait = super::Wait::begin(kind, self.shell.id(), Some(&self.home), "its shell's exit");
         while self.shell.exited().is_none() {
-            assert!(Instant::now() < deadline, "the shell did not exit");
+            let mut shown = false;
             while let Ok(bytes) = self.shown.try_recv() {
                 self.keep(&bytes);
+                shown = true;
+            }
+            if let Err(stall) = wait.look(shown) {
+                panic!("the shell did not exit: {}", wait.refused(&stall));
             }
             std::thread::sleep(Duration::from_millis(5));
         }
+        wait.answered();
         (
             shown,
             status.trim().trim_end_matches('.').parse().unwrap(),

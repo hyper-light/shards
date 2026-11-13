@@ -2,13 +2,16 @@ use std::io::{self, Read as _, Write as _};
 use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::process::Command;
-use std::time::{Duration, Instant};
 
-pub fn run(path: &str, rounds: &str, milliseconds: &str) -> i32 {
+/// Reaps `rounds` orphans, each round a line of the report at `path`. Its waits have no
+/// bound of their own: its host's wait on the report judges them (tests/managed_lifecycle.rs,
+/// D209), and what the report has said by then, at `path` with `.pending`, says how far it
+/// came.
+pub fn run(path: &str, rounds: &str) -> i32 {
     let result = (|| {
         let pending = format!("{path}.pending");
         let mut report = std::fs::File::create(&pending)?;
-        let result = exercise(&mut report, path, rounds, milliseconds);
+        let result = exercise(&mut report, path, rounds);
         if let Err(error) = &result {
             writeln!(
                 report,
@@ -30,13 +33,11 @@ pub fn run(path: &str, rounds: &str, milliseconds: &str) -> i32 {
     }
 }
 
-fn exercise(report: &mut std::fs::File, path: &str, rounds: &str, milliseconds: &str) -> io::Result<()> {
+fn exercise(report: &mut std::fs::File, path: &str, rounds: &str) -> io::Result<()> {
     let rounds = rounds.parse::<usize>().map_err(io::Error::other)?;
-    let milliseconds = milliseconds.parse::<u64>().map_err(io::Error::other)?;
-    let deadline = Instant::now()
-        .checked_add(Duration::from_millis(milliseconds))
-        .filter(|_| rounds != 0 && milliseconds != 0)
-        .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+    if rounds == 0 {
+        return Err(io::Error::from(io::ErrorKind::InvalidInput));
+    }
     let starting = format!("{path}.started.pending");
     std::fs::write(&starting, b"started")?;
     std::fs::rename(starting, format!("{path}.started"))?;
@@ -49,7 +50,7 @@ fn exercise(report: &mut std::fs::File, path: &str, rounds: &str, milliseconds: 
     };
     let before = descriptors()?;
     for round in 0..rounds {
-        let pid = orphan(report, deadline)?;
+        let pid = orphan(report)?;
         let after = descriptors()?;
         writeln!(
             report,
@@ -73,20 +74,15 @@ fn pidfd(pid: u32) -> io::Result<OwnedFd> {
     Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
-fn wait_raw(fd: i32, events: i16, deadline: Instant) -> io::Result<()> {
+fn wait_raw(fd: i32, events: i16) -> io::Result<()> {
     loop {
-        let left = deadline.saturating_duration_since(Instant::now());
-        if left.is_zero() {
-            return Err(io::Error::from(io::ErrorKind::TimedOut));
-        }
-        let milliseconds = i32::try_from(left.as_millis()).unwrap_or(i32::MAX).max(1);
         let mut poll = libc::pollfd {
             fd,
             events,
             revents: 0,
         };
         // SAFETY: poll borrows this one live descriptor and initializes revents.
-        let n = unsafe { libc::poll(&raw mut poll, 1, milliseconds) };
+        let n = unsafe { libc::poll(&raw mut poll, 1, -1) };
         if n < 0 {
             let error = io::Error::last_os_error();
             if error.kind() == io::ErrorKind::Interrupted {
@@ -106,23 +102,20 @@ fn wait_raw(fd: i32, events: i16, deadline: Instant) -> io::Result<()> {
     }
 }
 
-fn orphan(report: &mut std::fs::File, deadline: Instant) -> io::Result<u32> {
+fn orphan(report: &mut std::fs::File) -> io::Result<u32> {
     let socket = format!("/tmp/reap-{}.sock", std::process::id());
     let listener = UnixListener::bind(&socket)?;
     let mut parent = Command::new(std::env::current_exe()?)
         .args(["managed-reap-child", &socket, "parent"])
         .spawn()?;
     let parent_fd = pidfd(parent.id())?;
-    wait_raw(listener.as_raw_fd(), libc::POLLIN, deadline)?;
+    wait_raw(listener.as_raw_fd(), libc::POLLIN)?;
     let (mut link, _) = listener.accept()?;
-    let left = deadline.saturating_duration_since(Instant::now());
-    link.set_read_timeout(Some(left))?;
-    link.set_write_timeout(Some(left))?;
     let mut bytes = [0; size_of::<u32>()];
     link.read_exact(&mut bytes)?;
     let pid = u32::from_be_bytes(bytes);
     let child_fd = pidfd(pid)?;
-    wait_raw(parent_fd.as_raw_fd(), libc::POLLIN, deadline)?;
+    wait_raw(parent_fd.as_raw_fd(), libc::POLLIN)?;
     if !parent.wait()?.success() {
         return Err(io::Error::from(io::ErrorKind::InvalidData));
     }
@@ -132,7 +125,7 @@ fn orphan(report: &mut std::fs::File, deadline: Instant) -> io::Result<u32> {
         return Err(io::Error::from(io::ErrorKind::InvalidData));
     }
     // Linux6.18 pidfd_poll distinguishes zombie POLLIN from reaped POLLHUP.
-    if let Err(error) = wait_raw(child_fd.as_raw_fd(), libc::POLLHUP, deadline) {
+    if let Err(error) = wait_raw(child_fd.as_raw_fd(), libc::POLLHUP) {
         match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
             Ok(stat) => {
                 let state = stat

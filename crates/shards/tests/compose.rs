@@ -10,14 +10,8 @@ mod common;
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use common::{TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, served};
-
-const TIMEOUT: Duration = Duration::from_secs(60);
-/// A client's call past this is taken for hung, and fails its test with what it said
-/// (`common::output_within`): well past the longest wait a call here asks for, `up`'s 120 s.
-const CLIENT: Duration = Duration::from_secs(600);
 
 /// docker compose, where this host has it: on `PATH`, or where the Docker CLI looks for
 /// its plugins (cli-plugins/manager's system directories, and Docker Desktop's; on Windows
@@ -132,7 +126,7 @@ volumes:
     std::fs::create_dir_all(&no_helpers).unwrap();
     let host = docker_host(&home);
     let run = |args: &[&str]| {
-        let out = common::output_within(
+        let out = common::client_output(
             std::process::Command::new(&compose)
                 .current_dir(&project)
                 .args(["-p", "shp"])
@@ -144,7 +138,7 @@ volumes:
                 .env_remove("COMPOSE_PROJECT_NAME")
                 .env_remove("COMPOSE_FILE")
                 .stdin(std::process::Stdio::null()),
-            CLIENT,
+            Some(&*home),
         );
         (
             out.status.code(),
@@ -173,11 +167,10 @@ volumes:
     assert_eq!(status, Some(0), "{err}");
     let published = out.trim().to_string();
     assert!(published.starts_with("127.0.0.1:"), "{out}{err}");
-    let mut conn = std::net::TcpStream::connect(&published).unwrap();
-    conn.set_read_timeout(Some(TIMEOUT)).unwrap();
+    let conn = std::net::TcpStream::connect(&published).unwrap();
     conn.shutdown(std::net::Shutdown::Write).unwrap();
     let mut said = String::new();
-    std::io::Read::read_to_string(&mut conn, &mut said).unwrap();
+    std::io::Read::read_to_string(&mut common::Following::of_home(&conn, &home), &mut said).unwrap();
     assert!(said.starts_with("from "), "{published}: {said:?}");
     // A one-off, removed when it ends, its status the command's.
     let (status, _, err) = run(&["run", "--rm", "--no-deps", "app", "exit", "3"]);
@@ -296,7 +289,7 @@ configs:
     std::fs::create_dir_all(&no_helpers).unwrap();
     let host = docker_host(&home);
     let run = |args: &[&str]| {
-        let out = common::output_within(
+        let out = common::client_output(
             std::process::Command::new(&compose)
                 .current_dir(&project)
                 .args(args)
@@ -309,7 +302,7 @@ configs:
                 .env_remove("COMPOSE_FILE")
                 .env_remove("COMPOSE_PROFILES")
                 .stdin(std::process::Stdio::null()),
-            CLIENT,
+            Some(&*home),
         );
         (
             out.status.code(),
@@ -421,7 +414,7 @@ services:
     std::fs::create_dir_all(&no_helpers).unwrap();
     let host = docker_host(&home);
     let run = |args: &[&str], set: &[(&str, &str)]| {
-        let out = common::output_within(
+        let out = common::client_output(
             std::process::Command::new(&compose)
                 .current_dir(&project)
                 .args(args)
@@ -433,7 +426,7 @@ services:
                 .env_remove("COMPOSE_FILE")
                 .envs(set.iter().copied())
                 .stdin(std::process::Stdio::null()),
-            CLIENT,
+            Some(&*home),
         );
         (
             out.status.code(),
