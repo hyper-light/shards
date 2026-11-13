@@ -35,6 +35,14 @@ const fn decimal_digits(mut n: u128) -> usize {
 /// Vulkan's VK_MAX_PHYSICAL_DEVICE_NAME_SIZE includes the UTF-8 string's NUL.
 pub const GPU_NAME_BYTES: usize = 256;
 
+/// A name a Vulkan driver wrote into one of its structures' fixed `char` arrays (a device's
+/// `deviceName`, an extension's `extensionName`): its bytes before the array's first NUL,
+/// taken within the array; none where the array holds no NUL, past which C's string
+/// functions read (resources/gpu/native-identity.c checks each with `memchr` first).
+pub fn fixed_name(array: &[u8]) -> Option<&core::ffi::CStr> {
+    core::ffi::CStr::from_bytes_until_nul(array).ok()
+}
+
 /// The renderer driver's reported name, never a selector or a catalog/model guess.
 /// Fixed storage keeps ownership transfer fallible only where text is requested.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,23 +64,17 @@ impl GpuName {
     }
 
     pub fn from_buffer(bytes: &[u8; GPU_NAME_BYTES]) -> Result<Self, GpuProbeError> {
-        let end = bytes
-            .iter()
-            .position(|byte| *byte == 0)
-            .ok_or(GpuProbeError::Properties)?;
-        Self::new(
-            core::str::from_utf8(bytes.get(..end).ok_or(GpuProbeError::Properties)?)
-                .map_err(|_| GpuProbeError::Properties)?,
-        )
+        Self::new(Self::text(bytes)?)
     }
 
     pub fn as_str(&self) -> Result<&str, GpuProbeError> {
-        let end = self
-            .bytes
-            .iter()
-            .position(|byte| *byte == 0)
-            .ok_or(GpuProbeError::Properties)?;
-        core::str::from_utf8(self.bytes.get(..end).ok_or(GpuProbeError::Properties)?)
+        Self::text(&self.bytes)
+    }
+
+    fn text(bytes: &[u8; GPU_NAME_BYTES]) -> Result<&str, GpuProbeError> {
+        fixed_name(bytes)
+            .ok_or(GpuProbeError::Properties)?
+            .to_str()
             .map_err(|_| GpuProbeError::Properties)
     }
 
@@ -695,6 +697,30 @@ mod tests {
             let narrower = MAX_PHYSICAL_GPUS.to_string().len() - count.to_string().len();
             assert_eq!(text.len() + narrower, probe_bytes(usize::from(count)).unwrap());
         }
+    }
+
+    /// D202, D232: a driver's name is taken within its fixed array, as native-identity.c's
+    /// `memchr` takes one before comparing it: up to its first NUL, the array's last byte
+    /// included, and none where its driver left it unterminated, never the bytes past it.
+    #[test]
+    fn a_name_is_taken_within_its_fixed_array() {
+        let wanted = b"VK_EXT_external_memory_host";
+        let mut array = [0u8; GPU_NAME_BYTES];
+        array[..wanted.len()].copy_from_slice(wanted);
+        assert_eq!(
+            fixed_name(&array).map(core::ffi::CStr::to_bytes),
+            Some(&wanted[..])
+        );
+        let mut full = [b'x'; GPU_NAME_BYTES];
+        full[GPU_NAME_BYTES - 1] = 0;
+        assert_eq!(
+            fixed_name(&full).map(|name| name.to_bytes().len()),
+            Some(GPU_NAME_BYTES - 1)
+        );
+        // Unterminated, a NUL right past it in the same memory, where a read past it ends.
+        let mut memory = [0u8; 2 * GPU_NAME_BYTES];
+        memory[..GPU_NAME_BYTES].fill(b'x');
+        assert_eq!(fixed_name(&memory[..GPU_NAME_BYTES]), None);
     }
 
     #[test]

@@ -633,6 +633,7 @@ fn bind_agent(
             outputs,
             inputs,
             execs: Some(execs),
+            sockets: None,
         },
     )
     .map_err(Failure::Endpoint)
@@ -1391,6 +1392,8 @@ impl<D: Disk> Daemon<D> {
                 inputs: served_inputs,
                 revoke,
                 execs: starts,
+                // A daemon's run asks no socket lane (D251): its endpoint refuses each.
+                sockets: _,
             } = served;
             for ((scope, _), (producer, control)) in lanes.into_iter().zip(served_outputs) {
                 let excess = u64::try_from(producer.storage_capacity().saturating_sub(capacity))
@@ -2809,6 +2812,7 @@ mod tests {
                     outputs: &subscriptions,
                     inputs: &[],
                     execs: None,
+                    sockets: None,
                 },
             )
             .unwrap();
@@ -2944,6 +2948,7 @@ mod tests {
                     outputs: &[(scope, out, 0)],
                     inputs: &[],
                     execs: Some(admissions),
+                    sockets: None,
                 },
             )
             .unwrap();
