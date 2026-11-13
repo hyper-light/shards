@@ -23701,3 +23701,58 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   rule and RFC 1122 read, the ×2 and the floor gone; R04 `Out` and the trouble's `ran_out`;
   R09, R10 red on main's code, green after; R11 cross-platform code, macOS run; R15, R16
   implementer, its target removed after landing.
+
+### M559. A Unix socket's end: a peer's half-close, or its going (D251)
+
+- **Question.** A socket lane's reader sees its socket's end (a read of 0) where its peer
+  ended its writes and reads on (shutdown(SHUT_WR)) and where its peer has gone (close), and
+  its writer meets the second only at its next write (EPIPE). The Hex lead's Link test found
+  the endpoint's pump telling the end as the lane's FIN before its writer's EPIPE, 4 of 4 on
+  macOS; Linux passed 8 of 8. Can the reader tell the two apart at the end, writing nothing?
+- **Method.** `docs/research/measurements/socket-hangup/hup.py`, `python3 -I hup.py`: for each
+  case a connected AF_UNIX stream pair; poll(2) asked for POLLOUT with a timeout of 0, a recv
+  that does not wait, poll again, then a send of one byte. On this Mac (macOS 26, Darwin
+  25.4.0, arm64) and on adacachy2 (Linux 7.3.3-1-cachyos, x86_64), through kiln run.
+- **Found** (poll, recv, send):
+
+  | the peer | macOS 26 | Linux 7.3.3 |
+  |---|---|---|
+  | shutdown(SHUT_WR) | OUT, end, sent | OUT, end, sent |
+  | close() | HUP, end, EPIPE | OUT HUP, end, EPIPE |
+  | close(), a byte of ours unread | HUP, end, EPIPE | OUT HUP ERR, ECONNRESET, EPIPE |
+  | shutdown(SHUT_RDWR) | none, end, sent | OUT HUP, end, EPIPE |
+  | ours SHUT_WR first, then its SHUT_WR | HUP, end, EPIPE | OUT HUP, end, EPIPE |
+  | ours SHUT_WR first, then its close() | HUP, end, EPIPE | OUT HUP, end, EPIPE |
+  | nothing ended | OUT, nothing yet, sent | OUT, nothing yet, sent |
+
+  POLLHUP or POLLERR, asked for POLLOUT, is there as the reads end where the peer has gone,
+  and never for a half-close, on both. Linux sets it with the end: `unix_release_sock` sets
+  the peer's `sk_shutdown` to SHUTDOWN_MASK (and `sk_err` to ECONNRESET only where the closer
+  left bytes unread) under the peer's lock before it wakes it, and `unix_poll` says EPOLLHUP
+  for SHUTDOWN_MASK alone (net/unix/af_unix.c, Linux 7.2-rc4). This side's own SHUT_WR shows
+  the same once its reads have ended too. macOS reads a close that left our byte unread as an
+  end, not ECONNRESET; Linux reads ECONNRESET there, which already reset the lane (the pump's
+  failed read), and an end where the closer left nothing unread, as macOS does: there the same
+  code raced. XNU never shows a peer's shutdown(SHUT_RDWR), whose socket takes writes on (M236).
+- **Decision.** D251's reader asks `shards_ipc::hung_up` at its socket's end: hung up while
+  the controller's way is open is a cut, the lane reset, never its FIN first; hung up while
+  the controller's FIN is being written waits for the writer's word. Windows' lane socket is
+  shards' pipe, whose half-close is a message of no bytes and whose peer gone breaks the pipe
+  (PeekNamedPipe's ERROR_BROKEN_PIPE, pipe.rs `available`).
+- **Tests.** shards-remote `control::unix::tests::a_socket_cut_short_resets_its_lane_never_ending_it_in_order`
+  (the workload reads all, then closes: macOS's order on every host) and
+  `a_workloads_half_close_ends_its_way_in_order_while_the_other_goes_on`; shards-ipc
+  `hung_up_tells_a_peer_gone_from_a_half_close`.
+- **Checked** (`CARGO_INCREMENTAL=0`, `-j 4`): red on 8bfa6150e's pump (75d046a7e: `Ok(0)`
+  where `ConnectionReset` was due) on adas-mac-studio.local (macOS 26.2 arm64) and adacachy2
+  (Linux 7.3.3 x86_64); green after (b12c0a7f1) on both, the unix module's 10 tests and the
+  probe's; clippy for shards-remote and shards-ipc on macOS, x86_64-unknown-linux-gnu (natively,
+  adacachy2) and x86_64-pc-windows-msvc (cargo xwin): clean.
+- **Owed.** Windows' probe on a pipe whose other end has closed, unrun. ROOT's: a cut carried
+  through a real VM, which shards-init's relay and the vsock muxer do not yet carry (D251,
+  *Evidence owed*).
+- **Rules** (policy df2acf47, role implementer): R01 no panic added (the probe's error taken
+  as hung up); R02 Linux's source and both hosts measured; R03 no literal (poll's timeout 0
+  waits for none); R04 `Upward` and `Downward`, `Said::HungUp` and `Said::Shut` typed; R09,
+  R10 red on main's code on both hosts, green after; R11 Unix and Windows written, macOS and
+  Linux run; R15, R16 implementer, its runner targets removed after landing.

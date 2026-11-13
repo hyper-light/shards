@@ -1333,11 +1333,17 @@ for the exit status.
   - A client of another build, told apart by its binary's file identity, gets
     `RESTART`. The daemon removes its socket, ends its runs as `shards daemon stop`
     does, and exits; the client starts its own, which takes the home once the old one
-    has gone. A daemon ending its runs names itself in `daemon.stopping` first, as it
-    closes for any reason, and the new daemon and the client wait while that process
-    lives, however long its runs' stop timeouts make it; otherwise a daemon waits 20 s
-    for another's lock, and a client 30 s for its daemon to listen. `daemon stop` waits on
-    the lock it holds beside it until it has let go of the home (D185, *A stop's wait*).
+    has gone. The client asks again after a RESTART where it came from another daemon
+    than the last it asked again after, each the one `daemon.pid` named as its request was
+    asked (its ID and start): a takeover is the old daemon's RESTART, then its successor's
+    answer. The same daemon answering so again as itself, nothing about it changed, would
+    answer so for ever, and the client fails naming it; a count bounded it before
+    (`RESTARTS`, 4; D185, *A request asked again*). A daemon ending its runs names itself
+    in `daemon.stopping` first, as it closes for any reason, and the new daemon and the
+    client wait while that process lives, however long its runs' stop timeouts make it;
+    otherwise a daemon waits 20 s for another's lock, and a client 30 s for its daemon to
+    listen. `daemon stop` waits on the lock it holds beside it until it has let go of the
+    home (D185, *A stop's wait*).
   - It follows each run to its end. The warm VM tells the daemon of its command's start
     (`STARTED`) before its client has any of the command's output, and of its end
     (`DONE`) before its client has the status; a Unix socket's send puts a message in
@@ -7802,7 +7808,9 @@ descriptors.
   at once but its request waits its turn, and no slot is offered, so that further clients
   wait on their list and cost the daemon nothing. A closing daemon unlinks its lists at
   once, so that a client looking for a slot asks the next daemon, and answers RESTART to a
-  client that took a slot meanwhile; a client asks again as often as that can happen.
+  client that took a slot meanwhile; a client asks again after each RESTART that is another
+  daemon's than the one whose RESTART it last asked again after (*A request asked again*,
+  below).
 - The client asks through a slot for every command: the catalog's, its streams (`save`,
   `export`, `import`, `load`, `cp`) copied by the client to and from the slot's (`cli::Stream`:
   what the daemon writes, what it reads); a run's, an exec's and an attach's, its stdin
@@ -7927,6 +7935,35 @@ descriptors.
   that answers every stop RESTART as itself: asked twice, then named; red before, asked four
   times); and on real VMs by
   `a_stop_while_another_stops_its_daemon_waits_for_its_home_let_go_of` (tests/daemon.rs).
+- **A request asked again** (2026-11-13, R03). A run's, an exec's and an attach's client
+  (`serve`) and a command's (`container`, `ask`, `ask_here`) asked again after a RESTART,
+  or a socket an older build shut unread, within `RESTARTS` (`slots::OFFERED` + 2 = 4): a
+  count derived in its comment alone, for one takeover's RESTARTs (the step-aside
+  request's, each slot the closing daemon had offered of the kind asked, an older build's
+  socket), and in no D-entry. No count bounds it now. The client reads `daemon.pid`
+  (`shards_ipc::Named`: ID and start) as it takes its slot or connects, before it asks, and
+  after a RESTART asks again only where the daemon so named is another than the one whose
+  RESTART it last asked again after (`cli::client::Again`): the same one answering so again
+  as itself, nothing about it changed, would answer so for ever, and the client fails
+  naming it (`Untaken`: "the daemon (process N) answered again without taking the request;
+  see <daemon.log>"), as `stop` does through the same `Again` (*A stop's wait*). The name
+  read is the slot's daemon's: a daemon names itself before it offers any slot, and holds
+  its home until each slot it offered has its last word (*What it said last*), so no
+  successor names itself between a client's take and its ask. Cold start: nothing has
+  answered yet, so the first RESTART is asked again whoever said it, and a takeover is two
+  answers, the stepping-aside daemon's RESTART and its successor's. A `daemon.pid` naming
+  none is `None`, so two such RESTARTs in a row fail the client. Nothing is counted, timed
+  or learned, so nothing overflows; a writer of `daemon.pid`, a process its home lets in
+  (0700 on Unix), keeps a client asking only by naming another daemon each time, as a real
+  succession does.
+  Held by `a_request_its_daemon_answers_again_as_itself_without_taking_it_fails_naming_it`
+  (each client in a process of its own, its daemon a stand-in, this process, serving real
+  slots and answering every request RESTART as `4242 1`: asked twice, then named; red
+  before, asked four times, "the daemon kept asking for a restart"; red with the identity
+  check removed, asked to the stand-in's limit) and
+  `a_request_its_daemon_stepped_aside_from_goes_to_the_daemon_after_it` (RESTART as
+  `4242 1`, then `4343 2` answers: asked twice, status 0). On real VMs, owed: a takeover's
+  `a_rebuilt_binary_replaces_the_daemon` (tests/daemon.rs).
 - **Whose end a run's client heard** (PM M530). A run's, an exec's and an attach's slot
   passes on what its VM says, so the slot ends both where the VM's connection closes with no
   last word and where the daemon itself ends: a killed daemon closes every slot it served.
@@ -24802,7 +24839,7 @@ Shards carried and without (kiln's `docs/research/s16-vendor/`).
 `shards` runs from; a macOS that refuses a carrier's own identity the entitlements it allows ad
 hoc (then ad hoc, as shards signs them).
 
-### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends decided at the host from HVF's and KVM's runs, plan step 10, WHP owed; its endpoint building, step 11: its connection, refusals, stdio lanes, their controller, the daemon's endpoint per run, exec lanes at the endpoint, the controller and the daemon, each end's word on its TLS, and members' own lanes (a member's state, its end, its signals and its own terminal's size, goal 58's steps 5 and 6) built; log lanes building, goal 58's step 7: the lane, its controller and the daemon's log host built)
+### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends decided at the host from HVF's and KVM's runs, plan step 10, WHP owed; its endpoint building, step 11: its connection, refusals, stdio lanes, their controller, the daemon's endpoint per run, exec lanes at the endpoint, the controller and the daemon, each end's word on its TLS, and members' own lanes (a member's state, its end, its signals and its own terminal's size, goal 58's steps 5 and 6) built; log lanes built, goal 58's step 7: the lane, its controller, the daemon's log host, and the keeper of every member's log within the run's one log cap)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d runs every kiln harness in a microVM of
 its own, booted for Hex under shards-init (D231). The person decided how such a harness is
@@ -24945,9 +24982,10 @@ Until step 10 decided, only what both arms share was built (ROOT, 2026-11-12): t
 the microVM's identity, who is refused, and what a lane says. The control lane (exec, signal,
 inspect) and the terminal lane (attach, TTY) wait on step 6's member exec, attach and TTY. Step
 10 has decided for the host (above). The endpoint runs in the daemon and holds each microVM's
-own key, and the key's SHA-256 reaches the controller in the run's managed metadata. The log
-lane, which also waited on step 10, is step 11's to build. Exec lanes and members' own lanes
-(signal, inspect, a terminal's size) are built now, below.
+own key, and the key's SHA-256 reaches the controller in the run's managed metadata. Exec lanes,
+members' own lanes (signal, inspect, a terminal's size) and the log lane, which also waited on
+step 10, are built now, below; a log lane of an owned member waits on the daemon keeping that
+member's output (D240).
 
 *The connection.* QUIC over D180's driver and TLS (`net.rs`, `tls.rs`): TLS 1.3 alone, D239's
 provider (TLS13_AES_256_GCM_SHA384 alone, the hybrid ML-KEM groups), early data off, on an
@@ -25499,8 +25537,14 @@ to it, on a thread of its own:
   run's own log, which its VM writes, holds none. A record's start is the entry's bits below 61
   now, past what any log reaches.
 
-Until the daemon keeps an owned member's output (D240), a log lane of an owned member is refused
-`Failed`.
+*Every member's log* (slice 3). The daemon keeps every member's output, owned or not (D240, "Every
+member's log, within the run's one cap"), so a lane reads an owned member's log as it reads a
+drained one's, followed to its channels' end. A lane asked from the oldest of a log whose older
+output the run's one log cap let go begins with `Rotated { oldest }`, the oldest place kept, so
+its controller knows output before it went; one whose log lost nothing to the cap reads from its
+oldest as before. Segments the cap lets go under a reading lane are said `Rotated` as its reader
+finds them gone, each owner's log apart. Tested:
+`daemon::managed::log_lanes::tests::a_lane_from_the_oldest_says_what_the_cap_let_go`.
 
 Tested in the daemon: `daemon::logs::tests` reads a log through `Records` from any place, in
 pieces, across segments its writer cut records over, inside a record and one channel alone; a
@@ -25681,6 +25725,57 @@ and no exec, attach or terminal (the plan's steps 5, 6 and 7).
   come. Before, init aborted every member's pipes as the command ended, and the daemon ended
   the capture at the run's DONE, and agents' reports were cut mid-line (PM M543, "Lost at
   the run's end").
+- *Every member's log, within the run's one cap* (goal 58's step 7, slice 3; ROOT's ruling and the
+  person's decision, 2026-11-13). The log is the run's: every member's output is kept, owned or not.
+  - *Kept whoever reads it.* A drained member's records are kept as the daemon takes them (above);
+    an owned member's as its capture's bridge brings them, before its owner's stream is given them
+    (`managed::bridge`), each record once, as the drain keeps one: its owner waits one append's
+    time, and a write that fails costs the log, not the owner (counted lost, as the run's own log
+    counts its own). Each kept member's log has its label beside it, so `shards read logs` shows
+    owned members' kept output after the run's own, each line after its label, and a log lane reads
+    it (D238). An owned member's log holds what its capture brought: its channels end with the run.
+  - *One cap for the run* (`daemon/managed/cap.rs`). Its command's log and every member's together
+    keep at most the run's bound: its log's segment size times their count, its
+    `--log-opt max-size` and `max-file`, or else its home's history (D186: 1 GiB unless its user sets
+    it, `shards configure disk --log-history`). Each segment is weighed as the output it holds, its
+    log's bytes as written (a packed one's as its seek table says, D162), as the run's own retention
+    bounds its log: so a run's command alone is never cut short by its cap, and indexes, which are
+    not output, are not weighed. The oldest segment across the run's logs goes first, whoever's it
+    is: of each log's oldest that is not its newest, the one whose index last changed longest ago
+    (its last record's time), so every log still loses its segments oldest first and stays
+    contiguous for its readers. The disk is the authority: each hold lists and weighs the segments
+    there, and keeps nothing of them between holds.
+  - *Within one segment.* No log's newest is let go, as its writer holds it. Where every log is down
+    to its newest and they still pass the bound, the keeper closes the member's newest that is
+    oldest and holds output (its writer rotates), and the next pass lets it go; the run's command's
+    newest, which its VM writes, stays. A hold runs where the keeper's count of what its logs held at
+    its last hold and what it kept since passes the bound, and at each rotation of the command's log
+    (`daemon/files.rs`, once the VM has its next segment): the command's newest grows unseen between
+    its rotations, by a segment at most, which is the bound's one segment.
+  - *Each owner's loss.* Each segment the cap lets go is its owner's record, `log.capped` beside its
+    log: a line of the segment and its output's bytes. `logs` says, on stderr, before what is kept,
+    how much of each log's older output went to the run's one log cap; a log lane says it as
+    `Rotated { oldest }` (D238). A segment its own retention let go meanwhile is no loss of the cap's.
+  - *Compressed as the run's.* A member's segments rotated as they fill are compressed on the
+    packer's thread exactly as the run's own are, where its options say so (D162: `compress`, or
+    `cache-compress` for a driver that sends its log elsewhere); where they do not, neither are its
+    members'. Those a daemon before left as written are compressed as it starts (`pack_left`).
+  - *Cold start and failure.* A keeper's first keep holds the cap, weighing what a run started again
+    left. A hold that fails (its disk) is said in the daemon's log, and holds again once a bound's
+    worth more is kept; its logs keep their output meanwhile.
+  - *Literals.* None chosen: the bound is the person's configured cap or the run's own log options;
+    `log.capped` is a name no segment takes (`logs::segment_of`); each record's line is the segment's
+    number and its bytes.
+  - *Tested* (light, on macOS arm64), red first, each with its behaviour absent (record:
+    [agent-control-v1](../research/measurements/agent-control-v1/README.md)):
+    - `daemon::managed::drain::tests::a_members_log_is_kept_and_counted_in_its_runs_cap`
+    - `daemon::managed::drain::tests::a_members_rotated_segment_is_compressed_when_the_runs_options_say_so`
+    - `daemon::managed::cap::tests::a_drop_across_owners_records_the_loss_per_owner`
+    - `daemon::managed::cap::tests::the_newest_segment_rotation_keeps_the_bound_within_one_segment`
+    - `daemon::managed::cap::tests::each_log_loses_its_oldest_first_and_keeps_its_newest`
+    - `daemon::managed::log_lanes::tests::a_lane_from_the_oldest_says_what_the_cap_let_go`
+
+    Owed (ROOT): `tests/managed_output.rs`'s real-VM run on KVM, HVF and WHP.
 - *Its environment* (step 7, 239749c60). Init's, then the image's `Env`, then its own
   `run.env`, then what its run stages, the last given of each name winning. `PATH` keeps the
   member's own programs first; `HOME` is never the image's; `SHARDS_DOMAIN` is refused at the
@@ -27261,6 +27356,26 @@ Hex's acceptance (its INTERFACE.md and red tests, step11-a-socket-lane) is held 
   socket ended with `shards_ipc::end`, as M236 asks of a Mac. A write that fails resets the
   lane, never ending it in order. The socket's writer and reader run on threads of their own,
   woken into the endpoint's driver as exec's host is; the endpoint's end ends every socket.
+- *Its cut* (the Hex lead's Link test, 2026-11-13). A socket cut short resets the lane
+  (RESET_STREAM and STOP_SENDING), never its FIN first: its write fails (EPIPE, ECONNRESET),
+  its read fails, or it has hung up as its reads end, its peer gone rather than half-closed.
+  A read's end alone does not tell: a peer's close reads as a half-close's end, and the
+  writer finds EPIPE only at its next write, after the reader's FIN has gone (macOS 4 of 4;
+  on Linux a close that left a byte unread reads ECONNRESET, which resets the lane, and one
+  that left none an end, as on macOS, PM M559). So the reader asks the socket at its end
+  (`shards_ipc::hung_up`: poll(2)'s POLLHUP or POLLERR asked for POLLOUT, which a peer's
+  close sets as it ends the reads, and a half-close never; on Windows the pipe's other end
+  closed, PeekNamedPipe's ERROR_BROKEN_PIPE, where a half-close is a message of no bytes).
+  The endpoint holds each way's state (`Upward`, `Downward`, R04): hung up while the
+  controller's way is open is a cut; hung up while the controller's FIN is being written
+  waits for the writer, whose socket shut after all the controller sent (which hangs a Unix
+  socket up as well) ends the lane in order, and whose failed write cuts it. A socket that
+  cannot say is taken as hung up. Only a half-close, or both ways' ends, close in order. The
+  transport's RST drops what the controller had not read (RFC 9000 §3.2; hyper-quic's
+  `Recv::reset` clears its buffer): a cut promises no byte before it. No wire change: the
+  cut is the stream's reset, `ConnectionReset` at the controller. On Windows a cut WinSock
+  socket (AF_UNIX, the VM process's legs) reads WSAECONNRESET (10054), which std reads as
+  `ConnectionReset`.
 - *The controller* (`control::drive`). `Subscriptions::sockets` and `Dialed::sockets`;
   `Sockets::connect(name)` answers a `Socket` or a typed `Fault`, `Fault::Unreached(errno)`
   among them. `Socket` is `Read` and `Write`, with `shutdown_write`, `abort` and `split` (a
@@ -27309,7 +27424,10 @@ four-byte head (RFC 8446 §4), with D180's datagrams for a link of socket lanes 
 daemon's endpoints take them, its liveness judged at use (D180; `tls::QUIET` before). The asks' bounds are the frame's
 own: its head, the run (32), the generation (8) and the name. Linux's errnos are
 asm-generic's, which every guest architecture shares. The window, the lanes and so every
-buffer are the caller's admission (R03).
+buffer are the caller's admission (R03). The cut's probe waits for nothing (poll(2)'s
+timeout 0): it reads the socket's state as its reads end, which a peer's close has set by
+then (Linux's `unix_release_sock` sets the peer's `sk_shutdown` to SHUTDOWN_MASK before it
+wakes it, net/unix/af_unix.c; macOS as measured, PM M559).
 
 **Built and tested** (unit, focused).
 - shards-init on adacachy2 (Linux 7.3 x86_64, rustc 1.98.1): `lanes::tests`, 3 tests, among
@@ -27326,18 +27444,41 @@ buffer are the caller's admission (R03).
   reset each way; lanes past the admitted most refused `Capacity` until one ends; a stranger
   `NotEnrolled`. Plus an endpoint of no socket lanes refusing one `Scope`, and the frames' own
   tests.
+- Its cut: `control::unix::tests::a_socket_cut_short_resets_its_lane_never_ending_it_in_order`,
+  the workload reading all the controller sent and then closing, so that its end comes with
+  nothing for the writer to fail on, on every host: red on 8bfa6150e's pump (`Ok(0)` where
+  `ConnectionReset` was due) on adas-mac-studio.local (macOS 26.2 arm64) and adacachy2 (Linux
+  7.3.3 x86_64), green after with the unix module's 10 tests, among them
+  `a_workloads_half_close_ends_its_way_in_order_while_the_other_goes_on` (the workload speaks
+  first and ends its writes, the controller reads to that end before it writes a byte);
+  shards-ipc `hung_up_tells_a_peer_gone_from_a_half_close`; clippy for shards-remote and
+  shards-ipc on macOS, x86_64-unknown-linux-gnu (natively, adacachy2) and
+  x86_64-pc-windows-msvc (cargo xwin).
 
 **Evidence owed** (ROOT, real VMs).
 - Hex's case (f), `nesting::a_nested_workloads_sockets_are_lanes_of_its_orchestrators_controller`
   (with the run host's endpoint, D252), on HVF, KVM x86_64 and WHP.
 - The lane's throughput and round trip against D238's arm h numbers (control-end's harness).
 - Mutation of the grant's and the name's checks.
+- A cut carried through a real VM, which the guest's legs do not yet carry: shards-init's
+  relay (`relay.rs` `Direction::turn`, `EndPolicy::Independent`) forwards the workload's end
+  as SHUT_WR on vsock before its write's EPIPE is known, and the VM process's muxer
+  (`vsock/conn.rs` `flush`) turns the guest's SHUTDOWN(SEND) into the host socket's
+  shutdown(Write) before it closes on the guest's RST, so the endpoint's socket reads a
+  half-close first, not hung up, and the lane ends in order. On Windows warm.rs's `pass`
+  reads a guest connection's WSAECONNRESET as its end and half-closes the owner's pipe. Each
+  leg needs this entry's rule: hung up at a read's end while the other way is open is a cut,
+  carried as both ways ended at once (the muxer closing its host socket, no shutdown(Write)
+  first), with real-VM runs on HVF, KVM and WHP, the muxer being every exec's and engine's
+  too.
+- Windows: `hung_up` on a pipe whose other end has closed, unrun (its peek is `readable`'s).
 
 **What would falsify it.**
 - A workload reaching a socket outside its root.
 - A lane's bytes reordered or lost.
 - A half-close turned into a full close.
 - A lane held past its window.
+- A socket cut short read as `Ok(0)` at the controller, or a half-close read as a cut.
 
 ### D252. An orchestrator's run binds its own agent-control endpoint, and shards-api carries Shards' controller (built; real-VM runs owed)
 

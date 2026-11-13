@@ -1922,6 +1922,18 @@ pub fn end(sock: &Stream) {
     let _ = sock.shutdown(Shutdown::Both);
 }
 
+/// Whether `sock` has hung up, asked at once: its peer gone, the pipe's other end closed
+/// (PeekNamedPipe's ERROR_BROKEN_PIPE, ERROR_PIPE_NOT_CONNECTED or ERROR_NO_DATA), or this
+/// end ended both ways ([`end`]). A peer that ended only its writes, a message of no bytes,
+/// has not hung it up, the pipe connected still: so what a read's end was (D251).
+pub fn hung_up(sock: &Stream) -> io::Result<bool> {
+    let guard = sock.0.pipe.read().unwrap_or_else(PoisonError::into_inner);
+    match &*guard {
+        Some(handle) => Ok(available(handle.as_raw_handle(), None)?.is_none()),
+        None => Ok(true),
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {

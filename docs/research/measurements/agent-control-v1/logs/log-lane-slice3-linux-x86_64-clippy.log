@@ -1,0 +1,7 @@
+# #72 log-lane slice 3, the merged tree 728f89cd4 (tree 173f88103d7a98fd8453563a58e8696739c8945f), native, no cross toolchain
+# host: adacachy2 Linux 7.3.3-1-cachyos x86_64, 32 CPUs; rustc 1.98.1 (48a229cea 2026-09-01); SHARDS_HELPERS=skip
+# cargo clippy --locked -j 8 -p shards -p shards-vm-process --all-targets -- -D warnings
+    Checking shards-sigstore v0.1.0 (/home/adalundhe/g121-tmp/s11-logs3/shards/crates/sigstore)
+    Checking shards-vm-process v0.1.0 (/home/adalundhe/g121-tmp/s11-logs3/shards/crates/vm-process)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 36.31s
+::: clippy ok in 37 s

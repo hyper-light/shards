@@ -1608,7 +1608,6 @@ dependencies = [
  "shards-abi",
  "shards-cmdline",
  "shards-ipc",
- "shards-net",
  "shards-netring",
  "shards-testdir",
  "shards-vmm",
