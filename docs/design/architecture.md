@@ -17689,7 +17689,7 @@ Tested (E2E; each guard mutation-checked, the mutant built and run, killed unles
 - **Unmeasured until PM M146 and M147:** the start path's cost of the command's PID
   namespace, and of `--init`'s reaper, forked as such a run starts.
 
-### D234. A nested runtime's grant: one run's command makes boxes in its own microVM (decided; built; its real-VM runs owed)
+### D234. A nested runtime's grant: one run's command makes boxes in its own microVM (decided; built; its real-VM test, red on CI's KVM x86_64 for two defects of its own, fixed; its green and other runs owed)
 
 **Why.** Hex runs its node as a Shards guest's own PID 1 (D215's direct boot, no
 Agentfile). That PID 1 mounts the node's file systems, gives the node its descriptor limit,
@@ -17744,6 +17744,10 @@ The research, every finding graded with its sources:
     (f6).
   - **CAP_SYS_ADMIN and CAP_NET_ADMIN**, beside Docker's default set (f10). These cover its
     boxes' namespaces, mounts and pivot_root, their loopback, and their device programs.
+    Like every run's capabilities (D42), they are the command's while it runs as root. A
+    command whose user is another keeps only their bounding set across its execve, with no
+    file or ambient capabilities (capabilities(7)), so a runtime there runs rootless. A
+    nested runtime's image therefore runs its command as root, as CI's red run below shows.
   - **Docker's default filter, resolved for those capabilities, with `pivot_root` added**
     (f16), and without D121's mount filter (f17). The capabilities open `bpf` and
     `perf_event_open` there, as Docker's profile opens them for CAP_SYS_ADMIN. Everything
@@ -17944,18 +17948,45 @@ it, and stopping the run is the caller's decision.
 - shards-api's `nesting` and `ready_by`, the deadline made on the run host, its typed
   refusals, and `wait_ready` (step 6, 93ce2e26a and 0d63d6bf2);
 - the real-VM test, `crates/shards/tests/nesting.rs`, with runc 1.5.2 as the stand-in
-  nested runtime (step 5).
+  nested runtime (step 5), and the fix of the two defects its first runs showed (231bbdf6d,
+  below).
 
 Not built:
 - `gpus=`. No run carries a D232 selection that its VM process binds: the daemon's run
   has `--gpus` alone, and shards-api's image spec has no `gpu_devices`. So no run sends
   the entry, and none has `/run/shards/gpus`, until a run's own GPU selection is built.
+  This still holds on main at 1145bd3f2.
 - How late a `ready` was, on its event: the daemon's log says it, and the run host's
   `Ready::Late`. No event attribute is named for it.
 
+**The real-VM test's first runs: CI's, red.** CI's x86_64 Linux jobs boot real guests on
+KVM. The two main runs read that reached `tests/nesting.rs` ran it red: 3 passed, 6
+failed, 1 ignored, at 83f0549ad (run 43303186680, job 131479475824, gnu) and at d35c4cf79
+(run 43303460342, jobs 131480418603, gnu, and 131480418606, musl). The six other main runs
+read for it timed out at 56 minutes before reaching it (the record's step7/ci-runs.txt). The
+defects were the test's own:
+- Its images came from the served test image, whose user is `app`. So their commands held
+  none of the grant's capabilities (above), and runc ran rootless: "rootless container
+  requires user namespaces", a mount refused EPERM, and the subtree root's files EACCES
+  where nsdelegate's EPERM was meant.
+- Its shards-api case named its command without its program. shards-api's command is the
+  whole argv, as api-run gives the run an empty entrypoint, and so it ended at once with
+  128.
+
+What the red runs did show, on KVM x86_64: the granted command sits in its leaf
+(`workload cgroup /init`); its READY reaches the host; and it still reaches no host port
+over vsock. 231bbdf6d makes every image the test builds run as root, and names the
+shards-api case's program. Its compile and clippy are checked on x86_64 Linux, and CI on
+main builds the other targets. Its green is not shown: no VM has run it since. macOS CI runs
+none of the test, every
+case returning at "Hypervisor.framework is unavailable". The CI logs are in the record's
+step7/.
+
 **Evidence owed** (ROOT):
-- the real-VM E2E (`crates/shards/tests/nesting.rs`, plan step 5) on KVM x86_64, nested
-  arm64 KVM, HVF with its GPU, and WHP, through `shards run vm` and through shards-api;
+- the real-VM E2E (`crates/shards/tests/nesting.rs`, plan step 5): its green at 231bbdf6d
+  or later on KVM x86_64 (CI's next main run that reaches it, or ROOT's own), and its runs
+  on nested arm64 KVM, HVF with its GPU, and WHP, through `shards run vm` and through
+  shards-api;
 - mutations of its guards, which its header lists with the test each fails;
 - the daemon's filter tests on arm64, whose syscall numbers are checked against the
   kernel's headers but have not run there;
