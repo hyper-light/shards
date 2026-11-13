@@ -23195,11 +23195,12 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
   request's credentials travel. The run host prepares the run with the daemon's own
   functions (`run::prepare`, `volumes::open_for`, `setup::setup`, `security_setup`,
   `domain_seccomp`, `guest::server_device`, managed capture admission, the egress policy),
-  starts the VM process cold in its warm mode with its network process through the
-  builder's launch made shared, and plays the daemon's side of the warm link for that one
-  run (`READY`, `RUN`, `TAKEN`, `STOP_ORDER` of SIGKILL so that the run ends with its host,
-  the run's messages, execs). It owns the run's managed output (P3) and relays each
-  member's channels and end to the orchestrator. Its channel closing ends the run.
+  starts the VM process cold in its warm mode with its network process through the launch
+  the daemon and the builder start theirs by (launch.rs), and plays the daemon's side of the
+  warm link for that one run (`READY`, `RUN`, `TAKEN`, `STOP_ORDER` of SIGKILL so that the
+  run ends with its host, the run's messages, execs). It owns the run's managed output (P3)
+  and relays each member's channels and end to the orchestrator. Its channel closing ends
+  the run.
 - *Members' streams and ends.* stdout and stderr are managed capture's, credited per
   channel by the orchestrator's reads; a member's end is `MEMBER_ENDED` (its status as
   `docker run` reports one), sent by init once, when its population has ended. stdin is
@@ -23275,8 +23276,7 @@ process confined in an AppContainer made suspended, its link, grants, null devic
 handed by name, its network process started on the suspended VM, each share's stream a byte
 pair handed after `RUN` (D197). **Owed:** Windows arm64's build and its WHP runs (below), a
 member's terminal, DAX windows for its shares, templates and pools, shares added
-while running, `attach` after the owner's crash, one launch shared with the builder's and the
-daemon's, and a simulator.
+while running, `attach` after the owner's crash, and a simulator.
 
 **Tested** (real VMs, `crates/shards/tests/api_image.rs`, 2026-11-12): 6 of 6 on Linux x86_64
 KVM (Fedora 44, at 5333c2747, main), macOS arm64 HVF (an M5 Max, macOS 26.5.2) and Windows
@@ -23295,6 +23295,11 @@ Open `taken::linux` failures are 037866828's (already on main). Main CI's six ap
 at d35c4cf79 were each the Windows host's absence, which 731b5e54f added. R12's third launch copy
 stays owed as a slice of its own, with every backend's runs and R14's cold start. The review is
 in runtime-image-boot-v1/README.md, "Review (plan step 2)".
+
+**R12 fold (plan step 2, goal 52's step 10).** The daemon's, the run host's and the builder's VM
+launches are one, `crate::launch` (launch.rs), each caller's descriptors and words held to its
+old layout by unit tests at the seam; its real-VM runs on every backend and R14's cold start
+before and after are owed to ROOT: docs/research/measurements/vm-launch-seam-v1/README.md.
 
 **What would falsify it.** A run host costing more per microVM than the daemon per run (then
 one host per orchestrator); an orchestrator needing to link the VMM; credentials a member
