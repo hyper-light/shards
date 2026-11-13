@@ -1,4 +1,4 @@
-//! The waits real guests make, measured for the bounds that hold them (PM M463,
+//! The waits real guests make, measured for what they cost (PM M463,
 //! `docs/research/measurements/shards-api-waits/run.sh`): an ignored test its harness runs
 //! where `SHARDS_API_REAL=1`, with `SHARDS_API_KERNEL` a kernel (shards' pinned one) and
 //! `SHARDS_API_INIT` Shards' test guest (`crates/testguest`, static musl, as the E2E tests
@@ -20,7 +20,6 @@ use std::io::{Read as _, Write as _};
 use std::net::Shutdown;
 use std::time::{Duration, Instant};
 
-use shards_api::conformance;
 use shards_api::{End, GuestSpec, Guests as _, Init, Shards, min_memory_mib};
 
 /// The real guests' specs, by `shards_test=` mode, where `SHARDS_API_REAL=1` asks for them.
@@ -50,9 +49,10 @@ fn specs() -> Option<impl Fn(&str) -> GuestSpec> {
     })
 }
 
-/// Measures the waits real guests make, for the bounds that hold them: a boot to its echo
-/// port answering, an unserved port's refusal past `UNSERVED_PATIENCE`, `stop`, and a boot
-/// to a guest's power-off. `SHARDS_API_WAITS_N` (default 40) of each, printed as n, p50,
+/// Measures the waits real guests make: a boot to its echo port answering, an unserved
+/// port's refusal past its patience (this host's own: what one refused attempt there took,
+/// as `conformance::an_unserved_port_is_refused` asks), `stop`, and a boot to a guest's
+/// power-off. `SHARDS_API_WAITS_N` (default 40) of each, printed as n, p50,
 /// p90, p99 and max (docs/research/measurements/shards-api-waits/run.sh).
 #[test]
 #[ignore = "a measurement, run by its harness"]
@@ -69,9 +69,13 @@ fn the_waits_of_real_guests() {
         let conn = g.connect(1234, Duration::MAX).unwrap();
         ready.push(start.elapsed());
         echo.push(echoed(conn));
+        let at = Instant::now().checked_add(*ready.last().unwrap()).unwrap();
+        let once = Instant::now();
+        assert!(g.connect_once_before(1236, at).is_err());
+        let patience = once.elapsed();
         let start = Instant::now();
-        assert!(g.connect(1236, conformance::UNSERVED_PATIENCE).is_err());
-        over.push(start.elapsed().saturating_sub(conformance::UNSERVED_PATIENCE));
+        assert!(g.connect(1236, patience).is_err());
+        over.push(start.elapsed().saturating_sub(patience));
         let start = Instant::now();
         g.stop().unwrap();
         assert_eq!(g.wait_for(Duration::MAX).unwrap(), Some(End::Stopped));
