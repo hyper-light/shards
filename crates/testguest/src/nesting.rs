@@ -143,7 +143,7 @@ fn run_box(id: &str, args: &[&str], resources: &str, devices: &str) -> Option<i3
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .and_then(|runc| bounded(runc, id));
+        .and_then(|runc| bounded(runc, id, RUNC_MOST));
     match ran {
         Ok(out) => {
             for line in String::from_utf8_lossy(&out.stdout).lines() {
@@ -169,7 +169,7 @@ fn run_box(id: &str, args: &[&str], resources: &str, devices: &str) -> Option<i3
 /// `runc`'s output, as `Command::output` gives it; where it has not ended within
 /// [`RUNC_MOST`], once SIGQUIT has had Go's runtime write where each of its goroutines waits
 /// to its stderr and exit, so that a runtime that hangs says where (box `what`).
-fn bounded(mut runc: std::process::Child, what: &str) -> io::Result<std::process::Output> {
+fn bounded(mut runc: std::process::Child, what: &str, most: Duration) -> io::Result<std::process::Output> {
     let read = |pipe: Option<Box<dyn io::Read + Send>>| {
         std::thread::spawn(move || {
             let mut bytes = Vec::new();
@@ -189,15 +189,18 @@ fn bounded(mut runc: std::process::Child, what: &str) -> io::Result<std::process
             .take()
             .map(|p| Box::new(p) as Box<dyn io::Read + Send>),
     );
-    let deadline = Instant::now() + RUNC_MOST;
+    let deadline = Instant::now() + most;
     let status = loop {
         if let Some(status) = runc.try_wait()? {
             break status;
         }
         if Instant::now() >= deadline {
             say(&format!(
-                "box {what}: runc did not end within {RUNC_MOST:?}, asked where it waits (SIGQUIT)"
+                "box {what}: runc did not end within {most:?}, asked where it waits (SIGQUIT)"
             ));
+            for line in where_it_waits(runc.id()) {
+                say(&format!("box {what}: runc {line}"));
+            }
             if let Ok(pid) = libc::pid_t::try_from(runc.id()) {
                 // SAFETY: kill(2) of this process's own child, not yet reaped.
                 unsafe { libc::kill(pid, libc::SIGQUIT) };
@@ -211,6 +214,11 @@ fn bounded(mut runc: std::process::Child, what: &str) -> io::Result<std::process
         stdout: out.join().unwrap_or_default(),
         stderr: err.join().unwrap_or_default(),
     })
+}
+
+/// Where process `pid` waits: nothing, as yet.
+fn where_it_waits(_pid: u32) -> Vec<String> {
+    Vec::new()
 }
 
 /// `KEY`'s count in the kept box's cgroup file `FILE`, as the workload reads it from inside
@@ -501,7 +509,7 @@ fn exit_leaving_a_box(code: i32) -> i32 {
             .stdout(Stdio::null())
             .stderr(stderr)
             .spawn()
-            .and_then(|runc| bounded(runc, "held"))
+            .and_then(|runc| bounded(runc, "held", RUNC_MOST))
             .map(|out| out.status)
     });
     if !started.as_ref().is_ok_and(std::process::ExitStatus::success) {
@@ -680,4 +688,60 @@ fn open_said(path: &str) -> String {
 fn open(path: &str) -> i32 {
     say(&open_said(path));
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::linux::net::SocketAddrExt as _;
+    use std::os::unix::net::{SocketAddr, UnixListener};
+
+    /// A runc that does not end within its bound ends at it, though it takes SIGQUIT for
+    /// itself as runc v1.5.2 does (it relays every signal it can catch to its box,
+    /// signals.go): its stand-in here ignores SIGQUIT, and only SIGKILL ends it.
+    #[test]
+    fn a_runc_that_takes_sigquit_for_itself_ends_at_its_bound() {
+        let runc = Command::new("/bin/sh")
+            .args(["-c", "trap '' QUIT; exec sleep 600"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let pid = libc::pid_t::try_from(runc.id()).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(bounded(runc, "stand-in", Duration::from_millis(200)));
+        });
+        let ended = rx.recv_timeout(Duration::from_secs(30));
+        if ended.is_err() {
+            // SAFETY: kill(2) of the stand-in, which its bound left running.
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+        }
+        let out = ended
+            .expect("its bound passed 30 s ago and the stand-in still runs")
+            .unwrap();
+        assert_eq!(out.status.signal(), Some(libc::SIGKILL));
+    }
+
+    /// Where a process waits names each of its threads' waits and each descriptor it holds,
+    /// a Unix socket by the name it is bound to: as runc's notify socket would be named
+    /// (`--root`'s `ID/notify/notify.sock`, runc v1.5.2 notify_socket.go).
+    #[test]
+    fn where_a_process_waits_names_its_threads_and_its_sockets() {
+        let name = format!("shards-nesting-{}", std::process::id());
+        let addr = SocketAddr::from_abstract_name(name.as_bytes()).unwrap();
+        let _listener = UnixListener::bind_addr(&addr).unwrap();
+        let said = where_it_waits(std::process::id());
+        assert!(
+            said.iter()
+                .any(|l| l.starts_with("thread ") && l.contains(" waits in ")),
+            "{said:#?}"
+        );
+        let named = format!(" @{name}");
+        assert!(
+            said.iter().any(|l| l.starts_with("fd ") && l.ends_with(&named)),
+            "{said:#?}"
+        );
+    }
 }
