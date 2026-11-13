@@ -105,8 +105,9 @@ Each command runs from a checkout at or after this harness's landing.
     `launchd-run.sh` (CLAUDE.md).
 - **Evidence.** The test's output. Its home and diagnostics show if it fails (`common::TempDir`).
 
-**2. Step 33's acceptance: real sessions** (after steps 6 and 8 land: Hex's grants and leases,
-and the sign-in profiles; step 3's injector is built). On each backend:
+**2. Step 33's acceptance: real sessions** (after step 8 lands, the sign-in profiles, and Hex's
+half of step 6 is merged by the Hex lead; step 3's injector and kiln's half of step 6 are
+built). On each backend:
 1. **Run the session.** The orchestrator (Hex, through shards-api) boots the signed-in Claude
    Code, or Codex, image with its credential grants. It runs a tool turn and forces a refresh,
    as plan step 10 says.
@@ -165,5 +166,6 @@ All on adas-mac-studio-3.local, through the carrier:
 
 - **Run 1, the harness's own check,** on KVM x86_64, HVF arm64, WHP x86_64 and KVM arm64
   (L1). Not run here: no VM is booted in this lane.
-- **Run 2, the real sessions.** It waits on steps 6 and 8, and on a save hook in Hex.
+- **Run 2, the real sessions.** It waits on step 8, on Hex's half of step 6, and on a save hook
+  in Hex.
 - **Step 10's second part,** the injector's A/B latency harness, is another lane's.
