@@ -70,7 +70,7 @@ struct State {
     /// that it holds the asks in flight alone.
     rooms: Awaited<Option<u64>>,
     /// Each rate asked and still awaited, by its ask's id, and its answer once it came
-    /// (D242), as rooms.
+    /// (D243), as rooms.
     rates: Awaited<Option<NonZeroU64>>,
     next_ask: u32,
     /// The run's own command's readiness under the nesting grant (D234), as its init last
@@ -87,10 +87,10 @@ struct State {
 }
 
 /// Each ask of a kind awaited, by its id, and its answer once it came, or why its host
-/// refused it (D241, D242).
+/// refused it (D241, D243).
 type Awaited<T> = HashMap<u32, Option<Result<T, String>>>;
 
-/// A numbered ask of the session's, answered by its id (D241, D242): its kind; the ask and
+/// A numbered ask of the session's, answered by its id (D241, D243): its kind; the ask and
 /// its send, as a refusal names them; where its answer is awaited; what its host's refusal
 /// is.
 struct Asked<T> {
@@ -157,7 +157,7 @@ impl Shared {
         self.ask(asked, |id| wire::RoomAsk { id, room }.encode(), patience)
     }
 
-    /// Tells the run `rate` (D242) and waits at most `patience` for what its VM holds its
+    /// Tells the run `rate` (D243) and waits at most `patience` for what its VM holds its
     /// vCPUs to.
     fn rate(&self, rate: Option<NonZeroU64>, patience: Duration) -> Result<Option<NonZeroU64>, ImageRefusal> {
         let asked = Asked {
@@ -172,7 +172,7 @@ impl Shared {
 
     /// Sends `asked`'s ask, numbered by the session, and waits at most `patience` for its
     /// answer: the ask awaited from before it is sent until it is answered or given up, so
-    /// that no answer outlives its ask (D241, D242).
+    /// that no answer outlives its ask (D241, D243).
     fn ask<T>(&self, asked: Asked<T>, ask: impl FnOnce(u32) -> Vec<u8>, patience: Duration) -> Result<T, ImageRefusal> {
         let id = {
             let mut state = lock(&self.state);
@@ -1193,7 +1193,7 @@ mod tests {
         assert!(lock(&s.state).rooms.is_empty());
     }
 
-    /// A rate's answer is kept for the ask awaiting it alone (D242), as a room's is: one for
+    /// A rate's answer is kept for the ask awaiting it alone (D243), as a room's is: one for
     /// an ask no longer awaited is dropped; one that is no answer breaks the channel.
     #[test]
     fn a_rates_answer_is_kept_for_its_awaited_ask_alone() {
@@ -1214,7 +1214,7 @@ mod tests {
     }
 
     /// A rate no host hears is refused, typed, and leaves no ask awaited; a run that has
-    /// ended is told none (D242).
+    /// ended is told none (D243).
     #[test]
     fn a_rate_no_host_hears_is_refused_and_leaves_no_ask() {
         let s = shared();

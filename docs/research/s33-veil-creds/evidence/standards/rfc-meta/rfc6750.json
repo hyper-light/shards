@@ -1,0 +1,48 @@
+{
+  "draft": "draft-ietf-oauth-v2-bearer-23",
+  "doc_id": "RFC6750",
+  "title": "The OAuth 2.0 Authorization Framework: Bearer Token Usage",
+  "authors": [
+    "M. Jones",
+    "D. Hardt"
+  ],
+  "format": [
+    "TEXT",
+    "HTML"
+  ],
+  "page_count": "18",
+  "pub_status": "PROPOSED STANDARD",
+  "status": "PROPOSED STANDARD",
+  "source": "Web Authorization Protocol",
+  "abstract": "This specification describes how to use bearer tokens in HTTP requests to access OAuth 2.0 protected resources.  Any party in possession of a bearer token (a \"bearer\") can use it to get access to the associated resources (without demonstrating possession of a cryptographic key).  To prevent misuse, bearer tokens need to be protected from disclosure in storage and in transport. [STANDARDS-TRACK]",
+  "pub_date": "October 2012",
+  "keywords": [
+    "Client",
+    "Resource Owner",
+    "Authorization Server",
+    "Resource Server",
+    "Token Endpoint",
+    "Authorization Endpoint",
+    "Authorization Request",
+    "Authorization Grant",
+    "Protected Resource",
+    "Access Token",
+    "Refresh\u00a0Token",
+    "Authorization Code",
+    "Implicit Grant",
+    "Client Identifier",
+    "Access Token Scope",
+    "Bearer Authorization Header",
+    "Bearer Access\u00a0Token Type"
+  ],
+  "obsoletes": [],
+  "obsoleted_by": [],
+  "updates": [],
+  "updated_by": [
+    "RFC8996",
+    "RFC9700"
+  ],
+  "see_also": [],
+  "doi": "10.17487/RFC6750",
+  "errata_url": "https://www.rfc-editor.org/errata/rfc6750"
+}

@@ -1,0 +1,11 @@
+LC_ALL=C $GG -a -o -b -E 'function g\(\)\{let e=Z0\(\),r="\.credentials\.json";return\{storageDir:e,storagePath:Z\(e,"\.credentials\.json"\)\}\}' "$B"
+LC_ALL=C $GG -a -o -b -E 'var rJr="Warning: Storing credentials in plaintext\."' "$B"
+LC_ALL=C $GG -a -o -b -E 'async write\(e\)\{try\{let\{storageDir:r,storagePath:n\}=g\(\);return await ie\(\)\.mkdir\(r\),await Mn\(n,_\(e\),384\),await J\(n,384\),\{success:!0,warning:rJr\}' "$B"
+LC_ALL=C $GG -a -o -b -E 'await hte\(r,_\(e\),\{mode:384,exactMode:384\}\)' "$B"
+LC_ALL=C $GG -a -o -b -E 'function Z0\(\)\{let e=process\.env\.CLAUDE_SECURESTORAGE_CONFIG_DIR;.{0,90}' "$B" | LC_ALL=C tr -c '[:print:]\n' '.'
+LC_ALL=C $GG -a -o -b -E 'function hxi\(\)\{let e=i\.CLAUDE_CODE_API_KEY_HELPER_TTL_MS;.{0,190}' "$B" | LC_ALL=C tr -c '[:print:]\n' '.'
+LC_ALL=C $GG -a -o -b -E 'var _\$=300000' "$B"
+LC_ALL=C $GG -a -o -b -E 'function Qy\(e,n\)\{.{0,280}' "$B" | LC_ALL=C tr -c '[:print:]\n' '.'
+LC_ALL=C $GG -a -o -b -E 'oe==="CLAUDE_CODE_OAUTH_TOKEN"\|\|oe==="CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR"\|\|oe==="CCR_OAUTH_TOKEN_FILE"' "$B"
+LC_ALL=C $GG -a -o -b -E 'CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR:\(\)=>[A-Za-z]+,CLAUDE_CODE_API_KEY_HELPER_TTL_MS:\(\)=>[A-Za-z]+' "$B"
+LC_ALL=C $GG -a -o -b -E 'CLAUDE_CODE_OAUTH_REFRESH_TOKEN:\(\)=>[A-Za-z]+,CLAUDE_CODE_OAUTH_SCOPES:\(\)=>[A-Za-z]+,CLAUDE_CODE_OAUTH_TOKEN:\(\)=>[A-Za-z]+,CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR:\(\)=>[A-Za-z]+' "$B"

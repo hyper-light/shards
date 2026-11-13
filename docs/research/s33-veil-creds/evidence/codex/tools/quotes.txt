@@ -1,0 +1,266 @@
+Q1a@@@src/codex-rs/login/src/auth/storage.rs@@@51@@@/// Expected structure for $CODEX_HOME/auth.json.
+Q1b@@@src/codex-rs/login/src/auth/storage.rs@@@55@@@pub auth_mode: Option<AuthMode>,
+Q1c@@@src/codex-rs/login/src/auth/storage.rs@@@57@@@#[serde(rename = "OPENAI_API_KEY")]
+Q1d@@@src/codex-rs/login/src/auth/storage.rs@@@58@@@pub openai_api_key: Option<String>,
+Q1e@@@src/codex-rs/login/src/auth/storage.rs@@@61@@@pub tokens: Option<TokenData>,
+Q1f@@@src/codex-rs/login/src/auth/storage.rs@@@64@@@pub last_refresh: Option<DateTime<Utc>>,
+Q1g@@@src/codex-rs/login/src/auth/storage.rs@@@67@@@pub agent_identity: Option<AgentIdentityStorage>,
+Q1h@@@src/codex-rs/login/src/auth/storage.rs@@@70@@@pub personal_access_token: Option<String>,
+Q1i@@@src/codex-rs/login/src/auth/storage.rs@@@73@@@pub bedrock_api_key: Option<BedrockApiKeyAuth>,
+Q1j@@@src/codex-rs/login/src/auth/storage.rs@@@76@@@pub bedrock_access_keys: Option<BedrockAccessKeysAuth>,
+Q1k@@@src/codex-rs/login/src/token_data.rs@@@17@@@pub id_token: IdTokenInfo,
+Q1l@@@src/codex-rs/login/src/token_data.rs@@@19@@@/// This is a JWT.
+Q1m@@@src/codex-rs/login/src/token_data.rs@@@20@@@pub access_token: String,
+Q1n@@@src/codex-rs/login/src/token_data.rs@@@22@@@pub refresh_token: String,
+Q1o@@@src/codex-rs/login/src/token_data.rs@@@27@@@pub oauth_provenance: Option<AccountOAuthProvenance>,
+Q1p@@@src/codex-rs/login/src/token_data.rs@@@31@@@pub login_owner_id: Option<String>,
+Q1q@@@src/codex-rs/login/src/token_data.rs@@@33@@@pub account_id: Option<String>,
+Q1r@@@src/codex-rs/login/src/token_data.rs@@@227@@@serializer.serialize_str(&id_token.raw_jwt)
+Q1s@@@src/codex-rs/login/src/auth/storage.rs@@@168@@@codex_home.join("auth.json")
+Q1t@@@src/codex-rs/utils/home-dir/src/lib.rs@@@6@@@specified by the `CODEX_HOME` environment variable. If not set, defaults to
+Q1u@@@src/codex-rs/utils/home-dir/src/lib.rs@@@7@@@/// `~/.codex`.
+Q1v@@@src/codex-rs/utils/home-dir/src/lib.rs@@@9@@@If `CODEX_HOME` is set, the value must exist and be a directory.
+Q1w@@@src/codex-rs/login/src/auth/storage.rs@@@282@@@// tempfile creates a private (0600 on Unix) file in the same filesystem.
+Q1x@@@crates/tempfile-3.27.0/x/tempfile-3.27.0/src/file/imp/unix.rs@@@23@@@open_options.mode(permissions.map(|p| p.mode()).unwrap_or(0o600));
+Q1y@@@src/codex-rs/login/src/auth/storage.rs@@@292@@@std::fs::rename(&path, auth_file)?;
+Q1z@@@src/codex-rs/login/src/auth/storage_file.rs@@@2@@@//! Symlinks retain their target; hard links and read-only files fail rather than split identity.
+Q1aa@@@src/codex-rs/login/src/auth/storage_file.rs@@@40@@@if metadata.permissions().readonly() {
+Q1ab@@@src/codex-rs/login/src/auth/storage.rs@@@206@@@.open(home.join("auth.lock"))?;
+Q1ac@@@src/codex-rs/login/src/auth/storage_commit.rs@@@39@@@.with_extension("json.lock");
+Q1ad@@@src/codex-rs/config/src/types.rs@@@139@@@#[default]
+Q1ae@@@src/codex-rs/config/src/types.rs@@@140@@@/// Persist credentials in CODEX_HOME/auth.json.
+Q1af@@@src/codex-rs/config/src/types.rs@@@146@@@/// Store credentials in memory only for the current process.
+Q1ag@@@src/codex-rs/config/src/config_toml.rs@@@291@@@/// file (default): Use a file in the Codex home directory.
+Q1ah@@@src/codex-rs/config/src/config_toml.rs@@@293@@@/// auto: Use the keyring if available, otherwise use a file.
+Q1ai@@@src/codex-rs/config/src/config_toml.rs@@@295@@@pub cli_auth_credentials_store: Option<AuthCredentialsStoreMode>,
+Q1aj@@@src/codex-rs/protocol/src/auth.rs@@@8@@@#[serde(rename_all = "lowercase")]
+Q1ak@@@src/codex-rs/login/src/auth/manager.rs@@@631@@@last_refresh: Some(_),
+Q1al@@@src/codex-rs/login/src/auth/manager.rs@@@634@@@_ => Err(std::io::Error::other("Token data is not available.")),
+Q1am@@@src/codex-rs/login/src/auth/manager.rs@@@1927@@@if self.openai_api_key.is_some() {
+Q1an@@@src/codex-rs/login/src/auth/manager.rs@@@1928@@@return AuthMode::ApiKey;
+Q1ao@@@docs/learn.chatgpt.com_docs_auth.md@@@242@@@Codex caches login details locally in a plaintext file at `~/.codex/auth.json` or in your OS-specific credential store.
+Q1ap@@@docs/learn.chatgpt.com_docs_auth.md@@@258@@@# file | keyring | auto | ephemeral
+Q1aq@@@src/codex-rs/config/src/types.rs@@@179@@@if cfg!(windows) {
+Q2a@@@src/codex-rs/login/src/server.rs@@@78@@@pub(super) const DEFAULT_ISSUER: &str = "https://auth.openai.com";
+Q2b@@@src/codex-rs/login/src/server.rs@@@79@@@const DEFAULT_PORT: u16 = 1455;
+Q2c@@@src/codex-rs/login/src/server.rs@@@81@@@const FALLBACK_PORT: u16 = 1457;
+Q2d@@@src/codex-rs/login/src/server.rs@@@197@@@let redirect_uri = format!("http://127.0.0.1:{actual_port}/auth/callback");
+Q2e@@@src/codex-rs/login/src/server.rs@@@642@@@let preferred_bind_address = format!("127.0.0.1:{port}");
+Q2f@@@src/codex-rs/login/src/server.rs@@@609@@@endpoint: &format!("{issuer}/oauth/authorize"),
+Q2g@@@src/codex-rs/login/src/server.rs@@@613@@@"openid profile email offline_access api.connectors.read api.connectors.invoke",
+Q2h@@@src/codex-rs/login/src/server.rs@@@592@@@("id_token_add_organizations", "true"),
+Q2i@@@src/codex-rs/login/src/oauth/pkce.rs@@@21@@@// Challenge (S256): BASE64URL-ENCODE(SHA256(verifier)) without padding
+Q2j@@@src/codex-rs/login/src/oauth/authorization.rs@@@31@@@query.append_pair("code_challenge_method", "S256");
+Q2k@@@src/codex-rs/login/src/oauth/client.rs@@@15@@@/// ChatGPT refresh uses JSON; authorization-code and gateway grants use form encoding.
+Q2l@@@src/codex-rs/login/src/oauth/client.rs@@@84@@@("grant_type", "authorization_code"),
+Q2m@@@src/codex-rs/login/src/oauth/client.rs@@@88@@@("code_verifier", grant.pkce.code_verifier.as_str()),
+Q2n@@@src/codex-rs/login/src/server.rs@@@722@@@let token_endpoint = format!("{}/oauth/token", issuer.trim_end_matches('/'));
+Q2o@@@src/codex-rs/login/src/server.rs@@@818@@@encoding: TokenEncoding::Form,
+Q2p@@@src/codex-rs/login/src/server.rs@@@704@@@pub id_token: String,
+Q2q@@@src/codex-rs/login/src/server.rs@@@446@@@// Obtain API key via token-exchange and persist
+Q2r@@@src/codex-rs/login/src/server.rs@@@450@@@.ok();
+Q2s@@@src/codex-rs/login/src/server.rs@@@1053@@@urlencoding::encode("urn:ietf:params:oauth:grant-type:token-exchange"),
+Q2t@@@src/codex-rs/login/src/server.rs@@@1055@@@urlencoding::encode("openai-api-key"),
+Q2u@@@src/codex-rs/login/src/server.rs@@@1057@@@urlencoding::encode("urn:ietf:params:oauth:token-type:id_token")
+Q2v@@@src/codex-rs/login/src/device_code_auth.rs@@@167@@@let api_base_url = format!("{base_url}/api/accounts");
+Q2w@@@src/codex-rs/login/src/device_code_auth.rs@@@68@@@let url = format!("{auth_base_url}/deviceauth/usercode");
+Q2x@@@src/codex-rs/login/src/device_code_auth.rs@@@38@@@client_id: String,
+Q2y@@@src/codex-rs/login/src/device_code_auth.rs@@@30@@@#[serde(alias = "user_code", alias = "usercode")]
+Q2z@@@src/codex-rs/login/src/device_code_auth.rs@@@107@@@let url = format!("{auth_base_url}/deviceauth/token");
+Q2aa@@@src/codex-rs/login/src/device_code_auth.rs@@@131@@@if status == StatusCode::FORBIDDEN || status == StatusCode::NOT_FOUND {
+Q2ab@@@src/codex-rs/login/src/device_code_auth.rs@@@108@@@let max_wait = Duration::from_secs(15 * 60);
+Q2ac@@@src/codex-rs/login/src/device_code_auth.rs@@@57@@@authorization_code: String,
+Q2ad@@@src/codex-rs/login/src/device_code_auth.rs@@@59@@@code_verifier: String,
+Q2ae@@@src/codex-rs/login/src/device_code_auth.rs@@@175@@@verification_url: format!("{base_url}/codex/device"),
+Q2af@@@src/codex-rs/login/src/device_code_auth.rs@@@206@@@let redirect_uri = format!("{base_url}/deviceauth/callback");
+Q2ag@@@src/codex-rs/login/src/device_code_auth.rs@@@226@@@crate::server::persist_tokens_async(&opts, /*api_key*/ None, &tokens).await
+Q2ah@@@src/codex-rs/login/src/auth/manager.rs@@@1863@@@pub const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
+Q2ai@@@src/codex-rs/login/src/auth/manager.rs@@@234@@@pub const CLIENT_ID_OVERRIDE_ENV_VAR: &str = "CODEX_APP_SERVER_LOGIN_CLIENT_ID";
+Q2aj@@@src/codex-rs/cli/src/main.rs@@@543@@@#[arg(long = "device-auth")]
+Q2ak@@@src/codex-rs/cli/src/login.rs@@@133@@@if let Err(err) = logout_with_revoke(
+Q2al@@@src/codex-rs/login/src/server.rs@@@873@@@auth_mode: Some(AuthMode::Chatgpt),
+Q2am@@@src/codex-rs/login/src/server.rs@@@876@@@last_refresh: Some(Utc::now()),
+Q2an@@@src/codex-rs/login/src/server.rs@@@863@@@login_owner_id: Some(generate_state()),
+Q2ao@@@src/codex-rs/login/src/success_page.rs@@@88@@@("id_token", id_token.to_string()),
+Q2ap@@@src/codex-rs/login/tests/suite/device_code_login.rs@@@75@@@"code_challenge": "code-challenge-321",
+Q2aq@@@docs/learn.chatgpt.com_docs_auth.md@@@326@@@run `codex login --device-auth` directly.
+Q3a@@@src/codex-rs/login/src/token_data.rs@@@145@@@// JWT format: header.payload.signature
+Q3b@@@src/codex-rs/login/src/token_data.rs@@@147@@@let (_header_b64, payload_b64, _sig_b64) = match (parts.next(), parts.next(), parts.next()) {
+Q3c@@@src/codex-rs/login/src/token_data.rs@@@152@@@let payload_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload_b64)?;
+Q3d@@@src/codex-rs/login/src/token_data.rs@@@25@@@never infer authority from unverified token claims.
+Q3e@@@src/codex-rs/login/src/token_data.rs@@@90@@@#[serde(rename = "https://api.openai.com/profile", default)]
+Q3f@@@src/codex-rs/login/src/token_data.rs@@@92@@@#[serde(rename = "https://api.openai.com/auth", default)]
+Q3g@@@src/codex-rs/login/src/token_data.rs@@@105@@@chatgpt_plan_type: Option<PlanType>,
+Q3h@@@src/codex-rs/login/src/token_data.rs@@@107@@@chatgpt_user_id: Option<String>,
+Q3i@@@src/codex-rs/login/src/token_data.rs@@@109@@@user_id: Option<String>,
+Q3j@@@src/codex-rs/login/src/token_data.rs@@@111@@@chatgpt_account_id: Option<String>,
+Q3k@@@src/codex-rs/login/src/token_data.rs@@@113@@@chatgpt_account_is_fedramp: bool,
+Q3l@@@src/codex-rs/login/src/token_data.rs@@@193@@@.or_else(|| claims.profile.and_then(|profile| profile.email));
+Q3m@@@src/codex-rs/login/src/token_data.rs@@@220@@@parse_chatgpt_jwt_claims(&s).map_err(serde::de::Error::custom)
+Q3n@@@src/codex-rs/login/src/token_data.rs@@@119@@@exp: Option<i64>,
+Q3o@@@src/codex-rs/login/src/auth/manager.rs@@@3536@@@&& let Ok(Some(expires_at)) = parse_jwt_expiration(&tokens.access_token)
+Q3p@@@src/codex-rs/login/src/token_data.rs@@@130@@@chatgpt_account_user_id: Option<String>,
+Q3q@@@src/codex-rs/login/src/auth/manager.rs@@@714@@@/// This is local identity selection, not access-token or proof validation.
+Q3r@@@src/codex-rs/login/src/auth/manager.rs@@@1887@@@parse_chatgpt_jwt_claims(access_token).map_err(std::io::Error::other)?;
+Q3s@@@src/codex-rs/login/src/auth/agent_identity.rs@@@275@@@let claims = decode_agent_identity_jwt(jwt, Some(&jwks)).map_err(std::io::Error::other)?;
+Q3t@@@src/codex-rs/login/src/server.rs@@@867@@@.get("chatgpt_account_id")
+Q4a@@@src/codex-rs/login/src/auth/manager.rs@@@221@@@const TOKEN_REFRESH_INTERVAL: i64 = 8;
+Q4b@@@src/codex-rs/login/src/auth/manager.rs@@@222@@@const CHATGPT_ACCESS_TOKEN_REFRESH_WINDOW_MINUTES: i64 = 5;
+Q4c@@@src/codex-rs/login/src/auth/manager.rs@@@3540@@@+ chrono::Duration::minutes(CHATGPT_ACCESS_TOKEN_REFRESH_WINDOW_MINUTES))
+Q4d@@@src/codex-rs/login/src/auth/manager.rs@@@3541@@@.then_some(RefreshReason::ProactiveExpiry);
+Q4e@@@src/codex-rs/login/src/auth/manager.rs@@@3544@@@(last_refresh < Utc::now() - chrono::Duration::days(TOKEN_REFRESH_INTERVAL))
+Q4f@@@src/codex-rs/login/src/auth/manager.rs@@@2610@@@if let Some(reason) = Self::proactive_refresh_reason(&auth)
+Q4g@@@src/codex-rs/login/src/auth/manager.rs@@@2614@@@return Some(auth);
+Q4h@@@src/codex-rs/login/src/auth/manager.rs@@@2006@@@// to API fail with 401 status code.
+Q4i@@@src/codex-rs/login/src/auth/manager.rs@@@2011@@@// 1. Attempt to reload the auth data from disk.
+Q4j@@@src/codex-rs/login/src/auth/manager.rs@@@2012@@@// 2. Attempt to refresh the token using OAuth token refresh flow.
+Q4k@@@src/codex-rs/model-provider/src/auth.rs@@@239@@@&& refreshed_headers != headers
+Q4l@@@src/codex-rs/login/src/auth/manager.rs@@@230@@@const REFRESH_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
+Q4m@@@src/codex-rs/login/src/auth/manager.rs@@@232@@@pub const REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR: &str = "CODEX_REFRESH_TOKEN_URL_OVERRIDE";
+Q4n@@@src/codex-rs/login/src/auth/manager.rs@@@1875@@@.map(|provenance| format!("{}/oauth/token", provenance.issuer.trim_end_matches('/')))
+Q4o@@@src/codex-rs/login/src/auth/manager.rs@@@3622@@@.map(|provenance| provenance.client_id.clone())
+Q4p@@@src/codex-rs/login/src/auth/manager.rs@@@1786@@@encoding: TokenEncoding::Json,
+Q4q@@@src/codex-rs/login/src/auth/manager.rs@@@1787@@@timeout: Some(Duration::from_secs(45)),
+Q4r@@@src/codex-rs/login/src/oauth/client.rs@@@102@@@("grant_type", "refresh_token"),
+Q4s@@@src/codex-rs/login/src/oauth/client.rs@@@104@@@("refresh_token", grant.refresh_token),
+Q4t@@@src/codex-rs/login/src/oauth/client.rs@@@110@@@parameters.push(("refresh_reason", reason.as_str()));
+Q4u@@@src/codex-rs/login/src/oauth/client.rs@@@134@@@.json(&parameters.iter().copied().collect::<BTreeMap<_, _>>()),
+Q4v@@@src/codex-rs/login/src/oauth/client.rs@@@57@@@Self::ProactiveExpiry => "proactive_expiry",
+Q4w@@@src/codex-rs/login/tests/suite/auth_refresh.rs@@@130@@@"refresh_reason": "forced",
+Q4x@@@src/codex-rs/login/src/auth/manager.rs@@@1857@@@id_token: Option<String>,
+Q4y@@@src/codex-rs/login/src/auth/manager.rs@@@1859@@@refresh_token: Option<String>,
+Q4z@@@src/codex-rs/login/src/auth/manager.rs@@@1759@@@tokens.id_token = parse_chatgpt_jwt_claims(&id_token).map_err(std::io::Error::other)?;
+Q4aa@@@src/codex-rs/login/src/auth/manager.rs@@@1765@@@tokens.refresh_token = refresh_token;
+Q4ab@@@src/codex-rs/login/src/auth/manager.rs@@@1767@@@auth_dot_json.last_refresh = Some(Utc::now());
+Q4ac@@@src/codex-rs/login/src/auth/manager.rs@@@1768@@@storage.compare_and_save(&original, &auth_dot_json)?;
+Q4ad@@@src/codex-rs/login/src/auth/manager.rs@@@1811@@@if status == StatusCode::UNAUTHORIZED
+Q4ae@@@src/codex-rs/login/src/auth/manager.rs@@@1809@@@code.eq_ignore_ascii_case("invalid_grant")
+Q4af@@@src/codex-rs/login/src/auth/manager.rs@@@1835@@@Some("refresh_token_expired") => RefreshTokenFailedReason::Expired,
+Q4ag@@@src/codex-rs/login/src/auth/manager.rs@@@1836@@@Some("refresh_token_reused") => RefreshTokenFailedReason::Exhausted,
+Q4ah@@@src/codex-rs/login/src/auth/manager.rs@@@1837@@@Some("refresh_token_invalidated") => RefreshTokenFailedReason::Revoked,
+Q4ai@@@src/codex-rs/login/src/auth/manager.rs@@@1955@@@/// later refresh attempts for the same credentials fail fast without network.
+Q4aj@@@src/codex-rs/login/src/oauth/error.rs@@@146@@@.and_then(|json| nonempty_text(json.get("code")))
+Q4ak@@@src/codex-rs/login/src/auth/revoke.rs@@@71@@@Some((tokens.refresh_token.as_str(), RevokeTokenKind::Refresh))
+Q4al@@@src/codex-rs/login/src/auth/manager.rs@@@231@@@pub(super) const REVOKE_TOKEN_URL: &str = "https://auth.openai.com/oauth/revoke";
+Q4am@@@docs/learn.chatgpt.com_docs_auth_ci-cd-auth.md@@@33@@@if `last_refresh` is older than about 8 days, Codex refreshes the token
+Q4an@@@docs/learn.chatgpt.com_docs_auth_ci-cd-auth.md@@@37@@@if a request gets a `401`, Codex also has a built-in refresh-and-retry path
+Q4ao@@@docs/learn.chatgpt.com_docs_auth.md@@@244@@@Codex refreshes tokens automatically during use before they expire
+Q4ap@@@docs/learn.chatgpt.com_docs_auth_ci-cd-auth.md@@@241@@@another machine or concurrent job rotated the token first
+Q5a@@@src/codex-rs/model-provider/src/bearer_auth_provider.rs@@@37@@@HeaderValue::from_str(&format!("Bearer {token}"))
+Q5b@@@src/codex-rs/model-provider/src/bearer_auth_provider.rs@@@39@@@let _ = headers.insert(http::header::AUTHORIZATION, header);
+Q5c@@@src/codex-rs/model-provider/src/bearer_auth_provider.rs@@@44@@@let _ = headers.insert(CHATGPT_ACCOUNT_ID_HEADER, header);
+Q5d@@@src/codex-rs/http-client/src/openai_headers.rs@@@3@@@pub const CHATGPT_ACCOUNT_ID_HEADER: &str = "chatgpt-account-id";
+Q5e@@@src/codex-rs/model-provider/src/bearer_auth_provider.rs@@@47@@@let _ = headers.insert("X-OpenAI-Fedramp", HeaderValue::from_static("true"));
+Q5f@@@src/codex-rs/model-provider/src/auth.rs@@@424@@@token: auth.get_token().ok(),
+Q5g@@@src/codex-rs/model-provider/src/auth.rs@@@425@@@account_id: auth.get_account_id(),
+Q5h@@@src/codex-rs/login/src/auth/manager.rs@@@641@@@Self::ApiKey(auth) => Ok(auth.api_key.clone()),
+Q5i@@@src/codex-rs/login/src/auth/manager.rs@@@643@@@let access_token = self.get_token_data()?.access_token;
+Q5j@@@src/codex-rs/model-provider-info/src/lib.rs@@@86@@@pub const CHATGPT_CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
+Q5k@@@src/codex-rs/model-provider-info/src/lib.rs@@@482@@@"https://api.openai.com/v1"
+Q5l@@@src/codex-rs/codex-api/src/lib.rs@@@19@@@pub const RESPONSES_PATH: &str = "/responses";
+Q5m@@@src/codex-rs/model-provider/src/chatgpt_base_url.rs@@@6@@@pub const DEFAULT_CHATGPT_BASE_URL: &str = "https://chatgpt.com/backend-api/";
+Q5n@@@src/codex-rs/model-provider/src/chatgpt_base_url.rs@@@7@@@const FEDRAMP_CHATGPT_BASE_URL: &str = "https://gov.chatgpt.com/backend-api/";
+Q5o@@@src/codex-rs/login/src/auth/default_client.rs@@@42@@@pub const DEFAULT_ORIGINATOR: &str = "codex_cli_rs";
+Q5p@@@src/codex-rs/features/src/lib.rs@@@2324@@@key: "use_agent_identity",
+Q5q@@@src/codex-rs/features/src/lib.rs@@@2326@@@default_enabled: false,
+Q5r@@@src/codex-rs/core/src/session/session.rs@@@1845@@@if config.features.enabled(Feature::UseAgentIdentity) {
+Q5s@@@src/codex-rs/login/src/auth/manager.rs@@@1019@@@pub const CODEX_ACCESS_TOKEN_ENV_VAR: &str = "CODEX_ACCESS_TOKEN";
+Q5t@@@src/codex-rs/login/src/auth/manager.rs@@@1018@@@pub const CODEX_API_KEY_ENV_VAR: &str = "CODEX_API_KEY";
+Q6a@@@src/codex-rs/Cargo.toml@@@469@@@reqwest = { version = "0.12", features = ["cookies"] }
+Q6b@@@src/codex-rs/http-client/Cargo.toml@@@16@@@reqwest = { workspace = true, features = ["json", "rustls-tls", "rustls-tls-native-roots", "stream"] }
+Q6c@@@crates/reqwest-0.12.28/x/reqwest-0.12.28/Cargo.toml@@@102@@@"default-tls",
+Q6d@@@crates/reqwest-0.12.28/x/reqwest-0.12.28/Cargo.toml@@@148@@@rustls-tls = ["rustls-tls-webpki-roots"]
+Q6e@@@crates/reqwest-0.12.28/x/reqwest-0.12.28/src/tls.rs@@@591@@@#[cfg(all(feature = "default-tls", not(feature = "http3")))]
+Q6f@@@crates/reqwest-0.12.28/x/reqwest-0.12.28/src/tls.rs@@@593@@@TlsBackend::Default
+Q6g@@@src/codex-rs/http-client/src/tls_backend_fallback.rs@@@3@@@//! Native TLS remains the default.
+Q6h@@@src/codex-rs/http-client/src/custom_ca.rs@@@14@@@read CA material from `CODEX_CA_CERTIFICATE`, falling back to `SSL_CERT_FILE`
+Q6i@@@src/codex-rs/http-client/src/custom_ca.rs@@@63@@@pub const CODEX_CA_CERT_ENV: &str = "CODEX_CA_CERTIFICATE";
+Q6j@@@src/codex-rs/http-client/src/custom_ca.rs@@@311@@@builder = builder.use_rustls_tls();
+Q6k@@@src/codex-rs/http-client/src/custom_ca.rs@@@334@@@builder = builder.add_root_certificate(certificate);
+Q6l@@@src/codex-rs/http-client/src/custom_ca.rs@@@267@@@let mut root_store = (*crate::native_roots::load()).clone();
+Q6m@@@src/codex-rs/http-client/src/native_roots.rs@@@41@@@// rustls-native-certs treats these as overrides of the platform store.
+Q6n@@@src/codex-rs/http-client/src/client_builder.rs@@@348@@@HTTP client fell back to system root certificates
+Q6o@@@crates/reqwest-0.12.28/x/reqwest-0.12.28/src/async_impl/client.rs@@@694@@@root_cert_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+Q6p@@@crates/reqwest-0.12.28/x/reqwest-0.12.28/src/async_impl/client.rs@@@702@@@let load_results = rustls_native_certs::load_native_certs();
+Q6q@@@crates/native-tls-0.2.14/x/native-tls-0.2.14/src/imp/openssl.rs@@@22@@@static PROBE_RESULT: LazyLock<ProbeResult> = LazyLock::new(openssl_probe::probe);
+Q6r@@@crates/native-tls-0.2.14/x/native-tls-0.2.14/src/imp/openssl.rs@@@277@@@if let Err(e) = connector.load_verify_locations(Some(cert_file), None) {
+Q6s@@@crates/openssl-0.10.75/x/openssl-0.10.75/src/ssl/connector.rs@@@73@@@ctx.set_default_verify_paths()?;
+Q6t@@@docs/openssl-3.6.4_SSL_CTX_load_verify_locations.pod@@@44@@@Alternatively the B<SSL_CERT_DIR> environment variable can be defined to
+Q6u@@@docs/openssl-3.6.4_SSL_CTX_load_verify_locations.pod@@@48@@@Alternatively the B<SSL_CERT_FILE> environment variable can be defined to
+Q6v@@@docs/openssl-3.6.4_SSL_CTX_load_verify_locations.pod@@@46@@@The default CA certificates file is called F<cert.pem> in the default
+Q6w@@@crates/openssl-probe-0.1.6/x/openssl-probe-0.1.6/src/lib.rs@@@156@@@let var = |name| env::var_os(name).map(PathBuf::from).filter(|p| p.exists());
+Q6x@@@crates/openssl-probe-0.1.6/x/openssl-probe-0.1.6/src/lib.rs@@@168@@@let mut result = probe_from_env();
+Q6y@@@crates/rustls-native-certs-0.8.3/x/rustls-native-certs-0.8.3/src/lib.rs@@@8@@@//! If the SSL_CERT_FILE environment variable is set, certificates (in PEM
+Q6z@@@crates/rustls-native-certs-0.8.3/x/rustls-native-certs-0.8.3/src/unix.rs@@@4@@@let likely_locations = openssl_probe::probe();
+Q6aa@@@crates/openssl-probe-0.2.1/x/openssl-probe-0.2.1/src/lib.rs@@@171@@@/etc/ssl/certs/ca-certificates.crt
+Q6ab@@@crates/openssl-probe-0.2.1/x/openssl-probe-0.2.1/src/lib.rs@@@176@@@// Alpine Linux
+Q6ac@@@src/.github/workflows/rust-release.yml@@@118@@@# Release artifacts intentionally ship MUSL-linked Linux binaries.
+Q6ad@@@src/codex-rs/core/Cargo.toml@@@140@@@# Build OpenSSL from source for musl builds.
+Q6ae@@@src/.github/scripts/install-musl-openssl.sh@@@33@@@--openssldir=/usr/local/ssl --libdir=lib
+Q6af@@@src/.github/scripts/install-musl-openssl.sh@@@44@@@# openssl-sys honors OPENSSL_NO_VENDOR even when Cargo enables `vendored`.
+Q6ag@@@src/.github/scripts/install-musl-openssl.sh@@@16@@@openssl_version="3.6.4"
+Q6ah@@@src/.github/scripts/install-musl-build-tools.sh@@@50@@@install-musl-openssl.sh
+Q6ai@@@src/.github/workflows/rust-release.yml@@@211@@@install-musl-build-tools.sh
+Q6aj@@@crates/openssl-src-300.6.1+3.6.3/x/openssl-src-300.6.1+3.6.3/src/lib.rs@@@39@@@openssl_dir: Some(PathBuf::from("/usr/local/ssl")),
+Q6ak@@@crates/openssl-sys-0.9.111/x/openssl-sys-0.9.111/build/main.rs@@@53@@@if env("OPENSSL_NO_VENDOR").map_or(true, |s| s == "0") {
+Q6al@@@src/codex-rs/websocket-client/src/lib.rs@@@65@@@/// Build an explicit TLS configuration from native roots and configured Codex custom CAs.
+Q6am@@@src/codex-rs/codex-api/src/endpoint/responses_websocket.rs@@@441@@@let connector = WebSocketConnector::new(http_client_factory)
+Q6an@@@docs/learn.chatgpt.com_docs_auth.md@@@310@@@`CODEX_CA_CERTIFICATE` is unset, Codex falls back to `SSL_CERT_FILE`. The same
+Q6ao@@@docs/learn.chatgpt.com_docs_auth.md@@@311@@@custom CA settings apply to login, normal HTTPS requests, and secure WebSocket
+Q6ap@@@src/codex-rs/http-client/Cargo.toml@@@36@@@rustls-platform-verifier = "0.7.0"
+Q6aq@@@src/codex-rs/http-client/Cargo.toml@@@34@@@[target.'cfg(target_os = "windows")'.dependencies]
+Q7a@@@crates/reqwest-0.12.28/x/reqwest-0.12.28/Cargo.toml@@@104@@@"http2",
+Q7b@@@crates/reqwest-0.12.28/x/reqwest-0.12.28/src/async_impl/client.rs@@@531@@@#[cfg(all(feature = "native-tls-alpn", not(feature = "http3")))]
+Q7c@@@crates/reqwest-0.12.28/x/reqwest-0.12.28/src/async_impl/client.rs@@@839@@@"h2".into(),
+Q7d@@@src/codex-rs/http-client/src/client_builder.rs@@@106@@@// Native TLS may lack ALPN support; HTTPS HTTP/2 requires advertising h2.
+Q7e@@@src/codex-rs/http-client/src/client_builder.rs@@@104@@@/// Uses HTTP/2 for SDKs such as gRPC that require framed bidirectional bodies.
+Q7f@@@src/codex-rs/model-provider-info/src/lib.rs@@@606@@@supports_websockets: true,
+Q7g@@@src/codex-rs/core/src/client.rs@@@1191@@@if !self.state.provider.info().supports_websockets
+Q7h@@@src/codex-rs/features/src/lib.rs@@@546@@@/// Legacy rollout flag for Responses API WebSocket transport experiments.
+Q7i@@@src/codex-rs/core/src/client.rs@@@182@@@responses_websockets=2026-02-06
+Q7j@@@src/codex-rs/core/src/client.rs@@@800@@@falling back to HTTP
+Q7k@@@src/codex-rs/codex-client/src/provider.rs@@@96@@@"https" => "wss",
+Q7l@@@src/codex-rs/codex-api/src/endpoint/responses.rs@@@145@@@HeaderValue::from_static("text/event-stream"),
+Q7m@@@crates/native-tls-0.2.14/x/native-tls-0.2.14/src/imp/openssl.rs@@@309@@@#[cfg(feature = "alpn")]
+Q8a@@@src/codex-rs/app-server-protocol/src/protocol/common.rs@@@1330@@@LoginAccount => "account/login/start" {
+Q8b@@@src/codex-rs/app-server-protocol/src/protocol/common.rs@@@1891@@@ChatgptAuthTokensRefresh => "account/chatgptAuthTokens/refresh" {
+Q8c@@@src/codex-rs/app-server-protocol/src/protocol/common.rs@@@31@@@/// ChatGPT auth tokens are supplied by an external host app and are only
+Q8d@@@src/codex-rs/app-server-protocol/src/protocol/common.rs@@@32@@@/// stored in memory. Token refresh must be handled by the external host app.
+Q8e@@@src/codex-rs/app-server-protocol/src/protocol/v2/account.rs@@@98@@@/// [UNSTABLE] FOR OPENAI INTERNAL USE ONLY - DO NOT USE.
+Q8f@@@src/codex-rs/app-server-protocol/src/protocol/v2/account.rs@@@100@@@#[experimental("account/login/start.chatgptAuthTokens")]
+Q8g@@@src/codex-rs/app-server-protocol/src/protocol/v2/account.rs@@@104@@@/// Access token (JWT) supplied by the client.
+Q8h@@@src/codex-rs/app-server-protocol/src/protocol/v2/account.rs@@@108@@@chatgpt_account_id: String,
+Q8i@@@src/codex-rs/app-server-protocol/src/protocol/v2/account.rs@@@302@@@/// Codex attempted a backend request and received `401 Unauthorized`.
+Q8j@@@src/codex-rs/app-server-protocol/src/protocol/v2/account.rs@@@326@@@pub access_token: String,
+Q8k@@@src/codex-rs/app-server-protocol/src/protocol/v2/account.rs@@@97@@@ChatgptDeviceCode,
+Q8l@@@src/codex-rs/app-server-protocol/src/protocol/v1.rs@@@57@@@pub experimental_api: bool,
+Q8m@@@src/codex-rs/app-server/src/message_processor.rs@@@1019@@@return Err(invalid_request(experimental_required_message(reason)));
+Q8n@@@src/codex-rs/app-server/src/external_auth.rs@@@18@@@const EXTERNAL_AUTH_REFRESH_TIMEOUT: Duration = Duration::from_secs(10);
+Q8o@@@src/codex-rs/app-server/src/external_auth.rs@@@44@@@.send_request(ServerRequestPayload::ChatgptAuthTokensRefresh(params))
+Q8p@@@src/codex-rs/login/src/auth/manager.rs@@@1896@@@refresh_token: String::new(),
+Q8q@@@src/codex-rs/login/src/auth/manager.rs@@@1903@@@auth_mode: Some(AuthMode::ChatgptAuthTokens),
+Q8r@@@src/codex-rs/app-server/src/request_processors/account_processor.rs@@@934@@@.set_external_auth(Arc::new(ExternalAuthBridge::new(
+Q8s@@@src/codex-rs/login/src/auth/manager.rs@@@2047@@@UnauthorizedRecoveryMode::External => UnauthorizedRecoveryStep::ExternalRefresh,
+Q8t@@@docs/learn.chatgpt.com_docs_auth_ci-cd-auth.md@@@57@@@external-token host integrations
+Q8u@@@src/codex-rs/app-server-protocol/src/protocol/common.rs@@@1365@@@CancelLoginAccount => "account/login/cancel" {
+X1@@@src/codex-rs/network-proxy/src/credential_broker/providers.rs@@@206@@@// Keep over 128 bits of randomness after the visible marker.
+X2@@@src/codex-rs/network-proxy/src/credential_broker/providers/openai.rs@@@56@@@.filter(|header| header.contains(expected_value))?;
+X3@@@src/codex-rs/network-proxy/src/certs.rs@@@272@@@// Best-effort compatibility set for common child toolchains that accept a CA bundle path.
+X4@@@src/codex-rs/features/src/lib.rs@@@233@@@/// Mask credentials and inject them through an already enabled network proxy.
+X5@@@src/codex-rs/features/src/lib.rs@@@1572@@@default_enabled: false,
+X6@@@src/codex-rs/features/src/lib.rs@@@1570@@@key: "credential_masking",
+D1@@@src/docs/authentication.md@@@3@@@For information about Codex CLI authentication, see [this documentation](https://developers.openai.com/codex/auth).
+D2@@@src/docs/config.md@@@7@@@For a full configuration reference, see [this documentation](https://developers.openai.com/codex/config-reference).
+Q4aq@@@src/codex-rs/login/src/auth/manager.rs@@@2600@@@/// For managed ChatGPT auth that needs a proactive refresh, first performs
+Q4ar@@@src/codex-rs/login/src/auth/manager.rs@@@2601@@@/// a guarded reload and then refreshes only if the on-disk auth is unchanged.
+Q4as@@@src/codex-rs/model-provider/src/auth.rs@@@184@@@fn apply_auth_headers(&self, mut headers: HeaderMap) -> AuthHeadersFuture<'_> {
+Q4at@@@src/codex-rs/model-provider/src/auth.rs@@@188@@@.auth()
+Q4au@@@src/codex-rs/login/src/auth/manager.rs@@@3530@@@CodexAuth::Chatgpt(chatgpt_auth) => chatgpt_auth,
+Q4av@@@src/codex-rs/login/src/auth/manager.rs@@@2605@@@self.reload().await;
+Q5u@@@src/codex-rs/login/src/auth/manager.rs@@@1586@@@// API key via env var takes precedence over any other auth method.
+Q5v@@@src/codex-rs/app-server/src/lib.rs@@@601@@@AuthManager::shared_from_config(&config, /*enable_codex_api_key_env*/ false)
+Q5w@@@src/codex-rs/model-provider-info/src/lib.rs@@@590@@@"OPENAI_ORGANIZATION".to_string(),
+Q7n@@@src/codex-rs/codex-api/src/endpoint/responses.rs@@@144@@@http::header::ACCEPT,
+Q2ar@@@src/codex-rs/login/src/oauth/pkce.rs@@@15@@@let mut bytes = [0u8; 64];
+Q2as@@@src/codex-rs/login/src/oauth/authorization.rs@@@45@@@let mut bytes = [0_u8; 32];
+Q6ar@@@crates/reqwest-0.12.28/x/reqwest-0.12.28/src/async_impl/client.rs@@@318@@@tls_built_in_root_certs: true,

@@ -1,0 +1,2 @@
+Gate [person]: the person has chosen the credential mode for harnesses (Shards G18): native sign-in, an opaque broker, or both.
+reason: the agent said so: The person named Veil (github.com/hyper-light/veil) as the just-in-time secrets vault for credential injection and auth (2026-11-11). Veil's design fixes the mode: placeholders in the VM, values filled in at its egress, OAuth refresh outside. Plan step 33 (v10) builds that shape now.

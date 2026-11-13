@@ -23189,7 +23189,7 @@ Shards carried and without (kiln's `docs/research/s16-vendor/`).
 `shards` runs from; a macOS that refuses a carrier's own identity the entitlements it allows ad
 hoc (then ad hoc, as shards signs them).
 
-### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends decided at the host from HVF's and KVM's runs, plan step 10, WHP owed; its endpoint building, step 11: its connection, refusals and stdio lanes built)
+### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends decided at the host from HVF's and KVM's runs, plan step 10, WHP owed; its endpoint building, step 11: its connection, refusals, stdio lanes and their controller built)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d runs every kiln harness in a microVM of
 its own, booted for Hex under shards-init (D231). The person decided how such a harness is
@@ -23490,6 +23490,35 @@ admits it, a quarter of it the keep-alive), and its handshake and datagram buffe
 D180's driver tells a handler when its peer allows more streams (`Handler::available`), so that
 a controller opens a lane as the endpoint's limit allows.
 
+*The controller's side* (`control::Controller`, `control/drive.rs`). kiln and Hex reach a
+microVM's lanes through it rather than writing this wire again. `Controller::dial` takes the
+controller's key, the microVM's pinned fingerprint and its endpoint's address, both from the run's
+managed metadata, and the member streams it drives (`control::Subscriptions`): each stream with the
+admission its endpoint announced, and the cursor its lane opens at. Lanes open once the handshake
+has taken the pinned key, as many at once as the endpoint's stream limit allows; the rest wait for
+`Handler::available`. Each lane's handle is step 5's client of its stream:
+- *An output* (`control::Output`): `next_record` gives its records in order. Asking for the next
+  acknowledges the one before, since step 5 acknowledges a record only once its owner has it
+  whole. `Got::Finished` comes once the output has finished.
+- *A stdin* (`control::Input`): `write` sends one record within the endpoint's room and returns once
+  it is taken. The driver checks each taken against the protocol: it falls where the record ends,
+  or, the first after a subscription, at or past its cursor, which counts the bytes an earlier
+  connection's record gave. `end` and `abort` wait for the member's init to tell how the stdin
+  ended. An errno is a `NonZeroU16`, under Linux's MAX_ERRNO.
+
+A lane's refusal, its reset (its stream revoked), a stdin's end and the connection's end are typed
+(`control::Fault`). D180's driver now passes QUIC's own error to a handler just before the loss
+(`Handler::cause`), so a key not enrolled reads `NotEnrolled`, not words. The controller retries
+nothing: each handle's `cursor` is where a later dial opens, and the endpoint keeps an
+unacknowledged record and a stdin's place for that dial. Its transport is the endpoint's
+admissions, summed over its lanes as the endpoint sums its own:
+- what the endpoint may send on a lane before it is read, the largest per lane and their sum: a
+  record with its head, a stdin's taken or end, or a refusal;
+- what the controller sends unacknowledged on each lane, summed: an output's subscription and one
+  acknowledgment; a stdin's subscription, one record and its end;
+- no stream the endpoint may open;
+- one command slot per lane, since each handle has one ask in flight.
+
 Tested in `crates/remote` (`control::tests`, over the in-process exchange of `lib.rs`'s
 handshake tests): the enrolled controller and its pinned microVM connect,
 TLS13_AES_256_GCM_SHA384 and `shards-control/1` at both ends, each holding the other's key; a
@@ -23504,7 +23533,16 @@ ending its lane; a stranger's key reaches no stream; lanes of another member, ge
 kind refused alone, typed, while a served lane works; a second lane of a stream refused; a newer
 connection superseding the older and resuming its unacknowledged record; a revoked stream's lane
 reset alone; an input's own end ending its lane, a late frame let go; the windows its streams'
-sums. Record:
+sums. Through the controller over loopback:
+- member 0's stdio exact both ways, a stdin written one room at a time and its end told;
+- a record acknowledged only as the next is asked for;
+- lanes refused alone and typed;
+- a controller that is not enrolled, or that pinned another key, reaching no lane (`NotEnrolled`);
+- a newer dial superseding the older (`Stale`) and resuming at its cursors;
+- a revoked output and an aborted stdin each ending alone, and a hangup ending the rest (`Local`);
+- its windows its lanes' sums.
+
+Record:
 [agent-control-v1](../research/measurements/agent-control-v1/README.md).
 
 **Control that crosses no TLS** (ROOT's ruling, 2026-11-13). The CLI's request slots (D185),
@@ -23531,6 +23569,9 @@ buffer, chunk, keep-alive or idle value is set here: `control::endpoint` and
 | `CONNECTIONS` 2 | its controller's connection and the one that replaces it; the older closes at the newer's handshake and is held until its close drains (RFC 9000 §10.2) |
 | One command slot | a wake is one unit whose turn serves every stream; a full handoff is a wake queued |
 | Windows, streams | each stream's own (above): its endpoint of one stream's windows, summed; one stream per lane |
+| The controller's windows; its command slots | the endpoint's admissions, summed over its lanes as the endpoint sums its own; one slot per lane, as each handle has one ask in flight |
+| An output's acknowledgment, 13 bytes | step 5's `consumed` frame: a frame's head (5) and an offset (8) |
+| An errno under 4096 (`NonZeroU16`) | Linux's MAX_ERRNO, 4095 (`include/linux/err.h`) |
 
 ### D239. AES-256-GCM alone, both ways, on every link that carries agent or shards control (built: plan step 3; its real-VM runs owed)
 
@@ -23763,7 +23804,124 @@ memory its guest holds before its guest drops its page cache (D188's measure, PM
 image run); an orchestrator that needs D188's pressure give-back through its run host to keep
 its runs within its budget.
 
-### D242. An orchestrator's rate: D191's hold told through its run's host, in milli-CPU (built; real-VM validation owed)
+### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the injector, the CA, the broker and the real-VM runs owed)
+
+**Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 33: every kiln harness runs in a
+Shards microVM, and a harness needs its model-provider credential without the credential
+ever being in the VM, where the harness and every process it starts could read it and send
+it anywhere its grants reach. The person named Veil (github.com/hyper-light/veil) as the
+coming just-in-time secrets vault, and its design (CP-T8.3) fixes the shape: the workload
+holds a placeholder, and the real value is filled in at the workload's egress over a TLS
+connection terminated with a CA only that workload trusts, for granted hosts alone; OAuth
+refresh happens outside the VM; files or environment variables hold values only where
+nothing else works, on tmpfs, revoked when the run ends. Step 33 builds that shape with
+today's parts (kiln-seams' `Secrets` as the store, Shards' per-VM network process as the
+injector's home), so that when Veil lands only the backend and the injector library change.
+
+Today a member reads what it is given: `shards-api` stages a member's env and files as
+native-sign-in delegation (image.rs, G18), and the harness bring-up found no run-time secret
+primitive, no refresh/rotation/revocation contract and no opaque broker
+(docs/research/measurements/harness-bringup-v1, -v2). The research for this plan is kiln
+research 01a1d2b88be57304bf6b081fe46832e0 (findings f1–f76; plan 01a1d2b88be57304b972761e2a5c6781,
+goal #63 of ROOT's stack; first gathered as research 01a1d1fa03e67433a6e7c00fd45abb0c), with its
+evidence under docs/research/s33-veil-creds. This is the credential half of the agent-control work: the
+control plane's transport, lanes, identity and AES-256-GCM-only crypto are D238 and D239
+(plan step 11); this entry is what a workload's own provider credential does over it.
+
+**The shape (decided).**
+- *Named, never carried.* A credential grant is by reference: a credential named by a path
+  in the orchestrator's store (kiln-seams' `Secrets`), and the hosts it may be filled in
+  toward. The value never rides the launch spec, an image, telemetry or a log; it rides a
+  lease the injector pulls just in time (step 4). This entry's slice is the contract:
+  `wire::CredentialGrant { reference, toward }` on the run channel's `Request` (channel
+  version 8) and on `ImageSpec`, kept or dropped by an orchestrator and never added to, as
+  D236's destinations are.
+- *Default deny.* A run with no grant has no substitution; a flow to a host no grant names
+  carries no credential. Nothing is implicit.
+- *A gateway, not a proxy.* The injector terminates the guest's TLS as the origin for a
+  granted host and makes its own outbound request. RFC 9110 forbids a *proxy* (a forwarding
+  agent the client chose) to modify a request's `Authorization` (§11.6.2), but defines a
+  *gateway* as an origin server for its outbound connection, held to origin servers'
+  requirements (§3.7); the injector is the latter. The decision it renders is typed
+  (`wire::Fill`: `With(reference)`, `Pass`, `Misdirected`), not an undocumented combination
+  of booleans (R04).
+- *Filled only when the names agree.* `wire::decide(grants, sni, host)` fills a value only
+  when the TLS SNI the flow arrived on, the request's `Host` (HTTP/1.1) or `:authority`
+  (HTTP/2) and a grant's host all agree, ASCII case-insensitively (RFC 9549 §2.3). The SNI
+  alone is not enough: a client picks its `Host` freely (domain fronting, Fifield et al.
+  2015; and SNI-only matching has a documented hole, Vercel's firewall docs), so a `Host`
+  that differs from the SNI is `Misdirected` and refused 421 (RFC 9110 §7.4), never guessed.
+  This is D236's lesson (names held by what a flow says are the client's to choose) carried
+  to the injector.
+- *Host vocabulary.* A grant's `toward` hosts are DNS names lowered, as a network's
+  `--egress=HOST:PORT` names a destination's host by name (D236), or `host.docker.internal`,
+  the host itself; never with a port, and never `localhost`. Never an address either, though
+  D236 grants egress to one: TLS names a server by its DNS name alone ("Literal IPv4 and IPv6
+  addresses are not permitted in HostName", RFC 6066 §3), so a grant toward an address could
+  never be filled, and a grant that can never act is refused, not kept silently. The
+  orchestrator's side checks this where it builds the request (`shards_api::image::request`),
+  reusing `shards_dns::host_name` and `shards_dns::HOST` (R12), and stores them lowered so
+  the injector's case-insensitive decision rests on a lowered store.
+- *Who.* A grant is the run's. The network process holds the whole microVM to the union of
+  its members' grants (D236) and cannot tell one member's flow from another's, so it ends
+  TLS for a granted host on every flow D236's grants let reach that host: each member whose
+  grants reach it trusts the run's CA, and a member whose grants do not reaches the host not
+  at all. Which member may use a value is its placeholder's. A value is filled in only where
+  its placeholder stands in a request, and a placeholder is given only to the member an
+  orchestrator stages it into, or to the client whose sign-in the injector captured
+  (later slices). Holding a placeholder is the capability; nothing fills a value into a
+  request that does not carry one.
+- *Leases are the run's identity's (ROOT's decision for step 33, with D238).* A run's leases
+  are issued to the SHA-256 of its microVM's own key (D238). A moved microVM gets a new key at
+  its destination (no private key leaves the host that made it), so the move revokes every
+  lease bound to the old fingerprint, the destination's first use is leased anew to the new
+  one, and an ask under the old fingerprint after the move is refused, typed (the lease side:
+  this plan's steps 4 and 5).
+
+**Built in this slice (the contract).** `crates/api/src/image/wire.rs`: `CredentialGrant`,
+`Fill`, `decide`, `Request.credentials`, channel version 8 (appended, so an older reader
+refuses a newer request by its version, never reads it with a field defaulted); unit tests
+for the wire round-trip, the decision at its edges, and that no value prints.
+`crates/api/src/image.rs`: `ImageSpec.credentials`, validated and lowered into the request.
+A value type stays redacted: `wire::Secret`'s `Debug` prints its length alone, and a
+`CredentialGrant` carries no value to print.
+
+**Owed (later slices of step 33, this plan's steps 2–10).** The per-VM CA in the network
+process and the granted members' trust (step 2); the injector that terminates TLS and fills
+HTTP/1.1 then HTTP/2 headers (steps 3, 7); the grants through the run host and the just-in-
+time fetch and release (step 4); kiln's broker over kiln-seams' `Secrets` with per-run
+leases, single-flight refresh and sign-in capture outside the VM (step 5); Hex wiring the
+grants (step 6); the Claude Code and Codex sign-in/refresh profiles (step 8); the survey of
+each harness's trust and token checks and the tmpfs-fallback list (step 9); and ROOT's
+real-VM runs on KVM, HVF and WHP with a whole-guest-memory leak scan and the injector's
+measured cost (step 10).
+
+**Literals.** None of its own: this slice adds no numeric bound. A credential's `reference`
+is bounded by the store it names (kiln-seams `NAME_MAX`, 512), not re-stated here; its hosts
+are bounded by `shards_dns`'s RFC 1035/1123 rules (a label 63 bytes, a name 253), reused.
+The channel version `8` is a sequence number, not a tuned value. A placeholder's format is
+not fixed here. It is minted where a credential is given to a member: by the orchestrator
+for a value it stages into a member (carried to the injector with the run's grants), and by
+the injector for a token it captures at sign-in. It exists before the value's lease, which
+is asked just in time at its first use. Its format is derived where it is minted: Codex's own
+egress broker keeps over 128 bits of randomness after a visible marker, and a sentinel the
+same length as the value is another option (Claude Code's sandbox mask does this). The
+choice is recorded there.
+
+**Evidence.** The implementer's record and light tests: docs/research/s33-veil-creds
+(POLICY_READ.json, STEP1.md, the research evidence). On macOS arm64: `cargo test -p shards-api`
+green (91 unit, 17 integration), each of the slice's five guards removed in turn failing its
+test (STEP1.md), and clippy of `shards-api` and `shards` clean. **Owed** (ROOT): CI's matrix
+on main; the real-VM runs of the later slices, and the end-to-end no-value-in-the-VM proof
+(step 10).
+
+**What would falsify it.** A harness that pins its provider's certificate or checks its
+token's signature or `at_hash` locally (then that harness is tmpfs-fallback, not injected —
+step 9 lists each); a provider that issues sender-constrained tokens, DPoP- or mTLS-bound
+(then bearer substitution cannot serve it, and it is fallback); a measured injector cost
+that a run cannot bear (then the native-sign-in delegation path, which stays, D231).
+
+### D243. An orchestrator's rate: D191's hold told through its run's host, in milli-CPU (built; real-VM validation owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 14: Hex caps each microVM it runs at
 its water-filled share of its fleet's CPU budget each window, in milli-CPU, at least the

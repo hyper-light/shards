@@ -1016,7 +1016,7 @@ fn function(
 }
 
 /// Holds this VM's vCPUs together to `milli` milli-CPU of the host's time, its run's CPU
-/// limits updated (`CPUS`, D191) or its orchestrator's rate (`RATE`, D242): what it holds
+/// limits updated (`CPUS`, D191) or its orchestrator's rate (`RATE`, D243): what it holds
 /// them to, none where it lets them be.
 pub fn hold_rate(milli: u64) -> Result<Option<std::num::NonZeroU64>, String> {
     RUNNING

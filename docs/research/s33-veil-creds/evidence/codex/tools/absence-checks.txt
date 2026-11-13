@@ -1,0 +1,26 @@
+## A1 custom verifier / pinning in non-test Rust sources (excluding vendor/)
+cmd: grep -rln 'ServerCertVerifier|dangerous()|danger_accept_invalid|pinned_cert|spki|cert_pin|certificate_pin|public_key_pin|PinnedCert|with_custom_certificate_verifier|set_verify_callback' --include='*.rs' . | grep -v /vendor/
+user-verification/src/credential_tests.rs
+shell-command/src/command_safety/windows_dangerous_commands.rs
+shell-command/src/command_safety/is_dangerous_command.rs
+## A2 reqwest features native-tls-alpn / http3 enabled by any workspace manifest (excluding vendor/)
+cmd: grep -rn --include=Cargo.toml -E 'native-tls-alpn|http3' . | grep -v '^./vendor'
+(no matches)
+## A3 refresh parameter list (client.rs lines 101-111) contains no scope
+        let mut parameters = vec![
+            ("grant_type", "refresh_token"),
+            ("client_id", self.endpoint.client_id),
+            ("refresh_token", grant.refresh_token),
+        ];
+        if let Some(resource) = grant.resource {
+            parameters.push(("resource", resource));
+        }
+        if let Some(reason) = grant.refresh_reason {
+            parameters.push(("refresh_reason", reason.as_str()));
+        }
+## A4 scope in refresh path of manager.rs
+cmd: grep -n 'scope' login/src/auth/manager.rs
+1709:    tokio::task::spawn_blocking(move || originator.sync_scope(|| storage.load()))
+2506:    /// Creates a provider-scoped token cache whose command environment overrides are
+2767:            originator.sync_scope(|| {
+3648:                originator.sync_scope(|| {

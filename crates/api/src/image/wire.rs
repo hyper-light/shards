@@ -26,11 +26,13 @@ pub use shards_abi::run::nesting::Ready;
 /// run (`ROOM`, answered `HELD`; D188, D241), so that a side that tells none refuses the run
 /// as it is asked, before any room is: a host of version 6 ends a run at a frame it has no
 /// kind for; and the run's stats carry what its microVM costs its host and what its vCPUs ran
-/// of its guest ([`Stats::microvm`], D241); 8, the CPU rate its orchestrator holds the run's
-/// vCPUs to (`RATE`, answered `RATED`; D191, D242), so that a side that holds none refuses the
-/// run as it is asked, before any rate is: a host of version 7 ends a run at a frame it has no
-/// kind for.
-pub const VERSION: u8 = 8;
+/// of its guest ([`Stats::microvm`], D241); 8, the run's credential grants
+/// ([`Request::credentials`], D242), each a credential named by reference and the hosts it
+/// may be filled in toward; 10, the CPU rate its orchestrator holds the run's vCPUs to
+/// (`RATE`, answered `RATED`; D191, D243), so that a side that holds none refuses the run as
+/// it is asked, before any rate is: a host of an earlier version ends a run at a frame it has
+/// no kind for. 9 is members' reach's, its number given it first.
+pub const VERSION: u8 = 10;
 
 /// What the orchestrator's side sends.
 pub mod to_host {
@@ -56,7 +58,7 @@ pub mod to_host {
     /// (D188, D241).
     pub const ROOM: u8 = 10;
     /// A [`RateAsk`](super::RateAsk): the CPU rate the orchestrator holds the run's vCPUs to
-    /// (D191, D242).
+    /// (D191, D243).
     pub const RATE: u8 = 11;
 }
 
@@ -233,6 +235,59 @@ impl Default for Narrowing {
     }
 }
 
+/// A credential grant by reference (D242): the credential named `reference` (a secret's
+/// path in the orchestrator's store, never a value) may be filled in at the VM's egress
+/// toward the hosts in `toward`, and no others. The grant carries no value, so it may
+/// print; the value rides a lease the injector pulls just in time, never this channel.
+///
+/// Each host in `toward` is a DNS name lowered, as a network's `--egress=HOST:PORT` names a
+/// destination's host by name (D236), or [`host.docker.internal`](shards_dns::HOST), the
+/// host itself; never an address (TLS names a server by its DNS name alone, RFC 6066 §3),
+/// never with a port, and never `localhost`. The orchestrator's side checks that where it builds the request
+/// ([`super::request`]); a side reading the wire takes them as bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CredentialGrant {
+    pub reference: String,
+    pub toward: Vec<String>,
+}
+
+/// What the credential injector (a gateway, not a proxy: RFC 9110 §3.7, so it may set the
+/// `Authorization` header a proxy may not, §11.6.2) does with a request it has terminated,
+/// decided by [`decide`] from the TLS name the flow arrived on, the request's host and the
+/// VM's grants (D242). The injector renders the outcome; this enum is the decision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Fill {
+    /// Fill the credential named `reference` into the request, then forward it.
+    With(String),
+    /// No grant names this host: forward the request with no credential (default deny).
+    Pass,
+    /// The request's host disagrees with the TLS name the flow arrived on, so the flow is
+    /// misdirected (RFC 9110 §7.4): refuse it 421, never guessing which host was meant.
+    Misdirected,
+}
+
+/// Decide what the injector fills into a request to a credential-granted host (D242).
+/// `sni` is the TLS server name the flow was terminated on, `host` the request's host (its
+/// HTTP/1.1 `Host` or HTTP/2 `:authority`, the authority alone, without a port); `grants`
+/// are the VM's. A value is filled only when the SNI, the host and a grant's host all
+/// agree: the SNI alone is not enough (a client picks its `Host` freely; domain fronting),
+/// so a `Host` that differs from the SNI is [`Misdirected`](Fill::Misdirected), and
+/// otherwise the first grant whose `toward` names the host fills it, else
+/// [`Pass`](Fill::Pass). Matching is ASCII case-insensitive, as DNS names compare (RFC
+/// 9549 §2.3); callers that also require the request to carry the credential's placeholder
+/// add that where they substitute.
+pub fn decide(grants: &[CredentialGrant], sni: &str, host: &str) -> Fill {
+    if !sni.eq_ignore_ascii_case(host) {
+        return Fill::Misdirected;
+    }
+    for grant in grants {
+        if grant.toward.iter().any(|h| h.eq_ignore_ascii_case(host)) {
+            return Fill::With(grant.reference.clone());
+        }
+    }
+    Fill::Pass
+}
+
 /// A host directory the guest sees at a path, as `-v HOST:PATH[:ro]` gives one (D109).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShareAt {
@@ -264,6 +319,10 @@ pub struct Request {
     /// The grant's deadline (D234): a budget in nanoseconds from when the run host reads
     /// this request, which it makes an instant on its own clock; none for none.
     pub ready_by: Option<u64>,
+    /// The run's credential grants (D242): each a credential named by reference and the
+    /// hosts the injector may fill it in toward. Empty for a run with none, as every run
+    /// is until an orchestrator asks for one (default deny).
+    pub credentials: Vec<CredentialGrant>,
 }
 
 /// Room for `bytes` more of member `member`'s `channel`.
@@ -542,7 +601,7 @@ pub struct RoomAnswer {
     pub result: Result<Option<u64>, String>,
 }
 
-/// The CPU rate the orchestrator holds the run's vCPUs to together (D191, D242), in
+/// The CPU rate the orchestrator holds the run's vCPUs to together (D191, D243), in
 /// milli-CPU of the host's time; none for no hold, the microVM's vCPUs its ceiling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RateAsk {
@@ -1069,6 +1128,16 @@ impl Request {
         for m in &self.members {
             w.u8(u8::from(m.input));
         }
+        // The run's credential grants, appended in version 8 (D242): each a reference and
+        // the hosts it may be filled in toward.
+        w.count(self.credentials.len())?;
+        for grant in &self.credentials {
+            w.text(&grant.reference)?;
+            w.count(grant.toward.len())?;
+            for host in &grant.toward {
+                w.text(host)?;
+            }
+        }
         w.done()
     }
 
@@ -1159,6 +1228,20 @@ impl Request {
         for m in &mut members {
             m.input = r.flag()?;
         }
+        // The run's credential grants, appended in version 8 (D242): each grant is at least
+        // its reference's length (four bytes) and its hosts' count (four), and each host at
+        // least its length (four).
+        let n = r.count(4 + 4)?;
+        let mut credentials = Vec::with_capacity(n);
+        for _ in 0..n {
+            let reference = r.text()?;
+            let toward_n = r.count(4)?;
+            let mut toward = Vec::with_capacity(toward_n);
+            for _ in 0..toward_n {
+                toward.push(r.text()?);
+            }
+            credentials.push(CredentialGrant { reference, toward });
+        }
         r.end()?;
         Ok(Request {
             image,
@@ -1171,6 +1254,7 @@ impl Request {
             shares,
             nesting,
             ready_by,
+            credentials,
         })
     }
 }
@@ -1815,6 +1899,94 @@ mod tests {
         ));
     }
 
+    /// The injector fills a credential only when the TLS name, the request's host and a
+    /// grant's host all agree (D242): a grant toward one host does not fill a request to
+    /// another, a host that differs from the SNI is misdirected, and matching ignores
+    /// ASCII case.
+    #[test]
+    fn decide_fills_only_on_an_agreed_granted_host() {
+        let grants = vec![
+            CredentialGrant {
+                reference: "anthropic/claude-max".into(),
+                toward: vec!["api.anthropic.com".into(), "platform.claude.com".into()],
+            },
+            CredentialGrant {
+                reference: "openai/chatgpt".into(),
+                toward: vec!["chatgpt.com".into()],
+            },
+        ];
+        // SNI == Host == a grant's host: filled, the first grant that names it.
+        assert_eq!(
+            decide(&grants, "api.anthropic.com", "api.anthropic.com"),
+            Fill::With("anthropic/claude-max".into())
+        );
+        assert_eq!(
+            decide(&grants, "chatgpt.com", "chatgpt.com"),
+            Fill::With("openai/chatgpt".into())
+        );
+        // Case folds, as DNS names compare (RFC 9549 §2.3).
+        assert_eq!(
+            decide(&grants, "API.Anthropic.Com", "api.anthropic.com"),
+            Fill::With("anthropic/claude-max".into())
+        );
+        // A host no grant names: forwarded bare (default deny).
+        assert_eq!(decide(&grants, "example.com", "example.com"), Fill::Pass);
+        assert_eq!(decide(&[], "api.anthropic.com", "api.anthropic.com"), Fill::Pass);
+        // A grant toward host A does not fill a request whose host is B.
+        assert_eq!(decide(&grants, "evil.example", "evil.example"), Fill::Pass);
+        // The request's host disagrees with the TLS name it arrived on: misdirected, and
+        // never filled even though the SNI is a granted host (the SNI alone is not enough).
+        assert_eq!(
+            decide(&grants, "api.anthropic.com", "evil.example"),
+            Fill::Misdirected
+        );
+        assert_eq!(
+            decide(&grants, "chatgpt.com", "api.anthropic.com"),
+            Fill::Misdirected
+        );
+    }
+
+    /// A credential's value never prints: a [`Secret`]'s `Debug` says only its length, and
+    /// a [`CredentialGrant`] carries no value to print (reference and hosts alone).
+    #[test]
+    fn a_value_never_prints() {
+        let secret = Secret(b"sk-ant-very-secret-value".to_vec());
+        let shown = format!("{secret:?}");
+        assert!(
+            !shown.contains("sk-ant"),
+            "a Secret's Debug showed its value: {shown}"
+        );
+        assert_eq!(shown, "Secret(24 bytes)");
+        let grant = CredentialGrant {
+            reference: "anthropic/claude-max".into(),
+            toward: vec!["api.anthropic.com".into()],
+        };
+        let shown = format!("{grant:?}");
+        assert!(
+            shown.contains("anthropic/claude-max"),
+            "the reference is a name, not a value"
+        );
+        assert!(shown.contains("api.anthropic.com"));
+        // A staged variable holding a value is a Secret, redacted in a MemberStage's Debug.
+        let staged = MemberStage {
+            kind: MemberKind::Harness,
+            name: "codex".into(),
+            env: vec![Secret::from("OPENAI_API_KEY=sk-live-DEADBEEF")],
+            files: vec![StagedFile {
+                path: "auth.json".into(),
+                mode: 0o600,
+                bytes: Secret::from("{\"token\":\"sk-live-DEADBEEF\"}"),
+            }],
+            workdir: None,
+            input: false,
+        };
+        let shown = format!("{staged:?}");
+        assert!(
+            !shown.contains("DEADBEEF"),
+            "a staged value leaked into Debug: {shown}"
+        );
+    }
+
     fn request() -> Request {
         Request {
             image: "registry.example/codex:1".into(),
@@ -1860,6 +2032,7 @@ mod tests {
             }],
             nesting: false,
             ready_by: None,
+            credentials: Vec::new(),
         }
     }
 
@@ -1868,6 +2041,20 @@ mod tests {
     fn messages_round_trip() {
         let r = request();
         assert_eq!(Request::decode(&r.encode().unwrap()).unwrap(), r);
+        // The run's credential grants (version 8, D242): none, one with several hosts, and
+        // one with none, each reading back as written.
+        let mut credited = request();
+        credited.credentials = vec![
+            CredentialGrant {
+                reference: "anthropic/claude-max".into(),
+                toward: vec!["api.anthropic.com".into(), "platform.claude.com".into()],
+            },
+            CredentialGrant {
+                reference: "openai/chatgpt".into(),
+                toward: Vec::new(),
+            },
+        ];
+        assert_eq!(Request::decode(&credited.encode().unwrap()).unwrap(), credited);
         // Each member's working directory, or none, in the members' order (version 5), and
         // whether its input is the orchestrator's (version 6).
         let mut worked = request();
@@ -1917,10 +2104,11 @@ mod tests {
         .encode()
         .unwrap();
         assert_eq!(
-            asked.get(asked.len() - 13..).unwrap(),
-            [1, 1, 1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 1],
-            "appended: the grant's flag, the deadline's, the destinations kept (all), then the one \
-             member's working directory (none) and its input"
+            asked.get(asked.len() - 17..).unwrap(),
+            [1, 1, 1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 1, 0, 0, 0, 0],
+            "appended: the grant's flag, the deadline's, the destinations kept (all), the one \
+             member's working directory (none) and its input, then the credential grants' count \
+             (zero, version 8)"
         );
         // Destinations kept by name, the host itself among them (D236), and none.
         for destinations in [
@@ -2084,11 +2272,16 @@ mod tests {
             InputEnd::decode(&[0, 0, 0, 1, 2]),
             Err(WireError::Tag { tag: 2, .. })
         ));
-        // A member's input flag, appended last in version 5, that is no flag.
+        // A member's input flag, before the credential grants' count (version 8), that is
+        // no flag. One member, so its input is the fifth byte from the end (the count's
+        // four follow it).
         let mut bad = request().encode().unwrap();
-        let last = bad.len() - 1;
-        assert_eq!(bad[last], 1, "the member's input flag comes last");
-        bad[last] = 2;
+        let at = bad.len() - 5;
+        assert_eq!(
+            bad[at], 1,
+            "the member's input flag precedes the credentials' count"
+        );
+        bad[at] = 2;
         assert!(matches!(
             Request::decode(&bad),
             Err(WireError::Tag {
@@ -2135,20 +2328,30 @@ mod tests {
         v5.truncate(v5.len() - 1);
         v5[0] = 5;
         assert_eq!(Request::decode(&v5), Err(WireError::Version(5)));
-        // One of version 6 carries every field this one does, but its host ends the run at
+        // One of version 6 carries every field version 7 does, but its host ends the run at
         // a room: refused by its version, before any room is told (D241).
         let mut v6 = request().encode().unwrap();
+        v6.truncate(v6.len() - 4);
         v6[0] = 6;
         assert_eq!(Request::decode(&v6), Err(WireError::Version(6)));
-        // One of version 7 carries every field this one does, but its host ends the run at a
-        // rate: refused by its version, before any rate is told (D242).
+        // One of version 7, without the credential grants' count: refused by its version
+        // (D242), so an older reader never reads a grant with its field defaulted.
         let mut v7 = request().encode().unwrap();
+        v7.truncate(v7.len() - 4);
         v7[0] = 7;
         assert_eq!(Request::decode(&v7), Err(WireError::Version(7)));
-        // The nesting flag, before the deadline's tag, the destinations' and the one member's
-        // working directory's and input's: no flag.
+        // One of version 8 or 9 carries every field this one reads, but its host ends the
+        // run at a rate: refused by its version, before any rate is told (D243).
+        for version in [8, 9] {
+            let mut older = request().encode().unwrap();
+            older[0] = version;
+            assert_eq!(Request::decode(&older), Err(WireError::Version(version)));
+        }
+        // The nesting flag, before the deadline's tag, the destinations', the one member's
+        // working directory's and input's, and the credential grants' count (version 8): no
+        // flag.
         let mut flag = request().encode().unwrap();
-        let at = flag.len() - 5;
+        let at = flag.len() - 9;
         flag[at] = 2;
         assert_eq!(
             Request::decode(&flag),
@@ -2157,10 +2360,10 @@ mod tests {
                 tag: 2
             })
         );
-        // The destinations' list, before the member's working directory and input: no list
-        // of version 3's and on.
+        // The destinations' list, before the member's working directory and input and the
+        // credential grants' count: no list of version 3's and on.
         let mut list = request().encode().unwrap();
-        let at = list.len() - 3;
+        let at = list.len() - 7;
         list[at] = 2;
         assert_eq!(
             Request::decode(&list),
@@ -2315,7 +2518,7 @@ mod tests {
         assert_eq!(long.encode(), Err(WireError::TooLong));
     }
 
-    /// A rate and its answer read back as they were said (D242): no hold, the least rate,
+    /// A rate and its answer read back as they were said (D243): no hold, the least rate,
     /// a CPU and a half, the most a u64 holds; held to none, to a rate, and why not. Cut
     /// short, padded or of a tag no version has, refused.
     #[test]

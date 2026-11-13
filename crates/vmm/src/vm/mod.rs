@@ -181,7 +181,7 @@ pub use guest_time::{GuestTimes, VcpuTime};
 /// A CPU in the hold's unit, the milli-CPU: a rate is a whole CPU's time in thousandths, as
 /// Kubernetes counts CPU, no finer than `1m` ("Resource Management for Pods and Containers",
 /// CPU resource units), and as Hex charges and caps a microVM (`hex_api::MIN_CPU_MILLI`). A
-/// unit, not a tuning: a daemon's whole CPUs are this many of it (D191, D242).
+/// unit, not a tuning: a daemon's whole CPUs are this many of it (D191, D243).
 pub const MILLI_PER_CPU: u64 = 1000;
 #[cfg(any(hv, test))]
 mod hold;

@@ -30,6 +30,7 @@ speculative abstraction (R05).
 | An unenrolled peer refused, typed | built, slice 1 | `control::{Ended, ended}` |
 | A lane's first frame; a lane's refusal | built, slice 1 | `control::{lane, refused, read_refused}` |
 | The lanes' service: stdio lanes on step 5's streams, one connection of the controller's at a time | built, slice 2 | `control::{Endpoint, Streams, Served, Revoke}` over step 5's `managed::Service`, `managed::input::Service` |
+| The controller's side: kiln's and Hex's client of the stdio lanes (attach included), typed faults, cursors to resume at | built, goal #58's plan step 2 | `control::{Controller, Subscriptions, Output, Input, Fault, Got, Hangup}` (`control/drive.rs`), `net::Handler::cause` |
 | Control (exec, signal, inspect) and terminal (attach, TTY) lanes | held for step 6 | — |
 | Log lane; where the endpoint runs and how its key's SHA-256 reaches the controller | held for step 10 | — |
 
@@ -144,6 +145,13 @@ touch, and scripts/lint's C toolchain for each target: all seven targets are cle
 The first run of `mutate.py` reported its kills by exit status alone; the harness now counts a
 mutant killed only where its one test ran and failed, and prints the failure, and the log is
 that second run's.
+
+The controller's side (goal #58's plan `01a1d2c733ea7731bb3204cad78bc94d`, step 2), on one host
+as the person's rule of 2026-11-13 asks, its tree origin/main `b66bc0131` with `4c50a8744` merged:
+macOS 26.2 arm64 (adas-mac-studio.local, M4 Max, rustc 1.98.1), `cargo test -p shards-remote
+--lib` 68 passed (24 `control::tests`, seven of them the controller's), `--test loopback` 17
+passed, `cargo clippy -p shards-remote --all-targets -- -D warnings` clean, rustfmt clean. CI on
+main covers the other targets.
 
 ## R01–R16
 

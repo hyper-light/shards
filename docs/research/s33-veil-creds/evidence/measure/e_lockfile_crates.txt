@@ -1,0 +1,16 @@
+# 2026-11-12T23:19:45Z Cargo.lock of 99d88fccf6107d1929c1115eb220a732b182fd37
+rustls: 0.23.46
+rustls-webpki: 0.103.16
+rustls-platform-verifier: 0.7.1
+rustls-native-certs: 0.8.4
+webpki-roots: absent
+aws-lc-rs: 1.18.1
+rcgen: 0.14.10
+x509-parser: 0.18.1
+httparse: 1.10.1
+h2: absent
+hpack: absent
+hyper: absent
+http: absent
+tokio: absent
+tungstenite: absent

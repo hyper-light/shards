@@ -85,6 +85,7 @@ fn spec(home: &TempDir, image: &str) -> ImageSpec {
         members: Vec::new(),
         publish: Vec::new(),
         egress: Narrowing::default(),
+        credentials: Vec::new(),
         shares: Vec::new(),
         nesting: false,
         ready_by: None,
@@ -487,7 +488,7 @@ fn the_orchestrators_room_holds_its_run_within_it() {
     assert_eq!(guest.wait_for(TIMEOUT).unwrap(), Some(RunEnd::Stopped));
 }
 
-/// The CPU rate an orchestrator holds its run's vCPUs to (D242) reaches its VM through its
+/// The CPU rate an orchestrator holds its run's vCPUs to (D243) reaches its VM through its
 /// host: a run spinning its one vCPU, held to a quarter of its CPU, runs its guest a quarter
 /// of the time passing, but what a period may overrun and a period's share where the window
 /// and the periods do not line up, and is let go each period; held to its vCPU's whole CPU,
