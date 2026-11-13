@@ -13,7 +13,11 @@ fn peak() -> f64 {
     // SAFETY: as above; RUSAGE_SELF and a valid pointer.
     unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut ru) };
     let max = ru.ru_maxrss as f64;
-    if cfg!(target_os = "macos") { max } else { max * 1024.0 }
+    if cfg!(target_os = "macos") {
+        max
+    } else {
+        max * 1024.0
+    }
 }
 
 /// macOS's lifetime peak physical footprint, what memory pressure and jetsam count (the
@@ -31,7 +35,11 @@ fn footprint() -> f64 {
             (&raw mut info).cast(),
         )
     };
-    if rc == 0 { info.ri_lifetime_max_phys_footprint as f64 } else { f64::NAN }
+    if rc == 0 {
+        info.ri_lifetime_max_phys_footprint as f64
+    } else {
+        f64::NAN
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -58,7 +66,13 @@ fn main() {
     let builtin = funcs::lookup(name).unwrap();
     let before = peak();
     let t = Instant::now();
-    let got = builtin(&mut Context { holdable, ..Context::default() }, ops);
+    let got = builtin(
+        &mut Context {
+            holdable,
+            ..Context::default()
+        },
+        ops,
+    );
     let answer = got.map(|v| v.map(|v| value::to_json(&v).unwrap()));
     let secs = t.elapsed().as_secs_f64();
     let mib = |b: f64| b / (1 << 20) as f64;

@@ -40,7 +40,11 @@ fn peak(limit: u64) -> u64 {
         return limit;
     }
     let max = u64::try_from(u.ru_maxrss).unwrap_or(0);
-    if cfg!(target_os = "macos") { max } else { max.saturating_mul(1024) }
+    if cfg!(target_os = "macos") {
+        max
+    } else {
+        max.saturating_mul(1024)
+    }
 }
 
 /// What an evaluation can hold now: the room left under the limit, less the quarantine

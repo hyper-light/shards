@@ -1,6 +1,8 @@
 //! number.rs against what Go's big.Float and OPA make of testdata/numbers.json
 //! (testdata/numbers-oracle.json, written by scripts/rego/generate).
 
+#![allow(clippy::unwrap_used, clippy::panic)]
+
 use shards_rego::digits;
 use shards_rego::funcs::{self, BuiltinError, Context};
 use shards_rego::number::{self, Error, Float};
@@ -233,7 +235,7 @@ fn answer(name: &str, got: &Result<Option<Value>, BuiltinError>) -> serde_json::
 fn call(name: &str, args: &str, ctx: &mut Context) -> Result<Option<Value>, BuiltinError> {
     let operands = value::from_json(args).unwrap();
     let Value::Array(args) = &operands else {
-        panic!("{name}({args}): no array");
+        return Err(BuiltinError::Other(format!("{name}({args}): no array")));
     };
     funcs::lookup(name).unwrap()(ctx, args)
 }
@@ -322,8 +324,23 @@ fn a_text_past_what_the_evaluation_holds_is_refused_by_name() {
         ..Context::default()
     };
     let e = call("bits.lsh", "[1, 1e30]", &mut ctx).unwrap_err();
-    assert!(e.message().starts_with("number too large to write"), "{}", e.message());
-    let e = call("bits.or", "[1e646456992, 1]", &mut Context { holdable: 1 << 30, ..Context::default() })
-        .unwrap_err();
-    assert!(e.message().starts_with("number too large to write"), "{}", e.message());
+    assert!(
+        e.message().starts_with("number too large to write"),
+        "{}",
+        e.message()
+    );
+    let e = call(
+        "bits.or",
+        "[1e646456992, 1]",
+        &mut Context {
+            holdable: 1 << 30,
+            ..Context::default()
+        },
+    )
+    .unwrap_err();
+    assert!(
+        e.message().starts_with("number too large to write"),
+        "{}",
+        e.message()
+    );
 }

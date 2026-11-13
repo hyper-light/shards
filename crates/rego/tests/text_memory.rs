@@ -5,6 +5,8 @@
 //! transforms or text change. The bound is an upper bound of the peak by construction;
 //! this holds it to the allocations themselves.
 
+#![allow(clippy::unwrap_used)]
+
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};

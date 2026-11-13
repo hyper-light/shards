@@ -33,15 +33,16 @@ const T0: [u64; 2] = [8_446_744_073_709_551_616, 1];
 /// Trans. Computers 60(2), 2011, algorithm 4); BASE is normalized (≥ 2^63).
 const BASE_INV: u64 = (u128::MAX / BASE as u128 - (1u128 << 64)) as u64;
 
-/// Products with an operand of at most this many limbs are schoolbook's: the least size
-/// past which the transforms measured cheaper at every size, on arm64 macOS and x86_64
-/// Linux (PM M525's `school` crossover).
-const SCHOOL: usize = 24;
+/// Products with an operand of at most this many limbs are schoolbook's: past it the
+/// transforms measured cheaper at every size, s by s limbs and s by 64·s, on arm64 macOS
+/// (from 73) and x86_64 Linux (from 164) (PM M531, `digits_crossover.rs`'s
+/// `schoolbook_against_transforms`). The transforms' cost steps where their points
+/// double, so they win in windows before that (112 to 128 on a Ryzen 9950X3D2).
+const SCHOOL: usize = 163;
 
 /// (u1·2^64 + u0) / BASE and its remainder, for u1 < BASE.
 fn div_base(u1: u64, u0: u64) -> (u64, u64) {
-    let q = (u128::from(BASE_INV) * u128::from(u1))
-        .wrapping_add((u128::from(u1) << 64) | u128::from(u0));
+    let q = (u128::from(BASE_INV) * u128::from(u1)).wrapping_add((u128::from(u1) << 64) | u128::from(u0));
     let mut q1 = ((q >> 64) as u64).wrapping_add(1);
     let mut r = u0.wrapping_sub(q1.wrapping_mul(BASE));
     if r > q as u64 {
@@ -369,7 +370,9 @@ impl Scratch {
         if self.words.len() < want {
             let len = want.max(words_for(self.most));
             self.words = Vec::new();
-            self.words.try_reserve_exact(len).map_err(|_| refused::<u64>(len))?;
+            self.words
+                .try_reserve_exact(len)
+                .map_err(|_| refused::<u64>(len))?;
             self.words.resize(len, 0);
         }
         self.words
@@ -422,9 +425,13 @@ fn mul(a: &[u64], b: &[u64], scratch: &mut Scratch) -> Result<Vec<u64>, Error> {
     if s.len() <= SCHOOL {
         return school(s, l);
     }
-    // By pieces of the shorter's length where a piece's transform is at most half the
-    // whole's: the product's limbs and a piece's transforms then hold less than the
-    // whole's transforms would ([`need`]'s 4.5·N).
+    by_transforms(s, l, scratch)
+}
+
+/// s·l by transforms, s not longer than l, s not empty: by pieces of s's length where a
+/// piece's transform is at most half the whole's (the product's limbs and a piece's
+/// transforms then hold less than the whole's transforms would, [`need`]'s 4.5·N).
+fn by_transforms(s: &[u64], l: &[u64], scratch: &mut Scratch) -> Result<Vec<u64>, Error> {
     let whole = (s.len() + l.len() - 1).checked_next_power_of_two();
     let piece = (2 * s.len() - 1).checked_next_power_of_two();
     if piece.zip(whole).is_none_or(|(p, w)| p > w / 2) {
@@ -588,10 +595,7 @@ impl Converter {
     /// Takes a block of 2^k limbs, aligned at the limbs taken.
     fn push(&mut self, mut k: u32, mut block: Block) -> Result<(), Error> {
         let size = 1u64.checked_shl(k).ok_or(Error::Go("number too long"))?;
-        self.taken = self
-            .taken
-            .checked_add(size)
-            .ok_or(Error::Go("number too long"))?;
+        self.taken = self.taken.checked_add(size).ok_or(Error::Go("number too long"))?;
         while let Some(&(top, _)) = self.stack.last()
             && top == k
         {
@@ -728,22 +732,21 @@ fn sizes(bits: u64) -> Sizes {
 /// - the transforms' scratch ([`Scratch`]), made once for the largest: 4.5 words a
 ///   point.
 ///
-/// Then the text: its digits (19 a limb) and a sign, while the limbs are held; and its
-/// caller's copy, as `Rc<str>` from a String copies.
+/// Then, on top of those (an allocator may keep what the conversion gave back while the
+/// text is made: macOS's did, PM M531), the text, its digits (19 a limb, from the last
+/// product's limbs) and a sign, and its caller's copy (`Rc<str>` from a String copies).
 pub fn need(bits: u64) -> u64 {
     let z = sizes(bits);
-    let scratch = u64::try_from(words_for(usize::try_from(z.points).unwrap_or(usize::MAX)))
-        .unwrap_or(u64::MAX);
+    let scratch =
+        u64::try_from(words_for(usize::try_from(z.points).unwrap_or(usize::MAX))).unwrap_or(u64::MAX);
     let words = z
         .powers
         .saturating_add(z.values.saturating_mul(3))
         .saturating_add(z.largest)
         .saturating_add(scratch);
-    let text = most(bits);
     words
         .saturating_mul(8)
-        .max(z.values.saturating_mul(8).saturating_add(text))
-        .max(text.saturating_mul(2))
+        .saturating_add(most(bits).saturating_mul(2))
 }
 
 /// The most bytes the text of an integer of `bits` bits takes: its decimal limbs' digits
@@ -756,23 +759,20 @@ pub fn most(bits: u64) -> u64 {
 
 /// The digits of `mant`·2^shift, after a `-` for `neg`, into `out`; refused where writing
 /// them would hold more than `holdable` bytes ([`need`]).
-pub fn write(
-    out: &mut String,
-    neg: bool,
-    mant: &BigUint,
-    shift: u64,
-    holdable: u64,
-) -> Result<(), Error> {
+pub fn write(out: &mut String, neg: bool, mant: &BigUint, shift: u64, holdable: u64) -> Result<(), Error> {
     let bits = mant.bits().saturating_add(shift);
     let need = need(bits);
     if need > holdable {
-        return Err(Error::Unholdable {
-            bits,
-            need,
-            holdable,
-        });
+        return Err(Error::Unholdable { bits, need, holdable });
     }
+    text(out, neg, &limbs_of_shifted(mant, shift)?)
+}
+
+/// mant·2^shift in base 10^19 by the converter, mant's limbs shifted as they go, never
+/// made whole.
+fn limbs_of_shifted(mant: &BigUint, shift: u64) -> Result<Vec<u64>, Error> {
     let mut c = Converter::default();
+    let bits = mant.bits().saturating_add(shift);
     c.scratch.most = usize::try_from(sizes(bits).points).unwrap_or(usize::MAX);
     if mant.bits() > 0 {
         c.uniform(false, shift / 64)?;
@@ -780,7 +780,6 @@ pub fn write(
         if s == 0 {
             c.limbs(mant.iter_u64_digits())?;
         } else {
-            // mant's limbs shifted left s bits, as they go.
             let mut carry = 0u64;
             let shifted = mant.iter_u64_digits().map(|x| {
                 let y = (x << s) | carry;
@@ -793,7 +792,12 @@ pub fn write(
             }
         }
     }
-    let limbs = c.finish()?;
+    c.finish()
+}
+
+/// The digits of base-10^19 limbs (least first, no top zero limbs), after a `-` for
+/// `neg`, into `out`, grown once to their length.
+fn text(out: &mut String, neg: bool, limbs: &[u64]) -> Result<(), Error> {
     let Some((&top, rest)) = limbs.split_last() else {
         out.push_str(if neg { "-0" } else { "0" });
         return Ok(());
@@ -846,9 +850,10 @@ mod tests {
         }
     }
 
+    /// The converter's digits, as `write` makes them.
     fn text(x: &BigUint, shift: u64) -> String {
         let mut out = String::new();
-        write(&mut out, false, x, shift, u64::MAX).unwrap();
+        super::text(&mut out, false, &limbs_of_shifted(x, shift).unwrap()).unwrap();
         out
     }
 
@@ -903,7 +908,14 @@ mod tests {
     fn division_by_the_base_is_exact() {
         let mut r = Rng(9);
         let mut cases: Vec<(u64, u64)> = (0..100_000).map(|_| (r.next() % BASE, r.next())).collect();
-        cases.extend([(0, 0), (0, BASE - 1), (0, BASE), (0, u64::MAX), (BASE - 1, u64::MAX), (BASE - 1, 0)]);
+        cases.extend([
+            (0, 0),
+            (0, BASE - 1),
+            (0, BASE),
+            (0, u64::MAX),
+            (BASE - 1, u64::MAX),
+            (BASE - 1, 0),
+        ]);
         for (u1, u0) in cases {
             let x = (u128::from(u1) << 64) | u128::from(u0);
             let want = ((x / u128::from(BASE)) as u64, (x % u128::from(BASE)) as u64);
@@ -944,20 +956,36 @@ mod tests {
             let mut z = Scratch::default();
             assert_eq!(to_big(&mul(&a, &b, &mut z).unwrap()), want, "{la}×{lb}");
             assert_eq!(to_big(&school(&a, &b).unwrap()), want, "{la}×{lb} by rows");
-            assert_eq!(to_big(&convolve(&a, Some(&b), &mut z).unwrap()), want, "{la}×{lb} by transforms");
+            assert_eq!(
+                to_big(&convolve(&a, Some(&b), &mut z).unwrap()),
+                want,
+                "{la}×{lb} by transforms"
+            );
             let sq = to_big(&a) * to_big(&a);
             assert_eq!(to_big(&square(&a, &mut z).unwrap()), sq, "{la}²");
-            assert_eq!(to_big(&convolve(&a, None, &mut z).unwrap()), sq, "{la}² by transforms");
+            assert_eq!(
+                to_big(&convolve(&a, None, &mut z).unwrap()),
+                sq,
+                "{la}² by transforms"
+            );
         }
         // Every limb at its most: the largest coefficients the transforms meet.
         let a = vec![BASE - 1; 4096];
         let want = to_big(&a) * to_big(&a);
-        assert_eq!(to_big(&convolve(&a, Some(&a), &mut Scratch::default()).unwrap()), want);
+        assert_eq!(
+            to_big(&convolve(&a, Some(&a), &mut Scratch::default()).unwrap()),
+            want
+        );
         assert_eq!(to_big(&school(&a, &a).unwrap()), want);
     }
 
     fn from_limbs(limbs: &[u64]) -> BigUint {
-        BigUint::from_slice(&limbs.iter().flat_map(|&x| [x as u32, (x >> 32) as u32]).collect::<Vec<_>>())
+        BigUint::from_slice(
+            &limbs
+                .iter()
+                .flat_map(|&x| [x as u32, (x >> 32) as u32])
+                .collect::<Vec<_>>(),
+        )
     }
 
     #[test]

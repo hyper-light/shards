@@ -7,7 +7,7 @@ set -eu
 cargo=${1:-cargo}
 dir=docs/research/measurements/rego-bignum/text
 $cargo build --release --manifest-path "$dir/Cargo.toml" >&2
-bin=$dir/target/release/rego-bignum-text
+bin=${CARGO_TARGET_DIR:-$dir/target}/release/rego-bignum-text
 host="$(uname -sm), $(sysctl -n machdep.cpu.brand_string 2>/dev/null || grep -m1 'model name' /proc/cpuinfo | cut -d: -f2), $(git rev-parse --short HEAD)"
 echo "host: $host"
 fz=80000000000e00029174680

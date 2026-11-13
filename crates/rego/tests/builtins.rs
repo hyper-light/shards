@@ -334,7 +334,8 @@ fn numbers_with_huge_exponents_answer_in_bounded_work() {
             "error p.rego:1: eval_builtin_error: {name}: number too large to write: the text of a {bits}-bit number takes "
         );
         assert!(
-            got.starts_with(&want) && got.ends_with("more than the 1073741824 bytes this evaluation can hold"),
+            got.starts_with(&want)
+                && got.ends_with("more than the 1073741824 bytes this evaluation can hold"),
             "{name}{args}: {got}"
         );
     }

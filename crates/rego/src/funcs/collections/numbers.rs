@@ -185,12 +185,7 @@ pub(super) fn floor(ctx: &mut Context, args: &[Value]) -> Out {
 type FloatOp = fn(&Float, &Float, u32) -> Result<Float, number::Error>;
 
 /// plus and mul: small integers directly, else big.Float.
-fn small_or_float(
-    ctx: &Context,
-    args: &[Value],
-    small_op: fn(i64, i64) -> i64,
-    op: FloatOp,
-) -> Out {
+fn small_or_float(ctx: &Context, args: &[Value], small_op: fn(i64, i64) -> i64, op: FloatOp) -> Out {
     let n1 = number_operand(arg(args, 0)?, 1)?;
     let n2 = number_operand(arg(args, 1)?, 2)?;
     if let (Some(x), Some(y)) = (small(n1), small(n2)) {
@@ -211,9 +206,7 @@ pub(super) fn mul(ctx: &mut Context, args: &[Value]) -> Out {
 pub(super) fn minus(ctx: &mut Context, args: &[Value]) -> Out {
     let (a, b) = (arg(args, 0)?, arg(args, 1)?);
     match (a, b) {
-        (Value::Number(_), Value::Number(_)) => {
-            small_or_float(ctx, args, |x, y| x - y, Float::sub)
-        }
+        (Value::Number(_), Value::Number(_)) => small_or_float(ctx, args, |x, y| x - y, Float::sub),
         (Value::Set(s1), Value::Set(s2)) => ok(Value::set(diff(s1, s2))),
         (Value::Set(_), Value::Number(_)) => Err(BuiltinError::operand_type(2, b, &["set"])),
         (Value::Number(_) | Value::Set(_), _) => Err(BuiltinError::operand_type(2, b, &["number"])),
@@ -228,7 +221,10 @@ pub(super) fn div(ctx: &mut Context, args: &[Value]) -> Out {
     if b.is_zero() {
         return Err(BuiltinError::Other("divide by zero".into()));
     }
-    number(ctx, &Float::quo(&a, &b, Float::max_prec(&a, &b)).map_err(num_err)?)
+    number(
+        ctx,
+        &Float::quo(&a, &b, Float::max_prec(&a, &b)).map_err(num_err)?,
+    )
 }
 
 /// x % y of integers from floats, as big.Int's Rem (truncated, of x's sign), y's low 64
@@ -262,7 +258,11 @@ pub(super) fn rem(ctx: &mut Context, args: &[Value]) -> Out {
     };
     // big.Int's Int64 of y, its low 64 bits, as OPA asks of a divisor.
     let (ym, yshift) = y.truncated();
-    let low = ym.iter_u64_digits().next().unwrap_or(0).checked_shl(u32::try_from(yshift).unwrap_or(u32::MAX));
+    let low = ym
+        .iter_u64_digits()
+        .next()
+        .unwrap_or(0)
+        .checked_shl(u32::try_from(yshift).unwrap_or(u32::MAX));
     if low.is_none_or(|l| l == 0) {
         return Err(BuiltinError::Other("modulo by zero".into()));
     }
@@ -453,7 +453,10 @@ fn range_operands(ctx: &Context, args: &[Value]) -> Result<(BigInt, BigInt), Bui
     let (bx, by) = (int_bits(vx), int_bits(vy));
     let bs = args.get(2).map_or(0, int_bits);
     holds(ctx, bx.max(by), &[bx, by, bs])?;
-    Ok((big_int_operand(vx, 1, ctx.holdable)?, big_int_operand(vy, 2, ctx.holdable)?))
+    Ok((
+        big_int_operand(vx, 1, ctx.holdable)?,
+        big_int_operand(vy, 2, ctx.holdable)?,
+    ))
 }
 
 pub(super) fn range(ctx: &mut Context, args: &[Value]) -> Out {

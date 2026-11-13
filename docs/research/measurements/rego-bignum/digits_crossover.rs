@@ -1,11 +1,14 @@
-//! PM M525's crossovers for `digits` (crates/rego/src/digits.rs takes this by #[path]):
+//! PM M531's crossovers for `digits` (crates/rego/src/digits.rs takes this by #[path]):
 //!
-//! - `schoolbook_against_transforms`: a product by schoolbook rows against one by transforms, for operands of s
-//!   limbs each (s × s) and of s by 64·s limbs (the shorter by a far longer, as a sparse
-//!   integer's upper part meets T[k]), s from 1 to 128;
-//! - `against_num_bigint`: an integer's digits by `write` against num-bigint 0.4.8's
-//!   `to_str_radix(10)`, for random integers of n limbs, n from 1 to 2^14 (400 samples a
-//!   size), then a few far larger, fewer samples each (their n printed).
+//! - `schoolbook_against_transforms`: a product by schoolbook rows against one by
+//!   transforms as `mul` makes it past `SCHOOL` (by pieces where the other operand is far
+//!   longer), for operands of s limbs each (s × s) and of s by 64·s limbs (the shorter by
+//!   a far longer, as a sparse integer's upper part meets T[k]), s from 1 to 128, then to
+//!   256 four at a time;
+//! - `against_num_bigint`: an integer's digits by the converter (as `write` makes them)
+//!   against num-bigint 0.4.8's `to_str_radix(10)`, for random
+//!   integers of n limbs, n from 1 to 2^16 a quarter more each step (400 samples a size),
+//!   then four far larger, fewer samples each (their n printed).
 //!
 //! Each sample draws fresh operands; the two ways interleave, their order alternating, 20
 //! warm-ups first. Run built for release, unclamped (on a Mac, through
@@ -76,6 +79,16 @@ fn crossover(rows: &[(usize, u128, u128)]) -> Option<usize> {
     from
 }
 
+/// The converter's digits of x, as `write` makes them.
+fn convert(x: &BigUint) -> Result<String, Error> {
+    let mut out = String::new();
+    text(&mut out, false, &limbs_of_shifted(x, 0)?)?;
+    Ok(out)
+}
+
+/// A product of two operands' limbs, as each way makes it.
+type Product<'a> = dyn Fn(&[u64], &[u64]) -> Vec<u64> + 'a;
+
 fn decimal(r: &mut Rng, n: usize) -> Vec<u64> {
     (0..n).map(|_| r.next() % BASE).collect()
 }
@@ -91,11 +104,11 @@ fn schoolbook_against_transforms() {
     );
     for (shape, times) in [("s×s", 1usize), ("s×64s", 64)] {
         let mut rows = Vec::new();
-        for s in 1..=128usize {
+        for s in (1..=128usize).chain((132..=256).step_by(4)) {
             let pairs: Vec<(Vec<u64>, Vec<u64>)> = (0..420)
                 .map(|_| (decimal(&mut r, s), decimal(&mut r, s * times)))
                 .collect();
-            let time = |f: &dyn Fn(&[u64], &[u64]) -> Vec<u64>, i: usize| {
+            let time = |f: &Product<'_>, i: usize| {
                 let (a, b) = &pairs[i];
                 let t = Instant::now();
                 black_box(f(black_box(a), black_box(b)));
@@ -106,12 +119,7 @@ fn schoolbook_against_transforms() {
                 400,
                 20,
                 |i| time(&|a, b| school(a, b).unwrap(), i),
-                |i| {
-                    time(
-                        &|a, b| convolve(a, Some(b), &mut scratch.borrow_mut()).unwrap(),
-                        i,
-                    )
-                },
+                |i| time(&|a, b| by_transforms(a, b, &mut scratch.borrow_mut()).unwrap(), i),
             );
             let (pa, pb) = (pct(&mut a, 0.5), pct(&mut b, 0.5));
             println!(
@@ -137,7 +145,7 @@ fn against_num_bigint() {
     );
     let mut sizes: Vec<usize> = Vec::new();
     let mut n = 1.0f64;
-    while n <= 16384.0 {
+    while n <= 65536.0 {
         let k = n.round() as usize;
         if sizes.last() != Some(&k) {
             sizes.push(k);
@@ -147,7 +155,7 @@ fn against_num_bigint() {
     let mut rows = Vec::new();
     for (i, &n) in sizes
         .iter()
-        .chain([65_536usize, 262_144, 1_048_576].iter())
+        .chain([131_072usize, 262_144, 524_288, 1_048_576].iter())
         .enumerate()
     {
         let large = i >= sizes.len();
@@ -168,19 +176,12 @@ fn against_num_bigint() {
             },
             |i| {
                 let t = Instant::now();
-                let mut out = String::new();
-                write(&mut out, false, black_box(&xs[i]), 0, u64::MAX).unwrap();
-                black_box(out);
+                black_box(convert(black_box(&xs[i])).unwrap());
                 t.elapsed().as_nanos()
             },
         );
         let (pa, pb) = (pct(&mut a, 0.5), pct(&mut b, 0.5));
-        println!(
-            "{n} {} {} {:.2}",
-            row(&mut a),
-            row(&mut b),
-            pa as f64 / pb as f64
-        );
+        println!("{n} {} {} {:.2}", row(&mut a), row(&mut b), pa as f64 / pb as f64);
         if !large {
             rows.push((n, pa, pb));
         }

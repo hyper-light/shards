@@ -33,11 +33,7 @@ impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Error::Go(s) => f.write_str(s),
-            Error::Unholdable {
-                bits,
-                need,
-                holdable,
-            } => write!(
+            Error::Unholdable { bits, need, holdable } => write!(
                 f,
                 "number too large to write: the text of a {bits}-bit number takes {need} bytes \
                  to make, more than the {holdable} bytes this evaluation can hold"
@@ -449,11 +445,7 @@ impl Float {
         let bits = u64::try_from(self.go_exp()).unwrap_or(0);
         let need = bits.div_ceil(64).saturating_mul(8);
         if need > holdable {
-            return Err(Error::Unholdable {
-                bits,
-                need,
-                holdable,
-            });
+            return Err(Error::Unholdable { bits, need, holdable });
         }
         let exact = self.is_int();
         let mag = if self.exp >= 0 {
@@ -511,11 +503,7 @@ impl Float {
             let bits = mant.bits().saturating_add(shift);
             let need = crate::digits::need(bits).saturating_add(crate::digits::most(bits));
             if need > holdable {
-                return Err(Error::Unholdable {
-                    bits,
-                    need,
-                    holdable,
-                });
+                return Err(Error::Unholdable { bits, need, holdable });
             }
             let mut digits = String::new();
             crate::digits::write(&mut digits, false, &mant, shift, holdable)?;

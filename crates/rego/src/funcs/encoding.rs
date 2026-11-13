@@ -901,7 +901,9 @@ fn units_parse(ctx: &mut Context, args: &[Value]) -> Out {
     } else {
         r.float_string(10, ctx.holdable)
     };
-    ok(Value::Number(Number(text.map_err(|e| other(e.to_string()))?.into())))
+    ok(Value::Number(Number(
+        text.map_err(|e| other(e.to_string()))?.into(),
+    )))
 }
 
 #[cfg(test)]
