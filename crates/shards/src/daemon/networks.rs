@@ -39,17 +39,15 @@ pub(super) struct Member {
 }
 
 /// Sends a network process `which` and waits for it to say it took it, as published
-/// ports are given (`give_ports`).
+/// ports are given (`give_ports`): while it goes on with it, as D215's judge follows a
+/// party ([`crate::netproc::ask`], the daemon's record of its network processes' answers).
 pub(super) fn ask_net(
-    net: &crate::netproc::Control,
+    net: &crate::netproc::NetLink,
     which: u8,
     payload: &[u8],
     fds: &[crate::netproc::Lent<'_>],
 ) -> Result<(), String> {
-    net.set_read_timeout(Some(super::PUBLISH_PATIENCE))
-        .map_err(|e| e.to_string())?;
-    crate::netproc::send(net, which, payload, fds).map_err(|e| format!("the network process: {e}"))?;
-    match crate::netproc::recv(net) {
+    match crate::netproc::ask(net, &crate::netproc::NET_ANSWERS, which, payload, fds) {
         Ok(Some(m)) if m.kind == which => Ok(()),
         Ok(_) => Err("the network process did not take it".into()),
         Err(e) => Err(format!("the network process: {e}")),
@@ -69,20 +67,22 @@ fn owned(end: shards_vmm::platform::UnixStream) -> crate::netproc::Sock {
 /// in the order asked. The descriptors an ask hands over are kept until its answer has
 /// come: XNU drops a socket in flight that no process holds (M24).
 pub(super) struct Asks<'n> {
-    net: &'n crate::netproc::Control,
+    net: &'n crate::netproc::NetLink,
     /// Each ask's kind, and what it is, to say where it is not taken.
     asked: Vec<(u8, &'static str)>,
     held: Vec<crate::netproc::Sock>,
+    /// The asks' waits, which follow the network process from the first ask's
+    /// ([`crate::netproc::until_ready`]), its answers teaching the daemon's record.
+    follow: Option<shards_api::Follow<'static>>,
 }
 
 impl<'n> Asks<'n> {
-    pub(super) fn new(net: &'n crate::netproc::Control) -> Result<Asks<'n>, String> {
-        net.set_read_timeout(Some(super::PUBLISH_PATIENCE))
-            .map_err(|e| format!("network process: {e}"))?;
+    pub(super) fn new(net: &'n crate::netproc::NetLink) -> Result<Asks<'n>, String> {
         Ok(Asks {
             net,
             asked: Vec::new(),
             held: Vec::new(),
+            follow: net.follow(&crate::netproc::NET_ANSWERS),
         })
     }
 
@@ -95,7 +95,9 @@ impl<'n> Asks<'n> {
         payload: &[u8],
         fds: &[crate::netproc::Lent<'_>],
     ) -> Result<(), String> {
-        crate::netproc::send(self.net, which, payload, fds)
+        crate::netproc::until_ready(self.net, crate::netproc::Way::Write, &mut self.follow)
+            .map_err(|e| format!("{what}: {e}"))?;
+        crate::netproc::send(&self.net.control, which, payload, fds)
             .map_err(|e| format!("{what}: the network process: {e}"))?;
         self.asked.push((which, what));
         Ok(())
@@ -115,11 +117,18 @@ impl<'n> Asks<'n> {
         Ok(())
     }
 
-    /// Each ask's answer, in the order asked: the first not taken says which.
-    pub(super) fn answered(self) -> Result<(), String> {
+    /// Each ask's answer, in the order asked: the first not taken says which. Each answer
+    /// teaches the daemon's record of its network processes' answers.
+    pub(super) fn answered(mut self) -> Result<(), String> {
         for (which, what) in &self.asked {
-            match crate::netproc::recv(self.net) {
-                Ok(Some(m)) if m.kind == *which => {}
+            crate::netproc::until_ready(self.net, crate::netproc::Way::Read, &mut self.follow)
+                .map_err(|e| format!("{what}: {e}"))?;
+            match crate::netproc::recv(&self.net.control) {
+                Ok(Some(m)) if m.kind == *which => {
+                    if let Some(follow) = self.follow.as_mut() {
+                        follow.answered();
+                    }
+                }
                 Ok(_) => return Err(format!("{what}: the network process did not take it")),
                 Err(e) => return Err(format!("{what}: the network process: {e}")),
             }
@@ -1039,7 +1048,7 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// A copy of microVM `id`'s network process's control socket, while it runs.
-    fn net_control(&self, id: &str) -> Option<crate::netproc::Control> {
+    fn net_control(&self, id: &str) -> Option<crate::netproc::NetLink> {
         match lock(&self.runs).get(id) {
             Some(super::RunState::Tracked(t)) => t.net.as_ref()?.try_clone().ok(),
             _ => None,

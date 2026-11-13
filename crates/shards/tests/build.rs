@@ -14158,6 +14158,11 @@ fn a_step_for_another_cpu_runs_under_its_emulator() {
     if cannot_run_vms() {
         return;
     }
+    if common::cannot_reach_docker_hub(
+        "alpine:3.22 for other CPUs, and the build's emulator image (EMULATOR_IMAGE)",
+    ) {
+        return;
+    }
     let home = TempDir::new("emulated-home");
     let env = [
         ("SHARDS_HOME", home.as_os_str()),
@@ -16080,6 +16085,9 @@ fn policies_read_image_provenance_and_signatures() {
     if cannot_run_vms() {
         return;
     }
+    if common::cannot_reach_docker_hub("moby/buildkit:v0.28.1's attestation chain") {
+        return;
+    }
     let home = TempDir::new("policy-image-sig-home");
     let env = [
         ("SHARDS_HOME", home.as_os_str()),
@@ -16178,6 +16186,9 @@ fn a_policy_asking_a_single_manifests_chain_is_answered() {
 #[test]
 fn policies_check_the_frontend_and_the_default_policy() {
     if cannot_run_vms() {
+        return;
+    }
+    if common::cannot_reach_docker_hub("docker/dockerfile:1, alpine:3.20 and moby/buildkit's signatures") {
         return;
     }
     let host = match std::env::consts::ARCH {
@@ -16335,6 +16346,9 @@ fn policies_check_the_frontend_and_the_default_policy() {
 /// refuses.
 #[test]
 fn policy_eval_answers() {
+    if common::cannot_reach_docker_hub("alpine:3.20's metadata") {
+        return;
+    }
     let home = TempDir::new("policy-eval-home");
     let dir = TempDir::new("policy-eval");
     let write = |sub: &str, rego: &str| {
@@ -16470,6 +16484,9 @@ fn policy_eval_answers() {
 /// platform), `--run`, a test file named alone, and the paths and policies buildx refuses.
 #[test]
 fn policy_test_runs() {
+    if common::cannot_reach_docker_hub("alpine's metadata") {
+        return;
+    }
     let home = TempDir::new("policy-test-home");
     let dir = TempDir::new("policy-test");
     for sub in ["basic", "notests"] {

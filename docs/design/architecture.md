@@ -7477,6 +7477,29 @@ Decided by the user on 2026-10-14 ("so long as they apply appropriately to micro
     (`--memory-swap` its memory): its guest's `memory.high` slows it and refuses it nothing
     (cgroup-v2.rst), so it passes `memory.max` whether its room comes before its growth or
     after, as nothing it holds can go to swap.
+  - **Each microVM's words its own** (built, macOS and Windows). The groups' thread told
+    each member its room and asked each to give back one after another, each waited for
+    while its VM process lived (`Wait::WhileRuns`): a member whose guest never answered a
+    room told before any room was answered, which a wait follows while its VM process
+    lives, held every other member's words and every group's stop for as long as its VM
+    process lived: `a_member_that_never_answers_holds_up_no_other_member_or_group`, red at
+    1e391c093 (adas-mac-studio.local, macOS 26.2 arm64: group two's member never stopped
+    in 20 s), plays it.
+    Now each member's word, its room told and then, for a round, what it holds cold asked
+    back, goes on a thread of its own, one word at a time, judged as D215's judge judges a
+    wait, its give-back waiting out one of its host's pressure under way as a budget's does
+    (reclaim.rs `give_after`); an ask made meanwhile waits behind it, its newest room and
+    any give-back kept. The groups' thread asks at its passes, hears each answer as it
+    comes (its condvar), and waits on none. A group found short with no round under way
+    begins one, each member asked once; it is judged once each has answered, ended, or run
+    past the slowest answer of its kind this daemon has seen with none (`Record::stalled`,
+    in memory: no figure of ours, and before its kind's first answer a member's word
+    follows its microVM's liveness alone, as its own wait does), the groups' thread waking
+    at that moment if nothing wakes it sooner; past `memory.max` with nothing given back,
+    its largest is stopped. So a member that never answers holds up no other member and no
+    other group, and its own group's stop comes once its word has run past the slowest
+    room answered (the same test: each group's largest stopped, OOM-killed). A group whose
+    budget goes tells each member it told a room that it has none, its hold let go of.
   - **Windows** (built): every process of a microVM under NAME is made in a job object of
     NAME's, nested above the VM process's own (PROC_THREAD_ATTRIBUTE_JOB_LIST, the
     group's first; Job Objects, "Nested Jobs", Windows 8 on), its warm VMs too: a VM
@@ -8220,9 +8243,21 @@ user's host as Docker's.
   network process; it now waits one slice. The cost: a network process stuck on nothing of
   its own is ended 10 s or more after its VM, where it was 1 s; one that exits as its links
   close, as each does, ends the wait at once. The waits that took that second as their
-  basis keep it, their own basis owed (R03): init's relay drain (hostbind.rs `DRAIN`), the
-  daemon's `PUBLISH_PATIENCE`, and the VM process's wait for its network process's
-  unpublish (warm.rs).
+  basis keep it, their own basis owed (R03): init's relay drain (hostbind.rs `DRAIN`), and
+  the VM process's wait for its network process's unpublish (warm.rs).
+- **The daemon's asks of a network process are followed too** (ROOT, 2026-11-13; it was
+  `PUBLISH_PATIENCE`, the same second, picked): a published port, a peer, a network's names
+  (`networks::ask_net`, `Asks`), and a run's on the host's network (`HostNet`), each wait for
+  room and for its answer judged by D215's judge (`netproc::until_ready`) on the daemon's
+  record of its network processes' answers (`netproc::NET_ANSWERS`, one for the process, W*
+  its slowest answer), its network process followed by its pid (`NetLink`, carried with its
+  control from its start): before the record's first answer, the process's liveness alone,
+  its socket's end; past W*, looked at each W*, and refused where a whole W* shows it ran
+  no CPU and its host was not the reason. Each answer teaches the record, its wall and the
+  process's CPU. A wait for room is one for poll(2)'s POLLOUT (WSAPoll's POLLWRNORM), so no
+  write is cut part-way. Red at 07adbbc8b (`ask_red_tests`, adas-mac-studio.local): an answer
+  1.5 s on was refused at 1.002 s; green: `netproc::ask_tests`, a busy stand-in's answers 1.5
+  s on taken, cold and past W*, and a sleeping one's ask refused past a taught W*.
 - **The slice is the host's own, W*.** Each end heard is kept in the home (`ends`:
   `teardown MS`, `exit MS` and `helper MS`, the slowest of each this home's processes have
   heard: its daemon and its runs' hosts keep one record, each end put with what it holds
@@ -21952,6 +21987,31 @@ a value that would expand, the Agentfile made of it, built: the config the origi
 mutation-checked (`$` unescaped, no lookup by digest);
 `values_are_written_so_that_nothing_in_them_expands`,
 `an_images_config_is_written_as_its_instructions`.
+
+**A base the store holds asks no registry (2026-11-13).** A build without `--pull` asks no
+registry for a base its store holds: one pinned by a digest held under any name is resolved
+to the digest asked (above); one named by a tag held under that name is taken as the store
+has it, as buildx's docker driver has Docker's builder take one (`image-resolve-mode=local`,
+buildx v0.37.1 build/opt.go:580-585; BuildKit v0.28.1 util/resolver/pool.go:243-263,
+`ResolveModePreferLocal`, the image store asked before the registry). A tag it does not
+hold, and every base with `--pull`, is asked of its registry. BuildKit takes a digest its
+content store holds from the same repository from there, whatever the resolve mode
+(v0.28.1 util/imageutil/config.go:87-111, `Config`; util/pull/pull.go:56-112,
+`tryLocalResolve`, `contentutil.HasSource`), yet its resolver's first fetcher still resolves
+the reference, the image store answering in `local` mode where it names the image at that
+digest, else the registry, whose answer it drops (util/resolver/pool.go:234-262); shards
+takes one held under any name, and asks nothing. Tested: `a_base_the_store_holds_is_resolved_without_asking_a_registry`
+(build/bases_tests.rs), an image pulled by its digest from a stand-in registry that counts
+what it is asked, then resolved under another registry's name and a tag of its own, and by
+a tag pulled once: no registry asked either time. It holds on the revision it was written
+against (7152fa749): what spent Docker Hub's anonymous pulls (100 an hour for the LAN's
+IPv6 /64) were E2E tests whose fresh homes each pulled their base, which now take Docker
+Hub's images from the tests' own registry, served from what a build pulled once per
+checkout into target/artifacts/hub (tests/common `hub`), as the pinned kernel is fetched
+once into target/artifacts. A test that must read Docker Hub itself (attestation chains and
+signatures, tags as they move, other CPUs' images and the emulator image) skips unless
+`SHARDS_TESTS_DOCKER_HUB=1`, which CI's test step sets (tests/common
+`cannot_reach_docker_hub`).
 
 **A pull's Agentfile, and the platform's (2026-10-16).** §10 has a pull make an image a
 microVM, an Agentfile, or both; `pull --output-agentfile` was in pull's help from its first
