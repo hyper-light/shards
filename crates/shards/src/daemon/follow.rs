@@ -235,7 +235,7 @@ impl<D: Disk> Daemon<D> {
             let due = lock(&f.deadlines)
                 .peek()
                 .map(|Reverse((at, _))| at.saturating_duration_since(Instant::now()));
-            if let Err(e) = f.poller.wait(&mut ready, due) {
+            if let Err(e) = super::timed(due, || f.poller.wait(&mut ready, due)) {
                 log(format!("the followers' wait: {e}"));
                 return;
             }

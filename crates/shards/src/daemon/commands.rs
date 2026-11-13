@@ -2198,7 +2198,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 .filter_map(|e| e.deadline)
                 .min()
                 .map(|d| d.saturating_duration_since(Instant::now()));
-            if let Err(e) = poller.wait(&mut ready, timeout) {
+            if let Err(e) = super::timed(timeout, || poller.wait(&mut ready, timeout)) {
                 super::log(format!("waiting for containers' ends: {e}"));
                 // Nothing to wait on: what is left is given up, as its time would be.
                 for gone in going.drain(..) {
