@@ -3157,6 +3157,51 @@ mod tests {
             assert_eq!(stdout.cursor(), 5);
         }
 
+        /// A record the endpoint grew past what the controller admitted at its dial, as the
+        /// daemon's learner grows an owned output's (`Producer::admit`, QUIC's window as it
+        /// was): handed over whole, at its place, and the output goes on after it.
+        #[test]
+        fn a_record_grown_past_the_admitted_one_is_had_whole() {
+            let (vm, kiln) = (Identity::generate().unwrap(), Identity::generate().unwrap());
+            let serving = Serving::bind(&vm, kiln.fingerprint());
+            let (outputs, inputs) = all(0);
+            let (mut dialed, driver) = drive(
+                &kiln,
+                vm.fingerprint(),
+                serving.address,
+                Subscriptions {
+                    outputs: &outputs,
+                    inputs: &inputs,
+                    execs: None,
+                    sockets: None,
+                },
+            );
+            // Several of the stream's windows, so that the record comes over more than one.
+            let grown = 4 * (RECORD + DATA_HEAD);
+            let (producer, _) = &serving.outputs[STDOUT];
+            assert!(producer.admit(grown).unwrap() >= grown);
+            let big: Vec<u8> = (0..grown).map(|i| i as u8).collect();
+            serving.submit(STDOUT, &big);
+            let mut stdout = dialed.outputs.remove(0);
+            assert_eq!(stdout.next_record(), Ok(Got::Record { at: 0, bytes: big }));
+            // Asking for the next acknowledges it, which gives its producer room for the next.
+            let reader = std::thread::spawn(move || {
+                let next = stdout.next_record();
+                (stdout, next)
+            });
+            serving.submit(STDOUT, b"after");
+            let (stdout, next) = reader.join().unwrap();
+            assert_eq!(
+                next,
+                Ok(Got::Record {
+                    at: grown as u64,
+                    bytes: b"after".to_vec()
+                })
+            );
+            drop((stdout, dialed));
+            driver.join().unwrap().unwrap();
+        }
+
         /// A lane the endpoint does not serve is refused alone, typed, and the others go on.
         #[test]
         fn a_lane_the_endpoint_refuses_is_refused_alone_and_typed() {
