@@ -2497,7 +2497,7 @@ pub static EXEC: Command = Command {
             "list",
             "Read in a file of environment variables",
         ),
-        // Into one of its image's agents or harnesses (plan step 6, D242).
+        // Into one of its image's agents or harnesses (plan step 6, D243).
         Flag::string(
             "for",
             None,

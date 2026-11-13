@@ -72,7 +72,7 @@ pub(super) enum Step<'a> {
 /// What a step answers once its microVM has ended, or would not.
 pub(super) type Then<'a> = Box<dyn FnOnce(bool) -> Result<bool, String> + 'a>;
 
-/// Why `exec --for NAME` runs nothing (D242), each with the name given: a member's command
+/// Why `exec --for NAME` runs nothing (D243), each with the name given: a member's command
 /// is confined as its member is, so it takes no privilege and no user of its own.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum MemberExec {
@@ -97,7 +97,7 @@ impl std::fmt::Display for MemberExec {
     }
 }
 
-/// What `exec --for` asks that its member has not (D242): privileges, or a user, of its
+/// What `exec --for` asks that its member has not (D243): privileges, or a user, of its
 /// own. Its init refuses both again.
 fn held_as_its_member(exec: &shards_ipc::Exec) -> Result<(), MemberExec> {
     if exec.privileged {
@@ -319,7 +319,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 return refuse(&format!("shards: {} is not running", exec.container));
             }
         };
-        // In one of its image's agents or harnesses (D242): as that member runs, so with no
+        // In one of its image's agents or harnesses (D243): as that member runs, so with no
         // user or privilege of its own, and nothing of the run's own command's; its init
         // refuses both again.
         let member = match self.exec_member(&id, &exec) {
@@ -430,7 +430,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         }
     }
 
-    /// The member `exec --for` runs its command in (D242), where it names one: an agent or
+    /// The member `exec --for` runs its command in (D243), where it names one: an agent or
     /// harness of the microVM's image that runs a command of its own, and the exec asking
     /// nothing that member has not.
     fn exec_member(&self, id: &str, exec: &shards_ipc::Exec) -> Result<Option<u32>, MemberExec> {
@@ -3068,7 +3068,7 @@ mod tests {
         }
     }
 
-    /// `exec --for` takes no privilege and no user of its own: its member's are its (D242).
+    /// `exec --for` takes no privilege and no user of its own: its member's are its (D243).
     #[test]
     fn a_member_exec_takes_nothing_its_member_has_not() {
         let exec = |privileged: bool, user: &str| shards_ipc::Exec {

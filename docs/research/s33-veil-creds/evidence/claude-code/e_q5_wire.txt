@@ -1,0 +1,45 @@
+# Q5 request-credential searches on BIN=$B = linux-x64 claude 2.1.311 (sha256 86dc1fcc69498159eaf15f446613e847010f9036bfbbdffd4c49350be8489ada), searched only, never executed.
+# B=/var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/tmp.cvKZio0ayi/claude
+# GG=/opt/homebrew/bin/ggrep
+## command: LC_ALL=C $GG -a -o -b -E 'async apiKeyAuth\(n\)\{if\(this\.apiKey==null\)return;return O\(\[\{"X-Api-Key":this\.apiKey\}\]\)\}async bearerAuth\(n\)\{if\(this\.authToken==null\)return;return O\(\[\{Authorization:`Bearer \$\{this\.authToken\}`\}\]\)\}' "$B"
+243835301:async apiKeyAuth(n){if(this.apiKey==null)return;return O([{"X-Api-Key":this.apiKey}])}async bearerAuth(n){if(this.authToken==null)return;return O([{Authorization:`Bearer ${this.authToken}`}])}
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'function qii\(e\)\{if\(e\.isSubscriber\)return\{apiKey:null,authToken:e\.oauthAccessToken\?\?null\};return\{apiKey:e\.apiKey,authToken:null\}\}' "$B"
+243254610:function qii(e){if(e.isSubscriber)return{apiKey:null,authToken:e.oauthAccessToken??null};return{apiKey:e.apiKey,authToken:null}}
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'let ph=\{apiKey:wn\.apiKey,authToken:wn\.authToken,\.\.\.i\.ANTHROPIC_BASE_URL\?\{baseURL:i\.ANTHROPIC_BASE_URL\}:!1,' "$B"
+243943820:let ph={apiKey:wn.apiKey,authToken:wn.authToken,...i.ANTHROPIC_BASE_URL?{baseURL:i.ANTHROPIC_BASE_URL}:!1,
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'if\(kt\(\)\)\{let r=\$n\(\);if\(!r\?\.accessToken\)return\{headers:\{\},error:"No OAuth token available",reasonCode:"no_oauth_token"\};return\{headers:\{Authorization:`Bearer \$\{r\.accessToken\}`,"anthropic-beta":Xu\}\}\}' "$B"
+242399004:if(kt()){let r=$n();if(!r?.accessToken)return{headers:{},error:"No OAuth token available",reasonCode:"no_oauth_token"};return{headers:{Authorization:`Bearer ${r.accessToken}`,"anthropic-beta":Xu}}}
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'let r=n\.slice\(7,10\);if\(r==="api"\)return\{headers:\{"x-api-key":n\}\};if\(r==="oat"\)return\{headers:\{Authorization:`Bearer \$\{n\}`,"anthropic-beta":Xu\}\};' "$B"
+242687996:let r=n.slice(7,10);if(r==="api")return{headers:{"x-api-key":n}};if(r==="oat")return{headers:{Authorization:`Bearer ${n}`,"anthropic-beta":Xu}};
+## end
+## command: LC_ALL=C $GG -a -o -b -E '"accessToken"in e\?\{Authorization:`Bearer \$\{e\.accessToken\}`,"anthropic-beta":Xu\}:\{"x-api-key":e\.apiKey\}' "$B"
+242169649:"accessToken"in e?{Authorization:`Bearer ${e.accessToken}`,"anthropic-beta":Xu}:{"x-api-key":e.apiKey}
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'var j4t=k\("claude_code","claude-code-20250219"\),rPe=k\("oauth_auth",Xu\)' "$B"
+240998181:var j4t=k("claude_code","claude-code-20250219"),rPe=k("oauth_auth",Xu)
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'return e\.Authorization=`Bearer \$\{y\}`,h\?"ANTHROPIC_AUTH_TOKEN":"apiKeyHelper"' "$B"
+243944151:return e.Authorization=`Bearer ${y}`,h?"ANTHROPIC_AUTH_TOKEN":"apiKeyHelper"
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'case"firstParty":return process\.env\.ANTHROPIC_BASE_URL\|\|on\(\)\.BASE_API_URL' "$B"
+243944833:case"firstParty":return process.env.ANTHROPIC_BASE_URL||on().BASE_API_URL
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'Sz=new Set\(\["authorization","proxy-authorization","x-authorization","x-api-key","cookie"\]\)' "$B"
+242601705:Sz=new Set(["authorization","proxy-authorization","x-authorization","x-api-key","cookie"])
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'getUserAgent\(\)\{return`Anthropic/JS \$\{RR\}`\}' "$B"
+243835524:getUserAgent(){return`Anthropic/JS ${RR}`}
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'function wV\(e\)\{if\(_Se\(\)\|\|Sr\(\)\)return;if\(!uu\(\)\|\|!Tc\(e\)\|\|!Xm\(e\)\)return;let n=eb\(\);if\(!n\|\|!n\.startsWith\("sk-ant-"\)\)return;' "$B"
+242687877:function wV(e){if(_Se()||Sr())return;if(!uu()||!Tc(e)||!Xm(e))return;let n=eb();if(!n||!n.startsWith("sk-ant-"))return;
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'function eb\(\)\{return qv\(\)\?void 0:i\.ANTHROPIC_AUTH_TOKEN\}' "$B"
+242321173:function eb(){return qv()?void 0:i.ANTHROPIC_AUTH_TOKEN}
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'w=!y&&S\.reasonCode==="no_api_key"\?wV\(this\.endpoint\)\?\?S:S' "$B"
+242683645:w=!y&&S.reasonCode==="no_api_key"?wV(this.endpoint)??S:S
+## end

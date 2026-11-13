@@ -1,0 +1,59 @@
+# Q7 certificate pinning searches on BIN=$B = linux-x64 claude 2.1.311 (sha256 86dc1fcc69498159eaf15f446613e847010f9036bfbbdffd4c49350be8489ada), searched only, never executed.
+# B=/var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/tmp.cvKZio0ayi/claude
+# GG=/opt/homebrew/bin/ggrep
+## command: LC_ALL=C $GG -a -o -b -i -E 'pin-sha256|publicKeyPins?|public-key-pins|certificatePins?|pinnedPublicKey|pinnedFingerprint|pinnedCert[A-Za-z]*|spkiPin[A-Za-z]*|TLS pin[A-Za-z ]{0,20}|cert pin[A-Za-z ]{0,20}' "$B" | awk -F: '{print ($1<115363840?"native":"app"), $2}' | sort | uniq -c | sort -rn
+  10 app pinnedFingerprint
+   4 app TLS pin is kept
+   4 app TLS pin is in a symlinked c
+   4 app TLS pin could not be read f
+   2 app TLS pin store unreadable
+   2 app TLS pin store refused
+   2 app TLS pin is a symlink
+   2 app TLS pin could not be read 
+   2 app TLS pin
+   1 app cert pin not applied 
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'fingerprint256' "$B" | awk -F: '{print ($1<115363840?"native":"app")}' | sort | uniq -c
+   5 app
+   1 native
+## end
+## command: LC_ALL=C $GG -a -o -b -E '.{0,120}fingerprint256.{0,80}' "$B" | awk -F: '$1>=115363840' | LC_ALL=C tr -c '[:print:]\n' '.'
+123079728: a subjectAltName
+242060615:|G.getPeerX509Certificate()?.checkHost(y,{wildcards:!1,subject:"never"})!==void 0,Z=G.getPeerCertificate(),le=typeof Z?.fingerprint256==="string"?Z.fingerprint256.replaceAll(":","").toLowerCase():"";G.destroy();let
+242063840:({...r?{rejectUnauthorized:!0}:CA(),...s&&{ca:s},checkServerIdentity:(h,y)=>{let S=HD(h,y);if(S)return S;let w=typeof y.fingerprint256==="string"?y.fingerprint256.replaceAll(":","").toLowerCase():"";if(w!==e){let C
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'var uir="gateway TLS certificate does not match the pinned fingerprint"' "$B"
+242063339:var uir="gateway TLS certificate does not match the pinned fingerprint"
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'function gF\(e,n,r=!1\)\{let s=gat\(zie\(n\)\);return new fb\(\{.{0,330}' "$B" | LC_ALL=C tr -c '[:print:]\n' '.'
+242063787:function gF(e,n,r=!1){let s=gat(zie(n));return new fb({...r?{rejectUnauthorized:!0}:CA(),...s&&{ca:s},checkServerIdentity:(h,y)=>{let S=HD(h,y);if(S)return S;let w=typeof y.fingerprint256==="string"?y.fingerprint256.replaceAll(":","").toLowerCase():"";if(w!==e){let C={pinnedFingerprint:e,presentedFingerprint:w};return Object.assign(Error(uir),C)}return}})}function cSe(e,n,r=!1){if(!
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'per-request cert pin not applied \(known gap; list the gateway in NO_PROXY to pin\)' "$B"
+242064304:per-request cert pin not applied (known gap; list the gateway in NO_PROXY to pin)
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'gatewayTrust:\{\.\.\.h\.gatewayTrust\?\?\{\},\[e\]:n\}' "$B"
+242064489:gatewayTrust:{...h.gatewayTrust??{},[e]:n}
+## end
+## command: LC_ALL=C $GG -a -o -b -E '.{0,110}checkServerIdentity.{0,110}' "$B" | awk -F: '$1>=238000000' | LC_ALL=C tr -c '[:print:]\n' '.'
+240732316:d - Node.js will automatically append to built-in CAs")}var ir=Ce(N7r(),1);import{isIP as io}from"net";import{checkServerIdentity as cr}from"tls";function yfr(e){return{servername:io(e)?"":e,checkServerIdentity:(r,n)=>cr(e,n)}}class NRt ex
+240732570:roxyAgent{connect(...[e,r]){if(!r.secureEndpoint)return super.connect(e,r);let n=r.servername||r.host||"",o=r.checkServerIdentity??cr;return super.connect(e,{...r,checkServerIdentity:(s,c)=>o(n,c)})}}class Xe extends Error{connectStatus;he
+242038016:;import{Agent as fb,request as UD}from"https";import{isIPv4 as hr,isIPv6 as io}from"net";import{connect as BD,checkServerIdentity as HD,rootCertificates as KD}from"tls";import{Agent as AD,request as TD}from"https";class By{seenAt=void 0;se
+242063779:;return}function gF(e,n,r=!1){let s=gat(zie(n));return new fb({...r?{rejectUnauthorized:!0}:CA(),...s&&{ca:s},checkServerIdentity:(h,y)=>{let S=HD(h,y);if(S)return S;let w=typeof y.fingerprint256==="string"?y.fingerprint256.replaceAll(":",
+245922038:append(r,s)}return n}import{Agent as HH,request as KH}from"https";import{createServer as jH}from"http";import{checkServerIdentity as qH,TLSSocket as ER}from"tls";import{Duplex as YH}from"stream";import{Transform as RH}from"stream";function
+245935182:=>{}),e.resume(),s)C();else e.once("finish",C);e.end()}function r8(e){let n=new HH({keepAlive:!0,maxSockets:1,checkServerIdentity:(s,h)=>qH(e.hostname,h),...e.upstreamCA?{ca:e.upstreamCA}:{}}),r;return{agent:n,address(){if(!r){let s=kzr(e.
+268965388:promises as gB,lookup as yB}from"dns";import{request as _B}from"http";import{request as bB}from"https";import{checkServerIdentity as vB}from"tls";var pk="ECONNREFUSED_SSRF: blocked (cloud metadata / link-local)",hk="ECONNREFUSED_SSRF: bloc
+268967936:headers);return f.set("host",u),fetch(n,{...a,headers:f,...n.protocol==="https:"&&{tls:{...a.tls,serverName:o,checkServerIdentity:(h,m)=>vB(o,m)}}})}async function OB(e,t){let n=new Headers(t.headers);if(n.set("host",e.host),!n.has("user-a
+282405172:hority(o),c=is.splitHostPort(l),u=(s=c===null||c===void 0?void 0:c.host)!==null&&s!==void 0?s:l;if(a.host=u,t.checkServerIdentity)a.checkServerIdentity=t.checkServerIdentity;if(t.rejectUnauthorized!==void 0)a.rejectUnauthorized=t.rejectUna
+282405421:if(a.ALPNProtocols=["h2"],i["grpc.ssl_target_name_override"]){let d=i["grpc.ssl_target_name_override"],h=(n=a.checkServerIdentity)!==null&&n!==void 0?n:ut.checkServerIdentity;a.checkServerIdentity=(m,f)=>h(d,f),a.servername=d}else a.server
+282406315:ls(e){if(this===e)return!0;if(e instanceof ss)return this.secureContext===e.secureContext&&this.verifyOptions.checkServerIdentity===e.verifyOptions.checkServerIdentity;else return!1}_createSecureConnector(e,t,r){let i=Vl(this.secureContext
+282407204:ntityCertificateProvider===e.identityCertificateProvider&&((t=this.verifyOptions)===null||t===void 0?void 0:t.checkServerIdentity)===((r=e.verifyOptions)===null||r===void 0?void 0:r.checkServerIdentity);else return!1}ref(){var e;if(this.re
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'gn=new Set\(\["[0-9a-f]{64}","[0-9a-f]{64}"\]\)' "$B"
+240705647:gn=new Set(["9fe882b0c4259bcf890a100ab941d8299915e50c2e982d9a4dc16a28285894f0","c146462ee17c2c62a74202469d65a9e79e246f7f1b0b9db872e045f6331271c2"])
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'function Cn\(e\)\{let r=e\.split\("\."\)\.slice\(-4\);.{0,220}' "$B" | LC_ALL=C tr -c '[:print:]\n' '.'
+240706204:function Cn(e){let r=e.split(".").slice(-4);return Re.test(e)||hn.has(e)||pn.some((n)=>e===n||e.endsWith(`.${n}`))||r.some((n,o)=>gn.has(tt(r.slice(o).join("."))))||mn(e)||yn(e)||Kcs(e)}function bn(e){let r=e.split(".");return r.length>=2&&r.every((n)=>n!=="")&&!r
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'var Tn=xn\(new Set\(\["[0-9a-f]{64}","[0-9a-f]{64}"\]\)\)' "$B"
+240711904:var Tn=xn(new Set(["376a1a7082a593dccc20d561d119e9ab8d30f11cc321d0a37fa41f0df284e01c","ece28e35289ce8621c72407949e5050052ad4607cc332eaf9b546029aacbfb7a"]))
+## end

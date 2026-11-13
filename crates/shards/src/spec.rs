@@ -41,7 +41,7 @@ pub struct Options {
     /// command a pty: TERM's where the environment gives none ([`spec`]); none where the
     /// client said none, as an Engine API client does.
     pub terms: Vec<String>,
-    /// A command run in one of its image's agents or harnesses (D242): none of the
+    /// A command run in one of its image's agents or harnesses (D243): none of the
     /// microVM's defaults laid under its variables, which init lays over the member's own
     /// as they are given, a name alone unsetting the member's; its TERM, where neither names
     /// one, init's to choose in the member's root, xterm last.
@@ -465,7 +465,7 @@ mod tests {
         assert_eq!(made(&[], false, &client), (None, Vec::new()));
     }
 
-    /// A command run in a member (D242) gets none of the microVM's variables under its own:
+    /// A command run in a member (D243) gets none of the microVM's variables under its own:
     /// they go as given, a name alone among them, for init to lay over its member's. With a
     /// terminal and no TERM of its own, init chooses one in the member's root from its
     /// client's types, xterm last, whether or not its client said any.

@@ -1,0 +1,13 @@
+LC_ALL=C $GG -a -o -b -E 'https://[A-Za-z0-9.-]*(anthropic\.com|claude\.ai|claude\.com)[A-Za-z0-9./_?=&%-]*oauth[A-Za-z0-9./_?=&%-]*' "$B" | awk -F: '{print $2":"$3}' | sort | uniq -c | sort -rn
+LC_ALL=C $GG -a -o -b -E 'let u=on\(\),c=new URL\(u\.TOKEN_URL\),t=\[`\$\{u\.BASE_API_URL\}/api/hello`,`\$\{c\.origin\}/v1/oauth/hello`\]' "$B"
+LC_ALL=C $GG -a -o -b -E 'var T="https://http-intake\.logs\.us5\.datadoghq\.com/api/v2/logs"' "$B"
+LC_ALL=C $GG -a -o -b -E 'var p="https://browser-intake-us5-datadoghq\.com/api/v2/logs"' "$B"
+LC_ALL=C $GG -a -o -b -E 'function Oar\(e\)\{return Di\}var Di="https://api\.anthropic\.com/"' "$B"
+LC_ALL=C $GG -a -o -b -E 'let w=new Is\(\{apiHost:y,clientKey:h,attributes:s,remoteEval:!0,.{0,200}apiHostRequestHeaders:\{"User-Agent":Bs\(\),\.\.\.S&&n\.headers\}' "$B" | LC_ALL=C tr -c '[:print:]\n' '.'
+LC_ALL=C $GG -a -o -b -i -E '[A-Za-z0-9.-]*(statsig|ingest\.sentry|sentry\.io)[A-Za-z0-9.-]*' "$B" | awk -F: '$1>=115363840 {print $2}' | sort | uniq -c | sort -rn
+LC_ALL=C $GG -a -o -b -E 'VT\.SENTRY_WILDCARD_HOST="\*\.sentry\.io";VT\.SPELLCHECK_DICTIONARY_HOST="redirector\.gvt1\.com";VT\.SPELLCHECK_DICTIONARY_WILDCARD="\*\.gvt1\.com";VT\.SENTRY_INGEST_HOST="o1158394\.ingest\.us\.sentry\.io"' "$B"
+LC_ALL=C $GG -a -o -b -E '@sentry/[a-z-]+|Sentry\.init|SENTRY_DSN|https://[0-9a-f]{32}@' "$B" | awk -F: '$1>=115363840' | wc -l
+LC_ALL=C $GG -a -o -b -E 'https://(downloads\.claude\.ai|storage\.googleapis\.com|registry\.npmjs\.org|raw\.githubusercontent\.com|mcp-proxy\.anthropic\.com|bridge\.claudeusercontent\.com|code\.claude\.com|formulae\.brew\.sh)[A-Za-z0-9./_-]{0,50}' "$B" | awk -F: '$1>=238000000 {print $2":"$3}' | cut -d/ -f1-4 | sort | uniq -c | sort -rn | head -30
+LC_ALL=C $GG -a -o -b -E 'BASE_API_URL\}/[A-Za-z0-9_/.?=-]+' "$B" | awk -F: '$1>=238000000 {print $2}' | sort | uniq -c | sort -rn
+LC_ALL=C $GG -a -o -b -E '"/api/event_logging/v2/batch"|"/api/ws/speech_to_text/voice_stream"' "$B" | awk -F: '$1>=238000000 {print $2}' | sort | uniq -c
+LC_ALL=C $GG -a -o -b -E '(DISABLE_TELEMETRY|CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC|DISABLE_ERROR_REPORTING|DISABLE_AUTOUPDATER|DISABLE_GROWTHBOOK|DO_NOT_TRACK|CLAUDE_CODE_DISABLE_FEATURE_FLAGS):\(\)=>[A-Za-z_$]+' "$B" | awk -F: '$1>=238000000 {print $2":"$3}' | sort -u

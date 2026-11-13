@@ -1,4 +1,4 @@
-//! A command run in one of the run's members (the harness plan's step 6, G24; D242): born
+//! A command run in one of the run's members (the harness plan's step 6, G24; D243): born
 //! in the member's PID namespace and into its cgroup at once (clone3(2) `CLONE_INTO_CGROUP`,
 //! so the cgroup's `pids.max` holds it as it is born, which a move into `cgroup.procs` would
 //! not), it enters the namespaces of the member's command (one setns(2) of a pidfd, Linux

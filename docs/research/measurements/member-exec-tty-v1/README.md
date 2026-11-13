@@ -82,7 +82,7 @@ alone. This slice's test reads the harness's stdout as its owner does, through s
 - R15: implementer's light runs only; the real-VM suites are ROOT's.
 - R16: nothing reclaimed.
 
-## Slice 2: a command run in a member (D242)
+## Slice 2: a command run in a member (D243)
 
 `shards exec vm --for NAME VM CMD [ARG...]` runs CMD in the agent or harness NAME of the
 microVM's image, confined exactly as that member is. The daemon resolves NAME to the member's
@@ -94,7 +94,7 @@ pidfd of its command, and confines itself through `domains::confine` with the me
 or a pty whose peer comes from TIOCGPTPEER, given to the member's uid, resized by the
 existing `EXEC_RESIZE`. What stops it is typed: `members::Refusal` under
 `exec_failed::MEMBER`, said with `docker exec`'s statuses. Design, alternatives and literals:
-D242.
+D243.
 
 ### Light results
 
@@ -154,9 +154,9 @@ KVM arm64 (the nested L1 path), HVF and WHP; shards-init's unit tests on arm64 L
   child's report by pattern; clippy's denied lints on the host below.
 - R02: runc v1.5.1 and crun 1.31 read at their sources for joining a container; Docker's
   exec resize (moby, containerd); setns(2), clone(2), cgroup-v2's PID controller,
-  landlock(7), TIOCGPTPEER(2const), pid_namespaces(7) (D242, and kiln research
+  landlock(7), TIOCGPTPEER(2const), pid_namespaces(7) (D243, and kiln research
   01a1d2be234e7711a389f3e1d52731db).
-- R03: no chosen number: wire codes and statuses, each with its source in D242's Literals.
+- R03: no chosen number: wire codes and statuses, each with its source in D243's Literals.
 - R04: refusals typed end to end, each with its cause; no new lifecycle state, the member's
   own ending ends the command (pid_namespaces(7)).
 - R05/R12/R13: the member's start and a command in it share `confine` and `Confinement`, a

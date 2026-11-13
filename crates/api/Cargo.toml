@@ -11,6 +11,7 @@ publish = false
 [dependencies]
 sha2 = "0.11"
 shards-abi = { path = "../abi" }
+shards-dns = { path = "../dns" }
 triomphe = { version = "=0.1.17", default-features = false, features = ["std", "unsize"] }
 unsize = "=1.1.0"
 

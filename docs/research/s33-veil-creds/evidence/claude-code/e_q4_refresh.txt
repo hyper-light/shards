@@ -1,0 +1,46 @@
+# Q4 refresh searches on BIN=$B = linux-x64 claude 2.1.311 (sha256 86dc1fcc69498159eaf15f446613e847010f9036bfbbdffd4c49350be8489ada), searched only, never executed.
+# B=/var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/tmp.cvKZio0ayi/claude
+# GG=/opt/homebrew/bin/ggrep
+## command: LC_ALL=C $GG -a -o -b -E 'function SC\(e,n=Date\.now\(\)\)\{if\(e===null\)return!1;return n\+300000>=e\}' "$B"
+242108130:function SC(e,n=Date.now()){if(e===null)return!1;return n+300000>=e}
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'async function Fu\(e,n,r,s,h,y,S,w,C=!1,x=!1\)\{.{0,640}' "$B" | LC_ALL=C tr -c '[:print:]\n' '.'
+242367796:async function Fu(e,n,r,s,h,y,S,w,C=!1,x=!1){await wA(e,S);let F=await ml(S);if(!h){if(F&&!SC(F.expiresAt))return"not_needed";if(!F?.refreshToken)return"no_refresh_token"}if(!F?.refreshToken)return"no_refresh_token";if(Ci.has(F.refreshToken))return"known_dead_refresh_token";if(Ti.has(F.refreshToken))return"account_on_hold";if(!CB(F.scopes)&&!F.subscriptionType)return"not_refreshable";if(!Un()&&!C)return"not_needed";let H=y??F.accessToken;Yh();let G=await ml(S);if(!G?.refreshToken)return"no_refresh_token";if(G.accessToken!==H)return En(),a("tengu_oauth_token_refresh_race_resolved",{}),"refreshed";if(!h&&!SC(G.expiresAt))return"not_needed";if(Y())return m("oauth_token_refresh","
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'P=\{grant_type:"refresh_token",refresh_token:e,client_id:s\?\?on\(\)\.CLIENT_ID,scope:x\.join\(" "\)\};.{0,420}' "$B" | LC_ALL=C tr -c '[:print:]\n' '.'
+242103577:P={grant_type:"refresh_token",refresh_token:e,client_id:s??on().CLIENT_ID,scope:x.join(" ")};if(r!==void 0)P.expires_in=r;try{let F=await It.post(on().TOKEN_URL,P,{headers:{"Content-Type":"application/json"},timeout:30000,signal:y});if(F.status!==200)throw Error(`Token refresh failed: ${F.statusText}`);let H=F.data,{access_token:G,refresh_token:j=e,expires_in:Q}=H,q=Date.now()+Q*1000,Z=o3r(H.refresh_token_expires_in,!1),le=_ir(H.scope);a("tengu_oauth_token_refresh_success",{plugins_scope_requested:x.includes
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'function o3r\(e,n\)\{if\(typeof e==="number"\)return Date\.now\(\)\+e\*1000;return n\?Date\.now\(\)\+YF:void 0\}' "$B"
+242101604:function o3r(e,n){if(typeof e==="number")return Date.now()+e*1000;return n?Date.now()+YF:void 0}
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'async function i3r\(e,n\)\{try\{return await It\.post\(`\$\{on\(\)\.TOKEN_URL\}/revoke`,\{token:e,token_type_hint:"refresh_token",client_id:n\?\?on\(\)\.CLIENT_ID\}' "$B"
+242106079:async function i3r(e,n){try{return await It.post(`${on().TOKEN_URL}/revoke`,{token:e,token_type_hint:"refresh_token",client_id:n??on().CLIENT_ID}
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'function gar\(e,n\)\{return\{lockfilePath:wp\(e,"\.oauth_refresh\.lock"\),realpath:!1,stale:60000,update:5000' "$B"
+242364498:function gar(e,n){return{lockfilePath:wp(e,".oauth_refresh.lock"),realpath:!1,stale:60000,update:5000
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'claudeAiOauth:\{\.\.\.y,refreshToken:"",accessToken:"",expiresAt:0\}' "$B"
+242352375:claudeAiOauth:{...y,refreshToken:"",accessToken:"",expiresAt:0}
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'tengu_oauth_refresh_token_marked_dead_invalid_grant' "$B" | head -2
+123113136:tengu_oauth_refresh_token_marked_dead_invalid_grant
+242352204:tengu_oauth_refresh_token_marked_dead_invalid_grant
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'let S=\{force:!0,entryAccessToken:e,credentials:n,storageV5:r,usesLoginOffFirstParty:s\};if\(!h\)return pa\(S\);' "$B"
+242362697:let S={force:!0,entryAccessToken:e,credentials:n,storageV5:r,usesLoginOffFirstParty:s};if(!h)return pa(S);
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'OAuth 401 recovery: waiting up to \$\{F\}ms for a rotated' "$B"
+242361846:OAuth 401 recovery: waiting up to ${F}ms for a rotated
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'function X\$\(\)\{if\(i\.CLAUDE_CODE_OAUTH_TOKEN\)return Tp\(i\.CLAUDE_CODE_OAUTH_TOKEN\);' "$B"
+242353499:function X$(){if(i.CLAUDE_CODE_OAUTH_TOKEN)return Tp(i.CLAUDE_CODE_OAUTH_TOKEN);
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'function Tp\(e\)\{return\{accessToken:e,refreshToken:null,expiresAt:null,scopes:cA\(\),subscriptionType:i\.CLAUDE_CODE_SUBSCRIPTION_TYPE\|\|null,rateLimitTier:i\.CLAUDE_CODE_RATE_LIMIT_TIER\|\|null\}\}' "$B"
+242353260:function Tp(e){return{accessToken:e,refreshToken:null,expiresAt:null,scopes:cA(),subscriptionType:i.CLAUDE_CODE_SUBSCRIPTION_TYPE||null,rateLimitTier:i.CLAUDE_CODE_RATE_LIMIT_TIER||null}}
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'function cA\(e=\["user:inference"\]\)\{return fA\(\)\?\?\[\.\.\.e\]\}function fA\(\)\{let e=i\.CLAUDE_CODE_OAUTH_SCOPES\?\.split' "$B"
+242353037:function cA(e=["user:inference"]){return fA()??[...e]}function fA(){let e=i.CLAUDE_CODE_OAUTH_SCOPES?.split
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'This hosted session \(claude-code-server\) cannot refresh an OAuth token' "$B" | head -1
+123115576:This hosted session (claude-code-server) cannot refresh an OAuth token
+## end

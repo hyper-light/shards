@@ -1,0 +1,13 @@
+# 2026-11-12T23:15:59Z OpenSSL 3.6.4 25 Aug 2026 (Library: OpenSSL 3.6.4 25 Aug 2026) on Darwin arm64
+api.anthropic.com | offered h2,http/1.1 | ALPN protocol: h2
+api.anthropic.com | offered http/1.1 | ALPN protocol: http/1.1
+platform.claude.com | offered h2,http/1.1 | ALPN protocol: h2
+platform.claude.com | offered http/1.1 | ALPN protocol: http/1.1
+claude.ai | offered h2,http/1.1 | ALPN protocol: h2
+claude.ai | offered http/1.1 | ALPN protocol: http/1.1
+api.openai.com | offered h2,http/1.1 | ALPN protocol: h2
+api.openai.com | offered http/1.1 | ALPN protocol: http/1.1
+chatgpt.com | offered h2,http/1.1 | ALPN protocol: h2
+chatgpt.com | offered http/1.1 | ALPN protocol: http/1.1
+auth.openai.com | offered h2,http/1.1 | ALPN protocol: h2
+auth.openai.com | offered http/1.1 | ALPN protocol: http/1.1

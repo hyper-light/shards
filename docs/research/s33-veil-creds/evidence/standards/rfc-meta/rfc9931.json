@@ -1,0 +1,35 @@
+{
+  "draft": "draft-ietf-httpbis-optimistic-upgrade-06",
+  "doc_id": "RFC9931",
+  "title": "Security Considerations for Optimistic Protocol Transitions in HTTP/1.1",
+  "authors": [
+    "B. Schwartz"
+  ],
+  "format": [
+    "XML",
+    "TEXT",
+    "HTML",
+    "PDF"
+  ],
+  "page_count": "11",
+  "pub_status": "PROPOSED STANDARD",
+  "status": "PROPOSED STANDARD",
+  "source": "HTTP",
+  "abstract": "In HTTP/1.1, the client can request a change to a new protocol on the existing connection.  This document discusses the security considerations that apply to data sent by the client before this request is confirmed and adds new requirements to RFCs 9112 and 9298 to avoid related security issues.",
+  "pub_date": "March 2026",
+  "keywords": [
+    "Request Smuggling",
+    "False Start",
+    "HTTP CONNECT"
+  ],
+  "obsoletes": [],
+  "obsoleted_by": [],
+  "updates": [
+    "RFC9112",
+    "RFC9298"
+  ],
+  "updated_by": [],
+  "see_also": [],
+  "doi": "10.17487/RFC9931",
+  "errata_url": null
+}

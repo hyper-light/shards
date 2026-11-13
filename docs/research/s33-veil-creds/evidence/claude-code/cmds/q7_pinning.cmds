@@ -1,0 +1,11 @@
+LC_ALL=C $GG -a -o -b -i -E 'pin-sha256|publicKeyPins?|public-key-pins|certificatePins?|pinnedPublicKey|pinnedFingerprint|pinnedCert[A-Za-z]*|spkiPin[A-Za-z]*|TLS pin[A-Za-z ]{0,20}|cert pin[A-Za-z ]{0,20}' "$B" | awk -F: '{print ($1<115363840?"native":"app"), $2}' | sort | uniq -c | sort -rn
+LC_ALL=C $GG -a -o -b -E 'fingerprint256' "$B" | awk -F: '{print ($1<115363840?"native":"app")}' | sort | uniq -c
+LC_ALL=C $GG -a -o -b -E '.{0,120}fingerprint256.{0,80}' "$B" | awk -F: '$1>=115363840' | LC_ALL=C tr -c '[:print:]\n' '.'
+LC_ALL=C $GG -a -o -b -E 'var uir="gateway TLS certificate does not match the pinned fingerprint"' "$B"
+LC_ALL=C $GG -a -o -b -E 'function gF\(e,n,r=!1\)\{let s=gat\(zie\(n\)\);return new fb\(\{.{0,330}' "$B" | LC_ALL=C tr -c '[:print:]\n' '.'
+LC_ALL=C $GG -a -o -b -E 'per-request cert pin not applied \(known gap; list the gateway in NO_PROXY to pin\)' "$B"
+LC_ALL=C $GG -a -o -b -E 'gatewayTrust:\{\.\.\.h\.gatewayTrust\?\?\{\},\[e\]:n\}' "$B"
+LC_ALL=C $GG -a -o -b -E '.{0,110}checkServerIdentity.{0,110}' "$B" | awk -F: '$1>=238000000' | LC_ALL=C tr -c '[:print:]\n' '.'
+LC_ALL=C $GG -a -o -b -E 'gn=new Set\(\["[0-9a-f]{64}","[0-9a-f]{64}"\]\)' "$B"
+LC_ALL=C $GG -a -o -b -E 'function Cn\(e\)\{let r=e\.split\("\."\)\.slice\(-4\);.{0,220}' "$B" | LC_ALL=C tr -c '[:print:]\n' '.'
+LC_ALL=C $GG -a -o -b -E 'var Tn=xn\(new Set\(\["[0-9a-f]{64}","[0-9a-f]{64}"\]\)\)' "$B"

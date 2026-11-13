@@ -4454,7 +4454,7 @@ impl Exec {
             .iter()
             .find_map(|e| e.strip_prefix(b"in-join="))
             .map(|n| std::str::from_utf8(n).ok().and_then(|n| n.parse::<u32>().ok()));
-        // A command run in one of the run's members (plan step 6, D242).
+        // A command run in one of the run's members (plan step 6, D243).
         let in_member = run::members::exec_member(&spec.setup);
         let started = if let Ok(Some(member)) = in_member {
             crate::enter::start(&spec, member, domains)
@@ -4582,7 +4582,7 @@ impl Exec {
                 exec.to_conn.extend(&[&run::header(kind::STARTED, 0)]);
             }
             Err(f) => {
-                // A member's refusal by type, its words after (D242); else the class alone.
+                // A member's refusal by type, its words after (D243); else the class alone.
                 let said = match f.refusal {
                     Some(r) => [&[run::exec_failed::MEMBER][..], &r.encode(f.message.as_bytes())].concat(),
                     None if f.daemon => [&[run::exec_failed::DAEMON][..], f.message.as_bytes()].concat(),
