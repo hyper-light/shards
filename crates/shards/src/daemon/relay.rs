@@ -238,6 +238,32 @@ impl io::Write for Answering {
     }
 }
 
+/// Whether an engine client has gone, its connection ended: a read of it now would say its
+/// end. recv(2) with MSG_PEEK and MSG_DONTWAIT takes nothing and leaves its descriptor blocking
+/// for the relay's reader, whose file status flags a clone shares (fcntl(2) `O_NONBLOCK`).
+#[cfg(unix)]
+fn gone(conn: &UnixStream) -> bool {
+    let mut byte = 0u8;
+    // SAFETY: recv(2) of at most one byte into a byte of this frame's, on a socket the relay
+    // holds open.
+    let read = unsafe {
+        libc::recv(
+            conn.as_raw_fd(),
+            (&raw mut byte).cast(),
+            1,
+            libc::MSG_PEEK | libc::MSG_DONTWAIT,
+        )
+    };
+    read == 0
+}
+
+/// [`gone`] on Windows: its pipe says it has ended where it reads as readable with nothing
+/// to read (PeekNamedPipe's broken pipe, `shards_ipc::Stream::readable`).
+#[cfg(windows)]
+fn gone(conn: &UnixStream) -> bool {
+    conn.readable() && matches!(conn.peek(), Ok(None))
+}
+
 impl<D: Disk> Daemon<D> {
     /// Serves the engine socket of each context this home joined and lets go of those of
     /// contexts removed, where the contexts may have changed (`listed`); and binds again a
@@ -471,16 +497,22 @@ impl<D: Disk> Daemon<D> {
                 };
                 // Its handshake and waits start from what the home knows of the machine's path,
                 // and what the connection saw is kept for the next (D180). A machine never
-                // reached is waited for with no deadline of shards' own, each probe logged, and
-                // the relay hung up from its start as the daemon stops, which ends its client's
-                // connection here.
+                // reached is waited for with no deadline of shards' own, each probe logged, for
+                // as long as its client waits (its party's liveness: a client gone is seen at
+                // the next probe), and the relay hung up from its start as the daemon stops,
+                // which ends its client's connection here.
                 let before = crate::context::known(&self.home, &context);
                 let told = |unanswered: shards_remote::client::Unanswered| {
+                    let waits = !gone(&conn);
                     log(format!(
-                        "context {}: no answer yet from {}: {} probes over {:.1?}",
-                        context.name, context.address, unanswered.probes, unanswered.waited
+                        "context {}: no answer yet from {}: {} probes over {:.1?}{}",
+                        context.name,
+                        context.address,
+                        unanswered.probes,
+                        unanswered.waited,
+                        if waits { "" } else { "; its engine client has gone" }
                     ));
-                    true
+                    waits
                 };
                 let held = |hang_up| self.engine.hold_relayed(number, hang_up, &self.stopping);
                 let (ran, seen) = shards_remote::client::exec_with(
@@ -526,5 +558,27 @@ impl<D: Disk> Daemon<D> {
             done();
             log(format!("context {name}: a thread for an engine client: {e}"));
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use std::io::Write as _;
+
+    use super::*;
+
+    /// An engine client is gone once its connection has ended, and not while it is there,
+    /// quiet or with bytes waiting: the relay's reader takes those (D180).
+    #[test]
+    fn an_engine_client_is_gone_once_its_connection_ends() {
+        let (relayed, mut client) = UnixStream::pair().unwrap();
+        assert!(!gone(&relayed), "quiet");
+        client.write_all(b"GET /").unwrap();
+        assert!(!gone(&relayed), "bytes waiting");
+        let mut first = [0u8; 5];
+        std::io::Read::read_exact(&mut &relayed, &mut first).unwrap();
+        drop(client);
+        assert!(gone(&relayed), "its client closed");
     }
 }
