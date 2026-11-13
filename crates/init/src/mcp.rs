@@ -235,7 +235,8 @@ mod tests {
     fn a_members_socket_is_its_own_beside_its_bridges_mount_point() {
         use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
         let dir = shards_testdir::TempDir::new("mcp").unwrap();
-        let uid = unsafe { libc::getuid() };
+        // This process's own identity: its directory's owner.
+        let uid = std::fs::metadata(dir.path()).unwrap().uid();
         std::fs::write(dir.path().join(socket_name()), b"stale").unwrap();
         let listener = listen(dir.path(), uid).unwrap();
         let socket = dir.path().join(socket_name());
