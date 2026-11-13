@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::io::Read;
 use std::net::SocketAddr;
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, PoisonError, mpsc};
 use std::time::{Duration, Instant};
@@ -228,7 +228,7 @@ struct Stalls {
 
 /// A command's stdin, which says when it is let go.
 struct Told {
-    stdin: std::process::ChildStdin,
+    stdin: Box<dyn std::io::Write + Send>,
     what: String,
     seen: Saw,
 }
@@ -323,20 +323,17 @@ impl Host for Machine {
         let (gone, gone_rx) = mpsc::channel::<()>();
         let what = args.join(" ");
         // Each command one of the tests' helper program's, the same on every host.
-        let mut child = Command::new(shards_testdir::helper().map_err(Error::new)?)
-            .args(&args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| Error::new(e.to_string()))?;
+        let Spawned {
+            stdin,
+            stdout,
+            stderr,
+            mut child,
+        } = spawn_helper(&args)?;
         let stdin = Told {
-            stdin: child.stdin.take().unwrap(),
+            stdin,
             what: what.clone(),
             seen: self.seen.clone(),
         };
-        let stdout = child.stdout.take().unwrap();
-        let stderr = child.stderr.take().unwrap();
         let _ = self.seen.send(Seen::Started(what.clone()));
         let (exited, hung) = (self.seen.clone(), self.seen.clone());
         let hung_what = what.clone();
@@ -351,18 +348,15 @@ impl Host for Machine {
             stdout: Box::new(stdout),
             stderr: Box::new(stderr),
             wait: Box::new(move || {
-                let ended = loop {
-                    match child.try_wait() {
-                        Ok(Some(status)) => break Ok(status),
-                        Ok(None) => {}
-                        Err(e) => break Err(e),
+                let status = loop {
+                    if let Some(status) = ended(&mut child) {
+                        break status;
                     }
                     if hung_up.try_recv().is_ok() && !outlives {
-                        let _ = child.kill();
+                        kill(&mut child);
                     }
                     std::thread::sleep(Duration::from_millis(5));
                 };
-                let status = ended.map(|s| s.code().unwrap_or(128)).unwrap_or(1);
                 let _ = exited.send(Seen::Exited(what, status));
                 let _ = gone.send(());
                 status
@@ -399,6 +393,139 @@ impl Host for Machine {
         let _ = self
             .seen
             .send(Seen::Unheard(client.unwrap_or_default().to_string()));
+    }
+}
+
+/// A command of the tests' helper program, its stdio piped. On Unix started through
+/// `shards_ipc::spawn`, as the daemon starts its commands (crates/shards' daemon/remote.rs), which
+/// gives it its three pipes' ends and nothing else of this process's: on macOS its spawn closes
+/// every other descriptor (`POSIX_SPAWN_CLOEXEC_DEFAULT`), whatever its close-on-exec flag, so
+/// that no command holds the pipe of another test's command that std made and has not yet
+/// marked (`a_command_holds_no_descriptor_it_was_not_given`). On Windows through std, whose
+/// handles are made uninheritable and whose spawn hands a child its own under a lock.
+struct Spawned {
+    stdin: Box<dyn std::io::Write + Send>,
+    stdout: Box<dyn Read + Send>,
+    stderr: Box<dyn Read + Send>,
+    child: Proc,
+}
+
+#[cfg(unix)]
+type Proc = shards_ipc::Child;
+#[cfg(windows)]
+type Proc = std::process::Child;
+
+#[cfg(unix)]
+fn spawn_helper(args: &[String]) -> Result<Spawned, Error> {
+    use std::os::fd::AsFd;
+    let pipe = || std::io::pipe().map_err(|e| Error::new(format!("a pipe for the command: {e}")));
+    let ((in_r, in_w), (out_r, out_w), (err_r, err_w)) = (pipe()?, pipe()?, pipe()?);
+    let argv: Vec<&std::ffi::OsStr> = args.iter().map(std::ffi::OsStr::new).collect();
+    let fds = [(in_r.as_fd(), 0), (out_w.as_fd(), 1), (err_w.as_fd(), 2)];
+    let child = shards_ipc::spawn(shards_testdir::helper().map_err(Error::new)?, &argv, &fds, false)
+        .map_err(|e| Error::new(format!("starting the command: {e}")))?;
+    Ok(Spawned {
+        stdin: Box::new(in_w),
+        stdout: Box::new(out_r),
+        stderr: Box::new(err_r),
+        child,
+    })
+}
+
+#[cfg(windows)]
+fn spawn_helper(args: &[String]) -> Result<Spawned, Error> {
+    let mut child = Command::new(shards_testdir::helper().map_err(Error::new)?)
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| Error::new(e.to_string()))?;
+    Ok(Spawned {
+        stdin: Box::new(child.stdin.take().unwrap()),
+        stdout: Box::new(child.stdout.take().unwrap()),
+        stderr: Box::new(child.stderr.take().unwrap()),
+        child,
+    })
+}
+
+/// Its status once it has ended: its own, or 128 plus the signal that ended it.
+#[cfg(unix)]
+fn ended(child: &mut Proc) -> Option<i32> {
+    child.try_wait()
+}
+
+#[cfg(windows)]
+fn ended(child: &mut Proc) -> Option<i32> {
+    match child.try_wait() {
+        Ok(Some(status)) => Some(status.code().unwrap_or(128)),
+        Ok(None) => None,
+        Err(_) => Some(1),
+    }
+}
+
+#[cfg(unix)]
+fn kill(child: &mut Proc) {
+    let _ = child.kill(libc::SIGKILL);
+}
+
+#[cfg(windows)]
+fn kill(child: &mut Proc) {
+    let _ = child.kill();
+}
+
+/// This test program, running the test `name` alone in a process of its own, `set` in its
+/// environment: started as [`Spawned`]'s commands are, holding nothing of this process's but
+/// its stdout and stderr, which a command's pipe another test made meanwhile is not among.
+#[cfg(unix)]
+fn this_test(name: &str, set: (&str, &std::ffi::OsStr)) -> Alone {
+    use std::os::fd::AsFd;
+    let ((out, out_w), (err, err_w)) = (std::io::pipe().unwrap(), std::io::pipe().unwrap());
+    let null = std::fs::File::open("/dev/null").unwrap();
+    let args = ["--exact", name, "--nocapture"].map(std::ffi::OsStr::new);
+    let fds = [(null.as_fd(), 0), (out_w.as_fd(), 1), (err_w.as_fd(), 2)];
+    let exe = std::env::current_exe().unwrap();
+    let child = shards_ipc::spawn_with(&exe, &args, &fds, false, &[set]).unwrap();
+    Alone { child, out, err }
+}
+
+/// A test run alone ([`this_test`]).
+#[cfg(unix)]
+struct Alone {
+    child: shards_ipc::Child,
+    out: std::io::PipeReader,
+    err: std::io::PipeReader,
+}
+
+/// What a test run alone ended with: its status, and what it wrote.
+#[cfg(unix)]
+struct Output {
+    status: i32,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+
+#[cfg(unix)]
+impl Alone {
+    fn output(self) -> Output {
+        let Alone {
+            child,
+            mut out,
+            mut err,
+        } = self;
+        let errs = std::thread::spawn(move || {
+            let mut stderr = Vec::new();
+            let _ = err.read_to_end(&mut stderr);
+            stderr
+        });
+        let mut stdout = Vec::new();
+        let _ = out.read_to_end(&mut stdout);
+        let stderr = errs.join().unwrap();
+        Output {
+            status: child.wait().unwrap(),
+            stdout,
+            stderr,
+        }
     }
 }
 
@@ -2030,17 +2157,13 @@ fn a_daemon_reached_before_unheard_past_its_window_runs_out_and_is_waited_for() 
 fn a_process_frozen_past_every_window_keeps_its_connections() {
     const CHILD: &str = "SHARDS_TEST_FROZEN_PROCESS";
     if std::env::var_os(CHILD).is_none() {
-        let output = Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "a_process_frozen_past_every_window_keeps_its_connections",
-                "--nocapture",
-            ])
-            .env(CHILD, "1")
-            .output()
-            .unwrap();
+        let output = this_test(
+            "a_process_frozen_past_every_window_keeps_its_connections",
+            (CHILD, "1".as_ref()),
+        )
+        .output();
         assert!(
-            output.status.success(),
+            output.status == 0,
             "{}{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
@@ -2187,21 +2310,14 @@ fn a_client_frozen_mid_import_past_its_daemons_window_keeps_its_connection() {
     );
     let at = Invitation::new("daemon", d.remote.address, daemon_id.fingerprint()).unwrap();
     std::fs::write(dir.path().join("daemon"), at.text()).unwrap();
-    let child = Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "a_client_frozen_mid_import_past_its_daemons_window_keeps_its_connection",
-            "--nocapture",
-        ])
-        .env(CLIENT, dir.path())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let pid = child.id();
+    let child = this_test(
+        "a_client_frozen_mid_import_past_its_daemons_window_keeps_its_connection",
+        (CLIENT, dir.path().as_os_str()),
+    );
+    let pid = child.child.id();
     let (tx, ended) = mpsc::channel();
     std::thread::spawn(move || {
-        let _ = tx.send(child.wait_with_output());
+        let _ = tx.send(child.output());
     });
     let began = Instant::now();
     d.seen.saw(&Seen::Started("drip 2".into()));
@@ -2227,7 +2343,7 @@ fn a_client_frozen_mid_import_past_its_daemons_window_keeps_its_connection() {
     d.seen.saw(&Seen::Unheard("laptop".into()));
     let told = began.elapsed();
     drop(frozen);
-    let output = run_end(&ended, "the frozen client's end", Duration::ZERO).unwrap();
+    let output = run_end(&ended, "the frozen client's end", Duration::ZERO);
     let said = String::from_utf8_lossy(&output.stdout);
     let stalls = d
         .seen
