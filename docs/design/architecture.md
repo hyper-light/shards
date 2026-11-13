@@ -9866,6 +9866,20 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
   holds who is looked at and the slice (a sixth of `READY_TIMEOUT`), and
   `a_busy_process_is_seen_running_with_its_cpu_and_faults` the look on the host's own
   process times.
+- **Amended (2026-11-13, ROOT's R03 ruling): a microVM's heartbeat is no progress of a
+  test's subject.** A nesting test whose runc hung waited on it to Linux CI's 56-minute
+  limit (8a50a9742, run 43391975331), and HVF's past its own bound (fafe35efc): the daemon
+  says it each `READY_STALL` while that microVM's CPU runs, whatever it runs, and the guest
+  of a runtime that hangs runs. Past its bound a wait goes on only while its subject
+  progresses: `common::Said` takes each whole line its home's daemon says but that heartbeat
+  (`common::HEARTBEAT`) for progress, a microVM's start said slowly among them, as liveness
+  governs a cold start, which the daemon gives up on itself past `READY_TIMEOUT`. The daemon
+  still logs it, a slow workload's durable evidence; a test's client is waited on past its
+  deadline through what the daemon says of its run, never through its microVM's CPU alone.
+  Held by tests/harness.rs's stand-ins: `a_daemons_heartbeat_is_no_progress_and_its_other_lines_are`,
+  `a_wait_whose_daemon_says_only_its_heartbeat_ends_at_its_bound`, red before the change and
+  red again with the heartbeat's distinction taken out. `common::Ran`, which judges a client's
+  own microVMs by their CPU, is unchanged.
 - **A test's own waits on pools and microVMs follow them too** (M424). daemon.rs' rerun at
   b57cad27 failed 7 of 38, each a wait of the test's own past a fixed minute (a pool
   filled, a restored run's VM up) while its daemon's log showed templates saved, 264 MiB
