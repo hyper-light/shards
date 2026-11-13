@@ -1,0 +1,10 @@
+# adacachy (Linux 7.2.9-2-cachyos, x86_64), KVM. The mutation: the server takes no request for
+# a notice (server.rs `noticing(caller) && false`), on branch tmp/s8p2-mutation-v2 (609a10878,
+# deleted after).
+# ~/g121-tmp/s8p2-test.sh tmp/s8p2-mutation-v2 plug a_host_edit_wakes_a_watch_in_the_guest
+== 609a10878 MUTATION, not for main: step 8 part 2's guards removed (notice no-op,  2026-11-12T23:27:17Z
+running 1 test
+thread 'a_host_edit_wakes_a_watch_in_the_guest' (3416908) panicked at crates/shards/tests/plug.rs:297:9:
+/rw: [Ok(DirEntry("/tmp/shards-tests/3416890/notice-files-1/rw/f"))]
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 3.01s
+== exit 101 2026-11-12T23:28:55Z

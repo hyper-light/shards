@@ -156,8 +156,12 @@ pub fn device(
             // it before the probe returns, and a driver is bound only after (drivers/base/
             // dd.c `really_probe`, then `driver_bound`). Mounted once: a refusal is the
             // kernel's word.
+            // Read-only by its mount alone, its file system writable as every share's is:
+            // the host's notices touch through a mount of their own (D235, notice.rs), which
+            // a read-only file system would refuse; its server refuses the guest's writes.
             let (Some((id, cgroup)), Some(parts)) = (member, parts) else {
-                let mounted = fs_mount(c"virtiofs", &tag, read_only, 0)?;
+                let attrs = if read_only { MOUNT_ATTR_RDONLY } else { 0 };
+                let mounted = fs_mount(c"virtiofs", &tag, false, attrs)?;
                 return attach(mounted, workload, dst);
             };
             // A domain's, as a volume given it is (D109): `nosuid` and `nodev`, and the
@@ -356,7 +360,7 @@ fn disk_mount(name: &str, read_only: bool) -> io::Result<OwnedFd> {
 /// A new mount of `fstype` from `source`, read-only (the `ro` flag, and the mount's
 /// attribute) where asked, with mount attributes `attrs` besides, attached nowhere
 /// (fsopen(2), fsconfig(2), fsmount(2)).
-fn fs_mount(
+pub(crate) fn fs_mount(
     fstype: &std::ffi::CStr,
     source: &std::ffi::CStr,
     read_only: bool,
