@@ -352,33 +352,54 @@ fn judged_end(party: &mut std::process::Child) -> Result<std::process::ExitStatu
 /// What an `answer` stand-in writes.
 const ANSWER: &[u8] = b"answered";
 
-/// The old shape of a read of a stream its party answers on, at its test's `TIMEOUT`
-/// (warm.rs' daemon link and its client's connection, daemon.rs' engine stream,
-/// containers.rs' reads of published ports): a caller's bound on each read, here scaled to
-/// 100 ms, against a party that works for a second before it answers. Do: a stand-in
-/// connected to this test, busy for a second, then its answer; read it at that bound.
-/// Expect: its answer.
+/// A read of a stream its party answers on (warm.rs' daemon link and its client's
+/// connection, through `common::judged`) goes on while its party works, as a command's wait
+/// does (the person's ruling of 2026-11-13, D209): its caller gives it no bound, and past its
+/// cold start it is judged each W* of its call site's kind. Red at 68770070f as
+/// `red_a_judged_read_goes_on_while_its_party_works`: the old shape, a read timeout at its
+/// test's `TIMEOUT` scaled to 100 ms, cut a stand-in that answers after a second's work.
+/// Do: a stand-in connected to this test, busy for a second, then its answer; read it
+/// through `judged`, twice from one call site. Expect: each read holds until the answer, and
+/// the first's teaches the second's kind.
 #[test]
-fn red_a_judged_read_goes_on_while_its_party_works() {
-    use std::io::Read as _;
+fn a_judged_read_goes_on_while_its_party_works() {
     let busy = Duration::from_secs(1);
-    let bound = Duration::from_millis(100);
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
-    let mut party = stand_in_doing(&format!("answer {port} {}", busy.as_millis()))
-        .stdout(std::process::Stdio::null())
-        .spawn()
-        .unwrap();
-    let (mut conn, _) = listener.accept().unwrap();
-    let began = Instant::now();
-    conn.set_read_timeout(Some(bound)).unwrap();
-    let mut got = [0u8; ANSWER.len()];
-    let read = conn.read_exact(&mut got);
-    let _ = party.kill();
-    let _ = party.wait();
-    assert!(
-        read.is_ok(),
-        "a party busy for {busy:?} cut {:?} into its read: {read:?}",
-        began.elapsed()
-    );
+    for round in 0..2 {
+        let mut party = stand_in_doing(&format!("answer {port} {}", busy.as_millis()))
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let (mut conn, _) = listener.accept().unwrap();
+        let began = Instant::now();
+        let mut got = [0u8; ANSWER.len()];
+        let read = judged_read(&mut party, &mut conn, &mut got);
+        let _ = party.wait();
+        assert!(
+            matches!(read, Ok(Ok(()))),
+            "a party busy for {busy:?} cut {:?} into its read, round {round}: {read:?}",
+            began.elapsed()
+        );
+        assert_eq!(&got, ANSWER);
+        assert!(began.elapsed() >= busy, "it answered {:?} in", began.elapsed());
+    }
+}
+
+/// `party`'s answer on `conn` through [`common::judged`] at one call site: one kind for every
+/// read made through it. Refused, `party` is ended, which ends the read.
+fn judged_read(
+    party: &mut std::process::Child,
+    conn: &mut std::net::TcpStream,
+    got: &mut [u8],
+) -> Result<std::io::Result<()>, String> {
+    use std::io::Read as _;
+    common::judged(
+        common::Party::started(None),
+        "a stand-in's answer",
+        || {
+            let _ = party.kill();
+        },
+        || conn.read_exact(got),
+    )
 }
