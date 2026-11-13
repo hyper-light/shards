@@ -136,7 +136,7 @@ impl std::fmt::Display for Cut {
 /// microVM's init while the microVM's process runs ([`Wait::WhileRuns`]): each kind apart, as
 /// each takes its own time (D188; D215's records). None is in source: each is cold until its
 /// kind's first answer.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(super) struct Answers {
     /// What it holds cold given back (`RECLAIM`).
     pub reclaim: Record,
@@ -144,6 +144,21 @@ pub(super) struct Answers {
     pub room: Record,
     /// Its run's metrics, read (`METRICS`).
     pub metrics: Record,
+    /// Each of init's builtins its quiet work asks (`exec_answered`: `STAT`, `TOP`,
+    /// `STATS`, a member's ports, a network's switch, a layer's size, an update), by its
+    /// byte.
+    pub builtins: Box<[Record; 256]>,
+}
+
+impl Default for Answers {
+    fn default() -> Answers {
+        Answers {
+            reclaim: Record::new(),
+            room: Record::new(),
+            metrics: Record::new(),
+            builtins: Box::new([const { Record::new() }; 256]),
+        }
+    }
 }
 
 /// One probe's result: when it ran, its exit code (-1 if it timed out or could not run),
@@ -455,6 +470,35 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         timeout: Duration,
     ) -> std::io::Result<Quiet> {
         self.exec_waiting(id, spec, argv, limit, Wait::For(timeout))
+    }
+
+    /// Init's own work in microVM `id`, `spec` (a builtin, no command), as
+    /// [`exec_quietly`](Self::exec_quietly) does it, the first `limit` bytes of its answer
+    /// kept: waited for while its microVM's process runs ([`answered_wait`](Self::answered_wait)).
+    /// It was `TAKE_TIMEOUT`'s 10 s, picked.
+    pub(super) fn exec_answered(
+        &self,
+        id: &str,
+        spec: &shards_abi::run::Spec,
+        limit: usize,
+    ) -> std::io::Result<Quiet> {
+        let vm = match lock(&self.runs).get(id) {
+            Some(RunState::Tracked(t)) => Some(t.vm.id()),
+            _ => None,
+        };
+        self.exec_waiting(id, spec, None, limit, self.answered_wait(vm, spec.builtin))
+    }
+
+    /// How init's answer of `builtin` is waited for in a microVM whose process is `vm`: while
+    /// it runs, judged by that builtin's record (D215's judge, [`Wait::WhileRuns`]): before
+    /// its first answer, its liveness alone; then past the slowest seen, ended where a whole
+    /// one shows it ran no CPU, its host not the reason (R03, ROOT's (3), 2026-11-13). With no
+    /// process to follow, its end alone.
+    pub(super) fn answered_wait(&self, vm: Option<u32>, builtin: u8) -> Wait<'_> {
+        match (vm, self.answers.builtins.get(usize::from(builtin))) {
+            (Some(vm), Some(record)) => Wait::WhileRuns(vm, record),
+            _ => Wait::Ending,
+        }
     }
 
     /// [`exec_quietly`](Self::exec_quietly), waited for as `wait` says.
