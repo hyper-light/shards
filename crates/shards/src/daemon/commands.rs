@@ -2491,6 +2491,21 @@ impl<D: crate::containers::Disk> Daemon<D> {
         Ok(id)
     }
 
+    /// Stops run `id` as it stops (its own signal, then SIGKILL past its grace,
+    /// [`own_stop`](Self::own_stop)), for a failure of the daemon's own that leaves its run no
+    /// way on (managed.rs `capture_failed`, D258): once it runs, where it is still starting, as
+    /// `stop` stops one; nothing of one that has ended. Its restart is its policy's, as a run
+    /// that fails is.
+    pub(super) fn stop_for_failure(&self, id: &str) {
+        self.await_start(id);
+        if !self.running(id) {
+            return;
+        }
+        let (signal, grace) = self.own_stop(id);
+        let (linux, grace) = signal.map_or((9, None), |l| (l, grace));
+        self.end_all(vec![(0, id.to_owned(), linux, grace)], &mut |_, _, _| {});
+    }
+
     /// The stop microVM `id` asks for when nothing else is told, as dockerd reads it
     /// (moby daemon/stop.go, container.StopSignal and StopTimeout): its stop signal, else
     /// SIGTERM, `None` where Linux has no signal of its number; and how long its command

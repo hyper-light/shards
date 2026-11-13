@@ -3025,7 +3025,7 @@ mod hosted {
             {
                 let started = std::thread::Builder::new()
                     .name("api-run output".into())
-                    .spawn_scoped(scope, move || records(live, reading));
+                    .spawn_scoped(scope, move || records(live, reading, &launched.vm));
                 if let Err(e) = started {
                     let _ = writeln!(io::stderr(), "shards api-run: its members' output: {e}");
                 }
@@ -3316,7 +3316,8 @@ mod hosted {
         if let super::AsksEnd::Failed(why) = &ended {
             super::say(format_args!("its asks ended: {why}"));
         }
-        *lock(&live.asks_end) = Some(ended);
+        // The first end of its asks stands: its members' output's, where that came first.
+        lock(&live.asks_end).get_or_insert(ended);
         let _ = vm.kill(shards_ipc::signal::SIGKILL);
     }
 
@@ -3668,30 +3669,44 @@ mod hosted {
     }
 
     /// Reads the run's managed output until it ends: each member's bytes to the
-    /// orchestrator within its room, its channel's end, each record's credit renewed.
-    fn records(live: &Live<'_>, mut capture: Stream) {
+    /// orchestrator within its room, its channel's end, each record's credit renewed. Its
+    /// VM's end of it, at a frame's start or within one, is the VM's end, which `follow`
+    /// tells. Where this host cannot take what comes (a frame of no record's kind, cut short
+    /// in its header or malformed, a record it cannot hold or read) or cannot send its
+    /// orchestrator what it has, the run fails in those words: its asks' end
+    /// ([`super::AsksEnd`]), and `vm`, its VM, killed for it, so that no run waits for its
+    /// `STOP` on a failure its host saw (D258).
+    fn records(live: &Live<'_>, capture: Stream, vm: &shards_ipc::Child) {
+        if let Err(why) = read_records(live, capture) {
+            super::say(format_args!("its asks ended: {why}"));
+            lock(&live.asks_end).get_or_insert(super::AsksEnd::Failed(why));
+            let _ = vm.kill(shards_ipc::signal::SIGKILL);
+        }
+    }
+
+    /// [`records`]' reads, to their end: its VM's, or why not.
+    fn read_records(live: &Live<'_>, mut capture: Stream) -> Result<(), String> {
+        let broke = |why: std::fmt::Arguments<'_>| format!("its VM's members' output broke: {why}");
         loop {
             let mut header = [0u8; protocol::HEADER];
             if capture.read_exact(&mut header).is_err() {
-                return;
+                return Ok(());
             }
-            let Some((which, len)) = protocol::parse_header(header) else {
-                return;
-            };
+            let (which, len) =
+                protocol::parse_header(header).ok_or_else(|| broke(format_args!("a frame's header")))?;
             if which != protocol::kind::MANAGED {
-                return;
+                return Err(broke(format_args!("a frame of kind {which}, no record's")));
             }
             let mut record = Vec::new();
-            if record.try_reserve_exact(len as usize).is_err() {
-                return;
-            }
+            record
+                .try_reserve_exact(len as usize)
+                .map_err(|e| broke(format_args!("no room for a record of {len} bytes: {e}")))?;
             record.resize(len as usize, 0);
             if capture.read_exact(&mut record).is_err() {
-                return;
+                return Ok(());
             }
-            let Ok(parsed) = managed::Record::decode(&record) else {
-                return;
-            };
+            let parsed =
+                managed::Record::decode(&record).map_err(|e| broke(format_args!("a record: {e}")))?;
             let key = (parsed.member, channel_of(parsed.channel));
             let mut flows = lock(&live.flows);
             flows.granted.insert(key, false);
@@ -3723,8 +3738,13 @@ mod hosted {
                     sent.and_then(|()| live.answers.send(wire::to_client::OUTPUT_END, &[&end.encode()]))
                 }
             };
-            if sent.is_err() || live.grant(&mut flows, key).is_err() {
-                return;
+            sent.map_err(|e| format!("its answers to its orchestrator: {e}"))?;
+            // Room its VM can take no more of is its VM ending, its end the VM's (`take`'s
+            // credits likewise), said once.
+            if let Err(e) = live.grant(&mut flows, key)
+                && !std::mem::replace(&mut flows.ungranted, true)
+            {
+                super::say(format_args!("its VM takes no more of its members' output: {e}"));
             }
         }
     }
@@ -4237,6 +4257,70 @@ mod hosted {
             assert_eq!(*lock(&live.asks_end), None);
             assert!(lock(&live.flows).ungranted);
             let _ = vm.wait();
+        }
+
+        /// Do have a run's VM bring its managed output a frame its host cannot take, here one
+        /// of no record's kind; and end that output at a frame's start, as a VM does as its
+        /// run ends. Expect: the first to end the run's asks failed in its words, its VM killed
+        /// for it, so that no run waits for its `STOP` on a failure its host saw (D258); the
+        /// second to end nothing of the run, whose end is its VM's to say.
+        #[test]
+        fn members_output_its_host_cannot_take_ends_its_run_failed_saying_why() {
+            for refused in [true, false] {
+                let dir = shards_testdir::TempDir::new("api-records").unwrap();
+                let answers = super::super::Answers(Mutex::new(Box::new(Vec::<u8>::new())));
+                let (capture, its_vms) = Stream::pair().unwrap();
+                let (link, _vm_link) = Stream::pair().unwrap();
+                let live = Live {
+                    answers: &answers,
+                    ends: Ends::kept_in(dir.path()),
+                    flows: Mutex::new(Flows::default()),
+                    feeds: Mutex::new(HashMap::new()),
+                    fed: std::sync::Condvar::new(),
+                    capture: None,
+                    link: Mutex::new(link),
+                    held: Mutex::new(Some(HashMap::new())),
+                    asks_end: Mutex::new(None),
+                    next_exec: std::sync::atomic::AtomicU64::new(0),
+                    home: dir.path(),
+                    members: &[],
+                    roots: &[],
+                    devices: Mutex::new(Some(Vec::new())),
+                    guest_times: Mutex::new(Some(Vec::new())),
+                    rates: Mutex::new(Some(Vec::new())),
+                    lanes: Mutex::new(Some(HashMap::new())),
+                    next_lane: std::sync::atomic::AtomicU64::new(0),
+                    plugged: Mutex::new(HashMap::new()),
+                    notices_due: Mutex::new(None),
+                    notices: Mutex::new(Vec::new()),
+                    leasing: None,
+                };
+                let args = [OsStr::new("-c"), OsStr::new("sleep 30")];
+                let vm = shards_ipc::spawn_in(Path::new("/bin/sh"), &args, &[], false, &[]).unwrap();
+                if refused {
+                    (&its_vms)
+                        .write_all(&protocol::header(protocol::kind::STDOUT, 0))
+                        .unwrap();
+                } else {
+                    drop(its_vms);
+                }
+                records(&live, capture, &vm);
+                if refused {
+                    assert_eq!(
+                        *lock(&live.asks_end),
+                        Some(super::super::AsksEnd::Failed(format!(
+                            "its VM's members' output broke: a frame of kind {}, no record's",
+                            protocol::kind::STDOUT
+                        )))
+                    );
+                    assert_eq!(vm.wait().unwrap(), 128 + libc::SIGKILL);
+                } else {
+                    assert_eq!(*lock(&live.asks_end), None);
+                    assert_eq!(vm.try_wait(), None, "its VM, killed for an end of its own");
+                    let _ = vm.kill(libc::SIGKILL);
+                    let _ = vm.wait();
+                }
+            }
         }
 
         /// A run's share process ends as its run ends, by its own going: [`Shares::end`]
