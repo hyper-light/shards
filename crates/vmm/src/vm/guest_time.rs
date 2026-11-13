@@ -7,14 +7,16 @@
 
 use std::fmt::Write as _;
 
+pub use shards_abi::guest_time::Unread;
+
 /// One vCPU's guest time, as a sample read it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VcpuTime {
     pub index: u32,
     /// Nanoseconds, never less than an earlier sample of the same vCPU said.
     pub guest_ns: u64,
-    /// Why this sample did not read it: `guest_ns` is then the most it read before.
-    pub unread: Option<String>,
+    /// Why this sample did not read it, typed: `guest_ns` is then the most it read before.
+    pub unread: Option<Unread>,
 }
 
 /// A machine's vCPUs' guest time, as one sample read it.
@@ -35,15 +37,15 @@ impl GuestTimes {
     }
 
     /// As text, a line each, in decimal: `departed NS`, then `vcpu INDEX NS` for each vCPU,
-    /// ` unread WHY` after where this sample did not read it, as a VM process answers its
-    /// daemon.
+    /// ` unread CAUSE [CODE]` after where this sample did not read it ([`Unread::write`]), as a
+    /// VM process answers its daemon.
     pub fn encode(&self) -> String {
         let mut text = format!("departed {}\n", self.departed_ns);
         for v in &self.vcpus {
             let _ = write!(text, "vcpu {} {}", v.index, v.guest_ns);
             if let Some(why) = &v.unread {
                 text.push_str(" unread ");
-                text.extend(why.chars().map(|c| if c == '\n' || c == '\r' { ' ' } else { c }));
+                let _ = why.write(&mut text);
             }
             text.push('\n');
         }
@@ -70,7 +72,7 @@ impl GuestTimes {
                     let guest_ns = words.next()?.parse().ok()?;
                     let unread = match (words.next(), words.next()) {
                         (None, _) => None,
-                        (Some("unread"), why) => Some(why.unwrap_or_default().to_string()),
+                        (Some("unread"), Some(cause)) => Some(Unread::parse(cause)?),
                         _ => return None,
                     };
                     if vcpus.last().is_some_and(|v| v.index >= index) {
@@ -100,12 +102,12 @@ mod clocks {
     use std::collections::BTreeMap;
     use std::sync::Mutex;
 
-    use super::{GuestTimes, VcpuTime};
+    use super::{GuestTimes, Unread, VcpuTime};
     use crate::sync::lock;
 
     /// What reads one vCPU's guest time, in nanoseconds, from any thread: its hypervisor's
-    /// clock.
-    pub(in crate::vm) type Read = Box<dyn Fn() -> Result<u64, String> + Send + Sync>;
+    /// clock, or why it did not, typed.
+    pub(in crate::vm) type Read = Box<dyn Fn() -> Result<u64, Unread> + Send + Sync>;
 
     /// A machine's vCPUs' guest-time clocks by index, and what those gone ran. A sample reads
     /// each under its lock, which only vCPUs joining and leaving, out of their guests, take:
@@ -129,19 +131,15 @@ mod clocks {
 
     struct Clock {
         joined: u64,
-        /// Its hypervisor's clock, or why the vCPU has none.
-        read: Result<Read, String>,
+        /// Its hypervisor's clock.
+        read: Read,
         /// The most it has read, which a sample never says less than.
         last: u64,
     }
 
     impl Clock {
-        fn sample(&mut self) -> (u64, Option<String>) {
-            let read = match &self.read {
-                Ok(read) => read(),
-                Err(why) => Err(why.clone()),
-            };
-            match read {
+        fn sample(&mut self) -> (u64, Option<Unread>) {
+            match (self.read)() {
                 Ok(ns) => {
                     self.last = self.last.max(ns);
                     (self.last, None)
@@ -152,10 +150,10 @@ mod clocks {
     }
 
     impl GuestClocks {
-        /// vCPU `index` joins its machine, its guest time read by `read`, or none where `read`
-        /// says why, until the [`Joined`] returned goes. One of its index still there is
-        /// taken as gone, what it read kept as its machine's.
-        pub(in crate::vm) fn join(&self, index: u32, read: Result<Read, String>) -> Joined<'_> {
+        /// vCPU `index` joins its machine, its guest time read by `read`, until the [`Joined`]
+        /// returned goes. One of its index still there is taken as gone, what it read kept as
+        /// its machine's.
+        pub(in crate::vm) fn join(&self, index: u32, read: Read) -> Joined<'_> {
             let mut clocks = lock(&self.0);
             clocks.joins = clocks.joins.wrapping_add(1);
             let joined = clocks.joins;
@@ -236,9 +234,9 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     /// A clock that reads what `at` holds.
-    fn clock(at: &Arc<AtomicU64>) -> Result<Read, String> {
+    fn clock(at: &Arc<AtomicU64>) -> Read {
         let at = at.clone();
-        Ok(Box::new(move || Ok(at.load(Ordering::SeqCst))))
+        Box::new(move || Ok(at.load(Ordering::SeqCst)))
     }
 
     fn times(t: &GuestTimes) -> Vec<(u32, u64)> {
@@ -311,8 +309,8 @@ mod tests {
         assert_eq!(clocks.sample().total_ns(), 600);
     }
 
-    /// A read that fails says why, beside the most read before; a vCPU with no clock says
-    /// why, at none; neither keeps the others from being read.
+    /// A read that fails says why, typed, beside the most read before; one that never read
+    /// says why at none; neither keeps the others from being read.
     #[test]
     fn an_unread_vcpu_says_why_and_keeps_its_last() {
         let clocks = GuestClocks::default();
@@ -320,18 +318,18 @@ mod tests {
         let failing = fails.clone();
         let read: Read = Box::new(move || match failing.load(Ordering::SeqCst) {
             0 => Ok(300),
-            _ => Err("its thread's stat: gone".to_string()),
+            _ => Err(Unread::ThreadStat(Some(2))),
         });
-        let _zero = clocks.join(0, Ok(read));
-        let _one = clocks.join(1, Err("no clock".to_string()));
+        let _zero = clocks.join(0, read);
+        let _one = clocks.join(1, Box::new(|| Err(Unread::Gone)));
         let at = Arc::new(AtomicU64::new(8));
         let _two = clocks.join(2, clock(&at));
         assert_eq!(clocks.sample().vcpus[0].unread, None);
         fails.store(1, Ordering::SeqCst);
         let t = clocks.sample();
         assert_eq!(times(&t), [(0, 300), (1, 0), (2, 8)]);
-        assert_eq!(t.vcpus[0].unread.as_deref(), Some("its thread's stat: gone"));
-        assert_eq!(t.vcpus[1].unread.as_deref(), Some("no clock"));
+        assert_eq!(t.vcpus[0].unread, Some(Unread::ThreadStat(Some(2))));
+        assert_eq!(t.vcpus[1].unread, Some(Unread::Gone));
         assert_eq!(t.vcpus[2].unread, None);
         assert_eq!(t.total_ns(), 308);
     }
@@ -425,8 +423,8 @@ mod tests {
         );
     }
 
-    /// Times encoded decode as they were: a vCPU unread, its reason's line breaks made
-    /// spaces; none; and the most a u64 holds.
+    /// Times encoded decode as they were: a vCPU unread, its cause and code whole; one unread
+    /// with no code; none; and the most a u64 holds.
     #[test]
     fn encoded_times_decode_as_they_were() {
         let t = GuestTimes {
@@ -439,12 +437,12 @@ mod tests {
                 VcpuTime {
                     index: 5,
                     guest_ns: u64::MAX,
-                    unread: Some("WHvGetVirtualProcessorCounters failed:\nE_ACCESSDENIED".into()),
+                    unread: Some(Unread::WhpCounters(-2147024891)),
                 },
                 VcpuTime {
                     index: 6,
                     guest_ns: 0,
-                    unread: Some(String::new()),
+                    unread: Some(Unread::ThreadStat(None)),
                 },
             ],
             departed_ns: 99,
@@ -452,12 +450,10 @@ mod tests {
         let text = t.encode();
         assert_eq!(
             text,
-            "departed 99\nvcpu 0 123456789\nvcpu 5 18446744073709551615 unread \
-             WHvGetVirtualProcessorCounters failed: E_ACCESSDENIED\nvcpu 6 0 unread \n"
+            "departed 99\nvcpu 0 123456789\nvcpu 5 18446744073709551615 unread whp-counters \
+             -2147024891\nvcpu 6 0 unread thread-stat malformed\n"
         );
-        let mut said = t.clone();
-        said.vcpus[1].unread = Some("WHvGetVirtualProcessorCounters failed: E_ACCESSDENIED".into());
-        assert_eq!(GuestTimes::decode(&text), Some(said));
+        assert_eq!(GuestTimes::decode(&text), Some(t.clone()));
         assert_eq!(t.total_ns(), u64::MAX, "the total saturates");
         let none = GuestTimes::default();
         assert_eq!(GuestTimes::decode(&none.encode()), Some(none));
@@ -476,6 +472,9 @@ mod tests {
             "departed 1\nvcpu 0\n",
             "departed 1\nvcpu 0 -1\n",
             "departed 1\nvcpu 0 1 lost\n",
+            "departed 1\nvcpu 0 1 unread\n",
+            "departed 1\nvcpu 0 1 unread its thread's stat: gone\n",
+            "departed 1\nvcpu 0 1 unread whp-counters\n",
             "departed 1\nvcpu 1 5\nvcpu 0 5\n",
             "departed 1\nvcpu 0 5\nvcpu 0 6\n",
         ] {
