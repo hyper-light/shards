@@ -20,7 +20,7 @@
 //!   Disconnect"), its output let go of and its stdin ended.
 
 use std::fs::File;
-use std::io::{self, Read as _, Write as _};
+use std::io::{self, Write as _};
 use std::mem::size_of;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -31,14 +31,15 @@ use shards_ipc::fd::{AsFd as _, AsRawFd, BorrowedFd};
 use shards_remote::control::exec::{self, Replies, Reply, Start, Steer, Unstarted};
 use shards_remote::managed::{Producer, input};
 
-use super::{Admission, Charge, ipc_buffers, log};
+use super::{Admission, Charge, ipc_buffers, mcp};
 
 /// Linux's SIGHUP, which the guest's init gives the exec (include/uapi/asm-generic/signal.h).
 const SIGHUP: u32 = 1;
 /// Linux's EPIPE and EIO (include/uapi/asm-generic/errno-base.h): how an exec's stdin ended
-/// where its pipe refused a write, its reader gone or any other failure.
-const EPIPE: i32 = 32;
-const EIO: i32 = 5;
+/// where its pipe refused a write, its reader gone or any other failure; an MCP connection's
+/// input likewise (mcp.rs).
+pub(super) const EPIPE: i32 = 32;
+pub(super) const EIO: i32 = 5;
 /// The most an xnu pipe's buffer grows to, which macOS says of no pipe: 64 KiB
 /// (`BIG_PIPE_SIZE`, xnu-12377.101.15 bsd/sys/pipe.h l. 80, as synced.rs cites it).
 #[cfg(target_os = "macos")]
@@ -46,32 +47,47 @@ const XNU_PIPE_MOST: u64 = 64 << 10;
 
 /// How the host starts an exec in its run's microVM: its VM process handed the member's exec,
 /// its `EXEC_RUN` flags, its stdio and its client's end of its connection
-/// (`Daemon::launch_exec`).
-pub(super) type Launch<'a> =
+/// (`Daemon::launch_exec`, api_run.rs `hand_exec`).
+pub(crate) type Launch<'a> =
     dyn Fn(&Spec, &[String], u8, [BorrowedFd<'_>; 3], &Stream) -> io::Result<()> + Sync + 'a;
 
-/// Hosts each exec `starts` brings, on a thread of its own, until the endpoint that brings them
-/// has ended and so has every exec it brought: each charged to `charge`, its streams admitted
-/// as `admissions` says, started through `launch`; a log lane read from the run's logs
-/// (`logs`, log_lanes.rs).
-pub(super) fn host(
-    starts: &mpsc::Receiver<Start>,
-    admissions: exec::Admissions,
-    charge: &Charge,
-    launch: &Launch<'_>,
-    logs: &super::log_lanes::Logs<'_>,
-) {
+/// Where a run's host says what befell one of its lanes: the daemon's log, or an orchestrator's
+/// run host's diagnostics.
+pub(crate) type Say = dyn Fn(&str) + Sync;
+
+/// What a run's exec host serves its execs, its log lanes and its members' MCP connections
+/// with: their streams' admissions, the run's budget, how it starts an exec, the run's logs a
+/// log lane reads (log_lanes.rs; none for an orchestrator's run host, which keeps none of its
+/// run's logs), the connections its members make to their MCP bridges where its run gave any
+/// one (D254), and where it says what befell each.
+pub(crate) struct Hosting<'a> {
+    pub(crate) admissions: exec::Admissions,
+    pub(crate) charge: &'a Charge,
+    pub(crate) launch: &'a Launch<'a>,
+    pub(crate) logs: Option<&'a super::log_lanes::Logs<'a>>,
+    pub(crate) bridges: Option<&'a mcp::Bridges>,
+    pub(crate) say: &'a Say,
+}
+
+/// Hosts each exec, log lane and MCP connection `starts` brings, on a thread of its own, until
+/// the endpoint that brings them has ended and so has every one it brought.
+pub(crate) fn host(starts: &mpsc::Receiver<Start>, hosting: &Hosting<'_>) {
     std::thread::scope(|scope| {
         while let Ok(start) = starts.recv() {
             let (number, replies) = (start.exec, start.replies.try_clone());
             let spawned = std::thread::Builder::new()
                 .name("agent-exec".into())
-                .spawn_scoped(scope, move || match start.ask.kind {
-                    exec::Kind::Log(_) => super::log_lanes::serve(start, logs, admissions, charge),
-                    _ => serve(start, admissions, charge, launch),
+                .spawn_scoped(scope, move || {
+                    let logged = matches!(start.ask.kind, exec::Kind::Log(_));
+                    match (logged, hosting.logs) {
+                        (true, Some(logs)) => {
+                            super::log_lanes::serve(start, logs, hosting.admissions, hosting.charge)
+                        }
+                        _ => serve(start, hosting),
+                    }
                 });
             if let Err(e) = spawned {
-                log(format!("agent-control exec {number}: its thread: {e}"));
+                (hosting.say)(&format!("agent-control exec {number}: its thread: {e}"));
                 if let Ok(replies) = replies {
                     replies.tell(Reply::Unstarted(Unstarted::Failed));
                 }
@@ -269,7 +285,8 @@ pub(super) fn pipe_bytes(pipe: &impl AsRawFd) -> io::Result<u64> {
 }
 
 /// The run's budget, charged for one exec while it runs and given back as it drops; or for a
-/// member's lane while it is open, or a steer's delivery while it goes (members.rs).
+/// member's lane while it is open, a steer's delivery while it goes (members.rs), or a member's
+/// MCP connection while it is held and carried (mcp.rs).
 pub(super) struct Held<'a> {
     charge: &'a Charge,
     bytes: u64,
@@ -280,6 +297,11 @@ impl<'a> Held<'a> {
         charge.grow(bytes)?;
         Ok(Held { charge, bytes })
     }
+
+    /// `bytes` charged to `charge` already, given back as it drops.
+    pub(super) fn of(charge: &'a Charge, bytes: u64) -> Held<'a> {
+        Held { charge, bytes }
+    }
 }
 
 impl Drop for Held<'_> {
@@ -289,7 +311,7 @@ impl Drop for Held<'_> {
 }
 
 /// A zeroed buffer of `len` bytes, or none where it cannot be allocated.
-fn buffer(len: usize) -> Option<Vec<u8>> {
+pub(super) fn buffer(len: usize) -> Option<Vec<u8>> {
     let mut bytes = Vec::new();
     bytes.try_reserve_exact(len).ok()?;
     bytes.resize(len, 0);
@@ -351,31 +373,42 @@ fn hear(conn: &Stream, replies: &Replies) -> End {
     }
 }
 
-/// Carries an exec's output from `pipe` to its stream as it comes, a read a record, each once
-/// its producer has room: until the VM process's end of the pipe closes, or its stream is let
-/// go. Read into `buffer` first, so that a record is taken only for bytes there are: one taken
-/// and never submitted would keep its stream from finishing.
-fn pump(producer: &Producer, mut pipe: io::PipeReader, buffer: &mut [u8]) {
+/// How a pump's source ended (R04).
+pub(super) enum Pumped {
+    /// At its end, every byte it gave submitted.
+    Ended,
+    /// A read failed.
+    Failed,
+    /// Its stream was let go first.
+    Unread,
+}
+
+/// Carries an output from `from` to its stream as it comes, a read a record, each once its
+/// producer has room: an exec's from its VM process's pipe until that end closes, an MCP
+/// connection's from the connection (mcp.rs), or until its stream is let go. Read into
+/// `buffer` first, so that a record is taken only for bytes there are: one taken and never
+/// submitted would keep its stream from finishing.
+pub(super) fn pump(producer: &Producer, mut from: impl io::Read, buffer: &mut [u8]) -> Pumped {
     loop {
-        let n = match pipe.read(buffer) {
-            Ok(0) => return,
+        let n = match from.read(buffer) {
+            Ok(0) => return Pumped::Ended,
             Ok(n) => n,
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-            Err(_) => return,
+            Err(_) => return Pumped::Failed,
         };
         let Some(bytes) = buffer.get(..n) else {
-            return;
+            return Pumped::Failed;
         };
         if producer.wait_capacity().is_err() {
-            return;
+            return Pumped::Unread;
         }
         let Ok(Some(mut record)) = producer.take_buffer() else {
-            return;
+            return Pumped::Unread;
         };
         record.clear();
         record.extend_from_slice(bytes);
         if producer.submit(record).is_err() {
-            return;
+            return Pumped::Unread;
         }
     }
 }
@@ -443,8 +476,18 @@ fn steer_on(steer: mpsc::Receiver<Steer>, conn: Stream, replies: Replies, ended:
 }
 
 /// One exec, from its ask to its end: refused, charged, made, started and served, and how it
-/// went told.
-fn serve(start: Start, admissions: exec::Admissions, charge: &Charge, launch: &Launch<'_>) {
+/// went told; or one MCP connection, carried (mcp.rs).
+fn serve(start: Start, hosting: &Hosting<'_>) {
+    if start.ask.kind == exec::Kind::Mcp {
+        return mcp::carry(start, hosting);
+    }
+    let Hosting {
+        admissions,
+        charge,
+        launch,
+        say: log,
+        ..
+    } = *hosting;
     let Start {
         ask: exec::Ask { member, kind, .. },
         exec: number,
@@ -454,24 +497,16 @@ fn serve(start: Start, admissions: exec::Admissions, charge: &Charge, launch: &L
         steer,
         replies,
     } = start;
-    let say = |what: &str| log(format!("agent-control exec {number} in member {member}: {what}"));
+    let say = |what: &str| log(&format!("agent-control exec {number} in member {member}: {what}"));
     let refuse = |why: Unstarted, what: &str| {
         say(what);
         replies.tell(Reply::Unstarted(why));
     };
     let spec = match kind {
         exec::Kind::Exec(spec) => *spec,
-        // A member's MCP bridge is made only where its run asks for one (D254), which no run
-        // of this daemon's can yet: its member has none to connect to.
-        exec::Kind::Mcp => {
-            return refuse(
-                Unstarted::Refused,
-                "an MCP connection: its member has no MCP bridge",
-            );
-        }
         // A member's own lane is the member host's (members.rs), which the endpoint hands it
-        // on a channel of its own: none reaches this one.
-        exec::Kind::Member => {
+        // on a channel of its own; an MCP connection is carried above: none reaches here.
+        exec::Kind::Member | exec::Kind::Mcp => {
             return refuse(Unstarted::Failed, "a member's own lane, which no exec serves");
         }
         // A log lane is the log host's (log_lanes.rs), which `host` hands it.

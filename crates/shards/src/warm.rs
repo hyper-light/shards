@@ -1781,6 +1781,16 @@ pub fn serve_engine(
         .map_err(|e| format!("its engine's thread: {e}"))
 }
 
+/// A resumed run's tokens (D176) as its request brings them after its head: its save's own,
+/// which its guest dials the host again with; then what the save kept of its tokens' entries,
+/// its engine's (`engine=`, D181) and its members' MCP connections' (`mcp=`, D254), as a fresh
+/// run's spec carries them, in a spec of those entries alone. None for a request that is not
+/// one.
+pub fn resumed_tokens(brought: &[u8]) -> Option<(&[u8], Spec)> {
+    let (tokens, kept) = brought.split_at_checked(2 * shards_abi::run::TOKEN)?;
+    Some((tokens, Spec::decode(kept)?))
+}
+
 /// The token the run's members' MCP connections are carried by (D254), its spec's `mcp=`
 /// entry, where it has one whole: its guest's init refuses a run whose entry is not.
 pub fn mcp_token(spec: &Spec) -> Option<[u8; shards_abi::run::TOKEN]> {
@@ -2707,6 +2717,36 @@ mod tests {
     mod mcp {
         use super::*;
         use std::io::Read as _;
+
+        /// A resumed run's request brings its save's tokens, then what its save kept of its
+        /// engine's and its MCP connections' tokens as a fresh run's spec carries them (D176):
+        /// each read back as it was kept, either alone, or neither; one cut short is none.
+        #[test]
+        fn a_resumed_runs_tokens_bring_its_engines_and_its_mcp_connections() {
+            let token = |b: u8| [b; shards_abi::run::TOKEN];
+            let hex = |t: [u8; shards_abi::run::TOKEN]| -> Vec<u8> {
+                let digits: String = t.iter().map(|b| format!("{b:02x}")).collect();
+                format!("engine={digits}").into_bytes()
+            };
+            let saved = [7u8; 2 * shards_abi::run::TOKEN];
+            for (engine, mcp) in [
+                (Some(token(1)), Some(token(2))),
+                (None, Some(token(2))),
+                (Some(token(1)), None),
+                (None, None),
+            ] {
+                let mut kept = Spec::default();
+                kept.setup.extend(engine.map(hex));
+                kept.setup
+                    .extend(mcp.as_ref().map(shards_abi::run::mcp::token_entry));
+                let mut brought = saved.to_vec();
+                kept.encode_into(&mut brought);
+                let (tokens, read) = resumed_tokens(&brought).unwrap();
+                assert_eq!(tokens, saved);
+                assert_eq!((engine_token(&read), mcp_token(&read)), (engine, mcp));
+            }
+            assert!(resumed_tokens(&saved[1..]).is_none());
+        }
 
         /// Closed: its far end reads its end, nothing of it unread there.
         fn closed(mut relay: GuestConn) {

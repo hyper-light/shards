@@ -2107,15 +2107,30 @@ fn serve_workload(
                             );
                             // Its own engine (D181), before its guest hears of the run, where
                             // it has one; where not, its port is let go, and refuses. A resumed
-                            // run's token comes after its save's (D176): its guest's relay says
-                            // the one it said before.
-                            let (tokens, engine) = match &request.tokens {
-                                Some(t) => {
-                                    let (run, engine) = t.split_at_checked(2 * shards_abi::run::TOKEN).unwrap_or((t, &[]));
-                                    (Some(run.to_vec()), <[u8; shards_abi::run::TOKEN]>::try_from(engine).ok())
-                                }
-                                None => (None, crate::warm::engine_token(&request.spec)),
+                            // run's tokens come after its save's (D176): its guest's relay says
+                            // the ones it said before.
+                            let brought = request
+                                .tokens
+                                .as_deref()
+                                .map(|t| {
+                                    crate::warm::resumed_tokens(t)
+                                        .ok_or_else(|| "a resumed run's tokens, malformed".to_string())
+                                })
+                                .transpose()
+                                .inspect_err(|e| report(e))?;
+                            let (tokens, engine, mcp) = match &brought {
+                                Some((run, kept)) => (
+                                    Some(run.to_vec()),
+                                    crate::warm::engine_token(kept),
+                                    crate::warm::mcp_token(kept),
+                                ),
+                                None => (
+                                    None,
+                                    crate::warm::engine_token(&request.spec),
+                                    crate::warm::mcp_token(&request.spec),
+                                ),
                             };
+                            drop(brought);
                             let engine_served = match (engines.take(), engine) {
                                 (Some(engines), Some(token)) => {
                                     crate::warm::serve_engine(&link, token, engines).inspect_err(|e| report(e))?;
@@ -2125,9 +2140,8 @@ fn serve_workload(
                             };
                             // Its members' MCP connections (D254), where it asks for them,
                             // before its guest hears of the run; where not, its port is let
-                            // go, and refuses. A resumed run's spec is none (D176): its port
-                            // refuses too.
-                            if let (Some(mcps), Some(token)) = (mcps.take(), crate::warm::mcp_token(&request.spec)) {
+                            // go, and refuses. A resumed run's token is its save's (D176).
+                            if let (Some(mcps), Some(token)) = (mcps.take(), mcp) {
                                 crate::warm::serve_mcp(&link, token, mcps).inspect_err(|e| report(e))?;
                             }
                             // The run's own most memory to plug, before its guest hears of

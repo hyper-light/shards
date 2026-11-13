@@ -2131,6 +2131,7 @@ mod tests {
             input,
             terminal: false,
             args: Vec::new(),
+            mcp: false,
         };
         let s = Shared {
             state: Mutex::new(State::asking(&[stage("codex", true), stage("other", false)])),
