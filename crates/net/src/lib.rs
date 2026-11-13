@@ -2732,7 +2732,7 @@ impl<'r> Stack<'r> {
             if let Some(had) = self.tcp.slot(slot).map(|s| s.interest) {
                 self.forget(c.fd(), self.tcp.token(slot), had);
             }
-            self.tcp.release(slot);
+            self.release(slot);
             return;
         }
         let named = self.tcp.token(slot);
@@ -2750,7 +2750,7 @@ impl<'r> Stack<'r> {
             self.forget(fd, named, had);
             let mut o = self.out();
             c.reset(&mut o);
-            self.tcp.release(slot);
+            self.release(slot);
             return;
         }
         let Some(s) = self.tcp.slot(slot) else { return };
@@ -2766,6 +2766,15 @@ impl<'r> Stack<'r> {
             self.blocked.push_back(named);
         }
         s.conn = Some(c);
+    }
+
+    /// Empties `slot`, its connection gone, and with it what the run's sign-ins keep for its
+    /// flow (D242, #74 step 8): an answer, which may be a token response, outlives no flow.
+    fn release(&mut self, slot: u32) {
+        if let Some(c) = self.credentials.as_mut() {
+            c.sign_ins.gone(self.tcp.token(slot));
+        }
+        self.tcp.release(slot);
     }
 
     /// Connections a full ring held back, sent again in the order they were held, until
@@ -3328,6 +3337,132 @@ mod tests {
         stack.timers(due);
         assert_eq!(stack.timers.len(), 1, "fired, and armed again");
         assert!(stack.next_timer().unwrap() > due);
+    }
+
+    /// A run's credentials with one sign-in, not yet captured (D242, step 8).
+    fn signing() -> Credentials {
+        Credentials {
+            grants: Vec::new(),
+            ca: ca::Ca::new(ca::Key::generate().unwrap(), &["platform.claude.com"]).unwrap(),
+            leases: lease::Leases::new(Vec::new()),
+            upstream: inject::Upstream::new(Vec::new()).unwrap(),
+            sign_ins: signin::SignIns::new(vec![signin::SignInGrant {
+                sign_in: "claude/acct-1".into(),
+                cli: signin::Cli::ClaudeCode,
+                toward: vec!["api.anthropic.com".into()],
+                captured: None,
+            }]),
+        }
+    }
+
+    /// A connection to the guest settled into a slot of `stack`'s, its socket's far end kept
+    /// open by the caller: its slot.
+    fn opened(stack: &mut Stack<'_>, port: u16) -> (u32, std::net::TcpStream) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (sock, _) = listener.accept().unwrap();
+        sock.set_nonblocking(true).unwrap();
+        let key = Key {
+            guest_port: port,
+            remote: (IpAddr::V4(stack.cfg.gateway_ip), 49152),
+        };
+        let c = Conn::accept(key, sock, 1000, &mut stack.out());
+        let slot = stack.tcp.reserve(key);
+        stack.settle(slot, c);
+        (slot, client)
+    }
+
+    /// Ends the connection in `slot` as a reset ends it, and settles it.
+    fn reset(stack: &mut Stack<'_>, slot: u32) {
+        let mut c = stack.tcp.take(slot).unwrap();
+        c.reset(&mut stack.out());
+        assert!(c.closed);
+        stack.settle(slot, c);
+    }
+
+    /// The run host answers the one refresh asked with a token response.
+    fn refreshed(stack: &mut Stack<'_>) -> zeroize::Zeroizing<Vec<u8>> {
+        let s = &mut stack.credentials.as_mut().unwrap().sign_ins;
+        let asks = s.asks();
+        assert_eq!(asks.len(), 1, "one refresh asked");
+        let Some(signin::Told::Refresh { id, .. }) = signin::Told::decode(&asks[0]) else {
+            panic!("no refresh asked")
+        };
+        let body = zeroize::Zeroizing::new(
+            br#"{"access_token":"sk-ant-oat01-not-real","refresh_token":"sk-ant-ort01-not-real"}"#.to_vec(),
+        );
+        let answer = signin::Answered::Refreshed {
+            id,
+            result: Ok(body.clone()),
+        };
+        assert_eq!(
+            s.answered(&answer.encode().unwrap(), &[]),
+            Some(signin::Changed::Refreshed { index: 0 }),
+            "the refresh stands for the sign-in whoever waited on it"
+        );
+        body
+    }
+
+    /// An HTTP/1.1 flow that ends while its sign-in's refresh is under way keeps nothing of its
+    /// answer (D242, #74 step 8): a token response outlives no flow it was for. Do: two flows ask
+    /// one refresh; the first is reset; the run host answers. Expect: one flow waiting once the
+    /// first ends; no answer for the first, the second's its own.
+    #[test]
+    fn a_flow_that_ends_mid_refresh_keeps_no_answer() {
+        let region = Region::map(shards_netring::memory().unwrap()).unwrap();
+        let (_, rings) = shards_netring::doorbell().unwrap();
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let cfg = Config::on_bridge(Policy::DenyAll, [2, 0, 0, 0, 0, 1], &bridge);
+        let mut stack = stack(cfg, region.producer(1, rings));
+        stack.credentials = Some(signing());
+        let (a, _a) = opened(&mut stack, 80);
+        let (b, _b) = opened(&mut stack, 81);
+        let (gone, kept) = (stack.tcp.token(a), stack.tcp.token(b));
+        let s = &mut stack.credentials.as_mut().unwrap().sign_ins;
+        s.refresh(0, gone).unwrap();
+        s.refresh(0, kept).unwrap();
+        reset(&mut stack, a);
+        let s = &mut stack.credentials.as_mut().unwrap().sign_ins;
+        assert_eq!(s.waiting(), 1, "a flow gone still waits on its ask");
+        let body = refreshed(&mut stack);
+        let s = &mut stack.credentials.as_mut().unwrap().sign_ins;
+        assert!(s.take(gone).is_none(), "an answer kept for a flow gone");
+        assert!(matches!(s.take(kept), Some(signin::Answer::Refreshed(b)) if b == body));
+    }
+
+    /// An HTTP/2 connection that ends with streams mid-ask keeps no answer for any of them
+    /// (D242, #74 step 8), and another flow's streams take theirs. Do: streams 1 and 3 of one
+    /// flow and stream 1 of another ask one refresh; the first flow is reset; the run host
+    /// answers. Expect: one stream waiting once the first flow ends; no answer for either of its
+    /// streams, the other flow's stream its own.
+    #[test]
+    fn an_h2_flow_that_ends_mid_ask_keeps_no_answer_for_its_streams() {
+        let region = Region::map(shards_netring::memory().unwrap()).unwrap();
+        let (_, rings) = shards_netring::doorbell().unwrap();
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let cfg = Config::on_bridge(Policy::DenyAll, [2, 0, 0, 0, 0, 1], &bridge);
+        let mut stack = stack(cfg, region.producer(1, rings));
+        stack.credentials = Some(signing());
+        let (a, _a) = opened(&mut stack, 80);
+        let (b, _b) = opened(&mut stack, 81);
+        let on = |flow, stream| signin::Asker { flow, stream };
+        let (gone, kept) = (stack.tcp.token(a), stack.tcp.token(b));
+        let s = &mut stack.credentials.as_mut().unwrap().sign_ins;
+        for asker in [on(gone, 1), on(gone, 3), on(kept, 1)] {
+            s.refresh(0, asker).unwrap();
+        }
+        reset(&mut stack, a);
+        let s = &mut stack.credentials.as_mut().unwrap().sign_ins;
+        assert_eq!(s.waiting(), 1, "a flow gone's streams still wait on its ask");
+        let body = refreshed(&mut stack);
+        let s = &mut stack.credentials.as_mut().unwrap().sign_ins;
+        for stream in [1, 3] {
+            assert!(
+                s.take(on(gone, stream)).is_none(),
+                "an answer kept for stream {stream} of a flow gone"
+            );
+        }
+        assert!(matches!(s.take(on(kept, 1)), Some(signin::Answer::Refreshed(b)) if b == body));
     }
 
     /// A segment's headers and its bytes, from both halves of a queue that wraps, reach the

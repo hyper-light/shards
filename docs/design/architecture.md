@@ -5389,8 +5389,8 @@ terminal that went away), and checks a client's enrollment again for each comman
 `shards remove client` ends its access at once. A join's refusal is the same whatever made
 it fail. The client's side (`client.rs`, `context.rs`) refuses here what a context does not
 carry yet, the client's terminal and files, read by shards' own parser of each command (a
-flag past another's value included); and where no daemon answers, it says so as each probe
-of its handshake goes, and waits on for as long as its user does, past the slowest handshake
+flag past another's value included); and where no daemon answers, it says so once, past what
+its path has shown, and waits on for as long as its user does, past the slowest handshake
 seen from a daemon reached before ("Its values derived", below). A connection that has done
 its handshake lives while its peer makes progress, its liveness checked as it is used, with
 no idle timeout (D176 part 6, "Over a slow link": 10 s of silence ended 2 of the first 20
@@ -6435,7 +6435,8 @@ stateless reset (§10.3), which ends the connection for that peer as its close w
 connection, its handshake's or established, keeps its place: a vanished owner's is freed only
 as its successor contends for it and it has not answered, within its probe timeout, the PING
 an earlier attempt sent it (`Driver::reclaim`, below), its successor refused and dialing again meanwhile; a stranger's
-handshake in flight holds it too. Every bounded endpoint shares the driver, so an
+handshake in flight holds it too, and gives it up the same way, or by making no progress for a whole window
+(`Liveness::unfinished`, below). Every bounded endpoint shares the driver, so an
 output endpoint's observer resubscribing after its close is taken at once, and so is the
 agent-control endpoint's third connection while the older drains (D238's `CONNECTIONS`). No
 literal: the places are the caller's admission, the close period the transport's own. Red at
@@ -6472,12 +6473,26 @@ replaced by:
   previous RTT is available, the initial RTT SHOULD be set to 333 milliseconds"), the only
   figure here, the protocol's own, and has no deadline: QUIC probes it as §6.2 does, its
   backoff doubling each probe timeout, and each probe past its first flight, while nothing of
-  the daemon's has been heard, is told typed to whoever waits (`Handler::unanswered`,
-  `client::Unanswered { probes, waited }`). The CLI says each on stderr
-  (`shards: NAME: no answer yet from ADDR: N probes over T`) and waits as long as its user
-  does; a daemon's relay logs each, and waits until that daemon answers or this one stops,
-  which hangs it up at once from its start (`client::HangUp`), as a probe its backoff puts ever
-  further off would not. A host that answers its port unreachable refuses at once: the
+  the daemon's has been heard, is asked typed of whoever waits whether it waits on
+  (`Handler::unanswered`, `client::Unanswered { probes, waited }`), the user's patience alone
+  deciding. What its user is told is a stall's, once a handshake, as an established
+  connection's is (ROOT's ruling A): a path with no window, a cold start's or a marked one's,
+  is told at the first probe past the probe timeout RFC 9002 gives a path with no RTT sample
+  (`tls::Known::COLD_PTO`: §5.3 starts smoothed_rtt at kInitialRtt and rttvar at half of it,
+  §6.2.1's PTO is smoothed_rtt + max(4·rttvar, kGranularity) with no max_ack_delay in the
+  handshake's spaces: 999 ms, three kInitialRtt, the first probe a cold start sends), and a
+  path with one at its run-out (below), typed `client::Stall::Unreached { waited, window }`
+  (`client::Told`). The CLI says it on stderr (`shards: NAME: no answer yet from ADDR in T;
+  still waiting (…; ^C ends this)`) and waits as long as its user does; a daemon's relay logs
+  it the same way, and waits until that daemon answers or this one stops, which hangs it up at
+  once from its start (`client::HangUp`), as a probe its backoff puts ever further off would
+  not. Each probe was told from 1e4c5a905: a marked path starts its probes from its own RTT,
+  and on a loaded host a reached one's handshake probes within its window, so a command's
+  stderr held "shards: gpu: no answer yet from 127.0.0.1:44476: 4 probes over 424.6µs" (ROOT's
+  KVM run at 21a65b459 on adacachy2, `tests/context.rs`'s
+  `a_policy_through_a_context_is_the_clients_its_builder_the_machine`); red and green so in
+  `client.rs`'s `a_handshake_within_its_paths_window_is_told_nothing_and_once_past_it` and
+  `a_handshake_with_no_window_is_told_once_past_the_cold_probe_timeout`. A host that answers its port unreachable refuses at once: the
   client's socket is connected to its one peer (`Driver::aim`), so its ICMP reads as a refusal
   (ECONNREFUSED; Windows' WSAECONNRESET), said so, and the record kept as it was, whichever of
   its next send and its next read is told of it (`Driver::flush_datagrams`): Linux gives a
@@ -6494,9 +6509,10 @@ replaced by:
   nothing heard from it (its Initial and Handshake packets count; before its first, nothing
   does, QUIC's probes being this side's own sends) past the later of when it was last heard and
   that timeout, it has run out. Run out, it is marked, told once, typed (`Handler::ran_out`,
-  `RanOut::Handshake { waited, window }`), and its window let go (`Liveness::handshake_ran_out`):
-  it goes on as a cold start's does, with no deadline, each probe told to whoever waits, until it
-  ends or its caller gives up, as every wait after a run-out follows the party's liveness and
+  `RanOut::Handshake { waited, window }`, to its user `Stall::Unreached` with its window), and
+  its window let go (`Liveness::handshake_ran_out`): it goes on as a cold start's does, with no
+  deadline, each probe asked of whoever waits and nothing more told, until it ends or its
+  caller gives up, as every wait after a run-out follows the party's liveness and
   progress (the person's ruling; D222's "a run-out learns nothing"). One that goes past its
   window and its probe timeout both while it is heard has run out too, and goes on, marked. A
   marked record's next handshake waits as a cold start does, until a handshake ends again.
@@ -6569,12 +6585,13 @@ replaced by:
   its commands up (`Controls::hang_up`). A stall still unanswered as its connection ends is the
   path's lost silence (`Liveness::lost`: the silence before the send that stalled); one its
   answer ended is the peer's slowness, and records none. What bounds a driver's resources is
-  the reclaim as a newcomer contends (`Driver::reclaim`): it asks each established holder for
-  an answer (a PING) and refuses the newcomer, and at a later attempt lets go of the holder
+  the reclaim as a newcomer contends (`Driver::reclaim`): it asks each holder, its handshake in
+  flight or ended, for an answer (a PING) and refuses the newcomer, and at a later attempt lets go of the holder
   unheard longest of those that have not answered that PING within their own probe timeout
-  (`Liveness::unanswering`), its handler told as QUIC's `TimedOut`; a holder that answers,
-  however late, keeps its place, and newcomers dialing again put off no judgement, as an ask
-  still unanswered stands (`Liveness::ask`). ROOT's ruling on #72 (2026-11-13): under
+  (`Liveness::unanswering`), or of the handshakes that made no progress for a whole window
+  (`Liveness::unfinished`, below), its handler told as QUIC's `TimedOut`; an established holder
+  that answers, however late, keeps its place, and so does a handshake that keeps advancing,
+  however slowly; newcomers dialing again put off no judgement, as an ask still unanswered stands (`Liveness::ask`). ROOT's ruling on #72 (2026-11-13): under
   contention a holder is judged by its liveness, warm or cold, stalled or not. Before, a
   holder had to be stalled as well, and one whose path never showed an answer (an owner gone
   before its handshake's last frames were acknowledged) has no window and never stalls, so its
@@ -6595,8 +6612,63 @@ replaced by:
   established alike, as its descriptors (`Driver::hold_connections`, `Host::handshakes`:
   `platform::descriptor_limit`, as each connection served may hold a command and its stdio,
   so no more could each be served one; red with no bound,
-  `a_listener_at_its_bound_gives_a_vanished_clients_place_to_a_newcomer`). Owed, as for
-  handshakes: the memory a connection holds, measured, as its second term. No wait is
+  `a_listener_at_its_bound_gives_a_vanished_clients_place_to_a_newcomer`). ROOT's ruling on
+  #72's handshakes (2026-11-13): a handshake in flight holding a place is judged as any holder
+  is. Only established holders were asked, so a client gone mid-handshake held its place for
+  good: a bounded endpoint's successor refused at every attempt
+  (`a_handshake_unheard_past_its_probe_timeout_gives_its_place_and_one_heard_keeps_it`, red so
+  at 494ceb1dc: one place held by a hand-driven client's Initial, which never reads its
+  server's flight), and the listener's own rule for handshakes, the oldest given up for the
+  newest past `Host::handshakes` (`Driver::hold_handshakes`), never ran, as the listener's
+  places were the same number and a newcomer past them was refused before it was looked at.
+  That rule is gone: the reclaim covers it, and it would have given up a live handshake for
+  any newer one. A handshake is judged by its own spaces' probe timeout, which counts no
+  `max_ack_delay` (RFC 9002 §6.2.1: Initial and Handshake packets are acknowledged at once,
+  RFC 9000 §13.2.1), read from its transport as its application-data probe timeout less its
+  peer's `max_ack_delay` (`Connection::probe_timeout`, `Connection::peer_max_ack_delay`; no
+  ACK_FREQUENCY frame, which raises the former, is sent before the handshake ends); before its
+  first RTT sample it is the initial RTT's (§6.2.2: 333 ms, so 999 ms), and a client that
+  acknowledges nothing gives none. No deadline of the handshake's own, and no idle timeout. A
+  handshake heard since the ask is not let go for want of an answer, the test's client
+  answering each ask over three such probe timeouts while newcomers were refused. Its failure is
+  typed as an established holder's: a live client whose answer comes later than that loses its
+  place, its handler told `TimedOut`, and dials again. ROOT's ruling on #72's unfinished
+  handshakes (2026-11-13): an established holder's answer is its liveness, but a handshake's
+  goal is to end, so a handshake shows progress only by advancing. N clients that answered every
+  ask and never finished held a listener's descriptor-bound places for good, strangers bounded
+  by invitations only after their handshakes (found by the implementer of the ruling above;
+  `a_handshake_that_answers_but_never_advances_gives_its_place_after_a_window_without_progress`,
+  red so at 9ebbdbcff: the newcomer refused 23,979 times over 30 s on macOS arm64). Progress is
+  hyper-quic's `Connection::handshake_progress` (patch Q35, its VENDORED.md §51, on hyper-raft's
+  branch `p/q35-handshake-progress-v1`, e0613f524): CRYPTO bytes newly read in order, this
+  side's CRYPTO bytes the peer newly acknowledged in the Initial and Handshake spaces, and keys
+  installed for the next space; a datagram or CRYPTO frame repeated, a PING answered and any
+  other acknowledgement move it not at all (`ConnectionStats` counts all of those, so cannot tell
+  them apart). The driver notes it as each connection is fed (`Liveness::advance`), and as a
+  newcomer needs a place lets go of a handshake that has made no progress for a whole window
+  (`Liveness::unfinished`). The window is learned where it runs: the slowest handshake this
+  endpoint has completed (`Driver::slowest`, an online maximum from the first completed
+  handshake on, each from its first datagram to its end), no shorter than the handshake's
+  probe timeout, before which QUIC declares no loss. Cold, before any handshake has completed
+  here, it is the time QUIC's own recovery takes to give up on a silent path: RFC 9002's
+  kPersistentCongestionThreshold of 3 probe timeouts in a row (§7.6.1, "approximately
+  equivalent to having two TLPs before an RTO in TCP"), each backed off (§6.2.1: PTO, 2 PTO,
+  4 PTO), 7 handshake probe timeouts in all, within which a live client that is advancing
+  acknowledges the server's flight or one of its two probes; before any RTT sample, 6.993 s.
+  No value of shards' own enters either. A handshake that keeps advancing keeps its place
+  however slowly (`a_handshake_that_advances_slowly_keeps_its_place`: its client acknowledging
+  the server's Initial 4 s in and finishing 4 s later, past the cold window from its start),
+  and the window grows with a slow completed handshake
+  (`the_learned_window_grows_with_a_slow_completed_handshake`: after one of 3 s, a handshake
+  that never advanced kept its place for no less than 2.5 s and gave it within the cold window).
+  Its failure is typed (`GiveWay::Unfinished`, beside `GiveWay::Unanswered`): the client gets a
+  CONNECTION_CLOSE whose reason says its handshake made no progress for a whole window, as the
+  unanswered reclaim's does (an application close, which RFC 9000 §10.2.3 has a server clear of
+  its reason in Initial and Handshake packets), its handler told `TimedOut` and the window and
+  whether it was cold; a live client slower than every handshake this endpoint has completed
+  loses its place to a contender only while it advances nothing, and dials again, its slower
+  handshake then teaching the endpoint a longer window once it ends. Owed: the memory a connection holds, measured, as
+  its second term. No wait is
   judged sooner than QUIC's own loss recovery judges its send, at its probe timeout (§6.2.1,
   the smoothed RTT, four times its variation and the peer's `max_ack_delay`;
   `Connection::probe_timeout`, hyper-quic's patch Q7): a run-out is past the window and that
@@ -6619,11 +6691,13 @@ replaced by:
   open invitations, none while it holds none, and where every place is taken, a newer stranger
   takes the place of the one that has held it longest without joining, which is let go
   (server.rs `judged`), once the machine has said whom its key is.
-- *Handshakes held at once* (none before): a daemon holds as many handshakes from keys not yet
-  known as its descriptors allow (`Host::handshakes`: the process's limit,
-  `platform::descriptor_limit`, as each connection served may hold a command and its stdio),
-  and past them the newest takes the place of the oldest still unanswered (`Driver::hold_handshakes`).
-  Owed: the memory a handshake holds, measured, as its second term.
+- *Handshakes held at once* (none before): a daemon holds as many connections, handshakes from
+  keys not yet known among them, as its descriptors allow (`Host::handshakes`: the process's
+  limit, `platform::descriptor_limit`, as each connection served may hold a command and its
+  stdio), and past them a newcomer takes the place of a holder, its handshake in flight or
+  ended, unheard past its probe timeout since an earlier newcomer asked it
+  (`Driver::hold_connections`, above; the oldest-first rule it replaced never ran). Owed: the
+  memory a handshake holds, measured, as its second term.
 - *Output's high-water mark* (was 1 MiB of frames held before a reader waited): none. A reader
   of a command's output (`server.rs`) or of a client's stdin (`client.rs`) reads again once the
   transport has taken all it read: the peer's flow control (RFC 9000 §4.1) is the only
@@ -26047,7 +26121,7 @@ memory its guest holds before its guest drops its page cache (D188's measure, PM
 image run); an orchestrator that needs D188's pressure give-back through its run host to keep
 its runs within its budget.
 
-### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; the injector built, step 3: TLS ended for granted hosts, HTTP/1.1 heads filled in, echoes masked; Hex filling a harness VM's grants and answering its leases from kiln's broker built, step 6, kiln's half on kiln main and Hex's with the Hex lead; the leak scan's harness built, step 10's first part, D259; the Claude Code and Codex sign-in profiles built, step 8's first slice; HTTP/2's layer built, step 7's first slice; the injector's capture and its run host's relay built, step 8's second slice; HTTP/2 in the injector's connections built, step 7's second slice; a sign-in's token host over HTTP/2, kiln's broker answering sign-ins and the real-VM runs owed)
+### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; the injector built, step 3: TLS ended for granted hosts, HTTP/1.1 heads filled in, echoes masked; Hex filling a harness VM's grants and answering its leases from kiln's broker built, step 6, kiln's half on kiln main and Hex's with the Hex lead; the leak scan's harness built, step 10's first part, D259; the Claude Code and Codex sign-in profiles built, step 8's first slice; HTTP/2's layer built, step 7's first slice; the injector's capture and its run host's relay built, step 8's second slice; HTTP/2 in the injector's connections built, step 7's second slice; a sign-in's token host over HTTP/2 built, its token handling per stream; kiln's broker answering sign-ins and the real-VM runs owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 33: every kiln harness runs in a
 Shards microVM, and a harness needs its model-provider credential without the credential
@@ -26911,9 +26985,8 @@ record docs/research/s33-veil-creds/STEP7.md).
   so holding the guest's handshake for it adds no wait. A ClientHello that says plainly this side cannot serve it (no
   protocol or no cipher suite in common, RFC 8446 §4.1.1) is refused at once, no host's TLS begun for it. A host whose
   TLS fails first has the guest accepted in its own first choice, its requests answered 502 in it. A sign-in's token host
-  is offered HTTP/1.1 alone: step 8 reads its tokens from HTTP/1.1's messages, and the CLIs it serves offer
-  `http/1.1` (f41), so a token host's flow is the HTTP/1.1 path's as before; reading a token response per HTTP/2
-  stream is owed (below).
+  was offered HTTP/1.1 alone in this slice (step 8 read its tokens from HTTP/1.1's messages); it is offered what its
+  guest offered since the block below.
 - *An HTTP/2 flow state beside `Ended` (R04).* `H2` is the injector's end of each hop: an `http2::Hop` for each, with
   its own settings, windows and HPACK contexts. `Phase` per hop: the guest's preface octets, then each peer's first
   frame, its SETTINGS (§3.4), then open, then away once a GOAWAY goes either way (§6.8). Each side's preface is sent as
@@ -26962,13 +27035,64 @@ record docs/research/s33-veil-creds/STEP7.md).
   completes. A guest offering `h2` to an HTTP/1.1-only host is served HTTP/1.1, filled. inject.rs' HTTP/1.1 tests pass
   as before, the AES-128-only guest refused at once. `cargo clippy -p shards-net --all-targets -- -D warnings` clean
   for aarch64-apple-darwin, x86_64-unknown-linux-gnu (zig) and x86_64-pc-windows-msvc (xwin).
-- *Owed.* A sign-in's token host over HTTP/2: its token POST and response read whole per stream, as the HTTP/1.1 path
-  reads them (step 8's reading on HTTP/2's messages). ROOT: CI's matrix on main; the guard-removal mutations in
+- *Owed.* A sign-in's token host over HTTP/2, built below. ROOT: CI's matrix on main; the guard-removal mutations in
   STEP7.md; the real-VM runs: an api run with a credential grant toward a host speaking HTTP/2, on KVM, HVF and WHP,
   under step 10's leak scan.
 
-**Owed (later slices of step 33, this plan's steps 7, 8 and 10).** A sign-in's token host over
-HTTP/2 (step 7's second slice offers it HTTP/1.1 alone); kiln's broker answering the sign-ins' words (step 8's third slice;
+**Built: a sign-in's token host over HTTP/2, step 8's token handling per stream** (`crates/net/src/inject.rs`,
+`crates/net/src/signin.rs`; kiln plan 01a1d2b88be57304b972761e2a5c6781 steps 7 and 8, "#74 credentials"; record
+docs/research/s33-veil-creds/STEP7.md and STEP8.md).
+- *ALPN.* A sign-in's token host is offered what its guest offered of `h2` and `http/1.1`, as any granted host is, and
+  its guest accepted in the host's choice: a guest offering `h2` alone is served HTTP/2, no longer refused at its
+  handshake.
+- *Requests, per stream, as the HTTP/1.1 path reads them.* No value is filled toward the token host (its fills
+  dropped), and each request asks `accept-encoding: identity` in place of its own (RFC 9110 §12.5.3). A POST to the
+  profile's token or revocation path with one Content-Length of no more than the connection holds (`TO_HOST`, the
+  HTTP/1.1 path's bound) is held (`Upward::Reading`) until its END_STREAM, its body then asked of `signin::ask`; a
+  body not of its Content-Length is malformed (RFC 9113 §8.1.1), its stream reset PROTOCOL_ERROR. A refresh of the
+  sign-in's placeholder is asked outside (`Upward::Refreshing`), joined to one under way, and answered on its stream
+  from the broker's answer, its tokens the sign-in's placeholders; a revocation is answered 200 on its stream
+  (RFC 7009 §2.2), never sent; anything else goes on as any request. Such a POST without a Content-Length goes on
+  as any request, as a chunked one does over HTTP/1.1, its response read all the same.
+- *Responses, per stream.* Each final response with a body (`TokenResponse`, R04: `Reading`, `Capturing`,
+  `Written`) has its head held and its body read whole, none of it to the guest before; one coded otherwise than as
+  its sender wrote it is refused 502 on its stream (`signin::readable_fields`, the HTTP/1.1 check over decoded
+  fields). At its END_STREAM (or its trailers) a body naming no token goes on as it came; one with tokens is held while
+  its run host keeps them, then given with the sign-in's placeholders in their places (`signin::write`, as before), its
+  `content-length` saying the new length (RFC 9113 §8.1.1), its trailers after it. Informational responses pass. Each
+  field the guest is sent is encoded on the guest's hop as any response's; the placeholders lie in DATA.
+- *Flow control and bounds.* A held body's octets are given back to the host's windows as they are read, and the
+  bodies a connection's streams hold are bounded together by `TO_GUEST`, the HTTP/1.1 path's bound for its one body:
+  past it, that stream is refused 502 and its host stream cancelled. What a written body sends the guest is none of the
+  host's octets, so no credit goes back for it twice (`TokenResponse::Written`).
+- *One stream at a time, each its own.* A sign-in's asks and answers are kept per flow and stream (`signin::Asker`;
+  an HTTP/1.1 flow's stream 0, which no HTTP/2 request uses, §5.1.1), so two streams of one connection asking at once
+  each get their own answer. A stream let go of before its answer forgets it (`SignIns::forget`); its ask stays under way
+  for the other askers and the grants. Every other stream on the connection goes on unaffected.
+- *Refusals on their stream alone.* `Denied`, `Unavailable`, `Ended` and `Unanswered` are answered on the stream with
+  the HTTP/1.1 path's status and text (a refused refresh `invalid_grant` 400, else 503; a capture not kept 502), as the
+  injector's own answers are made once, as HTTP/1.1's bytes, and said on a stream by `said_on_h2` (`:status`, the
+  fields lowered, the connection-specific ones dropped, RFC 9113 §8.2). A refusal of a stream whose host stream is
+  still open cancels it there (CANCEL).
+- *Shared, not duplicated (R12).* The token code both paths run is factored out of the HTTP/1.1 path: what a request
+  read whole asks (`ask_whole`), a revocation answered here (`revoke_here`), the sign-in's placeholders
+  (`signed_as`), a response's tokens asked outside (`capture_tokens`) and written (`capture_written`), and a
+  refresh's answer (`refresh_answer`).
+- *Literals.* None of its own: RFC 9113's stream 0 and §8.1.1's Content-Length rule; RFC 7009's 200; the bounds are the
+  connection's `TO_HOST` and `TO_GUEST`.
+- *Tests (macOS arm64, adalundhe-macbook-pro; STEP8.md).* `cargo test -p shards-net --profile test-release --lib --
+  hpack:: http2:: inject:: signin` red at the tests' commit (32196c665: 4 failed, 51 passed, 2 ignored; three served
+  HTTP/1.1, the h2-alone guest refused at its handshake) and green at the change's (3ad5e9d3a: 55 passed, 2 ignored),
+  over slice (b)'s in-process HTTP/2 host and step 8's test broker: a token response captured on its stream, the
+  guest given placeholders under a new Content-Length and the host asked `identity`; a refresh answered outside on
+  its stream, the host's first request the GET after it; a refused refresh answered 400 `invalid_grant` on its stream
+  while a GET on another completes, no stream reset; a guest offering `h2` alone served HTTP/2, its revocation answered
+  200 there. The tests wait on the bench's own progress, no deadline (R03).
+- *Owed.* ROOT: CI's matrix on main; the guard-removal mutations in STEP8.md; the real-VM runs (a sign-in's CLI over
+  HTTP/2 in a microVM, under step 10's leak scan). A flow that ends with an ask under way leaves its answer in
+  `SignIns` until the run's end, for HTTP/1.1 as for HTTP/2 (each stream let go of forgets its own).
+
+**Owed (later slices of step 33, this plan's steps 7, 8 and 10).** Kiln's broker answering the sign-ins' words (step 8's third slice;
 the network process telling its run host of a capture, a refresh and a revocation, the run host its
 orchestrator, and the injector capturing and answering outside are built, its second); and ROOT's real-VM runs on KVM, HVF and WHP with a whole-guest-memory leak scan
 (its harness built, D259), the injector's measured cost (step 10), and a real sign-in of each
@@ -27848,7 +27972,10 @@ wakes it, net/unix/af_unix.c; macOS as measured, PM M559).
 - Mutation of the grant's and the name's checks.
 - A cut carried through a real VM (*Its cut through the guest's legs*, built and unit
   tested): a workload's socket cut mid-stream read as `ConnectionReset` at the controller,
-  and its half-close still as its way's end, on HVF, KVM and WHP; and, the muxer being every
+  and its half-close still as its way's end, on HVF, KVM and WHP
+  (`nesting::a_nested_workloads_socket_cut_mid_stream_resets_its_lane_at_the_controller` and
+  `nesting::a_nested_workloads_half_close_ends_its_way_in_order_while_the_controllers_goes_on`,
+  testguest's `nesting ends`; written, not yet run); and, the muxer being every
   exec's, engine's and MCP member's, their suites on all three. On WHP: a guest connection
   ended both ways at once with its host still writing now loses the host what it had not
   read (no linger); exec's own end is a half-close first, which keeps M358's hold.
@@ -28055,6 +28182,52 @@ tests unchanged.
 **Owed** (ROOT, real VMs): `api_image.rs`'s `an_images_next_run_takes_a_warm_host_of_its_pool`
 on HVF, KVM x86_64 and WHP; R14's start of a warm run against a restored one, the warm host's
 resident memory, and its start's time from `WARMED`.
+
+**Decided: a run host's layers end with it** (plan step 17, #73). A run host makes its
+microVM's writable layer's file in its home's `layers` (D190, layers.rs `fresh`), unlinked as
+its handle goes once the microVM is ready or has failed. A host that ends before that, stopped
+mid-boot (D231's `BootStop`: its process group killed on Unix, its job on Windows) or failing,
+never lets go of it: the file stayed, sparse, up to the run's 10 GiB, its written blocks
+counted, until a daemon next started in that home cleared `layers`, and an orchestrator's home
+may never run one. Found from source by the boot-stop test's implementer; reproduced by the
+stand-in host tests below, red before the change.
+- *Considered: no name to outlive its holders.* Unlink as the VM process opens the file, or
+  hand it a descriptor of an unlinked file. Rejected for this slice: the VM process takes
+  `--layer PATH` and opens it by path (`platform::open_input`, through its grants on macOS and
+  Windows), a restore's file is a clone made by name (`for_restore`), and a daemon's run that
+  stays needs the name until its microVM has gone, when it renames it into its directory
+  (`keep_at`). A descriptor-only layer means a new grant kind on three platforms and a
+  `keep_at` that links an open file back to a name (Linux's `linkat` of `/proc/self/fd`, none
+  on macOS or Windows): a larger redesign, and the window between `fresh` and the hand-off
+  stays either way.
+- *Decided: the orchestrator removes them.* Only the process that makes a layer's file names it,
+  by its own pid (`shards_ipc::layer_name`, now shared by `fresh` and the sweep;
+  `layer_maker` reads it back). The orchestrator's watcher of each host (`session.rs`
+  `watch`) waits for the host's end without reaping it (`Child::ended`, waitid `WNOWAIT`), then
+  removes every `layers/<hostpid>-*` file (`clear_layers`), then reaps it. Ended, the host
+  makes no more; unreaped (on Windows, its handle held by the watcher), its pid is no other
+  process's, so no live host of the same pid in the same home can exist and lose its file to
+  the sweep. Which home is the host's is found as the host finds it, from the environment it is
+  given over the orchestrator's (`shards_ipc::home_in`, `home`'s rule with the lookup passed
+  in). A file its microVM still holds as it is killed goes as the one its host let go of at
+  readiness does: the name now, the blocks with the microVM.
+- *Unchanged:* a run that stays keeps its layer. A kept layer is renamed out of `layers` into
+  its run's directory (`keep_at`) or never was in it (`in_place`), and an orchestrator's run host
+  keeps none. A host that ends after its run started has let go of its file already, and the
+  sweep finds nothing. The daemon's `clear` at start stays for a daemon's own.
+- *Literals:* none. Removal failures are not refusals: the watcher has no caller to tell, a
+  name left is what the drop leaves on the same failure, and the next daemon clears it.
+
+**Tested** (unit, stand-in hosts, no VM): `a_stop_mid_boot_ends_the_boot_its_host_and_all_its_host_started`
+(Unix) and its Windows twin `a_stop_mid_boot_ends_the_boot_its_host_and_the_vm_of_its_job`,
+whose hosts now make a layer's file as the real one names it and are stopped mid-boot;
+`a_run_host_that_ends_before_its_run_starts_leaves_no_layer` (Unix), whose host makes two
+and exits. Each expects the host's gone and another pid's kept. `a_layers_name_says_its_maker`
+(shards-ipc).
+
+**Owed** (ROOT, real VMs): `api_image.rs`'s
+`a_stop_mid_boot_ends_the_run_host_and_every_process_of_its_run`, which now also expects no
+`layers/<host>-*` file once stopped, on HVF, KVM x86_64 and WHP.
 
 ### D254. kiln's MCP rides the agent-control link: a stdio bridge in the harness's member, one lane of the link per connection, no network grant (decided; its asks built at the endpoint and the controller, the member's listener and bridge and its VM's hand-off built; the run hosts' pairing, kiln's side and every real-VM run owed)
 
