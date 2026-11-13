@@ -3097,7 +3097,7 @@ mod tests {
         });
         let (stream, peer) = Stream::pair().unwrap();
         peer.set_read_timeout(Some(PATIENCE)).unwrap();
-        let mut vm = peer.try_clone().unwrap();
+        let vm = peer.try_clone().unwrap();
         let (writing, reading) = (stream.try_clone().unwrap(), stream.try_clone().unwrap());
         let owner = Owner {
             outputs: vec![None, None],
@@ -3110,10 +3110,21 @@ mod tests {
         // Many credits' worth of each channel, more than a pipe holds.
         let rounds = 64;
         let mut written: [Vec<u8>; 2] = [Vec::new(), Vec::new()];
+        /// Ends the capture's threads if the VM's play fails, as its VM's side drops with it:
+        /// the failure is told, not waited on by the scope's threads.
+        struct Unwound<'a>(&'a Credits);
+        impl Drop for Unwound<'_> {
+            fn drop(&mut self) {
+                if std::thread::panicking() {
+                    self.0.close();
+                }
+            }
+        }
         let (credited, bridged) = std::thread::scope(|threads| {
             let (owner, labels) = (&owner, &labels);
             let crediting = threads.spawn(move || send_credits(writing, owner, &[]));
             let bridging = threads.spawn(move || bridge(reading, owner, labels, vec![StreamState::New; 2]));
+            let (peer, mut vm, _unwound) = (peer, vm, Unwound(&owner.credits));
             let (mut offsets, mut sent, mut opened, mut ended) = ([0u64; 2], [0usize; 2], [false; 2], 0);
             while ended < 2 {
                 let granted = credit(&peer).expect("a drained channel's next credit");
@@ -3123,8 +3134,8 @@ mod tests {
                     encoded(0, granted.channel, 0, Event::Open("agent main"))
                 } else if sent[at] < rounds {
                     sent[at] += 1;
-                    let head = encoded(0, granted.channel, offsets[at], Event::Data(&[])).len();
-                    let room = usize::try_from(granted.capacity).unwrap() - head;
+                    // A data record is its header and its bytes (an empty one is refused).
+                    let room = usize::try_from(granted.capacity).unwrap() - run::managed::HEADER;
                     let bytes: Vec<u8> = (0..room).map(|i| (i + sent[at] + at) as u8).collect();
                     written[at].extend_from_slice(&bytes);
                     let record = encoded(0, granted.channel, offsets[at], Event::Data(&bytes));
