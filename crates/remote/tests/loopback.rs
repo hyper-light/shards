@@ -965,6 +965,51 @@ fn a_command_that_reads_no_stdin_holds_up_no_other() {
     assert_eq!(status, Ok(0));
 }
 
+/// A command holds no descriptor of this process's that it was not given. On macOS std makes a
+/// pipe with pipe(2) and only then marks its ends close-on-exec (std's sys/pipe/unix.rs: macOS
+/// has no pipe2), and its spawn closes nothing it was not told to (no
+/// `POSIX_SPAWN_CLOEXEC_DEFAULT`), so a command another test starts in between holds that pipe's
+/// write end for as long as it runs: the daemon answers a command once its output has ended, so
+/// one whose stdout another command holds is answered only once that one ends (16 of 20,000
+/// spawns beside a spawning thread, a `sleep 1` holding a pipe's end 1.70 s at worst, s72's
+/// harness on macOS arm64). Here the pipe is left inheritable for good, the window held open.
+#[cfg(target_vendor = "apple")]
+#[test]
+fn a_command_holds_no_descriptor_it_was_not_given() {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    let daemon_id = leak(Identity::generate().unwrap());
+    let laptop = leak(Identity::generate().unwrap());
+    let mut d = daemon(
+        daemon_id,
+        vec![("laptop".into(), laptop.spki().to_vec())],
+        Vec::new(),
+    );
+    let dir = TempDir::new("remote-given").unwrap();
+    let go = dir.path().join("go");
+    let go = go.to_str().unwrap();
+    let mut ends = [0; 2];
+    // SAFETY: pipe(2) into a local array; each end owned once made.
+    assert_eq!(unsafe { libc::pipe(ends.as_mut_ptr()) }, 0);
+    // SAFETY: pipe(2) made both, and nothing else owns them.
+    let (read, write) = unsafe { (OwnedFd::from_raw_fd(ends[0]), OwnedFd::from_raw_fd(ends[1])) };
+    let held = run(laptop, d.remote, &["await", go], None);
+    d.seen.saw(&Seen::Started(format!("await {go}")));
+    drop(write);
+    // SAFETY: fcntl(2) and read(2) on a descriptor this test owns, into a local buffer.
+    let (flags, n, errno) = unsafe {
+        let flags = libc::fcntl(read.as_raw_fd(), libc::F_GETFL);
+        libc::fcntl(read.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK);
+        let mut byte = 0u8;
+        let n = libc::read(read.as_raw_fd(), (&raw mut byte).cast(), 1);
+        (flags, n, std::io::Error::last_os_error())
+    };
+    assert!(flags >= 0);
+    std::fs::write(go, b"").unwrap();
+    let (status, _, _) = held.get();
+    assert_eq!(status, Ok(0));
+    assert_eq!(n, 0, "the pipe's end held by the command: {errno}");
+}
+
 /// What a raw client hears.
 #[derive(Debug, PartialEq, Eq)]
 enum Heard {
