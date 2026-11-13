@@ -1236,6 +1236,7 @@ dependencies = [
  "shards-afunix",
  "shards-dns",
  "shards-ipc",
+ "shards-remote",
  "shards-testdir",
  "triomphe",
  "unsize",

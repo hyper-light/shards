@@ -801,6 +801,26 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
                     drop(held);
                 }
             }
+            // A lane to a socket of its run's own command (D251), its owner's ask: opened on a
+            // thread of its own, its owner answered by the lane's number.
+            kind::LANE_OPEN if matches!(from, From::Daemon(_)) => {
+                if let Some((number, name)) = message.payload.split_first_chunk::<8>() {
+                    open_lane(conn, to, *number, name.to_vec());
+                }
+            }
+            // A lane's connection its owner has, or will not take: this VM's copy goes (M24).
+            // On Windows the owner gives the socket it is relayed onto, or none.
+            kind::LANE_HELD if matches!(from, From::Daemon(_)) => {
+                if let Ok(n) = <[u8; 8]>::try_from(message.payload.as_slice()) {
+                    let held = lanes_held().remove(&u64::from_be_bytes(n));
+                    #[cfg(windows)]
+                    if let (Some(guest), Some(pipe)) = (held, message.fds.into_iter().next()) {
+                        relay_engine(guest, pipe);
+                    }
+                    #[cfg(unix)]
+                    drop(held);
+                }
+            }
             // Its run's limit updated (D148): its guest's most to plug, before the exec that
             // writes its cgroup, which comes after this on the same link.
             kind::PLUG if matches!(from, From::Daemon(_)) => {
@@ -2182,10 +2202,109 @@ pub fn hand_input(owner: &UnixStream, member: u32, conn: GuestConn) -> io::Resul
     sent
 }
 
+/// The lanes' connections handed to the owner and not yet taken, by number: held meanwhile,
+/// as an engine connection is ([`ENGINE_HELD`], M24); on Windows until the owner gives the
+/// socket each is relayed onto.
+static LANES_HELD: std::sync::Mutex<std::collections::BTreeMap<u64, GuestConn>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+fn lanes_held() -> std::sync::MutexGuard<'static, std::collections::BTreeMap<u64, GuestConn>> {
+    LANES_HELD
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// [`kind::LANE_OPEN`]'s answer for lane `number`: its status
+/// (`shards_abi::run::socket::STATUS` bytes: 0 connected, else the errno it was refused with),
+/// then, for a lane that could not be asked of its guest or whose connection never came
+/// (said as ESRCH: its command is gone as far as this VM can tell), why, in words.
+fn lane_answer(number: [u8; 8], outcome: &Result<(), workload::Unopened>) -> Vec<u8> {
+    use shards_abi::run::socket::errno::ESRCH;
+    let (errno, why) = match outcome {
+        Ok(()) => (0, ""),
+        Err(workload::Unopened::Refused(errno)) => (errno.get(), ""),
+        Err(workload::Unopened::Ended(why)) => (ESRCH, why.as_str()),
+    };
+    [&number[..], &errno.to_be_bytes(), why.as_bytes()].concat()
+}
+
+/// Opens lane `number` to socket `name` of the run's own command (D251), on a thread of
+/// its own, and answers `owner` ([`kind::LANE_OPEN`]): opened, with its connection, beside
+/// the answer on Unix and a copy held until the owner says it has it (`LANE_HELD`, M24),
+/// and on Windows held until the owner's `LANE_HELD` brings the socket it is relayed onto;
+/// else why not.
+fn open_lane(owner: &UnixStream, to: &'static ToGuest, number: [u8; 8], name: Vec<u8>) {
+    let Ok(owner) = owner.try_clone() else {
+        return;
+    };
+    let answer = move |owner: &UnixStream| {
+        let opened = workload::open_socket(to, &name);
+        let Ok(conn) = opened else {
+            let _ = to_daemon(
+                owner,
+                kind::LANE_OPEN,
+                &lane_answer(number, &opened.map(drop)),
+                &[],
+            );
+            return;
+        };
+        #[cfg(unix)]
+        let (held, handed) = match conn.try_clone() {
+            Ok(held) => (held, [std::os::fd::AsFd::as_fd(&conn)]),
+            Err(e) => {
+                let why = Err(workload::Unopened::Ended(format!(
+                    "holding the lane's connection: {e}"
+                )));
+                let _ = to_daemon(owner, kind::LANE_OPEN, &lane_answer(number, &why), &[]);
+                return;
+            }
+        };
+        #[cfg(windows)]
+        let (held, handed) = (conn, []);
+        let key = u64::from_be_bytes(number);
+        lanes_held().insert(key, held);
+        if to_daemon(owner, kind::LANE_OPEN, &lane_answer(number, &Ok(())), &handed).is_err() {
+            lanes_held().remove(&key);
+        }
+    };
+    let spawned = std::thread::Builder::new().name("lane".into()).spawn({
+        let owner = owner.try_clone();
+        move || {
+            if let Ok(owner) = owner {
+                answer(&owner);
+            }
+        }
+    });
+    if let Err(e) = spawned {
+        let why = Err(workload::Unopened::Ended(format!("a lane's thread: {e}")));
+        let _ = to_daemon(&owner, kind::LANE_OPEN, &lane_answer(number, &why), &[]);
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// A lane's answer (D251) by its number: 0 for connected, the guest's errno for a refusal,
+    /// and ESRCH with why for a lane its guest could not be asked for or never answered.
+    #[test]
+    fn a_lanes_answer_says_its_status_by_its_number() {
+        let number = 7u64.to_be_bytes();
+        let errno = std::num::NonZeroU32::new(111).unwrap();
+        assert_eq!(
+            lane_answer(number, &Ok(())),
+            [&number[..], &[0, 0, 0, 0]].concat()
+        );
+        assert_eq!(
+            lane_answer(number, &Err(workload::Unopened::Refused(errno))),
+            [&number[..], &[0, 0, 0, 111]].concat()
+        );
+        assert_eq!(
+            lane_answer(number, &Err(workload::Unopened::Ended("gone".into()))),
+            [&number[..], &[0, 0, 0, 3], b"gone"].concat()
+        );
+    }
 
     /// The null device's path.
     const NULL: &str = if cfg!(windows) { "NUL" } else { "/dev/null" };

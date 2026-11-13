@@ -39,7 +39,9 @@ impl Unread {
     pub fn code(&self) -> Option<i32> {
         match *self {
             Self::Gone | Self::ThreadStat(None) => None,
-            Self::HvfExit(c) | Self::HvfExecTime(c) | Self::WhpCounters(c) | Self::ThreadStat(Some(c)) => Some(c),
+            Self::HvfExit(c) | Self::HvfExecTime(c) | Self::WhpCounters(c) | Self::ThreadStat(Some(c)) => {
+                Some(c)
+            }
         }
     }
 
@@ -92,7 +94,11 @@ impl fmt::Display for Unread {
             Self::Gone => f.write_str("its vCPU has gone"),
             Self::HvfExit(c) => write!(f, "hv_vcpus_exit failed: {:#010x}", hex(c)),
             Self::HvfExecTime(c) => write!(f, "hv_vcpu_get_exec_time failed: {:#010x}", hex(c)),
-            Self::WhpCounters(c) => write!(f, "WHvGetVirtualProcessorCounters failed: HRESULT {:#010x}", hex(c)),
+            Self::WhpCounters(c) => write!(
+                f,
+                "WHvGetVirtualProcessorCounters failed: HRESULT {:#010x}",
+                hex(c)
+            ),
             Self::ThreadStat(Some(e)) => write!(f, "its thread's stat: errno {e}"),
             Self::ThreadStat(None) => f.write_str("its thread's stat: a line this does not parse"),
         }

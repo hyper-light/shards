@@ -21,7 +21,7 @@ use shards_abi::run;
     dead_code,
     reason = "this path-shared module also serves testguest's bounded TCP/cancellation caller"
 )]
-mod native_relay;
+pub(crate) mod native_relay;
 
 /// The listener's tag on the standby's error channel, as [`crate::hostbind::LISTENER`]
 /// tags its filter's.

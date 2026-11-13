@@ -25,9 +25,9 @@ mod session;
 pub mod wire;
 
 pub use wire::{
-    Bound, Channel, CredentialGrant, Fill, GuestTimes, HostUse, Keep, MemberInfo, MemberKind, MemberReach,
-    Microvm, Narrowing, PlugRefusal, Proto, Publish, Ready, Receiving, RunEnd, Secret, Stats, StatsScope,
-    VcpuTime, decide,
+    Bound, Channel, ControlAsk, ControlAt, CredentialGrant, Fill, GuestTimes, HostUse, Keep, MemberInfo,
+    MemberKind, MemberReach, Microvm, Narrowing, PlugRefusal, Proto, Publish, Ready, Receiving, RunEnd,
+    Secret, SocketGrant, Stats, StatsScope, VcpuTime, decide,
 };
 
 /// A member, as the image's Agentfile names it.
@@ -136,6 +136,11 @@ pub struct ImageSpec {
     /// as `shards run` takes them). Never a member's: those are [`MemberSpec::env`], which
     /// travel on the channel alone.
     pub env: Vec<(std::ffi::OsString, std::ffi::OsString)>,
+    /// The run's agent-control endpoint (D238, D252), bound by its host for this run alone,
+    /// its key the run's own, made after its restore and held by the endpoint alone; it takes
+    /// [`ControlAsk::controller`]'s key alone, and serves lanes to the run's own command's
+    /// sockets where [`ControlAsk::sockets`] grants them (D251). None: no endpoint.
+    pub control: Option<ControlAsk>,
 }
 
 /// How a member ended.
@@ -218,6 +223,10 @@ pub trait ImageGuest: Send + Sync {
     fn members(&self) -> &[MemberInfo];
     /// Each port published, as bound, and the members it reaches ([`Bound::to`]).
     fn published(&self) -> &[Bound];
+    /// Where the run's agent-control endpoint is bound, and its microVM's key, which its
+    /// controller pins (D252), where [`ImageSpec::control`] asked for one: as the run started,
+    /// unchanged until it ends.
+    fn control(&self) -> Option<&ControlAt>;
     /// A member's channel, as a pipe's read end, its bytes exactly as the member wrote
     /// them, ending at the channel's end; once each. What no one reads backs up into that
     /// channel alone. Refused for a member that does not run.
@@ -474,6 +483,34 @@ fn request(spec: &ImageSpec) -> Result<wire::Request, ImageRefusal> {
             toward,
         });
     }
+    // The run's agent-control endpoint (D252): its socket grant's directory absolute and plain,
+    // as a member's working directory is, refused here, by the run host and by init; its
+    // admission one lane and one byte at least (R03: the caller's numbers), and the grant a run's
+    // own command's, so none in a run of its image's members alone.
+    if let Some(grant) = spec.control.as_ref().and_then(|c| c.sockets.as_ref()) {
+        let refuse = |why: String| ImageRefusal::Spec {
+            what: "the socket grant",
+            why,
+        };
+        if !shards_abi::run::socket::dir_ok(grant.dir.as_bytes()) {
+            return Err(refuse(format!(
+                "{:?}: {}",
+                grant.dir,
+                shards_abi::run::socket::Error::Dir
+            )));
+        }
+        if grant.lanes == 0 || grant.window == 0 {
+            return Err(refuse(format!(
+                "{} lanes of {} bytes: a grant admits a lane and a byte at least",
+                grant.lanes, grant.window
+            )));
+        }
+        if spec.command.is_none() {
+            return Err(refuse(
+                "a run without a command of its own has no sockets to grant".into(),
+            ));
+        }
+    }
     let request = wire::Request {
         image: spec.image.clone(),
         vcpus: spec.vcpus,
@@ -486,6 +523,7 @@ fn request(spec: &ImageSpec) -> Result<wire::Request, ImageRefusal> {
         nesting: spec.nesting,
         ready_by,
         credentials,
+        control: spec.control.clone(),
     };
     // Past the channel's bound it would never be read; the guest's bound is the same one.
     request.encode().map_err(|e| ImageRefusal::Spec {
@@ -529,6 +567,7 @@ mod tests {
             ready_by: None,
             binary: None,
             env: Vec::new(),
+            control: None,
         }
     }
 
@@ -693,5 +732,50 @@ mod tests {
             request(&s),
             Err(ImageRefusal::Spec { what: "the spec", .. })
         ));
+    }
+
+    /// Step 11 (b), D252 (Hex's acceptance): a socket grant that names no plain absolute
+    /// directory, admits no lane or no byte, or is asked of a run without a command of its own,
+    /// is refused by shards-api before any run host starts, as a member's working directory is;
+    /// a grant within its bounds is carried whole.
+    #[test]
+    fn a_socket_grant_out_of_its_bounds_is_refused_before_a_run_host_starts() {
+        let grant = |dir: &str, lanes, window| ControlAsk {
+            controller: [1u8; 32],
+            sockets: Some(SocketGrant {
+                dir: dir.into(),
+                lanes,
+                window,
+            }),
+        };
+        for (dir, lanes, window) in [
+            ("run/hex/channel", 8, 65_536),
+            ("", 8, 65_536),
+            ("/run/hex/../etc", 8, 65_536),
+            ("/run//hex", 8, 65_536),
+            ("/run/hex/./channel", 8, 65_536),
+            ("/run/hex/channel", 0, 65_536),
+            ("/run/hex/channel", 8, 0),
+        ] {
+            let mut s = spec();
+            s.nesting = true;
+            s.command = Some(vec!["/init".into()]);
+            s.control = Some(grant(dir, lanes, window));
+            assert!(
+                matches!(request(&s), Err(ImageRefusal::Spec { .. })),
+                "{dir:?} lanes {lanes} window {window}"
+            );
+        }
+        let mut s = spec();
+        s.command = Some(vec!["/init".into()]);
+        s.control = Some(grant("/run/hex/channel", 8, 65_536));
+        assert_eq!(request(&s).unwrap().control, s.control);
+        s.command = None;
+        assert!(matches!(request(&s), Err(ImageRefusal::Spec { .. })));
+        s.control = Some(ControlAsk {
+            controller: [1u8; 32],
+            sockets: None,
+        });
+        assert_eq!(request(&s).unwrap().control, s.control);
     }
 }
