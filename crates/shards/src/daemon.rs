@@ -12460,8 +12460,10 @@ mod tests {
     }
 
     /// Sets its flag as it drops: a played VM's thread ends with its test, a failing one's too.
+    #[cfg(any(target_os = "macos", windows))]
     struct Done<'a>(&'a AtomicBool);
 
+    #[cfg(any(target_os = "macos", windows))]
     impl Drop for Done<'_> {
         fn drop(&mut self) {
             self.0.store(true, Ordering::SeqCst);
@@ -12472,11 +12474,13 @@ mod tests {
     /// test's too, the exec `held` unanswered let go of first: the daemon keeps its own end of
     /// an exec's connection while its run lives (M24), so that one left waiting would outlive
     /// its test.
+    #[cfg(any(target_os = "macos", windows))]
     struct Ends<'a> {
         held: Option<shards_ipc::Message>,
         vms: Vec<(&'a UnixStream, u8)>,
     }
 
+    #[cfg(any(target_os = "macos", windows))]
     impl Drop for Ends<'_> {
         fn drop(&mut self) {
             drop(self.held.take());
