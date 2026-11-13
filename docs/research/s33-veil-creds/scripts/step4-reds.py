@@ -90,6 +90,9 @@ REDS = [
     ("run host: nothing asked after the release", RUN,
      "        if self.released {\n            return Err(Refusal::Ended);\n        }\n", "",
      SHARDS + ["api_run::tests::a_runs_ledger_holds_one_lease_of_a_credential_and_releases_them_all"]),
+    ("run host: a frame wiped as it is let go of", RUN,
+     "        zeroize::Zeroize::zeroize(&mut *self.payload);\n", "",
+     SHARDS + ["api_run::tests::a_leased_frame_leaves_nothing_of_its_value_in_the_channels_buffer"]),
     ("run host: every end releases its leases", RUN,
      "    if let Some((held, asked)) = leasing.and_then(|l| lock(&l.ledger).release()) {\n"
      "        say(format_args!(\"{}\", Audit::Released { held, asked }));\n"

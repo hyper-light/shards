@@ -6369,7 +6369,11 @@ Tested: abi `run::managed` (the input entries, one token a member, the end's cod
 `input` (binary, no newline, invalid UTF-8 across split frames reach the pipe exactly; an
 unread stdin stops the connection's reading and resumes as it is read; a member that stops
 reading ends its input as `EPIPE` idle and writing; a connection cut short or of another
-protocol, and a hello that cannot go, end typed) and `capture` (the end's room reserved and
+protocol, and a hello that cannot go, end typed), `setup` (the input tokens the VM process
+mints, and every entry init reads for its members, of any bytes, are no entry of the
+standby's: `what_init_reads_for_its_members_is_no_workload_setup`, red on main at 845d7eb93
+with the EINVAL every run asking a member's stdin met as "error remounting the root
+read-only: invalid argument" on KVM) and `capture` (the end's room reserved and
 told before the scope's end); remote `managed::input` (frames; a record taken whole once the
 last is delivered; resubscription and refusals by scope, generation, channel and offset; an
 abort held by an unread record closes its connection; revocation), and over the real transport
@@ -22546,7 +22550,8 @@ Tested: `agents_run_in_their_domains` boots a real microVM. Its agent comes from
 artifact pushed to a registry; beside it is an agent of files alone. The agent reports:
 
 - uid and gid 200000, no groups;
-- PID 1, alone in its `/proc`;
+- PID 2 of its PID namespace, under init's sealed reaper (PID 1; D59's owned native domain
+  lifetime above), the two alone in its `/proc`;
 - its host name;
 - all five capability sets empty, and `no_new_privs`;
 - the other agent's directory and `/sys` unreadable (EACCES);
@@ -25178,7 +25183,8 @@ docs/research/s33-veil-creds/STEP4.md.
   (`ImageRefusal::Spec`, "the run's lessor"). The daemon gives no network process grants, so
   none of its runs asks.
 - *The run's identity: its own key where it has one, else its channel* (the implementer's
-  decision, for ROOT to confirm). D238's key is made where a run's agent-control endpoint
+  decision, confirmed by ROOT on 2026-11-13: the run's D252 key where it binds an endpoint,
+  else its channel, no key made for leases alone, `KeyReplaced` carried end to end). D238's key is made where a run's agent-control endpoint
   binds: by the daemon as a run's managed scope begins (daemon/managed.rs `bind_agent`, its
   SHA-256 the `vm` line of the run's managed metadata), and by `shards api-run` once the run's
   VM has started, where its orchestrator asks for an endpoint (D252: `ImageSpec::control`, told
@@ -25204,11 +25210,18 @@ docs/research/s33-veil-creds/STEP4.md.
   type holding a value prints it: `Secret` its length, `lease::Asked` and `lease::Leases` neither.
 - *Wiping.* `Secret` zeroizes its bytes as it drops; the network process holds a value in
   `Zeroizing`; the copies of a frame that carries one are wiped once sent or taken (the
-  orchestrator's `LEASED` payload, the run host's read of it and the `NET_LEASE` it sends, the
-  network process's received message), each value appended last and whole, so that no buffer
-  let go of as one grows holds a part of it. Not wiped: kernel pipe and socket buffers, std's
-  `Stdin` buffer in the run host (later frames overwrite it), and the memory of a process
-  killed before its drop.
+  orchestrator's `LEASED` payload, the `NET_LEASE` the run host sends, the network process's
+  received message), each value appended last and whole, so that no buffer let go of as one
+  grows holds a part of it. The run host reads its channel into a buffer of its own
+  (`api_run::Channel` over `wire::read_frame_into`: its own descriptor of stdin, or handle,
+  read unbuffered, each frame read exactly), never through std's `Stdin`, whose buffer read
+  ahead and kept each frame until later ones overwrote it. Each frame is wiped in that buffer
+  as it is let go of (`api_run::Frame`'s drop, a frame cut short as well), so between frames
+  it is all zeros: a lease's value, a staged credential and a member's typed input alike. On
+  Windows the answer to the network process is written as it lies, its header and then its
+  payload (`shards_ipc::write_message_parts`), where `write_message`'s frame was a copy. Not
+  wiped: kernel pipe and socket buffers, which no call of a process's clears, and the memory
+  of a process killed before its drop.
 - *Literals.* Kind 100, the run channel's kinds 13 (`LEASED`), 30 (`LEASE`) and 31
   (`RELEASED`) and its version 20 are sequence numbers (98 and 99 went first to D251's
   `LANE_OPEN` and `LANE_HELD`; 14 to 19, to guest-cpu-time-v1's typed unread time, D252's
@@ -25238,13 +25251,19 @@ docs/research/s33-veil-creds/STEP4.md.
   where its start told one, under none where it told none. `image`: grants without a lessor
   refused. `api_run`: the ledger's states; the relay end to end over a socket and pipes, the
   network process's real lease client with a simulated orchestrator, at three kinds of end; an
-  answer to no ask breaking the channel; the audit's lines.
+  answer to no ask breaking the channel; the audit's lines; a `LEASED` frame read through the
+  run host's channel leaving not one byte other than zero in its buffer once let go of, its
+  next frame read whole (red before the wipe and with it removed, STEP4.md).
 - *Owed (ROOT).* A real run with a credential grant through `shards api-run` (KVM x86_64, HVF,
   WHP): the lease asked on first use and released at each end, with the run host's diagnostics
   saying each and no value. That needs the injector (step 3), the first caller of
   `Leases::ask`; until it lands, nothing in a run asks. Hex's vendored shards-api takes
-  `ImageSpec::lessor` (step 6). The daemon's runs have no grants, so their lease relay and a
-  move's release there are owed with them.
+  `ImageSpec::lessor` (step 6). The daemon's runs have no credential grants: their lease relay
+  and a move's release there are owed by the first change that gives a daemon's run grants.
+  No step brings them: not this plan's ten, nor the 39 of kiln plan
+  01a1cd8e862e7169a074db3d5fa33f3d, whose harness runs are all an orchestrator's, through
+  `shards api-run` (D231; its steps 9 and 15 grant names on the network, D236, not
+  credentials).
 
 **Built: step 5, kiln's broker (kiln main 752ca8bbc, its ledger 13991fea1; CP-T8.3).** In kiln, through kiln-seams'
 `Secrets` alone, so that `SimSecrets`, kiln's own store and Veil's (CP-T8.1) serve it alike.
@@ -26396,9 +26415,14 @@ controller's bytes and the harness's exact, its end told, a member with no bridg
 typed), `daemon::managed::tests` (the daemon's host refusing an MCP ask before its VM process
 hears of it).
 
-**Owed.** The listener, the bridge and `LANE_ACCEPTED` (D251's agent); the daemon's and the orchestrator's
-hosts pairing each connection with its ask; kiln's harness configs naming the bridge and its
-in-process server over the two streams (kiln's step 18); every real-VM run, ROOT's: each
+**Owed.** The listener, the bridge and `LANE_ACCEPTED` (D251's agent, building them; ipc kind
+101); the daemon's and the orchestrator's hosts pairing each connection with its ask, and the
+asking (the daemon's annotation, the orchestrator's MemberSpec field), goal 58's; kiln's harness
+configs naming the bridge. kiln's in-process server over the two streams is built (kiln main
+`dace992a6`, `reach::mcp::serve_lane`: one `Execs::mcp(member)` connection's newline-delimited
+JSON-RPC read from `McpConnection::from` and answered on `to`, in the runner's own process, no
+socket, on Windows too), its connection to a launch waiting on kiln's next re-vendor of Shards
+and this pairing (kiln's step 18, goal 61). Every real-VM run, ROOT's: each
 harness that takes MCP calling kiln's server through the bridge, on KVM, HVF and WHP, with the
 microVM and the kiln runner on one machine and on two.
 

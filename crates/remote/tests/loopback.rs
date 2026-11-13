@@ -52,6 +52,20 @@ struct Machine {
     seen: mpsc::Sender<Seen>,
     /// What lets a `stalls` command's start go on.
     stall: Mutex<Option<mpsc::Receiver<()>>>,
+    /// What lets a join go on, where one is held.
+    join_stall: Mutex<Option<mpsc::Receiver<()>>>,
+    /// How long it takes to say whom a key is, on the driver at each handshake's end: a host
+    /// slow to answer a fresh client's first ask.
+    enroll_stall: Duration,
+}
+
+/// What a [`Machine`] holds up, and how: a `stalls` command's start, every join, and each
+/// handshake's end.
+#[derive(Default)]
+struct Stalls {
+    start: Option<mpsc::Receiver<()>>,
+    join: Option<mpsc::Receiver<()>>,
+    enroll: Duration,
 }
 
 /// A command's stdin, which says when it is let go.
@@ -87,6 +101,7 @@ impl Drop for Held {
 
 impl Host for Machine {
     fn enrolled(&self, spki: &[u8]) -> Option<String> {
+        std::thread::sleep(self.enroll_stall);
         let clients = self.clients.lock().unwrap();
         clients
             .iter()
@@ -95,6 +110,10 @@ impl Host for Machine {
     }
 
     fn join(&self, name: &str, proof: &[u8], exported: &[u8; 32], spki: &[u8]) -> Result<(), Error> {
+        if let Some(release) = self.join_stall.lock().unwrap().as_ref() {
+            let _ = self.seen.send(Seen::Stalled(format!("join {name}")));
+            let _ = release.recv();
+        }
         let mut invitations = self.invitations.lock().unwrap();
         let at = invitations
             .iter()
@@ -254,15 +273,15 @@ fn daemon(
     clients: Vec<(String, Vec<u8>)>,
     invitations: Vec<Invitation>,
 ) -> Daemon {
-    daemon_with(identity, clients, invitations, None)
+    daemon_with(identity, clients, invitations, Stalls::default())
 }
 
-/// [`daemon`], a `stalls` command's start held until `stall` gives it leave.
+/// [`daemon`], held up as `stalls` says.
 fn daemon_with(
     identity: &'static Identity,
     clients: Vec<(String, Vec<u8>)>,
     invitations: Vec<Invitation>,
-    stall: Option<mpsc::Receiver<()>>,
+    stalls: Stalls,
 ) -> Daemon {
     // The commands' program, built before the daemon serves: its first start would build it
     // (cargo, seconds) on the daemon's driver, which answers nothing meanwhile, and a client
@@ -273,7 +292,9 @@ fn daemon_with(
         clients: Mutex::new(clients),
         invitations: Mutex::new(invitations),
         seen,
-        stall: Mutex::new(stall),
+        stall: Mutex::new(stalls.start),
+        join_stall: Mutex::new(stalls.join),
+        enroll_stall: stalls.enroll,
     };
     let (tx, bound) = mpsc::channel();
     std::thread::spawn(move || {
@@ -1128,7 +1149,10 @@ fn a_slow_start_holds_up_no_other_client() {
         daemon_id,
         vec![("laptop".into(), laptop.spki().to_vec())],
         Vec::new(),
-        Some(held),
+        Stalls {
+            start: Some(held),
+            ..Stalls::default()
+        },
     );
     let slow = run(laptop, d.remote, &["stalls", "say", "slow", "x", "0"], None);
     d.seen.saw(&Seen::Stalled("say slow x 0".into()));
@@ -1137,6 +1161,68 @@ fn a_slow_start_holds_up_no_other_client() {
     release.send(()).unwrap();
     let (status, out, _) = slow.get();
     assert_eq!((status, out), (Ok(0), b"slow\n".to_vec()));
+}
+
+/// A host's join runs apart from the daemon's driver too, which acknowledges every client
+/// meanwhile: while a stranger's join is held (a stand-in for one whose record takes long to
+/// sync), an enrolled client's command is answered whole, and the join, let go, enrolls its
+/// stranger. Red with the join on the driver: tests/context.rs's joins on HVF (ROOT's run at
+/// dc7f45bc6) died at 123-152 ms, their client's send unanswered while the daemon synced.
+#[test]
+fn a_slow_join_holds_up_no_other_client() {
+    let daemon_id = leak(Identity::generate().unwrap());
+    let (laptop, stranger) = (
+        leak(Identity::generate().unwrap()),
+        leak(Identity::generate().unwrap()),
+    );
+    let (release, held) = mpsc::channel();
+    let invited = invitation(daemon_id);
+    let mut d = daemon_with(
+        daemon_id,
+        vec![("laptop".into(), laptop.spki().to_vec())],
+        vec![invited.clone()],
+        Stalls {
+            join: Some(held),
+            ..Stalls::default()
+        },
+    );
+    let invitation = Invitation {
+        address: d.remote.address,
+        ..invited
+    };
+    // A thread of its own, which a failing test does not wait for (the join it holds would
+    // never be let go).
+    let (joined_tx, joined) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = joined_tx.send(client::join(stranger, &invitation).0);
+    });
+    d.seen.saw(&Seen::Stalled("join someone".into()));
+    let (status, out, _) = run(laptop, d.remote, &["say", "quick", "x", "0"], None).get();
+    assert_eq!((status, out), (Ok(0), b"quick\n".to_vec()));
+    release.send(()).unwrap();
+    assert_eq!(joined.recv_timeout(DEADLINE).unwrap().unwrap(), Ok(()));
+}
+
+/// A daemon slow to answer a fresh client's first ask, its driver held a while as it says whom
+/// the key is (a stand-in for a host busy, or scheduled off, as the client asks), is waited for:
+/// cold, before any answer of a send's has been seen on its path, the client's wait has no
+/// window, a handshake's own being no measure of a request's (D180). Red with the handshake
+/// seeding the window: the client's send unanswered past it, its connection taken for dead.
+#[test]
+fn a_daemon_slow_to_answer_a_fresh_client_is_waited_for() {
+    let daemon_id = leak(Identity::generate().unwrap());
+    let laptop = leak(Identity::generate().unwrap());
+    let d = daemon_with(
+        daemon_id,
+        vec![("laptop".into(), laptop.spki().to_vec())],
+        Vec::new(),
+        Stalls {
+            enroll: Duration::from_millis(300),
+            ..Stalls::default()
+        },
+    );
+    let (status, out, _) = run(laptop, d.remote, &["say", "late", "x", "0"], None).get();
+    assert_eq!((status, out), (Ok(0), b"late\n".to_vec()));
 }
 
 /// A client the machine enrolled keeps its connection through its command's silence: neither
