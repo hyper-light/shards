@@ -70,8 +70,11 @@ struct State {
     /// that it holds the asks in flight alone.
     rooms: Awaited<Option<u64>>,
     /// Each rate asked and still awaited, by its ask's id, and its answer once it came
-    /// (D244), as rooms.
+    /// (D247), as rooms.
     rates: Awaited<Option<NonZeroU64>>,
+    /// Each resize asked and still awaited, by its ask's id, and its answer once it came
+    /// (D244), held as [`rooms`](Self::rooms) is.
+    resizes: HashMap<u32, Option<Result<(), String>>>,
     next_ask: u32,
     /// The run's own command's readiness under the nesting grant (D234), as its init last
     /// said it: init owns it, and moves it by D234's table.
@@ -87,10 +90,10 @@ struct State {
 }
 
 /// Each ask of a kind awaited, by its id, and its answer once it came, or why its host
-/// refused it (D241, D244).
+/// refused it (D241, D247).
 type Awaited<T> = HashMap<u32, Option<Result<T, String>>>;
 
-/// A numbered ask of the session's, answered by its id (D241, D244): its kind; the ask and
+/// A numbered ask of the session's, answered by its id (D241, D247): its kind; the ask and
 /// its send, as a refusal names them; where its answer is awaited; what its host's refusal
 /// is.
 struct Asked<T> {
@@ -157,7 +160,7 @@ impl Shared {
         self.ask(asked, |id| wire::RoomAsk { id, room }.encode(), patience)
     }
 
-    /// Tells the run `rate` (D244) and waits at most `patience` for what its VM holds its
+    /// Tells the run `rate` (D247) and waits at most `patience` for what its VM holds its
     /// vCPUs to.
     fn rate(&self, rate: Option<NonZeroU64>, patience: Duration) -> Result<Option<NonZeroU64>, ImageRefusal> {
         let asked = Asked {
@@ -172,7 +175,7 @@ impl Shared {
 
     /// Sends `asked`'s ask, numbered by the session, and waits at most `patience` for its
     /// answer: the ask awaited from before it is sent until it is answered or given up, so
-    /// that no answer outlives its ask (D241, D244).
+    /// that no answer outlives its ask (D241, D247).
     fn ask<T>(
         &self,
         asked: Asked<T>,
@@ -214,6 +217,54 @@ impl Shared {
                 })
             });
         (asked.awaited)(&mut lock(&self.state)).remove(&id);
+        answer
+    }
+
+    /// Asks member `member`'s own terminal sized (D244) and waits at most `patience` for
+    /// whether its init did; its ask awaited from before it is sent until it is answered or
+    /// given up, as [`room`](Self::room)'s is.
+    fn resize(&self, member: u32, rows: u16, cols: u16, patience: Duration) -> Result<(), ImageRefusal> {
+        let id = {
+            let mut state = lock(&self.state);
+            if let Some(end) = &state.end {
+                return Err(ImageRefusal::Ended(end.clone()));
+            }
+            state.next_ask = state.next_ask.wrapping_add(1);
+            let id = state.next_ask;
+            state.resizes.insert(id, None);
+            id
+        };
+        let ask = wire::ResizeAsk {
+            id,
+            member,
+            rows,
+            cols,
+        };
+        let answer = self
+            .send(wire::to_host::RESIZE, &ask.encode())
+            .map_err(|e| ImageRefusal::Os {
+                what: "the run host's resize",
+                kind: e.kind(),
+            })
+            .and_then(|()| {
+                self.wait(patience, |s| {
+                    if let Some(answer) = s.resizes.get_mut(&id).and_then(Option::take) {
+                        return Some(answer.map_err(ImageRefusal::Terminal));
+                    }
+                    if let Some(end) = &s.end {
+                        return Some(Err(ImageRefusal::Ended(end.clone())));
+                    }
+                    s.gone()
+                        .then(|| Err(ImageRefusal::Host("it exited without answering".into())))
+                })
+                .unwrap_or_else(|| {
+                    Err(ImageRefusal::Unsupported {
+                        what: "a resize",
+                        why: format!("no answer within {patience:?}"),
+                    })
+                })
+            });
+        lock(&self.state).resizes.remove(&id);
         answer
     }
 
@@ -339,6 +390,8 @@ pub(super) struct Session {
     /// Its command has the nesting grant (D234): its spec asked for it, and its host, which
     /// refuses a grant it cannot give, started it.
     nesting: bool,
+    /// Each member whose spec asked for a terminal of its own (D244), by its index.
+    terminals: Vec<u32>,
 }
 
 impl Session {
@@ -467,6 +520,19 @@ impl Session {
                 }
             }
         }
+        // Each member whose terminal its spec asked for (D244), by its index likewise.
+        let terminals = request
+            .members
+            .iter()
+            .filter(|m| m.terminal)
+            .filter_map(|m| {
+                started
+                    .members
+                    .iter()
+                    .find(|i| i.kind == m.kind && i.name == m.name)
+                    .map(|i| i.index)
+            })
+            .collect();
         let session = Session {
             shared,
             host,
@@ -474,6 +540,7 @@ impl Session {
             published: started.published,
             outputs: Mutex::new(HashMap::new()),
             nesting: request.nesting,
+            terminals,
         };
         session.pump_outputs()?;
         Ok(session)
@@ -728,6 +795,12 @@ fn take(shared: &Shared, kind: u8, payload: &[u8]) -> Result<bool, String> {
                 *awaited = Some(answer.result);
             }
         }
+        k::RESIZED => {
+            let answer = wire::ResizeAnswer::decode(payload).map_err(bad)?;
+            if let Some(awaited) = state.resizes.get_mut(&answer.id) {
+                *awaited = Some(answer.result);
+            }
+        }
         k::READY => state.ready = Some(wire::ready(payload).map_err(bad)?),
         k::INPUT_ROOM => {
             let room = wire::InputRoom::decode(payload).map_err(bad)?;
@@ -934,6 +1007,23 @@ impl ImageGuest for Session {
 
     fn rate(&self, rate: Option<NonZeroU64>, patience: Duration) -> Result<Option<NonZeroU64>, ImageRefusal> {
         self.shared.rate(rate, patience)
+    }
+
+    fn resize(
+        &self,
+        member: &MemberName,
+        rows: u16,
+        cols: u16,
+        patience: Duration,
+    ) -> Result<(), ImageRefusal> {
+        let index = self.index(member)?.index;
+        if !self.terminals.contains(&index) {
+            return Err(ImageRefusal::Spec {
+                what: "a member's terminal",
+                why: format!("{member:?}: its spec asks for no terminal of it"),
+            });
+        }
+        self.shared.resize(index, rows, cols, patience)
     }
 
     fn plug(
@@ -1180,6 +1270,42 @@ mod tests {
         assert!(take(&s, wire::to_client::HELD, &[0, 0, 0, 4, 9]).is_err());
     }
 
+    /// A resize's answer is kept for the ask awaiting it alone, as a room's is (D244); a
+    /// resize no host hears is refused, typed, and leaves no ask awaited; a run that has
+    /// ended is sized no more.
+    #[test]
+    fn a_resizes_answer_is_kept_for_its_awaited_ask_alone() {
+        let s = shared();
+        lock(&s.state).resizes.insert(4, None);
+        let resized = |id, result| wire::ResizeAnswer { id, result }.encode().unwrap();
+        assert_eq!(take(&s, wire::to_client::RESIZED, &resized(4, Ok(()))), Ok(false));
+        assert_eq!(lock(&s.state).resizes.get(&4), Some(&Some(Ok(()))));
+        assert_eq!(
+            take(&s, wire::to_client::RESIZED, &resized(5, Err("no".into()))),
+            Ok(false)
+        );
+        assert!(
+            !lock(&s.state).resizes.contains_key(&5),
+            "an answer no ask awaits is dropped"
+        );
+        assert!(take(&s, wire::to_client::RESIZED, &[0, 0, 0, 4, 9]).is_err());
+        let s = shared();
+        assert_eq!(
+            s.resize(1, 40, 120, BOUND),
+            Err(ImageRefusal::Os {
+                what: "the run host's resize",
+                kind: io::ErrorKind::BrokenPipe
+            })
+        );
+        assert!(lock(&s.state).resizes.is_empty());
+        lock(&s.state).end = Some(RunEnd::Stopped);
+        assert_eq!(
+            s.resize(1, 40, 120, BOUND),
+            Err(ImageRefusal::Ended(RunEnd::Stopped))
+        );
+        assert!(lock(&s.state).resizes.is_empty());
+    }
+
     /// A room no host hears is refused, typed, and leaves no ask awaited; a run that has
     /// ended is told none (D241).
     #[test]
@@ -1198,7 +1324,7 @@ mod tests {
         assert!(lock(&s.state).rooms.is_empty());
     }
 
-    /// A rate's answer is kept for the ask awaiting it alone (D244), as a room's is: one for
+    /// A rate's answer is kept for the ask awaiting it alone (D247), as a room's is: one for
     /// an ask no longer awaited is dropped; one that is no answer breaks the channel.
     #[test]
     fn a_rates_answer_is_kept_for_its_awaited_ask_alone() {
@@ -1222,7 +1348,7 @@ mod tests {
     }
 
     /// A rate no host hears is refused, typed, and leaves no ask awaited; a run that has
-    /// ended is told none (D244).
+    /// ended is told none (D247).
     #[test]
     fn a_rate_no_host_hears_is_refused_and_leaves_no_ask() {
         let s = shared();

@@ -511,7 +511,7 @@ mod tests {
     }
 
     /// A rate's share of a period is that many thousandths of it, exact to the nanosecond
-    /// below (D244): a whole CPU's, the period itself, as D191's whole CPUs had; a CPU and
+    /// below (D247): a whole CPU's, the period itself, as D191's whole CPUs had; a CPU and
     /// a half's, a period and a half; the least rate's, a thousandth; past what a u64 holds,
     /// the most it holds.
     #[test]
@@ -527,7 +527,7 @@ mod tests {
     }
 
     /// A hold holds its vCPUs to a rate below every vCPU's whole CPU, and lets them be at
-    /// none and at every vCPU's whole CPU or more (D244), as D191's whole CPUs did.
+    /// none and at every vCPU's whole CPU or more (D247), as D191's whole CPUs did.
     #[test]
     fn a_hold_holds_a_rate_below_its_vcpus_alone() {
         let hold = Hold::new(2);

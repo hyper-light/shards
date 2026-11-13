@@ -355,7 +355,7 @@ impl Handle {
 
     /// Holds its vCPUs together to `milli` milli-CPU of the host's time each period
     /// ([`MILLI_PER_CPU`](super::MILLI_PER_CPU) a whole CPU's), its run's limit (D191) or
-    /// its orchestrator's rate (D244), whatever its guest does with its own cgroups; 0, or
+    /// its orchestrator's rate (D247), whatever its guest does with its own cgroups; 0, or
     /// every vCPU's whole CPU, lets them be. Returns what it holds them to, none where it
     /// lets them be. Its governor's thread is made with the first limit.
     pub fn hold_rate(&self, milli: u64) -> Result<Option<std::num::NonZeroU64>, String> {

@@ -709,7 +709,7 @@ enum From<'a> {
 /// connection to answer on.
 type Pause = (bool, [u8; 8], UnixStream);
 
-/// A `RATE`'s number and its rate in milli-CPU (D244): exactly 16 bytes, both big-endian;
+/// A `RATE`'s number and its rate in milli-CPU (D247): exactly 16 bytes, both big-endian;
 /// anything else is no ask, as an unread `GUEST_TIME`'s is.
 fn rate_asked(payload: &[u8]) -> Option<([u8; 8], u64)> {
     let (number, milli) = payload.split_first_chunk::<8>()?;
@@ -834,7 +834,7 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
                     let _ = writeln!(io::stderr(), "shards: its CPUs' hold: {e}");
                 }
             }
-            // The CPU rate its orchestrator holds its vCPUs to (D244), answered once held:
+            // The CPU rate its orchestrator holds its vCPUs to (D247), answered once held:
             // what it holds them to, or why not.
             kind::RATE if matches!(from, From::Daemon(_)) => {
                 if let Some((number, milli)) = rate_asked(&message.payload) {
@@ -2189,7 +2189,7 @@ mod tests {
     /// The null device's path.
     const NULL: &str = if cfg!(windows) { "NUL" } else { "/dev/null" };
 
-    /// A rate's ask reads as its run host wrote it (D244): its number, then its rate; a
+    /// A rate's ask reads as its run host wrote it (D247): its number, then its rate; a
     /// payload a byte short or long is no ask, never a rate made up.
     #[test]
     fn a_rate_ask_reads_its_number_and_rate_alone() {

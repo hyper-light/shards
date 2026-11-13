@@ -25,6 +25,11 @@ pub const IMAGE_ENV_KEY: &[u8] = b"image-env=";
 /// `member-ends`, alone: the run's owner hears each member's end
 /// ([`kind::MEMBER_ENDED`](super::kind::MEMBER_ENDED)), which a daemon's run does not ask.
 pub const ENDS: &[u8] = b"member-ends";
+/// `member-terminal=<index>`: the member's stdio is a terminal of its own (plan step 6,
+/// D244), whose master init holds: what the terminal shows is its stdout channel, its
+/// stdin goes to it, and [`builtin::RESIZE`](super::builtin::RESIZE) sizes it. One for a
+/// member at most.
+pub const TERMINAL_KEY: &[u8] = b"member-terminal=";
 /// The variable that names a member's domain to its processes: init's to set
 /// (init domains.rs), never a stager's.
 pub const DOMAIN_VARIABLE: &[u8] = b"SHARDS_DOMAIN";
@@ -60,6 +65,10 @@ pub enum Error {
     Shape,
     /// A second member for one exec ([`EXEC_KEY`]).
     SecondMember,
+    /// A second terminal for one member ([`TERMINAL_KEY`]).
+    SecondTerminal,
+    /// A terminal's size that is not its rows and columns, each a decimal u16.
+    Size,
 }
 
 impl core::fmt::Display for Error {
@@ -74,6 +83,8 @@ impl core::fmt::Display for Error {
             Error::Twice => "a second working directory for one member",
             Error::Shape => "an entry missing a field",
             Error::SecondMember => "a second member for one exec",
+            Error::SecondTerminal => "a second terminal for one member",
+            Error::Size => "a terminal size that is not its rows and columns in decimal u16s",
         })
     }
 }
@@ -368,6 +379,60 @@ pub fn exec_member(setup: &[Vec<u8>]) -> Result<Option<u32>, Error> {
         }
     }
     Ok(found)
+}
+
+/// The setup entry giving member `member` a terminal of its own ([`TERMINAL_KEY`]).
+pub fn terminal(member: u32) -> Vec<u8> {
+    let mut entry = Vec::new();
+    entry.extend_from_slice(TERMINAL_KEY);
+    push_decimal(&mut entry, member);
+    entry
+}
+
+/// The members `setup` gives a terminal of their own, in its order: every entry checked,
+/// and a member named twice refusing the whole.
+pub fn terminals(setup: &[Vec<u8>]) -> Result<Vec<u32>, Error> {
+    let mut seen = alloc::collections::BTreeSet::new();
+    let mut found = Vec::new();
+    for value in setup.iter().filter_map(|e| e.strip_prefix(TERMINAL_KEY)) {
+        let member = decimal(value)?;
+        if !seen.insert(member) {
+            return Err(Error::SecondTerminal);
+        }
+        found.push(member);
+    }
+    Ok(found)
+}
+
+/// [`builtin::RESIZE`](super::builtin::RESIZE)'s arguments: the member's index, then its
+/// terminal's rows and columns, each in decimal.
+pub fn resize_args(member: u32, size: super::Size) -> Vec<Vec<u8>> {
+    [member, u32::from(size.rows), u32::from(size.cols)]
+        .into_iter()
+        .map(|n| {
+            let mut arg = Vec::new();
+            push_decimal(&mut arg, n);
+            arg
+        })
+        .collect()
+}
+
+/// The member and the size [`resize_args`] gives, checked: three arguments, the index a
+/// decimal u32, the rows and columns each a decimal u16.
+pub fn parse_resize(args: &[Vec<u8>]) -> Result<(u32, super::Size), Error> {
+    let [member, rows, cols] = args else {
+        return Err(Error::Shape);
+    };
+    let cells = |arg: &[u8]| -> Result<u16, Error> {
+        decimal(arg)
+            .map_err(|_| Error::Size)
+            .and_then(|n| u16::try_from(n).map_err(|_| Error::Size))
+    };
+    let size = super::Size {
+        rows: cells(rows)?,
+        cols: cells(cols)?,
+    };
+    Ok((decimal(member)?, size))
 }
 
 /// Why init ran no command in a member (plan step 6, D243), as its exec's
@@ -753,6 +818,45 @@ mod tests {
         ] {
             assert_eq!(exec_member(&[bad.to_vec()]), Err(Error::Index), "{bad:?}");
         }
+    }
+
+    /// A member's terminal is asked once at most, in the index's one spelling; the setup's
+    /// other entries are not terminals.
+    #[test]
+    fn a_member_has_one_terminal_at_most() {
+        let setup = [terminal(2), b"member-ends".to_vec(), terminal(0), exec_in(1)];
+        assert_eq!(terminals(&setup), Ok(vec![2, 0]));
+        assert_eq!(terminals(&[]), Ok(Vec::new()));
+        assert_eq!(terminals(&[terminal(1), terminal(1)]), Err(Error::SecondTerminal));
+        for bad in [
+            &b"member-terminal="[..],
+            b"member-terminal=01",
+            b"member-terminal=x",
+        ] {
+            assert_eq!(terminals(&[bad.to_vec()]), Err(Error::Index), "{bad:?}");
+        }
+    }
+
+    /// A resize's arguments round-trip; a size past a u16, or not three arguments, is
+    /// refused.
+    #[test]
+    fn a_resize_says_its_member_and_size() {
+        let size = super::super::Size { rows: 40, cols: 120 };
+        assert_eq!(parse_resize(&resize_args(3, size)), Ok((3, size)));
+        let most = super::super::Size {
+            rows: u16::MAX,
+            cols: 0,
+        };
+        assert_eq!(parse_resize(&resize_args(u32::MAX, most)), Ok((u32::MAX, most)));
+        let args = |a: &[&[u8]]| a.iter().map(|x| x.to_vec()).collect::<Vec<_>>();
+        assert_eq!(parse_resize(&args(&[b"1", b"65536", b"80"])), Err(Error::Size));
+        assert_eq!(parse_resize(&args(&[b"1", b"24", b"-1"])), Err(Error::Size));
+        assert_eq!(parse_resize(&args(&[b"x", b"24", b"80"])), Err(Error::Index));
+        assert_eq!(parse_resize(&args(&[b"1", b"24"])), Err(Error::Shape));
+        assert_eq!(
+            parse_resize(&args(&[b"1", b"24", b"80", b"9"])),
+            Err(Error::Shape)
+        );
     }
 
     /// Every refusal round-trips with its words; one cut short, or of a code no refusal

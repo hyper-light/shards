@@ -784,6 +784,9 @@ pub struct Started {
     pub end_told: bool,
     /// What confines its processes, kept for a command run in it ([`crate::enter`]).
     pub confinement: Confinement,
+    /// A descriptor of its own terminal's master, where its stdio is one (plan step 6,
+    /// D244), kept to size it (`builtin::RESIZE`).
+    pub terminal: Option<OwnedFd>,
 }
 
 impl Started {
@@ -877,6 +880,10 @@ struct Prepared {
     /// Its stdin: the read end of its input's pipe, where its owner asked for its input
     /// ([`crate::input`]); else `/dev/null`, opened as it starts.
     stdin: Option<RawFd>,
+    /// Its stdio is a terminal of its own (plan step 6, D244): the descriptor its stdout is
+    /// given is the terminal's other end, which is its stdin and stderr too and its
+    /// session's controlling terminal.
+    terminal: bool,
     /// Its root: the image as built, a mount not yet attached.
     root: RawFd,
     /// Its Unix sockets' directories, each a mount not yet attached and where it goes,
@@ -1954,6 +1961,18 @@ pub fn start(
             "an input is asked for member {member}, which this image starts no program for"
         ));
     }
+    // The members whose stdio is a terminal of their own (plan step 6, D244): each one that
+    // starts here, else the run is refused, as an input is.
+    let terminals =
+        shards_abi::run::members::terminals(setup).map_err(|e| format!("its members' terminals: {e}"))?;
+    if let Some(member) = terminals
+        .iter()
+        .find(|m| !domains.iter().any(|d| d.id.checked_sub(FIRST_ID) == Some(**m)))
+    {
+        return Err(format!(
+            "a terminal is asked for member {member}, which this image starts no program for"
+        ));
+    }
     let mut started = Vec::new();
     for (i, d) in domains.iter().enumerate() {
         let member =
@@ -2141,6 +2160,7 @@ pub fn start(
             go: None,
             chooser: None,
             stdin: None,
+            terminal: false,
         };
         let mut prepared = prepared;
         // A candidate for a port several are given: the channel its listener comes on.
@@ -2172,19 +2192,56 @@ pub fn start(
             }
             None => None,
         };
-        let (stdout, stdout_write) =
-            crate::capture::Pipe::make().map_err(|e| format!("{}: its stdout pipe: {e}", d.label))?;
         let (stderr, stderr_write) =
             crate::capture::Pipe::make().map_err(|e| format!("{}: its stderr pipe: {e}", d.label))?;
-        let (input, stdin) = match inputs.iter().find(|(m, _)| *m == member) {
-            Some((_, token)) => {
+        // Its stdout: a pipe init reads, or a terminal of its own (D244), whose master init
+        // reads as its stdout and whose other end, owned by its uid, is all its stdio, so
+        // that its stderr channel ends at once. The kernel makes a terminal 0 by 0; its owner
+        // sizes it (`builtin::RESIZE`).
+        let terminal = terminals
+            .contains(&member)
+            .then(|| crate::enter::terminal(shards_abi::run::Size::default(), d.id))
+            .transpose()
+            .map_err(|e| format!("{}: its terminal: {e}", d.label))?;
+        let (stdout, stdout_write, master) = match terminal {
+            Some((master, other)) => {
+                let kept = master
+                    .try_clone()
+                    .map_err(|e| format!("{}: its terminal: {e}", d.label))?;
+                let read = crate::capture::Pipe::master(master)
+                    .map_err(|e| format!("{}: its terminal: {e}", d.label))?;
+                (read, other, Some(kept))
+            }
+            None => {
+                let (read, write) =
+                    crate::capture::Pipe::make().map_err(|e| format!("{}: its stdout pipe: {e}", d.label))?;
+                (read, write, None)
+            }
+        };
+        let (input, stdin) = match (inputs.iter().find(|(m, _)| *m == member), &master) {
+            (Some((_, token)), Some(master)) => {
+                let typed = master
+                    .try_clone()
+                    .and_then(|m| crate::input::Input::terminal(member, token, m))
+                    .map_err(|e| format!("{}: its stdin: {e}", d.label))?;
+                (Some(typed), None)
+            }
+            (Some((_, token)), None) => {
                 let (input, stdin) = crate::input::Input::open(member, token)
                     .map_err(|e| format!("{}: its stdin pipe: {e}", d.label))?;
                 (Some(input), Some(stdin))
             }
-            None => (None, None),
+            (None, _) => (None, None),
         };
         prepared.stdin = stdin.as_ref().map(AsRawFd::as_raw_fd);
+        prepared.terminal = master.is_some();
+        // A terminal's other end is its stderr too, and where its setup's failure is said;
+        // its stderr pipe's write end is no one's, so the channel ends at once.
+        let out = if master.is_some() {
+            stdout_write.as_raw_fd()
+        } else {
+            stderr_write.as_raw_fd()
+        };
         let mut launch = crate::managed::Launch::new(last_cap, cgroup)
             .map_err(|e| format!("{}: preparing its owner: {e}", d.label))?;
         let mut args = CloneArgs {
@@ -2209,14 +2266,7 @@ pub fn start(
         }
         if pid == 0 {
             let setup = launch.child();
-            child(
-                d,
-                &prepared,
-                &confinement,
-                stdout_write.as_raw_fd(),
-                stderr_write.as_raw_fd(),
-                setup,
-            );
+            child(d, &prepared, &confinement, stdout_write.as_raw_fd(), out, setup);
         }
         let pid = libc::pid_t::try_from(pid)
             .map_err(|_| format!("{}: the kernel returned a PID out of range", d.label))?;
@@ -2281,6 +2331,7 @@ pub fn start(
             input,
             end_told: false,
             confinement,
+            terminal: master,
         });
     }
     drop(joined);
@@ -2866,10 +2917,16 @@ fn child(d: &Domain, p: &Prepared, c: &Confinement, stdout: RawFd, out: RawFd, s
                 fail(out, c"giving init the chooser's listener");
             }
         }
+        // A terminal of its own (D244) is its session's controlling terminal, as an exec's
+        // is made (run.rs `child`, TIOCSCTTY after setsid(2)), and its stdin.
+        if p.terminal && (libc::setsid() < 0 || libc::ioctl(stdout, libc::TIOCSCTTY, 0) != 0) {
+            fail(out, c"making its terminal its session's");
+        }
         // Its stdio, and no other descriptor of init's.
-        let input = match p.stdin {
-            Some(fd) => fd,
-            None => libc::open(c"/dev/null".as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC),
+        let input = match (p.terminal, p.stdin) {
+            (true, _) => stdout,
+            (false, Some(fd)) => fd,
+            (false, None) => libc::open(c"/dev/null".as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC),
         };
         let status = libc::fcntl(setup, libc::F_DUPFD_CLOEXEC, libc::STDERR_FILENO + 2);
         if input < 0

@@ -292,6 +292,42 @@ fn inputs(request: &wire::Request, members: &[wire::MemberInfo]) -> Result<Vec<u
     Ok(inputs)
 }
 
+/// The members whose stdio the request asks to be a terminal of their own (plan step 6,
+/// D244), by their declared index: each one of the image's that runs a program, each asked
+/// once, refused by name otherwise.
+fn terminals(request: &wire::Request, members: &[wire::MemberInfo]) -> Result<Vec<u32>, No> {
+    let mut terminals = Vec::new();
+    for m in request.members.iter().filter(|m| m.terminal) {
+        let info = members
+            .iter()
+            .find(|i| i.kind == m.kind && i.name == m.name)
+            .ok_or_else(|| {
+                No(
+                    Cause::Image,
+                    format!("{:?} {}: the image declares no such member", m.kind, m.name),
+                )
+            })?;
+        if !info.runs {
+            return Err(No(
+                Cause::Image,
+                format!(
+                    "{:?} {}: files alone, which run nothing to have a terminal",
+                    m.kind, m.name
+                ),
+            ));
+        }
+        if terminals.contains(&info.index) {
+            return Err(No(
+                Cause::Request,
+                format!("{:?} {}: its terminal asked for twice", m.kind, m.name),
+            ));
+        }
+        terminals.push(info.index);
+    }
+    terminals.sort_unstable();
+    Ok(terminals)
+}
+
 /// What of `granted` the orchestrator keeps: all of it, or each it names, each one
 /// `granted` holds as written; any other is a widening, refused by name.
 fn kept(what: &str, granted: &[Vec<u8>], keep: &wire::Keep) -> Result<Vec<Vec<u8>>, No> {
@@ -467,7 +503,7 @@ fn run_request(spec: &shards_abi::run::Spec, published: bool) -> Vec<u8> {
     payload
 }
 
-/// What its VM said it holds a run's vCPUs to (`RATED`'s answer, D244), as asked with
+/// What its VM said it holds a run's vCPUs to (`RATED`'s answer, D247), as asked with
 /// `rate`: the rate it was asked where it holds them, nothing where it lets them be. A VM
 /// holds what it is told or nothing, so any other word is a broken one, never a hold.
 fn rated_of(rate: Option<std::num::NonZeroU64>, said: &str) -> Result<Option<std::num::NonZeroU64>, String> {
@@ -649,6 +685,7 @@ mod hosted {
         let members = super::members_of(&labels, &active);
         let staged = super::staged(request, &members)?;
         let inputs = super::inputs(request, &members)?;
+        let terminals = super::terminals(request, &members)?;
         super::ports_granted(&request.publish, agentfile.as_ref(), request.command.is_some())?;
         let egress = super::egress(agentfile.as_ref().map(|a| &a.grants), &request.egress)?;
         if egress.is_some() {
@@ -767,6 +804,7 @@ mod hosted {
             Some((count, active.clone()))
         };
         setup.extend(staged);
+        setup.extend(terminals.iter().map(|&m| protocol::members::terminal(m)));
         setup.push(protocol::members::ENDS.to_vec());
         prepared.spec.setup = setup;
         prepared.spec.cgroup = crate::resources::cgroup(&run.resources, prepared.cpus)
@@ -1387,7 +1425,7 @@ mod hosted {
         devices: Mutex<Option<Vec<Asked>>>,
         /// Each guest time asked of the VM and not yet answered (`GUEST_TIMED`), as devices.
         guest_times: Mutex<Option<Vec<Asked>>>,
-        /// Each rate told the VM and not yet answered (`RATED`, D244), as devices.
+        /// Each rate told the VM and not yet answered (`RATED`, D247), as devices.
         rates: Mutex<Option<Vec<Asked>>>,
         /// What is plugged into the run's members, by the path it is at.
         plugged: Mutex<HashMap<String, Plugged>>,
@@ -1886,6 +1924,19 @@ mod hosted {
                         rated(live, ask.id, Err("no thread to ask it on".into()));
                     }
                 }
+                // On a thread of its own, as a room: a guest slow to size a member's terminal
+                // holds up nothing else (D244).
+                wire::to_host::RESIZE => {
+                    let Ok(ask) = wire::ResizeAsk::decode(&payload) else {
+                        break;
+                    };
+                    let asked = std::thread::Builder::new()
+                        .name("api-run resize".into())
+                        .spawn_scoped(scope, move || resized(live, ask.id, resize(live, ask)));
+                    if asked.is_err() {
+                        resized(live, ask.id, Err("no thread to ask it on".into()));
+                    }
+                }
                 // On a thread of its own, as stats: a plug's guest steps hold up nothing else.
                 wire::to_host::PLUG | wire::to_host::UNPLUG => {
                     let asked = if which == wire::to_host::PLUG {
@@ -2258,7 +2309,7 @@ mod hosted {
         }
     }
 
-    /// The CPU rate its orchestrator holds the run's vCPUs to (D244), told its VM as the
+    /// The CPU rate its orchestrator holds the run's vCPUs to (D247), told its VM as the
     /// daemon tells a run's its CPUs (`CPUS`, D191) but answered (`RATED`): what the VM
     /// holds them to, none where it lets them be, or why not.
     fn rate(
@@ -2281,6 +2332,26 @@ mod hosted {
     fn held(live: &Live<'_>, id: u32, result: Result<Option<u64>, String>) {
         if let Ok(payload) = (wire::RoomAnswer { id, result }).encode() {
             let _ = live.answers.send(wire::to_client::HELD, &[&payload]);
+        }
+    }
+
+    /// A member's own terminal sized (plan step 6, D244), as its init's `RESIZE` built-in
+    /// sizes it; refused in its init's words.
+    fn resize(live: &Live<'_>, ask: wire::ResizeAsk) -> Result<(), String> {
+        let size = protocol::Size {
+            rows: ask.rows,
+            cols: ask.cols,
+        };
+        let args = protocol::members::resize_args(ask.member, size);
+        match builtin(live, protocol::builtin::RESIZE, args)? {
+            Said { status: Some(0), .. } => Ok(()),
+            Said { err, .. } => Err(String::from_utf8_lossy(&err).trim_end().to_string()),
+        }
+    }
+
+    fn resized(live: &Live<'_>, id: u32, result: Result<(), String>) {
+        if let Ok(payload) = (wire::ResizeAnswer { id, result }).encode() {
+            let _ = live.answers.send(wire::to_client::RESIZED, &[&payload]);
         }
     }
 
@@ -2691,6 +2762,51 @@ mod tests {
             }],
             workdir: Some("/Users/ada/proj".into()),
             input: false,
+            terminal: false,
+        }
+    }
+
+    /// A terminal of its own (D244) goes to a member the image runs, by its index, each
+    /// asked once; one the image does not declare, one of files alone, or one asked twice
+    /// is refused by name, and none asked is none.
+    #[test]
+    fn a_terminal_is_a_running_members_once() {
+        let with_terminal = |kind, name: &str| wire::MemberStage {
+            terminal: true,
+            ..stage(kind, name)
+        };
+        assert!(matches!(
+            terminals(&request(vec![stage(wire::MemberKind::Harness, "codex")]), &members()),
+            Ok(none) if none.is_empty()
+        ));
+        assert!(matches!(
+            terminals(
+                &request(vec![with_terminal(wire::MemberKind::Harness, "codex")]),
+                &members()
+            ),
+            Ok(asked) if asked == [1]
+        ));
+        for (asked, cause) in [
+            (
+                vec![with_terminal(wire::MemberKind::Harness, "nosuch")],
+                Cause::Image,
+            ),
+            (
+                vec![with_terminal(wire::MemberKind::Agent, "helper")],
+                Cause::Image,
+            ),
+            (
+                vec![
+                    with_terminal(wire::MemberKind::Harness, "codex"),
+                    with_terminal(wire::MemberKind::Harness, "codex"),
+                ],
+                Cause::Request,
+            ),
+        ] {
+            assert!(
+                matches!(terminals(&request(asked.clone()), &members()), Err(No(c, _)) if c == cause),
+                "{asked:?}"
+            );
         }
     }
 
@@ -3126,7 +3242,7 @@ mod tests {
         }
     }
 
-    /// What its VM says it holds a run's vCPUs to reads as it was asked (D244): the rate it
+    /// What its VM says it holds a run's vCPUs to reads as it was asked (D247): the rate it
     /// was asked where it holds them, nothing where it lets them be; another rate, no rate
     /// or a word that is no number is a broken word from its VM, never a hold.
     #[test]
