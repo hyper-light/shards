@@ -1,0 +1,961 @@
+# paused_exec_stream_experiment: e8d19fc683cc 1 changed; 2026-11-12T23:13:20Z Linux 7.2.9-2-cachyos x86_64; rustc 1.98.1 (48a229cea 2026-09-01); load 93.64 104.55 104.60
+## stuck 12 s at: round 0: pause Some(0), kill Some(0) in 367.022694ms, VM 2138371
+## its VM process 2138371's threads, 23:14:08: tid, name, state, wait channel
+2138371 shards-vm S futex_wait
+2138378 exec-hellos S __x64_sys_poll.cold
+2138414 vcpu0 S futex_wait
+2138418 vcpu1 S futex_wait
+2138419 vcpu2 S futex_wait
+2138421 vcpu3 S futex_wait
+2138422 vcpu4 S futex_wait
+2138424 vcpu5 S futex_wait
+2138425 vcpu6 S futex_wait
+2138426 vcpu7 S futex_wait
+2138427 vcpu8 S futex_wait
+2138428 vcpu9 S futex_wait
+2138429 vcpu10 S futex_wait
+2138430 vcpu11 S futex_wait
+2138431 vcpu12 S futex_wait
+2138432 vcpu13 S futex_wait
+2138433 vcpu14 S futex_wait
+2138434 vcpu15 S futex_wait
+2138435 vcpu16 S futex_wait
+2138436 vcpu17 S futex_wait
+2138437 vcpu18 S futex_wait
+2138438 vcpu19 S futex_wait
+2138439 vcpu20 S futex_wait
+2138440 vcpu21 S futex_wait
+2138442 vcpu22 S futex_wait
+2138443 vcpu23 S futex_wait
+2138444 vcpu24 S futex_wait
+2138445 vcpu25 S futex_wait
+2138446 vcpu26 S futex_wait
+2138448 vcpu27 S futex_wait
+2138449 vcpu28 S futex_wait
+2138450 vcpu29 S futex_wait
+2138451 vcpu30 S futex_wait
+2138456 vcpu31 S futex_wait
+2138460 kvm-nx-lpage-re S vhost_task_fn
+2138461 workload S unix_stream_read_generic
+2138755 virtio-fs S futex_wait
+2138756 virtio-fs S futex_wait
+2138760 virtio-balloon S futex_wait
+2138761 virtio-mem S futex_wait
+2138766 virtio-blk S futex_wait
+2138767 virtio-pmem S futex_wait
+2138768 virtio-pmem S futex_wait
+2138777 virtio-net S __x64_sys_poll.cold
+2138780 virtio-vsock S __x64_sys_poll.cold
+2138846 virtio-pmem S futex_wait
+2138990 daemon-signals S futex_wait
+2138991 client-signals S unix_stream_read_generic
+2139000 signal-conn S unix_stream_read_generic
+2139922 exec S unix_stream_read_generic
+2139977 exec S sock_alloc_send_pskb
+2140037 exec S futex_wait
+2140134 exec S futex_wait
+2140194 exec S futex_wait
+2140237 exec S futex_wait
+2140348 exec S futex_wait
+2140363 exec S futex_wait
+2140389 exec S futex_wait
+2140398 exec S futex_wait
+2140432 exec S futex_wait
+2140478 exec S futex_wait
+2140494 exec S futex_wait
+2140505 exec S futex_wait
+2140538 exec S futex_wait
+2140572 exec-client S unix_stream_read_generic
+2140573 pauses S futex_wait
+## 2138990 daemon-signals: its kernel stack, then its user stack (eu-stack -1)
+[<0>] futex_wait+0x272/0x320
+[<0>] __x64_sys_futex+0x26c/0x2f0
+[<0>] do_syscall_64+0xa6/0x3e0
+[<0>] entry_SYSCALL_64_after_hwframe+0x76/0x7e
+TID 2138990:
+#0  0x00007f269227097a syscall
+#1  0x00007f2692239cd6 _RNvMNtNtNtNtCsiaXzZB6mOEP_3std3sys4sync5mutex5futexNtB2_5Mutex14lock_contended
+#2  0x00007f26920b729a _RNvNtCs72vBiAOQT8G_9shards_vm8workload8to_guest.llvm.12254250133449771392
+#3  0x00007f2692093677 _RNvNtCs72vBiAOQT8G_9shards_vm4warm13relay_signals
+#4  0x00007f26920bd79a _RINvNtNtCsiaXzZB6mOEP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvMs0_NtCs72vBiAOQT8G_9shards_vm4warmNtB1f_5Relay5start0uEB1h_
+#5  0x00007f26920a7ddd _RNSNvYNCINvNtNtCsiaXzZB6mOEP_3std6thread9lifecycle15spawn_uncheckedNCNvMs0_NtCs72vBiAOQT8G_9shards_vm4warmNtB1b_5Relay5start0uEs_0INtNtNtCs9L9tuJX2du2_4core3ops8function6FnOnceuE9call_once6vtableB1d_
+#6  0x00007f269225063f _RNvNvMs0_NtNtNtCsiaXzZB6mOEP_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+#7  0x00007f2692274cd5 start
+#8  0x00007f2692276215 __clone
+#9  0x00007f2692276215 __clone
+#10 0x00007f2692276215 __clone
+#11 0x00007f2692276215 __clone
+#12 0x00007f2692276215 __clone
+#13 0x00007f2692276215 __clone
+#14 0x00007f2692276215 __clone
+#15 0x00007f2692276215 __clone
+#16 0x00007f2692276215 __clone
+#17 0x00007f2692276215 __clone
+#18 0x00007f2692276215 __clone
+#19 0x00007f2692276215 __clone
+#20 0x00007f2692276215 __clone
+#21 0x00007f2692276215 __clone
+#22 0x00007f2692276215 __clone
+#23 0x00007f2692276215 __clone
+#24 0x00007f2692276215 __clone
+#25 0x00007f2692276215 __clone
+#26 0x00007f2692276215 __clone
+#27 0x00007f2692276215 __clone
+#28 0x00007f2692276215 __clone
+#29 0x00007f2692276215 __clone
+#30 0x00007f2692276215 __clone
+#31 0x00007f2692276215 __clone
+#32 0x00007f2692276215 __clone
+#33 0x00007f2692276215 __clone
+#34 0x00007f2692276215 __clone
+#35 0x00007f2692276215 __clone
+#36 0x00007f2692276215 __clone
+#37 0x00007f2692276215 __clone
+#38 0x00007f2692276215 __clone
+## 2138991 client-signals: its kernel stack, then its user stack (eu-stack -1)
+[<0>] unix_stream_read_generic+0x4f6/0x680
+[<0>] __x64_sys_recvmsg.cold+0x83/0x26b
+[<0>] do_syscall_64+0xa6/0x3e0
+[<0>] entry_SYSCALL_64_after_hwframe+0x76/0x7e
+TID 2138991:
+#0  0x00007f2692274830 sccp
+#1  0x00007f2692270de5 recvmsg
+#2  0x00007f269220afb0 _RNvNtCs4R32wNxmgoR_10shards_ipc4unix8recv_msg
+#3  0x00007f269220972e _RNvNtCs4R32wNxmgoR_10shards_ipc4unix10recv_until.llvm.3685304705708889430
+#4  0x00007f269220acae _RNvNtCs4R32wNxmgoR_10shards_ipc4unix4recv
+#5  0x00007f2692091d9a _RNvNtCs72vBiAOQT8G_9shards_vm4warm13relay_signals
+#6  0x00007f26920bd79a _RINvNtNtCsiaXzZB6mOEP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvMs0_NtCs72vBiAOQT8G_9shards_vm4warmNtB1f_5Relay5start0uEB1h_
+#7  0x00007f26920a7ddd _RNSNvYNCINvNtNtCsiaXzZB6mOEP_3std6thread9lifecycle15spawn_uncheckedNCNvMs0_NtCs72vBiAOQT8G_9shards_vm4warmNtB1b_5Relay5start0uEs_0INtNtNtCs9L9tuJX2du2_4core3ops8function6FnOnceuE9call_once6vtableB1d_
+#8  0x00007f269225063f _RNvNvMs0_NtNtNtCsiaXzZB6mOEP_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+#9  0x00007f2692274cd5 start
+#10 0x00007f2692276215 __clone
+#11 0x00007f2692276215 __clone
+#12 0x00007f2692276215 __clone
+#13 0x00007f2692276215 __clone
+#14 0x00007f2692276215 __clone
+#15 0x00007f2692276215 __clone
+#16 0x00007f2692276215 __clone
+#17 0x00007f2692276215 __clone
+#18 0x00007f2692276215 __clone
+#19 0x00007f2692276215 __clone
+#20 0x00007f2692276215 __clone
+#21 0x00007f2692276215 __clone
+#22 0x00007f2692276215 __clone
+#23 0x00007f2692276215 __clone
+#24 0x00007f2692276215 __clone
+#25 0x00007f2692276215 __clone
+#26 0x00007f2692276215 __clone
+#27 0x00007f2692276215 __clone
+#28 0x00007f2692276215 __clone
+#29 0x00007f2692276215 __clone
+#30 0x00007f2692276215 __clone
+#31 0x00007f2692276215 __clone
+#32 0x00007f2692276215 __clone
+#33 0x00007f2692276215 __clone
+#34 0x00007f2692276215 __clone
+#35 0x00007f2692276215 __clone
+#36 0x00007f2692276215 __clone
+#37 0x00007f2692276215 __clone
+#38 0x00007f2692276215 __clone
+## 2139000 signal-conn: its kernel stack, then its user stack (eu-stack -1)
+[<0>] unix_stream_read_generic+0x4f6/0x680
+[<0>] sock_read_iter.cold+0x69/0x200
+[<0>] __x64_sys_read+0x236/0x450
+[<0>] do_syscall_64+0xa6/0x3e0
+[<0>] entry_SYSCALL_64_after_hwframe+0x76/0x7e
+TID 2139000:
+#0  0x00007f2692274830 sccp
+#1  0x00007f26922768cd read
+#2  0x00007f26920f114e _RINvNtCsiaXzZB6mOEP_3std2io18default_read_exactINtNtCs4R32wNxmgoR_10shards_ipc4unix6PolledRNtNtNtNtNtB4_2os4unix3net6stream10UnixStreamEECs72vBiAOQT8G_9shards_vm
+#3  0x00007f26920b0475 _RNvNtCs72vBiAOQT8G_9shards_vm8workload12take_signals
+#4  0x00007f26920bf9aa _RINvNtNtCsiaXzZB6mOEP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCs72vBiAOQT8G_9shards_vm8workload5servesa_0uEB1d_
+#5  0x00007f26920a89e8 _RNSNvYNCINvNtNtCsiaXzZB6mOEP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCs72vBiAOQT8G_9shards_vm8workload5servesa_0uEs_0INtNtNtCs9L9tuJX2du2_4core3ops8function6FnOnceuE9call_once6vtableB19_
+#6  0x00007f269225063f _RNvNvMs0_NtNtNtCsiaXzZB6mOEP_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+#7  0x00007f2692274cd5 start
+#8  0x00007f2692276215 __clone
+#9  0x00007f2692276215 __clone
+#10 0x00007f2692276215 __clone
+#11 0x00007f2692276215 __clone
+#12 0x00007f2692276215 __clone
+#13 0x00007f2692276215 __clone
+#14 0x00007f2692276215 __clone
+#15 0x00007f2692276215 __clone
+#16 0x00007f2692276215 __clone
+#17 0x00007f2692276215 __clone
+#18 0x00007f2692276215 __clone
+#19 0x00007f2692276215 __clone
+#20 0x00007f2692276215 __clone
+#21 0x00007f2692276215 __clone
+#22 0x00007f2692276215 __clone
+#23 0x00007f2692276215 __clone
+#24 0x00007f2692276215 __clone
+#25 0x00007f2692276215 __clone
+#26 0x00007f2692276215 __clone
+#27 0x00007f2692276215 __clone
+#28 0x00007f2692276215 __clone
+#29 0x00007f2692276215 __clone
+#30 0x00007f2692276215 __clone
+#31 0x00007f2692276215 __clone
+#32 0x00007f2692276215 __clone
+#33 0x00007f2692276215 __clone
+#34 0x00007f2692276215 __clone
+#35 0x00007f2692276215 __clone
+#36 0x00007f2692276215 __clone
+#37 0x00007f2692276215 __clone
+#38 0x00007f2692276215 __clone
+## 2139922 exec: its kernel stack, then its user stack (eu-stack -1)
+[<0>] unix_stream_read_generic+0x4f6/0x680
+[<0>] sock_read_iter.cold+0x69/0x200
+[<0>] __x64_sys_read+0x236/0x450
+[<0>] do_syscall_64+0xa6/0x3e0
+[<0>] entry_SYSCALL_64_after_hwframe+0x76/0x7e
+TID 2139922:
+#0  0x00007f2692274830 sccp
+#1  0x00007f26922768cd read
+#2  0x00007f26920f4b2e _RNvXs3_NtNtNtCsiaXzZB6mOEP_3std2io8buffered9bufreaderINtB5_9BufReaderINtNtCs4R32wNxmgoR_10shards_ipc4unix6PolledRNtNtNtNtNtBb_2os4unix3net6stream10UnixStreamEENtB9_4Read4readCs72vBiAOQT8G_9shards_vm
+#3  0x00007f26920f1243 _RINvNtCsiaXzZB6mOEP_3std2io18default_read_exactINtNtNtB2_8buffered9bufreader9BufReaderINtNtCs4R32wNxmgoR_10shards_ipc4unix6PolledRNtNtNtNtNtB4_2os4unix3net6stream10UnixStreamEEECs72vBiAOQT8G_9shards_vm
+#4  0x00007f26920ae2cd _RNvNtCs72vBiAOQT8G_9shards_vm8workload12exec_session
+#5  0x00007f26920bf0c7 _RINvNtNtCsiaXzZB6mOEP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCs72vBiAOQT8G_9shards_vm8workload4exec0uEB1d_
+#6  0x00007f26920a87ca _RNSNvYNCINvNtNtCsiaXzZB6mOEP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCs72vBiAOQT8G_9shards_vm8workload4exec0uEs_0INtNtNtCs9L9tuJX2du2_4core3ops8function6FnOnceuE9call_once6vtableB19_
+#7  0x00007f269225063f _RNvNvMs0_NtNtNtCsiaXzZB6mOEP_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+#8  0x00007f2692274cd5 start
+#9  0x00007f2692276215 __clone
+#10 0x00007f2692276215 __clone
+#11 0x00007f2692276215 __clone
+#12 0x00007f2692276215 __clone
+#13 0x00007f2692276215 __clone
+#14 0x00007f2692276215 __clone
+#15 0x00007f2692276215 __clone
+#16 0x00007f2692276215 __clone
+#17 0x00007f2692276215 __clone
+#18 0x00007f2692276215 __clone
+#19 0x00007f2692276215 __clone
+#20 0x00007f2692276215 __clone
+#21 0x00007f2692276215 __clone
+#22 0x00007f2692276215 __clone
+#23 0x00007f2692276215 __clone
+#24 0x00007f2692276215 __clone
+#25 0x00007f2692276215 __clone
+#26 0x00007f2692276215 __clone
+#27 0x00007f2692276215 __clone
+#28 0x00007f2692276215 __clone
+#29 0x00007f2692276215 __clone
+#30 0x00007f2692276215 __clone
+#31 0x00007f2692276215 __clone
+#32 0x00007f2692276215 __clone
+#33 0x00007f2692276215 __clone
+#34 0x00007f2692276215 __clone
+#35 0x00007f2692276215 __clone
+#36 0x00007f2692276215 __clone
+#37 0x00007f2692276215 __clone
+#38 0x00007f2692276215 __clone
+## 2139977 exec: its kernel stack, then its user stack (eu-stack -1)
+[<0>] sock_alloc_send_pskb+0x22c/0x2b0
+[<0>] unix_stream_sendmsg+0x1e0/0x510
+[<0>] __x64_sys_sendto.cold+0xb/0x17d
+[<0>] do_syscall_64+0xa6/0x3e0
+[<0>] entry_SYSCALL_64_after_hwframe+0x76/0x7e
+TID 2139977:
+#0  0x00007f2692274830 sccp
+#1  0x00007f2692270f50 sendto
+#2  0x00007f2692251e04 _RNvXs2_NtNtNtNtCsiaXzZB6mOEP_3std2os4unix3net6streamNtB5_10UnixStreamNtNtBd_2io5Write5write
+#3  0x00007f26920f2871 _RNvYNtNtNtNtNtCsiaXzZB6mOEP_3std2os4unix3net6stream10UnixStreamNtNtBc_2io5Write9write_allCs72vBiAOQT8G_9shards_vm
+#4  0x00007f26920b6ce7 _RNvNtCs72vBiAOQT8G_9shards_vm8workload8to_guest.llvm.12254250133449771392
+#5  0x00007f26920adcae _RNvNtCs72vBiAOQT8G_9shards_vm8workload12exec_session
+#6  0x00007f26920bf0c7 _RINvNtNtCsiaXzZB6mOEP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCs72vBiAOQT8G_9shards_vm8workload4exec0uEB1d_
+#7  0x00007f26920a87ca _RNSNvYNCINvNtNtCsiaXzZB6mOEP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCs72vBiAOQT8G_9shards_vm8workload4exec0uEs_0INtNtNtCs9L9tuJX2du2_4core3ops8function6FnOnceuE9call_once6vtableB19_
+#8  0x00007f269225063f _RNvNvMs0_NtNtNtCsiaXzZB6mOEP_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+#9  0x00007f2692274cd5 start
+#10 0x00007f2692276215 __clone
+#11 0x00007f2692276215 __clone
+#12 0x00007f2692276215 __clone
+#13 0x00007f2692276215 __clone
+#14 0x00007f2692276215 __clone
+#15 0x00007f2692276215 __clone
+#16 0x00007f2692276215 __clone
+#17 0x00007f2692276215 __clone
+#18 0x00007f2692276215 __clone
+#19 0x00007f2692276215 __clone
+#20 0x00007f2692276215 __clone
+#21 0x00007f2692276215 __clone
+#22 0x00007f2692276215 __clone
+#23 0x00007f2692276215 __clone
+#24 0x00007f2692276215 __clone
+#25 0x00007f2692276215 __clone
+#26 0x00007f2692276215 __clone
+#27 0x00007f2692276215 __clone
+#28 0x00007f2692276215 __clone
+#29 0x00007f2692276215 __clone
+#30 0x00007f2692276215 __clone
+#31 0x00007f2692276215 __clone
+#32 0x00007f2692276215 __clone
+#33 0x00007f2692276215 __clone
+#34 0x00007f2692276215 __clone
+#35 0x00007f2692276215 __clone
+#36 0x00007f2692276215 __clone
+#37 0x00007f2692276215 __clone
+#38 0x00007f2692276215 __clone
+## 2140037 exec: its kernel stack, then its user stack (eu-stack -1)
+[<0>] futex_wait+0x272/0x320
+[<0>] __x64_sys_futex+0x26c/0x2f0
+[<0>] do_syscall_64+0xa6/0x3e0
+[<0>] entry_SYSCALL_64_after_hwframe+0x76/0x7e
+TID 2140037:
+#0  0x00007f269227097a syscall
+#1  0x00007f2692239cd6 _RNvMNtNtNtNtCsiaXzZB6mOEP_3std3sys4sync5mutex5futexNtB2_5Mutex14lock_contended
+#2  0x00007f26920b729a _RNvNtCs72vBiAOQT8G_9shards_vm8workload8to_guest.llvm.12254250133449771392
+#3  0x00007f26920adcae _RNvNtCs72vBiAOQT8G_9shards_vm8workload12exec_session
+#4  0x00007f26920bf0c7 _RINvNtNtCsiaXzZB6mOEP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCs72vBiAOQT8G_9shards_vm8workload4exec0uEB1d_
+#5  0x00007f26920a87ca _RNSNvYNCINvNtNtCsiaXzZB6mOEP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCs72vBiAOQT8G_9shards_vm8workload4exec0uEs_0INtNtNtCs9L9tuJX2du2_4core3ops8function6FnOnceuE9call_once6vtableB19_
+#6  0x00007f269225063f _RNvNvMs0_NtNtNtCsiaXzZB6mOEP_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+#7  0x00007f2692274cd5 start
+#8  0x00007f2692276215 __clone
+#9  0x00007f2692276215 __clone
+#10 0x00007f2692276215 __clone
+#11 0x00007f2692276215 __clone
+#12 0x00007f2692276215 __clone
+#13 0x00007f2692276215 __clone
+#14 0x00007f2692276215 __clone
+#15 0x00007f2692276215 __clone
+#16 0x00007f2692276215 __clone
+#17 0x00007f2692276215 __clone
+#18 0x00007f2692276215 __clone
+#19 0x00007f2692276215 __clone
+#20 0x00007f2692276215 __clone
+#21 0x00007f2692276215 __clone
+#22 0x00007f2692276215 __clone
+#23 0x00007f2692276215 __clone
+#24 0x00007f2692276215 __clone
+#25 0x00007f2692276215 __clone
+#26 0x00007f2692276215 __clone
+#27 0x00007f2692276215 __clone
+#28 0x00007f2692276215 __clone
+#29 0x00007f2692276215 __clone
+#30 0x00007f2692276215 __clone
+#31 0x00007f2692276215 __clone
+#32 0x00007f2692276215 __clone
+#33 0x00007f2692276215 __clone
+#34 0x00007f2692276215 __clone
+#35 0x00007f2692276215 __clone
+#36 0x00007f2692276215 __clone
+#37 0x00007f2692276215 __clone
+#38 0x00007f2692276215 __clone
+## 2140134 exec: its kernel stack, then its user stack (eu-stack -1)
+[<0>] futex_wait+0x272/0x320
+[<0>] __x64_sys_futex+0x26c/0x2f0
+[<0>] do_syscall_64+0xa6/0x3e0
+[<0>] entry_SYSCALL_64_after_hwframe+0x76/0x7e
+TID 2140134:
+#0  0x00007f269227097a syscall
+#1  0x00007f2692239cd6 _RNvMNtNtNtNtCsiaXzZB6mOEP_3std3sys4sync5mutex5futexNtB2_5Mutex14lock_contended
+#2  0x00007f26920b729a _RNvNtCs72vBiAOQT8G_9shards_vm8workload8to_guest.llvm.12254250133449771392
+#3  0x00007f26920adcae _RNvNtCs72vBiAOQT8G_9shards_vm8workload12exec_session
+#4  0x00007f26920bf0c7 _RINvNtNtCsiaXzZB6mOEP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCs72vBiAOQT8G_9shards_vm8workload4exec0uEB1d_
+#5  0x00007f26920a87ca _RNSNvYNCINvNtNtCsiaXzZB6mOEP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCs72vBiAOQT8G_9shards_vm8workload4exec0uEs_0INtNtNtCs9L9tuJX2du2_4core3ops8function6FnOnceuE9call_once6vtableB19_
+#6  0x00007f269225063f _RNvNvMs0_NtNtNtCsiaXzZB6mOEP_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+#7  0x00007f2692274cd5 start
+#8  0x00007f2692276215 __clone
+#9  0x00007f2692276215 __clone
+#10 0x00007f2692276215 __clone
+#11 0x00007f2692276215 __clone
+#12 0x00007f2692276215 __clone
+#13 0x00007f2692276215 __clone
+#14 0x00007f2692276215 __clone
+#15 0x00007f2692276215 __clone
+#16 0x00007f2692276215 __clone
+#17 0x00007f2692276215 __clone
+#18 0x00007f2692276215 __clone
+#19 0x00007f2692276215 __clone
+#20 0x00007f2692276215 __clone
+#21 0x00007f2692276215 __clone
+#22 0x00007f2692276215 __clone
+#23 0x00007f2692276215 __clone
+#24 0x00007f2692276215 __clone
+#25 0x00007f2692276215 __clone
+#26 0x00007f2692276215 __clone
+#27 0x00007f2692276215 __clone
+#28 0x00007f2692276215 __clone
+#29 0x00007f2692276215 __clone
+#30 0x00007f2692276215 __clone
+#31 0x00007f2692276215 __clone
+#32 0x00007f2692276215 __clone
+#33 0x00007f2692276215 __clone
+#34 0x00007f2692276215 __clone
+#35 0x00007f2692276215 __clone
+#36 0x00007f2692276215 __clone
+#37 0x00007f2692276215 __clone
+#38 0x00007f2692276215 __clone
+## 2140194 exec: its kernel stack, then its user stack (eu-stack -1)
+[<0>] futex_wait+0x272/0x320
+[<0>] __x64_sys_futex+0x26c/0x2f0
+[<0>] do_syscall_64+0xa6/0x3e0
+[<0>] entry_SYSCALL_64_after_hwframe+0x76/0x7e
+TID 2140194:
+#0  0x00007f269227097a syscall
+#1  0x00007f2692239cd6 _RNvMNtNtNtNtCsiaXzZB6mOEP_3std3sys4sync5mutex5futexNtB2_5Mutex14lock_contended
+#2  0x00007f26920b729a _RNvNtCs72vBiAOQT8G_9shards_vm8workload8to_guest.llvm.12254250133449771392
+#3  0x00007f26920adcae _RNvNtCs72vBiAOQT8G_9shards_vm8workload12exec_session
+#4  0x00007f26920bf0c7 _RINvNtNtCsiaXzZB6mOEP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCs72vBiAOQT8G_9shards_vm8workload4exec0uEB1d_
+#5  0x00007f26920a87ca _RNSNvYNCINvNtNtCsiaXzZB6mOEP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCs72vBiAOQT8G_9shards_vm8workload4exec0uEs_0INtNtNtCs9L9tuJX2du2_4core3ops8function6FnOnceuE9call_once6vtableB19_
+#6  0x00007f269225063f _RNvNvMs0_NtNtNtCsiaXzZB6mOEP_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+#7  0x00007f2692274cd5 start
+#8  0x00007f2692276215 __clone
+#9  0x00007f2692276215 __clone
+#10 0x00007f2692276215 __clone
+#11 0x00007f2692276215 __clone
+#12 0x00007f2692276215 __clone
+#13 0x00007f2692276215 __clone
+#14 0x00007f2692276215 __clone
+#15 0x00007f2692276215 __clone
+#16 0x00007f2692276215 __clone
+#17 0x00007f2692276215 __clone
+#18 0x00007f2692276215 __clone
+#19 0x00007f2692276215 __clone
+#20 0x00007f2692276215 __clone
+#21 0x00007f2692276215 __clone
+#22 0x00007f2692276215 __clone
+#23 0x00007f2692276215 __clone
+#24 0x00007f2692276215 __clone
+#25 0x00007f2692276215 __clone
+#26 0x00007f2692276215 __clone
+#27 0x00007f2692276215 __clone
+#28 0x00007f2692276215 __clone
+#29 0x00007f2692276215 __clone
+#30 0x00007f2692276215 __clone
+#31 0x00007f2692276215 __clone
+#32 0x00007f2692276215 __clone
+#33 0x00007f2692276215 __clone
+#34 0x00007f2692276215 __clone
+#35 0x00007f2692276215 __clone
+#36 0x00007f2692276215 __clone
+#37 0x00007f2692276215 __clone
+#38 0x00007f2692276215 __clone
+## 2140237 exec: its kernel stack, then its user stack (eu-stack -1)
+[<0>] futex_wait+0x272/0x320
+[<0>] __x64_sys_futex+0x26c/0x2f0
+[<0>] do_syscall_64+0xa6/0x3e0
+[<0>] entry_SYSCALL_64_after_hwframe+0x76/0x7e
+TID 2140237:
+#0  0x00007f269227097a syscall
+#1  0x00007f2692239cd6 _RNvMNtNtNtNtCsiaXzZB6mOEP_3std3sys4sync5mutex5futexNtB2_5Mutex14lock_contended
+#2  0x00007f26920b729a _RNvNtCs72vBiAOQT8G_9shards_vm8workload8to_guest.llvm.12254250133449771392
+#3  0x00007f26920adcae _RNvNtCs72vBiAOQT8G_9shards_vm8workload12exec_session
+#4  0x00007f26920bf0c7 _RINvNtNtCsiaXzZB6mOEP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCs72vBiAOQT8G_9shards_vm8workload4exec0uEB1d_
+#5  0x00007f26920a87ca _RNSNvYNCINvNtNtCsiaXzZB6mOEP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCs72vBiAOQT8G_9shards_vm8workload4exec0uEs_0INtNtNtCs9L9tuJX2du2_4core3ops8function6FnOnceuE9call_once6vtableB19_
+#6  0x00007f269225063f _RNvNvMs0_NtNtNtCsiaXzZB6mOEP_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+#7  0x00007f2692274cd5 start
+#8  0x00007f2692276215 __clone
+#9  0x00007f2692276215 __clone
+#10 0x00007f2692276215 __clone
+#11 0x00007f2692276215 __clone
+#12 0x00007f2692276215 __clone
+#13 0x00007f2692276215 __clone
+#14 0x00007f2692276215 __clone
+#15 0x00007f2692276215 __clone
+#16 0x00007f2692276215 __clone
+#17 0x00007f2692276215 __clone
+#18 0x00007f2692276215 __clone
+#19 0x00007f2692276215 __clone
+#20 0x00007f2692276215 __clone
+#21 0x00007f2692276215 __clone
+#22 0x00007f2692276215 __clone
+#23 0x00007f2692276215 __clone
+#24 0x00007f2692276215 __clone
+#25 0x00007f2692276215 __clone
+#26 0x00007f2692276215 __clone
+#27 0x00007f2692276215 __clone
+#28 0x00007f2692276215 __clone
+#29 0x00007f2692276215 __clone
+#30 0x00007f2692276215 __clone
+#31 0x00007f2692276215 __clone
+#32 0x00007f2692276215 __clone
+#33 0x00007f2692276215 __clone
+#34 0x00007f2692276215 __clone
+#35 0x00007f2692276215 __clone
+#36 0x00007f2692276215 __clone
+#37 0x00007f2692276215 __clone
+#38 0x00007f2692276215 __clone
+## 2140348 exec: its kernel stack, then its user stack (eu-stack -1)
+[<0>] futex_wait+0x272/0x320
+[<0>] __x64_sys_futex+0x26c/0x2f0
+[<0>] do_syscall_64+0xa6/0x3e0
+[<0>] entry_SYSCALL_64_after_hwframe+0x76/0x7e
+TID 2140348:
+#0  0x00007f269227097a syscall
+#1  0x00007f2692239cd6 _RNvMNtNtNtNtCsiaXzZB6mOEP_3std3sys4sync5mutex5futexNtB2_5Mutex14lock_contended
+#2  0x00007f26920b729a _RNvNtCs72vBiAOQT8G_9shards_vm8workload8to_guest.llvm.12254250133449771392
+#3  0x00007f26920adcae _RNvNtCs72vBiAOQT8G_9shards_vm8workload12exec_session
+#4  0x00007f26920bf0c7 _RINvNtNtCsiaXzZB6mOEP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCs72vBiAOQT8G_9shards_vm8workload4exec0uEB1d_
+#5  0x00007f26920a87ca _RNSNvYNCINvNtNtCsiaXzZB6mOEP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCs72vBiAOQT8G_9shards_vm8workload4exec0uEs_0INtNtNtCs9L9tuJX2du2_4core3ops8function6FnOnceuE9call_once6vtableB19_
+#6  0x00007f269225063f _RNvNvMs0_NtNtNtCsiaXzZB6mOEP_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+#7  0x00007f2692274cd5 start
+#8  0x00007f2692276215 __clone
+#9  0x00007f2692276215 __clone
+#10 0x00007f2692276215 __clone
+#11 0x00007f2692276215 __clone
+#12 0x00007f2692276215 __clone
+#13 0x00007f2692276215 __clone
+#14 0x00007f2692276215 __clone
+#15 0x00007f2692276215 __clone
+#16 0x00007f2692276215 __clone
+#17 0x00007f2692276215 __clone
+#18 0x00007f2692276215 __clone
+#19 0x00007f2692276215 __clone
+#20 0x00007f2692276215 __clone
+#21 0x00007f2692276215 __clone
+#22 0x00007f2692276215 __clone
+#23 0x00007f2692276215 __clone
+#24 0x00007f2692276215 __clone
+#25 0x00007f2692276215 __clone
+#26 0x00007f2692276215 __clone
+#27 0x00007f2692276215 __clone
+#28 0x00007f2692276215 __clone
+#29 0x00007f2692276215 __clone
+#30 0x00007f2692276215 __clone
+#31 0x00007f2692276215 __clone
+#32 0x00007f2692276215 __clone
+#33 0x00007f2692276215 __clone
+#34 0x00007f2692276215 __clone
+#35 0x00007f2692276215 __clone
+#36 0x00007f2692276215 __clone
+#37 0x00007f2692276215 __clone
+#38 0x00007f2692276215 __clone
+## 2140363 exec: its kernel stack, then its user stack (eu-stack -1)
+[<0>] futex_wait+0x272/0x320
+[<0>] __x64_sys_futex+0x26c/0x2f0
+[<0>] do_syscall_64+0xa6/0x3e0
+[<0>] entry_SYSCALL_64_after_hwframe+0x76/0x7e
+TID 2140363:
+#0  0x00007f269227097a syscall
+#1  0x00007f2692239cd6 _RNvMNtNtNtNtCsiaXzZB6mOEP_3std3sys4sync5mutex5futexNtB2_5Mutex14lock_contended
+#2  0x00007f26920b729a _RNvNtCs72vBiAOQT8G_9shards_vm8workload8to_guest.llvm.12254250133449771392
+#3  0x00007f26920adcae _RNvNtCs72vBiAOQT8G_9shards_vm8workload12exec_session
+#4  0x00007f26920bf0c7 _RINvNtNtCsiaXzZB6mOEP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCs72vBiAOQT8G_9shards_vm8workload4exec0uEB1d_
+#5  0x00007f26920a87ca _RNSNvYNCINvNtNtCsiaXzZB6mOEP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCs72vBiAOQT8G_9shards_vm8workload4exec0uEs_0INtNtNtCs9L9tuJX2du2_4core3ops8function6FnOnceuE9call_once6vtableB19_
+#6  0x00007f269225063f _RNvNvMs0_NtNtNtCsiaXzZB6mOEP_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+#7  0x00007f2692274cd5 start
+#8  0x00007f2692276215 __clone
+#9  0x00007f2692276215 __clone
+#10 0x00007f2692276215 __clone
+#11 0x00007f2692276215 __clone
+#12 0x00007f2692276215 __clone
+#13 0x00007f2692276215 __clone
+#14 0x00007f2692276215 __clone
+#15 0x00007f2692276215 __clone
+#16 0x00007f2692276215 __clone
+#17 0x00007f2692276215 __clone
+#18 0x00007f2692276215 __clone
+#19 0x00007f2692276215 __clone
+#20 0x00007f2692276215 __clone
+#21 0x00007f2692276215 __clone
+#22 0x00007f2692276215 __clone
+#23 0x00007f2692276215 __clone
+#24 0x00007f2692276215 __clone
+#25 0x00007f2692276215 __clone
+#26 0x00007f2692276215 __clone
+#27 0x00007f2692276215 __clone
+#28 0x00007f2692276215 __clone
+#29 0x00007f2692276215 __clone
+#30 0x00007f2692276215 __clone
+#31 0x00007f2692276215 __clone
+#32 0x00007f2692276215 __clone
+#33 0x00007f2692276215 __clone
+#34 0x00007f2692276215 __clone
+#35 0x00007f2692276215 __clone
+#36 0x00007f2692276215 __clone
+#37 0x00007f2692276215 __clone
+#38 0x00007f2692276215 __clone
+## 2140389 exec: its kernel stack, then its user stack (eu-stack -1)
+[<0>] futex_wait+0x272/0x320
+[<0>] __x64_sys_futex+0x26c/0x2f0
+[<0>] do_syscall_64+0xa6/0x3e0
+[<0>] entry_SYSCALL_64_after_hwframe+0x76/0x7e
+TID 2140389:
+#0  0x00007f269227097a syscall
+#1  0x00007f2692239cd6 _RNvMNtNtNtNtCsiaXzZB6mOEP_3std3sys4sync5mutex5futexNtB2_5Mutex14lock_contended
+#2  0x00007f26920b729a _RNvNtCs72vBiAOQT8G_9shards_vm8workload8to_guest.llvm.12254250133449771392
+#3  0x00007f26920adcae _RNvNtCs72vBiAOQT8G_9shards_vm8workload12exec_session
+#4  0x00007f26920bf0c7 _RINvNtNtCsiaXzZB6mOEP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCs72vBiAOQT8G_9shards_vm8workload4exec0uEB1d_
+#5  0x00007f26920a87ca _RNSNvYNCINvNtNtCsiaXzZB6mOEP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCs72vBiAOQT8G_9shards_vm8workload4exec0uEs_0INtNtNtCs9L9tuJX2du2_4core3ops8function6FnOnceuE9call_once6vtableB19_
+#6  0x00007f269225063f _RNvNvMs0_NtNtNtCsiaXzZB6mOEP_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+#7  0x00007f2692274cd5 start
+#8  0x00007f2692276215 __clone
+#9  0x00007f2692276215 __clone
+#10 0x00007f2692276215 __clone
+#11 0x00007f2692276215 __clone
+#12 0x00007f2692276215 __clone
+#13 0x00007f2692276215 __clone
+#14 0x00007f2692276215 __clone
+#15 0x00007f2692276215 __clone
+#16 0x00007f2692276215 __clone
+#17 0x00007f2692276215 __clone
+#18 0x00007f2692276215 __clone
+#19 0x00007f2692276215 __clone
+#20 0x00007f2692276215 __clone
+#21 0x00007f2692276215 __clone
+#22 0x00007f2692276215 __clone
+#23 0x00007f2692276215 __clone
+#24 0x00007f2692276215 __clone
+#25 0x00007f2692276215 __clone
+#26 0x00007f2692276215 __clone
+#27 0x00007f2692276215 __clone
+#28 0x00007f2692276215 __clone
+#29 0x00007f2692276215 __clone
+#30 0x00007f2692276215 __clone
+#31 0x00007f2692276215 __clone
+#32 0x00007f2692276215 __clone
+#33 0x00007f2692276215 __clone
+#34 0x00007f2692276215 __clone
+#35 0x00007f2692276215 __clone
+#36 0x00007f2692276215 __clone
+#37 0x00007f2692276215 __clone
+#38 0x00007f2692276215 __clone
+## 2140398 exec: its kernel stack, then its user stack (eu-stack -1)
+[<0>] futex_wait+0x272/0x320
+[<0>] __x64_sys_futex+0x26c/0x2f0
+[<0>] do_syscall_64+0xa6/0x3e0
+[<0>] entry_SYSCALL_64_after_hwframe+0x76/0x7e
+TID 2140398:
+#0  0x00007f269227097a syscall
+#1  0x00007f2692239cd6 _RNvMNtNtNtNtCsiaXzZB6mOEP_3std3sys4sync5mutex5futexNtB2_5Mutex14lock_contended
+#2  0x00007f26920b729a _RNvNtCs72vBiAOQT8G_9shards_vm8workload8to_guest.llvm.12254250133449771392
+#3  0x00007f26920adcae _RNvNtCs72vBiAOQT8G_9shards_vm8workload12exec_session
+#4  0x00007f26920bf0c7 _RINvNtNtCsiaXzZB6mOEP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCs72vBiAOQT8G_9shards_vm8workload4exec0uEB1d_
+#5  0x00007f26920a87ca _RNSNvYNCINvNtNtCsiaXzZB6mOEP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCs72vBiAOQT8G_9shards_vm8workload4exec0uEs_0INtNtNtCs9L9tuJX2du2_4core3ops8function6FnOnceuE9call_once6vtableB19_
+#6  0x00007f269225063f _RNvNvMs0_NtNtNtCsiaXzZB6mOEP_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+#7  0x00007f2692274cd5 start
+#8  0x00007f2692276215 __clone
+#9  0x00007f2692276215 __clone
+#10 0x00007f2692276215 __clone
+#11 0x00007f2692276215 __clone
+#12 0x00007f2692276215 __clone
+#13 0x00007f2692276215 __clone
+#14 0x00007f2692276215 __clone
+#15 0x00007f2692276215 __clone
+#16 0x00007f2692276215 __clone
+#17 0x00007f2692276215 __clone
+#18 0x00007f2692276215 __clone
+#19 0x00007f2692276215 __clone
+#20 0x00007f2692276215 __clone
+#21 0x00007f2692276215 __clone
+#22 0x00007f2692276215 __clone
+#23 0x00007f2692276215 __clone
+#24 0x00007f2692276215 __clone
+#25 0x00007f2692276215 __clone
+#26 0x00007f2692276215 __clone
+#27 0x00007f2692276215 __clone
+#28 0x00007f2692276215 __clone
+#29 0x00007f2692276215 __clone
+#30 0x00007f2692276215 __clone
+#31 0x00007f2692276215 __clone
+#32 0x00007f2692276215 __clone
+#33 0x00007f2692276215 __clone
+#34 0x00007f2692276215 __clone
+#35 0x00007f2692276215 __clone
+#36 0x00007f2692276215 __clone
+#37 0x00007f2692276215 __clone
+#38 0x00007f2692276215 __clone
+## 2140432 exec: its kernel stack, then its user stack (eu-stack -1)
+[<0>] futex_wait+0x272/0x320
+[<0>] __x64_sys_futex+0x26c/0x2f0
+[<0>] do_syscall_64+0xa6/0x3e0
+[<0>] entry_SYSCALL_64_after_hwframe+0x76/0x7e
+TID 2140432:
+#0  0x00007f269227097a syscall
+#1  0x00007f2692239cd6 _RNvMNtNtNtNtCsiaXzZB6mOEP_3std3sys4sync5mutex5futexNtB2_5Mutex14lock_contended
+#2  0x00007f26920b729a _RNvNtCs72vBiAOQT8G_9shards_vm8workload8to_guest.llvm.12254250133449771392
+#3  0x00007f26920adcae _RNvNtCs72vBiAOQT8G_9shards_vm8workload12exec_session
+#4  0x00007f26920bf0c7 _RINvNtNtCsiaXzZB6mOEP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCs72vBiAOQT8G_9shards_vm8workload4exec0uEB1d_
+#5  0x00007f26920a87ca _RNSNvYNCINvNtNtCsiaXzZB6mOEP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCs72vBiAOQT8G_9shards_vm8workload4exec0uEs_0INtNtNtCs9L9tuJX2du2_4core3ops8function6FnOnceuE9call_once6vtableB19_
+#6  0x00007f269225063f _RNvNvMs0_NtNtNtCsiaXzZB6mOEP_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+#7  0x00007f2692274cd5 start
+#8  0x00007f2692276215 __clone
+#9  0x00007f2692276215 __clone
+#10 0x00007f2692276215 __clone
+#11 0x00007f2692276215 __clone
+#12 0x00007f2692276215 __clone
+#13 0x00007f2692276215 __clone
+#14 0x00007f2692276215 __clone
+#15 0x00007f2692276215 __clone
+#16 0x00007f2692276215 __clone
+#17 0x00007f2692276215 __clone
+#18 0x00007f2692276215 __clone
+#19 0x00007f2692276215 __clone
+#20 0x00007f2692276215 __clone
+#21 0x00007f2692276215 __clone
+#22 0x00007f2692276215 __clone
+#23 0x00007f2692276215 __clone
+#24 0x00007f2692276215 __clone
+#25 0x00007f2692276215 __clone
+#26 0x00007f2692276215 __clone
+#27 0x00007f2692276215 __clone
+#28 0x00007f2692276215 __clone
+#29 0x00007f2692276215 __clone
+#30 0x00007f2692276215 __clone
+#31 0x00007f2692276215 __clone
+#32 0x00007f2692276215 __clone
+#33 0x00007f2692276215 __clone
+#34 0x00007f2692276215 __clone
+#35 0x00007f2692276215 __clone
+#36 0x00007f2692276215 __clone
+#37 0x00007f2692276215 __clone
+#38 0x00007f2692276215 __clone
+## 2140478 exec: its kernel stack, then its user stack (eu-stack -1)
+[<0>] futex_wait+0x272/0x320
+[<0>] __x64_sys_futex+0x26c/0x2f0
+[<0>] do_syscall_64+0xa6/0x3e0
+[<0>] entry_SYSCALL_64_after_hwframe+0x76/0x7e
+TID 2140478:
+#0  0x00007f269227097a syscall
+#1  0x00007f2692239cd6 _RNvMNtNtNtNtCsiaXzZB6mOEP_3std3sys4sync5mutex5futexNtB2_5Mutex14lock_contended
+#2  0x00007f26920b729a _RNvNtCs72vBiAOQT8G_9shards_vm8workload8to_guest.llvm.12254250133449771392
+#3  0x00007f26920adcae _RNvNtCs72vBiAOQT8G_9shards_vm8workload12exec_session
+#4  0x00007f26920bf0c7 _RINvNtNtCsiaXzZB6mOEP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCs72vBiAOQT8G_9shards_vm8workload4exec0uEB1d_
+#5  0x00007f26920a87ca _RNSNvYNCINvNtNtCsiaXzZB6mOEP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCs72vBiAOQT8G_9shards_vm8workload4exec0uEs_0INtNtNtCs9L9tuJX2du2_4core3ops8function6FnOnceuE9call_once6vtableB19_
+#6  0x00007f269225063f _RNvNvMs0_NtNtNtCsiaXzZB6mOEP_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+#7  0x00007f2692274cd5 start
+#8  0x00007f2692276215 __clone
+#9  0x00007f2692276215 __clone
+#10 0x00007f2692276215 __clone
+#11 0x00007f2692276215 __clone
+#12 0x00007f2692276215 __clone
+#13 0x00007f2692276215 __clone
+#14 0x00007f2692276215 __clone
+#15 0x00007f2692276215 __clone
+#16 0x00007f2692276215 __clone
+#17 0x00007f2692276215 __clone
+#18 0x00007f2692276215 __clone
+#19 0x00007f2692276215 __clone
+#20 0x00007f2692276215 __clone
+#21 0x00007f2692276215 __clone
+#22 0x00007f2692276215 __clone
+#23 0x00007f2692276215 __clone
+#24 0x00007f2692276215 __clone
+#25 0x00007f2692276215 __clone
+#26 0x00007f2692276215 __clone
+#27 0x00007f2692276215 __clone
+#28 0x00007f2692276215 __clone
+#29 0x00007f2692276215 __clone
+#30 0x00007f2692276215 __clone
+#31 0x00007f2692276215 __clone
+#32 0x00007f2692276215 __clone
+#33 0x00007f2692276215 __clone
+#34 0x00007f2692276215 __clone
+#35 0x00007f2692276215 __clone
+#36 0x00007f2692276215 __clone
+#37 0x00007f2692276215 __clone
+#38 0x00007f2692276215 __clone
+## 2140494 exec: its kernel stack, then its user stack (eu-stack -1)
+[<0>] futex_wait+0x272/0x320
+[<0>] __x64_sys_futex+0x26c/0x2f0
+[<0>] do_syscall_64+0xa6/0x3e0
+[<0>] entry_SYSCALL_64_after_hwframe+0x76/0x7e
+TID 2140494:
+#0  0x00007f269227097a syscall
+#1  0x00007f2692239cd6 _RNvMNtNtNtNtCsiaXzZB6mOEP_3std3sys4sync5mutex5futexNtB2_5Mutex14lock_contended
+#2  0x00007f26920b729a _RNvNtCs72vBiAOQT8G_9shards_vm8workload8to_guest.llvm.12254250133449771392
+#3  0x00007f26920adcae _RNvNtCs72vBiAOQT8G_9shards_vm8workload12exec_session
+#4  0x00007f26920bf0c7 _RINvNtNtCsiaXzZB6mOEP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCs72vBiAOQT8G_9shards_vm8workload4exec0uEB1d_
+#5  0x00007f26920a87ca _RNSNvYNCINvNtNtCsiaXzZB6mOEP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCs72vBiAOQT8G_9shards_vm8workload4exec0uEs_0INtNtNtCs9L9tuJX2du2_4core3ops8function6FnOnceuE9call_once6vtableB19_
+#6  0x00007f269225063f _RNvNvMs0_NtNtNtCsiaXzZB6mOEP_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+#7  0x00007f2692274cd5 start
+#8  0x00007f2692276215 __clone
+#9  0x00007f2692276215 __clone
+#10 0x00007f2692276215 __clone
+#11 0x00007f2692276215 __clone
+#12 0x00007f2692276215 __clone
+#13 0x00007f2692276215 __clone
+#14 0x00007f2692276215 __clone
+#15 0x00007f2692276215 __clone
+#16 0x00007f2692276215 __clone
+#17 0x00007f2692276215 __clone
+#18 0x00007f2692276215 __clone
+#19 0x00007f2692276215 __clone
+#20 0x00007f2692276215 __clone
+#21 0x00007f2692276215 __clone
+#22 0x00007f2692276215 __clone
+#23 0x00007f2692276215 __clone
+#24 0x00007f2692276215 __clone
+#25 0x00007f2692276215 __clone
+#26 0x00007f2692276215 __clone
+#27 0x00007f2692276215 __clone
+#28 0x00007f2692276215 __clone
+#29 0x00007f2692276215 __clone
+#30 0x00007f2692276215 __clone
+#31 0x00007f2692276215 __clone
+#32 0x00007f2692276215 __clone
+#33 0x00007f2692276215 __clone
+#34 0x00007f2692276215 __clone
+#35 0x00007f2692276215 __clone
+#36 0x00007f2692276215 __clone
+#37 0x00007f2692276215 __clone
+#38 0x00007f2692276215 __clone
+## 2140505 exec: its kernel stack, then its user stack (eu-stack -1)
+[<0>] futex_wait+0x272/0x320
+[<0>] __x64_sys_futex+0x26c/0x2f0
+[<0>] do_syscall_64+0xa6/0x3e0
+[<0>] entry_SYSCALL_64_after_hwframe+0x76/0x7e
+TID 2140505:
+#0  0x00007f269227097a syscall
+#1  0x00007f2692239cd6 _RNvMNtNtNtNtCsiaXzZB6mOEP_3std3sys4sync5mutex5futexNtB2_5Mutex14lock_contended
+#2  0x00007f26920b729a _RNvNtCs72vBiAOQT8G_9shards_vm8workload8to_guest.llvm.12254250133449771392
+#3  0x00007f26920adcae _RNvNtCs72vBiAOQT8G_9shards_vm8workload12exec_session
+#4  0x00007f26920bf0c7 _RINvNtNtCsiaXzZB6mOEP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCs72vBiAOQT8G_9shards_vm8workload4exec0uEB1d_
+#5  0x00007f26920a87ca _RNSNvYNCINvNtNtCsiaXzZB6mOEP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCs72vBiAOQT8G_9shards_vm8workload4exec0uEs_0INtNtNtCs9L9tuJX2du2_4core3ops8function6FnOnceuE9call_once6vtableB19_
+#6  0x00007f269225063f _RNvNvMs0_NtNtNtCsiaXzZB6mOEP_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+#7  0x00007f2692274cd5 start
+#8  0x00007f2692276215 __clone
+#9  0x00007f2692276215 __clone
+#10 0x00007f2692276215 __clone
+#11 0x00007f2692276215 __clone
+#12 0x00007f2692276215 __clone
+#13 0x00007f2692276215 __clone
+#14 0x00007f2692276215 __clone
+#15 0x00007f2692276215 __clone
+#16 0x00007f2692276215 __clone
+#17 0x00007f2692276215 __clone
+#18 0x00007f2692276215 __clone
+#19 0x00007f2692276215 __clone
+#20 0x00007f2692276215 __clone
+#21 0x00007f2692276215 __clone
+#22 0x00007f2692276215 __clone
+#23 0x00007f2692276215 __clone
+#24 0x00007f2692276215 __clone
+#25 0x00007f2692276215 __clone
+#26 0x00007f2692276215 __clone
+#27 0x00007f2692276215 __clone
+#28 0x00007f2692276215 __clone
+#29 0x00007f2692276215 __clone
+#30 0x00007f2692276215 __clone
+#31 0x00007f2692276215 __clone
+#32 0x00007f2692276215 __clone
+#33 0x00007f2692276215 __clone
+#34 0x00007f2692276215 __clone
+#35 0x00007f2692276215 __clone
+#36 0x00007f2692276215 __clone
+#37 0x00007f2692276215 __clone
+#38 0x00007f2692276215 __clone
+## 2140538 exec: its kernel stack, then its user stack (eu-stack -1)
+[<0>] futex_wait+0x272/0x320
+[<0>] __x64_sys_futex+0x26c/0x2f0
+[<0>] do_syscall_64+0xa6/0x3e0
+[<0>] entry_SYSCALL_64_after_hwframe+0x76/0x7e
+TID 2140538:
+#0  0x00007f269227097a syscall
+#1  0x00007f2692239cd6 _RNvMNtNtNtNtCsiaXzZB6mOEP_3std3sys4sync5mutex5futexNtB2_5Mutex14lock_contended
+#2  0x00007f26920b729a _RNvNtCs72vBiAOQT8G_9shards_vm8workload8to_guest.llvm.12254250133449771392
+#3  0x00007f26920adcae _RNvNtCs72vBiAOQT8G_9shards_vm8workload12exec_session
+#4  0x00007f26920bf0c7 _RINvNtNtCsiaXzZB6mOEP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCs72vBiAOQT8G_9shards_vm8workload4exec0uEB1d_
+#5  0x00007f26920a87ca _RNSNvYNCINvNtNtCsiaXzZB6mOEP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCs72vBiAOQT8G_9shards_vm8workload4exec0uEs_0INtNtNtCs9L9tuJX2du2_4core3ops8function6FnOnceuE9call_once6vtableB19_
+#6  0x00007f269225063f _RNvNvMs0_NtNtNtCsiaXzZB6mOEP_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+#7  0x00007f2692274cd5 start
+#8  0x00007f2692276215 __clone
+#9  0x00007f2692276215 __clone
+#10 0x00007f2692276215 __clone
+#11 0x00007f2692276215 __clone
+#12 0x00007f2692276215 __clone
+#13 0x00007f2692276215 __clone
+#14 0x00007f2692276215 __clone
+#15 0x00007f2692276215 __clone
+#16 0x00007f2692276215 __clone
+#17 0x00007f2692276215 __clone
+#18 0x00007f2692276215 __clone
+#19 0x00007f2692276215 __clone
+#20 0x00007f2692276215 __clone
+#21 0x00007f2692276215 __clone
+#22 0x00007f2692276215 __clone
+#23 0x00007f2692276215 __clone
+#24 0x00007f2692276215 __clone
+#25 0x00007f2692276215 __clone
+#26 0x00007f2692276215 __clone
+#27 0x00007f2692276215 __clone
+#28 0x00007f2692276215 __clone
+#29 0x00007f2692276215 __clone
+#30 0x00007f2692276215 __clone
+#31 0x00007f2692276215 __clone
+#32 0x00007f2692276215 __clone
+#33 0x00007f2692276215 __clone
+#34 0x00007f2692276215 __clone
+#35 0x00007f2692276215 __clone
+#36 0x00007f2692276215 __clone
+#37 0x00007f2692276215 __clone
+#38 0x00007f2692276215 __clone
+## 2140573 pauses: its kernel stack, then its user stack (eu-stack -1)
+[<0>] futex_wait+0x272/0x320
+[<0>] __x64_sys_futex+0x26c/0x2f0
+[<0>] do_syscall_64+0xa6/0x3e0
+[<0>] entry_SYSCALL_64_after_hwframe+0x76/0x7e
+TID 2140573:
+#0  0x00007f269227097a syscall
+#1  0x00007f2692242aa6 _RNvMs_NtNtCsiaXzZB6mOEP_3std6thread6threadNtB4_6Thread4park
+#2  0x00007f26920c6085 _RNCNvMs1_NtNtNtCsiaXzZB6mOEP_3std4sync4mpmc4listINtB7_7ChannelINtNtCs9L9tuJX2du2_4core6result6ResultNtNtNtNtNtBd_2os4unix3net6stream10UnixStreamNtNtCs8WDM7dFiV1N_5alloc6string6StringEE4recvs_0Cs72vBiAOQT8G_9shards_vm
+#3  0x00007f26920cadb5 _RNvMs1_NtNtNtCsiaXzZB6mOEP_3std4sync4mpmc4listINtB5_7ChannelTbAhj8_NtNtNtNtNtBb_2os4unix3net6stream10UnixStreamEE4recvCs72vBiAOQT8G_9shards_vm
+#4  0x00007f26920bd3f8 _RINvNtNtCsiaXzZB6mOEP_3std3sys9backtrace28___rust_begin_short_backtraceNCNCNvNtCs72vBiAOQT8G_9shards_vm4warm6pauses00uEB1f_
+#5  0x00007f26920a7c47 _RNSNvYNCINvNtNtCsiaXzZB6mOEP_3std6thread9lifecycle15spawn_uncheckedNCNCNvNtCs72vBiAOQT8G_9shards_vm4warm6pauses00uEs_0INtNtNtCs9L9tuJX2du2_4core3ops8function6FnOnceuE9call_once6vtableB1b_
+#6  0x00007f269225063f _RNvNvMs0_NtNtNtCsiaXzZB6mOEP_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+#7  0x00007f2692274cd5 start
+#8  0x00007f2692276215 __clone
+#9  0x00007f2692276215 __clone
+#10 0x00007f2692276215 __clone
+#11 0x00007f2692276215 __clone
+#12 0x00007f2692276215 __clone
+#13 0x00007f2692276215 __clone
+#14 0x00007f2692276215 __clone
+#15 0x00007f2692276215 __clone
+#16 0x00007f2692276215 __clone
+#17 0x00007f2692276215 __clone
+#18 0x00007f2692276215 __clone
+#19 0x00007f2692276215 __clone
+#20 0x00007f2692276215 __clone
+#21 0x00007f2692276215 __clone
+#22 0x00007f2692276215 __clone
+#23 0x00007f2692276215 __clone
+#24 0x00007f2692276215 __clone
+#25 0x00007f2692276215 __clone
+#26 0x00007f2692276215 __clone
+#27 0x00007f2692276215 __clone
+#28 0x00007f2692276215 __clone
+#29 0x00007f2692276215 __clone
+#30 0x00007f2692276215 __clone
+#31 0x00007f2692276215 __clone
+#32 0x00007f2692276215 __clone
+#33 0x00007f2692276215 __clone
+#34 0x00007f2692276215 __clone
+#35 0x00007f2692276215 __clone
+#36 0x00007f2692276215 __clone
+#37 0x00007f2692276215 __clone
+#38 0x00007f2692276215 __clone
+## test exit 101 23:20:05
+thread 'paused_exec_stream_experiment' (2137743) panicked at crates/shards/tests/common/mod.rs:2349:78:
+shards unpause busy did not exit within 30s
+thread '<unnamed>' (2139049) panicked at crates/shards/tests/common/mod.rs:2349:78:
+shards exec --env-file /tmp/shards-tests/2137742/containers-stream-0/big.env busy /bin/testguest exit 0 did not exit within 120s
+thread '<unnamed>' (2139080) panicked at crates/shards/tests/common/mod.rs:2349:78:
+shards exec --env-file /tmp/shards-tests/2137742/containers-stream-0/big.env busy /bin/testguest exit 0 did not exit within 120s
+thread '<unnamed>' (2139057) panicked at crates/shards/tests/common/mod.rs:2349:78:
+shards exec --env-file /tmp/shards-tests/2137742/containers-stream-0/big.env busy /bin/testguest exit 0 did not exit within 120s
+thread '<unnamed>' (2139061) panicked at crates/shards/tests/common/mod.rs:2349:78:
+shards exec --env-file /tmp/shards-tests/2137742/containers-stream-0/big.env busy /bin/testguest exit 0 did not exit within 120s
+thread '<unnamed>' (2139048) panicked at crates/shards/tests/common/mod.rs:2349:78:
+shards exec --env-file /tmp/shards-tests/2137742/containers-stream-0/big.env busy /bin/testguest exit 0 did not exit within 120s
+thread '<unnamed>' (2139081) panicked at crates/shards/tests/common/mod.rs:2349:78:
+shards exec --env-file /tmp/shards-tests/2137742/containers-stream-0/big.env busy /bin/testguest exit 0 did not exit within 120s
+thread '<unnamed>' (2139058) panicked at crates/shards/tests/common/mod.rs:2349:78:
+shards exec --env-file /tmp/shards-tests/2137742/containers-stream-0/big.env busy /bin/testguest exit 0 did not exit within 120s
+thread '<unnamed>' (2139053) panicked at crates/shards/tests/common/mod.rs:2349:78:
+shards exec --env-file /tmp/shards-tests/2137742/containers-stream-0/big.env busy /bin/testguest exit 0 did not exit within 120s
+thread '<unnamed>' (2139052) panicked at crates/shards/tests/common/mod.rs:2349:78:
+shards exec --env-file /tmp/shards-tests/2137742/containers-stream-0/big.env busy /bin/testguest exit 0 did not exit within 120s
+thread '<unnamed>' (2139054) panicked at crates/shards/tests/common/mod.rs:2349:78:
+shards exec --env-file /tmp/shards-tests/2137742/containers-stream-0/big.env busy /bin/testguest exit 0 did not exit within 120s
+thread '<unnamed>' (2139050) panicked at crates/shards/tests/common/mod.rs:2349:78:
+shards exec --env-file /tmp/shards-tests/2137742/containers-stream-0/big.env busy /bin/testguest exit 0 did not exit within 120s
+thread '<unnamed>' (2139060) panicked at crates/shards/tests/common/mod.rs:2349:78:
+shards exec --env-file /tmp/shards-tests/2137742/containers-stream-0/big.env busy /bin/testguest exit 0 did not exit within 120s
+thread '<unnamed>' (2139076) panicked at crates/shards/tests/common/mod.rs:2349:78:
+shards exec --env-file /tmp/shards-tests/2137742/containers-stream-0/big.env busy /bin/testguest exit 0 did not exit within 120s
+thread '<unnamed>' (2139051) panicked at crates/shards/tests/common/mod.rs:2349:78:
+shards exec --env-file /tmp/shards-tests/2137742/containers-stream-0/big.env busy /bin/testguest exit 0 did not exit within 120s
+thread '<unnamed>' (2139055) panicked at crates/shards/tests/common/mod.rs:2349:78:
+shards exec --env-file /tmp/shards-tests/2137742/containers-stream-0/big.env busy /bin/testguest exit 0 did not exit within 120s
+# done 23:20:07

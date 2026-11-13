@@ -21579,7 +21579,8 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
     for, the run's VM process ended instead, its daemon alive. A diagnostic build
     (`harness/diag.patch`, not merged) said how each side of the slot ended.
   - The fix: its unit tests, then each guard removed (`harness/unit.sh`), on Linux, macOS
-    and Windows, and the shards binary's whole unit suite; `kill.sh` again with the fix.
+    and Windows, and the shards binary's whole unit suite; `kill.sh` again with the fix;
+    `scripts/lint` on every supported target from a Mac (`harness/lint.sh`, `lint2.sh`).
 - **Found.**
   - kiln ended them. At 16:00:49.831Z its agent "stopping what agents' commands left running,
     now that they're between turns" ended 48108 (the eng-ring-2 daemon, whose log's lines are
@@ -21605,14 +21606,20 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   - With the fix the daemon ended mid-run said "the daemon ended before the command did",
     6 of 6 (3 and 3), and the VM ended "the command's microVM stopped before the command
     ended", 3 of 3 (r4).
-  - The unit tests, on Linux: green; with the relay's `UNANSWERED` a no-op, the relay's test
-    failed ("left: Some([12]) right: Some([12, 91])"); with the client's line for a wordless
-    end put back, the client's test failed (its words against "the daemon ended before the
-    command did"); the shards binary's unit suite passed in test-release, 730 of 730, 14
-    ignored (r5). On Windows, green, and the relay's test red without its guard, as on
-    Linux; the rest of Windows' and macOS' as the record's Owed says. In the dev profile
-    the suite ended at a stack overflow of a test's `policy` thread (Rego) on Linux and
-    Windows alike, code this change leaves alone.
+  - The unit tests, on Linux (adacachy, x86_64), Windows (jupiter) and macOS (a Mac
+    Studio, arm64), rustc 1.98.1: green; with the relay's `UNANSWERED` a no-op, the relay's test
+    failed on each ("left: Some([12]) right: Some([12, 91])"); with the client's line for a
+    wordless end put back, the client's test failed on each (its words against "the daemon
+    ended before the command did"); the shards binary's unit suite passed in test-release:
+    730 passed and 14 ignored on Linux, 709 and 10 on Windows, 730 and 12 on macOS, none
+    failed (r5). In the dev
+    profile the suite ended at a stack overflow in
+    `build::policy::tests::the_deepest_policy_runs_on_the_policy_thread` (its `policy`
+    thread) on Linux and Windows alike, code this change leaves alone.
+  - `scripts/lint`, every supported target (r6): clean, but for both Windows targets'
+    workspace lint, stopped by another change's test (windows_process.rs:544, an unsafe
+    block whose SAFETY comment sat above its `assert_ne!`; cacbd8883, fixed on main by 63bdbf315);
+    this change's crates, shards and shards-ipc, were clean there alone.
 - **Consequence (D185).** The cause is outside shards: kiln's between-turns sweep ends a
   shards daemon, and every microVM it holds, once the agent whose command started it is
   between turns, whatever still uses it. For agents in kiln sessions: wait for a run that
@@ -21756,3 +21763,222 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
     since NR_CPUS rose (its `api_image` hangs first).
   - arm64 on KVM (the nested L1) and WHP: its tasks a vCPU and its costs a vCPU, unmeasured.
   - macOS, whose storm runs at HVF's most vCPUs.
+
+### M533. A second GPU report of one scope on Windows, refused ERROR_PIPE_BUSY (D232, D233)
+
+- **Question.** shards-api's `physical::report` tests failed on Windows when run side by
+  side and passed one at a time (step 9's report, at a7dbf1446). Did the client's own pipe
+  code fail, would it under clients of its own, and what does Windows say?
+- **Method.** `docs/research/measurements/api-flakes/` (its README has the harness, every
+  revision and binary): the library tests built at `test-release` and run again and again
+  on jupiter (Windows x86_64, 32 CPUs, rustc 1.98.1; a kiln runner beside CI's jobs),
+  2026-11-12: `physical::report` side by side as libtest runs them, and one at a time; a
+  new test, two reports of one scope at once and one beside an earlier report's writer, on
+  main's code and on the fix's.
+- **Found.**
+
+  | build | args | runs failed |
+  |---|---|---|
+  | main ad600dd52 | `physical::report` | 40 of 40 |
+  | main ad600dd52 | `physical::report --test-threads=1` | 0 of 40 |
+  | main c2c4547c1 | `physical::report` | 40 of 40 |
+  | main c2c4547c1 and the new test | the new test alone | 20 of 20 |
+  | the fix | `physical::report` | 0 of 200 |
+  | main c2c4547c1, runs interleaved with the fix's | the whole library | 11 of 40 |
+  | the fix, runs interleaved with main's | the whole library | 4 of 40 |
+
+  Every failure was `CreateNamedPipeW`'s, `ManagedIo { operation: "GPU report pipe", code:
+  Some(231) }`: ERROR_PIPE_BUSY. The pipe's name was the report's scope
+  (`\\.\pipe\shards-api-gpu-<scope>`), one instance, FILE_FLAG_FIRST_PIPE_INSTANCE; the
+  six tests' fixtures share one scope, so any two at once met; and the new test met it
+  alone, twice over: a second report of the scope while the first lived, and one beside
+  an earlier report's writer, whose instance outlives its receiver. In the whole library,
+  main's 11 failed runs were 8 of these and 3 that hung; the fix's 4 all hung, in
+  `client::borrowed_tests::exact_bytes_clone_and_half_close`, past 120 s, a fault of its
+  own that main has too, measured apart.
+- **Reading.**
+  - The fault was the client's, not its tests': a scope names a report's frame
+    (`GpuReport::parse` checks it) and nothing makes it unique to one report at a time, so
+    a client that boots two guests in one native scope, or one again while a VM process
+    still holds the last one's writer, was refused on Windows alone (its Unix pipe has no
+    name). An instance "is always deleted when the last handle to the instance of the named
+    pipe is closed", and the pipe's name is "the unique pipe name"
+    ([CreateNamedPipeW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createnamedpipea)).
+  - Windows names the second instance's refusal ERROR_PIPE_BUSY here, not the
+    ERROR_ACCESS_DENIED the same page gives FILE_FLAG_FIRST_PIPE_INSTANCE: the instance
+    count is checked first.
+  - Not a client to make wait: a named pipe client that meets ERROR_PIPE_BUSY "uses the
+    WaitNamedPipe function to wait for an instance of the named pipe to become available"
+    ([Named Pipe Client](https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-client)),
+    but this pipe's one client is the report's own writer, opened by the same call that
+    made the pipe; an instance another holds is no report's, and refused.
+  - The fix names the pipe as Windows names its own anonymous ones ("implemented using a
+    named pipe with a unique name",
+    [Anonymous Pipe Operations](https://learn.microsoft.com/en-us/windows/win32/ipc/anonymous-pipe-operations),
+    which also says they take no overlapped reads, so this one stays named): the client
+    process's nonce and counter (`client::private_name`, which its socket directories
+    already used), `\\.\pipe\shards-api-gpu-<nonce>-<n>`. The scope stays in the frame.
+    FILE_FLAG_FIRST_PIPE_INSTANCE and the writer's process check stay: a name another took
+    first is refused, never joined.
+  - What would show this wrong: a refusal of a report's pipe with no other of this
+    process's alive, or a frame of one report read by another.
+
+### M534. A GPU probe's test on macOS, Pending: a real guest's patience on a new script's first start (D215, D232)
+
+- **Question.** `client::tests::gpu_probe_protocol_requires_exact_completed_receipt` failed on
+  macOS now and then, `GpuProbe(Pending)` where its stand-in's report was due (step 9's
+  report, at a7dbf1446). What did its probe wait on?
+- **Method.** `docs/research/measurements/api-flakes/` (`runs.sh`, `first-exec.py`; its README
+  names every build): shards-api's test binaries at `test-release`, run again and again on
+  adas-mac-studio.local-2 (M3 Ultra, 32 CPUs, macOS 26.4) in kiln's shell (priority 20,
+  nice 10) and as launchd jobs of the user's session (Interactive: priority 31, nice 0;
+  `macos-sched/launchd-run.sh`), under its co-tenants (load average 5 to 27), 2026-11-12;
+  M463's harness (tests/sim.rs `the_waits_of_these_tests`, n 40) there; and `first-exec.py`
+  (a new script's first start against its second, n 60) there and on Adas-MacBook-Pro-2
+  (M5 Max, 18 CPUs, macOS 26.4.1, an agent's session, load 13 to 23).
+- **Found.** Runs failed, every failure `GpuProbe(Pending)`:
+
+  | build | test | kiln's shell | launchd |
+  |---|---|---|---|
+  | main c2c4547c1 | alone | 9 of 100 | 89 of 100 |
+  | main c2c4547c1 | the whole library | 37 of 100 | 12 of 100 |
+  | main 99d88fccf | alone | 14 of 100 | 9 of 100 |
+  | main 99d88fccf | the whole library | 32 of 100 | |
+  | the fix | alone (in tests/sim.rs) | 0 of 200 | 0 of 200 |
+  | the fix less its first start | alone | 0 of 200 (c2c4547c1) | 1 of 200 (c2c4547c1, a probe past 8.8 s), 0 of 200 |
+  | the fix less its bound (a guest's) | alone | | 0 of 200 |
+
+  What a start costs (`first-exec.py`, ms):
+
+  | | Mac Studio, kiln's shell | Mac Studio, launchd | MacBook |
+  |---|---|---|---|
+  | a new script, its first start | p50 145.6, p99 412.1 | p50 183.4, p99 362.8 | p50 182.0, p99 279.4 |
+  | the same script, started again | p50 5.6, p99 8.3 | p50 13.6, p99 46.3 | p50 21.9, p99 106.8 |
+  | a new copy of /usr/bin/true | p50 93.1, p99 452.8 | p50 94.7, p99 249.6 | p50 88.9, p99 181.3 |
+  | /bin/sh reading a new script | p50 5.9, p99 8.7 | p50 16.3, p99 63.6 | p50 17.5, p99 169.4 |
+
+  An earlier probe of the same kind there started the first scripts of a new directory in
+  2,561 and 7,166 ms. Each new file carries `com.apple.provenance`.
+
+  M463's waits of a stand-in (n 40), each a new one as main makes them, then each started
+  once before (the fix):
+
+  | wait | kiln's shell, new | launchd, new | kiln's shell, started | launchd, started |
+  |---|---|---|---|---|
+  | a stand-in ending first, refused | p50 300.4 ms, max 4.97 s | p50 284.5 ms, max 7.19 s | p50 4.0 ms, max 43.0 ms | p50 10.1 ms, max 17.5 ms |
+  | a stand-in exiting 0, its end | p50 300.2 ms, max 4.98 s | p50 285.9 ms, max 5.83 s | p50 3.9 ms, max 9.4 ms | p50 10.2 ms, max 15.0 ms |
+- **Reading.**
+  - The test bounded a probe of a new script by `conformance::PATIENCE`, twice a real guest's
+    slowest power-off (M463's 134 ms): another wait's record. macOS assesses a new executable
+    as it first starts: 90 to 180 ms at the median and past 7 s at worst here, where the
+    same file's next start takes 6 to 22 ms. The probe's start ran past 268 ms, and it was
+    Pending.
+  - M463's record of a new stand-in's start, 4.4 s, is past too (4.97 s and 7.19 s here),
+    and a probe bounded by twice it, 8.8 s, failed once in 200.
+  - The fix: the test moves among the stand-ins it is one of, tests/sim.rs, to their patience
+    (M463) and their install(1) (no ETXTBSY on Linux), its refusals' causes asserted exactly
+    (a refused report's Pending no longer passes); and each stand-in starts once, untimed,
+    as `stand_in` makes it (`--warm` first, which no launch gives shards), so a test times
+    its stand-in's own work: 4 to 10 ms at the median and 43 ms at most here, where new ones
+    took 0.3 s and up to 7.2 s. Either half alone failed once in 200 or not at all: the
+    bound alone leaves macOS's assessment inside the probe, the start alone a guest's
+    patience on a stand-in. Both stay.
+  - What would show this wrong: a stand-in started once whose next start takes as long as a
+    new one's, or a probe of one past the stand-ins' patience.
+
+### M535. The zero-patience test's refused socket, still open at its peer: a process another test starts holds it (D215)
+
+- **Question.** `client::borrowed_tests::contract::zero_patience_attempts_one_request_and_does_not_wait_for_accept_or_reply`
+  failed now and then on macOS (step 9's report) and on Linux (Hex upstream 0030, 0031): its
+  peer's read of the refused socket's end found it open, `WouldBlock` (contract.rs:40). What
+  held the socket?
+- **Method.** `docs/research/measurements/api-flakes/` (`runs.sh`; `spawns.rs`, the test's
+  check 5,000 times beside four threads each keeping eight processes alive, none, `/bin/sleep
+  0.2` or a new script each, with the time each refused socket's end then took): shards-api's
+  library at `test-release` on adas-mac-studio.local-2 (M3 Ultra, 32 CPUs, macOS 26.4) in
+  kiln's shell and as launchd jobs (load average 5 to 27), and on adacachy2 (x86_64 Linux,
+  CachyOS, a user unit of 12 CPUs, load 10 to 16), 2026-11-12.
+- **Found.** Runs of the whole library failed in this test:
+
+  | build | host | kiln's shell or Linux | launchd |
+  |---|---|---|---|
+  | main c2c4547c1 | macOS | 5 of 100 | 3 of 100 |
+  | main c2c4547c1 and M534's fix | macOS | 6 of 100 | |
+  | main 99d88fccf | macOS | 8 of 100 | |
+  | main 99d88fccf | Linux | 1 of 20 | |
+  | the fix | macOS | 0 of 200 | 0 of 100 |
+  | the fix | Linux | 0 of 20 | |
+  | the fix with its check in the library's process again | macOS | 2 of 100 | |
+
+  `spawns.rs` (macOS, kiln's shell): with none started, 0 of 5,000 found open; beside 165
+  `sleep`s, 3, each ending 0.1 to 0.5 ms later; beside 79 new scripts, 14, ending in under
+  1 ms but for 4.5 ms and 3,512 ms.
+- **Reading.**
+  - The product closes its socket. Its peer sees the end once no process holds the socket,
+    and a process another test starts holds every descriptor of this one as it starts,
+    close-on-exec ones too, until its exec closes them: a few tenths of a millisecond after
+    a `sleep`, up to seconds after a new script, which macOS assesses as it starts (M534).
+    The test read its peer at once, in that window.
+  - Its check now runs alone in a process of its own (`zero_patience_alone`, started by the
+    test as 0030's reader checks are), where no other test starts anything; the check is the
+    same.
+  - Not a fix the product could make: neither Linux's nor macOS's process start leaves a
+    starting child without its parent's descriptors, and std's own sockets are as exposed.
+  - What would show this wrong: the check failing alone, or a socket found open with no
+    process started beside it.
+
+### M536. A blocking read of an AF_UNIX stream on Windows sleeps through its peer's end (D140)
+
+- **Question.** `client::borrowed_tests::exact_bytes_clone_and_half_close` hung on Windows, past
+  120 s, in a few runs of every 100 (M533's last runs), at main as on its fix. Where did it
+  wait, and why?
+- **Method.** `docs/research/measurements/api-flakes/` (`hang.sh`: the test binary again and
+  again, and at a time limit every thread's stack from cdb, WinDbg 1.2611's console
+  debugger, attached noninvasively, `~*kn`, symbolized from the build's PDB; `half-close.rs`:
+  a read waiting on a pair while its peer writes three bytes, ends its side, through a copy
+  of its socket or not, or only closes, its socket blocking or not, the reader in recv
+  itself or in WSAPoll first, 2,000 times each, a read seeing no end within 2 s counted
+  lost and freed by a shutdown of its own): on jupiter (Windows 10.0.26200, x86_64, 32
+  CPUs), beside ROOT's WHP gate of the whole workspace, CPU load 29% to 100%, 2026-11-12.
+- **Found.** Every hang's stacks (7: 4 of the test alone, 3 of the whole library, main
+  c2c4547c1) were the same: the test's thread in `server.join()` (focused.rs:79); its
+  server's in `ws2_32!recv`, from `shards_afunix::UnixStream::read_into`, at focused.rs:63,
+  the read of its peer's end after the peer had written three bytes, ended its side through
+  its `try_clone` copy and closed both copies.
+
+  | build | `half-close.rs`, reads that missed the end: recv | WSAPoll, then recv |
+  |---|---|---|
+  | main 7f9f73b6a (three ways to end, a blocking peer) | 3 of 6,000 (all of a close) | 0 of 6,000 |
+  | main 99d88fccf | 4 of 12,000 | 0 of 12,000 |
+  | the fix less its WSAPoll before a read with no timeout | 6 of 12,000 | 0 of 12,000 |
+  | the fix (its recv waits in WSAPoll first) | 0 of 12,000 | 0 of 12,000 |
+
+  Each missed end was a half-close or a close, of a blocking or a non-blocking peer; each
+  missing read was freed by its own side's shutdown, so its thread had sat in recv.
+
+  | build | the test alone, 20 s limit | runs hung |
+  |---|---|---|
+  | main c2c4547c1 | 150 | 4 |
+  | main 99d88fccf | 300 | 7 |
+  | the fix | 1,000 | 0 |
+  | the fix less its WSAPoll before a read with no timeout | 300 | 26 |
+
+  And the fix's whole library, 20 runs: none hung or failed. The loads: 97% to 100% CPU as
+  main's, the fix's and the mutant's runs ran, 51% as the whole library's did.
+- **Reading.**
+  - A recv waiting on an AF_UNIX stream (afunix.sys) can miss its peer's end, a half-close
+    or a close, and wait for good: 13 of 30,000 waits here, about one in 2,300, where WSAPoll
+    on the same streams saw all of 54,000. XNU's reader has a gap of its kind (M236); this
+    is Windows' own, and no record of it from Microsoft or others was found.
+  - The fix is where every such read is made, `shards_afunix`: a blocking stream's read
+    (`Read`, `readv`) waits in WSAPoll, for ever where it has no timeout, and only then
+    reads; a read of nothing waits for nothing. shards_ipc's Windows `read` reads these
+    streams, so it waits so too. A clone keeps its stream's mode, which their socket
+    shares (WSADuplicateSocketW: "All of the state information associated with a socket is
+    held in common across all the descriptors"), so a non-blocking stream's clone (shards-api
+    makes them) never waits in the poll.
+  - The other readers were looked at: shards-api's streams and the VMM's vsock sockets do not
+    block (each waits in WSAPoll or on WSAEventSelect's events, D140, D215); the daemon's
+    log streams wait on WSAEventSelect's events and peek; named pipes end at once (M340).
+  - What would show this wrong: a read waiting in WSAPoll that misses an end, or a blocking
+    stream read that still sleeps in recv.

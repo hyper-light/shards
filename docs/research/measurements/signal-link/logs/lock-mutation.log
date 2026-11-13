@@ -1,0 +1,11 @@
+# mutation: send_frames sends with the link's lock held; e8d19fc683cc + unit.patch; 2026-11-12T23:34:06Z Linux 7.2.9-2-cachyos x86_64
+test workload::tests::a_send_its_guest_has_yet_to_read_holds_no_other_frames_caller ... FAILED
+thread 'workload::tests::a_send_its_guest_has_yet_to_read_holds_no_other_frames_caller' (3656786) panicked at crates/vm-process/src/../../shards/src/workload.rs:3592:9:
+  left: Err(Timeout)
+ right: Ok(Ok(()))
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 58 filtered out; finished in 5.01s
+## mutant exit 101
+# restored:  2 files changed, 318 insertions(+), 109 deletions(-)
+test workload::tests::a_send_its_guest_has_yet_to_read_holds_no_other_frames_caller ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 58 filtered out; finished in 0.01s
+## restored exit 0

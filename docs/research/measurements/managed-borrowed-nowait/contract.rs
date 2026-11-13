@@ -1,9 +1,31 @@
 //! The same two feature-contract examples compile against before and after source.
 use super::*;
 
+/// The zero-patience example, alone in a process of its own (PM M535): the refused
+/// socket's end reaches its peer once no process holds the socket, and a process another
+/// test starts as the socket lives can hold it, so beside the other tests its peer read
+/// found it open, `WouldBlock` where its end was due.
 #[cfg(unix)]
 #[test]
 fn zero_patience_attempts_one_request_and_does_not_wait_for_accept_or_reply() {
+    let name = "client::borrowed_tests::contract::zero_patience_alone";
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", name, "--ignored", "--test-threads=1"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success() && stdout.contains("1 passed"),
+        "{name}: {stdout}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+#[ignore = "zero_patience_attempts_one_request_and_does_not_wait_for_accept_or_reply runs it alone"]
+fn zero_patience_alone() {
     let dir = shards_testdir::TempDir::new("nb-zero").unwrap();
     let path = dir.join("v");
     let listener = UnixListener::bind(&path).unwrap();

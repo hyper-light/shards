@@ -27,9 +27,12 @@ pub struct ControlQueue {
     state: ControlState,
 }
 impl ControlQueue {
-    pub fn prepare(members: usize) -> Result<Self, String> {
+    /// Room for every word the control scope may say, reserved before any member starts: one
+    /// abort for each of `members`, one end for each of `inputs`, and the scope's own end.
+    pub fn prepare(members: usize, inputs: usize) -> Result<Self, String> {
         let size = Some(members)
             .and_then(|n| n.checked_mul(run::HEADER + managed::ABORT_LEN))
+            .and_then(|n| n.checked_add(inputs.checked_mul(run::HEADER + managed::INPUT_ENDED_LEN)?))
             .and_then(|n| n.checked_add(run::HEADER))
             .ok_or("managed terminal reservation overflow")?;
         let mut bytes = Vec::new();
@@ -41,21 +44,32 @@ impl ControlQueue {
         })
     }
     pub fn push(&mut self, abort: managed::Abort) -> Result<(), Failure> {
+        let payload = abort.encode().map_err(invalid)?;
+        self.queue(kind::MANAGED_ABORT, &payload)
+    }
+
+    /// A member's input's end, which its reservation holds room for.
+    pub fn push_input(&mut self, ended: managed::InputEnded) -> Result<(), Failure> {
+        let payload = ended.encode().map_err(invalid)?;
+        self.queue(kind::MANAGED_INPUT_ENDED, &payload)
+    }
+
+    fn queue(&mut self, which: u8, payload: &[u8]) -> Result<(), Failure> {
         if !matches!(self.state, ControlState::Open) {
             return Err(invalid(managed::Error::State));
         }
-        let payload = abort.encode().map_err(invalid)?;
+        let len = u32::try_from(payload.len()).map_err(|_| invalid(managed::Error::Capacity))?;
         let end = self
             .bytes
             .len()
-            .checked_add(run::HEADER + managed::ABORT_LEN)
+            .checked_add(run::HEADER)
+            .and_then(|n| n.checked_add(payload.len()))
             .ok_or_else(|| invalid(managed::Error::Capacity))?;
         if end > self.bytes.capacity() {
             return Err(invalid(managed::Error::Capacity));
         }
-        self.bytes
-            .extend_from_slice(&run::header(kind::MANAGED_ABORT, managed::ABORT_LEN as u32));
-        self.bytes.extend_from_slice(&payload);
+        self.bytes.extend_from_slice(&run::header(which, len));
+        self.bytes.extend_from_slice(payload);
         Ok(())
     }
     pub fn end(&mut self) -> Result<(), Failure> {
@@ -905,7 +919,7 @@ mod tests {
     #[test]
     fn reserved_control_orders_abort_then_explicit_end_without_output_credit() {
         let (conn, mut peer) = UnixStream::pair().unwrap();
-        let mut control = ControlQueue::prepare(1).unwrap();
+        let mut control = ControlQueue::prepare(1, 0).unwrap();
         let abort = managed::Abort {
             member: 2,
             errno: libc::EIO,
@@ -926,6 +940,55 @@ mod tests {
         let mut payload = [0; managed::ABORT_LEN];
         peer.read_exact(&mut payload).unwrap();
         assert_eq!(managed::Abort::decode(&payload).unwrap(), abort);
+        peer.read_exact(&mut header).unwrap();
+        assert_eq!(run::parse_header(header), Some((kind::MANAGED_CONTROL_END, 0)));
+    }
+
+    #[test]
+    fn an_inputs_end_has_room_reserved_beside_the_aborts_and_goes_before_the_scopes_end() {
+        let (conn, mut peer) = UnixStream::pair().unwrap();
+        let mut control = ControlQueue::prepare(1, 1).unwrap();
+        let ended = managed::InputEnded {
+            member: 4,
+            written: 9,
+            end: managed::InputEnd::Aborted(libc::EPIPE),
+        };
+        control.push_input(ended).unwrap();
+        control
+            .push(managed::Abort {
+                member: 4,
+                errno: libc::EIO,
+            })
+            .unwrap();
+        // What the reservation holds is all it takes, before anything is written.
+        assert!(matches!(
+            control.push_input(ended),
+            Err(Failure::Protocol(managed::Error::Capacity))
+        ));
+        control.end().unwrap();
+        while control.pending() {
+            control.write(conn.as_raw_fd()).unwrap();
+        }
+        assert!(
+            control.push_input(ended).is_err(),
+            "nothing after the scope's end"
+        );
+        let mut header = [0; run::HEADER];
+        peer.read_exact(&mut header).unwrap();
+        assert_eq!(
+            run::parse_header(header),
+            Some((kind::MANAGED_INPUT_ENDED, managed::INPUT_ENDED_LEN as u32))
+        );
+        let mut payload = [0; managed::INPUT_ENDED_LEN];
+        peer.read_exact(&mut payload).unwrap();
+        assert_eq!(managed::InputEnded::decode(&payload).unwrap(), ended);
+        peer.read_exact(&mut header).unwrap();
+        assert_eq!(
+            run::parse_header(header),
+            Some((kind::MANAGED_ABORT, managed::ABORT_LEN as u32))
+        );
+        let mut abort = [0; managed::ABORT_LEN];
+        peer.read_exact(&mut abort).unwrap();
         peer.read_exact(&mut header).unwrap();
         assert_eq!(run::parse_header(header), Some((kind::MANAGED_CONTROL_END, 0)));
     }

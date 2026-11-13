@@ -4051,14 +4051,23 @@ impl<D: Disk> Daemon<D> {
                 fails("managed output scopes cannot yet be restored or joined");
                 return None;
             }
-            Some(agentfile) => match self.managed_capture(
-                threads,
-                &id,
-                &run.client,
+            Some(agentfile) => match managed::input_members(
+                &run.annotations,
                 &agentfile.managed_labels,
                 &agentfile.active_members,
-                &mut prepared.spec.setup,
-            ) {
+            )
+            .map_err(managed::Failure::Refused)
+            .and_then(|inputs| {
+                self.managed_capture(
+                    threads,
+                    &id,
+                    &run.client,
+                    &agentfile.managed_labels,
+                    &agentfile.active_members,
+                    &inputs,
+                    &mut prepared.spec.setup,
+                )
+            }) {
                 Ok(stream) => Some(stream),
                 Err(e) => {
                     fails(&format!("{id}: {e}"));
@@ -5745,6 +5754,67 @@ impl<D: Disk> Daemon<D> {
                 kind::MANAGED_ABORT => {
                     if let Err(e) = self.managed.abort_member(id, &m.payload) {
                         log(format!("container {id}: invalid managed abort: {e}"));
+                    }
+                }
+                // A member's input's end, as its init told it.
+                kind::MANAGED_INPUT_ENDED => {
+                    if let Err(e) = self.managed.input_ended(id, &m.payload) {
+                        log(format!("container {id}: a managed input's end: {e}"));
+                    }
+                }
+                // A member's input connection (plan step 5): its VM's copy goes once the
+                // daemon has it (M24), and its relay writes the owner's records to it. One
+                // the run does not await is ended, and its init tells its input's end.
+                #[cfg(unix)]
+                kind::MANAGED_INPUT => {
+                    if let Err(e) = inbox.socket.send(kind::MANAGED_INPUT, &m.payload, &[]) {
+                        log(format!("container {id}: answering its managed input: {e}"));
+                    }
+                    let member = <[u8; 4]>::try_from(m.payload.as_slice()).map(u32::from_be_bytes);
+                    match (member, m.fds.into_iter().next()) {
+                        (Ok(member), Some(fd)) => {
+                            if let Err(e) = self.managed.input_arrived(id, member, UnixStream::from(fd)) {
+                                log(format!("container {id}: member {member}'s input: {e}"));
+                            }
+                        }
+                        _ => log(format!(
+                            "container {id}: a managed input connection without its member or descriptor"
+                        )),
+                    }
+                }
+                // On Windows a VM gives its daemon no handle: it asks for a pipe for the
+                // connection instead, which it relays the connection onto, as an engine
+                // connection's (warm.rs `relay_engine`); none for one the run does not await.
+                #[cfg(windows)]
+                kind::MANAGED_INPUT => {
+                    let member = <[u8; 4]>::try_from(m.payload.as_slice()).map(u32::from_be_bytes);
+                    let pair = match member {
+                        Ok(member) if self.managed.awaits_input(id, member) => {
+                            UnixStream::plain_pair().map_err(|e| e.to_string())
+                        }
+                        _ => Err("an input the run does not await".to_string()),
+                    };
+                    match pair.and_then(|(ours, theirs)| {
+                        let given = theirs.share().map_err(|e| e.to_string())?;
+                        inbox
+                            .socket
+                            .send(kind::MANAGED_INPUT, &m.payload, &[given.as_fd()])
+                            .map_err(|e| format!("giving it its pipe: {e}"))?;
+                        Ok(ours)
+                    }) {
+                        Ok(ours) => {
+                            if let Ok(member) = member
+                                && let Err(e) = self.managed.input_arrived(id, member, ours)
+                            {
+                                log(format!("container {id}: member {member}'s input: {e}"));
+                            }
+                        }
+                        Err(why) => {
+                            log(format!("container {id}: a managed input connection: {why}"));
+                            if let Err(e) = inbox.socket.send(kind::MANAGED_INPUT, &m.payload, &[]) {
+                                log(format!("container {id}: answering its managed input: {e}"));
+                            }
+                        }
                     }
                 }
                 // A file its share's DAX window maps, watched for another process cutting

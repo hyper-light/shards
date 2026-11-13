@@ -458,3 +458,59 @@ fn stop_ends_the_run_at_once() {
         Some(MemberEnd::WithRun)
     );
 }
+
+/// Plan step 5 through the orchestrator's path: a harness whose stdin its spec asks for
+/// reads exactly what the orchestrator writes into its pipe, JSON lines, bytes no UTF-8
+/// holds, no final newline and more than a pipe holds, which it echoes to its stdout; the
+/// pipe's close is its end, after which its stdout ends with the same bytes and its stderr
+/// says how many it read. A harness whose spec does not ask for it has no stdin to take.
+#[test]
+fn a_harness_reads_its_orchestrators_stdin_exactly_and_its_close_is_its_end() {
+    if cannot_run_vms() {
+        return;
+    }
+    let home = TempDir::new("api-stdin-home");
+    build(&home, "api-stdin:1", &["managed-capture", "codex", "echo"], "");
+    let mut s = spec(&home, "api-stdin:1");
+    s.members = vec![MemberSpec {
+        member: codex(),
+        env: Vec::new(),
+        files: Vec::new(),
+        workdir: None,
+        stdin: true,
+        terminal: false,
+    }];
+    let guest = ImageShards::new().boot(&s, TIMEOUT).unwrap();
+    let mut input = Vec::new();
+    input.extend_from_slice(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}\n");
+    input.extend_from_slice(b"\0\xff\x80\x1b[2Jno-newline\xc3\x28");
+    input.extend((0..300 * 1024u32).map(|i| (i % 251) as u8));
+    let mut writer = guest.take_input(&codex()).unwrap();
+    assert!(guest.take_input(&codex()).is_err(), "taken once");
+    let echoed = std::thread::scope(|scope| {
+        let reading = scope.spawn(|| read_all(guest.as_ref(), Channel::Stdout));
+        writer.write_all(&input).unwrap();
+        drop(writer);
+        reading.join().unwrap()
+    });
+    assert_eq!(echoed.len(), input.len());
+    assert!(
+        echoed == input,
+        "the harness echoed other bytes than its stdin took"
+    );
+    let said = read_all(guest.as_ref(), Channel::Stderr);
+    assert_eq!(said, format!("codex\0echo-end {}", input.len()).into_bytes());
+    assert_eq!(
+        guest.wait_member(&codex(), TIMEOUT).unwrap(),
+        Some(MemberEnd::Exited(0))
+    );
+    guest.stop().unwrap();
+    // Not asked for: no stdin.
+    let home = TempDir::new("api-nostdin-home");
+    build(&home, "api-nostdin:1", &["managed-capture", "codex", "echo"], "");
+    let guest = ImageShards::new()
+        .boot(&spec(&home, "api-nostdin:1"), TIMEOUT)
+        .unwrap();
+    assert!(guest.take_input(&codex()).is_err());
+    guest.stop().unwrap();
+}

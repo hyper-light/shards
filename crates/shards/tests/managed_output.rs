@@ -17,6 +17,9 @@ mod broker_effects;
 #[path = "managed_output/metrics.rs"]
 mod metrics;
 
+#[path = "managed_output/member_stdin.rs"]
+mod member_stdin;
+
 #[path = "common/managed_alloc.rs"]
 mod managed_alloc;
 
@@ -59,6 +62,8 @@ struct Fixture {
     /// runs alone in its process, as the coordinator's cost campaign does, which sets it. The
     /// binary's other tests run beside each other, so the fixture never sets it.
     initial_fds: Option<usize>,
+    /// The members the run gives an input (`--annotation shards.stdin=…`), where it gives any.
+    stdin: Option<&'static str>,
 }
 
 impl Fixture {
@@ -75,6 +80,7 @@ impl Fixture {
             observed: BTreeMap::new(),
             observer_sockets: Vec::new(),
             initial_fds: None,
+            stdin: None,
         }
     }
 
@@ -171,25 +177,16 @@ impl Fixture {
         );
         assert_eq!(built.status, Some(0), "{built}");
         let run = |args: &[&str]| self.command(args, until.saturating_duration_since(Instant::now()));
-        let started = match publication.as_ref() {
-            Some(bindings) => {
-                let mut args = vec!["run", "vm", "-d", "--name", "owner-output"];
-                for binding in bindings {
-                    args.extend(["-p", binding.as_str()]);
-                }
-                args.extend(["owner-output:1", "sleep"]);
-                run(&args)
-            }
-            None => run(&[
-                "run",
-                "vm",
-                "-d",
-                "--name",
-                "owner-output",
-                "owner-output:1",
-                "sleep",
-            ]),
-        };
+        let stdin = self.stdin.map(|members| format!("shards.stdin={members}"));
+        let mut args = vec!["run", "vm", "-d", "--name", "owner-output"];
+        for binding in publication.iter().flatten() {
+            args.extend(["-p", binding.as_str()]);
+        }
+        if let Some(annotation) = &stdin {
+            args.extend(["--annotation", annotation.as_str()]);
+        }
+        args.extend(["owner-output:1", "sleep"]);
+        let started = run(&args);
         assert_eq!(started.status, Some(0), "{started}");
         let id = started.stdout.trim();
         assert!(
@@ -202,9 +199,14 @@ impl Fixture {
         assert_eq!(metadata.run, id);
         assert_eq!(metadata.server, self.owner.fingerprint());
         assert_eq!(metadata.owner, self.owner.fingerprint());
+        let expected: &[(u32, u8)] = if self.stdin.is_some() {
+            &[(1, 1), (1, 2), (2, 0), (2, 1), (2, 2)]
+        } else {
+            &[(1, 1), (1, 2), (2, 1), (2, 2)]
+        };
         assert_eq!(
             metadata.endpoints.keys().copied().collect::<Vec<_>>(),
-            [(1, 1), (1, 2), (2, 1), (2, 2)],
+            expected,
             "files-only member retains its declaration hole"
         );
         self.record = Some(record);

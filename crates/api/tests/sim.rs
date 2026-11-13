@@ -172,7 +172,7 @@ fn a_guest_ends_as_its_program_says() {
 #[cfg(unix)]
 mod client {
     use super::*;
-    use shards_api::Shards;
+    use shards_api::{GpuProbe, GpuProbeError, PhysicalGpu, ResolvedGpu, Shards};
     use std::path::PathBuf;
     use std::time::Instant;
 
@@ -187,14 +187,20 @@ mod client {
         ],
     );
 
-    /// A stand-in for `shards` that runs `body` whatever it is asked.
     /// A stand-in for `shards` that runs `body` whatever it is asked. Written to a file of
     /// its own and installed by install(1), so no descriptor of this process ever writes
     /// the file it executes: one that a test running beside it forked while it was open
-    /// would make its exec fail ETXTBSY (execve(2)).
+    /// would make its exec fail ETXTBSY (execve(2)). Then started once and ended at once
+    /// (`--warm` first, which no launch gives shards), as macOS assesses a new executable
+    /// as it is first started, from 0.1 s to past 8.8 s here (PM M534), and the tests time a
+    /// stand-in's own work, not that.
     fn stand_in(dir: &shards_testdir::TempDir, body: &str) -> PathBuf {
         let (source, path) = (dir.path().join("shards.sh"), dir.path().join("shards"));
-        std::fs::write(&source, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::write(
+            &source,
+            format!("#!/bin/sh\n[ \"$1\" = --warm ] && exit 0\n{body}\n"),
+        )
+        .unwrap();
         let installed = std::process::Command::new("install")
             .args(["-m", "755"])
             .arg(&source)
@@ -202,6 +208,12 @@ mod client {
             .status()
             .unwrap();
         assert!(installed.success());
+        let warmed = std::process::Command::new(&path)
+            .arg("--warm")
+            .stdin(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(warmed.success());
         path
     }
 
@@ -285,6 +297,57 @@ mod client {
                 .unwrap();
             assert_eq!(g.wait_for(patience()).unwrap(), Some(end));
         }
+    }
+
+    /// D215, D232: a GPU probe takes a stand-in's exact, completed report and refuses one
+    /// of another GPU or cut short, each by its content; with no patience it is pending.
+    /// Real bounded pipe, watch and parse wiring with a stand-in process, not a renderer or
+    /// a GPU of the host's. Its patience is the stand-ins' (PM M463), not a real guest's
+    /// (PM M534).
+    #[test]
+    fn gpu_probe_protocol_requires_exact_completed_receipt() {
+        let native = PhysicalGpu::MetalRegistry(7);
+        let expected = GpuProbe {
+            devices: vec![ResolvedGpu {
+                physical: native,
+                uuid: [7; 16],
+                pci: None,
+                luid: Some(7u64.to_be_bytes()),
+                name: None,
+                device_local_bytes: None,
+            }],
+            host_visible_bytes: 4096,
+        };
+        let body = expected.encode().unwrap();
+        let probing = |bin| GuestSpec {
+            binary: Some(bin),
+            gpu: true,
+            gpu_devices: vec![native],
+            ..spec("")
+        };
+        for (text, refused) in [
+            (body.clone(), None),
+            (
+                body.replace("metal:0000000000000007", "metal:0000000000000008"),
+                Some(GpuProbeError::Identity),
+            ),
+            (body.replace("end\n", ""), Some(GpuProbeError::Syntax)),
+        ] {
+            let dir = shards_testdir::TempDir::new("api-gpu-probe").unwrap();
+            // Canonical protocol fields contain no shell quoting characters.
+            let bin = stand_in(&dir, &format!("printf '%s' '{text}'"));
+            let probed = Shards.probe_gpu(&probing(bin), patience());
+            match refused {
+                None => assert_eq!(probed.unwrap(), expected),
+                Some(why) => assert_eq!(probed.err(), Some(Refusal::GpuProbe(why))),
+            }
+        }
+        assert_eq!(
+            Shards
+                .probe_gpu(&probing(PathBuf::from("never-run")), Duration::ZERO)
+                .err(),
+            Some(Refusal::GpuProbe(GpuProbeError::Pending))
+        );
     }
 
     /// `stop` ends a shards that runs on, as `Stopped`; a connect after is refused

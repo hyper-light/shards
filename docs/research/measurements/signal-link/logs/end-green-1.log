@@ -1,0 +1,4 @@
+# tests/containers.rs a_runs_end_says_no_lost_signal_connection: e8d19fc683cc, 5 files changed (crates/init/src/run.rs crates/shards/src/workload.rs crates/shards/tests/common/mod.rs crates/shards/tests/containers.rs crates/shards/tests/saved.rs ); 2026-11-12T23:34:43Z Linux 7.2.9-2-cachyos x86_64; rustc 1.98.1 (48a229cea 2026-09-01); load 51.09 71.28 78.46
+test a_runs_end_says_no_lost_signal_connection ... warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 162 filtered out; finished in 4.59s
+## exit 0 after 5 s, 23:34:48

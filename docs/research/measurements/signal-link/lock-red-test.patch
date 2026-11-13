@@ -1,0 +1,67 @@
+--- a/crates/shards/src/workload.rs
++++ b/crates/shards/src/workload.rs
+@@ -3538,5 +3538,64 @@
+         assert!(waits.try_recv().is_err() && captured.try_recv().is_err());
+         assert_eq!(hellos::fail_execs("lost"), 0);
+         hellos::close();
++    }
++
++    /// `to`'s workload runs, its guest's signal connection taken as `serve` takes it, its
++    /// sender and its watch on threads of their own ([`take_signals`]): the guest's end, and
++    /// the watch's thread.
++    fn taken(to: &'static ToGuest) -> (UnixStream, std::thread::JoinHandle<()>) {
++        will_run(to);
++        let (host, guest) = UnixStream::pair().unwrap();
++        (guest, std::thread::spawn(move || take_signals(to, host, None)))
+     }
++
++    /// Waits for what `guest` has yet to read: a frame on its way.
++    fn readable(guest: &UnixStream) {
++        let mut came = libc::pollfd {
++            fd: std::os::fd::AsRawFd::as_raw_fd(guest),
++            events: libc::POLLIN,
++            revents: 0,
++        };
++        // SAFETY: poll(2) of one pollfd of a socket this test holds open.
++        assert_eq!(unsafe { libc::poll(&mut came, 1, 5000) }, 1, "no frame came");
++    }
++
++    /// A frame whose send waits on its guest (more than the connection's sockets hold, its
++    /// guest reading nothing, as a paused microVM's reads nothing) holds no other frame's
++    /// caller: theirs are answered at once, held behind it, and every frame goes in order as
++    /// the guest reads again (at e8d19fc68 that send held the link's lock until the guest
++    /// read it, and every other caller waited for the lock: the daemon's relay among them,
++    /// and with it the unpause it would read next).
++    #[test]
++    fn a_send_its_guest_has_yet_to_read_holds_no_other_frames_caller() {
++        static TO: ToGuest = ToGuest::new(Signals::new());
++        let (_serial, _port, _acceptor) = exec_port_test();
++        let (mut guest, watching) = taken(&TO);
++        let big = vec![0x5a; 4 << 20];
++        let first = big.clone();
++        let held = std::thread::spawn(move || to_guest(&TO, kind::BOUND, &first));
++        // Its send is under way.
++        readable(&guest);
++        let (said, heard) = std::sync::mpsc::channel();
++        std::thread::spawn(move || {
++            let _ = said.send(signal_guest(&TO, 28));
++        });
++        let answered = heard.recv_timeout(std::time::Duration::from_secs(5));
++        // The guest reads again: both go, in order.
++        assert_eq!(next_frame(&mut guest), (kind::BOUND, big));
++        assert_eq!(
++            next_frame(&mut guest),
++            (kind::SIGNAL, 28u32.to_be_bytes().to_vec())
++        );
++        assert_eq!(held.join().unwrap(), Ok(()));
++        drop(guest);
++        watching.join().unwrap();
++        hellos::close();
++        assert_eq!(
++            answered,
++            Ok(Ok(())),
++            "a signal waited on another frame's send"
++        );
++    }
++
+ }

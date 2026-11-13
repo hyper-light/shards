@@ -248,7 +248,15 @@ pub fn main(device: &str, template: bool) -> ! {
                 let active = run::managed::active(&spec.setup)
                     .map_err(|e| e.to_string())?
                     .ok_or("managed activation missing")?;
-                workload.capture_control = Some(crate::capture::ControlQueue::prepare(active.len())?);
+                let inputs = run::managed::inputs(&spec.setup)
+                    .map_err(|e| e.to_string())?
+                    .map_or(0, <[_]>::len);
+                workload.capture_control = Some(crate::capture::ControlQueue::prepare(active.len(), inputs)?);
+            } else if run::managed::inputs(&spec.setup)
+                .map_err(|e| e.to_string())?
+                .is_some()
+            {
+                return Err("a member's input is asked for where no managed output is".into());
             }
             crate::domains::start(&all, &domains, &pairs, &filters, &spec.setup)
         }) {
@@ -2187,7 +2195,7 @@ pub(crate) fn dial(port: u32, blocking: bool) -> io::Result<File> {
 }
 
 /// A nonblocking connect's result, once its socket is writable.
-fn connect_result(fd: RawFd) -> io::Result<()> {
+pub(crate) fn connect_result(fd: RawFd) -> io::Result<()> {
     let mut err: libc::c_int = 0;
     let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
     // SAFETY: getsockopt(2) into a c_int of `len` bytes.
@@ -2205,6 +2213,14 @@ fn connect_result(fd: RawFd) -> io::Result<()> {
         (0, e) => Err(io::Error::from_raw_os_error(e)),
         _ => Err(io::Error::last_os_error()),
     }
+}
+
+/// The signal whose frame an init built for tests takes for a malformed one, losing its signal
+/// connection as a malformed frame loses it, unsaid: a loss its host's E2E tests provoke
+/// (tests/containers.rs, D16). Named by the build's `SHARDS_TEST_LOSE_SIGNALS_ON`; none in any
+/// other build, whose frames this never touches.
+fn loses_signals_on() -> Option<u32> {
+    option_env!("SHARDS_TEST_LOSE_SIGNALS_ON").and_then(|n| n.parse().ok())
 }
 
 /// Says the relay's end, last, on the signal connection `signals` ([`kind::SIGNALS_END`]):
@@ -4798,6 +4814,8 @@ enum Owner {
     Domain(usize, shards_abi::run::managed::Channel),
     Capture,
     DomainLife(usize),
+    /// A member's input, by its domain's index: its connection, or its stdin's pipe.
+    MemberInput(usize, Part),
     /// The domains' memory.
     Memory,
     /// The process events connector (D123).
@@ -4930,6 +4948,16 @@ impl Workload {
                 for domain in &mut self.domains {
                     domain.stdout.abort();
                     domain.stderr.abort();
+                    // An input that ended is told before the scope ends; one still open goes
+                    // with the run, whose end says it.
+                    if let Some(ended) = domain.input.as_ref().and_then(crate::input::Input::report)
+                        && let Some(control) = self.capture_control.as_mut()
+                        && let Err(e) = control.push_input(ended)
+                    {
+                        fatal = Some(setup_failed(format!("managed input control: {e}")));
+                        break 'relay;
+                    }
+                    domain.input = None;
                 }
                 self.capture = None;
                 if let Some(control) = self.capture_control.as_mut()
@@ -4978,6 +5006,25 @@ impl Workload {
                     }
                     domain.output_control = crate::capture::OutputControl::Reported;
                 }
+            }
+            // Each member's input's end told its owner once, however it ended.
+            for domain in &mut self.domains {
+                let Some(input) = domain.input.as_mut() else {
+                    continue;
+                };
+                let Some(ended) = input.report() else {
+                    continue;
+                };
+                let result = self
+                    .capture_control
+                    .as_mut()
+                    .ok_or(crate::capture::Failure::Protocol(run::managed::Error::State))
+                    .and_then(|control| control.push_input(ended));
+                if let Err(e) = result {
+                    fatal = Some(setup_failed(format!("managed input control: {e}")));
+                    break 'relay;
+                }
+                input.told();
             }
             if let Some(capture) = self.capture.as_mut() {
                 for domain in &mut self.domains {
@@ -5166,6 +5213,12 @@ impl Workload {
             );
             for (i, d) in self.domains.iter().enumerate() {
                 poll(d.lifecycle.events(), libc::POLLPRI, Owner::DomainLife(i));
+                if let Some(input) = d.input.as_ref() {
+                    let (fd, events) = input.conn();
+                    poll(fd, events, Owner::MemberInput(i, Part::Conn));
+                    let (fd, events) = input.pipe();
+                    poll(fd, events, Owner::MemberInput(i, Part::Stdin));
+                }
             }
             if let Some(capture) = self.capture.as_ref() {
                 poll(Some(capture.fd()), capture.events(), Owner::Capture);
@@ -5508,12 +5561,23 @@ impl Workload {
                                 let running = status.is_none();
                                 let pty = self.stdout.as_ref().filter(|_| self.tty).map(AsRawFd::as_raw_fd);
                                 let hosts = self.hosts.as_ref();
+                                let mut taken_for_malformed = false;
                                 let whole = each_frame(&mut from_signals, |which, payload| {
                                     let id_and = |p: &[u8]| {
                                         let (id, rest) = p.split_at_checked(4)?;
                                         Some((u32::from_be_bytes(id.try_into().ok()?), rest.to_vec()))
                                     };
                                     let sig = |p: &[u8]| <[u8; 4]>::try_from(p).map(u32::from_be_bytes).ok();
+                                    // Nothing past a malformed frame is read, as `each_frame` reads
+                                    // none past one.
+                                    if taken_for_malformed
+                                        || (which == kind::SIGNAL
+                                            && sig(payload).is_some()
+                                            && sig(payload) == loses_signals_on())
+                                    {
+                                        taken_for_malformed = true;
+                                        return;
+                                    }
                                     match which {
                                         kind::RESIZE => {
                                             if let (Some(fd), Some(size)) = (pty, Size::decode(payload)) {
@@ -5581,7 +5645,7 @@ impl Workload {
                                         _ => {}
                                     }
                                 });
-                                if !whole {
+                                if !whole || taken_for_malformed {
                                     signals = None;
                                 }
                             }
@@ -5637,6 +5701,14 @@ impl Workload {
                         {
                             fatal = Some(setup_failed(format!("managed scheduling: {e}")));
                             break 'relay;
+                        }
+                    }
+                    Owner::MemberInput(i, part) => {
+                        if let Some(input) = self.domains.get_mut(i).and_then(|d| d.input.as_mut()) {
+                            match part {
+                                Part::Stdin => input.on_pipe(p.revents),
+                                _ => input.progress(),
+                            }
                         }
                     }
                     Owner::Procs => keep_processes(&mut self.procs, &mut to_host),
@@ -6651,6 +6723,13 @@ mod signals_end_tests {
         let (signals, host) = ours();
         drop(host);
         say_signals_end(&signals, false);
+    }
+
+    /// An init built without the tests' knob (`SHARDS_TEST_LOSE_SIGNALS_ON`), as every one
+    /// but theirs is, takes no signal's frame for a malformed one.
+    #[test]
+    fn an_init_built_for_runs_takes_no_signal_for_a_malformed_frame() {
+        assert_eq!(loses_signals_on(), None);
     }
 }
 

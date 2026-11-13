@@ -287,12 +287,6 @@ fn request(spec: &ImageSpec) -> Result<wire::Request, ImageRefusal> {
                     .into(),
             });
         }
-        if m.stdin {
-            return Err(ImageRefusal::Unsupported {
-                what: "a member's stdin",
-                why: "a member's input connection is owed (D231's next slice); its stdin is /dev/null".into(),
-            });
-        }
         let mut env = Vec::with_capacity(m.env.len());
         for (key, value) in &m.env {
             let mut variable = Vec::with_capacity(key.len() + 1 + value.0.len());
@@ -339,6 +333,7 @@ fn request(spec: &ImageSpec) -> Result<wire::Request, ImageRefusal> {
             env,
             files,
             workdir: m.workdir.clone(),
+            input: m.stdin,
         });
     }
     let mut shares = Vec::with_capacity(spec.shares.len());
@@ -527,9 +522,11 @@ mod tests {
         let mut s = spec();
         s.members[0].terminal = true;
         assert_eq!(refused(s), "a member's terminal");
+        // A member's stdin is asked for in its request, as the run host takes it.
         let mut s = spec();
         s.members[0].stdin = true;
-        assert_eq!(refused(s), "a member's stdin");
+        assert!(request(&s).unwrap().members[0].input);
+        assert!(!request(&spec()).unwrap().members[0].input);
     }
 
     /// A spec past the channel's bound is refused before the run host starts.
