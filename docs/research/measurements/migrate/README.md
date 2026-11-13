@@ -70,3 +70,23 @@ hv::kvm::x86_64::tests::a_vm_told_a_baseline_gives_its_vcpus_no_more` 48 passed 
 test makes a VM with no guest), the move's tests 11 passed, `--test moved --no-run`
 compiled, and each of M1-M10 failed its named test.
 
+
+Its own checks, at 2192b9dac (one host, adas-mac-studio.local: Apple M4 Max, macOS 26.2,
+rustc 1.98.1, 2026-11-13T04:07Z; its tree carried there as a git bundle onto a clone of
+main): `cargo fmt --all --check` clean; `cargo test -p shards-vmm --lib -- arch::` 48 passed,
+`a_baseline_holds_supervisor_state_amx_and_kvms_own_features` among them (red at 0993723ee,
+whose sample of KVM's features already had the one it moves); the move's tests 10 passed;
+`cargo test -p shards --test moved --no-run` compiled; `cargo clippy -p shards -p shards-vmm
+--all-targets -- -D warnings` clean natively and with `--target x86_64-unknown-linux-gnu`
+(zig as scripts/lint sets it), where it first refused `assemble`'s eight arguments.
+
+Owed (x86-64 Linux with KVM; the coordinator's):
+
+    cargo test -p shards-vmm --lib -- arch:: hv::kvm::x86_64::tests::a_vm_told_a_baseline_gives_its_vcpus_no_more
+    cargo test -p shards --bin shards -- daemon::moves cli::moves a_move_of_another_hypervisors_microvm_is_refused_typed
+    cargo test -p shards --test moved -- an_x86_cpu_baseline_is_all_its_guest_finds_and_goes_with_it
+
+The first two hold `a_vm_told_a_baseline_gives_its_vcpus_no_more` (a KVM VM, no guest),
+`a_baseline_masks_every_feature_an_x86_guest_finds` and
+`a_machine_short_of_a_baseline_refuses_it_by_each_register`, built on x86-64 alone; the third
+is the E2E on two homes of a KVM x86-64 machine.
