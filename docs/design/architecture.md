@@ -22757,6 +22757,8 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
 - *Stop.* The VM process killed at once, as `Guest::stop`.
 - *The run's own command* is the orchestrator's, or `builtin::ATTEND`: the standby holds,
   the members start.
+- *Its end* (`RunEnd`): `Exited` with the status its own command or `ATTEND`'s holder ended
+  with; a command that never started, `Failed` in its VM's words (D249).
 
 **Literals.** None new: `run::MAX_PAYLOAD`, `run::TOKEN`, the permission mask `0o777`,
 `docker run`'s `128 + signal`; every wait is on a fact.
@@ -24648,11 +24650,12 @@ words were lost. Hex's image_real found a run's exit wrong on a real KVM node (H
 `/bin/sh -c 'exit 3'`, where `shards run --rm --network none` of the same image and command
 exits 3; the Hex lead's notes, 2026-11-13).
 
-**Decided.** `api_run::run_end(failed, done)`: the link's failure first; a `DONE` of a status
-alone is `Exited(status)`; a status followed by words is `Failed("its command never started
-(status N): WORDS")`; no `DONE` is a failure, as before. The words are the mark: warm.rs
-writes them only for a command that never ran (`not_run`), and the daemon takes them where
-its run never started. No wire change: `RunEnd::Failed` is "its VM, its host or its guest
+**Decided.** `api_run::run_end(failed, done, started)`: the link's failure first; a `DONE`
+whose status words follow, where its guest never said `STARTED`, is `Failed("its command never
+started (status N): WORDS")`; any other `DONE` is `Exited(status)`; no `DONE` is a failure, as
+before. That is the daemon's reading (`run_ended`): warm.rs writes the words only for a
+command that never ran (`not_run`), and `STARTED` says it ran (ipc's `kind::DONE`,
+`kind::STARTED`); the Hex lead's draft made the run host track `STARTED` as the daemon does. No wire change: `RunEnd::Failed` is "its VM, its host or its guest
 failed". Whether HEX-IMG-3's command started is not known here: if it did not, its run now
 fails saying why, and that cause is its own fix.
 
@@ -24663,7 +24666,10 @@ fails saying why, and that cause is its own fix.
 adas-mac-studio.local (Darwin 25.2.0 arm64, rustc 1.98.1), `cargo test -p shards --bin shards
 -- api_run::`: with the run's end composed as `follow` composed it (`DONE`'s first byte alone),
 14 passed and that test failed ("a command that never started ended its run as Exited(128)");
-as built, 15 passed. Clippy for shards, all targets, `-D warnings`: clean.
+as built, 15 passed. Clippy for shards, all targets, `-D warnings`: clean. Its `STARTED` case
+(the Hex lead's): with the words taken whether or not the guest said `STARTED`, as first
+landed (f176b3e61), 15 passed and that test failed (`Failed(…)` where `Exited(128)` was
+expected); as built, passed.
 
 **Evidence owed** (ROOT, real VMs). Hex's image_real (HEX-IMG-3) on KVM once Hex vendors this,
 and `cargo test -p shards --profile test-release --test api_image` on a KVM host.

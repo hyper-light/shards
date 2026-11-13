@@ -642,16 +642,16 @@ fn held_of(room: Option<i64>, out: &[u8]) -> Result<Option<u64>, String> {
 }
 
 /// How a run ended, from its VM's link (D249): why the link failed, else its `DONE`. That is
-/// the command's status and, where the command never started, why not, in the words the
-/// daemon reads there too (warm.rs `finish`, daemon.rs `run_ended`). Such a run failed, in
-/// its VM's words: the status alone, the code dockerd gives a run whose command never
-/// started, would read as the command's own exit.
-fn run_end(failed: Option<String>, done: Option<&[u8]>) -> wire::RunEnd {
+/// the command's status and, where the command never started (its guest said no `STARTED`),
+/// why not, read as the daemon reads them (warm.rs `finish`, daemon.rs `run_ended`). Such a
+/// run failed, in its VM's words: the status alone, the code dockerd gives a run whose
+/// command never started, would read as the command's own exit.
+fn run_end(failed: Option<String>, done: Option<&[u8]>, started: bool) -> wire::RunEnd {
     if let Some(why) = failed {
         return wire::RunEnd::Failed(why);
     }
     match done.and_then(<[u8]>::split_first) {
-        Some((status, said)) if !said.is_empty() => wire::RunEnd::Failed(format!(
+        Some((status, said)) if !started && !said.is_empty() => wire::RunEnd::Failed(format!(
             "its command never started (status {status}): {}",
             String::from_utf8_lossy(said)
         )),
@@ -1905,6 +1905,7 @@ mod hosted {
     /// as the VM takes it, the run's end from its `DONE` (`super::run_end`).
     fn follow(live: &Live<'_>, link: &Stream) -> RunEnd {
         let mut done = None;
+        let mut started = false;
         let failed = loop {
             let m = match shards_ipc::recv(link) {
                 Ok(Some(m)) => m,
@@ -1914,6 +1915,7 @@ mod hosted {
             if m.kind == kind::DONE {
                 done = Some(m.payload);
             } else if m.kind == kind::STARTED {
+                started = true;
                 // Its guest told what its host changes in its shares from now on (D235).
                 if let Some(pipe) = lock(&live.notices_due).take() {
                     match notice_exec(live, pipe) {
@@ -1956,7 +1958,7 @@ mod hosted {
         for member in members {
             end_input(live, member);
         }
-        super::run_end(failed, done.as_deref())
+        super::run_end(failed, done.as_deref(), started)
     }
 
     /// The orchestrator's asks, until its channel closes: credit, stats, stop. A channel
@@ -2835,16 +2837,20 @@ mod tests {
         members_of(&["agent helper".into(), "harness codex".into()], &[1])
     }
 
-    /// Do end a run with a `DONE` of a status alone, of a status and the words of a command
-    /// that never started (warm.rs `finish`), after a broken link, and with none. Expect: the
-    /// status as the run's exit; a failure saying the command never started, its status and
-    /// the VM's words, never that status as an exit; the link's failure; a failure.
+    /// Do end a run whose guest said `STARTED` with a `DONE` of a status alone; one whose
+    /// guest never did with a status and the words of a command that never started (warm.rs
+    /// `finish`); one that started with such words; one after a broken link; and one with no
+    /// `DONE`. Expect: the status as the run's exit; a failure saying the command never
+    /// started, its status and the VM's words, never that status as an exit; the status, as
+    /// the daemon keeps a started command's (daemon.rs `run_ended`); the link's failure; a
+    /// failure.
     #[test]
     fn a_command_that_never_started_ends_its_run_failed_saying_why() {
-        assert_eq!(run_end(None, Some(&[3])), wire::RunEnd::Exited(3));
-        assert_eq!(run_end(None, Some(&[0])), wire::RunEnd::Exited(0));
+        assert_eq!(run_end(None, Some(&[3]), true), wire::RunEnd::Exited(3));
+        assert_eq!(run_end(None, Some(&[0]), true), wire::RunEnd::Exited(0));
         let never = b"\x80exec: \"/bin/sh\": operation not permitted";
-        match run_end(None, Some(never)) {
+        assert_eq!(run_end(None, Some(never), true), wire::RunEnd::Exited(128));
+        match run_end(None, Some(never), false) {
             wire::RunEnd::Failed(why) => assert_eq!(
                 why,
                 "its command never started (status 128): exec: \"/bin/sh\": operation not permitted"
@@ -2852,10 +2858,10 @@ mod tests {
             other => panic!("a command that never started ended its run as {other:?}"),
         }
         assert_eq!(
-            run_end(Some("the VM's link: reset".into()), Some(&[3])),
+            run_end(Some("the VM's link: reset".into()), Some(&[3]), true),
             wire::RunEnd::Failed("the VM's link: reset".into())
         );
-        assert!(matches!(run_end(None, None), wire::RunEnd::Failed(_)));
+        assert!(matches!(run_end(None, None, false), wire::RunEnd::Failed(_)));
     }
 
     /// A run that keeps nothing past the microVM of what the image grants its members has
