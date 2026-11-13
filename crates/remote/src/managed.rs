@@ -1698,12 +1698,7 @@ mod tests {
     #[test]
     fn three_keep_alives_fall_within_every_idle_bound_quic_carries() {
         let most = Duration::from_millis(VarInt::MAX.into_inner());
-        for bound in [
-            Duration::from_millis(1),
-            PATIENCE,
-            tls::QUIET,
-            most,
-        ] {
+        for bound in [Duration::from_millis(1), PATIENCE, tls::QUIET, most] {
             let interval = tls::keep_alive(bound);
             assert!(interval > Duration::ZERO, "{bound:?}");
             assert!(interval * 3 < bound, "{bound:?}: {interval:?}");

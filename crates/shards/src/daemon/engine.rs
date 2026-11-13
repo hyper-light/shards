@@ -277,7 +277,12 @@ impl Engine {
     /// hung up now where it is stopping already. `stopping` is read under the lock
     /// [`end_engine`](Daemon::end_engine) hangs them up under, and stored before it: each
     /// connection is hung up by one or the other.
-    pub(super) fn hold_relayed(&self, number: u64, hang_up: shards_remote::client::HangUp, stopping: &AtomicBool) {
+    pub(super) fn hold_relayed(
+        &self,
+        number: u64,
+        hang_up: shards_remote::client::HangUp,
+        stopping: &AtomicBool,
+    ) {
         let mut relayed = lock(&self.relayed);
         if stopping.load(Ordering::SeqCst) {
             let _ = hang_up.now();

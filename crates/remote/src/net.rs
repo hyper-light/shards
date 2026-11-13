@@ -1,8 +1,9 @@
 //! A QUIC endpoint on a UDP socket of its own (D180), driven by one thread: datagrams in and
 //! out, the connections' timers, and their streams, which a [`Handler`] reads and writes. Other
-//! threads reach the driver with a [`Command`] on its channel and a datagram to its socket
-//! from its waker, which wakes it from the socket's read: what std gives every target,
-//! Windows' consoles and pipes among the descriptors no poll(2) of a socket reaches.
+//! threads reach the driver with a [`Command`] on its channel and a datagram from its waker to
+//! a wake socket of the driver's own, beside the one it serves on, which it waits on with that
+//! one (poll(2); WSAPoll): what every target's sockets give, Windows' consoles and pipes among
+//! the descriptors no poll of a socket reaches.
 
 use std::collections::{HashMap, VecDeque};
 use std::net::{SocketAddr, UdpSocket};
@@ -301,6 +302,9 @@ pub struct Liveness {
     answer: Duration,
     /// The peer's own `max_ack_delay`, once its transport parameters came.
     ack_delay: Duration,
+    /// Its transport's probe timeout as last looked at (RFC 9002 §6.2.1), before which no wait
+    /// of it is judged.
+    pto: Duration,
     /// A send of this side's waiting for its answer.
     wait: Option<Wait>,
     /// Its transport's ack-eliciting frames sent and bytes acknowledged, as last looked at.
@@ -312,7 +316,9 @@ pub struct Liveness {
     ran_out: bool,
     /// Its peer refused it, definitely: an ICMP port-unreachable told its connected socket.
     refused: bool,
-    /// The probes told so far while its handshake has not ended.
+    /// The datagrams of its first flight, as its first look found them: no probe.
+    flight: Option<u64>,
+    /// The datagrams sent as its first look, or its last probe told, found them.
     probes: u64,
 }
 
@@ -353,12 +359,14 @@ impl Liveness {
             longest: Duration::ZERO,
             answer,
             ack_delay: Duration::ZERO,
+            pto: Duration::ZERO,
             wait: None,
             sent: 0,
             acked: 0,
             lost: None,
             ran_out: false,
             refused: false,
+            flight: None,
             probes: 0,
         }
     }
@@ -371,16 +379,31 @@ impl Liveness {
         self.heard = Some(now);
     }
 
-    /// Its handshake ended at `now`: its answer, the first, is the slowest seen where none
-    /// known was slower.
-    pub fn connected(&mut self, now: Instant) {
+    /// Its handshake ended at `now`, its transport having sent `sent` ack-eliciting frames and
+    /// had `acked` bytes acknowledged by then: its answer, the first, is the slowest seen where
+    /// none known was slower, and what the handshake sent is no send waiting (its frames are
+    /// answered as it ends, so a wait for them would end with no answer, its quiet peer then
+    /// taken for dead).
+    pub fn connected(&mut self, now: Instant, sent: u64, acked: u64) {
         self.connected = Some(now);
         self.answer = self.answer.max(now.saturating_duration_since(self.began));
+        self.sent = sent;
+        self.acked = acked;
     }
 
     /// Its peer's own `max_ack_delay` (RFC 9000 §18.2), which each window adds.
     pub fn peer_ack_delay(&mut self, delay: Duration) {
         self.ack_delay = delay;
+    }
+
+    /// Its transport's probe timeout now (RFC 9002 §6.2.1: the smoothed RTT, four times its
+    /// variation and the peer's `max_ack_delay`; hyper-quic's patch Q7): QUIC declares no loss
+    /// sooner, so no wait is judged sooner either. A peer acknowledges application data up to
+    /// its `max_ack_delay` late, and later as its timer fires late, where its handshake's
+    /// packets it acknowledges at once (RFC 9000 §13.2.1): a window its handshake seeded alone
+    /// would take that peer's first delayed acknowledgement for none.
+    pub fn probe_timeout(&mut self, pto: Duration) {
+        self.pto = pto;
     }
 
     /// When the driver ends it unless its handshake ends first: none once it has, or where its
@@ -402,14 +425,25 @@ impl Liveness {
         self.refused = true;
     }
 
-    /// While its handshake has not ended, `datagrams` sent in all: the probes and how long it
-    /// has waited, where more went than were told.
+    /// While its handshake has not ended and nothing of its peer's has been heard, `datagrams`
+    /// sent in all: where more went than before, the datagrams its probes sent (RFC 9002 §6.2),
+    /// past its first flight, which its first look finds and which is no probe, and how long it
+    /// has waited. A peer heard is answering, however slowly: its handshake's deadline, where it
+    /// has one, holds it.
     pub fn unanswered(&mut self, now: Instant, datagrams: u64) -> Option<(u64, Duration)> {
-        if self.connected.is_some() || datagrams <= self.probes {
+        if self.connected.is_some() || self.heard.is_some() {
+            return None;
+        }
+        let Some(flight) = self.flight else {
+            self.flight = Some(datagrams);
+            self.probes = datagrams;
+            return None;
+        };
+        if datagrams <= self.probes {
             return None;
         }
         self.probes = datagrams;
-        Some((datagrams, now.saturating_duration_since(self.began)))
+        Some((datagrams - flight, now.saturating_duration_since(self.began)))
     }
 
     /// Its window: the slowest answer seen and the peer's `max_ack_delay`.
@@ -420,7 +454,10 @@ impl Liveness {
     /// Looks at it at `now`, its transport's ack-eliciting frames sent and bytes acknowledged in
     /// all being `sent` and `acked`: an answer raises the slowest; a send with none waiting
     /// begins a wait; a wait past its window with progress is a run-out, told once; a whole
-    /// window with no progress, its death.
+    /// window with no progress, its death. Neither is judged before its probe timeout
+    /// ([`Liveness::probe_timeout`]): a run-out is past the window and that timeout both, and a
+    /// death a whole window with no progress past the later of its last progress and that
+    /// timeout.
     pub fn look(&mut self, now: Instant, sent: u64, acked: u64) -> Look {
         let Some(connected) = self.connected else {
             return Look::Fine;
@@ -446,7 +483,7 @@ impl Liveness {
         let Some(wait) = self.wait.as_mut() else {
             return Look::Fine;
         };
-        let progress = self.heard.map_or(wait.since, |heard| heard.max(wait.since));
+        let progress = judged_from(self.heard, wait.since, self.pto);
         if now.saturating_duration_since(progress) > window {
             self.ran_out = true;
             self.lost = Some(wait.quiet);
@@ -456,7 +493,7 @@ impl Liveness {
             };
         }
         let waited = now.saturating_duration_since(wait.since);
-        if waited > window && !wait.told {
+        if waited > window.max(self.pto) && !wait.told {
             wait.told = true;
             self.ran_out = true;
             return Look::RanOut { waited, window };
@@ -464,16 +501,19 @@ impl Liveness {
         Look::Fine
     }
 
-    /// When [`Liveness::look`] must look again for what waits to change: its window's end, and
-    /// a whole window past its last progress.
+    /// When [`Liveness::look`] must look again for what waits to change: its window's end (its
+    /// probe timeout's, where that is later), and a whole window past its last progress (or past
+    /// its probe timeout).
     pub fn next(&self) -> Option<Instant> {
         let wait = self.wait?;
         let window = self.window();
-        let progress = self.heard.map_or(wait.since, |heard| heard.max(wait.since));
-        let dead = progress.checked_add(window)?;
+        let dead = judged_from(self.heard, wait.since, self.pto).checked_add(window)?;
         match wait.told {
             true => Some(dead),
-            false => wait.since.checked_add(window).map(|out| out.min(dead)),
+            false => wait
+                .since
+                .checked_add(window.max(self.pto))
+                .map(|out| out.min(dead)),
         }
     }
 
@@ -501,8 +541,7 @@ impl Liveness {
 
     /// How long its handshake took, once it ended.
     pub fn handshake_took(&self) -> Option<Duration> {
-        self.connected
-            .map(|at| at.saturating_duration_since(self.began))
+        self.connected.map(|at| at.saturating_duration_since(self.began))
     }
 }
 
@@ -790,6 +829,10 @@ pub struct Driver<H: Handler> {
     /// The one peer its socket is connected to, where it was aimed ([`Driver::aim`]): an ICMP
     /// port-unreachable then reads as that peer's refusal.
     aimed: Option<SocketAddr>,
+    /// Where its [`Sender`]s wake it, a socket of its own beside the one it serves on: a socket
+    /// aimed at its peer takes datagrams from that peer alone (connect(2): Linux udp(7), XNU
+    /// `udp_input`, Winsock's connect), so a wake sent there would never come.
+    wake: UdpSocket,
     /// The handshakes it holds at once from peers not yet known, its owner's resources' bound
     /// ([`Driver::hold_handshakes`]): past it, the oldest unanswered is given up for the newest.
     slots: Option<usize>,
@@ -865,10 +908,12 @@ impl<H: Handler> Driver<H> {
         let waker_at = waker
             .local_addr()
             .map_err(|e| Error::new(format!("the driver's waker: {e}")))?;
-        let mut to = local;
-        if to.ip().is_unspecified() {
-            to.set_ip(waker_at.ip());
-        }
+        let wake = UdpSocket::bind(loopback).map_err(|e| Error::new(format!("the driver's wake: {e}")))?;
+        wake.set_nonblocking(true)
+            .map_err(|e| Error::new(format!("the driver's wake: {e}")))?;
+        let to = wake
+            .local_addr()
+            .map_err(|e| Error::new(format!("the driver's wake: {e}")))?;
         let endpoint = Endpoint::new(EndpointConfig::default(), server, true, None)
             .map_err(|_| Error::new("no random bytes for QUIC"))?;
         let (commands_tx, commands) = match limits {
@@ -901,6 +946,7 @@ impl<H: Handler> Driver<H> {
                 lost: held.lost,
                 checked: held.checked,
                 aimed: None,
+                wake,
                 slots: None,
                 out: VecDeque::new(),
             },
@@ -939,8 +985,11 @@ impl<H: Handler> Driver<H> {
             .map_err(|e| Error::new(format!("the driver's socket: {e}")))
     }
 
+    /// What the kernel holds for its sockets' queues: the one it serves on and its wake's.
     pub(crate) fn kernel_buffer_bytes(&self) -> Result<u64, Error> {
-        socket_buffers(&self.socket)
+        socket_buffers(&self.socket)?
+            .checked_add(socket_buffers(&self.wake)?)
+            .ok_or_else(|| Error::new("the driver's kernel queues: UDP queue size overflow"))
     }
 
     /// The handler, once the driver has ended.
@@ -997,15 +1046,29 @@ impl<H: Handler> Driver<H> {
                 (Some(a), Some(b)) => Some(a.min(b)),
                 (a, b) => a.or(b),
             };
-            // Until its next timer, a socket's timeout no shorter than its least, a nanosecond (it
-            // refuses none, `set_read_timeout`); with none due, until a datagram or a wake comes,
-            // which every command and stop sends ([`Sender`]).
-            let wait = next.map(|at| {
-                at.saturating_duration_since(Instant::now())
-                    .max(Duration::from_nanos(1))
-            });
+            // Until its next timer; with none due, until a datagram or a wake comes, which every
+            // command and stop sends ([`Sender`]) to its wake socket ([`Driver::wake`]).
+            let wait = next.map(|at| at.saturating_duration_since(Instant::now()));
+            let (served, woken) = match readable(&self.socket, &self.wake, wait) {
+                Ok(ready) => ready,
+                // A signal interrupts the wait (Linux signal(7)): another turn checks commands
+                // and timers without losing any of the connections.
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(Error::new(format!("the driver's sockets: {e}"))),
+            };
+            if woken {
+                // Every wake that came: the commands they tell of are the next turn's.
+                while self.wake.recv_from(&mut datagram).is_ok() {}
+            }
+            // A socket aimed at its peer is read whatever its wait said, so that its peer's
+            // refusal is read as it comes where the wait does not tell an error (WSAPoll).
+            if !served && self.aimed.is_none() {
+                continue;
+            }
+            // What is there read without waiting, the least a socket's timeout takes being a
+            // nanosecond (`set_read_timeout` refuses none).
             self.socket
-                .set_read_timeout(wait)
+                .set_read_timeout(Some(Duration::from_nanos(1)))
                 .map_err(|e| Error::new(format!("the driver's socket: {e}")))?;
             match self.socket.recv_from(&mut datagram) {
                 Ok((n, from)) => {
@@ -1212,7 +1275,12 @@ impl<H: Handler> Driver<H> {
             }
             let (mut io, handler) = self.io(now);
             io.close(key, 0, "refused there");
-            handler.lost(&mut io, key, "refused: no QUIC endpoint listens there (ICMP port unreachable)", None);
+            handler.lost(
+                &mut io,
+                key,
+                "refused: no QUIC endpoint listens there (ICMP port unreachable)",
+                None,
+            );
             self.client = io.client;
         }
     }
@@ -1243,21 +1311,36 @@ impl<H: Handler> Driver<H> {
             if !self.checked || !conn.connected {
                 continue;
             }
-            match conn.liveness.look(now, eliciting(&stats.frame_tx), stats.path.acked_bytes) {
+            conn.liveness.probe_timeout(conn.quic.probe_timeout());
+            let look = conn
+                .liveness
+                .look(now, eliciting(&stats.frame_tx), stats.path.acked_bytes);
+            match look {
                 Look::Fine => {}
                 Look::RanOut { waited, window } => {
                     let (mut io, handler) = self.io(now);
                     handler.ran_out(&mut io, key, waited, window);
                     self.client = io.client;
                 }
+                // Typed as QUIC types a peer unheard past its bound (RFC 9000 §10.1), for a
+                // handler that types its ends.
                 Look::Dead { .. } => {
                     let (mut io, handler) = self.io(now);
                     io.close(key, 0, "unanswered past the slowest answer seen");
-                    handler.lost(&mut io, key, "no answer within the slowest answer seen on its path", None);
+                    handler.cause(key, &ConnectionError::TimedOut);
+                    handler.lost(
+                        &mut io,
+                        key,
+                        "no answer within the slowest answer seen on its path",
+                        None,
+                    );
                     self.client = io.client;
                     continue;
                 }
             }
+            let Some(conn) = self.conns.get_mut(&key) else {
+                continue;
+            };
             if let Some(keep) = keep_within(self.lost, conn.quic.idle_timeout())
                 && conn.liveness.keep_alive(keep).is_some_and(|at| at <= now)
             {
@@ -1309,7 +1392,9 @@ impl<H: Handler> Driver<H> {
                     .unwrap_or_default();
                 if let Some(conn) = self.conns.get_mut(&key) {
                     conn.connected = true;
-                    conn.liveness.connected(now);
+                    let stats = conn.quic.stats();
+                    conn.liveness
+                        .connected(now, eliciting(&stats.frame_tx), stats.path.acked_bytes);
                     conn.liveness.peer_ack_delay(conn.quic.peer_max_ack_delay());
                 }
                 let (mut io, handler) = self.io(now);
@@ -1565,6 +1650,64 @@ fn eliciting(f: &hyper_quic::FrameStats) -> u64 {
     .fold(0u64, u64::saturating_add)
 }
 
+/// Where a wait begun `since` counts its silence from: its peer last `heard` after it began, or
+/// its probe timeout `pto` past its start, whichever is later.
+fn judged_from(heard: Option<Instant>, since: Instant, pto: Duration) -> Instant {
+    let progress = heard.map_or(since, |heard| heard.max(since));
+    progress.max(since.checked_add(pto).unwrap_or(since))
+}
+
+/// Whether `socket` and `wake` have something to read (a datagram, or `socket`'s error: its
+/// peer's ICMP refusal), waiting up to `wait` for either, none: until one does. poll(2) waits
+/// whole milliseconds, so a wait under one is one, and a timer is looked at no sooner than it
+/// is due.
+#[cfg(unix)]
+fn readable(socket: &UdpSocket, wake: &UdpSocket, wait: Option<Duration>) -> std::io::Result<(bool, bool)> {
+    use std::os::fd::AsRawFd as _;
+    let fd = |s: &UdpSocket| libc::pollfd {
+        fd: s.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let mut fds = [fd(socket), fd(wake)];
+    let ms = wait.map_or(-1, |w| {
+        libc::c_int::try_from(w.as_nanos().div_ceil(1_000_000)).unwrap_or(libc::c_int::MAX)
+    });
+    // SAFETY: poll(2) over this driver's two sockets, open while it runs, the array's length
+    // its count.
+    let n = unsafe { libc::poll(fds.as_mut_ptr(), 2, ms) };
+    if n < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let [served, woken] = fds.map(|f| f.revents != 0);
+    Ok((served, woken))
+}
+
+/// [`readable`] on Windows: WSAPoll's, its milliseconds as poll(2)'s.
+#[cfg(windows)]
+fn readable(socket: &UdpSocket, wake: &UdpSocket, wait: Option<Duration>) -> std::io::Result<(bool, bool)> {
+    use std::os::windows::io::AsRawSocket as _;
+    use windows_sys::Win32::Networking::WinSock::{POLLRDNORM, WSAGetLastError, WSAPOLLFD, WSAPoll};
+    let fd = |s: &UdpSocket| WSAPOLLFD {
+        fd: s.as_raw_socket() as usize,
+        events: POLLRDNORM,
+        revents: 0,
+    };
+    let mut fds = [fd(socket), fd(wake)];
+    let ms = wait.map_or(-1, |w| {
+        i32::try_from(w.as_nanos().div_ceil(1_000_000)).unwrap_or(i32::MAX)
+    });
+    // SAFETY: WSAPoll over this driver's two sockets, open while it runs, the array's length its
+    // count.
+    let n = unsafe { WSAPoll(fds.as_mut_ptr(), 2, ms) };
+    if n < 0 {
+        // SAFETY: retrieves this thread's Winsock failure.
+        return Err(std::io::Error::from_raw_os_error(unsafe { WSAGetLastError() }));
+    }
+    let [served, woken] = fds.map(|f| f.revents != 0);
+    Ok((served, woken))
+}
+
 /// The silence a connection is kept alive within: the shortest after which one on its path was
 /// found dead (`lost`), and the idle timeout its peer negotiated (RFC 9000 §10.1, hyper-quic's
 /// patch Q30), whichever is shorter; none where neither is, and no keep-alive goes.
@@ -1579,10 +1722,10 @@ fn keep_within(lost: Option<Duration>, idle: Option<Duration>) -> Option<Duratio
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use crate::tls::Known;
 
-    /// A timed socket read is not restarted after a signal, even with SA_RESTART
-    /// (Linux signal(7)). A harmless host signal must leave the driver serving commands.
+    /// A wait on the driver's sockets is not restarted after a signal, whatever SA_RESTART says
+    /// (poll(2), Linux signal(7)). A harmless host signal must leave the driver serving
+    /// commands.
     #[cfg(target_os = "linux")]
     #[test]
     fn an_interrupted_receive_keeps_serving_commands() {
@@ -1608,7 +1751,6 @@ mod tests {
             return;
         }
 
-        use std::os::fd::AsRawFd;
         use std::os::unix::thread::JoinHandleExt;
         use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -1647,10 +1789,9 @@ mod tests {
             "127.0.0.1:0".parse().unwrap(),
             None,
             Waiting,
-            Known::Never,
+            crate::tls::Known::Never,
         )
         .unwrap();
-        let fd = driver.socket.as_raw_fd();
         let (started, ready) = mpsc::channel();
         let worker = std::thread::spawn(move || {
             // SAFETY: gettid identifies this live thread.
@@ -1667,18 +1808,20 @@ mod tests {
             let call = std::fs::read_to_string(&syscall).unwrap();
             let mut words = call.split_whitespace();
             let number = words.next().and_then(|s| s.parse::<libc::c_long>().ok());
-            let socket = words
-                .next()
-                .and_then(|s| i32::from_str_radix(s.trim_start_matches("0x"), 16).ok());
-            if number == Some(libc::SYS_recvfrom) && socket == Some(fd) {
+            // Its wait: poll(2) of its sockets, ppoll's where the target has no poll.
+            #[cfg(target_arch = "x86_64")]
+            let waiting = [libc::SYS_poll, libc::SYS_ppoll];
+            #[cfg(not(target_arch = "x86_64"))]
+            let waiting = [libc::SYS_ppoll];
+            if number.is_some_and(|n| waiting.contains(&n)) {
                 break;
             }
             assert!(!worker.is_finished(), "the driver ended before its receive");
             std::thread::yield_now();
         }
         // SAFETY: the borrowed pthread identity belongs to worker, still owned and not
-        // joined. It is live, blocked in this socket's recvfrom; its handler records
-        // delivery without restarting that timed read.
+        // joined. It is live, blocked in its sockets' poll; its handler records delivery,
+        // which ends that wait.
         assert_eq!(unsafe { libc::pthread_kill(thread, libc::SIGUSR1) }, 0);
         while !HEARD.load(Ordering::SeqCst) {
             assert!(!worker.is_finished(), "the driver ended before the signal");
@@ -1695,24 +1838,31 @@ mod tests {
     }
 
     /// A handshake is held to its deadline from its start, the slowest seen from its peer, or
-    /// to none, as long as its probing goes on, each new probe told once with how long it has
-    /// waited; its end measures its first answer, and nothing of the handshake's holds it after.
-    /// The longest silence a connection lived through is the one measured, its peer last heard
-    /// at its last packet.
+    /// to none, as long as its probing goes on, each new probe past its first flight told once
+    /// with how long it has waited, and none once its peer is heard; its end measures its first
+    /// answer, and nothing of the handshake's holds it after. The longest silence a connection
+    /// lived through is the one measured, its peer last heard at its last packet.
     #[test]
     fn a_handshake_is_held_to_its_deadline_or_probes_on_and_its_silences_are_measured() {
         let t0 = Instant::now();
         let mut held = Liveness::new(t0, Some(ms(40)), Duration::ZERO);
         assert_eq!(held.due(), t0.checked_add(ms(40)));
-        assert_eq!(held.unanswered(t0 + ms(1), 1), Some((1, ms(1))));
-        assert_eq!(held.unanswered(t0 + ms(2), 1), None, "no new probe");
-        assert_eq!(held.unanswered(t0 + ms(3), 2), Some((2, ms(3))));
+        assert_eq!(held.unanswered(t0, 2), None, "its first flight is no probe");
+        assert_eq!(held.unanswered(t0 + ms(1), 3), Some((1, ms(1))));
+        assert_eq!(held.unanswered(t0 + ms(2), 3), None, "no new probe");
+        assert_eq!(held.unanswered(t0 + ms(3), 5), Some((3, ms(3))));
+        held.heard(t0 + ms(4));
+        assert_eq!(held.unanswered(t0 + ms(5), 6), None, "its peer answers");
         let mut l = Liveness::new(t0, None, Duration::ZERO);
-        assert_eq!(l.due(), None, "a peer never reached is waited for as long as it probes");
+        assert_eq!(
+            l.due(),
+            None,
+            "a peer never reached is waited for as long as it probes"
+        );
         assert_eq!(l.last_heard(), None, "nothing heard yet");
         l.heard(t0 + ms(30));
         assert_eq!(l.last_heard(), Some(t0 + ms(30)));
-        l.connected(t0 + ms(30));
+        l.connected(t0 + ms(30), 0, 0);
         assert_eq!((l.due(), l.handshake_took()), (None, Some(ms(30))));
         assert_eq!(l.unanswered(t0 + ms(31), 9), None, "its handshake ended");
         assert_eq!(l.window(), ms(30));
@@ -1743,9 +1893,13 @@ mod tests {
     fn a_send_waits_its_window_runs_out_with_progress_and_dies_without() {
         let t0 = Instant::now();
         let mut l = Liveness::new(t0, None, Duration::ZERO);
-        assert_eq!(l.look(t0, 1, 0), Look::Fine, "nothing waits before its handshake ends");
+        assert_eq!(
+            l.look(t0, 1, 0),
+            Look::Fine,
+            "nothing waits before its handshake ends"
+        );
         l.heard(t0 + ms(10));
-        l.connected(t0 + ms(10));
+        l.connected(t0 + ms(10), 0, 0);
         l.peer_ack_delay(ms(5));
         assert_eq!(l.window(), ms(15));
         assert_eq!(l.look(t0 + ms(10), 0, 0), Look::Fine);
@@ -1779,6 +1933,70 @@ mod tests {
         assert_eq!(seen, (ms(12), Some(ms(88)), true));
     }
 
+    /// What its handshake sent, answered as it ends, is no send waiting: a wait begun for it
+    /// would never see an answer, and its peer, quiet while its command runs, would be taken
+    /// for dead a window on (what failed 10 of tests/loopback.rs's 19 before). A send after it
+    /// waits for its own answer.
+    #[test]
+    fn what_its_handshake_sent_is_no_send_waiting() {
+        let t0 = Instant::now();
+        let mut l = Liveness::new(t0, None, Duration::ZERO);
+        l.heard(t0 + ms(10));
+        l.connected(t0 + ms(10), 4, 1200);
+        l.peer_ack_delay(ms(5));
+        assert_eq!(l.look(t0 + ms(11), 4, 1200), Look::Fine);
+        assert_eq!(l.next(), None, "nothing waits");
+        assert_eq!(l.look(t0 + ms(10_000), 4, 1200), Look::Fine, "a quiet peer lives");
+        assert_eq!(l.look(t0 + ms(10_001), 5, 1200), Look::Fine);
+        assert_eq!(l.next(), Some(t0 + ms(10_001) + l.window()));
+    }
+
+    /// A wait is judged no sooner than QUIC's loss recovery judges its send (its probe timeout,
+    /// RFC 9002 §6.2.1): a peer's acknowledgement delayed by its max_ack_delay and a late timer,
+    /// past a window its handshake seeded but within the probe timeout, has not run out, and is
+    /// the slowest answer from then on; a send nothing answers runs out past its window and dies
+    /// a whole window past its probe timeout. Red before: 10 of tests/loopback.rs's 19 died on a
+    /// send 28.9 ms unanswered, their window 26.9 ms (a handshake of 1.9 ms and 25 ms of
+    /// max_ack_delay), their probe timeout 30.7 ms.
+    #[test]
+    fn a_wait_is_judged_no_sooner_than_its_probe_timeout() {
+        let t0 = Instant::now();
+        let mut l = Liveness::new(t0, None, Duration::ZERO);
+        l.heard(t0 + ms(2));
+        l.connected(t0 + ms(2), 0, 0);
+        l.peer_ack_delay(ms(25));
+        l.probe_timeout(ms(31));
+        assert_eq!(l.window(), ms(27));
+        assert_eq!(l.look(t0 + ms(2), 1, 0), Look::Fine);
+        assert_eq!(l.next(), Some(t0 + ms(33)), "judged at its probe timeout");
+        assert_eq!(
+            l.look(t0 + ms(30), 1, 0),
+            Look::Fine,
+            "past its window, within its timeout"
+        );
+        l.heard(t0 + ms(31));
+        assert_eq!(l.look(t0 + ms(31), 1, 100), Look::Fine);
+        assert_eq!(l.window(), ms(54));
+        assert_eq!(l.look(t0 + ms(40), 2, 100), Look::Fine);
+        assert_eq!(l.next(), Some(t0 + ms(94)));
+        assert_eq!(
+            l.look(t0 + ms(95), 2, 100),
+            Look::RanOut {
+                waited: ms(55),
+                window: ms(54)
+            }
+        );
+        assert_eq!(l.next(), Some(t0 + ms(125)));
+        assert_eq!(l.look(t0 + ms(125), 2, 100), Look::Fine);
+        assert_eq!(
+            l.look(t0 + ms(126), 2, 100),
+            Look::Dead {
+                quiet: ms(9),
+                window: ms(54)
+            }
+        );
+    }
+
     /// A keep-alive goes before the silence its path is kept within, early by the window so
     /// that it lands; none while a send waits; and it is kept within the shortest silence found
     /// dead and the peer's own idle timeout, whichever is shorter, or none.
@@ -1788,11 +2006,15 @@ mod tests {
         let mut l = Liveness::new(t0, None, ms(10));
         assert_eq!(l.keep_alive(ms(100)), None, "none before its handshake ends");
         l.heard(t0 + ms(4));
-        l.connected(t0 + ms(4));
+        l.connected(t0 + ms(4), 0, 0);
         l.peer_ack_delay(ms(5));
         assert_eq!(l.window(), ms(15));
         assert_eq!(l.keep_alive(ms(100)), Some(t0 + ms(89)));
-        assert_eq!(l.keep_alive(ms(9)), Some(t0 + ms(4)), "at once, where the window is longer");
+        assert_eq!(
+            l.keep_alive(ms(9)),
+            Some(t0 + ms(4)),
+            "at once, where the window is longer"
+        );
         assert_eq!(l.look(t0 + ms(50), 1, 0), Look::Fine);
         assert_eq!(l.keep_alive(ms(100)), None, "a send waits");
         assert_eq!(keep_within(Some(ms(90_000)), Some(ms(10_000))), Some(ms(10_000)));

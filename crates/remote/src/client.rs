@@ -656,13 +656,12 @@ pub fn join(identity: &Identity, invitation: &Invitation) -> (Result<Result<(), 
         secret: invitation.secret,
     };
     let mut seen = Seen::default();
-    let joined = run(identity, remote, ask, None, None, Hooks::default(), &mut seen).and_then(|answer| {
-        match answer {
+    let joined =
+        run(identity, remote, ask, None, None, Hooks::default(), &mut seen).and_then(|answer| match answer {
             Answer::Joined => Ok(Ok(())),
             Answer::Refused(why) => Ok(Err(why)),
             Answer::Exit(_) => Err(Error::new("the daemon answered a join as a command")),
-        }
-    });
+        });
     (joined, seen)
 }
 

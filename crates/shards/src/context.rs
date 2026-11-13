@@ -726,7 +726,8 @@ fn peer_record(home: &Path, name: &str) -> PathBuf {
 /// MAY use the previous connection's final smoothed RTT value"). A daemon never reached where
 /// there is none, or it is of another daemon or address, or reads as no record.
 pub(crate) fn known(home: &Path, context: &Context) -> Known {
-    fs::read_to_string(peer_record(home, &context.name)).map_or(Known::Never, |text| context.peer_parse(&text))
+    fs::read_to_string(peer_record(home, &context.name))
+        .map_or(Known::Never, |text| context.peer_parse(&text))
 }
 
 /// Keeps what `home` knows of `context`'s daemon's path after a connection that started from
@@ -744,10 +745,8 @@ pub(crate) fn keep(home: &Path, context: &Context, before: Known, seen: &Seen) -
 }
 
 /// Runs `request` on `context`'s daemon as [`client::exec_made`] does (D180), as the home
-/// `home` whose identity is `identity`: its handshake and its waits starting from what the home
-/// knows of the daemon's path ([`known`]), and what its connection saw kept for the next
-/// ([`keep`]). A daemon never reached, or whose last wait ran out, is waited for as long as
-/// this command is, each probe of its handshake told on stderr. What the connection saw, too.
+/// `home` whose identity is `identity` ([`exec_with`]): a daemon never reached, or whose last
+/// wait ran out, waited for as long as this command is. What the connection saw, too.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn exec(
     home: &Path,
@@ -760,6 +759,39 @@ pub(crate) fn exec(
     steered: impl FnOnce(client::Controls),
     made: impl FnMut(&[u8]),
 ) -> (Result<Result<i32, String>, shards_remote::Error>, Seen) {
+    exec_with(
+        home,
+        identity,
+        context,
+        request,
+        stdin,
+        stdout,
+        stderr,
+        steered,
+        made,
+        |_| true,
+    )
+}
+
+/// Runs `request` on `context`'s daemon as [`client::exec_with`] does (D180), as the home
+/// `home` whose identity is `identity`: its handshake and its waits starting from what the home
+/// knows of the daemon's path ([`known`]), and what its connection saw kept for the next
+/// ([`keep`]). Each probe of a handshake that has not ended is told on stderr, and `waits`
+/// asked whether it waits on: a daemon never reached, or whose last wait ran out, has no
+/// deadline but its caller's. What the connection saw, too.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn exec_with(
+    home: &Path,
+    identity: &Identity,
+    context: &Context,
+    request: Request,
+    stdin: Option<Box<dyn io::Read + Send>>,
+    stdout: impl io::Write + Send + 'static,
+    stderr: impl io::Write + Send + 'static,
+    steered: impl FnOnce(client::Controls),
+    made: impl FnMut(&[u8]),
+    mut waits: impl FnMut(client::Unanswered) -> bool,
+) -> (Result<Result<i32, String>, shards_remote::Error>, Seen) {
     let before = known(home, context);
     let told = |unanswered: client::Unanswered| {
         let _ = writeln!(
@@ -770,7 +802,7 @@ pub(crate) fn exec(
             unanswered.probes,
             unanswered.waited
         );
-        true
+        waits(unanswered)
     };
     let (ran, seen) = client::exec_with(
         identity,
@@ -784,9 +816,9 @@ pub(crate) fn exec(
         told,
         |_| {},
     );
-    if let Err(e) = keep(home, context, before, &seen) {
-        let _ = writeln!(io::stderr(), "shards: {e}");
-    }
+    // A record not kept leaves the next connection to start from the one kept before, nothing
+    // of this command's lost: no word of it on a stderr whose bytes are the command's.
+    let _ = keep(home, context, before, &seen);
     (ran, seen)
 }
 
@@ -1527,7 +1559,12 @@ fn artifact_building(words: &[String]) -> Option<Built> {
 /// kept there as its referrer, once the machine finds that it signs what the name names
 /// still. `None` where the command is no artifact's signature, or asks for its help, which
 /// the machine says.
-fn artifact_sign_there(home: &Path, identity: &Identity, context: &Context, words: &[String]) -> Option<ExitCode> {
+fn artifact_sign_there(
+    home: &Path,
+    identity: &Identity,
+    context: &Context,
+    words: &[String],
+) -> Option<ExitCode> {
     let said = shards_cmdline::grammar::rewrite(words).unwrap_or_else(|| words.to_vec());
     let [kind_word, action, rest @ ..] = said.as_slice() else {
         return None;
@@ -1895,7 +1932,9 @@ fn build_there(
                     };
                     let relayed = std::thread::Builder::new()
                         .name("build-agent".into())
-                        .spawn_scoped(scope, move || relay_agent(home, identity, context, key, &token, agent));
+                        .spawn_scoped(scope, move || {
+                            relay_agent(home, identity, context, key, &token, agent)
+                        });
                     if let Err(e) = relayed {
                         let _ = writeln!(io::stderr(), "shards: a thread for an agent: {e}");
                     }
@@ -2960,7 +2999,9 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
     // machine's daemon: its files here are this client's. What steers a command steers no
     // step, so a signal ends the client, and the step there with its stream.
     if let Some(parsed) = copying(&words_sent) {
-        return crate::cli::cp::copy(&parsed, &|argv, fds| step_there(home, &identity, context, argv, fds));
+        return crate::cli::cp::copy(&parsed, &|argv, fds| {
+            step_there(home, &identity, context, argv, fds)
+        });
     }
     // The file is made once the signals that would end the client are taken, and named
     // while it is made, so that one that ends the client removes it.
@@ -3372,9 +3413,7 @@ fn create(home: &Path, name: &str, rest: &[&str]) -> Result<(), String> {
     // context's of this name, removed, is replaced, and one not kept leaves its next command
     // to start as from a daemon never reached.
     let _ = fs::remove_file(peer_record(home, name));
-    if let Err(e) = keep(home, &context, Known::Never, &seen) {
-        let _ = writeln!(io::stderr(), "shards: {e}");
-    }
+    let _ = keep(home, &context, Known::Never, &seen);
     let _ = writeln!(io::stdout(), "{name}");
     let _ = writeln!(io::stderr(), "Successfully created context {name:?}");
     Ok(())
@@ -3854,7 +3893,10 @@ mod tests {
             lost: Some(ms(300_000)),
         };
         assert_eq!(known(&home, &gpu), Known::Reached(path));
-        let ran_out = Seen { ran_out: true, ..seen };
+        let ran_out = Seen {
+            ran_out: true,
+            ..seen
+        };
         keep(&home, &gpu, known(&home, &gpu), &ran_out).unwrap();
         assert_eq!(known(&home, &gpu), Known::RanOut(path));
         let other = Context {
@@ -3871,7 +3913,10 @@ mod tests {
         std::fs::write(peer_record(&home, "gpu"), unread).unwrap();
         assert_eq!(known(&home, &gpu), Known::Never);
         keep(&home, &gpu, Known::Never, &Seen::default()).unwrap();
-        assert_eq!(std::fs::read_to_string(peer_record(&home, "gpu")).unwrap(), unread);
+        assert_eq!(
+            std::fs::read_to_string(peer_record(&home, "gpu")).unwrap(),
+            unread
+        );
         remove(&home, &["gpu"]).unwrap();
         assert!(!peer_record(&home, "gpu").exists());
     }

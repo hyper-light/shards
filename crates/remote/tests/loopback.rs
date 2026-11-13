@@ -240,6 +240,10 @@ fn daemon(
     clients: Vec<(String, Vec<u8>)>,
     invitations: Vec<Invitation>,
 ) -> Daemon {
+    // The commands' program, built before the daemon serves: its first start would build it
+    // (cargo, seconds) on the daemon's driver, which answers nothing meanwhile, and a client
+    // whose send goes unanswered a whole window past its probe timeout is let go (D180).
+    shards_testdir::helper().unwrap();
     let (seen, rx) = mpsc::channel();
     let machine = Machine {
         clients: Mutex::new(clients),
@@ -801,7 +805,6 @@ struct RawClient {
     ask: net::Sender<Ask>,
     heard: mpsc::Receiver<Heard>,
     stops: mpsc::Receiver<StreamId>,
-    driver: Option<std::thread::JoinHandle<()>>,
 }
 
 impl RawClient {
@@ -809,7 +812,7 @@ impl RawClient {
         let (heard_tx, heard) = mpsc::channel();
         let (stops_tx, stops) = mpsc::channel();
         let (tx, made) = mpsc::channel();
-        let driver = std::thread::spawn(move || {
+        std::thread::spawn(move || {
             let raw = Raw {
                 config: Some(tls::client(identity, remote.daemon, remote.known).unwrap()),
                 heard: heard_tx,
@@ -818,25 +821,15 @@ impl RawClient {
                 inbound: HashMap::new(),
                 done: false,
             };
-            let (mut driver, sender) = Driver::bind(
-                "127.0.0.1:0".parse().unwrap(),
-                None,
-                raw,
-                remote.known,
-            )
-            .unwrap();
+            let (mut driver, sender) =
+                Driver::bind("127.0.0.1:0".parse().unwrap(), None, raw, remote.known).unwrap();
             let _ = tx.send(sender);
             let _ = driver.run();
         });
         let ask = made.recv_timeout(DEADLINE).unwrap();
         ask.send(net::Command::Handler(Ask::Connect(remote.address)))
             .unwrap();
-        let client = RawClient {
-            ask,
-            heard,
-            stops,
-            driver: Some(driver),
-        };
+        let client = RawClient { ask, heard, stops };
         assert_eq!(client.next(), Heard::Connected);
         client
     }
@@ -863,14 +856,6 @@ impl RawClient {
 
     fn ask(&self, ask: Ask) {
         self.ask.send(net::Command::Handler(ask)).unwrap();
-    }
-
-    /// Closes its connection, and waits for its driver to have sent the close.
-    fn close(mut self) {
-        self.ask(Ask::Close);
-        if let Some(driver) = self.driver.take() {
-            driver.join().unwrap();
-        }
     }
 
     /// Waits until the daemon has asked it to send no more of `stream`.
@@ -1141,7 +1126,11 @@ fn no_daemon_answering_is_probed_until_its_caller_gives_up() {
     let said = ran.unwrap_err().to_string();
     assert!(said.contains("no shards daemon answered"), "{said}");
     assert!(told.len() >= 2, "{told:?}");
-    assert!(told.windows(2).all(|w| w[0].probes < w[1].probes && w[0].waited <= w[1].waited), "{told:?}");
+    assert!(
+        told.windows(2)
+            .all(|w| w[0].probes < w[1].probes && w[0].waited <= w[1].waited),
+        "{told:?}"
+    );
     assert_eq!((seen.handshake, seen.ran_out, seen.refused), (None, false, false));
     assert_eq!(remote.known.after(&seen), tls::Known::Never);
     drop(silent);

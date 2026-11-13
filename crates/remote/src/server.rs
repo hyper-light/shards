@@ -672,7 +672,11 @@ impl<H: Host> Handler for Server<H> {
             if self.strangers().count() >= invited
                 && let Some((oldest, _)) = self.strangers().min_by_key(|(_, since)| *since)
             {
-                io.close(oldest, UNENROLLED, "not enrolled: a newer stranger took its place");
+                io.close(
+                    oldest,
+                    UNENROLLED,
+                    "not enrolled: a newer stranger took its place",
+                );
                 self.peers.remove(&oldest);
             }
         }
@@ -758,7 +762,6 @@ impl<H: Host> Handler for Server<H> {
     fn done(&self) -> bool {
         false
     }
-
 }
 
 /// Stops a [`serve`]: each connection closed, its peer told.

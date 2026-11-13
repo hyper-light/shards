@@ -109,7 +109,11 @@ impl Known {
             answer: before.map_or(seen.answer, |p| p.answer.max(seen.answer)),
             lost,
         };
-        if seen.ran_out { Known::RanOut(path) } else { Known::Reached(path) }
+        if seen.ran_out {
+            Known::RanOut(path)
+        } else {
+            Known::Reached(path)
+        }
     }
 }
 
@@ -240,13 +244,7 @@ fn verify_signature(
 /// The server side, which a daemon listening for clients accepts connections under: a client's
 /// round trip is not known before its handshake, which starts from a peer never measured's.
 pub fn server(identity: &Identity) -> Result<ServerConfig, Error> {
-    server_under(
-        provider(),
-        identity,
-        None,
-        transport(true, Known::Never),
-        ALPN,
-    )
+    server_under(provider(), identity, None, transport(true, Known::Never), ALPN)
 }
 
 pub(crate) fn owner_server(
@@ -482,13 +480,7 @@ mod tests {
             ALPN,
         );
         let to_ours = connect(server(&daemon).unwrap(), theirs.unwrap());
-        let theirs = server_under(
-            other,
-            &daemon,
-            None,
-            transport(true, Known::Never),
-            ALPN,
-        );
+        let theirs = server_under(other, &daemon, None, transport(true, Known::Never), ALPN);
         let from_ours = connect(
             theirs.unwrap(),
             client(&home, daemon.fingerprint(), Known::Never).unwrap(),
@@ -543,18 +535,8 @@ mod tests {
             client(&home, daemon.fingerprint(), Known::Never).unwrap(),
         );
         let alpn = crate::managed::ALPN;
-        let owner = owner_server(
-            &daemon,
-            home.fingerprint(),
-            transport(true, Known::Never),
-            alpn,
-        );
-        let subscriber = client_with(
-            &home,
-            daemon.fingerprint(),
-            transport(false, Known::Never),
-            alpn,
-        );
+        let owner = owner_server(&daemon, home.fingerprint(), transport(true, Known::Never), alpn);
+        let subscriber = client_with(&home, daemon.fingerprint(), transport(false, Known::Never), alpn);
         let managed = connect(owner.unwrap(), subscriber.unwrap());
         assert_aes_256_gcm(&context);
         assert_aes_256_gcm(&managed);

@@ -261,7 +261,11 @@ pub(crate) struct Relays {
 impl Relays {
     /// Serves `served` for the run there that names their tokens, once each relay is kept on
     /// `context`'s machine, as the home `home` asks it (`context::exec`): or why one is not.
-    pub(crate) fn start(home: &Path, context: &crate::context::Context, served: &[Served]) -> Result<Relays, String> {
+    pub(crate) fn start(
+        home: &Path,
+        context: &crate::context::Context,
+        served: &[Served],
+    ) -> Result<Relays, String> {
         // As far as its limit may go, as a share process raises its own.
         let _ = shards_vmm::platform::raise_descriptor_limit();
         let limits = shards_vmm::devices::virtio::fs::server::Limits::now()
@@ -281,7 +285,11 @@ impl Relays {
             let (home, context) = (home.to_path_buf(), context.clone());
             let thread = std::thread::Builder::new()
                 .name("context-bind".into())
-                .spawn(move || serve(&home, &identity, &context, &token, &here, &server, ready_tx, steer_tx))
+                .spawn(move || {
+                    serve(
+                        &home, &identity, &context, &token, &here, &server, ready_tx, steer_tx,
+                    )
+                })
                 .map_err(|e| format!("a thread for {}: {e}", s.relay.here))?;
             relays.threads.push(thread);
             waits.push((ready_rx, steer_rx));

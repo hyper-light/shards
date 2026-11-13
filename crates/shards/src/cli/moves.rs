@@ -272,7 +272,7 @@ impl Times {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Heard {
     /// The longest that machine went unheard and was heard again: its slowest answer in this
-    /// move, held below the silence that ends a connection (`shards_remote::tls::QUIET`).
+    /// move.
     slowest: Duration,
     /// When it was last heard.
     last: Option<Instant>,
@@ -330,7 +330,7 @@ fn removed_there(there: &AskThere<'_>, name: &str) -> bool {
 /// export wrote them, and as they were sent where it was packed; the bytes of UDP the
 /// other machine acknowledged, over the import's whole time, the rate the link was seen to
 /// carry; its round trip, the packets it took for lost, and the longest its peer went
-/// unheard, which `shards_remote::tls::QUIET` bounds.
+/// unheard.
 fn sent_line(tally: Option<crate::packing::Tally>, seen: &Seen, took: std::time::Duration) -> String {
     let packed = match tally {
         Some(t) => format!(
@@ -365,9 +365,13 @@ fn moved(home: &Path, name: &str, to: &str, live: bool, ask: &Ask<'_>) -> Result
     };
     let context = crate::context::load(home, to)?.ok_or_else(|| format!("no context named {to}"))?;
     let identity = crate::context::identity(home)?;
-    // A step on the other machine: `argv`, `stdin` sent as it comes; what it came to, and
-    // what its connection saw of the link.
-    let exec = |argv: Vec<String>, stdin: Option<Box<dyn Read + Send>>| -> (Asked, Seen) {
+    // A step on the other machine: `argv`, `stdin` sent as it comes, its handshake waiting on
+    // while `waits` says (`context::exec_with`); what it came to, and what its connection saw
+    // of the link.
+    let exec = |argv: Vec<String>,
+                stdin: Option<Box<dyn Read + Send>>,
+                waits: &mut dyn FnMut(shards_remote::client::Unanswered) -> bool|
+     -> (Asked, Seen) {
         let (out_tx, out_rx) = std::sync::mpsc::channel();
         let (err_tx, err_rx) = std::sync::mpsc::channel();
         let request = Request {
@@ -375,7 +379,7 @@ fn moved(home: &Path, name: &str, to: &str, live: bool, ask: &Ask<'_>) -> Result
             env: Vec::new(),
             terminal: None,
         };
-        let (ran, seen) = crate::context::exec(
+        let (ran, seen) = crate::context::exec_with(
             home,
             &identity,
             &context,
@@ -385,6 +389,7 @@ fn moved(home: &Path, name: &str, to: &str, live: bool, ask: &Ask<'_>) -> Result
             Taken(err_tx),
             |_| {},
             |_| {},
+            waits,
         );
         let asked = match ran {
             Ok(Ok(status)) => Ok(Ok((
@@ -403,7 +408,7 @@ fn moved(home: &Path, name: &str, to: &str, live: bool, ask: &Ask<'_>) -> Result
     // A step there, a refusal and no answer alike its error.
     let there_seen =
         |argv: Vec<String>, stdin: Option<Box<dyn Read + Send>>| -> (Result<There, String>, Seen) {
-            let (asked, seen) = exec(argv, stdin);
+            let (asked, seen) = exec(argv, stdin, &mut |_| true);
             heard.lock().unwrap_or_else(PoisonError::into_inner).saw(&seen);
             (asked.flatten(), seen)
         };
@@ -609,7 +614,13 @@ fn moved(home: &Path, name: &str, to: &str, live: bool, ask: &Ask<'_>) -> Result
         // run in both places, nor in neither, where it cannot.
         Err(e) => {
             let so_far = *heard.lock().unwrap_or_else(PoisonError::into_inner);
-            let mut inspect = || exec(step(&["inspect", "-f", "{{.State.Running}}", name]), None);
+            // An ask that hears nothing gives up as that machine goes silent past this move's
+            // slowest answer ([`Heard::silent`]), as a daemon whose last wait ran out has no
+            // handshake deadline of its own (D180).
+            let mut inspect = || {
+                let argv = step(&["inspect", "-f", "{{.State.Running}}", name]);
+                exec(argv, None, &mut |_| !so_far.silent())
+            };
             match running_there(&mut inspect, so_far) {
                 Some(true) => {}
                 // Not running there, and seen gone: it goes on here alone.
