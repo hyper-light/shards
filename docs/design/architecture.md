@@ -24064,7 +24064,7 @@ memory its guest holds before its guest drops its page cache (D188's measure, PM
 image run); an orchestrator that needs D188's pressure give-back through its run host to keep
 its runs within its budget.
 
-### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the injector, the CA, the broker and the real-VM runs owed)
+### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process built, step 2's first slice; the granted members' trust, the leases, the injector, the broker and the real-VM runs owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 33: every kiln harness runs in a
 Shards microVM, and a harness needs its model-provider credential without the credential
