@@ -2374,6 +2374,11 @@ impl Patience {
     pub fn seen(&self) -> shards_api::Seen {
         self.wait.kind.record().seen()
     }
+
+    /// Its wait's account ([`Wait::account`]): what its last look counted as progress.
+    pub fn account(&self) -> String {
+        self.wait.account()
+    }
 }
 
 /// The VM processes `client` is, or started, as far down as its descendants go: shards-vm's
