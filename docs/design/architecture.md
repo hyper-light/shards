@@ -23308,7 +23308,8 @@ reboots, driver updates or hot plug; a device's own identity does.
   the GPU's render node, as `--gpus` gives a run's; it boots that kernel in the GPU's VM
   process with `--gpu` and each `--gpu-device`. (2d60abb24 booted the stored guest's kernel,
   which has no GPU driver, and gave the command no render node: fixed with
-  `a_run_naming_gpus_boots_the_gpu_guest_and_reaches_its_render_node`, red first.) A host
+  `a_run_naming_gpus_asks_for_the_gpu_guest_and_its_render_node` and
+  `a_run_given_its_gpu_boots_the_gpu_guests_kernel`, red first.) A host
   that gives a microVM no GPU (`run::GIVES_GPU`) refuses GPUs named, `Unsupported`. Under the
   nesting grant the command reads them in `/run/shards/gpus` (D234's `gpus=`).
 

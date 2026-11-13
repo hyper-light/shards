@@ -4225,37 +4225,43 @@ mod tests {
         );
     }
 
-    /// D232 through D231, its guest (2d60abb24 booted the stored guest's kernel, which has no
-    /// GPU driver, and gave its command no render node): a run naming GPUs asks for the
-    /// microVM's GPU as `--gpus 1` asks it, where this host gives one, so that `run::prepare`
-    /// gives it the GPU's guest kernel (D144), its VM boots that kernel with its guest's init,
-    /// and its command is given the GPU's render node, as `--gpus` gives a run's; a run naming
-    /// none asks for none, boots its guest's own kernel and has no render node.
+    /// D232 through D231, what a run naming GPUs asks (2d60abb24 asked none, so its guest had
+    /// no GPU driver and its command no render node): the microVM's GPU, as `--gpus 1` asks
+    /// it, where this host gives one, so that `run::prepare` gives it the GPU's guest kernel
+    /// (D144), and its command the GPU's render node, as `--gpus` gives a run's; a run naming
+    /// none asks for neither.
     #[test]
-    fn a_run_naming_gpus_boots_the_gpu_guest_and_reaches_its_render_node() {
+    fn a_run_naming_gpus_asks_for_the_gpu_guest_and_its_render_node() {
         let naming = wire::Request {
             command: Some(vec!["node".into()]),
             gpu_devices: vec![shards_api::PhysicalGpu::MetalRegistry(0x1_0000_02a1)],
             ..request(Vec::new())
         };
         let gpus = hosted::as_run(&naming, None);
+        let none = hosted::as_run(&request(Vec::new()), None);
         assert_eq!(
             crate::run::wants_gpu(&gpus).is_ok_and(|wants| wants),
             crate::run::GIVES_GPU
         );
+        assert_eq!(crate::run::wants_gpu(&none), Ok(false));
         let renders = |run: &shards_ipc::Run| {
             let node = crate::run::RENDER_NODE.as_bytes();
-            crate::setup::setup(run, &[], None, None)
-                .unwrap()
+            let mut setup = Vec::new();
+            crate::setup::security_setup(&mut setup, run, shards_seccomp::Kernel(6, 18), None, &[], None)
+                .unwrap();
+            setup
                 .iter()
                 .any(|e| e.starts_with(b"devices=") && e.windows(node.len()).any(|w| w == node))
         };
         assert_eq!(renders(&gpus), crate::run::GIVES_GPU);
-        assert!(!renders(&hosted::as_run(&request(Vec::new()), None)));
-        assert_eq!(
-            crate::run::wants_gpu(&hosted::as_run(&request(Vec::new()), None)),
-            Ok(false)
-        );
+        assert!(!renders(&none));
+    }
+
+    /// D232 through D231, what a run given its GPU boots (2d60abb24 booted its stored guest's
+    /// kernel): the GPU's guest kernel `run::prepare` gave it, with its guest's init, as the
+    /// daemon boots a run given one; a run given none, its guest's own.
+    #[test]
+    fn a_run_given_its_gpu_boots_the_gpu_guests_kernel() {
         let stored = crate::run::Boot::Stored(crate::guest::Guest {
             kernel: "/store/vmlinux".into(),
             init: "/store/init".into(),
