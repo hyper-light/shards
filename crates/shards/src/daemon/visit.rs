@@ -326,8 +326,10 @@ impl<D: crate::containers::Disk> Daemon<D> {
                     revents: 0,
                 };
                 let ms = libc::c_int::try_from(left.as_millis().max(1)).unwrap_or(libc::c_int::MAX);
-                // SAFETY: poll(2) on one pollfd of a descriptor the inbox holds open.
-                unsafe { libc::poll(&raw mut polled, 1, ms) };
+                super::timed(super::poll_timeout(ms), || {
+                    // SAFETY: poll(2) on one pollfd of a descriptor the inbox holds open.
+                    unsafe { libc::poll(&raw mut polled, 1, ms) }
+                });
             }
             #[cfg(windows)]
             let _ = stream.wait_readable(None, Instant::now().checked_add(left));
@@ -339,6 +341,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
 /// most), trimmed: why it ended before it held.
 fn said_to(client: &UnixStream) -> String {
     let _ = client.set_read_timeout(Some(Duration::from_secs(1)));
+    let _waiting = super::Waiting::of(Some(Duration::from_secs(1)));
     let mut said = Vec::new();
     while let Ok(Some(m)) = shards_ipc::recv(client) {
         if m.kind == kind::ERR {

@@ -1222,7 +1222,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         };
         let format = shards_cmdline::format::stats::format(source);
         loop {
-            std::thread::sleep(Duration::from_secs(1));
+            super::slept(Duration::from_secs(1));
             let (rows, measured) = sample();
             if !measured && parsed.bool("no-stream") && !resampled {
                 resampled = true;
@@ -1724,7 +1724,9 @@ impl<D: crate::containers::Disk> Daemon<D> {
             lock(&inbox).guest_times.retain(|(n, _)| *n != number);
             return Err(format!("asking its microVM: {e}"));
         }
-        let answered = answer.recv_timeout(super::TAKE_TIMEOUT);
+        let answered = super::timed(Some(super::TAKE_TIMEOUT), || {
+            answer.recv_timeout(super::TAKE_TIMEOUT)
+        });
         if answered.is_err() {
             lock(&inbox).guest_times.retain(|(n, _)| *n != number);
         }
@@ -2196,7 +2198,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 .filter_map(|e| e.deadline)
                 .min()
                 .map(|d| d.saturating_duration_since(Instant::now()));
-            if let Err(e) = poller.wait(&mut ready, timeout) {
+            if let Err(e) = super::timed(timeout, || poller.wait(&mut ready, timeout)) {
                 super::log(format!("waiting for containers' ends: {e}"));
                 // Nothing to wait on: what is left is given up, as its time would be.
                 for gone in going.drain(..) {
@@ -4051,7 +4053,9 @@ pub(super) fn wait_readable(
 ) -> io::Result<[bool; 3]> {
     let deadline = timeout.and_then(|t| Instant::now().checked_add(t));
     let events: Vec<_> = watches.iter().map(|watch| watch.fd()).collect();
-    let (streams, signalled) = shards_ipc::await_any(&[end, client], &events, deadline)?;
+    let (streams, signalled) = super::timed(timeout, || {
+        shards_ipc::await_any(&[end, client], &events, deadline)
+    })?;
     Ok([
         signalled.iter().any(|&s| s),
         streams.first().copied().unwrap_or(false),

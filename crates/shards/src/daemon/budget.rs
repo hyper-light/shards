@@ -561,8 +561,8 @@ impl<D: Disk> Daemon<D> {
                     if short.is_empty() {
                         woke = WAKE.wait(woke).unwrap_or_else(PoisonError::into_inner);
                     } else {
-                        let (w, waited) = WAKE
-                            .wait_timeout(woke, shards_vmm::platform::PRESSURE_WINDOW)
+                        let window = shards_vmm::platform::PRESSURE_WINDOW;
+                        let (w, waited) = super::timed(Some(window), || WAKE.wait_timeout(woke, window))
                             .unwrap_or_else(PoisonError::into_inner);
                         woke = w;
                         if waited.timed_out() {
