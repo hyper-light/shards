@@ -9,6 +9,7 @@ pub mod check;
 pub mod compare;
 pub mod compile;
 pub mod copyprop;
+pub mod digits;
 pub mod eval;
 pub mod funcs;
 pub mod goquote;

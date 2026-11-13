@@ -1,0 +1,26 @@
+# PM M537: a builtin called once on operands read from JSON, as
+# fuzz/fuzz_targets/rego-builtins.rs calls them, its answer written as JSON as the fuzz
+# target writes it: the time, the text's length and the process's peak resident memory,
+# built as shards' release is (fat LTO, one codegen unit). One call a process, so the
+# peak is the call's. A workspace of its own:
+#
+#   cargo +1.98.1 run --release --manifest-path docs/research/measurements/rego-bignum/text/Cargo.toml -- NAME 'ARGS' [HOLDABLE]
+#
+# text/run.sh runs PM M537's cases.
+[package]
+name = "rego-bignum-text"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[dependencies]
+shards-rego = { path = "../../../../../crates/rego" }
+libc = "0.2"
+
+[workspace]
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"

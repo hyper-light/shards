@@ -244,8 +244,10 @@ fn answer_within_a_minute(name: &'static str, args: &'static str) -> String {
             let _ = tx.send(format!("{name}{args}: operands not an array"));
             return;
         };
+        // A gibibyte to hold: every answer here but those past any host's memory.
         let mut ctx = Context {
             time_ns: 1_700_000_000_000_000_000,
+            holdable: 1 << 30,
             ..Context::default()
         };
         let got = match f(&mut ctx, args) {
@@ -266,12 +268,12 @@ fn answer_within_a_minute(name: &'static str, args: &'static str) -> String {
 /// Numbers whose exponents are millions to billions, where CI's fuzzing found work as
 /// long as their values (docs/research/measurements/ci-rego-compare: its artifacts, then
 /// each path bounded): comparisons answer exactly, a float's text is OPA's (number.rs's
-/// `shortest`), and an exact integer past OPA's bound on numbers (MantExp 1e5, which
-/// OPA's parser keeps a literal to) is "number too big". OPA panics on the comparisons
-/// ("illegal value") and writes the integers for minutes to hours (ci-rego-compare/opa).
+/// `shortest`), and an exact integer is written whole as far as the evaluation can hold
+/// it (D98's number-text bound; tests/numbers.rs holds such answers to OPA's own) and
+/// refused past it. OPA panics on the comparisons ("illegal value") and writes the
+/// integers for minutes to hours (ci-rego-compare/opa), or fails as memory runs out.
 #[test]
 fn numbers_with_huge_exponents_answer_in_bounded_work() {
-    let big = |name: &str| format!("error p.rego:1: eval_builtin_error: {name}: number too big");
     let cases = [
         ("lt", "[33,3e33333333332]", "result true".to_string()),
         (
@@ -284,8 +286,6 @@ fn numbers_with_huge_exponents_answer_in_bounded_work() {
             "[[44222222222222222200000008854029,2222222000000222222222222222200000008854029,222222200000008854008854029,22e22224444]]",
             "result 22e22224444".to_string(),
         ),
-        ("ceil", "[266000000e2028020]", big("ceil")),
-        ("ceil", "[2e001752525]", big("ceil")),
         // Each path to such work, bounded.
         (
             "sort",
@@ -305,21 +305,6 @@ fn numbers_with_huge_exponents_answer_in_bounded_work() {
             "[1e-99999999999]",
             "error p.rego:1: eval_builtin_error: abs: exponent out of range".to_string(),
         ),
-        ("round", "[1e200000]", big("round")),
-        ("floor", "[-1e200000]", big("floor")),
-        ("rem", "[1e200000,7]", big("rem")),
-        ("bits.negate", "[1e200000]", big("bits.negate")),
-        ("bits.lsh", "[1,100000]", big("bits.lsh")),
-        ("bits.lsh", "[1,4611686018427387904]", big("bits.lsh")),
-        ("numbers.range", "[1e200000,1e200000]", big("numbers.range")),
-        ("format_int", "[1e200000,16]", big("format_int")),
-        // As units' other errors, the name twice (OPA's errUnitsNumConv and kin).
-        ("units.parse", "[\"1e200000\"]", big("units.parse: units.parse")),
-        (
-            "units.parse_bytes",
-            "[\"1e200000\"]",
-            big("units.parse_bytes: units.parse_bytes"),
-        ),
         // Go's ±Inf, whose Int is 0, and an int64 OPA's Int64 refuses: OPA's answers.
         ("units.parse_bytes", "[\"1e700000000\"]", "result 0".to_string()),
         (
@@ -335,6 +320,24 @@ fn numbers_with_huge_exponents_answer_in_bounded_work() {
     ];
     for (name, args, want) in cases {
         assert_eq!(answer_within_a_minute(name, args), want, "{name}{args}");
+    }
+    // Past the gibibyte the evaluation holds: refused before the work, the size and the
+    // bound named (D98). Go would make the integer whole, or fail as memory runs out.
+    for (name, args, bits) in [
+        ("bits.lsh", "[1,4611686018427387904]", "4611686018427387905"),
+        ("ceil", "[1e600000000]", "1993156857"),
+        ("format_int", "[-1e600000000,10]", "1993156857"),
+        ("bits.negate", "[1e600000000]", "1993156858"),
+    ] {
+        let got = answer_within_a_minute(name, args);
+        let want = format!(
+            "error p.rego:1: eval_builtin_error: {name}: number too large to write: the text of a {bits}-bit number takes "
+        );
+        assert!(
+            got.starts_with(&want)
+                && got.ends_with("more than the 1073741824 bytes this evaluation can hold"),
+            "{name}{args}: {got}"
+        );
     }
     // Up to the bound, the number is made.
     let two = (num_bigint::BigInt::from(1) << 99999u32).to_string();

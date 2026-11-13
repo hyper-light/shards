@@ -1,0 +1,13 @@
+# kiln run r918 on adas-mac-studio-2.local (runner b24c5c951260dcdfd0972f2aeaf3cf51): scripts/lint's Windows arm,
+# for the crate this change touches, with cargo-xwin and Homebrew's LLVM (clang-cl, llvm-lib) as scripts/lint runs it.
+2a3b623565016b8636b885eb49fb79bd015c9525
+Fri Nov 13 01:32:55 UTC 2026
+=== cargo xwin clippy -p shards-remote --all-targets --target aarch64-pc-windows-msvc -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 14.48s
+=== exit 0
+366M	/Users/adalundhe/g121-tmp/s11-control/xwin-target   (removed after)
+Fri Nov 13 01:33:10 UTC 2026
+
+# Before it, the same clippy natively on adacachy's Windows 11 guest (MSVC 14.44's Hostx64\arm64 tools, no clang-cl)
+# failed in aws-lc-sys's build script: MSVC's cl cannot compile aws-lc's ARM64 sources (C2146, C2065 in
+# stdalign_check.c and neon_sha3_check.c), which is why scripts/lint takes clang-cl for Windows targets.

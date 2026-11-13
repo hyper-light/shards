@@ -1,0 +1,11 @@
+# Mac Studio (adas-mac-studio.local-2, macOS 26.4, arm64, APFS case-insensitive), HVF. The
+# mutation: every name found trusted its second (server.rs `name_valid`, `|| true`), on branch
+# tmp/s8p2-mutation-v2 (609a10878, deleted after).
+# ~/g121-tmp/s8p2/run-test.sh tmp/s8p2-mutation-v2 plug a_shares_names_are_its_hosts_case_and_all
+running 1 test
+thread 'a_shares_names_are_its_hosts_case_and_all' (32222248) panicked at crates/shards/tests/plug.rs:403:5:
+31 steps; the guest's differ from the host's:
+host "case stat foo NotFound", guest "case stat foo ok"
+host "case stat FOO NotFound", guest "case stat FOO ok"
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5 filtered out; finished in 4.17s
+== exit 101 2026-11-12T23:31:40Z

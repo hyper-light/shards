@@ -10,6 +10,7 @@ use num_bigint::{BigInt, Sign};
 use super::Builtin;
 use super::{BuiltinError, Context, arg, int_operand, number_operand, string_operand};
 use crate::goquote;
+use crate::number::{self, Float};
 use crate::value::Value;
 
 pub fn lookup(name: &str) -> Option<Builtin> {
@@ -116,25 +117,64 @@ fn any_suffix_match(_: &mut Context, args: &[Value]) -> Out {
     Ok(Some(Value::Bool(any_starts_with_any(&strs, &suffixes))))
 }
 
-fn format_int(_: &mut Context, args: &[Value]) -> Out {
+fn format_int(ctx: &mut Context, args: &[Value]) -> Out {
     let input = number_operand(arg(args, 0)?, 1)?;
     let base = number_operand(arg(args, 1)?, 2)?;
-    // OPA compares the base's text.
-    let radix = match base.text() {
-        "2" => 2,
-        "8" => 8,
+    // OPA compares the base's text; the others' digits are 1, 3 or 4 bits.
+    let bits = match base.text() {
+        "2" => 1,
+        "8" => 3,
         "10" => {
             if let Some(i) = input.as_i64() {
                 return ok_str(i.to_string());
             }
-            10
+            0
         }
-        "16" => 16,
+        "16" => 4,
         _ => return Err(BuiltinError::operand(2, "must be one of {2, 8, 10, 16}")),
     };
     let f = input.to_float().map_err(|e| BuiltinError::Other(e.to_string()))?;
-    let (i, _) = f.int().map_err(|e| BuiltinError::Other(e.to_string()))?;
-    ok_str(i.to_str_radix(radix))
+    let text = if bits == 0 {
+        f.int_text(ctx.holdable)
+    } else {
+        power_of_two_text(&f, bits, ctx.holdable)
+    };
+    ok_str(text.map_err(|e| BuiltinError::Other(e.to_string()))?)
+}
+
+/// x.Int(nil)'s digits in base 2^k: m·2^s's are those of m shifted by what s leaves past
+/// whole digits, then a zero for each of the rest (m a float's mantissa, short); refused
+/// where the text and its caller's copy of it would take more than `holdable`.
+fn power_of_two_text(f: &Float, k: u64, holdable: u64) -> Result<String, number::Error> {
+    let (m, s) = f.truncated();
+    if m.bits() == 0 {
+        return Ok("0".to_string());
+    }
+    let head = (m.as_ref() << (s % k)).to_str_radix(1 << k);
+    let zeros = s / k;
+    let neg = f.signbit();
+    let len = u64::try_from(head.len())
+        .unwrap_or(u64::MAX)
+        .saturating_add(zeros)
+        .saturating_add(u64::from(neg));
+    let need = len.saturating_mul(2);
+    if need > holdable {
+        return Err(number::Error::Unholdable {
+            bits: m.bits().saturating_add(s),
+            need,
+            holdable,
+        });
+    }
+    let refused = number::Error::Refused { bytes: len };
+    let mut out = String::new();
+    out.try_reserve_exact(usize::try_from(len).map_err(|_| refused.clone())?)
+        .map_err(|_| refused)?;
+    if neg {
+        out.push('-');
+    }
+    out.push_str(&head);
+    out.extend(std::iter::repeat_n('0', usize::try_from(zeros).unwrap_or(0)));
+    Ok(out)
 }
 
 fn concat(_: &mut Context, args: &[Value]) -> Out {

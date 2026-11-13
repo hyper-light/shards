@@ -21982,3 +21982,214 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
     log streams wait on WSAEventSelect's events and peek; named pipes end at once (M340).
   - What would show this wrong: a read waiting in WSAPoll that misses an end, or a blocking
     stream read that still sleeps in recv.
+
+### M537. An integer's every digit, made once and lean, and what writing a number may hold: the evaluation's memory (D98)
+
+- **Question.** M524's Open: `floor`, `ceil`, `round` and `format_int` of the fuzzer's
+  number (80000000000e00029174680, a 96,916,226-bit integer) answer every digit, as OPA
+  does, and still ran ASan's fuzzer past 2 GB through three num-bigint conversions. main
+  meanwhile refused such integers past a MantExp of 10^5 (ci-rego, merged at 5e53d5e3a),
+  OPA's parser's limit on Rego source literals, which OPA's builtins do not apply to their
+  operands. ROOT's decision: one lean conversion, OPA's answer up to a bound derived from
+  the evaluation's real memory, and past it a refusal that names both. What does the
+  conversion cost and hold, and where is the bound?
+- **Method.** Revisions: a03b37113 (the conversion and the bound), a6f4766d3 (merged with
+  main 41e5a0943, ci-rego's cap replaced), ddaf55963 (the converter at every size, the
+  text's phase added to the bound, `SCHOOL` measured) and e493120c0 (merged with main
+  dc7d36014); 2026-11-12. Harnesses, in `measurements/rego-bignum/`:
+  - `digits_crossover.rs` (digits.rs takes it by #[path]): schoolbook against
+    `by_transforms` (a product as `mul` makes it past `SCHOOL`, by pieces where the other
+    operand is far longer), s × s and s × 64·s limbs; the converter against num-bigint
+    0.4.8's `to_str_radix(10)` on random dense integers of n limbs. 400 samples a size
+    after 20 warm-ups (5 after 1 past 2^16 limbs), the two ways interleaved, their order
+    alternating. Release builds, carrier patch 2d163aff on 41e5a0943 (`SCHOOL` 108).
+  - `crates/rego/tests/text_memory.rs`: every allocation through a counting global
+    allocator, each vector by its capacity; its peak over a write and its `Rc<str>` copy,
+    against `digits::need`, for 108 integers.
+  - `text/` (`run.sh`): a builtin on its operands' JSON, as the fuzz target calls it, its
+    answer as JSON, one call a process: time, peak RSS (getrusage) and, on macOS, the
+    lifetime peak physical footprint (`proc_pid_rusage`); fat LTO, as release.
+  - `fuzz.sh`: CI's fuzz job (nightly-2026-09-05, cargo-fuzz 0.13.1, ASan,
+    `-rss_limit_mb=2048 -max_len=65536`): each seed replayed alone (`ptime.py`), then
+    rego-builtins fuzzed for 300 s seeded with ci-rego's ten artifacts and the fuzzer's
+    number through each integer builtin, then `rego` for 60 s.
+  - `scripts/rego/generate numbers`: OPA v1.14.1 under Go 1.26.1, rerun on the merged
+    inputs.
+
+  Hosts: a Mac Studio, Apple M4 Max, 14 cores, Darwin 25.2.0 (adas-mac-studio-2.local):
+  crossovers, allocations, whole calls, tests; another (adas-mac-studio.local), the lint.
+  Linux x86_64: a Ryzen 9 9950X3D2, 32 threads, Linux 7.3.3-1-cachyos (adacachy2, shared,
+  load 10 to 60, its /home full, so targets and corpus on its tmpfs; offline twice since):
+  crossovers, whole calls and the first fuzz; an i9-14900HX, Linux 6.19.10 (Fedora 44),
+  its P-cores (taskset 0-15), everything under /tmp as its /home is mounted read-only:
+  `SCHOOL`'s range past 160, the final tests and whole calls. It has no C++ compiler, which
+  libFuzzer's build needs, so the final fuzz ran on adacachy (Linux 7.2.9-2-cachyos, 32
+  threads, shared: load 58 to 121), with CI's nightly and the pinned 1.98.1 (which builds
+  cargo-fuzz, as CI does) installed under its /tmp. Raw logs: `results/` (`crossovers-*`,
+  `school-linux-x86_64-i9`, `memory-*`, `final-e493120c0-*`, `fuzz-*`,
+  `lint-e493120c0-macos-arm64`).
+- **Found.**
+  - One conversion: an integer whose precision holds it whole is its own shortest decimal
+    (no other integer lies within half an ulp of it, nor any decimal of as few digits), so
+    Go's three whole conversions are one.
+  - The conversion, `digits.rs`: FastIntegerInput in base 10^19 (Brent and Zimmermann,
+    MCA §1.7.2, algorithm 1.25); products past `SCHOOL` by number-theoretic transforms over
+    the three largest primes c·2^32 + 1 below 2^62, joined by Garner; Möller and
+    Granlund's reciprocal for 10^19; one scratch for every transform; zero and all-one
+    limb runs cost no product.
+  - Schoolbook against transforms, p50 ratios (above 1, the transforms the cheaper):
+
+    | s | 64 | 72 | 73 | 100 | 112 | 128 | 136 | 160 | 164 | 200 | 256 |
+    |---|---|---|---|---|---|---|---|---|---|---|---|
+    | macOS, s × s | 1.68 | 1.00 | 1.02 | 1.91 | 2.37 | 3.07 | 1.61 | 2.21 | | | |
+    | Ryzen, s × s | 0.75 | 0.44 | 0.45 | 0.83 | 1.03 | 1.34 | 0.71 | 0.97 | | | |
+    | i9, s × s | 0.74 | 0.44 | 0.45 | 0.82 | 1.03 | 1.35 | 0.70 | 0.97 | 1.01 | 1.50 | 2.41 |
+
+    s × 64·s, the same crossovers on each host. The least size from which the transforms
+    were the cheaper at every size measured: 73 on macOS, 164 on the i9; on the Ryzen
+    none to 160, where it went offline (cheaper from 112 to 128, then dearer as their
+    points doubled, as on the i9). `SCHOOL` = 163, past which they are the cheaper on both.
+    Schoolbook's cost on macOS from 73 to 163 limbs, up to 3.07 times the transforms', did
+    not show in whole calls: `floor` of the fuzzer's number took 1.70 s at `SCHOOL` 163
+    and at 108 (`memory-macos-arm64.txt`).
+  - num-bigint against the converter, dense random integers, p50 ratios (below 1,
+    num-bigint the cheaper):
+
+    | limbs | 1 | 14,694 | 28,699 | 35,873 | 44,842 | 56,052 | 2^17 | 2^18 | 2^19 | 2^20 |
+    |---|---|---|---|---|---|---|---|---|---|---|
+    | macOS | 0.42 | 0.86 | 1.05 | 0.95 | 1.08 | 1.28 | 1.74 | 2.20 | 2.76 | 3.49 |
+    | Ryzen | 0.62 | 0.34 | 0.41 | 0.36 | 0.40 | 0.47 | 0.65 | 0.81 | 0.97 | 1.20 |
+
+    num-bigint divides by a limb with x86's `div` instruction there, elsewhere by a
+    128-bit division (division.rs's `div_wide`). It was not taken below those crossovers:
+    its division clones its operands at each level, and at the revision that wrote through
+    it below 2^20 limbs (`memory-old-bound-macos-arm64.txt`, patch eac633fc), 56 of the
+    108 integers passed the bound as it then stood, by 0.3 to 18%. For the sparse integers
+    builtins write, the converter is the cheaper: `floor(1e10000000)` 0.49 s against
+    5.9 s through num-bigint, the same Mac.
+  - The bound's phases. `need` first took the larger of the conversion's peak and the
+    text's; macOS's allocator kept the freed scratch and powers resident while the text
+    was made: 170.1 MiB of physical footprint for the fuzzer's number, against that
+    bound's 131.5 MiB (the same log). Linux's resident memory stayed within it
+    (111.6 MiB, the Ryzen). `need` now adds the text and its copy to the conversion's
+    peak. Before one scratch, each product's own buffers, freed and made again larger
+    at each level, stayed resident on macOS past the bound then computed (a build before
+    a03b37113, whose log was not kept).
+  - Allocations against `need` at e493120c0 (108 integers dense, sparse, of ones and half
+    zero, 1 to 150,000 limbs about each level's size): every peak 0.06 to 0.65 of it on
+    macOS arm64; the test, which holds each to it, passed on the i9 too.
+  - Whole calls at e493120c0 (time; macOS's peak physical footprint, Linux's peak RSS,
+    each process's start included: 1.6 MiB on macOS, about 3 MiB on Linux):
+
+    | call | text | macOS arm64, M4 Max | Linux x86_64, i9 |
+    |---|---|---|---|
+    | `abs`, the fuzzer's number | 29.2 MB | 52 ms, 56.7 MiB | 44 ms, 59.1 MiB |
+    | `floor`, the same | 29.2 MB | 1.70 s, 170.1 MiB | 4.91 s, 111.1 MiB |
+    | `ceil` of its negation | 29.2 MB | 1.70 s, 170.2 MiB | 4.77 s, 111.7 MiB |
+    | `round` | 29.2 MB | 1.69 s, 170.1 MiB | 4.75 s, 111.6 MiB |
+    | `format_int(·, 10)` | 29.2 MB | 1.79 s, 180.0 MiB | 4.95 s, 111.9 MiB |
+    | `format_int(·, 16)` | 24.2 MB | 40 ms, 72.5 MiB | 59 ms, 65.3 MiB |
+    | `format_int(·, 2)` | 96.9 MB | 158 ms, 280.5 MiB | 220 ms, 188.0 MiB |
+    | `floor(1e10000000)` | 10 MB | 0.49 s, 71.7 MiB | 1.35 s, 51.9 MiB |
+    | `floor(1e100000000)` | 100 MB | 6.68 s, 614.7 MiB | 19.4 s, 414.9 MiB |
+    | `floor(1e400000000)` | 400 MB | 34.2 s, 2,455.3 MiB | 99.2 s, 1,645.4 MiB |
+    | `floor(1e646456992)` | 646 MB | 76.4 s, 4,319.6 MiB | 205.4 s, 2,956.1 MiB |
+    | Go's `Text` of the fuzzer's number (M524, an M5 Max) | 29.2 MB | 63.4 s, 447 MB | |
+
+    Decimal writes from 10^6 digits up, past the process's start (the harness's JSON copy
+    of the answer counted): 0.64 to 0.96 of `need` on macOS, 0.57 to 0.67 on Linux.
+    `format_int(·, 2)`'s bound is twice its text (the text, reserved exactly, and its
+    copy); the harness's JSON copy of a 96.9 MB answer, and that buffer's growth, are on
+    top of it. At the fuzzer's number the bound is 196,218,786 bytes; with a byte less,
+    refused in 22 µs (macOS) and 33 µs (Linux): "number too large to write: the text of a
+    96916226-bit number takes 196218786 bytes to make, more than the 196218785 bytes this
+    evaluation can hold".
+  - Byte for byte OPA's: 131 builtin calls on long numbers (floor, ceil, round,
+    format_int in four bases, bits.*, rem, numbers.range*, units.parse*; the fuzzer's
+    number and ci-rego's cases past 10^5 among them), 73 readings (Go's `Text('p', 0)`,
+    1e536870937 through 1e2147483648, either sign), and main's numbers, pairs and texts.
+    Crate tests at e493120c0 (test-release): all passed on macOS arm64 and the i9.
+  - Fuzzing, CI's flags: at a6f4766d3 on the Ryzen, rego-builtins 300 s, 4,636 runs,
+    exit 0, peak RSS 1,335 MB, slowest unit 43 s (`round` of a 49-million-digit
+    integer); `rego` 60 s, 219,546 runs, exit 0 (`fuzz-a6f4766d3-*.txt`). At e493120c0:
+    every artifact and seed replayed alone, exit 0, the largest peak RSS 1,282 MiB (`abs` of
+    1e646456992, its 646 MB text answered within the limit) and `floor` of it refused at
+    once; rego-builtins 300 s, 3,172 runs in 313 s, exit 0, RSS 1,323 MB, its slowest units
+    14 to 21 s at that load (`ceil` of the fuzzer's number; `floor` and `ceil` of numbers a
+    digit from it); `rego` 60 s, 191,735 runs, exit 0
+    (`fuzz-e493120c0-linux-x86_64-adacachy.txt`).
+  - Lint: `scripts/lint` at e493120c0, format and all seven targets clean, 425 s.
+- **So.** `SCHOOL` 163; the converter at every size; the bound `Context::holdable`, the
+  refusal typed and named (D98).
+- **Open.** `sprintf`'s big integers (`%d` of a number written as digits) keep
+  num-bigint's conversion: their text is the input's own length, so they amplify
+  nothing. What a caller makes of an answer afterwards (a JSON copy of it) is the
+  caller's, past the builtin's bound. The comparison's and sort's items are ci-rego's
+  (M526). Owed: the Ryzen's schoolbook range past 160; Windows, Linux arm64 and musl test
+  runs (CI's); every timing and memory figure here is an implementer's, for ROOT's review
+  (R14).
+- **Rules** (policy df2acf47, role implementer):
+
+  | rule | proof, result, gap |
+  |---|---|
+  | R01 | No unwrap, expect, indexing or panic in production code (clippy `-D warnings` on all seven targets, `lint-e493120c0-macos-arm64.txt`); sizes from inputs checked or saturating, transform arithmetic wrapping where meant; each allocation a write makes by `try_reserve`, its refusal typed (`Error::Refused`). The fuzz builds run cargo-fuzz's overflow checks. Gap: none known. |
+  | R02 | Sources: MCA 2010 §1.7.2 and §2.7; Pollard 1971; Möller and Granlund 2011; Go 1.26's math/big (ftoa.go, natconv.go, floatconv.go); num-bigint 0.4.8's convert.rs and division.rs; OPA v1.14.1's topdown; libFuzzer's FuzzerFlags and RSS thread; compiler-rt's asan_allocator.cpp and asan_mapping.h. Alternatives measured: num-bigint below a crossover (refused: clones, allocations past the bound as it stood), the larger-of-phases bound (refused: macOS's footprint passed it), ci-rego's 10^5 cap (superseded at ROOT's word). |
+  | R03 | `SCHOOL` from both hosts' crossovers; the primes from their derivation (the largest c·2^32+1 below 2^62); `need`'s terms from the allocations they bound, held to every allocation by the test; the bound from the host's or libFuzzer's real limit. No chosen constant. |
+  | R04 | Refusals typed (`number::Error::Unholdable`, `Refused`), rendered by Display at the builtin's boundary; no state machine added. |
+  | R05 | One scratch, its lifetime a conversion's, its size the largest transform's, so that macOS's footprint does not grow by each level's freed buffers. No cache; no interface added but `Context::holdable`. |
+  | R06, R07, R13 | digits.rs, 831 lines before its tests (1,049 with them); comments carry derivations and sources. |
+  | R08, R14 | Against OPA on the fuzzer's number: 1.7 s and 170 MiB (macOS), 4.9 s and 111 MiB (Linux), Go's `Text` 63.4 s and 447 MB. Against num-bigint: slower for dense integers below the crossovers above, recorded. Implementer's measurements, owed ROOT's review. |
+  | R09, R10 | The ASan OOM of floor/ceil/round/format_int reproduced in M524; the fixed calls' memory and time above; raw logs in `results/`. |
+  | R11, R12 | One implementation. Tests: macOS arm64, Linux x86_64 (the i9; the Ryzen at a6f4766d3). Lint: all seven targets. Owed: Windows, Linux arm64 and musl test runs. |
+  | R15, R16 | No agents started. adacachy2's full /home untouched (its tmpfs used); the i9's read-only /home untouched (its /tmp used); adacachy's toolchains, cargo-fuzz and targets under its /tmp, its user's rustup untouched; scratch under ~/.cache/rb2 on the Mac Studios and /tmp on the Linux hosts. |
+
+### M538. CI's one `rm -f` timeout on Windows: a restored run's SIGKILL that never reached its command, the signal link's bug not shown to be the cause
+
+- **Question.** `engine.rs`'s `the_docker_cli_checkpoints_and_restores_microvms` timed out
+  once in its last `rm -f` (job 131325553441, c01aeb941, windows-2025-vs2026). Was that the
+  signal link's lost SIGKILL, fixed at 3607aad11 (main since 1c349a632)? If so, the D217
+  change on `p/win-ci-green-teardown-wip` (3f5698f5a) stays unmerged.
+- **Method.** `measurements/restored-kill`:
+  - the failing run's `daemon.log`, its home's one log;
+  - `tally.sh`, the test's result in each completed x86_64 Windows job on main's last 200
+    commits (`ci/tally.tsv`);
+  - a jupiter A/B, aeac12d67 against 9e5e5f8ea, `engine.rs` whole held to 4 CPUs, alternate
+    rounds, with measurement-only patches that keep `daemon.log` and time `rm -f` (`jupiter/`).
+- **Found.**
+  - CI's restored machine ran 109 to 375 ms of CPU every 10 s for 600 s after the SIGKILL,
+    above an idle microVM's 63 ms. So D217 followed it to the client's deadline: its counter
+    was never ended.
+  - Before the fix, three host paths dropped a restored run's frames silently, its SIGKILL
+    included: a dial it could not take, a queued frame's failed send, and a later failed
+    send. Each is now a typed loss that stops the machine. They logged nothing, so the
+    failing log can show none of them.
+  - CI before the fix: windows-2025 failed 1 of 28, windows-2022 0 of 30. 80 jobs never
+    reached `engine.rs`. After the fix: no results yet, as all 60 jobs were queued at
+    2026-11-13 01:10Z.
+  - jupiter: 8 of 8 passed before the fix and 7 of 7 after (`rm -f` 0.10 to 13.1 s).
+  - After the fix, 4 of 7 runs logged a loss on the checkpointed original. This is inferred,
+    not seen: no run logged `kill_command`'s "no signal reaches" at `rm -f`.
+  - One run after the fix (with an exec into the restored machine first) left its command
+    unended for 10 s after the SIGKILL, its VM below idle CPU, until D217 killed it (11.1 s,
+    passed).
+- **Reading.** Consistent, not shown. CI's symptom is what each of the fixed paths does, but
+  the failure is rare, never seen on jupiter, and not yet run on CI after the fix. Main
+  still holds a restored run's frames, with no time bound, for a dial that never comes (D16,
+  D176), and that would look the same. Not closed as the signal link's bug. D217's change
+  stays unmerged, since nothing fails on main.
+- **Owed.**
+  - After-fix windows-2025 runs (`tally.sh 3` as CI's queue drains): about 83 without a
+    failure to say the rate fell at 95% (27/28 to the 83rd power is 0.049).
+  - The exec run's restored machine: its console and logs were not kept.
+  - The original's loss warning at its save, for the signal link's owner.
+- **Rules** (policy df2acf47, role implementer; records only, no code):
+
+  | rule | proof, result, gap |
+  |---|---|
+  | R01, R04, R05, R06, R07, R12, R13 | No code changed. |
+  | R02, R03 | Not a decision; no value introduced. |
+  | R08, R14 | Nothing measured for speed or resources. |
+  | R09 | Not reproduced: jupiter 0 of 15, and CI's after-fix runs owed. Nothing fixed here. |
+  | R10 | The raw logs, patches, scripts and tally are in `measurements/restored-kill`. |
+  | R11 | Windows x86_64 only, where the failure was. Windows arm64 runs no VM tests. Linux's and macOS's CI results for this test were not tallied. |
+  | R15, R16 | No agents started. jupiter's trees, targets and logs from this lane are removed after landing. |
