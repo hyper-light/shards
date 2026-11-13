@@ -335,3 +335,29 @@ fn judged_end(party: &mut std::process::Child) -> Result<std::process::ExitStatu
         || party.wait().unwrap(),
     )
 }
+
+/// The old shape of a retry while what a test started comes up (slates_fs.rs' `slates`: a
+/// verb asked again while slates' anchor has no daemon yet, for its test's `START`, 60 s,
+/// scaled to 100 ms), against an anchor that works for a second before it answers. Do: a
+/// stand-in busy for a second, asked after until it has ended, at that bound. Expect: its end.
+#[test]
+fn red_a_retry_goes_on_while_what_this_test_started_works() {
+    let busy = Duration::from_secs(1);
+    let bound = Duration::from_millis(100);
+    let mut anchor = stand_in_doing(&format!("busy {}", busy.as_millis()))
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let began = Instant::now();
+    while anchor.try_wait().unwrap().is_none() {
+        if began.elapsed() > bound {
+            let _ = anchor.kill();
+            let _ = anchor.wait();
+            panic!(
+                "an anchor busy for {busy:?} given up {:?} into its retries",
+                began.elapsed()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
