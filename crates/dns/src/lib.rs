@@ -13,6 +13,8 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
+pub mod credential;
+
 /// Every answer's TTL: kept by no cache (RFC 1035 §3.2.1).
 const TTL: u32 = 0;
 

@@ -570,12 +570,15 @@ fn egress(
 
 /// The run's credential grants for its network process (D242), by reference and never a
 /// value: each toward one host at least, and each host one its egress grants reach (D236),
-/// as a grant that could never be filled is refused, not kept silently; the network process
-/// checks them again as it takes them (D109). None where the run has none.
+/// as a grant that could never be filled is refused, not kept silently; each placeholder a
+/// token, and one credential's alone, as its orchestrator's side checked them; the network
+/// process checks them again as it takes them (D109). None where the run has none.
 fn credentials(grants: &[wire::CredentialGrant], egress: Option<&[u8]>) -> Result<Option<Vec<u8>>, No> {
     if grants.is_empty() {
         return Ok(None);
     }
+    shards_net::dns::credential::check(grants)
+        .map_err(|refused| No(Cause::Request, format!("credential {refused}")))?;
     let (ports, named, _) = egress.and_then(shards_net::decode_policy).unwrap_or_default();
     let mut held = Vec::with_capacity(grants.len());
     for g in grants {
@@ -597,10 +600,7 @@ fn credentials(grants: &[wire::CredentialGrant], egress: Option<&[u8]>) -> Resul
                 ),
             ));
         }
-        held.push(shards_net::Grant {
-            reference: g.reference.clone(),
-            toward: g.toward.clone(),
-        });
+        held.push(g.clone());
     }
     shards_net::encode_grants(&held).map(Some).ok_or_else(|| {
         No(
@@ -4625,6 +4625,7 @@ mod tests {
         let grant = |reference: &str, toward: &[&str]| wire::CredentialGrant {
             reference: reference.into(),
             toward: toward.iter().map(|h| (*h).to_string()).collect(),
+            placeholder: format!("kiln-placeholder-{}", reference.replace('/', "-")),
         };
         let named = shards_net::encode_policy(
             &shards_net::Ports::default(),
@@ -4644,12 +4645,24 @@ mod tests {
             Some(vec![shards_net::Grant {
                 reference: "anthropic/claude-max".into(),
                 toward: vec!["api.anthropic.com".into()],
+                placeholder: "kiln-placeholder-anthropic-claude-max".into(),
             }])
         );
+        // A placeholder that is no token, and one shared by two credentials, as an
+        // orchestrator's side that checked nothing could send them.
+        let mut untoken = grant("anthropic/claude-max", &["api.anthropic.com"]);
+        untoken.placeholder = "two words".into();
+        let mut shared = grant("anthropic/console", &["api.anthropic.com"]);
+        shared.placeholder = "kiln-placeholder-anthropic-claude-max".into();
         for refused in [
             credentials(&[grant("openai/chatgpt", &["chatgpt.com"])], Some(&named)),
             credentials(&[grant("anthropic/claude-max", &[])], Some(&named)),
             credentials(&[grant("anthropic/claude-max", &["api.anthropic.com"])], None),
+            credentials(&[untoken], Some(&named)),
+            credentials(
+                &[grant("anthropic/claude-max", &["api.anthropic.com"]), shared],
+                Some(&named),
+            ),
         ] {
             assert!(matches!(refused, Err(No(Cause::Request, _))));
         }
@@ -4669,10 +4682,12 @@ mod tests {
             shards_net::Grant {
                 reference: "anthropic/claude-max".into(),
                 toward: vec!["api.anthropic.com".into(), "claude.ai".into()],
+                placeholder: "kiln-placeholder-0a".into(),
             },
             shards_net::Grant {
                 reference: "anthropic/console".into(),
                 toward: vec!["api.anthropic.com".into()],
+                placeholder: "kiln-placeholder-1b".into(),
             },
         ])
         .unwrap();
