@@ -328,6 +328,25 @@ fn read_request(io: &mut Box<dyn Io>) -> io::Result<Vec<u8>> {
 mod tests {
     use super::*;
 
+    /// A scripted server waits for its client's next request as long as the client's
+    /// connection lives, its own drop the cancel: a second request on a kept connection, sent
+    /// 10.5 s after the first's answer, past the 10 s a read of the server's had before, is
+    /// answered (R03: the client's end or the server's drop ends its wait, no figure of the
+    /// tests').
+    #[test]
+    fn a_scripted_server_waits_for_its_client_as_long_as_it_lives() {
+        let ok = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec();
+        let server = serve(None, vec![(ok.clone(), After::Keep), (ok, After::Keep)]);
+        let mut kept = TcpStream::connect(("127.0.0.1", server.port)).unwrap();
+        let mut answer = [0u8; 38];
+        kept.write_all(b"GET / HTTP/1.1\r\n\r\n").unwrap();
+        kept.read_exact(&mut answer).unwrap();
+        std::thread::sleep(Duration::from_millis(10_500));
+        kept.write_all(b"GET / HTTP/1.1\r\n\r\n").unwrap();
+        kept.read_exact(&mut answer).unwrap();
+        assert!(answer.starts_with(b"HTTP/1.1 200 OK"), "{answer:?}");
+    }
+
     /// A server dropped is gone: its accept loop has returned and its listener closed, so
     /// its port refuses connections, and a connection it held is closed.
     #[test]
