@@ -68,10 +68,10 @@ struct State {
     /// Each room asked and still awaited, by its ask's id, and its answer once it came
     /// (D241): an answer to an ask no longer awaited, its patience run out, is dropped, so
     /// that it holds the asks in flight alone.
-    rooms: HashMap<u32, Option<Result<Option<u64>, String>>>,
+    rooms: Awaited<Option<u64>>,
     /// Each rate asked and still awaited, by its ask's id, and its answer once it came
     /// (D242), as rooms.
-    rates: HashMap<u32, Option<Result<Option<NonZeroU64>, String>>>,
+    rates: Awaited<Option<NonZeroU64>>,
     next_ask: u32,
     /// The run's own command's readiness under the nesting grant (D234), as its init last
     /// said it: init owns it, and moves it by D234's table.
@@ -86,6 +86,10 @@ struct State {
     said_all: bool,
 }
 
+/// Each ask of a kind awaited, by its id, and its answer once it came, or why its host
+/// refused it (D241, D242).
+type Awaited<T> = HashMap<u32, Option<Result<T, String>>>;
+
 /// A numbered ask of the session's, answered by its id (D241, D242): its kind; the ask and
 /// its send, as a refusal names them; where its answer is awaited; what its host's refusal
 /// is.
@@ -93,7 +97,7 @@ struct Asked<T> {
     kind: u8,
     what: &'static str,
     sending: &'static str,
-    awaited: fn(&mut State) -> &mut HashMap<u32, Option<Result<T, String>>>,
+    awaited: fn(&mut State) -> &mut Awaited<T>,
     refused: fn(String) -> ImageRefusal,
 }
 
