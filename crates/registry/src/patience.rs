@@ -117,6 +117,16 @@ fn micros(d: Duration) -> u64 {
     u64::try_from(d.as_micros()).unwrap_or(u64::MAX)
 }
 
+/// A wait as a sample of its kind, in the record's µs: none where it took less than the
+/// record measures, a µs. Such a wait waited for nothing: a read that found its bytes
+/// already buffered, an answer that came with its request's end, shows no stall of the
+/// path's, and a bound of it, zero, would be none at all (std refuses a socket timeout of
+/// zero: "cannot set a 0 duration timeout"). A record that keeps 0, as d54bca98e's could,
+/// is read as none too (`bounded`).
+fn sample(d: Duration) -> Option<u64> {
+    Some(micros(d)).filter(|&us| us > 0)
+}
+
 /// What a path has shown, as kept.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
@@ -216,7 +226,7 @@ enum Out {
 /// What a wait of a kind begins with: `slowest`, the slowest of its kind its path has shown,
 /// and whether its last ran out.
 fn bounded(slowest: Option<u64>, out: Out) -> Bounded {
-    match (slowest.map(Duration::from_micros), out) {
+    match (slowest.filter(|&us| us > 0).map(Duration::from_micros), out) {
         (None, _) => Bounded::Cold,
         (Some(d), Out::No) => Bounded::Slowest(d),
         (Some(d), Out::Yes) => Bounded::RanOut(d),
@@ -441,7 +451,7 @@ impl Paths {
     /// their slowest again.
     pub(crate) fn answered(&self, key: &str, took: Duration) {
         self.with(key, |p| {
-            let slowest = slower(p.shown.slowest_answer_us, Some(micros(took)));
+            let slowest = slower(p.shown.slowest_answer_us, sample(took));
             p.changed |= slowest != p.shown.slowest_answer_us;
             p.shown.slowest_answer_us = slowest;
             p.answer = Out::No;
@@ -467,13 +477,13 @@ impl Paths {
     /// ([`Bounded::RanOut`]). Its slowest silence, which bounds the rest.
     pub(crate) fn outlasted(&self, key: &str, lasted: Duration) -> Option<Duration> {
         self.with(key, |p| {
-            let slowest = slower(p.shown.slowest_silence_us, Some(micros(lasted)));
+            let slowest = slower(p.shown.slowest_silence_us, sample(lasted));
             if slowest != p.shown.slowest_silence_us {
                 p.changed = true;
                 p.shown.slowest_silence_us = slowest;
                 p.silence = Out::No;
             }
-            slowest.map(Duration::from_micros)
+            slowest.filter(|&us| us > 0).map(Duration::from_micros)
         })
     }
 
@@ -489,7 +499,7 @@ impl Paths {
     /// come within what the path had shown, and one that ran out begins one.
     pub(crate) fn silenced(&self, key: &str, body: &Silenced) {
         self.with(key, |p| {
-            let slowest = slower(p.shown.slowest_silence_us, body.slowest.map(micros));
+            let slowest = slower(p.shown.slowest_silence_us, body.slowest.and_then(sample));
             p.changed |= slowest != p.shown.slowest_silence_us;
             p.shown.slowest_silence_us = slowest;
             match body.last {
