@@ -2204,8 +2204,13 @@ fn rate_exchange(
             left => Ok(Some(left)),
         },
     };
-    let timed_out = |e: &io::Error| e.kind() == io::ErrorKind::WouldBlock;
-    let mut s = stream::connect_until(vsock, deadline).map_err(failed("rate's dial"))?;
+    // A wait past its timeout fails as std's does: WouldBlock, or on Windows TimedOut.
+    let timed_out = |e: &io::Error| matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut);
+    let mut s = match stream::connect_until(vsock, deadline) {
+        Ok(s) => s,
+        Err(e) if timed_out(&e) => return Err(late()?),
+        Err(e) => return Err(failed("rate's dial")(e)),
+    };
     Stream::set_write_timeout(&s, left()?).map_err(failed("rate's ask"))?;
     if let Err(e) = s.write_all(shards_abi::rate::ask(milli).as_bytes()) {
         return Err(if timed_out(&e) {
@@ -2233,7 +2238,7 @@ fn rate_exchange(
                     what: "a rate's answer",
                 })?;
                 line.extend_from_slice(&byte);
-                if byte == [b'\n'] {
+                if byte == *b"\n" {
                     return Ok(line);
                 }
                 if line.len() >= shards_abi::rate::ANSWER_MOST {
@@ -2833,17 +2838,14 @@ mod tests {
     }
 
     /// D255: a rate its VM process does not answer within its caller's patience is refused
-    /// as unanswered, typed.
+    /// as unanswered, typed: a patience of none, past before its ask.
     #[test]
     fn a_managed_rate_unanswered_within_its_patience_is_refused() {
         let dir = shards_testdir::TempDir::new("api-rate-late").unwrap();
         let socket = dir.join("v");
         let listener = rate_listener(&socket);
         let (guest, _native) = managed_model_at(false, socket);
-        let asked = guest.rate(
-            std::num::NonZeroU64::new(250),
-            crate::conformance::UNSERVED_PATIENCE,
-        );
+        let asked = guest.rate(std::num::NonZeroU64::new(250), Duration::ZERO);
         assert!(
             matches!(&asked, Err(Refusal::Unsupported { what: "rate", why }) if why.starts_with("no answer within")),
             "{asked:?}"
@@ -2861,10 +2863,7 @@ mod tests {
             Err(Refusal::Unsupported { what: "room", .. })
         ));
         native.publish(crate::TerminalScope::Released);
-        assert_eq!(
-            guest.wait_for(crate::conformance::PATIENCE.get()).unwrap(),
-            Some(End::PowerOff)
-        );
+        assert_eq!(guest.wait_for(Duration::MAX).unwrap(), Some(End::PowerOff));
         assert_eq!(
             guest.rate(std::num::NonZeroU64::new(250), Duration::MAX),
             Err(Refusal::Ended(End::PowerOff))
