@@ -1,0 +1,36 @@
+{
+  "draft": "draft-ietf-lamps-keyusage-crl-validation-04",
+  "doc_id": "RFC10007",
+  "title": "Clarification to Processing Key Usage Values During Certificate Revocation List (CRL) Validation",
+  "authors": [
+    "C. Bonnell",
+    "T. Ito",
+    "T. Okubo"
+  ],
+  "format": [
+    "XML",
+    "TEXT",
+    "HTML",
+    "PDF"
+  ],
+  "page_count": "6",
+  "pub_status": "PROPOSED STANDARD",
+  "status": "PROPOSED STANDARD",
+  "source": "Limited Additional Mechanisms for PKIX and SMIME",
+  "abstract": "RFC 5280 defines the profile of X.509 certificates and Certificate Revocation Lists (CRLs) for use in the Internet. Section 4.2.1.3 of RFC 5280 requires CRL issuer certificates to contain the keyUsage extension with the cRLSign bit asserted. However, the CRL validation algorithm specified in Section 6.3 of RFC 5280 does not explicitly include a corresponding check for the presence of the keyUsage certificate extension. This document updates RFC 5280 to require that check.",
+  "pub_date": "June 2026",
+  "keywords": [
+    "Public Key Infrastructure",
+    "Certificate validation",
+    "Security"
+  ],
+  "obsoletes": [],
+  "obsoleted_by": [],
+  "updates": [
+    "RFC5280"
+  ],
+  "updated_by": [],
+  "see_also": [],
+  "doi": "10.17487/RFC10007",
+  "errata_url": null
+}

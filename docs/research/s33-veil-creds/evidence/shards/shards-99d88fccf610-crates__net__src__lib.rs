@@ -1,0 +1,3618 @@
+//! A microVM's network process (docs/design/architecture.md D31): the guest's frames, from
+//! its virtio-net device through a shared ring (shards-netring), become host sockets, one
+//! per flow, opened only if the VM's policy allows them; the host's answers become frames.
+//! The guest's link reaches nothing else: no host loopback, no other VM, no host network
+//! namespace. One such process serves one VM, so that its stack, which parses what the
+//! guest and the Internet send, shares no memory with another VM's; the confinement that
+//! would keep a compromised one from the rest of the host (seccomp, Landlock, App
+//! Sandbox) is still to be built (architecture.md D31).
+
+pub mod bridge;
+#[cfg(target_os = "linux")]
+pub mod confine;
+#[cfg(windows)]
+mod dial;
+/// The answers its resolver gives a network's members (D46): shards-dns, shared with the
+/// agents' resolver in the guest (D181).
+pub use shards_dns as dns;
+pub mod pktinfo;
+mod poll;
+mod ring;
+mod siphash;
+pub mod sys;
+pub mod tcp;
+pub mod wire;
+
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
+use std::io;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, UdpSocket};
+#[cfg(unix)]
+use std::os::fd::OwnedFd;
+
+/// A socket a control message hands this process (PUBLISH, NET_PUBLISHED, NET_PEER): a
+/// descriptor passed beside it on Unix; on Windows one this process makes its own from the
+/// protocol info its sender shared it by, before the message's payload
+/// ([`shards_ipc::with_sockets`], PM M203).
+#[cfg(unix)]
+type Handed = OwnedFd;
+#[cfg(windows)]
+type Handed = std::os::windows::io::OwnedSocket;
+use std::time::{Duration, Instant};
+
+use shards_netring::{Consumer, Handle, Producer, RING, Region};
+use sys::{AsRawSock as _, RawSock, UnixStream};
+use tcp::{Conn, Key, Payload, ToGuest};
+use wire::Frames;
+
+#[cfg(windows)]
+pub use dial::Dialer;
+pub use shards_netring::Bell;
+
+/// The ports a published connection comes from, at the gateway: IANA's dynamic range
+/// (RFC 6335 §6), 49152 to 65535.
+const EPHEMERAL: std::ops::RangeInclusive<u16> = 49152..=u16::MAX;
+
+/// Packets or connections one socket gives up per pass of the loop, before the others
+/// have their turn: Linux's own budget for a device per poll (net.core.dev_weight, 64;
+/// Documentation/admin-guide/sysctl/net.rst), for the same fairness. A flood on one
+/// published port leaves the rest of the VM's flows served.
+const BUDGET: usize = 64;
+
+/// How long a UDP flow lives, as Linux conntrack keeps one (nf_conntrack_proto_udp.c,
+/// udp_packet; v6.12): 30 s past its last datagram (nf_conntrack_udp_timeout), or 120 s
+/// (nf_conntrack_udp_timeout_stream) once it has had a reply and is still going 2 s after
+/// its first datagram, a stream. A query and its answer hold a port 30 s, not 120.
+const UDP_UNREPLIED: Duration = Duration::from_secs(30);
+const UDP_STREAM: Duration = Duration::from_secs(120);
+const UDP_STREAM_AFTER: Duration = Duration::from_secs(2);
+
+/// When a UDP flow ends, unless another datagram comes.
+#[derive(Debug, Clone, Copy)]
+struct Lifetime {
+    first: Instant,
+    replied: bool,
+    until: Instant,
+}
+
+impl Lifetime {
+    fn new(now: Instant) -> Lifetime {
+        Lifetime {
+            first: now,
+            replied: false,
+            until: now + UDP_UNREPLIED,
+        }
+    }
+
+    /// A datagram at `now`; a `reply` if it went the other way from the first.
+    fn datagram(&mut self, now: Instant, reply: bool) {
+        self.replied |= reply;
+        let stream = self.replied && now > self.first + UDP_STREAM_AFTER;
+        self.until = now + if stream { UDP_STREAM } else { UDP_UNREPLIED };
+    }
+}
+/// Frames waiting for room in the ring, at most: past this the oldest datagram-like frame
+/// is dropped, as a full NIC queue drops; TCP never adds to it unasked.
+const BACKLOG: usize = 1024;
+
+/// A transport protocol a grant names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Proto {
+    Tcp,
+    Udp,
+}
+
+/// The ports a VM may open flows to (`Policy::Ports`): its image's Agentfile's egress
+/// grants, each a range of one protocol's ports, written as an `EXPOSE` writes them
+/// (`443`, `53/udp`, `8000-8010/tcp`), TCP where none is said.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Ports(pub Vec<(Proto, u16, u16)>);
+
+/// `NET_POLICY`'s payload for [`Policy::Host`]: its tag alone.
+pub const HOST_POLICY: [u8; 1] = [0x82];
+
+/// `NET_POLICY`'s payload: each port range as [`Ports::encode`] writes one; 0x81 where any
+/// name may be resolved past the microVM; then each name granted as 0x80, its port in
+/// network order, its length's byte and the name.
+pub fn encode_policy(ports: &Ports, named: &[(String, u16)], dns_all: bool) -> Vec<u8> {
+    let mut out = ports.encode();
+    if dns_all {
+        out.push(0x81);
+    }
+    for (host, port) in named {
+        let Ok(len) = u8::try_from(host.len()) else {
+            continue;
+        };
+        out.push(0x80);
+        out.extend_from_slice(&port.to_be_bytes());
+        out.push(len);
+        out.extend_from_slice(host.as_bytes());
+    }
+    out
+}
+
+/// A policy as `NET_POLICY` carries it: the ports, the names granted with their ports, and
+/// whether any name may be resolved.
+pub type Granted = (Ports, Vec<(String, u16)>, bool);
+
+/// What [`encode_policy`] wrote; None for a malformed payload.
+pub fn decode_policy(mut bytes: &[u8]) -> Option<Granted> {
+    let mut ranges = Vec::new();
+    let mut named = Vec::new();
+    let mut dns_all = false;
+    while let Some(&tag) = bytes.first() {
+        if tag == 0x81 {
+            dns_all = true;
+            bytes = bytes.get(1..)?;
+        } else if tag == 0x80 {
+            let (&[_, a, b, len], rest) = bytes.split_first_chunk::<4>()?;
+            let (name, rest) = rest.split_at_checked(usize::from(len))?;
+            named.push((String::from_utf8(name.to_vec()).ok()?, u16::from_be_bytes([a, b])));
+            bytes = rest;
+        } else {
+            let (record, rest) = bytes.split_at_checked(5)?;
+            ranges.extend(Ports::decode(record)?.0);
+            bytes = rest;
+        }
+    }
+    Some((Ports(ranges), named, dns_all))
+}
+
+impl Ports {
+    /// Ports as the build's label lists them, comma-separated.
+    pub fn parse(text: &str) -> Result<Ports, String> {
+        let mut out = Vec::new();
+        for item in text.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            let (range, proto) = match item.rsplit_once('/') {
+                Some((r, "tcp")) => (r, Proto::Tcp),
+                Some((r, "udp")) => (r, Proto::Udp),
+                Some((_, p)) => return Err(format!("{item:?}: no protocol {p:?}, only tcp or udp")),
+                None => (item, Proto::Tcp),
+            };
+            let port = |p: &str| p.parse::<u16>().ok().filter(|p| *p > 0);
+            let (lo, hi) = match range.split_once('-') {
+                Some((a, b)) => (port(a), port(b)),
+                None => (port(range), port(range)),
+            };
+            match (lo, hi) {
+                (Some(lo), Some(hi)) if lo <= hi => out.push((proto, lo, hi)),
+                _ => return Err(format!("{item:?}: no port or range of ports")),
+            }
+        }
+        Ok(Ports(out))
+    }
+
+    /// As `NET_POLICY` carries them: each a protocol's IP number and the range's ends,
+    /// in network order.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.0.len() * 5);
+        for (proto, lo, hi) in &self.0 {
+            out.push(match proto {
+                Proto::Tcp => 6,
+                Proto::Udp => 17,
+            });
+            out.extend_from_slice(&lo.to_be_bytes());
+            out.extend_from_slice(&hi.to_be_bytes());
+        }
+        out
+    }
+
+    pub fn decode(bytes: &[u8]) -> Option<Ports> {
+        let (chunks, rest) = bytes.as_chunks::<5>();
+        if !rest.is_empty() {
+            return None;
+        }
+        let mut out = Vec::with_capacity(chunks.len());
+        for &[p, a, b, c, d] in chunks {
+            let proto = match p {
+                6 => Proto::Tcp,
+                17 => Proto::Udp,
+                _ => return None,
+            };
+            let (lo, hi) = (u16::from_be_bytes([a, b]), u16::from_be_bytes([c, d]));
+            if lo == 0 || lo > hi {
+                return None;
+            }
+            out.push((proto, lo, hi));
+        }
+        Some(Ports(out))
+    }
+
+    /// Whether `port` of `proto` is among them.
+    pub fn has(&self, proto: Proto, port: u16) -> bool {
+        self.0
+            .iter()
+            .any(|&(p, lo, hi)| p == proto && (lo..=hi).contains(&port))
+    }
+}
+
+/// What a VM may reach.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Policy {
+    /// The Internet and the host's networks, which a Dockerfile's `RUN` reaches by
+    /// default (D31): a build's steps. Not the host itself (the gateway, its loopback);
+    /// not link-local addresses, a cloud's instance metadata (169.254.169.254) among them, which a
+    /// request made from the host's own stack would reach past the hop limit that keeps
+    /// it from Docker's bridged containers (AWS IMDSv2's); and not multicast or broadcast,
+    /// which Docker's bridge does not route out.
+    AllowAll,
+    /// Nothing: a run's, by default (spec §3), and a VM without grants.
+    DenyAll,
+    /// What `AllowAll` reaches, on these ports alone: an Agentfile's egress grants, the
+    /// union of its agents' (D59), each agent held to its own by its microVM's switch.
+    Ports(Ports),
+    /// A build's proxy alone (D110, BuildKit's `exec.proxy`): TCP to the gateway's `port`,
+    /// carried to the proxy's Unix socket on the host; nothing else, neither the host's
+    /// networks nor the Internet, nor a resolver.
+    Proxy { port: u16, socket: std::path::PathBuf },
+    /// The host's network, a run's that asked for it (`--network host`, D124): every
+    /// unicast address the host reaches, link-local ones among them, and the host itself,
+    /// the gateway being its loopback's 127.0.0.1 and a loopback address the guest sends to
+    /// (its loopback's flows to ports none of its processes hold, routed out by its init)
+    /// being the host's own. Not multicast or broadcast: flows are TCP's and UDP's, as
+    /// Docker Desktop's host network carries them.
+    Host,
+}
+
+/// The guest's link: its address and MAC, the gateway's, and the VM's policy.
+#[derive(Debug, Clone)]
+pub struct Config {
+    pub guest_mac: [u8; 6],
+    pub guest_ip: Ipv4Addr,
+    pub gateway_mac: [u8; 6],
+    pub gateway_ip: Ipv4Addr,
+    /// The guest's IPv6 address and its gateway's, on a network with IPv6 (D99): none
+    /// else, and the guest's IPv6 frames are dropped.
+    pub guest_ip6: Option<Ipv6Addr>,
+    pub gateway_ip6: Option<Ipv6Addr>,
+    /// The guest's link-local addresses on its network (`NET_LINK_LOCAL`, PM M175): its
+    /// own beside its addresses, which reach its peers' alone and nothing past the link.
+    pub guest_link_local: Vec<IpAddr>,
+    pub policy: Policy,
+    /// The resolvers a guest's names past the microVM are asked of, the host's own
+    /// (`/etc/resolv.conf`, or `SHARDS_DNS`): asked only under [`Policy::Ports`], for a
+    /// name the network's members do not hold, and only as a grant names it (D59).
+    pub resolvers: Vec<(Ipv4Addr, u16)>,
+    /// Destinations granted by name, each a host and a TCP port (an Agentfile's remote MCP
+    /// servers, D59, and its networks' destinations, D236): reached at the address a host
+    /// is, or at those the host's resolver answered for it through this process; the host
+    /// itself (`dns::HOST`) at the gateway, which is its loopback there.
+    pub named: Vec<(String, u16)>,
+    /// What the named have resolved to, each address with its grant's port.
+    pub learned: HashSet<(IpAddr, u16)>,
+    /// Whether any name may be asked past the microVM (`NETWORK --dns`); else only the
+    /// named's, and every other question is REFUSED.
+    pub dns_all: bool,
+}
+
+/// The TCP ports a policy's flows reach past the microVM, which the network process is held
+/// to (D31): its grants' TCP ports and its named servers', and where names may be resolved
+/// past the microVM, the port of the resolver they are asked of (the first, as
+/// `on_guest_udp` and `on_guest_tcp` ask it): the host's 53, or another `SHARDS_DNS`
+/// names.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn policy_tcp_ports(
+    ports: &Ports,
+    named: &[(String, u16)],
+    dns_all: bool,
+    resolvers: &[(Ipv4Addr, u16)],
+) -> Vec<u16> {
+    let mut tcp: Vec<u16> = ports
+        .0
+        .iter()
+        .filter(|(proto, _, _)| *proto == Proto::Tcp)
+        .flat_map(|&(_, first, last)| first..=last)
+        .chain(named.iter().map(|&(_, port)| port))
+        .collect();
+    if dns_all || !named.is_empty() {
+        tcp.extend(resolvers.first().map(|&(_, port)| port));
+    }
+    tcp
+}
+
+/// A MAC address as shards' processes pass it to one another (review 2.32): its six
+/// bytes in hex, two digits each, between colons, as Linux and Docker write one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Mac(pub [u8; 6]);
+
+impl std::fmt::Display for Mac {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let [a, b, c, d, e, g] = self.0;
+        write!(f, "{a:02x}:{b:02x}:{c:02x}:{d:02x}:{e:02x}:{g:02x}")
+    }
+}
+
+impl std::str::FromStr for Mac {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Mac, String> {
+        let not = || format!("{s:?} is not a MAC");
+        let mut octets = s.split(':');
+        let mut mac = [0u8; 6];
+        for byte in &mut mac {
+            let hex = octets
+                .next()
+                .filter(|h| h.len() == 2 && h.bytes().all(|c| c.is_ascii_hexdigit()))
+                .ok_or_else(not)?;
+            *byte = u8::from_str_radix(hex, 16).map_err(|_| not())?;
+        }
+        match octets.next() {
+            Some(_) => Err(not()),
+            None => Ok(Mac(mac)),
+        }
+    }
+}
+
+/// Addresses as the daemon and a network process pass them (`NET_LINK_LOCAL`, `NET_PEER`):
+/// each its length, 4 or 16, then its octets.
+pub fn encode_addresses(addresses: &[IpAddr]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for a in addresses {
+        match a {
+            IpAddr::V4(v4) => {
+                out.push(4);
+                out.extend_from_slice(&v4.octets());
+            }
+            IpAddr::V6(v6) => {
+                out.push(16);
+                out.extend_from_slice(&v6.octets());
+            }
+        }
+    }
+    out
+}
+
+/// [`encode_addresses`]'s addresses; none of a list cut short or of another length.
+fn decode_addresses(mut b: &[u8]) -> Option<Vec<IpAddr>> {
+    let mut out = Vec::new();
+    while let Some((&len, rest)) = b.split_first() {
+        let (address, rest) = match len {
+            4 => rest
+                .split_first_chunk::<4>()
+                .map(|(o, rest)| (IpAddr::from(*o), rest))?,
+            16 => rest
+                .split_first_chunk::<16>()
+                .map(|(o, rest)| (IpAddr::from(*o), rest))?,
+            _ => return None,
+        };
+        out.push(address);
+        b = rest;
+    }
+    Some(out)
+}
+
+/// A fresh guest MAC, random, locally administered and unicast, as current Docker gives
+/// each container (measured under Docker Desktop, 2026-10-02).
+pub fn random_mac() -> io::Result<[u8; 6]> {
+    let mut mac = [0u8; 6];
+    entropy(&mut mac)?;
+    mac[0] = (mac[0] & 0xfe) | 0x02;
+    Ok(mac)
+}
+
+/// `buf` filled from the OS's random source ([`sys::entropy`]).
+pub fn entropy(buf: &mut [u8]) -> io::Result<()> {
+    sys::entropy(buf)
+}
+
+impl Config {
+    /// Docker's default bridge, `bridge`, as the guest whose MAC is `guest_mac` sees it:
+    /// the gateway's MAC made of its address (shards_abi::gateway_mac).
+    pub fn on_bridge(policy: Policy, guest_mac: [u8; 6], bridge: &bridge::Bridge) -> Config {
+        Config {
+            guest_mac,
+            guest_ip: bridge.guest(),
+            gateway_mac: shards_abi::gateway_mac(bridge.gateway().octets()),
+            gateway_ip: bridge.gateway(),
+            guest_ip6: None,
+            gateway_ip6: None,
+            guest_link_local: Vec::new(),
+            policy,
+            resolvers: Vec::new(),
+            named: Vec::new(),
+            learned: HashSet::new(),
+            dns_all: false,
+        }
+    }
+
+    /// Whether `ip` is one of the guest's own: its address of that version, or one of its
+    /// link-local addresses.
+    fn guests(&self, ip: IpAddr) -> bool {
+        let address = match ip {
+            IpAddr::V4(v4) => v4 == self.guest_ip,
+            IpAddr::V6(v6) => Some(v6) == self.guest_ip6,
+        };
+        address || self.guest_link_local.contains(&ip)
+    }
+
+    /// The gateway of `ip`'s version: the address the guest reaches this process at.
+    fn gateway_of(&self, ip: IpAddr) -> IpAddr {
+        match (ip, self.gateway_ip6) {
+            (IpAddr::V6(_), Some(g)) => IpAddr::V6(g),
+            _ => IpAddr::V4(self.gateway_ip),
+        }
+    }
+
+    /// Where a flow to `to`'s `port` of `proto` goes on the host: `to` itself, but for the
+    /// gateway under the host's network (D124), which is the host's own loopback, of its
+    /// version; and for the gateway at a TCP port a grant names the host itself at (D236),
+    /// the host's IPv4 loopback there.
+    fn host_side(&self, to: IpAddr, proto: Proto, port: u16) -> IpAddr {
+        match (&self.policy, to) {
+            (Policy::Host, IpAddr::V4(v4)) if v4 == self.gateway_ip => IpAddr::V4(Ipv4Addr::LOCALHOST),
+            (Policy::Host, IpAddr::V6(v6)) if Some(v6) == self.gateway_ip6 => IpAddr::V6(Ipv6Addr::LOCALHOST),
+            (Policy::Ports(_), IpAddr::V4(v4))
+                if v4 == self.gateway_ip && proto == Proto::Tcp && self.host_granted(port) =>
+            {
+                IpAddr::V4(Ipv4Addr::LOCALHOST)
+            }
+            _ => to,
+        }
+    }
+
+    /// Whether a grant names the host itself at TCP `port` (`dns::HOST`, D236): the guest
+    /// reaches it at its gateway, and this process takes that to the host's loopback, at
+    /// that port alone. Under the ports a run's grants give alone: a build's policy, and
+    /// the host's network, have none.
+    fn host_granted(&self, port: u16) -> bool {
+        matches!(self.policy, Policy::Ports(_))
+            && self
+                .named
+                .iter()
+                .any(|(h, p)| *p == port && h.eq_ignore_ascii_case(dns::HOST))
+    }
+
+    /// Whether a question for `name` may go past the microVM: any name where names may be
+    /// resolved (`NETWORK --dns`), else a destination's that a grant names (D59, D236), but
+    /// the host itself's, which is no name of the DNS's (`dns::HOST`).
+    fn asks(&self, name: &str) -> bool {
+        self.dns_all
+            || (!name.eq_ignore_ascii_case(dns::HOST)
+                && self.named.iter().any(|(h, _)| h.eq_ignore_ascii_case(name)))
+    }
+
+    /// The names a grant lets a question ask past the microVM, lowered: its destinations',
+    /// but the host itself's ([`Config::asks`]).
+    fn asked_names(&self) -> Vec<String> {
+        self.named
+            .iter()
+            .map(|(h, _)| h.to_ascii_lowercase())
+            .filter(|h| h != dns::HOST)
+            .collect()
+    }
+
+    /// Where a connection to `to`'s `port` goes under a build's proxy (D110): to the
+    /// proxy's socket where it is the gateway's proxy port; none for anything else.
+    fn proxy_flow(&self, to: IpAddr, port: u16) -> Option<std::path::PathBuf> {
+        match &self.policy {
+            Policy::Proxy { port: p, socket } if to == IpAddr::V4(self.gateway_ip) && port == *p => {
+                Some(socket.clone())
+            }
+            _ => None,
+        }
+    }
+
+    fn allows(&self, to: IpAddr, proto: Proto, port: u16) -> bool {
+        // An IPv4 address carried in IPv6 (`::ffff:a.b.c.d`) is that address, and is
+        // judged as it is: a host socket to it reaches it.
+        let to = to.to_canonical();
+        // The host itself, as a grant names it: the gateway, at that TCP port alone, which
+        // `host_side` takes to the host's loopback (D236).
+        if proto == Proto::Tcp && to == IpAddr::V4(self.gateway_ip) && self.host_granted(port) {
+            return true;
+        }
+        let named = proto == Proto::Tcp
+            && (self.learned.contains(&(to, port))
+                || self.named.iter().any(|(h, p)| {
+                    // An IPv6 address as a URL writes it, in brackets (RFC 3986 §3.2.2).
+                    let h = h.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(h);
+                    *p == port && h.parse::<IpAddr>().ok().map(|a| a.to_canonical()) == Some(to)
+                }));
+        match &self.policy {
+            // The proxy's one flow is the stack's own (`proxy_flow`), past this.
+            Policy::DenyAll | Policy::Proxy { .. } => false,
+            // Every unicast address the host reaches, the host's own among them (D124).
+            Policy::Host => match to {
+                IpAddr::V4(to) => !to.is_unspecified() && !to.is_multicast() && !to.is_broadcast(),
+                IpAddr::V6(to) => !to.is_unspecified() && !to.is_multicast(),
+            },
+            Policy::Ports(p) if !p.has(proto, port) && !named => false,
+            // The gateway would be the host itself: never by default (rootless-security.md
+            // R4.16).
+            Policy::AllowAll | Policy::Ports(_) => match to {
+                IpAddr::V4(to) => {
+                    to != self.gateway_ip
+                        && !to.is_loopback()
+                        && !to.is_unspecified()
+                        && !to.is_link_local()
+                        && !to.is_multicast()
+                        && !to.is_broadcast()
+                }
+                // IPv6's: not the gateway, the loopback, the unspecified address, link-local
+                // unicast (fe80::/10, RFC 4291 §2.5.6) or multicast (ff00::/8), as IPv4's;
+                // nor IPv4-compatible addresses (::/96, deprecated by RFC 4291 §2.5.5.1),
+                // which some stacks still route to IPv4.
+                IpAddr::V6(to) => {
+                    Some(to) != self.gateway_ip6
+                        && !to.is_loopback()
+                        && !to.is_unspecified()
+                        && !to.is_unicast_link_local()
+                        && !to.is_multicast()
+                        && to.segments().get(..6) != Some(&[0; 6])
+                }
+            },
+        }
+    }
+}
+
+/// A published port's host socket: listening for TCP, or bound for UDP's datagrams.
+#[cfg_attr(
+    windows,
+    allow(
+        dead_code,
+        reason = "published ports come from the daemon, Unix's alone yet (D143)"
+    )
+)]
+enum Listener {
+    Tcp(std::net::TcpListener),
+    Udp(UdpSocket),
+}
+
+impl Listener {
+    fn raw_sock(&self) -> RawSock {
+        match self {
+            Listener::Tcp(l) => l.raw_sock(),
+            Listener::Udp(u) => u.raw_sock(),
+        }
+    }
+}
+
+/// A host peer's datagrams to a published UDP port: the guest has them from a gateway
+/// port of the peer's own, and its answers to that port go back to the peer, from the
+/// host address it asked.
+struct Inbound {
+    /// Its port, in `published`.
+    published: usize,
+    peer: std::net::SocketAddr,
+    asked: Option<std::net::IpAddr>,
+    guest_port: u16,
+    life: Lifetime,
+}
+
+/// A UDP flow's host socket and how long it lives.
+struct UdpFlow {
+    sock: UdpSocket,
+    life: Lifetime,
+}
+
+/// The guest's ends of a UDP flow: its port, and the remote address and port.
+type UdpKey = (u16, IpAddr, u16);
+
+/// The most of a UDP flow's datagrams that wait for its socket from the spawner's dialer
+/// (Windows): what the guest sends past them goes, as datagrams past a full socket buffer
+/// go. Its answer comes once the spawner has bound and connected one, in microseconds.
+#[cfg(windows)]
+const UDP_WAITING: usize = 16;
+
+/// What a poller's token or a timer names (review 2.14): its kind in the top byte, then
+/// the generation of the slot it names, then the slot, so that what an earlier holder of
+/// a slot left is never taken for its next's.
+mod token {
+    pub const DOORBELL: u64 = 0;
+    pub const CONTROL: u64 = 1;
+    pub const LISTENER: u64 = 2;
+    pub const TCP: u64 = 3;
+    pub const UDP: u64 = 4;
+    pub const INBOUND: u64 = 5;
+    pub const PEER: u64 = 6;
+    /// The spawner's dialer (Windows, dial.rs).
+    #[cfg(windows)]
+    pub const DIALER: u64 = 7;
+
+    pub fn of(kind: u64, generation: u32, index: u32) -> u64 {
+        kind << 56 | (u64::from(generation) & 0xff_ffff) << 32 | u64::from(index)
+    }
+
+    pub fn kind(token: u64) -> u64 {
+        token >> 56
+    }
+
+    pub fn generation(token: u64) -> u32 {
+        ((token >> 32) & 0xff_ffff) as u32
+    }
+
+    pub fn index(token: u64) -> u32 {
+        token as u32
+    }
+}
+
+/// The guest's TCP connections, each in a slot of its own, found by its ends.
+#[derive(Default)]
+struct Tcp {
+    slots: Vec<TcpSlot>,
+    free: Vec<u32>,
+    by_key: HashMap<Key, u32>,
+}
+
+/// A connection's slot: the connection, out of it while it is being served; what the
+/// poller waits for on its socket; when its timer is armed; whether it waits among the
+/// blocked.
+#[derive(Default)]
+struct TcpSlot {
+    generation: u32,
+    conn: Option<Conn>,
+    key: Option<Key>,
+    interest: poll::Interest,
+    armed: Option<Instant>,
+    blocked: bool,
+}
+
+impl Tcp {
+    /// A slot for the connection of `key`, empty until it is settled into it.
+    fn reserve(&mut self, key: Key) -> u32 {
+        let i = match self.free.pop() {
+            Some(i) => i,
+            None => {
+                self.slots.push(TcpSlot::default());
+                u32::try_from(self.slots.len() - 1).unwrap_or(u32::MAX)
+            }
+        };
+        if let Some(slot) = self.slots.get_mut(i as usize) {
+            *slot = TcpSlot {
+                generation: slot.generation.wrapping_add(1),
+                key: Some(key),
+                ..TcpSlot::default()
+            };
+        }
+        self.by_key.insert(key, i);
+        i
+    }
+
+    fn slot(&mut self, i: u32) -> Option<&mut TcpSlot> {
+        self.slots.get_mut(i as usize)
+    }
+
+    /// The slot `token` names, if its connection is still that one.
+    fn slot_of(&self, token: u64) -> Option<u32> {
+        let i = token::index(token);
+        self.slots
+            .get(i as usize)
+            .filter(|s| s.key.is_some() && s.generation & 0xff_ffff == token::generation(token))
+            .map(|_| i)
+    }
+
+    fn token(&self, i: u32) -> u64 {
+        let generation = self.slots.get(i as usize).map_or(0, |s| s.generation);
+        token::of(token::TCP, generation, i)
+    }
+
+    /// Takes slot `i`'s connection out, to serve it.
+    fn take(&mut self, i: u32) -> Option<Conn> {
+        self.slot(i).and_then(|s| s.conn.take())
+    }
+
+    /// Empties slot `i`, its connection gone.
+    fn release(&mut self, i: u32) {
+        if let Some(slot) = self.slots.get_mut(i as usize) {
+            if let Some(key) = slot.key.take() {
+                self.by_key.remove(&key);
+            }
+            *slot = TcpSlot {
+                generation: slot.generation,
+                ..TcpSlot::default()
+            };
+            self.free.push(i);
+        }
+    }
+}
+
+/// The stack's state: its frame ring, connections and flows.
+struct Stack<'r> {
+    cfg: Config,
+    frames: Frames,
+    to_guest: Producer<'r>,
+    /// Frames for the guest the ring had no room for yet.
+    backlog: VecDeque<Vec<u8>>,
+    tcp: Tcp,
+    udp: HashMap<UdpKey, UdpFlow>,
+    /// UDP flows by their numbers, and the next number.
+    udp_ids: HashMap<u32, UdpKey>,
+    next_udp: u32,
+    /// The guest's datagrams of UDP flows whose sockets the spawner's dialer is asked for
+    /// (Windows, `DIAL_UDP`), [`UDP_WAITING`] of each at most.
+    #[cfg(windows)]
+    udp_waiting: HashMap<UdpKey, Vec<Vec<u8>>>,
+    /// What waits for the host's sockets, the timers due, earliest first, and the
+    /// connections a full ring kept from the guest, in turn (review 2.14).
+    poller: poll::Poller,
+    timers: BinaryHeap<Reverse<(Instant, u64)>>,
+    blocked: VecDeque<u64>,
+    buf: Vec<u8>,
+    /// Where segments to the guest are made.
+    scratch: Vec<u8>,
+    /// The key of this process's initial sequence numbers, and when it began: their
+    /// clock's origin ([`Stack::isn`]).
+    isn_key: [u8; 16],
+    began: Instant,
+    /// Published ports' host sockets, each with the guest port it reaches, in the slot its
+    /// token names; a slot emptied where the host's network let one go (D124).
+    published: Vec<Option<(Listener, u16)>>,
+    /// The host's network's ports (D124), by the daemon's number for each, at their slots.
+    hosted: HashMap<u32, usize>,
+    /// Published UDP ports' flows, by their gateway ports, and those ports by their
+    /// published port and peer.
+    inbound: HashMap<u16, Inbound>,
+    inbound_ports: HashMap<(usize, std::net::SocketAddr), u16>,
+    /// The gateway port the next published connection tries first.
+    next_port: u16,
+    /// The other VMs on the guest's network (D46), by the slot their token names.
+    peers: Vec<Option<Peer>>,
+    /// The names its members answer to, which the gateway's resolver says: none off a
+    /// network of its own.
+    names: Option<dns::Names>,
+    /// Whether the process is held to an Agentfile's TCP ports already (D31, `NET_POLICY`).
+    #[cfg(target_os = "linux")]
+    ports_confined: bool,
+    /// The spawner's dialer (Windows, dial.rs), and what the poller waits on it for.
+    #[cfg(windows)]
+    dialer: Option<Dialer>,
+    #[cfg(windows)]
+    dialer_waits: poll::Interest,
+}
+
+/// A peer on the guest's network (D46): another VM's network process, on a stream socket
+/// the daemon paired the two with, and its guest's address. A frame goes each way whole,
+/// its length's four bytes first. One the socket takes only in part is finished before
+/// the next goes; frames meanwhile are dropped, as a switch whose port is full drops them,
+/// and the guests' TCP sends them again.
+struct Peer {
+    ip: Ipv4Addr,
+    /// Its IPv6 address, on a network with IPv6.
+    ip6: Option<Ipv6Addr>,
+    /// Its link-local addresses (PM M175), which its guest's alone reach.
+    link_local: Vec<IpAddr>,
+    sock: UnixStream,
+    /// What of the frame being sent the socket has yet to take.
+    unsent: Vec<u8>,
+    /// What has come of the frames being received.
+    received: Vec<u8>,
+}
+
+/// Sends frames to the guest through the ring, into the backlog while it is full.
+struct Out<'a, 'r> {
+    frames: &'a Frames,
+    to_guest: &'a mut Producer<'r>,
+    backlog: &'a mut VecDeque<Vec<u8>>,
+    guest_ip: Ipv4Addr,
+    guest_ip6: Option<Ipv6Addr>,
+    /// Where segments are made, kept from one to the next.
+    scratch: &'a mut Vec<u8>,
+}
+
+impl Out<'_, '_> {
+    /// Sends a frame of `parts`, one after another: into the ring, or queued while it is
+    /// full or others wait.
+    fn send(&mut self, parts: &[&[u8]]) -> bool {
+        if self.backlog.is_empty() {
+            match self.to_guest.try_push(parts) {
+                Ok(Some(_)) => return true,
+                Ok(None) => {}
+                Err(_) => return false,
+            }
+        }
+        if self.backlog.len() >= BACKLOG {
+            self.backlog.pop_front();
+        }
+        self.backlog.push_back(parts.concat());
+        true
+    }
+
+    /// Sends the frame `build` writes, made in the scratch.
+    fn built(&mut self, build: impl FnOnce(&Frames, &mut Vec<u8>)) -> bool {
+        let mut f = std::mem::take(self.scratch);
+        build(self.frames, &mut f);
+        let sent = self.send(&[&f]);
+        *self.scratch = f;
+        sent
+    }
+
+    /// The guest's address of `ip`'s version.
+    fn guest_of(&self, ip: IpAddr) -> IpAddr {
+        match (ip, self.guest_ip6) {
+            (IpAddr::V6(_), Some(g)) => IpAddr::V6(g),
+            _ => IpAddr::V4(self.guest_ip),
+        }
+    }
+
+    /// Sends the guest `payload` from `src`, to its port `port`: the datagram's headers
+    /// made in the scratch, its bytes copied from where they lie.
+    fn datagram(&mut self, src: (IpAddr, u16), port: u16, payload: &[u8]) -> bool {
+        let mut head = std::mem::take(self.scratch);
+        let guest = self.guest_of(src.0);
+        self.frames.udp_headers(&mut head, src, (guest, port), payload);
+        let sent = self.send(&[&head, payload]);
+        *self.scratch = head;
+        sent
+    }
+}
+
+impl ToGuest for Out<'_, '_> {
+    #[allow(clippy::too_many_arguments)]
+    fn segment(
+        &mut self,
+        key: &Key,
+        seq: u32,
+        ack: u32,
+        flags: u8,
+        window: u16,
+        syn: Option<(u16, Option<u8>)>,
+        payload: Payload<'_>,
+    ) -> bool {
+        let [a, b] = payload;
+        let len = a.len() + b.len();
+        // A segment with bytes waits for room rather than fill the backlog, so that what
+        // TCP sends is what it holds; a bare control segment may queue.
+        if len > 0 && !self.backlog.is_empty() {
+            return false;
+        }
+        let mut head = std::mem::take(self.scratch);
+        let guest = self.guest_of(key.remote.0);
+        self.frames.tcp_headers(
+            &mut head,
+            key.remote,
+            (guest, key.guest_port),
+            seq,
+            ack,
+            flags,
+            window,
+            syn,
+            len,
+        );
+        let sent = if len == 0 {
+            self.send(&[&head])
+        } else {
+            matches!(self.to_guest.try_push(&[&head, a, b]), Ok(Some(_)))
+        };
+        *self.scratch = head;
+        sent
+    }
+}
+
+/// Whose a control socket is, and so what it may say (review 2.19).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Control {
+    /// The daemon's: published ports come on it ([`shards_ipc::kind::PUBLISH`]).
+    Daemon,
+    /// The VM's: published ports go on it as its run ends
+    /// ([`shards_ipc::kind::UNPUBLISH`]). A VM gives nothing to publish.
+    Release,
+}
+
+impl Control {
+    /// Whether a message of `kind` is this socket's to send.
+    fn says(self, kind: u8) -> bool {
+        match self {
+            Control::Daemon => matches!(
+                kind,
+                shards_ipc::kind::PUBLISH
+                    | shards_ipc::kind::NET_PUBLISHED
+                    | shards_ipc::kind::NET_UNPUBLISHED
+                    | shards_ipc::kind::NET_ADDRESS
+                    | shards_ipc::kind::NET_MAC
+                    | shards_ipc::kind::NET_LINK_LOCAL
+                    | shards_ipc::kind::NET_PEER
+                    | shards_ipc::kind::NET_NAMES
+                    | shards_ipc::kind::NET_POLICY
+            ),
+            Control::Release => kind == shards_ipc::kind::UNPUBLISH,
+        }
+    }
+}
+
+/// Serves the guest on `region`'s rings until the VM goes, ringing `wake_peer` and sleeping
+/// on `wake_me`: on Unix the VM goes as its doorbell hangs up; on Windows, whose doorbells
+/// are events, as its process (`vm`) ends, and what its AppContainer keeps it from goes
+/// through `dialer`. Published ports come and go on `controls`, each of whom [`Control`]
+/// says; their messages are taken as each comes whole, so that one cut short holds up
+/// nothing.
+pub fn serve(
+    region: Handle,
+    wake_me: shards_netring::Bell,
+    wake_peer: shards_netring::Bell,
+    #[cfg(windows)] vm: std::os::windows::io::OwnedHandle,
+    #[cfg(windows)] dialer: Option<Dialer>,
+    cfg: Config,
+    controls: Vec<(Control, UnixStream)>,
+) -> io::Result<()> {
+    // Each control socket keeps its place, a token's index, until it hangs up.
+    let mut controls: Vec<Option<(Control, UnixStream, shards_ipc::Incoming)>> = controls
+        .into_iter()
+        .map(|(role, sock)| Some((role, sock, shards_ipc::Incoming::default())))
+        .collect();
+    let region = Region::map(region)?;
+    // The device's frames come on 0, this side's go on 1.
+    let mut from_guest: Consumer<'_> = region.consumer(0, wake_peer.try_clone()?, wake_me);
+    let to_guest = region.producer(1, wake_peer);
+    let mut stack = Stack {
+        frames: Frames {
+            gateway_mac: cfg.gateway_mac,
+            guest_mac: cfg.guest_mac,
+        },
+        cfg,
+        to_guest,
+        backlog: VecDeque::new(),
+        tcp: Tcp::default(),
+        udp: HashMap::new(),
+        udp_ids: HashMap::new(),
+        next_udp: 0,
+        #[cfg(windows)]
+        udp_waiting: HashMap::new(),
+        poller: poll::Poller::new()?,
+        timers: BinaryHeap::new(),
+        blocked: VecDeque::new(),
+        buf: vec![0u8; shards_netring::MAX_FRAME],
+        scratch: Vec::new(),
+        isn_key: {
+            let mut key = [0u8; 16];
+            entropy(&mut key)?;
+            key
+        },
+        began: Instant::now(),
+        published: Vec::new(),
+        hosted: HashMap::new(),
+        inbound: HashMap::new(),
+        inbound_ports: HashMap::new(),
+        next_port: *EPHEMERAL.start(),
+        peers: Vec::new(),
+        names: None,
+        #[cfg(target_os = "linux")]
+        ports_confined: false,
+        #[cfg(windows)]
+        dialer,
+        #[cfg(windows)]
+        dialer_waits: poll::Interest::NONE,
+    };
+    #[cfg(windows)]
+    stack.wait_on_dialer();
+    let doorbell = from_guest.waits_on();
+    #[cfg(unix)]
+    stack.poller.set(
+        doorbell,
+        token::of(token::DOORBELL, 0, 0),
+        poll::Interest::NONE,
+        poll::Interest::READ,
+    )?;
+    // Its VM's doorbell on Windows: an AF_UNIX socket its port names with its sockets (PM
+    // M213), whose hang-up says its VM has gone; or an event. Its VM's process is watched
+    // too, its end said once.
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle as _;
+        let named = token::of(token::DOORBELL, 0, 0);
+        match doorbell {
+            shards_netring::RawWait::Socket(s) => {
+                stack
+                    .poller
+                    .set(s, named, poll::Interest::NONE, poll::Interest::READ)?;
+            }
+            shards_netring::RawWait::Event(h) => stack.poller.watch(h, named, false)?,
+        }
+        stack.poller.watch(vm.as_raw_handle(), named, true)?;
+    }
+    for (i, (_, sock, _)) in controls.iter().flatten().enumerate() {
+        let named = token::of(token::CONTROL, 0, u32::try_from(i).unwrap_or(u32::MAX));
+        stack
+            .poller
+            .set(sock.raw_sock(), named, poll::Interest::NONE, poll::Interest::READ)?;
+    }
+    let mut frame = vec![0u8; shards_netring::MAX_FRAME];
+    let mut events: Vec<poll::Event> = Vec::new();
+    loop {
+        // The guest's frames, a batch at a time.
+        take_frames(&mut from_guest, &mut stack, &mut frame, 256, usize::MAX)?;
+        stack.flush_backlog();
+        // What a full ring kept from the guest goes once it has drained: nothing else
+        // would send it while the connection waits on no timer and reads no socket.
+        if stack.backlog.is_empty() {
+            stack.unblock();
+        }
+        stack.timers(Instant::now());
+        // Frames for the guest left in the backlog wait for room without a spin: the ring
+        // that had none asked to be rung once the guest's side makes some.
+        let busy = from_guest.ready().map_err(|e| io::Error::other(e.to_string()))?;
+        // Asked to be rung for the guest's next frame: one that came before the ask rang
+        // nothing, so the wait does not wait for it.
+        let timeout = if busy || from_guest.arm().map_err(|e| io::Error::other(e.to_string()))? {
+            Some(Duration::ZERO)
+        } else {
+            stack
+                .next_timer()
+                .map(|t| t.saturating_duration_since(Instant::now()))
+        };
+        stack.poller.wait(&mut events, timeout)?;
+        for e in &events {
+            let index = token::index(e.token);
+            match token::kind(e.token) {
+                token::DOORBELL => {
+                    // The guest's device closed the ring's doorbell: the VM is gone, and
+                    // what it sent last goes out before this does.
+                    if e.ended {
+                        let _ = take_frames(&mut from_guest, &mut stack, &mut frame, usize::MAX, RING);
+                        return Ok(());
+                    }
+                    sys::drain(doorbell);
+                }
+                token::CONTROL => {
+                    let Some(entry) = controls.get_mut(index as usize) else {
+                        continue;
+                    };
+                    // The frames the guest sent before this message was, taken before it:
+                    // a run's last answer to a published port's peer goes out before the
+                    // port closes (UNPUBLISH), its VM having put it in the ring first
+                    // (warm.rs `release_ports`).
+                    take_frames(&mut from_guest, &mut stack, &mut frame, usize::MAX, RING)?;
+                    let keep = entry
+                        .as_mut()
+                        .is_some_and(|(role, sock, incoming)| control(&mut stack, *role, sock, incoming));
+                    // Hung up, or said what was not its: forgotten, and closed. What is
+                    // published stays, as the VM runs on.
+                    if !keep && let Some((_, sock, _)) = entry.take() {
+                        stack.forget(sock.raw_sock(), e.token, poll::Interest::READ);
+                    }
+                }
+                token::LISTENER => match stack.published.get(index as usize).and_then(Option::as_ref) {
+                    Some((Listener::Tcp(_), _)) => stack.accept(index as usize),
+                    Some((Listener::Udp(_), _)) => stack.receive(index as usize),
+                    None => {}
+                },
+                token::TCP => stack.on_socket(e),
+                token::PEER => stack.on_peer(index as usize, e),
+                token::UDP => stack.on_udp(index),
+                #[cfg(windows)]
+                token::DIALER => stack.on_dialer(e.write),
+                _ => {}
+            }
+        }
+        stack.timers(Instant::now());
+    }
+}
+
+/// Takes what control socket `sock` holds, `role` saying what it may say: published ports
+/// come and go as each message comes whole, and each is answered once taken, so that its
+/// sender's copies may close. False once it has hung up, or said what is not its to say.
+fn control(
+    stack: &mut Stack<'_>,
+    role: Control,
+    sock: &UnixStream,
+    incoming: &mut shards_ipc::Incoming,
+) -> bool {
+    loop {
+        let m = match incoming.take(sock) {
+            Ok(shards_ipc::Took::Message(m)) => m,
+            Ok(shards_ipc::Took::Partial) => return true,
+            Ok(shards_ipc::Took::Ended) | Err(_) => return false,
+        };
+        if !role.says(m.kind) {
+            return false;
+        }
+        let answered = if shards_ipc::kind::hands_sockets(m.kind) {
+            // Its sockets: passed beside it on Unix; on Windows shared before its payload.
+            #[cfg(unix)]
+            let (fds, payload) = (m.fds, m.payload.as_slice());
+            #[cfg(windows)]
+            let Ok((fds, payload)) = shards_ipc::adopt_sockets(&m.payload) else {
+                return false;
+            };
+            handed(stack, sock, m.kind, payload, fds)
+        } else {
+            answer_other(stack, sock, &m)
+        };
+        if answered.is_err() {
+            return false;
+        }
+    }
+}
+
+/// [`control`]'s answer to a message of `kind` that hands this process sockets, `fds`,
+/// with `payload`.
+fn handed(
+    stack: &mut Stack<'_>,
+    sock: &UnixStream,
+    kind: u8,
+    payload: &[u8],
+    fds: Vec<Handed>,
+) -> io::Result<()> {
+    if kind == shards_ipc::kind::PUBLISH {
+        stack.publish(payload, fds);
+        answer(sock, shards_ipc::kind::PUBLISH)
+    } else if kind == shards_ipc::kind::NET_PUBLISHED {
+        // A port of the host's network (D124): its number, then as PUBLISH's. Not
+        // answered: the daemon holds its copy of the socket until it lets the port go.
+        let Some((id, ports)) = payload.split_first_chunk::<4>() else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "a port of the host's network without its number",
+            ));
+        };
+        let at = stack.published.len();
+        stack.publish(ports, fds);
+        if stack.published.len() > at {
+            stack.hosted.insert(u32::from_be_bytes(*id), at);
+        }
+        Ok(())
+    } else {
+        stack.add_peer(payload, fds);
+        answer(sock, shards_ipc::kind::NET_PEER)
+    }
+}
+
+/// [`control`]'s answer to message `m`, of a kind no socket comes with.
+fn answer_other(stack: &mut Stack<'_>, sock: &UnixStream, m: &shards_ipc::Message) -> io::Result<()> {
+    let malformed = || {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "a control message this process does not take",
+        )
+    };
+    {
+        if m.kind == shards_ipc::kind::NET_UNPUBLISHED {
+            let Ok(id) = <[u8; 4]>::try_from(m.payload.as_slice()) else {
+                return Err(malformed());
+            };
+            stack.unpublish(u32::from_be_bytes(id));
+            // Answered: the port is free once this has its sockets closed, which a bind
+            // of the same port waits for (the daemon's hostnet.rs).
+            answer(sock, shards_ipc::kind::NET_UNPUBLISHED)
+        } else if m.kind == shards_ipc::kind::NET_ADDRESS {
+            if !stack.readdress(&m.payload) {
+                return Err(malformed());
+            }
+            answer(sock, shards_ipc::kind::NET_ADDRESS)
+        } else if m.kind == shards_ipc::kind::NET_MAC {
+            let Ok(mac) = <[u8; 6]>::try_from(m.payload.as_slice()) else {
+                return Err(malformed());
+            };
+            stack.remac(mac);
+            answer(sock, shards_ipc::kind::NET_MAC)
+        } else if m.kind == shards_ipc::kind::NET_NAMES {
+            let Some(names) = dns::Names::decode(&m.payload) else {
+                return Err(malformed());
+            };
+            stack.names = Some(names);
+            answer(sock, shards_ipc::kind::NET_NAMES)
+        } else if m.kind == shards_ipc::kind::NET_POLICY && m.payload == HOST_POLICY {
+            // The host's network (D124), once, as grants are: every port, which no layer of
+            // Landlock's narrows.
+            #[cfg(target_os = "linux")]
+            {
+                if stack.ports_confined {
+                    return Err(malformed());
+                }
+                stack.ports_confined = true;
+            }
+            stack.cfg.policy = Policy::Host;
+            answer(sock, shards_ipc::kind::NET_POLICY)
+        } else if m.kind == shards_ipc::kind::NET_POLICY {
+            let Some((ports, named, dns_all)) = decode_policy(&m.payload) else {
+                return Err(malformed());
+            };
+            // The process held to the grants' TCP ports (D31), once: a layer narrows what
+            // the last left and never widens it, so a second policy is refused, and the
+            // daemon, which sends one, lets the VM go.
+            #[cfg(target_os = "linux")]
+            {
+                if stack.ports_confined {
+                    return Err(malformed());
+                }
+                let tcp = policy_tcp_ports(&ports, &named, dns_all, &stack.cfg.resolvers);
+                if confine::to_ports(&tcp).is_err() {
+                    return Err(malformed());
+                }
+                stack.ports_confined = true;
+            }
+            stack.cfg.policy = Policy::Ports(ports);
+            stack.cfg.named = named;
+            stack.cfg.dns_all = dns_all;
+            answer(sock, shards_ipc::kind::NET_POLICY)
+        } else if m.kind == shards_ipc::kind::NET_LINK_LOCAL {
+            let Some(addresses) = decode_addresses(&m.payload) else {
+                return Err(malformed());
+            };
+            stack.cfg.guest_link_local = addresses;
+            answer(sock, shards_ipc::kind::NET_LINK_LOCAL)
+        } else {
+            // Flows left answer nobody: their sockets are forgotten, and closed. Each is
+            // forgotten before it closes, as the poller has a socket closed: on Windows a
+            // registration it keeps by the socket's value would be taken for the next socket
+            // given that value, which it would never register (a joiner's listener on the
+            // host's network never accepting, jupiter 7 of 20 runs).
+            let listening: Vec<(RawSock, u64)> = stack
+                .published
+                .iter()
+                .enumerate()
+                .filter_map(|(i, slot)| {
+                    let (listener, _) = slot.as_ref()?;
+                    Some((
+                        listener.raw_sock(),
+                        token::of(token::LISTENER, 0, u32::try_from(i).unwrap_or(u32::MAX)),
+                    ))
+                })
+                .collect();
+            for (sock, named) in listening {
+                stack.forget(sock, named, poll::Interest::READ);
+            }
+            stack.published.clear();
+            stack.hosted.clear();
+            answer(sock, shards_ipc::kind::UNPUBLISH)
+        }
+    }
+}
+
+/// Answers a control message of `kind`, with nothing more: that it was taken.
+fn answer(sock: &UnixStream, kind: u8) -> io::Result<()> {
+    #[cfg(unix)]
+    return shards_ipc::send(sock, kind, &[], &[]);
+    #[cfg(windows)]
+    return shards_ipc::write_message(sock, kind, &[]);
+}
+
+/// Takes the guest's frames from the ring, `frames` of them at most, until it is empty or
+/// `bytes` of them are taken: a ring's worth ([`RING`]) is every frame the ring held when
+/// asked, however fast the guest refills it.
+fn take_frames(
+    from_guest: &mut Consumer<'_>,
+    stack: &mut Stack<'_>,
+    frame: &mut [u8],
+    frames: usize,
+    bytes: usize,
+) -> io::Result<()> {
+    let (mut n_frames, mut n_bytes) = (0usize, 0usize);
+    while n_frames < frames && n_bytes < bytes {
+        let got = from_guest
+            .pop(|n, copy| {
+                copy(0, frame.as_mut_ptr(), n);
+                n
+            })
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        let Some(n) = got else { break };
+        stack.on_guest_frame(frame.get(..n).unwrap_or_default());
+        n_frames += 1;
+        n_bytes = n_bytes.saturating_add(n.max(1));
+    }
+    Ok(())
+}
+
+/// A gateway port no published UDP flow uses, from the ephemeral range, in turn from
+/// `next`.
+fn free_udp_port(next: &mut u16, inbound: &HashMap<u16, Inbound>) -> Option<u16> {
+    for _ in EPHEMERAL {
+        let port = *next;
+        *next = port
+            .checked_add(1)
+            .filter(|p| EPHEMERAL.contains(p))
+            .unwrap_or(*EPHEMERAL.start());
+        if !inbound.contains_key(&port) {
+            return Some(port);
+        }
+    }
+    None
+}
+
+/// [`Stack::isn`] of connection `conn` of `guest`, under `secret`, `ticks` 64 ns ticks on.
+fn initial_seq(secret: &[u8; 16], ticks: u64, guest: IpAddr, conn: &Key) -> u32 {
+    let octets = |ip: IpAddr| match ip {
+        IpAddr::V4(v4) => v4.octets().to_vec(),
+        IpAddr::V6(v6) => v6.octets().to_vec(),
+    };
+    let mut m = octets(guest);
+    m.extend(octets(conn.remote.0));
+    m.extend_from_slice(&conn.guest_port.to_be_bytes());
+    m.extend_from_slice(&conn.remote.1.to_be_bytes());
+    let hash = siphash::siphash24(secret, &m);
+    (hash as u32).wrapping_add(ticks as u32)
+}
+
+impl<'r> Stack<'r> {
+    /// The initial sequence number of the connection `key` names, as RFC 6528 makes one
+    /// and Linux does (net/core/secure_seq.c, `secure_tcp_seq` and `seq_scale`): SipHash-2-4
+    /// of its addresses and ports, keyed by this process's secret, plus a clock of 64 ns
+    /// ticks. No one who sees one connection's can predict another's (review 2.31): a
+    /// workload with raw sockets could otherwise put its own segments into the connections
+    /// of the other processes of its guest.
+    fn isn(&self, key: &Key) -> u32 {
+        let ticks = u64::try_from(self.began.elapsed().as_nanos() >> 6).unwrap_or(u64::MAX);
+        let guest = match (key.remote.0, self.cfg.guest_ip6) {
+            (IpAddr::V6(_), Some(g)) => IpAddr::V6(g),
+            _ => IpAddr::V4(self.cfg.guest_ip),
+        };
+        initial_seq(&self.isn_key, ticks, guest, key)
+    }
+
+    /// Takes published ports' host sockets, each for the guest port and protocol its
+    /// payload's next three bytes name (a big-endian u16, then the IP protocol number);
+    /// what does not pair up, or names another protocol, is closed.
+    fn publish(&mut self, ports: &[u8], fds: Vec<Handed>) {
+        for (fd, &[hi, lo, proto]) in fds.into_iter().zip(ports.as_chunks::<3>().0) {
+            let listener = match proto {
+                wire::PROTO_TCP => Listener::Tcp(std::net::TcpListener::from(fd)),
+                wire::PROTO_UDP => Listener::Udp(UdpSocket::from(fd)),
+                _ => continue,
+            };
+            let nonblocking = match &listener {
+                Listener::Tcp(l) => l.set_nonblocking(true),
+                Listener::Udp(u) => u.set_nonblocking(true),
+            };
+            let named = token::of(
+                token::LISTENER,
+                0,
+                u32::try_from(self.published.len()).unwrap_or(u32::MAX),
+            );
+            if nonblocking.is_ok()
+                && self
+                    .poller
+                    .set(
+                        listener.raw_sock(),
+                        named,
+                        poll::Interest::NONE,
+                        poll::Interest::READ,
+                    )
+                    .is_ok()
+            {
+                self.published
+                    .push(Some((listener, u16::from_be_bytes([hi, lo]))));
+            }
+        }
+    }
+
+    /// Lets go of the host's network's port the daemon numbered `id` (D124), its slot
+    /// emptied, and the flows its UDP peers had.
+    fn unpublish(&mut self, id: u32) {
+        let Some(i) = self.hosted.remove(&id) else {
+            return;
+        };
+        if let Some(slot) = self.published.get_mut(i)
+            && let Some((listener, _)) = slot.take()
+        {
+            // Forgotten before it closes ([`Poller::forget`]): on Windows a registration kept
+            // by its value would be taken for the next socket given that value.
+            let named = token::of(token::LISTENER, 0, u32::try_from(i).unwrap_or(u32::MAX));
+            self.forget(listener.raw_sock(), named, poll::Interest::READ);
+        }
+        self.inbound_ports.retain(|(published, _), _| *published != i);
+        self.inbound.retain(|_, f| f.published != i);
+    }
+
+    /// Takes what published UDP port `i` holds: each datagram to the guest's port, from
+    /// its peer's gateway port.
+    fn receive(&mut self, i: usize) {
+        let Some((Listener::Udp(sock), guest_port)) = self.published.get(i).and_then(Option::as_ref) else {
+            return;
+        };
+        let guest_port = *guest_port;
+        for _ in 0..BUDGET {
+            let Ok((n, peer, asked)) = pktinfo::recv(sock, &mut self.buf) else {
+                return;
+            };
+            let port = match self.inbound_ports.get(&(i, peer)) {
+                Some(&port) => port,
+                None => {
+                    // Every port in use: dropped, as a full table drops.
+                    let Some(port) = free_udp_port(&mut self.next_port, &self.inbound) else {
+                        continue;
+                    };
+                    self.inbound_ports.insert((i, peer), port);
+                    port
+                }
+            };
+            let now = Instant::now();
+            match self.inbound.entry(port) {
+                std::collections::hash_map::Entry::Occupied(mut e) => {
+                    let f = e.get_mut();
+                    f.asked = asked;
+                    f.life.datagram(now, false);
+                }
+                std::collections::hash_map::Entry::Vacant(v) => {
+                    let life = Lifetime::new(now);
+                    v.insert(Inbound {
+                        published: i,
+                        peer,
+                        asked,
+                        guest_port,
+                        life,
+                    });
+                    self.timers.push(Reverse((
+                        life.until,
+                        token::of(token::INBOUND, 0, u32::from(port)),
+                    )));
+                }
+            }
+            let mut o = Out {
+                frames: &self.frames,
+                to_guest: &mut self.to_guest,
+                backlog: &mut self.backlog,
+                guest_ip: self.cfg.guest_ip,
+                guest_ip6: self.cfg.guest_ip6,
+                scratch: &mut self.scratch,
+            };
+            o.datagram(
+                (IpAddr::V4(self.cfg.gateway_ip), port),
+                guest_port,
+                self.buf.get(..n).unwrap_or_default(),
+            );
+        }
+    }
+
+    /// Accepts what published port `i` holds: each connection opened to the guest's port,
+    /// from the gateway, as a userland proxy's connection comes from it.
+    fn accept(&mut self, i: usize) {
+        for _ in 0..BUDGET {
+            let Some((Listener::Tcp(listener), guest_port)) = self.published.get(i).and_then(Option::as_ref)
+            else {
+                return;
+            };
+            let guest_port = *guest_port;
+            let Ok((sock, _)) = listener.accept() else { return };
+            // Nagle's on this leg too would hold what the guest's own TCP already chose
+            // to send, as Go's net, docker-proxy's, never does.
+            if sock
+                .set_nonblocking(true)
+                .and_then(|()| sock.set_nodelay(true))
+                .is_err()
+            {
+                continue;
+            }
+            let Some(port) = self.free_port(guest_port) else {
+                // Every port of the range in use: refused, as a full table refuses.
+                continue;
+            };
+            let key = Key {
+                guest_port,
+                remote: (IpAddr::V4(self.cfg.gateway_ip), port),
+            };
+            let isn = self.isn(&key);
+            let c = {
+                let mut o = self.out();
+                Conn::accept(key, sock, isn, &mut o)
+            };
+            let slot = self.tcp.reserve(key);
+            self.settle(slot, c);
+        }
+    }
+
+    /// A gateway port no connection to `guest_port` uses, from the ephemeral range, in
+    /// turn: the guest tells connections apart by both ends.
+    fn free_port(&mut self, guest_port: u16) -> Option<u16> {
+        for _ in EPHEMERAL {
+            let port = self.next_port;
+            self.next_port = port
+                .checked_add(1)
+                .filter(|p| EPHEMERAL.contains(p))
+                .unwrap_or(*EPHEMERAL.start());
+            let key = Key {
+                guest_port,
+                remote: (IpAddr::V4(self.cfg.gateway_ip), port),
+            };
+            if !self.tcp.by_key.contains_key(&key) {
+                return Some(port);
+            }
+        }
+        None
+    }
+
+    fn out(&mut self) -> Out<'_, 'r> {
+        Out {
+            frames: &self.frames,
+            to_guest: &mut self.to_guest,
+            backlog: &mut self.backlog,
+            guest_ip: self.cfg.guest_ip,
+            guest_ip6: self.cfg.guest_ip6,
+            scratch: &mut self.scratch,
+        }
+    }
+
+    fn flush_backlog(&mut self) {
+        while let Some(f) = self.backlog.front() {
+            match self.to_guest.try_push(&[f]) {
+                Ok(Some(_)) => {
+                    self.backlog.pop_front();
+                }
+                _ => break,
+            }
+        }
+    }
+
+    fn on_guest_frame(&mut self, f: &[u8]) {
+        let Some(e) = f.get(wire::VNET..).and_then(wire::eth) else {
+            return;
+        };
+        if e.src != self.cfg.guest_mac {
+            return;
+        }
+        match e.kind {
+            wire::ETHERTYPE_ARP => {
+                if let Some(req) = wire::arp_request(e.payload)
+                    && self.cfg.guests(IpAddr::V4(req.sender_ip))
+                    && !self.cfg.guests(IpAddr::V4(req.target_ip))
+                {
+                    self.out().built(|frames, f| frames.arp_reply(f, &req));
+                }
+            }
+            wire::ETHERTYPE_IPV4 => {
+                let Some(ip) = wire::ipv4(e.payload) else { return };
+                self.on_guest_ip(f, &ip);
+            }
+            wire::ETHERTYPE_IPV6 => {
+                // No IPv6 on the guest's network: its frames (link-local chatter, router
+                // and multicast listener messages) reach nothing.
+                if self.cfg.guest_ip6.is_none() {
+                    return;
+                }
+                let Some(ip) = wire::ipv6(e.payload) else { return };
+                // Neighbor discovery for any address but its own: the gateway's MAC, as
+                // ARP is answered. The guest may ask from its link-local address (Linux
+                // solicits from the address the waiting packet has, else that one); the
+                // frame is its own, by its MAC, either way.
+                if let Some(ns) = wire::neighbor_solicit(&ip) {
+                    if !self.cfg.guests(IpAddr::V6(ns.target)) {
+                        self.out().built(|frames, f| frames.neighbor_advert(f, &ns));
+                    }
+                    return;
+                }
+                self.on_guest_ip(f, &ip);
+            }
+            _ => {}
+        }
+    }
+
+    /// The guest's IP packet `ip`, of either version, in frame `f`, from one of its own
+    /// addresses: to a peer, or to the stack, only from its address of that version.
+    fn on_guest_ip(&mut self, f: &[u8], ip: &wire::Ip<'_>) {
+        if !self.cfg.guests(ip.src) {
+            return;
+        }
+        // A member of its network (a peer), at any of its addresses the guest's link
+        // reaches, to its VM whole, past the policy, as a bridge's members reach one
+        // another: its address, and its link-local ones, which IPv6 always reaches
+        // (fe80::/64 is every interface's) and IPv4 only from a guest with a link-local
+        // address of its own, whose route makes 169.254.0.0/16 its link's (PM M175).
+        let on_link = match ip.dst {
+            IpAddr::V4(_) => self.cfg.guest_link_local.iter().any(IpAddr::is_ipv4),
+            IpAddr::V6(_) => true,
+        };
+        if let Some(i) = self.peers.iter().position(|p| {
+            p.as_ref().is_some_and(|p| {
+                let address = match ip.dst {
+                    IpAddr::V4(dst) => p.ip == dst,
+                    IpAddr::V6(dst) => p.ip6 == Some(dst),
+                };
+                address || on_link && p.link_local.contains(&ip.dst)
+            })
+        }) {
+            self.forward_to_peer(i, f);
+            return;
+        }
+        // Past the link, from its address alone: no router forwards what comes from a
+        // link-local one (RFC 3927 §2.7, RFC 4291 §2.5.6).
+        let own = match ip.src {
+            IpAddr::V4(src) => src == self.cfg.guest_ip,
+            IpAddr::V6(src) => Some(src) == self.cfg.guest_ip6,
+        };
+        if !own {
+            return;
+        }
+        match ip.proto {
+            wire::PROTO_ICMP | wire::PROTO_ICMPV6 => self.on_icmp(ip),
+            wire::PROTO_UDP => self.on_guest_udp(ip),
+            wire::PROTO_TCP => self.on_guest_tcp(ip),
+            _ => {}
+        }
+    }
+
+    /// The guest's address on its network, its prefix and gateway (`NET_ADDRESS`): what
+    /// its frames come from, and the gateway they go through. False for a malformed one.
+    /// Then, on a network with IPv6, its IPv6 address, prefix and gateway (16, 1 and 16
+    /// bytes).
+    fn readdress(&mut self, payload: &[u8]) -> bool {
+        let Some((&[a, b, c, d, _prefix, g0, g1, g2, g3], rest)) = payload.split_first_chunk::<9>() else {
+            return false;
+        };
+        let v6 = match rest.len() {
+            0 => None,
+            33 => {
+                let (Some(guest), Some(gateway)) = (
+                    rest.get(..16).and_then(|o| <[u8; 16]>::try_from(o).ok()),
+                    rest.get(17..33).and_then(|o| <[u8; 16]>::try_from(o).ok()),
+                ) else {
+                    return false;
+                };
+                Some((Ipv6Addr::from(guest), Ipv6Addr::from(gateway)))
+            }
+            _ => return false,
+        };
+        self.cfg.guest_ip = Ipv4Addr::new(a, b, c, d);
+        self.cfg.gateway_ip = Ipv4Addr::new(g0, g1, g2, g3);
+        self.cfg.gateway_mac = shards_abi::gateway_mac([g0, g1, g2, g3]);
+        self.cfg.guest_ip6 = v6.map(|(guest, _)| guest);
+        self.cfg.gateway_ip6 = v6.map(|(_, gateway)| gateway);
+        self.frames.gateway_mac = self.cfg.gateway_mac;
+        true
+    }
+
+    /// The guest's own MAC from its run on (`NET_MAC`, D46): what its frames come from,
+    /// and what those made here go to.
+    fn remac(&mut self, mac: [u8; 6]) {
+        self.cfg.guest_mac = mac;
+        self.frames.guest_mac = mac;
+    }
+
+    /// A peer (`NET_PEER`): its guest's address, then its IPv6 one on a network with
+    /// IPv6, and the socket to its network process.
+    fn add_peer(&mut self, payload: &[u8], fds: Vec<Handed>) {
+        let (Some((&[a, b, c, d], rest)), Some(fd)) =
+            (payload.split_first_chunk::<4>(), fds.into_iter().next())
+        else {
+            return;
+        };
+        let (ip6, rest) = match rest.split_first() {
+            Some((0, rest)) => (None, rest),
+            Some((16, rest)) => match rest.split_first_chunk::<16>() {
+                Some((o, rest)) => (Some(Ipv6Addr::from(*o)), rest),
+                None => return,
+            },
+            _ => return,
+        };
+        let Some(link_local) = decode_addresses(rest) else {
+            return;
+        };
+        let sock = UnixStream::from(fd);
+        if sock.set_nonblocking(true).is_err() {
+            return;
+        }
+        // A ring's worth each way (shards_netring::RING), so that what a VM's ring passes
+        // on in a burst reaches its peer's, rather than finding the link full: macOS gives
+        // a socket pair 8 KiB (net.local.stream.sendspace, recvspace), five full-size
+        // frames (PM M182). Linux keeps an unprivileged process to twice net.core's
+        // wmem_max and rmem_max.
+        sys::set_buffers(sock.raw_sock(), shards_netring::RING);
+        let i = self
+            .peers
+            .iter()
+            .position(Option::is_none)
+            .unwrap_or(self.peers.len());
+        let token = token::of(token::PEER, 0, u32::try_from(i).unwrap_or(u32::MAX));
+        if self
+            .poller
+            .set(sock.raw_sock(), token, poll::Interest::NONE, poll::Interest::READ)
+            .is_err()
+        {
+            return;
+        }
+        let peer = Peer {
+            ip: Ipv4Addr::new(a, b, c, d),
+            ip6,
+            link_local,
+            sock,
+            unsent: Vec::new(),
+            received: Vec::new(),
+        };
+        match self.peers.get_mut(i) {
+            Some(slot) => *slot = Some(peer),
+            None => self.peers.push(Some(peer)),
+        }
+    }
+
+    /// Sends the guest's frame `f` to peer `i`: its virtio header's segmentation cleared,
+    /// as the frame fits the peer's MTU whole (the guest's TCP segments a 65520-byte MTU's
+    /// way), its checksum's partial state kept, which the peer's device takes
+    /// (VIRTIO_NET_F_GUEST_CSUM).
+    fn forward_to_peer(&mut self, i: usize, f: &[u8]) {
+        let Some(Some(peer)) = self.peers.get_mut(i) else {
+            return;
+        };
+        if !peer.unsent.is_empty() {
+            return;
+        }
+        let Ok(len) = u32::try_from(f.len()) else { return };
+        let mut framed = Vec::with_capacity(4 + f.len());
+        framed.extend_from_slice(&len.to_be_bytes());
+        framed.extend_from_slice(f);
+        // gso_type, hdr_len and gso_size: bytes 1 to 5 of the header.
+        if let Some(gso) = framed.get_mut(5..10) {
+            gso.fill(0);
+        }
+        use std::io::Write as _;
+        match (&peer.sock).write(&framed) {
+            Ok(n) if n == framed.len() => {}
+            Ok(n) => {
+                peer.unsent = framed.split_off(n);
+                let token = token::of(token::PEER, 0, u32::try_from(i).unwrap_or(u32::MAX));
+                let both = poll::Interest {
+                    read: true,
+                    write: true,
+                };
+                let _ = self
+                    .poller
+                    .set(peer.sock.raw_sock(), token, poll::Interest::READ, both);
+            }
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+            Err(_) => self.drop_peer(i),
+        }
+    }
+
+    /// Peer `i`'s socket is ready: what is unsent goes on, and its frames come to the
+    /// guest, each only from its own address to the guest's, from the gateway's MAC as a
+    /// routed one would.
+    fn on_peer(&mut self, i: usize, e: &poll::Event) {
+        use std::io::{Read as _, Write as _};
+        let token = token::of(token::PEER, 0, u32::try_from(i).unwrap_or(u32::MAX));
+        let mut gone = e.ended;
+        let mut frames = Vec::new();
+        {
+            let Some(Some(peer)) = self.peers.get_mut(i) else {
+                return;
+            };
+            if e.write && !peer.unsent.is_empty() {
+                match (&peer.sock).write(&peer.unsent) {
+                    Ok(n) => {
+                        peer.unsent.drain(..n);
+                        if peer.unsent.is_empty() {
+                            let both = poll::Interest {
+                                read: true,
+                                write: true,
+                            };
+                            let _ = self
+                                .poller
+                                .set(peer.sock.raw_sock(), token, both, poll::Interest::READ);
+                        }
+                    }
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+                    Err(_) => gone = true,
+                }
+            }
+            let mut buf = [0u8; 64 * 1024];
+            for _ in 0..BUDGET {
+                match (&peer.sock).read(&mut buf) {
+                    Ok(0) => {
+                        gone = true;
+                        break;
+                    }
+                    Ok(n) => peer.received.extend_from_slice(buf.get(..n).unwrap_or_default()),
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                    Err(_) => {
+                        gone = true;
+                        break;
+                    }
+                }
+            }
+            while let Some(&len) = peer.received.first_chunk::<4>() {
+                let len = u32::from_be_bytes(len) as usize;
+                if len > shards_netring::MAX_FRAME {
+                    gone = true;
+                    break;
+                }
+                if peer.received.len() < 4 + len {
+                    break;
+                }
+                let frame: Vec<u8> = peer.received.drain(..4 + len).skip(4).collect();
+                frames.push((peer.ip, peer.ip6, frame));
+            }
+        }
+        let theirs: Vec<IpAddr> = match self.peers.get(i) {
+            Some(Some(peer)) => peer.link_local.clone(),
+            _ => Vec::new(),
+        };
+        for (from, from6, mut frame) in frames {
+            let Some(eth) = frame.get(wire::VNET..).and_then(wire::eth) else {
+                continue;
+            };
+            let ip = match eth.kind {
+                wire::ETHERTYPE_IPV4 => wire::ipv4(eth.payload),
+                wire::ETHERTYPE_IPV6 => wire::ipv6(eth.payload),
+                _ => None,
+            };
+            let Some(ip) = ip else { continue };
+            // From one of the peer's own addresses to one of the guest's: its address of
+            // that version, or a link-local one (PM M175).
+            let from_theirs = match ip.src {
+                IpAddr::V4(src) => src == from,
+                IpAddr::V6(src) => from6 == Some(src),
+            } || theirs.contains(&ip.src);
+            let theirs_to_ours = from_theirs && self.cfg.guests(ip.dst);
+            if !theirs_to_ours {
+                continue;
+            }
+            if let Some(macs) = frame.get_mut(wire::VNET..wire::VNET + 12)
+                && let (dst, src) = macs.split_at_mut(6)
+            {
+                dst.copy_from_slice(&self.cfg.guest_mac);
+                src.copy_from_slice(&self.cfg.gateway_mac);
+            }
+            self.out().send(&[&frame]);
+        }
+        if gone {
+            self.drop_peer(i);
+        }
+    }
+
+    /// Forgets peer `i`, whose VM has gone.
+    fn drop_peer(&mut self, i: usize) {
+        if let Some(slot) = self.peers.get_mut(i)
+            && let Some(peer) = slot.take()
+        {
+            let token = token::of(token::PEER, 0, u32::try_from(i).unwrap_or(u32::MAX));
+            let was = if peer.unsent.is_empty() {
+                poll::Interest::READ
+            } else {
+                poll::Interest {
+                    read: true,
+                    write: true,
+                }
+            };
+            self.forget(peer.sock.raw_sock(), token, was);
+        }
+    }
+
+    /// An echo request to the gateway, ICMP's or ICMPv6's, is answered here; others are not
+    /// reached yet.
+    fn on_icmp(&mut self, ip: &wire::Ip<'_>) {
+        let p = ip.payload;
+        let request = if ip.proto == wire::PROTO_ICMPV6 {
+            wire::ICMPV6_ECHO_REQUEST
+        } else {
+            8
+        };
+        if p.first() == Some(&request) && ip.dst == self.cfg.gateway_of(ip.src) {
+            let data = p.get(4..).unwrap_or_default();
+            self.out()
+                .built(|frames, f| frames.icmp_echo_reply(f, ip.dst, ip.src, data));
+        }
+    }
+
+    fn on_guest_udp(&mut self, ip: &wire::Ip<'_>) {
+        let Some(u) = wire::udp(ip.payload) else { return };
+        let gateway = self.cfg.gateway_of(ip.src);
+        // An answer to a published port's peer, through the gateway port it was given.
+        if ip.dst == gateway {
+            // The names of the network it is on (D46), which its guest's 127.0.0.11 relays
+            // here: those the network holds, answered here.
+            if u.dst_port == 53
+                && let Some(answer) = self
+                    .names
+                    .as_ref()
+                    .filter(|n| n.holds(u.payload))
+                    .and_then(|n| n.answer(u.payload))
+            {
+                self.out().datagram((gateway, 53), u.src_port, &answer);
+                return;
+            }
+            // A name past the microVM, for agents granted egress (D59): to the host's
+            // resolver, as a flow keyed to the gateway, so that its answer comes back from
+            // it.
+            if u.dst_port == 53
+                && matches!(self.cfg.policy, Policy::Ports(_))
+                && let Some(&up) = self.cfg.resolvers.first()
+            {
+                // Only what a grant names: any name with `--dns`, else a remote MCP
+                // server's or a destination's own (default deny).
+                let asked = dns::query_name(u.payload);
+                let granted = asked.as_deref().map_or(self.cfg.dns_all, |q| self.cfg.asks(q));
+                if granted {
+                    self.flow((u.src_port, ip.dst, 53), (IpAddr::V4(up.0), up.1), u.payload);
+                } else if let Some(no) = dns::refused(u.payload) {
+                    self.out().datagram((gateway, 53), u.src_port, &no);
+                }
+                return;
+            }
+            // Any other question of a network's member names nothing a grant reaches:
+            // refused at once, by policy (RFC 1035 §4.1.1), which a resolver takes as final,
+            // where a server's failure would be asked again.
+            if u.dst_port == 53
+                && self.names.is_some()
+                && let Some(no) = dns::refused(u.payload)
+            {
+                self.out().datagram((gateway, 53), u.src_port, &no);
+                return;
+            }
+            if let Some(f) = self.inbound.get_mut(&u.dst_port)
+                && gateway.is_ipv4()
+                && f.guest_port == u.src_port
+                && let Some((Listener::Udp(sock), _)) =
+                    self.published.get(f.published).and_then(Option::as_ref)
+            {
+                let _ = pktinfo::send(sock, u.payload, f.peer, f.asked);
+                f.life.datagram(Instant::now(), true);
+                return;
+            }
+            // On the host's network (D124), the gateway is the host's loopback.
+            if self.cfg.policy == Policy::Host {
+                let to = (self.cfg.host_side(ip.dst, Proto::Udp, u.dst_port), u.dst_port);
+                self.flow((u.src_port, ip.dst, u.dst_port), to, u.payload);
+            }
+            return;
+        }
+        // Refused, said at once (review 2.27): a connected socket's next call fails
+        // (Linux: EHOSTUNREACH, net/ipv4/icmp.c icmp_err_convert), where a datagram
+        // dropped would leave a resolver to wait out its timeouts.
+        if !self.cfg.allows(ip.dst, Proto::Udp, u.dst_port) {
+            self.out().built(|frames, f| {
+                frames.icmp_unreachable(f, gateway, ip.src, ip);
+            });
+            return;
+        }
+        let to = (self.cfg.host_side(ip.dst, Proto::Udp, u.dst_port), u.dst_port);
+        self.flow((u.src_port, ip.dst, u.dst_port), to, u.payload);
+    }
+
+    /// Sends `payload` on UDP flow `key`, its host socket connected to `to`, made where
+    /// there is none; its answers go to the guest from `key`'s remote end.
+    fn flow(&mut self, key: UdpKey, to: (IpAddr, u16), payload: &[u8]) {
+        if !self.udp.contains_key(&key) {
+            // What its AppContainer keeps it from, the host's loopback and own addresses
+            // (Windows, PM M204), its spawner's dialer binds and connects for it, as its TCP
+            // connections there are: the datagrams wait for it meanwhile, as a socket's
+            // buffer holds them.
+            #[cfg(windows)]
+            if let Some(dialer) = self.dialer.as_mut()
+                && dialer.reaches(to.0)
+            {
+                let waiting = self.udp_waiting.entry(key).or_default();
+                if waiting.len() < UDP_WAITING {
+                    waiting.push(payload.to_vec());
+                }
+                if !dialer.asking_udp(&key) && dialer.ask_udp(std::net::SocketAddr::from(to), key).is_err() {
+                    self.udp_waiting.remove(&key);
+                }
+                self.wait_on_dialer();
+                return;
+            }
+            let any = match to.0 {
+                IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+            };
+            let Ok(sock) = UdpSocket::bind((any, 0)) else {
+                return;
+            };
+            if sock.connect(to).is_err() || sock.set_nonblocking(true).is_err() {
+                return;
+            }
+            if !self.add_udp_flow(key, sock) {
+                return;
+            }
+        }
+        if let Some(f) = self.udp.get_mut(&key) {
+            let _ = f.sock.send(payload);
+            f.life.datagram(Instant::now(), false);
+        }
+    }
+
+    /// UDP flow `key`'s host socket, connected and nonblocking: its answers waited for from
+    /// now on, and its end timed. False where the poller would not take it.
+    fn add_udp_flow(&mut self, key: UdpKey, sock: UdpSocket) -> bool {
+        let id = self.next_udp;
+        let named = token::of(token::UDP, 0, id);
+        if self
+            .poller
+            .set(sock.raw_sock(), named, poll::Interest::NONE, poll::Interest::READ)
+            .is_err()
+        {
+            return false;
+        }
+        self.next_udp = id.wrapping_add(1);
+        self.udp_ids.insert(id, key);
+        let life = Lifetime::new(Instant::now());
+        self.timers.push(Reverse((life.until, named)));
+        self.udp.insert(key, UdpFlow { sock, life });
+        true
+    }
+
+    /// A UDP flow's socket the dialer answered: its waiting datagrams sent on it; or, where
+    /// there is none, those datagrams gone, as a far end's refusal loses them.
+    #[cfg(windows)]
+    fn udp_dialed(&mut self, key: UdpKey, got: io::Result<UdpSocket>) {
+        let waiting = self.udp_waiting.remove(&key).unwrap_or_default();
+        let sock = match got {
+            Ok(sock) => sock,
+            Err(e) => {
+                if e.kind() != io::ErrorKind::ConnectionRefused {
+                    use std::io::Write as _;
+                    let _ = writeln!(
+                        io::stderr(),
+                        "shards-net: guest port {}'s datagrams to {:?} dropped: its dialer: {e}",
+                        key.0,
+                        (key.1, key.2)
+                    );
+                }
+                return;
+            }
+        };
+        if self.udp.contains_key(&key) || !self.add_udp_flow(key, sock) {
+            return;
+        }
+        if let Some(f) = self.udp.get_mut(&key) {
+            for datagram in waiting {
+                let _ = f.sock.send(&datagram);
+                f.life.datagram(Instant::now(), false);
+            }
+        }
+    }
+
+    /// What UDP flow `id`'s host socket holds, to the guest.
+    fn on_udp(&mut self, id: u32) {
+        let Some(key) = self.udp_ids.get(&id).copied() else {
+            return;
+        };
+        let Some(f) = self.udp.get_mut(&key) else { return };
+        let mut o = Out {
+            frames: &self.frames,
+            to_guest: &mut self.to_guest,
+            backlog: &mut self.backlog,
+            guest_ip: self.cfg.guest_ip,
+            guest_ip6: self.cfg.guest_ip6,
+            scratch: &mut self.scratch,
+        };
+        for _ in 0..BUDGET {
+            let Ok(n) = f.sock.recv(&mut self.buf) else {
+                return;
+            };
+            f.life.datagram(Instant::now(), true);
+            let got = self.buf.get(..n).unwrap_or_default();
+            // A forwarded answer for a name granted to agents: what it resolved to, each
+            // address reached at its grant's port from now on.
+            if key.1 == IpAddr::V4(self.cfg.gateway_ip)
+                && key.2 == 53
+                && !self.cfg.named.is_empty()
+                && let Some((name, addrs)) = dns::a_records(got)
+            {
+                for (host, port) in &self.cfg.named {
+                    if host.eq_ignore_ascii_case(&name) {
+                        self.cfg.learned.extend(addrs.iter().map(|a| (*a, *port)));
+                    }
+                }
+            }
+            o.datagram((key.1, key.2), key.0, got);
+        }
+    }
+
+    fn on_guest_tcp(&mut self, ip: &wire::Ip<'_>) {
+        let Some(seg) = wire::tcp(ip.payload) else { return };
+        let key = Key {
+            guest_port: seg.src_port,
+            remote: (ip.dst, seg.dst_port),
+        };
+        let existing = self.tcp.by_key.get(&key).copied();
+        let (slot, mut c) = if let Some(slot) = existing {
+            let Some(c) = self.tcp.take(slot) else { return };
+            (slot, c)
+        } else {
+            if seg.flags & wire::SYN == 0 || seg.flags & wire::ACK != 0 {
+                // Not a connection's start, and no connection: a reset, as a host with no
+                // such connection answers (RFC 9293 §3.10.7.1).
+                if seg.flags & wire::RST == 0 {
+                    // An ACK's reset takes its sequence number from it, and acknowledges
+                    // nothing; else it starts at 0 and acknowledges the segment.
+                    let mut o = self.out();
+                    if seg.flags & wire::ACK != 0 {
+                        o.segment(&key, seg.ack, 0, wire::RST, 0, None, tcp::EMPTY);
+                    } else {
+                        let ack = seg
+                            .seq
+                            .wrapping_add(seg.payload.len() as u32)
+                            .wrapping_add(u32::from(seg.flags & (wire::SYN | wire::FIN) != 0));
+                        o.segment(&key, 0, ack, wire::RST | wire::ACK, 0, None, tcp::EMPTY);
+                    }
+                }
+                return;
+            }
+            // DNS over TCP past the microVM, for agents granted egress (D59), as by UDP: to
+            // the host's resolver, each question as its grants say.
+            let resolver = (ip.dst == IpAddr::V4(self.cfg.gateway_ip)
+                && seg.dst_port == 53
+                && matches!(self.cfg.policy, Policy::Ports(_)))
+            .then(|| self.cfg.resolvers.first().map(|&(a, p)| (IpAddr::V4(a), p)))
+            .flatten();
+            let proxy = self.cfg.proxy_flow(ip.dst, seg.dst_port);
+            if resolver.is_none() && proxy.is_none() && !self.cfg.allows(ip.dst, Proto::Tcp, seg.dst_port) {
+                let mut o = self.out();
+                o.segment(
+                    &key,
+                    0,
+                    seg.seq.wrapping_add(1),
+                    wire::RST | wire::ACK,
+                    0,
+                    None,
+                    tcp::EMPTY,
+                );
+                return;
+            }
+            // What the AppContainer keeps this process from goes through the spawner's
+            // dialer (Windows, D142), asked for without waiting.
+            #[cfg(windows)]
+            if let Some(dialer) = self.dialer.as_ref() {
+                let to = match (resolver, &proxy) {
+                    (Some(to), _) => Some(std::net::SocketAddr::from(to)),
+                    (None, Some(_)) => None,
+                    (None, None) => Some(std::net::SocketAddr::from((
+                        self.cfg.host_side(ip.dst, Proto::Tcp, seg.dst_port),
+                        seg.dst_port,
+                    ))),
+                };
+                if to.is_none_or(|to| dialer.reaches(to.ip())) {
+                    self.dial(key, to, &seg, resolver.is_some());
+                    return;
+                }
+            }
+            let opened = match resolver {
+                Some(to) => Conn::open_to(key, to, &seg, self.isn(&key)).map(|mut c| {
+                    let names = self.cfg.asked_names();
+                    c.dns = Some(dns::Stream::new(self.cfg.dns_all, names));
+                    c
+                }),
+                None => match proxy {
+                    Some(socket) => Conn::open_unix(key, &socket, &seg, self.isn(&key)),
+                    None => Conn::open_to(
+                        key,
+                        (self.cfg.host_side(ip.dst, Proto::Tcp, seg.dst_port), seg.dst_port),
+                        &seg,
+                        self.isn(&key),
+                    ),
+                },
+            };
+            match opened {
+                Ok(c) => (self.tcp.reserve(key), c),
+                Err(e) => {
+                    // The far end's own refusals are the guest's to hear; what this
+                    // process lacked to connect at all (descriptors, ports, buffers) is
+                    // said too.
+                    if !matches!(
+                        e.kind(),
+                        io::ErrorKind::ConnectionRefused
+                            | io::ErrorKind::TimedOut
+                            | io::ErrorKind::HostUnreachable
+                            | io::ErrorKind::NetworkUnreachable
+                    ) {
+                        use std::io::Write as _;
+                        let _ = writeln!(
+                            io::stderr(),
+                            "shards-net: guest port {}'s connection to {:?} reset: connecting: {e}",
+                            key.guest_port,
+                            key.remote
+                        );
+                    }
+                    let mut o = self.out();
+                    o.segment(
+                        &key,
+                        0,
+                        seg.seq.wrapping_add(1),
+                        wire::RST | wire::ACK,
+                        0,
+                        None,
+                        tcp::EMPTY,
+                    );
+                    return;
+                }
+            }
+        };
+        {
+            let mut o = self.out();
+            c.on_segment(&seg, &mut o);
+        }
+        self.settle(slot, c);
+    }
+
+    /// Asks the spawner's dialer for the guest's SYN `seg` to `key`'s far end, at `to`, or
+    /// at the build's proxy where none (Windows, D142): the connection is made once it
+    /// answers ([`Stack::dialed`]). The guest's SYN again meanwhile asks for nothing more.
+    #[cfg(windows)]
+    fn dial(&mut self, key: Key, to: Option<std::net::SocketAddr>, seg: &wire::Tcp<'_>, dns: bool) {
+        let isn = self.isn(&key);
+        let Some(dialer) = self.dialer.as_mut() else {
+            return;
+        };
+        if dialer.asking(&key) {
+            return;
+        }
+        if let Err(e) = dialer.ask(to, key, tcp::Syn::from(seg), isn, dns) {
+            use std::io::Write as _;
+            let _ = writeln!(
+                io::stderr(),
+                "shards-net: guest port {}'s connection to {:?} reset: its dialer: {e}",
+                key.guest_port,
+                key.remote
+            );
+            let mut o = self.out();
+            o.segment(
+                &key,
+                0,
+                seg.seq.wrapping_add(1),
+                wire::RST | wire::ACK,
+                0,
+                None,
+                tcp::EMPTY,
+            );
+        }
+        self.wait_on_dialer();
+    }
+
+    /// The spawner's dialer ready: what it took of what was unsent, and the connections it
+    /// answered, each made or reset. Gone, every connection it was asked for is reset.
+    #[cfg(windows)]
+    fn on_dialer(&mut self, writable: bool) {
+        let Some(dialer) = self.dialer.as_mut() else {
+            return;
+        };
+        if writable {
+            let _ = dialer.flush();
+        }
+        let answers = dialer.answers();
+        if !answers.there
+            && let Some(gone) = self.dialer.take()
+        {
+            let had = std::mem::replace(&mut self.dialer_waits, poll::Interest::NONE);
+            self.forget(gone.sock(), token::of(token::DIALER, 0, 0), had);
+        }
+        for (d, got) in answers.tcp {
+            self.dialed(d, got);
+        }
+        for (key, got) in answers.udp {
+            self.udp_dialed(key, got);
+        }
+        self.wait_on_dialer();
+    }
+
+    /// A connection the dialer answered: made with the socket it connected, or the guest's
+    /// SYN reset, as the far end's refusal would.
+    #[cfg(windows)]
+    fn dialed(&mut self, d: dial::Dialing, got: io::Result<tcp::HostSock>) {
+        match got {
+            Ok(sock) => {
+                if self.tcp.by_key.contains_key(&d.key) {
+                    return;
+                }
+                let mut c = Conn::dialed(d.key, sock, &d.syn, d.isn);
+                if d.dns {
+                    let names = self.cfg.asked_names();
+                    c.dns = Some(dns::Stream::new(self.cfg.dns_all, names));
+                }
+                let slot = self.tcp.reserve(d.key);
+                self.settle(slot, c);
+            }
+            Err(e) => {
+                if !matches!(
+                    e.kind(),
+                    io::ErrorKind::ConnectionRefused
+                        | io::ErrorKind::TimedOut
+                        | io::ErrorKind::HostUnreachable
+                        | io::ErrorKind::NetworkUnreachable
+                ) {
+                    use std::io::Write as _;
+                    let _ = writeln!(
+                        io::stderr(),
+                        "shards-net: guest port {}'s connection to {:?} reset: connecting: {e}",
+                        d.key.guest_port,
+                        d.key.remote
+                    );
+                }
+                let mut o = self.out();
+                o.segment(
+                    &d.key,
+                    0,
+                    d.syn.seq().wrapping_add(1),
+                    wire::RST | wire::ACK,
+                    0,
+                    None,
+                    tcp::EMPTY,
+                );
+            }
+        }
+    }
+
+    /// Has the poller wait on the dialer for its answers, and for room where something is
+    /// unsent.
+    #[cfg(windows)]
+    fn wait_on_dialer(&mut self) {
+        let Some(dialer) = self.dialer.as_ref() else {
+            return;
+        };
+        let wants = poll::Interest {
+            read: true,
+            write: dialer.wants_write(),
+        };
+        let named = token::of(token::DIALER, 0, 0);
+        if self
+            .poller
+            .set(dialer.sock(), named, self.dialer_waits, wants)
+            .is_ok()
+        {
+            self.dialer_waits = wants;
+        }
+    }
+
+    /// Has the poller forget `sock`, waited on under `token` for `had`, before it closes:
+    /// a closed socket's number, or on Windows its handle's value, may name the next one
+    /// (poll.rs).
+    fn forget(&self, sock: RawSock, token: u64, had: poll::Interest) {
+        let _ = self.poller.forget(sock, token, had);
+    }
+
+    /// Puts connection `c` back in `slot` once it has been served: its socket waited on
+    /// for what it now wants, its timer armed for its deadline unless an earlier one is,
+    /// and its turn kept if a full ring held it back; or its slot emptied if it has
+    /// closed, its socket with it, which the poller forgets (review 2.14).
+    fn settle(&mut self, slot: u32, mut c: Conn) {
+        if c.closed {
+            if let Some(had) = self.tcp.slot(slot).map(|s| s.interest) {
+                self.forget(c.fd(), self.tcp.token(slot), had);
+            }
+            self.tcp.release(slot);
+            return;
+        }
+        let named = self.tcp.token(slot);
+        let wants = poll::Interest {
+            read: c.wants_read(),
+            write: c.wants_write(),
+        };
+        let (deadline, blocked, fd) = (c.deadline(), c.blocked(), c.fd());
+        let Some(had) = self.tcp.slot(slot).map(|s| s.interest) else {
+            return;
+        };
+        if self.poller.set(fd, named, had, wants).is_err() {
+            // A socket that cannot be waited on would never be served: the guest hears
+            // a reset, as from a peer gone.
+            self.forget(fd, named, had);
+            let mut o = self.out();
+            c.reset(&mut o);
+            self.tcp.release(slot);
+            return;
+        }
+        let Some(s) = self.tcp.slot(slot) else { return };
+        s.interest = wants;
+        if let Some(due) = deadline
+            && s.armed.is_none_or(|armed| due < armed)
+        {
+            s.armed = Some(due);
+            self.timers.push(Reverse((due, named)));
+        }
+        if blocked && !s.blocked {
+            s.blocked = true;
+            self.blocked.push_back(named);
+        }
+        s.conn = Some(c);
+    }
+
+    /// Connections a full ring held back, sent again in the order they were held, until
+    /// the ring is full again: the rest keep their turn.
+    fn unblock(&mut self) {
+        while let Some(named) = self.blocked.pop_front() {
+            let Some(slot) = self.tcp.slot_of(named) else {
+                continue;
+            };
+            if let Some(s) = self.tcp.slot(slot) {
+                s.blocked = false;
+            }
+            let Some(mut c) = self.tcp.take(slot) else {
+                continue;
+            };
+            {
+                let mut o = self.out();
+                c.unblock(&mut o);
+            }
+            let again = !c.closed && c.blocked();
+            self.settle(slot, c);
+            if again {
+                // Its turn first next time: it went to the back as it settled.
+                if self.blocked.back() == Some(&named) {
+                    self.blocked.pop_back();
+                    self.blocked.push_front(named);
+                }
+                return;
+            }
+        }
+    }
+
+    /// A connection's host socket ready, as the poller says it.
+    fn on_socket(&mut self, e: &poll::Event) {
+        let Some(slot) = self.tcp.slot_of(e.token) else {
+            return;
+        };
+        let Some(mut c) = self.tcp.take(slot) else { return };
+        let mut buf = std::mem::take(&mut self.buf);
+        {
+            let mut o = Out {
+                frames: &self.frames,
+                to_guest: &mut self.to_guest,
+                backlog: &mut self.backlog,
+                guest_ip: self.cfg.guest_ip,
+                guest_ip6: self.cfg.guest_ip6,
+                scratch: &mut self.scratch,
+            };
+            if e.write {
+                c.on_writable(&mut o);
+            }
+            if !c.closed && e.read {
+                c.on_readable(&mut o, &mut buf);
+            }
+        }
+        self.buf = buf;
+        // What answers of the guest's DNS over TCP resolved granted names to.
+        if let Some(d) = c.dns.as_mut() {
+            for (name, addrs) in d.learned.drain(..) {
+                for (host, port) in &self.cfg.named {
+                    if host.eq_ignore_ascii_case(&name) {
+                        self.cfg.learned.extend(addrs.iter().map(|a| (*a, *port)));
+                    }
+                }
+            }
+        }
+        self.settle(slot, c);
+    }
+
+    /// Runs the timers due by `now`, earliest first: a connection's retransmission or
+    /// probe, a UDP flow's end. One a later timer took the place of, or whose flow lives
+    /// on, does nothing, or is armed again for when it ends (review 2.14).
+    fn timers(&mut self, now: Instant) {
+        ring::expire(now);
+        while let Some(&Reverse((at, named))) = self.timers.peek() {
+            if at > now {
+                break;
+            }
+            self.timers.pop();
+            match token::kind(named) {
+                token::TCP => {
+                    let Some(slot) = self.tcp.slot_of(named) else {
+                        continue;
+                    };
+                    match self.tcp.slot(slot) {
+                        Some(s) if s.armed == Some(at) => s.armed = None,
+                        _ => continue,
+                    }
+                    let Some(mut c) = self.tcp.take(slot) else {
+                        continue;
+                    };
+                    {
+                        let mut o = self.out();
+                        c.on_timer(now, &mut o);
+                    }
+                    self.settle(slot, c);
+                }
+                token::UDP => {
+                    let id = token::index(named);
+                    let Some(key) = self.udp_ids.get(&id).copied() else {
+                        continue;
+                    };
+                    match self.udp.get(&key) {
+                        Some(f) if now < f.life.until => {
+                            self.timers.push(Reverse((f.life.until, named)));
+                        }
+                        _ => {
+                            // Forgotten by the poller, its socket closes with it.
+                            if let Some(f) = self.udp.remove(&key) {
+                                self.forget(
+                                    f.sock.raw_sock(),
+                                    token::of(token::UDP, 0, id),
+                                    poll::Interest::READ,
+                                );
+                            }
+                            self.udp_ids.remove(&id);
+                        }
+                    }
+                }
+                token::INBOUND => {
+                    let Ok(port) = u16::try_from(token::index(named)) else {
+                        continue;
+                    };
+                    match self.inbound.get(&port) {
+                        Some(f) if now < f.life.until => {
+                            self.timers.push(Reverse((f.life.until, named)));
+                        }
+                        Some(_) => {
+                            if let Some(f) = self.inbound.remove(&port) {
+                                self.inbound_ports.remove(&(f.published, f.peer));
+                            }
+                        }
+                        None => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// The earliest timer's time: a connection's, a flow's, or the memory its queues let
+    /// go of going back to the OS (ring.rs).
+    fn next_timer(&self) -> Option<Instant> {
+        let timer = self.timers.peek().map(|Reverse((at, _))| *at);
+        match (timer, ring::expire(Instant::now())) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    /// The ports the network process is held to: the grants' TCP ports and the named
+    /// servers', and where names may be resolved, the port of the resolver it asks, the
+    /// host's 53 or another (`SHARDS_DNS`); none where no name may be.
+    #[test]
+    fn a_policy_reaches_the_resolver_at_its_own_port() {
+        let ports = Ports(vec![(Proto::Tcp, 80, 81), (Proto::Udp, 9000, 9000)]);
+        let named = vec![("mcp.example".to_string(), 8443)];
+        let at = |port| vec![(Ipv4Addr::LOCALHOST, port), (Ipv4Addr::LOCALHOST, 7)];
+        assert_eq!(
+            policy_tcp_ports(&ports, &named, false, &at(35353)),
+            [80, 81, 8443, 35353]
+        );
+        assert_eq!(policy_tcp_ports(&ports, &[], true, &at(53)), [80, 81, 53]);
+        assert_eq!(policy_tcp_ports(&ports, &[], false, &at(53)), [80, 81]);
+        assert_eq!(policy_tcp_ports(&ports, &named, true, &[]), [80, 81, 8443]);
+    }
+
+    /// A slot's token names its connection alone: once the slot is emptied, and taken by
+    /// another, what was waited on or timed for the first reaches nothing (review 2.14).
+    #[test]
+    fn a_slots_token_is_its_connections_alone() {
+        let mut tcp = Tcp::default();
+        let key = |port| Key {
+            guest_port: port,
+            remote: (IpAddr::V4(Ipv4Addr::LOCALHOST), 1),
+        };
+        let a = tcp.reserve(key(1));
+        let first = tcp.token(a);
+        assert_eq!(tcp.slot_of(first), Some(a));
+        assert_eq!(token::kind(first), token::TCP);
+        tcp.release(a);
+        assert_eq!(tcp.slot_of(first), None);
+        assert!(!tcp.by_key.contains_key(&key(1)));
+        let b = tcp.reserve(key(2));
+        assert_eq!(b, a, "the slot is taken again");
+        assert_eq!(
+            tcp.slot_of(first),
+            None,
+            "the first's events are not the second's"
+        );
+        assert_eq!(tcp.slot_of(tcp.token(b)), Some(b));
+        for (kind, generation, index) in [(token::UDP, 0, u32::MAX), (token::INBOUND, 0xff_ffff, 7)] {
+            let named = token::of(kind, generation, index);
+            assert_eq!(
+                (token::kind(named), token::generation(named), token::index(named)),
+                (kind, generation, index)
+            );
+        }
+    }
+
+    /// A stack as the network process makes one, sending to the guest on `to_guest`.
+    fn stack(cfg: Config, to_guest: Producer<'_>) -> Stack<'_> {
+        Stack {
+            frames: Frames {
+                gateway_mac: cfg.gateway_mac,
+                guest_mac: cfg.guest_mac,
+            },
+            cfg,
+            to_guest,
+            backlog: VecDeque::new(),
+            tcp: Tcp::default(),
+            udp: HashMap::new(),
+            udp_ids: HashMap::new(),
+            next_udp: 0,
+            #[cfg(windows)]
+            udp_waiting: HashMap::new(),
+            poller: poll::Poller::new().unwrap(),
+            timers: BinaryHeap::new(),
+            blocked: VecDeque::new(),
+            buf: vec![0u8; 2048],
+            scratch: Vec::new(),
+            isn_key: [0; 16],
+            began: Instant::now(),
+            published: Vec::new(),
+            hosted: HashMap::new(),
+            inbound: HashMap::new(),
+            inbound_ports: HashMap::new(),
+            next_port: *EPHEMERAL.start(),
+            peers: Vec::new(),
+            names: None,
+            #[cfg(target_os = "linux")]
+            ports_confined: false,
+            #[cfg(windows)]
+            dialer: None,
+            #[cfg(windows)]
+            dialer_waits: poll::Interest::NONE,
+        }
+    }
+
+    /// A published port let go of has its listener forgotten before it closes, so that the
+    /// next socket given its value is waited on as its own: on Windows the poller keeps a
+    /// registration by its socket's value, and a listener let go of without that kept the
+    /// next listener given its value from ever being waited on (a joiner on the host's
+    /// network that never accepted, jupiter 7 of 20 runs). Eight in turn, each ready once a
+    /// connection waits on it.
+    #[test]
+    fn a_listener_let_go_of_leaves_its_socket_value_to_the_next() {
+        let region = Region::map(shards_netring::memory().unwrap()).unwrap();
+        let (_, pr) = shards_netring::doorbell().unwrap();
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let mut stack = stack(
+            Config::on_bridge(Policy::Host, [2, 0, 0, 0, 0, 1], &bridge),
+            region.producer(1, pr),
+        );
+        for round in 0u32..8 {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let at = listener.local_addr().unwrap();
+            let index = stack.published.len();
+            stack.publish(&[0x1f, 0x90, wire::PROTO_TCP], vec![Handed::from(listener)]);
+            assert_eq!(stack.published.len(), index + 1, "round {round}: not taken");
+            stack.hosted.insert(round, index);
+            let waiting = std::net::TcpStream::connect(at).unwrap();
+            let listening = token::of(token::LISTENER, 0, u32::try_from(index).unwrap());
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut events = Vec::new();
+            while !events.iter().any(|e: &poll::Event| e.token == listening) {
+                assert!(
+                    Instant::now() < deadline,
+                    "round {round}: its listener never ready"
+                );
+                stack
+                    .poller
+                    .wait(&mut events, Some(Duration::from_millis(100)))
+                    .unwrap();
+            }
+            // Waited on again, as the loop's next wait arms what a notice disarmed; then
+            // let go of, the last socket closed, so that the next one made is likeliest to
+            // be given its value.
+            stack.poller.wait(&mut events, Some(Duration::ZERO)).unwrap();
+            drop(waiting);
+            #[cfg(windows)]
+            let value = stack
+                .published
+                .get(index)
+                .and_then(Option::as_ref)
+                .map(|(l, _)| l.raw_sock())
+                .unwrap();
+            stack.unpublish(round);
+            // Nothing kept of its value, whatever the next socket given it is.
+            #[cfg(windows)]
+            assert!(!stack.poller.keeps(value), "round {round}: its registration kept");
+        }
+    }
+
+    /// The guest's MAC as its run gives it (`NET_MAC`, D46): the one this side's frames
+    /// go to from then on, and the one frames are heard from; its template's is no longer
+    /// heard.
+    #[test]
+    fn a_runs_mac_is_the_one_frames_go_to() {
+        let region = Region::map(shards_netring::memory().unwrap()).unwrap();
+        let (cw, pr) = shards_netring::doorbell().unwrap();
+        let (_, cr) = shards_netring::doorbell().unwrap();
+        let mut consumer = region.consumer(1, cr, cw);
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let (template, run) = ([2, 0, 0, 0, 0, 1], [2, 0x42, 0xac, 0x11, 0, 0x99]);
+        let mut stack = stack(
+            Config::on_bridge(Policy::DenyAll, template, &bridge),
+            region.producer(1, pr),
+        );
+        stack.remac(run);
+        // An ARP request for the gateway, from `mac`.
+        let ask = |mac: [u8; 6], stack: &Stack<'_>| {
+            let mut f = vec![0u8; wire::VNET];
+            f.extend_from_slice(&[0xff; 6]);
+            f.extend_from_slice(&mac);
+            f.extend_from_slice(&wire::ETHERTYPE_ARP.to_be_bytes());
+            f.extend_from_slice(&[0, 1, 8, 0, 6, 4, 0, 1]);
+            f.extend_from_slice(&mac);
+            f.extend_from_slice(&stack.cfg.guest_ip.octets());
+            f.extend_from_slice(&[0; 6]);
+            f.extend_from_slice(&stack.cfg.gateway_ip.octets());
+            f
+        };
+        let (old, new) = (ask(template, &stack), ask(run, &stack));
+        stack.on_guest_frame(&old);
+        stack.on_guest_frame(&new);
+        let mut take = || {
+            consumer
+                .pop(|n, copy| {
+                    let mut f = vec![0u8; n];
+                    copy(0, f.as_mut_ptr(), n);
+                    f
+                })
+                .unwrap()
+        };
+        let reply = take().unwrap();
+        let e = wire::eth(reply.get(wire::VNET..).unwrap()).unwrap();
+        assert_eq!((e.dst, e.kind), (run, wire::ETHERTYPE_ARP));
+        assert_eq!(e.payload.get(18..24), Some(&run[..]), "the reply's target");
+        assert_eq!(take(), None, "the template's MAC is not heard");
+    }
+
+    /// The guest's link-local addresses (PM M175), as members of one bridge reach one
+    /// another: a packet to a peer's link-local address goes to that peer, from the guest's
+    /// link-local address or, its route being on the link, its address; from a link-local
+    /// address to one no peer has, nowhere; ARP asked from one is answered; a peer's frame
+    /// from its link-local address to the guest's reaches the guest; and a guest with no
+    /// IPv4 link-local address of its own, whose route to 169.254.0.0/16 is its gateway,
+    /// reaches no peer's.
+    // Peers come from the daemon, which runs on Unix alone yet (D143).
+    #[cfg(unix)]
+    #[test]
+    fn link_local_addresses_reach_their_peers_alone() {
+        use std::io::{Read as _, Write as _};
+        let region = Region::map(shards_netring::memory().unwrap()).unwrap();
+        let (cw, pr) = shards_netring::doorbell().unwrap();
+        let (_, cr) = shards_netring::doorbell().unwrap();
+        let mut consumer = region.consumer(1, cr, cw);
+        let mut take = || {
+            consumer
+                .pop(|n, copy| {
+                    let mut f = vec![0u8; n];
+                    copy(0, f.as_mut_ptr(), n);
+                    f
+                })
+                .unwrap()
+        };
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let cfg = Config::on_bridge(Policy::DenyAll, [2, 0, 0, 0, 0, 1], &bridge);
+        let (guest_mac, gateway_mac, guest_ip) = (cfg.guest_mac, cfg.gateway_mac, cfg.guest_ip);
+        let mut stack = stack(cfg, region.producer(1, pr));
+        let (ours, theirs) = (Ipv4Addr::new(169, 254, 1, 1), Ipv4Addr::new(169, 254, 1, 2));
+        stack.cfg.guest_link_local = vec![IpAddr::V4(ours)];
+        let (mut peer, end) = std::os::unix::net::UnixStream::pair().unwrap();
+        let mut payload = Ipv4Addr::new(172, 17, 0, 9).octets().to_vec();
+        payload.push(0);
+        payload.extend(encode_addresses(&[IpAddr::V4(theirs)]));
+        stack.add_peer(&payload, vec![end.into()]);
+        // An IPv4 datagram from the guest, src to dst.
+        let datagram = |src: Ipv4Addr, dst: Ipv4Addr| {
+            let mut f = vec![0u8; wire::VNET];
+            f.extend_from_slice(&gateway_mac);
+            f.extend_from_slice(&guest_mac);
+            f.extend_from_slice(&wire::ETHERTYPE_IPV4.to_be_bytes());
+            f.extend_from_slice(&[0x45, 0, 0, 28, 0, 0, 0, 0, 64, wire::PROTO_UDP, 0, 0]);
+            f.extend_from_slice(&src.octets());
+            f.extend_from_slice(&dst.octets());
+            f.extend_from_slice(&[0x30, 0x39, 0x1b, 0x58, 0, 8, 0, 0]);
+            f
+        };
+        let mut len = [0u8; 4];
+        let mut forwarded = |peer: &mut std::os::unix::net::UnixStream| {
+            peer.read_exact(&mut len).unwrap();
+            let mut got = vec![0u8; u32::from_be_bytes(len) as usize];
+            peer.read_exact(&mut got).unwrap();
+            let ip = wire::ipv4(wire::eth(got.get(wire::VNET..).unwrap()).unwrap().payload).unwrap();
+            (ip.src, ip.dst)
+        };
+        for src in [ours, guest_ip] {
+            stack.on_guest_frame(&datagram(src, theirs));
+            assert_eq!(forwarded(&mut peer), (IpAddr::V4(src), IpAddr::V4(theirs)));
+        }
+        // From its link-local one to an address no peer has: nowhere, as no router
+        // forwards it.
+        stack.on_guest_frame(&datagram(ours, Ipv4Addr::new(169, 254, 9, 9)));
+        peer.set_nonblocking(true).unwrap();
+        assert_eq!(
+            peer.read(&mut [0u8; 4]).unwrap_err().kind(),
+            io::ErrorKind::WouldBlock,
+            "nothing more reached the peer"
+        );
+        assert_eq!(take(), None, "nor the guest");
+        // Its ARP for the peer's link-local address, asked from its own: answered.
+        let mut arp = vec![0u8; wire::VNET];
+        arp.extend_from_slice(&[0xff; 6]);
+        arp.extend_from_slice(&guest_mac);
+        arp.extend_from_slice(&wire::ETHERTYPE_ARP.to_be_bytes());
+        arp.extend_from_slice(&[0, 1, 8, 0, 6, 4, 0, 1]);
+        arp.extend_from_slice(&guest_mac);
+        arp.extend_from_slice(&ours.octets());
+        arp.extend_from_slice(&[0; 6]);
+        arp.extend_from_slice(&theirs.octets());
+        stack.on_guest_frame(&arp);
+        let reply = take().unwrap();
+        let e = wire::eth(reply.get(wire::VNET..).unwrap()).unwrap();
+        assert_eq!((e.dst, e.kind), (guest_mac, wire::ETHERTYPE_ARP));
+        // The peer's frame, from its link-local address to the guest's: to the guest.
+        let frame = datagram(theirs, ours);
+        peer.set_nonblocking(false).unwrap();
+        peer.write_all(&u32::try_from(frame.len()).unwrap().to_be_bytes())
+            .unwrap();
+        peer.write_all(&frame).unwrap();
+        let ready = poll::Event {
+            token: 0,
+            read: true,
+            write: false,
+            ended: false,
+        };
+        stack.on_peer(0, &ready);
+        let delivered = take().unwrap();
+        let e = wire::eth(delivered.get(wire::VNET..).unwrap()).unwrap();
+        let ip = wire::ipv4(e.payload).unwrap();
+        assert_eq!(
+            (e.dst, ip.src, ip.dst),
+            (guest_mac, IpAddr::V4(theirs), IpAddr::V4(ours))
+        );
+        // No IPv4 link-local address of its own: its gateway takes the packet, which no
+        // grant lets past, saying so (ICMP's communication administratively prohibited).
+        stack.cfg.guest_link_local.clear();
+        stack.on_guest_frame(&datagram(guest_ip, theirs));
+        let refused = take().unwrap();
+        let ip = wire::ipv4(wire::eth(refused.get(wire::VNET..).unwrap()).unwrap().payload).unwrap();
+        assert_eq!(
+            (ip.proto, ip.payload.first(), ip.payload.get(1)),
+            (wire::PROTO_ICMP, Some(&3), Some(&13))
+        );
+    }
+
+    /// A connection's timer is armed once for its deadline, however often it settles,
+    /// and armed again when it fires: the timers hold a connection once, not once a
+    /// change (review 2.14).
+    #[test]
+    fn a_connections_timer_is_armed_once() {
+        let region = Region::map(shards_netring::memory().unwrap()).unwrap();
+        let (_, rings) = shards_netring::doorbell().unwrap();
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let cfg = Config::on_bridge(Policy::DenyAll, [2, 0, 0, 0, 0, 1], &bridge);
+        let mut stack = stack(cfg, region.producer(1, rings));
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let _client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (sock, _) = listener.accept().unwrap();
+        sock.set_nonblocking(true).unwrap();
+        let key = Key {
+            guest_port: 80,
+            remote: (IpAddr::V4(stack.cfg.gateway_ip), 49152),
+        };
+        // Opened to the guest: its SYN sent, a retransmission due.
+        let c = Conn::accept(key, sock, 1000, &mut stack.out());
+        let slot = stack.tcp.reserve(key);
+        stack.settle(slot, c);
+        assert_eq!(stack.timers.len(), 1);
+        for _ in 0..3 {
+            let c = stack.tcp.take(slot).unwrap();
+            stack.settle(slot, c);
+        }
+        assert_eq!(stack.timers.len(), 1, "armed once");
+        let due = stack.next_timer().unwrap();
+        stack.timers(due);
+        assert_eq!(stack.timers.len(), 1, "fired, and armed again");
+        assert!(stack.next_timer().unwrap() > due);
+    }
+
+    /// A segment's headers and its bytes, from both halves of a queue that wraps, reach the
+    /// ring as one frame, as does a datagram; while frames wait in the backlog, a segment
+    /// of bytes waits for room, and a bare one queues behind them.
+    #[test]
+    fn frames_reach_the_ring_whole() {
+        let region = Region::map(shards_netring::memory().unwrap()).unwrap();
+        let (cw, pr) = shards_netring::doorbell().unwrap();
+        let (_, cr) = shards_netring::doorbell().unwrap();
+        let mut producer = region.producer(1, pr);
+        let mut consumer = region.consumer(1, cr, cw);
+        let mut take = || {
+            consumer
+                .pop(|n, copy| {
+                    let mut f = vec![0u8; n];
+                    copy(0, f.as_mut_ptr(), n);
+                    f
+                })
+                .unwrap()
+        };
+        let frames = Frames {
+            gateway_mac: [2, 0, 0, 0, 0, 1],
+            guest_mac: [2, 0x42, 0xac, 0x11, 0, 2],
+        };
+        let (mut backlog, mut scratch) = (VecDeque::new(), Vec::new());
+        let guest_ip = Ipv4Addr::new(172, 17, 0, 2);
+        let mut out = Out {
+            frames: &frames,
+            to_guest: &mut producer,
+            backlog: &mut backlog,
+            guest_ip,
+            guest_ip6: None,
+            scratch: &mut scratch,
+        };
+        let key = Key {
+            guest_port: 80,
+            remote: (IpAddr::from([1, 2, 3, 4]), 40_000),
+        };
+        assert!(out.segment(&key, 7, 9, wire::ACK, 100, None, [b"hello, ", b"world"]));
+        assert!(out.datagram((IpAddr::from([8, 8, 8, 8]), 53), 5353, b"an answer"));
+        out.backlog.push_back(vec![0; 64]);
+        assert!(!out.segment(&key, 19, 9, wire::ACK, 100, None, [b"later", b""]));
+        assert!(out.segment(&key, 19, 9, wire::ACK, 100, None, tcp::EMPTY));
+        assert_eq!(out.backlog.len(), 2);
+        let segment = take().unwrap();
+        let ip = wire::ipv4(wire::eth(segment.get(wire::VNET..).unwrap()).unwrap().payload).unwrap();
+        assert_eq!((ip.src, ip.dst), (key.remote.0, IpAddr::V4(guest_ip)));
+        let t = wire::tcp(ip.payload).unwrap();
+        assert_eq!((t.seq, t.ack, t.payload), (7, 9, &b"hello, world"[..]));
+        let datagram = take().unwrap();
+        let ip = wire::ipv4(wire::eth(datagram.get(wire::VNET..).unwrap()).unwrap().payload).unwrap();
+        let u = wire::udp(ip.payload).unwrap();
+        assert_eq!((u.src_port, u.dst_port, u.payload), (53, 5353, &b"an answer"[..]));
+        assert_eq!(take(), None);
+    }
+
+    /// A MAC goes as text and comes back the same; what is not six two-digit hex bytes
+    /// between colons is no MAC.
+    #[test]
+    fn macs_read_back_as_written() {
+        let mac = Mac([0x02, 0x42, 0xac, 0x11, 0x00, 0xff]);
+        assert_eq!(mac.to_string(), "02:42:ac:11:00:ff");
+        assert_eq!("02:42:ac:11:00:ff".parse(), Ok(mac));
+        assert_eq!("02:42:AC:11:00:FF".parse(), Ok(mac));
+        for not in [
+            "",
+            "02:42:ac:11:00",
+            "02:42:ac:11:00:ff:01",
+            "2:42:ac:11:00:ff",
+            "+2:42:ac:11:00:ff",
+            "02:42:ac:11:00:fg",
+            "02-42-ac-11-00-ff",
+            "02:42:ac:11:00:ff:",
+        ] {
+            assert!(not.parse::<Mac>().is_err(), "{not:?}");
+        }
+    }
+
+    /// The host's network (D124): every unicast address the host reaches, the host's own
+    /// loopback and link-local addresses among them, the gateway being the host's
+    /// 127.0.0.1; multicast and broadcast not.
+    #[test]
+    fn the_hosts_network_reaches_what_the_host_does() {
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let mut host = Config::on_bridge(Policy::Host, [2, 0, 0, 0, 0, 1], &bridge);
+        host.gateway_ip6 = Some("fd00:17::1".parse().unwrap());
+        let gateway = IpAddr::V4(host.gateway_ip);
+        for to in [
+            gateway,
+            IpAddr::from([8, 8, 8, 8]),
+            IpAddr::from([127, 0, 0, 1]),
+            IpAddr::from([127, 0, 0, 53]),
+            IpAddr::from([169, 254, 169, 254]),
+            "::1".parse().unwrap(),
+            "fe80::1".parse().unwrap(),
+            "2001:4860:4860::8888".parse().unwrap(),
+        ] {
+            assert!(
+                host.allows(to, Proto::Tcp, 5432) && host.allows(to, Proto::Udp, 53),
+                "{to}"
+            );
+        }
+        for to in [
+            IpAddr::from([0, 0, 0, 0]),
+            IpAddr::from([224, 0, 0, 251]),
+            IpAddr::from([255, 255, 255, 255]),
+            "ff02::1".parse().unwrap(),
+            "::".parse().unwrap(),
+        ] {
+            assert!(!host.allows(to, Proto::Tcp, 443), "{to}");
+        }
+        assert_eq!(
+            host.host_side(gateway, Proto::Tcp, 80),
+            IpAddr::from([127, 0, 0, 1])
+        );
+        assert_eq!(
+            host.host_side("fd00:17::1".parse().unwrap(), Proto::Udp, 53),
+            "::1".parse::<IpAddr>().unwrap()
+        );
+        assert_eq!(
+            host.host_side(IpAddr::from([127, 0, 0, 53]), Proto::Tcp, 80),
+            IpAddr::from([127, 0, 0, 53])
+        );
+        assert_eq!(
+            host.host_side(IpAddr::from([8, 8, 8, 8]), Proto::Tcp, 80),
+            IpAddr::from([8, 8, 8, 8])
+        );
+        // A policy of grants never makes the gateway the host's loopback, but where a grant
+        // names the host itself (below).
+        let ports = Config::on_bridge(Policy::Ports(Ports::default()), [2, 0, 0, 0, 0, 1], &bridge);
+        assert_eq!(ports.host_side(gateway, Proto::Tcp, 80), gateway);
+    }
+
+    /// The host itself, as a destination names it (D236): the gateway, at that TCP port
+    /// alone, taken to the host's IPv4 loopback there; never another port of it, nor UDP,
+    /// nor the host's loopback or the gateway at another port by any other grant, nor the
+    /// host's network's or a build's policy's; and its name is never asked of a resolver,
+    /// where a destination's is.
+    #[test]
+    fn the_host_itself_is_its_one_granted_port() {
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let mut cfg = Config::on_bridge(Policy::Ports(Ports::default()), [2, 0, 0, 0, 0, 1], &bridge);
+        let gateway = IpAddr::V4(cfg.gateway_ip);
+        cfg.named = vec![
+            (dns::HOST.to_string(), 7070),
+            ("api.openai.com".to_string(), 443),
+            ("127.0.0.1".to_string(), 9000),
+        ];
+        assert!(cfg.allows(gateway, Proto::Tcp, 7070));
+        assert_eq!(
+            cfg.host_side(gateway, Proto::Tcp, 7070),
+            IpAddr::from([127, 0, 0, 1])
+        );
+        for (to, proto, port) in [
+            (gateway, Proto::Tcp, 7071),
+            (gateway, Proto::Udp, 7070),
+            (gateway, Proto::Tcp, 443),
+            // The host's loopback, even as a grant names it as an address: never past the
+            // microVM but by the host's own name.
+            (IpAddr::from([127, 0, 0, 1]), Proto::Tcp, 7070),
+            (IpAddr::from([127, 0, 0, 1]), Proto::Tcp, 9000),
+        ] {
+            assert!(!cfg.allows(to, proto, port), "{to} {proto:?} {port}");
+        }
+        assert_eq!(cfg.host_side(gateway, Proto::Udp, 7070), gateway);
+        assert_eq!(cfg.host_side(gateway, Proto::Tcp, 7071), gateway);
+        // A port grant of the same port is no grant of the host.
+        let mut wide = Config::on_bridge(
+            Policy::Ports(Ports::parse("7070").unwrap()),
+            [2, 0, 0, 0, 0, 1],
+            &bridge,
+        );
+        assert!(!wide.allows(gateway, Proto::Tcp, 7070));
+        wide.named = vec![(dns::HOST.to_string(), 7070)];
+        assert!(wide.allows(gateway, Proto::Tcp, 7070));
+        // Nor of any other policy's.
+        for policy in [Policy::AllowAll, Policy::DenyAll] {
+            let mut other = Config::on_bridge(policy, [2, 0, 0, 0, 0, 1], &bridge);
+            other.named = vec![(dns::HOST.to_string(), 7070)];
+            assert!(!other.allows(gateway, Proto::Tcp, 7070));
+            assert_eq!(other.host_side(gateway, Proto::Tcp, 7070), gateway);
+        }
+        // Names: a destination's asked, the host's never, every other refused.
+        assert!(cfg.asks("API.openai.com"));
+        assert!(!cfg.asks("host.docker.internal"));
+        assert!(!cfg.asks("chatgpt.com"));
+        assert_eq!(cfg.asked_names(), ["api.openai.com", "127.0.0.1"]);
+        cfg.dns_all = true;
+        assert!(cfg.asks("chatgpt.com"));
+    }
+
+    /// What a build's steps reach: the Internet and the host's networks, not the host
+    /// itself, a cloud's instance metadata, multicast or broadcast; a run's, by default,
+    /// nothing.
+    #[test]
+    fn policies_reach_what_they_say() {
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let allow = Config::on_bridge(Policy::AllowAll, [2, 0, 0, 0, 0, 1], &bridge);
+        for to in [[8, 8, 8, 8], [192, 168, 1, 10], [10, 0, 0, 1], [172, 17, 0, 3]] {
+            assert!(allow.allows(IpAddr::from(to), Proto::Tcp, 443), "{to:?}");
+        }
+        for to in [
+            [172, 17, 0, 1],
+            [127, 0, 0, 1],
+            [0, 0, 0, 0],
+            [169, 254, 169, 254],
+            [169, 254, 0, 1],
+            [224, 0, 0, 251],
+            [239, 255, 255, 250],
+            [255, 255, 255, 255],
+        ] {
+            assert!(!allow.allows(IpAddr::from(to), Proto::Tcp, 443), "{to:?}");
+        }
+        let deny = Config::on_bridge(Policy::DenyAll, [2, 0, 0, 0, 0, 1], &bridge);
+        assert!(!deny.allows(IpAddr::from([8, 8, 8, 8]), Proto::Tcp, 443));
+        // IPv6 alike (D99): the gateway, loopback, link-local and multicast kept out, and
+        // an IPv4 address carried in IPv6 judged as the IPv4 address it is.
+        let mut allow = allow;
+        allow.gateway_ip6 = Some("fd00:17::1".parse().unwrap());
+        for to in ["2001:4860:4860::8888", "fd00:17::3", "::ffff:8.8.8.8"] {
+            assert!(allow.allows(to.parse().unwrap(), Proto::Tcp, 443), "{to}");
+        }
+        for to in [
+            "fd00:17::1",
+            "::1",
+            "::",
+            "fe80::1",
+            "ff02::1",
+            "::127.0.0.1",
+            "::ffff:127.0.0.1",
+            "::ffff:169.254.169.254",
+            "::ffff:172.17.0.1",
+        ] {
+            assert!(!allow.allows(to.parse().unwrap(), Proto::Tcp, 443), "{to}");
+        }
+    }
+
+    /// A build's proxy (D110): its one flow, to the gateway's proxy port, reaches the
+    /// proxy's socket; every other, the Internet, the host's networks, another port of the
+    /// gateway's and UDP included, is refused.
+    #[test]
+    fn a_proxy_policy_reaches_its_proxy_alone() {
+        let dir = shards_testdir::TempDir::new("net-proxy").unwrap();
+        let socket = dir.join("p");
+        let listener = sys::UnixListener::bind(&socket).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let policy = Policy::Proxy {
+            port: 3128,
+            socket: socket.clone(),
+        };
+        let cfg = Config::on_bridge(policy, [2, 0, 0, 0, 0, 1], &bridge);
+        let gateway = IpAddr::V4(cfg.gateway_ip);
+        for (to, proto, port) in [
+            (IpAddr::from([8, 8, 8, 8]), Proto::Tcp, 443),
+            (IpAddr::from([172, 17, 0, 3]), Proto::Tcp, 3128),
+            (gateway, Proto::Tcp, 3128),
+            (gateway, Proto::Udp, 53),
+            (IpAddr::from([8, 8, 8, 8]), Proto::Udp, 53),
+        ] {
+            assert!(!cfg.allows(to, proto, port), "{to} {proto:?} {port}");
+        }
+        assert_eq!(cfg.proxy_flow(gateway, 3128), Some(socket.clone()));
+        assert_eq!(cfg.proxy_flow(gateway, 3129), None);
+        assert_eq!(cfg.proxy_flow(IpAddr::from([8, 8, 8, 8]), 3128), None);
+        // A guest's SYN to it connects to the socket; one elsewhere is reset, unconnected.
+        let region = Region::map(shards_netring::memory().unwrap()).unwrap();
+        let (_, rings) = shards_netring::doorbell().unwrap();
+        let guest_ip = cfg.guest_ip;
+        let mut stack = stack(cfg, region.producer(1, rings));
+        let syn = |stack: &mut Stack<'_>, to: IpAddr, port: u16| {
+            let mut frame = Vec::new();
+            stack.frames.tcp_headers(
+                &mut frame,
+                (IpAddr::V4(guest_ip), 40_000),
+                (to, port),
+                7,
+                0,
+                wire::SYN,
+                65_535,
+                Some((1460, Some(7))),
+                0,
+            );
+            let ip = wire::ipv4(frame.get(wire::VNET + wire::ETH..).unwrap()).unwrap();
+            stack.on_guest_tcp(&ip);
+        };
+        syn(&mut stack, IpAddr::from([8, 8, 8, 8]), 443);
+        syn(&mut stack, gateway, 3129);
+        assert!(stack.tcp.by_key.is_empty(), "no connection but the proxy's");
+        assert!(listener.accept().is_err(), "nothing reached the proxy");
+        syn(&mut stack, gateway, 3128);
+        assert_eq!(stack.tcp.by_key.len(), 1);
+        assert!(listener.accept().is_ok(), "the proxy took it");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// What an AppContainer keeps the network process from goes through its spawner's
+    /// dialer (Windows, D142), asked for without waiting: the guest's SYN to the host makes
+    /// no connection until the dialer answers, the same SYN again asks nothing more, and
+    /// each answer comes as its connect ends, whatever the order asked: a socket connected
+    /// opens its connection, acknowledged (`kind::TAKEN`), and a refusal resets the guest's.
+    /// A dialer gone resets what it was asked for.
+    #[cfg(windows)]
+    #[test]
+    fn dials_are_answered_as_they_end_and_hold_up_nothing() {
+        use shards_ipc::kind;
+        use std::os::windows::io::AsRawSocket as _;
+        let region = Region::map(shards_netring::memory().unwrap()).unwrap();
+        let (cw, pr) = shards_netring::doorbell().unwrap();
+        let (_, cr) = shards_netring::doorbell().unwrap();
+        let mut consumer = region.consumer(1, cr, cw);
+        // Each frame to the guest: its TCP destination port and flags.
+        let mut sent = || {
+            let mut got = Vec::new();
+            while let Some(f) = consumer
+                .pop(|n, copy| {
+                    let mut f = vec![0u8; n];
+                    copy(0, f.as_mut_ptr(), n);
+                    f
+                })
+                .unwrap()
+            {
+                let e = wire::eth(f.get(wire::VNET..).unwrap()).unwrap();
+                let ip = wire::ipv4(e.payload).unwrap();
+                let seg = wire::tcp(ip.payload).unwrap();
+                got.push((seg.dst_port, seg.flags));
+            }
+            got
+        };
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let cfg = Config::on_bridge(Policy::Host, [2, 0, 0, 0, 0, 1], &bridge);
+        let (gateway, guest_ip) = (IpAddr::V4(cfg.gateway_ip), cfg.guest_ip);
+        let mut stack = stack(cfg, region.producer(1, pr));
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        stack.dialer = Some(Dialer::new(ours, Vec::new()).unwrap());
+        stack.wait_on_dialer();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let syn = |stack: &mut Stack<'_>, guest_port: u16| {
+            let mut frame = Vec::new();
+            stack.frames.tcp_headers(
+                &mut frame,
+                (IpAddr::V4(guest_ip), guest_port),
+                (gateway, port),
+                7,
+                0,
+                wire::SYN,
+                65_535,
+                Some((1460, Some(7))),
+                0,
+            );
+            let ip = wire::ipv4(frame.get(wire::VNET + wire::ETH..).unwrap()).unwrap();
+            stack.on_guest_tcp(&ip);
+        };
+        syn(&mut stack, 40_000);
+        syn(&mut stack, 40_000);
+        syn(&mut stack, 40_001);
+        assert!(stack.tcp.by_key.is_empty(), "no connection before an answer");
+        assert_eq!(sent(), [], "nothing said to the guest yet");
+        let mut to_itself = port.to_be_bytes().to_vec();
+        to_itself.splice(0..0, [127, 0, 0, 1]);
+        for id in [0u32, 1] {
+            let ask = shards_ipc::read_message(&theirs).unwrap().unwrap();
+            assert_eq!(ask.kind, kind::DIAL);
+            assert_eq!(
+                ask.payload,
+                [&id.to_be_bytes()[..], &to_itself].concat(),
+                "one ask each"
+            );
+        }
+        // The second answered first, refused; then the first, connected.
+        let answer = |id: u32, kind: u8, rest: &[u8]| {
+            shards_ipc::write_message(&theirs, kind, &[&id.to_be_bytes()[..], rest].concat()).unwrap();
+        };
+        answer(1, kind::ERR, b"refused");
+        let conn = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let info = shards_ipc::share_socket(conn.as_raw_socket(), std::process::id()).unwrap();
+        answer(0, kind::GRANTED, &info);
+        // Each answer whole before the stack looks: it takes both at once.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        stack.on_dialer(false);
+        let taken = shards_ipc::read_message(&theirs).unwrap().unwrap();
+        assert_eq!(
+            (taken.kind, taken.payload),
+            (kind::TAKEN, 0u32.to_be_bytes().to_vec())
+        );
+        drop(conn);
+        assert_eq!(stack.tcp.by_key.len(), 1, "the connected one opened");
+        // Its socket ready, the guest hears its SYN-ACK.
+        let mut events = Vec::new();
+        stack
+            .poller
+            .wait(&mut events, Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        for e in &events {
+            if token::kind(e.token) == token::TCP {
+                stack.on_socket(e);
+            }
+        }
+        assert_eq!(
+            sent(),
+            [(40_001, wire::RST | wire::ACK), (40_000, wire::SYN | wire::ACK)]
+        );
+        // Asked for again, and the dialer gone: reset.
+        syn(&mut stack, 40_002);
+        drop(theirs);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        stack.on_dialer(false);
+        assert!(stack.dialer.is_none(), "forgotten");
+        assert_eq!(sent(), [(40_002, wire::RST | wire::ACK)]);
+    }
+
+    /// An Agentfile's egress grants: their ports alone, of their protocol, and never
+    /// what `AllowAll` keeps out; written as an `EXPOSE` writes ports, carried whole.
+    #[test]
+    fn ports_reach_their_ports_alone() {
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let ports = Ports::parse("443, 53/udp,8000-8010/tcp").unwrap();
+        assert_eq!(Ports::decode(&ports.encode()), Some(ports.clone()));
+        let cfg = Config::on_bridge(Policy::Ports(ports), [2, 0, 0, 0, 0, 1], &bridge);
+        let out = IpAddr::from([8, 8, 8, 8]);
+        for (proto, port) in [
+            (Proto::Tcp, 443),
+            (Proto::Udp, 53),
+            (Proto::Tcp, 8000),
+            (Proto::Tcp, 8010),
+        ] {
+            assert!(cfg.allows(out, proto, port), "{proto:?} {port}");
+        }
+        for (proto, port) in [
+            (Proto::Udp, 443),
+            (Proto::Tcp, 53),
+            (Proto::Tcp, 7999),
+            (Proto::Tcp, 8011),
+        ] {
+            assert!(!cfg.allows(out, proto, port), "{proto:?} {port}");
+        }
+        assert!(!cfg.allows(IpAddr::from([169, 254, 169, 254]), Proto::Tcp, 443));
+        assert!(!cfg.allows(IpAddr::from([127, 0, 0, 1]), Proto::Tcp, 443));
+        for bad in ["0", "70000", "9-8", "443/sctp", "x"] {
+            assert!(Ports::parse(bad).is_err(), "{bad}");
+        }
+        assert_eq!(Ports::decode(&[6, 0, 0, 0, 1]), None);
+        // Names granted, beside the ports, carried whole.
+        let named = vec![("mcp.example".to_string(), 443), ("10.0.0.7".to_string(), 8443)];
+        let both = encode_policy(&Ports::parse("53/udp").unwrap(), &named, true);
+        assert_eq!(
+            decode_policy(&both),
+            Some((Ports::parse("53/udp").unwrap(), named.clone(), true))
+        );
+        assert_eq!(
+            decode_policy(&encode_policy(&Ports::default(), &[], false)),
+            Some((Ports::default(), vec![], false))
+        );
+        assert_eq!(decode_policy(&both[..both.len() - 1]), None);
+        // A named grant reaches its address, learned or literal, at its port alone.
+        let mut cfg = Config::on_bridge(Policy::Ports(Ports::default()), [2, 0, 0, 0, 0, 1], &bridge);
+        cfg.named = named;
+        let learned = IpAddr::from([203, 0, 113, 9]);
+        assert!(!cfg.allows(learned, Proto::Tcp, 443), "not yet resolved");
+        cfg.learned.insert((learned, 443));
+        assert!(cfg.allows(learned, Proto::Tcp, 443));
+        assert!(!cfg.allows(learned, Proto::Tcp, 80));
+        assert!(!cfg.allows(learned, Proto::Udp, 443));
+        assert!(cfg.allows(IpAddr::from([10, 0, 0, 7]), Proto::Tcp, 8443));
+        assert!(!cfg.allows(IpAddr::from([10, 0, 0, 8]), Proto::Tcp, 8443));
+        // An IPv6 address as its URL writes it, in brackets (D99), and an IPv6 address
+        // a name resolved to (AAAA), each at its port alone.
+        cfg.named.push(("[2001:db8::7]".to_string(), 8443));
+        let seven = IpAddr::from([0x2001, 0xdb8, 0, 0, 0, 0, 0, 7]);
+        assert!(cfg.allows(seven, Proto::Tcp, 8443));
+        assert!(!cfg.allows(seven, Proto::Tcp, 443));
+        assert!(!cfg.allows(IpAddr::from([0x2001, 0xdb8, 0, 0, 0, 0, 0, 8]), Proto::Tcp, 8443));
+        let learned6 = IpAddr::from([0x2001, 0xdb8, 0, 0, 0, 0, 0, 9]);
+        assert!(!cfg.allows(learned6, Proto::Tcp, 443), "not yet resolved");
+        cfg.learned.insert((learned6, 443));
+        assert!(cfg.allows(learned6, Proto::Tcp, 443));
+        assert!(!cfg.allows(learned6, Proto::Tcp, 8443));
+        assert_eq!(Ports::decode(&[6, 0, 1]), None);
+    }
+
+    /// The daemon's control socket publishes and the VM's lets go, and neither says the
+    /// other's: a VM gives the network process nothing to serve (review 2.19).
+    #[test]
+    fn each_control_socket_says_only_its_own() {
+        use shards_ipc::kind::{PUBLISH, UNPUBLISH};
+        assert!(Control::Daemon.says(PUBLISH) && !Control::Daemon.says(UNPUBLISH));
+        assert!(Control::Release.says(UNPUBLISH) && !Control::Release.says(PUBLISH));
+    }
+
+    /// An initial sequence number is its connection's and its secret's alone, plus its
+    /// clock: another connection, or another process's secret, gives another, and the
+    /// clock adds to it (RFC 6528 §3, review 2.31).
+    #[test]
+    fn initial_sequence_numbers_are_the_connections_and_the_secrets() {
+        let guest = IpAddr::from([172, 17, 0, 2]);
+        let conn = |port| Key {
+            guest_port: port,
+            remote: (IpAddr::from([93, 184, 215, 14]), 443),
+        };
+        let (one, two) = ([1u8; 16], [2u8; 16]);
+        let isn = initial_seq(&one, 0, guest, &conn(40_000));
+        assert_eq!(isn, initial_seq(&one, 0, guest, &conn(40_000)));
+        assert_ne!(isn, initial_seq(&one, 0, guest, &conn(40_001)));
+        assert_ne!(isn, initial_seq(&two, 0, guest, &conn(40_000)));
+        assert_eq!(initial_seq(&one, 5, guest, &conn(40_000)), isn.wrapping_add(5));
+    }
+
+    /// UDP flows live as conntrack keeps them: 30 s from a datagram, until a reply has
+    /// come and a datagram more than 2 s after the first; 120 s from then.
+    #[test]
+    fn udp_flows_live_as_conntrack_keeps_them() {
+        let t0 = Instant::now();
+        let mut life = Lifetime::new(t0);
+        assert_eq!(life.until, t0 + UDP_UNREPLIED);
+        // A query answered at once: still 30 s.
+        life.datagram(t0 + Duration::from_millis(5), true);
+        assert_eq!(life.until, t0 + Duration::from_millis(5) + UDP_UNREPLIED);
+        // More one way only, past 2 s: not a stream without a reply.
+        let mut one_way = Lifetime::new(t0);
+        one_way.datagram(t0 + Duration::from_secs(3), false);
+        assert_eq!(one_way.until, t0 + Duration::from_secs(3) + UDP_UNREPLIED);
+        // Replied, and going past 2 s: a stream.
+        life.datagram(t0 + Duration::from_secs(3), false);
+        assert_eq!(life.until, t0 + Duration::from_secs(3) + UDP_STREAM);
+    }
+
+    /// A UDP flow's gateway port is one no other flow has, in turn, and none once all are.
+    #[test]
+    fn udp_flows_take_free_gateway_ports_in_turn() {
+        let flow = || Inbound {
+            published: 0,
+            peer: "127.0.0.1:1".parse().unwrap(),
+            asked: None,
+            guest_port: 53,
+            life: Lifetime::new(Instant::now()),
+        };
+        let start = *EPHEMERAL.start();
+        let mut inbound = HashMap::from([(start, flow())]);
+        let mut next = start;
+        assert_eq!(free_udp_port(&mut next, &inbound), Some(start + 1));
+        assert_eq!(free_udp_port(&mut next, &inbound), Some(start + 2));
+        let mut last = u16::MAX;
+        assert_eq!(free_udp_port(&mut last, &inbound), Some(u16::MAX));
+        assert_eq!(last, start, "past the range's end, its start");
+        inbound.extend(EPHEMERAL.map(|p| (p, flow())));
+        assert_eq!(free_udp_port(&mut next, &inbound), None);
+    }
+
+    /// Each guest's MAC is its own, and one a host's stack takes as a unicast address of
+    /// a local, not a vendor's, assignment.
+    #[test]
+    fn macs_are_fresh_local_unicast_ones() {
+        let macs: Vec<[u8; 6]> = (0..64).map(|_| random_mac().unwrap()).collect();
+        for mac in &macs {
+            assert_eq!(mac[0] & 0x03, 0x02, "{mac:02x?}");
+        }
+        let mut distinct = macs.clone();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert_eq!(distinct.len(), macs.len());
+    }
+
+    /// A port of the host's network (D124), given by its number and let go by it: the host
+    /// socket the network process held is closed then, so its port is the host's again,
+    /// and a port published beside it stays.
+    // Published ports come from the daemon, which runs on Unix alone yet (D143).
+    #[cfg(unix)]
+    #[test]
+    fn a_hosted_port_is_let_go_by_its_number() {
+        use std::os::fd::AsFd as _;
+        use std::os::unix::net::UnixStream;
+        let region = shards_netring::memory().unwrap();
+        let (net_waits, device_rings) = shards_netring::doorbell().unwrap();
+        let (device_waits, net_rings) = shards_netring::doorbell().unwrap();
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let cfg = Config::on_bridge(Policy::Host, [2, 0, 0, 0, 0, 1], &bridge);
+        let (daemon, daemons) = UnixStream::pair().unwrap();
+        let (vm, vms) = UnixStream::pair().unwrap();
+        let soon = || Instant::now() + Duration::from_secs(10);
+        // Below the ports a bind of port 0 is given (Linux's ip_local_port_range, from
+        // 32768 by default; macOS's from 49152): once let go, the port is no other bind's,
+        // where one of that range was another test's at once.
+        let low: u16 = std::fs::read_to_string("/proc/sys/net/ipv4/ip_local_port_range")
+            .ok()
+            .and_then(|r| r.split_whitespace().next().and_then(|n| n.parse().ok()))
+            .unwrap_or(32768)
+            .min(32768);
+        let outside = || {
+            (1024..low)
+                .rev()
+                .find_map(|port| std::net::TcpListener::bind(("127.0.0.1", port)).ok())
+                .unwrap()
+        };
+        let (hosted, kept) = (outside(), outside());
+        let (hosted_at, kept_at) = (hosted.local_addr().unwrap(), kept.local_addr().unwrap());
+        std::thread::scope(|scope| {
+            let served = scope.spawn(move || {
+                serve(
+                    region,
+                    net_waits,
+                    net_rings,
+                    cfg,
+                    vec![(Control::Daemon, daemons), (Control::Release, vms)],
+                )
+            });
+            // Neither is answered: a PUBLISH of nothing after each, which is, says it was
+            // taken, the control socket's messages taken in order.
+            let taken = || {
+                shards_ipc::send(&daemon, shards_ipc::kind::PUBLISH, &[], &[]).unwrap();
+                let answer = shards_ipc::recv_by(&daemon, soon()).unwrap().unwrap();
+                assert_eq!(answer.kind, shards_ipc::kind::PUBLISH);
+            };
+            for (id, listener) in [(7u32, &hosted), (8, &kept)] {
+                let mut payload = id.to_be_bytes().to_vec();
+                payload.extend(8080u16.to_be_bytes());
+                payload.push(wire::PROTO_TCP);
+                shards_ipc::send(
+                    &daemon,
+                    shards_ipc::kind::NET_PUBLISHED,
+                    &payload,
+                    &[listener.as_fd()],
+                )
+                .unwrap();
+            }
+            taken();
+            drop((hosted, kept));
+            shards_ipc::send(
+                &daemon,
+                shards_ipc::kind::NET_UNPUBLISHED,
+                &7u32.to_be_bytes(),
+                &[],
+            )
+            .unwrap();
+            let answer = shards_ipc::recv_by(&daemon, soon()).unwrap().unwrap();
+            assert_eq!(answer.kind, shards_ipc::kind::NET_UNPUBLISHED);
+            assert!(
+                std::net::TcpListener::bind(hosted_at).is_ok(),
+                "its port the host's again"
+            );
+            assert!(
+                std::net::TcpListener::bind(kept_at).is_err(),
+                "the other held still"
+            );
+            // The VM gone: its doorbells closed.
+            drop((daemon, vm, device_rings, device_waits));
+            let _ = served.join();
+        });
+    }
+
+    /// A guest's answer to a published port's peer that is in the ring when the port's
+    /// UNPUBLISH comes goes out before the port closes, though no doorbell rang for it: a
+    /// run's last datagram, which its VM puts in the ring before it asks for its ports
+    /// to close (warm.rs `release_ports`), reaches its peer (the published UDP flake,
+    /// 2026-10-10).
+    // Published ports come from the daemon, which runs on Unix alone yet (D143).
+    #[cfg(unix)]
+    #[test]
+    fn frames_in_the_ring_go_before_a_control_message() {
+        use std::os::fd::AsFd as _;
+        use std::os::unix::net::UnixStream;
+        let region = shards_netring::memory().unwrap();
+        let ring = Region::map(region.try_clone().unwrap()).unwrap();
+        let (net_waits, device_rings) = shards_netring::doorbell().unwrap();
+        let (device_waits, net_rings) = shards_netring::doorbell().unwrap();
+        // A doorbell nobody waits on: the guest's answer is put in the ring unannounced.
+        let (_nobody, unheard) = shards_netring::doorbell().unwrap();
+        let (_also_nobody, room) = shards_netring::doorbell().unwrap();
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let cfg = Config::on_bridge(Policy::DenyAll, [2, 0, 0, 0, 0, 1], &bridge);
+        let (daemon, daemons) = UnixStream::pair().unwrap();
+        let (vm, vms) = UnixStream::pair().unwrap();
+        let listener = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let published = listener.local_addr().unwrap();
+        std::thread::scope(|scope| {
+            let served = scope.spawn(move || {
+                serve(
+                    region,
+                    net_waits,
+                    net_rings,
+                    cfg,
+                    vec![(Control::Daemon, daemons), (Control::Release, vms)],
+                )
+            });
+            let mut ports = 5353u16.to_be_bytes().to_vec();
+            ports.push(wire::PROTO_UDP);
+            shards_ipc::send(&daemon, shards_ipc::kind::PUBLISH, &ports, &[listener.as_fd()]).unwrap();
+            let soon = || Instant::now() + Duration::from_secs(10);
+            assert!(shards_ipc::recv_by(&daemon, soon()).unwrap().is_some());
+            drop(listener);
+            let client = UdpSocket::bind("127.0.0.1:0").unwrap();
+            client.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            client.send_to(b"ping", published).unwrap();
+            // The datagram as the guest is given it, then answered from the guest's port.
+            let mut to_guest = ring.consumer(1, room, device_waits);
+            let deadline = soon();
+            let mut f = loop {
+                let got = to_guest
+                    .pop(|n, copy| {
+                        let mut f = vec![0u8; n];
+                        copy(0, f.as_mut_ptr(), n);
+                        f
+                    })
+                    .unwrap();
+                match got {
+                    Some(f) if f.ends_with(b"ping") => break f,
+                    _ => {
+                        assert!(Instant::now() < deadline, "no datagram reached the guest");
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                }
+            };
+            // virtio-net's header, then Ethernet's (MACs at 0 and 6), IPv4's (addresses
+            // at 12 and 16 of its 20 bytes) and UDP's (ports at 0 and 2): each pair
+            // swapped, which leaves both checksums as they were.
+            let (eth, ip) = (12, 12 + 14);
+            let udp = ip + 20;
+            for (a, b, len) in [(eth, eth + 6, 6), (ip + 12, ip + 16, 4), (udp, udp + 2, 2)] {
+                for i in 0..len {
+                    f.swap(a + i, b + i);
+                }
+            }
+            // The network process asleep again, waiting to be rung, which it is not.
+            std::thread::sleep(Duration::from_millis(100));
+            let mut from_guest = ring.producer(0, unheard);
+            let pushed = from_guest.try_push_with(f.len(), |dst| {
+                // SAFETY: `dst` has room for the frame's bytes.
+                unsafe { std::ptr::copy_nonoverlapping(f.as_ptr(), dst, f.len()) }
+            });
+            assert!(matches!(pushed, Ok(Some(_))));
+            shards_ipc::send(&vm, shards_ipc::kind::UNPUBLISH, &[], &[]).unwrap();
+            assert!(shards_ipc::recv_by(&vm, soon()).unwrap().is_some());
+            let mut buf = [0u8; 64];
+            let answered = client.recv_from(&mut buf);
+            // The VM goes: its device's doorbell closes, and the network process ends.
+            drop(device_rings);
+            assert!(served.join().unwrap().is_ok());
+            let (n, from) = answered.expect("the guest's answer before the port closed");
+            assert_eq!((&buf[..n], from), (&b"ping"[..], published));
+        });
+    }
+}

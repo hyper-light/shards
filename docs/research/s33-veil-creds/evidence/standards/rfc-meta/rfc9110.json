@@ -1,0 +1,49 @@
+{
+  "draft": "draft-ietf-httpbis-semantics-19",
+  "doc_id": "RFC9110",
+  "title": "HTTP Semantics",
+  "authors": [
+    "R. Fielding, Ed.",
+    "M. Nottingham, Ed.",
+    "J. Reschke, Ed."
+  ],
+  "format": [
+    "XML",
+    "TEXT",
+    "HTML",
+    "PDF"
+  ],
+  "page_count": "194",
+  "pub_status": "INTERNET STANDARD",
+  "status": "INTERNET STANDARD",
+  "source": "HTTP",
+  "abstract": "The Hypertext Transfer Protocol (HTTP) is a stateless application-level protocol for distributed, collaborative, hypertext information systems. This document describes the overall architecture of HTTP, establishes common terminology, and defines aspects of the protocol that are shared by all versions. In this definition are core protocol elements, extensibility mechanisms, and the \"http\" and \"https\" Uniform Resource Identifier (URI) schemes.\n\n This document updates RFC 3864 and obsoletes RFCs 2818, 7231, 7232, 7233, 7235, 7538, 7615, 7694, and portions of 7230.",
+  "pub_date": "June 2022",
+  "keywords": [
+    "Hypertext Transfer Protocol",
+    "HTTP",
+    "HTTP semantics",
+    "HTTP content",
+    "HTTP method",
+    "HTTP status code"
+  ],
+  "obsoletes": [
+    "RFC2818",
+    "RFC7230",
+    "RFC7231",
+    "RFC7232",
+    "RFC7233",
+    "RFC7235",
+    "RFC7538",
+    "RFC7615",
+    "RFC7694"
+  ],
+  "obsoleted_by": [],
+  "updates": [
+    "RFC3864"
+  ],
+  "updated_by": [],
+  "see_also": [],
+  "doi": "10.17487/RFC9110",
+  "errata_url": "https://www.rfc-editor.org/errata/rfc9110"
+}

@@ -1254,7 +1254,7 @@ pub fn setup_vcpu(vm: &hv::Vm, index: usize, start: VcpuStart) -> Result<(hv::Vc
                     .is_none_or(|&(_, now)| now != v)
             });
             if differs {
-                aarch64::cpu::covers(&here, &cpu_id)?;
+                aarch64::cpu::covers(&here, &cpu_id).map_err(|lacks| lacks.to_string())?;
                 vcpu.set_cpu_id(&cpu_id).map_err(|err| {
                     format!("this CPU is not the snapshot's, and is not told its guest's: {err}")
                 })?;

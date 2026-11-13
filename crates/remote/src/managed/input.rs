@@ -31,7 +31,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use hyper_quic::{ClientConfig, StreamId};
 use shards_abi::run::managed::InputEnd;
 
-use super::{AdmissionError, Admitted, Error, ProtocolError, Reason, RunId};
+use super::{AdmissionError, Admitted, Error, Gone, ProtocolError, Reason, RunId, Stop};
 use crate::frame::{self, Tag};
 use crate::identity::{Fingerprint, Identity};
 use crate::net::{Close, Command, ConnKey, Driver, DriverLimits, Handler, Io, Read, Sender};
@@ -376,6 +376,7 @@ pub struct Control {
     shared: Arc<Shared>,
     sender: Sender<()>,
     room: u32,
+    stop: Stop,
 }
 
 impl std::fmt::Debug for Control {
@@ -450,7 +451,8 @@ impl Control {
     }
 
     /// Lets the input go: its relay told, its connection to the member ended, its driver
-    /// stopped. A member's stdin then reads its end.
+    /// stopped, or its lane alone where its endpoint serves others ([`Stop`]). A member's
+    /// stdin then reads its end.
     pub fn abort(&self) {
         {
             let mut slot = lock(&self.shared);
@@ -460,7 +462,7 @@ impl Control {
         }
         self.shared.changed.notify_all();
         self.shared.close();
-        self.sender.request_stop();
+        self.stop.revoke(&self.sender);
     }
 }
 
@@ -472,7 +474,9 @@ enum Subscription {
     Closed,
 }
 
-struct Service {
+/// One input's subscriber, on one stream at a time: its subscription, the records and the end
+/// it reads, and what it is told. The connection it is on is its endpoint's to admit.
+pub(crate) struct Service {
     scope: Scope,
     owner: Fingerprint,
     room: u32,
@@ -547,55 +551,15 @@ impl Endpoint {
         scope: Scope,
         admitted: Admitted,
     ) -> Result<(Self, Relay, Control), Error> {
-        let room =
-            u32::try_from(admitted.record_bytes).map_err(|_| Error::Admission(AdmissionError::Capacity))?;
-        if room == 0
-            || admitted.record_bytes > super::RECORD_MOST
-            || admitted.transport_bytes == 0
-            || admitted.handshake_bytes == 0
-            || admitted.patience.is_zero()
-            || std::time::Instant::now().checked_add(admitted.patience).is_none()
-        {
-            return Err(Error::Admission(AdmissionError::Capacity));
-        }
-        let mut buffer = Vec::new();
-        buffer
-            .try_reserve_exact(admitted.record_bytes)
-            .map_err(|_| Error::Admission(AdmissionError::Allocation))?;
-        // The owner's stream holds a subscription, then one record and its end at most
-        // before the endpoint reads them.
-        let receive = RECORD_HEAD
-            .checked_add(admitted.record_bytes)
-            .and_then(|n| n.checked_add(END_BYTES))
-            .ok_or(Error::Admission(AdmissionError::Window))?
-            .max(SUBSCRIBE_BYTES);
-        let transport = super::transport(admitted, receive)?;
+        super::admissible(&admitted)?;
+        let transport = super::transport(admitted, receive_bytes(admitted.record_bytes)?)?;
         let mut config = tls::owner_server(identity, owner, transport, super::ALPN)?;
         config
             .max_incoming(1)
             .incoming_buffer_size(0)
             .incoming_buffer_size_total(0);
-        let shared = Arc::new(Shared {
-            slot: Mutex::new(Slot::Free { at: 0, buffer }),
-            changed: Condvar::new(),
-            closer: Mutex::new(None),
-        });
-        let service = Service {
-            scope,
-            owner,
-            room,
-            shared: Arc::clone(&shared),
-            state: Subscription::Listening,
-            head: [0; HEAD_MOST],
-            head_len: 0,
-            out: [0; TAKEN_BYTES],
-            out_len: 0,
-            out_written: 0,
-            told: None,
-            told_end: false,
-            finished: false,
-        };
-        let (driver, sender) = Driver::bind_bounded(
+        let service = Service::new(scope, owner, admitted.record_bytes)?;
+        let (mut driver, sender) = Driver::bind_bounded(
             SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
             Some(config),
             service,
@@ -610,11 +574,7 @@ impl Endpoint {
         if matches!(address.port(), 80 | 443) {
             return Err(Error::Admission(AdmissionError::ExcludedPort));
         }
-        let relay = Relay {
-            shared: Arc::clone(&shared),
-            sender: sender.try_clone()?,
-        };
-        let control = Control { shared, sender, room };
+        let (relay, control) = driver.handler_mut().handles(sender, Stop::Driver)?;
         Ok((
             Self {
                 driver,
@@ -632,18 +592,19 @@ impl Endpoint {
 
     pub fn run(mut self) -> Result<(), Error> {
         let result = self.driver.run();
-        let service = self.driver.handler_mut();
-        service.state = Subscription::Closed;
-        {
-            let mut slot = lock(&service.shared);
-            if !matches!(*slot, Slot::Ended { .. }) {
-                *slot = Slot::Revoked;
-            }
-        }
-        service.shared.changed.notify_all();
-        service.shared.close();
+        self.driver.handler_mut().close();
         result.map_err(Error::Transport)
     }
+}
+
+/// The most an owner sends on its stream before the endpoint reads it: a subscription, or one
+/// record of `record_bytes` at most and its end.
+pub(crate) fn receive_bytes(record_bytes: usize) -> Result<usize, Error> {
+    Ok(RECORD_HEAD
+        .checked_add(record_bytes)
+        .and_then(|n| n.checked_add(END_BYTES))
+        .ok_or(Error::Admission(AdmissionError::Window))?
+        .max(SUBSCRIBE_BYTES))
 }
 
 /// What the owner's frame at the head buffer says, once enough of it has come.
@@ -663,6 +624,148 @@ enum Head {
 }
 
 impl Service {
+    /// The input of `scope`, its one record `record_bytes` at most, written by `owner`'s streams
+    /// alone.
+    pub(crate) fn new(scope: Scope, owner: Fingerprint, record_bytes: usize) -> Result<Service, Error> {
+        let room = u32::try_from(record_bytes).map_err(|_| Error::Admission(AdmissionError::Capacity))?;
+        if room == 0 || record_bytes > super::RECORD_MOST {
+            return Err(Error::Admission(AdmissionError::Capacity));
+        }
+        let mut buffer = Vec::new();
+        buffer
+            .try_reserve_exact(record_bytes)
+            .map_err(|_| Error::Admission(AdmissionError::Allocation))?;
+        Ok(Service {
+            scope,
+            owner,
+            room,
+            shared: Arc::new(Shared {
+                slot: Mutex::new(Slot::Free { at: 0, buffer }),
+                changed: Condvar::new(),
+                closer: Mutex::new(None),
+            }),
+            state: Subscription::Listening,
+            head: [0; HEAD_MOST],
+            head_len: 0,
+            out: [0; TAKEN_BYTES],
+            out_len: 0,
+            out_written: 0,
+            told: None,
+            told_end: false,
+            finished: false,
+        })
+    }
+
+    /// Its relay and its control, waking the driver that serves it through `sender`.
+    pub(crate) fn handles(&self, sender: Sender<()>, stop: Stop) -> Result<(Relay, Control), Error> {
+        let relay = Relay {
+            shared: Arc::clone(&self.shared),
+            sender: sender.try_clone()?,
+        };
+        let control = Control {
+            shared: Arc::clone(&self.shared),
+            sender,
+            room: self.room,
+            stop,
+        };
+        Ok((relay, control))
+    }
+
+    /// Its driver has ended: an input not ended is let go, its relay told and its member's
+    /// connection closed.
+    pub(crate) fn close(&mut self) {
+        self.state = Subscription::Closed;
+        {
+            let mut slot = lock(&self.shared);
+            if !matches!(*slot, Slot::Ended { .. }) {
+                *slot = Slot::Revoked;
+            }
+        }
+        self.shared.changed.notify_all();
+        self.shared.close();
+    }
+
+    pub(crate) fn scope(&self) -> Scope {
+        self.scope
+    }
+
+    /// The stream that subscribes to it now.
+    pub(crate) fn subscriber(&self) -> Option<(ConnKey, StreamId)> {
+        match self.state {
+            Subscription::Subscribed { conn, stream } => Some((conn, stream)),
+            _ => None,
+        }
+    }
+
+    /// Its input was let go: no stream subscribes to it again.
+    pub(crate) fn revoked(&self) -> bool {
+        matches!(*lock(&self.shared), Slot::Revoked)
+    }
+
+    /// Its input has ended, as the member's init told it: nothing a subscriber sends is the
+    /// input's any more.
+    pub(crate) fn ended(&self) -> bool {
+        matches!(*lock(&self.shared), Slot::Ended { .. })
+    }
+
+    /// Its subscriber has been told the input's end, all of it, and its stream finished.
+    pub(crate) fn said_its_end(&self) -> bool {
+        self.finished
+    }
+
+    /// A subscription read by the endpoint its stream came to, which admitted the connection
+    /// (the agent-control endpoint, D238): `(conn, stream)` writes this input from `offset` on,
+    /// as an endpoint of one stream subscribes its owner ([`Service::heard`]).
+    pub(crate) fn lane(
+        &mut self,
+        conn: ConnKey,
+        stream: StreamId,
+        scope: Scope,
+        offset: u64,
+    ) -> Result<(), Reason> {
+        if !matches!(self.state, Subscription::Listening) {
+            return Err(Reason::Scope);
+        }
+        if self.revoked() {
+            return Err(Reason::Closed);
+        }
+        self.subscribed(conn, stream, scope, CHANNEL, offset)
+    }
+
+    /// Takes a subscription to `scope`'s `channel` at `offset` on `(conn, stream)`: refused for
+    /// another input or generation, for an input let go, or for an offset past what was taken.
+    fn subscribed(
+        &mut self,
+        conn: ConnKey,
+        stream: StreamId,
+        scope: Scope,
+        channel: u8,
+        offset: u64,
+    ) -> Result<(), Reason> {
+        if scope.run != self.scope.run || scope.member != self.scope.member || channel != CHANNEL {
+            return Err(Reason::Scope);
+        }
+        if scope.generation != self.scope.generation {
+            return Err(Reason::Stale);
+        }
+        {
+            let slot = lock(&self.shared);
+            match (slot.next_start(), &*slot) {
+                // An owner may be a record behind, the taken of its last lost with its
+                // connection; never ahead of what was taken.
+                (Some(next), _) if offset <= next => {}
+                (None, Slot::Ended { .. }) => {}
+                (None, _) => return Err(Reason::Closed),
+                (Some(_), _) => return Err(Reason::Protocol),
+            }
+        }
+        self.told = None;
+        self.told_end = false;
+        self.finished = false;
+        self.state = Subscription::Subscribed { conn, stream };
+        Ok(())
+    }
+
     fn refuse(&mut self, io: &mut Io<'_>, conn: ConnKey, reason: Reason) {
         io.close(conn, reason as u32, "managed input subscription refused");
         self.disconnect();
@@ -670,7 +773,7 @@ impl Service {
 
     /// The subscription gone, whatever took it: a record cut short is let go, its buffer kept
     /// for the next; what came whole goes on to the member.
-    fn disconnect(&mut self) {
+    pub(crate) fn disconnect(&mut self) {
         self.state = Subscription::Listening;
         self.head_len = 0;
         self.out_len = 0;
@@ -807,28 +910,7 @@ impl Service {
                 if !matches!(self.state, Subscription::Connecting(c) if c == conn) {
                     return Err(Reason::Protocol);
                 }
-                if scope.run != self.scope.run || scope.member != self.scope.member || channel != CHANNEL {
-                    return Err(Reason::Scope);
-                }
-                if scope.generation != self.scope.generation {
-                    return Err(Reason::Stale);
-                }
-                {
-                    let slot = lock(&self.shared);
-                    match (slot.next_start(), &*slot) {
-                        // An owner may be a record behind, the taken of its last lost with
-                        // its connection; never ahead of what was taken.
-                        (Some(next), _) if offset <= next => {}
-                        (None, Slot::Ended { .. }) => {}
-                        (None, _) => return Err(Reason::Closed),
-                        (Some(_), _) => return Err(Reason::Protocol),
-                    }
-                }
-                self.told = None;
-                self.told_end = false;
-                self.finished = false;
-                self.state = Subscription::Subscribed { conn, stream };
-                Ok(())
+                self.subscribed(conn, stream, scope, channel, offset)
             }
             Head::Record { offset, len } => {
                 let mut slot = lock(&self.shared);
@@ -885,41 +967,38 @@ impl Service {
             self.refuse(io, conn, Reason::Protocol);
             return;
         }
+        match self.read(io, conn, stream) {
+            Ok(()) => self.flush(io),
+            Err(gone) => self.refuse(io, conn, gone.reason()),
+        }
+    }
+
+    /// Reads what its subscriber sent, as far as it has come: its subscription, its records
+    /// and its end. The owner's stream finished ends its subscription, never its input: an
+    /// owner keeps its side open until it hears the input's end.
+    pub(crate) fn read(&mut self, io: &mut Io<'_>, conn: ConnKey, stream: StreamId) -> Result<(), Gone> {
         loop {
-            let want = match self.want() {
-                Ok(0) => break,
-                Ok(n) => n,
-                Err(reason) => {
-                    self.refuse(io, conn, reason);
-                    return;
-                }
+            let want = match self.want().map_err(Gone::Refused)? {
+                0 => return Ok(()),
+                n => n,
             };
             let (bytes, ended) = match io.read_within(conn, stream, want) {
                 Ok(Read::Bytes(bytes)) => (bytes, false),
                 Ok(Read::End(bytes)) => (bytes, true),
-                Ok(Read::Blocked) => break,
-                Ok(Read::Reset) | Err(_) => {
-                    self.refuse(io, conn, Reason::Protocol);
-                    return;
-                }
+                Ok(Read::Blocked) => return Ok(()),
+                Ok(Read::Reset) => return Err(Gone::Reset),
+                Err(_) => return Err(Gone::Refused(Reason::Protocol)),
             };
-            if let Err(reason) = self.take(&bytes, conn, stream) {
-                self.refuse(io, conn, reason);
-                return;
-            }
-            // The owner's stream finished: its subscription ends, never its input. An owner keeps
-            // its side open until it hears the input's end.
+            self.take(&bytes, conn, stream).map_err(Gone::Refused)?;
             if ended {
-                self.refuse(io, conn, Reason::Closed);
-                return;
+                return Err(Gone::Ended);
             }
         }
-        self.flush(io);
     }
 
     /// Says what the owner has to hear: where its next record goes once the last is taken,
     /// or the input's end, after which its stream is finished.
-    fn flush(&mut self, io: &mut Io<'_>) {
+    pub(crate) fn flush(&mut self, io: &mut Io<'_>) {
         let Subscription::Subscribed { conn, stream } = self.state else {
             return;
         };

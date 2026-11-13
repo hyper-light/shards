@@ -209,8 +209,16 @@ pub trait Handler {
     /// code its peer closed it with, where its peer did (RFC 9000 §20.2). One this side closed
     /// is not told of: its handler knows.
     fn lost(&mut self, io: &mut Io<'_>, conn: ConnKey, why: &str, code: Option<u64>);
+    /// Why a connection ended, as QUIC told it (RFC 9000 §20, RFC 9001 §4.8), just before
+    /// [`Handler::lost`] tells of it: for a handler that types its peer's refusals, which
+    /// `lost`'s words and application code do not carry. Nothing, by default; a connection
+    /// whose handshake ran out of patience ([`DriverLimits::handshake_patience`]) has none.
+    fn cause(&mut self, _conn: ConnKey, _error: &ConnectionError) {}
     /// Another thread's command.
     fn command(&mut self, io: &mut Io<'_>, command: Self::Command);
+    /// The peer allows more of the streams this side opens (MAX_STREAMS, RFC 9000 §4.6): one
+    /// that could not be opened before may be now. Nothing, for a handler that opens none.
+    fn available(&mut self, _io: &mut Io<'_>, _conn: ConnKey) {}
     /// Whether the driver may end, once it has sent what it holds: a client's, once its
     /// command has ended and it has closed its connection, whose peer is then told so (a
     /// closing endpoint need only have sent its CONNECTION_CLOSE, RFC 9000 §10.2).
@@ -901,6 +909,7 @@ impl<H: Handler> Driver<H> {
                 };
                 let why = reason.to_string();
                 let (mut io, handler) = self.io(now);
+                handler.cause(key, &reason);
                 handler.lost(&mut io, key, &why, code);
                 self.client = io.client;
             }
@@ -921,6 +930,11 @@ impl<H: Handler> Driver<H> {
                 let (mut io, handler) = self.io(now);
                 io.reset(key, id);
                 handler.stopped(&mut io, key, id);
+                self.client = io.client;
+            }
+            Event::Stream(StreamEvent::Available { dir: Dir::Bi }) => {
+                let (mut io, handler) = self.io(now);
+                handler.available(&mut io, key);
                 self.client = io.client;
             }
             Event::Stream(StreamEvent::Readable { id }) => {

@@ -1,5 +1,5 @@
 diff --git a/crates/init/src/build.rs b/crates/init/src/build.rs
-index f74739781..267a52dc9 100644
+index 3f8ddaa21..e18b7afa9 100644
 --- a/crates/init/src/build.rs
 +++ b/crates/init/src/build.rs
 @@ -243,6 +243,14 @@ fn serve() -> io::Result<()> {
@@ -26,10 +26,10 @@ index f74739781..267a52dc9 100644
              kind::EMULATE => {
                  let why = b
 diff --git a/crates/init/src/plug.rs b/crates/init/src/plug.rs
-index e54ac38b4..8e8ff5a13 100644
+index c4bce1e98..99c965d25 100644
 --- a/crates/init/src/plug.rs
 +++ b/crates/init/src/plug.rs
-@@ -708,6 +708,57 @@ fn peak_since(used: u64) -> u64 {
+@@ -764,6 +764,57 @@ fn peak_since(used: u64) -> u64 {
      peak.max(used)
  }
  
@@ -88,10 +88,10 @@ index e54ac38b4..8e8ff5a13 100644
  /// back (D188), from what its microVM booted with (`boot`), the most it may have plugged,
  /// what stays of what it has plugged ([`staying`]) and has asked to have, what it uses and
 diff --git a/crates/shards/src/build/builder.rs b/crates/shards/src/build/builder.rs
-index 438450c21..9ea41d1cf 100644
+index 1f6058e2c..159177259 100644
 --- a/crates/shards/src/build/builder.rs
 +++ b/crates/shards/src/build/builder.rs
-@@ -566,10 +566,23 @@ fn launch(
+@@ -583,10 +583,23 @@ fn launch(
      };
      let null = std::fs::File::open("/dev/null").map_err(|e| format!("/dev/null: {e}"))?;
      let err = io::stderr();
@@ -117,11 +117,11 @@ index 438450c21..9ea41d1cf 100644
          (side.region.as_fd(), crate::netproc::VM_FDS[0]),
          (side.sleeps.as_fd(), crate::netproc::VM_FDS[1]),
          (side.rings.as_fd(), crate::netproc::VM_FDS[2]),
-@@ -809,7 +822,6 @@ impl Builder {
+@@ -853,7 +866,6 @@ impl Builder {
              vsock.clone().into(),
              "--net".into(),
              crate::netproc::VmSide::arg(&mac).into(),
 -            "--no-console".into(),
          ];
-         for base in boot.bases {
-             args.extend(["--pmem".into(), base.into()]);
+         // What it keeps of its console to quote as it fails, as its kernel's records say,
+         // and the pipe it tells how that report came out on (D12).

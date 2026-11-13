@@ -81,6 +81,10 @@ pub(crate) struct Plan {
     /// Its guest's architecture, and the snapshot format it was saved in.
     pub arch: String,
     pub format: u32,
+    /// The hypervisor it ran on (`hv::BACKEND`), whose own its snapshot's vCPUs, interrupt
+    /// controller and devices are: none from a daemon of an earlier build, which said none.
+    #[serde(default)]
+    pub hypervisor: Option<String>,
     /// The snapshot it moves as.
     pub snapshot: String,
     /// This machine's home, resolved: what each file's name in the move is relative to.
@@ -301,6 +305,184 @@ pub(crate) struct Needs {
     pub files: Vec<String>,
     #[serde(default)]
     pub unpacks: Vec<String>,
+}
+
+/// Why a machine refuses a microVM moved to it, before anything of it moves: its `ready`
+/// step's answer, as JSON on stdout beside its words on stderr, so that the mover matches
+/// what was refused (cli/moves.rs `Refused`) and a client of an earlier build still reads
+/// why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "refused", rename_all = "kebab-case")]
+pub(crate) enum Refused {
+    /// Its guest is another architecture's.
+    Arch {
+        name: String,
+        arch: String,
+        here: String,
+    },
+    /// It ran on another hypervisor, whose own its snapshot's vCPUs, interrupt controller
+    /// and devices are; `here` is none where this build drives no VMs.
+    Hypervisor {
+        name: String,
+        hypervisor: String,
+        here: Option<String>,
+    },
+    /// It was saved in a snapshot format this build does not read.
+    Format { name: String, format: u32, here: u32 },
+    /// This machine's hypervisor shows a guest less of each of these fields than the CPU
+    /// baseline its guest was told.
+    Cpu { name: String, short: Vec<CpuShort> },
+    /// This machine's CPU lacks these features, as its OS names them, which its guest may
+    /// have used where it ran.
+    Features { name: String, lacks: Vec<String> },
+    /// A microVM with its ID is here.
+    IdTaken { name: String },
+    /// A microVM of its name is here.
+    NameTaken { name: String },
+    /// A volume of the name of one it moves with is here.
+    VolumeTaken { name: String, volume: String },
+    /// A host path it binds is not on this machine.
+    BindAbsent { name: String, path: String },
+}
+
+/// A field of the CPU a guest was told that this machine's hypervisor shows less of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub(crate) enum CpuShort {
+    /// A field of an AArch64 ID register ([`shards_vmm::arch::aarch64::cpu::Short`]).
+    Field {
+        reg: u16,
+        shift: u32,
+        guest: i8,
+        here: i8,
+    },
+}
+
+/// A hypervisor as `hv::BACKEND` names it, in a person's words.
+fn hypervisor_name(backend: &str) -> &str {
+    match backend {
+        "kvm" => "KVM",
+        "hvf" => "Hypervisor.framework",
+        "whp" => "the Windows Hypervisor Platform",
+        other => other,
+    }
+}
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Refused::Arch { name, arch, here } => {
+                write!(
+                    f,
+                    "{name} is a {arch} microVM, and this machine runs {here} microVMs"
+                )
+            }
+            Refused::Hypervisor {
+                name,
+                hypervisor,
+                here,
+            } => {
+                write!(f, "{name} ran on {}, and ", hypervisor_name(hypervisor))?;
+                match here {
+                    Some(here) => write!(f, "this machine runs microVMs on {}", hypervisor_name(here))?,
+                    None => f.write_str("this machine runs no microVMs")?,
+                }
+                f.write_str(
+                    ": a snapshot holds its vCPUs and interrupt controller as its hypervisor keeps them",
+                )
+            }
+            Refused::Format { name, format, here } => write!(
+                f,
+                "{name} was saved in snapshot format {format}, and this machine's shards reads {here}"
+            ),
+            Refused::Cpu { name, short } => {
+                let fields = short
+                    .iter()
+                    .map(|s| match *s {
+                        CpuShort::Field {
+                            reg,
+                            shift,
+                            guest,
+                            here,
+                        } => shards_vmm::arch::aarch64::cpu::Short {
+                            reg,
+                            shift,
+                            guest,
+                            host: here,
+                        },
+                    })
+                    .collect();
+                let lacks = shards_vmm::arch::aarch64::cpu::Lacks(fields);
+                write!(f, "{lacks}, which {name}'s CPU baseline names")
+            }
+            Refused::Features { name, lacks } => write!(
+                f,
+                "this machine's CPU lacks {}, which {name}'s guest may have used where it ran",
+                lacks.join(", ")
+            ),
+            Refused::IdTaken { name } => write!(f, "a microVM with {name}'s ID is here already"),
+            Refused::NameTaken { name } => write!(f, "a microVM named {name} is here already"),
+            Refused::VolumeTaken { name, volume } => write!(
+                f,
+                "a volume named {volume} is here already, and {name}'s would move here"
+            ),
+            Refused::BindAbsent { name, path } => write!(
+                f,
+                "{path}, which {name} binds, is not on this machine: a move takes a bind's host path shared at the same place"
+            ),
+        }
+    }
+}
+
+/// What a plan says of the machine its microVM ran on that refuses it on one whose guests
+/// are of `arch`, whose VMs `hypervisor` drives and whose shards reads snapshot `format`,
+/// before anything else is asked of it: a guest of another architecture, a machine of
+/// another hypervisor, a snapshot of another format. A plan of an earlier build names no
+/// hypervisor, and is taken as before, its restore refusing a state of another one.
+fn platform_refused(plan: &Plan, arch: &str, hypervisor: Option<&str>, format: u32) -> Option<Refused> {
+    let name = plan.name.clone();
+    if plan.arch != arch {
+        return Some(Refused::Arch {
+            name,
+            arch: plan.arch.clone(),
+            here: arch.to_string(),
+        });
+    }
+    if let Some(theirs) = plan.hypervisor.as_deref()
+        && Some(theirs) != hypervisor
+    {
+        return Some(Refused::Hypervisor {
+            name,
+            hypervisor: theirs.to_string(),
+            here: hypervisor.map(str::to_string),
+        });
+    }
+    if plan.format != format {
+        return Some(Refused::Format {
+            name,
+            format: plan.format,
+            here: format,
+        });
+    }
+    None
+}
+
+/// Why `ready` answers no [`Needs`]: it refuses the move, or it could not tell.
+enum Unready {
+    Refused(Refused),
+    Failed(String),
+}
+
+impl From<String> for Unready {
+    fn from(e: String) -> Unready {
+        Unready::Failed(e)
+    }
+}
+
+impl From<Refused> for Unready {
+    fn from(refused: Refused) -> Unready {
+        Unready::Refused(refused)
+    }
 }
 
 /// `bytes`' SHA-256, in hex.
@@ -838,7 +1020,19 @@ impl<D: Disk> Daemon<D> {
             Some("plan") => self.move_plan(args.get(1).map_or("", String::as_str)),
             Some("live") => self.move_live(args.get(1..).unwrap_or_default(), asker, reply),
             Some("done") => self.move_done(args.get(1..).unwrap_or_default()),
-            Some("ready") => self.move_ready(args.get(1).map_or("", String::as_str), asker, reply),
+            Some("ready") => match self.move_ready(args.get(1).map_or("", String::as_str), asker, reply) {
+                Ok(needs) => Ok(needs),
+                Err(Unready::Failed(e)) => Err(e),
+                // Typed on stdout, for the mover to match; in words on stderr, as any step's
+                // failure is, for a client of an earlier build.
+                Err(Unready::Refused(refused)) => {
+                    if let Ok(json) = serde_json::to_string(&refused) {
+                        reply.out(&json);
+                    }
+                    reply.err(&format!("shards: {refused}"));
+                    return 1;
+                }
+            },
             Some("cpu") => self
                 .host_cpu_id()
                 .map(|id| shards_vmm::arch::aarch64::cpu::encode(&id)),
@@ -945,6 +1139,7 @@ impl<D: Disk> Daemon<D> {
             image_id: c.image_id.clone().unwrap_or_default(),
             arch: std::env::consts::ARCH.into(),
             format: shards_vmm::snapshot::FORMAT,
+            hypervisor: shards_vmm::hv::BACKEND.map(str::to_string),
             snapshot,
             home: home.to_string_lossy().into_owned(),
             files,
@@ -1172,6 +1367,7 @@ impl<D: Disk> Daemon<D> {
             image_id: c.image_id.clone().unwrap_or_default(),
             arch: std::env::consts::ARCH.into(),
             format: shards_vmm::snapshot::FORMAT,
+            hypervisor: shards_vmm::hv::BACKEND.map(str::to_string),
             snapshot: snapshot.to_string(),
             home: home.to_string_lossy().into_owned(),
             files,
@@ -1229,67 +1425,66 @@ impl<D: Disk> Daemon<D> {
     /// `ready PLAN`, on the machine moved to: whether it can take the plan's microVM, and
     /// what it lacks, as JSON: its image where it has none and none could be pulled, and the
     /// files its snapshot restores against that it has none of, or another of.
-    fn move_ready(&self, plan: &str, asker: &Asker, reply: &Reply<'_>) -> Result<String, String> {
+    fn move_ready(&self, plan: &str, asker: &Asker, reply: &Reply<'_>) -> Result<String, Unready> {
         let plan: Plan = serde_json::from_str(plan).map_err(|e| format!("the move's plan: {e}"))?;
-        if plan.arch != std::env::consts::ARCH {
-            return Err(format!(
-                "{} is a {} microVM, and this machine runs {} microVMs",
-                plan.name,
-                plan.arch,
-                std::env::consts::ARCH
-            ));
-        }
-        if plan.format != shards_vmm::snapshot::FORMAT {
-            return Err(format!(
-                "{} was saved in snapshot format {}, and this machine's shards reads {}",
-                plan.name,
-                plan.format,
-                shards_vmm::snapshot::FORMAT
-            ));
+        let name = || plan.name.clone();
+        if let Some(refused) = platform_refused(
+            &plan,
+            std::env::consts::ARCH,
+            shards_vmm::hv::BACKEND,
+            shards_vmm::snapshot::FORMAT,
+        ) {
+            return Err(refused.into());
         }
         // Its CPU: every feature of the machine it ran on, as its guest may have used any.
         // Told a baseline, each of its fields this machine's hypervisor shows at least; and of
         // the features it ran on, those the baseline cannot mask, by name.
         if !plan.baseline.is_empty() {
             let id = self.host_cpu_id()?;
-            shards_vmm::arch::aarch64::cpu::covers(&id, &plan.baseline)
-                .map_err(|e| format!("{e}, which {}'s CPU baseline names", plan.name))?;
+            if let Err(lacks) = shards_vmm::arch::aarch64::cpu::covers(&id, &plan.baseline) {
+                let short = lacks
+                    .0
+                    .iter()
+                    .map(|s| CpuShort::Field {
+                        reg: s.reg,
+                        shift: s.shift,
+                        guest: s.guest,
+                        here: s.host,
+                    })
+                    .collect();
+                return Err(Refused::Cpu { name: name(), short }.into());
+            }
         }
         let here = host_cpu();
         let may_use = unmasked(&plan.cpu, &plan.baseline);
         let lacks = cpu_lacks(&may_use, &here);
         if !lacks.is_empty() {
-            return Err(format!(
-                "this machine's CPU lacks {}, which {}'s guest may have used where it ran",
-                lacks.join(", "),
-                plan.name
-            ));
+            let lacks = lacks.into_iter().map(str::to_string).collect();
+            return Err(Refused::Features { name: name(), lacks }.into());
         }
         {
             let registry = lock(&self.containers);
             if registry.get(&plan.id).is_some() || registry.dir(&plan.id).exists() {
-                return Err(format!("a microVM with {}'s ID is here already", plan.name));
+                return Err(Refused::IdTaken { name: name() }.into());
             }
             if registry.name_taken(&plan.name).is_some() {
-                return Err(format!("a microVM named {} is here already", plan.name));
+                return Err(Refused::NameTaken { name: name() }.into());
             }
         }
         let store = crate::volumes::Store::new(&self.home);
-        for v in &plan.volumes {
-            if store.get(v).is_some() {
-                return Err(format!(
-                    "a volume named {v} is here already, and {}'s would move here",
-                    plan.name
-                ));
+        if let Some(volume) = plan.volumes.iter().find(|v| store.get(v).is_some()) {
+            return Err(Refused::VolumeTaken {
+                name: name(),
+                volume: volume.clone(),
             }
+            .into());
         }
-        for bind in &plan.binds {
-            if std::fs::symlink_metadata(bind).is_err() {
-                return Err(format!(
-                    "{bind}, which {} binds, is not on this machine: a move takes a bind's host path shared at the same place",
-                    plan.name
-                ));
+        if let Some(bind) = plan.binds.iter().find(|b| std::fs::symlink_metadata(b).is_err()) {
+            return Err(Refused::BindAbsent {
+                name: name(),
+                path: bind.clone(),
             }
+            .into());
         }
         // Its image, by the digest its name resolved to: here, or pulled by it.
         let image = self.moved_image(&plan, asker, reply);
@@ -1321,7 +1516,7 @@ impl<D: Disk> Daemon<D> {
                 needs.files.push(file.rel.clone());
             }
         }
-        serde_json::to_string(&needs).map_err(|e| e.to_string())
+        Ok(serde_json::to_string(&needs).map_err(|e| e.to_string())?)
     }
 
     /// The plan's image here, by its ID, or pulled by the digest its name resolved to.
@@ -1794,6 +1989,7 @@ mod tests {
             image_id: format!("sha256:{}", "b".repeat(64)),
             arch: std::env::consts::ARCH.into(),
             format: shards_vmm::snapshot::FORMAT,
+            hypervisor: shards_vmm::hv::BACKEND.map(str::to_string),
             snapshot: "s1".into(),
             home: "/h".into(),
             files: vec![Backing {
@@ -1808,6 +2004,130 @@ mod tests {
             guest: false,
             baseline: Vec::new(),
         }
+    }
+
+    /// A microVM of another architecture, hypervisor or snapshot format is refused, each by
+    /// what differs, before anything else of it is asked: the architecture first, as a
+    /// machine of another has another hypervisor's VMs too. A plan of an earlier build names
+    /// no hypervisor, and is taken as before.
+    #[test]
+    fn a_microvm_of_another_hypervisor_is_refused_before_anything_moves() {
+        let (arch, format) = (std::env::consts::ARCH, shards_vmm::snapshot::FORMAT);
+        let mut kvm = plan();
+        kvm.hypervisor = Some("kvm".into());
+        assert_eq!(platform_refused(&kvm, arch, Some("kvm"), format), None);
+        let refused = platform_refused(&kvm, arch, Some("hvf"), format);
+        assert_eq!(
+            refused,
+            Some(Refused::Hypervisor {
+                name: "web".into(),
+                hypervisor: "kvm".into(),
+                here: Some("hvf".into()),
+            })
+        );
+        assert_eq!(
+            refused.map(|r| r.to_string()).as_deref(),
+            Some(
+                "web ran on KVM, and this machine runs microVMs on Hypervisor.framework: a \
+                 snapshot holds its vCPUs and interrupt controller as its hypervisor keeps them"
+            )
+        );
+        assert!(matches!(
+            platform_refused(&kvm, arch, None, format),
+            Some(Refused::Hypervisor { here: None, .. })
+        ));
+        let earlier = Plan {
+            hypervisor: None,
+            ..plan()
+        };
+        assert_eq!(platform_refused(&earlier, arch, Some("hvf"), format), None);
+        let other = if arch == "x86_64" { "aarch64" } else { "x86_64" };
+        assert!(matches!(
+            platform_refused(&kvm, other, Some("hvf"), format),
+            Some(Refused::Arch { .. })
+        ));
+        assert_eq!(
+            platform_refused(&kvm, arch, Some("kvm"), format + 1),
+            Some(Refused::Format {
+                name: "web".into(),
+                format,
+                here: format + 1,
+            })
+        );
+    }
+
+    /// A refusal goes as JSON, tagged by what refused it, and reads back as it went; its
+    /// words are those each refusal said before it was typed, which a mover of an earlier
+    /// build still prints.
+    #[test]
+    fn a_refusal_is_typed_on_the_wire_and_says_what_it_said() {
+        let all = [
+            (
+                Refused::Arch {
+                    name: "web".into(),
+                    arch: "aarch64".into(),
+                    here: "x86_64".into(),
+                },
+                "web is a aarch64 microVM, and this machine runs x86_64 microVMs",
+            ),
+            (
+                Refused::Format {
+                    name: "web".into(),
+                    format: 28,
+                    here: 29,
+                },
+                "web was saved in snapshot format 28, and this machine's shards reads 29",
+            ),
+            (
+                Refused::Cpu {
+                    name: "web".into(),
+                    short: vec![CpuShort::Field {
+                        reg: 0xc032,
+                        shift: 52,
+                        guest: 1,
+                        here: 0,
+                    }],
+                },
+                "this CPU has less of what its guest uses: ID_AA64ISAR2_EL1[55:52] 1 here 0 (the \
+                 guest's level, then this host's), which web's CPU baseline names",
+            ),
+            (
+                Refused::Features {
+                    name: "web".into(),
+                    lacks: vec!["FEAT_CSSC".into(), "FEAT_HBC".into()],
+                },
+                "this machine's CPU lacks FEAT_CSSC, FEAT_HBC, which web's guest may have used where it ran",
+            ),
+            (
+                Refused::IdTaken { name: "web".into() },
+                "a microVM with web's ID is here already",
+            ),
+            (
+                Refused::NameTaken { name: "web".into() },
+                "a microVM named web is here already",
+            ),
+            (
+                Refused::VolumeTaken {
+                    name: "web".into(),
+                    volume: "data".into(),
+                },
+                "a volume named data is here already, and web's would move here",
+            ),
+            (
+                Refused::BindAbsent {
+                    name: "web".into(),
+                    path: "/srv".into(),
+                },
+                "/srv, which web binds, is not on this machine: a move takes a bind's host path shared at the same place",
+            ),
+        ];
+        for (refused, said) in all {
+            let json = serde_json::to_string(&refused).unwrap();
+            assert_eq!(serde_json::from_str::<Refused>(&json).unwrap(), refused, "{json}");
+            assert_eq!(refused.to_string(), said);
+        }
+        let json = serde_json::to_string(&Refused::NameTaken { name: "web".into() }).unwrap();
+        assert_eq!(json, r#"{"refused":"name-taken","name":"web"}"#);
     }
 
     /// A baseline masks the features of the registers it names, which the move checks by

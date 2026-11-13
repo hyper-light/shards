@@ -1,0 +1,32 @@
+2026-11-13T01:45:13.9329140Z      Running tests/nesting.rs (target/aarch64-apple-darwin/test-release/deps/nesting-813b2d2f8d64f942)
+2026-11-13T01:45:13.9330780Z test common::port_probe ... ignored, a process of its own for port_free and hold_port, which run it
+2026-11-13T01:45:13.9332730Z test live_move_downtime ... ignored, a measurement, run by docs/research/measurements/migrate
+2026-11-13T01:45:13.9334250Z test a_volume_shared_here_moves_with_one_and_the_other_goes_on_here ... ok
+2026-11-13T01:45:13.9335490Z test a_volumes_guest_owners_move_with_it ... ok
+2026-11-13T01:45:13.9336240Z 
+2026-11-13T01:45:13.9337020Z test result: ok. 10 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s
+2026-11-13T01:45:13.9338080Z 
+2026-11-13T01:45:13.9952670Z 
+2026-11-13T01:45:13.9954400Z SKIP: Hypervisor.framework is unavailable on this host (sysctl kern.hv_support is not 1), as inside a VM without nested virtualization
+2026-11-13T01:45:13.9961270Z running 10 tests
+2026-11-13T01:45:13.9962350Z SKIP: Hypervisor.framework is unavailable on this host (sysctl kern.hv_support is not 1), as inside a VM without nested virtualization
+2026-11-13T01:45:13.9977740Z test a_deadline_given_through_shards_api_is_met_or_said_passed ... ok
+2026-11-13T01:45:13.9978510Z SKIP: Hypervisor.framework is unavailable on this host (sysctl kern.hv_support is not 1), as inside a VM without nested virtualization
+2026-11-13T01:45:13.9979250Z test a_granted_commands_runtime_makes_boxes_in_its_own_subtree ... ok
+2026-11-13T01:45:13.9995470Z SKIP: Hypervisor.framework is unavailable on this host (sysctl kern.hv_support is not 1), as inside a VM without nested virtualization
+2026-11-13T01:45:13.9996480Z SKIP: Hypervisor.framework is unavailable on this host (sysctl kern.hv_support is not 1), as inside a VM without nested virtualization
+2026-11-13T01:45:13.9997300Z SKIP: Hypervisor.framework is unavailable on this host (sysctl kern.hv_support is not 1), as inside a VM without nested virtualization
+2026-11-13T01:45:13.9998120Z SKIP: Hypervisor.framework is unavailable on this host (sysctl kern.hv_support is not 1), as inside a VM without nested virtualization
+2026-11-13T01:45:13.9999010Z SKIP: Hypervisor.framework is unavailable on this host (sysctl kern.hv_support is not 1), as inside a VM without nested virtualization
+2026-11-13T01:45:13.9999840Z SKIP: Hypervisor.framework is unavailable on this host (sysctl kern.hv_support is not 1), as inside a VM without nested virtualization
+2026-11-13T01:45:14.0001050Z      Running tests/plug.rs (target/aarch64-apple-darwin/test-release/deps/plug-b705b9e8abda37e5)
+2026-11-13T01:45:14.0001700Z test a_granted_run_ends_with_its_command_and_its_boxes_with_it ... ok
+2026-11-13T01:45:14.0002290Z test a_granted_runs_boxes_reach_its_gpu_as_their_rules_and_its_own_say ... ok
+2026-11-13T01:45:14.0002760Z test a_granted_workload_is_held_to_its_subtree ... ok
+2026-11-13T01:45:14.0003180Z test a_granted_workload_still_reaches_no_host_port_over_vsock ... ok
+2026-11-13T01:45:14.0003710Z test common::port_probe ... ignored, a process of its own for port_free and hold_port, which run it
+2026-11-13T01:45:14.0004230Z test a_granted_workloads_readiness_reaches_the_host ... ok
+2026-11-13T01:45:14.0004660Z test an_exec_takes_the_commands_grant_and_a_joiner_is_refused ... ok
+2026-11-13T01:45:14.0005060Z test no_box_is_made_without_both_words_or_beside_a_domain ... ok
+2026-11-13T01:45:14.0005310Z 
+2026-11-13T01:45:14.0005530Z test result: ok. 9 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s

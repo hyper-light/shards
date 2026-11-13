@@ -1,0 +1,28 @@
+# Extra: Claude Code's own sandbox credential masking (sentinel substitution through a TLS-terminating proxy, for sandboxed Bash commands) and undocumented host-auth variable names, on BIN=$B = linux-x64 claude 2.1.311 (sha256 86dc1fcc69498159eaf15f446613e847010f9036bfbbdffd4c49350be8489ada), searched only, never executed.
+# B=/var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/tmp.cvKZio0ayi/claude
+# GG=/opt/homebrew/bin/ggrep
+## command: LC_ALL=C $GG -a -o -b -E 'function IH\(e\)\{return e\.every\(\(n\)=>n\.sentinel\.length===n\.realValue\.length\)\}' "$B"
+245922269:function IH(e){return e.every((n)=>n.sentinel.length===n.realValue.length)}
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'request body has Content-Encoding .{0,80}masked-credential .\+.substitution skipped .{0,90}' "$B" | LC_ALL=C tr -c '[:print:]\n' '.'
+245922613:request body has Content-Encoding "${String(n.headers["content-encoding"])}"; masked-credential `+"substitution skipped \u2014 a sentinel in this body reaches the "+"upstream as the fake value",{level:"warn"});
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'sentinelsForHost\(e,n\)\{let r=\[\];for\(let s of this\.bySentinel\.values\(\)\)\{if\(!s\.injectHosts\.some\(\(h\)=>n\(e,h\)\)\)continue;' "$B"
+245964569:sentinelsForHost(e,n){let r=[];for(let s of this.bySentinel.values()){if(!s.injectHosts.some((h)=>n(e,h)))continue;
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'e\.leafKeyPair\?\?\(e\.leafKeyPair=Zm\.rsa\.generateKeyPair\(2048\)\)' "$B"
+245923636:e.leafKeyPair??(e.leafKeyPair=Zm.rsa.generateKeyPair(2048))
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'h\.setExtensions\(\[\{name:"basicConstraints",cA:!1,critical:!0\}' "$B"
+245923917:h.setExtensions([{name:"basicConstraints",cA:!1,critical:!0}
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'Credential injection only runs on TLS-terminated connections' "$B" | awk -F: '$1>=115363840' | head -2
+127168854:Credential injection only runs on TLS-terminated connections
+127169277:Credential injection only runs on TLS-terminated connections
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'CLAUDE_CODE_HOST_AUTH_ENV_VAR:\(\)=>[A-Za-z]+,CLAUDE_CODE_HOST_AUTH_REFRESH_TIMEOUT_MS:\(\)=>[A-Za-z]+,CLAUDE_CODE_HOST_CREDS_FILE:\(\)=>[A-Za-z]+' "$B"
+238969327:CLAUDE_CODE_HOST_AUTH_ENV_VAR:()=>Wt,CLAUDE_CODE_HOST_AUTH_REFRESH_TIMEOUT_MS:()=>Kt,CLAUDE_CODE_HOST_CREDS_FILE:()=>Yt
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'readHostCredsFile failed' "$B" | awk -F: '$1>=238000000' | head -1
+243118517:readHostCredsFile failed
+## end

@@ -1,0 +1,40 @@
+{
+  "draft": "draft-ietf-tls-svcb-ech-08",
+  "doc_id": "RFC9848",
+  "title": "Bootstrapping TLS Encrypted ClientHello with DNS Service Bindings",
+  "authors": [
+    "B. Schwartz",
+    "M. Bishop",
+    "E. Nygren"
+  ],
+  "format": [
+    "XML",
+    "TEXT",
+    "HTML",
+    "PDF"
+  ],
+  "page_count": "9",
+  "pub_status": "PROPOSED STANDARD",
+  "status": "PROPOSED STANDARD",
+  "source": "Transport Layer Security",
+  "abstract": "To use TLS Encrypted ClientHello (ECH), the client needs to learn the ECH configuration for a server before it attempts a connection to the server.  This specification provides a mechanism for conveying the ECH configuration information via DNS, using a SVCB or HTTPS resource record (RR).",
+  "pub_date": "March 2026",
+  "keywords": [
+    "ech SvcParamKey",
+    "ech SvcParam",
+    "ECH",
+    "SVCB",
+    "HTTPS Resource Records",
+    "TLS SNI",
+    "Encrypted SNI",
+    "Server Name Indication",
+    "Encrypted Server Name Indication"
+  ],
+  "obsoletes": [],
+  "obsoleted_by": [],
+  "updates": [],
+  "updated_by": [],
+  "see_also": [],
+  "doi": "10.17487/RFC9848",
+  "errata_url": null
+}
