@@ -1,0 +1,128 @@
+r23: goal 71's CI cluster 9, engine_ring's light checks (no VM), through the carrier's run.sh
+(this directory's cure-g71-red-*.patch are its red patches). Host adalundhe-macbook-pro, macOS
+26.5.2 arm64, 18 CPUs, rustc 1.98.1 (48a229cea 2026-09-01); a blobless clone of
+https://github.com/hyper-light/shards, the lane's commits from a git bundle, detached at the
+commit named; CARGO_TARGET_DIR=~/g121-tmp/g71-ring/target, CARGO_INCREMENTAL=0, nice -n 10,
+SHARDS_HELPERS=skip, SHARDS_INIT_BINARY and SHARDS_SERVER_BINARY empty placeholders.
+
+Each run, in order:
+  green:  cargo test -p shards --profile test-release --test engine_ring -- a_settle_of the_held_connections_wait
+  each red patch applied (git apply), the same command, then git checkout of engine_ring.rs
+  cargo test -p shards-api --profile test-release --lib a_pause_weighs
+  cargo clippy -p shards-api -p shards --all-targets -- -D warnings
+Shown: each run's exit and its test lines, as run.sh greps them from the run's whole log.
+
+== kiln run r246, at ca185963f (the first commit): compile errors (engine_ring.rs had an enum
+   Kind already, the budget's; this lane's type alias renamed SettleKind), and shards-api's
+   a_pause_weighs passed. Not evidence of the tests; kept as what ran.
+
+== kiln run r291, at 5f129b93d (the cure's commit before the merge)
+== green (16:15:38Z) exit 0
+test the_held_connections_wait_reads_a_word_its_log_keeps ... ok
+test a_settle_of_a_size_not_yet_seen_follows_its_liveness_whatever_other_kinds_answered ... ok
+test a_settle_of_a_kind_seen_is_refused_a_whole_w_star_after_its_last_freed_slot ... ok
+test a_settle_of_a_kind_seen_goes_on_past_w_star_while_its_slots_are_freed ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.36s
+== red-main-window exit 101
+test a_settle_of_a_size_not_yet_seen_follows_its_liveness_whatever_other_kinds_answered ... FAILED
+  left: Err(Stalled { now: 21, want: 0, stall: Stall { waited: 191166667, over: 191166667, least: [0, 176722000], slowest: 176722000 } })
+test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.35s
+== red-sizes-shared exit 101
+test a_settle_of_a_size_not_yet_seen_follows_its_liveness_whatever_other_kinds_answered ... FAILED
+  left: Err(Stalled { now: 21, want: 0, stall: Stall { waited: 42413083, over: 42413083, least: [0, 13520042], slowest: 24172333 } })
+test a_settle_of_a_kind_seen_is_refused_a_whole_w_star_after_its_last_freed_slot ... FAILED (engine_ring.rs:930, its lookup of its record by kind)
+test a_settle_of_a_kind_seen_goes_on_past_w_star_while_its_slots_are_freed ... FAILED (engine_ring.rs:963, likewise)
+test result: FAILED. 1 passed; 3 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.10s
+== red-held-attached-still exit 101
+test the_held_connections_wait_reads_a_word_its_log_keeps ... FAILED (engine_ring.rs:1018, assert!(held_attached(&r, 3)))
+test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.28s
+== api-pause exit 0: test client::tests::a_pause_weighs_the_dials_cost_against_lateness ... ok (1 passed)
+== clippy exit 0 (16:16:40Z to 16:16:56Z)
+
+== kiln run r313, at 5bd87fcae (5f129b93d's test reworked, then merged with origin/main b6cb15f6e)
+== green exit 0: 4 passed; finished in 0.71s
+== red-main-window exit 0: 4 passed; finished in 0.66s (it rebuilt: "Compiling shards v0.7.0 ... in 1.87s")
+   Finding: the HVF test's loop looked only while its time was within 206.907 ms, so a pause
+   that ended past it, its judged look still to come, left the seeded rule unjudged, and the
+   last look (0 pages) answered first. The test's guard hung on a pause's lateness. Cured
+   before landing: its last look begins past 206.907 ms, however late a pause ends.
+== red-sizes-shared exit 101: the HVF test FAILED at its own lookup of the other kinds'
+   records (engine_ring.rs:890, indexing), not at a refusal; cured with the rest: the lookup
+   reads `records.get`.
+== red-held-attached-still exit 101: the_held_connections_wait_reads_a_word_its_log_keeps FAILED (engine_ring.rs:1018)
+== api-pause exit 0 (1 passed); clippy exit 0
+
+== kiln run r327, at b97d37664 (the reworked commit 3c93f59e9 merged with origin/main d9f759025)
+== green (16:23:31Z) exit 0 (16:24:31Z)
+test the_held_connections_wait_reads_a_word_its_log_keeps ... ok
+test a_settle_of_a_size_not_yet_seen_follows_its_liveness_whatever_other_kinds_answered ... ok
+test a_settle_of_a_kind_seen_is_refused_a_whole_w_star_after_its_last_freed_slot ... ok
+test a_settle_of_a_kind_seen_goes_on_past_w_star_while_its_slots_are_freed ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.41s
+== red-main-window (16:24:31Z) exit 101 (16:24:34Z)
+test the_held_connections_wait_reads_a_word_its_log_keeps ... ok
+test a_settle_of_a_kind_seen_goes_on_past_w_star_while_its_slots_are_freed ... ok
+test a_settle_of_a_kind_seen_is_refused_a_whole_w_star_after_its_last_freed_slot ... ok
+test a_settle_of_a_size_not_yet_seen_follows_its_liveness_whatever_other_kinds_answered ... FAILED
+thread 'a_settle_of_a_size_not_yet_seen_follows_its_liveness_whatever_other_kinds_answered' panicked at crates/shards/tests/engine_ring.rs:903:13:
+  left: Err(Stalled { now: 21, want: 0, stall: Stall { waited: 223160791, over: 223160791, least: [0, 176722000], slowest: 176722000 } })
+test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.28s
+== red-sizes-shared (16:24:34Z) exit 101 (16:24:37Z)
+test the_held_connections_wait_reads_a_word_its_log_keeps ... ok
+test a_settle_of_a_kind_seen_is_refused_a_whole_w_star_after_its_last_freed_slot ... FAILED
+thread 'a_settle_of_a_kind_seen_is_refused_a_whole_w_star_after_its_last_freed_slot' panicked at crates/shards/tests/engine_ring.rs:935:56: (its lookup of its record by kind, which the patch moves)
+test a_settle_of_a_size_not_yet_seen_follows_its_liveness_whatever_other_kinds_answered ... FAILED
+thread 'a_settle_of_a_size_not_yet_seen_follows_its_liveness_whatever_other_kinds_answered' panicked at crates/shards/tests/engine_ring.rs:900:13:
+  left: Err(Stalled { now: 21, want: 0, stall: Stall { waited: 21608750, over: 21608750, least: [0, 19210000], slowest: 21092500 } })
+test a_settle_of_a_kind_seen_goes_on_past_w_star_while_its_slots_are_freed ... FAILED
+thread 'a_settle_of_a_kind_seen_goes_on_past_w_star_while_its_slots_are_freed' panicked at crates/shards/tests/engine_ring.rs:968:56: (likewise)
+test result: FAILED. 1 passed; 3 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.09s
+== red-held-attached-still (16:24:37Z) exit 101 (16:24:40Z)
+test the_held_connections_wait_reads_a_word_its_log_keeps ... FAILED
+thread 'the_held_connections_wait_reads_a_word_its_log_keeps' panicked at crates/shards/tests/engine_ring.rs:1023:5: (assert!(held_attached(&r, 3)))
+test a_settle_of_a_size_not_yet_seen_follows_its_liveness_whatever_other_kinds_answered ... ok
+test a_settle_of_a_kind_seen_is_refused_a_whole_w_star_after_its_last_freed_slot ... ok
+test a_settle_of_a_kind_seen_goes_on_past_w_star_while_its_slots_are_freed ... ok
+test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.43s
+== api-pause (16:24:40Z) exit 0 (16:24:41Z)
+test client::tests::a_pause_weighs_the_dials_cost_against_lateness ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 165 filtered out; finished in 0.00s
+== clippy (16:24:41Z) exit 0 (16:25:00Z)
+
+== kiln run r341, at 4130e0725 (main moved: b97d37664 and the record's commit c0472af14 merged with
+   origin/main b87c0ce19)
+== green (16:27:25Z) exit 0 (16:28:53Z)
+test the_held_connections_wait_reads_a_word_its_log_keeps ... ok
+test a_settle_of_a_size_not_yet_seen_follows_its_liveness_whatever_other_kinds_answered ... ok
+test a_settle_of_a_kind_seen_goes_on_past_w_star_while_its_slots_are_freed ... ok
+test a_settle_of_a_kind_seen_is_refused_a_whole_w_star_after_its_last_freed_slot ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.37s
+== red-main-window (16:28:53Z) exit 101 (16:29:01Z)
+test a_settle_of_a_size_not_yet_seen_follows_its_liveness_whatever_other_kinds_answered ... FAILED (engine_ring.rs:903:13)
+  left: Err(Stalled { now: 21, want: 0, stall: Stall { waited: 220651625, over: 220651625, least: [0, 176722000], slowest: 176722000 } })
+test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.29s
+== red-sizes-shared (16:29:01Z) exit 101 (16:29:07Z)
+test a_settle_of_a_size_not_yet_seen_follows_its_liveness_whatever_other_kinds_answered ... FAILED (engine_ring.rs:900:13)
+  left: Err(Stalled { now: 21, want: 0, stall: Stall { waited: 12757333, over: 12757333, least: [0, 6010875], slowest: 12263833 } })
+test a_settle_of_a_kind_seen_goes_on_past_w_star_while_its_slots_are_freed ... FAILED (engine_ring.rs:968:56, its lookup of its record by kind)
+test a_settle_of_a_kind_seen_is_refused_a_whole_w_star_after_its_last_freed_slot ... FAILED (engine_ring.rs:935:56, likewise)
+test result: FAILED. 1 passed; 3 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.11s
+== red-held-attached-still (16:29:07Z) exit 101 (16:29:12Z)
+test the_held_connections_wait_reads_a_word_its_log_keeps ... FAILED (engine_ring.rs:1023:5, assert!(held_attached(&r, 3)))
+test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.36s
+== api-pause (16:29:12Z) exit 0 (16:29:19Z): test client::tests::a_pause_weighs_the_dials_cost_against_lateness ... ok (1 passed; 165 filtered out)
+== clippy (16:29:19Z) exit 0 (16:29:42Z)
+
+== Main moved twice more before the push. 75761254e merged 4506d5268 (D185 on Windows: crates/ipc's
+   #[cfg(windows)] pipe and named-slot modules, a Windows-target windows-sys feature, docs), which no
+   macOS build compiles; e072a886f merged f6d6f7da2 (crates/shards/src/workload.rs and
+   workload/capture.rs), and the run was made again there.
+== kiln run r351, at e072a886f: landed (main f6d6f7da2..e072a886f, fast-forward)
+== green (16:30:57Z) exit 0 (16:31:52Z): 4 passed; 0 failed; 6 filtered out; finished in 0.38s
+== red-main-window exit 101: the HVF test FAILED (engine_ring.rs:903:13)
+  left: Err(Stalled { now: 21, want: 0, stall: Stall { waited: 222753292, over: 222753292, least: [0, 176722000], slowest: 176722000 } })
+== red-sizes-shared exit 101: the HVF test FAILED (engine_ring.rs:900:13)
+  left: Err(Stalled { now: 21, want: 0, stall: Stall { waited: 9221542, over: 9221542, least: [0, 7543875], slowest: 8592458 } })
+  and the two learned-kind tests at their lookups by kind (engine_ring.rs:935:56, 968:56)
+== red-held-attached-still exit 101: the_held_connections_wait_reads_a_word_its_log_keeps FAILED (engine_ring.rs:1023:5)
+== api-pause exit 0 (1 passed); clippy exit 0 (16:32:02Z to 16:32:19Z)

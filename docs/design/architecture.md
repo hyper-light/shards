@@ -7183,6 +7183,47 @@ and pinned memory, on KVM x86_64 and arm64, HVF, WHP x86_64 and arm64.
 
 **Review (plan step 2):** [ring-pins-v1/review.md](../research/measurements/ring-pins-v1/review.md) (F1 fixed, b81d707a9; F2 fixed by ROOT, a6edfb8e9; F3 cured, 6557c8597, and F4, a2c887eeb: its "Cures, F3 and F4", with the real-VM runs F4 owes; F5, a failed slot's room given back without moving `room_gen`, cured: its "Cures, F5").
 
+**The pins E2E's waits** (goal 71's CI cluster 9, 2026-11-13; review.md "Cures, goal 71"). They
+follow the person's ruling of 2026-11-13: "No record seeds. The cold start, and every wait after
+a run-out, follows the party's liveness and progress. After that the bound is the slowest answer
+seen. No ×2."
+- *The settle*, the wait for a guest's pinned pages to come back to what it pinned idle once the
+  device has let go of every ring, is D215's judge, shared, its progress a slot freed (the pins
+  at a new low).
+  - Its kind is a work (the setup's connections, one at a time, or the streams', V at once and
+    then 2V) at a microVM's vCPU count, each kind's record its own, in the test's memory. The
+    release is as large as the slots the work leaves the relay and as quick as the vCPUs that
+    run the relay's streams free them, and the work and the size set both.
+  - A kind not yet seen follows its microVM's liveness alone: each look an exec it answers, one
+    unanswered failing the test. A kind seen is looked at once each W* and refused where no slot
+    was freed since the look before. In one run each kind settles once, so each settle is a cold
+    start.
+  - Its looks are paced by D215's `sqrt(2 c w)` (`shards_api::pause`, shared), `c` a look's own
+    time. Its progress is told on stderr as it comes, and each settle's time is reported per
+    size.
+  - It was refused before once a window as long as its own work had passed with no slot freed
+    (a2c887eeb), a seed of no answer of its own. At dc7f45bc6 on HVF that refused 18 vCPUs, 21
+    pages pinned 207 ms into their settle where their streams had taken 177 ms, after 1 and 2
+    vCPUs had passed. Nothing on the ring's path changed between HVF's green batch at 9483b5a84
+    and that run (init's ring.rs and engine.rs, the vsock device, the ABI's ring.rs, the test
+    guest's engine_bulk.rs, engine_ring.rs and tests/common/mod.rs), and the test's binary ran
+    its tests at once, as libtest does.
+- *Its gap.* A slot never freed while its microVM lives is not refused on its kind's first
+  settle: its looks go on, ever further apart, its last progress told, until its caller ends it.
+  A learned settle's looks read the guest's pins alone, not its host's hold on its VM process,
+  which shards-api's followers read privately. So a host that held the relay's vCPUs for a whole
+  W* would refuse it.
+- *The held connection* of the give-back and shrinking-room tests is awaited by the device's word
+  that its ring attached, which the log keeps, not by its ring attached still, which a give-back
+  ends. At f5c0c8b04 (CI run 43435318858, x86_64-unknown-linux-gnu) the daemon's give-back for
+  its runner's own memory pressure let it go 31 ms after it attached, between two looks, and the
+  test waited 600 s. Each test now checks that its ring was not let go before it asks for the
+  slot. The shrinking-room test hears its host's pressure only through a pipe of its own, never
+  said, as the give-back test does; `common::Told` is named per instance on Windows, so both live
+  at once.
+- Owed to ROOT, on real VMs: the four E2E tests on HVF arm64 (the pins test at 1, 2 and every CPU
+  of the host), KVM x86_64 (glibc and musl jobs), KVM arm64 through L1 and WHP x86_64.
+
 ### D183. `--cgroup-parent`: a microVM's processes under a slice of the user's service manager (slices 1, 2 and 3 built)
 
 Decided by the user on 2026-10-14 ("so long as they apply appropriately to microvms").
@@ -27210,8 +27251,15 @@ seen on real runs:
   could not send its orchestrator ends it `Failed`, saying so. A credit it could not pass to
   its VM's capture ends nothing: that capture closes as its VM ends, before its `DONE` can
   come, and killing the VM for it put a failure where the VM's own end belonged (WHP at
-  3a05bc3f1). The host says the first such credit on its stderr, which shows why a run whose
-  output stops while its VM runs on stopped; its `STOP` still ends that run. Each failed end is
+  3a05bc3f1). The host says the first such credit on its stderr. A capture whose relay breaks
+  while its VM runs on (its owner's frames or its guest's refused, or the relay's own failure)
+  is the VM's to end: the relay ends the run's connection and keeps why, and the VM fails the
+  run in those words (`UNSERVED`, below; capture.rs `relay_ending`), where before its output
+  stopped and the run waited for its owner's `STOP`. A side's end of its connection ends
+  nothing of the run: its guest's, as its run ends; its owner's, which its owner ends the run
+  for, or its `STOP_ORDER` where its owner is gone, whose grace the run keeps. Owed (goal 75's
+  survey): api-run's reader of the capture lets go of its own copy alone on a record it cannot
+  take, and the daemon ends its owner at its own failure, each leaving the run to its `STOP`. Each failed end is
   said on the host's stderr too. An end the VM said
   first (its `DONE` came) stands, whatever the asks did meanwhile. Frames are read in place
   and wiped as they go (D242's channel), and a lease's answer is served from its frame.
@@ -27245,6 +27293,13 @@ No other.
   19e122a2a: both failed. As built, `cargo test -p shards-api --lib image::` passed 56 of 56.
 - `shards-ipc every_message_kind_has_its_own_number`, and clippy `-D warnings` for shards,
   shards-api, shards-vm-process and shards-ipc, all targets: clean.
+- The capture relay's typed end: shards-vm-process
+  `workload::capture::tests::a_relay_that_breaks_mid_run_ends_its_run_saying_why` (a relay
+  whose owner gives a channel's credit twice ends the run's connection and keeps "duplicate or
+  closed managed credit"; one whose guest, or whose owner, ends its side ends nothing). Red at
+  a0e12422e: failed ("a relay that broke left its run's connection open"). As built,
+  `cargo test -p shards-vm-process --bin shards-vm workload::` passed 39 of 39; clippy for
+  shards-vm-process, all targets, clean.
 
 **Owed** (ROOT).
 - The real-VM suites on HVF, KVM and WHP: api_image whole, member_exec, and boot.rs
