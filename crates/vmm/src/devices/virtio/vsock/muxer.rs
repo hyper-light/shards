@@ -1615,6 +1615,12 @@ mod tests {
     /// end of it having written data the guest took none of: the muxer, the host's end and
     /// the guest's memory.
     fn spoken() -> (Muxer, crate::platform::UnixStream, GuestMemory) {
+        spoken_after(b"stdin")
+    }
+
+    /// [`spoken`]'s connection, the host's end having written `host_sent` first, which the
+    /// muxer has not read.
+    fn spoken_after(host_sent: &[u8]) -> (Muxer, crate::platform::UnixStream, GuestMemory) {
         let (sender, arrived) = std::sync::mpsc::channel();
         let host = VsockHost {
             path: None,
@@ -1627,7 +1633,7 @@ mod tests {
         m.on_guest_packet(&request(54, 49_152), &[], &mem);
         assert_eq!(m.next_rx(&[]).map(|h| h.op), Some(op::RESPONSE));
         let mut theirs = arrived.try_recv().unwrap();
-        theirs.write_all(b"stdin").unwrap();
+        theirs.write_all(host_sent).unwrap();
         mem.access().unwrap().write(0x8000_0000, SAID).unwrap();
         let output = Span {
             gpa: 0x8000_0000,
@@ -1769,6 +1775,49 @@ mod tests {
             // unread, reads as a reset (PM M358).
             let (_, end) = read_out(&mut theirs);
             assert_eq!(end, Some(io::ErrorKind::ConnectionReset));
+        }
+    }
+
+    /// D251's cut with nothing of the host's unread, as a workload that read all its
+    /// controller sent, then closed: the host still finds a cut, never an end in order. On
+    /// Unix it reads an end hung up (POLLHUP, PM M559). On Windows a socket closed with
+    /// nothing of its peer's unread reads as end-of-stream (PM M358's first row), which the
+    /// VM process's relay passes on as a half-close (`warm.rs` `pass`): the cut closes with
+    /// a reset instead, so its host reads `ConnectionReset`, after a prefix of what the
+    /// guest sent at most (a cut promises no byte before it).
+    #[test]
+    fn a_guest_gone_both_ways_with_nothing_of_its_hosts_unread_is_a_cut() {
+        use super::super::packet::shutdown;
+        let (mut m, mut theirs, mem) = spoken_after(b"");
+        guest_shuts(&mut m, shutdown::RCV | shutdown::SEND, &mem);
+        assert_eq!(m.next_rx(&[]).map(|h| h.op), Some(op::RST));
+        assert!(m.conns.is_empty(), "the guest's connection is over");
+        let (got, end) = read_out(&mut theirs);
+        assert!(SAID.starts_with(&got), "{got:?}");
+        #[cfg(unix)]
+        {
+            assert_eq!(got, SAID, "what the guest sent, whole");
+            assert_eq!(end, None, "end-of-stream, nothing of the host's unread");
+            let mut fd = libc::pollfd {
+                fd: std::os::fd::AsRawFd::as_raw_fd(&theirs),
+                events: libc::POLLOUT,
+                revents: 0,
+            };
+            // SAFETY: one pollfd of a socket this test holds; a timeout of 0 waits for none.
+            assert!(unsafe { libc::poll(&raw mut fd, 1, 0) } >= 0);
+            assert_ne!(fd.revents & (libc::POLLHUP | libc::POLLERR), 0, "hung up");
+        }
+        #[cfg(windows)]
+        {
+            assert!(
+                m.lingering.is_empty(),
+                "a cut holds the host's socket for nothing"
+            );
+            assert_eq!(
+                end,
+                Some(io::ErrorKind::ConnectionReset),
+                "a cut read as an end in order"
+            );
         }
     }
 

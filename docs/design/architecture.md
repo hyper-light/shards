@@ -24448,22 +24448,51 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
     (`POSIX_SPAWN_SETSID`), and shards-api's every kill of a host (a stop, its patience, its
     pools, a `stop` whose host cannot be asked) is SIGKILL to that group: its VM, network and
     share processes are its children in it (api-run starts none detached), so none outlives
-    it, not even a VM booting that has not yet looked at its link. On Windows the host
-    alone is ended, and its job, whose last handle it holds with
-    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, ends them as it ends (D141, D197). A terminal's
-    signals to the orchestrator's process group no longer reach its run hosts; a run still
-    ends with its orchestrator, its stdin closing.
+    it, not even a VM booting that has not yet looked at its link. On Windows the run host
+    is made in a job of shards-api's own (`shards_ipc::spawn_grouped`, its group), nested
+    under any job the orchestrator is in; the host's own job (JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    D141, D197) and the VM's confined Job nest under it ("Nested Jobs", Windows 8 and later:
+    a child process is associated with every job in its parent's chain), and as the group's
+    job sets no JOB_OBJECT_LIMIT_BREAKAWAY_OK, nothing the host starts leaves it. Every kill
+    of a host is `kill_group`: each process in the group's job held first (OpenProcess,
+    checked as still the job's by IsProcessInJob, so a freed and reused ID is never waited
+    on), then TerminateJobObject, which ends the job's nested jobs' processes too, and those
+    made between the two held after. A terminal's signals to the orchestrator's process group
+    no longer reach its run hosts; a run still ends with its orchestrator, its stdin closing.
   - *Followed, not timed* (D215, D217): the boot returns once the host has exited and been
     reaped, its answers ended, and its diagnostics' pipe closed by every process holding it,
-    the VM, network and share processes among them, as their stderr.
+    the VM, network and share processes among them, as their stderr. On Windows that pipe's
+    end says nothing of its holders' ends: a process closes its handles as it exits, before
+    its handle is signalled, and TerminateJobObject, "as if TerminateProcess were called for
+    each process", "initiates termination and returns immediately"; to "be sure the process
+    has terminated", its handle is waited on (TerminateProcess's documentation). WHP at
+    21c59efa7 (jupiter, Windows 11 x86_64): the stand-in's stop returned `Ended(Stopped)`
+    after 0.02 s with its VM's handle not yet signalled, though its pipe had ended (`the VM
+    in its run host's job outlived the boot's stop`). So first `Child::end_group` follows
+    the group: rounds of TerminateJobObject, holding each process in the job not held yet,
+    and waiting on every handle held, until a round holds none new and the job's
+    ActiveProcesses (JOBOBJECT_BASIC_ACCOUNTING_INFORMATION) is 0. No literal: each round
+    waits on processes whose termination has begun, the progress D215 judges by, and goes
+    again only where a process joined the job meanwhile. A process it cannot open or ask
+    about is refused `Os` ("the stopped run's processes"), never reported `Stopped`. What is
+    left: a process made into the job after `kill_group`'s second hold that had exited by
+    `end_group`'s first is counted out of ActiveProcesses but never held, so its handle's
+    signal is not waited on; Windows offers no handle-based list of a job's processes, and
+    its completion port's JOB_OBJECT_MSG_NEW_PROCESS is not guaranteed delivery
+    (JOBOBJECT_ASSOCIATE_COMPLETION_PORT), so neither closes it.
   - *Tested* (unit, stand-in run hosts, `image::session`'s tests): one that starts a VM of its
     own that never looks at its host and never says its run started, stopped mid-boot,
     returns `Ended(Stopped)` well within its bound, its host and that VM gone; one never
     answering is refused as before (`Boot`, not started within its patience); one stopped
     first ends `Stopped`. Red on 83db267f2 (each boot waited out its bound, the VM outlived
-    it), green with the stop. **Owed** (ROOT): a stop mid-boot of a real microVM on KVM,
-    Hypervisor.framework and WHP (`crates/shards/tests/api_image.rs`), with no VM, network
-    or share process left; the Windows stand-in (the unit tests are Unix's).
+    it), green with the stop. The Windows stand-in
+    (`a_stop_mid_boot_ends_the_boot_its_host_and_the_vm_of_its_job`, a test binary that is
+    its own run host and VM) was red on WHP at 21c59efa7, as above; `shards_ipc`'s
+    `a_groups_end_follows_every_process_of_it_to_its_end` holds `end_group` to a grouped
+    cmd and the ping it starts. The real-VM twin
+    (`a_stop_mid_boot_ends_the_run_host_and_every_process_of_its_run`) passed 1/1 on WHP,
+    HVF and KVM. **Owed** (ROOT): both Windows tests on WHP with `end_group`, and the
+    real-VM twin (`crates/shards/tests/api_image.rs`) again on WHP with the host grouped.
 - *The run's own command* is the orchestrator's, or `builtin::ATTEND`: the standby holds,
   the members start.
 - *Its end* (`RunEnd`): `Exited` with the status its own command or `ATTEND`'s holder ended
@@ -25411,7 +25440,17 @@ has taken the pinned key, as many at once as the endpoint's stream limit allows;
 `Handler::available`. Each lane's handle is step 5's client of its stream:
 - *An output* (`control::Output`): `next_record` gives its records in order. Asking for the next
   acknowledges the one before, since step 5 acknowledges a record only once its owner has it
-  whole. `Got::Finished` comes once the output has finished.
+  whole. `Got::Finished` comes once the output has finished. The admission its endpoint
+  announced (the run's metadata `capacity`) is where its records start, not their bound: the
+  endpoint grows a stream's record as the daemon's learner asks (`managed::Producer::admit`,
+  QUIC's window as it was), so a lane reads a record up to the managed wire's own bound, one
+  frame's (`managed::RECORD_MOST`, `frame::MAX_FRAME` less the record's offset), its buffer
+  reserved at the admitted record and grown, fallibly, to what comes; one past that bound
+  breaks the protocol. A lane that held the first admission as its bound closed the connection
+  `Protocol` once an owned output's record grew (ROOT's KVM run of `log_lanes`, 2026-11-13;
+  `control::tests::lanes::a_record_grown_past_the_admitted_one_is_had_whole`). What an owned
+  output's records carry is the guest's capture record whole (`run::managed::Record`), which
+  its owner decodes.
 - *A stdin* (`control::Input`): `write` sends one record within the endpoint's room and returns once
   it is taken. The driver checks each taken against the protocol: it falls where the record ends,
   or, the first after a subscription, at or past its cursor, which counts the bytes an earlier
@@ -27915,10 +27954,15 @@ Hex's acceptance (its INTERFACE.md and red tests, step11-a-socket-lane) is held 
     the guest's SHUTDOWN(RCV) while the host's way is open (no host end-of-stream read) and
     its SEND not ended in an earlier packet is a cut. Its host socket is closed once the
     guest's bytes are flushed, on the guest's RST, with no `shutdown(Write)` first, and on
-    Windows held for nothing (`Conn::linger`): its peer loses what it had not read and reads
-    a reset (PM M358), as a cut promises no byte before it. The guest's SHUTDOWN(SEND), then
-    its close, is a half-close exactly as before (exec's run connection ends so,
-    `shutdown_and_wait`), and M358's hold for it stands.
+    Windows held for nothing and closed resetting (`Conn::linger`; SO_LINGER {on, 0},
+    `shards_afunix::UnixStream::close_resets`, closesocket's hard close): its peer loses what
+    it had not read and reads a reset, as a cut promises no byte before it. A plain close
+    resets a WinSock AF_UNIX peer only where the closer held some of its bytes unread (PM
+    M358); with none, as where the workload read all its controller sent, the peer reads
+    end-of-stream, which `pass` below carries on as a half-close: ROOT's WHP run of the
+    nesting cut test at 2731499f7 read 196,618 bytes and then an end in order there. The
+    guest's SHUTDOWN(SEND), then its close, is a half-close exactly as before (exec's run
+    connection ends so, `shutdown_and_wait`), and M358's hold for it stands.
   - Windows' relay of a guest connection onto its owner's pipe (`warm.rs` `pass`): a read
     that fails (WSAECONNRESET from a cut socket) ends the other side both ways, the owner's
     pipe ended (`shards_ipc::end`, whose reader then finds it hung up: ERROR_BROKEN_PIPE) or
@@ -27974,7 +28018,9 @@ asm-generic's, which every guest architecture shares. The window, the lanes and 
 buffer are the caller's admission (R03). The cut's probe waits for nothing (poll(2)'s
 timeout 0): it reads the socket's state as its reads end, which a peer's close has set by
 then (Linux's `unix_release_sock` sets the peer's `sk_shutdown` to SHUTDOWN_MASK before it
-wakes it, net/unix/af_unix.c; macOS as measured, PM M559).
+wakes it, net/unix/af_unix.c; macOS as measured, PM M559). A cut's close on Windows lingers
+{on, 0}: WinSock's own value for a hard close (LINGER, learn.microsoft.com "closesocket
+function"), no time chosen.
 
 **Built and tested** (unit, focused).
 - shards-init on adacachy2 (Linux 7.3 x86_64, rustc 1.98.1): `lanes::tests`, 3 tests, among
@@ -28033,6 +28079,13 @@ wakes it, net/unix/af_unix.c; macOS as measured, PM M559).
   read (no linger); exec's own end is a half-close first, which keeps M358's hold.
 - Windows: `pass`'s test (`warm::tests::a_read_that_fails_ends_the_other_side_both_ways`)
   was compiled (cargo xwin clippy) but not run.
+- Windows: the cut's reset with nothing of the host's unread, unit tested but not run there:
+  shards-vmm `muxer::tests::a_guest_gone_both_ways_with_nothing_of_its_hosts_unread_is_a_cut`
+  (red before `close_resets`, as the WHP nesting run was) and shards-afunix
+  `a_close_made_to_reset_reads_as_a_reset_where_a_plain_one_ends_in_order` (a plain close
+  with nothing unread an end; one made to reset a reset). Whether afunix.sys honours
+  SO_LINGER {on, 0} is known from these alone: M358 set {on, 5} unchecked, and Microsoft's
+  documents name no AF_UNIX case.
 - Windows: `hung_up` on a pipe whose other end has closed, unrun (its peek is `readable`'s).
 
 **What would falsify it.**

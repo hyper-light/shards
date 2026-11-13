@@ -219,11 +219,16 @@ impl Conn {
     ///
     /// What the guest sent that the host had not taken goes as its connection ends, as on
     /// Unix: its socket takes no more, and the muxer counts nothing a lingering one holds.
-    /// A cut one ([`HostWrites::Cut`]) closes at once: its peer is to lose what it had not
-    /// read, as a cut promises no byte before it (D251), and read a reset (PM M358).
+    /// A cut one ([`HostWrites::Cut`]) closes at once, resetting: its peer is to lose what
+    /// it had not read, as a cut promises no byte before it (D251), and read a reset, never
+    /// end-of-stream, which a plain close with nothing of its peer's unread reads as (PM
+    /// M358) and the VM process's relay would carry on as a half-close (`warm.rs` `pass`).
     #[cfg(windows)]
     pub fn linger(mut self) -> Option<Conn> {
         if self.host_writes == HostWrites::Cut {
+            if let Err(e) = self.stream.close_resets() {
+                debug!("vsock: resetting port {}'s cut host socket: {e}", self.local_port);
+            }
             return None;
         }
         self.tx_buf = TxBuf::default();
