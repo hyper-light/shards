@@ -967,7 +967,6 @@ impl Controller {
                 // A wake is one unit whoever sends it, and its turn reads every ask.
                 command_slots: 1,
                 queued_datagram_bytes: link.datagram_bytes,
-                handshake_patience: link.patience,
             },
         )?;
         driver.handler_mut().wake = Some(sender.try_clone()?);
@@ -1154,7 +1153,7 @@ fn record_end(frame: &[u8]) -> Option<u64> {
 /// the endpoint sends on a lane before it is read (a whole record or a stdin's word, a refusal
 /// at most otherwise), the largest per lane and all of them summed; what the controller sends
 /// unacknowledged on each, summed; no stream the endpoint may open (it opens none, D238); the
-/// least patience, the largest handshake and datagrams. An exec's lanes add theirs while it
+/// largest handshake and datagrams. An exec's lanes add theirs while it
 /// runs ([`Drive::exec_started`]).
 pub(super) fn windows(subscriptions: Subscriptions<'_>) -> Result<(Admitted, Windows), managed::Error> {
     let window = || managed::Error::Admission(AdmissionError::Window);
@@ -1191,7 +1190,6 @@ pub(super) fn windows(subscriptions: Subscriptions<'_>) -> Result<(Admitted, Win
             Some(link) => Admitted {
                 handshake_bytes: link.handshake_bytes.max(admitted.handshake_bytes),
                 datagram_bytes: link.datagram_bytes.max(admitted.datagram_bytes),
-                patience: link.patience.min(admitted.patience),
                 ..link
             },
         });
@@ -2250,7 +2248,7 @@ impl Handler for Drive {
         if self.conn.is_some_and(|c| c != conn) {
             return;
         }
-        // No cause: its handshake ran out of the endpoint's patience, unheard.
+        // No cause: unheard, its dial ended by its caller (its `Hangup`) or refused.
         let why = self.cause.take().unwrap_or(Ended::Silent);
         self.lose(why);
     }
