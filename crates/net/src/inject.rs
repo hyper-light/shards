@@ -2,8 +2,11 @@
 //! whose TLS names a host a credential grant names has the guest's TLS ended here, under a leaf
 //! the run's CA mints for that name as its ClientHello comes (as mitmproxy and gondolin mint
 //! theirs, f34), and the host's made from here and verified as the registry's client verifies
-//! (f20); both are TLS 1.3 under TLS_AES_256_GCM_SHA384 alone (f21). Between them the injector
-//! is an HTTP/1.1 gateway (RFC 9110 §3.7): each request's head is read whole, its credential
+//! (f20); both are TLS 1.3 under TLS_AES_256_GCM_SHA384 alone (f21). The guest's ClientHello is
+//! held while the host's TLS is made offering what the guest offered of HTTP/1.1 and HTTP/2, and
+//! the guest's accepted with the protocol the host chose (f41), so both hops speak one. Over
+//! HTTP/2 the injector is an end of each hop (`H2`, http2.rs; step 7). Over HTTP/1.1 it
+//! is a gateway (RFC 9110 §3.7): each request's head is read whole, its credential
 //! fields' placeholders filled in where [`credential::decide`] says (f56, f65), a request for
 //! another host refused 421 (RFC 9110 §7.4, f44), and its body passed on as it comes, never
 //! read for a placeholder (f27); each response comes back as it came, but for the values filled
@@ -16,7 +19,7 @@
 //! asked as a request first needs it; a request whose lease is asked is parked, and the lease's
 //! answer resumes its flow.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::io::{self, BufRead, Write};
 use std::ops::Range;
@@ -32,8 +35,11 @@ use zeroize::Zeroizing;
 
 use crate::Credentials;
 use crate::dns::credential::{self, Fill};
+use crate::hpack;
+use crate::http2::{self, Code, End, Scope};
 use crate::lease::{self, Asked};
 use crate::ring::Ring;
+use crate::signin::{self, Cli};
 
 /// Each side's TLS (D242): TLS 1.3 under TLS13_AES_256_GCM_SHA384 alone, both ways (RFC 8446
 /// §4.1.3, §7.3: one suite, each direction keyed apart), as D239 holds shards' links, and every
@@ -57,12 +63,14 @@ static PROVIDER: LazyLock<Arc<CryptoProvider>> = LazyLock::new(|| {
     })
 });
 
-/// The one application protocol each side offers (RFC 7301): the injector speaks HTTP/1.1
-/// alone, so a guest offering only another is refused at its handshake.
+/// The application protocols the injector speaks (RFC 7301): HTTP/1.1, and HTTP/2 over TLS
+/// (RFC 9113 §3.2). A guest offering neither is refused at its handshake.
 const HTTP_1_1: &[u8] = b"http/1.1";
+const H2: &[u8] = b"h2";
 
 /// The host's side of an injected flow's TLS (D242): verified as the registry's client
-/// verifies (D19, f20), offering HTTP/1.1 alone, and resuming no session, as a session kept is
+/// verifies (D19, f20), offering, flow by flow, what the guest offered of the protocols the
+/// injector speaks (HTTP/1.1 where it offered none), and resuming no session, as a session kept is
 /// a cache nothing measured (R05). Made as the network process starts, before it confines
 /// itself, as on Linux the verifier reads the system's roots then (shards-verify).
 #[derive(Debug, Clone)]
@@ -86,9 +94,9 @@ impl Upstream {
     }
 }
 
-/// The guest's side for a flow to `name`'s host: the leaf the run's CA mints for it, HTTP/1.1
-/// alone, no session kept and no ticket sent (R05).
-fn guest_config(cert: Vec<u8>, key: Vec<u8>) -> Result<Arc<ServerConfig>, rustls::Error> {
+/// The guest's side for a flow to `name`'s host: the leaf the run's CA mints for it, `alpn`
+/// alone (the protocol its host chose), no session kept and no ticket sent (R05).
+fn guest_config(cert: Vec<u8>, key: Vec<u8>, alpn: &[u8]) -> Result<Arc<ServerConfig>, rustls::Error> {
     let mut config = ServerConfig::builder_with_provider(PROVIDER.clone())
         .with_protocol_versions(&[&rustls::version::TLS13])?
         .with_no_client_auth()
@@ -96,7 +104,7 @@ fn guest_config(cert: Vec<u8>, key: Vec<u8>) -> Result<Arc<ServerConfig>, rustls
             vec![CertificateDer::from(cert)],
             PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key)),
         )?;
-    config.alpn_protocols = vec![HTTP_1_1.to_vec()];
+    config.alpn_protocols = vec![alpn.to_vec()];
     config.session_storage = Arc::new(NoServerSessionStorage {});
     config.send_tls13_tickets = 0;
     Ok(Arc::new(config))
@@ -112,29 +120,50 @@ pub struct Run<'a> {
     pub audit: Vec<Audit>,
 }
 
-/// A value filled in (D242, f26): toward which host, which credential, and when; never the
-/// value.
+/// What the injector did with a credential (D242, f26): toward which host, which credential
+/// (a sign-in's name, for a sign-in's), what, and when; never a value or a placeholder.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Audit {
     pub host: String,
     pub reference: String,
+    pub what: Did,
     pub at: SystemTime,
+}
+
+/// What an [`Audit`] records (R04).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Did {
+    /// Its value filled in toward the host.
+    Filled,
+    /// A sign-in's token response from the host taken outside, its CLI given placeholders.
+    Captured,
+    /// A sign-in's refresh, asked of the host, answered outside.
+    Refreshed,
+    /// A sign-in's revocation, asked of the host, answered here, its stored tokens untouched.
+    Revoked,
 }
 
 impl fmt::Display for Audit {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (reference, host) = (&self.reference, &self.host);
+        match self.what {
+            Did::Filled => write!(f, "shards-net: credential {reference} filled in toward {host}")?,
+            Did::Captured => write!(
+                f,
+                "shards-net: sign-in {reference}: its tokens from {host} taken outside"
+            )?,
+            Did::Refreshed => write!(
+                f,
+                "shards-net: sign-in {reference}: its refresh at {host} answered outside"
+            )?,
+            Did::Revoked => write!(
+                f,
+                "shards-net: sign-in {reference}: its revocation at {host} answered here, its tokens kept"
+            )?,
+        }
         match self.at.duration_since(SystemTime::UNIX_EPOCH) {
-            Ok(t) => write!(
-                f,
-                "shards-net: credential {reference} filled in toward {host} at {}.{:09} (Unix time)",
-                t.as_secs(),
-                t.subsec_nanos()
-            ),
-            Err(_) => write!(
-                f,
-                "shards-net: credential {reference} filled in toward {host}, the clock before the Unix epoch"
-            ),
+            Ok(t) => write!(f, " at {}.{:09} (Unix time)", t.as_secs(), t.subsec_nanos()),
+            Err(_) => f.write_str(", the clock before the Unix epoch"),
         }
     }
 }
@@ -212,7 +241,9 @@ impl fmt::Debug for Flow {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self.state {
             State::Hello { .. } => "Flow(Hello)",
+            State::Opening(_) => "Flow(Opening)",
             State::Ended(_) => "Flow(Ended)",
+            State::H2(_) => "Flow(H2)",
             State::Gone => "Flow(Gone)",
         })
     }
@@ -224,8 +255,12 @@ enum State {
     /// bound (64 KiB, `MAX_HANDSHAKE_SIZE`), which RFC 8446 §4 lets a receiver set below its
     /// 2^24 bytes; one past it is no ClientHello this side reads, and passes.
     Hello { acceptor: Box<Acceptor>, seen: Vec<u8> },
-    /// A granted host's: the guest's TLS ended here, the host's made from here.
+    /// A granted host's, its ClientHello held while the host's TLS is made (f41).
+    Opening(Box<Opening>),
+    /// A granted host's over HTTP/1.1: the guest's TLS ended here, the host's made from here.
     Ended(Box<Ended>),
+    /// A granted host's over HTTP/2 (RFC 9113), both hops: the injector an end of each.
+    H2(Box<H2>),
     /// Let go of, its connection carrying the rest.
     Gone,
 }
@@ -251,7 +286,9 @@ impl Flow {
     pub fn held(&self) -> usize {
         match &self.state {
             State::Hello { seen, .. } => seen.len(),
+            State::Opening(o) => o.early.len(),
             State::Ended(e) => e.held(),
+            State::H2(h) => h.held(),
             State::Gone => 0,
         }
     }
@@ -260,7 +297,12 @@ impl Flow {
     pub fn from_guest(&mut self, bytes: &[u8], run: &mut Run<'_>, q: &mut Queues<'_>) -> Said {
         match &mut self.state {
             State::Hello { .. } => self.hello(bytes, run, q),
+            State::Opening(o) => {
+                o.early.extend_from_slice(bytes);
+                Said::Going
+            }
             State::Ended(e) => e.guest_bytes(bytes, run, q),
+            State::H2(h) => h.guest_bytes(bytes, run, q),
             State::Gone => Said::Going,
         }
     }
@@ -270,7 +312,13 @@ impl Flow {
     pub fn from_host(&mut self, bytes: &[u8], run: &mut Run<'_>, q: &mut Queues<'_>) -> Said {
         match &mut self.state {
             State::Hello { .. } => self.pass(),
+            State::Opening(o) => match o.host_bytes(bytes, q) {
+                Ok(false) => Said::Going,
+                Ok(true) => self.open(None, run, q),
+                Err(why) => self.open(Some(why), run, q),
+            },
             State::Ended(e) => e.host_bytes(bytes, run, q),
+            State::H2(h) => h.host_bytes(bytes, run, q),
             State::Gone => Said::Going,
         }
     }
@@ -279,7 +327,15 @@ impl Flow {
     pub fn guest_ended(&mut self, run: &mut Run<'_>, q: &mut Queues<'_>) -> Said {
         match &mut self.state {
             State::Hello { .. } => self.pass(),
+            State::Opening(o) => {
+                o.host.send_close_notify();
+                match send(&mut o.host, q.to_host) {
+                    Ok(()) => Said::Close,
+                    Err(_) => Said::Reset,
+                }
+            }
             State::Ended(e) => e.guest_ended(run, q),
+            State::H2(h) => h.close(q),
             State::Gone => Said::Going,
         }
     }
@@ -288,7 +344,9 @@ impl Flow {
     pub fn host_ended(&mut self, run: &mut Run<'_>, q: &mut Queues<'_>) -> Said {
         match &mut self.state {
             State::Hello { .. } => self.pass(),
+            State::Opening(_) => self.open(Some("the host ended before its TLS was made".into()), run, q),
             State::Ended(e) => e.host_ended(run, q),
+            State::H2(h) => h.host_failed("the host ended".into(), run, q),
             State::Gone => Said::Going,
         }
     }
@@ -297,7 +355,8 @@ impl Flow {
     pub fn resume(&mut self, run: &mut Run<'_>, q: &mut Queues<'_>) -> Said {
         match &mut self.state {
             State::Ended(e) => e.serve(run, q),
-            State::Hello { .. } | State::Gone => Said::Going,
+            State::H2(h) => h.serve(run, q),
+            State::Hello { .. } | State::Opening(_) | State::Gone => Said::Going,
         }
     }
 
@@ -335,26 +394,186 @@ impl Flow {
         let Some(sni) = accepted.client_hello().server_name().map(str::to_ascii_lowercase) else {
             return self.pass();
         };
-        let granted = run
-            .credentials
-            .grants
-            .iter()
-            .any(|g| g.toward.iter().any(|h| h.eq_ignore_ascii_case(&sni)));
+        // A grant's host, or a sign-in's: its token host, or a host its access token goes to,
+        // which a capture during the run may grant (D242, step 8).
+        let named = |toward: &[String]| toward.iter().any(|h| h.eq_ignore_ascii_case(&sni));
+        let granted =
+            run.credentials.grants.iter().any(|g| named(&g.toward))
+                || run.credentials.sign_ins.grants.iter().any(|s| {
+                    named(&s.toward) || signin::profile(s.cli).token.host.eq_ignore_ascii_case(&sni)
+                });
         if !granted {
             return self.pass();
         }
-        let ended = match Ended::new(&sni, accepted, rest, run, q) {
-            Ok(ended) => ended,
+        let offered = accepted
+            .client_hello()
+            .alpn()
+            .map(|a| a.map(<[u8]>::to_vec).collect::<Vec<_>>());
+        match Opening::new(&sni, accepted, rest, offered, run, q) {
+            Ok(opening) => {
+                self.state = State::Opening(Box::new(opening));
+                Said::Going
+            }
             Err(said) => {
                 self.state = State::Gone;
+                said
+            }
+        }
+    }
+
+    /// The host's TLS made, or failed: the guest's accepted speaking the protocol the host chose
+    /// (HTTP/1.1 where it chose none, RFC 7301 §3.2), or, where the host failed, the guest's own
+    /// first choice, so that its requests are answered 502 in it.
+    fn open(&mut self, failed: Option<String>, run: &mut Run<'_>, q: &mut Queues<'_>) -> Said {
+        let State::Opening(opening) = std::mem::replace(&mut self.state, State::Gone) else {
+            return Said::Going;
+        };
+        let Opening {
+            sni,
+            accepted,
+            early,
+            mut host,
+            offered,
+        } = *opening;
+        let h2 = match &failed {
+            None => host.alpn_protocol() == Some(H2),
+            Some(why) => {
+                say(&sni, format_args!("the host's TLS failed: {why}"));
+                offered.first().is_some_and(|p| p == H2)
+            }
+        };
+        let guest = match accept(&sni, accepted, if h2 { H2 } else { HTTP_1_1 }, run, q) {
+            Ok(guest) => guest,
+            Err(said) => {
+                host.send_close_notify();
+                let _ = send(&mut host, q.to_host);
                 return said;
             }
         };
-        self.state = State::Ended(Box::new(ended));
-        let State::Ended(e) = &mut self.state else {
-            return Said::Reset;
+        let sign_in = run.credentials.sign_ins.at_token_host(&sni);
+        if h2 {
+            let mut e = H2::new(sni, guest, host, sign_in, failed);
+            if let Err(said) = e.take_guest(&early, q) {
+                return said;
+            }
+            self.state = State::H2(Box::new(e));
+        } else {
+            let mut e = Ended::new(sni, guest, host, sign_in, failed);
+            if let Err(said) = e.take_guest(&early, q) {
+                return said;
+            }
+            self.state = State::Ended(Box::new(e));
+        }
+        self.resume(run, q)
+    }
+}
+
+/// The guest's TLS accepted under a leaf for `sni`, speaking `alpn`; refused with its alert.
+fn accept(
+    sni: &str,
+    accepted: rustls::server::Accepted,
+    alpn: &[u8],
+    run: &mut Run<'_>,
+    q: &mut Queues<'_>,
+) -> Result<ServerConnection, Said> {
+    let (cert, key) = run.credentials.ca.leaf(sni).map_err(|e| {
+        say(sni, format_args!("no leaf: {e}"));
+        Said::Reset
+    })?;
+    let config = guest_config(cert, key, alpn).map_err(|e| {
+        say(sni, format_args!("no TLS of the guest's: {e}"));
+        Said::Reset
+    })?;
+    match accepted.into_connection(config) {
+        Ok(mut guest) => {
+            // Its queues are the connection's, whose window bounds them; rustls's own bound
+            // would only hold back what the window already lets come.
+            guest.set_buffer_limit(None);
+            Ok(guest)
+        }
+        Err((e, mut alert)) => {
+            say(sni, format_args!("the guest's TLS refused: {e}"));
+            Err(match alert.write_all(&mut Onto(&mut *q.to_guest)) {
+                Ok(()) => Said::Close,
+                Err(_) => Said::Reset,
+            })
+        }
+    }
+}
+
+/// A granted host's flow while the host's TLS is made (D242, f41): the guest's ClientHello held,
+/// and the guest's bytes after it, until the host has chosen among the protocols the guest
+/// offered. A request waits for the host's TLS in any case, so holding the guest's costs it none.
+struct Opening {
+    sni: String,
+    accepted: rustls::server::Accepted,
+    early: Vec<u8>,
+    host: ClientConnection,
+    /// What the guest offered of what the injector speaks, in its order of preference.
+    offered: Vec<Vec<u8>>,
+}
+
+impl Opening {
+    /// The host's TLS begun, offering what the guest offered (`offered`, none where it sent no
+    /// ALPN) of what the injector speaks, a sign-in's token host as any other: its tokens are read
+    /// from HTTP/1.1's messages and from each HTTP/2 stream's (step 8). A guest offering none of it
+    /// is refused at its handshake (RFC 7301 §3.2), no host's TLS begun.
+    fn new(
+        sni: &str,
+        accepted: rustls::server::Accepted,
+        rest: &[u8],
+        offered: Option<Vec<Vec<u8>>>,
+        run: &mut Run<'_>,
+        q: &mut Queues<'_>,
+    ) -> Result<Opening, Said> {
+        let offered: Vec<Vec<u8>> = match offered {
+            None => vec![HTTP_1_1.to_vec()],
+            Some(all) => all.into_iter().filter(|p| p == HTTP_1_1 || p == H2).collect(),
         };
-        e.serve(run, q)
+        // A guest whose ClientHello says plainly that this side cannot serve it, no protocol or no
+        // suite in common (RFC 7301 §3.2, RFC 8446 §4.1.1), is refused at once, no host's TLS
+        // begun for it.
+        let suites = accepted.client_hello().cipher_suites().to_vec();
+        let suite = PROVIDER.cipher_suites.iter().any(|s| suites.contains(&s.suite()));
+        if offered.is_empty() || !suite {
+            return Err(match accept(sni, accepted, HTTP_1_1, run, q) {
+                Ok(_) => Said::Reset,
+                Err(said) => said,
+            });
+        }
+        let name = ServerName::try_from(sni.to_string()).map_err(|_| Said::Reset)?;
+        let config = run.credentials.upstream.0.clone();
+        let mut host = ClientConnection::new_with_alpn(config, name, offered.clone()).map_err(|e| {
+            say(sni, format_args!("no TLS of the host's: {e}"));
+            Said::Reset
+        })?;
+        host.set_buffer_limit(None);
+        send(&mut host, q.to_host).map_err(|_| Said::Reset)?;
+        Ok(Opening {
+            sni: sni.to_string(),
+            accepted,
+            early: rest.to_vec(),
+            host,
+            offered,
+        })
+    }
+
+    /// The host's TLS bytes: whether its handshake is done, or why it failed.
+    fn host_bytes(&mut self, bytes: &[u8], q: &mut Queues<'_>) -> Result<bool, String> {
+        let mut rest = bytes;
+        while !rest.is_empty() {
+            match self.host.read_tls(&mut rest) {
+                Ok(0) => break,
+                Ok(_) => {}
+                Err(e) => return Err(e.to_string()),
+            }
+            if let Err(e) = self.host.process_new_packets() {
+                let _ = send(&mut self.host, q.to_host);
+                return Err(e.to_string());
+            }
+        }
+        send(&mut self.host, q.to_host).map_err(|e| e.to_string())?;
+        Ok(!self.host.is_handshaking())
     }
 }
 
@@ -380,6 +599,15 @@ enum Refusal {
     Unleased { reference: String, why: lease::Refusal },
     /// The host's TLS failed, or it ended before it answered: 502.
     Upstream(String),
+    /// A sign-in's access token toward an endpoint of its host that mints a credential its
+    /// response carries in the clear (`signin::Profile::mints`): 403, never sent.
+    Mints { host: String },
+    /// A sign-in's token response that could not be read or written: 502, never passed on.
+    SignIn(signin::Refusal),
+    /// A sign-in's capture or refresh not answered outside: a refresh its broker refused is
+    /// `invalid_grant` (400, RFC 6749 §5.2), so that its CLI signs in anew; the rest 502 for a
+    /// capture, 503 for a refresh.
+    Declined { refresh: bool, why: signin::Declined },
 }
 
 impl fmt::Display for Refusal {
@@ -393,6 +621,17 @@ impl fmt::Display for Refusal {
             ),
             Refusal::Unleased { reference, why } => write!(f, "credential {reference} was not leased: {why}"),
             Refusal::Upstream(why) => write!(f, "the host's side failed: {why}"),
+            Refusal::Mints { host } => write!(
+                f,
+                "a sign-in's token is never sent to {host}'s endpoint that mints a key in the clear"
+            ),
+            Refusal::SignIn(why) => write!(f, "{why}"),
+            Refusal::Declined { refresh: true, why } => {
+                write!(f, "the sign-in's refresh was not answered: {why}")
+            }
+            Refusal::Declined { refresh: false, why } => {
+                write!(f, "the sign-in was not taken outside: {why}")
+            }
         }
     }
 }
@@ -405,13 +644,30 @@ impl Refusal {
             Refusal::TooLarge => (431, "Request Header Fields Too Large"),
             Refusal::Misdirected { .. } => (421, "Misdirected Request"),
             Refusal::Unleased { .. } => (503, "Service Unavailable"),
-            Refusal::Upstream(_) => (502, "Bad Gateway"),
+            Refusal::Upstream(_) | Refusal::SignIn(_) => (502, "Bad Gateway"),
+            Refusal::Mints { .. } => (403, "Forbidden"),
+            Refusal::Declined {
+                refresh: true,
+                why: signin::Declined::Denied(_),
+            } => (400, "Bad Request"),
+            Refusal::Declined { refresh: true, .. } => (503, "Service Unavailable"),
+            Refusal::Declined { refresh: false, .. } => (502, "Bad Gateway"),
         }
     }
 
     /// The response the guest gets, the connection closing after it.
     fn response(&self) -> Vec<u8> {
         let (status, reason) = self.status();
+        if status == 400 && matches!(self, Refusal::Declined { .. }) {
+            // RFC 6749 §5.2's error, which a CLI reads as its sign-in's end (its broker's words
+            // go to the diagnostics, never into the guest).
+            let body = r#"{"error":"invalid_grant"}"#;
+            return format!(
+                "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .into_bytes();
+        }
         let body = format!("shards: {self}\n");
         format!(
             "HTTP/1.1 {status} {reason}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -444,6 +700,8 @@ enum Request {
     Sent,
     /// Upgraded or tunnelled: the guest's bytes go to the host as they come.
     Tunnel,
+    /// A sign-in's refresh, read whole and asked outside (D242, step 8): its answer resumes it.
+    Refreshing,
     /// Refused, or the flow ending: nothing more is taken.
     Done,
 }
@@ -458,6 +716,18 @@ struct Parked {
     host: String,
     body: Framing,
     owed: Owed,
+    /// Where it is a sign-in's token host's POST to its token or revocation path: its body is
+    /// read whole before it goes, as a refresh or a revocation is answered outside.
+    whole: Option<Whole>,
+}
+
+/// What a sign-in's request read whole is asked by (D242, step 8): its CLI, method, target and
+/// Content-Type.
+struct Whole {
+    cli: Cli,
+    method: String,
+    target: String,
+    content_type: Option<Vec<u8>>,
 }
 
 /// Where the host's responses stand (R04).
@@ -468,6 +738,19 @@ enum Response {
     Body(Framing),
     /// Upgraded or tunnelled: the host's bytes go to the guest as they come.
     Tunnel,
+    /// A sign-in's token host's response, its body read whole as it comes (D242, step 8), none of
+    /// it to the guest before: its tokens taken outside, or it passed on as it came.
+    Whole {
+        head: Vec<u8>,
+        body: Zeroizing<Vec<u8>>,
+        framing: Framing,
+    },
+    /// Its tokens asked of the run host to keep, their placeholders coming in the answer.
+    Capturing {
+        head: Vec<u8>,
+        body: Zeroizing<Vec<u8>>,
+        tokens: signin::Tokens,
+    },
 }
 
 /// A message body's framing (RFC 9112 §6.3), where in it.
@@ -737,26 +1020,52 @@ fn hop_by_hop(head: &[u8], fields: &[Field]) -> Vec<(Range<usize>, Vec<u8>)> {
     edits
 }
 
-/// A field's value as a credential's token: an `Authorization` field's bearer token (RFC 6750
-/// §2.1, its scheme of any case, RFC 9110 §11.1) or an `x-api-key` field's whole value, the
-/// two fields the harnesses send theirs in (f56, f65), where each lies in the head.
-fn token(head: &[u8], field: &Field) -> Option<Range<usize>> {
-    let value = head.get(field.value.clone())?;
-    match field.name.as_str() {
-        "authorization" => {
+/// Where a credential's token lies in a field's value: an `Authorization` field's bearer token
+/// (RFC 6750 §2.1, its scheme of any case, RFC 9110 §11.1) or an `x-api-key` field's whole
+/// value, the two fields the harnesses send theirs in (f56, f65). `name` lowered, as HTTP/1.1's
+/// fields are read and HTTP/2's are sent (RFC 9113 §8.2.1).
+pub(crate) fn token_in(name: &[u8], value: &[u8]) -> Option<Range<usize>> {
+    match name {
+        b"authorization" => {
             let space = value.iter().position(|&b| b == b' ')?;
             let (scheme, rest) = value.split_at_checked(space)?;
             if !scheme.eq_ignore_ascii_case(b"bearer") {
                 return None;
             }
-            let skipped = rest.iter().take_while(|&&b| b == b' ').count();
-            let start = field.value.start + space + skipped;
-            (start < field.value.end && !value.get(space + skipped..)?.contains(&b' '))
-                .then_some(start..field.value.end)
+            let start = space + rest.iter().take_while(|&&b| b == b' ').count();
+            (start < value.len() && !value.get(start..)?.contains(&b' ')).then_some(start..value.len())
         }
-        "x-api-key" => (!value.is_empty()).then_some(field.value.clone()),
+        b"x-api-key" => (!value.is_empty()).then_some(0..value.len()),
         _ => None,
     }
+}
+
+/// A head's field's credential token, where it lies in the head.
+fn token(head: &[u8], field: &Field) -> Option<Range<usize>> {
+    let r = token_in(field.name.as_bytes(), head.get(field.value.clone())?)?;
+    Some(field.value.start + r.start..field.value.start + r.end)
+}
+
+/// A sign-in's request made to ask its response as its sender wrote it (RFC 9110 §12.5.3:
+/// `identity`), so that its tokens can be read where they lie: each Accept-Encoding line cut and
+/// one asking `identity` written before the head's end (D242, step 8).
+fn identity(head: &[u8], fields: &[Field]) -> Vec<(Range<usize>, Vec<u8>)> {
+    let end = head.len().saturating_sub(2);
+    fields
+        .iter()
+        .filter(|f| f.name == "accept-encoding")
+        .map(|f| (f.line.clone(), Vec::new()))
+        .chain([(end..end, b"Accept-Encoding: identity\r\n".to_vec())])
+        .collect()
+}
+
+/// Whether `reference` is a sign-in's access token, and `host`'s `target` an endpoint its CLI's
+/// profile names as minting a credential in the clear (`signin::Profile::mints`).
+fn mints(run: &Run<'_>, reference: &str, host: &str, target: &str) -> bool {
+    run.credentials.sign_ins.grants.iter().any(|s| {
+        s.captured.as_ref().is_some_and(|c| c.access == reference)
+            && signin::profile(s.cli).mints(host, target)
+    })
 }
 
 /// The host a request is for (RFC 9112 §3.2, §3.2.2): its target's authority where the target
@@ -779,8 +1088,13 @@ fn request_host(target: &str, head: &[u8], fields: &[Field]) -> Result<String, R
     };
     let authority =
         std::str::from_utf8(authority).map_err(|_| Refusal::Malformed("a host that is not text"))?;
-    // Without its user information, then its port, an IPv6 literal kept whole with its
-    // brackets (RFC 3986 §3.2.2).
+    authority_host(authority).ok_or(Refusal::Malformed("a request's host is empty"))
+}
+
+/// An authority's host (RFC 3986 §3.2.2): without its user information, then its port, an IPv6
+/// literal kept whole with its brackets; lowered, as `decide` compares hosts. None where nothing
+/// is left.
+pub(crate) fn authority_host(authority: &str) -> Option<String> {
     let authority = authority.rsplit_once('@').map_or(authority, |(_, a)| a);
     let name = match authority.find(']') {
         Some(close) if authority.starts_with('[') => authority.get(..=close).unwrap_or(authority),
@@ -789,10 +1103,7 @@ fn request_host(target: &str, head: &[u8], fields: &[Field]) -> Result<String, R
             .filter(|(_, port)| port.bytes().all(|b| b.is_ascii_digit()))
             .map_or(authority, |(name, _)| name),
     };
-    if name.is_empty() {
-        return Err(Refusal::Malformed("a request's host is empty"));
-    }
-    Ok(name.to_ascii_lowercase())
+    (!name.is_empty()).then(|| name.to_ascii_lowercase())
 }
 
 /// A request's body's framing (RFC 9112 §6.3, f43): chunked where its Transfer-Encoding ends in
@@ -1068,6 +1379,131 @@ impl Mask {
     }
 }
 
+/// What a sign-in's request read whole comes to (R04).
+enum Outside {
+    /// Its body has not come whole.
+    Waiting(Whole),
+    /// Answered here or asked outside: it goes no further.
+    Answered,
+    /// Neither: it goes on as any request.
+    Pass,
+}
+
+/// A sign-in's placeholders, as its capture gave them.
+fn placeholders_of(c: &signin::Captured) -> signin::Placeholders {
+    signin::Placeholders {
+        access: c.access_placeholder.clone(),
+        refresh: c.refresh_placeholder.clone(),
+    }
+}
+
+// A sign-in's token host's messages (D242, step 8), as each HTTP/1.1 exchange and each HTTP/2
+// stream carries them: what a request read whole asks, a revocation answered here, a response's
+// tokens asked outside and written with their placeholders, a refresh's answer given.
+
+/// What a sign-in's request to `host`, read whole with `body`, asks (`signin::ask`), and the index
+/// of its CLI's sign-in among the run's; none where the run has no sign-in of its CLI.
+fn ask_whole(whole: &Whole, host: &str, body: &[u8], run: &Run<'_>) -> Option<(usize, signin::Ask)> {
+    let sign_ins = &run.credentials.sign_ins;
+    let index = sign_ins.of(whole.cli)?;
+    let placeholders = sign_ins
+        .grants
+        .get(index)
+        .and_then(|g| g.captured.as_ref())
+        .map(placeholders_of);
+    let request = signin::Request {
+        host,
+        method: &whole.method,
+        target: &whole.target,
+        content_type: whole.content_type.as_deref(),
+        body,
+    };
+    let asked = signin::ask(
+        signin::profile(whole.cli),
+        &request,
+        &placeholders.iter().collect::<Vec<_>>(),
+    );
+    Some((index, asked))
+}
+
+/// The VM's revocation of sign-in `index` toward `host`, answered here (RFC 7009 §2.2,
+/// `signin::REVOKED`): its run host told, its stored tokens untouched, audited.
+fn revoke_here(index: usize, host: &str, run: &mut Run<'_>) {
+    let sign_ins = &mut run.credentials.sign_ins;
+    sign_ins.revoke(index);
+    let sign_in = sign_ins
+        .grants
+        .get(index)
+        .map(|g| g.sign_in.clone())
+        .unwrap_or_default();
+    run.audit.push(Audit {
+        host: host.to_string(),
+        reference: sign_in,
+        what: Did::Revoked,
+        at: SystemTime::now(),
+    });
+}
+
+/// The name of sign-in `cli` and the placeholders its capture gave, which its token responses
+/// carry to the guest in its tokens' places.
+fn signed_as(cli: Option<Cli>, run: &Run<'_>) -> Result<(String, signin::Placeholders), Refusal> {
+    let sign_ins = &run.credentials.sign_ins;
+    cli.and_then(|cli| sign_ins.of(cli))
+        .and_then(|i| sign_ins.grants.get(i))
+        .and_then(|g| Some((g.sign_in.clone(), placeholders_of(g.captured.as_ref()?))))
+        .ok_or(Refusal::SignIn(signin::Refusal::NoPlaceholder))
+}
+
+/// A token host's response body, read whole: none where it names no token, so that it goes on as
+/// it came; else its tokens, asked of the run host to keep, `asker` waiting.
+fn capture_tokens(
+    body: &[u8],
+    cli: Option<Cli>,
+    asker: signin::Asker,
+    run: &mut Run<'_>,
+) -> Result<Option<signin::Tokens>, Refusal> {
+    let Some(tokens) = signin::read(body).map_err(Refusal::SignIn)? else {
+        return Ok(None);
+    };
+    let sign_ins = &mut run.credentials.sign_ins;
+    let index = cli
+        .and_then(|cli| sign_ins.of(cli))
+        .ok_or(Refusal::SignIn(signin::Refusal::NoToken))?;
+    let taken = signin::Taken::of(&tokens).map_err(Refusal::SignIn)?;
+    sign_ins
+        .capture(index, taken, asker)
+        .map_err(|why| Refusal::Declined { refresh: false, why })?;
+    Ok(Some(tokens))
+}
+
+/// A captured response's body as the guest is to have it: the sign-in's placeholders in its
+/// tokens' places and its ID token inert; and the sign-in's name, for the audit.
+fn capture_written(
+    body: &[u8],
+    tokens: &signin::Tokens,
+    cli: Option<Cli>,
+    run: &Run<'_>,
+) -> Result<(String, Zeroizing<Vec<u8>>), Refusal> {
+    let (sign_in, placeholders) = signed_as(cli, run)?;
+    let written = signin::write(body, tokens, &placeholders).map_err(Refusal::SignIn)?;
+    Ok((sign_in, written))
+}
+
+/// A refresh's answer from outside, `body` the token response its broker gave: the response its
+/// CLI is to have (`signin::refreshed`'s, kept from caches), its tokens the sign-in's
+/// placeholders whatever its broker sent; and the sign-in's name, for the audit.
+fn refresh_answer(
+    body: &[u8],
+    cli: Option<Cli>,
+    run: &Run<'_>,
+) -> Result<(String, Zeroizing<Vec<u8>>), Refusal> {
+    let tokens = signin::read(body)
+        .map_err(Refusal::SignIn)?
+        .ok_or(Refusal::SignIn(signin::Refusal::NoToken))?;
+    let (sign_in, written) = capture_written(body, &tokens, cli, run)?;
+    Ok((sign_in, signin::refreshed(&written)))
+}
+
 /// A granted host's flow: the guest's TLS ended here, the host's made from here.
 struct Ended {
     /// The name its TLS was ended under, lowered.
@@ -1086,47 +1522,28 @@ struct Ended {
     mask: Mask,
     /// Why the host's TLS failed, before anything of it reached the guest.
     failed: Option<String>,
+    /// Whose sign-in's token host this is, where it is one (D242, step 8): no value is filled
+    /// toward it, and its responses are read whole for tokens.
+    sign_in: Option<Cli>,
+    /// What its response's side refuses, answered once that side's bytes are taken.
+    refused: Option<Refusal>,
+    /// The host ended its side while a sign-in's tokens were asked outside: the guest's ends
+    /// once their answer has gone.
+    host_closed: bool,
 }
 
 impl Ended {
-    /// The guest's TLS ended under a leaf for `sni`, its ClientHello `accepted` and the bytes
-    /// after it `rest`; the host's begun.
+    /// Its guest's TLS accepted under a leaf for `sni` and its host's made (`failed`, where it
+    /// failed); `sign_in` the sign-in whose token host it is, where it is one.
     fn new(
-        sni: &str,
-        accepted: rustls::server::Accepted,
-        rest: &[u8],
-        run: &mut Run<'_>,
-        q: &mut Queues<'_>,
-    ) -> Result<Ended, Said> {
-        let (cert, key) = run.credentials.ca.leaf(sni).map_err(|e| {
-            say(sni, format_args!("no leaf: {e}"));
-            Said::Reset
-        })?;
-        let config = guest_config(cert, key).map_err(|e| {
-            say(sni, format_args!("no TLS of the guest's: {e}"));
-            Said::Reset
-        })?;
-        let mut guest = match accepted.into_connection(config) {
-            Ok(guest) => guest,
-            Err((e, mut alert)) => {
-                say(sni, format_args!("the guest's TLS refused: {e}"));
-                return Err(match alert.write_all(&mut Onto(&mut *q.to_guest)) {
-                    Ok(()) => Said::Close,
-                    Err(_) => Said::Reset,
-                });
-            }
-        };
-        let name = ServerName::try_from(sni.to_string()).map_err(|_| Said::Reset)?;
-        let mut host = ClientConnection::new(run.credentials.upstream.0.clone(), name).map_err(|e| {
-            say(sni, format_args!("no TLS of the host's: {e}"));
-            Said::Reset
-        })?;
-        // Their queues are the connection's, whose window bounds them; rustls's own bounds
-        // would only hold back what the window already lets come.
-        guest.set_buffer_limit(None);
-        host.set_buffer_limit(None);
-        let mut e = Ended {
-            sni: sni.to_string(),
+        sni: String,
+        guest: ServerConnection,
+        host: ClientConnection,
+        sign_in: Option<Cli>,
+        failed: Option<String>,
+    ) -> Ended {
+        Ended {
+            sni,
             guest,
             host,
             pending: Vec::new(),
@@ -1135,10 +1552,11 @@ impl Ended {
             owed: None,
             answered: false,
             mask: Mask::default(),
-            failed: None,
-        };
-        e.take_guest(rest, q)?;
-        Ok(e)
+            failed,
+            sign_in,
+            refused: None,
+            host_closed: false,
+        }
     }
 
     fn held(&self) -> usize {
@@ -1218,9 +1636,12 @@ impl Ended {
                 say(&self.sni, format_args!("the host's response is broken: {why}"));
                 return Said::Reset;
             }
+            if let Some(refusal) = self.refused.take() {
+                return self.refuse(refusal, q);
+            }
         }
         if closed {
-            return self.host_done(q);
+            return self.host_done(run, q);
         }
         self.serve(run, q)
     }
@@ -1234,7 +1655,7 @@ impl Ended {
             say(&self.sni, format_args!("the host's response is broken: {why}"));
             return Said::Reset;
         }
-        self.host_done(q)
+        self.host_done(run, q)
     }
 
     /// The host's TLS failed: the guest is told 502 where nothing of its answer has reached it
@@ -1256,7 +1677,25 @@ impl Ended {
 
     /// The host has ended its side: a response read to its end ends there, one owed and not
     /// begun is answered 502, and the guest's TLS ends.
-    fn host_done(&mut self, q: &mut Queues<'_>) -> Said {
+    fn host_done(&mut self, run: &mut Run<'_>, q: &mut Queues<'_>) -> Said {
+        // A sign-in's response read to the host's end ends there (D242, step 8); its tokens asked
+        // outside, the guest's side ends once their answer has gone.
+        if matches!(
+            self.response,
+            Response::Whole {
+                framing: Framing::Close,
+                ..
+            }
+        ) {
+            self.finish_whole(run);
+        }
+        if let Some(refusal) = self.refused.take() {
+            return self.refuse(refusal, q);
+        }
+        if matches!(self.response, Response::Capturing { .. }) {
+            self.host_closed = true;
+            return Said::Going;
+        }
         if matches!(self.response, Response::Body(Framing::Close) | Response::Tunnel) {
             let Ended { mask, guest, .. } = self;
             if mask.end_message(&mut |b| guest.writer().write_all(b)).is_err() {
@@ -1296,6 +1735,16 @@ impl Ended {
 
     /// Takes what it can of the guest's requests, and sends what each side is to have.
     fn serve(&mut self, run: &mut Run<'_>, q: &mut Queues<'_>) -> Said {
+        if matches!(self.response, Response::Capturing { .. })
+            && let Some(answer) = run.credentials.sign_ins.take(run.waiter)
+        {
+            if let Err(refusal) = self.captured(answer, run) {
+                return self.refuse(refusal, q);
+            }
+            if self.host_closed {
+                return self.host_done(run, q);
+            }
+        }
         loop {
             match self.advance(run) {
                 Ok(true) => {}
@@ -1367,11 +1816,77 @@ impl Ended {
                     .map_err(|e| Refusal::Upstream(e.to_string()))?;
                 Ok(false)
             }
+            Request::Refreshing => self.refreshed(run),
             Request::Done => {
                 self.pending.clear();
                 Ok(false)
             }
         }
+    }
+
+    /// A sign-in's request read whole (D242, step 8), once its body has come within the
+    /// connection's window: a refresh of the sign-in's placeholder asked outside, its answer
+    /// resuming the flow; a revocation of one answered here, its stored tokens untouched; anything
+    /// else passed on, its response read. An answered request's body goes no further.
+    fn outside(&mut self, parked: &Parked, whole: Whole, run: &mut Run<'_>) -> Result<Outside, Refusal> {
+        let Framing::Length(n) = parked.body else {
+            return Ok(Outside::Pass);
+        };
+        let n = usize::try_from(n).unwrap_or(usize::MAX);
+        if self.pending.len() < n {
+            return Ok(Outside::Waiting(whole));
+        }
+        let body = self.pending.get(..n).unwrap_or_default();
+        let Some((index, asked)) = ask_whole(&whole, &parked.host, body, run) else {
+            return Ok(Outside::Pass);
+        };
+        match asked {
+            signin::Ask::Pass => return Ok(Outside::Pass),
+            signin::Ask::Refresh(_) => {
+                run.credentials
+                    .sign_ins
+                    .refresh(index, run.waiter)
+                    .map_err(|why| Refusal::Declined { refresh: true, why })?;
+                self.request = Request::Refreshing;
+            }
+            signin::Ask::Revoke(_) => {
+                self.guest
+                    .writer()
+                    .write_all(signin::REVOKED)
+                    .map_err(|e| Refusal::Upstream(e.to_string()))?;
+                revoke_here(index, &parked.host, run);
+                self.request = Request::Head;
+            }
+        }
+        self.pending.drain(..n);
+        Ok(Outside::Answered)
+    }
+
+    /// A refresh asked outside (D242, step 8), once its answer has come: the token response its
+    /// CLI is to have, its tokens the sign-in's placeholders and its ID token inert, kept from
+    /// caches; or refused.
+    fn refreshed(&mut self, run: &mut Run<'_>) -> Result<bool, Refusal> {
+        let body = match run.credentials.sign_ins.take(run.waiter) {
+            Some(signin::Answer::Refreshed(body)) => body,
+            Some(signin::Answer::Declined(why)) => return Err(Refusal::Declined { refresh: true, why }),
+            Some(signin::Answer::Captured) | None => {
+                self.request = Request::Refreshing;
+                return Ok(false);
+            }
+        };
+        let (sign_in, response) = refresh_answer(&body, self.sign_in, run)?;
+        self.guest
+            .writer()
+            .write_all(&response)
+            .map_err(|e| Refusal::Upstream(e.to_string()))?;
+        run.audit.push(Audit {
+            host: self.sni.clone(),
+            reference: sign_in,
+            what: Did::Refreshed,
+            at: SystemTime::now(),
+        });
+        self.request = Request::Head;
+        Ok(true)
     }
 
     /// A request's head, if it has come whole: its host and framing read, its hop-by-hop
@@ -1415,25 +1930,52 @@ impl Ended {
                 host,
             });
         }
-        let edits = hop_by_hop(&head, &fields);
+        let mut edits = hop_by_hop(&head, &fields);
         let mut fills = Vec::new();
-        for field in &fields {
-            if edits
-                .iter()
-                .any(|(cut, _)| cut.start <= field.line.start && field.line.end <= cut.end)
-            {
-                continue;
+        let whole = match self.sign_in {
+            // A sign-in's token host (D242, step 8): no value goes to it; its response is asked
+            // as its sender writes it, so that its tokens can be read; a POST to its token or
+            // revocation path is read whole, as a refresh or a revocation is answered outside.
+            Some(cli) => {
+                edits.extend(identity(&head, &fields));
+                edits.sort_by_key(|(r, _)| r.start);
+                let profile = signin::profile(cli);
+                let path = signin::path(&target);
+                let ours = method.eq_ignore_ascii_case("POST")
+                    && (path == profile.token.path || path == profile.revoke.path);
+                let fits = matches!(body, Framing::Length(n) if usize::try_from(n).is_ok_and(|n| n <= crate::tcp::TO_HOST));
+                (ours && fits).then(|| Whole {
+                    cli,
+                    method: method.clone(),
+                    target: target.clone(),
+                    content_type: values(&head, &fields, "content-type").next().map(<[u8]>::to_vec),
+                })
             }
-            let Some(range) = token(&head, field) else {
-                continue;
-            };
-            let Some(token) = head.get(range.clone()).and_then(|t| std::str::from_utf8(t).ok()) else {
-                continue;
-            };
-            if let Fill::With(reference) = credential::decide(grants, &self.sni, &host, Some(token)) {
-                fills.push((range, reference));
+            None => {
+                for field in &fields {
+                    if edits
+                        .iter()
+                        .any(|(cut, _)| cut.start <= field.line.start && field.line.end <= cut.end)
+                    {
+                        continue;
+                    }
+                    let Some(range) = token(&head, field) else {
+                        continue;
+                    };
+                    let Some(token) = head.get(range.clone()).and_then(|t| std::str::from_utf8(t).ok())
+                    else {
+                        continue;
+                    };
+                    if let Fill::With(reference) = credential::decide(grants, &self.sni, &host, Some(token)) {
+                        if mints(run, &reference, &host, &target) {
+                            return Err(Refusal::Mints { host });
+                        }
+                        fills.push((range, reference));
+                    }
+                }
+                None
             }
-        }
+        };
         Ok(Some(Parked {
             head,
             edits,
@@ -1441,13 +1983,25 @@ impl Ended {
             host,
             body,
             owed,
+            whole,
         }))
     }
 
     /// A parked request goes once the host's TLS is up and each value it carries is leased:
     /// its head as it came but for its hop-by-hop fields and its placeholders, each filled in
     /// and audited; refused where a lease is; parked again while one is asked.
-    fn go(&mut self, parked: Box<Parked>, run: &mut Run<'_>) -> Result<bool, Refusal> {
+    fn go(&mut self, mut parked: Box<Parked>, run: &mut Run<'_>) -> Result<bool, Refusal> {
+        if let Some(whole) = parked.whole.take() {
+            match self.outside(&parked, whole, run)? {
+                Outside::Waiting(whole) => {
+                    parked.whole = Some(whole);
+                    self.request = Request::Parked(parked);
+                    return Ok(false);
+                }
+                Outside::Answered => return Ok(true),
+                Outside::Pass => {}
+            }
+        }
         if let Some(why) = &self.failed {
             return Err(Refusal::Upstream(why.clone()));
         }
@@ -1503,6 +2057,7 @@ impl Ended {
                 run.audit.push(Audit {
                     host: parked.host.clone(),
                     reference: reference.clone(),
+                    what: Did::Filled,
                     at,
                 });
                 self.mask.filled.push((reference.clone(), 0));
@@ -1519,10 +2074,10 @@ impl Ended {
 
     /// The host's plaintext `bytes`, answered to the guest as its responses' framing reads
     /// them, the values filled into their request masked.
-    fn respond(&mut self, mut bytes: &[u8], run: &Run<'_>) -> Result<(), Broken> {
+    fn respond(&mut self, mut bytes: &[u8], run: &mut Run<'_>) -> Result<(), Broken> {
         let queued = |_: io::Error| Broken("its bytes could not be queued");
         while !bytes.is_empty() {
-            if matches!(self.request, Request::Done) {
+            if matches!(self.request, Request::Done) || self.refused.is_some() {
                 return Ok(());
             }
             match &mut self.response {
@@ -1563,8 +2118,96 @@ impl Ended {
                         .map_err(queued)?;
                     return Ok(());
                 }
+                Response::Whole { body, framing, .. } => {
+                    let (taken, ended) = walk(framing, bytes, crate::tcp::TO_GUEST, &mut |p| {
+                        if let Piece::Data(data) = p {
+                            if body.len().saturating_add(data.len()) > crate::tcp::TO_GUEST {
+                                return Err(io::Error::other("past what its connection holds"));
+                            }
+                            signin::append(body, data);
+                        }
+                        Ok(())
+                    })?;
+                    bytes = bytes.get(taken..).unwrap_or_default();
+                    if ended {
+                        self.finish_whole(run);
+                    }
+                }
+                Response::Capturing { .. } => {
+                    return Err(Broken("bytes past a sign-in's response, one request at a time"));
+                }
             }
         }
+        Ok(())
+    }
+
+    /// A sign-in's token host's response, whole (D242, step 8), read for tokens: one with none
+    /// goes to the guest as it came, framed by its length; one with tokens waits while they are
+    /// asked outside; one that cannot be read is refused, none of it passed on.
+    fn finish_whole(&mut self, run: &mut Run<'_>) {
+        let Response::Whole { head, body, .. } =
+            std::mem::replace(&mut self.response, Response::Head(Vec::new()))
+        else {
+            return;
+        };
+        let read = capture_tokens(&body, self.sign_in, run.waiter.into(), run);
+        let went = read.and_then(|tokens| match tokens {
+            None => self.pass_whole(&head, &body),
+            Some(tokens) => {
+                self.response = Response::Capturing { head, body, tokens };
+                Ok(())
+            }
+        });
+        if let Err(refusal) = went {
+            self.refused = Some(refusal);
+        }
+    }
+
+    /// A sign-in's response with no token in it, to the guest as it came, framed by its length.
+    fn pass_whole(&mut self, head: &[u8], body: &[u8]) -> Result<(), Refusal> {
+        let framed = signin::frame(head, body.len()).map_err(Refusal::SignIn)?;
+        let mut writer = self.guest.writer();
+        writer
+            .write_all(&framed)
+            .and_then(|()| writer.write_all(body))
+            .map_err(|e| Refusal::Upstream(e.to_string()))?;
+        self.answered = true;
+        self.exchange_ended();
+        Ok(())
+    }
+
+    /// A capture's answer (D242, step 8): the token response goes to the guest with the
+    /// sign-in's placeholders in its tokens' places and its ID token inert, framed anew; its real
+    /// tokens wiped as they drop here; or it is refused.
+    fn captured(&mut self, answer: signin::Answer, run: &mut Run<'_>) -> Result<(), Refusal> {
+        let Response::Capturing { head, body, tokens } =
+            std::mem::replace(&mut self.response, Response::Head(Vec::new()))
+        else {
+            return Ok(());
+        };
+        match answer {
+            signin::Answer::Captured => {}
+            signin::Answer::Declined(why) => return Err(Refusal::Declined { refresh: false, why }),
+            signin::Answer::Refreshed(_) => {
+                self.response = Response::Capturing { head, body, tokens };
+                return Ok(());
+            }
+        }
+        let (sign_in, written) = capture_written(&body, &tokens, self.sign_in, run)?;
+        let framed = signin::frame(&head, written.len()).map_err(Refusal::SignIn)?;
+        let mut writer = self.guest.writer();
+        writer
+            .write_all(&framed)
+            .and_then(|()| writer.write_all(&written))
+            .map_err(|e| Refusal::Upstream(e.to_string()))?;
+        self.answered = true;
+        self.exchange_ended();
+        run.audit.push(Audit {
+            host: self.sni.clone(),
+            reference: sign_in,
+            what: Did::Captured,
+            at: SystemTime::now(),
+        });
         Ok(())
     }
 
@@ -1594,6 +2237,20 @@ impl Ended {
         let cut = hop_by_hop(&head, &fields);
         let edits: Vec<(Range<usize>, &[u8])> = cut.iter().map(|(r, v)| (r.clone(), v.as_slice())).collect();
         let passed = rewrite(&head, &edits);
+        // A sign-in's token host's final response with a body is read whole before any of it
+        // goes, so that its tokens are taken outside (D242, step 8).
+        if self.sign_in.is_some() && !tunnel && !interim && framing != Framing::Length(0) {
+            if let Err(why) = signin::readable(&passed) {
+                self.refused = Some(Refusal::SignIn(why));
+                return Ok(());
+            }
+            self.response = Response::Whole {
+                head: passed.to_vec(),
+                body: Zeroizing::new(Vec::new()),
+                framing,
+            };
+            return Ok(());
+        }
         let Ended { mask, guest, .. } = self;
         let mut out = |b: &[u8]| guest.writer().write_all(b);
         mask.push(&passed, true, run, &mut out)
@@ -1626,6 +2283,1667 @@ impl Ended {
         }
     }
 }
+
+/// Where one hop of an HTTP/2 flow stands (R04).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    /// The client preface's octets awaited (§3.4): the guest's alone.
+    Preface,
+    /// The peer's first frame awaited, which is its SETTINGS (§3.4).
+    Settings,
+    Open,
+    /// A GOAWAY sent or received (§6.8): no new stream on it, and the flow ends once its
+    /// streams have.
+    Away,
+}
+
+/// A stream's state on one hop as RFC 9113 §5.1 has it, from the injector's end. Idle is a
+/// stream not yet in the map (the guest's) or not yet sent (the host's); push's reserved states
+/// never come, push being off (§8.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StreamState {
+    Open,
+    HalfClosedLocal,
+    HalfClosedRemote,
+    Closed,
+}
+
+impl StreamState {
+    /// This end sent END_STREAM.
+    fn sent_end(self) -> StreamState {
+        match self {
+            StreamState::Open => StreamState::HalfClosedLocal,
+            StreamState::HalfClosedRemote | StreamState::Closed => StreamState::Closed,
+            StreamState::HalfClosedLocal => StreamState::HalfClosedLocal,
+        }
+    }
+
+    /// The peer sent END_STREAM.
+    fn received_end(self) -> StreamState {
+        match self {
+            StreamState::Open => StreamState::HalfClosedRemote,
+            StreamState::HalfClosedLocal | StreamState::Closed => StreamState::Closed,
+            StreamState::HalfClosedRemote => StreamState::HalfClosedRemote,
+        }
+    }
+
+    /// The peer may still send on it.
+    fn receiving(self) -> bool {
+        matches!(self, StreamState::Open | StreamState::HalfClosedLocal)
+    }
+
+    /// This end may still send on it.
+    fn sending(self) -> bool {
+        matches!(self, StreamState::Open | StreamState::HalfClosedRemote)
+    }
+}
+
+/// A request's way to the host (R04).
+enum Upward {
+    /// Decoded, waiting for its leases or for room among the host's streams
+    /// (SETTINGS_MAX_CONCURRENT_STREAMS, §5.1.2).
+    Parked(Box<http2::Go>),
+    /// Its HEADERS sent on the host's stream `id`, which stands at `state`.
+    Sent { id: u32, state: StreamState },
+    /// Answered here and never sent: what the guest sends on it is dropped.
+    Answered,
+    /// A POST to a sign-in's token or revocation path (D242, step 8), its body of `length` octets
+    /// read whole before it is asked of `signin::ask`, as the HTTP/1.1 path reads one.
+    Reading {
+        go: Box<http2::Go>,
+        whole: Whole,
+        length: usize,
+    },
+    /// A sign-in's refresh, read whole and asked outside: its answer is given on the stream.
+    Refreshing,
+}
+
+/// A sign-in's token host's final response with a body, on its stream (D242, step 8; R04).
+enum TokenResponse {
+    /// Its head held and its body read whole as it comes, none of it to the guest before.
+    Reading {
+        fields: Vec<hpack::Field>,
+        body: Zeroizing<Vec<u8>>,
+    },
+    /// Its tokens asked of the run host to keep, their placeholders coming in the answer.
+    Capturing {
+        fields: Vec<hpack::Field>,
+        body: Zeroizing<Vec<u8>>,
+        tokens: signin::Tokens,
+    },
+    /// Written here, its tokens' places holding their placeholders: what goes to the guest is
+    /// none of the host's octets, which were given back to its windows as they were read.
+    Written,
+}
+
+/// What ends one direction's message once its DATA has gone (§8.1): END_STREAM, or a trailer
+/// section, encoded as it goes, as each hop's blocks are decoded in the order they are sent
+/// (§4.3).
+enum Last {
+    End,
+    Trailers(Vec<hpack::Field>),
+}
+
+/// Where a stream's response stands (§8.1): its final head awaited, informational ones passed
+/// on; or its body coming, after which a field block is its trailers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Down {
+    Head,
+    Body,
+}
+
+/// One of the guest's streams: its state on the guest's hop, its request's way to the host,
+/// each direction's DATA held while the next hop's windows are spent, and the values filled into
+/// its request, masked in its response.
+struct Stream {
+    guest: StreamState,
+    up: Upward,
+    up_data: Vec<u8>,
+    up_last: Option<Last>,
+    down: Down,
+    down_data: Vec<u8>,
+    down_last: Option<Last>,
+    mask: Mask,
+    /// Its response, where it is a token host's read whole.
+    token: Option<TokenResponse>,
+}
+
+impl Stream {
+    fn new(end_stream: bool) -> Stream {
+        Stream {
+            guest: if end_stream {
+                StreamState::HalfClosedRemote
+            } else {
+                StreamState::Open
+            },
+            up: Upward::Answered,
+            up_data: Vec::new(),
+            up_last: end_stream.then_some(Last::End),
+            down: Down::Head,
+            down_data: Vec::new(),
+            down_last: None,
+            mask: Mask::default(),
+            token: None,
+        }
+    }
+
+    /// What it holds of the guest's: its request's fields while parked, its DATA and trailers.
+    fn held(&self) -> usize {
+        let fields = |f: &[hpack::Field]| f.iter().map(hpack::Field::size).sum::<usize>();
+        let parked = match &self.up {
+            Upward::Parked(go) | Upward::Reading { go, .. } => fields(&go.fields),
+            _ => 0,
+        };
+        let trailers = match &self.up_last {
+            Some(Last::Trailers(f)) => fields(f),
+            _ => 0,
+        };
+        parked.saturating_add(trailers).saturating_add(self.up_data.len())
+    }
+}
+
+/// Which hop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Which {
+    Guest,
+    Host,
+}
+
+/// A stream error (§5.4.2).
+fn stream_error(stream: u32, code: Code, why: &'static str) -> http2::Error {
+    http2::Error {
+        scope: Scope::Stream(stream),
+        code,
+        why,
+    }
+}
+
+/// A PING (§6.7): answered on its own hop.
+fn ping(head: http2::Head, payload: &[u8], out: &mut Vec<u8>) -> Result<(), http2::Error> {
+    if head.stream != 0 {
+        return Err(http2::connection(Code::Protocol, "a PING on a stream"));
+    }
+    if payload.len() != 8 {
+        return Err(http2::connection(Code::FrameSize, "a PING not of eight octets"));
+    }
+    if head.flags & http2::ACK == 0 {
+        http2::ping_ack(payload, out);
+    }
+    Ok(())
+}
+
+/// `value`, a field's, its echoes of the values `mask` masks replaced.
+fn masked(mask: &mut Mask, value: &[u8], run: &Run<'_>) -> Zeroizing<Vec<u8>> {
+    let mut out = Zeroizing::new(Vec::with_capacity(value.len()));
+    let _ = mask.push(value, true, run, &mut |b| {
+        out.extend_from_slice(b);
+        Ok(())
+    });
+    let _ = mask.end_message(&mut |b| {
+        out.extend_from_slice(b);
+        Ok(())
+    });
+    out
+}
+
+/// An answer the injector makes as HTTP/1.1's bytes (a refusal's, `signin::refreshed`'s,
+/// `signin::REVOKED`), as an HTTP/2 stream carries it: its status as `:status` (RFC 9113
+/// §8.3.2), its fields lowered (§8.2.1) but the connection-specific ones (§8.2.2), and its body;
+/// none where it is no response.
+fn said_on_h2(response: &[u8]) -> Option<(Vec<hpack::Field>, &[u8])> {
+    let end = head_end(response).ok()??;
+    let (head, body) = response.split_at_checked(end)?;
+    let mut read = vec![httparse::EMPTY_HEADER; head.iter().filter(|&&b| b == b'\n').count()];
+    let mut parsed = httparse::Response::new(&mut read);
+    if !matches!(parsed.parse(head), Ok(httparse::Status::Complete(n)) if n == head.len()) {
+        return None;
+    }
+    let status = parsed.code?.to_string();
+    let mut fields = vec![hpack::Field::new(
+        b":status",
+        status.as_bytes(),
+        hpack::Indexing::Incremental,
+    )];
+    for h in parsed.headers.iter() {
+        let name = h.name.to_ascii_lowercase();
+        let connection = matches!(
+            name.as_str(),
+            "connection" | "keep-alive" | "proxy-connection" | "transfer-encoding" | "upgrade"
+        );
+        if !connection {
+            fields.push(hpack::Field::new(
+                name.as_bytes(),
+                h.value,
+                hpack::Indexing::Incremental,
+            ));
+        }
+    }
+    Some((fields, body))
+}
+
+/// An HTTP/2 request's fields, where they are a POST to sign-in `cli`'s token or revocation path
+/// with one Content-Length of no more than its connection holds (`TO_HOST`), as the HTTP/1.1 path
+/// reads a body whole (D242, step 8): what it is asked by, and its length. Anything else goes on as
+/// any request, its response read for tokens.
+fn token_post(cli: Cli, fields: &[hpack::Field]) -> Option<(Whole, usize)> {
+    let one = |name: &[u8]| {
+        let mut all = fields.iter().filter(|f| f.name == name);
+        match (all.next(), all.next()) {
+            (Some(f), None) => std::str::from_utf8(&f.value).ok(),
+            _ => None,
+        }
+    };
+    let (method, target) = (one(b":method")?, one(b":path")?);
+    let profile = signin::profile(cli);
+    let path = signin::path(target);
+    if !method.eq_ignore_ascii_case("POST") || (path != profile.token.path && path != profile.revoke.path) {
+        return None;
+    }
+    let length = one(b"content-length")?
+        .parse::<usize>()
+        .ok()
+        .filter(|&n| n <= crate::tcp::TO_HOST)?;
+    let content_type = fields
+        .iter()
+        .find(|f| f.name == b"content-type")
+        .map(|f| f.value.to_vec());
+    let whole = Whole {
+        cli,
+        method: method.to_string(),
+        target: target.to_string(),
+        content_type,
+    };
+    Some((whole, length))
+}
+
+/// What this side holds of a hop's peer's DATA (`http2::Holds`): `n`, what its connection holds
+/// that way (tcp.rs' `TO_HOST`, `TO_GUEST`), within a window's 2^31-1 (§6.9.1).
+fn holds(n: usize) -> http2::Holds {
+    let n = u32::try_from(n).unwrap_or(u32::MAX).min(http2::MOST_STREAM);
+    http2::Holds {
+        stream: n,
+        connection: n,
+    }
+}
+
+/// A granted host's flow over HTTP/2 (RFC 9113; D242, step 7): the guest's TLS ended here and
+/// the host's made from here, the injector an end of each hop, each with its own settings,
+/// windows and field compression (§4.3.1, §6.9). Each request's block is decoded on the guest's
+/// hop, filled in, and encoded anew on the host's; each response's decoded on the host's hop,
+/// its echoes masked, and encoded anew on the guest's. Host stream ids are given in the order
+/// requests go, so that a request parked on its lease holds back no other (§5.1.1).
+struct H2 {
+    sni: String,
+    guest: ServerConnection,
+    host: ClientConnection,
+    guest_hop: http2::Hop,
+    host_hop: http2::Hop,
+    guest_phase: Phase,
+    host_phase: Phase,
+    /// Each side's plaintext not yet framed.
+    from_guest: Vec<u8>,
+    from_host: Zeroizing<Vec<u8>>,
+    /// A field block coming from each, until its END_HEADERS (§6.10).
+    guest_block: Option<http2::Block>,
+    host_block: Option<http2::Block>,
+    /// The guest's streams by its ids, and the last it opened (§5.1.1).
+    streams: BTreeMap<u32, Stream>,
+    last_guest: u32,
+    /// The guest's stream each host stream carries, and the host stream id to be sent next.
+    by_host: BTreeMap<u32, u32>,
+    next_host: u32,
+    /// Each hop's frames, to go.
+    to_guest: Vec<u8>,
+    to_host: Zeroizing<Vec<u8>>,
+    /// Why the host's side failed: each request not yet sent is answered 502.
+    failed: Option<String>,
+    /// Whose sign-in's token host this is, where it is one (D242, step 8): no value is filled
+    /// toward it, and each stream's response is read whole for tokens.
+    sign_in: Option<Cli>,
+    /// Streams let go of while their sign-in's asks were under way, whose answers are to be
+    /// dropped (`SignIns::forget`) once the run is at hand.
+    gone: Vec<u32>,
+}
+
+impl H2 {
+    fn new(
+        sni: String,
+        guest: ServerConnection,
+        host: ClientConnection,
+        sign_in: Option<Cli>,
+        failed: Option<String>,
+    ) -> H2 {
+        // What each decoder lets its peer's table be: the protocol's initial size, which this
+        // side never changes (§6.5.2), so that no encoder's table is larger than the other hop's.
+        let table = http2::Settings::INITIAL.header_table_size as usize;
+        let mut h = H2 {
+            sni,
+            guest,
+            host,
+            guest_hop: http2::Hop::new(holds(crate::tcp::TO_HOST), table),
+            host_hop: http2::Hop::new(holds(crate::tcp::TO_GUEST), table),
+            guest_phase: Phase::Preface,
+            host_phase: if failed.is_some() {
+                Phase::Away
+            } else {
+                Phase::Settings
+            },
+            from_guest: Vec::new(),
+            from_host: Zeroizing::new(Vec::new()),
+            guest_block: None,
+            host_block: None,
+            streams: BTreeMap::new(),
+            last_guest: 0,
+            by_host: BTreeMap::new(),
+            next_host: 1,
+            to_guest: Vec::new(),
+            to_host: Zeroizing::new(Vec::new()),
+            failed,
+            sign_in,
+            gone: Vec::new(),
+        };
+        h.guest_hop.preface(End::Server, &mut h.to_guest);
+        if h.failed.is_none() {
+            h.host_hop.preface(End::Client, &mut h.to_host);
+        }
+        h
+    }
+
+    /// What it holds of the guest's bytes: its plaintext not yet framed, a block coming, and
+    /// each stream's.
+    fn held(&self) -> usize {
+        self.streams.values().fold(
+            self.from_guest
+                .len()
+                .saturating_add(self.guest_block.as_ref().map_or(0, http2::Block::held)),
+            |n, s| n.saturating_add(s.held()),
+        )
+    }
+
+    /// The guest's TLS bytes into its connection, its plaintext into `from_guest`; its TLS's
+    /// failure answered with its alert, the flow closing.
+    fn take_guest(&mut self, bytes: &[u8], q: &mut Queues<'_>) -> Result<(), Said> {
+        let mut rest = bytes;
+        while !rest.is_empty() {
+            let read = self.guest.read_tls(&mut rest);
+            let processed = read.as_ref().ok().map(|_| self.guest.process_new_packets());
+            let why = match (read, processed) {
+                (Ok(0), _) | (Ok(_), None) => break,
+                (Ok(_), Some(Ok(_))) => None,
+                (Err(e), _) => Some(e.to_string()),
+                (Ok(_), Some(Err(e))) => Some(e.to_string()),
+            };
+            if let Some(why) = why {
+                say(&self.sni, format_args!("the guest's TLS failed: {why}"));
+                self.host.send_close_notify();
+                return Err(
+                    match (send(&mut self.guest, q.to_guest), send(&mut self.host, q.to_host)) {
+                        (Ok(()), Ok(())) => Said::Close,
+                        _ => Said::Reset,
+                    },
+                );
+            }
+            if plain(&mut self.guest, &mut self.from_guest) {
+                // Its close_notify: it opens no stream more.
+                self.guest_phase = Phase::Away;
+            }
+        }
+        Ok(())
+    }
+
+    fn guest_bytes(&mut self, bytes: &[u8], run: &mut Run<'_>, q: &mut Queues<'_>) -> Said {
+        if let Err(said) = self.take_guest(bytes, q) {
+            return said;
+        }
+        self.serve(run, q)
+    }
+
+    /// The host's TLS bytes, its plaintext into `from_host`.
+    fn host_bytes(&mut self, bytes: &[u8], run: &mut Run<'_>, q: &mut Queues<'_>) -> Said {
+        if self.failed.is_some() {
+            return self.serve(run, q);
+        }
+        let mut rest = bytes;
+        while !rest.is_empty() {
+            let read = self.host.read_tls(&mut rest);
+            let processed = read.as_ref().ok().map(|_| self.host.process_new_packets());
+            match (read, processed) {
+                (Ok(0), _) | (Ok(_), None) => break,
+                (Ok(_), Some(Ok(_))) => {}
+                (Err(e), _) => return self.host_failed(e.to_string(), run, q),
+                (Ok(_), Some(Err(e))) => return self.host_failed(e.to_string(), run, q),
+            }
+            // Its plaintext taken as each record is, as rustls holds no more than its own bound;
+            // its close_notify read once its frames before it are (`serve`).
+            if plain(&mut self.host, &mut self.from_host) {
+                break;
+            }
+        }
+        self.serve(run, q)
+    }
+
+    /// The host's side has failed or ended: each stream whose response has not begun is
+    /// answered 502, one whose response has is reset, and the guest told the connection goes
+    /// (§6.8), as no request can reach the host.
+    fn host_failed(&mut self, why: String, run: &mut Run<'_>, q: &mut Queues<'_>) -> Said {
+        say(&self.sni, format_args!("the host's side ended: {why}"));
+        let _ = send(&mut self.host, q.to_host);
+        self.failed = Some(why.clone());
+        self.host_phase = Phase::Away;
+        let sent: Vec<(u32, Option<u32>, Down)> = self
+            .streams
+            .iter()
+            .filter_map(|(&gid, s)| match s.up {
+                // A token host's response held is not begun for the guest.
+                Upward::Sent { id, state } => {
+                    let down = match s.token {
+                        Some(TokenResponse::Reading { .. }) => Down::Head,
+                        _ => s.down,
+                    };
+                    Some((gid, (!state.receiving()).then_some(id), down))
+                }
+                _ => None,
+            })
+            .collect();
+        for (gid, ended, down) in sent {
+            match (ended, down) {
+                // Its response whole: it goes on to the guest, its request no further (§8.1).
+                (Some(id), _) => {
+                    self.by_host.remove(&id);
+                    self.host_hop.close(id);
+                    if let Some(s) = self.streams.get_mut(&gid) {
+                        s.up = Upward::Answered;
+                        self.guest_hop.released(gid, s.up_data.len(), &mut self.to_guest);
+                        s.up_data.clear();
+                        s.up_last = None;
+                    }
+                }
+                (None, Down::Head) => self.answer(gid, Refusal::Upstream(why.clone())),
+                (None, Down::Body) => self.reset(Which::Guest, gid, Code::Internal),
+            }
+        }
+        self.go_away_guest(Code::NoError);
+        self.serve(run, q)
+    }
+
+    /// Takes each side's frames, moves each stream as far as it goes, and sends what each hop
+    /// is to have; the connection ends once a hop has gone away and its streams have ended.
+    fn serve(&mut self, run: &mut Run<'_>, q: &mut Queues<'_>) -> Said {
+        let closed = self.failed.is_none() && plain(&mut self.host, &mut self.from_host);
+        if let Err((which, e)) = self
+            .frames(Which::Guest, run)
+            .and_then(|()| self.frames(Which::Host, run))
+        {
+            return self.fail(which, e, q);
+        }
+        if closed {
+            return self.host_failed("the host ended its TLS".into(), run, q);
+        }
+        let ids: Vec<u32> = self.streams.keys().copied().collect();
+        for gid in ids {
+            self.signing(gid, run);
+            self.go(gid, run);
+            self.flush_up(gid);
+            self.flush_down(gid);
+            self.reap(gid);
+        }
+        for gid in self.gone.drain(..) {
+            run.credentials.sign_ins.forget(signin::Asker {
+                flow: run.waiter,
+                stream: gid,
+            });
+        }
+        if self.streams.is_empty() && self.guest_phase == Phase::Away {
+            return self.close(q);
+        }
+        self.flush(q)
+    }
+
+    /// Each hop's frames to `to_guest` and `to_host`, and the TLS records each side is to have.
+    fn flush(&mut self, q: &mut Queues<'_>) -> Said {
+        let guest = self.guest.writer().write_all(&self.to_guest);
+        self.to_guest.clear();
+        let host = if self.failed.is_none() {
+            self.host.writer().write_all(&self.to_host)
+        } else {
+            Ok(())
+        };
+        self.to_host.clear();
+        match (
+            guest,
+            host,
+            send(&mut self.guest, q.to_guest),
+            send(&mut self.host, q.to_host),
+        ) {
+            (Ok(()), Ok(()), Ok(()), Ok(())) => Said::Going,
+            _ => Said::Reset,
+        }
+    }
+
+    /// Ends the flow: what each hop is to have, then each side's TLS.
+    fn close(&mut self, q: &mut Queues<'_>) -> Said {
+        if self.flush(q) == Said::Reset {
+            return Said::Reset;
+        }
+        self.guest.send_close_notify();
+        self.host.send_close_notify();
+        match (send(&mut self.guest, q.to_guest), send(&mut self.host, q.to_host)) {
+            (Ok(()), Ok(())) => Said::Close,
+            _ => Said::Reset,
+        }
+    }
+
+    /// A connection error (§5.4.1): a GOAWAY with its code to the hop that erred, the other told
+    /// the connection goes, and the flow ends.
+    fn fail(&mut self, which: Which, e: http2::Error, q: &mut Queues<'_>) -> Said {
+        say(
+            &self.sni,
+            format_args!("the {which:?}'s HTTP/2 failed ({:?}): {}", e.code, e.why),
+        );
+        match which {
+            Which::Guest => {
+                http2::goaway(self.last_guest, e.code as u32, &mut self.to_guest);
+                if self.failed.is_none() {
+                    http2::goaway(0, Code::NoError as u32, &mut self.to_host);
+                }
+            }
+            Which::Host => {
+                http2::goaway(0, e.code as u32, &mut self.to_host);
+                http2::goaway(self.last_guest, Code::Internal as u32, &mut self.to_guest);
+            }
+        }
+        self.close(q)
+    }
+
+    /// Tells the guest the connection goes, its streams up to its last taken (§6.8).
+    fn go_away_guest(&mut self, code: Code) {
+        if self.guest_phase != Phase::Away {
+            http2::goaway(self.last_guest, code as u32, &mut self.to_guest);
+            self.guest_phase = Phase::Away;
+        }
+    }
+
+    /// Every whole frame `which` sent; a stream error resets its stream, a connection error is
+    /// the caller's.
+    fn frames(&mut self, which: Which, run: &mut Run<'_>) -> Result<(), (Which, http2::Error)> {
+        if which == Which::Host && self.failed.is_some() {
+            self.from_host.clear();
+            return Ok(());
+        }
+        if which == Which::Guest && self.guest_phase == Phase::Preface {
+            let n = http2::PREFACE.len().min(self.from_guest.len());
+            if self.from_guest.get(..n) != http2::PREFACE.get(..n) {
+                return Err((
+                    which,
+                    http2::connection(Code::Protocol, "no HTTP/2 client preface"),
+                ));
+            }
+            if n < http2::PREFACE.len() {
+                return Ok(());
+            }
+            self.from_guest.drain(..n);
+            self.guest_phase = Phase::Settings;
+        }
+        let most = http2::Settings::INITIAL.max_frame_size;
+        let mut at = 0usize;
+        loop {
+            let buf: &[u8] = match which {
+                Which::Guest => &self.from_guest,
+                Which::Host => &self.from_host,
+            };
+            let rest = buf.get(at..).unwrap_or_default();
+            let Some((head, payload)) = http2::frame(rest, most).map_err(|e| (which, e))? else {
+                break;
+            };
+            let payload = Zeroizing::new(payload.to_vec());
+            at = at.saturating_add(http2::HEAD).saturating_add(payload.len());
+            let done = match which {
+                Which::Guest => self.guest_frame(head, &payload, run),
+                Which::Host => self.host_frame(head, &payload, run),
+            };
+            match done {
+                Ok(()) => {}
+                Err(http2::Error {
+                    scope: Scope::Stream(id),
+                    code,
+                    why,
+                }) => {
+                    say(
+                        &self.sni,
+                        format_args!("{which:?} stream {id} reset ({code:?}): {why}"),
+                    );
+                    self.reset(which, id, code);
+                }
+                Err(e) => return Err((which, e)),
+            }
+        }
+        let buf = match which {
+            Which::Guest => &mut self.from_guest,
+            Which::Host => &mut *self.from_host,
+        };
+        buf.drain(..at.min(buf.len()));
+        Ok(())
+    }
+
+    /// A stream ended by an error on `which`'s hop (its id there): reset there with `code`, and
+    /// on the other hop with CANCEL toward the host or INTERNAL_ERROR toward the guest.
+    fn reset(&mut self, which: Which, id: u32, code: Code) {
+        let gid = match which {
+            Which::Guest => Some(id),
+            Which::Host => self.by_host.get(&id).copied(),
+        };
+        let stream = gid.and_then(|gid| Some((gid, self.streams.remove(&gid)?)));
+        if let Some((gid, s)) = stream {
+            let (to_guest, to_host) = match which {
+                Which::Guest => (code, Code::Cancel),
+                Which::Host => (Code::Internal, code),
+            };
+            let host_open = matches!(s.up, Upward::Sent { state, .. } if state != StreamState::Closed);
+            let host_id = match s.up {
+                Upward::Sent { id, .. } => Some(id),
+                _ => None,
+            };
+            self.forget(gid, &s);
+            if s.guest != StreamState::Closed {
+                http2::rst_stream(gid, to_guest as u32, &mut self.to_guest);
+            }
+            if let (true, Some(h)) = (host_open && self.failed.is_none(), host_id) {
+                http2::rst_stream(h, to_host as u32, &mut self.to_host);
+            }
+        } else {
+            let out = match which {
+                Which::Guest => &mut self.to_guest,
+                Which::Host => &mut *self.to_host,
+            };
+            http2::rst_stream(id, code as u32, out);
+        }
+    }
+
+    /// A stream let go of: what it held given back to its peers' windows, and each hop's state
+    /// of it dropped.
+    fn forget(&mut self, gid: u32, s: &Stream) {
+        if matches!(s.up, Upward::Refreshing) || matches!(s.token, Some(TokenResponse::Capturing { .. })) {
+            self.gone.push(gid);
+        }
+        self.guest_hop.released(gid, s.up_data.len(), &mut self.to_guest);
+        self.guest_hop.close(gid);
+        if let Upward::Sent { id, .. } = s.up {
+            self.host_hop.released(id, s.down_data.len(), &mut self.to_host);
+            self.host_hop.close(id);
+            self.by_host.remove(&id);
+        }
+    }
+
+    /// The guest's stream `gid` refused, never processed, which its client may retry (§8.7).
+    fn refuse_stream(&mut self, gid: u32) {
+        if let Some(s) = self.streams.remove(&gid) {
+            self.forget(gid, &s);
+        }
+        http2::rst_stream(gid, Code::RefusedStream as u32, &mut self.to_guest);
+    }
+
+    /// A stream ended on both hops is let go of.
+    fn reap(&mut self, gid: u32) {
+        let done = self.streams.get(&gid).is_some_and(|s| {
+            s.guest == StreamState::Closed
+                && !matches!(s.up, Upward::Sent { state, .. } if state != StreamState::Closed)
+        });
+        if done && let Some(s) = self.streams.remove(&gid) {
+            self.forget(gid, &s);
+        }
+    }
+
+    fn guest_frame(
+        &mut self,
+        head: http2::Head,
+        payload: &[u8],
+        run: &mut Run<'_>,
+    ) -> Result<(), http2::Error> {
+        if let Some(mut block) = self.guest_block.take() {
+            let most = crate::tcp::TO_HOST.saturating_sub(self.held());
+            if block.continued(head, payload, most)? {
+                return self.request_block(block, run);
+            }
+            self.guest_block = Some(block);
+            return Ok(());
+        }
+        if self.guest_phase == Phase::Settings {
+            if head.kind != http2::SETTINGS || head.flags & http2::ACK != 0 {
+                return Err(http2::connection(
+                    Code::Protocol,
+                    "the guest's preface not followed by its SETTINGS",
+                ));
+            }
+            self.guest_phase = Phase::Open;
+        }
+        match head.kind {
+            http2::SETTINGS => self.guest_hop.settings(head, payload, &mut self.to_guest),
+            http2::WINDOW_UPDATE => self.window_update(Which::Guest, head, payload),
+            http2::PING => ping(head, payload, &mut self.to_guest),
+            http2::HEADERS => {
+                let (block, whole) = http2::Block::headers(head, payload)?;
+                if whole {
+                    return self.request_block(block, run);
+                }
+                self.guest_block = Some(block);
+                Ok(())
+            }
+            http2::CONTINUATION => Err(http2::connection(Code::Protocol, "a CONTINUATION after no block")),
+            http2::DATA => self.guest_data(head, payload),
+            http2::RST_STREAM => self.guest_rst(head, payload),
+            http2::GOAWAY => {
+                if head.stream != 0 || payload.len() < 8 {
+                    return Err(http2::connection(Code::Protocol, "a GOAWAY on a stream or short"));
+                }
+                self.guest_phase = Phase::Away;
+                Ok(())
+            }
+            http2::PUSH_PROMISE => Err(http2::connection(
+                Code::Protocol,
+                "a PUSH_PROMISE from a client (§8.4)",
+            )),
+            // PRIORITY is deprecated (§5.3.2) and every other type unknown here (§5.5).
+            _ => Ok(()),
+        }
+    }
+
+    /// A WINDOW_UPDATE on `which`'s hop; one on a stream let go of is passed over, its window
+    /// gone with it (§6.9).
+    fn window_update(&mut self, which: Which, head: http2::Head, payload: &[u8]) -> Result<(), http2::Error> {
+        let (hop, known) = match which {
+            Which::Guest => (&mut self.guest_hop, self.streams.contains_key(&head.stream)),
+            Which::Host => (&mut self.host_hop, self.by_host.contains_key(&head.stream)),
+        };
+        if head.stream != 0 && !known {
+            return if payload.len() == 4 {
+                Ok(())
+            } else {
+                Err(http2::connection(
+                    Code::FrameSize,
+                    "a WINDOW_UPDATE not of four octets",
+                ))
+            };
+        }
+        hop.window_update(head, payload)
+    }
+
+    fn guest_data(&mut self, head: http2::Head, payload: &[u8]) -> Result<(), http2::Error> {
+        if head.stream == 0 {
+            return Err(http2::connection(Code::Protocol, "DATA on stream 0"));
+        }
+        self.guest_hop.received(head)?;
+        let data = http2::data(head, payload)?;
+        let length = head.length as usize;
+        let Some(s) = self.streams.get_mut(&head.stream) else {
+            if head.stream > self.last_guest {
+                return Err(http2::connection(Code::Protocol, "DATA on an idle stream"));
+            }
+            // A stream let go of here: its DATA dropped, its credit given back.
+            self.guest_hop.released(head.stream, length, &mut self.to_guest);
+            self.guest_hop.close(head.stream);
+            return Ok(());
+        };
+        if !s.guest.receiving() {
+            return Err(stream_error(
+                head.stream,
+                Code::StreamClosed,
+                "DATA after its END_STREAM",
+            ));
+        }
+        let end = head.flags & http2::END_STREAM != 0;
+        if end {
+            s.guest = s.guest.received_end();
+        }
+        let mut dropped = length.saturating_sub(data.len());
+        if matches!(s.up, Upward::Answered) {
+            dropped = length;
+        } else {
+            s.up_data.extend_from_slice(data);
+            if end {
+                s.up_last = Some(Last::End);
+            }
+        }
+        self.guest_hop.released(head.stream, dropped, &mut self.to_guest);
+        Ok(())
+    }
+
+    fn guest_rst(&mut self, head: http2::Head, payload: &[u8]) -> Result<(), http2::Error> {
+        let (true, Some(code)) = (
+            head.stream != 0,
+            http2::word(payload, 0).filter(|_| payload.len() == 4),
+        ) else {
+            return Err(http2::connection(
+                Code::FrameSize,
+                "a RST_STREAM on stream 0 or not of four octets",
+            ));
+        };
+        if head.stream > self.last_guest {
+            return Err(http2::connection(
+                Code::Protocol,
+                "a RST_STREAM on an idle stream",
+            ));
+        }
+        if let Some(s) = self.streams.remove(&head.stream) {
+            self.forget(head.stream, &s);
+            if let Upward::Sent { id, state } = s.up
+                && state != StreamState::Closed
+                && self.failed.is_none()
+            {
+                http2::rst_stream(id, code, &mut self.to_host);
+            }
+        }
+        Ok(())
+    }
+
+    /// A request's block, or its trailers (§8.1): a new stream's request held to RFC 9113 and
+    /// decided by `http2::request`, answered here where it is refused, parked otherwise; its
+    /// decoded list past what the connection holds less what it holds already answered 431,
+    /// the block decoded all the same (§10.5.1).
+    fn request_block(&mut self, block: http2::Block, run: &mut Run<'_>) -> Result<(), http2::Error> {
+        let gid = block.stream;
+        let most = crate::tcp::TO_HOST.saturating_sub(self.held());
+        let decoded = block.decode(&mut self.guest_hop.decoder, most)?;
+        if let Some(s) = self.streams.get_mut(&gid) {
+            if !s.guest.receiving() {
+                return Err(stream_error(
+                    gid,
+                    Code::StreamClosed,
+                    "a field block after its END_STREAM",
+                ));
+            }
+            if !block.end_stream {
+                return Err(stream_error(
+                    gid,
+                    Code::Protocol,
+                    "a trailer section without END_STREAM",
+                ));
+            }
+            let hpack::Decoded::Fields(fields) = decoded else {
+                return Err(stream_error(
+                    gid,
+                    Code::EnhanceYourCalm,
+                    "a trailer section past what the connection holds",
+                ));
+            };
+            s.guest = s.guest.received_end();
+            if !matches!(s.up, Upward::Answered) {
+                s.up_last = Some(Last::Trailers(fields));
+            }
+            return Ok(());
+        }
+        if gid.is_multiple_of(2) || gid <= self.last_guest {
+            return Err(http2::connection(
+                Code::Protocol,
+                "a stream the guest cannot open (§5.1.1)",
+            ));
+        }
+        self.last_guest = gid;
+        if self.guest_phase == Phase::Away {
+            http2::rst_stream(gid, Code::RefusedStream as u32, &mut self.to_guest);
+            return Ok(());
+        }
+        self.streams.insert(gid, Stream::new(block.end_stream));
+        let fields = match decoded {
+            hpack::Decoded::TooLarge => {
+                self.answer(gid, Refusal::TooLarge);
+                return Ok(());
+            }
+            hpack::Decoded::Fields(fields) => fields,
+        };
+        let go = match http2::request(fields, &run.credentials.grants, &self.sni) {
+            http2::Request::Malformed(why) => return Err(stream_error(gid, Code::Protocol, why)),
+            http2::Request::Misdirected { host } => {
+                let sni = self.sni.clone();
+                self.answer(gid, Refusal::Misdirected { sni, host });
+                return Ok(());
+            }
+            http2::Request::Go(go) => go,
+        };
+        let mut go = go;
+        if let Some(cli) = self.sign_in {
+            // A sign-in's token host (D242, step 8), as the HTTP/1.1 path has it: no value goes to
+            // it, its responses are asked as their senders write them (RFC 9110 §12.5.3), so that
+            // their tokens can be read, and a POST to its token or revocation path is read whole,
+            // as a refresh or a revocation is answered outside.
+            go.fills.clear();
+            go.fields.retain(|f| f.name != b"accept-encoding");
+            go.fields.push(hpack::Field::new(
+                b"accept-encoding",
+                b"identity",
+                hpack::Indexing::Incremental,
+            ));
+            if let Some((whole, length)) = token_post(cli, &go.fields) {
+                if let Some(s) = self.streams.get_mut(&gid) {
+                    s.up = Upward::Reading {
+                        go: Box::new(go),
+                        whole,
+                        length,
+                    };
+                }
+                return Ok(());
+            }
+        }
+        let path = go
+            .fields
+            .iter()
+            .find(|f| f.name == b":path")
+            .map(|f| String::from_utf8_lossy(&f.value).into_owned())
+            .unwrap_or_default();
+        if go.fills.iter().any(|f| mints(run, &f.reference, &go.host, &path)) {
+            self.answer(gid, Refusal::Mints { host: go.host });
+            return Ok(());
+        }
+        if let Some(s) = self.streams.get_mut(&gid) {
+            s.up = Upward::Parked(Box::new(go));
+        }
+        Ok(())
+    }
+
+    /// The guest's stream `gid` answered here with `refusal`'s status and text, its request
+    /// never sent on (or no more), what it held of the guest's let go.
+    fn answer(&mut self, gid: u32, refusal: Refusal) {
+        let (status, _) = refusal.status();
+        say(
+            &self.sni,
+            format_args!("stream {gid} answered {status}: {refusal}"),
+        );
+        self.answer_with(gid, &refusal.response());
+    }
+
+    /// The guest's stream `gid` answered here with `response`, which the injector makes as
+    /// HTTP/1.1's bytes (`said_on_h2`): a refusal's, or a sign-in's refresh or revocation answered
+    /// outside, so that each says on a stream what the HTTP/1.1 path says. Its request is never
+    /// sent on, or no more (its host stream cancelled), and what it held of the guest's is let go.
+    fn answer_with(&mut self, gid: u32, response: &[u8]) {
+        let Some((fields, body)) = said_on_h2(response) else {
+            return self.reset(Which::Guest, gid, Code::Internal);
+        };
+        let Some(s) = self.streams.get_mut(&gid) else {
+            return;
+        };
+        if let Upward::Sent { id, state } = s.up {
+            if state.receiving() && self.failed.is_none() {
+                http2::rst_stream(id, Code::Cancel as u32, &mut self.to_host);
+            }
+            self.by_host.remove(&id);
+            self.host_hop.close(id);
+        }
+        let mut block = Vec::new();
+        self.guest_hop.encoder.encode(&fields, &mut block);
+        http2::headers(
+            gid,
+            &block,
+            false,
+            self.guest_hop.peer.max_frame_size,
+            &mut self.to_guest,
+        );
+        self.guest_hop.released(gid, s.up_data.len(), &mut self.to_guest);
+        s.up_data.clear();
+        s.up_last = None;
+        s.up = Upward::Answered;
+        s.down = Down::Body;
+        s.down_data = body.to_vec();
+        s.down_last = Some(Last::End);
+        s.token = None;
+    }
+
+    /// A token host's stream (D242, step 8) moved as far as its sign-in's asks let it: a POST read
+    /// whole once its body has come; a refresh's or a capture's answer, once it has come, given on
+    /// the stream.
+    fn signing(&mut self, gid: u32, run: &mut Run<'_>) {
+        let asker = signin::Asker {
+            flow: run.waiter,
+            stream: gid,
+        };
+        let Some(s) = self.streams.get(&gid) else {
+            return;
+        };
+        if matches!(s.token, Some(TokenResponse::Capturing { .. })) {
+            if let Some(answer) = run.credentials.sign_ins.take(asker) {
+                self.captured(gid, answer, run);
+            }
+        } else if matches!(s.up, Upward::Refreshing) {
+            if let Some(answer) = run.credentials.sign_ins.take(asker) {
+                self.refreshed(gid, answer, run);
+            }
+        } else if matches!(s.up, Upward::Reading { .. }) && !s.guest.receiving() {
+            self.read_whole(gid, run);
+        }
+    }
+
+    /// A sign-in's POST, its body come whole: a refresh of the sign-in's placeholder asked
+    /// outside, a revocation of one answered here, anything else parked to go on as any request.
+    /// A body whose length is not its Content-Length is malformed (RFC 9113 §8.1.1).
+    fn read_whole(&mut self, gid: u32, run: &mut Run<'_>) {
+        let Some(s) = self.streams.get_mut(&gid) else {
+            return;
+        };
+        let Upward::Reading { go, whole, length } = std::mem::replace(&mut s.up, Upward::Answered) else {
+            return;
+        };
+        if s.up_data.len() != length {
+            return self.reset(Which::Guest, gid, Code::Protocol);
+        }
+        match ask_whole(&whole, &go.host, &s.up_data, run) {
+            None | Some((_, signin::Ask::Pass)) => s.up = Upward::Parked(go),
+            Some((index, signin::Ask::Refresh(_))) => {
+                let asker = signin::Asker {
+                    flow: run.waiter,
+                    stream: gid,
+                };
+                match run.credentials.sign_ins.refresh(index, asker) {
+                    Ok(()) => {
+                        self.guest_hop.released(gid, s.up_data.len(), &mut self.to_guest);
+                        s.up_data.clear();
+                        s.up_last = None;
+                        s.up = Upward::Refreshing;
+                    }
+                    Err(why) => self.answer(gid, Refusal::Declined { refresh: true, why }),
+                }
+            }
+            Some((index, signin::Ask::Revoke(_))) => {
+                revoke_here(index, &go.host, run);
+                self.answer_with(gid, signin::REVOKED);
+            }
+        }
+    }
+
+    /// A refresh's answer from outside, given on its stream as the HTTP/1.1 path gives it; a
+    /// refusal answered on the stream alone.
+    fn refreshed(&mut self, gid: u32, answer: signin::Answer, run: &mut Run<'_>) {
+        let body = match answer {
+            signin::Answer::Refreshed(body) => body,
+            signin::Answer::Declined(why) => {
+                return self.answer(gid, Refusal::Declined { refresh: true, why });
+            }
+            // Not a refresh's answer: none is this stream's.
+            signin::Answer::Captured => return,
+        };
+        match refresh_answer(&body, self.sign_in, run) {
+            Ok((sign_in, response)) => {
+                self.answer_with(gid, &response);
+                run.audit.push(Audit {
+                    host: self.sni.clone(),
+                    reference: sign_in,
+                    what: Did::Refreshed,
+                    at: SystemTime::now(),
+                });
+            }
+            Err(refusal) => self.answer(gid, refusal),
+        }
+    }
+
+    /// A token host's response on stream `gid`, its END_STREAM come: one naming no token given to
+    /// the guest as it came; one with tokens held while they are asked outside; one that cannot
+    /// be read refused on its stream, none of it passed on.
+    fn finish_token(&mut self, gid: u32, run: &mut Run<'_>) {
+        let asker = signin::Asker {
+            flow: run.waiter,
+            stream: gid,
+        };
+        let Some(s) = self.streams.get_mut(&gid) else {
+            return;
+        };
+        let Some(TokenResponse::Reading { fields, body }) = s.token.take() else {
+            return;
+        };
+        match capture_tokens(&body, self.sign_in, asker, run) {
+            Ok(None) => self.give(gid, fields, &body),
+            Ok(Some(tokens)) => s.token = Some(TokenResponse::Capturing { fields, body, tokens }),
+            Err(refusal) => self.answer(gid, refusal),
+        }
+    }
+
+    /// A capture's answer: the token response given to the guest on its stream with the
+    /// sign-in's placeholders in its tokens' places, its real tokens wiped as they drop here; or
+    /// refused on its stream alone.
+    fn captured(&mut self, gid: u32, answer: signin::Answer, run: &mut Run<'_>) {
+        match answer {
+            signin::Answer::Captured => {}
+            signin::Answer::Declined(why) => {
+                return self.answer(gid, Refusal::Declined { refresh: false, why });
+            }
+            // Not a capture's answer: none is this stream's.
+            signin::Answer::Refreshed(_) => return,
+        }
+        let Some(s) = self.streams.get_mut(&gid) else {
+            return;
+        };
+        let Some(TokenResponse::Capturing { fields, body, tokens }) = s.token.take() else {
+            return;
+        };
+        match capture_written(&body, &tokens, self.sign_in, run) {
+            Ok((sign_in, written)) => {
+                self.give(gid, fields, &written);
+                run.audit.push(Audit {
+                    host: self.sni.clone(),
+                    reference: sign_in,
+                    what: Did::Captured,
+                    at: SystemTime::now(),
+                });
+            }
+            Err(refusal) => self.answer(gid, refusal),
+        }
+    }
+
+    /// A token host's response read whole, to the guest on its stream: its head as it came but
+    /// for its Content-Length, which says `body`'s length (RFC 9113 §8.1.1), then `body` and its
+    /// END_STREAM or the trailers that came.
+    fn give(&mut self, gid: u32, mut fields: Vec<hpack::Field>, body: &[u8]) {
+        let Some(s) = self.streams.get_mut(&gid) else {
+            return;
+        };
+        fields.retain(|f| f.name != b"content-length");
+        fields.push(hpack::Field::new(
+            b"content-length",
+            body.len().to_string().as_bytes(),
+            hpack::Indexing::Incremental,
+        ));
+        if s.guest.sending() {
+            let mut block = Vec::new();
+            self.guest_hop.encoder.encode(&fields, &mut block);
+            http2::headers(
+                gid,
+                &block,
+                false,
+                self.guest_hop.peer.max_frame_size,
+                &mut self.to_guest,
+            );
+        }
+        s.down_data = body.to_vec();
+        s.down_last.get_or_insert(Last::End);
+        s.token = Some(TokenResponse::Written);
+    }
+
+    /// What the streams hold of token responses read whole: given back to the host's windows as
+    /// read, they are bounded together by what the connection holds toward the guest (`TO_GUEST`),
+    /// as the HTTP/1.1 path's one is.
+    fn token_bodies(&self) -> usize {
+        self.streams
+            .values()
+            .map(|s| match &s.token {
+                Some(TokenResponse::Reading { body, .. } | TokenResponse::Capturing { body, .. }) => {
+                    body.len()
+                }
+                _ => 0,
+            })
+            .fold(0, usize::saturating_add)
+    }
+
+    /// A parked request goes once each value it carries is leased and the host has room for
+    /// another stream: encoded on the host's hop on the next host stream, each fill audited;
+    /// answered 503 where a lease is refused, 502 where the host's side failed, and refused
+    /// (§8.7) where the host has gone away.
+    fn go(&mut self, gid: u32, run: &mut Run<'_>) {
+        let Some(Upward::Parked(go)) = self.streams.get(&gid).map(|s| &s.up) else {
+            return;
+        };
+        let references: Vec<String> = go.references().into_iter().map(str::to_string).collect();
+        if let Some(why) = self.failed.clone() {
+            return self.answer(gid, Refusal::Upstream(why));
+        }
+        if self.host_phase == Phase::Away {
+            return self.refuse_stream(gid);
+        }
+        let mut waiting = false;
+        for reference in references {
+            match run.credentials.leases.ask(&reference, run.waiter, run.now) {
+                Asked::Held(_) => {}
+                Asked::Waiting => waiting = true,
+                Asked::Refused(why) => return self.answer(gid, Refusal::Unleased { reference, why }),
+            }
+        }
+        let open = self
+            .streams
+            .values()
+            .filter(|s| matches!(s.up, Upward::Sent { state, .. } if state != StreamState::Closed))
+            .count();
+        let room = self
+            .host_hop
+            .peer
+            .max_concurrent_streams
+            .is_none_or(|most| open < most as usize);
+        if waiting || !room {
+            return;
+        }
+        let id = self.next_host;
+        if id > http2::MOST_STREAM {
+            // The host's stream ids spent (§5.1.1): a new connection is the guest's to make.
+            return self.refuse_stream(gid);
+        }
+        let Some(s) = self.streams.get_mut(&gid) else {
+            return;
+        };
+        let Upward::Parked(go) = std::mem::replace(&mut s.up, Upward::Answered) else {
+            return;
+        };
+        let leases = &run.credentials.leases;
+        let Some(block) = go.encode(&mut self.host_hop.encoder, |r| leases.held(r, run.now)) else {
+            let reference = go
+                .references()
+                .first()
+                .map_or_else(String::new, |r| r.to_string());
+            let why = lease::Refusal::Lapsed;
+            return self.answer(gid, Refusal::Unleased { reference, why });
+        };
+        let end = !s.guest.receiving() && s.up_data.is_empty() && matches!(s.up_last, Some(Last::End));
+        if end {
+            s.up_last = None;
+        }
+        http2::headers(
+            id,
+            &block,
+            end,
+            self.host_hop.peer.max_frame_size,
+            &mut self.to_host,
+        );
+        drop(block);
+        self.next_host = id.saturating_add(2);
+        let at = SystemTime::now();
+        s.mask.filled.clear();
+        for fill in &go.fills {
+            if !s.mask.filled.iter().any(|(r, _)| r == &fill.reference) {
+                run.audit.push(Audit {
+                    host: go.host.clone(),
+                    reference: fill.reference.clone(),
+                    what: Did::Filled,
+                    at,
+                });
+                s.mask.filled.push((fill.reference.clone(), 0));
+            }
+        }
+        s.up = Upward::Sent {
+            id,
+            state: if end {
+                StreamState::HalfClosedLocal
+            } else {
+                StreamState::Open
+            },
+        };
+        self.by_host.insert(id, gid);
+    }
+
+    /// The guest's DATA held for a sent request, to the host as its windows let it, then its
+    /// END_STREAM or trailers; each octet sent given back to the guest's window.
+    fn flush_up(&mut self, gid: u32) {
+        let Some(s) = self.streams.get_mut(&gid) else {
+            return;
+        };
+        let Upward::Sent { id, state } = &mut s.up else {
+            return;
+        };
+        if !state.sending() || (s.up_data.is_empty() && s.up_last.is_none()) {
+            return;
+        }
+        let end = matches!(s.up_last, Some(Last::End));
+        let n = self.host_hop.send_data(*id, &s.up_data, end, &mut self.to_host);
+        s.up_data.drain(..n.min(s.up_data.len()));
+        self.guest_hop.released(gid, n, &mut self.to_guest);
+        if !s.up_data.is_empty() {
+            return;
+        }
+        match s.up_last.take() {
+            Some(Last::End) => *state = state.sent_end(),
+            Some(Last::Trailers(fields)) => {
+                let mut block = Zeroizing::new(Vec::new());
+                self.host_hop.encoder.encode(&fields, &mut block);
+                http2::headers(
+                    *id,
+                    &block,
+                    true,
+                    self.host_hop.peer.max_frame_size,
+                    &mut self.to_host,
+                );
+                *state = state.sent_end();
+            }
+            None => {}
+        }
+    }
+
+    /// A stream's response DATA held, to the guest as its windows let it, then its END_STREAM
+    /// or trailers; each octet sent given back to the host's window. A response answered here
+    /// before its request ended ends the stream (§8.1: RST_STREAM NO_ERROR).
+    fn flush_down(&mut self, gid: u32) {
+        let Some(s) = self.streams.get_mut(&gid) else {
+            return;
+        };
+        let held = matches!(
+            s.token,
+            Some(TokenResponse::Reading { .. } | TokenResponse::Capturing { .. })
+        );
+        if held || !s.guest.sending() || (s.down_data.is_empty() && s.down_last.is_none()) {
+            return;
+        }
+        let end = matches!(s.down_last, Some(Last::End));
+        let n = self
+            .guest_hop
+            .send_data(gid, &s.down_data, end, &mut self.to_guest);
+        s.down_data.drain(..n.min(s.down_data.len()));
+        if let (Upward::Sent { id, .. }, None) = (&s.up, &s.token) {
+            self.host_hop.released(*id, n, &mut self.to_host);
+        }
+        if !s.down_data.is_empty() {
+            return;
+        }
+        match s.down_last.take() {
+            Some(Last::End) => {}
+            Some(Last::Trailers(fields)) => {
+                let mut block = Vec::new();
+                self.guest_hop.encoder.encode(&fields, &mut block);
+                http2::headers(
+                    gid,
+                    &block,
+                    true,
+                    self.guest_hop.peer.max_frame_size,
+                    &mut self.to_guest,
+                );
+            }
+            None => return,
+        }
+        s.guest = s.guest.sent_end();
+        if matches!(s.up, Upward::Answered) && s.guest.receiving() {
+            http2::rst_stream(gid, Code::NoError as u32, &mut self.to_guest);
+            s.guest = StreamState::Closed;
+        }
+    }
+
+    fn host_frame(
+        &mut self,
+        head: http2::Head,
+        payload: &[u8],
+        run: &mut Run<'_>,
+    ) -> Result<(), http2::Error> {
+        if let Some(mut block) = self.host_block.take() {
+            if block.continued(head, payload, crate::tcp::TO_GUEST)? {
+                return self.response_block(block, run);
+            }
+            self.host_block = Some(block);
+            return Ok(());
+        }
+        if self.host_phase == Phase::Settings {
+            if head.kind != http2::SETTINGS || head.flags & http2::ACK != 0 {
+                return Err(http2::connection(
+                    Code::Protocol,
+                    "the host's preface is no SETTINGS",
+                ));
+            }
+            self.host_phase = Phase::Open;
+        }
+        match head.kind {
+            http2::SETTINGS => self.host_hop.settings(head, payload, &mut self.to_host),
+            http2::WINDOW_UPDATE => self.window_update(Which::Host, head, payload),
+            http2::PING => ping(head, payload, &mut self.to_host),
+            http2::HEADERS => {
+                let (block, whole) = http2::Block::headers(head, payload)?;
+                if whole {
+                    return self.response_block(block, run);
+                }
+                self.host_block = Some(block);
+                Ok(())
+            }
+            http2::CONTINUATION => Err(http2::connection(Code::Protocol, "a CONTINUATION after no block")),
+            http2::DATA => self.host_data(head, payload, run),
+            http2::RST_STREAM => self.host_rst(head, payload),
+            http2::GOAWAY => self.host_goaway(head, payload),
+            http2::PUSH_PROMISE => Err(http2::connection(
+                Code::Protocol,
+                "a PUSH_PROMISE with push off (§8.4)",
+            )),
+            // PRIORITY is deprecated (§5.3.2) and every other type unknown here (§5.5).
+            _ => Ok(()),
+        }
+    }
+
+    /// The host's stream `hid`'s guest stream, where it is still carried: none for one let go
+    /// of; an idle stream's is a connection error (§5.1).
+    fn carried(&self, hid: u32) -> Result<Option<u32>, http2::Error> {
+        if hid.is_multiple_of(2) || hid >= self.next_host {
+            return Err(http2::connection(
+                Code::Protocol,
+                "a frame on a stream the injector never opened",
+            ));
+        }
+        Ok(self.by_host.get(&hid).copied())
+    }
+
+    /// A response's block (§8.1), or its trailers: decoded on the host's hop, its echoes masked,
+    /// and encoded on the guest's, in order with every other block that hop is sent.
+    fn response_block(&mut self, block: http2::Block, run: &mut Run<'_>) -> Result<(), http2::Error> {
+        let hid = block.stream;
+        let decoded = block.decode(&mut self.host_hop.decoder, crate::tcp::TO_GUEST)?;
+        let Some(gid) = self.carried(hid)? else {
+            return Ok(());
+        };
+        let Some(s) = self.streams.get_mut(&gid) else {
+            return Ok(());
+        };
+        let Upward::Sent { state, .. } = &mut s.up else {
+            return Ok(());
+        };
+        if !state.receiving() {
+            return Err(stream_error(
+                hid,
+                Code::StreamClosed,
+                "a field block after its END_STREAM",
+            ));
+        }
+        let hpack::Decoded::Fields(mut fields) = decoded else {
+            return Err(stream_error(
+                hid,
+                Code::Internal,
+                "a response's fields past what the connection holds",
+            ));
+        };
+        let trailers = s.down == Down::Body;
+        if trailers && !block.end_stream {
+            return Err(stream_error(
+                hid,
+                Code::Protocol,
+                "a trailer section without END_STREAM",
+            ));
+        }
+        if block.end_stream {
+            *state = state.received_end();
+        }
+        if trailers {
+            let Stream { mask, down_data, .. } = &mut *s;
+            let _ = mask.end_message(&mut |b| {
+                down_data.extend_from_slice(b);
+                Ok(())
+            });
+        }
+        for f in &mut fields {
+            f.value = masked(&mut s.mask, &f.value, run);
+        }
+        if trailers {
+            s.down_last = Some(Last::Trailers(fields));
+            if matches!(s.token, Some(TokenResponse::Reading { .. })) {
+                self.finish_token(gid, run);
+            }
+            return Ok(());
+        }
+        let informational = fields
+            .iter()
+            .find(|f| f.name == b":status")
+            .is_some_and(|f| f.value.first() == Some(&b'1'));
+        if !informational {
+            s.down = Down::Body;
+        }
+        // A sign-in's token host's final response with a body is read whole before any of it goes,
+        // so that its tokens are taken outside (D242, step 8); one coded otherwise than as its
+        // sender wrote it is refused on its stream, as its tokens could not be found.
+        if self.sign_in.is_some() && !informational && !block.end_stream {
+            let readable = signin::readable_fields(fields.iter().map(|f| (&f.name[..], &f.value[..])));
+            match readable {
+                Ok(()) => {
+                    s.token = Some(TokenResponse::Reading {
+                        fields,
+                        body: Zeroizing::new(Vec::new()),
+                    });
+                }
+                Err(why) => self.answer(gid, Refusal::SignIn(why)),
+            }
+            return Ok(());
+        }
+        if !s.guest.sending() {
+            return Ok(());
+        }
+        let mut out = Vec::new();
+        self.guest_hop.encoder.encode(&fields, &mut out);
+        http2::headers(
+            gid,
+            &out,
+            block.end_stream,
+            self.guest_hop.peer.max_frame_size,
+            &mut self.to_guest,
+        );
+        if block.end_stream {
+            s.guest = s.guest.sent_end();
+        }
+        Ok(())
+    }
+
+    fn host_data(
+        &mut self,
+        head: http2::Head,
+        payload: &[u8],
+        run: &mut Run<'_>,
+    ) -> Result<(), http2::Error> {
+        if head.stream == 0 {
+            return Err(http2::connection(Code::Protocol, "DATA on stream 0"));
+        }
+        self.host_hop.received(head)?;
+        let data = http2::data(head, payload)?;
+        let length = head.length as usize;
+        let carried = self.carried(head.stream)?;
+        let bodies = self.token_bodies();
+        let Some((gid, s)) = carried.and_then(|gid| Some((gid, self.streams.get_mut(&gid)?))) else {
+            // A stream let go of here: its DATA dropped, its credit given back.
+            self.host_hop.released(head.stream, length, &mut self.to_host);
+            self.host_hop.close(head.stream);
+            return Ok(());
+        };
+        let Upward::Sent { state, .. } = &mut s.up else {
+            return Ok(());
+        };
+        if !state.receiving() {
+            return Err(stream_error(
+                head.stream,
+                Code::StreamClosed,
+                "DATA after its END_STREAM",
+            ));
+        }
+        if s.down == Down::Head {
+            return Err(stream_error(
+                head.stream,
+                Code::Protocol,
+                "DATA before a response's head",
+            ));
+        }
+        let end = head.flags & http2::END_STREAM != 0;
+        if end {
+            *state = state.received_end();
+        }
+        if let Some(TokenResponse::Reading { body, .. }) = &mut s.token {
+            let over = bodies.saturating_add(data.len()) > crate::tcp::TO_GUEST;
+            if !over {
+                signin::append(body, data);
+            }
+            self.host_hop.released(head.stream, length, &mut self.to_host);
+            if over {
+                let why = "a sign-in's response past what its connection holds".to_string();
+                self.answer(gid, Refusal::Upstream(why));
+            } else if end {
+                self.finish_token(gid, run);
+            }
+            return Ok(());
+        }
+        let mut dropped = length.saturating_sub(data.len());
+        if s.guest.sending() {
+            let Stream {
+                mask,
+                down_data,
+                down_last,
+                ..
+            } = &mut *s;
+            let mut out = |b: &[u8]| {
+                down_data.extend_from_slice(b);
+                Ok(())
+            };
+            let _ = mask.push(data, true, run, &mut out);
+            if end {
+                let _ = mask.end_message(&mut out);
+                *down_last = Some(Last::End);
+            }
+        } else {
+            dropped = length;
+        }
+        self.host_hop.released(head.stream, dropped, &mut self.to_host);
+        Ok(())
+    }
+
+    fn host_rst(&mut self, head: http2::Head, payload: &[u8]) -> Result<(), http2::Error> {
+        let (true, Some(code)) = (
+            head.stream != 0,
+            http2::word(payload, 0).filter(|_| payload.len() == 4),
+        ) else {
+            return Err(http2::connection(
+                Code::FrameSize,
+                "a RST_STREAM on stream 0 or not of four octets",
+            ));
+        };
+        if let Some(gid) = self.carried(head.stream)?
+            && let Some(s) = self.streams.remove(&gid)
+        {
+            self.forget(gid, &s);
+            if s.guest != StreamState::Closed {
+                http2::rst_stream(gid, code, &mut self.to_guest);
+            }
+        }
+        self.host_hop.close(head.stream);
+        Ok(())
+    }
+
+    /// The host's GOAWAY (§6.8): the streams it will not process, and those not yet sent, refused
+    /// to the guest, which may retry them (§8.7); the guest told the connection goes, with the
+    /// host's code.
+    fn host_goaway(&mut self, head: http2::Head, payload: &[u8]) -> Result<(), http2::Error> {
+        let (true, Some(last), Some(code)) = (
+            head.stream == 0,
+            http2::word(payload, 0).map(|l| l & http2::MOST_STREAM),
+            http2::word(payload, 4),
+        ) else {
+            return Err(http2::connection(
+                Code::FrameSize,
+                "a GOAWAY on a stream or short",
+            ));
+        };
+        self.host_phase = Phase::Away;
+        let refused: Vec<u32> = self
+            .streams
+            .iter()
+            .filter(|(_, s)| match s.up {
+                Upward::Sent { id, .. } => id > last,
+                Upward::Parked(_) | Upward::Reading { .. } => true,
+                Upward::Answered | Upward::Refreshing => false,
+            })
+            .map(|(&gid, _)| gid)
+            .collect();
+        for gid in refused {
+            self.refuse_stream(gid);
+        }
+        if self.guest_phase != Phase::Away {
+            http2::goaway(self.last_guest, code, &mut self.to_guest);
+            self.guest_phase = Phase::Away;
+        }
+        Ok(())
+    }
+}
+
+/// The injector's cost, measured (#74 step 10 part B): ignored tests ROOT runs, its README beside it.
+#[cfg(test)]
+#[path = "../../../docs/research/measurements/s33-injector-ab/ab.rs"]
+mod ab;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
@@ -1689,7 +4007,12 @@ mod tests {
 
     /// The echo server's TLS, any suite: a leaf for the three hosts that `root` signs.
     fn echo_config(root: &CertifiedIssuer<'static, KeyPair>) -> Arc<ServerConfig> {
-        let mut p = params(&[GRANTED, OTHER, FREE]);
+        leaf_config(root, &[GRANTED, OTHER, FREE])
+    }
+
+    /// A test server's TLS, any suite: a leaf for `names` that `root` signs.
+    fn leaf_config(root: &CertifiedIssuer<'static, KeyPair>, names: &[&str]) -> Arc<ServerConfig> {
+        let mut p = params(names);
         p.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
         p.key_usages = vec![KeyUsagePurpose::DigitalSignature];
         let key = KeyPair::generate().unwrap();
@@ -1795,6 +4118,7 @@ mod tests {
             ca: ca::Ca::new(ca::Key::generate().unwrap(), &[GRANTED, OTHER]).unwrap(),
             leases: lease::Leases::new(vec![CLAUDE.into(), ELSEWHERE.into()]),
             upstream: Upstream::new(vec![root.der().clone()]).unwrap(),
+            sign_ins: signin::SignIns::new(Vec::new()),
         }
     }
 
@@ -1818,17 +4142,28 @@ mod tests {
         name: &str,
         suites: Option<Vec<rustls::SupportedCipherSuite>>,
     ) -> ClientConnection {
+        guest_offering(trusts, name, suites, &[])
+    }
+
+    /// A guest's TLS client as `guest` makes it, offering the application protocols `alpn`.
+    fn guest_offering(
+        trusts: CertificateDer<'static>,
+        name: &str,
+        suites: Option<Vec<rustls::SupportedCipherSuite>>,
+        alpn: &[&[u8]],
+    ) -> ClientConnection {
         let mut roots = rustls::RootCertStore::empty();
         roots.add(trusts).unwrap();
         let mut provider = aws_lc_rs::default_provider();
         if let Some(suites) = suites {
             provider.cipher_suites = suites;
         }
-        let config = ClientConfig::builder_with_provider(Arc::new(provider))
+        let mut config = ClientConfig::builder_with_provider(Arc::new(provider))
             .with_safe_default_protocol_versions()
             .unwrap()
             .with_root_certificates(roots)
             .with_no_client_auth();
+        config.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
         let mut c =
             ClientConnection::new(Arc::new(config), ServerName::try_from(name.to_string()).unwrap()).unwrap();
         c.set_buffer_limit(None);
@@ -1870,6 +4205,8 @@ mod tests {
         held_most: usize,
         audit: Vec<Audit>,
         passed: bool,
+        /// The token its run resumes it by.
+        waiter: u64,
     }
 
     impl Bench {
@@ -1888,6 +4225,7 @@ mod tests {
                 held_most: 0,
                 audit: Vec::new(),
                 passed: false,
+                waiter: 7,
             }
         }
 
@@ -1905,7 +4243,7 @@ mod tests {
             let Some(flow) = self.flow.as_mut() else { return };
             let mut run = Run {
                 credentials,
-                waiter: 7,
+                waiter: self.waiter,
                 now: Instant::now(),
                 audit: Vec::new(),
             };
@@ -2018,7 +4356,7 @@ mod tests {
                 let moved = self.turn(credentials);
                 if lease && lease_all(credentials) > 0 {
                     for r in credentials.leases.resumed() {
-                        assert_eq!(r.waiter, 7);
+                        assert_eq!(r.waiter, self.waiter);
                     }
                     self.step(credentials, None, |f, run, q| f.resume(run, q));
                 } else if !moved {
@@ -2484,5 +4822,1334 @@ mod tests {
         })
         .unwrap();
         assert_eq!(out, &VALUE[..7]);
+    }
+
+    // Step 8: a sign-in through the injector (D242), its token endpoint simulated.
+
+    const SIGN_IN: &str = "claude/acct-1";
+    const TOKEN_HOST: &str = "platform.claude.com";
+    const API_HOST: &str = "api.anthropic.com";
+    /// The provider's tokens, shaped as Anthropic's and none real: as its code's exchange issues
+    /// them, and as a refresh rotates them.
+    const ISSUED_ACCESS: &str = "sk-ant-oat01-issued-access-not-real-0123456789";
+    const ISSUED_REFRESH: &str = "sk-ant-ort01-issued-refresh-not-real-0123456789";
+    const ROTATED_ACCESS: &str = "sk-ant-oat01-rotated-access-not-real-9876543210";
+    const ROTATED_REFRESH: &str = "sk-ant-ort01-rotated-refresh-not-real-9876543210";
+    /// What the broker gives in their places.
+    const SIGNED_ACCESS: &str =
+        "kiln-placeholder-aaaa456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    const SIGNED_REFRESH: &str =
+        "kiln-placeholder-bbbb456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    fn access_reference() -> String {
+        format!("sign-ins/{SIGN_IN}/access")
+    }
+
+    /// A token response as Claude Code reads one (`formatTokens`).
+    fn token_response(access: &str, refresh: &str) -> String {
+        format!(
+            r#"{{"token_type":"Bearer","access_token":"{access}","expires_in":28800,"refresh_token":"{refresh}","scope":"user:inference user:profile"}}"#
+        )
+    }
+
+    /// A token endpoint as Claude Code's is (`TOKEN_URL`), over TLS `config` gives: each request
+    /// told the test, head and body; a code's exchange answered with the issued tokens, anything
+    /// else 400.
+    fn token_endpoint(config: Arc<ServerConfig>) -> (SocketAddr, mpsc::Receiver<Vec<u8>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            for tcp in listener.incoming() {
+                let Ok(tcp) = tcp else { return };
+                let (config, tx) = (config.clone(), tx.clone());
+                std::thread::spawn(move || {
+                    let mut tls = rustls::StreamOwned::new(ServerConnection::new(config).unwrap(), tcp);
+                    loop {
+                        let mut head = Vec::new();
+                        let mut byte = [0u8; 1];
+                        while !head.ends_with(b"\r\n\r\n") {
+                            match tls.read(&mut byte) {
+                                Ok(1) => head.push(byte[0]),
+                                _ => return,
+                            }
+                        }
+                        let text = String::from_utf8_lossy(&head).to_ascii_lowercase();
+                        let len: usize = text
+                            .lines()
+                            .find_map(|l| l.strip_prefix("content-length:"))
+                            .map_or(0, |v| v.trim().parse().unwrap());
+                        let mut body = vec![0u8; len];
+                        if tls.read_exact(&mut body).is_err() {
+                            return;
+                        }
+                        let exchange = holds(&body, br#""grant_type":"authorization_code""#);
+                        let _ = tx.send([head, body].concat());
+                        let (status, answer) = if exchange {
+                            ("200 OK", token_response(ISSUED_ACCESS, ISSUED_REFRESH))
+                        } else {
+                            ("400 Bad Request", r#"{"error":"unexpected"}"#.to_string())
+                        };
+                        let response = format!(
+                            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nCache-Control: no-store\r\nContent-Length: {}\r\n\r\n{answer}",
+                            answer.len()
+                        );
+                        if tls.write_all(response.as_bytes()).is_err() {
+                            return;
+                        }
+                        let _ = tls.flush();
+                    }
+                });
+            }
+        });
+        (addr, rx)
+    }
+
+    /// A run with Claude Code's sign-in granted, its access token toward its API host alone, its
+    /// injector's host side trusting `root`; captured before where `captured` says.
+    fn sign_in_credentials(root: &CertifiedIssuer<'static, KeyPair>, captured: bool) -> Credentials {
+        let captured = captured.then(|| signin::Captured {
+            access: access_reference(),
+            access_placeholder: SIGNED_ACCESS.into(),
+            refresh_placeholder: Some(SIGNED_REFRESH.into()),
+        });
+        let grants: Vec<Grant> = captured.iter().map(|c| c.grant(&[API_HOST.into()])).collect();
+        Credentials {
+            leases: lease::Leases::new(grants.iter().map(|g| g.reference.clone()).collect()),
+            grants,
+            ca: ca::Ca::new(ca::Key::generate().unwrap(), &[API_HOST, TOKEN_HOST]).unwrap(),
+            upstream: Upstream::new(vec![root.der().clone()]).unwrap(),
+            sign_ins: signin::SignIns::new(vec![signin::SignInGrant {
+                sign_in: SIGN_IN.into(),
+                cli: Cli::ClaudeCode,
+                toward: vec![API_HOST.into()],
+                captured,
+            }]),
+        }
+    }
+
+    /// The run host and its orchestrator's broker, as a test lessor: each capture's tokens kept
+    /// and the broker's placeholders given; each refresh one call to the provider, which rotates
+    /// the tokens and whose answer, real tokens and all, comes back as it came; each revocation
+    /// counted, the stored tokens kept; each lease of the access token answered with the stored
+    /// one.
+    #[derive(Default)]
+    struct Broker {
+        access: Vec<u8>,
+        refresh: Vec<u8>,
+        provider_calls: usize,
+        revoked: usize,
+        /// Where set, each refresh is refused so, the provider never called.
+        refuse: Option<signin::Declined>,
+    }
+
+    impl Broker {
+        fn holding(access: &str, refresh: &str) -> Broker {
+            Broker {
+                access: access.as_bytes().to_vec(),
+                refresh: refresh.as_bytes().to_vec(),
+                ..Broker::default()
+            }
+        }
+
+        /// Answers what the run asks; how many asks.
+        fn serve(&mut self, credentials: &mut Credentials) -> usize {
+            let mut n = 0;
+            for ask in credentials.leases.asks() {
+                let (id, reference) = lease::decode_ask(&ask).unwrap();
+                assert_eq!(
+                    reference,
+                    access_reference(),
+                    "a lease of what no capture granted"
+                );
+                let life = NonZeroU64::new(60_000_000_000).unwrap();
+                let answer = lease::encode_answer(id, Ok((life, &self.access))).unwrap();
+                assert!(credentials.leases.answered(&answer, Instant::now()));
+                n += 1;
+            }
+            for told in credentials.sign_ins.asks() {
+                n += 1;
+                let answered = match signin::Told::decode(&told).unwrap() {
+                    signin::Told::Capture { id, sign_in, taken } => {
+                        assert_eq!(sign_in, SIGN_IN);
+                        assert_eq!(taken.expires_in, Some(28800));
+                        self.access = taken.access.to_vec();
+                        self.refresh = taken.refresh.unwrap().to_vec();
+                        signin::Answered::Captured {
+                            id,
+                            result: Ok(signin::Captured {
+                                access: access_reference(),
+                                access_placeholder: SIGNED_ACCESS.into(),
+                                refresh_placeholder: Some(SIGNED_REFRESH.into()),
+                            }),
+                        }
+                    }
+                    signin::Told::Refresh { id, sign_in } if self.refuse.is_some() => {
+                        assert_eq!(sign_in, SIGN_IN);
+                        signin::Answered::Refreshed {
+                            id,
+                            result: Err(self.refuse.clone().unwrap()),
+                        }
+                    }
+                    signin::Told::Refresh { id, sign_in } => {
+                        assert_eq!(sign_in, SIGN_IN);
+                        assert!(!self.refresh.is_empty(), "a refresh of a sign-in never kept");
+                        self.provider_calls += 1;
+                        self.access = ROTATED_ACCESS.as_bytes().to_vec();
+                        self.refresh = ROTATED_REFRESH.as_bytes().to_vec();
+                        signin::Answered::Refreshed {
+                            id,
+                            result: Ok(Zeroizing::new(
+                                token_response(ROTATED_ACCESS, ROTATED_REFRESH).into_bytes(),
+                            )),
+                        }
+                    }
+                    signin::Told::Revoke { sign_in } => {
+                        assert_eq!(sign_in, SIGN_IN);
+                        self.revoked += 1;
+                        continue;
+                    }
+                };
+                let changed = credentials
+                    .sign_ins
+                    .answered(&answered.encode().unwrap(), &credentials.grants)
+                    .unwrap();
+                crate::follow(credentials, changed);
+            }
+            n
+        }
+    }
+
+    /// Turns `bench` until `done` says so of what its guest read, the broker answering what its
+    /// run asks and the flow looking for its answers each turn.
+    fn drive(
+        bench: &mut Bench,
+        credentials: &mut Credentials,
+        broker: &mut Broker,
+        done: impl Fn(&Bench) -> bool,
+    ) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !done(bench) {
+            assert!(
+                Instant::now() < deadline,
+                "no end: the guest read {:?}",
+                String::from_utf8_lossy(&bench.got)
+            );
+            let moved = bench.turn(credentials);
+            let asked = broker.serve(credentials);
+            // Whichever flow an answer named, this one looks: another bench's answer may have
+            // been taken by an earlier drive, and a look with none for it does nothing.
+            let _ = (credentials.leases.resumed(), credentials.sign_ins.resumed());
+            bench.step(credentials, None, |f, run, q| f.resume(run, q));
+            if !moved && asked == 0 {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+    }
+
+    fn post(target: &str, host: &str, body: &str) -> Vec<u8> {
+        format!(
+            "POST {target} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nAccept-Encoding: gzip, br\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+        .into_bytes()
+    }
+
+    fn refresh_body() -> String {
+        format!(
+            r#"{{"grant_type":"refresh_token","refresh_token":"{SIGNED_REFRESH}","client_id":"9d1c250a-e61b-44d9-88ed-5944d1962f5e","scope":"user:inference user:profile"}}"#
+        )
+    }
+
+    /// Do: sign Claude Code in through the injector: its code exchanged at its token host, which
+    /// answers real-shaped tokens; a request to its API host with the access placeholder the
+    /// guest was given; on the first connection, a refresh and then a revocation with its refresh
+    /// placeholder. Expect: the exchange reaching the host asking `identity`; its response held
+    /// until the broker keeps its tokens, then reaching the guest with the broker's placeholders
+    /// in their places, framed by its new length, no real token in it; the API request filled with
+    /// the kept token; the refresh never reaching the host, one call to the provider outside, the
+    /// guest given the same placeholders, kept from caches, and no rotated token; the held lease
+    /// of the access token let go, its value rotated; the revocation answered 200 here, the kept
+    /// tokens as they were; each audited by the sign-in's name, no token or placeholder in it.
+    #[test]
+    fn a_sign_in_is_taken_outside_and_its_refresh_and_revocation_answered_there() {
+        let root = root("shards test root");
+        let (token_addr, at_token) = token_endpoint(leaf_config(&root, &[TOKEN_HOST]));
+        let (api_addr, at_api) = echo(leaf_config(&root, &[API_HOST]), false);
+        let mut credentials = sign_in_credentials(&root, false);
+        let ca = credentials.ca.der().to_vec();
+        let mut broker = Broker::default();
+        let mut cli = Bench::new(guest(ca.clone().into(), TOKEN_HOST, None), token_addr);
+        let exchange = post(
+            "/v1/oauth/token",
+            TOKEN_HOST,
+            r#"{"grant_type":"authorization_code","code":"c0de","redirect_uri":"https://platform.claude.com/oauth/code/callback","client_id":"9d1c250a-e61b-44d9-88ed-5944d1962f5e","code_verifier":"v","state":"s"}"#,
+        );
+        cli.guest.writer().write_all(&exchange).unwrap();
+        drive(&mut cli, &mut credentials, &mut broker, |b| whole(&b.got));
+        let sent = at_token.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(holds(&sent, b"Accept-Encoding: identity\r\n") && !holds(&sent, b"gzip"));
+        assert_eq!(
+            broker.access,
+            ISSUED_ACCESS.as_bytes(),
+            "the issued token was not kept"
+        );
+        assert_eq!(broker.refresh, ISSUED_REFRESH.as_bytes());
+        let answer = String::from_utf8(cli.got.clone()).unwrap();
+        assert!(answer.starts_with("HTTP/1.1 200 OK\r\n"), "{answer}");
+        assert!(
+            answer.ends_with(&token_response(SIGNED_ACCESS, SIGNED_REFRESH)),
+            "{answer}"
+        );
+        for real in [ISSUED_ACCESS, ISSUED_REFRESH] {
+            assert!(
+                !holds(&cli.got, real.as_bytes()),
+                "a real token reached the guest"
+            );
+        }
+        // Its access token is granted toward its API host now, filled in where its placeholder
+        // stands.
+        let mut api = Bench::new(guest(ca.clone().into(), API_HOST, None), api_addr);
+        let request = format!(
+            "GET /v1/models HTTP/1.1\r\nHost: {API_HOST}\r\nAuthorization: Bearer {SIGNED_ACCESS}\r\n\r\n"
+        );
+        api.guest.writer().write_all(request.as_bytes()).unwrap();
+        drive(&mut api, &mut credentials, &mut broker, |b| whole(&b.got));
+        let filled = at_api.recv_timeout(Duration::from_secs(10)).unwrap().request;
+        assert_eq!(
+            filled,
+            swapped(
+                request.as_bytes(),
+                SIGNED_ACCESS.as_bytes(),
+                ISSUED_ACCESS.as_bytes()
+            )
+        );
+        assert!(
+            !holds(&api.got, ISSUED_ACCESS.as_bytes()),
+            "the token's echo reached the guest"
+        );
+        assert!(
+            credentials
+                .leases
+                .held(&access_reference(), Instant::now())
+                .is_some()
+        );
+        // Its refresh, answered outside.
+        cli.got.clear();
+        cli.guest
+            .writer()
+            .write_all(&post("/v1/oauth/token", TOKEN_HOST, &refresh_body()))
+            .unwrap();
+        drive(&mut cli, &mut credentials, &mut broker, |b| whole(&b.got));
+        assert_eq!(broker.provider_calls, 1);
+        let answer = String::from_utf8(cli.got.clone()).unwrap();
+        assert!(answer.contains("Cache-Control: no-store\r\n"), "{answer}");
+        assert!(
+            answer.ends_with(&token_response(SIGNED_ACCESS, SIGNED_REFRESH)),
+            "{answer}"
+        );
+        for real in [ISSUED_ACCESS, ISSUED_REFRESH, ROTATED_ACCESS, ROTATED_REFRESH] {
+            assert!(
+                !holds(&cli.got, real.as_bytes()),
+                "a real token reached the guest"
+            );
+        }
+        assert!(
+            credentials
+                .leases
+                .held(&access_reference(), Instant::now())
+                .is_none(),
+            "the rotated token's old value is held still"
+        );
+        // Its revocation, answered here.
+        cli.got.clear();
+        let revoke = format!(
+            r#"{{"token":"{SIGNED_REFRESH}","token_type_hint":"refresh_token","client_id":"9d1c250a-e61b-44d9-88ed-5944d1962f5e"}}"#
+        );
+        cli.guest
+            .writer()
+            .write_all(&post("/v1/oauth/token/revoke", TOKEN_HOST, &revoke))
+            .unwrap();
+        drive(&mut cli, &mut credentials, &mut broker, |b| whole(&b.got));
+        assert!(cli.got.starts_with(b"HTTP/1.1 200 OK\r\n"));
+        assert_eq!(broker.revoked, 1);
+        assert_eq!(
+            broker.refresh,
+            ROTATED_REFRESH.as_bytes(),
+            "the kept token was revoked"
+        );
+        assert!(
+            at_token.try_recv().is_err(),
+            "a refresh or a revocation reached the provider"
+        );
+        let did: Vec<Did> = cli.audit.iter().map(|a| a.what).collect();
+        assert_eq!(did, [Did::Captured, Did::Refreshed, Did::Revoked]);
+        for record in cli.audit.iter().chain(&api.audit) {
+            let said = record.to_string();
+            assert!(
+                said.contains(SIGN_IN) || said.contains(&access_reference()),
+                "{said}"
+            );
+            for secret in [
+                ISSUED_ACCESS,
+                ISSUED_REFRESH,
+                ROTATED_ACCESS,
+                SIGNED_ACCESS,
+                SIGNED_REFRESH,
+            ] {
+                assert!(!said.contains(secret), "{said}");
+            }
+        }
+    }
+
+    /// Do: two connections of the run's Claude Code, captured before (a later run's), ask its
+    /// refresh before either is answered. Expect: one ask of the run host and one call to the
+    /// provider outside; both answered with the sign-in's placeholders, nothing reaching the host.
+    #[test]
+    fn refreshes_of_one_sign_in_at_once_ask_once() {
+        let root = root("shards test root");
+        let (token_addr, at_token) = token_endpoint(leaf_config(&root, &[TOKEN_HOST]));
+        let mut credentials = sign_in_credentials(&root, true);
+        let ca = credentials.ca.der().to_vec();
+        let mut broker = Broker::holding(ISSUED_ACCESS, ISSUED_REFRESH);
+        let mut one = Bench::new(guest(ca.clone().into(), TOKEN_HOST, None), token_addr);
+        let mut two = Bench::new(guest(ca.into(), TOKEN_HOST, None), token_addr);
+        two.waiter = 8;
+        let waiting = |bench: &mut Bench, credentials: &mut Credentials, flows: usize| {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while credentials.sign_ins.waiting() < flows {
+                assert!(Instant::now() < deadline, "the refresh was not asked");
+                if !bench.turn(credentials) {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
+        };
+        one.guest
+            .writer()
+            .write_all(&post("/v1/oauth/token", TOKEN_HOST, &refresh_body()))
+            .unwrap();
+        waiting(&mut one, &mut credentials, 1);
+        two.guest
+            .writer()
+            .write_all(&post("/v1/oauth/token", TOKEN_HOST, &refresh_body()))
+            .unwrap();
+        waiting(&mut two, &mut credentials, 2);
+        assert_eq!(broker.serve(&mut credentials), 1, "two asks of one refresh");
+        assert_eq!(broker.provider_calls, 1);
+        for bench in [&mut one, &mut two] {
+            drive(bench, &mut credentials, &mut broker, |b| whole(&b.got));
+            assert!(
+                bench
+                    .got
+                    .ends_with(token_response(SIGNED_ACCESS, SIGNED_REFRESH).as_bytes())
+            );
+            assert!(
+                !holds(&bench.got, ROTATED_ACCESS.as_bytes())
+                    && !holds(&bench.got, ROTATED_REFRESH.as_bytes())
+            );
+        }
+        assert_eq!(broker.provider_calls, 1);
+        assert!(at_token.try_recv().is_err(), "a refresh reached the provider");
+    }
+
+    /// Do: ask the endpoint that mints a key with a captured sign-in's access placeholder.
+    /// Expect: answered 403 by the injector, nothing reaching the host, nothing leased.
+    #[test]
+    fn a_sign_ins_token_never_goes_to_the_endpoint_that_mints_a_key() {
+        let root = root("shards test root");
+        let (api_addr, at_api) = echo(leaf_config(&root, &[API_HOST]), false);
+        let mut credentials = sign_in_credentials(&root, true);
+        let mut broker = Broker::holding(ISSUED_ACCESS, ISSUED_REFRESH);
+        let mut api = Bench::new(
+            guest(credentials.ca.der().to_vec().into(), API_HOST, None),
+            api_addr,
+        );
+        let request = format!(
+            "POST /api/oauth/claude_cli/%63reate_api_key HTTP/1.1\r\nHost: {API_HOST}\r\nAuthorization: Bearer {SIGNED_ACCESS}\r\nContent-Length: 0\r\n\r\n"
+        );
+        api.guest.writer().write_all(request.as_bytes()).unwrap();
+        drive(&mut api, &mut credentials, &mut broker, |b| {
+            b.closed && whole(&b.got)
+        });
+        assert!(api.got.starts_with(b"HTTP/1.1 403 Forbidden\r\n"));
+        assert!(at_api.try_recv().is_err(), "the request reached the host");
+        assert!(
+            credentials.leases.asks().is_empty()
+                && credentials
+                    .leases
+                    .held(&access_reference(), Instant::now())
+                    .is_none()
+        );
+    }
+
+    // HTTP/2 through the injector (#74 step 7 slice (b)): a guest and a host that speak it, each
+    // an end written over http2.rs and hpack.rs, as no HTTP/2 crate is in the tree.
+
+    use crate::hpack::{self, Indexing};
+    use crate::http2::{self, End, Holds};
+    use std::collections::BTreeMap;
+
+    /// What an HTTP/2 end in a test read.
+    #[derive(Debug)]
+    enum Event {
+        Headers {
+            stream: u32,
+            fields: Vec<hpack::Field>,
+            end: bool,
+        },
+        Data {
+            stream: u32,
+            bytes: Vec<u8>,
+            end: bool,
+        },
+        Rst {
+            stream: u32,
+            code: u32,
+        },
+        GoAway {
+            last: u32,
+            code: u32,
+        },
+    }
+
+    /// One end of an HTTP/2 connection: its hop, what it has read and not framed, a block being
+    /// read, the DATA it is to send as its peer's windows let it, and what it has to write. It
+    /// gives credit back for DATA as it reads it, and holds its peer to its windows.
+    struct Peer {
+        hop: http2::Hop,
+        inbox: Vec<u8>,
+        preface: bool,
+        block: Option<http2::Block>,
+        sending: BTreeMap<u32, (Vec<u8>, bool)>,
+        out: Vec<u8>,
+        events: Vec<Event>,
+    }
+
+    impl Peer {
+        fn new(end: End, holds: Holds) -> Peer {
+            let hop = http2::Hop::new(holds, 4096);
+            let mut out = Vec::new();
+            hop.preface(end, &mut out);
+            Peer {
+                hop,
+                inbox: Vec::new(),
+                preface: end == End::Client,
+                block: None,
+                sending: BTreeMap::new(),
+                out,
+                events: Vec::new(),
+            }
+        }
+
+        fn feed(&mut self, bytes: &[u8]) {
+            self.inbox.extend_from_slice(bytes);
+            if !self.preface {
+                if self.inbox.len() < http2::PREFACE.len() {
+                    return;
+                }
+                assert!(self.inbox.starts_with(http2::PREFACE), "no client preface");
+                self.inbox.drain(..http2::PREFACE.len());
+                self.preface = true;
+            }
+            let most = http2::Settings::INITIAL.max_frame_size;
+            while let Some((head, payload)) = http2::frame(&self.inbox, most).unwrap() {
+                let payload = payload.to_vec();
+                self.inbox.drain(..http2::HEAD + payload.len());
+                self.frame(head, &payload);
+            }
+            self.pump();
+        }
+
+        fn frame(&mut self, head: http2::Head, payload: &[u8]) {
+            if let Some(mut block) = self.block.take() {
+                if block.continued(head, payload, usize::MAX).unwrap() {
+                    self.decoded(block);
+                } else {
+                    self.block = Some(block);
+                }
+                return;
+            }
+            match head.kind {
+                http2::SETTINGS => self.hop.settings(head, payload, &mut self.out).unwrap(),
+                http2::WINDOW_UPDATE => self.hop.window_update(head, payload).unwrap(),
+                http2::PING if head.flags & http2::ACK == 0 => http2::ping_ack(payload, &mut self.out),
+                http2::HEADERS => {
+                    let (block, whole) = http2::Block::headers(head, payload).unwrap();
+                    if whole {
+                        self.decoded(block);
+                    } else {
+                        self.block = Some(block);
+                    }
+                }
+                http2::DATA => {
+                    self.hop.received(head).unwrap();
+                    let bytes = http2::data(head, payload).unwrap().to_vec();
+                    self.hop
+                        .released(head.stream, head.length as usize, &mut self.out);
+                    self.events.push(Event::Data {
+                        stream: head.stream,
+                        bytes,
+                        end: head.flags & http2::END_STREAM != 0,
+                    });
+                }
+                http2::RST_STREAM => self.events.push(Event::Rst {
+                    stream: head.stream,
+                    code: http2::word(payload, 0).unwrap(),
+                }),
+                http2::GOAWAY => self.events.push(Event::GoAway {
+                    last: http2::word(payload, 0).unwrap(),
+                    code: http2::word(payload, 4).unwrap(),
+                }),
+                http2::PUSH_PROMISE => panic!("a push, with push off"),
+                _ => {}
+            }
+        }
+
+        fn decoded(&mut self, block: http2::Block) {
+            let fields = match block.decode(&mut self.hop.decoder, usize::MAX).unwrap() {
+                hpack::Decoded::Fields(f) => f,
+                other => panic!("{other:?}"),
+            };
+            self.events.push(Event::Headers {
+                stream: block.stream,
+                fields,
+                end: block.end_stream,
+            });
+        }
+
+        fn send_headers(&mut self, stream: u32, fields: &[hpack::Field], end: bool) {
+            let mut block = Vec::new();
+            self.hop.encoder.encode(fields, &mut block);
+            http2::headers(stream, &block, end, self.hop.peer.max_frame_size, &mut self.out);
+        }
+
+        fn send_data(&mut self, stream: u32, bytes: &[u8], end: bool) {
+            let entry = self.sending.entry(stream).or_default();
+            entry.0.extend_from_slice(bytes);
+            entry.1 |= end;
+            self.pump();
+        }
+
+        fn pump(&mut self) {
+            let streams: Vec<u32> = self.sending.keys().copied().collect();
+            for stream in streams {
+                let (bytes, end) = self.sending.remove(&stream).unwrap();
+                let n = self.hop.send_data(stream, &bytes, end, &mut self.out);
+                if n < bytes.len() {
+                    self.sending.insert(stream, (bytes[n..].to_vec(), end));
+                }
+            }
+        }
+
+        fn take_out(&mut self) -> Vec<u8> {
+            std::mem::take(&mut self.out)
+        }
+
+        /// Each RST_STREAM (its stream and code) and GOAWAY (its last stream and code) it read.
+        fn ends(&self) -> Vec<(&'static str, u32, u32)> {
+            self.events
+                .iter()
+                .filter_map(|e| match *e {
+                    Event::Rst { stream, code } => Some(("RST_STREAM", stream, code)),
+                    Event::GoAway { last, code } => Some(("GOAWAY", last, code)),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        /// A stream's response: its head's fields, its data, and whether it ended.
+        fn response(&self, stream: u32) -> Got {
+            let (mut fields, mut data, mut ended) = (Vec::new(), Vec::new(), false);
+            for e in &self.events {
+                match e {
+                    Event::Headers {
+                        stream: s,
+                        fields: f,
+                        end,
+                    } if *s == stream => {
+                        if fields.is_empty() {
+                            fields = f.iter().map(|f| (f.name.clone(), f.value.to_vec())).collect();
+                        }
+                        ended |= end;
+                    }
+                    Event::Data {
+                        stream: s,
+                        bytes,
+                        end,
+                    } if *s == stream => {
+                        data.extend_from_slice(bytes);
+                        ended |= end;
+                    }
+                    _ => {}
+                }
+            }
+            Got { fields, data, ended }
+        }
+    }
+
+    /// What an HTTP/2 end in a test read of a stream's response.
+    struct Got {
+        fields: Vec<(Vec<u8>, Vec<u8>)>,
+        data: Vec<u8>,
+        ended: bool,
+    }
+
+    fn field(name: &str, value: &[u8]) -> hpack::Field {
+        hpack::Field::new(name.as_bytes(), value, Indexing::Incremental)
+    }
+
+    fn value_of<'f>(fields: &'f [(Vec<u8>, Vec<u8>)], name: &str) -> Option<&'f [u8]> {
+        fields
+            .iter()
+            .find(|(n, _)| n == name.as_bytes())
+            .map(|(_, v)| &v[..])
+    }
+
+    /// What the HTTP/2 test host had of a request: its fields as its decoder read them, how each
+    /// was sent too, and its body.
+    struct H2Had {
+        fields: Vec<hpack::Field>,
+        body: Vec<u8>,
+    }
+
+    /// The test host's windows: small, so that a large body meets them on each stream and on the
+    /// connection.
+    const HOST_HOLDS: Holds = Holds {
+        stream: 4096,
+        connection: 65_535,
+    };
+
+    /// An HTTPS server speaking HTTP/2 alone (ALPN `h2`), its windows `HOST_HOLDS`, answering
+    /// each request once it has ended: `:status` 200, an `x-echo` of its Authorization, and DATA
+    /// of its Authorization, a newline and its body; telling the test what it had.
+    fn h2_host(root: &CertifiedIssuer<'static, KeyPair>) -> (SocketAddr, mpsc::Receiver<H2Had>) {
+        h2_serving(root, &[GRANTED, OTHER], h2_echo)
+    }
+
+    /// The echo `h2_host` answers with: `:status` 200, an `x-echo` of the request's
+    /// Authorization, and DATA of its Authorization, a newline and its body.
+    fn h2_echo(fields: &[hpack::Field], body: &[u8]) -> (Vec<hpack::Field>, Vec<u8>) {
+        let auth = fields
+            .iter()
+            .find(|f| f.name == b"authorization")
+            .map(|f| f.value.to_vec())
+            .unwrap_or_default();
+        let data = [&auth[..], b"\n", body].concat();
+        (vec![field(":status", b"200"), field("x-echo", &auth)], data)
+    }
+
+    /// How an HTTP/2 test host answers a request, from its fields and body: its response's fields
+    /// and DATA.
+    type H2Answer = fn(&[hpack::Field], &[u8]) -> (Vec<hpack::Field>, Vec<u8>);
+
+    /// An HTTPS server for `names` speaking HTTP/2 alone (ALPN `h2`), its windows `HOST_HOLDS`,
+    /// answering each request once it has ended as `answer` says, and telling the test what it had.
+    fn h2_serving(
+        root: &CertifiedIssuer<'static, KeyPair>,
+        names: &[&str],
+        answer: H2Answer,
+    ) -> (SocketAddr, mpsc::Receiver<H2Had>) {
+        let mut config = (*leaf_config(root, names)).clone();
+        config.alpn_protocols = vec![b"h2".to_vec()];
+        let config = Arc::new(config);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            for tcp in listener.incoming() {
+                let Ok(tcp) = tcp else { return };
+                let (config, tx) = (config.clone(), tx.clone());
+                std::thread::spawn(move || h2_answer(config, tcp, tx, answer));
+            }
+        });
+        (addr, rx)
+    }
+
+    fn h2_answer(config: Arc<ServerConfig>, tcp: TcpStream, tx: mpsc::Sender<H2Had>, answer: H2Answer) {
+        let mut tls = rustls::StreamOwned::new(ServerConnection::new(config).unwrap(), tcp);
+        let mut peer = Peer::new(End::Server, HOST_HOLDS);
+        let mut requests: BTreeMap<u32, (Vec<hpack::Field>, Vec<u8>)> = BTreeMap::new();
+        let mut buf = vec![0u8; 64 << 10];
+        loop {
+            let out = peer.take_out();
+            if !out.is_empty() && (tls.write_all(&out).is_err() || tls.flush().is_err()) {
+                return;
+            }
+            let n = match tls.read(&mut buf) {
+                Ok(0) | Err(_) => return,
+                Ok(n) => n,
+            };
+            peer.feed(&buf[..n]);
+            for event in std::mem::take(&mut peer.events) {
+                let (stream, end) = match event {
+                    Event::Headers { stream, fields, end } => {
+                        requests.entry(stream).or_default().0 = fields;
+                        (stream, end)
+                    }
+                    Event::Data { stream, bytes, end } => {
+                        requests.entry(stream).or_default().1.extend_from_slice(&bytes);
+                        (stream, end)
+                    }
+                    _ => continue,
+                };
+                if !end {
+                    continue;
+                }
+                let (fields, body) = requests.remove(&stream).unwrap();
+                let (head, data) = answer(&fields, &body);
+                peer.send_headers(stream, &head, false);
+                peer.send_data(stream, &data, true);
+                let _ = tx.send(H2Had { fields, body });
+            }
+        }
+    }
+
+    /// The guest's windows: small too, so that a large response meets them.
+    const GUEST_HOLDS: Holds = Holds {
+        stream: 8192,
+        connection: 65_535,
+    };
+
+    /// A request's fields as a guest sends them, its Authorization indexed, as RFC 7541 §7.1.3
+    /// lets a client.
+    fn h2_request(
+        method: &str,
+        authority: &str,
+        path: &str,
+        authorization: Option<&str>,
+    ) -> Vec<hpack::Field> {
+        let mut fields = vec![
+            field(":method", method.as_bytes()),
+            field(":scheme", b"https"),
+            field(":authority", authority.as_bytes()),
+            field(":path", path.as_bytes()),
+        ];
+        if let Some(a) = authorization {
+            fields.push(field("authorization", a.as_bytes()));
+        }
+        fields
+    }
+
+    /// Turns the bench with an HTTP/2 guest until `done`, every byte the guest read kept in
+    /// `seen`, leases answered as they are asked.
+    fn h2_until(
+        bench: &mut Bench,
+        peer: &mut Peer,
+        seen: &mut Vec<u8>,
+        credentials: &mut Credentials,
+        done: impl Fn(&Peer) -> bool,
+    ) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !done(peer) {
+            assert!(
+                Instant::now() < deadline,
+                "no end: the guest read {:?}",
+                peer.events
+            );
+            let out = peer.take_out();
+            if !out.is_empty() {
+                bench.guest.writer().write_all(&out).unwrap();
+            }
+            let moved = bench.turn(credentials);
+            if !bench.got.is_empty() {
+                let got = std::mem::take(&mut bench.got);
+                seen.extend_from_slice(&got);
+                peer.feed(&got);
+            }
+            if lease_all(credentials) > 0 {
+                for r in credentials.leases.resumed() {
+                    assert_eq!(r.waiter, bench.waiter);
+                }
+                bench.step(credentials, None, |f, run, q| f.resume(run, q));
+            } else if !moved {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+    }
+
+    fn h2_bench(credentials: &Credentials, addr: SocketAddr) -> (Bench, Peer) {
+        let guest = guest_offering(
+            credentials.ca.der().to_vec().into(),
+            GRANTED,
+            None,
+            &[b"h2", b"http/1.1"],
+        );
+        (Bench::new(guest, addr), Peer::new(End::Client, GUEST_HOLDS))
+    }
+
+    /// Do: a guest offering `h2` and `http/1.1` sends a host speaking HTTP/2 alone, on one
+    /// connection, stream 1 with the credential's placeholder as a bearer token (indexed, as the
+    /// guest's encoder chose) and stream 3 at once with a body of 1 MiB and no credential, both
+    /// hops' windows small; then stream 5 with the placeholder again. Expect: HTTP/2 on both hops;
+    /// stream 1 arriving with the value in its Authorization, sent never indexed (RFC 7541
+    /// §7.1.3), its echo in a field and in DATA back to the guest masked with the placeholder's
+    /// bytes, the value never reaching the guest; stream 3's body arriving and coming back as it
+    /// was sent; stream 5 never indexed again; one lease asked and each fill audited.
+    #[test]
+    fn an_h2_guests_granted_stream_arrives_filled_never_indexed_and_its_echo_comes_back_masked() {
+        let root = root("shards test root");
+        let (addr, had) = h2_host(&root);
+        let mut credentials = credentials(&root);
+        let (mut bench, mut peer) = h2_bench(&credentials, addr);
+        let mut seen = Vec::new();
+        let bearer = format!("Bearer {PLACEHOLDER}");
+        let body: Vec<u8> = (0..1u32 << 20).map(|i| (i % 251) as u8).collect();
+        peer.send_headers(
+            1,
+            &h2_request("POST", GRANTED, "/v1/messages", Some(&bearer)),
+            false,
+        );
+        peer.send_data(1, b"hello", true);
+        peer.send_headers(3, &h2_request("PUT", GRANTED, "/upload", None), false);
+        peer.send_data(3, &body, true);
+        h2_until(&mut bench, &mut peer, &mut seen, &mut credentials, |p| {
+            p.response(1).ended && p.response(3).ended
+        });
+        assert_eq!(
+            bench.guest.alpn_protocol(),
+            Some(&b"h2"[..]),
+            "the guest was not served HTTP/2"
+        );
+        let mut arrived: Vec<H2Had> = (0..2)
+            .map(|_| had.recv_timeout(Duration::from_secs(10)).unwrap())
+            .collect();
+        arrived.sort_by_key(|h| h.body.len());
+        let auth = arrived[0]
+            .fields
+            .iter()
+            .find(|f| f.name == b"authorization")
+            .unwrap();
+        assert_eq!(&auth.value[..], &[b"Bearer ", VALUE].concat()[..]);
+        assert_eq!(
+            auth.indexing,
+            Indexing::Never,
+            "the credential was not sent never indexed"
+        );
+        assert_eq!(arrived[0].body, b"hello");
+        assert!(arrived[1].body == body, "the large body changed on its way");
+        let masked = [b"Bearer ", &echo_mask()[..]].concat();
+        let Got { fields, data, .. } = peer.response(1);
+        assert_eq!(value_of(&fields, ":status"), Some(&b"200"[..]));
+        assert_eq!(
+            value_of(&fields, "x-echo"),
+            Some(&masked[..]),
+            "the echo in a field was not masked"
+        );
+        assert_eq!(
+            data,
+            [&masked[..], b"\nhello"].concat(),
+            "the echo in DATA was not masked"
+        );
+        let Got { fields, data, .. } = peer.response(3);
+        let sent = [b"\n", &body[..]].concat();
+        let differs = data.iter().zip(&sent).position(|(a, b)| a != b);
+        assert!(
+            data == sent,
+            "the large body came back changed: {} octets of {}, first differing at {differs:?}: {:?} {:?}",
+            data.len(),
+            sent.len(),
+            value_of(&fields, ":status").map(String::from_utf8_lossy),
+            String::from_utf8_lossy(&data[..data.len().min(120)])
+        );
+        assert!(!holds(&seen, VALUE), "the value reached the guest");
+        // The same connection's next stream: its value in no table of either hop.
+        peer.send_headers(5, &h2_request("GET", GRANTED, "/v1/models", Some(&bearer)), true);
+        h2_until(&mut bench, &mut peer, &mut seen, &mut credentials, |p| {
+            p.response(5).ended
+        });
+        let five = had.recv_timeout(Duration::from_secs(10)).unwrap();
+        let auth = five.fields.iter().find(|f| f.name == b"authorization").unwrap();
+        assert_eq!(
+            (&auth.value[..], auth.indexing),
+            (&[b"Bearer ", VALUE].concat()[..], Indexing::Never)
+        );
+        assert!(!holds(&seen, VALUE), "the value reached the guest");
+        assert!(
+            credentials.leases.asks().is_empty(),
+            "a held lease was asked again"
+        );
+        assert_eq!(peer.ends(), [], "a stream reset or the connection ended");
+        assert_eq!(bench.audit.len(), 2, "{:?}", bench.audit);
+        assert!(
+            bench
+                .audit
+                .iter()
+                .all(|a| (a.host.as_str(), a.reference.as_str(), a.what) == (GRANTED, CLAUDE, Did::Filled))
+        );
+    }
+
+    /// Do: on one HTTP/2 connection to the granted host, stream 1 for another host (granted
+    /// another credential) carrying the placeholder, and stream 3 for the granted host. Expect:
+    /// stream 1 answered 421 by the injector on that stream alone, nothing of it reaching the host
+    /// and nothing leased; stream 3 answered by the host on the same connection (RFC 9110 §7.4).
+    #[test]
+    fn an_h2_stream_for_another_host_is_answered_421_while_another_completes() {
+        let root = root("shards test root");
+        let (addr, had) = h2_host(&root);
+        let mut credentials = credentials(&root);
+        let (mut bench, mut peer) = h2_bench(&credentials, addr);
+        let mut seen = Vec::new();
+        let bearer = format!("Bearer {PLACEHOLDER}");
+        peer.send_headers(1, &h2_request("GET", OTHER, "/", Some(&bearer)), true);
+        peer.send_headers(3, &h2_request("GET", GRANTED, "/v1/models", None), true);
+        h2_until(&mut bench, &mut peer, &mut seen, &mut credentials, |p| {
+            p.response(1).ended && p.response(3).ended
+        });
+        assert_eq!(bench.guest.alpn_protocol(), Some(&b"h2"[..]));
+        let Got { fields, data, .. } = peer.response(1);
+        assert_eq!(value_of(&fields, ":status"), Some(&b"421"[..]));
+        assert!(
+            String::from_utf8_lossy(&data).contains("RFC 9110 §7.4"),
+            "{data:?}"
+        );
+        let Got { fields, .. } = peer.response(3);
+        assert_eq!(value_of(&fields, ":status"), Some(&b"200"[..]));
+        let one = had.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(
+            one.fields
+                .iter()
+                .any(|f| f.name == b":path" && &f.value[..] == b"/v1/models")
+        );
+        assert!(
+            had.recv_timeout(Duration::from_millis(200)).is_err(),
+            "a misdirected stream reached the host"
+        );
+        assert!(credentials.leases.asks().is_empty() && bench.audit.is_empty());
+        assert!(!bench.closed, "the connection ended with its 421");
+        assert_eq!(peer.ends(), [], "a stream reset or the connection ended");
+    }
+
+    /// Do: a guest offering `h2` and `http/1.1` sends a granted host that speaks HTTP/1.1 alone
+    /// (no ALPN) a request with the placeholder. Expect: the guest served HTTP/1.1, its request
+    /// arriving filled as any HTTP/1.1 request's.
+    #[test]
+    fn a_guest_offering_h2_to_an_http_1_1_host_is_served_http_1_1() {
+        let root = root("shards test root");
+        let (addr, had) = echo(echo_config(&root), false);
+        let mut credentials = credentials(&root);
+        let (mut bench, _) = h2_bench(&credentials, addr);
+        let request =
+            format!("GET / HTTP/1.1\r\nHost: {GRANTED}\r\nx-api-key: {PLACEHOLDER}\r\n\r\n").into_bytes();
+        bench.guest.writer().write_all(&request).unwrap();
+        bench.until(&mut credentials, true, |b| whole(&b.got));
+        assert_eq!(bench.guest.alpn_protocol(), Some(&b"http/1.1"[..]));
+        assert_eq!(
+            had.recv_timeout(Duration::from_secs(10)).unwrap().request,
+            swapped(&request, PLACEHOLDER.as_bytes(), VALUE)
+        );
+    }
+
+    // A sign-in's token host over HTTP/2 (#74 steps 7 and 8): step 8's token handling per stream.
+
+    /// A token host as Claude Code's is (`TOKEN_URL`), speaking HTTP/2 alone: a code's exchange
+    /// answered with the issued tokens, a GET with a JSON text naming no token, anything else 400;
+    /// each a JSON text framed by its Content-Length.
+    fn h2_token_answer(fields: &[hpack::Field], body: &[u8]) -> (Vec<hpack::Field>, Vec<u8>) {
+        let get = fields
+            .iter()
+            .any(|f| f.name == b":method" && &f.value[..] == b"GET");
+        let (status, answer) = if holds(body, br#""grant_type":"authorization_code""#) {
+            ("200", token_response(ISSUED_ACCESS, ISSUED_REFRESH))
+        } else if get {
+            ("200", r#"{"ok":true}"#.to_string())
+        } else {
+            ("400", r#"{"error":"unexpected"}"#.to_string())
+        };
+        let head = vec![
+            field(":status", status.as_bytes()),
+            field("content-type", b"application/json"),
+            field("cache-control", b"no-store"),
+            field("content-length", answer.len().to_string().as_bytes()),
+        ];
+        (head, answer.into_bytes())
+    }
+
+    /// A guest of the token host offering `alpn`, its handshake done and HTTP/2 chosen.
+    fn h2_token_bench(credentials: &mut Credentials, addr: SocketAddr, alpn: &[&[u8]]) -> (Bench, Peer) {
+        let guest = guest_offering(credentials.ca.der().to_vec().into(), TOKEN_HOST, None, alpn);
+        let mut bench = Bench::new(guest, addr);
+        while bench.guest.is_handshaking() {
+            if !bench.turn(credentials) {
+                std::thread::yield_now();
+            }
+        }
+        assert_eq!(
+            bench.guest.alpn_protocol(),
+            Some(&b"h2"[..]),
+            "the guest was not served HTTP/2"
+        );
+        (bench, Peer::new(End::Client, GUEST_HOLDS))
+    }
+
+    /// Turns an HTTP/2 guest's bench until `done` says so of what the guest read, the broker
+    /// answering what the run asks and the flow looking for its answers each turn, every byte the
+    /// guest read kept in `seen`. It waits on the bench's own progress alone (R03); a connection
+    /// that ends fails it.
+    fn h2_drive(
+        bench: &mut Bench,
+        peer: &mut Peer,
+        seen: &mut Vec<u8>,
+        credentials: &mut Credentials,
+        broker: &mut Broker,
+        done: impl Fn(&Peer) -> bool,
+    ) {
+        while !done(peer) {
+            assert!(!bench.closed, "the connection ended: {:?}", peer.events);
+            let out = peer.take_out();
+            if !out.is_empty() {
+                bench.guest.writer().write_all(&out).unwrap();
+            }
+            let moved = bench.turn(credentials);
+            if !bench.got.is_empty() {
+                let got = std::mem::take(&mut bench.got);
+                seen.extend_from_slice(&got);
+                peer.feed(&got);
+            }
+            let asked = broker.serve(credentials);
+            let _ = (credentials.leases.resumed(), credentials.sign_ins.resumed());
+            bench.step(credentials, None, |f, run, q| f.resume(run, q));
+            if !moved && asked == 0 {
+                std::thread::yield_now();
+            }
+        }
+    }
+
+    /// A POST of `body` to the token host's `path`, as a CLI sends one, asking a coded response.
+    fn h2_post(path: &str, body: &str) -> Vec<hpack::Field> {
+        let mut fields = h2_request("POST", TOKEN_HOST, path, None);
+        fields.push(field("content-type", b"application/json"));
+        fields.push(field("accept-encoding", b"gzip, br"));
+        fields.push(field("content-length", body.len().to_string().as_bytes()));
+        fields
+    }
+
+    /// Whether `seen`, or any field the guest decoded, holds one of `reals`.
+    fn h2_leaked(peer: &Peer, seen: &[u8], reals: &[&str]) -> Option<String> {
+        reals
+            .iter()
+            .find(|real| {
+                holds(seen, real.as_bytes())
+                    || peer.events.iter().any(|e| match e {
+                        Event::Headers { fields, .. } => {
+                            fields.iter().any(|f| holds(&f.value, real.as_bytes()))
+                        }
+                        _ => false,
+                    })
+            })
+            .map(|r| r.to_string())
+    }
+
+    /// Do: a guest offering `h2` and `http/1.1` exchanges Claude Code's code at its token host,
+    /// which speaks HTTP/2 alone, on stream 1. Expect: HTTP/2 on both hops; the exchange reaching
+    /// the host asking `identity` and its body as sent; the response held until the broker keeps
+    /// the issued tokens, then reaching the guest on its stream with the broker's placeholders in
+    /// their places and a Content-Length of its new length; no real token in anything the guest
+    /// read; the capture audited; no stream reset.
+    #[test]
+    fn an_h2_token_response_is_captured_on_its_stream_and_the_guest_sees_placeholders() {
+        let root = root("shards test root");
+        let (addr, had) = h2_serving(&root, &[TOKEN_HOST], h2_token_answer);
+        let mut credentials = sign_in_credentials(&root, false);
+        let mut broker = Broker::default();
+        let (mut bench, mut peer) = h2_token_bench(&mut credentials, addr, &[b"h2", b"http/1.1"]);
+        let mut seen = Vec::new();
+        let exchange = r#"{"grant_type":"authorization_code","code":"c0de","redirect_uri":"https://platform.claude.com/oauth/code/callback","client_id":"9d1c250a-e61b-44d9-88ed-5944d1962f5e","code_verifier":"v","state":"s"}"#;
+        peer.send_headers(1, &h2_post("/v1/oauth/token", exchange), false);
+        peer.send_data(1, exchange.as_bytes(), true);
+        h2_drive(
+            &mut bench,
+            &mut peer,
+            &mut seen,
+            &mut credentials,
+            &mut broker,
+            |p| p.response(1).ended,
+        );
+        let sent = had.recv().unwrap();
+        let codings: Vec<&[u8]> = sent
+            .fields
+            .iter()
+            .filter(|f| f.name == b"accept-encoding")
+            .map(|f| &f.value[..])
+            .collect();
+        assert_eq!(
+            codings,
+            [&b"identity"[..]],
+            "the token host was not asked `identity`"
+        );
+        assert_eq!(sent.body, exchange.as_bytes());
+        assert_eq!(
+            broker.access,
+            ISSUED_ACCESS.as_bytes(),
+            "the issued token was not kept"
+        );
+        assert_eq!(broker.refresh, ISSUED_REFRESH.as_bytes());
+        let Got { fields, data, .. } = peer.response(1);
+        let expected = token_response(SIGNED_ACCESS, SIGNED_REFRESH);
+        assert_eq!(value_of(&fields, ":status"), Some(&b"200"[..]));
+        assert_eq!(String::from_utf8_lossy(&data), expected);
+        assert_eq!(
+            value_of(&fields, "content-length"),
+            Some(expected.len().to_string().as_bytes())
+        );
+        assert_eq!(h2_leaked(&peer, &seen, &[ISSUED_ACCESS, ISSUED_REFRESH]), None);
+        let did: Vec<Did> = bench.audit.iter().map(|a| a.what).collect();
+        assert_eq!(did, [Did::Captured]);
+        assert_eq!(peer.ends(), [], "a stream reset or the connection ended");
+    }
+
+    /// Do: a guest of a sign-in captured before (a later run's) refreshes it over HTTP/2 on stream
+    /// 1, then sends a GET on stream 3. Expect: the refresh answered on its stream from the broker,
+    /// one call to the provider outside, the guest given the sign-in's placeholders kept from
+    /// caches and no rotated token; the held lease of the access token let go; the host's first
+    /// request the GET, so that the refresh never reached it; the refresh audited.
+    #[test]
+    fn an_h2_refresh_is_answered_outside_on_its_stream_with_placeholders() {
+        let root = root("shards test root");
+        let (addr, had) = h2_serving(&root, &[TOKEN_HOST], h2_token_answer);
+        let mut credentials = sign_in_credentials(&root, true);
+        let mut broker = Broker::holding(ISSUED_ACCESS, ISSUED_REFRESH);
+        let (mut bench, mut peer) = h2_token_bench(&mut credentials, addr, &[b"h2", b"http/1.1"]);
+        let mut seen = Vec::new();
+        let refresh = refresh_body();
+        peer.send_headers(1, &h2_post("/v1/oauth/token", &refresh), false);
+        peer.send_data(1, refresh.as_bytes(), true);
+        h2_drive(
+            &mut bench,
+            &mut peer,
+            &mut seen,
+            &mut credentials,
+            &mut broker,
+            |p| p.response(1).ended,
+        );
+        assert_eq!(broker.provider_calls, 1);
+        let Got { fields, data, .. } = peer.response(1);
+        assert_eq!(value_of(&fields, ":status"), Some(&b"200"[..]));
+        assert_eq!(value_of(&fields, "cache-control"), Some(&b"no-store"[..]));
+        assert_eq!(value_of(&fields, "pragma"), Some(&b"no-cache"[..]));
+        assert_eq!(
+            String::from_utf8_lossy(&data),
+            token_response(SIGNED_ACCESS, SIGNED_REFRESH)
+        );
+        let reals = [ISSUED_ACCESS, ISSUED_REFRESH, ROTATED_ACCESS, ROTATED_REFRESH];
+        assert_eq!(h2_leaked(&peer, &seen, &reals), None);
+        assert!(
+            credentials
+                .leases
+                .held(&access_reference(), Instant::now())
+                .is_none(),
+            "the rotated token's old value is held still"
+        );
+        peer.send_headers(3, &h2_request("GET", TOKEN_HOST, "/after", None), true);
+        h2_drive(
+            &mut bench,
+            &mut peer,
+            &mut seen,
+            &mut credentials,
+            &mut broker,
+            |p| p.response(3).ended,
+        );
+        let first = had.recv().unwrap();
+        assert!(
+            first
+                .fields
+                .iter()
+                .any(|f| f.name == b":path" && &f.value[..] == b"/after"),
+            "the refresh reached the host"
+        );
+        let did: Vec<Did> = bench.audit.iter().map(|a| a.what).collect();
+        assert_eq!(did, [Did::Refreshed]);
+        assert_eq!(peer.ends(), [], "a stream reset or the connection ended");
+    }
+
+    /// Do: on one HTTP/2 connection to the token host, stream 1 a refresh the broker refuses (its
+    /// provider refused the refresh token) and stream 3 a GET, at once. Expect: stream 1 answered
+    /// by the injector on that stream alone with the HTTP/1.1 path's status and text, RFC 6749
+    /// §5.2's `invalid_grant` in a 400, so that its CLI signs in anew; stream 3 answered by the
+    /// host; no stream reset and the connection going on.
+    #[test]
+    fn a_refused_h2_refresh_is_answered_on_its_stream_while_another_completes() {
+        let root = root("shards test root");
+        let (addr, had) = h2_serving(&root, &[TOKEN_HOST], h2_token_answer);
+        let mut credentials = sign_in_credentials(&root, true);
+        let mut broker = Broker::holding(ISSUED_ACCESS, ISSUED_REFRESH);
+        broker.refuse = Some(signin::Declined::Denied("the refresh token was revoked".into()));
+        let (mut bench, mut peer) = h2_token_bench(&mut credentials, addr, &[b"h2", b"http/1.1"]);
+        let mut seen = Vec::new();
+        let refresh = refresh_body();
+        peer.send_headers(1, &h2_post("/v1/oauth/token", &refresh), false);
+        peer.send_data(1, refresh.as_bytes(), true);
+        peer.send_headers(3, &h2_request("GET", TOKEN_HOST, "/meanwhile", None), true);
+        h2_drive(
+            &mut bench,
+            &mut peer,
+            &mut seen,
+            &mut credentials,
+            &mut broker,
+            |p| p.response(1).ended && p.response(3).ended,
+        );
+        let refused = Refusal::Declined {
+            refresh: true,
+            why: signin::Declined::Denied("the refresh token was revoked".into()),
+        }
+        .response();
+        let body_at = refused.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+        let Got { fields, data, .. } = peer.response(1);
+        assert_eq!(value_of(&fields, ":status"), Some(&b"400"[..]));
+        assert_eq!(value_of(&fields, "content-type"), Some(&b"application/json"[..]));
+        assert_eq!(data, &refused[body_at..], "not the HTTP/1.1 path's answer");
+        let Got { fields, data, .. } = peer.response(3);
+        assert_eq!(value_of(&fields, ":status"), Some(&b"200"[..]));
+        assert_eq!(data, br#"{"ok":true}"#);
+        let first = had.recv().unwrap();
+        assert!(
+            first
+                .fields
+                .iter()
+                .any(|f| f.name == b":path" && &f.value[..] == b"/meanwhile")
+        );
+        assert_eq!(broker.provider_calls, 0);
+        assert_eq!(peer.ends(), [], "a stream reset or the connection ended");
+        assert!(!bench.closed, "the connection ended with its refusal");
+    }
+
+    /// Do: a guest offering `h2` alone (no `http/1.1`) reaches the token host, revokes its
+    /// sign-in on stream 1 and GETs on stream 3. Expect: served HTTP/2, not refused at its
+    /// handshake; the revocation answered 200 here on its stream, the kept tokens as they were;
+    /// the GET answered by the host.
+    #[test]
+    fn a_guest_offering_h2_alone_to_a_token_host_is_served_h2() {
+        let root = root("shards test root");
+        let (addr, _had) = h2_serving(&root, &[TOKEN_HOST], h2_token_answer);
+        let mut credentials = sign_in_credentials(&root, true);
+        let mut broker = Broker::holding(ISSUED_ACCESS, ISSUED_REFRESH);
+        let (mut bench, mut peer) = h2_token_bench(&mut credentials, addr, &[b"h2"]);
+        let mut seen = Vec::new();
+        let revoke = format!(
+            r#"{{"token":"{SIGNED_REFRESH}","token_type_hint":"refresh_token","client_id":"9d1c250a-e61b-44d9-88ed-5944d1962f5e"}}"#
+        );
+        peer.send_headers(1, &h2_post("/v1/oauth/token/revoke", &revoke), false);
+        peer.send_data(1, revoke.as_bytes(), true);
+        peer.send_headers(3, &h2_request("GET", TOKEN_HOST, "/", None), true);
+        h2_drive(
+            &mut bench,
+            &mut peer,
+            &mut seen,
+            &mut credentials,
+            &mut broker,
+            |p| p.response(1).ended && p.response(3).ended,
+        );
+        let Got { fields, data, .. } = peer.response(1);
+        assert_eq!(value_of(&fields, ":status"), Some(&b"200"[..]));
+        assert!(data.is_empty());
+        assert_eq!(broker.revoked, 1);
+        assert_eq!(
+            broker.refresh,
+            ISSUED_REFRESH.as_bytes(),
+            "the kept token was revoked"
+        );
+        assert_eq!(value_of(&peer.response(3).fields, ":status"), Some(&b"200"[..]));
+        let did: Vec<Did> = bench.audit.iter().map(|a| a.what).collect();
+        assert_eq!(did, [Did::Revoked]);
+        assert_eq!(peer.ends(), [], "a stream reset or the connection ended");
     }
 }

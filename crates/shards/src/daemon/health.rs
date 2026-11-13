@@ -331,8 +331,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                         None => c.changed.wait(due).unwrap_or_else(PoisonError::into_inner),
                         Some(Reverse((at, _))) if *at > now => {
                             let wait = at.saturating_duration_since(now);
-                            c.changed
-                                .wait_timeout(due, wait)
+                            super::timed(Some(wait), || c.changed.wait_timeout(due, wait))
                                 .unwrap_or_else(PoisonError::into_inner)
                                 .0
                         }
@@ -714,7 +713,8 @@ pub(super) enum Wait<'a> {
     /// since the look before ([`Cut::Stalled`]), or where it could not be read
     /// ([`Cut::Unread`]). A microVM its host holds at a `memory.high` is slowed there for as
     /// long as it is over it, and the answer of one asked to give back what would bring it
-    /// under comes as its host lets it run (D188; PM M467).
+    /// under comes as its host lets it run (D188; PM M467). An answer there as the wait
+    /// begins teaches nothing: it was waited for not at all (D222).
     WhileRuns(u32, &'a Record),
 }
 
@@ -722,6 +722,10 @@ pub(super) enum Wait<'a> {
 /// its end then, so that none outlives its asker.
 fn await_exit(ours: &shards_ipc::Stream, wait: Wait<'_>) -> Ended {
     let (mut follow, mut cut) = match wait {
+        // Its answer there as its wait begins was waited for not at all: read as it is, it
+        // teaches its kind nothing (D222's wait of nothing), as a slot's rest is learned only
+        // where it was waited for (D185's `Asked::waited`).
+        Wait::WhileRuns(..) if super::readable_within(ours, Some(Duration::ZERO)) => (None, None),
         Wait::WhileRuns(vm, record) => match following(vm, record) {
             Ok(follow) => (follow, None),
             Err(cut) => (None, Some(cut)),
@@ -864,6 +868,20 @@ mod tests {
             panic!("its answer taught nothing");
         };
         assert!(slowest >= after, "{slowest:?}");
+    }
+
+    /// An exec's answer there as its wait begins was waited for not at all: it is taken, and
+    /// teaches its kind nothing (D222's wait of nothing), whose W* of next to nothing would
+    /// have its kind's next asks looked at each microsecond. Its microVM's process is this
+    /// one, which lives throughout.
+    #[test]
+    fn an_exit_said_before_its_wait_teaches_nothing() {
+        let record = Record::new();
+        let (ours, theirs) = shards_ipc::Stream::pair().unwrap();
+        shards_ipc::send(&theirs, shards_ipc::kind::EXIT, &[7], &[]).unwrap();
+        let ended = await_exit(&ours, Wait::WhileRuns(std::process::id(), &record));
+        assert_eq!((ended.status, ended.cut), (Some(7), None));
+        assert_eq!(record.seen(), shards_api::Seen::Cold);
     }
 
     /// Set in the child of `a_microvm_that_runs_at_any_rate_is_waited_for`: it runs a CPU a

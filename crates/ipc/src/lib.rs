@@ -19,7 +19,14 @@ use std::path::{Path, PathBuf};
 /// `XDG_DATA_HOME` ignored. Whoever starts another shards process passes it this one
 /// ([`HOME`]).
 pub fn home() -> Result<PathBuf, String> {
-    let var = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty());
+    home_in(|name| std::env::var_os(name))
+}
+
+/// The [`home`] a process whose environment `var` reads finds, from this process's working
+/// directory: a run host's, which its orchestrator starts with variables of its own over
+/// its environment.
+pub fn home_in(var: impl Fn(&str) -> Option<std::ffi::OsString>) -> Result<PathBuf, String> {
+    let var = |name: &str| var(name).filter(|v| !v.is_empty());
     let absolute = |p: PathBuf| std::path::absolute(&p).map_err(|e| format!("{}: {e}", p.display()));
     if let Some(home) = var(HOME) {
         return absolute(PathBuf::from(home));
@@ -42,6 +49,25 @@ pub fn home() -> Result<PathBuf, String> {
 
 /// The variable that names shards' home.
 pub const HOME: &str = "SHARDS_HOME";
+
+/// The directory of a home where its daemon and its run hosts make their microVMs' writable
+/// layers' files (D190), each named by [`layer_name`].
+pub const LAYERS: &str = "layers";
+
+/// The name of the `n`th writable layer's file process `pid` makes in [`LAYERS`]: its maker
+/// in its name ([`layer_maker`]), so that what a process left there as it ended is found by
+/// its pid alone (D253).
+pub fn layer_name(pid: u32, n: u64) -> String {
+    format!("{pid}-{n}")
+}
+
+/// The pid of the process that made the layer's file `name` ([`layer_name`]); none for a name
+/// it does not make.
+pub fn layer_maker(name: &str) -> Option<u32> {
+    let (pid, n) = name.split_once('-')?;
+    n.parse::<u64>().ok()?;
+    pid.parse().ok()
+}
 
 /// What a daemon that no longer serves keeps in its home while it ends its runs: its
 /// process, as [`this_process`] names it. A daemon or client that finds none serving waits
@@ -362,6 +388,16 @@ pub mod kind {
     /// not, typed (shards_net::lease::encode_answer). Asked only where the run has credential
     /// grants (`NET_CREDENTIALS`), of a run host that relays it to its orchestrator.
     pub const NET_LEASE: u8 = 100;
+    /// Run host → network process: the run's sign-in grants (D242, step 8), each a sign-in's
+    /// name, its CLI, the hosts its access token goes to and what an earlier capture of it
+    /// gave, never a value (shards_net::signin::encode_grants), after its `NET_POLICY` and
+    /// before its `NET_CREDENTIALS`, once; answered with the same kind once taken.
+    pub const NET_SIGN_INS: u8 = 104;
+    /// Network process ⇄ its run host: a sign-in's capture or refresh, asked by id, and its
+    /// answer by that id; or a revocation, told (D242, step 8; shards_net::signin's codec).
+    /// The network process asks it as the injector meets a sign-in's token response or its
+    /// CLI's refresh, of a run host that relays it to its orchestrator.
+    pub const NET_SIGN_IN: u8 = 105;
     /// Daemon → a running microVM's VM process: a run joins its network (D119). Its number
     /// (a big-endian u64, which `EXEC_TAKEN` answers), with the VM's end of the joiner's
     /// own connection to the daemon, on which the joiner's run goes as a warm VM's does
@@ -2339,7 +2375,7 @@ mod pipe;
 #[cfg(windows)]
 pub use pipe::{
     Arriving, Event, ExitWatch, Listener, Message, Pipe, Poller, Stream, await_any, await_streams, byte_pair,
-    end, readable_raw, recv, recv_by, send,
+    end, hung_up, readable_raw, recv, recv_by, send,
 };
 #[cfg(windows)]
 mod windows;
@@ -2405,6 +2441,39 @@ pub mod fd {
     impl<T: std::os::windows::io::AsRawHandle + ?Sized> AsRawFd for T {
         fn as_raw_fd(&self) -> RawFd {
             self.as_raw_handle()
+        }
+    }
+}
+
+/// A MAC address as shards' processes pass it to one another (review 2.32): its six
+/// bytes in hex, two digits each, between colons, as Linux and Docker write one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Mac(pub [u8; 6]);
+
+impl std::fmt::Display for Mac {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let [a, b, c, d, e, g] = self.0;
+        write!(f, "{a:02x}:{b:02x}:{c:02x}:{d:02x}:{e:02x}:{g:02x}")
+    }
+}
+
+impl std::str::FromStr for Mac {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Mac, String> {
+        let not = || format!("{s:?} is not a MAC");
+        let mut octets = s.split(':');
+        let mut mac = [0u8; 6];
+        for byte in &mut mac {
+            let hex = octets
+                .next()
+                .filter(|h| h.len() == 2 && h.bytes().all(|c| c.is_ascii_hexdigit()))
+                .ok_or_else(not)?;
+            *byte = u8::from_str_radix(hex, 16).map_err(|_| not())?;
+        }
+        match octets.next() {
+            Some(_) => Err(not()),
+            None => Ok(Mac(mac)),
         }
     }
 }
@@ -2506,6 +2575,52 @@ impl Latch {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
+    /// A layer's file's name says its maker's pid; a name no process makes there (a kept
+    /// layer's, one half a name) says none.
+    #[test]
+    fn a_layers_name_says_its_maker() {
+        assert_eq!(super::layer_maker(&super::layer_name(4242, 7)), Some(4242));
+        assert_eq!(
+            super::layer_maker(&super::layer_name(u32::MAX, u64::MAX)),
+            Some(u32::MAX)
+        );
+        for not in [
+            "",
+            "layer.ext4",
+            "4242",
+            "4242-",
+            "-7",
+            "4242-x",
+            "x-7",
+            "4242-7-1",
+            "-1-7",
+        ] {
+            assert_eq!(super::layer_maker(not), None, "{not:?}");
+        }
+    }
+
+    /// A MAC goes as text and comes back the same; what is not six two-digit hex bytes
+    /// between colons is no MAC.
+    #[test]
+    fn macs_read_back_as_written() {
+        let mac = super::Mac([0x02, 0x42, 0xac, 0x11, 0x00, 0xff]);
+        assert_eq!(mac.to_string(), "02:42:ac:11:00:ff");
+        assert_eq!("02:42:ac:11:00:ff".parse(), Ok(mac));
+        assert_eq!("02:42:AC:11:00:FF".parse(), Ok(mac));
+        for not in [
+            "",
+            "02:42:ac:11:00",
+            "02:42:ac:11:00:ff:01",
+            "2:42:ac:11:00:ff",
+            "+2:42:ac:11:00:ff",
+            "02:42:ac:11:00:fg",
+            "02-42-ac-11-00-ff",
+            "02:42:ac:11:00:ff:",
+        ] {
+            assert!(not.parse::<super::Mac>().is_err(), "{not:?}");
+        }
+    }
+
     /// A private file its maker still holds is read by another open of its user's, on every
     /// host, and none is made over it: a run's managed-output record, which the daemon holds
     /// for the run's life, is how its owner finds the run, and Windows refused the owner's

@@ -1280,10 +1280,12 @@ impl Controller {
             receivers.push((id, heard, *from));
             id = id.saturating_add(1);
         }
+        // The run its asks name: its outputs', else the zero run and generation 0, as an
+        // endpoint of no member stream knows it (control/exec.rs `Execs::run`, unix.rs).
         let run = subscriptions
             .outputs
             .first()
-            .map(|(scope, _, _)| (scope.run, scope.generation));
+            .map_or((RunId([0; 32]), 0), |(scope, _, _)| (scope.run, scope.generation));
         let (asks_tx, asks) = mpsc::channel();
         let drive = Drive {
             to,
@@ -1361,27 +1363,23 @@ impl Controller {
                 });
             }
         }
-        let execs = match (subscriptions.execs, run) {
-            (Some(_), Some((run, generation))) => Some(Execs {
+        let (run, generation) = run;
+        let execs = match subscriptions.execs {
+            Some(_) => Some(Execs {
                 asks: asks(&sender)?,
                 run,
                 generation,
             }),
-            _ => None,
+            None => None,
         };
-        // A controller of sockets alone names the zero run and generation 0, as its endpoint of
-        // sockets alone knows them (unix.rs).
         let sockets = match subscriptions.sockets {
-            Some(admission) => {
-                let (run, generation) = run.unwrap_or((RunId([0; 32]), 0));
-                Some(Sockets {
-                    asks: asks(&sender)?,
-                    run,
-                    generation,
-                    window: usize::try_from(admission.window)
-                        .map_err(|_| managed::Error::Admission(AdmissionError::Window))?,
-                })
-            }
+            Some(admission) => Some(Sockets {
+                asks: asks(&sender)?,
+                run,
+                generation,
+                window: usize::try_from(admission.window)
+                    .map_err(|_| managed::Error::Admission(AdmissionError::Window))?,
+            }),
             None => None,
         };
         Ok((
@@ -2111,8 +2109,9 @@ struct Drive {
     asks_tx: mpsc::Sender<Ask>,
     wake: Option<Sender<()>>,
     next_id: u64,
-    /// The run and generation an exec is asked for in, from its dialed outputs.
-    run: Option<(RunId, u64)>,
+    /// The run and generation an exec is asked for in: its dialed outputs', else the zero
+    /// run's.
+    run: (RunId, u64),
     admissions: Option<exec::Admissions>,
     /// The connection's windows with no exec running.
     base: Limits,
@@ -2342,7 +2341,7 @@ impl Drive {
     /// are, at its streams ([`exec::exec_run`]) from their first bytes; the connection's windows
     /// raised by them; and their handles told to the exec's caller.
     fn exec_started(&mut self, io: &mut Io<'_>, conn: ConnKey, at: usize, exec: u32) -> Result<(), Broken> {
-        let (Some((run, generation)), Some(admissions)) = (self.run, self.admissions) else {
+        let ((run, generation), Some(admissions)) = (self.run, self.admissions) else {
             return Err(Broken::Protocol);
         };
         let Some(lane) = self.lanes.get(at) else {

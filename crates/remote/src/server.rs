@@ -6,14 +6,14 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::SocketAddr;
 use std::sync::mpsc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use hyper_quic::{StreamId, VarInt};
 
 use crate::frame::{self, Request, Tag};
 use crate::identity::Identity;
 use crate::invite;
-use crate::net::{Close, Command, ConnKey, Driver, Handler, Io, Read as StreamRead, Sender};
+use crate::net::{Close, Command, ConnKey, Driver, Handler, Io, RanOut, Read as StreamRead, Sender};
 use crate::{Error, tls};
 
 /// What one read of a command's output takes at most: what a pipe holds to be read at once,
@@ -68,10 +68,17 @@ pub trait Host: Send + Sync {
     /// How many invitations the machine holds open: as many clients it has not enrolled may
     /// be connected at once, to join, as an invitation enrolls one client.
     fn invited(&self) -> usize;
-    /// How many handshakes of keys not yet known the machine holds at once: its own resources'
-    /// bound, past which the oldest unanswered is given up for the newest (the person's ruling,
-    /// 2026-11-13).
+    /// How many connections the machine holds at once, its own resources' bound (at the daemon,
+    /// the process's descriptors, as each connection served may hold a command and its stdio):
+    /// handshakes and established connections alike, past which a newcomer is refused and takes
+    /// the place of a holder, its handshake in flight or ended, that does not answer the PING it
+    /// was sent within its probe timeout (ROOT's rulings on #72, `net::Driver::hold_connections`).
     fn handshakes(&self) -> usize;
+    /// A peer at `at` went `unheard` past the window its path has shown, a send of the daemon's
+    /// unanswered (`net::RanOut::Stalled`): told once a stall, for the machine's log, as its
+    /// connection waits on with no window and its commands run on (ROOT's ruling A). `client`,
+    /// the name it enrolled, where the machine has said whom its key is. Nothing, by default.
+    fn unheard(&self, _client: Option<&str>, _at: SocketAddr, _unheard: Duration) {}
 }
 
 /// The daemon's answer to any join that failed, whatever made it fail: a refusal tells
@@ -893,8 +900,20 @@ impl<H: Host> Handler for Server<'_, '_, H> {
         self.settle(io, conn, id);
     }
 
+    /// A client unheard past its window is said once to the machine's log ([`Host::unheard`]),
+    /// and waited for with no window: nothing here takes it for gone, so that its commands run
+    /// to their own end, as `docker exec`'s over a dead SSH session do.
+    fn ran_out(&mut self, io: &mut Io<'_>, conn: ConnKey, what: RanOut) {
+        if let RanOut::Stalled { unheard, .. } = what
+            && let Some(at) = io.peer(conn)
+        {
+            let client = self.peers.get(&conn).and_then(|p| p.client.as_deref());
+            self.host.unheard(client, at, unheard);
+        }
+    }
+
     fn lost(&mut self, _io: &mut Io<'_>, conn: ConnKey, _why: &str, _code: Option<u64>) {
-        // Its commands lose their terminal.
+        // Its commands lose their terminal: its client closed it, or its own end did.
         if let Some(peer) = self.peers.remove(&conn) {
             for stream in peer.streams.values() {
                 if stream.running()
@@ -975,7 +994,7 @@ pub fn serve<H: Host>(
     ready: impl FnOnce(SocketAddr, Stopper),
 ) -> Result<(), Error> {
     let config = tls::server(identity)?;
-    let slots = host.handshakes();
+    let places = host.handshakes();
     // Each start's worker is the scope's, the host shared with them: the listener returns once
     // every start under way as it stops has ended, each hung up where none relays it.
     std::thread::scope(|starts| {
@@ -988,7 +1007,7 @@ pub fn serve<H: Host>(
         // A client is not known before its handshake says whose key it holds: each is held as
         // a peer never reached, its handshake waited for as long as its probing goes on.
         let (mut driver, sender) = Driver::bind(at, Some(config), server, tls::Known::Never)?;
-        driver.hold_handshakes(slots);
+        driver.hold_connections(places);
         driver.handler_mut().sender = Some(sender.try_clone()?);
         ready(driver.local()?, Stopper(sender));
         driver.run()

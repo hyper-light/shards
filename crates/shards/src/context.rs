@@ -246,6 +246,11 @@ fn here_terminal() -> Option<frame::Terminal> {
 /// size and signals go.
 static STEERED: std::sync::Mutex<Option<client::Controls>> = std::sync::Mutex::new(None);
 
+/// The daemon has gone unheard past its window and not answered since (`client::Stall`): a
+/// signal that would end this client ends it, as one with no command to take it does, rather
+/// than going to a daemon that may be gone, as the stall's words say (D180, ROOT's ruling A).
+static STALLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// The file this client writes for the command there until it is whole ([`Named`]), which
 /// a signal that ends the client removes first: none is left behind.
 static UNFINISHED: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
@@ -414,11 +419,13 @@ extern "system" fn on_console_event(kind: u32) -> windows_sys::core::BOOL {
     let Some(linux) = console_signal(kind) else {
         return 0;
     };
-    let sent = STEERED
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .as_ref()
-        .is_some_and(|controls| controls.signal(linux).is_ok());
+    let stalled = STALLED.load(std::sync::atomic::Ordering::SeqCst);
+    let sent = !stalled
+        && STEERED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .is_some_and(|controls| controls.signal(linux).is_ok());
     if !sent {
         remove_unfinished();
         return 0;
@@ -469,19 +476,23 @@ fn steer_signals(reads_terminal: bool, terminal: Option<i32>) -> Result<(), Stri
                 if unsafe { libc::sigwait(&set, &mut sig) } != 0 {
                     return;
                 }
-                let steered = STEERED.lock().unwrap_or_else(PoisonError::into_inner);
-                let sent = steered.as_ref().is_some_and(|controls| match terminal {
-                    Some(fd) if sig == libc::SIGWINCH => {
-                        let (rows, cols) = crate::cli::terminal::size(fd);
-                        controls.resize(rows, cols).is_ok()
-                    }
-                    _ if sig == shards_ipc::CARRIER => {
-                        shards_ipc::sent_faults().all(|linux| controls.signal(linux).is_ok())
-                    }
-                    _ => shards_ipc::linux_signal(sig).is_some_and(|linux| controls.signal(linux).is_ok()),
-                });
-                drop(steered);
                 let ends = [libc::SIGHUP, libc::SIGINT, libc::SIGQUIT, libc::SIGTERM].contains(&sig);
+                let stalled = ends && STALLED.load(std::sync::atomic::Ordering::SeqCst);
+                let steered = STEERED.lock().unwrap_or_else(PoisonError::into_inner);
+                let sent = !stalled
+                    && steered.as_ref().is_some_and(|controls| match terminal {
+                        Some(fd) if sig == libc::SIGWINCH => {
+                            let (rows, cols) = crate::cli::terminal::size(fd);
+                            controls.resize(rows, cols).is_ok()
+                        }
+                        _ if sig == shards_ipc::CARRIER => {
+                            shards_ipc::sent_faults().all(|linux| controls.signal(linux).is_ok())
+                        }
+                        _ => {
+                            shards_ipc::linux_signal(sig).is_some_and(|linux| controls.signal(linux).is_ok())
+                        }
+                    });
+                drop(steered);
                 if !sent && ends && !ignored.contains(&sig) {
                     remove_unfinished();
                     crate::cli::terminal::restore();
@@ -776,9 +787,11 @@ pub(crate) fn exec(
 /// Runs `request` on `context`'s daemon as [`client::exec_with`] does (D180), as the home
 /// `home` whose identity is `identity`: its handshake and its waits starting from what the home
 /// knows of the daemon's path ([`known`]), and what its connection saw kept for the next
-/// ([`keep`]). Each probe of a handshake that has not ended is told on stderr, and `waits`
-/// asked whether it waits on: a daemon never reached, or whose last wait ran out, has no
-/// deadline but its caller's. What the connection saw, too.
+/// ([`keep`]). `waits` is asked, as each probe of a handshake that has not ended goes, whether
+/// it waits on: a daemon never reached, or whose last wait ran out, has no deadline but its
+/// caller's. A daemon unheard past the window its path has shown, its handshake's or its
+/// answers', is told on stderr once a stall, and waited for as long as its user waits (D180,
+/// ROOT's ruling A; `client::Stall`). What the connection saw, too.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn exec_with(
     home: &Path,
@@ -790,19 +803,28 @@ pub(crate) fn exec_with(
     stderr: impl io::Write + Send + 'static,
     steered: impl FnOnce(client::Controls),
     made: impl FnMut(&[u8]),
-    mut waits: impl FnMut(client::Unanswered) -> bool,
+    waits: impl FnMut(client::Unanswered) -> bool,
 ) -> (Result<Result<i32, String>, shards_remote::Error>, Seen) {
     let before = known(home, context);
-    let told = |unanswered: client::Unanswered| {
-        let _ = writeln!(
-            io::stderr(),
-            "shards: {}: no answer yet from {}: {} probes over {:.1?}",
-            context.name,
-            context.address,
-            unanswered.probes,
-            unanswered.waited
-        );
-        waits(unanswered)
+    let stalled = |stall: client::Stall| match stall {
+        client::Stall::Unheard { unheard, .. } => {
+            STALLED.store(true, std::sync::atomic::Ordering::SeqCst);
+            let _ = writeln!(
+                io::stderr(),
+                "shards: {}: the daemon at {} hasn't been heard for {unheard:.1?}; still waiting (it may be busy or gone; ^C ends this)",
+                context.name,
+                context.address,
+            );
+        }
+        client::Stall::Answered { .. } => STALLED.store(false, std::sync::atomic::Ordering::SeqCst),
+        client::Stall::Unreached { waited, .. } => {
+            let _ = writeln!(
+                io::stderr(),
+                "shards: {}: no answer yet from {} in {waited:.1?}; still waiting (it may be busy, loaded or not listening; ^C ends this)",
+                context.name,
+                context.address,
+            );
+        }
     };
     let (ran, seen) = client::exec_with(
         identity,
@@ -813,7 +835,8 @@ pub(crate) fn exec_with(
         stderr,
         steered,
         made,
-        told,
+        waits,
+        stalled,
         |_| {},
     );
     // A record not kept leaves the next connection to start from the one kept before, nothing

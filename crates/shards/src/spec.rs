@@ -192,12 +192,18 @@ pub fn now() -> u128 {
 /// record cut short, or bytes a guest wrote to look like one, are never taken for
 /// records, and `--tail` reads back from the end (audit A12). A log without an index is
 /// from an earlier shards, and is indexed as it is first read.
+///
+/// A member's log, which its daemon keeps (D240), may hold a gap's record too, its index
+/// entry [`INDEX_GAP`] beside [`INDEX_STDERR`] for the channel whose output it did not keep
+/// (daemon/logs.rs, `LOG_GAP`). Readers of output pass over it; the log lane says it (D238).
+/// A run's own log, which its VM writes, holds none.
 pub const LOG_STDOUT: u8 = 1;
 pub const LOG_STDERR: u8 = 2;
 pub const INDEX_STDERR: u64 = 1 << 63;
 pub const INDEX_LINE: u64 = 1 << 62;
+pub const INDEX_GAP: u64 = 1 << 61;
 /// A record's start, in an index entry.
-pub const INDEX_START: u64 = INDEX_LINE - 1;
+pub const INDEX_START: u64 = INDEX_GAP - 1;
 /// A record's bytes before its output.
 pub const LOG_HEAD: u64 = 13;
 

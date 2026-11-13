@@ -202,12 +202,23 @@ fn bytes(text: &str) -> Result<Option<u64>, String> {
         .ok_or_else(|| format!("{text:?}: more bytes than a budget holds"))
 }
 
-/// A microVM of a group: its VM process, and the run its words go through.
+/// A run of a group: its microVM's VM process, by its identity, its pid and when it started
+/// (`shards_ipc::started`, none where that could not be read), which a joiner shares with its
+/// provider (D119); and the run its words go through.
 #[cfg(any(target_os = "macos", windows))]
 #[derive(Debug, Clone)]
 struct Member {
     pid: u32,
+    start: Option<u64>,
     id: String,
+}
+
+#[cfg(any(target_os = "macos", windows))]
+impl Member {
+    /// Whether `other`'s VM process is its own: one microVM's, its provider's and joiners'.
+    fn shares(&self, other: &Member) -> bool {
+        self.pid == other.pid && self.start == other.start
+    }
 }
 
 /// What the groups' thread hears (D183, slice 3): runs begun, by VM process and microVM,
@@ -515,8 +526,10 @@ impl<D: Disk> Daemon<D> {
 
     /// Run `id`, of VM process `pid`, began: held to its group's budget, where it has one.
     pub(super) fn group_ran(&self, pid: u32, id: &str) {
+        let start = shards_ipc::started(pid).ok();
         lock(&self.groups.woke).ran.push(Member {
             pid,
+            start,
             id: id.to_string(),
         });
         self.groups.wake.notify_one();
@@ -551,9 +564,8 @@ impl<D: Disk> Daemon<D> {
                             .wait(woke)
                             .unwrap_or_else(PoisonError::into_inner),
                         Some(at) => {
-                            self.groups
-                                .wake
-                                .wait_timeout(woke, at.saturating_duration_since(Instant::now()))
+                            let left = at.saturating_duration_since(Instant::now());
+                            super::timed(Some(left), || self.groups.wake.wait_timeout(woke, left))
                                 .unwrap_or_else(PoisonError::into_inner)
                                 .0
                         }
@@ -675,7 +687,11 @@ impl<D: Disk> Daemon<D> {
                 None
             });
         #[cfg(target_os = "macos")]
-        let procs = Some(members.iter().map(|m| m.pid).collect::<Vec<_>>());
+        let procs = Some(
+            held.iter()
+                .filter_map(|&(i, _)| members.get(i).map(|m| m.pid))
+                .collect::<Vec<_>>(),
+        );
         if let Some(procs) = procs {
             let listed: String = procs.iter().map(|p| format!("{p}\n")).collect();
             let _ = std::fs::write(dir.join("cgroup.procs"), listed);
@@ -708,11 +724,11 @@ impl<D: Disk> Daemon<D> {
             });
         }
         // Each told its room with what its VM process held as the room was read: one read.
-        for (i, m) in members.iter().enumerate() {
+        for m in members {
             hold.told.insert(m.pid);
             let at = held
                 .iter()
-                .find(|&&(j, _)| j == i)
+                .find(|&&(j, _)| members.get(j).is_some_and(|first| first.shares(m)))
                 .map(|&(_, footprint)| footprint);
             let room = Some(Room { bytes: room, at });
             self.ask(threads, m, Ask { room, give });
@@ -918,21 +934,35 @@ impl<D: Disk> Daemon<D> {
     /// What each of `members` holds, by its index, as its group sums it: none of one whose
     /// VM process cannot be read.
     fn footprints(&self, members: &[Member]) -> Vec<(usize, u64)> {
-        members
-            .iter()
-            .enumerate()
-            .filter_map(|(i, m)| self.footprint_of(m.pid).map(|f| (i, f)))
-            .collect()
+        let mut read: Vec<&Member> = Vec::new();
+        let mut held = Vec::new();
+        for (i, m) in members.iter().enumerate() {
+            // Each VM process once, by its first run: a joiner's is its provider's (D119).
+            if read.iter().any(|first| first.shares(m)) {
+                continue;
+            }
+            read.push(m);
+            if let Some(footprint) = self.footprint_of(m) {
+                held.push((i, footprint));
+            }
+        }
+        held
     }
 
-    /// What VM process `pid` holds, as its group sums it: its footprint (proc_pid_rusage's
-    /// `ri_phys_footprint`, Windows' private working set); none where it cannot be read.
-    fn footprint_of(&self, pid: u32) -> Option<u64> {
+    /// What member `m`'s VM process holds, as its group sums it: its footprint (proc_pid_rusage's
+    /// `ri_phys_footprint`, Windows' private working set); none where it cannot be read, or
+    /// where its pid now names a process that started at another time, not its own.
+    fn footprint_of(&self, m: &Member) -> Option<u64> {
+        if m.start.is_some() && shards_ipc::started(m.pid).ok() != m.start {
+            return None;
+        }
         #[cfg(test)]
-        if let Some(&played) = lock(&self.groups.played).get(&pid) {
+        if let Some(&played) = lock(&self.groups.played).get(&m.pid) {
             return Some(played);
         }
-        shards_vmm::platform::process_usage(pid).ok().map(|u| u.footprint)
+        shards_vmm::platform::process_usage(m.pid)
+            .ok()
+            .map(|u| u.footprint)
     }
 
     /// Tells run `id`'s guest the room its group's budget leaves it (init's `ROOM`, D188):

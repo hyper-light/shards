@@ -141,6 +141,138 @@ pub fn check(grants: &[CredentialGrant]) -> Result<(), Refused> {
     Ok(())
 }
 
+/// A CLI whose own sign-in a run may capture outside its microVM (D242, step 8); its token
+/// endpoint's profile is the network process's (shards-net's `signin`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cli {
+    ClaudeCode,
+    Codex,
+}
+
+impl Cli {
+    /// Its number on the wires that carry it.
+    pub fn code(self) -> u8 {
+        match self {
+            Cli::ClaudeCode => 1,
+            Cli::Codex => 2,
+        }
+    }
+
+    pub fn from_code(code: u8) -> Option<Cli> {
+        match code {
+            1 => Some(Cli::ClaudeCode),
+            2 => Some(Cli::Codex),
+            _ => None,
+        }
+    }
+}
+
+/// A sign-in grant (D242, step 8): the run may sign `cli` in as the sign-in named `sign_in` (a
+/// name in the orchestrator's store, never a value), its token response taken outside the
+/// microVM and its CLI given placeholders, its refreshes and revocations answered outside; its
+/// access token is filled in toward the hosts in `toward` alone, by the rules a
+/// [`CredentialGrant`]'s hosts keep. `captured` is what an earlier capture of the sign-in gave,
+/// where there was one, so that a later run's CLI holds the same placeholders.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SignInGrant {
+    pub sign_in: String,
+    pub cli: Cli,
+    pub toward: Vec<String>,
+    pub captured: Option<Captured>,
+}
+
+/// What a sign-in's capture gave (D242, step 8): its access token's reference in the
+/// orchestrator's store and the placeholder that stands for it, and its refresh token's
+/// placeholder, which a refresh or a revocation names and nothing fills: none where its token
+/// response gave no refresh token, so that no placeholder stands for a token that is not, and its
+/// CLI, holding none, asks no refresh. Holding a placeholder is the capability, so none prints.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Captured {
+    pub access: String,
+    pub access_placeholder: String,
+    pub refresh_placeholder: Option<String>,
+}
+
+impl fmt::Debug for SignInGrant {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SignInGrant")
+            .field("sign_in", &self.sign_in)
+            .field("cli", &self.cli)
+            .field("toward", &self.toward)
+            .field("captured", &self.captured)
+            .finish()
+    }
+}
+
+/// Shows its reference, and of its placeholders their lengths alone.
+impl fmt::Debug for Captured {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Captured")
+            .field("access", &self.access)
+            .field(
+                "access_placeholder",
+                &format_args!("{} bytes", self.access_placeholder.len()),
+            )
+            .field(
+                "refresh_placeholder",
+                &self
+                    .refresh_placeholder
+                    .as_ref()
+                    .map(|p| format!("{} bytes", p.len())),
+            )
+            .finish()
+    }
+}
+
+impl Captured {
+    /// Its access token as a credential grant toward `toward`, which the injector fills where
+    /// its placeholder stands.
+    pub fn grant(&self, toward: &[String]) -> CredentialGrant {
+        CredentialGrant {
+            reference: self.access.clone(),
+            toward: toward.to_vec(),
+            placeholder: self.access_placeholder.clone(),
+        }
+    }
+}
+
+/// A run's grants and its sign-ins' captures checked as one (D242): each placeholder a token
+/// ([`placeholder`]) and one credential's alone, a sign-in's refresh placeholder too, which no
+/// grant or other sign-in may share.
+pub fn check_sign_ins(grants: &[CredentialGrant], sign_ins: &[SignInGrant]) -> Result<(), Refused> {
+    let mut all = grants.to_vec();
+    all.extend(
+        sign_ins
+            .iter()
+            .filter_map(|s| s.captured.as_ref().map(|c| c.grant(&s.toward))),
+    );
+    check(&all)?;
+    for (i, s) in sign_ins.iter().enumerate() {
+        let Some(refresh) = s.captured.as_ref().and_then(|c| c.refresh_placeholder.as_ref()) else {
+            continue;
+        };
+        if !placeholder(refresh) {
+            return Err(Refused::NotAToken(s.sign_in.clone()));
+        }
+        let shared = all
+            .iter()
+            .find(|g| g.placeholder == *refresh)
+            .map(|g| g.reference.clone())
+            .or_else(|| {
+                sign_ins
+                    .iter()
+                    .take(i)
+                    .filter_map(|o| o.captured.as_ref().map(|oc| (o, oc)))
+                    .find(|(_, oc)| oc.refresh_placeholder.as_ref() == Some(refresh))
+                    .map(|(o, _)| o.sign_in.clone())
+            });
+        if let Some(other) = shared {
+            return Err(Refused::Shared(other, s.sign_in.clone()));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,5 +423,57 @@ mod tests {
         assert!(!shown.contains(CLAUDE), "{shown}");
         assert!(!shown.contains("0123456789abcdef"), "{shown}");
         assert!(shown.contains(&format!("{} bytes", CLAUDE.len())), "{shown}");
+    }
+
+    #[test]
+    fn a_sign_ins_placeholders_are_tokens_and_one_credentials_alone() {
+        let captured = Captured {
+            access: "sign-ins/c/access".into(),
+            access_placeholder: CLAUDE.into(),
+            refresh_placeholder: Some(CODEX.into()),
+        };
+        let sign_in = SignInGrant {
+            sign_in: "c".into(),
+            cli: Cli::ClaudeCode,
+            toward: vec!["api.anthropic.com".into()],
+            captured: Some(captured.clone()),
+        };
+        assert_eq!(check_sign_ins(&[], std::slice::from_ref(&sign_in)), Ok(()));
+        // A capture that gave no refresh token holds no placeholder for one.
+        let unrefreshed = SignInGrant {
+            captured: Some(Captured {
+                refresh_placeholder: None,
+                ..captured.clone()
+            }),
+            ..sign_in.clone()
+        };
+        assert_eq!(check_sign_ins(&[], &[unrefreshed]), Ok(()));
+        for placeholder in [CLAUDE, CODEX] {
+            let grant = CredentialGrant {
+                reference: "openai/chatgpt".into(),
+                toward: vec!["chatgpt.com".into()],
+                placeholder: placeholder.into(),
+            };
+            assert!(
+                matches!(
+                    check_sign_ins(&[grant], std::slice::from_ref(&sign_in)),
+                    Err(Refused::Shared(..))
+                ),
+                "a sign-in's placeholder shared with a grant"
+            );
+        }
+        let bad = SignInGrant {
+            captured: Some(Captured {
+                refresh_placeholder: Some("a b".into()),
+                ..captured.clone()
+            }),
+            ..sign_in.clone()
+        };
+        assert_eq!(check_sign_ins(&[], &[bad]), Err(Refused::NotAToken("c".into())));
+        let shown = format!("{sign_in:?}");
+        assert!(!shown.contains(CLAUDE) && !shown.contains(CODEX), "{shown}");
+        assert_eq!(Cli::from_code(Cli::Codex.code()), Some(Cli::Codex));
+        assert_eq!(Cli::from_code(Cli::ClaudeCode.code()), Some(Cli::ClaudeCode));
+        assert_eq!(Cli::from_code(0), None);
     }
 }

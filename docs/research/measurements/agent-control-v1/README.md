@@ -490,10 +490,27 @@ production code; clippy with the workspace's denied lints.
 | Slice | Host | Commands | Result |
 |---|---|---|---|
 | 1, the lane and its controller | adalundhe-macbook-pro, macOS 26.5 arm64, rustc 1.98.1 | `cargo test -p shards-remote --lib control::`; `cargo clippy -p shards-remote -p shards --all-targets -- -D warnings` | 56 passed (5 new codec tests, the loopback log test); clean ([log](logs/log-lane-slice1-macos-arm64.log)) |
+| 2, the record reader, the typed gap, the daemon's log host | adalundhe-macbook-pro, macOS 26.5 arm64, rustc 1.98.1 | `cargo test -p shards --bin shards -- daemon::logs daemon::managed log_writer`; `cargo clippy -p shards -p shards-vm-process --all-targets -- -D warnings` (the VM process includes `spec.rs` and `log_writer.rs`) | 62 passed, 6 ignored (ROOT's native fixtures); clean ([log](logs/log-lane-slice2-macos-arm64.log)) |
+| 3, every member's log within the run's one cap (#72 log-lane slice 3) | adalundhe-macbook-pro, macOS 26.5.2 arm64, rustc 1.98.1; adacachy2, Linux x86_64 (clippy, native) | `cargo test -p shards --bin shards -- daemon::logs daemon::managed daemon::packed daemon::files log_writer`; `cargo clippy -p shards -p shards-vm-process --all-targets -- -D warnings` on both; `cargo fmt --all --check` | 74 passed, 6 ignored, on the tree merged with main; clean on both ([macOS](logs/log-lane-slice3-macos-arm64.log), [Linux](logs/log-lane-slice3-linux-x86_64-clippy.log)) |
 
 Red before green, slice 1: the endpoint refusing the log of a member it serves no stream of
 (`scoped()` without its log exception): `left: Err(Refused(Scope))`, `right:
 Err(Unlogged(Unknown))` ([log](logs/log-lane-slice1-red-macos-arm64.log)).
+
+Red before green, slice 2: `logs`' line reader without its pass over a gap's record
+(`Reader::read_segment` taking a gap's bytes as output): `logs` shows the gaps' bytes (`[1, 0, 0,
+0, 0, 0, 0, 16, 0]`, why 1 and 4096 lost) as if output, joined to the next line, where the log
+without them reads `before`, `after` and `err` alone
+([log](logs/log-lane-slice2-red-macos-arm64.log)).
+
+Red before green, slice 3 (`5ca8129ec`, each behaviour absent: the cap letting nothing go and
+closing nothing, an owned member's log not kept, no filled segment handed to the packer, nothing
+said of the cap's losses): the six new tests fail, 68 others pass. An owned channel is not kept
+(`an owned channel is kept, not drained`; `a record of a channel not kept`); the cap drops nothing
+(`left: []`, `right: [Dropped { owner: Command, seq: 0, bytes: 17 }, Dropped { owner: Member(1),
+seq: 0, bytes: 17 }]`) and closes no member's newest (`left: []`, `right: [0, 1, 2]`); a lane from
+the oldest after the cap's loss reads `six` alone where `rotated 2` comes first
+([log](logs/log-lane-slice3-red-macos-arm64.log)).
 
 ### R01–R16 (so far)
 
@@ -513,8 +530,33 @@ Err(Unlogged(Unknown))` ([log](logs/log-lane-slice1-red-macos-arm64.log)).
 
 ### Owed
 
-- ROOT's real-VM run, once the daemon's log host lands (next slice): a run with
-  `--annotation shards.control=true`, its controller's `Execs::log` of the run's command and of a
-  member, unfollowed and followed, resumed from a cursor; on Linux KVM, macOS HVF and WHP.
+- ROOT's real-VM run (slices 1 and 2), in `crates/shards/tests/managed_output.rs` beside the exec
+  host's owed run: a run of an image with two agents, `--annotation shards.control=true` and
+  `--annotation shards.output=agent:A` (agent B drained); its controller dialed at the managed
+  metadata's `control` and `vm` lines with `Subscriptions::execs`; then
+  `Execs::log(LogSource::Command, LogChannels::BOTH, LogCursor::OLDEST, false)` reads the
+  command's output, each record at its place; `Execs::log(LogSource::Member(B), …, true)` reads
+  B's output as it is written and ends `Finished` as B's channels end; a second lane from the
+  first's `cursor()` reads only what came after; `LogSource::Member(A)`, the owned one, reads its
+  kept output as B's (slice 3); a run with `--log-driver none` refused `Unkept`; on Linux
+  KVM, macOS HVF and WHP.
+- R14: a log lane's read and follow costs (a reader's two 64 KiB buffers, one stream record),
+  from the controller's side, against `logs -f`'s.
+- Slice 3 built (D240, "Every member's log, within the run's one cap"): the keeper of every
+  member's log, the run's one log cap with its per-owner loss record and the newest-segment
+  rotation, members' rotated segments packed as the run's own, `logs`' notice, a lane from the
+  oldest saying `Rotated`. Not built: a typed gap of its own making, as an owned member's records
+  are kept as they come (`Behind` is never written; `Unwritten`'s bytes are counted lost, as the
+  run's own log counts its own, not written as a gap record).
+- ROOT's real-VM run of slice 3, in `crates/shards/tests/managed_output.rs` (the step's end):
+  the command's log read from the oldest; a member followed until its channels end, the owned
+  one too; a lane resumed from an earlier lane's `cursor()` reading only what came after; the
+  refusals (`Unknown`, `Rotated { oldest }`, `Unkept` with `--log-driver none`, `Uncached` for
+  the command with `cache-disabled=true`); owned members' kept output through `shards read logs`;
+  and the cap: a run with a small `--log-opt max-size`/`max-file` whose members write past it,
+  `logs` saying the cap's notice, a lane from the oldest beginning `Rotated`, the run's logs'
+  output within the bound and one segment. On KVM x86_64, HVF, WHP and arm64 KVM (L1).
+- R14: the keeper's added cost on an owned record's path (one append), and a hold's (a listing
+  and a weighing of each segment), from the owner's side.
 - Hex and kiln: shards-remote's `control::Fault` gains `Unlogged`, and `Granted` gains `Log`; a
   re-vendored caller that matches either exhaustively must add the arm.

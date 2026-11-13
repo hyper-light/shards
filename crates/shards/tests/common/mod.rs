@@ -2399,13 +2399,17 @@ pub const PROGRESS_SLICE: Duration = Duration::from_secs(10);
 /// client past its deadline is waited on while one of them ran within [`DAEMON_QUIET`], as
 /// a guest's workload runs at its host's speed (the parity plan's step 10: a 64-vCPU storm
 /// and a 3 GiB build step on an arm64 Windows host nested under QEMU's TCG). One that runs
-/// nothing for as long fails it as before. Not caught: a guest that spins for ever, as
-/// D209 says of a start, which its CI job's limit ends.
+/// nothing for as long fails it as before. Its first look is its first ask, and each VM
+/// process found at a look is judged a slice later. Not caught: a guest that spins for ever,
+/// as D209 says of a start, which its CI job's limit ends.
 pub struct Ran {
     client: u32,
     followed: std::collections::HashMap<u32, shards_vmm::platform::Progress>,
-    /// When its processes were last looked at.
-    looked: Instant,
+    /// When its processes were last looked at; none before its first ask.
+    looked: Option<Instant>,
+    /// Whether its last look judged every VM process under its client over a whole slice:
+    /// none found anew then, or none at all.
+    whole: bool,
     /// When one of them last ran, since this began watching.
     at: Option<Instant>,
     /// Whether its client's run has answered since this began watching.
@@ -2417,7 +2421,8 @@ impl Ran {
         Ran {
             client,
             followed: std::collections::HashMap::new(),
-            looked: Instant::now(),
+            looked: None,
+            whole: false,
             at: None,
             answered: false,
         }
@@ -2438,11 +2443,12 @@ impl Ran {
     /// Whether a VM process under its client ran within [`DAEMON_QUIET`], as its [`Floor`]
     /// judges what it ran: during its cold start, past an idle microVM's
     /// (`platform::progressed`); past it, not below its floor. Asked as often as its caller
-    /// likes, it looks once each [`PROGRESS_SLICE`]; one found anew is judged from the next
-    /// look on.
+    /// likes, it looks at its first ask and once each [`PROGRESS_SLICE`] after; one found
+    /// anew is judged from the next look on.
     pub fn lately(&mut self) -> bool {
-        if self.looked.elapsed() >= PROGRESS_SLICE {
-            self.looked = Instant::now();
+        if self.looked.is_none_or(|l| l.elapsed() >= PROGRESS_SLICE) {
+            self.looked = Some(Instant::now());
+            self.whole = true;
             let vms = vm_processes_under(self.client);
             self.followed.retain(|pid, _| vms.contains(pid));
             let mut floors = floors();
@@ -2465,11 +2471,18 @@ impl Ran {
                     }
                     std::collections::hash_map::Entry::Vacant(v) => {
                         v.insert(shards_vmm::platform::Progress::of(pid));
+                        self.whole = false;
                     }
                 }
             }
         }
         self.at.is_some_and(|at| at.elapsed() < DAEMON_QUIET)
+    }
+
+    /// Whether its last look judged a whole slice of every VM process under its client, or
+    /// found none: before it has, its silence says nothing of them.
+    pub fn watched(&self) -> bool {
+        self.whole
     }
 }
 
@@ -2481,8 +2494,12 @@ impl Ran {
 /// ([`Ran`]). Fast hosts keep `timeout`; a slow one (the parity plan's step 10, an arm64
 /// Windows host nested under QEMU's TCG, whose template saves took 20 s and pool restores
 /// a further minute) is waited on while it works, and a stuck one fails a minute after its
-/// last progress. The look that fails a wait begins past it: one that takes long itself,
-/// as a PowerShell's look at Windows' processes does, is never what the wait runs out in.
+/// last progress. A wait is never failed before each [`Ran`] has judged a whole slice of
+/// its VM processes (R03: refused only after a whole window with no progress): a bound
+/// shorter than a slice, as a start's learned from fast ones is (tests/budget.rs, 32 ms on
+/// adacachy2), is otherwise past before any of them has been looked at twice. The look that
+/// fails a wait begins past it: one that takes long itself, as a PowerShell's look at
+/// Windows' processes does, is never what the wait runs out in.
 pub struct Patience {
     start: Instant,
     timeout: Duration,
@@ -2523,8 +2540,9 @@ impl Patience {
     }
 
     /// Whether to look again: within its timeout, or past it while the daemon or a microVM
-    /// progresses; once neither does, once more, the look after this one, and then no more.
-    /// Ask it after each look that found the state not yet come, as often as they come.
+    /// progresses or a VM process has yet to be judged over a whole slice; once none of
+    /// these holds, once more, the look after this one, and then no more. Ask it after each
+    /// look that found the state not yet come, as often as they come.
     pub fn holds(&mut self) -> bool {
         let due = self.read.is_none_or(|r| r.elapsed() >= Duration::from_secs(1));
         if let Some(home) = self.home.as_ref().filter(|_| due) {
@@ -2540,7 +2558,8 @@ impl Patience {
         let said = self.said.as_mut().is_some_and(Said::lately);
         let ran = self.own.lately();
         let daemons = self.daemon.as_mut().is_some_and(|(_, r)| r.lately());
-        if self.start.elapsed() < self.timeout || said || ran || daemons {
+        let watched = self.own.watched() && self.daemon.as_ref().is_none_or(|(_, r)| r.watched());
+        if self.start.elapsed() < self.timeout || said || ran || daemons || !watched {
             self.out = false;
             return true;
         }
@@ -6006,4 +6025,142 @@ pub fn plug_roots(bound: &Path) -> Vec<String> {
         roots.push(top);
     }
     roots
+}
+
+/// A file held open sharing nothing under a Read-Handle oplock (FSCTL_REQUEST_OPLOCK): an
+/// open of it by another handle that reads, writes or deletes it, which its sharing
+/// refuses, breaks the oplock and waits for the break to be acknowledged, which closing
+/// the oplock's handle does as this drops. The wait has no end: "the system would wait
+/// forever to receive the acknowledgment as there's no timeout" ("Breaking Oplocks"); "the
+/// open operation is blocked and the Read-Handle oplock breaks. The application that owns
+/// the oplock may acknowledge the break by closing the handle" ("Types of Opportunistic
+/// Locks"). An open that reads its attributes alone shares nothing and waits for nothing.
+#[cfg(windows)]
+pub struct Oplocked {
+    file: Option<std::fs::File>,
+    // Written as the request completes, which may be after it is made: boxed, not to move,
+    // and kept until it has.
+    overlapped: Box<windows_sys::Win32::System::IO::OVERLAPPED>,
+    _answer: Box<windows_sys::Win32::System::Ioctl::REQUEST_OPLOCK_OUTPUT_BUFFER>,
+    event: std::os::windows::io::OwnedHandle,
+}
+
+#[cfg(windows)]
+impl Oplocked {
+    /// `path` held so, waiting out at most `timeout` another's handle that shares nothing.
+    pub fn new(path: &Path, timeout: Duration) -> Oplocked {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
+        use windows_sys::Win32::Foundation::{ERROR_IO_PENDING, ERROR_SHARING_VIOLATION};
+        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED;
+        use windows_sys::Win32::System::IO::{DeviceIoControl, OVERLAPPED};
+        use windows_sys::Win32::System::Ioctl::{
+            FSCTL_REQUEST_OPLOCK, OPLOCK_LEVEL_CACHE_HANDLE, OPLOCK_LEVEL_CACHE_READ,
+            REQUEST_OPLOCK_CURRENT_VERSION, REQUEST_OPLOCK_INPUT_BUFFER, REQUEST_OPLOCK_INPUT_FLAG_REQUEST,
+            REQUEST_OPLOCK_OUTPUT_BUFFER,
+        };
+        use windows_sys::Win32::System::Threading::CreateEventW;
+        // A handle that shares nothing is refused while another reads the file: Defender's,
+        // scanning the copy just written, is waited out.
+        let deadline = Instant::now() + timeout;
+        let file = loop {
+            match std::fs::OpenOptions::new()
+                .read(true)
+                .share_mode(0)
+                .custom_flags(FILE_FLAG_OVERLAPPED)
+                .open(path)
+            {
+                Ok(file) => break file,
+                Err(e)
+                    if e.raw_os_error() == Some(ERROR_SHARING_VIOLATION.cast_signed())
+                        && Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(e) => panic!("{}: {e}", path.display()),
+            }
+        };
+        // SAFETY: an unnamed manual-reset event, owned from here.
+        let event = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
+        assert!(!event.is_null(), "an event: {}", std::io::Error::last_os_error());
+        // SAFETY: the event just made, this alone holds.
+        let event = unsafe { OwnedHandle::from_raw_handle(event) };
+        // SAFETY: OVERLAPPED and REQUEST_OPLOCK_OUTPUT_BUFFER are plain data, zeroes valid
+        // values of them.
+        let (mut overlapped, mut answer): (Box<OVERLAPPED>, Box<REQUEST_OPLOCK_OUTPUT_BUFFER>) =
+            unsafe { (Box::new(std::mem::zeroed()), Box::new(std::mem::zeroed())) };
+        overlapped.hEvent = event.as_raw_handle();
+        let version = u16::try_from(REQUEST_OPLOCK_CURRENT_VERSION).unwrap();
+        answer.StructureVersion = version;
+        answer.StructureLength = u16::try_from(size_of::<REQUEST_OPLOCK_OUTPUT_BUFFER>()).unwrap();
+        let asked = REQUEST_OPLOCK_INPUT_BUFFER {
+            StructureVersion: version,
+            StructureLength: u16::try_from(size_of::<REQUEST_OPLOCK_INPUT_BUFFER>()).unwrap(),
+            RequestedOplockLevel: OPLOCK_LEVEL_CACHE_READ | OPLOCK_LEVEL_CACHE_HANDLE,
+            Flags: REQUEST_OPLOCK_INPUT_FLAG_REQUEST,
+        };
+        // SAFETY: the request is copied in as it is made (METHOD_BUFFERED), and its answer
+        // and OVERLAPPED live until it has completed, which dropping this waits for.
+        let done = unsafe {
+            DeviceIoControl(
+                file.as_raw_handle(),
+                FSCTL_REQUEST_OPLOCK,
+                (&raw const asked).cast(),
+                u32::try_from(size_of::<REQUEST_OPLOCK_INPUT_BUFFER>()).unwrap(),
+                (&raw mut *answer).cast(),
+                u32::try_from(size_of::<REQUEST_OPLOCK_OUTPUT_BUFFER>()).unwrap(),
+                std::ptr::null_mut(),
+                &raw mut *overlapped,
+            )
+        };
+        // Granted, the request pends until the oplock breaks.
+        let e = std::io::Error::last_os_error();
+        assert!(
+            done == 0 && e.raw_os_error() == Some(ERROR_IO_PENDING.cast_signed()),
+            "an oplock on {}: {e}",
+            path.display()
+        );
+        Oplocked {
+            file: Some(file),
+            overlapped,
+            _answer: answer,
+            event,
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Oplocked {
+    /// The event its request signals as it completes: as an open of the file breaks the
+    /// oplock, its opener then waiting until this drops.
+    pub fn breaking(&self) -> std::os::windows::io::BorrowedHandle<'_> {
+        use std::os::windows::io::AsHandle as _;
+        self.event.as_handle()
+    }
+}
+
+#[cfg(windows)]
+impl Drop for Oplocked {
+    fn drop(&mut self) {
+        use std::os::windows::io::AsRawHandle as _;
+        use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult};
+        let Some(file) = self.file.take() else {
+            return;
+        };
+        // The request, still pending or completed by a break, ended and waited for before
+        // its buffers go; then the handle is closed, which acknowledges a break, and an open
+        // that waits on it goes on.
+        // SAFETY: the request made on this handle with this OVERLAPPED.
+        unsafe {
+            CancelIoEx(file.as_raw_handle(), &raw const *self.overlapped);
+            let mut moved = 0;
+            GetOverlappedResult(
+                file.as_raw_handle(),
+                &raw const *self.overlapped,
+                &raw mut moved,
+                1,
+            );
+        }
+        drop(file);
+    }
 }

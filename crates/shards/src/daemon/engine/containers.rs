@@ -739,9 +739,8 @@ impl<D: Disk> Daemon<D> {
             if hung_up(client) {
                 return None;
             }
-            registry = self
-                .arrived
-                .wait_timeout(registry, Duration::from_millis(100))
+            let wait = Duration::from_millis(100);
+            registry = super::super::timed(Some(wait), || self.arrived.wait_timeout(registry, wait))
                 .unwrap_or_else(PoisonError::into_inner)
                 .0;
         }
@@ -839,7 +838,7 @@ impl<D: Disk> Daemon<D> {
             });
         }
         let stdin = loop {
-            match stdin_at.recv_timeout(LOOK_AGAIN) {
+            match super::super::timed(Some(LOOK_AGAIN), || stdin_at.recv_timeout(LOOK_AGAIN)) {
                 Ok(stdin) => break Some(stdin),
                 // Started without its stdin, or its stdin another's.
                 Err(RecvTimeoutError::Disconnected) => break None,

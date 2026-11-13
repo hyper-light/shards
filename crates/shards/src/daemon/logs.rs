@@ -18,7 +18,7 @@ use shards_vmm::platform;
 use super::packed::{SegmentLog, open_log};
 use crate::os::ReadAt as _;
 use crate::segments::log_segment;
-use crate::spec::{INDEX_LINE, INDEX_START, INDEX_STDERR, LOG_HEAD, LOG_STDERR, LOG_STDOUT};
+use crate::spec::{INDEX_GAP, INDEX_LINE, INDEX_START, INDEX_STDERR, LOG_HEAD, LOG_STDERR, LOG_STDOUT};
 
 /// A log's first segment, and its index, in its microVM's directory.
 pub const LOG: &str = "log";
@@ -27,6 +27,12 @@ pub const INDEX: &str = "log.idx";
 pub const CHUNK: usize = 64 << 10;
 /// How much of a line is held before it goes out in pieces: moby's copier's buffer.
 pub const PIECE: usize = 16 << 10;
+/// A gap's record's stream byte, in a member's log its daemon keeps (D240; spec.rs,
+/// `INDEX_GAP`): its channel's output not kept there.
+pub const LOG_GAP: u8 = 3;
+/// A gap's bytes: why (`control::exec::Gapped`'s byte), then how many bytes it lost
+/// (big-endian u64).
+pub const GAP_BYTES: usize = 1 + 8;
 /// Past every record there will be.
 const NEVER: Pos = Pos {
     seq: u64::MAX,
@@ -44,11 +50,16 @@ pub struct Pos {
 }
 
 impl Pos {
-    const START: Pos = Pos {
+    pub const START: Pos = Pos {
         seq: 0,
         no: 0,
         byte: 0,
     };
+
+    /// The first place of segment `seq`.
+    pub fn segment_start(seq: u64) -> Pos {
+        Pos { seq, ..Pos::START }
+    }
 
     /// Its segment.
     pub fn seq(self) -> u64 {
@@ -85,13 +96,14 @@ impl Pos {
 }
 
 /// A record: its stream (0 for stdout, 1 for stderr), when its output came, and where the
-/// output is in its segment's log.
+/// output is in its segment's log; or, a gap's (`gap`), where its bytes are.
 #[derive(Debug, Clone, Copy)]
 struct Record {
     stream: usize,
     at: u64,
     start: u64,
     len: u64,
+    gap: bool,
 }
 
 /// A microVM's log: its directory, where its segments are (segments.rs),
@@ -146,6 +158,11 @@ impl LogFile {
     /// Its directory, open.
     pub fn dir(&self) -> &File {
         &self.dir
+    }
+
+    /// Its oldest segment there: none where its last has gone too.
+    pub fn oldest(&self) -> io::Result<Option<u64>> {
+        Ok(self.segments()?.first().copied())
     }
 
     /// Segment `seq`, or `None` if it is not there: not yet, or no longer.
@@ -231,24 +248,29 @@ impl Segment {
         let log_len = len;
         let [stream, t @ .., l0, l1, l2, l3] = head;
         let damaged = || self.damaged(no);
-        let expected = if entry & INDEX_STDERR != 0 {
-            LOG_STDERR
-        } else {
-            LOG_STDOUT
+        let gap = entry & INDEX_GAP != 0;
+        let expected = match (gap, entry & INDEX_STDERR != 0) {
+            (true, _) => LOG_GAP,
+            (false, true) => LOG_STDERR,
+            (false, false) => LOG_STDOUT,
         };
         if stream != expected {
             return Err(damaged());
         }
         let len = u64::from(u32::from_be_bytes([l0, l1, l2, l3]));
+        if gap && len != GAP_BYTES as u64 {
+            return Err(damaged());
+        }
         let start = at.checked_add(LOG_HEAD).ok_or_else(damaged)?;
         if start.checked_add(len).is_none_or(|end| end > log_len) {
             return Err(damaged());
         }
         Ok(Record {
-            stream: usize::from(stream == LOG_STDERR),
+            stream: usize::from(entry & INDEX_STDERR != 0),
             at: u64::from_be_bytes(t),
             start,
             len,
+            gap,
         })
     }
 
@@ -370,6 +392,10 @@ pub fn tail(log: &LogFile, n: u64, ended: bool) -> io::Result<[Pos; 2]> {
         );
         let mut entries = Backward::new(&segment, count);
         while let Some((no, entry)) = entries.next()? {
+            // A gap's record is no output (D240).
+            if entry & INDEX_GAP != 0 {
+                continue;
+            }
             let ends_line = entry & INDEX_LINE != 0;
             let Some(stream) = streams.get_mut(usize::from(entry & INDEX_STDERR != 0)) else {
                 continue;
@@ -607,11 +633,8 @@ impl Reader {
         }
     }
 
-    /// Reads `segment`'s records whole so far, from the next: their entries a chunk at a
-    /// time, and the records, from the first not taken, as much of the log as `buf` holds
-    /// at a time; each whose head and output lie in it is taken from it, and one larger
-    /// read in pieces. A record and an entry each read alone cost three reads and a
-    /// `stat` a record, of a log of short lines (review 7.10, PM M95).
+    /// Reads `segment`'s records whole so far, from the next, as [`walk`] reads them: each
+    /// record's output taken into its stream's lines; a gap's record, no output, passed over.
     fn read_segment(
         &mut self,
         segment: &Segment,
@@ -619,112 +642,16 @@ impl Reader {
         entries: &mut [u8],
         each: &mut dyn FnMut(Piece<'_>) -> Flow,
     ) -> Flow {
-        let count = segment.count()?;
-        // The records counted are whole in it: their writer writes a record, then its
-        // entry.
-        let log_len = segment.log.len()?;
-        // At least one, so that each pass takes one or fails.
-        let per = (entries.len() / 8).max(1) as u64;
-        while self.next.no < count {
-            let n = (count - self.next.no).min(per);
-            let raw = entries
-                .get_mut(..usize::try_from(n * 8).unwrap_or(0))
-                .unwrap_or_default();
-            segment.index.read_exact_at(raw, self.next.no * 8)?;
-            let entry = |i: usize| {
-                raw.get(i * 8..i * 8 + 8)
-                    .and_then(|e| e.try_into().ok())
-                    .map(u64::from_be_bytes)
-                    .ok_or_else(|| io::Error::other("an index entry out of its chunk"))
-            };
-            let n = usize::try_from(n).unwrap_or(0);
-            let mut i = 0;
-            while i < n {
-                let first = entry(i)? & INDEX_START;
-                let span = usize::try_from(log_len.saturating_sub(first).min(buf.len() as u64)).unwrap_or(0);
-                let held = buf.get_mut(..span).unwrap_or_default();
-                segment.log.read_exact_at(held, first)?;
-                let mut taken = 0;
-                while i < n {
-                    let no = self.next.no;
-                    let e = entry(i)?;
-                    // Where in what is held it starts: none before, as entries go on.
-                    let Some(rel) = (e & INDEX_START)
-                        .checked_sub(first)
-                        .and_then(|r| usize::try_from(r).ok())
-                    else {
-                        break;
-                    };
-                    let Some(head) = held
-                        .get(rel..rel + LOG_HEAD as usize)
-                        .and_then(|h| <[u8; LOG_HEAD as usize]>::try_from(h).ok())
-                    else {
-                        if taken == 0 {
-                            // Not even its head in the rest of the log.
-                            return Err(segment.damaged(no));
-                        }
-                        break;
-                    };
-                    let record = segment.check(no, e, head, log_len)?;
-                    let out = rel + LOG_HEAD as usize;
-                    let at = Pos {
-                        seq: segment.seq,
-                        no,
-                        byte: 0,
-                    };
-                    let output = usize::try_from(record.len)
-                        .ok()
-                        .and_then(|len| out.checked_add(len))
-                        .and_then(|end| held.get(out..end));
-                    match output {
-                        Some(output) => {
-                            if !self.take(&record, at, output, each)? {
-                                return Ok(false);
-                            }
-                        }
-                        // Larger than the buffer: alone, in pieces.
-                        None if taken == 0 => {
-                            if !self.take_in_pieces(segment, &record, no, held, each)? {
-                                return Ok(false);
-                            }
-                        }
-                        // Read again, from it.
-                        None => break,
-                    }
-                    self.next.no += 1;
-                    i += 1;
-                    taken += 1;
-                }
+        let seq = segment.seq;
+        let mut no = self.next.no;
+        let read = walk(segment, &mut no, buf, entries, &mut |no, record, byte, bytes| {
+            if record.gap {
+                return Ok(true);
             }
-        }
-        Ok(true)
-    }
-
-    /// Takes `record`, number `no`, larger than `buf`, a piece at a time.
-    fn take_in_pieces(
-        &mut self,
-        segment: &Segment,
-        record: &Record,
-        no: u64,
-        buf: &mut [u8],
-        each: &mut dyn FnMut(Piece<'_>) -> Flow,
-    ) -> Flow {
-        let mut done = 0u64;
-        while done < record.len {
-            let take = usize::try_from((record.len - done).min(buf.len() as u64)).unwrap_or(0);
-            let chunk = buf.get_mut(..take).unwrap_or_default();
-            segment.log.read_exact_at(chunk, record.start + done)?;
-            let at = Pos {
-                seq: segment.seq,
-                no,
-                byte: done,
-            };
-            if !self.take(record, at, chunk, each)? {
-                return Ok(false);
-            }
-            done += take as u64;
-        }
-        Ok(true)
+            self.take(record, Pos { seq, no, byte }, bytes, each)
+        });
+        self.next.no = no;
+        read
     }
 
     /// What is left of each stream's unfinished line, once the microVM has ended.
@@ -801,6 +728,297 @@ impl Reader {
         }
         Ok(true)
     }
+}
+
+/// What a log keeps, as a log lane reads it (D238): output as written, a gap's record of
+/// output not kept (D240), or the segments its retention let go before it was read.
+#[derive(Debug)]
+pub enum Kept<'a> {
+    /// Bytes of its stream's output ([`LOG_STDOUT`] or [`LOG_STDERR`]), the first at `pos`,
+    /// come at `at` (nanoseconds since the Unix epoch).
+    Output {
+        stream: u8,
+        at: u64,
+        pos: Pos,
+        bytes: &'a [u8],
+    },
+    /// `lost` bytes of its stream's output not kept there, said at `at`, and why (a byte,
+    /// `control::exec::Gapped`'s): the gap's own record at `pos`.
+    Gap {
+        stream: u8,
+        at: u64,
+        pos: Pos,
+        lost: u64,
+        why: u8,
+    },
+    /// What it was to read next went with segments the log's retention let go before it read
+    /// them: it reads on from `oldest`, the first place kept.
+    Rotated { oldest: Pos },
+}
+
+/// A log's records as written, for a log lane (D238): each stream it reads from its place on,
+/// byte for byte, in the log's order, its output in pieces of at most its lane's room. It
+/// holds no line, as [`Reader`] does: a lane goes on from any byte.
+#[derive(Debug)]
+pub struct Records {
+    next: Pos,
+    segment: Option<Segment>,
+    /// Each stream's place: what is before it is not given.
+    from: [Pos; 2],
+    reads: [bool; 2],
+    piece: usize,
+    buf: Vec<u8>,
+    entries: Vec<u8>,
+}
+
+impl Records {
+    /// A reader of the streams `reads` says, stdout's then stderr's, each from its place in
+    /// `from`, its output in pieces of at most `piece` bytes (one at least).
+    pub fn new(from: [Pos; 2], reads: [bool; 2], piece: usize) -> Records {
+        let first = from
+            .iter()
+            .zip(reads)
+            .filter_map(|(at, read)| read.then_some(*at))
+            .min()
+            .unwrap_or(Pos::START);
+        Records {
+            next: Pos { byte: 0, ..first },
+            segment: None,
+            from,
+            reads,
+            piece: piece.max(1),
+            buf: vec![0u8; CHUNK],
+            entries: vec![0u8; CHUNK],
+        }
+    }
+
+    /// The segment read last, to watch for more of it.
+    pub fn segment(&self) -> Option<&Segment> {
+        self.segment.as_ref()
+    }
+
+    /// Reads the records whole so far, giving each to `each`: whether to go on.
+    pub fn read(&mut self, log: &LogFile, each: &mut dyn FnMut(Kept<'_>) -> Flow) -> Flow {
+        let mut buf = std::mem::take(&mut self.buf);
+        let mut entries = std::mem::take(&mut self.entries);
+        let read = self.read_with(log, &mut buf, &mut entries, each);
+        (self.buf, self.entries) = (buf, entries);
+        read
+    }
+
+    fn read_with(
+        &mut self,
+        log: &LogFile,
+        buf: &mut [u8],
+        entries: &mut [u8],
+        each: &mut dyn FnMut(Kept<'_>) -> Flow,
+    ) -> Flow {
+        loop {
+            if self.segment.as_ref().map(|s| s.seq) != Some(self.next.seq) {
+                let Some(segment) = log.first_from(self.next.seq)? else {
+                    return Ok(true);
+                };
+                if segment.seq != self.next.seq {
+                    // Its next went with segments let go before it read them: said, and read
+                    // on from the oldest kept, which is past every place it was given.
+                    let oldest = Pos::segment_start(segment.seq);
+                    self.next = oldest;
+                    if !each(Kept::Rotated { oldest })? {
+                        return Ok(false);
+                    }
+                }
+                self.segment = Some(segment);
+            }
+            let Some(segment) = self.segment.take() else {
+                return Ok(true);
+            };
+            // Whether it is whole is asked before its records are counted: records it gets
+            // after the count are only before a later segment's.
+            let read = log
+                .has_after(segment.seq)
+                .and_then(|whole| Ok((whole, self.read_segment(&segment, buf, entries, each)?)));
+            let seq = segment.seq;
+            self.segment = Some(segment);
+            match read? {
+                (_, false) => return Ok(false),
+                (false, true) => return Ok(true),
+                (true, true) => {}
+            }
+            self.next = Pos::segment_start(seq.saturating_add(1));
+        }
+    }
+
+    /// Gives `each` what `segment` holds of the streams it reads, from each's place: a gap at
+    /// or past its place, and output's bytes at or past it, in pieces.
+    fn read_segment(
+        &mut self,
+        segment: &Segment,
+        buf: &mut [u8],
+        entries: &mut [u8],
+        each: &mut dyn FnMut(Kept<'_>) -> Flow,
+    ) -> Flow {
+        let seq = segment.seq;
+        let (from, reads, piece) = (self.from, self.reads, self.piece);
+        let mut no = self.next.no;
+        let read = walk(segment, &mut no, buf, entries, &mut |no, record, byte, bytes| {
+            if !reads.get(record.stream).copied().unwrap_or(false) {
+                return Ok(true);
+            }
+            let from = from.get(record.stream).copied().unwrap_or(NEVER);
+            let stream = stream_of(record.stream);
+            let pos = Pos { seq, no, byte };
+            if record.gap {
+                let (why, lost) = gap_of(bytes).ok_or_else(|| segment.damaged(no))?;
+                if pos < from {
+                    return Ok(true);
+                }
+                return each(Kept::Gap {
+                    stream,
+                    at: record.at,
+                    pos,
+                    lost,
+                    why,
+                });
+            }
+            // What of these bytes is before its stream's place.
+            let skip = match (seq, no).cmp(&(from.seq, from.no)) {
+                std::cmp::Ordering::Less => bytes.len(),
+                std::cmp::Ordering::Equal => usize::try_from(from.byte.saturating_sub(byte))
+                    .map_or(bytes.len(), |n| n.min(bytes.len())),
+                std::cmp::Ordering::Greater => 0,
+            };
+            let mut at = byte.saturating_add(skip as u64);
+            for part in bytes.get(skip..).unwrap_or_default().chunks(piece) {
+                let given = Kept::Output {
+                    stream,
+                    at: record.at,
+                    pos: Pos { seq, no, byte: at },
+                    bytes: part,
+                };
+                if !each(given)? {
+                    return Ok(false);
+                }
+                at = at.saturating_add(part.len() as u64);
+            }
+            Ok(true)
+        });
+        self.next.no = no;
+        read
+    }
+}
+
+/// A gap's bytes: why, and how many bytes it lost; none for any other.
+fn gap_of(bytes: &[u8]) -> Option<(u8, u64)> {
+    let (why, lost) = bytes.split_first()?;
+    Some((*why, u64::from_be_bytes(<[u8; 8]>::try_from(lost).ok()?)))
+}
+
+/// What [`walk`] gives each record to: its number, the record, the offset in its output of the
+/// bytes given, and those bytes; whether to go on.
+type EachRecord<'a> = dyn FnMut(u64, &Record, u64, &[u8]) -> Flow + 'a;
+
+/// Walks `segment`'s records whole so far, from record `*no` on, giving `each` each one's
+/// number, the record, the offset in its output of the bytes given and those bytes: their
+/// entries a chunk at a time, and the records, from the first not given, as much of the log as
+/// `buf` holds at a time; each whose head and bytes lie in it is given from it, and one larger
+/// given in pieces. A record and an entry each read alone cost three reads and a `stat` a
+/// record, of a log of short lines (review 7.10, PM M95). `*no` is left at the first record
+/// not given whole: one `each` stopped at, or past the last.
+fn walk(
+    segment: &Segment,
+    no: &mut u64,
+    buf: &mut [u8],
+    entries: &mut [u8],
+    each: &mut EachRecord<'_>,
+) -> Flow {
+    let count = segment.count()?;
+    // The records counted are whole in it: their writer writes a record, then its
+    // entry.
+    let log_len = segment.log.len()?;
+    // At least one, so that each pass takes one or fails.
+    let per = (entries.len() / 8).max(1) as u64;
+    while *no < count {
+        let n = (count - *no).min(per);
+        let raw = entries
+            .get_mut(..usize::try_from(n * 8).unwrap_or(0))
+            .unwrap_or_default();
+        segment.index.read_exact_at(raw, *no * 8)?;
+        let entry = |i: usize| {
+            raw.get(i * 8..i * 8 + 8)
+                .and_then(|e| e.try_into().ok())
+                .map(u64::from_be_bytes)
+                .ok_or_else(|| io::Error::other("an index entry out of its chunk"))
+        };
+        let n = usize::try_from(n).unwrap_or(0);
+        let mut i = 0;
+        while i < n {
+            let first = entry(i)? & INDEX_START;
+            let span = usize::try_from(log_len.saturating_sub(first).min(buf.len() as u64)).unwrap_or(0);
+            let held = buf.get_mut(..span).unwrap_or_default();
+            segment.log.read_exact_at(held, first)?;
+            let mut taken = 0;
+            while i < n {
+                let e = entry(i)?;
+                // Where in what is held it starts: none before, as entries go on.
+                let Some(rel) = (e & INDEX_START)
+                    .checked_sub(first)
+                    .and_then(|r| usize::try_from(r).ok())
+                else {
+                    break;
+                };
+                let Some(head) = held
+                    .get(rel..rel + LOG_HEAD as usize)
+                    .and_then(|h| <[u8; LOG_HEAD as usize]>::try_from(h).ok())
+                else {
+                    if taken == 0 {
+                        // Not even its head in the rest of the log.
+                        return Err(segment.damaged(*no));
+                    }
+                    break;
+                };
+                let record = segment.check(*no, e, head, log_len)?;
+                let out = rel + LOG_HEAD as usize;
+                let output = usize::try_from(record.len)
+                    .ok()
+                    .and_then(|len| out.checked_add(len))
+                    .and_then(|end| held.get(out..end));
+                match output {
+                    Some(output) => {
+                        if !each(*no, &record, 0, output)? {
+                            return Ok(false);
+                        }
+                    }
+                    // Larger than the buffer: alone, in pieces.
+                    None if taken == 0 => {
+                        if !in_pieces(segment, &record, *no, held, each)? {
+                            return Ok(false);
+                        }
+                    }
+                    // Read again, from it.
+                    None => break,
+                }
+                *no += 1;
+                i += 1;
+                taken += 1;
+            }
+        }
+    }
+    Ok(true)
+}
+
+/// Gives `each` `record`, number `no`, larger than `buf`, a piece at a time.
+fn in_pieces(segment: &Segment, record: &Record, no: u64, buf: &mut [u8], each: &mut EachRecord<'_>) -> Flow {
+    let mut done = 0u64;
+    while done < record.len {
+        let take = usize::try_from((record.len - done).min(buf.len() as u64)).unwrap_or(0);
+        let chunk = buf.get_mut(..take).unwrap_or_default();
+        segment.log.read_exact_at(chunk, record.start + done)?;
+        if !each(no, record, done, chunk)? {
+            return Ok(false);
+        }
+        done += take as u64;
+    }
+    Ok(true)
 }
 
 fn stream_of(slot: usize) -> u8 {
@@ -1438,5 +1656,202 @@ mod tests {
         assert_eq!(got[0], vec![(999, b"line 999\n".to_vec())]);
         assert_eq!(got[1], vec![(1000, b"last\n".to_vec())]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A writer of the log in `dir`, as the daemon keeps a member's (D240): segments of
+    /// `size` bytes, as many as `files`.
+    fn writer(dir: &Path, size: u64, files: u64) -> crate::log_writer::Writer {
+        let newest = crate::daemon::newest_log(dir).unwrap();
+        let held = platform::open_dir(dir).unwrap();
+        crate::log_writer::Writer::new(
+            newest.log,
+            newest.index,
+            newest.seq,
+            crate::spec::LogRetention { size, files },
+            Box::new(move |seq| crate::segments::new_segment(&held, seq, files)),
+        )
+        .unwrap()
+    }
+
+    /// A gap's record of `lost` bytes of `stream`, why `why`, as the daemon's keeper keeps one.
+    fn gap(writer: &mut crate::log_writer::Writer, stream: u8, lost: u64, why: u8) {
+        let mut bytes = vec![why];
+        bytes.extend_from_slice(&lost.to_be_bytes());
+        let flags = INDEX_GAP | if stream == LOG_STDERR { INDEX_STDERR } else { 0 };
+        assert!(writer.keep_whole(LOG_GAP, flags, &bytes));
+    }
+
+    /// What a [`Records`] gives, owned: output as (stream, place, bytes), a gap as its stream,
+    /// place, bytes lost and why, a rotation as its oldest place.
+    #[derive(Debug, PartialEq, Eq)]
+    enum Got {
+        Output(u8, Pos, Vec<u8>),
+        Gap(u8, Pos, u64, u8),
+        Rotated(Pos),
+    }
+
+    fn records(dir: &Path, records: &mut Records) -> Vec<Got> {
+        let log = LogFile::open(dir).unwrap();
+        let mut got = Vec::new();
+        records
+            .read(&log, &mut |kept| {
+                got.push(match kept {
+                    Kept::Output {
+                        stream, pos, bytes, ..
+                    } => Got::Output(stream, pos, bytes.to_vec()),
+                    Kept::Gap {
+                        stream,
+                        pos,
+                        lost,
+                        why,
+                        ..
+                    } => Got::Gap(stream, pos, lost, why),
+                    Kept::Rotated { oldest } => Got::Rotated(oldest),
+                });
+                Ok(true)
+            })
+            .unwrap();
+        got
+    }
+
+    fn at(seq: u64, no: u64, byte: u64) -> Pos {
+        Pos { seq, no, byte }
+    }
+
+    /// A log lane's reader (D238) gives a log's records as written, byte for byte, each at its
+    /// own place, in the log's order and in pieces of its room, its records cut across three
+    /// segments as its writer fills each; from a place inside a record it gives that record's
+    /// rest, the other stream from its own place; and a stream it does not read it passes over.
+    #[test]
+    fn records_give_a_log_as_written_from_any_place() {
+        let dir = temp("records");
+        // Segments of 40 bytes, a record's head 13: the writer fills each, a record going on
+        // in the next segment where it has no more room.
+        let mut w = writer(&dir, 40, 4);
+        w.keep(LOG_STDOUT, b"first line\n");
+        w.keep(LOG_STDERR, b"\x00\xff no newline");
+        w.keep(LOG_STDOUT, b"0123456789");
+        let output = |stream, pos, bytes: &[u8]| Got::Output(stream, pos, bytes.to_vec());
+        let mut whole = Records::new([Pos::START; 2], [true, true], 4);
+        assert_eq!(
+            records(&dir, &mut whole),
+            [
+                output(LOG_STDOUT, at(0, 0, 0), b"firs"),
+                output(LOG_STDOUT, at(0, 0, 4), b"t li"),
+                output(LOG_STDOUT, at(0, 0, 8), b"ne\n"),
+                output(LOG_STDERR, at(0, 1, 0), b"\x00\xff "),
+                output(LOG_STDERR, at(1, 0, 0), b"no n"),
+                output(LOG_STDERR, at(1, 0, 4), b"ewli"),
+                output(LOG_STDERR, at(1, 0, 8), b"ne"),
+                output(LOG_STDOUT, at(1, 1, 0), b"0123"),
+                output(LOG_STDOUT, at(2, 0, 0), b"4567"),
+                output(LOG_STDOUT, at(2, 0, 4), b"89"),
+            ]
+        );
+        // Read on as the log grows: what comes after alone.
+        w.keep(LOG_STDERR, b"later");
+        assert_eq!(
+            records(&dir, &mut whole),
+            [
+                output(LOG_STDERR, at(2, 1, 0), b"late"),
+                output(LOG_STDERR, at(2, 1, 4), b"r")
+            ]
+        );
+        // stdout from inside its first record, stderr from inside its second.
+        let mut inside = Records::new([at(0, 0, 6), at(1, 0, 8)], [true, true], 64);
+        assert_eq!(
+            records(&dir, &mut inside),
+            [
+                output(LOG_STDOUT, at(0, 0, 6), b"line\n"),
+                output(LOG_STDERR, at(1, 0, 8), b"ne"),
+                output(LOG_STDOUT, at(1, 1, 0), b"0123"),
+                output(LOG_STDOUT, at(2, 0, 0), b"456789"),
+                output(LOG_STDERR, at(2, 1, 0), b"later"),
+            ]
+        );
+        let mut stderr = Records::new([Pos::START; 2], [false, true], 64);
+        assert_eq!(
+            records(&dir, &mut stderr),
+            [
+                output(LOG_STDERR, at(0, 1, 0), b"\x00\xff "),
+                output(LOG_STDERR, at(1, 0, 0), b"no newline"),
+                output(LOG_STDERR, at(2, 1, 0), b"later"),
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A gap's record (D240) is given typed, where its stream is read and its place reached,
+    /// and passed over by every reader of output: `logs` and `--tail` read the log as they
+    /// read it without the gap. Segments let go before a lane's reader read them are said,
+    /// and it reads on from the oldest kept.
+    #[test]
+    fn records_say_a_gap_and_the_segments_let_go() {
+        let dir = temp("gaps");
+        let mut w = writer(&dir, 1 << 20, 4);
+        w.keep(LOG_STDOUT, b"before\n");
+        gap(&mut w, LOG_STDOUT, 4096, 1);
+        w.keep(LOG_STDERR, b"err\n");
+        gap(&mut w, LOG_STDERR, 7, 2);
+        w.keep(LOG_STDOUT, b"after\n");
+        let mut read = Records::new([Pos::START; 2], [true, true], 64);
+        assert_eq!(
+            records(&dir, &mut read),
+            [
+                Got::Output(LOG_STDOUT, at(0, 0, 0), b"before\n".to_vec()),
+                Got::Gap(LOG_STDOUT, at(0, 1, 0), 4096, 1),
+                Got::Output(LOG_STDERR, at(0, 2, 0), b"err\n".to_vec()),
+                Got::Gap(LOG_STDERR, at(0, 3, 0), 7, 2),
+                Got::Output(LOG_STDOUT, at(0, 4, 0), b"after\n".to_vec()),
+            ]
+        );
+        // From past the first gap's record, stdout alone: no gap of stdout's again.
+        let mut past = Records::new([at(0, 2, 0), Pos::START], [true, false], 64);
+        assert_eq!(
+            records(&dir, &mut past),
+            [Got::Output(LOG_STDOUT, at(0, 4, 0), b"after\n".to_vec())]
+        );
+        // `logs` and its tail: the output alone, as if no gap were there.
+        let plain = temp("gaps-plain");
+        let mut p = writer(&plain, 1 << 20, 4);
+        for (stream, bytes) in [
+            (LOG_STDOUT, &b"before\n"[..]),
+            (LOG_STDERR, b"err\n"),
+            (LOG_STDOUT, b"after\n"),
+        ] {
+            p.keep(stream, bytes);
+        }
+        let without_times = |shown: [Vec<(u64, Vec<u8>)>; 2]| {
+            shown.map(|s| s.into_iter().map(|(_, b)| b).collect::<Vec<_>>())
+        };
+        assert_eq!(
+            without_times(shown(&dir, None, true)),
+            without_times(shown(&plain, None, true))
+        );
+        assert_eq!(
+            without_times(shown(&dir, Some(2), true)),
+            without_times(shown(&plain, Some(2), true))
+        );
+        // Its retention lets the first two segments go before the reader reads on.
+        let rotated = temp("rotated");
+        let mut r = writer(&rotated, 30, 2);
+        r.keep(LOG_STDOUT, b"one\n");
+        let mut follower = Records::new([Pos::START; 2], [true, true], 64);
+        assert_eq!(
+            records(&rotated, &mut follower),
+            [Got::Output(LOG_STDOUT, at(0, 0, 0), b"one\n".to_vec())]
+        );
+        for word in [&b"two two two\n"[..], b"three three\n", b"four four\n"] {
+            r.keep(LOG_STDOUT, word);
+        }
+        let got = records(&rotated, &mut follower);
+        assert_eq!(got.first(), Some(&Got::Rotated(at(2, 0, 0))), "{got:?}");
+        assert_eq!(
+            got.last(),
+            Some(&Got::Output(LOG_STDOUT, at(3, 0, 0), b"four four\n".to_vec()))
+        );
+        for dir in [dir, plain, rotated] {
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 }

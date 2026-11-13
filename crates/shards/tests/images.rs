@@ -9,7 +9,6 @@
 mod common;
 
 use std::sync::atomic::Ordering;
-use std::time::Duration;
 
 use common::{
     TempDir, cannot_run_vms, guest_init, kernel, rootfs_dir, run_shards_env, served, served_counting,
@@ -1133,7 +1132,7 @@ fn a_restore_reaches_nothing_its_saver_left_in_its_template() {
                 held.push(path.display().to_string());
             }
         }
-        std::thread::sleep(Duration::from_millis(5));
+        std::thread::sleep(std::time::Duration::from_millis(5));
     }
     let second = runner.join().unwrap();
     assert!(held.is_empty(), "read by a restore: {held:?}");

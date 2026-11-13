@@ -151,10 +151,292 @@ file restored after each (exit 101 each; 39 s).
 - R14, R15, R16: no profiling, campaigns or runner cleanup owed by this slice beyond deleting the target dir.
 - R06/R08: no complexity hot spot; no performance claim.
 
+## Slice 2a: the injector takes a sign-in's tokens outside and answers its refresh and revocation there
+
+### Change
+
+- `crates/dns/src/credential.rs`: `Cli`, `SignInGrant`, `Captured` (their `Debug` shows no placeholder), and
+  `check_sign_ins` (a run's grants and its sign-ins' placeholders checked as one).
+- `crates/ipc/src/lib.rs`: `NET_SIGN_INS` (104) and `NET_SIGN_IN` (105), after main's highest (103).
+- `crates/net/src/signin.rs`: `NET_SIGN_INS`' codec (`encode_grants`, `decode_grants`: one sign-in of a CLI a run);
+  `NET_SIGN_IN`'s (`Told`: a capture's tokens, a refresh, a revocation; `Answered`, `Declined`); `SignIns`, the run's
+  sign-ins and their asks (one refresh ask for every flow of a sign-in); `append` (a growing buffer whose old copy is
+  wiped).
+- `crates/net/src/inject.rs`: TLS ended at a sign-in's token host and the hosts its access token goes to; at its token
+  host no value filled, `Accept-Encoding: identity` asked, a POST to its token or revocation path read whole and
+  answered outside where it carries the sign-in's placeholder (`Request::Refreshing`), every final response with a body
+  read whole (`Response::Whole`) and, where it holds tokens, held until the run host answers their capture
+  (`Response::Capturing`), then written with the placeholders and framed anew; `Refusal::Mints` (403),
+  `Refusal::SignIn` (502), `Refusal::Declined` (`invalid_grant` 400 for a refresh its broker refused, else 502 or
+  503); `Audit` says what it did (`Did`).
+- `crates/net/src/lib.rs`: `Credentials::sign_ins`; `NET_SIGN_INS` taken before `NET_CREDENTIALS`, whose CA names the
+  sign-ins' hosts; `NET_SIGN_IN`'s answers followed (`follow`: a capture's access grant in place of the one it
+  replaced, a rotated token's held lease let go); its asks sent as leases' are, as they lie (`tell`).
+- `crates/net/src/lease.rs`: `Leases::grant`, `Leases::forget`.
+
+### Tests (adas-mac-studio.local, macOS arm64, cargo 1.98.1; the carrier as above)
+
+- Run (head ceeab486b, after r676's compile errors, `REFRESH` named twice, were fixed):
+  - `cargo test -p shards-dns --lib credential`: 5 passed (r676).
+  - `cargo test -p shards-ipc --lib every_message_kind_has_its_own_number`: 1 passed (r676).
+  - `cargo test -p shards-net --lib -- signin inject:: lease:: credential`: 46 passed, among them the plan's light test
+    (`inject::tests::a_sign_in_is_taken_outside_and_its_refresh_and_revocation_answered_there`,
+    `refreshes_of_one_sign_in_at_once_ask_once`, `a_sign_ins_token_never_goes_to_the_endpoint_that_mints_a_key`): a
+    simulated token endpoint behind the injector and a test lessor standing for the run host and its broker.
+  - `cargo clippy -p shards-dns -p shards-ipc -p shards-net --all-targets -- -D warnings`: clean.
+
+### R10: each guard's red (`scripts/step8-reds.py 2a`)
+
+Run r686 (head 56204ded6): 13 of 14 red, each its own test failing at its assertion; the fourteenth (single flight)
+did not compile as written (its `None` arms left the type open, so it was no red), was rewritten to
+`Asking::Refresh { waiting, .. } if false => Some(waiting)` and run alone (head 5124309b4): red. 14 of 14.
+
+| Guard removed | Its test, failing |
+|---|---|
+| a sign-in's response read whole before any of it goes (the real tokens through) | `inject::tests::a_sign_in_is_taken_outside_and_its_refresh_and_revocation_answered_there` (inject.rs:3190) |
+| a refresh answered outside, never sent on | the same (3242) |
+| a revocation answered here, never sent on | the same (3272) |
+| a refresh's answer given placeholders (the rotated tokens through) | the same (3245) |
+| a sign-in's request asks identity coding | the same (3189) |
+| no value toward an endpoint that mints a key | `a_sign_ins_token_never_goes_to_the_endpoint_that_mints_a_key` (3131: no 403, at its deadline) |
+| a capture grants its access token | `a_sign_in_is_taken_outside_and_its_refresh_and_revocation_answered_there` (3217) |
+| a refreshed token's held lease let go | the same (3255) |
+| a rotated value's ask under way kept | `lease::tests::a_captured_credential_is_granted_and_a_rotated_ones_held_lease_let_go` (lease.rs:721) |
+| refreshes of one sign-in ask once | `inject::tests::refreshes_of_one_sign_in_at_once_ask_once` (inject.rs:3335) |
+| one sign-in of a CLI a run | `signin::tests::sign_in_grants_ride_their_message_and_a_cli_has_one` (signin.rs:2127) |
+| a capture's placeholders checked | `signin::tests::a_captures_placeholders_that_are_no_tokens_or_anothers_are_declined` (2304) |
+| a refresh's answer never prints its tokens | `signin::tests::a_sign_ins_words_round_trip_and_print_no_token` (2189) |
+| a sign-in's refresh placeholder one credential's alone | `credential::tests::a_sign_ins_placeholders_are_tokens_and_one_credentials_alone` (credential.rs:442) |
+
+## Slice 2b: the run host's relay (#74 step 8 slice 2b)
+
+Role: implementer, for ROOT (g121). Policy read at origin/main ff08eca25: AGENTS.md sha256 f66d304c…,
+docs/development-rules.md df2acf47…, docs/development-evidence.md 61613a24…. Worktree `s33-signin2b`, branch
+`p/s33-signin2b-v1` from main ff08eca25; it builds on the previous implementer's partial start (the wire messages, the
+`Lessor` defaults and the session's handlers, untested), taken and finished. The design is D242's "Built: step 8's
+second slice, its second part".
+
+### Change
+
+- `crates/api/src/image/wire.rs`: version 24, `Request::sign_ins` appended; `SignInTokens` (with the inert ID token and
+  `scope`), `CaptureAsk`, `RefreshAsk`, `Revoked`, `CaptureAnswer`, `RefreshAnswer`, `SignInRefusal`; kinds
+  `CAPTURED` 34, `REFRESHED` 35 (to the host), `CAPTURE` 36, `REFRESH` 37, `REVOKE` 38 (to the client). The end-relative
+  offsets of older tests moved past the new count, and a version 23 request is refused.
+- `crates/api/src/image.rs`: `ImageSpec::sign_ins`, checked as the request is built (`sign_ins`); `Lessor` grown with
+  `capture`, `refresh` and `revoked`, each defaulted (`Unanswered`).
+- `crates/api/src/image/session.rs`: the three words put to the lessor on threads of their own; the captured access
+  token leasable (`granted`); a refresh releasing the leases of it given before it (`given_of`, `rotated`); a
+  `CAPTURE` frame wiped once taken.
+- `crates/shards/src/api_run.rs`: `sign_ins` (checked against the egress, encoded for `NET_SIGN_INS`); `tell_net`
+  sending it before `NET_CREDENTIALS`, which goes for a run with sign-ins and no grant too; `trust` naming the sign-ins'
+  hosts; the ledger's sign-ins (`Signing`, `Ledger::sign_in`, `signed_in`, `captured`, `refreshed`); the relay of
+  `NET_SIGN_IN` (`sign_in_told`) and of the answers (`captured`, `refreshed`); answers written through the process's own
+  stdout descriptor in one vectored write (`stdout`, `Answers::send`).
+- `crates/net/src/signin.rs`, `inject.rs`, `crates/dns/src/credential.rs` (ROOT's asks): `Captured::refresh_placeholder`
+  and `Placeholders::refresh` optional, a refresh token with no placeholder refused in `write`; `Tokens::scope`;
+  `Taken::id_token` (inert) and `Taken::scope`, carried by `Told::Capture`; `Taken::of` typed (`NoToken`, `NotAJwt`).
+
+### Tests (adas-mac-studio.local, macOS arm64, cargo 1.98.1; carrier `.claude/worktrees/s33-signin2b-carrier`,
+`CARGO_TARGET_DIR=~/g121-tmp/s33-signin2b/target`, `SHARDS_HELPERS=skip`, `CARGO_INCREMENTAL=0`)
+
+- Run r825 (head e33c6aea, the tree landed but for formatting and three test-only lint fixes):
+  - `cargo test -p shards-dns -p shards-net -p shards-api --lib -- credential signin inject:: lease:: image::`: 5, 47
+    and 62 passed.
+  - `cargo test -p shards --bin shards -- api_run::`: 45 passed, among them
+    `a_run_whose_request_grants_a_sign_in_tells_its_network_process_and_one_that_grants_none_tells_none`,
+    `a_sign_in_is_relayed_its_placeholders_kept_through_a_refresh_and_its_lease_released_at_the_runs_end` and
+    `a_runs_ledger_relays_its_own_sign_ins_and_lets_a_refreshed_lease_go`.
+- Run r840 (head a6d11fbb5, the three test-only lint findings of r825 fixed): `cargo clippy -p shards-dns -p shards-net
+  -p shards-api -p shards --all-targets -- -D warnings` clean on aarch64-apple-darwin, on x86_64-unknown-linux-gnu (zig
+  CC, as `scripts/lint` sets it) and on x86_64-pc-windows-msvc (`cargo xwin`); `image::session` 24 passed.
+- Run r858 (head 9539320cc, the relay test given a direct assertion of its lease's drop): `api_run::` 45 passed.
+- Run r874 (head 2fb3a0c23, the slice merged with main ed1136305, whose commits touched crates/net and D242): the same
+  tests, shards-api 64, shards-dns 5, shards-net 47 (2 ignored: step 10's A/B harness) and `api_run::` 45 passed; the
+  four crates' clippy clean on all three targets.
+
+### R10: each guard's red (`scripts/step8-reds.py 2b`)
+
+Run r847 (head ca5e5cf17, `run.sh p/s33-signin2b-v1 python3 docs/research/s33-veil-creds/scripts/step8-reds.py 2b`):
+9 of 10 red, each its own test failing at its assertion, the file restored after each. The tenth (the relay letting a
+refreshed token's held lease go) was held only by the relay test, which with the guard gone would wait on a lease ask
+that never comes rather than fail: the test now asserts the ledger's drop directly, and run r858 (head 9539320cc) shows
+it red, with the 2a guard of the same name still red. 10 of 10. Slice 1's and 2a's guard texts that this slice moved
+(the optional refresh placeholder) are updated in the script.
+
+| Guard removed | Its test, failing |
+|---|---|
+| a run's sign-ins told its network process | `api_run::tests::a_run_whose_request_grants_a_sign_in_tells_its_network_process_and_one_that_grants_none_tells_none` |
+| a sign-in its egress cannot reach refused | the same |
+| a refreshed token's held lease let go (the run host) | `api_run::tests::a_sign_in_is_relayed_its_placeholders_kept_through_a_refresh_and_its_lease_released_at_the_runs_end` |
+| a capture's access token granted (the run host) | `api_run::tests::a_runs_ledger_relays_its_own_sign_ins_and_lets_a_refreshed_lease_go` |
+| an ask after the run's release declined | the same |
+| a captured access token leasable (the session) | `image::session::tests::a_sign_ins_capture_and_refresh_are_kept_by_the_broker_and_its_lease_released_at_the_runs_end` |
+| a lease given before a refresh released (Q2) | the same |
+| a sign-in's CLI no version has refused | `image::wire::tests::a_runs_sign_ins_and_their_words_cross_the_channel` |
+| a refresh token with no placeholder never reaches the guest | `signin::tests::a_capture_carries_its_inert_id_token_and_scope_and_a_sign_in_may_hold_no_refresh_placeholder` |
+| the capture's ID token inert | the same |
+
+## R01-R16 (slice 2b)
+
+- R01: no unwrap, expect, indexing or unchecked arithmetic in the new production code; `IoSlice::advance_slices` is
+  given at most what `write_vectored` wrote (its precondition). Tests alone assert.
+- R02: the relay rides step 4's path (D242), the words its channel's existing conventions; no new mechanism.
+- R03: no numeric literal of its own: sequence numbers and wire tags; the channel's and `shards_ipc`'s bounds.
+- R04: `Signing`, `SignInRefusal` (to `signin::Declined`, each cause kept), the ledger's states; an answer to no ask, of
+  another kind, or a reused id breaks the contract, typed.
+- R05: no cache; the ledger is bounded by the run's sign-ins, one ask of each kind under way.
+- R06/R07/R13: focused functions; comments say why (Q1, Q2, wiping).
+- R08/R14: no performance claim; one vectored write per frame replaces std's buffered writes (unmeasured: ROOT's).
+- R09: no defect claimed; the gotcha (a refresh's lease refused `Live`) is held by a unit red.
+- R10: the reds above.
+- R11/R12: platform-independent code; the raw stdout is the twin of `stdin()` on Unix and Windows; clippy on three
+  targets.
+- R15: implementer scope only; R16: the target dir on the runner removed after landing.
+
+## A sign-in's token host over HTTP/2 (#74 steps 7 and 8)
+
+Role: implementer for ROOT (g121). Policy read at origin/main 2c9a97b8e: AGENTS.md sha256 f66d304c…, docs/development-
+rules.md df2acf47…, docs/development-evidence.md 61613a24…, and /tmp/g121-shot/brief-common.md. Worktree
+`s33-h2-signin`, branch `p/s33-h2-signin-v1`. Design and decisions: D242's "Built: a sign-in's token host over HTTP/2".
+
+### Change
+
+- `crates/net/src/inject.rs`:
+  - `Opening::new` offers a token host what its guest offered (the `h2` filter for token hosts gone); `H2` takes the
+    flow's sign-in.
+  - `H2`: `Upward::Reading` and `Upward::Refreshing`; `TokenResponse` (`Reading`, `Capturing`, `Written`) on each
+    stream; `signing`, `read_whole`, `refreshed`, `finish_token`, `captured`, `give`, `token_bodies`; `answer` made of
+    `answer_with`, which says the injector's HTTP/1.1 answer bytes on a stream (`said_on_h2`) and cancels a host
+    stream still open; streams let go of while asking forget their answers (`gone`, `SignIns::forget`).
+  - The HTTP/1.1 path's token code factored out for both: `ask_whole`, `revoke_here`, `signed_as`, `capture_tokens`,
+    `capture_written`, `refresh_answer`; `token_post` reads an HTTP/2 request as `read_head` reads a token POST.
+- `crates/net/src/signin.rs`: `Asker` (a flow and its stream, `From<Waiter>` for stream 0) keys asks and answers;
+  `forget`; `readable_fields` (the coding check over decoded fields, `readable` over it).
+- Tests in inject.rs: `h2_serving` (slice (b)'s HTTP/2 host, its answer a function; `h2_host` over it), a token host's
+  answer (`h2_token_answer`), `h2_token_bench`, `h2_drive` (the broker served each turn, no deadline), the broker's
+  `refuse`, and four tests.
+
+### Tests (adalundhe-macbook-pro, macOS arm64, cargo 1.98.1; carrier `/tmp/g121-shot/s33h2-carrier`)
+
+`run.sh BUNDLE REF test` clones the repo into `~/g121-tmp/s33h2`, fetches the bundle and runs `cargo test --locked -p
+shards-net --profile test-release --lib -- hpack:: http2:: inject:: signin` (`CARGO_INCREMENTAL=0`). adas-mac-studio.local
+had no DNS for the first runs, so the tests ran on adalundhe-macbook-pro.
+
+- **Red at 32196c665** (the tests alone), kiln run r975: 4 failed, 51 passed, 2 ignored. Three failed "the guest was
+  not served HTTP/2" (the token host offered HTTP/1.1 alone); `a_guest_offering_h2_alone_to_a_token_host_is_served_h2`
+  failed at its guest's handshake (refused, no protocol in common).
+- **Green at 3ad5e9d3a**, kiln run r977: 55 passed, 0 failed, 2 ignored (step 10 part B's measurement). With the
+  per-stream unit test (written after the change, below), on the tree merged with main (b1e22ee77, adas-mac-studio.local, kiln run r1012): 56 passed, 0 failed, 2 ignored; clippy clean on the three targets there.
+  - `an_h2_token_response_is_captured_on_its_stream_and_the_guest_sees_placeholders`: the host asked `identity`, the
+    body as sent; the broker keeps the issued tokens; the guest gets the placeholders, `content-length` the new length,
+    no real token in any byte or decoded field; `Did::Captured`; no stream reset.
+  - `an_h2_refresh_is_answered_outside_on_its_stream_with_placeholders`: one provider call; 200, `no-store`, `no-cache`,
+    the placeholders, no issued or rotated token; the held lease let go; the host's first request is the GET sent
+    after, so the refresh never reached it; `Did::Refreshed`.
+  - `a_refused_h2_refresh_is_answered_on_its_stream_while_another_completes`: stream 1 gets the HTTP/1.1 path's
+    `invalid_grant` 400 body byte for byte; stream 3's GET answered by the host; no reset; the connection stays.
+  - `a_guest_offering_h2_alone_to_a_token_host_is_served_h2`: HTTP/2; the revocation answered 200 on its stream, the
+    kept tokens as they were; the GET answered; `Did::Revoked`.
+- **Clippy**: `cargo clippy --locked -p shards-net --all-targets -- -D warnings` on aarch64-apple-darwin,
+  x86_64-unknown-linux-gnu (zig) and x86_64-pc-windows-msvc (xwin), adas-mac-studio.local (kiln run r979, at 3ad5e9d3a): clean.
+
+### Guard-removal mutations (ROOT's; on the green tree, `cargo test -p shards-net --profile test-release --lib -- inject::tests::<test>`, then `git checkout -- crates/net/src` and touch the file)
+
+1. The token host offered `h2`. Fails all four (three "not served HTTP/2", the h2-alone guest refused):
+   `perl -0pi -e 's/filter\(\|p\| p == HTTP_1_1 \|\| p == H2\)/filter(|p| p == HTTP_1_1)/' crates/net/src/inject.rs`
+2. A token response held and read whole. Fails `an_h2_token_response_is_captured_on_its_stream_and_the_guest_sees_placeholders` (a real token reaches the guest):
+   `perl -0pi -e 's/if self\.sign_in\.is_some\(\) && !informational/if false \&\& !informational/' crates/net/src/inject.rs`
+3. Its Content-Length rewritten. Fails the same test (`content-length` the host's):
+   `perl -0pi -e 's/fields\.retain\(\|f\| f\.name != b"content-length"\);//' crates/net/src/inject.rs`
+4. `identity` asked. Fails the same test ("the token host was not asked `identity`"):
+   `perl -0pi -e 's/go\.fields\.retain\(\|f\| f\.name != b"accept-encoding"\);//' crates/net/src/inject.rs`
+5. A refresh answered outside. Fails `an_h2_refresh_is_answered_outside_on_its_stream_with_placeholders`:
+   `perl -0pi -e 's/Some\(\(index, signin::Ask::Refresh\(_\)\)\) => \{/Some((index, signin::Ask::Refresh(_))) if false => {/' crates/net/src/inject.rs`
+6. Answers kept per stream. Fails `signin::tests::each_stream_of_a_flow_takes_its_own_answer_and_one_let_go_of_none`
+   (`cargo test -p shards-net --profile test-release --lib -- signin::tests::each_stream`; no inject.rs test has two
+   streams of one connection asking at once, so this unit test is the guard):
+   `perl -0pi -e 's/self\.answers\.insert\(asker, answer\);/self.answers.insert(Asker::from(asker.flow), answer);/' crates/net/src/signin.rs`
+7. A stream let go of waits no more. Fails the same test ("one refresh, two streams waiting"):
+   `perl -0pi -e 's/Asking::Refresh \{ waiting, \.\. \} => waiting\.retain\(\|a\| \*a != asker\),/Asking::Refresh { .. } => {}/' crates/net/src/signin.rs`
+
+That unit test was written after the change (with it, not red first): its red is mutation 6's and 7's, ROOT's to run.
+
+### R01-R16
+
+- R01: no unwrap, expect, indexing or unchecked arithmetic in the new production code (`split_at_checked`, `get`,
+  `saturating_add`, `parse` into a typed `Option`); tests alone assert.
+- R02: the design reuses step 8's reading (D242) and slice (b)'s stream machine; no new crate or mechanism.
+- R03: no literal of its own (stream 0 and §8.1.1 are RFC 9113's; the bounds `TO_HOST`, `TO_GUEST` are the
+  connection's). The tests wait on progress, never a deadline.
+- R04: `Upward::Reading`/`Refreshing`, `TokenResponse`'s three states, `Asker`; refusals stay `Refusal`, typed to the
+  wire through one rendering (`said_on_h2`).
+- R05: no cache; a held body is bounded with the others by `TO_GUEST`; answers are dropped as their streams go.
+- R06/R07/R13: focused functions per state; comments carry the RFCs and the step-8 reasons.
+- R08/R14: no performance claim (unmeasured; ROOT's).
+- R09: no defect claimed; the red is the missing behaviour itself.
+- R10: red and green above; mutations listed for ROOT.
+- R11/R12: platform-independent code, one implementation shared by HTTP/1.1 and HTTP/2; clippy on three targets.
+- R15: implementer scope; R16: the runners' target dirs removed after landing.
+
+## A flow's sign-in answers end with it (#74 step 8)
+
+Role: implementer for ROOT (g121). Policy read at origin/main 2731499f7: AGENTS.md sha256 f66d304c…, docs/development-
+rules.md df2acf47…, docs/development-evidence.md 61613a24…, and /tmp/g121-shot/brief-common.md. Worktree
+`s33-answers-drop`, branch `p/s33-answers-drop-v1`. Found by the agent that landed 2731499f7: a flow that ended while
+its sign-in's asks were under way left its answers (a token response among them) in the network process until the
+run ended, over HTTP/1.1 and HTTP/2 alike, unless an HTTP/2 stream was let go of first (`SignIns::forget`).
+
+### Change
+
+- `crates/net/src/signin.rs`: `SignIns::gone(flow)` drops every answer kept for any of the flow's streams (each
+  `Answer::Refreshed` a `Zeroizing` buffer, wiped as it drops) and takes the flow from every ask under way (a capture's
+  asker made none, a refresh's `waiting` without it). The ask stays under way, as with `forget`: a refresh still
+  rotates the sign-in for the run (its lease made stale) and a capture is still the sign-in's. An answer coming after
+  finds no asker of that flow and is kept for none. `forget` and `gone` share one let-go (`let_go`).
+- `crates/net/src/lib.rs`: `Stack::release`, the one place a TCP slot is emptied (`settle`'s two paths: a closed
+  connection, whether closed, reset or failed; and one whose socket cannot be waited on), tells the run's sign-ins
+  that the slot's flow is gone first. The run's own end drops the whole `Credentials`, so its answers too.
+
+### Tests (adas-mac-studio.local, macOS arm64; carrier `/tmp/s33-ad-carrier`, `run.sh REF STAGE...`)
+
+- **Red at 4deca30b4** (the tests alone; kiln run r1032): 2 failed. `tests::a_flow_that_ends_mid_refresh_keeps_no_answer`
+  ("a flow gone still waits on its ask": 2, not 1) and `tests::an_h2_flow_that_ends_mid_ask_keeps_no_answer_for_its_streams`
+  (3, not 1). Both run through the real `Stack::settle` of a connection reset in its slot, with no fixed waits.
+- **Green at e963d155a** (kiln run r1038): `cargo test -p shards-net --profile test-release --lib -- signin:: inject::
+  tests::a_flow_that_ends_mid_refresh tests::an_h2_flow_that_ends`: 46 passed, 0 failed, 2 ignored (the
+  measurements). With the fix came `signin::tests::a_flow_gone_takes_its_answers_with_it`, which covers an answer
+  already come when its flow goes and a capture whose flow goes first; its red is mutations 2 and 3 below.
+- `cargo fmt --all --check`, and `cargo clippy -p shards-net --all-targets -- -D warnings` on aarch64-apple-darwin,
+  x86_64-unknown-linux-gnu (zig) and x86_64-pc-windows-msvc (xwin), all clean. `cargo check -p shards --tests` with
+  `SHARDS_HELPERS=skip` is clean.
+
+### Guard-removal mutations (ROOT's; on the green tree, `cargo test -p shards-net --profile test-release --lib -- <filter>`, then `git checkout -- crates/net/src` and touch the file)
+
+1. A flow's slot emptied tells its sign-ins. Fails both `tests::a_flow_that_ends` and `tests::an_h2_flow_that_ends`
+   ("still waits on its ask"):
+   `perl -0pi -e 's/c\.sign_ins\.gone\(self\.tcp\.token\(slot\)\);/let _ = c;/' crates/net/src/lib.rs`
+2. Answers dropped with their askers. Fails `signin::tests::a_flow_gone` ("an answer kept for stream 1") and
+   `signin::tests::each_stream` ("an answer kept for a stream let go of"):
+   `perl -0pi -e 's/self\.answers\.retain\(\|a, _\| !gone\(a\)\);//' crates/net/src/signin.rs`
+3. A capture's asker gone with its flow. Fails `signin::tests::a_flow_gone` ("a flow gone waits on a capture"):
+   `perl -0pi -e 's/if asker\.as_ref\(\)\.is_some_and\(&gone\)/if false/' crates/net/src/signin.rs`
+
+### R01-R16
+
+- R01: no unwrap, indexing or arithmetic in the new production code. Tests alone assert.
+- R02/R05/R13: no new mechanism. The slot's release is the flow's one end, and `forget`'s let-go is generalized, not
+  copied. No cache: `answers` is bounded by asks and now by live flows.
+- R03: no literal.
+- R04: `Asking`'s states are unchanged; a flow's end is one event (`gone`).
+- R06/R07: two small functions; the comments say why (no answer outlives its flow).
+- R08/R14: no performance claim. Step 10's whole-memory leak scan is ROOT's.
+- R09: the red is the live reproduction (the answer's asker kept past its flow's reset).
+- R10: red, green and mutations above.
+- R11/R12: platform-independent code; clippy on three targets.
+- R15: implementer scope. R16: the runner's `~/g121-tmp/s33-ad` is removed after landing.
+
 ## Owed
 
-- Slice 2 (Shards): the NET kinds, the image channel's next version, `Lessor` grown append-only, the injector wired, the
-  light test with a simulated token endpoint.
 - Slice 3 (kiln): `RunLessor` answering capture, refresh and revoke from the broker.
 - ROOT: a real `claude auth login` and `codex login --device-auth` in a microVM through the injector, each surviving a
   refresh answered outside; a real request with the captured token filled in at egress; the `scope` a claude.ai

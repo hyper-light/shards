@@ -19,6 +19,9 @@ mod metrics;
 #[path = "managed_output/member_stdin.rs"]
 mod member_stdin;
 
+#[path = "managed_output/log_lanes.rs"]
+mod log_lanes;
+
 #[path = "common/managed_alloc.rs"]
 mod managed_alloc;
 

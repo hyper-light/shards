@@ -233,6 +233,10 @@ pub(crate) enum EndPolicy {
 pub(crate) enum Termination {
     BothHalvesClosed,
     BackendEnded,
+    /// The client's socket hung up as its reads ended while the backend's way was still
+    /// open: the client gone, not half-closed. The backend was ended both ways at once
+    /// (D251's cut), never its writes alone.
+    ClientCut,
 }
 
 #[derive(Clone, Copy)]
@@ -681,6 +685,39 @@ pub(crate) fn wait(
     Ok(())
 }
 
+/// Whether `client` has hung up, asked at once as its reads end: poll(2)'s POLLHUP or
+/// POLLERR asked for POLLOUT, which a Unix socket's peer's close sets as it ends the reads
+/// and its half-close never does (`unix_release_sock` sets the peer's `sk_shutdown` to
+/// SHUTDOWN_MASK before it wakes it, net/unix/af_unix.c; PM M559). A TCP peer's FIN sets
+/// neither (`tcp_poll`), so a TCP client's end stays a half-close. A socket that cannot
+/// say is taken as hung up, as `shards_ipc::hung_up`'s callers take it (D251).
+fn hung_up(client: BorrowedFd<'_>) -> bool {
+    let mut fd = libc::pollfd {
+        fd: client.as_raw_fd(),
+        events: libc::POLLOUT,
+        revents: 0,
+    };
+    loop {
+        // SAFETY: one pollfd of a socket this flow borrows; a timeout of 0 waits for none.
+        if unsafe { libc::poll(&raw mut fd, 1, 0) } >= 0 {
+            return fd.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0;
+        }
+        if io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
+            return true;
+        }
+    }
+}
+
+/// Ends `backend` both ways at once: over vsock one SHUTDOWN of RCV and SEND
+/// (`virtio_transport_shutdown`, net/vmw_vsock/virtio_transport_common.c), which its host
+/// reads as the connection gone, never the client's writes' end alone first.
+fn cut(backend: BorrowedFd<'_>) -> Result<(), Fault> {
+    // SAFETY: shutdown of this owned flow's borrowed socket; shutdown(2) does not wait.
+    count(unsafe { libc::shutdown(backend.as_raw_fd(), libc::SHUT_RDWR) } as isize)
+        .map(drop)
+        .map_err(|e| native(Leg::Backend, Operation::Shutdown, e))
+}
+
 pub(crate) fn pump(
     streams: [BorrowedFd<'_>; 2],
     slots: Slots,
@@ -709,7 +746,18 @@ pub(crate) fn pump(
         source: Leg::Backend,
     };
     loop {
+        let reading = report.to_backend.half == Half::Reading;
         let up_changed = up.turn(client, backend, &mut report.to_backend, &deadline, end)?;
+        if end == EndPolicy::Independent
+            && reading
+            && report.to_backend.half == Half::Draining(SourceEnd::Eof)
+            && (report.to_client.half == Half::Reading || report.to_client.pending != 0)
+            && hung_up(client)
+        {
+            cut(backend)?;
+            report.to_backend.half = Half::WriteClosed(SourceEnd::Eof);
+            return Ok(Termination::ClientCut);
+        }
         let down_changed = down.turn(backend, client, &mut report.to_client, &deadline, end)?;
         if end == EndPolicy::EnginePeerEnd
             && matches!(

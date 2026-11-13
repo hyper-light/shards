@@ -25,6 +25,9 @@ pub struct Writer {
     logged: u64,
     indexed: u64,
     lost: u64,
+    /// Bytes of records it has kept, every segment's: what the run's one log cap counts as it
+    /// grows (D240).
+    written: u64,
 }
 
 /// Makes a log's segment `seq`, its log and index to append to, and removes the oldest
@@ -68,6 +71,7 @@ impl Writer {
             logged,
             indexed,
             lost: 0,
+            written: 0,
         })
     }
 
@@ -95,39 +99,52 @@ impl Writer {
                 continue;
             }
             let (part, rest) = bytes.split_at(usize::try_from(room).unwrap_or(usize::MAX).min(bytes.len()));
-            self.record(stream, part);
+            let mut flags = if stream == LOG_STDERR { INDEX_STDERR } else { 0 };
+            if part.last() == Some(&b'\n') {
+                flags |= INDEX_LINE;
+            }
+            self.keep_whole(stream, flags, part);
             bytes = rest;
         }
     }
 
-    /// Writes `bytes` of `stream` as one record of the segment written.
-    fn record(&mut self, stream: u8, bytes: &[u8]) {
+    /// Keeps `bytes` whole as one record, its stream byte `stream` and its index entry's flags
+    /// `flags` (spec.rs, `INDEX_STDERR`): in the segment written where it has room, else in the
+    /// next. Output goes through [`Writer::keep`], which fills each segment; a daemon's member
+    /// log keeps a gap so too (D240). Whether it was kept; a record that was not is counted
+    /// lost.
+    pub fn keep_whole(&mut self, stream: u8, flags: u64, bytes: &[u8]) -> bool {
+        let record_len = LOG_HEAD.saturating_add(bytes.len() as u64);
+        if self.logged > 0
+            && self.logged.saturating_add(record_len) > self.retention.size
+            && self.rotate().is_err()
+        {
+            self.lost = self.lost.saturating_add(bytes.len() as u64);
+            return false;
+        }
         let head = log_head(stream, bytes);
-        let record_len = LOG_HEAD + bytes.len() as u64;
-        let mut entry = self.logged & INDEX_START;
-        if stream == LOG_STDERR {
-            entry |= INDEX_STDERR;
-        }
-        if bytes.last() == Some(&b'\n') {
-            entry |= INDEX_LINE;
-        }
+        let entry = (self.logged & INDEX_START) | flags;
         let kept = write_parts(&self.log, &mut [io::IoSlice::new(&head), io::IoSlice::new(bytes)])
             .and_then(|()| (&self.index).write_all(&entry.to_be_bytes()));
         match kept {
             Ok(()) => {
                 self.logged += record_len;
                 self.indexed += 8;
+                self.written = self.written.saturating_add(record_len);
+                true
             }
             Err(_) => {
                 self.lost = self.lost.saturating_add(bytes.len() as u64);
                 let _ = self.index.set_len(self.indexed);
                 let _ = self.log.set_len(self.logged);
+                false
             }
         }
     }
 
-    /// Starts the next segment.
-    fn rotate(&mut self) -> io::Result<()> {
+    /// Starts the next segment: as the one written fills, or, for a member's log its daemon
+    /// keeps, as the run's one log cap takes its newest segment (daemon/managed/cap.rs).
+    pub fn rotate(&mut self) -> io::Result<()> {
         let next = self.seq + 1;
         let (log, index) = (self.next)(next)?;
         (self.seq, self.log, self.index, self.logged, self.indexed) = (next, log, index, 0, 0);
@@ -137,6 +154,20 @@ impl Writer {
     /// Bytes of output not kept.
     pub fn lost(&self) -> u64 {
         self.lost
+    }
+
+    /// The segment it writes. The daemon's alone, its keeper of members' logs (D240): the VM
+    /// process carries this file too.
+    #[allow(dead_code)]
+    pub fn seq(&self) -> u64 {
+        self.seq
+    }
+
+    /// Bytes of records it has kept, heads and output, since it began: the daemon's alone, as
+    /// [`Writer::seq`].
+    #[allow(dead_code)]
+    pub fn written(&self) -> u64 {
+        self.written
     }
 }
 

@@ -176,6 +176,11 @@ impl<D: Disk> Daemon<D> {
                 if let Err(e) = sent {
                     log(format!("container {id}: answering for its log: {e}"));
                 }
+                // The segment the VM finished is weighed in its run's one log cap, shared with its
+                // members' logs (D240), once the VM has the next.
+                if made.is_some() {
+                    self.managed.cap(&id);
+                }
                 // Once the VM writes the new one, the one before is done.
                 if pack
                     && made.is_some()
