@@ -3316,7 +3316,8 @@ mod hosted {
         if let super::AsksEnd::Failed(why) = &ended {
             super::say(format_args!("its asks ended: {why}"));
         }
-        *lock(&live.asks_end) = Some(ended);
+        // The first end of its asks stands: its members' output's, where that came first.
+        lock(&live.asks_end).get_or_insert(ended);
         let _ = vm.kill(shards_ipc::signal::SIGKILL);
     }
 
@@ -3668,32 +3669,44 @@ mod hosted {
     }
 
     /// Reads the run's managed output until it ends: each member's bytes to the
-    /// orchestrator within its room, its channel's end, each record's credit renewed. `vm`,
-    /// the run's VM: nothing of it, as yet.
-    fn records(live: &Live<'_>, mut capture: Stream, vm: &shards_ipc::Child) {
-        let _ = vm;
+    /// orchestrator within its room, its channel's end, each record's credit renewed. Its
+    /// VM's end of it, at a frame's start or within one, is the VM's end, which `follow`
+    /// tells. Where this host cannot take what comes (a frame of no record's kind, cut short
+    /// in its header or malformed, a record it cannot hold or read) or cannot send its
+    /// orchestrator what it has, the run fails in those words: its asks' end
+    /// ([`super::AsksEnd`]), and `vm`, its VM, killed for it, so that no run waits for its
+    /// `STOP` on a failure its host saw (D258).
+    fn records(live: &Live<'_>, capture: Stream, vm: &shards_ipc::Child) {
+        if let Err(why) = read_records(live, capture) {
+            super::say(format_args!("its asks ended: {why}"));
+            lock(&live.asks_end).get_or_insert(super::AsksEnd::Failed(why));
+            let _ = vm.kill(shards_ipc::signal::SIGKILL);
+        }
+    }
+
+    /// [`records`]' reads, to their end: its VM's, or why not.
+    fn read_records(live: &Live<'_>, mut capture: Stream) -> Result<(), String> {
+        let broke = |why: std::fmt::Arguments<'_>| format!("its VM's members' output broke: {why}");
         loop {
             let mut header = [0u8; protocol::HEADER];
             if capture.read_exact(&mut header).is_err() {
-                return;
+                return Ok(());
             }
-            let Some((which, len)) = protocol::parse_header(header) else {
-                return;
-            };
+            let (which, len) =
+                protocol::parse_header(header).ok_or_else(|| broke(format_args!("a frame's header")))?;
             if which != protocol::kind::MANAGED {
-                return;
+                return Err(broke(format_args!("a frame of kind {which}, no record's")));
             }
             let mut record = Vec::new();
-            if record.try_reserve_exact(len as usize).is_err() {
-                return;
-            }
+            record
+                .try_reserve_exact(len as usize)
+                .map_err(|e| broke(format_args!("no room for a record of {len} bytes: {e}")))?;
             record.resize(len as usize, 0);
             if capture.read_exact(&mut record).is_err() {
-                return;
+                return Ok(());
             }
-            let Ok(parsed) = managed::Record::decode(&record) else {
-                return;
-            };
+            let parsed =
+                managed::Record::decode(&record).map_err(|e| broke(format_args!("a record: {e}")))?;
             let key = (parsed.member, channel_of(parsed.channel));
             let mut flows = lock(&live.flows);
             flows.granted.insert(key, false);
@@ -3725,8 +3738,13 @@ mod hosted {
                     sent.and_then(|()| live.answers.send(wire::to_client::OUTPUT_END, &[&end.encode()]))
                 }
             };
-            if sent.is_err() || live.grant(&mut flows, key).is_err() {
-                return;
+            sent.map_err(|e| format!("its answers to its orchestrator: {e}"))?;
+            // Room its VM can take no more of is its VM ending, its end the VM's (`take`'s
+            // credits likewise), said once.
+            if let Err(e) = live.grant(&mut flows, key)
+                && !std::mem::replace(&mut flows.ungranted, true)
+            {
+                super::say(format_args!("its VM takes no more of its members' output: {e}"));
             }
         }
     }
