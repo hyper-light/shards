@@ -209,10 +209,14 @@ impl<'a> Judge<'a> {
     /// party made no progress at all over the time since, a whole W* or more. A look before
     /// it is due, or of a wait not judged, judges nothing.
     pub fn found(&mut self, found: Found) -> Result<(), Stall> {
+        self.found_at(found, Instant::now())
+    }
+
+    /// [`found`](Self::found), the look made at `now`: the look clock, which a test sets.
+    fn found_at(&mut self, found: Found, now: Instant) -> Result<(), Stall> {
         let Some(due) = self.due() else {
             return Ok(());
         };
-        let now = Instant::now();
         if now < due {
             return Ok(());
         }
@@ -375,6 +379,52 @@ mod tests {
             stall.over() >= slowest && stall.waited() >= slowest * 4,
             "{stall:?}"
         );
+    }
+
+    /// The start that failed on a loaded host (ROOT's HVF run at d513d0a0b, containers.rs
+    /// `a_runs_log_is_sent_to_gelf_as_its_options_say`: "it ran nothing for 101.091209ms,
+    /// past the slowest start seen (98.915708ms), 202.999ms after it began"), replayed on an
+    /// injected look clock: its first look ran 101.908ms in and found progress, its second
+    /// 202.999ms in found none. That second look was meant W* past the first's meant time
+    /// (D215's looks each W* past the wait's start), and the time the judge ran late past it
+    /// was its host's hold, not the party's window: its party had less than a whole W* free,
+    /// and goes on. A look on time at the next due, its party still, is refused, over the
+    /// window its host did not hold the judge in (ROOT's ruling, 2026-11-13).
+    #[test]
+    fn a_look_its_host_held_late_counts_its_lateness_as_held() {
+        let us = Duration::from_micros;
+        let slowest = Duration::from_nanos(98_915_708);
+        let record = Record::new();
+        record.teach(slowest, Duration::from_millis(3));
+        let mut judge = Judge::begin(&record);
+        let began = judge.began;
+        assert_eq!(judge.found_at(Found::Progressed, began + us(101_908)), Ok(()));
+        assert_eq!(
+            judge.found_at(Found::Still, began + us(202_999)),
+            Ok(()),
+            "the judge's own lateness counted as the party's stillness"
+        );
+        let due = judge.due().unwrap();
+        assert_eq!(due, began + slowest * 3, "looks each W* past the wait's start");
+        let stall = judge.found_at(Found::Still, due).unwrap_err();
+        let late = us(202_999) - slowest * 2;
+        assert_eq!(stall.over(), slowest * 3 - us(101_908) - late);
+        assert_eq!(stall.waited(), slowest * 3);
+        assert_eq!(stall.slowest(), slowest);
+    }
+
+    /// A judge that looks on time at each due, its party stopped from the start, refuses it
+    /// at its first look, over a whole W* (ROOT's ruling, 2026-11-13: a host's hold of the
+    /// judge is never one it did not show).
+    #[test]
+    fn a_judge_on_time_refuses_a_stopped_party_at_its_first_look() {
+        let slowest = Duration::from_millis(30);
+        let record = Record::new();
+        record.teach(slowest, Duration::from_millis(3));
+        let mut judge = Judge::begin(&record);
+        let due = judge.due().unwrap();
+        let stall = judge.found_at(Found::Still, due).unwrap_err();
+        assert_eq!((stall.over(), stall.waited()), (slowest, slowest));
     }
 
     /// A wait judged from outside, as one blocked in a write is, is stalled once its party
