@@ -58,7 +58,12 @@ struct InputFlow {
 #[derive(Debug, Default)]
 struct State {
     started: Option<wire::Started>,
+    /// How a warm host's microVM started, once it is ready for its run (`WARMED`, D253's
+    /// pools).
+    warmed: Option<wire::StartedFrom>,
     refused: Option<ImageRefusal>,
+    /// Its refusal was of a run of another microVM's than its warm one (`Cause::Unfit`).
+    unfit: bool,
     flows: HashMap<(u32, Channel), Flow>,
     /// Each member's stdin its spec asked for, by its index.
     inputs: HashMap<u32, InputFlow>,
@@ -412,15 +417,21 @@ pub(super) struct Session {
     started_from: wire::StartedFrom,
 }
 
-impl Session {
-    pub(super) fn start(
-        spec: &ImageSpec,
-        request: &wire::Request,
-        patience: Duration,
-    ) -> Result<Session, ImageRefusal> {
-        let binary = spec
-            .binary
-            .clone()
+/// A run host started, its threads reading its answers, keeping its last diagnostics and
+/// waiting for its exit: a session's before its run has started.
+pub(super) struct Begun {
+    shared: Arc<Shared>,
+    host: Arc<shards_ipc::Child>,
+    /// Whether it ends the host as it drops: until its run's session holds the host.
+    armed: bool,
+}
+
+impl Begun {
+    /// Starts `binary` (`spec.binary`'s, else `SHARDS_BIN`, else `shards` on `PATH`) as the
+    /// run host (`api-run`), its environment this process's with `env` over it.
+    pub(super) fn begin(binary: Option<&Path>, env: &[(OsString, OsString)]) -> Result<Begun, ImageRefusal> {
+        let binary = binary
+            .map(Path::to_path_buf)
             .or_else(|| std::env::var_os("SHARDS_BIN").map(PathBuf::from))
             .unwrap_or_else(|| PathBuf::from("shards"));
         let os = |what: &'static str| move |e: io::Error| ImageRefusal::Os { what, kind: e.kind() };
@@ -429,7 +440,7 @@ impl Session {
             to_host,
             from_host,
             said,
-        } = start_host(&binary, &[OsStr::new("api-run")], &spec.env)?;
+        } = start_host(&binary, &[OsStr::new("api-run")], env)?;
         let shared = Arc::new(Shared {
             state: Mutex::new(State::default()),
             changed: Condvar::new(),
@@ -437,38 +448,104 @@ impl Session {
         });
         // Shared: the session and its exit watcher, which outlives this call.
         let host = Arc::new(process);
+        let begun = Begun {
+            shared,
+            host,
+            armed: true,
+        };
         let threads = (|| {
-            let (watcher, watched) = (shared.clone(), host.clone());
+            let (watcher, watched) = (begun.shared.clone(), begun.host.clone());
             std::thread::Builder::new()
                 .name("shards-api-image-exit".into())
                 .spawn(move || watch(&watcher, &watched))
                 .map_err(os("the run host's watcher"))?;
-            let reader = shared.clone();
+            let reader = begun.shared.clone();
             std::thread::Builder::new()
                 .name("shards-api-image".into())
                 .spawn(move || read_answers(&reader, from_host))
                 .map_err(os("the run host's reader"))?;
-            let tail = shared.clone();
+            let tail = begun.shared.clone();
             std::thread::Builder::new()
                 .name("shards-api-image-said".into())
                 .spawn(move || keep_said(&tail, said))
-                .map_err(os("the run host's diagnostics"))?;
-            let payload = request.encode().map_err(|e| ImageRefusal::Spec {
-                what: "the spec",
-                why: e.to_string(),
-            })?;
-            shared
-                .send(wire::to_host::CREATE, &payload)
-                .map_err(os("the run host's request"))
+                .map_err(os("the run host's diagnostics"))
+                .map(drop)
         })();
+        if let Err(e) = threads {
+            begun.end();
+            return Err(e);
+        }
+        Ok(begun)
+    }
+
+    /// The host's process, for its pool to end it while it starts warm (D253's pools).
+    pub(super) fn process(&self) -> Arc<shards_ipc::Child> {
+        self.host.clone()
+    }
+
+    /// Ends the host at once, and its channel.
+    fn end(&self) {
+        kill(&self.host);
+        lock(&self.shared.to_host).take();
+    }
+
+    /// Sends the host `request`, as a run's (`CREATE`) or a warm host's exemplar (`WARM`).
+    pub(super) fn send(&self, kind: u8, request: &wire::Request) -> Result<(), ImageRefusal> {
+        let payload = request.encode().map_err(|e| ImageRefusal::Spec {
+            what: "the spec",
+            why: e.to_string(),
+        })?;
+        self.shared.send(kind, &payload).map_err(|e| ImageRefusal::Os {
+            what: "the run host's request",
+            kind: e.kind(),
+        })
+    }
+
+    /// Waits for a warm host's microVM to be ready (`WARMED`, D253's pools): how it started;
+    /// else why not, the host ended.
+    pub(super) fn warmed(&self) -> Result<wire::StartedFrom, ImageRefusal> {
+        let outcome = self.shared.wait(Duration::MAX, |s| {
+            if let Some(from) = s.warmed {
+                return Some(Ok(from));
+            }
+            if s.refused.is_some() {
+                if !(s.gone() && s.said_all) {
+                    return None;
+                }
+                return s.refused.take().map(|r| Err(with_said(r, &s.said)));
+            }
+            s.gone().then(|| {
+                Err(ImageRefusal::Host(format!(
+                    "it exited before it was warm{}",
+                    quoted(&s.said)
+                )))
+            })
+        });
+        let warmed = outcome.unwrap_or_else(|| Err(ImageRefusal::Host("no word of its warmth".into())));
+        if warmed.is_err() {
+            self.end();
+        }
+        warmed
+    }
+
+    /// Waits at most `patience` for the start of the run `request` it was sent: the run's
+    /// session; else why not, the host ended, and whether it refused the run as one of
+    /// another microVM's than its warm one (`Cause::Unfit`, D253's pools).
+    pub(super) fn started(
+        mut self,
+        request: &wire::Request,
+        patience: Duration,
+    ) -> Result<Session, (ImageRefusal, bool)> {
+        // The host is the session's from here, ended by it, or here where its run does not
+        // start.
+        self.armed = false;
+        let (shared, host) = (self.shared.clone(), self.host.clone());
+        drop(self);
         let end_it = |shared: &Shared| {
             kill(&host);
             lock(&shared.to_host).take();
         };
-        if let Err(e) = threads {
-            end_it(&shared);
-            return Err(e);
-        }
+        let unfit = |shared: &Shared| lock(&shared.state).unfit;
         // Started, refused, or gone: whichever comes first, within the caller's patience. A
         // refusal is the host's last word, told once it has exited and said all it will.
         let outcome = shared.wait(patience, |s| {
@@ -498,19 +575,20 @@ impl Session {
             Some(Ok(started)) => started,
             Some(Err(e)) => {
                 end_it(&shared);
-                return Err(e);
+                return Err((e, unfit(&shared)));
             }
             None => {
                 end_it(&shared);
                 let mut state = lock(&shared.state);
                 // Refused, by a host that has not yet exited: its refusal still.
                 if let Some(r) = state.refused.take() {
-                    return Err(with_said(r, &state.said));
+                    return Err((with_said(r, &state.said), state.unfit));
                 }
                 let said = quoted(&state.said);
-                return Err(ImageRefusal::Boot(format!(
-                    "the run did not start within {patience:?}{said}"
-                )));
+                return Err((
+                    ImageRefusal::Boot(format!("the run did not start within {patience:?}{said}")),
+                    false,
+                ));
             }
         };
         // Each member whose stdin its spec asked for, by its index in the host's answer.
@@ -530,8 +608,11 @@ impl Session {
         // a run that asked, or one for a run that did not, broke the channel's contract.
         if request.control.is_some() != started.control.is_some() {
             end_it(&shared);
-            return Err(ImageRefusal::Host(
-                "the run host's start told an agent-control endpoint other than the run asked".into(),
+            return Err((
+                ImageRefusal::Host(
+                    "the run host's start told an agent-control endpoint other than the run asked".into(),
+                ),
+                false,
             ));
         }
         // Each member whose terminal its spec asked for (D244), by its index likewise.
@@ -559,8 +640,92 @@ impl Session {
             rate_period: started.rate_period,
             started_from: started.from,
         };
-        session.pump_outputs()?;
+        session.pump_outputs().map_err(|e| (e, false))?;
         Ok(session)
+    }
+}
+
+/// The run hosts the `shards` binary starts, for [`super::ImagePools`] (D253's pools): warm
+/// ones with a run's exemplar (`WARM`), handed their run as it comes (`CREATE`), and one for a
+/// run at once.
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct ShardsHosts;
+
+impl super::pool::Hosts for ShardsHosts {
+    type Starting = Begun;
+    type Warm = Begun;
+    type Kill = Arc<shards_ipc::Child>;
+
+    fn begin(
+        &self,
+        host: &super::pool::HostOf,
+        exemplar: &wire::Request,
+    ) -> Result<(Begun, Arc<shards_ipc::Child>), ImageRefusal> {
+        let begun = Begun::begin(host.binary.as_deref(), &host.env)?;
+        if let Err(e) = begun.send(wire::to_host::WARM, exemplar) {
+            begun.end();
+            return Err(e);
+        }
+        let process = begun.process();
+        Ok((begun, process))
+    }
+
+    fn warmed(&self, starting: Begun) -> Result<Begun, ImageRefusal> {
+        starting.warmed().map(|_| starting)
+    }
+
+    fn kill(&self, kill: &Arc<shards_ipc::Child>) {
+        self::kill(kill);
+    }
+
+    fn take(
+        &self,
+        warm: Begun,
+        request: &wire::Request,
+        patience: Duration,
+    ) -> Result<Box<dyn ImageGuest>, super::pool::Taken> {
+        use super::pool::Taken;
+        if let Err(e) = warm.send(wire::to_host::CREATE, request) {
+            warm.end();
+            return Err(Taken::Refused(e));
+        }
+        match warm.started(request, patience) {
+            Ok(session) => Ok(Box::new(session)),
+            Err((_, true)) => Err(Taken::Unfit),
+            Err((refused, false)) => Err(Taken::Refused(refused)),
+        }
+    }
+
+    fn fresh(
+        &self,
+        spec: &ImageSpec,
+        request: &wire::Request,
+        patience: Duration,
+    ) -> Result<Box<dyn ImageGuest>, ImageRefusal> {
+        Ok(Box::new(Session::start(spec, request, patience)?))
+    }
+}
+
+impl Drop for Begun {
+    /// A host whose run never started, a warm one its pool keeps no more among them, ends
+    /// with it: a session holds its own host once started (`started`), which ends it with
+    /// itself.
+    fn drop(&mut self) {
+        if self.armed {
+            self.end();
+        }
+    }
+}
+
+impl Session {
+    pub(super) fn start(
+        spec: &ImageSpec,
+        request: &wire::Request,
+        patience: Duration,
+    ) -> Result<Session, ImageRefusal> {
+        let begun = Begun::begin(spec.binary.as_deref(), &spec.env)?;
+        begun.send(wire::to_host::CREATE, request)?;
+        begun.started(request, patience).map_err(|(refused, _)| refused)
     }
 
     /// A pipe for each running member's channels, and the thread that fills it as its
@@ -755,8 +920,15 @@ fn take(shared: &Shared, kind: u8, payload: &[u8]) -> Result<bool, String> {
     let mut ended = false;
     match kind {
         k::STARTED => state.started = Some(wire::Started::decode(payload).map_err(bad)?),
+        k::WARMED => {
+            let from = wire::read_warmed(payload).map_err(bad)?;
+            if state.warmed.replace(from).is_some() {
+                return Err("a host warm twice".into());
+            }
+        }
         k::REFUSED => {
             let r = wire::Refused::decode(payload).map_err(bad)?;
+            state.unfit = r.cause == wire::Cause::Unfit;
             state.refused = Some(match r.cause {
                 wire::Cause::Request => ImageRefusal::Spec {
                     what: "the request",
@@ -769,6 +941,10 @@ fn take(shared: &Shared, kind: u8, payload: &[u8]) -> Result<bool, String> {
                     what: "the run host",
                     why: r.why,
                 },
+                wire::Cause::Unfit => ImageRefusal::Host(format!(
+                    "a warm run host of another microVM's than the run's: {}",
+                    r.why
+                )),
             });
         }
         k::OUTPUT => {

@@ -17,9 +17,9 @@ use std::time::{Duration, Instant};
 
 use common::{TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, served};
 use shards_api::image::{
-    Channel, ImageGuest, ImageRefusal, ImageShards, ImageShare, ImageSpec, Images as _, Keep, MemberEnd,
-    MemberFile, MemberKind, MemberName, MemberReach, MemberSpec, Narrowing, PlugRefusal, Proto, Publish,
-    RunEnd, Secret, StartedFrom, StatsScope,
+    Channel, ImageGuest, ImagePools, ImageRefusal, ImageShards, ImageShare, ImageSpec, Images as _, Keep,
+    MemberEnd, MemberFile, MemberKind, MemberName, MemberReach, MemberSpec, Narrowing, PlugRefusal, Proto,
+    Publish, RunEnd, Secret, StartedFrom, StatsScope,
 };
 
 const TIMEOUT: Duration = Duration::from_secs(120);
@@ -730,6 +730,60 @@ fn an_images_next_run_restores_the_template_its_first_saved() {
     assert_eq!(run(&stored), StartedFrom::Replaced);
     assert_eq!(run(&stored), StartedFrom::Restored);
     assert_eq!(run(&given), StartedFrom::Booted);
+}
+
+/// D253's pools: an orchestrator's pools give an image's next run a warm run host, its
+/// microVM restored and ready before the run asked. The pool's first run starts a host of its
+/// own, nothing being warm; the pool then starts one ahead, which a later run takes (`Warm`),
+/// its command ending as the first's did. A run of another microVM's (another size) starts a
+/// host of its own.
+#[test]
+fn an_images_next_run_takes_a_warm_host_of_its_pool() {
+    if cannot_run_vms() {
+        return;
+    }
+    let home = common::home_with("api-pool-home", TIMEOUT);
+    build_example(&home, "api-pool:1");
+    let mut s = spec(&home, "api-pool:1");
+    s.command = Some(["/bin/sh", "-c", "exit 3"].map(String::from).to_vec());
+    s.egress = Narrowing {
+        egress: Keep::Only(Vec::new()),
+        mcp: Keep::Only(Vec::new()),
+        destinations: Keep::Only(Vec::new()),
+        dns: false,
+        members: Some(Vec::new()),
+    };
+    s.env
+        .retain(|(name, _)| name != "SHARDS_KERNEL" && name != "SHARDS_INIT");
+    let pools = ImagePools::new(2, ImagePools::KEEP).unwrap();
+    let run = |s: &ImageSpec| {
+        let guest = pools.boot(s, TIMEOUT).unwrap();
+        let from = guest.started_from();
+        assert_eq!(guest.wait_for(TIMEOUT).unwrap(), Some(RunEnd::Exited(3)));
+        from
+    };
+    assert_ne!(
+        run(&s),
+        StartedFrom::Warm,
+        "nothing is warm before a pool's first run"
+    );
+    // The warm host its first run's pool started is taken by the first run that comes once
+    // it is ready: each run before that starts a host of its own.
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        if run(&s) == StartedFrom::Warm {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no run took a warm host within {TIMEOUT:?}"
+        );
+    }
+    let other = ImageSpec {
+        vcpus: 2,
+        ..s.clone()
+    };
+    assert_ne!(run(&other), StartedFrom::Warm, "another microVM's first run");
 }
 
 /// Stop ends the run at once, whatever its members do, and its end says so.

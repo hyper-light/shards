@@ -147,10 +147,9 @@ pub(crate) fn pci_slots() -> u8 {
 /// shares, so the default holds about 55 MiB (PM M49).
 const DEFAULT_WARM_MAX: usize = 16;
 const DEFAULT_IDLE: Duration = Duration::from_secs(900);
-/// How long a pool keeps warm VMs after its last claim unless `SHARDS_POOL_KEEP` says: as
-/// AWS keeps an idle function, 10 minutes (Shahrad et al., "Serverless in the Wild",
-/// USENIX ATC 2020, §1).
-const DEFAULT_KEEP: Duration = Duration::from_secs(600);
+/// How long a pool keeps warm VMs after its last claim unless `SHARDS_POOL_KEEP` says: D26's
+/// keep-alive, an orchestrator's pools' too (`shards_api::demand::KEEP`).
+const DEFAULT_KEEP: Duration = shards_api::demand::KEEP;
 /// Warm VMs a run may try: one can end while it waits, or before it has taken the run.
 const HANDOFF_TRIES: usize = 3;
 /// A stopped microVM's writable layer, in its directory (D37): kept whole, and being
