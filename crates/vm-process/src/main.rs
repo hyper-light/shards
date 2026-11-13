@@ -20,6 +20,8 @@ mod grant_ask;
 #[cfg(all(test, unix))]
 #[path = "../../shards/src/segments.rs"]
 mod segments;
+#[path = "../../shards/src/log_writer.rs"]
+mod log_writer;
 #[path = "../../shards/src/spec.rs"]
 mod spec;
 #[path = "../../shards/src/terminal.rs"]

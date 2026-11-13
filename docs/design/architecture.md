@@ -21983,9 +21983,14 @@ JSON library into PID 1. Each domain gets:
     read-only.
   - A scratch `/tmp` of its own, mode 700 and its uid's, lost when it ends.
 - **Only a loopback**, brought up; network grants are part three.
-- **Its stdio:** stdin is `/dev/null`; stdout and stderr are one pipe that init relays a
-  line at a time on the run's **stderr**, each line prefixed `[agent main] `. It goes to
-  stderr so that the workload's stdout stays its own, for pipes. Every descriptor past 2
+- **Its stdio:** stdin is `/dev/null`; stdout and stderr are pipes of their own, which init
+  captures whole for its owner (D240). Where the run names no owner of a member's output
+  (`shards.output`), the daemon reads it itself, keeps it in the member's log
+  (`members/<index>` in the run's directory, as the run's log is kept) and shows it to a
+  client attached to the run on that client's **stderr**, each line prefixed
+  `[agent main] `; the run's own stdout, stderr and log stay its command's. No member
+  waits on a reader: the daemon credits a channel again as soon as what came is kept, a
+  detached run's and one whose client has gone alike (PM M543). Every descriptor past 2
   is closed before exec. Every descriptor init holds is close-on-exec today, which the
   mutation shows: without the close, nothing of init's reaches the agent. The close is
   there so that one descriptor not marked close-on-exec, such as the O_PATH descriptors
@@ -22648,8 +22653,29 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
   bounds are gone: they give the suite no clock and wait on facts (a stand-in's end told
   through a FIFO, a holder of shards' output still running as the refusal comes), and
   boot.rs's deadline for a direct boot is this host's own boot of the test guest to its
-  answer, measured just before. What remains timed is the suite's and the crate's unit
-  tests', twice the slowest recorded run on the host class (`shards_api::record`:
+  answer, measured just before. Part A's own checks (e93bb4d45, landed by merge 831854804;
+  goal 52's agent, 2026-11-13) ran on adas-mac-studio.local (macOS 26.2 on arm64, rustc
+  1.98.1), on a clone of each tree, with `SHARDS_HELPERS=skip` and placeholder init and
+  server binaries:
+  - `cargo test -p shards-api`;
+  - `cargo clippy -p shards-api -p shards --all-targets -- -D warnings`.
+
+  Results:
+  - At e93bb4d45's tree (kiln run r101): the lib's tests 102 passed and 5 ignored,
+    tests/allocations.rs 1 passed, tests/real.rs 1 ignored, tests/sim.rs 17 passed and 2
+    ignored; clippy clean.
+  - At 831854804's tree (r115): the lib's 105 passed and 5 ignored, the rest the same;
+    clippy clean.
+  - The first draft (r85) failed sim's `client::gpu_probe_protocol_requires_exact_completed_receipt`
+    (sim.rs:313) and clippy (three `unwrap_used` in boot.rs). Both were fixed before
+    e93bb4d45.
+
+  The logs are that runner's ~/g121-tmp/s2-logs/a-*.log (r85), a2-*.log (r101) and a3-*.log
+  (r115). Not run: these checks on Linux or Windows, boot.rs's real-VM tests (ROOT's),
+  scripts/lint, and any guard-removal mutation.
+
+  What remains timed is the suite's and the crate's unit tests', twice the slowest
+  recorded run on the host class (`shards_api::record`:
   `conformance::PATIENCE`, an unserved port's `OVERSHOOT`; PM M463, M464, M515). It goes
   with the API's waits, which ROOT decided follow the guest's VM process: a wait goes on
   while that process advances (its CPU time each quiet period, as the daemon's
@@ -22861,8 +22887,31 @@ derivation of shards' own (R03). `GPU_NAME_BYTES`, 256: Vulkan's
 `VK_MAX_PHYSICAL_DEVICE_NAME_SIZE`. The probe's byte bounds are its encoding's longest lines
 for the count (`probe.rs`). Snapshot format 29.
 
-**Held.** A GPU VM process for Windows on arm64 (`gpu_target`, gpu-libs' arm64 build): never
-built or run for that target; ROOT's GPU lane holds it.
+**Windows on arm64 (plan step 2's step 3; Hex's one vendored change, upstreamed).** `gpu_target`
+takes `aarch64-pc-windows-msvc`, and scripts/gpu-libs builds the renderer, libepoxy and the
+identity bridge for it:
+- the host is named from `SHARDS_GPU_TARGET`, else the developer prompt's target
+  (`VSCMD_ARG_TGT_ARCH`), else Windows' own (`PROCESSOR_ARCHITEW6432`, `PROCESSOR_ARCHITECTURE`),
+  and any other name is refused;
+- every Windows build, x86_64's included, is a meson cross build for the machine named (clang-cl
+  `--target`, `host_machine`), never for the one its tools default to (Hex's reason: x64 tools
+  under emulation on an ARM host);
+- the bridge, which meson names `lib*.a` on Windows too, is copied as `shards_gpu_selection.lib`
+  and built for `/MD`, as on x86_64 (1cd728678, 1f86d092a).
+Its two pins are PyPI's published digests (pypi.org/pypi/NAME/VERSION/json, read 2026-11-12;
+the wheels re-checked against them 2026-11-13), not numbers of ours (R03): ninja 1.13.2's
+win_arm64 wheel, sha256 `1db9852e…85fb1`, and pkgconf 3.0.7.post0's, `3716a2a2…05f05`. Both files
+are byte for byte Hex's vendored shards-gpu (Shards e82b9403 plus Hex's 0001 patch, at Hex main
+65ef204f), so Hex can drop the patch at its next vendor. Never built: no arm64 Windows host runs
+it here, and Hex never compiled it either (Hex 97f9bbbb checked it by `vendor.py check` and
+`bash -n`; Hex's scripts/shards-gpu/build.sh builds on Linux alone). x86_64's cross build is
+checked against meson 1.11.2's source and the pinned sources' meson files (no program of the
+host's is run), not built; CI's renderer step, whose cache key hashes gpu-libs, rebuilds it on
+main. Owed to ROOT: the native arm64 build and its GPU VM process's link; x86_64 Windows' build
+and its `gpu::` tests on jupiter; scripts/lint for both Windows targets; and a clippy of
+`shards-vmm --features gpu` for `aarch64-pc-windows-msvc`, which no lint or CI job runs. A GPU
+VM on WHP arm64 is unverified, as no host has the hardware (R11).
+docs/research/measurements/hex-upstream-v1/windows-arm64-gpu.md.
 
 **Evidence.** Hex's research on the filter and transport (Hex's
 docs/hex-venus-physical-filter) and the managed-virtio-gpu lane's check of these patches'
@@ -23934,7 +23983,15 @@ and no exec, attach or terminal (the plan's steps 5, 6 and 7).
   connections are admitted as an exec's are (D16, "An exec's connection").
 - *stdout and stderr, captured whole* (P3). Each channel apart, its bytes as the member wrote
   them, credited by its reader; an observer's going ends no member (D180's "Managed
-  owner-output transport"; D231's "Members' streams and ends").
+  owner-output transport"; D231's "Members' streams and ends"). Its reader is its owner where
+  the run names it (`shards.output`, each `KIND:NAME`, as `shards.stdin` names an input),
+  through its own endpoints or its run's agent-control lanes (D238), which serve the named
+  members' output as they serve the named members' input;
+  else the daemon, which keeps it in the member's log and credits it again at once, so that
+  no member waits for want of a subscriber, and shows it to an attached client prefixed
+  with the member's label (D59, "Its stdio"; PM M543). Before, every member's output waited
+  for an owner's subscription that no `shards run` made: a run's agents were heard by no one
+  (`tests/build.rs`'s agents in their domains, red on every CI run since 9151296a8).
 - *Its environment* (step 7, 239749c60). Init's, then the image's `Env`, then its own
   `run.env`, then what its run stages, the last given of each name winning. `PATH` keeps the
   member's own programs first; `HOME` is never the image's; `SHARDS_DOMAIN` is refused at the
@@ -24072,7 +24129,7 @@ memory its guest holds before its guest drops its page cache (D188's measure, PM
 image run); an orchestrator that needs D188's pressure give-back through its run host to keep
 its runs within its budget.
 
-### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the injector, the CA, the broker and the real-VM runs owed)
+### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process built, step 2's first slice; the granted members' trust, the leases, the injector, the broker and the real-VM runs owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 33: every kiln harness runs in a
 Shards microVM, and a harness needs its model-provider credential without the credential
@@ -24153,6 +24210,51 @@ for the wire round-trip, the decision at its edges, and that no value prints.
 `crates/api/src/image.rs`: `ImageSpec.credentials`, validated and lowered into the request.
 A value type stays redacted: `wire::Secret`'s `Debug` prints its length alone, and a
 `CredentialGrant` carries no value to print.
+
+**Built: step 2's first slice, the run's CA in its network process.** The run host (`shards
+api-run`) checks each grant against the run's egress grants, refusing one toward no host or
+toward a host they do not reach (`shards_net::reaches`: a destination they name, or any host
+on a TCP port they open; `Cause::Request`). It starts the network process with
+`--credentials` and, after `NET_POLICY`, sends it the grants by reference
+(`NET_CREDENTIALS`, kind 97; `shards_net::encode_grants`). The network process checks them
+again against its policy (D109), once, and answers the run's CA's certificate (DER). The run
+host logs its SHA-256 and holds it for the members' trust (the next slice). shards-api's
+check refuses a grant toward no host as well.
+- *The CA (`shards_net::ca`).* Self-signed, `pathLenConstraint` 0 (it signs leaves alone),
+  `keyCertSign`, ECDSA over P-256 with SHA-256 (the signature every TLS 1.3 client must
+  verify, RFC 8446 §9.1). Name constraints are the grants' hosts as dNSName subtrees, written
+  critical (RFC 5280 §4.2.1.10). A leaf (`Ca::leaf`, the injector's, step 3) has a key of its
+  own and `serverAuth`.
+- *Its key is made as the process starts, before it confines itself.* AWS-LC's first draw
+  from its random generator opens the VM-generation device (`crypto/ube/vm_ube_detect.c`,
+  `open`) and marks a page `MADV_WIPEONFORK` (`crypto/ube/fork_ube_detect.c`), once per
+  process. The network process's seccomp filter allows neither, and ends the process at any
+  call it does not allow (`confine.rs`, `SECCOMP_RET_KILL_PROCESS`). So the key comes first,
+  and only for a run its spawner says has grants: a run with none makes no key and pays
+  nothing. Every later draw reads what that first one set up.
+- *Validity.* From 1970-01-01T00:00:00Z to 99991231235959Z, for the CA and its leaves. The
+  first is the Unix epoch, the earliest time every harness's TLS stack reads in a
+  certificate: rustls-webpki 0.103.16 refuses earlier ones as a bad time ("We don't support
+  dates before January 1, 1970", `time.rs`). This slice's own unit test found it, as a leaf
+  from 1950 came back `BadEncoding`. The second is RFC 5280's value of no well-defined end
+  (§4.1.2.5). No clock a guest may read falls outside the range, and the key, which dies with
+  the process, bounds the life of what it signs instead of a date.
+- *Literals.* Kind 97 is a sequence number (94 and 95 went first to D247's `RATE` and
+  `RATED`, 96 to D238's `EXEC_UNSTARTED`). The grants' length fields, two bytes for a reference and one for a host, hold
+  every reference a store names (kiln-seams `NAME_MAX`, 512) and every DNS name (255, RFC
+  1035 §2.3.4); a longer one is refused, typed. P-256,
+  `pathLenConstraint` 0 and the validity bounds are as cited above. No learned value enters
+  this slice.
+- *Tests (macOS arm64).* `shards_net::ca`: a leaf holds for a granted host alone, refused for
+  `evil.example`, `anthropic.com` and `chatgpt.com.evil.example` (rustls' verifier trusting
+  the CA alone); the validity bounds as written; no CA of no host. `shards_net`: the grants'
+  codec round-trips and refuses a cut payload, a grant toward no host and an over-long name;
+  `reaches` by name and by TCP port. `api_run`: grants reach the network process by
+  reference, refused toward an unreached host, toward none, or with no egress.
+- *Owed (ROOT).* A run with a credential grant on KVM x86_64, under the seccomp filter: its
+  network process makes its CA and serves, not ended by SIGSYS, and the run host logs the
+  CA's SHA-256. The cost of the key at the network process's start, measured (unmeasured
+  here). The CA reaching the granted members' trust is the next slice.
 
 **Owed (later slices of step 33, this plan's steps 2–10).** The per-VM CA in the network
 process and the granted members' trust (step 2); the injector that terminates TLS and fills

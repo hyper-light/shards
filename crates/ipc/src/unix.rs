@@ -695,6 +695,14 @@ pub fn await_any(fds: &[BorrowedFd<'_>]) -> io::Result<Vec<bool>> {
     await_any_within(fds, None)
 }
 
+/// The longest one select(2) waits on macOS: XNU refuses a longer timeout with EINVAL
+/// (bsd/kern/kern_time.c, `itimerfix`: `tv_sec > 100000000`), checked before it looks at
+/// any descriptor (bsd/kern/sys_generic.c, `select_nocancel`). A longer wait is several
+/// selects: a daemon's patience for a request doubles with each cut in a row (D222), past
+/// this after 27, and every slot's wait then failed at once (PM M542).
+#[cfg(target_os = "macos")]
+const SELECT_MOST: Duration = Duration::from_secs(100_000_000);
+
 /// [`await_any`], waiting no longer than `timeout` where one is given: then none is ready.
 pub fn await_any_within(fds: &[BorrowedFd<'_>], timeout: Option<Duration>) -> io::Result<Vec<bool>> {
     // None past what an Instant holds: for ever.
@@ -734,9 +742,14 @@ pub fn await_any_within(fds: &[BorrowedFd<'_>], timeout: Option<Duration>) -> io
                     *word |= 1 << (fd % 32);
                 }
             }
-            let mut tv = left().map(|l| libc::timeval {
-                tv_sec: libc::time_t::try_from(l.as_secs()).unwrap_or(libc::time_t::MAX),
-                tv_usec: libc::suseconds_t::try_from(l.subsec_micros()).unwrap_or(0),
+            let wait = left();
+            let cut = wait.is_some_and(|l| l > SELECT_MOST);
+            let mut tv = wait.map(|l| {
+                let l = l.min(SELECT_MOST);
+                libc::timeval {
+                    tv_sec: libc::time_t::try_from(l.as_secs()).unwrap_or(libc::time_t::MAX),
+                    tv_usec: libc::suseconds_t::try_from(l.subsec_micros()).unwrap_or(0),
+                }
             });
             let tv_at = tv.as_mut().map_or(std::ptr::null_mut(), std::ptr::from_mut);
             // SAFETY: a set of `bound` descriptors' bits, as long as that, and a timeout of
@@ -756,8 +769,12 @@ pub fn await_any_within(fds: &[BorrowedFd<'_>], timeout: Option<Duration>) -> io
                     .map(|fd| set.get(fd / 32).is_some_and(|w| w & (1 << (fd % 32)) != 0))
                     .collect());
             }
-            if n == 0 {
+            // A wait cut to select's most goes on to its own deadline.
+            if n == 0 && !cut {
                 return Ok(vec![false; at.len()]);
+            }
+            if n == 0 {
+                continue;
             }
             let e = io::Error::last_os_error();
             if e.kind() != io::ErrorKind::Interrupted {
@@ -1634,6 +1651,21 @@ pub(crate) mod tests {
     }
 
     use super::*;
+
+    /// A wait longer than one select(2) may take on macOS is waited, not refused: a ready
+    /// pipe is told ready under a timeout of 2^34 s, past XNU's most, as under any other
+    /// (EINVAL before, PM M542). Elsewhere poll(2) took it already.
+    #[test]
+    fn a_wait_past_selects_most_is_waited_not_refused() {
+        let (read, mut write) = std::io::pipe().unwrap();
+        std::io::Write::write_all(&mut write, b"x").unwrap();
+        let ready = await_any_within(&[read.as_fd()], Some(Duration::from_secs(1 << 34))).unwrap();
+        assert_eq!(ready, vec![true]);
+        // And one that nothing comes on is told so within its own short wait.
+        let (quiet, _held) = std::io::pipe().unwrap();
+        let none = await_any_within(&[quiet.as_fd()], Some(Duration::from_millis(1))).unwrap();
+        assert_eq!(none, vec![false]);
+    }
 
     /// What [`take_rest`] does to a process, done in a child of its own, this binary run
     /// for [`signal_child`] alone, `case` naming what it does: this process keeps its
