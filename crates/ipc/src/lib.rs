@@ -580,6 +580,14 @@ pub mod kind {
     /// VM → its owner: a member's input has ended, as its init told it
     /// (`shards_abi::run::managed::InputEnded`), on the independent control path.
     pub const MANAGED_INPUT_ENDED: u8 = 93;
+    /// An orchestrator's run host → its run's VM (D247): the CPU rate its vCPUs may use of
+    /// the host's together, by its number (8, big-endian), then the rate in milli-CPU (8,
+    /// big-endian), 0 for no hold; answered with [`RATED`].
+    pub const RATE: u8 = 94;
+    /// A VM → its run host: [`RATE`]'s answer, by its number (8, big-endian), then 0 and the
+    /// milli-CPU it holds its vCPUs to in decimal, nothing where it lets them be, or 1 and
+    /// why not.
+    pub const RATED: u8 = 95;
 
     /// Whether a network process's control message of `kind` hands it sockets: published
     /// ports' (`PUBLISH`, `NET_PUBLISHED`) and a peer's link (`NET_PEER`). Beside the

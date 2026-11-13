@@ -629,6 +629,22 @@ fn run_request(spec: &shards_abi::run::Spec, published: bool) -> Vec<u8> {
     payload
 }
 
+/// What its VM said it holds a run's vCPUs to (`RATED`'s answer, D247), as asked with
+/// `rate`: the rate it was asked where it holds them, nothing where it lets them be. A VM
+/// holds what it is told or nothing, so any other word is a broken one, never a hold.
+fn rated_of(rate: Option<std::num::NonZeroU64>, said: &str) -> Result<Option<std::num::NonZeroU64>, String> {
+    if said.is_empty() {
+        return Ok(None);
+    }
+    match (said.parse::<std::num::NonZeroU64>(), rate) {
+        (Ok(held), Some(asked)) if held == asked => Ok(Some(held)),
+        (Ok(held), _) => Err(format!(
+            "its VM held its vCPUs to {held} milli-CPU, asked {rate:?}"
+        )),
+        (Err(_), _) => Err(format!("its VM held its vCPUs to {said:?}, no rate")),
+    }
+}
+
 /// What init said it held a run within past what it uses (`builtin::ROOM`'s answer, D241),
 /// as asked with `room`: a decimal where it was told one, nothing where it was told none.
 fn held_of(room: Option<i64>, out: &[u8]) -> Result<Option<u64>, String> {
@@ -1565,6 +1581,8 @@ mod hosted {
         devices: Mutex<Option<Vec<Asked>>>,
         /// Each guest time asked of the VM and not yet answered (`GUEST_TIMED`), as devices.
         guest_times: Mutex<Option<Vec<Asked>>>,
+        /// Each rate told the VM and not yet answered (`RATED`, D247), as devices.
+        rates: Mutex<Option<Vec<Asked>>>,
         /// What is plugged into the run's members, by the path it is at.
         plugged: Mutex<HashMap<String, Plugged>>,
         /// The pipe the run's share process tells what its host changes on (D235), until
@@ -1812,6 +1830,7 @@ mod hosted {
                 roots: &plan.roots,
                 devices: Mutex::new(Some(Vec::new())),
                 guest_times: Mutex::new(Some(Vec::new())),
+                rates: Mutex::new(Some(Vec::new())),
                 plugged: Mutex::new(HashMap::new()),
                 notices_due: Mutex::new(due),
                 notices: Mutex::new(Vec::new()),
@@ -1959,6 +1978,8 @@ mod hosted {
                 answered(&live.devices, &m.payload);
             } else if m.kind == kind::GUEST_TIMED {
                 answered(&live.guest_times, &m.payload);
+            } else if m.kind == kind::RATED {
+                answered(&live.rates, &m.payload);
             } else if m.kind == kind::MANAGED_INPUT {
                 input_arrived(live, &m.payload, m.fds);
             } else if m.kind == kind::MANAGED_INPUT_ENDED {
@@ -1974,6 +1995,7 @@ mod hosted {
         // gone.
         *lock(&live.devices) = None;
         *lock(&live.guest_times) = None;
+        *lock(&live.rates) = None;
         // Its VM gone: no input goes on.
         let members: Vec<u32> = lock(&live.feeds).keys().copied().collect();
         for member in members {
@@ -2056,6 +2078,19 @@ mod hosted {
                         .spawn_scoped(scope, move || held(live, ask.id, room(live, ask.room)));
                     if asked.is_err() {
                         held(live, ask.id, Err("no thread to ask it on".into()));
+                    }
+                }
+                // On a thread of its own, as a room: a VM slow to answer holds up nothing
+                // else.
+                wire::to_host::RATE => {
+                    let Ok(ask) = wire::RateAsk::decode(&payload) else {
+                        break;
+                    };
+                    let asked = std::thread::Builder::new()
+                        .name("api-run rate".into())
+                        .spawn_scoped(scope, move || rated(live, ask.id, rate(live, ask.rate)));
+                    if asked.is_err() {
+                        rated(live, ask.id, Err("no thread to ask it on".into()));
                     }
                 }
                 // On a thread of its own, as a room: a guest slow to size a member's terminal
@@ -2440,6 +2475,25 @@ mod hosted {
                 status: Some(0), out, ..
             } => super::held_of(room, &out),
             Said { err, .. } => Err(String::from_utf8_lossy(&err).trim_end().to_string()),
+        }
+    }
+
+    /// The CPU rate its orchestrator holds the run's vCPUs to (D247), told its VM as the
+    /// daemon tells a run's its CPUs (`CPUS`, D191) but answered (`RATED`): what the VM
+    /// holds them to, none where it lets them be, or why not.
+    fn rate(
+        live: &Live<'_>,
+        rate: Option<std::num::NonZeroU64>,
+    ) -> Result<Option<std::num::NonZeroU64>, String> {
+        let milli = rate.map_or(0, std::num::NonZeroU64::get);
+        let said = ask_vm(live, &live.rates, kind::RATE, &milli.to_be_bytes(), &[])?;
+        super::rated_of(rate, &said)
+    }
+
+    /// A rate's outcome, told its orchestrator (`RATED`).
+    fn rated(live: &Live<'_>, id: u32, result: Result<Option<std::num::NonZeroU64>, String>) {
+        if let Ok(payload) = (wire::RateAnswer { id, result }).encode() {
+            let _ = live.answers.send(wire::to_client::RATED, &[&payload]);
         }
     }
 
@@ -3524,6 +3578,31 @@ mod tests {
         );
         for other in [kind::READY, kind::PROCESS, kind::DONE] {
             assert_eq!(relayed(other, &[1; 9]), None);
+        }
+    }
+
+    /// What its VM says it holds a run's vCPUs to reads as it was asked (D247): the rate it
+    /// was asked where it holds them, nothing where it lets them be; another rate, no rate
+    /// or a word that is no number is a broken word from its VM, never a hold.
+    #[test]
+    fn a_rates_answer_reads_as_it_was_asked() {
+        let rate = std::num::NonZeroU64::new;
+        assert_eq!(rated_of(rate(1500), "1500"), Ok(rate(1500)));
+        assert_eq!(
+            rated_of(rate(4000), ""),
+            Ok(None),
+            "every vCPU's whole CPU: no hold"
+        );
+        assert_eq!(rated_of(None, ""), Ok(None));
+        for (asked, said) in [
+            (rate(1500), "1000"),
+            (None, "1500"),
+            (rate(1500), "0"),
+            (rate(1500), "-1500"),
+            (rate(1500), "1500 milli"),
+            (rate(1500), " 1500"),
+        ] {
+            assert!(rated_of(asked, said).is_err(), "{asked:?} {said:?}");
         }
     }
 

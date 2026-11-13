@@ -10,6 +10,7 @@
 //! length alone.
 
 use std::net::{IpAddr, SocketAddr};
+use std::num::NonZeroU64;
 
 use shards_abi::run;
 pub use shards_abi::run::nesting::Ready;
@@ -31,8 +32,11 @@ pub use shards_abi::run::nesting::Ready;
 /// its size (`RESIZE`, answered `RESIZED`; D244), so that a side that has no terminals refuses
 /// the run as it is asked, before any resize is; 12, each member's reach of the names kept
 /// ([`Narrowing::members`], D246), which the run host holds every member the image declares
-/// to before its microVM starts.
-pub const VERSION: u8 = 12;
+/// to before its microVM starts; 13, the CPU rate its orchestrator holds the run's vCPUs to
+/// (`RATE`, answered `RATED`; D191, D247), so that a side that holds none refuses the run as
+/// it is asked, before any rate is: a host of an earlier version ends a run at a frame it has
+/// no kind for.
+pub const VERSION: u8 = 13;
 
 /// What the orchestrator's side sends.
 pub mod to_host {
@@ -59,6 +63,9 @@ pub mod to_host {
     pub const ROOM: u8 = 10;
     /// A [`ResizeAsk`](super::ResizeAsk): a member's own terminal sized (D244).
     pub const RESIZE: u8 = 11;
+    /// A [`RateAsk`](super::RateAsk): the CPU rate the orchestrator holds the run's vCPUs to
+    /// (D191, D247).
+    pub const RATE: u8 = 12;
 }
 
 /// What the run host sends.
@@ -91,6 +98,8 @@ pub mod to_client {
     /// [`ResizeAnswer`](super::ResizeAnswer): whether a member's terminal took its size, by
     /// its ask's id.
     pub const RESIZED: u8 = 28;
+    /// [`RateAnswer`](super::RateAnswer): what the run's vCPUs are held to, by its ask's id.
+    pub const RATED: u8 = 29;
 }
 
 /// Why a payload could not be read or written.
@@ -638,6 +647,22 @@ pub struct ResizeAsk {
 pub struct ResizeAnswer {
     pub id: u32,
     pub result: Result<(), String>,
+}
+
+/// The CPU rate the orchestrator holds the run's vCPUs to together (D191, D247), in
+/// milli-CPU of the host's time; none for no hold, the microVM's vCPUs its ceiling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RateAsk {
+    pub id: u32,
+    pub rate: Option<NonZeroU64>,
+}
+
+/// What the run's VM holds its vCPUs to, by its ask's id: the milli-CPU, none where it lets
+/// them be (no rate, or every vCPU's whole CPU or more), or why it holds them to nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RateAnswer {
+    pub id: u32,
+    pub result: Result<Option<NonZeroU64>, String>,
 }
 
 /// A host directory plugged into running member `member` as the run goes (D235), as
@@ -1874,6 +1899,61 @@ impl ResizeAnswer {
     }
 }
 
+impl RateAsk {
+    /// Its id, then the rate, 0 for no hold: no rate of nothing, which is a pause, not a
+    /// rate.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut w = Writer(Vec::new());
+        w.u32(self.id);
+        w.u64(self.rate.map_or(0, NonZeroU64::get));
+        w.0
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<RateAsk, WireError> {
+        let mut r = Reader(payload);
+        let id = r.u32()?;
+        let rate = NonZeroU64::new(r.u64()?);
+        r.end()?;
+        Ok(RateAsk { id, rate })
+    }
+}
+
+impl RateAnswer {
+    /// Its id, then 0 and the milli-CPU the vCPUs are held to (0 for none), or 1 and why.
+    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
+        let mut w = Writer(Vec::new());
+        w.u32(self.id);
+        match &self.result {
+            Ok(held) => {
+                w.u8(0);
+                w.u64(held.map_or(0, NonZeroU64::get));
+            }
+            Err(why) => {
+                w.u8(1);
+                w.text(why)?;
+            }
+        }
+        w.done()
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<RateAnswer, WireError> {
+        let mut r = Reader(payload);
+        let id = r.u32()?;
+        let result = match r.u8()? {
+            0 => Ok(NonZeroU64::new(r.u64()?)),
+            1 => Err(r.text()?),
+            tag => {
+                return Err(WireError::Tag {
+                    what: "a rate's answer",
+                    tag,
+                });
+            }
+        };
+        r.end()?;
+        Ok(RateAnswer { id, result })
+    }
+}
+
 impl RunEnd {
     pub fn encode(&self) -> Result<Vec<u8>, WireError> {
         let mut w = Writer(Vec::new());
@@ -2518,6 +2598,11 @@ mod tests {
         v11.truncate(v11.len() - 1);
         v11[0] = 11;
         assert_eq!(Request::decode(&v11), Err(WireError::Version(11)));
+        // One of version 12 carries every field version 13 does, but its host ends the run at
+        // a rate: refused by its version, before any rate is told (D247).
+        let mut v12 = request().encode().unwrap();
+        v12[0] = 12;
+        assert_eq!(Request::decode(&v12), Err(WireError::Version(12)));
         // The nesting flag, before the deadline's tag, the destinations', the one member's
         // working directory's and input's, the credential grants' count (version 8), the
         // member's terminal's (version 11) and the members' reach (version 12): no flag.
@@ -2760,6 +2845,79 @@ mod tests {
                 tag: 2
             })
         );
+    }
+
+    /// A rate and its answer read back as they were said (D247): no hold, the least rate,
+    /// a CPU and a half, the most a u64 holds; held to none, to a rate, and why not. Cut
+    /// short, padded or of a tag no version has, refused.
+    #[test]
+    fn rates_and_their_answers_read_back_as_said() {
+        for rate in [
+            None,
+            NonZeroU64::new(1),
+            NonZeroU64::new(1500),
+            NonZeroU64::new(u64::MAX),
+        ] {
+            let ask = RateAsk { id: 7, rate };
+            assert_eq!(RateAsk::decode(&ask.encode()), Ok(ask));
+        }
+        for result in [
+            Ok(None),
+            Ok(NonZeroU64::new(1)),
+            Ok(NonZeroU64::new(u64::MAX)),
+            Err("the microVM has not started".to_string()),
+        ] {
+            let answer = RateAnswer { id: u32::MAX, result };
+            assert_eq!(RateAnswer::decode(&answer.encode().unwrap()), Ok(answer));
+        }
+        // A rate of nothing reads as no hold: the wire has no rate of no CPU to say.
+        assert_eq!(
+            RateAsk::decode(&[0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0]),
+            Ok(RateAsk { id: 3, rate: None })
+        );
+        let ask = RateAsk {
+            id: 1,
+            rate: NonZeroU64::new(250),
+        }
+        .encode();
+        for cut in 0..ask.len() {
+            assert_eq!(
+                RateAsk::decode(&ask[..cut]),
+                Err(WireError::Short),
+                "cut at {cut}"
+            );
+        }
+        let mut padded = ask.clone();
+        padded.push(0);
+        assert_eq!(RateAsk::decode(&padded), Err(WireError::Trailing));
+        let answer = RateAnswer {
+            id: 1,
+            result: Ok(NonZeroU64::new(250)),
+        }
+        .encode()
+        .unwrap();
+        for cut in 0..answer.len() {
+            assert_eq!(
+                RateAnswer::decode(&answer[..cut]),
+                Err(WireError::Short),
+                "cut at {cut}"
+            );
+        }
+        let mut padded = answer.clone();
+        padded.push(0);
+        assert_eq!(RateAnswer::decode(&padded), Err(WireError::Trailing));
+        assert_eq!(
+            RateAnswer::decode(&[0, 0, 0, 1, 2]),
+            Err(WireError::Tag {
+                what: "a rate's answer",
+                tag: 2
+            })
+        );
+        let long = RateAnswer {
+            id: 1,
+            result: Err("x".repeat(run::MAX_PAYLOAD as usize)),
+        };
+        assert_eq!(long.encode(), Err(WireError::TooLong));
     }
 
     /// The run's stats carry what its microVM costs its host and what its vCPUs ran of its

@@ -175,6 +175,8 @@ pub enum ImageRefusal {
     Plug(PlugRefusal, String),
     /// The run's init held it within no room it was told (D241), in its words.
     Room(String),
+    /// The run's VM held its vCPUs to no rate it was told (D247), in its words.
+    Rate(String),
     /// A member's terminal its run's init did not size (D244), in its words.
     Terminal(String),
 }
@@ -192,6 +194,7 @@ impl std::fmt::Display for ImageRefusal {
             Self::Os { what, kind } => write!(f, "{what}: {kind:?}"),
             Self::Plug(cause, why) => write!(f, "the plug: {cause:?}: {why}"),
             Self::Room(why) => write!(f, "the run's room: {why}"),
+            Self::Rate(why) => write!(f, "the run's rate: {why}"),
             Self::Terminal(why) => write!(f, "a member's terminal: {why}"),
         }
     }
@@ -242,6 +245,19 @@ pub trait ImageGuest: Send + Sync {
     /// budget is the orchestrator's: it tells the room again as the budget changes or as
     /// the run's use moves, as D188's daemon does its own runs'.
     fn room(&self, room: Option<i64>, patience: Duration) -> Result<Option<u64>, ImageRefusal>;
+    /// The CPU rate its orchestrator holds the run's vCPUs to together (D191, D247), in
+    /// milli-CPU of the host's time, as a daemon holds a run of its own to its CPUs: once a
+    /// period's share is spent, every vCPU is held out of its guest until the period ends,
+    /// whatever its guest does, and what a period overran comes off the next ones. None lifts
+    /// the hold, the microVM's vCPUs its ceiling. Answers what its vCPUs are held to, none
+    /// where nothing holds them (no rate, or every vCPU's whole CPU or more), waiting at most
+    /// `patience` (`Duration::MAX`: until it answers or the run ends). The rate is the
+    /// orchestrator's: it tells it again as it moves.
+    fn rate(
+        &self,
+        rate: Option<std::num::NonZeroU64>,
+        patience: Duration,
+    ) -> Result<Option<std::num::NonZeroU64>, ImageRefusal>;
     /// Member `member`'s own terminal ([`MemberSpec::terminal`]) sized to `rows` by `cols`
     /// (plan step 6, D244), as a terminal's window is: its run's init sets the size, and the
     /// kernel tells the terminal's foreground process group SIGWINCH where it changed; a 0 in
