@@ -571,6 +571,38 @@ fn the_orchestrators_rate_holds_its_run_to_it() {
     assert_eq!(guest.wait_for(TIMEOUT).unwrap(), Some(RunEnd::Stopped));
 }
 
+/// A run that keeps nothing of what the image grants its harness past the microVM, as Hex's
+/// image class asks by default (kiln plan 01a1cd8e862e7169a074db3d5fa33f3d step 12), boots
+/// and its harness runs to its end, its network process letting nothing past (D231).
+#[test]
+fn a_run_keeping_nothing_the_image_grants_boots_and_its_harness_runs() {
+    if cannot_run_vms() {
+        return;
+    }
+    let home = TempDir::new("api-nothing-home");
+    build(
+        &home,
+        "api-nothing:1",
+        &["exit", "0"],
+        "NETWORK --egress=api.example:443 provider FOR codex\n\
+         EXPOSE --harnesses=codex 443 AS egress FOR provider\nCONNECT codex WITH codex ON provider\n",
+    );
+    let mut s = spec(&home, "api-nothing:1");
+    s.egress = Narrowing {
+        egress: Keep::Only(Vec::new()),
+        mcp: Keep::Only(Vec::new()),
+        destinations: Keep::Only(Vec::new()),
+        dns: false,
+        members: None,
+    };
+    let guest = ImageShards::new().boot(&s, TIMEOUT).unwrap();
+    assert_eq!(
+        guest.wait_member(&codex(), TIMEOUT).unwrap(),
+        Some(MemberEnd::Exited(0))
+    );
+    guest.stop().unwrap();
+}
+
 /// Stop ends the run at once, whatever its members do, and its end says so.
 #[test]
 fn stop_ends_the_run_at_once() {

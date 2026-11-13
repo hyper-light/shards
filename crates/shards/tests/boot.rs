@@ -17,19 +17,6 @@ use common::{
 
 const TIMEOUT: Duration = Duration::from_secs(60);
 const EXIT_RESET: i32 = 3;
-/// How long shards-api's waits here may take, side by side with this file's other boots as
-/// the suite runs them (`shards_api::record::Learned`): twice the slowest boot of the test
-/// guest to its port answering recorded under the suite on each host class
-/// (`shards_api_boot_under_the_suites_load`, docs/research/platform-measurements.md M465).
-static E2E: shards_api::record::Learned = shards_api::record::Learned::new(
-    "boot.rs E2E",
-    &[
-        ("macOS-HVF", Duration::from_nanos(230_018_375)),
-        ("Linux-KVM", Duration::from_nanos(1_206_822_260)),
-        ("Windows-WHP", Duration::from_nanos(2_406_838_900)),
-    ],
-);
-
 /// Kernel log lines that show the machine as each architecture's firmware describes it.
 fn machine_lines() -> Vec<String> {
     let lines: &[&str] = match common::ARCH {
@@ -2121,9 +2108,12 @@ fn a_direct_boot_ended_at_its_deadline_leaves_none_of_its_processes() {
         rw.to_str().unwrap(),
     ];
     let asked: Vec<String> = std::iter::once("shards").chain(args).map(String::from).collect();
+    // Its deadline is this host's own time for such a guest to answer: the share process,
+    // started before the VM, is under the run well before it.
+    let deadline = answered_boot();
     let mut cmd = common::command();
     cmd.args(args);
-    let Err(ended) = common::run_until(cmd, &asked, E2E.get()) else {
+    let Err(ended) = common::run_until(cmd, &asked, deadline) else {
         panic!("an echo guest's run ended by itself");
     };
     // Its share process is `shards` (its VM's, shards-vm, on Windows; on Unix the VM is
@@ -2185,15 +2175,17 @@ fn a_parent_that_started_after_its_child_is_not_its_parent() {
 
 /// shards-api's client of this build's `shards` conforms: every case of its conformance
 /// suite against real guests, the test guest as PID 1 (`echo` serves port 1234, `kmsg`
-/// powers off), each wait guarded by [`E2E`], recorded side by side with the suite's boots.
-/// A guest kernel's panic resets it at once (`panic=-1`), its case failing then, not at its
-/// patience.
+/// powers off), its patience no clock (`Duration::MAX`): each wait returns at its fact,
+/// the guest's listening, however long this host takes to boot it beside the suite's other
+/// boots, or its end, which refuses the wait as it comes. Twice a boot recorded on another
+/// host was no bound for this one's (CI's x86_64 KVM at d35c4cf79: "no OK within
+/// 2.41364452s", PM M465's Linux-KVM record doubled; R03). A guest kernel's panic resets it
+/// at once (`panic=-1`), its case failing then.
 #[test]
 fn shards_api_conforms_on_real_guests() {
     if cannot_run_vms() {
         return;
     }
-    let patience = E2E.get();
     let spec = |mode: &str| api_spec(&format!("console=ttyS0 quiet panic=-1 shards_test={mode}"));
     conformance::run(&conformance::Subject {
         guests: &shards_api::Shards,
@@ -2201,7 +2193,7 @@ fn shards_api_conforms_on_real_guests() {
         port: 1234,
         unserved: 1236,
         powering_off: spec("kmsg"),
-        patience,
+        patience: Duration::MAX,
     })
     .unwrap();
 }
@@ -2234,7 +2226,7 @@ fn shards_api_shares_a_directory_and_a_read_only_one() {
     };
     let guest = shards_api::Shards.boot(&spec).unwrap();
     assert_eq!(
-        guest.wait_for(E2E.get()).unwrap(),
+        guest.wait_for(Duration::MAX).unwrap(),
         Some(shards_api::End::PowerOff)
     );
     assert_eq!(
@@ -2245,7 +2237,7 @@ fn shards_api_shares_a_directory_and_a_read_only_one() {
 }
 
 /// Measures shards-api's boot of the test guest to its echo port answering, here, side by
-/// side with this file's other boots as the suite runs them, for [`E2E`]'s records:
+/// side with this file's other boots as the suite runs them: what such a boot costs here,
 /// `SHARDS_API_E2E_N` (default 5) boots, printed as n, p50 and max with `--nocapture`.
 #[test]
 fn shards_api_boot_under_the_suites_load() {
@@ -2263,9 +2255,7 @@ fn shards_api_boot_under_the_suites_load() {
                 .boot(&api_spec("console=ttyS0 quiet shards_test=echo"))
                 .unwrap();
             drop(guest.connect(1234, Duration::MAX).unwrap());
-            let took = start.elapsed();
-            E2E.saw(took);
-            took
+            start.elapsed()
         })
         .collect();
     let mut ended: Vec<Duration> = (0..n)
@@ -2295,9 +2285,7 @@ fn shards_api_boot_under_the_suites_load() {
                 guest.wait_for(Duration::MAX).unwrap(),
                 Some(shards_api::End::PowerOff)
             );
-            let took = start.elapsed();
-            E2E.saw(took);
-            took
+            start.elapsed()
         })
         .collect();
     for (what, d) in [
@@ -2307,11 +2295,30 @@ fn shards_api_boot_under_the_suites_load() {
         d.sort();
         if let (Some(p50), Some(max)) = (d.get(n / 2), d.last()) {
             println!(
-                "e2e-wait shards-api {what} under the suite: n={n} p50={p50:?} max={max:?} ({})",
-                shards_api::record::CLASS
+                "e2e-wait shards-api {what} under the suite: n={n} p50={p50:?} max={max:?} ({} {})",
+                std::env::consts::OS,
+                std::env::consts::ARCH
             );
         }
     }
+}
+
+/// This host's own time for shards-api's boot of the test guest to its echo port answering,
+/// waited for with no clock (`Duration::MAX`): a deadline learned where the test runs, as it
+/// runs, never a number of ours (R03).
+fn answered_boot() -> Duration {
+    let start = std::time::Instant::now();
+    let guest = shards_api::Shards
+        .boot(&api_spec("console=ttyS0 quiet panic=-1 shards_test=echo"))
+        .unwrap_or_else(|e| panic!("boot: {e}"));
+    drop(
+        guest
+            .connect(1234, Duration::MAX)
+            .unwrap_or_else(|e| panic!("connect: {e}")),
+    );
+    let took = start.elapsed();
+    guest.stop().unwrap_or_else(|e| panic!("stop: {e}"));
+    took
 }
 
 /// A shards-api spec of this build's `shards`, kernel and test guest: one vCPU, 256 MiB (as

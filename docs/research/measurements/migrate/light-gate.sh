@@ -31,7 +31,8 @@ shards=(cargo test -p shards --bin shards --)
 vmm=(cargo test -p shards-vmm --lib --)
 told=hv::kvm::x86_64::tests::a_vm_told_a_baseline_gives_its_vcpus_no_more
 step "${vmm[@]}" arch:: "$told"
-step "${shards[@]}" daemon::moves cli::moves a_move_of_another_hypervisors_microvm_is_refused_typed
+step "${shards[@]}" daemon::moves cli::moves a_move_of_another_hypervisors_microvm_is_refused_typed \
+	a_move_whose_published_port_is_taken_here_is_refused_typed a_managed_runs_move_and_a_lease_under_its_replaced_key_are_refused_typed
 step cargo test -p shards --test moved --no-run
 
 # mutate FILE OLD NEW COMMAND...: OLD replaced by NEW once in FILE, COMMAND run, FILE put back.
@@ -65,8 +66,8 @@ mutate $moves_rs "        && Some(theirs) != hypervisor
         && false
 " "${shards[@]}" a_microvm_of_another_hypervisor_is_refused_before_anything_moves a_move_of_another_hypervisors_microvm_is_refused_typed
 # M2: the refusal said in words alone, its type not on the wire.
-mutate $moves_rs "                        reply.out(&json);
-" "                        let _ = json;
+mutate $moves_rs "                    reply.out(&json);
+" "                    let _ = json;
 " "${shards[@]}" a_move_of_another_hypervisors_microvm_is_refused_typed
 # M3: the mover reads the step's words alone.
 mutate crates/shards/src/cli/moves.rs "    match serde_json::from_slice::<crate::daemon::Refused>(&answer.1) {" \
@@ -99,4 +100,22 @@ mutate $moves_rs "    if baseline.is_empty() {
 # M10: a baseline taken where this machine's KVM shows less of it.
 mutate $moves_rs "    shards_vmm::arch::cpu::covers(here, baseline)" "    shards_vmm::arch::cpu::covers(baseline, baseline)" \
 	"${shards[@]}" a_machine_short_of_a_baseline_refuses_it_by_each_register
+# M11: a microVM saved on another CPU taken where a restore takes only its own (step 3).
+mutate $moves_rs "    (here != theirs).then(|| Refused::CpuIdentity {" "    (here != theirs && false).then(|| Refused::CpuIdentity {" \
+	"${shards[@]}" a_microvm_saved_on_another_cpu_is_refused_where_a_restore_takes_only_its_own
+# M12: a published port this machine cannot bind taken (step 4).
+mutate $moves_rs "            .err()
+            .map(|why| Refused::PortTaken {" "            .err()
+            .filter(|_| false)
+            .map(|why| Refused::PortTaken {" \
+	"${shards[@]}" a_move_whose_published_port_is_taken_here_is_refused_typed
+# M13: a run with a managed scope moved, its save not refused (step 6).
+mutate $moves_rs "        super::managed::has_scope(&dir).then_some(Refused::Managed { name })" \
+	"        super::managed::has_scope(&dir).then_some(Refused::Managed { name }).filter(|_| false)" \
+	"${shards[@]}" a_managed_runs_move_and_a_lease_under_its_replaced_key_are_refused_typed
+# M14: a lease under the key a move replaced taken (step 6).
+mutate $moves_rs "    (replaced == Some(asked)).then(|| Refused::KeyReplaced {" \
+	"    (replaced == Some(asked) && false).then(|| Refused::KeyReplaced {" \
+	"${shards[@]}" a_lease_under_the_key_a_move_replaced_is_refused_and_the_run_names_its_own \
+	a_managed_runs_move_and_a_lease_under_its_replaced_key_are_refused_typed
 echo GATE_DONE >> "$log"

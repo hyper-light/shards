@@ -29,7 +29,9 @@ pub struct Subject<'a> {
     pub unserved: u32,
     /// A guest that powers off by itself.
     pub powering_off: GuestSpec,
-    /// How long a guest may take to boot and listen, or to end.
+    /// How long a guest may take to boot and listen, or to end; `Duration::MAX` is no clock,
+    /// each wait ending at its fact (a guest's listening, its end), as `Guest::connect` and
+    /// `Guest::wait_for` take it.
     pub patience: Duration,
 }
 
@@ -288,9 +290,7 @@ pub fn a_single_attempt_is_refused_at_once_where_the_guest_does_not_listen(
             .connect(s.port, s.patience)
             .map_err(|e| fail(CASE, format!("connect to the served port: {e}")))?,
     );
-    let at = Instant::now()
-        .checked_add(s.patience)
-        .ok_or_else(|| fail(CASE, "the patience is past a deadline"))?;
+    let at = deadline(s.patience).ok_or_else(|| fail(CASE, "the patience is past a deadline"))?;
     drop(
         guest
             .connect_once_before(s.port, at)
@@ -308,6 +308,18 @@ pub fn a_single_attempt_is_refused_at_once_where_the_guest_does_not_listen(
     }
     let _ = guest.stop();
     Ok(())
+}
+
+/// The deadline `patience` from now. No clock (`Duration::MAX`) is for ever's equal, as a
+/// stream's timeout keeps it (`stream::waits::nanos`: u64's most nanoseconds, 584 years),
+/// since no `Instant` is unbounded.
+fn deadline(patience: Duration) -> Option<Instant> {
+    let patience = if patience == Duration::MAX {
+        Duration::from_nanos(u64::MAX)
+    } else {
+        patience
+    };
+    Instant::now().checked_add(patience)
 }
 
 /// How long a real guest may take to boot and listen, to echo, or to end (`record::Learned`):
