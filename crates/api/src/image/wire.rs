@@ -612,11 +612,12 @@ pub struct Output {
 }
 
 /// Bytes for a member's stdin, at most the room its host has given and the orchestrator has
-/// not used.
+/// not used: what a person typed into the member, a credential as often as not, so its bytes
+/// are a [`Secret`]'s, wiped as they drop and never printed (D242).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Input {
     pub member: u32,
-    pub bytes: Vec<u8>,
+    pub bytes: Secret,
 }
 
 /// The orchestrator's end of a member's stdin ([`StreamEnd::Closed`]), every byte before it
@@ -1955,7 +1956,7 @@ impl Input {
         let (head, bytes) = payload.split_first_chunk::<4>().ok_or(WireError::Short)?;
         Ok(Input {
             member: u32::from_be_bytes(*head),
-            bytes: bytes.to_vec(),
+            bytes: Secret(bytes.to_vec()),
         })
     }
 }
@@ -2971,7 +2972,7 @@ mod tests {
             Input::decode(&bytes).unwrap(),
             Input {
                 member: 7,
-                bytes: b"\0\xff\x80{\"id\":1}\nno-newline".to_vec()
+                bytes: Secret(b"\0\xff\x80{\"id\":1}\nno-newline".to_vec())
             }
         );
         assert_eq!(Input::decode(&[0, 0, 1]), Err(WireError::Short));

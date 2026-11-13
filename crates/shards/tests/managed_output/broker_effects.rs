@@ -2,7 +2,6 @@
 use super::*;
 use serde_json::{Value, json};
 use std::net::{IpAddr, Ipv4Addr, TcpListener, TcpStream};
-use std::os::fd::AsRawFd as _;
 
 struct Inputs {
     case: Duration,
@@ -132,9 +131,19 @@ impl Capture {
     }
 }
 
-/// This host's IPv4 addresses (getifaddrs(3)). The guest's egress reaches the gate from one
-/// of them, the kernel's choice of source: on a host with several, not always the gate's own
-/// (adacachy: a connection to 192.168.1.90 came from 192.168.1.77).
+/// This host's IPv4 addresses: getifaddrs(3)'s; on Windows each up adapter's, its loopback
+/// among them (shards_net::bridge::host_addresses, GetAdaptersAddresses). The guest's egress
+/// reaches the gate from one of them, the kernel's choice of source: on a host with several,
+/// not always the gate's own (adacachy: a connection to 192.168.1.90 came from 192.168.1.77).
+#[cfg(windows)]
+fn host_addresses() -> std::collections::BTreeSet<IpAddr> {
+    shards_net::bridge::host_addresses()
+        .into_iter()
+        .filter(IpAddr::is_ipv4)
+        .collect()
+}
+
+#[cfg(unix)]
 fn host_addresses() -> std::collections::BTreeSet<IpAddr> {
     let mut list: *mut libc::ifaddrs = std::ptr::null_mut();
     // SAFETY: getifaddrs(3) fills `list`, freed below by freeifaddrs(3) alone.
@@ -166,11 +175,6 @@ fn accept_from(
     until: Instant,
 ) -> (TcpStream, SocketAddr, Vec<SocketAddr>) {
     listener.set_nonblocking(true).unwrap();
-    let mut ready = libc::pollfd {
-        fd: listener.as_raw_fd(),
-        events: libc::POLLIN,
-        revents: 0,
-    };
     let mut refused = Vec::new();
     loop {
         let left = until.saturating_duration_since(Instant::now());
@@ -179,18 +183,9 @@ fn accept_from(
             "original gate deadline; refused peers {refused:?}"
         );
         let ms = i32::try_from(left.as_millis().checked_add(1).unwrap()).unwrap();
-        // SAFETY: one initialized pollfd borrowing the live owned listener; finite timeout.
-        let result = unsafe { libc::poll(&raw mut ready, 1, ms) };
-        if result < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+        if !connection_waits(listener, ms) {
             continue;
         }
-        assert_eq!(
-            result,
-            1,
-            "owned gate readiness: {}",
-            std::io::Error::last_os_error()
-        );
-        assert_eq!(ready.revents, libc::POLLIN);
         match listener.accept() {
             Ok((peer, address)) if ours(address.ip()) => return (peer, address, refused),
             Ok((stranger, address)) => {
@@ -202,6 +197,54 @@ fn accept_from(
             Err(error) => panic!("gate accept: {error}"),
         }
     }
+}
+
+/// Waits up to `ms` for a connection on `listener` to take (poll(2)); false where a signal
+/// cut the wait short.
+#[cfg(unix)]
+fn connection_waits(listener: &TcpListener, ms: i32) -> bool {
+    use std::os::fd::AsRawFd as _;
+    let mut ready = libc::pollfd {
+        fd: listener.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: one initialized pollfd borrowing the live owned listener; finite timeout.
+    let result = unsafe { libc::poll(&raw mut ready, 1, ms) };
+    if result < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+        return false;
+    }
+    assert_eq!(
+        result,
+        1,
+        "owned gate readiness: {}",
+        std::io::Error::last_os_error()
+    );
+    assert_eq!(ready.revents, libc::POLLIN);
+    true
+}
+
+/// [`connection_waits`] on Windows: WSAPoll, whose listener with a connection to take reads
+/// as normal data ready (POLLRDNORM).
+#[cfg(windows)]
+fn connection_waits(listener: &TcpListener, ms: i32) -> bool {
+    use std::os::windows::io::AsRawSocket as _;
+    use windows_sys::Win32::Networking::WinSock::{POLLRDNORM, WSAPOLLFD, WSAPoll};
+    let mut ready = WSAPOLLFD {
+        fd: usize::try_from(listener.as_raw_socket()).unwrap(),
+        events: POLLRDNORM,
+        revents: 0,
+    };
+    // SAFETY: one initialized WSAPOLLFD naming the live owned listener; finite timeout.
+    let result = unsafe { WSAPoll(&raw mut ready, 1, ms) };
+    assert_eq!(
+        result,
+        1,
+        "owned gate readiness: {}",
+        std::io::Error::last_os_error()
+    );
+    assert_eq!(ready.revents, POLLRDNORM);
+    true
 }
 
 fn release_gate(listener: &TcpListener, inputs: &Inputs, until: Instant) {
@@ -219,25 +262,43 @@ fn release_gate(listener: &TcpListener, inputs: &Inputs, until: Instant) {
 }
 
 /// A TCP connection to `to` from `source`, which std cannot bind before it connects.
+#[cfg(unix)]
 fn connect_from(source: Ipv4Addr, to: SocketAddr) -> TcpStream {
     use std::os::fd::FromRawFd as _;
     let SocketAddr::V4(to) = to else {
         panic!("an IPv4 gate");
     };
-    let address = |ip: Ipv4Addr, port: u16| libc::sockaddr_in {
-        sin_family: libc::sa_family_t::try_from(libc::AF_INET).unwrap(),
-        sin_port: port.to_be(),
-        sin_addr: libc::in_addr {
-            s_addr: u32::from(ip).to_be(),
-        },
-        sin_zero: [0; 8],
+    let address = |ip: Ipv4Addr, port: u16| {
+        // SAFETY: sockaddr_in is plain C data, for which all zeroes is a value.
+        let mut at: libc::sockaddr_in = unsafe { std::mem::zeroed() };
+        // A BSD sockaddr says its own length (macOS's netinet/in.h); Linux's has no such field.
+        #[cfg(target_os = "macos")]
+        {
+            at.sin_len = u8::try_from(size_of::<libc::sockaddr_in>()).unwrap();
+        }
+        at.sin_family = libc::sa_family_t::try_from(libc::AF_INET).unwrap();
+        at.sin_port = port.to_be();
+        at.sin_addr.s_addr = u32::from(ip).to_be();
+        at
     };
     let size = libc::socklen_t::try_from(size_of::<libc::sockaddr_in>()).unwrap();
+    // Close-on-exec as it is made, on Linux; macOS's socket(2) takes no such flag, and the
+    // descriptor is made so at once after, as std makes its own there.
+    #[cfg(not(target_os = "macos"))]
     // SAFETY: socket(2) returning a new descriptor, owned by the stream below.
     let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0) };
+    #[cfg(target_os = "macos")]
+    // SAFETY: socket(2) returning a new descriptor, owned by the stream below.
+    let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
     assert!(fd >= 0, "{}", std::io::Error::last_os_error());
     // SAFETY: the descriptor socket(2) just returned, owned once.
     let stream = unsafe { TcpStream::from_raw_fd(fd) };
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: fcntl(2) setting a flag of the descriptor the stream owns.
+        let set = unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+        assert_ne!(set, -1, "{}", std::io::Error::last_os_error());
+    }
     let from = address(source, 0);
     // SAFETY: an initialized sockaddr_in of its exact size.
     let bound = unsafe { libc::bind(fd, (&raw const from).cast(), size) };
@@ -249,24 +310,96 @@ fn connect_from(source: Ipv4Addr, to: SocketAddr) -> TcpStream {
     stream
 }
 
+/// [`connect_from`] on Windows: Winsock's socket, kept from the processes this binary's tests
+/// start, as std makes its own (WSA_FLAG_NO_HANDLE_INHERIT). Winsock is started by std's
+/// first socket, the gate's.
+#[cfg(windows)]
+fn connect_from(source: Ipv4Addr, to: SocketAddr) -> TcpStream {
+    use std::os::windows::io::FromRawSocket as _;
+    use windows_sys::Win32::Networking::WinSock::{
+        AF_INET, IN_ADDR, IN_ADDR_0, INVALID_SOCKET, IPPROTO_TCP, SOCK_STREAM, SOCKADDR, SOCKADDR_IN,
+        WSA_FLAG_NO_HANDLE_INHERIT, WSA_FLAG_OVERLAPPED, WSASocketW, bind, connect,
+    };
+    let SocketAddr::V4(to) = to else {
+        panic!("an IPv4 gate");
+    };
+    let address = |ip: Ipv4Addr, port: u16| SOCKADDR_IN {
+        sin_family: AF_INET,
+        sin_port: port.to_be(),
+        sin_addr: IN_ADDR {
+            S_un: IN_ADDR_0 {
+                S_addr: u32::from(ip).to_be(),
+            },
+        },
+        sin_zero: [0; 8],
+    };
+    let size = i32::try_from(size_of::<SOCKADDR_IN>()).unwrap();
+    // SAFETY: WSASocketW making a new socket from no protocol info, owned by the stream below.
+    let socket = unsafe {
+        WSASocketW(
+            i32::from(AF_INET),
+            SOCK_STREAM,
+            IPPROTO_TCP,
+            std::ptr::null(),
+            0,
+            WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT,
+        )
+    };
+    assert_ne!(socket, INVALID_SOCKET, "{}", std::io::Error::last_os_error());
+    // SAFETY: the socket WSASocketW just returned, owned once.
+    let stream = unsafe { TcpStream::from_raw_socket(u64::try_from(socket).unwrap()) };
+    let from = address(source, 0);
+    // SAFETY: an initialized SOCKADDR_IN of its exact size.
+    let bound = unsafe { bind(socket, (&raw const from).cast::<SOCKADDR>(), size) };
+    assert_eq!(bound, 0, "{}", std::io::Error::last_os_error());
+    let peer = address(*to.ip(), to.port());
+    // SAFETY: an initialized SOCKADDR_IN of its exact size; a blocking connect.
+    let connected = unsafe { connect(socket, (&raw const peer).cast::<SOCKADDR>(), size) };
+    assert_eq!(connected, 0, "{}", std::io::Error::last_os_error());
+    stream
+}
+
+/// A source address of this host other than 127.0.0.1, standing in for a peer on another host:
+/// 127.0.0.2, which Linux's and Windows' loopback serve as they serve all of 127.0.0.0/8. macOS's
+/// lo0 serves 127.0.0.1 alone, without an alias its root adds: there, this host's address on its
+/// route out, where it has one.
+fn stranger() -> Option<Ipv4Addr> {
+    if cfg!(target_os = "macos") {
+        common::routable_v4()
+    } else {
+        Some(Ipv4Addr::new(127, 0, 0, 2))
+    }
+}
+
 #[test]
 fn the_gate_releases_only_a_peer_of_this_host() {
     use std::io::Read as _;
     let gate = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
     let at = gate.local_addr().unwrap();
-    // 127.0.0.2 stands in for a peer on another host, 127.0.0.1 for this host's own.
-    let mut elsewhere = connect_from(Ipv4Addr::new(127, 0, 0, 2), at);
+    // A stranger stands in for a peer on another host, 127.0.0.1 for this host's own.
+    let elsewhere = stranger().map(|source| connect_from(source, at));
     let own = connect_from(Ipv4Addr::LOCALHOST, at);
     let ours = |ip: IpAddr| ip == IpAddr::from(Ipv4Addr::LOCALHOST);
     let (_peer, address, refused) = accept_from(&gate, ours, Instant::now() + WITHIN);
     assert_eq!(address, own.local_addr().unwrap());
-    assert_eq!(refused, [elsewhere.local_addr().unwrap()]);
-    let mut byte = [0];
-    assert_eq!(
-        elsewhere.read(&mut byte).unwrap(),
-        0,
-        "a refused peer gets nothing"
-    );
+    match elsewhere {
+        Some(mut elsewhere) => {
+            assert_eq!(refused, [elsewhere.local_addr().unwrap()]);
+            let mut byte = [0];
+            assert_eq!(
+                elsewhere.read(&mut byte).unwrap(),
+                0,
+                "a refused peer gets nothing"
+            );
+        }
+        None => {
+            let _ = writeln!(
+                std::io::stderr(),
+                "SKIP: a refused peer: this host has no address but its loopback's to stand in for another's"
+            );
+            assert!(refused.is_empty(), "{refused:?}");
+        }
+    }
     // This host's addresses: its loopback, and its address on a route out where it has one.
     let host = host_addresses();
     assert!(host.contains(&IpAddr::from(Ipv4Addr::LOCALHOST)), "{host:?}");

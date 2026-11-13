@@ -26,8 +26,9 @@ pub(crate) const ROOT: &str = "/sys/fs/cgroup";
 /// `max`), the least one may still take before its host must take back memory its
 /// processes map or hold as their own ([`Holding::room_with`]), the file pages they map
 /// counted in wherever they are charged, and those of them their host took back under it
-/// that `evicted` says of what they map now, by process ([`Budgets::evicted`]); and which
-/// cgroup that is. None where no cgroup it is in has a budget.
+/// that `evicted` says of what they map now, by process ([`Budgets::evicted`]), less what its
+/// host's own reads of them need below it ([`Holding::reads`]); and which cgroup that is.
+/// None where no cgroup it is in has a budget.
 pub(crate) fn room(
     dir: &Path,
     root: &Path,
@@ -100,6 +101,13 @@ pub(super) struct Holding {
     pub current: u64,
     /// What it holds less its page cache no process maps.
     pub floor: u64,
+    /// What its host's own reads of its microVMs' files need below it past what it holds:
+    /// its kernel's charge ahead of the pages they take, a batch on each of its CPUs, which
+    /// `memory.current` counts and no reclaim takes back (mm/memcontrol.c `refill_stock`;
+    /// `reclaim_high` drains no stock), a share's request in flight and its read-ahead, as
+    /// the share keeps its copy by (`shards_vmm::devices::virtio::fs::headroom::reads_room`,
+    /// this host's CPUs and pages).
+    pub reads: u64,
 }
 
 impl Holding {
@@ -123,8 +131,8 @@ impl Holding {
     }
 
     /// The bytes of its budget not [`held`](Self::held), less the inactive pages its kernel
-    /// keeps beside the mapped ones charged to it ([`lru_buffer`]): short of none where it
-    /// holds past it.
+    /// keeps beside the mapped ones charged to it ([`lru_buffer`]) and what its host's own
+    /// reads need below it ([`reads`](Self::reads)): short of none where it holds past it.
     pub fn room(&self, files: u64) -> i64 {
         self.room_with(files, 0)
     }
@@ -141,6 +149,7 @@ impl Holding {
         signed(self.budget)
             .saturating_sub(signed(self.held(files.saturating_add(evicted))))
             .saturating_sub(signed(lru_buffer(self.mapped.saturating_add(evicted))))
+            .saturating_sub(signed(self.reads))
     }
 }
 
@@ -201,6 +210,7 @@ pub(super) fn held_at(dir: &Path) -> Option<Holding> {
         mapped: get("file_mapped"),
         current,
         floor: current.saturating_sub(unmapped),
+        reads: shards_vmm::devices::virtio::fs::headroom::reads_room(),
     })
 }
 
@@ -888,7 +898,7 @@ impl<D: Disk> Daemon<D> {
                     let files = mapped.iter().fold(0u64, |sum, &(_, b)| sum.saturating_add(b));
                     let evicted = self.budgets.evicted(&mapped);
                     format!(
-                        ": {}'s budget, {} MiB, holds {} MiB its host may take back from its processes alone, {} MiB of it files they map{}",
+                        ": {}'s budget, {} MiB, holds {} MiB its host may take back from its processes alone, {} MiB of it files they map{}, and leaves {} KiB below it for its host's own reads",
                         level.display(),
                         h.budget >> 20,
                         h.held(files.saturating_add(evicted)) >> 20,
@@ -900,7 +910,8 @@ impl<D: Disk> Daemon<D> {
                                 " and {} MiB its host took back of what they mapped, which their guests read again",
                                 evicted >> 20
                             )
-                        }
+                        },
+                        h.reads >> 10
                     )
                 })
         };
@@ -1031,11 +1042,16 @@ mod tests {
             &stat(149 * MIB, 117 * MIB, 0),
         );
         cgroup(&scope, None, None, 383 * MIB, &stat(149 * MIB, 117 * MIB, 0));
+        // What this host's own reads need below every budget, left out of each.
+        let reads = i64::try_from(shards_vmm::devices::virtio::fs::headroom::reads_room()).unwrap();
         // 384 MiB less what it holds but its 32 MiB of page cache no process maps, and less
         // the inactive pages its kernel keeps beside the 117 MiB processes map: short.
         assert_eq!(
             room(&scope, &root, &mut |_| 0),
-            Some(((384 - (383 - 32) - 117) as i64 * MIB as i64, slice.clone()))
+            Some((
+                (384 - (383 - 32) - 117) as i64 * MIB as i64 - reads,
+                slice.clone()
+            ))
         );
         // Its shared memory is not page cache its kernel may drop.
         cgroup(
@@ -1047,7 +1063,7 @@ mod tests {
         );
         assert_eq!(
             room(&scope, &root, &mut |_| 0),
-            Some(((1 - 117) * MIB as i64, slice.clone()))
+            Some(((1 - 117) * MIB as i64 - reads, slice.clone()))
         );
         // A hard limit under the high counts, and short is below none.
         cgroup(
@@ -1059,18 +1075,18 @@ mod tests {
         );
         assert_eq!(
             room(&scope, &root, &mut |_| 0),
-            Some((-83 * MIB as i64, slice.clone()))
+            Some((-83 * MIB as i64 - reads, slice.clone()))
         );
         // The least of two: the scope's own, tighter than its slice's.
         cgroup(&scope, Some(350 * MIB), None, 383 * MIB, &stat(0, 0, 0));
         assert_eq!(
             room(&scope, &root, &mut |_| 0),
-            Some((-83 * MIB as i64, slice.clone()))
+            Some((-83 * MIB as i64 - reads, slice.clone()))
         );
         cgroup(&scope, Some(250 * MIB), None, 383 * MIB, &stat(0, 0, 0));
         assert_eq!(
             room(&scope, &root, &mut |_| 0),
-            Some((-133 * MIB as i64, scope.clone()))
+            Some((-133 * MIB as i64 - reads, scope.clone()))
         );
         // Statistics read behind the counter, still counting a gigabyte of page cache the
         // kernel has just taken back: what the processes hold is counted from them, never
@@ -1080,7 +1096,10 @@ mod tests {
         cgroup(&slice, Some(384 * MIB), None, 383 * MIB, stale);
         assert_eq!(
             room(&scope, &root, &mut |_| 0),
-            Some((384 * MIB as i64 - 320_000_000 - 100_000_000, slice.clone()))
+            Some((
+                384 * MIB as i64 - 320_000_000 - 100_000_000 - reads,
+                slice.clone()
+            ))
         );
         // None held to a budget: no room to tell.
         cgroup(&scope, None, None, 383 * MIB, &stat(0, 0, 0));
@@ -1089,6 +1108,60 @@ mod tests {
         // The root itself holds nothing to a budget.
         cgroup(&root, Some(MIB), None, 900 * MIB, &stat(0, 0, 0));
         assert_eq!(room(&scope, &root, &mut |_| 0), None);
+    }
+
+    /// A budget's room leaves what its host's own reads of its microVMs' files need below it:
+    /// its kernel's charge ahead, a batch of 64 pages on each of its CPUs, which its
+    /// `memory.current` counts and its reclaim never takes back (mm/memcontrol.c
+    /// `refill_stock`, `reclaim_high`), and a share's request in flight with its read-ahead.
+    /// The share kept its copy only past that room; the daemon told it all to the guest, and
+    /// a 32-CPU host's slice, held to 123,101,184 bytes, sat past its `memory.high` for 28
+    /// minutes of a read held short, its share's reads throttled there (KVM x86_64, Linux
+    /// 7.3.3, 237f3ebe7). On CI's 4 CPUs the part told was 2.25 MiB; on 32, 9.25.
+    #[test]
+    fn a_budgets_room_leaves_its_hosts_own_reads_their_room() {
+        use shards_vmm::devices::virtio::fs::headroom::{reads_room, reads_room_of};
+        assert_eq!(reads_room_of(4, 4096), 9 * MIB / 4);
+        assert_eq!(reads_room_of(32, 4096), 37 * MIB / 4);
+        // A slice held to that budget, its processes mapping 212 KiB as that one's did, and
+        // holding all of it but 32 CPUs' reads' room and the inactive pages beside its
+        // mapped ones: none for its guest, where before its guest was told all 9.25 MiB.
+        let (budget, mapped) = (123_101_184, 217_088);
+        let reads = reads_room_of(32, 4096);
+        let held = Holding {
+            budget,
+            own: 110_628_864,
+            mapped,
+            current: budget - mapped - reads + 450_560,
+            floor: budget - mapped - reads,
+            reads,
+        };
+        assert_eq!(held.room(mapped), 0);
+        assert_eq!(Holding { reads: 0, ..held }.room(mapped), 37 * MIB as i64 / 4);
+        // This host's, as the daemon reads a cgroup: a budget leaving its reads' room past
+        // all it holds but its page cache no process maps, and the inactive pages beside its
+        // mapped ones, leaves its microVM none; a MiB more, a MiB.
+        let tmp = shards_testdir::TempDir::new("budget-reads").unwrap();
+        let root = tmp.join("cg");
+        let slice = root.join("a.slice");
+        let stat = "anon 100000000\nfile 4194304\nkernel 15000000\nfile_mapped 2097152\nshmem 0\n";
+        let floor = 120_000_000 - 2 * MIB;
+        cgroup(
+            &slice,
+            Some(floor + 2 * MIB + reads_room()),
+            None,
+            120_000_000,
+            stat,
+        );
+        assert_eq!(room(&slice, &root, &mut |_| 0), Some((0, slice.clone())));
+        cgroup(
+            &slice,
+            Some(floor + 3 * MIB + reads_room()),
+            None,
+            120_000_000,
+            stat,
+        );
+        assert_eq!(room(&slice, &root, &mut |_| 0), Some((MIB as i64, slice.clone())));
     }
 
     /// The files a budget's processes map count as held, wherever their pages are charged:
@@ -1101,6 +1174,7 @@ mod tests {
             mapped: 16 * MIB,
             current: 383 * MIB,
             floor: 168 * MIB,
+            reads: 0,
         };
         assert_eq!(held.held(0), 168 * MIB);
         assert_eq!(held.held(83 * MIB), 235 * MIB);
@@ -1115,6 +1189,7 @@ mod tests {
             mapped: 107 * MIB,
             current: 265 * MIB,
             floor: 179 * MIB,
+            reads: 0,
         };
         assert_eq!(ended.held(136 * MIB), 294 * MIB);
         assert_eq!(lru_buffer(16 * MIB), 16 * MIB);
@@ -1145,6 +1220,7 @@ mod tests {
             mapped: 16 * MIB,
             current: 383 * MIB,
             floor: 168 * MIB,
+            reads: 0,
         };
         // 83 MiB mapped, 67 of them charged elsewhere: a run's room holds them, a builder's
         // does not.
@@ -1168,9 +1244,11 @@ mod tests {
         let stat = "anon 100000000\nfile 0\nkernel 0\nfile_mapped 0\nshmem 0\n";
         cgroup(&slice, Some(384 * MIB), None, 100_000_000, stat);
         cgroup(&scope, Some(350 * MIB), None, 100_000_000, stat);
+        // Less what this host's own reads need below it, as a run's is.
+        let reads = i64::try_from(shards_vmm::devices::virtio::fs::headroom::reads_room()).unwrap();
         assert_eq!(
             charged_room(&scope, &root),
-            Some((350 * MIB as i64 - 100_000_000, scope.clone()))
+            Some((350 * MIB as i64 - 100_000_000 - reads, scope.clone()))
         );
         if std::path::Path::new("/proc/self/smaps_rollup").exists() {
             std::fs::write(scope.join("cgroup.procs"), format!("{}\n", std::process::id())).unwrap();
@@ -1179,10 +1257,10 @@ mod tests {
             let run = room(&scope, &root, &mut |_| 0).unwrap();
             assert_eq!(run.1, scope);
             // Its program's pages mapped as this reads them, which can move a little.
-            assert!(run.0 < 350 * MIB as i64 - 100_000_000);
+            assert!(run.0 < 350 * MIB as i64 - 100_000_000 - reads);
             assert_eq!(
                 charged_room(&scope, &root),
-                Some((350 * MIB as i64 - 100_000_000, scope.clone()))
+                Some((350 * MIB as i64 - 100_000_000 - reads, scope.clone()))
             );
         }
         // The root itself holds nothing to a budget.
@@ -1201,6 +1279,7 @@ mod tests {
             mapped: 123 * MIB,
             current: 274 * MIB,
             floor: 198 * MIB,
+            reads: 0,
         };
         let short = before.room(123 * MIB);
         assert!(short < 0, "short before: {short}");

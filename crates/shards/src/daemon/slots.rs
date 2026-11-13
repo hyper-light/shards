@@ -31,15 +31,21 @@ const SWEEP: Duration = Duration::from_secs(60);
 /// What the daemon has seen of its clients, which its waits on them follow (D185's
 /// admission), never a figure picked:
 /// - **The rest of a request** comes with its first byte: a client writes its request in one
-///   write (`Client::ask`). So a client that sends nothing past its first byte is waited for
-///   as long as the slowest rest a request has come whole in, and then cut: told RESTART,
-///   or finding its slot's `say` gone as it writes (BrokenPipe), it asks again through the
-///   next slot, its request begun nowhere. Before any request has come whole there is no
-///   such time, and the wait follows the client alone: its end, its FIFO's, or the daemon
-///   ending its clients. A request whose rest has begun is waited for until it is whole or
-///   its client ends: one larger than a FIFO holds comes in parts, each as the daemon reads
-///   and its client is next run, a gap no whole request's rest measures, which a window
-///   learned from them would cut again each time it was asked (PM M545).
+///   write (`Client::ask`), so its rest is there as the daemon reads it, and waits on no
+///   client: it teaches nothing, as an answer's write the FIFO takes at once does not. Only a
+///   rest its client was waited on for (`Asked::waited`: a request larger than a FIFO holds,
+///   coming in parts, or a client paused past its first byte) teaches how long a client goes
+///   on with one. A client that sends nothing past its first byte is waited for as long as
+///   the slowest such rest seen whole, and then cut: told RESTART, or finding its slot's
+///   `say` gone as it writes (BrokenPipe), it asks again through the next slot, its request
+///   begun nowhere. Before any, the wait follows the client alone (R03's cold start): its
+///   end, its FIFO's, or the daemon ending its clients. Before, every rest taught, and the
+///   first request's, read 2.334 µs after its first byte on a KVM x86_64 host, cut each
+///   client after it that paused there (D185). A request whose rest has begun is waited
+///   for until it is whole or its client ends: one larger than a FIFO holds comes in parts,
+///   each as the daemon reads and its client is next run, a gap no whole request's rest
+///   measures, which a window learned from them would cut again each time it was asked
+///   (PM M545).
 /// - **A client taking its answer** goes on as it takes: its answer is written as its FIFO
 ///   takes it, and only where the FIFO takes none of what is left is its client waited on,
 ///   until it makes room (`slots::write_all_waiting`). Each such wait that ends is a take,
@@ -48,11 +54,14 @@ const SWEEP: Duration = Duration::from_secs(60);
 ///   however slowly the answer goes as a whole. What the FIFO takes at once waits on no
 ///   client and teaches nothing. Before any take, the daemon follows the client alone:
 ///   its end, its FIFO's. On Windows a named pipe says nothing of its room before a write,
-///   so no take is seen there, and a closed daemon follows its clients' ends alone (PM
-///   M549). It was twice the longest a piece took, at least TCP's R2 (100 s).
+///   so its answer goes in parts no larger than its line's outbound quota, and a part whose
+///   write pends is the take, from its pend to its completion (`slots::named`; D185). It was
+///   twice the longest a piece took, at least TCP's R2 (100 s); and on Windows, no take,
+///   a closed daemon holding a client that took nothing until it ended (PM M549).
 #[derive(Debug, Default)]
 pub(crate) struct Seen {
-    /// The slowest a request's rest was read whole in, from its first byte; none before any.
+    /// The slowest a request's rest was read whole in, from its first byte, of those its
+    /// client was waited on for; none before any.
     slowest_rest: Option<Duration>,
     /// The slowest a client took to make room for its answer's next part; none before any.
     slowest_take: Option<Duration>,
@@ -60,12 +69,13 @@ pub(crate) struct Seen {
 
 impl Seen {
     /// How long a request's rest is waited for while none of it has come: the slowest rest
-    /// that has come whole; none before any, the client's end alone then.
+    /// its client was waited on for that has come whole; none before any, the client's end
+    /// alone then.
     pub(super) fn request_stall(&self) -> Option<Duration> {
         self.slowest_rest
     }
 
-    /// A request came whole `took` after its first byte.
+    /// A request its client was waited on for came whole `took` after its first byte.
     pub(super) fn whole(&mut self, took: Duration) {
         self.slowest_rest = Some(self.slowest_rest.map_or(took, |slowest| slowest.max(took)));
     }
@@ -124,8 +134,6 @@ pub(super) struct Live {
     /// Its answer's last word (`EXIT`, `END`, `RESTART`) is its client's: there in its FIFO
     /// whether or not the daemon is (pipe(7)), and nothing its client reads comes after it.
     answered: bool,
-    /// When it last went on, or was offered.
-    went_on: Instant,
 }
 
 impl<D: Disk> Daemon<D> {
@@ -151,28 +159,29 @@ impl<D: Disk> Daemon<D> {
 
     /// Whether a slot holds the daemon from being quiet, and so from exiting; and, once it
     /// has closed, when the first that does lets go of it. While it serves, a slot its
-    /// client opened holds it. Once it has closed, each holds it until its serving ends, its
-    /// answer's last word is its client's, or its client has taken nothing for longer than
-    /// the slowest take seen (`Seen::answer_wait`): its answer's writer waiting on it that
-    /// long, or, its request not yet gone on, it not gone on at all since its last step or
-    /// the close, the later. Before any take, it holds the daemon until it ends. A client
+    /// client opened holds it. Once it has closed, each its client opened holds it until
+    /// its serving ends, its answer's last word is its client's, or its client has taken
+    /// nothing of its answer for longer than the slowest take seen (`Seen::answer_wait`),
+    /// its answer's writer waiting on it that long; before any take, until it ends. A client
     /// reading its answer makes room as it reads, however slowly; one stopped, or held by a
     /// pager that waits, takes nothing, and keeps no daemon from exiting nor the next from
     /// starting past that wait. One whose request went on, with nothing of its answer to
     /// take yet, takes nothing it could: it holds the daemon while the daemon has yet to
     /// answer, as an attached run its stop ends after its timeout says nothing meanwhile (PM
-    /// M331).
+    /// M331). One whose request has not gone on holds it until its serving ends: its
+    /// request's wait is its own (`serve_slot`: the requests' record, and none once the
+    /// daemon has closed), never the answers'. A slot no client opened has no client.
     pub(super) fn slots_hold(&self) -> (bool, Option<Instant>) {
-        let closed_at = *lock(&self.closed_at);
+        let closed = self.closed.load(Ordering::SeqCst);
         let wait = lock(&self.seen).answer_wait();
         let now = Instant::now();
         let mut held = false;
         let mut lets_go: Option<Instant> = None;
         for live in lock(&self.live).values() {
-            let Some(closed_at) = closed_at else {
+            if !closed {
                 held |= live.session;
                 continue;
-            };
+            }
             let since = match (live.waiting, live.passed, live.answered) {
                 (Some(since), _, _) => since,
                 (None, true, _) => {
@@ -180,7 +189,10 @@ impl<D: Disk> Daemon<D> {
                     continue;
                 }
                 (None, false, true) => continue,
-                (None, false, false) => live.went_on.max(closed_at),
+                (None, false, false) => {
+                    held |= live.session;
+                    continue;
+                }
             };
             // No take seen yet: its client's end alone lets it go.
             let Some(wait) = wait else {
@@ -198,22 +210,18 @@ impl<D: Disk> Daemon<D> {
         (held, lets_go)
     }
 
-    /// Says which slots' clients the daemon exits without: each holds it no longer
-    /// ([`slots_hold`](Self::slots_hold)), and none has ended.
+    /// Says which slots' clients the daemon exits without: those its answer's writer waits
+    /// on, each past the slowest take seen ([`slots_hold`](Self::slots_hold)). The other
+    /// slots it exits with are no client's it leaves: their answer's last word is their
+    /// client's, or no client opened them.
     pub(super) fn leave_slots(&self) {
-        let closed_at = *lock(&self.closed_at);
         for (n, live) in lock(&self.live).iter() {
-            let (since, what) = match live.waiting {
-                Some(since) => (since, "took no more of its answer"),
-                None => (
-                    closed_at.map_or(live.went_on, |at| live.went_on.max(at)),
-                    "went no further",
-                ),
-            };
-            log(format!(
-                "request slot {n}: its client {what} in {:?}; exiting without it",
-                since.elapsed()
-            ));
+            if let Some(since) = live.waiting {
+                log(format!(
+                    "request slot {n}: its client took no more of its answer in {:?}; exiting without it",
+                    since.elapsed()
+                ));
+            }
         }
     }
 
@@ -428,13 +436,14 @@ impl<D: Disk> Daemon<D> {
         living.opened();
         let _ = tell.send(Event::Asked(n));
         // The rest of its request, waited for while its client goes on with it: none of it
-        // past the slowest rest seen whole, its client's end alone before any (`Seen`); and
-        // no longer once the daemon ends its clients.
+        // past the slowest rest seen whole that waited on its client, its client's end alone
+        // before any (`Seen`); and no longer once the daemon ends its clients. One there as
+        // it was read waited on no client, and teaches nothing.
         let stall = lock(&self.seen).request_stall();
         let request = |opened: slots::Opened| {
             let began = Instant::now();
             let requested = opened.request_within(stall, Some(&self.requests_end));
-            if let Ok(Requested::Asked(_)) = &requested {
+            if let Ok(Requested::Asked(Asked { waited: true, .. })) = &requested {
                 lock(&self.seen).whole(began.elapsed());
             }
             requested
@@ -456,6 +465,7 @@ impl<D: Disk> Daemon<D> {
                 session,
                 fds,
                 request,
+                ..
             })) => {
                 // A stop's session the daemon holds until its exit itself, which is how its
                 // client learns of it: it holds no quiet.
@@ -717,14 +727,13 @@ impl<'a, D: Disk> Living<'a, D> {
             passed: false,
             waiting: None,
             answered: false,
-            went_on: Instant::now(),
         };
         lock(&daemon.live).insert(n, live);
         Living { daemon, n }
     }
 
     /// Its client opened it.
-    fn opened(&self) {
+    pub(super) fn opened(&self) {
         self.step(|live| live.session = true);
     }
 
@@ -765,11 +774,10 @@ impl<'a, D: Disk> Living<'a, D> {
         written
     }
 
-    /// It goes on: `step` to its record, and when.
+    /// It goes on: `step` to its record.
     fn step(&self, step: impl FnOnce(&mut Live)) {
         if let Some(live) = lock(&self.daemon.live).get_mut(&self.n) {
             step(live);
-            live.went_on = Instant::now();
         }
     }
 
