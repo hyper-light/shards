@@ -1693,7 +1693,7 @@ mod hosted {
         rates: Mutex<Option<Vec<Asked>>>,
         /// Each socket lane asked of the VM and not yet answered (`LANE_OPEN`, D251), by its
         /// number; none once the VM's link has closed, as nothing will answer one then.
-        lanes: Mutex<Option<HashMap<u64, std::sync::mpsc::SyncSender<(Vec<u8>, Vec<OwnedFd>)>>>>,
+        lanes: Mutex<Option<LaneWaits>>,
         next_lane: std::sync::atomic::AtomicU64,
         /// What is plugged into the run's members, by the path it is at.
         plugged: Mutex<HashMap<String, Plugged>>,
@@ -1709,6 +1709,13 @@ mod hosted {
 
     /// A device step asked of the VM: its number, and who waits for its answer.
     type Asked = (u64, std::sync::mpsc::Sender<Result<String, String>>);
+
+    /// The VM's answer to a socket lane (`LANE_OPEN`, D251): its payload, and the connection
+    /// beside it on Unix.
+    type LaneAnswer = (Vec<u8>, Vec<OwnedFd>);
+
+    /// The socket lanes asked of the VM and not yet answered, by number.
+    type LaneWaits = HashMap<u64, std::sync::mpsc::SyncSender<LaneAnswer>>;
 
     /// A host directory plugged into a member (D235): its place on the microVM's PCI bus
     /// (`devfn`), its guest's address of it, the member's index, and its share process.

@@ -2378,9 +2378,10 @@ mod tests {
         }
         .encode()
         .unwrap();
+        // ... and the control ask's absence (version 15) last.
         assert_eq!(
-            asked.get(asked.len() - 19..).unwrap(),
-            [1, 1, 1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 1, 0, 0, 0, 0, 0, 0],
+            asked.get(asked.len() - 20..).unwrap(),
+            [1, 1, 1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
             "appended: the grant's flag, the deadline's, the destinations kept (all), the one \
              member's working directory (none) and its input, the credential grants' count \
              (zero, version 8), the member's terminal (none, version 11), then whether the \
@@ -2551,10 +2552,10 @@ mod tests {
         ));
         // A member's input flag, before the credential grants' count (version 8), its
         // terminal's flag (version 11) and the members' reach (version 12), that is no flag.
-        // One member, so its input is the seventh byte from the end (the count's four, its
-        // terminal's one and the reach's flag follow it).
+        // One member, so its input is the eighth byte from the end (the count's four, its
+        // terminal's one, the reach's flag and the control ask's follow it).
         let mut bad = request().encode().unwrap();
-        let at = bad.len() - 7;
+        let at = bad.len() - 8;
         assert_eq!(
             bad[at], 1,
             "the member's input flag precedes the credentials' count"
@@ -2633,9 +2634,9 @@ mod tests {
                 );
             }
         }
-        // The reach's flag, last where none is held apart.
+        // The reach's flag, last but the control ask's where none is held apart.
         let mut flag = held(None).encode().unwrap();
-        let at = flag.len() - 1;
+        let at = flag.len() - 2;
         flag[at] = 2;
         assert_eq!(
             Request::decode(&flag),
@@ -2648,7 +2649,8 @@ mod tests {
         let mut kindless = held(Some(vec![reach(MemberKind::Agent, "helper", &[])]))
             .encode()
             .unwrap();
-        let at = kindless.len() - (1 + 4 + "helper".len() + 4);
+        // ... then the control ask's absence (version 15).
+        let at = kindless.len() - (1 + 4 + "helper".len() + 4 + 1);
         assert_eq!(kindless[at], MemberKind::Agent as u8);
         kindless[at] = 2;
         assert_eq!(
@@ -2676,39 +2678,39 @@ mod tests {
         // their inputs, is no request of this one's: refused by its version, never read with
         // them defaulted. The request's one member makes each of those one byte.
         let mut v1 = request().encode().unwrap();
-        v1.truncate(v1.len() - 11);
+        v1.truncate(v1.len() - 12);
         v1[0] = 1;
         assert_eq!(Request::decode(&v1), Err(WireError::Version(1)));
         let mut v4 = request().encode().unwrap();
-        v4.truncate(v4.len() - 8);
+        v4.truncate(v4.len() - 9);
         v4[0] = 4;
         assert_eq!(Request::decode(&v4), Err(WireError::Version(4)));
         let mut v5 = request().encode().unwrap();
-        v5.truncate(v5.len() - 7);
+        v5.truncate(v5.len() - 8);
         v5[0] = 5;
         assert_eq!(Request::decode(&v5), Err(WireError::Version(5)));
         // One of version 6 carries every field version 7 does, but its host ends the run at
         // a room: refused by its version, before any room is told (D241).
         let mut v6 = request().encode().unwrap();
-        v6.truncate(v6.len() - 6);
+        v6.truncate(v6.len() - 7);
         v6[0] = 6;
         assert_eq!(Request::decode(&v6), Err(WireError::Version(6)));
         // One of version 7, without the credential grants' count: refused by its version
         // (D242), so an older reader never reads a grant with its field defaulted.
         let mut v7 = request().encode().unwrap();
-        v7.truncate(v7.len() - 6);
+        v7.truncate(v7.len() - 7);
         v7[0] = 7;
         assert_eq!(Request::decode(&v7), Err(WireError::Version(7)));
         // One of version 8, without its members' terminals: refused by its version (D244), so
         // an older reader never starts a member with pipes where its owner asked a terminal.
         let mut v8 = request().encode().unwrap();
-        v8.truncate(v8.len() - 2);
+        v8.truncate(v8.len() - 3);
         v8[0] = 8;
         assert_eq!(Request::decode(&v8), Err(WireError::Version(8)));
         // One of version 11, without the members' reach: refused by its version (D246), so a
         // run host never takes a request that holds its members apart as one that holds none.
         let mut v11 = request().encode().unwrap();
-        v11.truncate(v11.len() - 1);
+        v11.truncate(v11.len() - 2);
         v11[0] = 11;
         assert_eq!(Request::decode(&v11), Err(WireError::Version(11)));
         // One of version 12 carries every field version 13 does, but its host ends the run at
@@ -2716,11 +2718,17 @@ mod tests {
         let mut v12 = request().encode().unwrap();
         v12[0] = 12;
         assert_eq!(Request::decode(&v12), Err(WireError::Version(12)));
+        // One of version 14, without the control ask: refused by its version (D252), so a run
+        // host never takes a run that asked an endpoint as one that asked none.
+        let mut v14 = request().encode().unwrap();
+        v14.truncate(v14.len() - 1);
+        v14[0] = 14;
+        assert_eq!(Request::decode(&v14), Err(WireError::Version(14)));
         // The nesting flag, before the deadline's tag, the destinations', the one member's
         // working directory's and input's, the credential grants' count (version 8), the
         // member's terminal's (version 11) and the members' reach (version 12): no flag.
         let mut flag = request().encode().unwrap();
-        let at = flag.len() - 11;
+        let at = flag.len() - 12;
         flag[at] = 2;
         assert_eq!(
             Request::decode(&flag),
@@ -2733,7 +2741,7 @@ mod tests {
         // credential grants' count, the member's terminal and the members' reach: no list of
         // version 3's and on.
         let mut list = request().encode().unwrap();
-        let at = list.len() - 9;
+        let at = list.len() - 10;
         list[at] = 2;
         assert_eq!(
             Request::decode(&list),
@@ -2945,10 +2953,10 @@ mod tests {
         };
         assert_eq!(long.encode(), Err(WireError::TooLong));
         let mut bad = request().encode().unwrap();
-        let at = bad.len() - 2;
+        let at = bad.len() - 3;
         assert_eq!(
             bad[at], 0,
-            "the member's terminal flag precedes the members' reach"
+            "the member's terminal flag precedes the members' reach and the control ask"
         );
         bad[at] = 2;
         assert_eq!(

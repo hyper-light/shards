@@ -544,13 +544,9 @@ fn admitted(streams: Streams<'_>) -> Result<(Admitted, Windows), managed::Error>
             },
         });
     }
-    // An endpoint of socket lanes alone takes their link (unix.rs `link`).
-    let link = match link {
-        Some(link) => link,
-        None if streams.sockets.is_some() => unix::link(),
-        None => return Err(managed::Error::Admission(AdmissionError::Capacity)),
-    };
-    Ok((link, windows))
+    // An endpoint of no member stream takes the cited link (unix.rs `link`): its control lane,
+    // and its socket lanes where it admits them, have no link of their own to set it.
+    Ok((link.unwrap_or_else(unix::link), windows))
 }
 
 /// A lane's first frame, as it comes.
@@ -2088,15 +2084,42 @@ mod tests {
             );
             assert_eq!(link.patience, PATIENCE);
             assert_eq!(link.handshake_bytes, out.handshake_bytes);
-            assert!(matches!(
-                super::super::admitted(Streams {
-                    outputs: &[],
-                    inputs: &[],
-                    execs: None,
-                    sockets: None,
-                }),
-                Err(managed::Error::Admission(AdmissionError::Capacity))
-            ));
+            // An endpoint of no stream still has its control lane (D252): the cited link, and
+            // no stream's window; it binds, serving its control lane alone.
+            let (bare, nothing) = super::super::admitted(Streams {
+                outputs: &[],
+                inputs: &[],
+                execs: None,
+                sockets: None,
+            })
+            .unwrap();
+            assert_eq!(
+                (bare.handshake_bytes, bare.patience),
+                (unix::HANDSHAKE_MOST, tls::QUIET)
+            );
+            assert_eq!(
+                nothing,
+                Windows {
+                    stream: 0,
+                    connection: 0,
+                    send: 0,
+                    streams: 0
+                }
+            );
+            assert!(
+                Endpoint::bind(
+                    &Identity::generate().unwrap(),
+                    [0; 32],
+                    loopback(),
+                    Streams {
+                        outputs: &[],
+                        inputs: &[],
+                        execs: None,
+                        sockets: None,
+                    },
+                )
+                .is_ok()
+            );
             let none = Admitted {
                 record_bytes: 0,
                 ..out
@@ -3035,15 +3058,19 @@ mod tests {
                 }
             );
             assert_eq!(link.patience, PATIENCE);
-            assert!(matches!(
-                super::super::drive::windows(Subscriptions {
-                    outputs: &[],
-                    inputs: &[],
-                    execs: None,
-                    sockets: None,
-                }),
-                Err(managed::Error::Admission(AdmissionError::Capacity))
-            ));
+            // A controller of no stream still opens its control lane (D252), on the cited link.
+            let (bare, control) = super::super::drive::windows(Subscriptions {
+                outputs: &[],
+                inputs: &[],
+                execs: None,
+                sockets: None,
+            })
+            .unwrap();
+            assert_eq!(
+                (bare.handshake_bytes, bare.patience),
+                (unix::HANDSHAKE_MOST, tls::QUIET)
+            );
+            assert!(control.connection > 0 && control.send > 0, "{control:?}");
         }
     }
 }

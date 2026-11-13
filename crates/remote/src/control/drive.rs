@@ -1242,13 +1242,9 @@ pub(super) fn windows(subscriptions: Subscriptions<'_>) -> Result<(Admitted, Win
             })
             .ok_or_else(window)?;
     }
-    // A controller of socket lanes alone takes their link (unix.rs `link`).
-    let link = match link {
-        Some(link) => link,
-        None if subscriptions.sockets.is_some() => unix::link(),
-        None => return Err(managed::Error::Admission(AdmissionError::Capacity)),
-    };
-    Ok((link, windows))
+    // A controller of no member stream takes the cited link (unix.rs `link`), as its endpoint
+    // does: its control lane, and its socket lanes where admitted, set none of their own.
+    Ok((link.unwrap_or_else(unix::link), windows))
 }
 
 /// What an exec's lanes add to the controller's connection while it runs: what the endpoint
