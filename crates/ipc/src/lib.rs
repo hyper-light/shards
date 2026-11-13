@@ -2339,7 +2339,7 @@ mod pipe;
 #[cfg(windows)]
 pub use pipe::{
     Arriving, Event, ExitWatch, Listener, Message, Pipe, Poller, Stream, await_any, await_streams, byte_pair,
-    end, readable_raw, recv, recv_by, send,
+    end, hung_up, readable_raw, recv, recv_by, send,
 };
 #[cfg(windows)]
 mod windows;
