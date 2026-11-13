@@ -27251,8 +27251,15 @@ seen on real runs:
   could not send its orchestrator ends it `Failed`, saying so. A credit it could not pass to
   its VM's capture ends nothing: that capture closes as its VM ends, before its `DONE` can
   come, and killing the VM for it put a failure where the VM's own end belonged (WHP at
-  3a05bc3f1). The host says the first such credit on its stderr, which shows why a run whose
-  output stops while its VM runs on stopped; its `STOP` still ends that run. Each failed end is
+  3a05bc3f1). The host says the first such credit on its stderr. A capture whose relay breaks
+  while its VM runs on (its owner's frames or its guest's refused, or the relay's own failure)
+  is the VM's to end: the relay ends the run's connection and keeps why, and the VM fails the
+  run in those words (`UNSERVED`, below; capture.rs `relay_ending`), where before its output
+  stopped and the run waited for its owner's `STOP`. A side's end of its connection ends
+  nothing of the run: its guest's, as its run ends; its owner's, which its owner ends the run
+  for, or its `STOP_ORDER` where its owner is gone, whose grace the run keeps. Owed (goal 75's
+  survey): api-run's reader of the capture lets go of its own copy alone on a record it cannot
+  take, and the daemon ends its owner at its own failure, each leaving the run to its `STOP`. Each failed end is
   said on the host's stderr too. An end the VM said
   first (its `DONE` came) stands, whatever the asks did meanwhile. Frames are read in place
   and wiped as they go (D242's channel), and a lease's answer is served from its frame.
@@ -27286,6 +27293,13 @@ No other.
   19e122a2a: both failed. As built, `cargo test -p shards-api --lib image::` passed 56 of 56.
 - `shards-ipc every_message_kind_has_its_own_number`, and clippy `-D warnings` for shards,
   shards-api, shards-vm-process and shards-ipc, all targets: clean.
+- The capture relay's typed end: shards-vm-process
+  `workload::capture::tests::a_relay_that_breaks_mid_run_ends_its_run_saying_why` (a relay
+  whose owner gives a channel's credit twice ends the run's connection and keeps "duplicate or
+  closed managed credit"; one whose guest, or whose owner, ends its side ends nothing). Red at
+  a0e12422e: failed ("a relay that broke left its run's connection open"). As built,
+  `cargo test -p shards-vm-process --bin shards-vm workload::` passed 39 of 39; clippy for
+  shards-vm-process, all targets, clean.
 
 **Owed** (ROOT).
 - The real-VM suites on HVF, KVM and WHP: api_image whole, member_exec, and boot.rs
