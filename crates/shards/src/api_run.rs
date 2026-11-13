@@ -4245,9 +4245,10 @@ mod tests {
         );
         let renders = |run: &shards_ipc::Run| {
             let node = crate::run::RENDER_NODE.as_bytes();
-            crate::setup::setup(run, &[], None, None).unwrap().iter().any(|e| {
-                e.starts_with(b"devices=") && e.windows(node.len()).any(|w| w == node)
-            })
+            crate::setup::setup(run, &[], None, None)
+                .unwrap()
+                .iter()
+                .any(|e| e.starts_with(b"devices=") && e.windows(node.len()).any(|w| w == node))
         };
         assert_eq!(renders(&gpus), crate::run::GIVES_GPU);
         assert!(!renders(&hosted::as_run(&request(Vec::new()), None)));
