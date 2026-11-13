@@ -2244,6 +2244,19 @@ fn tcp_reach(directives: &[Directive]) -> Vec<TcpReach<'_>> {
     members
 }
 
+/// What each member the Agentfile declares reaches past the microVM by name (D236, §4.4):
+/// its networks' destinations and its remote MCP servers', each a host and a TCP port, as
+/// its init lets it out to them; in the order the Agentfile declares its members, one that
+/// reaches none with none. Where [`held`] holds, a member reaches exactly those of them its
+/// microVM's network process keeps, so a run host can hold each member to a reach an
+/// orchestrator names (D246).
+pub fn named_reach(directives: &[Directive]) -> Vec<(TargetKind, Vec<u8>, Vec<Destination>)> {
+    tcp_reach(directives)
+        .into_iter()
+        .map(|r| (r.member.0, r.member.1.to_vec(), r.named))
+        .collect()
+}
+
 /// Members granted one TCP port past the microVM unalike, where any reaches it by name (a
 /// destination, D236, or a remote MCP server, §4.4), refused, naming both: its network
 /// process holds the whole microVM to the union of its members' grants on a port, and each
