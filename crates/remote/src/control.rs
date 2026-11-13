@@ -40,11 +40,11 @@ use crate::tls;
 
 mod drive;
 pub mod exec;
+pub use crate::tls::Negotiated;
 pub use drive::{
     Controller, Dialed, Exec, ExecControl, Execs, Fault, Got, Hangup, Input, Link, Linked, Output,
     Subscriptions,
 };
-pub use crate::tls::Negotiated;
 
 /// The application protocol of a control connection (RFC 7301), apart from a context's
 /// (`shards/1`) and the managed output's: a peer offering another is refused at its handshake.
@@ -2826,9 +2826,10 @@ mod tests {
             driver.join().unwrap().unwrap();
         }
 
-        /// The controller's windows are its lanes' own, from the endpoint's admissions: what
-        /// the endpoint sends on each before it is read, summed; what it sends on each, summed;
-        /// no stream the endpoint may open; the least patience and the largest handshake.
+        /// The controller's windows are its lanes' own, from the endpoint's admissions, the
+        /// control lane's among them: what the endpoint sends on each before it is read,
+        /// summed; what it sends on each, summed; no stream the endpoint may open; the least
+        /// patience and the largest handshake.
         #[test]
         fn the_controllers_windows_are_its_lanes_own_summed() {
             let slow = Admitted {
@@ -2845,16 +2846,19 @@ mod tests {
             })
             .unwrap();
             let ack = 5 + 8;
+            // The control lane: its report or a refusal read, its ask sent.
+            let (report, ask) = (NEGOTIATED_BYTES.max(REFUSED_BYTES), CONTROL_ASK.len());
             assert_eq!(
                 windows,
                 Windows {
                     stream: RECORD + DATA_HEAD,
-                    connection: 2 * (RECORD + DATA_HEAD) + input::TAKEN_BYTES,
+                    connection: 2 * (RECORD + DATA_HEAD) + input::TAKEN_BYTES + report,
                     send: (2 * (managed::CONTROL_BYTES + ack)
                         + input::SUBSCRIBE_BYTES
                         + input::RECORD_HEAD
                         + 50
-                        + input::END_BYTES) as u64,
+                        + input::END_BYTES
+                        + ask) as u64,
                     streams: 0,
                 }
             );

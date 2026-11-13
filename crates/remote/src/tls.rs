@@ -472,10 +472,19 @@ mod tests {
         for other in [TLS13_AES_128_GCM_SHA256, TLS13_CHACHA20_POLY1305_SHA256] {
             assert!(!named(other).is_provided(), "{:?}", other.suite());
         }
+        // Codes rustls names none of, as it says first.
         let unknown = Negotiated {
-            suite: 0xfefe,
+            suite: 0x1399,
             group: 0xfefe,
         };
+        assert!(matches!(
+            CipherSuite::from(unknown.suite),
+            CipherSuite::Unknown(_)
+        ));
+        assert!(matches!(
+            rustls::NamedGroup::from(unknown.group),
+            rustls::NamedGroup::Unknown(_)
+        ));
         assert!(!unknown.is_provided());
         assert_eq!((unknown.suite_name(), unknown.group_name()), (None, None));
     }
