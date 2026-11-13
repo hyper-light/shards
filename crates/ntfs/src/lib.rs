@@ -259,8 +259,10 @@ fn unix_time(nt: i64) -> (u64, u32) {
 /// What `h`'s file is, as a Linux guest is told: NTFS's stat with WSL's metadata
 /// (FileStatLxInformation, its `$LX` attributes read), its key its volume's serial number
 /// and its file's ID (FileIdInfo, whose upper 8 bytes NTFS leaves unused, PM M362). One with
-/// no owner WSL keeps is root's, and one with no mode its kind's: a directory 755, an LX
-/// symlink 777, a file 644, or 444 where NTFS keeps it read-only.
+/// no owner WSL keeps is root's, and one with no mode its kind's: a directory or a file 755, an
+/// LX symlink 777, or 555 where NTFS keeps it read-only, as WSL's DrvFs shows a file it keeps
+/// no metadata of (0777 under its default umask 022, the write bits gone where read-only;
+/// learn.microsoft.com/windows/wsl/file-permissions).
 pub fn stat(h: BorrowedHandle<'_>) -> Result<Stat, Errno> {
     let mut lx = FILE_STAT_LX_INFORMATION::default();
     let mut io = IO_STATUS_BLOCK::default();
