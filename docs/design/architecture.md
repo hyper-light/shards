@@ -7570,7 +7570,7 @@ descriptors.
   unwritten goes. With none, it sleeps until it hears something (PM M260).
 - **A request in time.** The rest of a request is waited for while its client goes on with
   it: one that sends nothing past its first byte for as long as the slowest rest the daemon
-  has seen whole is cut, and one whose rest has begun is read until it is whole or its
+  has seen whole that waited on its client is cut, and one whose rest has begun is read until it is whole or its
   client ends ("Admission", below); no longer, either way, once the daemon ends its clients
   (`requests_end`, a pipe written once). A client cut hears RESTART, as one whose request
   no thread had read does, and asks again. (Was 10 s, `REQUEST_TIMEOUT`, after which the
@@ -7682,19 +7682,35 @@ process.
   through the next slot (`ask_slot`'s BrokenPipe).
   - *Its first byte alone.* A client writes its request in one write (`Client::ask`), so
     its rest comes with its first byte. A client that sends nothing past it is waited for as
-    long as the slowest rest this daemon has read whole, from its first byte, and then cut.
-  - *Its cold start.* Before any request has come whole the daemon has seen no rest, and
+    long as the slowest rest this daemon has read whole, from its first byte, of those its
+    client was waited on for, and then cut.
+  - *What teaches.* A rest there as the daemon reads it waited on no client, and teaches
+    nothing, as an answer's write the FIFO takes at once does not (below). Only a rest whose
+    reader found nothing there and waited for its client to write it does
+    (`shards_ipc::slots::Asked::waited`: a poll(2) or select(2) that does not wait finds
+    nothing, or PeekNamedPipe says no bytes): a request larger than a FIFO holds, coming in
+    parts, or a client paused past its first byte.
+  - *Its cold start.* Before any such rest has come whole the daemon has seen none, and
     bounds none: the wait follows the client alone, its end (the FIFO's, or the pipe's) or
-    the daemon ending its clients. A daemon is mostly started by a client's request, which
-    comes whole and so teaches it the first rest.
+    the daemon ending its clients (R03's cold start). It was every rest read whole: the
+    request that starts a daemon came whole, its rest read microseconds after its first
+    byte, and from then on each client that paused past its first byte was cut that far
+    into its pause. So `clients_past_the_cap_wait_their_turn`'s sixteen silent clients were
+    never in hand at once, on every job of CI's run at f5c0c8b04 that ran it: "request slot
+    N: nothing past its request's first byte in 8µs; its client asks again" on aarch64
+    macOS, 5.384 µs on aarch64 glibc, 6.408 µs on aarch64 musl, 5.68 µs on x86_64 glibc,
+    6.261 µs on x86_64 musl, 24.1 µs on aarch64 Windows; and 2.334 µs on a KVM x86_64 host at
+    e72239dd3. A first slowest of microseconds, or none, is no bound for a client still
+    writing (ROOT, 2026-11-13).
   - *Its rest begun.* A request whose rest has begun is read until it is whole or its
     client ends. One larger than a FIFO holds (a run's spec, up to `MAX_PAYLOAD`, 6 MiB)
     comes in parts, each as the daemon reads and its client is next run: a gap no rest of a
     request written whole measures, so a window learned from those would cut such a request
     each time it was asked, for ever.
   - *What it costs.* A client stopped mid-request (`SIGSTOP`) holds its slot's descriptors
-    until it goes on or ends, and keeps an idle daemon from exiting meanwhile; a closing
-    daemon still lets it go after its answer's wait (below). The slowest rest is this
+    until it goes on or ends, and keeps an idle daemon from exiting meanwhile; a closed
+    daemon ends its read at once (`requests_end`, set as it closes, as at a stop), and the
+    client, told RESTART or finding its `say` gone, asks the next daemon. The slowest rest is this
     daemon's alone, in memory: a client of the home's own user can make it longer by
     writing its request slowly, which only waits longer on a silent one.
   - It was D222's restart cutoff (Luby, Sinclair and Zuckerman 1993, over the daemon's
@@ -7729,6 +7745,16 @@ process.
     §4.2.3.5).
   A slot whose answer's last word is its client's holds it no more: the word is in its FIFO
   whether or not the daemon is, and nothing its client reads comes after it.
+  - *A request not yet gone on* holds a closed daemon until its serving ends: its wait is
+    the request's own (above), and none once the daemon has closed, whose reader ends at
+    once (`requests_end`), its client told RESTART; never the answers' record. A slot no
+    client has opened has no client: it holds nothing, and the daemon says it leaves only
+    the clients whose answer's writer waits on them. It was the slowest take after the
+    slot's last step or the close, which judged a request by its answers' record and said
+    it left slots that had no client to leave: a closed daemon whose slowest take was
+    3.1 ms said "request slot 2: its client went no further in 3.096667ms; exiting without
+    it" and slot 3 alike, beside the one client it did leave (an HVF host at dc7f45bc6,
+    `a_stopping_daemon_waits_for_no_client_that_reads_nothing`).
 - **Out of descriptors, the daemon refuses the client it cannot take and is woken as
   descriptors are let go of: nothing looks on a clock.** What it accepts on, and how:
   - *The Engine API's socket and the contexts' (Unix)*: a listener whose accept finds no
@@ -23436,7 +23462,6 @@ Results:
   - M2, an expired finite retry let through to the unbounded handshake:
     `finite_owned_retry_expiry_cannot_start_an_unbounded_handshake` failed, counting a late
     dial (1, not 0).
-
 Not run: these on Linux and Windows (Linux's CPU clock reader, Windows' process tree, the
 Windows report test; CI's matrix); boot.rs's real-VM tests on HVF, KVM x86_64, KVM arm64 (L1)
 and WHP (ROOT's); scripts/lint.
