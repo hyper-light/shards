@@ -25322,7 +25322,17 @@ has taken the pinned key, as many at once as the endpoint's stream limit allows;
 `Handler::available`. Each lane's handle is step 5's client of its stream:
 - *An output* (`control::Output`): `next_record` gives its records in order. Asking for the next
   acknowledges the one before, since step 5 acknowledges a record only once its owner has it
-  whole. `Got::Finished` comes once the output has finished.
+  whole. `Got::Finished` comes once the output has finished. The admission its endpoint
+  announced (the run's metadata `capacity`) is where its records start, not their bound: the
+  endpoint grows a stream's record as the daemon's learner asks (`managed::Producer::admit`,
+  QUIC's window as it was), so a lane reads a record up to the managed wire's own bound, one
+  frame's (`managed::RECORD_MOST`, `frame::MAX_FRAME` less the record's offset), its buffer
+  reserved at the admitted record and grown, fallibly, to what comes; one past that bound
+  breaks the protocol. A lane that held the first admission as its bound closed the connection
+  `Protocol` once an owned output's record grew (ROOT's KVM run of `log_lanes`, 2026-11-13;
+  `control::tests::lanes::a_record_grown_past_the_admitted_one_is_had_whole`). What an owned
+  output's records carry is the guest's capture record whole (`run::managed::Record`), which
+  its owner decodes.
 - *A stdin* (`control::Input`): `write` sends one record within the endpoint's room and returns once
   it is taken. The driver checks each taken against the protocol: it falls where the record ends,
   or, the first after a subscription, at or past its cursor, which counts the bytes an earlier
