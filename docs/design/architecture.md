@@ -7827,8 +7827,14 @@ process.
     (GetNamedPipeInfo's out buffer size, `LINE_BUFFER`), each waiting on the client for no
     more than a quota's worth of its reading: a part that finishes at once teaches nothing,
     and one that pends is a take, from its pend (`ERROR_IO_PENDING`, `pipe::write_telling`)
-    to its completion (ROOT, 2026-11-13). WriteQuotaAvailable is no measure of a client's
-    room; it was a closed daemon following its clients' ends alone there, no take seen.
+    to its completion (ROOT, 2026-11-13), where the pipe is connected still as it finishes
+    (`NamedPipeState`, `pipe::connected_now`): Windows 11 finishes a write that pended on a
+    client that then went, `Ok`, its data dropped, and fails the next with ERROR_NO_DATA,
+    where ReactOS's npfs completes it `STATUS_PIPE_BROKEN` (`statesup.c`
+    `NpSetClosingPipeState`); so one that finished as its client went is no take, told no end,
+    and the write fails `BrokenPipe` (PM M553: the line holds its quota exactly, 65,536 bytes,
+    before a part pends). WriteQuotaAvailable is no measure of a client's room; it was a
+    closed daemon following its clients' ends alone there, no take seen.
   - It was twice the longest a piece of 64 KiB took, at least TCP's R2 (100 s, RFC 1122
     §4.2.3.5).
   A slot whose answer's last word is its client's holds it no more: the word is in its FIFO
