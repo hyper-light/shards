@@ -1,0 +1,10 @@
+# control-end: where agent control terminates (README.md)
+hostname: adacachy
+platform: linux/x86_64
+cpus: 32
+os: CachyOS
+kernel: 7.2.9-2-cachyos
+cpu: AMD Ryzen 9 9950X3D2 16-Core Processor
+shards: shards version 0.7.0, build unknown-commit (commit unknown-commit)
+harness: 66113379cc78b8464c778658e44ace5276ba5590
+vms 32 | rounds 5 | vCPUs 1 | memory 512 MiB | idle 10s | pings 100 x 64 B | bulk 16777216 B x 1 streams x 3 | spin 0

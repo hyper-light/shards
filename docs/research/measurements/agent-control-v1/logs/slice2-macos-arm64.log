@@ -1,0 +1,29 @@
+# kiln run r1058 on adalundhe-macbook-pro (Apple M5 Max, macOS 26.5.2, arm64), merged HEAD 6fcef62bb
+# (Rust identical to c9630c6b4), a cold target directory of its own (removed after); rustc 1.98.1.
+# Excerpt: result lines and control::tests' lines; the run's whole output is r1058's.
+== test lib: cargo test -p shards-remote --lib
+test control::tests::a_lanes_reading_ends_it_alone_unless_its_controller_broke_its_protocol ... ok
+test control::tests::a_close_reads_as_its_cause ... ok
+test control::tests::a_lanes_refusal_reads_back_as_its_reason ... ok
+test control::tests::a_lane_of_no_kind_is_refused ... ok
+test control::tests::step_5s_subscriptions_open_a_members_lanes ... ok
+test control::tests::lanes::its_windows_are_its_streams_own_summed ... ok
+test control::tests::a_peer_of_another_protocol_is_refused ... ok
+test control::tests::an_endpoint_not_the_pinned_vm_is_refused_at_its_handshake ... ok
+test control::tests::a_controller_not_enrolled_is_refused_at_its_handshake ... ok
+test control::tests::lanes::a_peer_without_the_enrolled_key_reaches_no_lane ... ok
+test control::tests::an_enrolled_controller_and_its_pinned_vm_connect_on_aes_256_gcm ... ok
+test control::tests::lanes::an_inputs_own_end_ends_its_lane_and_the_connection_goes_on ... ok
+test control::tests::lanes::a_lane_the_endpoint_does_not_serve_is_refused_alone_and_the_others_go_on ... ok
+test control::tests::lanes::a_revoked_stream_ends_its_lane_alone ... ok
+test control::tests::lanes::a_second_lane_of_a_stream_is_refused_and_the_first_goes_on ... ok
+test control::tests::lanes::a_controllers_lanes_carry_a_members_stdio_exactly_and_end_as_it_ends ... ok
+test control::tests::lanes::the_controllers_newer_connection_supersedes_the_older_and_resumes_at_its_cursor ... ok
+test managed::tests::a_record_submitted_beside_a_queued_wake_is_kept_for_its_turn ... ok
+test result: ok. 61 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 13.98s
+lib_rc=0
+== test loopback: cargo test -p shards-remote --test loopback
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.28s
+loopback_rc=0
+== clippy aarch64-apple-darwin: not run here (this host's 1.98.1 toolchain has no clippy component); see slice2-macos-lint.log
+cleaned=yes
