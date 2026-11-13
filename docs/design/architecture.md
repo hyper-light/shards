@@ -7999,6 +7999,13 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
     tests (`a_process_followed_by_its_pid_is_judged_by_its_cpu`). Red at e0cc059c7 with
     the old wait and these tests (adas-mac-studio.local, macOS 26.2 arm64): the first two
     each ended `(Some(7), true)`, ended by the daemon, where `(Some(7), false)` was due.
+    Green on the merged tree (origin/main 5bc134861 with 6fc62c231 and 005dce1da; same host,
+    rustc 1.98.1): health.rs 11 of 11, reclaim.rs 1, daemon.rs's `metrics_` 4, budget.rs 7,
+    groups.rs 5; shards-api's `judge::` 5, `progress::` 6, `client::tests` 37 (3 ignored);
+    clippy `--all-targets -D warnings` clean for shards and shards-api, and for shards-api
+    on x86_64-pc-windows-msvc (cargo xwin), whose reader is the one Windows code touched.
+    Not run: these tests on Linux or Windows, real microVMs (the budget E2E above among
+    them), and guard-removal mutations, all ROOT's.
 - **A budget falling short waits for its host's give-back** (PM M467): where a give-back
   of the host's pressure is under way in the microVM, the budget's own asks once it has
   ended, its room read again; and its word says what its host's pressure had it give back
@@ -12475,7 +12482,9 @@ peer", each going on here as it should. What changed for them:
   - Held by `a_restore_refused_at_the_other_daemons_gate_goes_on_here`, with a fake `there`:
     red at e0cc059c7 (`NotKnown(..)` where `Here(..)` was due), green since, nothing asked
     of whether it runs there. A restore that failed, one done and one unanswered go as
-    before.
+    before. Green on the merged tree (origin/main 5bc134861 with 005dce1da; adas-mac-studio.local,
+    macOS 26.2 arm64): cli/moves.rs's tests 7 of 7, clippy clean; its real two-machine move,
+    refused at the gate, is not run (ROOT's).
   - Its gap: the remote server's relay can fail after `Host::start` has started a command
     (a thread or a handle it could not make; server.rs `relay`, or no listener's sender).
     It refuses that command though it goes on, its stdio closed, and a move takes it for a
