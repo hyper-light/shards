@@ -26356,9 +26356,10 @@ abi's, so D28 already covers them; the literals were the gap (ROOT's go, 2026-11
   compose them; api-run's staging and its CA's entries. Every entry is of a registered key, and
   the run of every option writes each of its kinds.
 - *The composers that write inline*: a census of the crate's sources.
-  - Every file writing a spec's setup must be among the census's 13. The daemon's runs,
+  - Every file writing a spec's setup must be among the census's 14. The daemon's runs,
     joiners and execs, api-run, the warm VM and the VM process are among them, so a new one
-    fails the test until it is read.
+    fails the test until it is read. Its first run found one the inventory had missed: a
+    member's exec (`daemon/managed/execs.rs`, D243), whose one entry is abi's `exec_in`.
   - Each key those files spell as a literal (`b"KEY=…"`, `b"KEY"`, `format!("KEY=…")`) must be
     registered, or one of the words each file names as no entry's key (a device's throttle tags,
     a volume's flags, a tmpfs's options).

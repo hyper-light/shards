@@ -1080,7 +1080,7 @@ mod tests {
     /// `devices=` entry, a volume's flags, a tmpfs's options, a terminal type, a test's
     /// marker. `volumes.rs` chooses one key as it runs (`domain-volume` or `volume`), which
     /// its own tests compose.
-    const COMPOSERS: [(&str, &[&str]); 13] = [
+    const COMPOSERS: [(&str, &[&str]); 14] = [
         ("setup.rs", &["rb", "ri", "w", "wb", "wi"]),
         ("daemon.rs", &["ro", "rw"]),
         ("api_run.rs", &[]),
@@ -1090,6 +1090,7 @@ mod tests {
         ("spec.rs", &["xterm"]),
         ("daemon/networks.rs", &[]),
         ("daemon/managed.rs", &["record"]),
+        ("daemon/managed/execs.rs", &[]),
         ("daemon/commands.rs", &[]),
         ("daemon/visit.rs", &[]),
         ("workload/capture.rs", &["x"]),
@@ -1105,7 +1106,9 @@ mod tests {
         let mut i = 0;
         while i < lines.len() {
             let line = lines[i];
-            let indent = &line[..line.len() - line.trim_start().len()];
+            let indent = line
+                .get(..line.len() - line.trim_start().len())
+                .unwrap_or_default();
             let opens = line.trim_start() == "#[cfg(test)]"
                 && lines
                     .iter()
@@ -1134,12 +1137,12 @@ mod tests {
         let mut keys = Vec::new();
         for (start, bare) in [("b\"", true), ("format!(\"", false)] {
             for (at, _) in text.match_indices(start) {
-                let rest = &text[at + start.len()..];
+                let rest = text.get(at + start.len()..).unwrap_or_default();
                 let key: String = rest
                     .chars()
                     .take_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-')
                     .collect();
-                let next = rest[key.len()..].chars().next();
+                let next = rest.get(key.len()..).and_then(|r| r.chars().next());
                 if key.starts_with(|c: char| c.is_ascii_lowercase())
                     && (next == Some('=') || (bare && next == Some('"')))
                 {
@@ -1150,8 +1153,9 @@ mod tests {
         let chosen = text
             .match_indices("format!(\"{")
             .filter(|(at, _)| {
-                let rest = &text[at + "format!(\"{".len()..];
-                rest.find('}').is_some_and(|end| rest[end + 1..].starts_with('='))
+                let rest = text.get(at + "format!(\"{".len()..).unwrap_or_default();
+                rest.find('}')
+                    .is_some_and(|end| rest.get(end + 1..).is_some_and(|r| r.starts_with('=')))
             })
             .count();
         (keys, chosen)
