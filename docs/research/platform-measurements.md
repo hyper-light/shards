@@ -22571,11 +22571,26 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
 - **Fix.** `shards_ipc::await_any_within` waits at most XNU's bound in one select on macOS,
   and a longer wait goes on to its own deadline in the next. A bound XNU's source states
   (R03).
-- **Checked** (one host, adalundhe-macbook-pro, macOS arm64):
-  `a_wait_past_selects_most_is_waited_not_refused` (a ready pipe under a 2^34 s wait: EINVAL
-  before, ready after) and `a_daemon_out_of_descriptors_waits_for_room` alone. Its red is
-  CI's.
-- **Owed.** ROOT's: the macOS leg of CI on main, where both run.
+- **The unit test's EINVAL** (`daemon::tests::a_client_no_descriptor_is_left_for_is_refused_with_the_spare`,
+  `daemon.rs:11707` in the plan's CI runs) had another cause, fixed on main by c2c4547c1
+  (11-12) before this: macOS refuses setsockopt(2) on a socket whose connection has ended,
+  and the test now bounds its client's read before the refusal.
+- **A build without its helpers starts no daemon.** Built with `SHARDS_HELPERS=skip` (as
+  `scripts/lint` builds), `shards ps` exits 125 and the daemon's log says "this shards was
+  built without its VM and network processes": the integration test failed at
+  `start_daemon` for that reason alone (kiln runs r124, r161). It needs a build that
+  carries them.
+- **Checked** (one host, adalundhe-macbook-pro, macOS arm64, on the tree merged with main
+  8479be870, helpers carried): `cargo test -p shards-ipc --lib --
+  a_wait_past_selects_most_is_waited_not_refused` (a ready pipe under a 2^34 s wait: EINVAL
+  in the unix.rs before the fix, ready after); `cargo test -p shards --bin shards --
+  daemon::tests::a_client_no_descriptor_is_left_for_is_refused_with_the_spare`; `cargo test
+  -p shards --test daemon -- a_daemon_out_of_descriptors_waits_for_room` alone (8.4 s);
+  `cargo clippy -p shards-ipc -p shards --all-targets -- -D warnings`. All green. The
+  integration test's red is CI's.
+- **Owed.** CI's: its macOS leg on main, where both tests run, and its Linux legs, where the
+  unit test runs; the change compiles on macOS alone (`cfg(target_os = "macos")`), so
+  Linux's poll(2) path is the one it had.
 - **Rules** (policy df2acf47, role implementer):
 
   | rule | proof, result, gap |
@@ -22583,8 +22598,9 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   | R01 | No unwrap or panic added; the bound is a constant of XNU's. |
   | R02, R03 | XNU's own source for the bound; no number of ours. |
   | R04, R05 | The wait's states are unchanged: ready, timed out at its own deadline, or interrupted. |
-  | R09, R10 | Red: CI's log above and the unit test before the fix. Green: both tests after. |
+  | R09, R10 | Red: CI's log above and the unit test before the fix. Green: the three tests after. |
   | R11 | The bound is macOS's alone; Linux's and Windows' waits are unchanged. |
+  | R15, R16 | Implementer, no agents started. `~/g51-s2-target` and `~/g51-carrier/src-s5` on adalundhe-macbook-pro are removed after. |
 
 ### M543. A run's agents heard by no one: their output waited for an owner no `shards run` had (D240, D59)
 
