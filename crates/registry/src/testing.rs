@@ -240,7 +240,8 @@ pub(crate) fn route(
                     }
                 }
                 let _closes = Closes(closer);
-                let _ = tcp.set_read_timeout(Some(Duration::from_secs(10)));
+                // Its reads wait as its client's connection lives: the client's end, or the
+                // server's drop, which shuts the connection down, ends each.
                 // A plain server asked for TLS answers as Go's net/http answers a request
                 // it cannot read, as a registry does (server.go, publicErr).
                 let mut first = [0u8; 1];
@@ -367,8 +368,7 @@ mod tests {
         // Not probed by connecting to its port again: the tests beside it are given freed
         // ports at once, so another's server may answer there. Its threads are joined, its
         // listener gone with its accept loop's; what is left to see is the connection it
-        // held, closed.
-        held.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        // held, closed: its end, read as the connection lives.
         assert_eq!(
             held.read(&mut [0u8; 1]).unwrap(),
             0,
