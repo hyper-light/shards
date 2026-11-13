@@ -6541,7 +6541,17 @@ replaced by:
   holds is read with the socket non-blocking: a receive timeout of the least, a microsecond,
   Linux keeps in whole jiffies (SO_RCVTIMEO, net/core/sock.c `sock_set_timeout`), so that a
   client's socket aimed at its daemon, read whatever its wait said, waited a jiffy out each turn
-  it had nothing to read.
+  it had nothing to read. What a connection fed has to send goes before more of the socket is
+  read (`Driver::take_in`): its acknowledgement above all, which its peer awaits at once from
+  its second ack-eliciting packet (RFC 9000 §13.2.2), within its `max_ack_delay` at the latest
+  (§13.2.1). Drained whole before any was sent, a backlog at a peer's full rate held every
+  acknowledgement back and heard each datagram as of the drain's start, its silence as long as
+  the drain (the same reading of moved.rs's live move: an import's connection taken for dead
+  mid-stream). A send that goes between reads is taken into its connection's liveness as it
+  goes (`Liveness::note`), before what answers it is read: taken in only at the turn's end, after
+  its answer had been read, it began a wait that answer had already ended, and a quiet peer was
+  taken for dead a window on (2 to 3 of `tests/loopback.rs`'s 26 on adacachy2, 7 on macOS, as
+  the driver first sent between reads).
 - *A driver's absence* (none before): a wait is judged on the time its side was there to hear.
   The time from one of a driver's turns to the next that its thread neither ran (its CPU time,
   POSIX's `CLOCK_THREAD_CPUTIME_ID`) nor waited as it planned (its poll, until its timer in whole
@@ -6613,8 +6623,8 @@ on, its silences measured; a handshake given up a whole window unheard past its 
 one heard living on past both, red with its window a deadline from its start; a send's window,
 its run-out with progress and its death without; a cold wait following its peer however long
 its first answer takes; a wait judged no sooner than its probe timeout; a wait judged on the
-time its side was there to hear, red with no absence taken; what its handshake sent no wait;
-the keep-alive
+time its side was there to hear, red with no absence taken; a send taken in before its
+answer is read answered by it; what its handshake sent no wait; the keep-alive
 early by the window and none while a send waits; a handshake past its slots taking the oldest
 unanswered place), `context::tests` (a daemon's path read back for its
 daemon and address alone, kept only where it changed, removed with its context),
