@@ -23813,8 +23813,12 @@ reaches them and nothing else (another host on their port, another port, an addr
 gave), and resolves them alone; one granted `host.docker.internal:PORT` reaches a listener on
 the host's loopback at PORT and no other port of the host, while the run's own command and
 another member reach neither; an image `held` refuses fails its build, and its run when
-crafted. The bring-up's examples (docs/examples/harness-codex, harness-claude) moved to
-destinations once run so.
+crafted. The bring-up's examples (docs/examples/harness-codex, harness-claude,
+harness-codex-signed-in, harness-claude-signed-in) moved to destinations once run so: each
+grants `--dns` and `--egress=443/tcp` today, any host on 443 (H2), and its hosts come from that
+run's resolver answers, not the records' host mentions, which include help-text URLs.
+
+**Review (plan step 2):** [harness-bringup-v2/review.md](../research/measurements/harness-bringup-v2/review.md) (F1–F7 fixed: the leak check's chosen numbers, the real-VM test's and bringup.sh's clocks and polls, `sleep 600`, H1's stale text, R10's no-tool check on the recorded turns; fetch.sh's findings and the real-VM runs owed to ROOT).
 
 **What would falsify it.** A provider whose clients reach it at addresses its names never
 answer (then address ranges as grants); a member that must reach one port by name beside
