@@ -1,0 +1,19 @@
+# devin 3000.12.43: its pinned linux/amd64 files' strings (devin.json; each file held to its pin's sha256)
+NODE_EXTRA_CA_CERTS: 0
+SSL_CERT_FILE: 0
+SSL_CERT_DIR: 0
+CODEX_CA_CERTIFICATE: 0
+NODE_USE_SYSTEM_CA / --use-system-ca: 0
+REQUESTS_CA_BUNDLE / CURL_CA_BUNDLE: 0
+the system bundle's path: 3
+    bin/devin: ...++++++++++++++++++++++++++++++++$++....+..++.++..+.+'.+++++./etc/ssl/certs/ca-certificates.crt/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem/etc/pki/tl...
+rustls-native-certs / openssl-probe: 0
+webpki-roots (roots of its own): 0
+Bun (its runtime): 0
+Node (its runtime): 0
+Go (its runtime): 0
+certificate or key pins: 0
+checkServerIdentity (its own name check): 0
+at_hash: 0
+ID token verification: 10
+    bin/devin: ..............o...oN.f.t.1^(.f.t.9^(.f...f...................H.jwks_uriH9.............o...~N.f.t..](.f.t..](.f...f....................

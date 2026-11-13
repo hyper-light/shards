@@ -1,0 +1,22 @@
+# goose 1.59.0: its pinned linux/amd64 files' strings (goose.json; each file held to its pin's sha256)
+NODE_EXTRA_CA_CERTS: 0
+SSL_CERT_FILE: 2
+    bin/goose/goose: ...ding certificates: .... at '..'.failed to read PEM from fileSSL_CERT_FILESSL_CERT_DIR: ..1...[...A...........,...........stream did n...
+SSL_CERT_DIR: 2
+    bin/goose/goose: ...ates: .... at '..'.failed to read PEM from fileSSL_CERT_FILESSL_CERT_DIR: ..1...[...A...........,...........stream did not contain v...
+CODEX_CA_CERTIFICATE: 0
+NODE_USE_SYSTEM_CA / --use-system-ca: 0
+REQUESTS_CA_BUNDLE / CURL_CA_BUNDLE: 0
+the system bundle's path: 3
+    bin/goose/goose: ......s...............................SSL_CERT_FILESSL_CERT_DIR/etc/ssl/certs/ca-certificates.crt/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem/etc/pki/tl...
+rustls-native-certs / openssl-probe: 66
+    bin/goose/goose: ...er6traits8iterator8Iterator9size_hintCscFMP1RP9hN7_7reqwest.rustls_native_certs.a836bab354c2893-cgu.2._RINvNtCsifRdLFh1usa_4core3ptr9drop_g...
+webpki-roots (roots of its own): 0
+Bun (its runtime): 0
+Node (its runtime): 0
+Go (its runtime): 0
+certificate or key pins: 0
+checkServerIdentity (its own name check): 0
+at_hash: 0
+ID token verification: 6
+    bin/goose/goose: ..............o...oN.f.t.....f.t.....f...f...................H.jwks_uriH9.............o...~N.f.t.....f.t.!...f...f....................
