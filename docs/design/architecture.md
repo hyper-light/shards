@@ -12197,10 +12197,13 @@ peer", each going on here as it should. What changed for them:
   Ultra's and an M4 Max's no `rpres`, PM M499), so no move checks them, and the baseline
   test holds it on each Mac it runs on. A guest is shown less than the features macOS
   names in registers the framework does say too (an M4 Max's finds no `i8mm`, ISAR1's),
-  which a baseline's fields, the hypervisors' own views, take in. On
-  arm64 only: x86_64's CPUID has `covers` and no meet yet, and `configure cpu` says so
-  there; between the two Linux hosts measured (one CPU model, Linux 7.2 and 7.3) every move
-  went through without one (PM M497).
+  which a baseline's fields, the hypervisors' own views, take in. On KVM x86-64 too (D245):
+  CPUID's feature leaves, one vendor's, each register the bits every machine's KVM offers
+  (`arch::x86_64::cpuid::meet`), the VM's supported CPUID brought within it before its
+  shape is written in (`cpuid::within`), and checked by those bits alone, none by name.
+  Not on WHP, which restores a snapshot only on the CPU it was taken on: `configure cpu`
+  says so there. Between the two Linux hosts measured (one CPU model, Linux 7.2 and 7.3)
+  every move went through without one (PM M497).
 - **A listener that outlives its runner's restarts** (two-hosts.sh, the harness of these
   measurements). A runner that restarts ends what its runs started, the listening daemon
   among them, and kiln's ends a launchd job a session starts within seconds (3 s on the M3
@@ -24151,6 +24154,91 @@ version tests, `session::tests::a_resizes_answer_is_kept_for_its_awaited_ask_alo
 test-release --test member_exec`): `a_harness_on_a_terminal_of_its_own_is_shown_and_sized_by_its_owner`
 and `a_harness_on_a_terminal_of_its_own_reads_what_its_owner_types`. Record:
 [member-exec-tty-v1](../research/measurements/member-exec-tty-v1/README.md).
+
+### D245. A CPU baseline: the CPU every machine a home moves among gives a guest, told each microVM it starts (decided; built on Hypervisor.framework, KVM arm64 and KVM x86-64; WHP next; real-VM runs owed)
+
+A microVM saved on one machine resumes on another only where that CPU has every feature its
+guest found (D176 part 6, "Its CPU"). Between two machines neither of which has every
+feature of the other, no move goes either way: an M3 Ultra (macOS 26.4) and an M4 Max
+(macOS 26.2) refused 38 of 40 at `ready` (PM M460, M462). A baseline is the CPU a guest is
+told so that it moves among a set of machines.
+
+**Alternatives.**
+- *A named, fixed CPU model.* Firecracker's CPU templates and QEMU's named models are fixed
+  feature sets a person picks for a fleet. "Representing one CPU vendor as another CPU vendor
+  is not supported", and "Disabling a feature in a CPU template does not generally make it
+  completely unavailable to the guest" (Firecracker, docs/cpu_templates/cpu-templates.md).
+  A fixed list is a choice of ours (R03), stale with each CPU generation.
+- *The meet of each machine's hypervisor's own view* (chosen). libvirt's
+  `hypervisor-cpu-baseline` will "Compute a baseline CPU which will be compatible with all
+  CPUs defined in an XML FILE", which "is different from cpu-baseline which does not consider
+  any hypervisor abilities" (virsh(1)). Hyper-V's dynamic processor compatibility (Windows
+  Server 2025) "dynamically calculates the common set of processor features across all
+  nodes" (Microsoft Learn, processor compatibility mode). KVM makes a guest's CPUID from
+  KVM_GET_SUPPORTED_CPUID's "x86 cpuid features which are supported by both the hardware and
+  kvm in its default configuration", constrained, for one, "for feature consistency across a
+  cluster" (Documentation/virt/kvm/api.rst §4.46).
+- *None*: `ready` refuses a CPU short of the guest's (D176 part 6). A guest keeps its whole
+  CPU, and moves only to machines that have more.
+
+**Decision.** `shards configure cpu --baseline CONTEXT[,CONTEXT...]` asks this machine's
+daemon and each context's for its CPU as its own hypervisor shows a guest (`move step cpu`,
+which runs `shards-vm cpu`), and keeps their meet in the home's `cpu-baseline`. Each microVM
+the home starts is told it; the run keeps it (its directory's `cpu-baseline`), its templates
+are keyed by it (`run::template`), its plan carries it (`Plan::baseline`), and the machine
+moved to checks it against its own hypervisor's view (`covers`) before anything moves,
+refusing typed. `arch::cpu` names a CPU per architecture:
+- *arm64* (Hypervisor.framework, KVM): ID registers by encoding, each 4-bit field the lowest
+  of the machines' (`arch::aarch64::cpu::meet`, the Arm ARM's ID scheme, Linux's own rule
+  across a system's CPUs); each vCPU is told the lower of its host's and the baseline's.
+- *x86-64* (KVM): leaf 0, the vendor, and CPUID's feature registers (`cpuid::FEATURES`: the
+  SDM's and APM's feature leaves; leaf 0DH's XCR0 and IA32_XSS components; leaf 1EH subleaf
+  1's AMX instructions; leaf 0x40000001's EAX, KVM's own paravirtual features, which differ
+  from host to host), each the AND of the machines' (`cpuid::meet`), of one vendor
+  (`Lacks::Vendor` otherwise). A VM's CPUID, KVM_GET_SUPPORTED_CPUID's, is brought within
+  it (`cpuid::within`) before the VM's shape is written in (`for_vcpu`: HYPERVISOR,
+  TSC-deadline, HTT, APIC IDs, topology), so the shape's bits stay the VMM's. Not in it:
+  leaves 1DH and 1EH's subleaf 0 (AMX's tile sizes, numbers that its leaf-7 and XCR0 bits
+  gate), leaf 0x40000000 (KVM's signature, every KVM host's alike), leaf 7's EAX (its highest
+  subleaf: one a host lacks reads as zeros in `covers`), and family, model and caches, which
+  are no features. It holds every feature register of cloud-hypervisor's migration check
+  (v54.1 `arch/src/x86_64/mod.rs`, `CpuidFeatureEntry`), and leaves 14H, 19H, 0x80000007,
+  0x80000008 and 0x80000021 besides.
+- *WHP*: none told yet. A WHP microVM's restore takes only the CPU it was taken on
+  (`hv::whp` `state.rs`), and `configure cpu` says so there.
+
+**Masked, not enforced.** A guest's kernel and programs use a feature only where its CPUID or
+ID registers say so; an instruction a program runs regardless is not stopped.
+
+**Literals (R03).** None chosen: each register of `FEATURES` is one the SDM, the APM or KVM's
+`cpuid.rst` defines as feature bits; `decode` takes at most `FEATURES.len() + 1` leaves (leaf
+0 and each feature leaf once), derived from it. The meet has no threshold.
+
+**Cold start.** A home with no `cpu-baseline` tells none: each guest is told its host's own
+CPU, as before, and `configure cpu --none` takes one away. A plan of an earlier build carries
+none (serde default) and is taken as before. A baseline written before a register joined
+`FEATURES` names no leaf for it: `within` leaves that leaf the host's, and `covers` checks
+only what the baseline names.
+
+**Failures, typed (R04).** `cpuid::Lacks::{Vendor, Bits}` and arm64's `Lacks`, carried as
+`Refused::{CpuVendor, Cpu}` (`CpuShort::{Bits, Field}`) on a move's wire (D176 part 6,
+"Refused before anything moves"). `configure cpu` across vendors says the machines' CPUs have
+no baseline, and why.
+
+**Held by** the unit tests `a_baseline_masks_what_any_machine_lacks`,
+`a_baseline_reads_back_as_written` and `a_baseline_holds_supervisor_state_amx_and_kvms_own_features`
+(cpuid.rs), `a_vm_told_a_baseline_gives_its_vcpus_no_more` (`hv::kvm`, a KVM VM with no
+guest), `a_machine_short_of_a_baseline_refuses_it_by_each_register` and
+`a_baseline_masks_every_feature_an_x86_guest_finds` (moves.rs), run on KVM x86-64
+([migrate](../research/measurements/migrate/README.md)); `light-gate.sh`'s mutants M4-M10
+failed their tests once, at the predecessor's tree. By E2E:
+`an_x86_cpu_baseline_is_all_its_guest_finds_and_goes_with_it` (tests/moved.rs, two homes of a
+KVM x86-64 machine) and arm64's `a_cpu_baseline_is_all_its_guest_finds_and_goes_with_it` (PM
+M497).
+
+**Owed** (ROOT). The x86-64 E2E on KVM x86-64; a move told a baseline between two machines of
+different CPUs on KVM x86-64 and on Macs (two-hosts.sh `BASELINE=1`); the arm64 unit tests
+(CI on main); WHP's baseline.
 
 ## 4. Start path (≤ 5 ms budget)
 

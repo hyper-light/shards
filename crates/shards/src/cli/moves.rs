@@ -138,7 +138,7 @@ pub(crate) fn cpu(args: &[std::ffi::OsString]) -> ExitCode {
             _ => Ok(()),
         },
         ["configure", "--baseline", contexts] => baseline_of(&home, contexts).and_then(|regs| {
-            let text = format!("{}\n{contexts}\n", shards_vmm::arch::aarch64::cpu::encode(&regs));
+            let text = format!("{}\n{contexts}\n", shards_vmm::arch::cpu::encode(&regs));
             std::fs::write(&at, text).map_err(|e| format!("{}: {e}", at.display()))
         }),
         _ => Err("usage: shards configure cpu --baseline CONTEXT[,CONTEXT...] | --none".into()),
@@ -151,13 +151,13 @@ pub(crate) fn cpu(args: &[std::ffi::OsString]) -> ExitCode {
 
 /// The CPU this machine and every one `contexts` (comma-separated) reach share: each
 /// one's, as its daemon asks its hypervisor (`move step cpu`), met field by field.
-fn baseline_of(home: &Path, contexts: &str) -> Result<Vec<(u16, u64)>, String> {
+fn baseline_of(home: &Path, contexts: &str) -> Result<shards_vmm::arch::cpu::Id, String> {
     let step = || vec![shards_ipc::MOVE_STEP.to_string(), "cpu".to_string()];
-    let read = |what: &str, (status, out, err): There| -> Result<Vec<(u16, u64)>, String> {
+    let read = |what: &str, (status, out, err): There| -> Result<shards_vmm::arch::cpu::Id, String> {
         if status != 0 {
             return Err(format!("{what}: {}", String::from_utf8_lossy(&err).trim()));
         }
-        shards_vmm::arch::aarch64::cpu::decode(String::from_utf8_lossy(&out).trim())
+        shards_vmm::arch::cpu::decode(String::from_utf8_lossy(&out).trim())
     };
     let daemon = super::shardsd()?;
     let command = shards_ipc::Command {
@@ -197,7 +197,8 @@ fn baseline_of(home: &Path, contexts: &str) -> Result<Vec<(u16, u64)>, String> {
     if cpus.len() < 2 {
         return Err("a baseline names the contexts of the machines it is every one's of".into());
     }
-    Ok(shards_vmm::arch::aarch64::cpu::baseline(&cpus))
+    shards_vmm::arch::cpu::baseline(&cpus)
+        .map_err(|lacks| format!("these machines' CPUs have no baseline: {lacks}"))
 }
 
 fn failed(said: &str) -> ExitCode {
