@@ -19,7 +19,7 @@ use common::{TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, served
 use shards_api::image::{
     Channel, ImageGuest, ImagePools, ImageRefusal, ImageShards, ImageShare, ImageSpec, Images as _, Keep,
     MemberEnd, MemberFile, MemberKind, MemberName, MemberReach, MemberSpec, Narrowing, PlugRefusal, Proto,
-    Publish, RunEnd, Secret, StartedFrom, StatsScope,
+    Publish, RunEnd, SaveRefusal, Secret, StartedFrom, StatsScope,
 };
 
 const TIMEOUT: Duration = Duration::from_secs(120);
@@ -961,4 +961,127 @@ fn a_members_arguments_follow_its_images_command_in_order() {
         refused(given(vec!["x".repeat(half), "x".repeat(half)])),
         ImageRefusal::Spec { what: "the spec", .. }
     ));
+}
+
+/// A value the guest's memory holds, unique to this test's run: a SHA-256 of `label`, this
+/// process and the time, in hex.
+fn canary(label: &str) -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let seed = format!("{label} {} {nanos}", std::process::id());
+    <sha2::Sha256 as sha2::Digest>::digest(seed.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// Plan step 33's leak scan (docs/research/measurements/s33-leak-scan), on what it scans:
+/// what `ImageGuest::save` writes, which is its owner's alone (D259).
+/// Python 3 runs it: `python3`, on Windows `python`.
+fn leak_scan(secrets: &std::path::Path, paths: &[&std::path::Path]) -> (Option<i32>, String) {
+    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/research/measurements/s33-leak-scan/scan.py");
+    let python = if cfg!(windows) { "python" } else { "python3" };
+    let out = std::process::Command::new(python)
+        .arg("-I")
+        .arg(script)
+        .arg("--secrets")
+        .arg(secrets)
+        .args(paths)
+        .output()
+        .unwrap();
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    (out.status.code(), said)
+}
+
+/// D259, and plan step 33's leak scan checked on a real microVM: a run's memory saved by its
+/// owner holds what the run's harness was given, and the scan finds it there, while a value
+/// never given is found nowhere. Do: give the harness (the test guest echoing its stdin, so that
+/// it runs on) a value in its environment and one in a staged file; ask a save outside the run's
+/// home, then one in it; echo a line after; scan the save, and the harness's environment as
+/// given, first for the values given, then for one never given. Expect: the first save refused
+/// `Destination` and nothing made; the second a snapshot directory, its generation's memory
+/// written; the harness still echoing; both values found in the save's memory, each by its name,
+/// and the environment's in its file (exit 3); the value never given found nowhere.
+#[test]
+fn a_saved_runs_memory_holds_what_its_harness_was_given_and_the_scan_finds_it() {
+    if cannot_run_vms() {
+        return;
+    }
+    let home = TempDir::new("api-save-home");
+    build(&home, "api-save:1", &["managed-capture", "codex", "echo"], "");
+    let (in_env, in_file, never) = (canary("env"), canary("file"), canary("never"));
+    let mut s = spec(&home, "api-save:1");
+    s.members = vec![MemberSpec {
+        member: codex(),
+        env: vec![("SHARDS_LEAK_CANARY".into(), Secret::from(in_env.as_str()))],
+        files: vec![MemberFile {
+            path: ".leak-canary".into(),
+            mode: 0o600,
+            bytes: Secret(in_file.clone().into_bytes()),
+        }],
+        workdir: None,
+        stdin: true,
+        terminal: false,
+        args: Vec::new(),
+    }];
+    let guest = boot(&home, &s);
+    let mut input = guest.take_input(&codex()).unwrap();
+    let mut output = guest.take_output(&codex(), Channel::Stdout).unwrap();
+    let mut echo = |line: &[u8]| {
+        input.write_all(line).unwrap();
+        let mut echoed = vec![0; line.len()];
+        output.read_exact(&mut echoed).unwrap();
+        assert_eq!(echoed, line);
+    };
+    echo(b"before\n");
+    let outside = TempDir::new("api-save-out");
+    match guest.save(&outside.join("s1"), TIMEOUT) {
+        Err(ImageRefusal::Save(SaveRefusal::Destination, why)) => {
+            assert!(why.contains("outside the run's home"), "{why}")
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(!outside.join("s1").exists());
+    let saved = home.join("leak-save");
+    guest.save(&saved, TIMEOUT).unwrap();
+    let generation = std::fs::read_to_string(saved.join("current")).unwrap();
+    let memory = saved.join(generation.trim()).join("memory");
+    assert!(std::fs::metadata(&memory).unwrap().len() > 0);
+    echo(b"after\n");
+    let keys = TempDir::new("api-save-keys");
+    let given = keys.join("given.json");
+    std::fs::write(
+        &given,
+        format!(r#"{{"env_token":"{in_env}","file_token":"{in_file}"}}"#),
+    )
+    .unwrap();
+    let not_given = keys.join("never.json");
+    std::fs::write(&not_given, format!(r#"{{"never_token":"{never}"}}"#)).unwrap();
+    let env = keys.join("env");
+    std::fs::create_dir(&env).unwrap();
+    std::fs::write(env.join("harness-codex"), format!("SHARDS_LEAK_CANARY={in_env}\0")).unwrap();
+    let (code, said) = leak_scan(&given, &[&saved, &env]);
+    assert_eq!(code, Some(3), "{said}");
+    let memory = memory.display().to_string();
+    for name in ["given.json:env_token", "given.json:file_token"] {
+        assert!(
+            said.lines()
+                .any(|l| l.starts_with(&format!("FOUND {memory} offset ")) && l.ends_with(name)),
+            "{name} in the save's memory: {said}"
+        );
+    }
+    assert!(said.contains("harness-codex offset 19 length 64: a run of given.json:env_token"), "{said}");
+    // Never given, never found: what else credential-shaped its memory holds is listed (exit 4)
+    // and is no secret's.
+    let (code, said) = leak_scan(&not_given, &[&saved, &env]);
+    assert!(matches!(code, Some(0 | 4)), "{said}");
+    assert!(said.contains(" 0 secret runs found"), "{said}");
+    guest.stop().unwrap();
 }

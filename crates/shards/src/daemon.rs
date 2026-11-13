@@ -93,7 +93,7 @@ mod restart;
 mod rmi;
 mod ship;
 mod slots;
-mod snapshots;
+pub(crate) mod snapshots;
 mod top;
 mod update;
 mod visit;
@@ -4428,7 +4428,7 @@ impl<D: Disk> Daemon<D> {
     /// then free, as libnetwork's endpoint goes with a start that fails (moby
     /// daemon/start.go, Cleanup); and a joiner's volumes in its microVM's join share (D119).
     fn let_go(&self, id: &str) {
-        self.managed.end(id);
+        self.managed.abort(id);
         self.free_ports(Some(id), None);
         self.leave_network(id);
         lock(&self.joiner_links).remove(id);
@@ -6649,7 +6649,9 @@ impl<D: Disk> Daemon<D> {
 
     /// Run `id` ended: `done` is its DONE, or `None` for a VM that ended without one.
     fn run_ended(&self, id: &str, inbox: &mut Inbox, done: Option<&[u8]>) {
-        self.managed.end(id);
+        // Its owners' channels end now; what the daemon drains of its members goes on to its
+        // capture's end, which its end is told after (D240).
+        let capturing = self.managed.end(id);
         // Its pool has one run fewer going, and is idle from the last to end
         // (`shards_api::demand`).
         if let Some(key) = inbox.pool.take()
@@ -6722,9 +6724,16 @@ impl<D: Disk> Daemon<D> {
             detached: inbox.detached.take(),
             named: inbox.named.is_some(),
         };
-        // Told once what its command wrote has reached its Engine API attaches, where the
-        // daemon relays it to any (engine `Relaying`).
-        self.end_after_relays(id, ended);
+        // Told once its members' logs keep all its capture brought (D240), and what its
+        // command wrote has reached its Engine API attaches, where the daemon relays it to any
+        // (engine `Relaying`).
+        let ended = match &capturing {
+            Some(capture) => capture.tell_after(ended),
+            None => Some(ended),
+        };
+        if let Some(ended) = ended {
+            self.end_after_relays(id, ended);
+        }
     }
 
     /// Tells run `id`'s end: its microVM stopped, its waiters, `die`, and its restart or
@@ -12117,9 +12126,14 @@ mod tests {
     /// big-endian nanoseconds, its length in a big-endian u32, then its bytes, and each
     /// record's entry in the index.
     fn write_log(t: &Test, id: &str, lines: &[Logged]) {
-        use crate::spec::{INDEX_LINE, INDEX_STDERR};
         let dir = lock(&t.daemon.containers).dir(id);
-        std::fs::create_dir_all(&dir).unwrap();
+        write_log_in(&dir, lines);
+    }
+
+    /// [`write_log`]'s log, in `dir`.
+    fn write_log_in(dir: &Path, lines: &[Logged]) {
+        use crate::spec::{INDEX_LINE, INDEX_STDERR};
+        std::fs::create_dir_all(dir).unwrap();
         let (mut log, mut index) = (Vec::new(), Vec::new());
         for (stream, at, bytes) in lines {
             for (i, piece) in bytes.chunks(16 << 10).enumerate() {
@@ -12233,6 +12247,65 @@ mod tests {
             drop(shards_ipc::recv(&theirs));
             drop(theirs);
             assert_eq!(joined(asking), 1, "undelivered logs answered as delivered");
+        });
+    }
+
+    /// `shards read logs` shows a run's members' kept lines (D240), each after its member's
+    /// label on stderr, as a client attached to the run is shown them, after the run's own
+    /// output, which stays the command's on its own streams: its last line left unfinished
+    /// as it is, a member's ended; with `-t` each line's time first, and with `--tail` the
+    /// last lines of each log. Before, `logs` read the run's own log alone: a detached run's
+    /// agents were never seen (build.rs's engine-member test on CI, PM M543).
+    #[test]
+    fn logs_show_each_members_kept_lines_after_its_label() {
+        let t = Test::new("member-logs");
+        t.run(|t| {
+            let id = t.create("racer");
+            write_log(
+                t,
+                &id,
+                &[
+                    (LOG_STDOUT, 1_000, b"out\n".to_vec()),
+                    (LOG_STDERR, 2_000, b"err\n".to_vec()),
+                    (LOG_STDOUT, 5_000, b"last".to_vec()),
+                ],
+            );
+            // Member 1's log as the drain keeps it (managed/drain.rs): `members/<index>`,
+            // its label beside it.
+            let member = lock(&t.daemon.containers).dir(&id).join("members").join("1");
+            write_log_in(
+                &member,
+                &[
+                    (LOG_STDOUT, 3_000, b"confined uid=200001\n".to_vec()),
+                    (LOG_STDERR, 4_000, b"oops\n".to_vec()),
+                    (LOG_STDOUT, 6_000, b"hal".to_vec()),
+                ],
+            );
+            std::fs::write(member.join("label"), "agent main").unwrap();
+            for args in [&["logs", "racer"][..], &["logs", "-f", "racer"]] {
+                let (status, out, err) = ask_bytes(&t.daemon, args);
+                assert_eq!(status, 0, "{args:?}: {}", String::from_utf8_lossy(&err));
+                assert_eq!(String::from_utf8(out).unwrap(), "out\nlast", "{args:?}");
+                assert_eq!(
+                    String::from_utf8(err).unwrap(),
+                    "err\n[agent main] confined uid=200001\n[agent main] oops\n[agent main] hal\n",
+                    "{args:?}"
+                );
+            }
+            let (status, out, err) = ask_bytes(&t.daemon, &["logs", "--tail", "1", "racer"]);
+            assert_eq!(status, 0);
+            assert_eq!(String::from_utf8(out).unwrap(), "last");
+            assert_eq!(String::from_utf8(err).unwrap(), "[agent main] hal\n");
+            let (status, _, err) = ask_bytes(&t.daemon, &["logs", "-t", "racer"]);
+            assert_eq!(status, 0);
+            assert!(
+                String::from_utf8(err).unwrap().ends_with(&format!(
+                    "{} [agent main] oops\n{} [agent main] hal\n",
+                    commands::rfc3339_nano(4_000),
+                    commands::rfc3339_nano(6_000)
+                )),
+                "a member's lines after their times"
+            );
         });
     }
 
@@ -12387,8 +12460,10 @@ mod tests {
     }
 
     /// Sets its flag as it drops: a played VM's thread ends with its test, a failing one's too.
+    #[cfg(any(target_os = "macos", windows))]
     struct Done<'a>(&'a AtomicBool);
 
+    #[cfg(any(target_os = "macos", windows))]
     impl Drop for Done<'_> {
         fn drop(&mut self) {
             self.0.store(true, Ordering::SeqCst);
@@ -12399,11 +12474,13 @@ mod tests {
     /// test's too, the exec `held` unanswered let go of first: the daemon keeps its own end of
     /// an exec's connection while its run lives (M24), so that one left waiting would outlive
     /// its test.
+    #[cfg(any(target_os = "macos", windows))]
     struct Ends<'a> {
         held: Option<shards_ipc::Message>,
         vms: Vec<(&'a UnixStream, u8)>,
     }
 
+    #[cfg(any(target_os = "macos", windows))]
     impl Drop for Ends<'_> {
         fn drop(&mut self) {
             drop(self.held.take());

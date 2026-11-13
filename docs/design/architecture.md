@@ -17157,12 +17157,20 @@ download.
   trouble has lasted so far (full jitter: the time lost past its end at most what it had
   lasted, and a crowd's askings not back together), at least what `Retry-After` names
   (RFC 9110 §10.2.3), with no count: a gateway's many quick failures are ridden out as a
-  timeout's few slow ones, for as long. The budget is twice the longest trouble the path
-  has passed (a doubling search past what is known, Baeza-Yates, Culberson and Rawlins,
-  "Searching in the plane", Inf. Comput. 106(2), 1993), and never less than the 100 s
-  TCP itself retransmits to a peer that does not answer before it gives up (RFC 1122
-  §4.2.3.5, R2): all a path that has passed none is given. A wait named past the budget,
-  or a trouble past it, is said as the registry's failure. A 500, which RFC 9110 §15.6.1
+  timeout's few slow ones, for as long. The budget is the longest trouble the path has
+  passed (`Paths::budget`, PM M558), by the person's rule: "The cold start, and every
+  wait after a run-out, follows the party's liveness and progress. After that the bound is
+  the slowest answer seen." A path that has passed none rides one out while it lasts, as
+  one does whose last trouble ran out, until a trouble passes, whose length is then the
+  bound; a run-out teaches nothing (`Trouble::over`). A wait named past the budget, or a
+  trouble past it, is said as the registry's failure. Before (11-09 to 11-13), twice the
+  longest (a doubling search, Baeza-Yates, Culberson and Rawlins 1993), each give-up
+  taught as a trouble passed, and never less than R2's 100 s (RFC 1122 §4.2.3.5): R2 is
+  how long TCP itself retransmits to a peer that does not answer before it ends the
+  connection, an end the host's own TCP already gives each connection (Linux's
+  `tcp_retries2`, past R2) and the trouble's next asking finds, so a floor of shards' own
+  added none of the protocol's. A trouble of a server that answers its failures (a
+  gateway's 503s) has no protocol bound at all: its path's own longest is the one. A 500, which RFC 9110 §15.6.1
   does not say passes, is asked again once, and a repeat is the request's own answer.
   A cancel ends a wait at once.
 - **Kept in the home, by path**: what each path showed (its slowest answer and slowest
@@ -17209,8 +17217,7 @@ download.
   | 1 s before any wait, and a pace's least | `patience::FIRST` | RFC 6298 §2.1, §2.4 |
   | ×2 a timeout in a row | `backed_off` | RFC 6298 §5.5 |
   | answers, silences, connects, handshakes each learned | `Wait`, `Paths::timeout`, `Paths::answer`, `Paths::silence` | each over its own times |
-  | budget: 2 × the longest trouble passed | `Shown::budget` | doubling search (Baeza-Yates, Culberson and Rawlins 1993) |
-  | budget at least 100 s | `patience::R2` | RFC 1122 §4.2.3.5, R2 |
+  | budget: the longest trouble passed; none before any, or after a run-out until one passes | `Paths::budget`, `Paths::trouble_ran_out`, `Trouble::wait` | the person's rule (2026-11-13); a run-out teaches nothing; TCP's own R2 ends dead connections already (RFC 1122 §4.2.3.5) |
   | a random share of the trouble so far | `Trouble` | full jitter, bounded by the trouble's own length |
   | at least `Retry-After` | `Trouble` | RFC 9110 §10.2.3 |
   | 502, 503, 504, 408 pass; a 500 asked once more | `Trouble` | RFC 9110 §15.5.9, §15.6.1, §15.6.3 to §15.6.5 |
@@ -23031,11 +23038,16 @@ JSON library into PID 1. Each domain gets:
 - **Its stdio:** stdin is `/dev/null`; stdout and stderr are pipes of their own, which init
   captures whole for its owner (D240). Where the run names no owner of a member's output
   (`shards.output`), the daemon reads it itself, keeps it in the member's log
-  (`members/<index>` in the run's directory, as the run's log is kept) and shows it to a
-  client attached to the run on that client's **stderr**, each line prefixed
-  `[agent main] `; the run's own stdout, stderr and log stay its command's. No member
-  waits on a reader: the daemon credits a channel again as soon as what came is kept, a
-  detached run's and one whose client has gone alike (PM M543). Every descriptor past 2
+  (`members/<index>` in the run's directory, as the run's log is kept, its label beside it)
+  and shows it to a client attached to the run on that client's **stderr**, each line
+  prefixed `[agent main] ` and written whole; `shards read logs` shows the same lines after
+  the run's own output, and follows them with `-f`. The run's own stdout, stderr and log stay
+  its command's. No member waits on a reader: the daemon credits a channel again as soon as
+  what came is kept, a detached run's and one whose client has gone alike (PM M543). As the
+  run ends, all such a member wrote is kept and shown before the run's end is said: init
+  reads its pipes to their ends, which the run's end brings as it ends the member, and the
+  daemon tells the run's end once its capture has kept the last of it (PM M543, "Lost at the
+  run's end"). Every descriptor past 2
   is closed before exec. Every descriptor init holds is close-on-exec today, which the
   mutation shows: without the close, nothing of init's reaches the agent. The close is
   there so that one descriptor not marked close-on-exec, such as the O_PATH descriptors
@@ -25475,9 +25487,18 @@ and no exec, attach or terminal (the plan's steps 5, 6 and 7).
   members' output as they serve the named members' input;
   else the daemon, which keeps it in the member's log and credits it again at once, so that
   no member waits for want of a subscriber, and shows it to an attached client prefixed
-  with the member's label (D59, "Its stdio"; PM M543). Before, every member's output waited
-  for an owner's subscription that no `shards run` made: a run's agents were heard by no one
-  (`tests/build.rs`'s agents in their domains, red on every CI run since 9151296a8).
+  with the member's label, as `shards read logs` shows it (D59, "Its stdio"; PM M543). Before,
+  every member's output waited for an owner's subscription that no `shards run` made: a run's
+  agents were heard by no one (`tests/build.rs`'s agents in their domains, red on every CI
+  run since 9151296a8).
+  As the run ends, a drained member's output goes to its end: the daemon names those members
+  in the run's setup (`managed-drained=`, `shards_abi::run::managed::DRAINED_KEY`), init reads
+  their pipes to their ends before it says the run's end, and the daemon tells the run's end
+  (its waiters, `logs -f`, its removal and restart) once its capture has kept the last record
+  it brought; an owner's channel still ends with the run, aborted, as its credit may never
+  come. Before, init aborted every member's pipes as the command ended, and the daemon ended
+  the capture at the run's DONE, and agents' reports were cut mid-line (PM M543, "Lost at
+  the run's end").
 - *Its environment* (step 7, 239749c60). Init's, then the image's `Env`, then its own
   `run.env`, then what its run stages, the last given of each name winning. `PATH` keeps the
   member's own programs first; `HOME` is never the image's; `SHARDS_DOMAIN` is refused at the
@@ -25615,7 +25636,7 @@ memory its guest holds before its guest drops its page cache (D188's measure, PM
 image run); an orchestrator that needs D188's pressure give-back through its run host to keep
 its runs within its budget.
 
-### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; the injector built, step 3: TLS ended for granted hosts, HTTP/1.1 heads filled in, echoes masked; HTTP/2 and the real-VM runs owed)
+### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; the injector built, step 3: TLS ended for granted hosts, HTTP/1.1 heads filled in, echoes masked; Hex filling a harness VM's grants and answering its leases from kiln's broker built, step 6, kiln's half on kiln main and Hex's with the Hex lead; the leak scan's harness built, step 10's first part, D259; HTTP/2 and the real-VM runs owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 33: every kiln harness runs in a
 Shards microVM, and a harness needs its model-provider credential without the credential
@@ -26133,6 +26154,49 @@ docs/research/s33-veil-creds/STEP3.md).
   in the run host's diagnostics. The injector's cost per connection (a leaf minted, two handshakes)
   and per request, measured (step 10). HTTP/2 (step 7).
 
+**Built: step 6, Hex fills a harness VM's credential grants and answers its leases from kiln's broker** (kiln plan
+01a1d2b88be57304b972761e2a5c6781 step 6; docs/research/s33-veil-creds/STEP6.md). Hex boots harness images through
+shards-api (D231) and is their orchestrator; kiln is Hex's.
+- *Hex* (a local branch given to the Hex lead, on its main cf535152 at Shards 740fa372; nothing pushed; Hex's
+  docs/design/credential-grants.md): a box's credential grants ride its image class's spec (`ShardsImage::credentials`,
+  each `{member, reference, toward}`), its durable record and its node's wire, and `inspect` shows every one
+  (`BoxInfo::credentials`). One check (`check_credentials`) refuses, typed, a grant that could not be filled in exactly
+  as it says: a reference no store could name; a host its member's own egress grant (a destination by name, by TCP,
+  D236) does not reach, as a credential grant grants no egress; a host another member reaches ungranted, as the
+  injector ends the TLS of every flow to a granted host whichever member's ("Who", above), so each such member must
+  hold the grant and Hex's record says what the run does; and, at 740fa372, a second credential toward one host. Hex
+  lowers them to this entry's run-wide grants, one of each credential toward every host its members' grants name,
+  adding none, and gives the boot a lessor for that run alone, made by the lessors its own orchestrator gave its node
+  (`hex_api::lease::Lessors`, `Lessor`). Through it each ask is answered: the value moved whole into `Secret`, a life
+  of none the run channel's most (the run's life), each refusal kind for kind, and each lease the session gives back
+  (every one, once, by whatever end, as above) given back to the orchestrator's. A run granting none has no lessor; a
+  box granting one on a node given no lessors is refused as it is created (`Refusal::Unconfigured`, a node's
+  configuration).
+- *kiln* (main e76cc5e72): the Sandbox seam's launch carries credentials by reference
+  (`kiln_seams::sandbox::CredentialGrant`, `Holds::credentials`, SANDBOX-13: filled in toward its granted host alone,
+  never-fillable grants `Invalid`, unheld ones `Unsupported`; kiln's host sandbox holds none), and `secrets::lessor`
+  answers a run's asks from the run-lease broker: its leases issued to the run's own key where it binds one, else to a
+  channel of its own (256 random bits in a key fingerprint's form, which names no other run), each lease given back
+  alone (`Broker::release_lease`), the run's end revoking the rest (`RunLessor::ended`).
+- *Since 740fa372:* step 3's injector moved the grant to `shards_dns::credential` and gave it its member's
+  `placeholder`, filling a value only where that placeholder stands. Hex's re-vendor past it carries each grant's
+  placeholder (kiln mints it where it stages the credential into its member) and drops the one-credential-per-host
+  rule, which Shards holds by placeholder (`Refused::Shared`).
+- *Literals.* A reference's grammar is the store's (1 to 512 of A-Za-z0-9/_+=.@-, Secrets Manager's, as kiln-seams'
+  `check_name` keeps it); a life of none is the u64 of nanoseconds this entry's channel carries at its most; 256 random
+  bits are a key fingerprint's form (D238). No learned value enters this step.
+- *Tests (Linux x86_64, adacachy2, rust 1.99.1; STEP6.md).* kiln (r426): kiln-seams sandbox 7/7, doc_truth 3/3, kiln
+  `secrets::` and `sandbox::` 34/34 (the lessor over SimSecrets and kiln's store alike), clippy clean. Hex (r503):
+  red at its red commit (hex-api 6, hex-core 12, hex-runtime 5 failing), green at its green (33/33, 131/131, 64/64:
+  a harness VM's grants in its boot and its record, its ask answered from a simulated broker and given back as it
+  stops, an ungranted host passed bare, a grant beyond its egress or on a node with no lessors refused before any
+  record, the wire both ways, the lease contract), the record's and the release's removal each failing its test, and
+  clippy clean for Linux, macOS and Windows.
+- *Owed.* The Hex lead's merge and re-vendor (past 740fa372: placeholders); kiln's implementation of Hex's lease seam
+  over `secrets::lessor` once kiln vendors that Hex, and its sandbox's grants carried to `ShardsImage::credentials`;
+  a remote node's lessors (a node reached over its wire has none, and refuses grants `Unconfigured`); ROOT's real runs
+  (step 10).
+
 **Built: step 9, every harness's trust and token checks surveyed** (docs/research/s33-veil-creds/
 harness-survey.md, its evidence `evidence/survey/<harness>.txt`). Each of kiln's ten harnesses was read from its own
 build: its pinned linux/amd64 files, held to their pins' sha256, searched for the strings that say how it trusts and
@@ -26145,11 +26209,24 @@ token beside a real ID token; whether its Anthropic sign-in runs it is step 8's 
 sender-constrained tokens. A string found says the build carries the code, not that every path runs it; ROOT's real
 runs (step 10) confirm each harness's trust of the run's CA.
 
-**Owed (later slices of step 33, this plan's steps 6–8 and 10).** The injector that
-fills HTTP/2 headers (step 7); Hex wiring the grants
-and answering a run's leases from kiln's broker (step 6); the Claude Code and Codex
+**Built: step 10's first part, the leak scan's harness (D259, docs/research/measurements/
+s33-leak-scan).**
+- *The save.* `ImageGuest::save` saves an orchestrator's run whole and leaves it running: its
+  memory, swap and writable layer. It uses D176's own save, made by the run's host. It is the
+  run owner's alone, beneath the run's home, beneath no directory its guest reaches, and typed.
+- *The scan.* scan.py reuses the bring-up's leak check where it lives (credentials.py: the whole
+  value, or any run of `RUN = 9` of its bytes, at every offset). It points that check at a
+  save's files, a disk image and each member's environment as given, and looks for each value
+  in its UTF-8, UTF-16LE and base64 forms. It counts the run's placeholders as no leak, lists
+  the bring-up's credential shapes that no value explains, and never prints a value.
+- *Owed.* ROOT's runs of it on KVM, HVF and WHP (its README); step 10's second part, the
+  injector's A/B latency harness, is another lane's.
+
+**Owed (later slices of step 33, this plan's steps 7, 8 and 10).** The injector that
+fills HTTP/2 headers (step 7); the Claude Code and Codex
 sign-in/refresh profiles (step 8); and ROOT's real-VM runs on KVM, HVF and WHP with a
-whole-guest-memory leak scan and the injector's measured cost (step 10).
+whole-guest-memory leak scan (its harness built, D259) and the injector's measured cost (step 10). Step 6's own owed
+items are its block's, above.
 
 **Literals.** None of its own: this slice adds no numeric bound. A credential's `reference`
 is bounded by the store it names (kiln-seams `NAME_MAX`, 512), not re-stated here; its hosts
@@ -27706,6 +27783,144 @@ No other.
 ended by an orchestrator's broken channel, or by a VM that could not serve it, whose end does
 not say why. A run's end read once as one thing and later as another. A host's diagnostic that
 its named file lacks, or holds twice.
+
+### D259. An orchestrator's run saved whole for its owner: `ImageGuest::save`, D176's save made by its run's host, and plan step 33's leak scan over what it writes (built; real-VM runs owed)
+
+**Why.** Plan step 33's acceptance (D242) is that no credential value is anywhere in a
+harness's microVM: its memory, its disk, its environment. Checking its memory needs the guest's
+memory whole, saved at a point of a session: after a tool turn and a token's refresh. Shards
+saves a running microVM whole (D176, `shards save vm`). But an orchestrator's run (D231) has
+no daemon, and its handle, `ImageGuest`, had no save (kiln research
+01a1d2b88be57304bf6b081fe46832e0, f19). ROOT's conditions (2026-11-13), because a run's memory
+on disk is the most sensitive thing a run has:
+- the save is the run owner's alone, asked over its own session, and written only where the
+  owner names, nothing anyone else can ask for;
+- it is typed, and refused when the run is in no state to save;
+- it has a D-entry of its own;
+- it reuses the daemon's save, or D253's template save, rather than build a second.
+
+**Alternatives.**
+- *The daemon's `save vm` (D176), as it is.* It reaches the daemon's own runs alone. An
+  orchestrator's run is hosted by its own `shards api-run` (D231, D248), and no daemon knows
+  it. A run's credential grants (D242) are an orchestrator's alone, so the sessions step 33
+  must scan are such runs. Its machinery is reused below, all of it.
+- *D253's template save.* It is the guest's own, made at its boot before any member runs, so
+  it can hold nothing a session holds later.
+- *Any path the owner names, held to a walk of every directory above it.* On Unix, OpenSSH's
+  `auth_secure_path` (auth.c) walks a path so: every directory owned by root or the user, none
+  writable by group or other. On Windows a directory's ACL can let another user rename what its
+  owner made beneath it. Authenticated Users' Modify, inherited beneath `C:\`, grants `DELETE`.
+  So a path's privacy there needs every ACE of every directory above it read. Shards already
+  keeps guest memory in the home, D25's templates and D176's saves, which is private on every OS
+  (0700; on Windows the ACL `%LOCALAPPDATA%` gives it, `os::owner_only_dir`). The save takes the
+  home's privacy instead (ROOT, 2026-11-13).
+- *The guest's RAM read from the host without a snapshot.* Its VM process maps its RAM
+  privately inside its sandbox (D30), and its own save writes it already.
+
+**Decided and built.**
+- *The ask* (shards-api).
+  - `ImageGuest::save(to, patience)`, image channel version 23 (after step 3's placeholders at 22): `to_host::SAVE` (15) carries a
+    `SaveAsk { id, to }`, answered by `to_client::SAVED` (33), a `SaveAnswer { id, result }`.
+  - Refusals are typed, `SaveRefusal`: `Destination` 0, `State` 1, `Unsupported` 2, `Failed` 3.
+    They reach the caller as `ImageRefusal::Save(SaveRefusal, String)`.
+  - A path that is not UTF-8 is refused as `Spec`, as a plug's is.
+  - It is awaited as a room's is: an answer to an ask whose patience ran out is dropped.
+  - `ImagePools`' runs pass it through.
+- *The owner's alone.*
+  - Its frame is read only on the run's own channel, in the run host's asks (`judged`), after
+    its request.
+  - A frame that comes before the request refuses the run (`before_request`, `Cause::Request`).
+    Until its run comes, a warm host's channel is its pool's (D253).
+  - The agent-control endpoint (D252) has no save, and neither has the guest.
+  - The VM's `SAVED` answers only a save its owner asked (`Saving::answered`).
+- *Where* (`api_run::destination`, `made`).
+  - `to` is absolute. Its parent is canonicalized, so no link is followed past here, and must be
+    the run's home or beneath it.
+  - `to` is not at, beneath or holding a directory a guest reaches: each share's host directory
+    (canonical as the run starts), each plug's, and the home's volumes (`volumes::ROOT`, made or
+    not).
+  - The directory is made then, its user's alone (`os::owner_only_dir`), and refused where
+    anything is already there.
+  - Each refusal is `Destination`, saying why.
+- *One at a time* (R04, `api_run::Saving`).
+  - `Idle` becomes `Asked` as the owner asks.
+  - `Asked` becomes `Idle` as its VM answers, or where the ask never reached it.
+  - Either becomes `Gone` as the VM's link closes, and a save awaiting its answer hears that
+    its microVM stopped.
+  - A save asked while one is under way, or after the VM's end, is refused `State`, as the
+    daemon refuses one per run (`Inbox::saving`).
+  - A host whose backend takes no snapshots refuses `Unsupported` (`shards_vmm::vm::SNAPSHOTS`).
+- *The save is the daemon's* (R12).
+  - `shards_vmm::snapshot::prepare(dir, true)` stages a generation: memory, state, swap,
+    layer-head, layer, window-heads.
+  - Its files are handed to the VM with `SAVE`, whose payload `daemon::snapshots::save_ask` now
+    makes for the daemon's `ask_save` and api-run alike. warm.rs's `save_request` reads it as
+    before.
+  - With `SAVE_LEAVE_RUNNING`, its VM parks its vCPUs, quiets its devices and its guest (D176's
+    `QUIESCE`), fills the files and goes on.
+  - The run host then commits the generation: synced, renamed, pointed at.
+  - Its tokens, D176's two of `run::TOKEN`, which a restore of it would dial with, are fresh,
+    wiped here and kept nowhere: no save of an orchestrator's run is restored.
+  - For the same reason, a host that saves but cannot restore (Windows Server 2022's WHP, PM
+    M345) still saves.
+  - A save that fails leaves nothing: its directory is removed.
+- *The leak scan* (docs/research/measurements/s33-leak-scan, its README). scan.py reuses the
+  bring-up's check where it lives (harness-bringup-v2/credentials.py): a secret is every value
+  under a token, key, secret or account_id name, and a leak is the whole value or a run of
+  `RUN` bytes, looked up at every offset. It adds:
+  - the scan of a save's files, a disk image and each member's environment as given, each file
+    mapped, not read in;
+  - each value's UTF-16LE and base64 forms;
+  - the run's placeholders, given as public, whose windows are no leak;
+  - the bring-up's credential shapes, those no value explains listed by where they lie;
+  - exit 3 for a leak and 4 for unexplained shapes alone, never printing a value.
+
+**Literals** (R03).
+- The channel's version 23, kinds 15 and 33, and refusal tags 0 to 3 are sequence numbers, each
+  the next free.
+- The save adds no number: D176's tokens and the snapshot's file names are reused.
+- The scan:
+  - `RUN = SHOWN + 1 = 9` is credentials.py's. OpenAI's refusal shows a key's first 8
+    characters, in harness-bringup-v1's record. The bring-up's review (F1) replaced the chosen
+    24-byte windows, 8-byte stride and 31-byte promise that research f18 still cites; ROOT
+    confirmed it, 2026-11-13.
+  - A shape's random part is at least `ceil(128 / 6) = 22` base64url characters: RFC 6749
+    §10.10 bounds a token's guessing odds at 2^-128, and RFC 4648 §5's 64 symbols carry 6 bits.
+  - Exit 3 is credentials.py's for a leak; 4 is the next.
+
+**Cold start** (R03). Nothing is learned or chosen.
+
+**Tested** (light; adas-mac-studio-3.local, macOS arm64, rustc 1.98.1, Python 3.9.6, through a
+carrier: a bundle over origin/main in a blobless clone):
+- shards-api: `image::wire::tests::saves_round_trip_and_bad_ones_are_refused`, and
+  `image::session::tests::a_saves_answer_is_kept_for_its_awaited_ask_alone` and
+  `a_save_rides_the_runs_channel_and_comes_back_typed`.
+- shards, api-run (`api_run::tests`):
+  - `a_save_is_served_on_its_run_owners_channel_alone`: not the owner's session;
+  - `a_runs_saves_go_one_at_a_time_and_end_with_its_vm`: not in a state to save;
+  - `a_save_is_made_only_where_its_owner_may_have_it`: a destination not the owner's;
+  - the run host's side, `hosted::tests::a_save_is_handed_to_its_vm_and_committed_once_its_vm_filled_it`.
+    Its VM is played on the link's other end, and the link is followed as a run's is.
+- shards: `daemon::snapshots::tests::a_saves_ask_reads_as_its_vm_reads_it`.
+- The scan: `scan_test.py`, 7 tests; credentials.py's `credentials_test.py`, 15, unchanged.
+- Each guard was removed in turn and its test failed: the records are in the scan's README and
+  below.
+
+**Owed** (ROOT).
+- `api_image`'s `a_saved_runs_memory_holds_what_its_harness_was_given_and_the_scan_finds_it` on
+  KVM x86_64, HVF, WHP and, through L1, KVM arm64.
+- Step 33's real sessions scanned, once steps 3, 6 and 8 land, with a save hook in Hex (the
+  Hex lead's).
+- These light tests on Linux and Windows (CI), and `scripts/lint` on every target.
+
+**What would falsify it.**
+- A save asked other than on its run's own channel that is made.
+- A save written where its owner did not name, or where a guest reaches.
+- A second save made while one is under way.
+- A save that fails and leaves files behind.
+- A run that stops for its save.
+- A credential's run in a save's files that the scan does not report, or a report that prints
+  a value.
 
 ## 4. Start path (≤ 5 ms budget)
 

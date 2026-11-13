@@ -325,7 +325,7 @@ impl Registry {
                         trouble.over(&self.http, &at);
                     }
                     mark = done;
-                    match trouble.wait(asked, self.http.budget(&at), None) {
+                    match trouble.wait(&self.http, &at, asked, None) {
                         Some(wait) => self.http.pause(wait)?,
                         None => {
                             return Err(e.context(format!(
@@ -372,7 +372,7 @@ impl Registry {
                     self.refused.fetch_min(len, Ordering::Relaxed);
                 }
                 // Not where the registry is: asked where that is, for a moment at most.
-                416 if trouble.wait(asked, self.http.budget(&at), None).is_some() => {
+                416 if trouble.wait(&self.http, &at, asked, None).is_some() => {
                     drop(response);
                     match self.status(&at, size)? {
                         Some((url, had)) => (at, done) = (url, had),
@@ -807,7 +807,7 @@ impl Registry {
                 // An overdue answer, one past the slowest its path has shown, is asked again
                 // at once, that asking waited for as its connection lives (crate::patience).
                 Err(e) if e.kind() == ErrorKind::Transient && file.is_none() => {
-                    match trouble.wait(asked, self.http.budget(url), None) {
+                    match trouble.wait(&self.http, url, asked, None) {
                         Some(wait) => {
                             if !e.is_overdue() {
                                 self.http.pause(wait)?;
@@ -850,11 +850,11 @@ impl Registry {
                 // What the registry or its gateway says is passing (RFC 9110 §15.5.9,
                 // §15.6.3 to §15.6.5): ridden out while it lasts a moment, waited as long
                 // as it names.
-                408 | 502 | 503 | 504 => trouble.wait(asked, self.http.budget(url), retry_after(&response)),
+                408 | 502 | 503 | 504 => trouble.wait(&self.http, url, asked, retry_after(&response)),
                 // An unexpected condition, which RFC 9110 §15.6.1 does not say passes:
                 // asked again once, as it may have been the moment's, but not past a
                 // repeat, which is the request's own.
-                500 if !repeated => trouble.wait(asked, self.http.budget(url), retry_after(&response)),
+                500 if !repeated => trouble.wait(&self.http, url, asked, retry_after(&response)),
                 _ => None,
             };
             let Some(wait) = wait else {
@@ -1332,7 +1332,7 @@ impl Registry {
                 continue;
             }
             // It brought nothing: resumed while that lasts its path's budget.
-            match trouble.wait(asked, self.http.budget(&url), None) {
+            match trouble.wait(&self.http, &url, asked, None) {
                 Some(wait) => self.http.pause(wait)?,
                 None => return Err(stalled(&digest, trouble.lasted())),
             }
@@ -1351,9 +1351,11 @@ impl Registry {
         self.http.keep_in(store.root());
     }
 
-    /// How long a trouble of `url`'s server is ridden out.
-    pub(crate) fn budget(&self, url: &Url) -> Duration {
-        self.http.budget(url)
+    /// After an attempt of `url`'s begun at `attempt` failed, a trouble of its server's:
+    /// how long to wait before asking again, none where it is given up on
+    /// ([`Trouble::wait`]).
+    pub(crate) fn ride(&self, trouble: &mut Trouble, url: &Url, attempt: Instant) -> Option<Duration> {
+        trouble.wait(&self.http, url, attempt, None)
     }
 
     /// A trouble of `url`'s server ended, the asking of `url` answered.
@@ -1748,21 +1750,27 @@ fn allowance_window(response: &Response, said: &[u8]) -> Option<Duration> {
 /// lasted so far (full jitter: a share of the failure's own length, so that the time lost
 /// past its end is at most what it had already lasted, and a crowd's asks do not come back
 /// together), at least what the registry names in `Retry-After` (RFC 9110 §10.2.3); until
-/// it has lasted its path's budget in all (crate::patience: twice the longest trouble the
-/// path passed, at least TCP's R2), or a wait it names would end past it. No count: a
+/// it has lasted its path's budget in all (crate::patience: the longest trouble the path
+/// passed; none before any, or after one ran out until one passes, its trouble ridden out
+/// while it lasts), or a wait it names would end past it. No count: a
 /// trouble of many quick failures (a gateway's cut connections) is ridden out as one of a
 /// few slow ones (a timeout's), for as long.
 #[derive(Debug, Default)]
 pub(crate) struct Trouble {
     /// When its first failed attempt began.
     began: Option<Instant>,
+    /// Whether it ran out, given up on past its path's budget: no trouble passed.
+    ran_out: bool,
 }
 
 impl Trouble {
     /// The trouble is over, the asking of `url` answered: what fails next begins another.
-    /// One that had begun passed, and its path learns how long it lasted (D222).
+    /// One that had begun and passed teaches its path how long it lasted (D222); one that
+    /// ran out teaches nothing.
     pub(crate) fn over(&mut self, http: &Client, url: &Url) {
-        if let Some(began) = self.began.take() {
+        if let Some(began) = self.began.take()
+            && !std::mem::take(&mut self.ran_out)
+        {
             http.passed(url, began.elapsed());
         }
     }
@@ -1772,23 +1780,38 @@ impl Trouble {
         self.began.map_or(Duration::ZERO, |b| b.elapsed())
     }
 
-    /// After an attempt begun at `attempt` failed: how long to wait before asking again,
-    /// or `None` where the trouble has lasted `budget`, or the registry names a wait
-    /// (`after`) past it.
+    /// After an attempt of `url`'s begun at `attempt` failed: how long to wait before
+    /// asking again; or `None` where the trouble has lasted its path's budget, the longest
+    /// it has passed, which runs it out ([`Client::trouble_ran_out`]), or the registry names
+    /// a wait (`after`) past it. A path whose troubles bound nothing rides one out while it
+    /// lasts.
     pub(crate) fn wait(
         &mut self,
+        http: &Client,
+        url: &Url,
         attempt: Instant,
-        budget: Duration,
         after: Option<Duration>,
     ) -> Option<Duration> {
         let began = *self.began.get_or_insert(attempt);
         let lasted = began.elapsed();
-        let left = budget.checked_sub(lasted).filter(|l| !l.is_zero())?;
+        let left = match http.budget(url) {
+            Some(budget) => match budget.checked_sub(lasted).filter(|l| !l.is_zero()) {
+                Some(left) => Some(left),
+                None => {
+                    self.ran_out = true;
+                    http.trouble_ran_out(url);
+                    return None;
+                }
+            },
+            None => None,
+        };
         let share = lasted.mul_f64(jitter());
-        match after {
-            Some(after) if after > left => None,
-            Some(after) => Some(after.max(share).min(left)),
-            None => Some(share.min(left)),
+        match (after, left) {
+            (Some(after), Some(left)) if after > left => None,
+            (Some(after), Some(left)) => Some(after.max(share).min(left)),
+            (Some(after), None) => Some(after.max(share)),
+            (None, Some(left)) => Some(share.min(left)),
+            (None, None) => Some(share),
         }
     }
 }
@@ -3091,11 +3114,13 @@ mod tests {
     fn a_troubles_waits_are_shares_of_its_length_within_a_moment() {
         let moment = Duration::from_secs(10);
         let ago = |d: Duration| Instant::now().checked_sub(d).unwrap();
+        let within = crate::testing::client().with_moment(moment);
+        let at = Url::parse("https://m.example/v2/").unwrap();
         let mut trouble = Trouble::default();
         let began = ago(Duration::from_secs(2));
         let mut waits = Vec::new();
         for _ in 0..200 {
-            let wait = trouble.wait(began, moment, None).unwrap();
+            let wait = trouble.wait(&within, &at, began, None).unwrap();
             assert!(wait <= trouble.lasted(), "{wait:?} past {:?}", trouble.lasted());
             waits.push(wait);
         }
@@ -3103,15 +3128,15 @@ mod tests {
         waits.sort();
         assert!(waits[0] < waits[199], "{waits:?}");
         // Named: at least that.
-        let named = trouble.wait(Instant::now(), moment, Some(Duration::from_secs(3)));
+        let named = trouble.wait(&within, &at, Instant::now(), Some(Duration::from_secs(3)));
         assert!(named.unwrap() >= Duration::from_secs(3));
         // Named past the moment: given up on.
         assert_eq!(
-            trouble.wait(Instant::now(), moment, Some(Duration::from_secs(9))),
+            trouble.wait(&within, &at, Instant::now(), Some(Duration::from_secs(9))),
             None
         );
         // Lasted the moment: given up on.
-        assert_eq!(Trouble::default().wait(ago(moment), moment, None), None);
+        assert_eq!(Trouble::default().wait(&within, &at, ago(moment), None), None);
         // Over: what fails next begins another, and the path learns how long it lasted.
         let http = crate::testing::client();
         let url = Url::parse("https://r.example/v2/").unwrap();
@@ -3229,6 +3254,46 @@ mod tests {
             moment,
         );
         assert_eq!((status.unwrap(), asked), (500, 2));
+    }
+
+    /// A trouble is ridden out no longer than the longest its path has passed, 0.3 s here,
+    /// never twice that nor TCP's 100 s: a gateway's 503s that last 1.5 s are the request's
+    /// answer past 0.3 s. The run-out learns nothing, and the next trouble is ridden out
+    /// while it lasts, to its 200, which is then the longest; a path that has passed none
+    /// rides one out so too (D222).
+    #[test]
+    fn a_trouble_is_ridden_out_no_longer_than_the_longest_its_path_passed() {
+        let first = Arc::new(std::sync::Mutex::new(None::<Instant>));
+        let since = first.clone();
+        // 503 for 1.5 s from each trouble's first asking, then 200.
+        let server = route(None, move |_| {
+            let began = *since.lock().unwrap().get_or_insert_with(Instant::now);
+            if began.elapsed() >= Duration::from_millis(1500) {
+                return Some((http("200 OK", &[]), After::Keep));
+            }
+            Some((http("503 Service Unavailable", &[]), After::Keep))
+        });
+        let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", server.port)).unwrap();
+        let passed = crate::patience::Shown {
+            trouble_us: 300_000,
+            ..crate::patience::Shown::default()
+        };
+        let http = crate::testing::client().showing("127.0.0.1", server.port, passed);
+        let registry = Registry::new(http, &reference, Credentials::Anonymous).unwrap();
+        let url = registry.base().join("manifests/v1").unwrap();
+        let t0 = Instant::now();
+        let (response, _) = registry.request("GET", &url, &[]).unwrap();
+        let took = t0.elapsed();
+        assert_eq!(response.status, 503, "given up past 0.3 s: {took:?}");
+        drop(response);
+        assert!(took < Duration::from_millis(1500), "{took:?}");
+        // The next trouble, ridden out while it lasts.
+        *first.lock().unwrap() = None;
+        let (response, _) = registry.request("GET", &url, &[]).unwrap();
+        assert_eq!(response.status, 200);
+        drop(response);
+        let shown = registry.http.shown("127.0.0.1", server.port);
+        assert!(shown.trouble_us >= 1_000_000, "{shown:?}");
     }
 
     /// A wait before asking a registry again ends at its client's cancel, which it says.
