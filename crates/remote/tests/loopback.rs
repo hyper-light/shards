@@ -40,6 +40,8 @@ enum Seen {
     Signalled(String, u32),
     /// The daemon let go of its stream's state, the means to hang it up with it.
     Released(String),
+    /// Its start is under way, held until the test lets it go (`stalls`).
+    Stalled(String),
 }
 
 /// A machine whose clients and invitations are kept in memory, running each command as a
@@ -48,6 +50,8 @@ struct Machine {
     clients: Mutex<Vec<(String, Vec<u8>)>>,
     invitations: Mutex<Vec<Invitation>>,
     seen: mpsc::Sender<Seen>,
+    /// What lets a `stalls` command's start go on.
+    stall: Mutex<Option<mpsc::Receiver<()>>>,
 }
 
 /// A command's stdin, which says when it is let go.
@@ -117,6 +121,16 @@ impl Host for Machine {
         // that ignores SIGHUP does.
         let outlives = args.first().is_some_and(|a| a == "outlives-hangup");
         let args = if outlives { args[1..].to_vec() } else { args };
+        // `stalls COMMAND...`: COMMAND, its start held until the test lets it go, as a host's
+        // start that takes long would hold it.
+        let stalls = args.first().is_some_and(|a| a == "stalls");
+        let args = if stalls { args[1..].to_vec() } else { args };
+        if stalls {
+            let _ = self.seen.send(Seen::Stalled(args.join(" ")));
+            if let Some(release) = self.stall.lock().unwrap().as_ref() {
+                let _ = release.recv();
+            }
+        }
         let (gone, gone_rx) = mpsc::channel::<()>();
         let what = args.join(" ");
         // Each command one of the tests' helper program's, the same on every host.
@@ -240,6 +254,16 @@ fn daemon(
     clients: Vec<(String, Vec<u8>)>,
     invitations: Vec<Invitation>,
 ) -> Daemon {
+    daemon_with(identity, clients, invitations, None)
+}
+
+/// [`daemon`], a `stalls` command's start held until `stall` gives it leave.
+fn daemon_with(
+    identity: &'static Identity,
+    clients: Vec<(String, Vec<u8>)>,
+    invitations: Vec<Invitation>,
+    stall: Option<mpsc::Receiver<()>>,
+) -> Daemon {
     // The commands' program, built before the daemon serves: its first start would build it
     // (cargo, seconds) on the daemon's driver, which answers nothing meanwhile, and a client
     // whose send goes unanswered a whole window past its probe timeout is let go (D180).
@@ -249,6 +273,7 @@ fn daemon(
         clients: Mutex::new(clients),
         invitations: Mutex::new(invitations),
         seen,
+        stall: Mutex::new(stall),
     };
     let (tx, bound) = mpsc::channel();
     std::thread::spawn(move || {
@@ -1089,6 +1114,29 @@ fn a_machine_holds_as_many_strangers_as_invitations_the_oldest_giving_way() {
     let none = daemon(daemon_id, Vec::new(), Vec::new());
     let third = RawClient::new(strangers[2], none.remote);
     assert_eq!(third.next(), unenrolled());
+}
+
+/// A host's start runs apart from the daemon's driver, which acknowledges every client
+/// meanwhile: while one start is held (a stand-in for one that takes long), another client's
+/// command is answered whole, and the held one, let go, runs as any other.
+#[test]
+fn a_slow_start_holds_up_no_other_client() {
+    let daemon_id = leak(Identity::generate().unwrap());
+    let laptop = leak(Identity::generate().unwrap());
+    let (release, held) = mpsc::channel();
+    let mut d = daemon_with(
+        daemon_id,
+        vec![("laptop".into(), laptop.spki().to_vec())],
+        Vec::new(),
+        Some(held),
+    );
+    let slow = run(laptop, d.remote, &["stalls", "say", "slow", "x", "0"], None);
+    d.seen.saw(&Seen::Stalled("say slow x 0".into()));
+    let (status, out, _) = run(laptop, d.remote, &["say", "quick", "x", "0"], None).get();
+    assert_eq!((status, out), (Ok(0), b"quick\n".to_vec()));
+    release.send(()).unwrap();
+    let (status, out, _) = slow.get();
+    assert_eq!((status, out), (Ok(0), b"slow\n".to_vec()));
 }
 
 /// A client the machine enrolled keeps its connection through its command's silence: neither
