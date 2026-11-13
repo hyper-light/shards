@@ -94,7 +94,7 @@ const EXTENDED: &[(&str, &str)] = &[
         "remove",
         "\nShards options:\n      --vms   Remove stopped microVMs\n",
     ),
-    // A command run in one of its image's agents or harnesses (D241).
+    // A command run in one of its image's agents or harnesses (D242).
     (
         "exec",
         "\nShards options:\n      --for string   Run it in the agent or harness of this name,\n                     confined as it is\n",

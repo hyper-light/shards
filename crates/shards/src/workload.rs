@@ -1812,7 +1812,7 @@ fn exec_session(to: &'static ToGuest, req: &mut ExecRequest) -> Result<u8, Strin
                         let _ = writeln!(req.stderr, "shards: {}", String::from_utf8_lossy(&why));
                         1
                     }
-                    // Refused in a member, by type (D241): `docker exec`'s 126 for what its
+                    // Refused in a member, by type (D242): `docker exec`'s 126 for what its
                     // runtime could not start, its 1 for what its daemon refuses.
                     Some((run::exec_failed::MEMBER, said)) => {
                         let (refusal, why) = run::members::Refusal::decode(&said)

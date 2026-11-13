@@ -360,7 +360,7 @@ impl HostListen {
 
 /// Why an exec did not start, as its [`kind::SYSTEM_ERR`] says first: the microVM's init
 /// could not start it, or the daemon refuses it (an unknown user), or init refuses to run
-/// it in a member, by type ([`members::Refusal`](super::run::members::Refusal), D241).
+/// it in a member, by type ([`members::Refusal`](super::run::members::Refusal), D242).
 pub mod exec_failed {
     pub const RUNTIME: u8 = 0;
     pub const DAEMON: u8 = 1;

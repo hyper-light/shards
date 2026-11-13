@@ -1,5 +1,5 @@
 //! A microVM's members as a command run in them finds them (the harness plan's step 6,
-//! G24; D241), on real VMs booted from SHARDS_KERNEL and SHARDS_INIT: an image from a
+//! G24; D242), on real VMs booted from SHARDS_KERNEL and SHARDS_INIT: an image from a
 //! loopback registry (tests/common, `served`) whose Agentfile's members are the test guest.
 //! What a member sees of itself is what its `confined` mode says on its stdout, read as its
 //! owner reads it (D180): booted for an orchestrator through shards-api's `ImageShards` and

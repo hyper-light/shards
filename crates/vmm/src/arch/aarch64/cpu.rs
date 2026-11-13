@@ -60,10 +60,49 @@ fn level(reg: u16, shift: u32, value: u64) -> i8 {
     }
 }
 
+/// A field of an ID register a host has less of than its guest found: the register by its
+/// encoding, the field's lowest bit, and the two levels as the ID scheme reads them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Short {
+    pub reg: u16,
+    pub shift: u32,
+    pub guest: i8,
+    pub host: i8,
+}
+
+impl std::fmt::Display for Short {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}[{}:{}] {} here {}",
+            name(self.reg),
+            self.shift.saturating_add(3),
+            self.shift,
+            self.guest,
+            self.host
+        )
+    }
+}
+
+/// Why a host does not run a guest ([`covers`]): each field it has less of.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Lacks(pub Vec<Short>);
+
+impl std::fmt::Display for Lacks {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let fields: Vec<String> = self.0.iter().map(Short::to_string).collect();
+        write!(
+            f,
+            "this CPU has less of what its guest uses: {} (the guest's level, then this host's)",
+            fields.join(", ")
+        )
+    }
+}
+
 /// Whether a host whose ID registers are `host` runs a guest that found `guest`: every
 /// field of every register both name at least the guest's level, MIDR_EL1 aside. Why not,
-/// naming each field short, where it does not.
-pub fn covers(host: &[(u16, u64)], guest: &[(u16, u64)]) -> Result<(), String> {
+/// each field short, where it does not.
+pub fn covers(host: &[(u16, u64)], guest: &[(u16, u64)]) -> Result<(), Lacks> {
     let mut short = Vec::new();
     for &(reg, want) in guest {
         if reg == MIDR_EL1 {
@@ -75,17 +114,19 @@ pub fn covers(host: &[(u16, u64)], guest: &[(u16, u64)]) -> Result<(), String> {
         for shift in (0..64).step_by(4) {
             let (g, h) = (level(reg, shift, want), level(reg, shift, have));
             if g > h {
-                short.push(format!("{}[{}:{}] {g} here {h}", name(reg), shift + 3, shift));
+                short.push(Short {
+                    reg,
+                    shift,
+                    guest: g,
+                    host: h,
+                });
             }
         }
     }
     if short.is_empty() {
         Ok(())
     } else {
-        Err(format!(
-            "this CPU has less of what its guest uses: {} (the guest's level, then this host's)",
-            short.join(", ")
-        ))
+        Err(Lacks(short))
     }
 }
 
@@ -167,7 +208,19 @@ mod tests {
         let m4 = [(MIDR_EL1, 0x612f_0280), (isar2, 0x0000_0000_0000_1000)];
         assert!(covers(&m5, &m4).is_ok());
         let refused = covers(&m4, &m5).unwrap_err();
-        assert!(refused.contains("ID_AA64ISAR2_EL1[55:52] 1 here 0"), "{refused}");
+        assert_eq!(
+            refused.0,
+            [Short {
+                reg: isar2,
+                shift: 52,
+                guest: 1,
+                host: 0
+            }]
+        );
+        assert!(
+            refused.to_string().contains("ID_AA64ISAR2_EL1[55:52] 1 here 0"),
+            "{refused}"
+        );
         let both = meet(&m5, &m4);
         assert!(covers(&m5, &both).is_ok() && covers(&m4, &both).is_ok());
         assert_eq!(both[0], (MIDR_EL1, 0x612f_0390), "the first's own CPU");

@@ -114,7 +114,7 @@ fn split_spec(spec: &str) -> Result<(String, String, bool), String> {
     Ok((source.to_string(), format!("/{path}"), read_only))
 }
 
-/// Why `--for NAME` names no member to plug into (D235) or run a command in (D241), each
+/// Why `--for NAME` names no member to plug into (D235) or run a command in (D242), each
 /// with the name given.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum NoMember {
@@ -341,7 +341,7 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// The member index of `name`, an agent or harness of running microVM `id`'s image that
-    /// runs (D235, D241).
+    /// runs (D235, D242).
     pub(super) fn running_member(&self, id: &str, name: &str) -> Result<u32, NoMember> {
         let runs = lock(&self.runs);
         let agentfile = match runs.get(id) {

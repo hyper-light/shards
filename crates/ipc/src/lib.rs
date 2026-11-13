@@ -634,7 +634,7 @@ pub struct Exec {
     /// exec`'s, which the daemon makes as it starts it.
     pub id: String,
     /// `--for`: the agent or harness of its image's to run it in, confined as that member
-    /// is (D241); empty for the microVM's command's namespaces.
+    /// is (D242); empty for the microVM's command's namespaces.
     pub member: String,
 }
 

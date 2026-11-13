@@ -195,7 +195,9 @@ it with `shards run vm --security-opt nesting=true IMAGE`. The program then has 
 microVM's cgroups below its own to divide (`/sys/fs/cgroup`, writable; the limits you gave
 the microVM stay yours), the capabilities a runtime makes namespaces, mounts and device
 rules with (`CAP_SYS_ADMIN`, `CAP_NET_ADMIN`), and Docker's default seccomp profile for them
-with `pivot_root` added; `shards exec vm` into it has the same. Its boxes end when it does,
+with `pivot_root` added; `shards exec vm` into it has the same. Like any program's
+capabilities, those are its own only while it runs as root, so keep the image's `USER` root:
+run as another user, the program has none of them. Its boxes end when it does,
 it still reaches nothing of your machine's, and its network past the microVM is still only
 what you grant. It can say it's ready by writing `READY=1` to `$NOTIFY_SOCKET`, as a
 systemd service does, and its microVM's `ready` event says so (`shards watch system`). Run

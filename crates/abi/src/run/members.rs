@@ -345,7 +345,7 @@ impl Ended {
 }
 
 /// `in-member=<index>`: an exec's setup entry that runs its command in the member of that
-/// declared index (plan step 6, D241): born in its PID namespace and cgroup, in the
+/// declared index (plan step 6, D242): born in its PID namespace and cgroup, in the
 /// namespaces of its command, and confined as its command is, with its environment under
 /// the exec's own and its working directory where the exec names none. One at most.
 pub const EXEC_KEY: &[u8] = b"in-member=";
@@ -370,7 +370,7 @@ pub fn exec_member(setup: &[Vec<u8>]) -> Result<Option<u32>, Error> {
     Ok(found)
 }
 
-/// Why init ran no command in a member (plan step 6, D241), as its exec's
+/// Why init ran no command in a member (plan step 6, D242), as its exec's
 /// [`kind::SYSTEM_ERR`](super::kind::SYSTEM_ERR) says after the class
 /// [`exec_failed::MEMBER`](super::exec_failed::MEMBER): a code, what that code carries, then
 /// the words for a person.

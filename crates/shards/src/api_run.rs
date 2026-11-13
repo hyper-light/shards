@@ -467,6 +467,20 @@ fn run_request(spec: &shards_abi::run::Spec, published: bool) -> Vec<u8> {
     payload
 }
 
+/// What init said it held a run within past what it uses (`builtin::ROOM`'s answer, D241),
+/// as asked with `room`: a decimal where it was told one, nothing where it was told none.
+fn held_of(room: Option<i64>, out: &[u8]) -> Result<Option<u64>, String> {
+    match (room, std::str::from_utf8(out).map(str::trim)) {
+        (None, Ok("")) => Ok(None),
+        (Some(_), Ok(n)) => n
+            .parse::<u64>()
+            .map(Some)
+            .map_err(|_| format!("its init held it within {n:?}, no number of bytes")),
+        (None, Ok(n)) => Err(format!("its init held it within {n:?} with no budget")),
+        (_, Err(_)) => Err("its init's answer is no text".into()),
+    }
+}
+
 mod hosted {
     use std::collections::HashMap;
     use std::ffi::{OsStr, OsString};
@@ -1355,6 +1369,8 @@ mod hosted {
         /// Each device step asked of the VM and not yet answered (`DEVICED`), by its number;
         /// none once the VM's link has closed, as nothing will answer one then.
         devices: Mutex<Option<Vec<Asked>>>,
+        /// Each guest time asked of the VM and not yet answered (`GUEST_TIMED`), as devices.
+        guest_times: Mutex<Option<Vec<Asked>>>,
         /// What is plugged into the run's members, by the path it is at.
         plugged: Mutex<HashMap<String, Plugged>>,
         /// The pipe the run's share process tells what its host changes on (D235), until
@@ -1588,6 +1604,7 @@ mod hosted {
                 members: &plan.members,
                 roots: &plan.roots,
                 devices: Mutex::new(Some(Vec::new())),
+                guest_times: Mutex::new(Some(Vec::new())),
                 plugged: Mutex::new(HashMap::new()),
                 notices_due: Mutex::new(due),
                 notices: Mutex::new(Vec::new()),
@@ -1732,7 +1749,9 @@ mod hosted {
                     held.remove(&u64::from_be_bytes(*number));
                 }
             } else if m.kind == kind::DEVICED {
-                answered_device(live, &m.payload);
+                answered(&live.devices, &m.payload);
+            } else if m.kind == kind::GUEST_TIMED {
+                answered(&live.guest_times, &m.payload);
             } else if m.kind == kind::MANAGED_INPUT {
                 input_arrived(live, &m.payload, m.fds);
             } else if m.kind == kind::MANAGED_INPUT_ENDED {
@@ -1744,8 +1763,10 @@ mod hosted {
         // No VM takes an exec now: their clients' ends go, and each waiting for its exit
         // hears its end.
         lock(&live.held).take();
-        // Device steps no answer will come for: their askers hear the VM has gone.
+        // Device steps and guest times no answer will come for: their askers hear the VM has
+        // gone.
         *lock(&live.devices) = None;
+        *lock(&live.guest_times) = None;
         // Its VM gone: no input goes on.
         let members: Vec<u32> = lock(&live.feeds).keys().copied().collect();
         for member in members {
@@ -1807,13 +1828,27 @@ mod hosted {
                     let Ok(ask) = wire::StatsAsk::decode(&payload) else {
                         break;
                     };
+                    let vm = vm.id();
                     let asked = std::thread::Builder::new()
                         .name("api-run stats".into())
-                        .spawn_scoped(scope, move || stats(live, ask));
+                        .spawn_scoped(scope, move || stats(live, ask, vm));
                     if asked.is_err()
                         && let Ok(answer) = wire::StatsAnswer::encode(ask.id, Err("no thread to ask it on"))
                     {
                         let _ = live.answers.send(wire::to_client::STATS, &[&answer]);
+                    }
+                }
+                // On a thread of its own, as stats: a guest slow to hold its run holds up
+                // nothing else.
+                wire::to_host::ROOM => {
+                    let Ok(ask) = wire::RoomAsk::decode(&payload) else {
+                        break;
+                    };
+                    let asked = std::thread::Builder::new()
+                        .name("api-run room".into())
+                        .spawn_scoped(scope, move || held(live, ask.id, room(live, ask.room)));
+                    if asked.is_err() {
+                        held(live, ask.id, Err("no thread to ask it on".into()));
                     }
                 }
                 // On a thread of its own, as stats: a plug's guest steps hold up nothing else.
@@ -2135,12 +2170,25 @@ mod hosted {
     }
 
     /// Answers `ask` with init's `STATS` of its scope, through an exec on the VM's link as
-    /// a health check's exec is sent (daemon/health.rs `send_exec`), on a thread of its own.
-    fn stats(live: &Live<'_>, ask: wire::StatsAsk) {
-        let answer = |result: Result<&[u8], &str>| {
+    /// a health check's exec is sent (daemon/health.rs `send_exec`), on a thread of its own;
+    /// for the run's, beside it what its microVM costs its host (D43's `microvm`, D241): its
+    /// vCPUs' guest time, then its VM process `vm`'s use, which holds that time, so that the
+    /// later read is never the less.
+    fn stats(live: &Live<'_>, ask: wire::StatsAsk, vm: u32) {
+        let answer = |result: Result<(&[u8], Option<&wire::Microvm>), &str>| {
             if let Ok(payload) = wire::StatsAnswer::encode(ask.id, result) {
                 let _ = live.answers.send(wire::to_client::STATS, &[&payload]);
             }
+        };
+        let microvm = || wire::Microvm {
+            guest: guest_times(live),
+            host: shards_vmm::platform::process_usage(vm)
+                .map(|u| wire::HostUse {
+                    cpu_ns: u.cpu_ns,
+                    resident_bytes: u.resident,
+                    footprint_bytes: u.footprint,
+                })
+                .map_err(|e| format!("its VM process: {e}")),
         };
         let args: Vec<Vec<u8>> = match ask.scope {
             wire::StatsScope::Command => Vec::new(),
@@ -2153,9 +2201,32 @@ mod hosted {
         match builtin(live, protocol::builtin::STATS, args) {
             Ok(Said {
                 status: Some(0), out, ..
-            }) => answer(Ok(&out)),
+            }) => {
+                let microvm = matches!(ask.scope, wire::StatsScope::Run).then(microvm);
+                answer(Ok((&out, microvm.as_ref())))
+            }
             Ok(Said { err, .. }) => answer(Err(String::from_utf8_lossy(&err).trim_end())),
             Err(e) => answer(Err(&e)),
+        }
+    }
+
+    /// The room its orchestrator's budget leaves the run (D241), told its init as the
+    /// daemon tells a run of its budget's (daemon/budget.rs, `builtin::ROOM`): what init
+    /// holds it within past what it uses, none where no budget holds it, or why not.
+    fn room(live: &Live<'_>, room: Option<i64>) -> Result<Option<u64>, String> {
+        let args = room.map(|r| r.to_string().into_bytes()).into_iter().collect();
+        match builtin(live, protocol::builtin::ROOM, args)? {
+            Said {
+                status: Some(0), out, ..
+            } => super::held_of(room, &out),
+            Said { err, .. } => Err(String::from_utf8_lossy(&err).trim_end().to_string()),
+        }
+    }
+
+    /// A room's outcome, told its orchestrator (`HELD`).
+    fn held(live: &Live<'_>, id: u32, result: Result<Option<u64>, String>) {
+        if let Ok(payload) = (wire::RoomAnswer { id, result }).encode() {
+            let _ = live.answers.send(wire::to_client::HELD, &[&payload]);
         }
     }
 
@@ -2441,15 +2512,47 @@ mod hosted {
     /// Asks the VM device step `step` (`DEVICE`), with `fds`, and waits for its answer
     /// (`DEVICED`), as the daemon asks one (daemon/devices.rs `ask_device`).
     fn ask_device(live: &Live<'_>, step: &[u8], fds: &[BorrowedFd<'_>]) -> Result<String, String> {
+        ask_vm(live, &live.devices, kind::DEVICE, step, fds)
+    }
+
+    /// What each of the VM's vCPUs has run of its guest (`GUEST_TIME`, answered
+    /// `GUEST_TIMED`), as the daemon asks it (daemon/commands.rs `guest_times_of`).
+    fn guest_times(live: &Live<'_>) -> Result<wire::GuestTimes, String> {
+        let said = ask_vm(live, &live.guest_times, kind::GUEST_TIME, &[], &[])?;
+        let times = shards_vmm::vm::GuestTimes::decode(&said)
+            .ok_or_else(|| format!("its microVM's guest time is none: {said:?}"))?;
+        Ok(wire::GuestTimes {
+            departed_ns: times.departed_ns,
+            vcpus: times
+                .vcpus
+                .into_iter()
+                .map(|v| wire::VcpuTime {
+                    index: v.index,
+                    guest_ns: v.guest_ns,
+                    unread: v.unread,
+                })
+                .collect(),
+        })
+    }
+
+    /// Asks the VM `which` with `step` after its number, and `fds`, and waits for its answer
+    /// by that number (`answered`), which comes as long as its link is open.
+    fn ask_vm(
+        live: &Live<'_>,
+        asks: &Mutex<Option<Vec<Asked>>>,
+        which: u8,
+        step: &[u8],
+        fds: &[BorrowedFd<'_>],
+    ) -> Result<String, String> {
         let number = live.next_exec.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let (told, answer) = std::sync::mpsc::channel();
-        match lock(&live.devices).as_mut() {
+        match lock(asks).as_mut() {
             Some(asked) => asked.push((number, told)),
             None => return Err("its microVM stopped".into()),
         }
         let ask = [&number.to_be_bytes()[..], step].concat();
-        if let Err(e) = shards_ipc::send(&lock(&live.link), kind::DEVICE, &ask, fds) {
-            if let Some(asked) = lock(&live.devices).as_mut() {
+        if let Err(e) = shards_ipc::send(&lock(&live.link), which, &ask, fds) {
+            if let Some(asked) = lock(asks).as_mut() {
                 asked.retain(|(n, _)| *n != number);
             }
             return Err(format!("asking its microVM: {e}"));
@@ -2460,14 +2563,15 @@ mod hosted {
             .map_err(|e| format!("its microVM: {e}"))
     }
 
-    /// The VM's answer to the device step its payload numbers (`DEVICED`), to its asker.
-    fn answered_device(live: &Live<'_>, payload: &[u8]) {
+    /// The VM's answer to the ask its payload numbers (`DEVICED`, `GUEST_TIMED`): its number,
+    /// then 0 and what it said, or anything else and why not; to its asker in `asks`.
+    fn answered(asks: &Mutex<Option<Vec<Asked>>>, payload: &[u8]) {
         let Some((number, said)) = payload.split_first_chunk::<8>() else {
             return;
         };
         let number = u64::from_be_bytes(*number);
-        let mut devices = lock(&live.devices);
-        let Some(asked) = devices.as_mut() else {
+        let mut asks = lock(asks);
+        let Some(asked) = asks.as_mut() else {
             return;
         };
         if let Some(i) = asked.iter().position(|(n, _)| *n == number) {
@@ -2964,6 +3068,25 @@ mod tests {
         );
         for other in [kind::READY, kind::PROCESS, kind::DONE] {
             assert_eq!(relayed(other, &[1; 9]), None);
+        }
+    }
+
+    /// What init says it held a run within reads as it was asked (D241): a number where it
+    /// was told a room, nothing where it was told none; anything else is a broken word from
+    /// its init, never a hold.
+    #[test]
+    fn a_rooms_answer_reads_as_it_was_asked() {
+        assert_eq!(held_of(Some(64 << 20), b"67108864"), Ok(Some(64 << 20)));
+        assert_eq!(held_of(Some(-1), b"3407872\n"), Ok(Some(3_407_872)));
+        assert_eq!(held_of(None, b""), Ok(None));
+        for (room, said) in [
+            (Some(1), &b""[..]),
+            (Some(1), b"-5"),
+            (Some(1), b"5 bytes"),
+            (None, b"5"),
+            (Some(1), &[0xff]),
+        ] {
+            assert!(held_of(room, said).is_err(), "{room:?} {said:?}");
         }
     }
 }
