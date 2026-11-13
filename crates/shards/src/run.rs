@@ -125,7 +125,10 @@ pub fn vfio_groups<'a>(paths: impl IntoIterator<Item = &'a str>) -> Result<Vec<V
         let clean = host.trim_end_matches('/');
         #[cfg(not(target_os = "linux"))]
         if names_a_function(clean) {
-            return Err(gathering(host, &shards_vmm::vm::passthrough_refused()));
+            return Err(gathering(
+                host,
+                &shards_vmm::vm::passthrough_refused().to_string(),
+            ));
         }
         // A function by its device node: iommufd its DMA's (vfio.rst, "VFIO Device cdev").
         let cdevs: Vec<String> = if clean == "/dev/vfio/devices" {

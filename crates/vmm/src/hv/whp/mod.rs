@@ -186,28 +186,27 @@ pub fn check_host() -> std::result::Result<(), String> {
 const VIRTUAL_PCI_DEVICES: u64 = 1 << 7;
 const IOMMU_SUPPORT: u64 = 1 << 8;
 
-/// Why this host's hypervisor gives no partition a host's PCI function, in its own words;
-/// none where it would (D154, PM M401, M402). A function reaches a partition as a virtual PCI
+/// Why this host's hypervisor gives no partition a host's PCI function, as it answers; none
+/// where it would (D154, PM M401, M402). A function reaches a partition as a virtual PCI
 /// device WHP makes of it once its administrator has dismounted it from the host
 /// (WHvAllocateVpciResource, then WHvCreateVpciDevice, physically backed; vpci.rs), in a
 /// partition allowed device assignment (WHvPartitionPropertyCodeAllowDeviceAssignment):
 /// asked of a partition of its own, never set up and given no memory, which a hypervisor
-/// that assigns none refuses as it is set, as Windows 11 Pro's does (M401).
-pub fn device_assignment_refused() -> Option<String> {
+/// that assigns none refuses as it is set, as Windows 11 Pro's does (M401). Where it refuses,
+/// this Windows' edition says whose limit that is (`super::assignment`).
+pub fn device_assignment_refused() -> Option<super::assignment::Refused> {
+    use super::assignment::{Edition, Refused};
     if !ffi::loaded() {
-        return Some("the Windows Hypervisor Platform is not on this host".into());
+        return Some(Refused::NoPlatform);
     }
-    let asked = |e: Error| Some(format!("asking the Windows Hypervisor Platform: {e}"));
+    let asked = |e: Error| Some(Refused::Unasked(e.to_string()));
     let features = match capability(WHvCapabilityCodeFeatures) {
         // SAFETY: the union member the code fills.
         Ok(cap) => unsafe { cap.Features.AsUINT64 },
         Err(e) => return asked(e),
     };
     if features & VIRTUAL_PCI_DEVICES == 0 {
-        return Some(
-            "its Windows Hypervisor Platform makes no virtual PCI device of a host's (WHvCapabilityCodeFeatures: VirtualPciDeviceSupport 0)"
-                .into(),
-        );
+        return Some(Refused::NoVirtualPci);
     }
     let mut handle: WHV_PARTITION_HANDLE = 0;
     // SAFETY: a handle for the call to fill.
@@ -225,14 +224,11 @@ pub fn device_assignment_refused() -> Option<String> {
             "WHvSetPartitionProperty(AllowDeviceAssignment)",
         )
         .err()?;
-    let iommu = if features & IOMMU_SUPPORT == 0 {
-        ", and says it has no IOMMU support (WHvCapabilityCodeFeatures: IommuSupport 0)"
-    } else {
-        ""
-    };
-    Some(format!(
-        "its hypervisor assigns no device to a partition: {refused}{iommu}"
-    ))
+    Some(Refused::NotAllowed {
+        refused: refused.to_string(),
+        iommu: features & IOMMU_SUPPORT != 0,
+        edition: crate::platform::product_type().map(Edition::of),
+    })
 }
 
 /// Whether this Windows sets a vCPU's state back as a restore does (state.rs

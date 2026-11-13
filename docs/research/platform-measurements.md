@@ -16965,7 +16965,11 @@ revision before comparing a changed API/implementation.
   on a partition of its own, never set up and mapping nothing, so that a process's one
   mapped partition, M345, is not disturbed): on jupiter, "its hypervisor assigns no device to
   a partition: WHvSetPartitionProperty(AllowDeviceAssignment) failed: HRESULT 0x80070032
-  (The request is not supported. (os error 50)), and says it has no IOMMU support".
+  (The request is not supported. (os error 50)), and says it has no IOMMU support". Since
+  the refusal is typed (D154's "Each refusal is typed", 2026-11-13), it goes on with whose
+  limit that is, by the edition the kernel gives (ProductType 1 here, jupiter.txt line 8):
+  "this Windows is a client edition, and Microsoft supports Discrete Device Assignment on
+  Windows Server alone, not on client editions such as Windows 10 or 11 Pro (D154)".
 
 ### M402. Whether CI's Windows runners' hypervisors give a partition a host's PCI function (D154)
 
@@ -16994,7 +16998,11 @@ revision before comparing a changed API/implementation.
   IOMMU (Microsoft Learn, "Deploy devices by using Discrete Device Assignment", 2025-02-19),
   which Azure's VMs do not give it, as Hyper-V's reasons say; and windows-11-arm has no
   hypervisor. Each refusal is the
-  host's own answer (`vm::passthrough_refused`). The refusal tests cover this path; they
+  host's own answer (`vm::passthrough_refused`), typed since 2026-11-13 (D154): on these
+  runners' Windows Server (ProductType 3, ci.txt lines 6 and 29) it names the hardware
+  Windows Server needs, "server-class hardware alone, which grants it control of the PCIe
+  fabric (Native PCI Express Control) and whose PCIe root complex has Access Control
+  Services", where Windows 11's names the edition (M401). The refusal tests cover this path; they
   are not a passthrough E2E. Windows Server DDA implementation and a successful E2E on an
   assignable physical function remain outstanding for step 13.
 
