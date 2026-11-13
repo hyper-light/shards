@@ -22366,6 +22366,8 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
   refused (its mounts are made as it starts).
 - *Stats.* `builtin::STATS` with a scope: the workload's (as before), the run's, or a
   member's cgroup.
+- *The room* its orchestrator's budget leaves the run: init's `builtin::ROOM`, told through
+  the run host (D238).
 - *Stop.* The VM process killed at once, as `Guest::stop`.
 - *The run's own command* is the orchestrator's, or `builtin::ATTEND`: the standby holds,
   the members start.
@@ -22747,6 +22749,84 @@ Shards carried and without (kiln's `docs/research/s16-vendor/`).
 **What would falsify it.** A carrier that cannot keep its helpers in the directory its
 `shards` runs from; a macOS that refuses a carrier's own identity the entitlements it allows ad
 hoc (then ad hoc, as shards signs them).
+
+### D238. An orchestrator's run: told the room its budget leaves it, its microVM's cost in its stats (D188 and D43 through D231) (built; real-VM validation owed)
+
+**Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 14: Hex charges each microVM its
+learned use, its envelope the ceiling, and holds the microVMs it runs on a machine to that
+fleet's budget, each VM's share of it its own budget (Hex `docs/design/learned-charge.md` C5,
+C7; the person, 2026-11-11: users set budgets, the budget's owner is the supply). D188 is how a
+microVM is held within a budget without its host taking memory its guest holds: its guest is
+told the room the budget leaves it, and its own kernel drops its run's page cache before its
+host must take anything; held from outside alone, a run's host took its guest's RAM back and
+the guest read it again for minutes (PM M309). A daemon tells its own runs their budgets'
+rooms. An image an orchestrator boots (D231) has no daemon, and shards-api had no call to tell
+one, so Hex refused it, typed (`Awaits(GuestRoom)`), and with it the ring pins D230 holds within
+that room (`Awaits(RingPinsWithinRoom)`). On macOS and Windows no host mechanism throttles a
+process at a level as `memory.high` does (macOS ends a process past its footprint limit,
+Windows refuses a commit past a job's), so there the guest's room is the one hold short of
+ending the microVM. Hex's charge is learned from each vCPU's guest time beside its VMM's own
+CPU and the memory it holds; a daemon run's stats carry them (D43, D170's `microvm`,
+guest-cpu-time-v1), an image run's carried only its guest's cgroup, so Hex refused that too
+(`Awaits(GuestCpuTimePerVcpu)`).
+
+**Decided.**
+- *The call.* `ImageGuest::room(room, patience)`: the run's budget owner tells it the bytes
+  its budget leaves it past what it uses, negative where the budget is short of what it holds,
+  none where no budget holds it. The run host passes it to init's `builtin::ROOM` as the daemon
+  does (daemon/budget.rs), through an exec on the VM's link, on a thread of its own as stats
+  are, and answers `HELD`: what init holds the run within past its use, none for no budget,
+  or init's words of why not, typed (`ImageRefusal::Room`).
+- *What it holds.* The run's whole cgroup (`/sys/fs/cgroup/run`): every member's domain
+  (`run/domains`) and its engine relay's ring slots (`run/engine`, D230, whose pins come out
+  of the room init is told) are beneath it. A room short of the least a run goes on in holds
+  the run there, never closer (D188); a negative room first reclaims that much of the run's
+  file pages, as a short budget's does.
+- *Whose room.* The orchestrator works the room out, as D188's daemon works out its own
+  budgets' (the budget less what the run holds), and tells it again as its budget or the run's
+  use moves. The run host keeps no budget of its own: it tells what it is asked, when asked.
+- *Its microVM's cost.* The run's stats (`StatsScope::Run`) carry `Stats::microvm`, as a
+  daemon run's carry D170's `microvm`: what each vCPU has run of its guest, by index, and what
+  departed vCPUs ran (its VM asked `GUEST_TIME` on its link, as the daemon asks it), then its
+  VM process's CPU time, resident and own memory (`platform::process_usage`), read after
+  them, so that its CPU time less their total is its VMM's own and never less than none past
+  the clocks' steps. Either part is none, said on the host's diagnostics, where it could not
+  be read; a member's or the command's stats carry none, their cgroups being inside the
+  microVM. The run host matches the VM's answers by number, as its device steps' (`DEVICED`),
+  one matcher for both; an answer for no ask is dropped.
+- *The channel.* Version 7, `ROOM` 10 and `HELD` 27, after every kind before, and the stats
+  answer's microVM after its lines: a host of version 6 ends a run at a frame it has no kind
+  for, so a pair that differs refuses the run at create, before any room is told. vCPUs out
+  of index order are refused (`WireError::Order`), as a count past what the bytes left hold.
+  The client keeps an ask's slot only while it waits: an answer that comes after its patience
+  ran out is dropped, so the session holds the asks in flight alone.
+
+**Literals.** None new: init's `builtin::ROOM`, `run::MAX_PAYLOAD`; the kinds are the next
+free numbers; a vCPU's least bytes on the channel (13) are its fields' widths.
+
+**Tested** (light): `image::wire`'s `rooms_and_their_answers_read_back_as_said` (each bound
+of a room, each answer, cut short, padded, unknown tags),
+`a_runs_microvm_reads_back_as_its_host_said_it` (each part absent or present, a vCPU unread,
+the largest numbers, vCPUs out of order, unknown tags, a hostile count, every cut) and its
+version 6 refused; `image::session`'s `a_rooms_answer_is_kept_for_its_awaited_ask_alone` and
+`a_room_no_host_hears_is_refused_and_leaves_no_ask`; `api_run`'s
+`a_rooms_answer_reads_as_it_was_asked`. Real VMs: `api_image.rs`
+`the_orchestrators_room_holds_its_run_within_it` (a room of 64 MiB held exactly, none left
+held within the least and short of it, no budget answered none) and
+`stats_read_the_run_and_a_member` (the run's microVM: its VM process's use, its one vCPU's
+guest time; a member's, none). Record:
+[orchestrator-room-v1](../research/measurements/orchestrator-room-v1/README.md).
+
+**Owed.** The real-VM tests on KVM, HVF and WHP (ROOT). Hex's adoption: Hex builds against
+version 6's shards-api, so its re-vendor of Shards, then its learner telling each Shards guest
+its C5 budget's room each window and reading each vCPU's guest time from the run's stats. D188's
+give-back at the host's pressure (`RECLAIM`) for an orchestrator's runs: no run host watches its
+host's pressure; an orchestrator gives one back by telling it a room short of what it holds.
+
+**What would falsify it.** A run told its room through its host whose host still takes back
+memory its guest holds before its guest drops its page cache (D188's measure, PM M309, on an
+image run); an orchestrator that needs D188's pressure give-back through its run host to keep
+its runs within its budget.
 
 ## 4. Start path (≤ 5 ms budget)
 

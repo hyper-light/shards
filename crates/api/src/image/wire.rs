@@ -21,8 +21,12 @@ pub use shards_abi::run::nesting::Ready;
 /// (`PLUG`, `UNPLUG`, answered `PLUGGED`; D235), so that a side that has no plugs refuses
 /// the run as it is asked, before any plug is; 5, each member's working directory
 /// ([`MemberStage::workdir`]); 6, whether each member's stdin is the orchestrator's
-/// ([`MemberStage::input`], plan step 5).
-pub const VERSION: u8 = 6;
+/// ([`MemberStage::input`], plan step 5); 7, the room its orchestrator's budget leaves the
+/// run (`ROOM`, answered `HELD`; D188, D238), so that a side that tells none refuses the run
+/// as it is asked, before any room is: a host of version 6 ends a run at a frame it has no
+/// kind for; and the run's stats carry what its microVM costs its host and what its vCPUs ran
+/// of its guest ([`Stats::microvm`], D238).
+pub const VERSION: u8 = 7;
 
 /// What the orchestrator's side sends.
 pub mod to_host {
@@ -44,6 +48,9 @@ pub mod to_host {
     /// [`InputEnd`](super::InputEnd): the orchestrator's end of a member's stdin, or its
     /// abort.
     pub const INPUT_END: u8 = 9;
+    /// A [`RoomAsk`](super::RoomAsk): the room the orchestrator's budget leaves the run
+    /// (D188, D238).
+    pub const ROOM: u8 = 10;
 }
 
 /// What the run host sends.
@@ -71,6 +78,8 @@ pub mod to_client {
     pub const INPUT_ROOM: u8 = 25;
     /// [`InputEnded`](super::InputEnded): a member's stdin has ended, and how.
     pub const INPUT_ENDED: u8 = 26;
+    /// [`RoomAnswer`](super::RoomAnswer): what the run is held within, by its ask's id.
+    pub const HELD: u8 = 27;
 }
 
 /// Why a payload could not be read or written.
@@ -88,6 +97,8 @@ pub enum WireError {
     Version(u8),
     /// A payload past `run::MAX_PAYLOAD`, or a count or length past what a u32 holds.
     TooLong,
+    /// A list whose items come out of the order the channel keeps them in.
+    Order { what: &'static str },
 }
 
 impl std::fmt::Display for WireError {
@@ -99,6 +110,7 @@ impl std::fmt::Display for WireError {
             Self::Text => f.write_str("text that is not UTF-8"),
             Self::Version(v) => write!(f, "channel version {v}, where this side speaks {VERSION}"),
             Self::TooLong => f.write_str("a payload past the channel's bound"),
+            Self::Order { what } => write!(f, "{what} out of order"),
         }
     }
 }
@@ -396,8 +408,9 @@ pub struct MemberEnded {
     pub status: u32,
 }
 
-/// What init's `STATS` says, each line `None` where it said none.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// What init's `STATS` says, each line `None` where it said none; and, for the run, what its
+/// microVM costs its host beside it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Stats {
     /// CPU time, in ns.
     pub cpu_ns: Option<u64>,
@@ -412,6 +425,61 @@ pub struct Stats {
     pub write_bytes: Option<u64>,
     pub rx_bytes: Option<u64>,
     pub tx_bytes: Option<u64>,
+    /// The run's alone ([`StatsScope::Run`]), as its run host reads it: none for its command
+    /// or a member, whose cgroups are inside the microVM it costs.
+    pub microvm: Option<Microvm>,
+}
+
+/// What a run's microVM costs its host, which no cgroup of its guest holds, as a daemon's
+/// stats say it of its own runs (D43, D170's `microvm`; guest-cpu-time-v1): its VM process's
+/// use of the host, and what each of its vCPUs has run of its guest, read before that use,
+/// so that the process's CPU time less its vCPUs' is its VMM's own and never less than none
+/// past the clocks' steps (D238).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Microvm {
+    /// None where its run host could not read its VM process.
+    pub host: Option<HostUse>,
+    /// None where its VM did not say.
+    pub guest: Option<GuestTimes>,
+}
+
+/// What a VM process uses of its host, as the host counts it (`platform::process_usage`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostUse {
+    /// Its CPU time, user and system together, in ns: its vCPUs' guest time among it.
+    pub cpu_ns: u64,
+    pub resident_bytes: u64,
+    /// Its own memory, as memory per VM is counted (PM M30): macOS's physical footprint,
+    /// Linux's anonymous resident pages, Windows' private working set.
+    pub footprint_bytes: u64,
+}
+
+/// What a microVM's vCPUs have run of its guest, as its hypervisor counts it: each by index,
+/// and what those it no longer has ran, which stay its machine's (guest-cpu-time-v1).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct GuestTimes {
+    /// In index order, each index once.
+    pub vcpus: Vec<VcpuTime>,
+    pub departed_ns: u64,
+}
+
+impl GuestTimes {
+    /// Its machine's: what every vCPU it has had ran of its guest.
+    pub fn total_ns(&self) -> u64 {
+        self.vcpus
+            .iter()
+            .fold(self.departed_ns, |total, v| total.saturating_add(v.guest_ns))
+    }
+}
+
+/// One vCPU's guest time, as a sample read it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VcpuTime {
+    pub index: u32,
+    /// Nanoseconds, never less than an earlier sample of the same vCPU said.
+    pub guest_ns: u64,
+    /// Why this sample did not read it: `guest_ns` is then the most it read before.
+    pub unread: Option<String>,
 }
 
 impl Stats {
@@ -448,6 +516,23 @@ pub struct StatsAnswer {
     pub id: u32,
     /// Init's lines, or why none came.
     pub result: Result<Stats, String>,
+}
+
+/// The room the orchestrator's budget leaves the run (D188, D238), as a daemon's budget
+/// tells a run of its own: the bytes it may use past what it uses, negative where the
+/// budget is short of what it holds; none where no budget holds it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RoomAsk {
+    pub id: u32,
+    pub room: Option<i64>,
+}
+
+/// What the run's init held it within past what it uses, by its ask's id: the bytes, none
+/// where its ask said no budget holds it, or why it held it within nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoomAnswer {
+    pub id: u32,
+    pub result: Result<Option<u64>, String>,
 }
 
 /// A host directory plugged into running member `member` as the run goes (D235), as
@@ -594,6 +679,9 @@ impl Writer {
     fn i32(&mut self, v: i32) {
         self.0.extend_from_slice(&v.to_be_bytes());
     }
+    fn i64(&mut self, v: i64) {
+        self.0.extend_from_slice(&v.to_be_bytes());
+    }
     fn count(&mut self, n: usize) -> Result<(), WireError> {
         self.u32(u32::try_from(n).map_err(|_| WireError::TooLong)?);
         Ok(())
@@ -641,6 +729,41 @@ impl Writer {
             }
         }
     }
+    fn microvm(&mut self, microvm: Option<&Microvm>) -> Result<(), WireError> {
+        let Some(m) = microvm else {
+            self.u8(0);
+            return Ok(());
+        };
+        self.u8(1);
+        match m.host {
+            None => self.u8(0),
+            Some(h) => {
+                self.u8(1);
+                self.u64(h.cpu_ns);
+                self.u64(h.resident_bytes);
+                self.u64(h.footprint_bytes);
+            }
+        }
+        let Some(g) = &m.guest else {
+            self.u8(0);
+            return Ok(());
+        };
+        self.u8(1);
+        self.u64(g.departed_ns);
+        self.count(g.vcpus.len())?;
+        for v in &g.vcpus {
+            self.u32(v.index);
+            self.u64(v.guest_ns);
+            match &v.unread {
+                None => self.u8(0),
+                Some(why) => {
+                    self.u8(1);
+                    self.text(why)?;
+                }
+            }
+        }
+        Ok(())
+    }
     fn done(self) -> Result<Vec<u8>, WireError> {
         if self.0.len() > run::MAX_PAYLOAD as usize {
             return Err(WireError::TooLong);
@@ -675,6 +798,9 @@ impl<'a> Reader<'a> {
     }
     fn i32(&mut self) -> Result<i32, WireError> {
         Ok(i32::from_be_bytes(self.array()?))
+    }
+    fn i64(&mut self) -> Result<i64, WireError> {
+        Ok(i64::from_be_bytes(self.array()?))
     }
     fn flag(&mut self) -> Result<bool, WireError> {
         match self.u8()? {
@@ -733,6 +859,73 @@ impl<'a> Reader<'a> {
             1 => Ok(StreamEnd::Aborted(self.i32()?)),
             tag => Err(WireError::Tag { what, tag }),
         }
+    }
+    fn microvm(&mut self) -> Result<Option<Microvm>, WireError> {
+        match self.u8()? {
+            0 => return Ok(None),
+            1 => {}
+            tag => {
+                return Err(WireError::Tag {
+                    what: "a microVM's cost",
+                    tag,
+                });
+            }
+        }
+        let host = match self.u8()? {
+            0 => None,
+            1 => Some(HostUse {
+                cpu_ns: self.u64()?,
+                resident_bytes: self.u64()?,
+                footprint_bytes: self.u64()?,
+            }),
+            tag => {
+                return Err(WireError::Tag {
+                    what: "a VM process's use",
+                    tag,
+                });
+            }
+        };
+        let guest = match self.u8()? {
+            0 => None,
+            1 => {
+                let departed_ns = self.u64()?;
+                // Each vCPU at least its index, its time and its flag.
+                let n = self.count(4 + 8 + 1)?;
+                let mut vcpus: Vec<VcpuTime> = Vec::with_capacity(n);
+                for _ in 0..n {
+                    let index = self.u32()?;
+                    let guest_ns = self.u64()?;
+                    let unread = match self.u8()? {
+                        0 => None,
+                        1 => Some(self.text()?),
+                        tag => {
+                            return Err(WireError::Tag {
+                                what: "a vCPU's guest time",
+                                tag,
+                            });
+                        }
+                    };
+                    if vcpus.last().is_some_and(|v| v.index >= index) {
+                        return Err(WireError::Order {
+                            what: "a microVM's vCPUs",
+                        });
+                    }
+                    vcpus.push(VcpuTime {
+                        index,
+                        guest_ns,
+                        unread,
+                    });
+                }
+                Some(GuestTimes { vcpus, departed_ns })
+            }
+            tag => {
+                return Err(WireError::Tag {
+                    what: "a microVM's guest time",
+                    tag,
+                });
+            }
+        };
+        Ok(Some(Microvm { host, guest }))
     }
     fn end(self) -> Result<(), WireError> {
         if self.0.is_empty() {
@@ -1325,14 +1518,18 @@ impl MemberEnded {
 }
 
 impl StatsAnswer {
-    /// Its id, then 0 and init's lines as it said them, or 1 and why none came.
-    pub fn encode(id: u32, result: Result<&[u8], &str>) -> Result<Vec<u8>, WireError> {
+    /// Its id, then 0, init's lines as it said them and the run's microVM (0 for none, or 1
+    /// and what it costs: its VM process's use, 0 or 1 and its CPU time, resident and own
+    /// memory; its vCPUs' guest time, 0 or 1, what departed vCPUs ran, and each vCPU's index,
+    /// time and 0, or 1 and why it went unread), or 1 and why none came.
+    pub fn encode(id: u32, result: Result<(&[u8], Option<&Microvm>), &str>) -> Result<Vec<u8>, WireError> {
         let mut w = Writer(Vec::new());
         w.u32(id);
         match result {
-            Ok(lines) => {
+            Ok((lines, microvm)) => {
                 w.u8(0);
                 w.bytes(lines)?;
+                w.microvm(microvm)?;
             }
             Err(why) => {
                 w.u8(1);
@@ -1346,7 +1543,11 @@ impl StatsAnswer {
         let mut r = Reader(payload);
         let id = r.u32()?;
         let result = match r.u8()? {
-            0 => Ok(Stats::parse(&String::from_utf8_lossy(r.bytes()?))),
+            0 => {
+                let mut stats = Stats::parse(&String::from_utf8_lossy(r.bytes()?));
+                stats.microvm = r.microvm()?;
+                Ok(stats)
+            }
             1 => Err(r.text()?),
             tag => {
                 return Err(WireError::Tag {
@@ -1357,6 +1558,72 @@ impl StatsAnswer {
         };
         r.end()?;
         Ok(StatsAnswer { id, result })
+    }
+}
+
+impl RoomAsk {
+    /// Its id, then 0 for no budget, or 1 and the room.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut w = Writer(Vec::new());
+        w.u32(self.id);
+        match self.room {
+            None => w.u8(0),
+            Some(room) => {
+                w.u8(1);
+                w.i64(room);
+            }
+        }
+        w.0
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<RoomAsk, WireError> {
+        let mut r = Reader(payload);
+        let id = r.u32()?;
+        let room = match r.u8()? {
+            0 => None,
+            1 => Some(r.i64()?),
+            tag => return Err(WireError::Tag { what: "a room", tag }),
+        };
+        r.end()?;
+        Ok(RoomAsk { id, room })
+    }
+}
+
+impl RoomAnswer {
+    /// Its id, then 0 for none held, 1 and the bytes held within, or 2 and why.
+    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
+        let mut w = Writer(Vec::new());
+        w.u32(self.id);
+        match &self.result {
+            Ok(None) => w.u8(0),
+            Ok(Some(held)) => {
+                w.u8(1);
+                w.u64(*held);
+            }
+            Err(why) => {
+                w.u8(2);
+                w.text(why)?;
+            }
+        }
+        w.done()
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<RoomAnswer, WireError> {
+        let mut r = Reader(payload);
+        let id = r.u32()?;
+        let result = match r.u8()? {
+            0 => Ok(None),
+            1 => Ok(Some(r.u64()?)),
+            2 => Err(r.text()?),
+            tag => {
+                return Err(WireError::Tag {
+                    what: "a room's answer",
+                    tag,
+                });
+            }
+        };
+        r.end()?;
+        Ok(RoomAnswer { id, result })
     }
 }
 
@@ -1680,12 +1947,13 @@ mod tests {
         for end in [RunEnd::Exited(0), RunEnd::Stopped, RunEnd::Failed("x".into())] {
             assert_eq!(RunEnd::decode(&end.encode().unwrap()).unwrap(), end);
         }
-        let answer = StatsAnswer::decode(&StatsAnswer::encode(4, Ok(b"cpu 10\npids 3\n")).unwrap()).unwrap();
+        let answer =
+            StatsAnswer::decode(&StatsAnswer::encode(4, Ok((b"cpu 10\npids 3\n", None))).unwrap()).unwrap();
         assert_eq!(answer.id, 4);
         let stats = answer.result.unwrap();
         assert_eq!(
-            (stats.cpu_ns, stats.pids, stats.memory_bytes),
-            (Some(10), Some(3), None)
+            (stats.cpu_ns, stats.pids, stats.memory_bytes, stats.microvm),
+            (Some(10), Some(3), None, None)
         );
         let refusal = StatsAnswer::decode(&StatsAnswer::encode(5, Err("no member 9 runs")).unwrap()).unwrap();
         assert_eq!(refusal.result, Err("no member 9 runs".into()));
@@ -1782,6 +2050,11 @@ mod tests {
         v5.truncate(v5.len() - 1);
         v5[0] = 5;
         assert_eq!(Request::decode(&v5), Err(WireError::Version(5)));
+        // One of version 6 carries every field this one does, but its host ends the run at
+        // a room: refused by its version, before any room is told (D238).
+        let mut v6 = request().encode().unwrap();
+        v6[0] = 6;
+        assert_eq!(Request::decode(&v6), Err(WireError::Version(6)));
         // The nesting flag, before the deadline's tag, the destinations' and the one member's
         // working directory's and input's: no flag.
         let mut flag = request().encode().unwrap();
@@ -1887,6 +2160,161 @@ mod tests {
                 "{payload:?}"
             );
         }
+    }
+
+    /// A room and its answer read back as they were said (D238): no budget, none left, one
+    /// past what a run holds, one short of it, each bound of an i64; none held, the bytes
+    /// held within and why not. Cut short, padded or of a tag no version has, refused.
+    #[test]
+    fn rooms_and_their_answers_read_back_as_said() {
+        for room in [
+            None,
+            Some(0),
+            Some(64 << 20),
+            Some(-(1 << 20)),
+            Some(i64::MIN),
+            Some(i64::MAX),
+        ] {
+            let ask = RoomAsk { id: 7, room };
+            assert_eq!(RoomAsk::decode(&ask.encode()), Ok(ask));
+        }
+        for result in [
+            Ok(None),
+            Ok(Some(0)),
+            Ok(Some(u64::MAX)),
+            Err("not held: no memory.high".to_string()),
+        ] {
+            let answer = RoomAnswer { id: u32::MAX, result };
+            assert_eq!(RoomAnswer::decode(&answer.encode().unwrap()), Ok(answer));
+        }
+        let ask = RoomAsk {
+            id: 1,
+            room: Some(-5),
+        }
+        .encode();
+        for cut in 0..ask.len() {
+            assert_eq!(
+                RoomAsk::decode(&ask[..cut]),
+                Err(WireError::Short),
+                "cut at {cut}"
+            );
+        }
+        let mut padded = ask.clone();
+        padded.push(0);
+        assert_eq!(RoomAsk::decode(&padded), Err(WireError::Trailing));
+        assert_eq!(
+            RoomAsk::decode(&[0, 0, 0, 1, 2]),
+            Err(WireError::Tag {
+                what: "a room",
+                tag: 2
+            })
+        );
+        assert_eq!(
+            RoomAnswer::decode(&[0, 0, 0, 1, 3]),
+            Err(WireError::Tag {
+                what: "a room's answer",
+                tag: 3
+            })
+        );
+        assert_eq!(RoomAnswer::decode(&[0, 0, 0, 1, 1, 0]), Err(WireError::Short));
+        assert_eq!(RoomAnswer::decode(&[0, 0, 0, 1, 0, 0]), Err(WireError::Trailing));
+        let long = RoomAnswer {
+            id: 1,
+            result: Err("x".repeat(run::MAX_PAYLOAD as usize)),
+        };
+        assert_eq!(long.encode(), Err(WireError::TooLong));
+    }
+
+    /// The run's stats carry what its microVM costs its host and what its vCPUs ran of its
+    /// guest (D238) as its run host read them: either part absent, a vCPU unread and why, the
+    /// largest numbers a u64 holds. vCPUs out of index order, a part's unknown tag, a count
+    /// past what the bytes left could hold, cut short or padded: refused, never read as a
+    /// cost.
+    #[test]
+    fn a_runs_microvm_reads_back_as_its_host_said_it() {
+        let times = GuestTimes {
+            vcpus: vec![
+                VcpuTime {
+                    index: 0,
+                    guest_ns: 4_000,
+                    unread: None,
+                },
+                VcpuTime {
+                    index: 2,
+                    guest_ns: u64::MAX,
+                    unread: Some("its vCPU had left its guest".into()),
+                },
+            ],
+            departed_ns: 1_500,
+        };
+        assert_eq!(times.total_ns(), u64::MAX);
+        let host = HostUse {
+            cpu_ns: 9_000,
+            resident_bytes: 64 << 20,
+            footprint_bytes: u64::MAX,
+        };
+        let lines = b"cpu 10\nmemory 7\n";
+        for microvm in [
+            Microvm::default(),
+            Microvm {
+                host: Some(host),
+                guest: None,
+            },
+            Microvm {
+                host: None,
+                guest: Some(times.clone()),
+            },
+            Microvm {
+                host: Some(host),
+                guest: Some(times.clone()),
+            },
+        ] {
+            let bytes = StatsAnswer::encode(3, Ok((lines, Some(&microvm)))).unwrap();
+            let stats = StatsAnswer::decode(&bytes).unwrap().result.unwrap();
+            assert_eq!((stats.cpu_ns, stats.memory_bytes), (Some(10), Some(7)));
+            assert_eq!(stats.microvm, Some(microvm));
+            for cut in 0..bytes.len() {
+                assert!(StatsAnswer::decode(&bytes[..cut]).is_err(), "cut at {cut}");
+            }
+            let mut padded = bytes.clone();
+            padded.push(0);
+            assert_eq!(StatsAnswer::decode(&padded), Err(WireError::Trailing));
+        }
+        let both = Microvm {
+            host: Some(host),
+            guest: Some(times),
+        };
+        let bytes = StatsAnswer::encode(3, Ok((lines, Some(&both)))).unwrap();
+        // The second vCPU's index, after the stats' id, tag, lines, the microVM's tag, its
+        // host's tag and three numbers, its guest's tag, departed time and count, and the
+        // first vCPU's index, time and flag: made the first's, out of order.
+        let second = 4 + 1 + 4 + lines.len() + 1 + 1 + 24 + 1 + 8 + 4 + 13;
+        let mut out_of_order = bytes.clone();
+        out_of_order[second..second + 4].copy_from_slice(&0u32.to_be_bytes());
+        assert_eq!(
+            StatsAnswer::decode(&out_of_order),
+            Err(WireError::Order {
+                what: "a microVM's vCPUs"
+            })
+        );
+        let microvm_tag = 4 + 1 + 4 + lines.len();
+        for (at, tag, what) in [
+            (microvm_tag, 2, "a microVM's cost"),
+            (microvm_tag + 1, 2, "a VM process's use"),
+            (microvm_tag + 1 + 1 + 24, 2, "a microVM's guest time"),
+            (second + 4 + 8, 2, "a vCPU's guest time"),
+        ] {
+            let mut bad = bytes.clone();
+            bad[at] = tag;
+            assert_eq!(
+                StatsAnswer::decode(&bad),
+                Err(WireError::Tag { what, tag }),
+                "{what}"
+            );
+        }
+        let mut hostile = bytes[..microvm_tag + 1 + 1 + 24 + 1 + 8].to_vec();
+        hostile.extend_from_slice(&u32::MAX.to_be_bytes());
+        assert_eq!(StatsAnswer::decode(&hostile), Err(WireError::Short));
     }
 
     /// A frame past the run protocol's bound is refused before it is written or read.

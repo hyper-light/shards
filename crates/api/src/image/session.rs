@@ -64,6 +64,10 @@ struct State {
     stats: HashMap<u32, Result<Stats, String>>,
     /// Each plug's or unplug's answer, by its ask's id (D235).
     plugs: HashMap<u32, Result<(), (wire::PlugRefusal, String)>>,
+    /// Each room asked and still awaited, by its ask's id, and its answer once it came
+    /// (D238): an answer to an ask no longer awaited, its patience run out, is dropped, so
+    /// that it holds the asks in flight alone.
+    rooms: HashMap<u32, Option<Result<Option<u64>, String>>>,
     next_ask: u32,
     /// The run's own command's readiness under the nesting grant (D234), as its init last
     /// said it: init owns it, and moves it by D234's table.
@@ -119,6 +123,48 @@ impl Shared {
             bytes,
         };
         self.send(wire::to_host::CREDIT, &credit.encode())
+    }
+
+    /// Tells the run `room` (D238) and waits at most `patience` for what its init held it
+    /// within; its ask awaited from before it is sent until it is answered or given up, so
+    /// that no answer outlives its ask.
+    fn room(&self, room: Option<i64>, patience: Duration) -> Result<Option<u64>, ImageRefusal> {
+        let id = {
+            let mut state = lock(&self.state);
+            if let Some(end) = &state.end {
+                return Err(ImageRefusal::Ended(end.clone()));
+            }
+            state.next_ask = state.next_ask.wrapping_add(1);
+            let id = state.next_ask;
+            state.rooms.insert(id, None);
+            id
+        };
+        let answer = self
+            .send(wire::to_host::ROOM, &wire::RoomAsk { id, room }.encode())
+            .map_err(|e| ImageRefusal::Os {
+                what: "the run host's room",
+                kind: e.kind(),
+            })
+            .and_then(|()| {
+                self.wait(patience, |s| {
+                    if let Some(answer) = s.rooms.get_mut(&id).and_then(Option::take) {
+                        return Some(answer.map_err(ImageRefusal::Room));
+                    }
+                    if let Some(end) = &s.end {
+                        return Some(Err(ImageRefusal::Ended(end.clone())));
+                    }
+                    s.gone()
+                        .then(|| Err(ImageRefusal::Host("it exited without answering".into())))
+                })
+                .unwrap_or_else(|| {
+                    Err(ImageRefusal::Unsupported {
+                        what: "a room",
+                        why: format!("no answer within {patience:?}"),
+                    })
+                })
+            });
+        lock(&self.state).rooms.remove(&id);
+        answer
     }
 
     /// Waits for `ready` to give an answer, at most `timeout` past now (`Duration::MAX`:
@@ -620,6 +666,12 @@ fn take(shared: &Shared, kind: u8, payload: &[u8]) -> Result<bool, String> {
             let answer = wire::PlugAnswer::decode(payload).map_err(bad)?;
             state.plugs.insert(answer.id, answer.result);
         }
+        k::HELD => {
+            let answer = wire::RoomAnswer::decode(payload).map_err(bad)?;
+            if let Some(awaited) = state.rooms.get_mut(&answer.id) {
+                *awaited = Some(answer.result);
+            }
+        }
         k::READY => state.ready = Some(wire::ready(payload).map_err(bad)?),
         k::INPUT_ROOM => {
             let room = wire::InputRoom::decode(payload).map_err(bad)?;
@@ -818,6 +870,10 @@ impl ImageGuest for Session {
                 why: format!("no answer within {patience:?}"),
             })
         })
+    }
+
+    fn room(&self, room: Option<i64>, patience: Duration) -> Result<Option<u64>, ImageRefusal> {
+        self.shared.room(room, patience)
     }
 
     fn plug(
@@ -1041,6 +1097,45 @@ mod tests {
             assert_eq!(take(&s, wire::to_client::REFUSED, &refused), Ok(false));
             assert_eq!(lock(&s.state).refused, Some(typed));
         }
+    }
+
+    /// A room's answer is kept for the ask awaiting it alone (D238): one for an ask no
+    /// longer awaited, its patience run out, is dropped, so that the session holds the asks
+    /// in flight and nothing more; one that is no answer breaks the channel.
+    #[test]
+    fn a_rooms_answer_is_kept_for_its_awaited_ask_alone() {
+        let s = shared();
+        lock(&s.state).rooms.insert(4, None);
+        let held = |id, result| wire::RoomAnswer { id, result }.encode().unwrap();
+        assert_eq!(
+            take(&s, wire::to_client::HELD, &held(4, Ok(Some(7 << 20)))),
+            Ok(false)
+        );
+        assert_eq!(lock(&s.state).rooms.get(&4), Some(&Some(Ok(Some(7 << 20)))));
+        assert_eq!(take(&s, wire::to_client::HELD, &held(5, Ok(None))), Ok(false));
+        assert!(
+            !lock(&s.state).rooms.contains_key(&5),
+            "an answer no ask awaits is dropped"
+        );
+        assert!(take(&s, wire::to_client::HELD, &[0, 0, 0, 4, 9]).is_err());
+    }
+
+    /// A room no host hears is refused, typed, and leaves no ask awaited; a run that has
+    /// ended is told none (D238).
+    #[test]
+    fn a_room_no_host_hears_is_refused_and_leaves_no_ask() {
+        let s = shared();
+        assert_eq!(
+            s.room(Some(1 << 20), BOUND),
+            Err(ImageRefusal::Os {
+                what: "the run host's room",
+                kind: io::ErrorKind::BrokenPipe
+            })
+        );
+        assert!(lock(&s.state).rooms.is_empty());
+        lock(&s.state).end = Some(RunEnd::Stopped);
+        assert_eq!(s.room(None, BOUND), Err(ImageRefusal::Ended(RunEnd::Stopped)));
+        assert!(lock(&s.state).rooms.is_empty());
     }
 
     /// How long a test waits for what should come at once: only a failing test waits it

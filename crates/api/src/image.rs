@@ -25,8 +25,8 @@ mod session;
 pub mod wire;
 
 pub use wire::{
-    Bound, Channel, Keep, MemberInfo, MemberKind, Narrowing, PlugRefusal, Proto, Publish, Ready, Receiving,
-    RunEnd, Secret, Stats, StatsScope,
+    Bound, Channel, GuestTimes, HostUse, Keep, MemberInfo, MemberKind, Microvm, Narrowing, PlugRefusal,
+    Proto, Publish, Ready, Receiving, RunEnd, Secret, Stats, StatsScope, VcpuTime,
 };
 
 /// A member, as the image's Agentfile names it.
@@ -161,6 +161,8 @@ pub enum ImageRefusal {
     },
     /// A plug or an unplug its run's host refused (D235), by what refused it.
     Plug(PlugRefusal, String),
+    /// The run's init held it within no room it was told (D238), in its words.
+    Room(String),
 }
 
 impl std::fmt::Display for ImageRefusal {
@@ -175,6 +177,7 @@ impl std::fmt::Display for ImageRefusal {
             Self::Host(why) => write!(f, "the run's host: {why}"),
             Self::Os { what, kind } => write!(f, "{what}: {kind:?}"),
             Self::Plug(cause, why) => write!(f, "the plug: {cause:?}: {why}"),
+            Self::Room(why) => write!(f, "the run's room: {why}"),
         }
     }
 }
@@ -208,8 +211,22 @@ pub trait ImageGuest: Send + Sync {
     /// The member's end, waiting at most `timeout` (`Duration::MAX`: until it comes).
     fn wait_member(&self, member: &MemberName, timeout: Duration) -> Result<Option<MemberEnd>, ImageRefusal>;
     /// The use of the run, of its own command or of a member, as its init reads its cgroup,
-    /// waiting at most `patience` (`Duration::MAX`: until it answers or the run ends).
+    /// waiting at most `patience` (`Duration::MAX`: until it answers or the run ends). The
+    /// run's carries what its microVM costs its host beside it ([`Stats::microvm`], D238):
+    /// its VM process's CPU time and memory, and each vCPU's guest time, read before them.
     fn stats(&self, scope: StatsScope, patience: Duration) -> Result<Stats, ImageRefusal>;
+    /// The room the orchestrator's budget leaves the run (D188, D238), told its init as a
+    /// daemon's budget tells a run of its own: the bytes the run may use past what it uses
+    /// now, every member's and its engine's ring slots among them (D230), negative where the
+    /// budget is short of what it holds, which its init then reclaims of its file pages; none
+    /// where no budget holds it, which lifts the hold. Its init holds the run within it, never
+    /// closer to what it uses than the least room a run goes on in, so that its own kernel
+    /// drops its page cache before its host must take memory its guest holds. Answers the
+    /// bytes it holds the run within past what it uses, none where no budget holds it,
+    /// waiting at most `patience` (`Duration::MAX`: until it answers or the run ends). The
+    /// budget is the orchestrator's: it tells the room again as the budget changes or as
+    /// the run's use moves, as D188's daemon does its own runs'.
+    fn room(&self, room: Option<i64>, patience: Duration) -> Result<Option<u64>, ImageRefusal>;
     /// The readiness of the run's own command under the nesting grant (D234), as its init
     /// last said it, once it differs from `seen` (none: once there is any), waiting at most
     /// `timeout` (`Duration::MAX`: until it comes; `Duration::ZERO`: as it stands). Its
