@@ -3407,6 +3407,37 @@ mod tests {
         served.join().unwrap();
     }
 
+    /// A wait shorter than the record's µs waited for nothing and is no sample: a body whose
+    /// bytes all came with its head, read at once, teaches its path no silence, and the next
+    /// request on the path is asked as before; a path whose record keeps 0 µs of each kind
+    /// (as d54bca98e's could) is asked as one that has shown none. Before, a bound of 0 was
+    /// set as a socket's timeout, which std refuses, and every next request failed: "cannot
+    /// set a 0 duration timeout" (D222).
+    #[test]
+    fn a_wait_of_nothing_is_no_sample_and_no_bound() {
+        let ok = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_vec();
+        // Four answers: a second asking can run out once on the first's bound, and is asked
+        // again.
+        let server = serve(None, vec![(ok.clone(), After::Keep); 4]);
+        let url = at("http", "127.0.0.1", server.port);
+        let client = plain().learning();
+        assert_eq!(fetch(&client, "GET", &url).unwrap(), (200, b"ok".to_vec()));
+        assert_eq!(fetch(&client, "GET", &url).unwrap(), (200, b"ok".to_vec()));
+        let shown = client.shown("127.0.0.1", server.port);
+        assert_ne!(shown.slowest_silence_us, Some(0), "{shown:?}");
+        assert_ne!(shown.slowest_answer_us, Some(0), "{shown:?}");
+        let zero = crate::patience::Shown {
+            slowest_answer_us: Some(0),
+            slowest_silence_us: Some(0),
+            ..crate::patience::Shown::default()
+        };
+        let server = serve(None, vec![(ok, After::Keep)]);
+        let url = at("http", "127.0.0.1", server.port);
+        let kept = plain().learning().showing("127.0.0.1", server.port, zero);
+        assert_eq!(kept.silence("127.0.0.1", server.port), Bounded::Cold);
+        assert_eq!(fetch(&kept, "GET", &url).unwrap(), (200, b"ok".to_vec()));
+    }
+
     /// A body's silence is a read's own wait for the bytes it brought, the gap past which
     /// its socket's timeout would cut it: a body its server sent whole, read by a reader
     /// that takes 0.3 s between its reads, shows its path silences of none of that time.
