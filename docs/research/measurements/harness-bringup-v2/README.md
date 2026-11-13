@@ -291,9 +291,11 @@ alone. The harness would still want a writable home of its own for its state.
     adacachy (x86_64 Linux): clean, 1 min 29 s;
   - `scripts/check-development-policy`: passed.
 - **Other hosts.** The signed-in turns on macOS arm64, Windows and Linux arm64 hosts.
-- **The mutation.** R10's check: a prompt asking for no tool must fail a case.
+- **The mutation.** R10's check: a prompt asking for no tool must fail a case. Done without a
+  prompt by the review ([review.md](review.md), F7): the recorded turns less their tool fail
+  their cases. A real turn of such a prompt stays ROOT's to decide.
 - **A long turn.** A turn with a silence past the owner endpoint's former 100 s bound, now
-  that H1 is fixed on main.
+  that H1 is fixed on main. The test keeps no clock of its own since the review (F2, F4).
 - **The person's choices (G18).** A refresh, rotation and revocation contract; a per-member
   secret primitive; an opaque broker.
 - **The merge.** This branch merges `origin/main` before its push, but the runs above used
