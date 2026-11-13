@@ -5,6 +5,7 @@
 //!     shards-net --ring REGION,WAKE_ME,WAKE_PEER --policy allow|deny|proxy --mac MAC
 //!         --bridge SUBNET/BITS [--control FD] [--release FD]
 //!         [--proxy-port PORT --proxy-socket PATH]
+//!         [--credentials]
 //!
 //! On Windows (D142) `--grants HANDLE` takes `--ring`'s place, and `--control`,
 //! `--release` and `--dialer` name sockets handed by name; `--host-address ADDR`, each of
@@ -49,6 +50,9 @@ struct Args {
     resolvers: Vec<(std::net::Ipv4Addr, u16)>,
     /// What its spawner handed it (Windows: `--grants HANDLE`, shards_ipc's pipe).
     grants: Option<String>,
+    /// The run has credential grants (`--credentials`, D242): its CA's key is made before
+    /// the process confines itself, its certificate once the grants come.
+    credentials: bool,
 }
 
 fn parse() -> Result<Args, String> {
@@ -65,6 +69,7 @@ fn parse() -> Result<Args, String> {
         bridge: None,
         resolvers: Vec::new(),
         grants: None,
+        credentials: false,
     };
     let mut args = std::env::args_os().skip(1);
     while let Some(arg) = args.next() {
@@ -94,6 +99,7 @@ fn parse() -> Result<Args, String> {
                         .map_err(|e| format!("--bridge: {e}"))?,
                 )
             }
+            Some("--credentials") => a.credentials = true,
             Some("--resolver") => {
                 let v = value(&mut args, "--resolver")?;
                 let at = v
@@ -162,6 +168,12 @@ impl Args {
         cfg.resolvers = std::mem::take(&mut self.resolvers);
         Ok(cfg)
     }
+
+    /// The run's CA's key where it has credential grants, made now, before the process
+    /// confines itself (shards_net::ca::Key); none where it has none.
+    fn credential_key(&self) -> Result<Option<shards_net::ca::Key>, String> {
+        self.credentials.then(shards_net::ca::Key::generate).transpose()
+    }
 }
 
 #[cfg(unix)]
@@ -179,6 +191,7 @@ fn run() -> Result<(), String> {
     let ring = a.ring.take().ok_or("--ring is required")?;
     let proxy = matches!(a.policy, Some(None));
     let cfg = a.config()?;
+    let credential_key = a.credential_key()?;
     let fds: Vec<i32> = ring
         .split(',')
         .map(|v| {
@@ -228,7 +241,7 @@ fn run() -> Result<(), String> {
     shards_net::confine::filter().map_err(|e| format!("its seccomp filter: {e}"))?;
     #[cfg(not(target_os = "linux"))]
     let _ = proxy;
-    shards_net::serve(region, me, peer, cfg, controls).map_err(|e| e.to_string())
+    shards_net::serve(region, me, peer, cfg, credential_key, controls).map_err(|e| e.to_string())
 }
 
 /// On Windows (D142): in an AppContainer of its own from its start, holding the network's
@@ -249,6 +262,7 @@ fn run() -> Result<(), String> {
     let mut a = parse()?;
     let grants = a.grants.take().ok_or("--grants is required")?;
     let cfg = a.config()?;
+    let credential_key = a.credential_key()?;
     let pipe = grants
         .parse::<usize>()
         .map_err(|_| format!("--grants: {grants:?} is not a handle"))?;
@@ -310,6 +324,7 @@ fn run() -> Result<(), String> {
         vm,
         dialer,
         cfg,
+        credential_key,
         controls,
     )
     .map_err(|e| e.to_string())

@@ -252,11 +252,15 @@ mod tests {
         assert_eq!(l.most(), 4000);
     }
 
-    /// Do: while a session of logman's default buffers listens for a provider of the test's
-    /// own, write events of the learner's next try, each answered as ETW answers it, until
-    /// the try holds. Expect the try then taken and a unit more refused: what the session
-    /// takes, learned from its answers alone. Skips where no session can be started (one is
-    /// an administrator's or Performance Log Users').
+    /// Do: while a session of logman's default buffer size listens for a provider of the
+    /// test's own, write events of the learner's next try, each answered as ETW answers it,
+    /// until the try holds. Expect the try then taken and a unit more refused: what the
+    /// session takes, learned from its answers alone. The session has a buffer for each event
+    /// written (`-nb`): with fewer, a disk slower than the writes leaves no buffer free and
+    /// the event is dropped, ERROR_NOT_ENOUGH_MEMORY, an answer about the disk and not the
+    /// event's size (EventWriteString, Microsoft Learn), as CI's arm64 Windows runner gave.
+    /// Skips where no session can be started (one is an administrator's or Performance Log
+    /// Users').
     #[test]
     fn a_sessions_bound_is_learned_from_a_real_sessions_answers() {
         use windows_sys::Win32::System::Diagnostics::Etw::EventUnregister;
@@ -274,10 +278,13 @@ mod tests {
         let name = format!("shards-tests-etw-{}", std::process::id());
         let dir = shards_testdir::TempDir::new("etw").unwrap();
         let etl = dir.path().join("t.etl");
+        // The learner's tries, then the bound taken and a unit more.
+        let tries = 64;
+        let buffers = (tries + 2).to_string();
         let started = std::process::Command::new("logman")
             .args(["start", &name, "-p", &format!("{{{guid}}}"), "-o"])
             .arg(&etl)
-            .arg("-ets")
+            .args(["-nb", &buffers, &buffers, "-ets"])
             .output()
             .unwrap();
         if !started.status.success() {
@@ -296,7 +303,7 @@ mod tests {
             unsafe { EventWriteString(handle, 0, 0, s.as_ptr()) }
         };
         let mut l = Learned::default();
-        for _ in 0..64 {
+        for _ in 0..tries {
             let n = l.most();
             let answer = write(n);
             assert!(matches!(answer, 0 | SOME_REFUSED | ALL_REFUSED), "{answer}");
