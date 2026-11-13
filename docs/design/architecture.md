@@ -8385,7 +8385,10 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   now D215's judge, shared, not copied (R12):
   - *Records*: each kind of answer apart, in the daemon's memory (`health::Answers`): a
     give-back (`RECLAIM`, at its host's pressure, a budget's or a group's), a room told
-    (`ROOM`), metrics read (`METRICS`). Each keeps W*, the slowest answer seen from a
+    (`ROOM`), metrics read (`METRICS`), and each of init's builtins its quiet work asks
+    (`exec_answered`, a record per builtin: `STAT`, `TOP`, `STATS`, a member's ports, a
+    network's switch, a layer's size, an update), which were each `TAKE_TIMEOUT`'s 10 s
+    (ROOT's (3), 2026-11-13). Each keeps W*, the slowest answer seen from a
     wait's start to its exec's end, and R*, the least CPU rate a microVM still answered at
     (`shards_api::Record`). Only an exec's own end teaches: one the daemon ended teaches
     nothing.
@@ -17063,6 +17066,15 @@ download.
     the answer is asked again at once, overdue (`Error::overdue_by`, typed by the wait that
     ran out: `Overdue::Answer` before its first byte, `Overdue::Silence` after), and a
     download is resumed where it was (fetch.rs).
+  - **A wait of nothing is no sample** (`patience::sample`): one shorter than the record
+    measures, a µs, waited for nothing, a read that found its bytes already buffered or an
+    answer that came with its request's end, and shows no stall of the path's. Taken for
+    one, it made a bound of 0, which std refuses as a socket's timeout ("cannot set a 0
+    duration timeout"): at d54bca98e every second request on a path whose body came whole
+    with its head failed so, every pull from the E2E tests' local registry on KVM among them
+    (ROOT, adacachy2). A record that keeps 0 µs, as those runs' homes can, is read as none
+    (`bounded`); and a dial at its deadline's very instant starts no `connect_timeout` of
+    zero (`dial`). The record's own resolution is the basis: no figure of ours.
   - **A run-out learns nothing** (no sample: that answer came later, or never), and the
     path's next wait of its kind follows its connection's liveness alone until one ends
     (`Bounded::RanOut`): an answer until one comes, which ends the run-out whatever its
@@ -22068,9 +22080,10 @@ what it is asked, then resolved under another registry's name and a tag of its o
 a tag pulled once: no registry asked either time. It holds on the revision it was written
 against (7152fa749): what spent Docker Hub's anonymous pulls (100 an hour for the LAN's
 IPv6 /64) were E2E tests whose fresh homes each pulled their base, which now take Docker
-Hub's images from the tests' own registry, served from what a build pulled once per
-checkout into target/artifacts/hub (tests/common `hub`), as the pinned kernel is fetched
-once into target/artifacts. A test that must read Docker Hub itself (attestation chains and
+Hub's images, and ghcr.io's, from the tests' own registry, served from what a build pulled
+once per checkout into target/artifacts/hub (tests/common `hub`), as the pinned kernel is
+fetched once into target/artifacts; a test that built in the host user's own home
+(`a_failing_step_cites_its_build_file_lines`) has a home of its own. A test that must read Docker Hub itself (attestation chains and
 signatures, tags as they move, other CPUs' images and the emulator image) skips unless
 `SHARDS_TESTS_DOCKER_HUB=1`, which CI's test step sets (tests/common
 `cannot_reach_docker_hub`).
@@ -23003,11 +23016,16 @@ JSON library into PID 1. Each domain gets:
 - **Its stdio:** stdin is `/dev/null`; stdout and stderr are pipes of their own, which init
   captures whole for its owner (D240). Where the run names no owner of a member's output
   (`shards.output`), the daemon reads it itself, keeps it in the member's log
-  (`members/<index>` in the run's directory, as the run's log is kept) and shows it to a
-  client attached to the run on that client's **stderr**, each line prefixed
-  `[agent main] `; the run's own stdout, stderr and log stay its command's. No member
-  waits on a reader: the daemon credits a channel again as soon as what came is kept, a
-  detached run's and one whose client has gone alike (PM M543). Every descriptor past 2
+  (`members/<index>` in the run's directory, as the run's log is kept, its label beside it)
+  and shows it to a client attached to the run on that client's **stderr**, each line
+  prefixed `[agent main] ` and written whole; `shards read logs` shows the same lines after
+  the run's own output, and follows them with `-f`. The run's own stdout, stderr and log stay
+  its command's. No member waits on a reader: the daemon credits a channel again as soon as
+  what came is kept, a detached run's and one whose client has gone alike (PM M543). As the
+  run ends, all such a member wrote is kept and shown before the run's end is said: init
+  reads its pipes to their ends, which the run's end brings as it ends the member, and the
+  daemon tells the run's end once its capture has kept the last of it (PM M543, "Lost at the
+  run's end"). Every descriptor past 2
   is closed before exec. Every descriptor init holds is close-on-exec today, which the
   mutation shows: without the close, nothing of init's reaches the agent. The close is
   there so that one descriptor not marked close-on-exec, such as the O_PATH descriptors
@@ -25447,9 +25465,18 @@ and no exec, attach or terminal (the plan's steps 5, 6 and 7).
   members' output as they serve the named members' input;
   else the daemon, which keeps it in the member's log and credits it again at once, so that
   no member waits for want of a subscriber, and shows it to an attached client prefixed
-  with the member's label (D59, "Its stdio"; PM M543). Before, every member's output waited
-  for an owner's subscription that no `shards run` made: a run's agents were heard by no one
-  (`tests/build.rs`'s agents in their domains, red on every CI run since 9151296a8).
+  with the member's label, as `shards read logs` shows it (D59, "Its stdio"; PM M543). Before,
+  every member's output waited for an owner's subscription that no `shards run` made: a run's
+  agents were heard by no one (`tests/build.rs`'s agents in their domains, red on every CI
+  run since 9151296a8).
+  As the run ends, a drained member's output goes to its end: the daemon names those members
+  in the run's setup (`managed-drained=`, `shards_abi::run::managed::DRAINED_KEY`), init reads
+  their pipes to their ends before it says the run's end, and the daemon tells the run's end
+  (its waiters, `logs -f`, its removal and restart) once its capture has kept the last record
+  it brought; an owner's channel still ends with the run, aborted, as its credit may never
+  come. Before, init aborted every member's pipes as the command ended, and the daemon ended
+  the capture at the run's DONE, and agents' reports were cut mid-line (PM M543, "Lost at
+  the run's end").
 - *Its environment* (step 7, 239749c60). Init's, then the image's `Env`, then its own
   `run.env`, then what its run stages, the last given of each name winning. `PATH` keeps the
   member's own programs first; `HOME` is never the image's; `SHARDS_DOMAIN` is refused at the

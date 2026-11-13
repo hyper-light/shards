@@ -41,6 +41,7 @@ pub const KEYS: &[&[u8]] = &[
     b"mac",
     b"managed-active",
     b"managed-capacity",
+    b"managed-drained",
     b"managed-input",
     b"managed-input-token",
     b"managed-members",
@@ -160,7 +161,7 @@ mod tests {
     #[test]
     fn every_entry_this_crate_makes_is_registered() {
         use super::super::{managed, mcp, members, nesting, plug, socket, trust};
-        let constants: [&[u8]; 24] = [
+        let constants: [&[u8]; 25] = [
             members::ENV_KEY,
             members::FILE_KEY,
             members::WORKDIR_KEY,
@@ -175,6 +176,7 @@ mod tests {
             managed::ACTIVE_KEY,
             managed::INPUT_KEY,
             managed::INPUT_TOKEN_KEY,
+            managed::DRAINED_KEY,
             mcp::TOKEN_KEY,
             mcp::MEMBER_KEY,
             nesting::GRANT,

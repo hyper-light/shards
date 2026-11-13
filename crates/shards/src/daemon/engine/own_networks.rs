@@ -69,7 +69,7 @@ impl<D: Disk> Daemon<D> {
             ..Default::default()
         };
         let quiet = self
-            .exec_quietly(&scope.provider, &spec, None, 1 << 12, crate::daemon::TAKE_TIMEOUT)
+            .exec_answered(&scope.provider, &spec, 1 << 12)
             .map_err(|e| format!("its microVM's switch: {e}"))?;
         let said = String::from_utf8_lossy(&quiet.output).trim().to_string();
         match quiet.status {

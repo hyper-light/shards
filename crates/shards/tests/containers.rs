@@ -1236,25 +1236,18 @@ fn stats_measures_each_microvm_from_its_guest() {
 /// M145): its shell and ps say what a command sees of its PID namespace.
 const ALPINE: &str = "alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8";
 
-/// A home with `image` pulled from its registry.
-fn pulled(name: &str, image: &str) -> Option<TempDir> {
+/// A home with `image`, a remote registry's pinned by its digest, pulled from the tests'
+/// own registry (`common::hub`), never from its own as a test runs; and the name it is run
+/// by there.
+fn pulled(name: &str, image: &str) -> Option<(TempDir, String)> {
     if cannot_run_vms() {
         return None;
     }
+    let image = common::hub(image, TIMEOUT);
     let home = TempDir::new(name);
-    let pulled = shards_in(&home, &["pull", "-q", image]);
+    let pulled = shards_in(&home, &["pull", "-q", &image]);
     assert_eq!(pulled.status, Some(0), "{pulled}");
-    Some(home)
-}
-
-/// A home with [`ALPINE`] pulled, from the tests' own registry (`common::hub`), never from
-/// Docker Hub as a test runs; and the name it is run by there.
-fn pulled_alpine(name: &str) -> Option<(TempDir, String)> {
-    if cannot_run_vms() {
-        return None;
-    }
-    let alpine = common::hub(ALPINE, TIMEOUT);
-    Some((pulled(name, &alpine)?, alpine))
+    Some((home, image))
 }
 
 /// A run's command is PID 1 of a PID namespace of its own, as a container's is (D115), with
@@ -1266,7 +1259,7 @@ fn pulled_alpine(name: &str) -> Option<(TempDir, String)> {
 /// `--init`'s command, which is 0 here, its parent being init, outside the namespace.
 #[test]
 fn a_command_is_pid_1_as_a_containers_is() {
-    let Some((home, alpine)) = pulled_alpine("containers-pid1") else {
+    let Some((home, alpine)) = pulled("containers-pid1", ALPINE) else {
         return;
     };
     let alpine = alpine.as_str();
@@ -1550,7 +1543,7 @@ fn a_command_is_pid_1_as_a_containers_is() {
 /// Docker 29.3.1 answered (M145).
 #[test]
 fn default_sysctls_let_ping_go_without_net_raw() {
-    let Some((home, alpine)) = pulled_alpine("containers-sysctls") else {
+    let Some((home, alpine)) = pulled("containers-sysctls", ALPINE) else {
         return;
     };
     let alpine = alpine.as_str();
@@ -1608,13 +1601,13 @@ const S6: &str = "ghcr.io/linuxserver/baseimage-alpine:3.22@sha256:ab81abc99e45e
 
 #[test]
 fn an_s6_overlay_image_runs_as_pid_1() {
-    let Some(home) = pulled("containers-s6", S6) else {
+    let Some((home, s6)) = pulled("containers-s6", S6) else {
         return;
     };
     let run = |args: &[&str]| {
         let mut all = vec!["run", "--rm"];
         all.extend_from_slice(args);
-        all.extend([S6, "echo", "hello from s6"]);
+        all.extend([s6.as_str(), "echo", "hello from s6"]);
         shards_in(&home, &all)
     };
     let r = run(&[]);
