@@ -25055,7 +25055,7 @@ memory its guest holds before its guest drops its page cache (D188's measure, PM
 image run); an orchestrator that needs D188's pressure give-back through its run host to keep
 its runs within its budget.
 
-### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; the injector and the real-VM runs owed)
+### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; the injector and the real-VM runs owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 33: every kiln harness runs in a
 Shards microVM, and a harness needs its model-provider credential without the credential
@@ -25422,11 +25422,22 @@ Owed: none beyond CI on main.
 - *Owed.* Hex answering a run's lease asks from the broker, and telling it of a move (step 6);
   Shards' run host asking them (step 4). ROOT's real runs (step 10).
 
-**Owed (later slices of step 33, this plan's steps 3 and 6–10).** The injector that
+**Built: step 9, every harness's trust and token checks surveyed** (docs/research/s33-veil-creds/
+harness-survey.md, its evidence `evidence/survey/<harness>.txt`). Each of kiln's ten harnesses was read from its own
+build: its pinned linux/amd64 files, held to their pins' sha256, searched for the strings that say how it trusts and
+checks, with no vendor CLI run. Every build reaches the run's CA, through a variable step 2 sets
+(`NODE_EXTRA_CA_CERTS` for Claude Code, Gemini CLI, opencode, Amp, Cursor and pi; `SSL_CERT_FILE` or
+`SSL_CERT_DIR` for goose and Antigravity; `CODEX_CA_CERTIFICATE` or `SSL_CERT_FILE` for Codex) or through the system
+bundle step 2 lays it in (Devin's alone). None carries a pinning API's names. So no harness is tmpfs-fallback on its
+trust, and each is injected. Claude Code's bundle carries an OIDC `at_hash` check, the hazard of a placeholder access
+token beside a real ID token; whether its Anthropic sign-in runs it is step 8's to settle from its source, as are
+sender-constrained tokens. A string found says the build carries the code, not that every path runs it; ROOT's real
+runs (step 10) confirm each harness's trust of the run's CA.
+
+**Owed (later slices of step 33, this plan's steps 3, 6–8 and 10).** The injector that
 terminates TLS and fills HTTP/1.1 then HTTP/2 headers (steps 3, 7); Hex wiring the grants
 and answering a run's leases from kiln's broker (step 6); the Claude Code and Codex
-sign-in/refresh profiles (step 8); the survey of each harness's trust and token checks and
-the tmpfs-fallback list (step 9); and ROOT's real-VM runs on KVM, HVF and WHP with a
+sign-in/refresh profiles (step 8); and ROOT's real-VM runs on KVM, HVF and WHP with a
 whole-guest-memory leak scan and the injector's measured cost (step 10).
 
 **Literals.** None of its own: this slice adds no numeric bound. A credential's `reference`
