@@ -205,8 +205,14 @@ struct Shared {
 }
 
 impl Shared {
-    /// The host's diagnostics written whole to `to` from now on: nothing, as yet.
-    fn keep_diagnostics(&self, _to: std::fs::File) -> io::Result<()> {
+    /// The host's diagnostics written whole to `to` from now on, after what is kept of them
+    /// until now, under the lock their keeper writes each part under ([`keep_said`]): so that
+    /// each part is in what is kept now or written after, and once.
+    fn keep_diagnostics(&self, mut to: std::fs::File) -> io::Result<()> {
+        let mut said_to = lock(&self.said_to);
+        let kept: Vec<u8> = lock(&self.state).said.iter().copied().collect();
+        to.write_all(&kept)?;
+        *said_to = Some(to);
         Ok(())
     }
 
@@ -1286,7 +1292,9 @@ fn release(shared: &Shared) {
     }
 }
 
-/// Keeps the host's last diagnostics until they end.
+/// Keeps the host's last diagnostics until they end, and writes each part whole to the file
+/// its caller named for them, where it has named one ([`Shared::keep_diagnostics`]): kept and
+/// written under that file's lock, which naming a file takes first.
 fn keep_said(shared: &Shared, mut said: io::PipeReader) {
     let keep = said_kept();
     let mut buf = [0u8; 4096];
@@ -1294,10 +1302,18 @@ fn keep_said(shared: &Shared, mut said: io::PipeReader) {
         if n == 0 {
             break;
         }
-        let mut state = lock(&shared.state);
-        state.said.extend(buf.get(..n).unwrap_or_default());
-        let over = state.said.len().saturating_sub(keep);
-        state.said.drain(..over);
+        let part = buf.get(..n).unwrap_or_default();
+        let mut said_to = lock(&shared.said_to);
+        {
+            let mut state = lock(&shared.state);
+            state.said.extend(part);
+            let over = state.said.len().saturating_sub(keep);
+            state.said.drain(..over);
+        }
+        // A part its file refuses is lost to it alone: the tail keeps it.
+        if let Some(to) = said_to.as_mut() {
+            let _ = to.write_all(part);
+        }
     }
     lock(&shared.state).said_all = true;
     shared.changed.notify_all();
