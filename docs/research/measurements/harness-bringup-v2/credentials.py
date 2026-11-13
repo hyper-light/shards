@@ -28,15 +28,18 @@ import time
 
 # A secret is a string a credential file holds under one of these names (Codex's
 # auth.json: OPENAI_API_KEY, tokens.{access,id,refresh}_token, tokens.account_id; Claude
-# Code's .credentials.json: claudeAiOauth.{access,refresh}Token).
+# Code's .credentials.json: claudeAiOauth.{access,refresh}Token), whatever its length; an
+# empty one holds none.
 SECRET_NAME = re.compile(r"token|key|secret|account_id", re.IGNORECASE)
-# A file is a leak where it holds a whole secret, or any run of WINDOW + STRIDE - 1 = 31 or
-# more consecutive bytes of one (a log can cut a token): every WINDOW-byte window of each
-# secret is kept, and the file's windows are looked up at every STRIDE-th offset, of which
-# one falls in such a run's first STRIDE bytes. JWTs of one issuer share their header, so a
-# leak is reported by path for a person to look at, never by value.
-WINDOW = 24
-STRIDE = 8
+# A file is a leak where it holds a whole secret, or a run of a secret's consecutive bytes
+# (a log can cut a token) longer than the most a provider itself shows of a credential:
+# OpenAI's refusal names a key by its first SHOWN = 8 and last 4 characters, the rest masked
+# one for one (harness-bringup-v1/records/codex-login-volume/stdout.bin,
+# "sk-shard*******************-key" for "sk-shards-placeholder-not-a-key"). Every RUN-byte run
+# of each secret is kept, and every offset of every file is looked up. JWTs of one issuer
+# share their header, so a leak is reported by path for a person to look at, never by value.
+SHOWN = 8
+RUN = SHOWN + 1
 
 
 def state_path(private):
@@ -65,7 +68,7 @@ def secrets(value, name=""):
     elif isinstance(value, list):
         for item in value:
             yield from secrets(item, name)
-    elif isinstance(value, str) and SECRET_NAME.search(name) and len(value) >= 16:
+    elif isinstance(value, str) and value and SECRET_NAME.search(name):
         yield value
 
 
@@ -140,23 +143,23 @@ def all_secrets(state):
                     found.update(secrets(json.loads(f.read())))
             except (FileNotFoundError, ValueError):
                 pass
-    windows, whole = set(), set()
+    runs, whole = set(), set()
     for value in found:
         data = value.encode()
         whole.add(data)
-        windows.update(data[i : i + WINDOW] for i in range(len(data) - WINDOW + 1))
-    return found, windows, whole
+        runs.update(data[i : i + RUN] for i in range(len(data) - RUN + 1))
+    return found, runs, whole
 
 
-def leaked(data, windows, whole):
+def leaked(data, runs, whole):
     if any(value in data for value in whole):
         return True
-    return any(data[i : i + WINDOW] in windows for i in range(0, len(data) - WINDOW + 1, STRIDE))
+    return any(data[i : i + RUN] in runs for i in range(len(data) - RUN + 1))
 
 
 def leakcheck(private, paths):
     state = load_state(private)
-    found, windows, whole = all_secrets(state)
+    found, runs, whole = all_secrets(state)
     files = scanned = 0
     leaks = []
     for root in paths:
@@ -170,10 +173,11 @@ def leakcheck(private, paths):
                     data = f.read()
                 files += 1
                 scanned += len(data)
-                if leaked(data, windows, whole):
+                if leaked(data, runs, whole):
                     leaks.append(path)
-    print(f"leak check: {len(found)} secret values of {len(state)} credentials, "
-          f"{files} files ({scanned} bytes) scanned: " + ("FOUND in " + ", ".join(leaks) if leaks else "not found"))
+    print(f"leak check: {len(found)} secret values of {len(state)} credentials, whole or any run of "
+          f"{RUN} bytes, {files} files ({scanned} bytes) scanned: "
+          + ("FOUND in " + ", ".join(leaks) if leaks else "not found"))
     return 3 if leaks else 0
 
 
