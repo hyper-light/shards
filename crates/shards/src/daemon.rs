@@ -4070,16 +4070,41 @@ impl<D: Disk> Daemon<D> {
                 &agentfile.managed_labels,
                 &agentfile.active_members,
             )
-            .and_then(|inputs| Ok((inputs, managed::control_asked(&run.annotations)?)))
+            .and_then(|inputs| {
+                let owned = managed::output_members(
+                    &run.annotations,
+                    &agentfile.managed_labels,
+                    &agentfile.active_members,
+                )?;
+                Ok((inputs, owned, managed::control_asked(&run.annotations)?))
+            })
             .map_err(managed::Failure::Refused)
-            .and_then(|(inputs, agent_control)| {
+            .and_then(|(inputs, owned, agent_control)| {
+                // What the daemon reads of the members it is shown an attached client on its
+                // stderr, as an agent's output always was (D59); a detached run's is kept
+                // alone.
+                let to = if run.detach {
+                    None
+                } else {
+                    stderr.try_clone().map(File::from).ok()
+                };
                 self.managed_capture(
                     threads,
                     &id,
                     &run.client,
                     &agentfile.managed_labels,
-                    &agentfile.active_members,
-                    &inputs,
+                    managed::Members {
+                        active: &agentfile.active_members,
+                        inputs: &inputs,
+                        owned: &owned,
+                    },
+                    managed::Shown {
+                        retention: kept.map(|k| LogRetention {
+                            size: k.size,
+                            files: k.files,
+                        }),
+                        to,
+                    },
                     agent_control,
                     &mut prepared.spec.setup,
                 )

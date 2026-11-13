@@ -21983,9 +21983,14 @@ JSON library into PID 1. Each domain gets:
     read-only.
   - A scratch `/tmp` of its own, mode 700 and its uid's, lost when it ends.
 - **Only a loopback**, brought up; network grants are part three.
-- **Its stdio:** stdin is `/dev/null`; stdout and stderr are one pipe that init relays a
-  line at a time on the run's **stderr**, each line prefixed `[agent main] `. It goes to
-  stderr so that the workload's stdout stays its own, for pipes. Every descriptor past 2
+- **Its stdio:** stdin is `/dev/null`; stdout and stderr are pipes of their own, which init
+  captures whole for its owner (D240). Where the run names no owner of a member's output
+  (`shards.output`), the daemon reads it itself, keeps it in the member's log
+  (`members/<index>` in the run's directory, as the run's log is kept) and shows it to a
+  client attached to the run on that client's **stderr**, each line prefixed
+  `[agent main] `; the run's own stdout, stderr and log stay its command's. No member
+  waits on a reader: the daemon credits a channel again as soon as what came is kept, a
+  detached run's and one whose client has gone alike (PM M543). Every descriptor past 2
   is closed before exec. Every descriptor init holds is close-on-exec today, which the
   mutation shows: without the close, nothing of init's reaches the agent. The close is
   there so that one descriptor not marked close-on-exec, such as the O_PATH descriptors
@@ -23913,7 +23918,15 @@ and no exec, attach or terminal (the plan's steps 5, 6 and 7).
   connections are admitted as an exec's are (D16, "An exec's connection").
 - *stdout and stderr, captured whole* (P3). Each channel apart, its bytes as the member wrote
   them, credited by its reader; an observer's going ends no member (D180's "Managed
-  owner-output transport"; D231's "Members' streams and ends").
+  owner-output transport"; D231's "Members' streams and ends"). Its reader is its owner where
+  the run names it (`shards.output`, each `KIND:NAME`, as `shards.stdin` names an input),
+  through its own endpoints or its run's agent-control lanes (D238), which serve the named
+  members' output as they serve the named members' input;
+  else the daemon, which keeps it in the member's log and credits it again at once, so that
+  no member waits for want of a subscriber, and shows it to an attached client prefixed
+  with the member's label (D59, "Its stdio"; PM M543). Before, every member's output waited
+  for an owner's subscription that no `shards run` made: a run's agents were heard by no one
+  (`tests/build.rs`'s agents in their domains, red on every CI run since 9151296a8).
 - *Its environment* (step 7, 239749c60). Init's, then the image's `Env`, then its own
   `run.env`, then what its run stages, the last given of each name winning. `PATH` keeps the
   member's own programs first; `HOME` is never the image's; `SHARDS_DOMAIN` is refused at the
