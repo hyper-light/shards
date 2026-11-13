@@ -23189,7 +23189,7 @@ Shards carried and without (kiln's `docs/research/s16-vendor/`).
 `shards` runs from; a macOS that refuses a carrier's own identity the entitlements it allows ad
 hoc (then ad hoc, as shards signs them).
 
-### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends decided at the host from HVF's and KVM's runs, plan step 10, WHP owed; its endpoint building, step 11: its connection, refusals and stdio lanes built)
+### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends decided at the host from HVF's and KVM's runs, plan step 10, WHP owed; its endpoint building, step 11: its connection, refusals, stdio lanes and their controller built)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d runs every kiln harness in a microVM of
 its own, booted for Hex under shards-init (D231). The person decided how such a harness is
@@ -23490,6 +23490,35 @@ admits it, a quarter of it the keep-alive), and its handshake and datagram buffe
 D180's driver tells a handler when its peer allows more streams (`Handler::available`), so that
 a controller opens a lane as the endpoint's limit allows.
 
+*The controller's side* (`control::Controller`, `control/drive.rs`). kiln and Hex reach a
+microVM's lanes through it rather than writing this wire again. `Controller::dial` takes the
+controller's key, the microVM's pinned fingerprint and its endpoint's address, both from the run's
+managed metadata, and the member streams it drives (`control::Subscriptions`): each stream with the
+admission its endpoint announced, and the cursor its lane opens at. Lanes open once the handshake
+has taken the pinned key, as many at once as the endpoint's stream limit allows; the rest wait for
+`Handler::available`. Each lane's handle is step 5's client of its stream:
+- *An output* (`control::Output`): `next_record` gives its records in order. Asking for the next
+  acknowledges the one before, since step 5 acknowledges a record only once its owner has it
+  whole. `Got::Finished` comes once the output has finished.
+- *A stdin* (`control::Input`): `write` sends one record within the endpoint's room and returns once
+  it is taken. The driver checks each taken against the protocol: it falls where the record ends,
+  or, the first after a subscription, at or past its cursor, which counts the bytes an earlier
+  connection's record gave. `end` and `abort` wait for the member's init to tell how the stdin
+  ended. An errno is a `NonZeroU16`, under Linux's MAX_ERRNO.
+
+A lane's refusal, its reset (its stream revoked), a stdin's end and the connection's end are typed
+(`control::Fault`). D180's driver now passes QUIC's own error to a handler just before the loss
+(`Handler::cause`), so a key not enrolled reads `NotEnrolled`, not words. The controller retries
+nothing: each handle's `cursor` is where a later dial opens, and the endpoint keeps an
+unacknowledged record and a stdin's place for that dial. Its transport is the endpoint's
+admissions, summed over its lanes as the endpoint sums its own:
+- what the endpoint may send on a lane before it is read, the largest per lane and their sum: a
+  record with its head, a stdin's taken or end, or a refusal;
+- what the controller sends unacknowledged on each lane, summed: an output's subscription and one
+  acknowledgment; a stdin's subscription, one record and its end;
+- no stream the endpoint may open;
+- one command slot per lane, since each handle has one ask in flight.
+
 Tested in `crates/remote` (`control::tests`, over the in-process exchange of `lib.rs`'s
 handshake tests): the enrolled controller and its pinned microVM connect,
 TLS13_AES_256_GCM_SHA384 and `shards-control/1` at both ends, each holding the other's key; a
@@ -23504,7 +23533,16 @@ ending its lane; a stranger's key reaches no stream; lanes of another member, ge
 kind refused alone, typed, while a served lane works; a second lane of a stream refused; a newer
 connection superseding the older and resuming its unacknowledged record; a revoked stream's lane
 reset alone; an input's own end ending its lane, a late frame let go; the windows its streams'
-sums. Record:
+sums. Through the controller over loopback:
+- member 0's stdio exact both ways, a stdin written one room at a time and its end told;
+- a record acknowledged only as the next is asked for;
+- lanes refused alone and typed;
+- a controller that is not enrolled, or that pinned another key, reaching no lane (`NotEnrolled`);
+- a newer dial superseding the older (`Stale`) and resuming at its cursors;
+- a revoked output and an aborted stdin each ending alone, and a hangup ending the rest (`Local`);
+- its windows its lanes' sums.
+
+Record:
 [agent-control-v1](../research/measurements/agent-control-v1/README.md).
 
 **Control that crosses no TLS** (ROOT's ruling, 2026-11-13). The CLI's request slots (D185),
@@ -23531,6 +23569,9 @@ buffer, chunk, keep-alive or idle value is set here: `control::endpoint` and
 | `CONNECTIONS` 2 | its controller's connection and the one that replaces it; the older closes at the newer's handshake and is held until its close drains (RFC 9000 §10.2) |
 | One command slot | a wake is one unit whose turn serves every stream; a full handoff is a wake queued |
 | Windows, streams | each stream's own (above): its endpoint of one stream's windows, summed; one stream per lane |
+| The controller's windows; its command slots | the endpoint's admissions, summed over its lanes as the endpoint sums its own; one slot per lane, as each handle has one ask in flight |
+| An output's acknowledgment, 13 bytes | step 5's `consumed` frame: a frame's head (5) and an offset (8) |
+| An errno under 4096 (`NonZeroU16`) | Linux's MAX_ERRNO, 4095 (`include/linux/err.h`) |
 
 ### D239. AES-256-GCM alone, both ways, on every link that carries agent or shards control (built: plan step 3; its real-VM runs owed)
 
