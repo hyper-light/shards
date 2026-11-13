@@ -46,11 +46,53 @@ const SIGINT: Sig = libc::SIGINT;
 #[cfg(windows)]
 const SIGINT: Sig = shards_ipc::signal::SIGINT;
 
-/// How many times a client asks before it gives up on daemons asking it to ask again
-/// (RESTART): a daemon of another build answers so the request that makes it step aside,
-/// and then each it took meanwhile through a slot it had offered of the kind the client
-/// asks for (`slots::OFFERED`); one of a build from before slots, once, on its socket.
-const RESTARTS: usize = shards_ipc::slots::OFFERED + 2;
+/// A daemon that answered a request without taking it (RESTART, or its socket shut unread),
+/// asked again after it had answered so, and answering so again as itself: nothing about it
+/// changed between, so no answer of its to come is progress (D185). It is the daemon the
+/// home's `daemon.pid` named as the request was asked, by its ID and start
+/// ([`shards_ipc::Named`]); none where that named none.
+#[derive(Debug, PartialEq, Eq)]
+struct Untaken(Option<shards_ipc::Named>);
+
+impl std::fmt::Display for Untaken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            Some(daemon) => write!(
+                f,
+                "the daemon (process {}) answered again without taking the request",
+                daemon.pid
+            ),
+            None => f.write_str("the daemon answered again without taking the request"),
+        }
+    }
+}
+
+impl Untaken {
+    /// What a client says of it, with where the daemon of `home` says why.
+    fn said(&self, home: &Path) -> String {
+        format!("{self}; see {}", log(home).display())
+    }
+}
+
+/// Whose answer last sent a client's request round again (RESTART, or its socket shut
+/// unread): none yet; then the daemon `daemon.pid` named as that request was asked, or none
+/// where it named none. A client asks again after each such answer while it comes from
+/// another daemon than the last: a takeover's from the daemon stepping aside, the next from
+/// the one that took the home after it. No count bounds it (D26, D185; R03).
+#[derive(Debug, Default)]
+struct Again(Option<Option<shards_ipc::Named>>);
+
+impl Again {
+    /// After `daemon`'s answer sent the request round again: [`Untaken`] where the last
+    /// such answer was that same daemon's too, else the ask again, `daemon` its last.
+    fn round(&mut self, daemon: Option<shards_ipc::Named>) -> Result<(), Untaken> {
+        if self.0 == Some(daemon) {
+            return Err(Untaken(daemon));
+        }
+        self.0 = Some(daemon);
+        Ok(())
+    }
+}
 
 /// Runs `request` through the daemon of `home`, whose binary is `daemon`, detaching on
 /// `detach_keys` under `-it`. Every path the request holds is absolute by now
@@ -211,9 +253,11 @@ fn serve(
     ];
     let opened = ways.iter().filter(|w| w.0).fold(0, |all, w| all | w.1);
     let named = ways.map(|(given, _, fd)| if given { fd } else { slots::fds::NULL });
-    // A daemon from another build answers RESTART once it has stepped aside.
-    for _ in 0..RESTARTS {
-        let asked = match ask_slot(
+    // A daemon from another build answers RESTART once it has stepped aside: asked again,
+    // while each such answer is another daemon's than the last.
+    let mut again = Again::default();
+    loop {
+        let (asked, whose) = match ask_slot(
             home,
             daemon,
             &mut started,
@@ -309,7 +353,10 @@ fn serve(
                 match shards_ipc::send(&conn, request.kind, &request.payload, &stdio) {
                     // Shut before it read the request, as a daemon of another build steps
                     // aside: the next one is asked.
-                    Err(e) if unread(&e) => continue,
+                    Err(e) if unread(&e) => match again.round(whose) {
+                        Ok(()) => continue,
+                        Err(untaken) => return failed(&untaken.said(home)),
+                    },
                     Err(e) => return failed(&format!("asking the daemon: {e}")),
                     Ok(()) => {}
                 }
@@ -352,6 +399,9 @@ fn serve(
                 if let Some(sig) = let_go(current) {
                     end_by(sig);
                 }
+                if let Err(untaken) = again.round(whose) {
+                    return failed(&untaken.said(home));
+                }
             }
             Ran::Failed(e) => {
                 if let Some(sig) = let_go(current) {
@@ -361,7 +411,6 @@ fn serve(
             }
         }
     }
-    failed("the daemon kept asking for a restart")
 }
 
 /// Where a run's signals go, from the moment its request is on its way, and what went
@@ -713,6 +762,8 @@ enum Asked {
 /// as the daemon that has taken the home lives ([`shards_ipc::daemon_lives`]), or one ends
 /// its runs before another takes it ([`shards_ipc::exiting`]): its starter returns once it
 /// serves, or once it found another that does, so that one gone without a slot has ended.
+/// With where it asked, the daemon the home's `daemon.pid` named as it asked there, by its
+/// ID and start: whose any RESTART is ([`Again`]).
 #[allow(clippy::too_many_arguments)]
 fn ask_slot(
     home: &Path,
@@ -723,22 +774,29 @@ fn ask_slot(
     streams: u8,
     named: &[u8],
     waiting: &mut dyn FnMut() -> Result<(), String>,
-) -> Result<Asked, String> {
-    use shards_ipc::slots;
+) -> Result<(Asked, Option<shards_ipc::Named>), String> {
+    use shards_ipc::{Named, slots};
+    // The daemon a slot or socket taken is of, as the home names the one that holds it: read
+    // once it is taken, before it is asked. A daemon names itself there before it offers any
+    // slot (`shards_ipc::PID`).
+    let holder = || Named::read(Path::new(shards_ipc::PID));
     loop {
         // The home is this process's working directory (`enter`): its slots are named from
         // there, as its socket is.
         match slots::take(Path::new("."), streams) {
-            Ok(slots::Taken::Slot(client)) => match client.ask(kind, payload, named) {
-                Ok(()) => return Ok(Asked::Slot(client)),
-                // Removed as it was asked: the next.
-                Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {}
-                Err(e) => return Err(format!("asking the daemon: {e}")),
-            },
+            Ok(slots::Taken::Slot(client)) => {
+                let whose = holder();
+                match client.ask(kind, payload, named) {
+                    Ok(()) => return Ok((Asked::Slot(client), whose)),
+                    // Removed as it was asked: the next.
+                    Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {}
+                    Err(e) => return Err(format!("asking the daemon: {e}")),
+                }
+            }
             Ok(slots::Taken::NoDaemon) => {
                 #[cfg(unix)]
                 if let Ok(conn) = UnixStream::connect(SOCKET) {
-                    return Ok(Asked::Socket(conn));
+                    return Ok((Asked::Socket(conn), holder()));
                 }
                 // What follows may wait as long as a daemon takes to start, or the one it
                 // replaces to end its runs: what must not wait with it goes first.
@@ -749,8 +807,9 @@ fn ask_slot(
                 } else if !shards_ipc::daemon_lives(home) && !shards_ipc::exiting(home) {
                     // Gone without a slot: looked for once more, as one may have come as it went.
                     if let Ok(slots::Taken::Slot(client)) = slots::take(Path::new("."), streams) {
+                        let whose = holder();
                         match client.ask(kind, payload, named) {
-                            Ok(()) => return Ok(Asked::Slot(client)),
+                            Ok(()) => return Ok((Asked::Slot(client), whose)),
                             Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {}
                             Err(e) => return Err(format!("asking the daemon: {e}")),
                         }
@@ -848,10 +907,12 @@ pub fn container(home: &Path, daemon: &Path, command: &Command, fds: &[Stream<'_
         Ok(started) => started,
         Err(e) => return failed(&e),
     };
-    // A daemon from another build answers RESTART once it has stepped aside.
-    for _ in 0..RESTARTS {
+    // A daemon from another build answers RESTART once it has stepped aside: asked again,
+    // while each such answer is another daemon's than the last.
+    let mut again = Again::default();
+    loop {
         let (opened, named) = streams_of(fds);
-        let asked = match ask_slot(
+        let (asked, whose) = match ask_slot(
             home,
             daemon,
             &mut started,
@@ -879,22 +940,25 @@ pub fn container(home: &Path, daemon: &Path, command: &Command, fds: &[Stream<'_
             Asked::Socket(conn) => {
                 let raw: Vec<BorrowedFd<'_>> = fds.iter().map(Stream::fd).collect();
                 match shards_ipc::send(&conn, kind::CONTAINER, &command.encode(), &raw) {
-                    Err(e) if unread(&e) => continue,
+                    // Shut before it read the request: asked again, as after a RESTART.
+                    Err(e) if unread(&e) => Ok(None),
                     Err(e) => return failed(&format!("asking the daemon: {e}")),
-                    Ok(()) => {}
+                    Ok(()) => Ok(std::thread::scope(|scope| {
+                        answer(scope, &mut || shards_ipc::recv(&conn), home, command.east_asian)
+                    })),
                 }
-                Ok(std::thread::scope(|scope| {
-                    answer(scope, &mut || shards_ipc::recv(&conn), home, command.east_asian)
-                }))
             }
         };
         match answered {
             Ok(Some(status)) => return status,
-            Ok(None) => {}
+            Ok(None) => {
+                if let Err(untaken) = again.round(whose) {
+                    return failed(&untaken.said(home));
+                }
+            }
             Err(e) => return failed(&e),
         }
     }
-    failed("the daemon kept asking for a restart")
 }
 
 /// Asks the daemon of `home`, whose binary is `daemon`, for `command` with `fds`, and
@@ -906,10 +970,12 @@ pub fn ask(
     fds: &[Stream<'_>],
 ) -> Result<(u8, Vec<u8>, Vec<u8>), String> {
     let mut started = enter(home, daemon)?;
-    // A daemon from another build answers RESTART once it has stepped aside.
-    for _ in 0..RESTARTS {
+    // A daemon from another build answers RESTART once it has stepped aside: asked again,
+    // while each such answer is another daemon's than the last.
+    let mut again = Again::default();
+    loop {
         let (opened, named) = streams_of(fds);
-        let answered = match ask_slot(
+        let (asked, whose) = ask_slot(
             home,
             daemon,
             &mut started,
@@ -918,24 +984,25 @@ pub fn ask(
             opened,
             &named,
             &mut || Ok(()),
-        )? {
+        )?;
+        let answered = match asked {
             Asked::Slot(client) => answered_whole(client, fds)?,
             #[cfg(unix)]
             Asked::Socket(conn) => {
                 let raw: Vec<BorrowedFd<'_>> = fds.iter().map(Stream::fd).collect();
                 match shards_ipc::send(&conn, kind::CONTAINER, &command.encode(), &raw) {
-                    Err(e) if unread(&e) => continue,
+                    // Shut before it read the request: asked again, as after a RESTART.
+                    Err(e) if unread(&e) => None,
                     Err(e) => return Err(format!("asking the daemon: {e}")),
-                    Ok(()) => {}
+                    Ok(()) => collected(&mut || shards_ipc::recv(&conn))?,
                 }
-                collected(&mut || shards_ipc::recv(&conn))?
             }
         };
-        if let Some(answered) = answered {
-            return Ok(answered);
+        match answered {
+            Some(answered) => return Ok(answered),
+            None => again.round(whose).map_err(|untaken| untaken.said(home))?,
         }
     }
-    Err("the daemon kept asking for a restart".into())
 }
 
 /// Asks the daemon whose home is this process's working directory for `command`, with
@@ -943,14 +1010,17 @@ pub fn ask(
 /// context's steps, daemon/remote.rs), which starts no daemon where its own has closed.
 // The daemon's, for a context's copy step (D180).
 pub fn ask_here(command: &Command, fds: &[Stream<'_>]) -> Result<(u8, Vec<u8>, Vec<u8>), String> {
-    use shards_ipc::slots;
-    for _ in 0..RESTARTS {
+    use shards_ipc::{Named, slots};
+    let mut again = Again::default();
+    loop {
         let (opened, named) = streams_of(fds);
         let client = match slots::take(Path::new("."), opened) {
             Ok(slots::Taken::Slot(client)) => client,
             Ok(slots::Taken::NoDaemon) => return Err("the daemon is shutting down".into()),
             Err(e) => return Err(format!("{}: {e}", slots::DIR)),
         };
+        // The daemon the slot is of, as `ask_slot` reads it.
+        let whose = Named::read(Path::new(shards_ipc::PID));
         match client.ask(kind::CONTAINER, &command.encode(), &named) {
             // Removed as it was asked: the next.
             Err(e) if e.kind() == io::ErrorKind::BrokenPipe => continue,
@@ -960,8 +1030,10 @@ pub fn ask_here(command: &Command, fds: &[Stream<'_>]) -> Result<(u8, Vec<u8>, V
         if let Some(answered) = answered_whole(client, fds)? {
             return Ok(answered);
         }
+        // Its words go back as the context's step's stderr (daemon/remote.rs `ask_self`), to a
+        // client its daemon's log, under a home known here only as ".", would not help.
+        again.round(whose).map_err(|untaken| untaken.to_string())?;
     }
-    Err("the daemon kept asking for a restart".into())
 }
 
 /// A command's answer taken whole: its status, and what it said on stdout and on stderr.
@@ -1135,63 +1207,133 @@ fn unread(e: &io::Error) -> bool {
 }
 
 /// Asks the daemon of `home` to exit once the runs in hand are handed over, and waits
-/// until it has: the daemon holds the request's slot open until it exits.
+/// until it has let go of its home: its slot's end alone, which it holds back until then,
+/// is no word of that where a RESTART or no slot answers, or the slot ends early; the lock
+/// a closed daemon holds until then is ([`await_stopping`], D185).
 pub fn stop(home: &Path) -> ExitCode {
-    use shards_ipc::slots;
     match std::env::set_current_dir(home) {
         Ok(()) => {}
         // No home: no daemon to stop.
         Err(e) if e.kind() == io::ErrorKind::NotFound => return ExitCode::SUCCESS,
         Err(e) => return failed(&format!("{}: {e}", home.display())),
     }
-    for _ in 0..RESTARTS {
-        let client = match slots::take(Path::new("."), 0) {
+    match stop_at(Path::new("."), home) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(NotStopped::Untaken(untaken)) => failed(&untaken.said(home)),
+        Err(NotStopped::Failed(why)) => failed(&why),
+    }
+}
+
+/// Why a stop did not end its daemon ([`stop_at`]).
+#[derive(Debug, PartialEq, Eq)]
+enum NotStopped {
+    /// The daemon that holds the home, asked again, answered again as itself without taking
+    /// the stop.
+    Untaken(Untaken),
+    /// It could not be asked, or what it answered could not be read: why.
+    Failed(String),
+}
+
+/// [`stop`] of the daemon of the home `here` names: `home`, by this process's working
+/// directory.
+fn stop_at(here: &Path, home: &Path) -> Result<(), NotStopped> {
+    use shards_ipc::{Named, slots};
+    // The daemon whose answer last sent this stop round again: the one progress there is to
+    // go by, as a daemon answers the same until something about it changes.
+    let mut again = Again::default();
+    loop {
+        let client = match slots::take(here, 0) {
             Ok(slots::Taken::Slot(client)) => client,
-            // No slot offered: a daemon of a build from before slots, or none.
+            // No slot offered: a daemon that has closed, waited for until it has let go of
+            // its home; then a daemon of a build from before slots, or none.
             #[cfg(unix)]
-            Ok(slots::Taken::NoDaemon) => return stop_socket(home),
-            // No slot offered: no daemon, Windows' first having slots.
+            Ok(slots::Taken::NoDaemon) => {
+                await_stopping(here).map_err(NotStopped::Failed)?;
+                return stop_socket(here, home).map_err(NotStopped::Failed);
+            }
+            // Windows' first daemon had slots.
             #[cfg(windows)]
-            Ok(slots::Taken::NoDaemon) => return ExitCode::SUCCESS,
-            Err(e) => return failed(&format!("{}: {e}", home.join(slots::DIR).display())),
+            Ok(slots::Taken::NoDaemon) => return await_stopping(here).map(drop).map_err(NotStopped::Failed),
+            Err(e) => {
+                return Err(NotStopped::Failed(format!(
+                    "{}: {e}",
+                    home.join(slots::DIR).display()
+                )));
+            }
         };
+        // The daemon this slot is of, as the home names the one that holds it.
+        let asked = Named::read(&here.join(shards_ipc::PID));
         match client.ask(kind::STOP, &[], &[]) {
             // Removed as it was asked: the next.
             Err(e) if e.kind() == io::ErrorKind::BrokenPipe => continue,
-            Err(e) => return failed(&format!("asking the daemon to stop: {e}")),
+            Err(e) => return Err(NotStopped::Failed(format!("asking the daemon to stop: {e}"))),
             Ok(()) => {}
         }
-        // Its end, waited for as long as it ends its runs, each as its stop timeout says
-        // (D217): the slot is the daemon's until it exits.
-        return match client.recv() {
-            // Its end. Closing already, or stepping aside for another build's client, it
-            // exits all the same.
-            Ok(None) => ExitCode::SUCCESS,
-            Ok(Some(f)) if f.kind == kind::RESTART => ExitCode::SUCCESS,
-            Err(_) => ExitCode::SUCCESS,
-            Ok(Some(f)) => failed(&format!(
-                "the daemon answered its stop with message kind {}",
-                f.kind
-            )),
+        // Its end, which a daemon that took the stop holds back until it has let go of its
+        // home (`stoppers`); or RESTART, from one closed already, or one that serves on, its
+        // request cut or no descriptor left for it. Neither is word of its exit: a stop its
+        // daemon closed for, or one it found closed, waits for that daemon's own.
+        match client.recv() {
+            Ok(None) | Err(_) => {}
+            Ok(Some(f)) if f.kind == kind::RESTART => {}
+            Ok(Some(f)) => {
+                return Err(NotStopped::Failed(format!(
+                    "the daemon answered its stop with message kind {}",
+                    f.kind
+                )));
+            }
+        }
+        drop(client);
+        if await_stopping(here).map_err(NotStopped::Failed)? {
+            return Ok(());
+        }
+        // None closed: the daemon asked has exited, or holds its home still, serving on, the
+        // stop not taken. Asked again, after its answer, where that daemon is another than the
+        // one last asked again; the same one, as itself, would answer the same for ever.
+        let Some(asked) =
+            asked.filter(|asked| asked.lives() && Named::read(&here.join(shards_ipc::PID)) == Some(*asked))
+        else {
+            return Ok(());
         };
+        again.round(Some(asked)).map_err(NotStopped::Untaken)?;
     }
-    failed("the daemon kept asking for a restart")
 }
 
-/// [`stop`] of a daemon of a build from before slots (D185), through its socket.
+/// Waits until a daemon of the home `here` names that has closed, and ends its runs, has let
+/// go of its home: it holds [`shards_ipc::STOPPING_LOCK`], a file it made anew as it closed,
+/// until it has unlocked the home (daemon.rs `close`, `finish`), and a shared lock of it is
+/// had once it has. No daemon that serves holds it, so this waits on none but one that
+/// stops: never a next daemon's lock of the home. Whether one had closed.
+fn await_stopping(here: &Path) -> Result<bool, String> {
+    let path = here.join(shards_ipc::STOPPING_LOCK);
+    let held = match File::open(&path) {
+        Ok(held) => held,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
+    held.lock_shared().map_err(|e| {
+        format!(
+            "waiting for the daemon to let go of its home, {}: {e}",
+            path.display()
+        )
+    })?;
+    // Let go of before its file closes (M244).
+    let _ = held.unlock();
+    Ok(true)
+}
+
+/// [`stop`] of a daemon of a build from before slots (D185), through its socket in `here`.
 #[cfg(unix)]
-fn stop_socket(home: &Path) -> ExitCode {
-    match UnixStream::connect(SOCKET) {
+fn stop_socket(here: &Path, home: &Path) -> Result<(), String> {
+    match UnixStream::connect(here.join(SOCKET)) {
         Ok(conn) => {
-            if let Err(e) = shards_ipc::send(&conn, kind::STOP, &[], &[]) {
-                return failed(&format!("asking the daemon to stop: {e}"));
-            }
+            shards_ipc::send(&conn, kind::STOP, &[], &[])
+                .map_err(|e| format!("asking the daemon to stop: {e}"))?;
             match shards_ipc::recv(&conn) {
                 // Stepping aside for another build's client, it exits all the same.
-                Ok(None) => ExitCode::SUCCESS,
-                Ok(Some(m)) if m.kind == kind::RESTART => ExitCode::SUCCESS,
-                Err(_) => ExitCode::SUCCESS,
-                Ok(Some(m)) => failed(&format!(
+                Ok(None) | Err(_) => Ok(()),
+                Ok(Some(m)) if m.kind == kind::RESTART => Ok(()),
+                Ok(Some(m)) => Err(format!(
                     "the daemon answered its stop with message kind {}",
                     m.kind
                 )),
@@ -1204,9 +1346,9 @@ fn stop_socket(home: &Path) -> ExitCode {
                 io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
             ) =>
         {
-            ExitCode::SUCCESS
+            Ok(())
         }
-        Err(e) => failed(&format!("{}: {e}", home.join(SOCKET).display())),
+        Err(e) => Err(format!("{}: {e}", home.join(SOCKET).display())),
     }
 }
 
@@ -1426,15 +1568,7 @@ fn take_signals(reads_terminal: bool, resizes: bool, proxies: bool) -> Result<Op
         if !resizes {
             return Ok(None);
         }
-        // SAFETY: plain sigset operations on a local set, then blocking it in this thread,
-        // which threads started later inherit.
-        let set = unsafe {
-            let mut set: libc::sigset_t = std::mem::zeroed();
-            libc::sigemptyset(&mut set);
-            libc::sigaddset(&mut set, libc::SIGWINCH);
-            libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
-            set
-        };
+        let set = shards_ipc::take_resizes().map_err(|e| format!("taking SIGWINCH: {e}"))?;
         return Ok(Some(Signals {
             set,
             ignored: Vec::new(),
@@ -1828,5 +1962,369 @@ mod tests {
         assert!(with_client_rss("{}").ends_with('}'));
         assert!(!with_client_rss("{}").contains(",}"));
         assert_eq!(with_client_rss("not json"), "not json");
+    }
+
+    /// How long [`a_stop_returns_once_its_daemon_has_let_go_of_its_home`] gives a stop to
+    /// return wrongly: one that takes its slot's end, a RESTART or no slot for its daemon's
+    /// exit has nothing left to do but return, microseconds; one that waits as it should
+    /// cannot return in it, so it bounds only how long each case waits before its stand-in
+    /// lets go. A test's patience, no runtime policy.
+    const RETURNS_WITHIN: Duration = Duration::from_secs(1);
+
+    /// How the stand-in daemon of [`a_stop_returns_once_its_daemon_has_let_go_of_its_home`]
+    /// answers a stop.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Stand {
+        /// Closed as it took the stop, its slot's session ends before it has let go of its
+        /// home: the stop of managed_output's HVF run at 4a426c367.
+        Ends,
+        /// Closed already (another stop's, an idle exit): RESTART.
+        Restarts,
+        /// Closed already, its lists gone: no slot.
+        NoSlot,
+        /// Serving on, it answers RESTART (a request cut, no descriptor left), and takes the
+        /// stop asked again.
+        ServesOn,
+    }
+
+    /// `stop daemon` returns once its daemon has let go of its home, however its slot went:
+    /// before, it took its slot's end, a RESTART or no slot for its daemon's exit, and
+    /// returned while that daemon still held the home's lock, ending its runs, or, serving
+    /// on, never stopped (D185). The stand-in daemon is this process: it holds the home's
+    /// lock and, once closed, [`shards_ipc::STOPPING_LOCK`], each through a file of its own
+    /// (flock(2) and LockFileEx lock an open file, so two of one process exclude each
+    /// other), and serves real slots.
+    #[test]
+    fn a_stop_returns_once_its_daemon_has_let_go_of_its_home() {
+        let mut wrong = Vec::new();
+        for stand in [Stand::Ends, Stand::Restarts, Stand::NoSlot, Stand::ServesOn] {
+            let home = shards_testdir::TempDir::new("stop-held").unwrap();
+            let held = locked(&home.join("daemon.lock"));
+            std::fs::write(home.join(shards_ipc::PID), shards_ipc::this_process().unwrap()).unwrap();
+            let mut exit = (stand != Stand::ServesOn).then(|| closed(&home));
+            let mut requests =
+                (stand != Stand::NoSlot).then(|| shards_ipc::slots::Requests::open(&home).unwrap());
+            // Serving on, a second for the stop asked again.
+            let offered = if stand == Stand::ServesOn { 2 } else { 1 };
+            let mut slots = Vec::new();
+            for _ in 0..offered {
+                let Some(requests) = requests.as_mut() else {
+                    break;
+                };
+                let slot = requests.make(false).unwrap();
+                requests.offer(slot.number(), false).unwrap();
+                slots.push(slot);
+            }
+            let stoppers: Vec<_> = slots.iter().map(|slot| slot.stopper().unwrap()).collect();
+            let at = home.to_path_buf();
+            let serving = std::thread::spawn(move || serve(slots, stand, &at));
+            let (said, returned) = std::sync::mpsc::channel();
+            let at = home.to_path_buf();
+            // Its own thread, not joined: a stop that never returned fails the case below.
+            std::thread::spawn(move || {
+                let status = stop_at(&at, &at);
+                let _ = said.send((status, lock_free(&at)));
+            });
+            if let Ok((status, free)) = returned.recv_timeout(RETURNS_WITHIN) {
+                wrong.push(format!(
+                    "{stand:?}: returned {status:?} while its daemon held its home (free: {free})"
+                ));
+            }
+            // An unasked slot's wait ended.
+            for stopper in &stoppers {
+                let _ = stopper.stop();
+            }
+            let taken = serving.join().unwrap();
+            // Let go of as `finish` does: the home's lock, then the exit's.
+            let _ = held.unlock();
+            if let Some(exit) = exit.take().or(taken) {
+                let _ = exit.unlock();
+            }
+            match returned.recv_timeout(RETURNS_WITHIN) {
+                Ok((Ok(()), true)) => {}
+                Ok((status, free)) => wrong.push(format!("{stand:?}: returned {status:?}, free: {free}")),
+                Err(e) => wrong.push(format!("{stand:?}: not returned once let go: {e}")),
+            }
+            drop(requests);
+        }
+        assert!(wrong.is_empty(), "{wrong:#?}");
+    }
+
+    /// Serves `slots` in turn as `stand` says, each slot's stop taken and its session ended,
+    /// after a RESTART where it says one; serving on, it closes as it takes the stop asked
+    /// again. The exit's lock it took, where it did.
+    fn serve(slots: Vec<shards_ipc::slots::Slot>, stand: Stand, home: &Path) -> Option<File> {
+        let mut exit = None;
+        for (n, slot) in slots.into_iter().enumerate() {
+            let Ok(shards_ipc::slots::Waited::Opened(opened)) = slot.wait() else {
+                break;
+            };
+            let asked = opened.request().unwrap().unwrap();
+            assert_eq!(asked.request.kind, kind::STOP);
+            match (stand, n) {
+                (Stand::Restarts, _) | (Stand::ServesOn, 0) => {
+                    asked.session.send(kind::RESTART, &[]).unwrap()
+                }
+                (Stand::ServesOn, _) => exit = Some(closed(home)),
+                (Stand::Ends | Stand::NoSlot, _) => {}
+            }
+        }
+        exit
+    }
+
+    /// A daemon's close, as its home shows it: named stopping, its exit's lock held.
+    fn closed(home: &Path) -> File {
+        std::fs::write(
+            home.join(shards_ipc::STOPPING),
+            shards_ipc::this_process().unwrap(),
+        )
+        .unwrap();
+        locked(&home.join(shards_ipc::STOPPING_LOCK))
+    }
+
+    /// The file at `path`, made where it is not, locked exclusively through a file of its own.
+    fn locked(path: &Path) -> File {
+        let file = File::options()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(path)
+            .unwrap();
+        file.lock().unwrap();
+        file
+    }
+
+    /// Whether no daemon holds `home`'s lock, tried through a file of its own.
+    fn lock_free(home: &Path) -> bool {
+        let file = File::open(home.join("daemon.lock")).unwrap();
+        let free = file.try_lock().is_ok();
+        let _ = file.unlock();
+        free
+    }
+
+    /// `stop daemon` asks again a daemon that answered it without taking it, once, and fails
+    /// naming it when that same daemon, as itself, answers so again: nothing changed between,
+    /// so no answer of its to come is progress. A count of asks bounded it before (RESTARTS),
+    /// a number no daemon's answer was its basis of (R03). The stand-in serves on, this
+    /// process holding its home, and answers RESTART to every stop it is asked.
+    #[test]
+    fn a_stop_its_daemon_answers_again_as_itself_without_taking_it_fails_naming_it() {
+        let home = shards_testdir::TempDir::new("stop-untaken").unwrap();
+        let _held = locked(&home.join("daemon.lock"));
+        let me = shards_ipc::this_process().unwrap();
+        std::fs::write(home.join(shards_ipc::PID), &me).unwrap();
+        let me = shards_ipc::Named::parse(&me).unwrap();
+        let mut requests = shards_ipc::slots::Requests::open(&home).unwrap();
+        let (offered, waiting) = std::sync::mpsc::channel();
+        let serving = std::thread::spawn(move || {
+            let mut asks = 0usize;
+            loop {
+                let slot = requests.make(false).unwrap();
+                requests.offer(slot.number(), false).unwrap();
+                let _ = offered.send(slot.stopper().unwrap());
+                let Ok(shards_ipc::slots::Waited::Opened(opened)) = slot.wait() else {
+                    return asks;
+                };
+                let asked = opened.request().unwrap().unwrap();
+                assert_eq!(asked.request.kind, kind::STOP);
+                asks += 1;
+                asked.session.send(kind::RESTART, &[]).unwrap();
+            }
+        });
+        let (said, returned) = std::sync::mpsc::channel();
+        let at = home.to_path_buf();
+        // Its own thread, not joined: a stop that never returned fails the test below.
+        std::thread::spawn(move || {
+            let _ = said.send(stop_at(&at, &at));
+        });
+        // A test's patience for an answer that comes at once, no runtime policy.
+        let outcome = returned.recv_timeout(Duration::from_secs(60));
+        // The slot it offers next, past the stop's last, waits for none.
+        for stopper in waiting {
+            let _ = stopper.stop();
+        }
+        let asks = serving.join().unwrap();
+        assert_eq!(outcome, Ok(Err(NotStopped::Untaken(Untaken(Some(me))))));
+        assert_eq!(asks, 2, "asked of the same daemon {asks} times");
+    }
+
+    /// The clients that ask again on a RESTART, each as [`a_client_of_its_own`] runs it: a
+    /// run's, an exec's and an attach's (`serve`), and a command's, its answer shown
+    /// (`container`), taken whole (`ask`), or asked of the daemon's own home (`ask_here`).
+    const CLIENTS: [&str; 6] = ["start", "exec", "attach", "container", "ask", "ask_here"];
+
+    /// How the stand-in daemon of [`asked_of_a_stand_in`] answers each request it takes.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Answers {
+        /// RESTART, every one, as the one daemon `daemon.pid` names throughout (`4242 1`): a
+        /// daemon serving on whose answer sends each request round again.
+        RestartAsItself,
+        /// RESTART to the first, as `4242 1`; then, `daemon.pid` naming another (`4343 2`),
+        /// the next taken, its last word saying status 0: the daemon of another build
+        /// stepping aside, and the daemon that took its home after it.
+        TakenOver,
+    }
+
+    /// The most requests [`asked_of_a_stand_in`]'s stand-in answers before it lets go of its
+    /// slots: one past the four a client asked of one daemon before (`RESTARTS`,
+    /// `slots::OFFERED` + 2), the least that shows a client asking past every bound it had.
+    /// A client still asking then finds no daemon, and fails to start the one it names,
+    /// which is not there: so a client with no bound ends. A test harness's limit, no
+    /// runtime policy.
+    const ANSWERED_AT_MOST: usize = 5;
+
+    /// `client` ([`CLIENTS`]) in a process of its own ([`a_client_of_its_own`]), of `home`,
+    /// whose daemon is a stand-in, this process, serving real slots one at a time, as
+    /// `answers` says: how many requests it took, and what the client said.
+    fn asked_of_a_stand_in(client: &str, answers: Answers, home: &Path) -> (usize, String) {
+        std::fs::write(home.join(shards_ipc::PID), "4242 1\n").unwrap();
+        let mut requests = shards_ipc::slots::Requests::open(home).unwrap();
+        // A run's, an exec's and an attach's slot has streams, and its last word is EXIT.
+        let (asked_kind, streams, last) = match client {
+            "start" => (kind::START, true, kind::EXIT),
+            "exec" => (kind::EXEC, true, kind::EXIT),
+            "attach" => (kind::ATTACH, true, kind::EXIT),
+            _ => (kind::CONTAINER, false, kind::END),
+        };
+        let (offered, waiting) = std::sync::mpsc::channel();
+        let at = home.to_path_buf();
+        let serving = std::thread::spawn(move || {
+            let mut asks = 0usize;
+            while asks < ANSWERED_AT_MOST {
+                let slot = requests.make(streams).unwrap();
+                requests.offer(slot.number(), streams).unwrap();
+                let _ = offered.send(slot.stopper().unwrap());
+                let Ok(shards_ipc::slots::Waited::Opened(opened)) = slot.wait() else {
+                    return asks;
+                };
+                let asked = opened.request().unwrap().unwrap();
+                assert_eq!(asked.request.kind, asked_kind);
+                asks += 1;
+                if answers == Answers::TakenOver && asks > 1 {
+                    asked.session.send(last, &[0]).unwrap();
+                    continue;
+                }
+                asked.session.send(kind::RESTART, &[]).unwrap();
+                if answers == Answers::TakenOver {
+                    // Its successor names itself as it takes the home, before it offers a slot.
+                    std::fs::write(at.join(shards_ipc::PID), "4343 2\n").unwrap();
+                }
+            }
+            asks
+        });
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "cli::client::tests::a_client_of_its_own",
+                "--exact",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("CLIENT_CHILD", client)
+            .env("CLIENT_CHILD_HOME", home)
+            .output()
+            .unwrap();
+        // The slot offered past the client's last ask, which no client takes, ends its wait.
+        for stopper in waiting {
+            let _ = stopper.stop();
+        }
+        let asks = serving.join().unwrap();
+        let said = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        (asks, said)
+    }
+
+    /// A client asks again on a RESTART only where the daemon that answered so is another
+    /// than the one whose RESTART it last asked again on, and fails naming it where that same
+    /// one, as itself, answers so again: nothing changed between, so no answer of its to come
+    /// is progress. A count of asks bounded it before (`RESTARTS`, `slots::OFFERED` + 2), a
+    /// number no daemon's answer was its basis of (R03). Each client in a process of its own,
+    /// its daemon a stand-in, this process, that answers every request RESTART as `4242 1`.
+    #[test]
+    fn a_request_its_daemon_answers_again_as_itself_without_taking_it_fails_naming_it() {
+        let mut wrong = Vec::new();
+        for client in CLIENTS {
+            let home = shards_testdir::TempDir::new("again").unwrap();
+            let (asks, said) = asked_of_a_stand_in(client, Answers::RestartAsItself, &home);
+            let untaken = "the daemon (process 4242) answered again without taking the request";
+            // The daemon asking itself (`ask_here`) has its own log.
+            let expected = match client {
+                "ask_here" => untaken.to_string(),
+                _ => format!("{untaken}; see {}", log(&home).display()),
+            };
+            if asks != 2 || !said.contains(&expected) {
+                wrong.push(format!("{client}: asked {asks} times, said:\n{said}"));
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    }
+
+    /// A client whose daemon stepped aside, answering RESTART, asks again the daemon that
+    /// took the home after it, as a takeover goes: its request is taken there, and it ends
+    /// as that daemon says. Each client in a process of its own, the stand-in this process.
+    #[test]
+    fn a_request_its_daemon_stepped_aside_from_goes_to_the_daemon_after_it() {
+        let mut wrong = Vec::new();
+        for client in CLIENTS {
+            let home = shards_testdir::TempDir::new("taken").unwrap();
+            let (asks, said) = asked_of_a_stand_in(client, Answers::TakenOver, &home);
+            if asks != 2 || !said.contains("ended 0") {
+                wrong.push(format!("{client}: asked {asks} times, said:\n{said}"));
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    }
+
+    /// A client in a process of its own, as [`asked_of_a_stand_in`] starts it: the one
+    /// `CLIENT_CHILD` names ([`CLIENTS`]), of the home `CLIENT_CHILD_HOME` names, the daemon it
+    /// would start not there. It says how it ended: its status, or the failure it returned
+    /// (a run's, an exec's, an attach's and a shown command's client says its own first).
+    #[test]
+    #[ignore = "run in a process of its own by asked_of_a_stand_in"]
+    fn a_client_of_its_own() {
+        let (Ok(client), Some(home)) = (
+            std::env::var("CLIENT_CHILD"),
+            std::env::var_os("CLIENT_CHILD_HOME"),
+        ) else {
+            return;
+        };
+        let home = std::path::PathBuf::from(home);
+        let daemon = home.join("absent");
+        let command = Command::default();
+        let served = |kind: u8| -> Result<u8, String> {
+            let request = Attached {
+                kind,
+                payload: Vec::new(),
+                interactive: false,
+                detach: false,
+                tty: false,
+                streams: (true, true),
+                proxies_signals: false,
+                card: None,
+                detach_said: None,
+            };
+            // The client's, not the stop tests' stand-in of the same name.
+            let code = super::serve(&home, &daemon, &request, &[], &mut None);
+            Ok((0..=u8::MAX).find(|&n| ExitCode::from(n) == code).unwrap())
+        };
+        let ended: Result<u8, String> = match client.as_str() {
+            "start" => served(kind::START),
+            "exec" => served(kind::EXEC),
+            "attach" => served(kind::ATTACH),
+            "container" => Ok(container(&home, &daemon, &command, &[])),
+            "ask" => ask(&home, &daemon, &command, &[]).map(|(status, ..)| status),
+            "ask_here" => {
+                std::env::set_current_dir(&home).unwrap();
+                ask_here(&command, &[]).map(|(status, ..)| status)
+            }
+            other => panic!("no client {other}"),
+        };
+        match ended {
+            Ok(status) => println!("ended {status}"),
+            Err(e) => println!("failed: {e}"),
+        }
     }
 }

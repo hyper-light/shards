@@ -10,7 +10,8 @@
 use std::collections::HashMap;
 use std::io::Read;
 use std::net::SocketAddr;
-use std::process::{Command, Stdio};
+use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, mpsc};
 use std::time::{Duration, Instant};
 
@@ -25,8 +26,138 @@ use shards_remote::server::{self, Host, Running, Stopper};
 use shards_remote::tls;
 use shards_testdir::TempDir;
 
-/// How long anything here may take before the test fails rather than waits.
-const DEADLINE: Duration = Duration::from_secs(60);
+/// What this process's tests have seen their subjects do: each thing a machine saw ([`Saw`]),
+/// each write to a command's stdin ([`Told`]) and of its output ([`Captured`]), each frame a raw
+/// client heard ([`Raw`]).
+/// The progress a wait is judged by ([`Patience`]).
+static PROGRESS: AtomicU64 = AtomicU64::new(0);
+
+fn progressed() {
+    PROGRESS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// A wait judged by what it waits on (R03), with no deadline of its own: by its subjects'
+/// transports, as net.rs judges its own waits ([`net::View`]: the datagrams their drivers heard,
+/// and the window their connections were judged by, learned from their own answers, no sooner
+/// than their probe timeouts, and cold their handshakes' window), and by what the tests see them
+/// do ([`PROGRESS`]). It goes on while either moves, and fails once the longest window its views
+/// show has passed whole with neither, a window no shorter than a silence its waiter makes
+/// itself (`floor`). Before any of its views shows a window (its driver has yet to look at a
+/// connection), or where it has none (a bind, on no connection), it looks again after as long
+/// as it has waited.
+struct Patience {
+    began: Instant,
+    floor: Duration,
+    views: Vec<net::View>,
+    /// What had moved as it last looked: [`PROGRESS`], and its views' datagrams heard.
+    moved: (u64, u64),
+    /// When it last saw anything move, or began.
+    heard: Instant,
+}
+
+impl Patience {
+    fn on(views: &[&net::View]) -> Patience {
+        let now = Instant::now();
+        let views: Vec<net::View> = views.iter().map(|v| (*v).clone()).collect();
+        let mut patience = Patience {
+            began: now,
+            floor: Duration::ZERO,
+            views,
+            moved: (0, 0),
+            heard: now,
+        };
+        patience.moved = patience.now_moved();
+        patience
+    }
+
+    fn now_moved(&self) -> (u64, u64) {
+        let heard = self
+            .views
+            .iter()
+            .map(net::View::heard)
+            .fold(0u64, u64::saturating_add);
+        (PROGRESS.load(Ordering::Relaxed), heard)
+    }
+
+    /// The longest window its views show, no shorter than its floor; none before one shows any.
+    fn window(&self) -> Option<Duration> {
+        let shown = self.views.iter().filter_map(net::View::window).max();
+        shown.map(|w| w.max(self.floor))
+    }
+
+    /// How long to wait before looking again: none once a whole window has passed since it
+    /// last saw anything move.
+    fn left(&mut self) -> Option<Duration> {
+        let moved = self.now_moved();
+        if moved != self.moved {
+            self.moved = moved;
+            self.heard = Instant::now();
+        }
+        match self.window() {
+            None => Some(self.began.elapsed().max(self.floor)),
+            Some(window) => window.checked_sub(self.heard.elapsed()).filter(|l| !l.is_zero()),
+        }
+    }
+
+    /// Why it failed, `what` not come.
+    fn out(&self, what: &str) -> String {
+        format!(
+            "{what}: nothing heard or seen for a whole window ({:?}, its transport's), {:?} in",
+            self.window().unwrap_or_default(),
+            self.began.elapsed()
+        )
+    }
+}
+
+/// What `rx` gives, waited for with [`Patience`] on `views`: `what`, said if it never comes.
+fn patiently<T>(rx: &mpsc::Receiver<T>, views: &[&net::View], what: &str) -> T {
+    waited(rx, what, Patience::on(views))
+}
+
+fn waited<T>(rx: &mpsc::Receiver<T>, what: &str, mut patience: Patience) -> T {
+    loop {
+        let Some(left) = patience.left() else {
+            panic!("{}", patience.out(what));
+        };
+        match rx.recv_timeout(left) {
+            Ok(value) => return value,
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                panic!(
+                    "{what}: its thread ended without it, {:?} in",
+                    patience.began.elapsed()
+                )
+            }
+        }
+    }
+}
+
+/// Waits until `view`'s driver has learned a window from a connection's answers
+/// ([`net::View::learned`]), with [`Patience`] on it. Nothing tells of it as it comes, so it
+/// looks again after as long as it has waited (as [`Patience`] does before a window shows).
+fn learned(view: &net::View) -> Duration {
+    let mut patience = Patience::on(&[view]);
+    loop {
+        if let Some(window) = view.learned() {
+            return window;
+        }
+        let Some(left) = patience.left() else {
+            panic!("{}", patience.out("a window learned"));
+        };
+        std::thread::sleep(left.min(patience.began.elapsed()));
+    }
+}
+
+/// Where a machine says what it saw, each saying progress ([`PROGRESS`]).
+#[derive(Clone)]
+struct Saw(mpsc::Sender<Seen>);
+
+impl Saw {
+    fn send(&self, seen: Seen) -> Result<(), mpsc::SendError<Seen>> {
+        progressed();
+        self.0.send(seen)
+    }
+}
 
 /// What the machine saw of a command, known by its arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,6 +171,10 @@ enum Seen {
     Signalled(String, u32),
     /// The daemon let go of its stream's state, the means to hang it up with it.
     Released(String),
+    /// Its start is under way, held until the test lets it go (`stalls`).
+    Stalled(String),
+    /// A client of its, by name, went unheard past its window (`Host::unheard`).
+    Unheard(String),
 }
 
 /// A machine whose clients and invitations are kept in memory, running each command as a
@@ -47,18 +182,37 @@ enum Seen {
 struct Machine {
     clients: Mutex<Vec<(String, Vec<u8>)>>,
     invitations: Mutex<Vec<Invitation>>,
-    seen: mpsc::Sender<Seen>,
+    seen: Saw,
+    /// What lets a `stalls` command's start go on.
+    stall: Mutex<Option<mpsc::Receiver<()>>>,
+    /// What lets a join go on, where one is held.
+    join_stall: Mutex<Option<mpsc::Receiver<()>>>,
+    /// The key whose verdict it holds, and what lets that go: a machine slow to say whom a key
+    /// is, its files read from a disk under load.
+    verdict_stall: Mutex<Option<(Vec<u8>, mpsc::Receiver<()>)>>,
+    /// The connections its daemon holds at once (`Host::handshakes`).
+    places: usize,
+}
+
+/// What a [`Machine`] holds up, and how: a `stalls` command's start, every join, and its verdict
+/// on one key.
+#[derive(Default)]
+struct Stalls {
+    start: Option<mpsc::Receiver<()>>,
+    join: Option<mpsc::Receiver<()>>,
+    verdict: Option<(Vec<u8>, mpsc::Receiver<()>)>,
 }
 
 /// A command's stdin, which says when it is let go.
 struct Told {
-    stdin: std::process::ChildStdin,
+    stdin: Box<dyn std::io::Write + Send>,
     what: String,
-    seen: mpsc::Sender<Seen>,
+    seen: Saw,
 }
 
 impl std::io::Write for Told {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        progressed();
         self.stdin.write(buf)
     }
     fn flush(&mut self) -> std::io::Result<()> {
@@ -73,7 +227,7 @@ impl Drop for Told {
 }
 
 /// What a command's hangup holds, which says when the daemon lets go of it.
-struct Held(mpsc::Sender<Seen>, String);
+struct Held(Saw, String);
 
 impl Drop for Held {
     fn drop(&mut self) {
@@ -83,6 +237,18 @@ impl Drop for Held {
 
 impl Host for Machine {
     fn enrolled(&self, spki: &[u8]) -> Option<String> {
+        // Taken out of its lock as it holds, so that no other key's verdict waits on it.
+        let stalled = {
+            let mut stall = self.verdict_stall.lock().unwrap();
+            match stall.as_ref() {
+                Some((key, _)) if key == spki => stall.take(),
+                _ => None,
+            }
+        };
+        if let Some((_, release)) = stalled {
+            let _ = self.seen.send(Seen::Stalled("verdict".into()));
+            let _ = release.recv();
+        }
         let clients = self.clients.lock().unwrap();
         clients
             .iter()
@@ -91,6 +257,10 @@ impl Host for Machine {
     }
 
     fn join(&self, name: &str, proof: &[u8], exported: &[u8; 32], spki: &[u8]) -> Result<(), Error> {
+        if let Some(release) = self.join_stall.lock().unwrap().as_ref() {
+            let _ = self.seen.send(Seen::Stalled(format!("join {name}")));
+            let _ = release.recv();
+        }
         let mut invitations = self.invitations.lock().unwrap();
         let at = invitations
             .iter()
@@ -117,23 +287,30 @@ impl Host for Machine {
         // that ignores SIGHUP does.
         let outlives = args.first().is_some_and(|a| a == "outlives-hangup");
         let args = if outlives { args[1..].to_vec() } else { args };
+        // `stalls COMMAND...`: COMMAND, its start held until the test lets it go, as a host's
+        // start that takes long would hold it.
+        let stalls = args.first().is_some_and(|a| a == "stalls");
+        let args = if stalls { args[1..].to_vec() } else { args };
+        if stalls {
+            let _ = self.seen.send(Seen::Stalled(args.join(" ")));
+            if let Some(release) = self.stall.lock().unwrap().as_ref() {
+                let _ = release.recv();
+            }
+        }
         let (gone, gone_rx) = mpsc::channel::<()>();
         let what = args.join(" ");
         // Each command one of the tests' helper program's, the same on every host.
-        let mut child = Command::new(shards_testdir::helper().map_err(Error::new)?)
-            .args(&args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| Error::new(e.to_string()))?;
+        let Spawned {
+            stdin,
+            stdout,
+            stderr,
+            mut child,
+        } = spawn_helper(&args)?;
         let stdin = Told {
-            stdin: child.stdin.take().unwrap(),
+            stdin,
             what: what.clone(),
             seen: self.seen.clone(),
         };
-        let stdout = child.stdout.take().unwrap();
-        let stderr = child.stderr.take().unwrap();
         let _ = self.seen.send(Seen::Started(what.clone()));
         let (exited, hung) = (self.seen.clone(), self.seen.clone());
         let hung_what = what.clone();
@@ -148,18 +325,15 @@ impl Host for Machine {
             stdout: Box::new(stdout),
             stderr: Box::new(stderr),
             wait: Box::new(move || {
-                let ended = loop {
-                    match child.try_wait() {
-                        Ok(Some(status)) => break Ok(status),
-                        Ok(None) => {}
-                        Err(e) => break Err(e),
+                let status = loop {
+                    if let Some(status) = ended(&mut child) {
+                        break status;
                     }
                     if hung_up.try_recv().is_ok() && !outlives {
-                        let _ = child.kill();
+                        kill(&mut child);
                     }
                     std::thread::sleep(Duration::from_millis(5));
                 };
-                let status = ended.map(|s| s.code().unwrap_or(128)).unwrap_or(1);
                 let _ = exited.send(Seen::Exited(what, status));
                 let _ = gone.send(());
                 status
@@ -187,23 +361,177 @@ impl Host for Machine {
     fn invited(&self) -> usize {
         self.invitations.lock().unwrap().len()
     }
+
+    fn handshakes(&self) -> usize {
+        self.places
+    }
+
+    fn unheard(&self, client: Option<&str>, _at: SocketAddr, _unheard: Duration) {
+        let _ = self
+            .seen
+            .send(Seen::Unheard(client.unwrap_or_default().to_string()));
+    }
+}
+
+/// A command of the tests' helper program, its stdio piped. On Unix started through
+/// `shards_ipc::spawn`, as the daemon starts its commands (crates/shards' daemon/remote.rs), which
+/// gives it its three pipes' ends and nothing else of this process's: on macOS its spawn closes
+/// every other descriptor (`POSIX_SPAWN_CLOEXEC_DEFAULT`), whatever its close-on-exec flag, so
+/// that no command holds the pipe of another test's command that std made and has not yet
+/// marked (`a_command_holds_no_descriptor_it_was_not_given`). On Windows through std, whose
+/// handles are made uninheritable and whose spawn hands a child its own under a lock.
+struct Spawned {
+    stdin: Box<dyn std::io::Write + Send>,
+    stdout: Box<dyn Read + Send>,
+    stderr: Box<dyn Read + Send>,
+    child: Proc,
+}
+
+#[cfg(unix)]
+type Proc = shards_ipc::Child;
+#[cfg(windows)]
+type Proc = std::process::Child;
+
+#[cfg(unix)]
+fn spawn_helper(args: &[String]) -> Result<Spawned, Error> {
+    use std::os::fd::AsFd;
+    let pipe = || std::io::pipe().map_err(|e| Error::new(format!("a pipe for the command: {e}")));
+    let ((in_r, in_w), (out_r, out_w), (err_r, err_w)) = (pipe()?, pipe()?, pipe()?);
+    let argv: Vec<&std::ffi::OsStr> = args.iter().map(std::ffi::OsStr::new).collect();
+    let fds = [(in_r.as_fd(), 0), (out_w.as_fd(), 1), (err_w.as_fd(), 2)];
+    let child = shards_ipc::spawn(shards_testdir::helper().map_err(Error::new)?, &argv, &fds, false)
+        .map_err(|e| Error::new(format!("starting the command: {e}")))?;
+    Ok(Spawned {
+        stdin: Box::new(in_w),
+        stdout: Box::new(out_r),
+        stderr: Box::new(err_r),
+        child,
+    })
+}
+
+#[cfg(windows)]
+fn spawn_helper(args: &[String]) -> Result<Spawned, Error> {
+    let mut child = Command::new(shards_testdir::helper().map_err(Error::new)?)
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| Error::new(e.to_string()))?;
+    Ok(Spawned {
+        stdin: Box::new(child.stdin.take().unwrap()),
+        stdout: Box::new(child.stdout.take().unwrap()),
+        stderr: Box::new(child.stderr.take().unwrap()),
+        child,
+    })
+}
+
+/// Its status once it has ended: its own, or 128 plus the signal that ended it.
+#[cfg(unix)]
+fn ended(child: &mut Proc) -> Option<i32> {
+    child.try_wait()
+}
+
+#[cfg(windows)]
+fn ended(child: &mut Proc) -> Option<i32> {
+    match child.try_wait() {
+        Ok(Some(status)) => Some(status.code().unwrap_or(128)),
+        Ok(None) => None,
+        Err(_) => Some(1),
+    }
+}
+
+#[cfg(unix)]
+fn kill(child: &mut Proc) {
+    let _ = child.kill(libc::SIGKILL);
+}
+
+#[cfg(windows)]
+fn kill(child: &mut Proc) {
+    let _ = child.kill();
+}
+
+/// This test program, running the test `name` alone in a process of its own, `set` in its
+/// environment: started as [`Spawned`]'s commands are, holding nothing of this process's but
+/// its stdout and stderr, which a command's pipe another test made meanwhile is not among.
+#[cfg(unix)]
+fn this_test(name: &str, set: (&str, &std::ffi::OsStr)) -> Alone {
+    use std::os::fd::AsFd;
+    let ((out, out_w), (err, err_w)) = (std::io::pipe().unwrap(), std::io::pipe().unwrap());
+    let null = std::fs::File::open("/dev/null").unwrap();
+    let args = ["--exact", name, "--nocapture"].map(std::ffi::OsStr::new);
+    let fds = [(null.as_fd(), 0), (out_w.as_fd(), 1), (err_w.as_fd(), 2)];
+    let exe = std::env::current_exe().unwrap();
+    let child = shards_ipc::spawn_with(&exe, &args, &fds, false, &[set]).unwrap();
+    Alone { child, out, err }
+}
+
+/// A test run alone ([`this_test`]).
+#[cfg(unix)]
+struct Alone {
+    child: shards_ipc::Child,
+    out: std::io::PipeReader,
+    err: std::io::PipeReader,
+}
+
+/// What a test run alone ended with: its status, and what it wrote.
+#[cfg(unix)]
+struct Output {
+    status: i32,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+
+#[cfg(unix)]
+impl Alone {
+    fn output(self) -> Output {
+        let Alone {
+            child,
+            mut out,
+            mut err,
+        } = self;
+        let errs = std::thread::spawn(move || {
+            let mut stderr = Vec::new();
+            let _ = err.read_to_end(&mut stderr);
+            stderr
+        });
+        let mut stdout = Vec::new();
+        let _ = out.read_to_end(&mut stdout);
+        let stderr = errs.join().unwrap();
+        Output {
+            status: child.wait().unwrap(),
+            stdout,
+            stderr,
+        }
+    }
 }
 
 /// What a machine saw, kept as it comes, so that a wait for one thing loses none of the rest.
 struct Watch {
     rx: mpsc::Receiver<Seen>,
     seen: Vec<Seen>,
+    /// The daemon's driver's ([`Patience`]).
+    view: net::View,
 }
 
 impl Watch {
     /// Waits until the machine has seen `what`.
     fn saw(&mut self, what: &Seen) {
-        let until = Instant::now() + DEADLINE;
+        let mut patience = Patience::on(&[&self.view]);
         while !self.seen.contains(what) {
-            let left = until.saturating_duration_since(Instant::now());
+            let Some(left) = patience.left() else {
+                panic!(
+                    "{}; it saw {:?}",
+                    patience.out(&format!("the machine never saw {what:?}")),
+                    self.seen
+                );
+            };
             match self.rx.recv_timeout(left) {
                 Ok(seen) => self.seen.push(seen),
-                Err(_) => panic!("the machine never saw {what:?}; it saw {:?}", self.seen),
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    panic!("the machine went before it saw {what:?}; it saw {:?}", self.seen)
+                }
             }
         }
     }
@@ -225,6 +553,13 @@ struct Daemon {
     seen: Watch,
 }
 
+impl Daemon {
+    /// Its driver's ([`net::View`]).
+    fn view(&self) -> net::View {
+        self.stopper.view()
+    }
+}
+
 impl Drop for Daemon {
     fn drop(&mut self) {
         let _ = self.stopper.stop();
@@ -236,11 +571,44 @@ fn daemon(
     clients: Vec<(String, Vec<u8>)>,
     invitations: Vec<Invitation>,
 ) -> Daemon {
+    daemon_with(identity, clients, invitations, Stalls::default())
+}
+
+/// [`daemon`], held up as `stalls` says.
+fn daemon_with(
+    identity: &'static Identity,
+    clients: Vec<(String, Vec<u8>)>,
+    invitations: Vec<Invitation>,
+    stalls: Stalls,
+) -> Daemon {
+    daemon_of(identity, clients, invitations, stalls, usize::MAX)
+}
+
+/// [`daemon`], holding `places` connections at once.
+fn daemon_holding(identity: &'static Identity, clients: Vec<(String, Vec<u8>)>, places: usize) -> Daemon {
+    daemon_of(identity, clients, Vec::new(), Stalls::default(), places)
+}
+
+fn daemon_of(
+    identity: &'static Identity,
+    clients: Vec<(String, Vec<u8>)>,
+    invitations: Vec<Invitation>,
+    stalls: Stalls,
+    places: usize,
+) -> Daemon {
+    // The commands' program, built before the daemon serves: its first start would build it
+    // (cargo, seconds) on the daemon's driver, which answers nothing meanwhile, and a client
+    // whose send goes unanswered a whole window past its probe timeout is let go (D180).
+    shards_testdir::helper().unwrap();
     let (seen, rx) = mpsc::channel();
     let machine = Machine {
         clients: Mutex::new(clients),
         invitations: Mutex::new(invitations),
-        seen,
+        seen: Saw(seen),
+        stall: Mutex::new(stalls.start),
+        join_stall: Mutex::new(stalls.join),
+        verdict_stall: Mutex::new(stalls.verdict),
+        places,
     };
     let (tx, bound) = mpsc::channel();
     std::thread::spawn(move || {
@@ -253,14 +621,20 @@ fn daemon(
             },
         );
     });
-    let (address, stopper) = bound.recv_timeout(DEADLINE).unwrap();
+    let (address, stopper) = patiently(&bound, &[], "the daemon's bind");
+    let view = stopper.view();
     Daemon {
         remote: Remote {
             address,
             daemon: identity.fingerprint(),
+            known: tls::Known::Never,
         },
         stopper,
-        seen: Watch { rx, seen: Vec::new() },
+        seen: Watch {
+            rx,
+            seen: Vec::new(),
+            view,
+        },
     }
 }
 
@@ -274,6 +648,7 @@ struct Captured(std::sync::Arc<Mutex<Vec<u8>>>);
 
 impl std::io::Write for Captured {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        progressed();
         self.0.lock().unwrap().extend_from_slice(buf);
         Ok(buf.len())
     }
@@ -331,6 +706,7 @@ fn run_steered(
 ) -> Pending<Ran> {
     let args: Vec<Vec<u8>> = args.iter().map(|a| a.as_bytes().to_vec()).collect();
     let (tx, rx) = mpsc::channel();
+    let (viewed, view) = mpsc::channel();
     std::thread::spawn(move || {
         let (out, err) = (Captured::default(), Captured::default());
         let request = Request {
@@ -343,20 +719,41 @@ fn run_steered(
                 let _ = steered.send(controls);
             }
         };
-        let status = client::exec(identity, remote, request, stdin, out.clone(), err.clone(), steer).unwrap();
-        let _ = tx.send((status, out.bytes(), err.bytes()));
+        let (status, _) = client::exec_with(
+            identity,
+            remote,
+            request,
+            stdin,
+            out.clone(),
+            err.clone(),
+            steer,
+            |_| {},
+            |_| true,
+            |_| {},
+            |hang_up: client::HangUp| {
+                let _ = viewed.send(hang_up.view());
+            },
+        );
+        let _ = tx.send((status.unwrap(), out.bytes(), err.bytes()));
     });
-    Pending(rx)
+    Pending(rx, view)
 }
 
-/// What a thread of a test will give.
-struct Pending<T>(mpsc::Receiver<T>);
+/// What a thread of a test's run will give, and its connection's driver's view, once made.
+struct Pending<T>(mpsc::Receiver<T>, mpsc::Receiver<net::View>);
 
 impl<T> Pending<T> {
     fn get(self) -> T {
-        self.0
-            .recv_timeout(DEADLINE)
-            .unwrap_or_else(|_| panic!("not ended within {DEADLINE:?}"))
+        self.get_through(Duration::ZERO)
+    }
+
+    /// [`Pending::get`] of a command silent `silence` long by design.
+    fn get_through(self, silence: Duration) -> T {
+        // Given as its run begins, before its connection is made: none where its run failed first.
+        let view = self.1.recv().ok();
+        let mut patience = Patience::on(&view.iter().collect::<Vec<_>>());
+        patience.floor = silence;
+        waited(&self.0, "its command's end", patience)
     }
 }
 
@@ -387,13 +784,13 @@ fn a_client_joins_then_runs_commands_whose_output_crosses_whole() {
         ..invitation.clone()
     };
     assert_eq!(
-        client::join(stranger, &forged).unwrap(),
+        client::join(stranger, &forged).0.unwrap(),
         Err(server::NOT_INVITED.to_string())
     );
     // The invitation: enrolled, once.
-    assert_eq!(client::join(laptop, &invitation).unwrap(), Ok(()));
+    assert_eq!(client::join(laptop, &invitation).0.unwrap(), Ok(()));
     assert_eq!(
-        client::join(stranger, &invitation).unwrap(),
+        client::join(stranger, &invitation).0.unwrap(),
         Err(server::NOT_INVITED.to_string())
     );
 
@@ -419,9 +816,12 @@ fn a_client_joins_then_runs_commands_whose_output_crosses_whole() {
     assert_eq!(status, Err(server::NOT_ENROLLED.to_string()));
 }
 
-/// A daemon that answers each request with `answer`, written at once with its stream's end.
+/// A daemon that answers each request with `answer`, written at once with its stream's end,
+/// its driver held `stall` as each handshake ends (a host busy, or scheduled off, as its client
+/// asks).
 struct Answers {
     answer: Vec<u8>,
+    stall: Duration,
     /// What each stream has sent, by its connection too: every connection's first stream
     /// has the same number, and a frame one left must never be read as the next one's.
     inbound: HashMap<(ConnKey, StreamId), Vec<u8>>,
@@ -431,6 +831,7 @@ impl Handler for Answers {
     type Command = ();
 
     fn connected(&mut self, _io: &mut Io<'_>, _conn: ConnKey, _peer: &[u8]) -> Result<(), Close> {
+        std::thread::sleep(self.stall);
         Ok(())
     }
 
@@ -494,19 +895,26 @@ fn a_streams_last_frames_and_its_end_come_at_once_and_are_all_taken() {
     std::thread::spawn(move || {
         let handler = Answers {
             answer,
+            stall: Duration::ZERO,
             inbound: HashMap::new(),
         };
         let config = tls::server(daemon_id).unwrap();
-        let (mut driver, sender) =
-            Driver::bind("127.0.0.1:0".parse().unwrap(), Some(config), handler).unwrap();
+        let (mut driver, sender) = Driver::bind(
+            "127.0.0.1:0".parse().unwrap(),
+            Some(config),
+            handler,
+            tls::Known::Never,
+        )
+        .unwrap();
         let _ = tx.send((driver.local().unwrap(), sender));
         let _ = driver.run();
     });
-    let (address, sender) = bound.recv_timeout(DEADLINE).unwrap();
+    let (address, sender) = patiently(&bound, &[], "the daemon's bind");
     let _stops = Stops(sender);
     let remote = Remote {
         address,
         daemon: daemon_id.fingerprint(),
+        known: tls::Known::Never,
     };
     for _ in 0..20 {
         let (status, out, err) = run(laptop, remote, &["anything"], None).get();
@@ -580,19 +988,25 @@ fn a_client_asked_to_send_no_more_stdin_waits_for_its_answer() {
             inbound: HashMap::new(),
         };
         let config = tls::server(daemon_id).unwrap();
-        let (mut driver, sender) =
-            Driver::bind("127.0.0.1:0".parse().unwrap(), Some(config), handler).unwrap();
+        let (mut driver, sender) = Driver::bind(
+            "127.0.0.1:0".parse().unwrap(),
+            Some(config),
+            handler,
+            tls::Known::Never,
+        )
+        .unwrap();
         let _ = tx.send((driver.local().unwrap(), sender));
         let _ = driver.run();
     });
-    let (address, sender) = bound.recv_timeout(DEADLINE).unwrap();
+    let (address, sender) = patiently(&bound, &[], "the daemon's bind");
     let remote = Remote {
         address,
         daemon: daemon_id.fingerprint(),
+        known: tls::Known::Never,
     };
     let endless: Option<Box<dyn Read + Send>> = Some(Box::new(std::io::repeat(b'y')));
     let later = run(laptop, remote, &["anything"], endless);
-    let (conn, stream) = asked.recv_timeout(DEADLINE).unwrap();
+    let (conn, stream) = patiently(&asked, &[&sender.view()], "the daemon's ask");
     // Its client sends stdin on meanwhile, to a stream stopped.
     std::thread::sleep(Duration::from_millis(200));
     sender.send(net::Command::Handler((conn, stream))).unwrap();
@@ -622,7 +1036,7 @@ fn what_steers_a_command_passes_its_stdin_waiting_for_room() {
     let endless: Option<Box<dyn Read + Send>> = Some(Box::new(std::io::repeat(b'y')));
     let (steered, controls) = mpsc::channel();
     let later = run_steered(laptop, d.remote, &["await", go], endless, Some(steered));
-    let controls = controls.recv_timeout(DEADLINE).unwrap();
+    let controls = patiently(&controls, &[&d.view()], "what steers the command");
     d.seen.saw(&Seen::Started(what.clone()));
     // Long enough for its pipe, and the daemon's room for its stdin, to fill.
     std::thread::sleep(Duration::from_millis(300));
@@ -673,12 +1087,95 @@ fn a_command_that_reads_no_stdin_holds_up_no_other() {
     d.seen.saw(&Seen::Started(format!("await {go}")));
     // Long enough for its pipe, and the daemon's room for its stdin, to fill.
     std::thread::sleep(Duration::from_millis(300));
-    let (status, out, _) = run(laptop, d.remote, &["echo", "hi"], None).get();
+    // Each command's exit seen at the machine before its answer is waited for: one that hangs
+    // says which it is, a command that never ended or an end never answered.
+    let echo = run(laptop, d.remote, &["echo", "hi"], None);
+    d.seen.saw(&Seen::Exited("echo hi".into(), 0));
+    let (status, out, _) = echo.get();
     assert_eq!(status, Ok(0));
     assert_eq!(out, b"hi\n");
     std::fs::write(go, b"").unwrap();
+    d.seen.saw(&Seen::Exited(format!("await {go}"), 0));
     let (status, _, _) = held.get();
     assert_eq!(status, Ok(0));
+}
+
+/// A command holds no descriptor of this process's that it was not given. On macOS std makes a
+/// pipe with pipe(2) and only then marks its ends close-on-exec (std's sys/pipe/unix.rs: macOS
+/// has no pipe2), and its spawn closes nothing it was not told to (no
+/// `POSIX_SPAWN_CLOEXEC_DEFAULT`), so a command another test starts in between holds that pipe's
+/// write end for as long as it runs: the daemon answers a command once its output has ended, so
+/// one whose stdout another command holds is answered only once that one ends (16 of 20,000
+/// spawns beside a spawning thread, a `sleep 1` holding a pipe's end 1.70 s at worst, s72's
+/// harness on macOS arm64). Here the pipe is left inheritable for good, the window held open.
+#[cfg(target_vendor = "apple")]
+#[test]
+fn a_command_holds_no_descriptor_it_was_not_given() {
+    use std::os::fd::{FromRawFd, OwnedFd};
+    let daemon_id = leak(Identity::generate().unwrap());
+    let laptop = leak(Identity::generate().unwrap());
+    let mut d = daemon(
+        daemon_id,
+        vec![("laptop".into(), laptop.spki().to_vec())],
+        Vec::new(),
+    );
+    let dir = TempDir::new("remote-given").unwrap();
+    let go = dir.path().join("go");
+    let go = go.to_str().unwrap();
+    let mut ends = [0; 2];
+    // SAFETY: pipe(2) into a local array; each end owned once made.
+    assert_eq!(unsafe { libc::pipe(ends.as_mut_ptr()) }, 0);
+    // SAFETY: pipe(2) made both, and nothing else owns them.
+    let (read, write) = unsafe { (OwnedFd::from_raw_fd(ends[0]), OwnedFd::from_raw_fd(ends[1])) };
+    let held = run(laptop, d.remote, &["await", go], None);
+    d.seen.saw(&Seen::Started(format!("await {go}")));
+    drop(write);
+    // Its end comes while every command still runs, `await` held: a command that held the pipe
+    // would hold it until it ended. A spawn in flight as the end was dropped may hold it for a
+    // moment (in ROOT's loops of 498f63f15 a read at once found it held in 42 of 50 suites and
+    // none of 6 runs alone, and `lsof` just after found it held nowhere), so its end is waited
+    // for, not looked for at once.
+    let (tx, end) = mpsc::channel();
+    let began = Instant::now();
+    std::thread::spawn(move || {
+        let mut byte = [0u8; 1];
+        let _ = tx.send(
+            std::fs::File::from(read)
+                .read(&mut byte)
+                .map_err(|e| e.to_string()),
+        );
+    });
+    let mut patience = Patience::on(&[&d.view()]);
+    let read = loop {
+        if let Some(left) = patience.left() {
+            match end.recv_timeout(left) {
+                Ok(read) => break read,
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => panic!("the pipe's reader ended"),
+            }
+        }
+        // Who else may hold it: this process's children now.
+        let me = std::process::id().to_string();
+        let ps = Command::new("ps")
+            .args(["-A", "-o", "pid=,ppid=,etime=,command="])
+            .output();
+        let children: Vec<String> = ps
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.split_whitespace().nth(1) == Some(me.as_str()))
+            .map(str::to_string)
+            .collect();
+        panic!(
+            "{}; this process's children: {children:#?}",
+            patience.out("the pipe's end")
+        );
+    };
+    eprintln!("the pipe's end came {:?} after it was dropped", began.elapsed());
+    std::fs::write(go, b"").unwrap();
+    let (status, _, _) = held.get();
+    assert_eq!(status, Ok(0));
+    assert_eq!(read, Ok(0));
 }
 
 /// What a raw client hears.
@@ -698,6 +1195,8 @@ enum Ask {
     Reset(StreamId),
     Stop(StreamId),
     Close,
+    /// Ends its driver without a word to the daemon, as a killed process's ends.
+    Vanish,
 }
 
 /// A client that sends the bytes a test gives it, keeps its connection as long as the test
@@ -735,6 +1234,7 @@ impl Handler for Raw {
             }
         }
         while let Ok(Some((tag, payload))) = frame::take(buffer) {
+            progressed();
             let _ = self.heard.send(Heard::Frame(stream, tag, payload));
         }
     }
@@ -742,6 +1242,7 @@ impl Handler for Raw {
     fn writable(&mut self, _io: &mut Io<'_>, _conn: ConnKey, _stream: StreamId) {}
 
     fn stopped(&mut self, _io: &mut Io<'_>, _conn: ConnKey, stream: StreamId) {
+        progressed();
         let _ = self.stops.send(stream);
     }
 
@@ -771,6 +1272,7 @@ impl Handler for Raw {
                 io.close(self.conn.unwrap(), 0, "");
                 self.done = true;
             }
+            Ask::Vanish => self.done = true,
         }
     }
 
@@ -784,44 +1286,45 @@ struct RawClient {
     ask: net::Sender<Ask>,
     heard: mpsc::Receiver<Heard>,
     stops: mpsc::Receiver<StreamId>,
-    driver: Option<std::thread::JoinHandle<()>>,
 }
 
 impl RawClient {
     fn new(identity: &'static Identity, remote: Remote) -> RawClient {
+        RawClient::dial(identity, remote).unwrap_or_else(|heard| panic!("not connected: {heard:?}"))
+    }
+
+    /// A raw client of `remote`, as `identity`, on a thread of its own: connected, or what it
+    /// heard instead.
+    fn dial(identity: &'static Identity, remote: Remote) -> Result<RawClient, Heard> {
         let (heard_tx, heard) = mpsc::channel();
         let (stops_tx, stops) = mpsc::channel();
         let (tx, made) = mpsc::channel();
-        let driver = std::thread::spawn(move || {
+        std::thread::spawn(move || {
             let raw = Raw {
-                config: Some(tls::client(identity, remote.daemon).unwrap()),
+                config: Some(tls::client(identity, remote.daemon, remote.known).unwrap()),
                 heard: heard_tx,
                 stops: stops_tx,
                 conn: None,
                 inbound: HashMap::new(),
                 done: false,
             };
-            let (mut driver, sender) = Driver::bind("127.0.0.1:0".parse().unwrap(), None, raw).unwrap();
+            let (mut driver, sender) =
+                Driver::bind("127.0.0.1:0".parse().unwrap(), None, raw, remote.known).unwrap();
             let _ = tx.send(sender);
             let _ = driver.run();
         });
-        let ask = made.recv_timeout(DEADLINE).unwrap();
+        let ask = patiently(&made, &[], "the raw client's driver");
         ask.send(net::Command::Handler(Ask::Connect(remote.address)))
             .unwrap();
-        let client = RawClient {
-            ask,
-            heard,
-            stops,
-            driver: Some(driver),
-        };
-        assert_eq!(client.next(), Heard::Connected);
-        client
+        let client = RawClient { ask, heard, stops };
+        match client.next() {
+            Heard::Connected => Ok(client),
+            other => Err(other),
+        }
     }
 
     fn next(&self) -> Heard {
-        self.heard
-            .recv_timeout(DEADLINE)
-            .unwrap_or_else(|_| panic!("heard nothing within {DEADLINE:?}"))
+        patiently(&self.heard, &[&self.ask.view()], "what the raw client hears next")
     }
 
     /// Opens a stream with `bytes` on it; its id.
@@ -835,32 +1338,16 @@ impl RawClient {
         self.ask
             .send(net::Command::Handler(Ask::Open(bytes, finish, told)))
             .unwrap();
-        id.recv_timeout(DEADLINE).unwrap()
+        patiently(&id, &[&self.ask.view()], "the stream opened")
     }
 
     fn ask(&self, ask: Ask) {
         self.ask.send(net::Command::Handler(ask)).unwrap();
     }
 
-    /// Closes its connection, and waits for its driver to have sent the close.
-    fn close(mut self) {
-        self.ask(Ask::Close);
-        if let Some(driver) = self.driver.take() {
-            driver.join().unwrap();
-        }
-    }
-
     /// Waits until the daemon has asked it to send no more of `stream`.
     fn stopped(&self, stream: StreamId) {
-        let until = Instant::now() + DEADLINE;
-        loop {
-            let left = until.saturating_duration_since(Instant::now());
-            match self.stops.recv_timeout(left) {
-                Ok(stopped) if stopped == stream => return,
-                Ok(_) => {}
-                Err(_) => panic!("{stream} not stopped within {DEADLINE:?}"),
-            }
-        }
+        while patiently(&self.stops, &[&self.ask.view()], &format!("{stream} stopped")) != stream {}
     }
 }
 
@@ -871,16 +1358,45 @@ impl Drop for RawClient {
 }
 
 /// Waits until `path` is there.
-fn until_there(path: &std::path::Path) {
-    let until = Instant::now() + DEADLINE;
+fn until_there(path: &std::path::Path, view: &net::View) {
+    let mut patience = Patience::on(&[view]);
     while !path.exists() {
-        assert!(
-            Instant::now() < until,
-            "{} not there within {DEADLINE:?}",
-            path.display()
-        );
-        std::thread::sleep(Duration::from_millis(10));
+        let Some(left) = patience.left() else {
+            panic!("{}", patience.out(&format!("{} there", path.display())));
+        };
+        std::thread::sleep(left.min(Duration::from_millis(10)));
     }
+}
+
+/// A command refused after it started is told apart from one refused before it, which says
+/// nothing of it ran: a frame out of place once its command runs ends the stream with its
+/// cut, which its client takes for "it may have run" (D176 part 6).
+#[test]
+fn a_command_refused_after_it_started_is_cut() {
+    let daemon_id = leak(Identity::generate().unwrap());
+    let laptop = leak(Identity::generate().unwrap());
+    let d = daemon(
+        daemon_id,
+        vec![("laptop".into(), laptop.spki().to_vec())],
+        Vec::new(),
+    );
+    let raw = RawClient::new(laptop, d.remote);
+    let mut bytes = exec(&["cat"]);
+    // A daemon's frame, which no client sends: out of place once its command runs.
+    frame::put(&mut bytes, Tag::Joined, &[]).unwrap();
+    let stream = raw.opens(bytes, false);
+    assert_eq!(
+        raw.next(),
+        Heard::Frame(stream, Tag::Cut, b"a frame out of place (Joined)".to_vec())
+    );
+    // Refused before any command of it started, a stream still hears a refusal.
+    let mut early = Vec::new();
+    frame::put(&mut early, Tag::Joined, &[]).unwrap();
+    let stream = raw.opens(early, false);
+    assert_eq!(
+        raw.next(),
+        Heard::Frame(stream, Tag::Refused, b"a frame out of place (Joined)".to_vec())
+    );
 }
 
 /// `args`' request frame, and none of its stdin's end.
@@ -1011,6 +1527,73 @@ fn a_control_stream_for_no_command_is_refused() {
     );
 }
 
+/// A daemon's listener holds as many connections at once as its machine's resources bound
+/// (`Host::handshakes`: at the daemon, the process's descriptors, each connection served
+/// holding a command and its stdio): past them a newcomer is refused and each holder asked for
+/// an answer (a PING). A holder that answers keeps its place, past its probe timeout too; one
+/// gone without a word gives it to a later attempt once unheard past its probe timeout (ROOT's
+/// ruling on #72). Red with no bound on established connections: the newcomer let in at once.
+#[test]
+fn a_listener_at_its_bound_gives_a_vanished_clients_place_to_a_newcomer() {
+    let daemon_id = leak(Identity::generate().unwrap());
+    let (laptop, desktop) = (
+        leak(Identity::generate().unwrap()),
+        leak(Identity::generate().unwrap()),
+    );
+    let d = daemon_holding(
+        daemon_id,
+        vec![
+            ("laptop".into(), laptop.spki().to_vec()),
+            ("desktop".into(), desktop.spki().to_vec()),
+        ],
+        1,
+    );
+    let held = RawClient::new(laptop, d.remote);
+    let refused = RawClient::dial(desktop, d.remote);
+    assert!(
+        matches!(refused, Err(Heard::Lost(_))),
+        "at its bound, a newcomer is refused: {:?}",
+        refused.map(|_| "connected")
+    );
+    // The holder heard after it was asked: its stream's answer comes after the ask.
+    let mut named = Vec::new();
+    frame::put(&mut named, Tag::Controls, &96u64.to_be_bytes()).unwrap();
+    let stream = held.open(named);
+    assert!(matches!(held.next(), Heard::Frame(s, Tag::Refused, _) if s == stream));
+    // Past its probe timeout on loopback (its RTT terms and the peer's 25 ms `max_ack_delay`,
+    // RFC 9000 §18.2's default), still answered.
+    std::thread::sleep(Duration::from_millis(200));
+    let kept = RawClient::dial(desktop, d.remote);
+    assert!(
+        matches!(kept, Err(Heard::Lost(_))),
+        "a holder that answers keeps its place: {:?}",
+        kept.map(|_| "connected")
+    );
+    // Gone without a word: a later attempt takes its place.
+    held.ask(Ask::Vanish);
+    // Each refusal is no progress of the newcomer's: refused through a whole window, it fails.
+    let mut patience = Patience::on(&[&d.view()]);
+    let mut attempts = 0;
+    let newcomer = loop {
+        attempts += 1;
+        match RawClient::dial(desktop, d.remote) {
+            Ok(newcomer) => break newcomer,
+            Err(heard) => {
+                if patience.left().is_none() {
+                    panic!(
+                        "{}: {heard:?}",
+                        patience.out(&format!("a place, refused {attempts} times"))
+                    );
+                }
+            }
+        }
+    };
+    let mut named = Vec::new();
+    frame::put(&mut named, Tag::Controls, &96u64.to_be_bytes()).unwrap();
+    let stream = newcomer.open(named);
+    assert!(matches!(newcomer.next(), Heard::Frame(s, Tag::Refused, _) if s == stream));
+}
+
 /// An invitation of the daemon `of`, for no one in particular.
 fn invitation(of: &Identity) -> Invitation {
     Invitation::new("someone", "127.0.0.1:1".parse().unwrap(), of.fingerprint()).unwrap()
@@ -1021,19 +1604,15 @@ fn unenrolled() -> Heard {
     Heard::Lost(Some(u64::from(server::UNENROLLED)))
 }
 
-/// The machine takes as many clients it has not enrolled at once as it holds invitations,
-/// each of which enrolls one: none, while it holds none.
+/// The machine holds as many clients it has not enrolled at once as it holds invitations, each
+/// of which enrolls one, with no deadline of its own: a newer stranger takes the place of the
+/// oldest, which is let go; a machine that holds none takes none, refused as its handshake ends.
 #[test]
-fn a_machine_takes_as_many_strangers_as_it_holds_invitations() {
+fn a_machine_holds_as_many_strangers_as_invitations_the_oldest_giving_way() {
     let daemon_id = leak(Identity::generate().unwrap());
-    let strangers: Vec<&'static Identity> = (0..4).map(|_| leak(Identity::generate().unwrap())).collect();
+    let strangers: Vec<&'static Identity> = (0..3).map(|_| leak(Identity::generate().unwrap())).collect();
     let d = daemon(daemon_id, Vec::new(), vec![invitation(daemon_id)]);
     let first = RawClient::new(strangers[0], d.remote);
-    // Refused at its handshake's end, not let go at its time's.
-    let start = Instant::now();
-    let second = RawClient::new(strangers[1], d.remote);
-    assert_eq!(second.next(), unenrolled());
-    assert!(start.elapsed() < tls::IDLE, "{:?}", start.elapsed());
     // The first is served: a join too long, refused by its header.
     let mut join = vec![Tag::Join as u8];
     join.extend_from_slice(&u32::try_from(invite::JOIN_MAX + 1).unwrap().to_be_bytes());
@@ -1042,40 +1621,183 @@ fn a_machine_takes_as_many_strangers_as_it_holds_invitations() {
         first.next(),
         Heard::Frame(stream, Tag::Refused, server::NOT_INVITED.as_bytes().to_vec())
     );
-    // Gone, its place is another's.
-    first.close();
-    let third = RawClient::new(strangers[2], d.remote);
-    let stream = third.open(join);
+    // A newer stranger takes its place: the first let go, the newer served.
+    let second = RawClient::new(strangers[1], d.remote);
+    assert_eq!(first.next(), unenrolled());
+    let stream = second.open(join);
     assert_eq!(
-        third.next(),
+        second.next(),
         Heard::Frame(stream, Tag::Refused, server::NOT_INVITED.as_bytes().to_vec())
     );
     // A machine that holds no invitation takes none.
     let none = daemon(daemon_id, Vec::new(), Vec::new());
-    let start = Instant::now();
-    let fourth = RawClient::new(strangers[3], none.remote);
-    assert_eq!(fourth.next(), unenrolled());
-    assert!(start.elapsed() < tls::IDLE, "{:?}", start.elapsed());
+    let third = RawClient::new(strangers[2], none.remote);
+    assert_eq!(third.next(), unenrolled());
 }
 
-/// A client the machine has not enrolled has as long to join as a client waits for its
-/// daemon, the idle bound: its connection kept alive, the daemon closes it then.
+/// A host's start runs apart from the daemon's driver, which acknowledges every client
+/// meanwhile: while one start is held (a stand-in for one that takes long), another client's
+/// command is answered whole, and the held one, let go, runs as any other.
 #[test]
-fn a_stranger_has_the_idle_bound_to_join() {
+fn a_slow_start_holds_up_no_other_client() {
     let daemon_id = leak(Identity::generate().unwrap());
-    let stranger = leak(Identity::generate().unwrap());
-    let d = daemon(daemon_id, Vec::new(), vec![invitation(daemon_id)]);
-    let start = Instant::now();
-    let raw = RawClient::new(stranger, d.remote);
-    assert_eq!(raw.next(), unenrolled());
-    let took = start.elapsed();
-    assert!(took >= tls::IDLE, "closed after {took:?}, before {:?}", tls::IDLE);
+    let laptop = leak(Identity::generate().unwrap());
+    let (release, held) = mpsc::channel();
+    let mut d = daemon_with(
+        daemon_id,
+        vec![("laptop".into(), laptop.spki().to_vec())],
+        Vec::new(),
+        Stalls {
+            start: Some(held),
+            ..Stalls::default()
+        },
+    );
+    let slow = run(laptop, d.remote, &["stalls", "say", "slow", "x", "0"], None);
+    d.seen.saw(&Seen::Stalled("say slow x 0".into()));
+    let (status, out, _) = run(laptop, d.remote, &["say", "quick", "x", "0"], None).get();
+    assert_eq!((status, out), (Ok(0), b"quick\n".to_vec()));
+    release.send(()).unwrap();
+    let (status, out, _) = slow.get();
+    assert_eq!((status, out), (Ok(0), b"slow\n".to_vec()));
 }
 
-/// A client the machine enrolled keeps its connection past the idle bound, as long as its
-/// command runs.
+/// A host's join runs apart from the daemon's driver too, which acknowledges every client
+/// meanwhile: while a stranger's join is held (a stand-in for one whose record takes long to
+/// sync), an enrolled client's command is answered whole, and the join, let go, enrolls its
+/// stranger. Red with the join on the driver: tests/context.rs's joins on HVF (ROOT's run at
+/// dc7f45bc6) died at 123-152 ms, their client's send unanswered while the daemon synced.
 #[test]
-fn an_enrolled_clients_command_runs_past_the_idle_bound() {
+fn a_slow_join_holds_up_no_other_client() {
+    let daemon_id = leak(Identity::generate().unwrap());
+    let (laptop, stranger) = (
+        leak(Identity::generate().unwrap()),
+        leak(Identity::generate().unwrap()),
+    );
+    let (release, held) = mpsc::channel();
+    let invited = invitation(daemon_id);
+    let mut d = daemon_with(
+        daemon_id,
+        vec![("laptop".into(), laptop.spki().to_vec())],
+        vec![invited.clone()],
+        Stalls {
+            join: Some(held),
+            ..Stalls::default()
+        },
+    );
+    let invitation = Invitation {
+        address: d.remote.address,
+        ..invited
+    };
+    // A thread of its own, which a failing test does not wait for (the join it holds would
+    // never be let go).
+    let (joined_tx, joined) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = joined_tx.send(client::join(stranger, &invitation).0);
+    });
+    d.seen.saw(&Seen::Stalled("join someone".into()));
+    let (status, out, _) = run(laptop, d.remote, &["say", "quick", "x", "0"], None).get();
+    assert_eq!((status, out), (Ok(0), b"quick\n".to_vec()));
+    release.send(()).unwrap();
+    assert_eq!(patiently(&joined, &[&d.view()], "the join").unwrap(), Ok(()));
+}
+
+/// A machine's verdict on a key runs apart from the daemon's driver too, which acknowledges
+/// every client meanwhile: while a stranger's is held (a stand-in for a machine whose files take
+/// long to read, its disk under load), an enrolled client's command is answered whole, and the
+/// stranger, its verdict let go, is refused as one not enrolled. Red with the verdict on the
+/// driver: the enrolled client unanswered past the test's deadline.
+#[test]
+fn a_slow_verdict_holds_up_no_other_client() {
+    let daemon_id = leak(Identity::generate().unwrap());
+    let (laptop, stranger) = (
+        leak(Identity::generate().unwrap()),
+        leak(Identity::generate().unwrap()),
+    );
+    let (release, held) = mpsc::channel();
+    let mut d = daemon_with(
+        daemon_id,
+        vec![("laptop".into(), laptop.spki().to_vec())],
+        Vec::new(),
+        Stalls {
+            verdict: Some((stranger.spki().to_vec(), held)),
+            ..Stalls::default()
+        },
+    );
+    // A thread of its own, which a failing test does not wait for (the verdict it waits on
+    // would never be let go).
+    let (refused_tx, refused) = mpsc::channel();
+    let remote = d.remote;
+    std::thread::spawn(move || {
+        let request = Request {
+            args: vec![b"true".to_vec()],
+            env: Vec::new(),
+            terminal: None,
+        };
+        let ran = client::exec(
+            stranger,
+            remote,
+            request,
+            None,
+            std::io::sink(),
+            std::io::sink(),
+            |_| {},
+        );
+        let _ = refused_tx.send(ran.map_err(|e| e.to_string()));
+    });
+    d.seen.saw(&Seen::Stalled("verdict".into()));
+    let (status, out, _) = run(laptop, d.remote, &["say", "quick", "x", "0"], None).get();
+    assert_eq!((status, out), (Ok(0), b"quick\n".to_vec()));
+    release.send(()).unwrap();
+    assert_eq!(
+        patiently(&refused, &[&d.view()], "the refusal"),
+        Ok(Err(server::NOT_ENROLLED.to_string()))
+    );
+}
+
+/// A daemon slow to answer a fresh client's first ask, its driver held a while as its handshake
+/// ends (a stand-in for a host busy, or scheduled off, as the client asks), is waited for: cold,
+/// before any answer of a send's has been seen on its path, the client's wait has no window, a
+/// handshake's own being no measure of a request's (D180). Red with the handshake seeding the
+/// window: the client's send unanswered past it, its connection taken for dead.
+#[test]
+fn a_daemon_slow_to_answer_a_fresh_client_is_waited_for() {
+    let daemon_id = leak(Identity::generate().unwrap());
+    let laptop = leak(Identity::generate().unwrap());
+    let mut answer = Vec::new();
+    frame::put(&mut answer, Tag::Exit, &0i32.to_be_bytes()).unwrap();
+    let (tx, bound) = mpsc::channel();
+    std::thread::spawn(move || {
+        let handler = Answers {
+            answer,
+            stall: Duration::from_millis(300),
+            inbound: HashMap::new(),
+        };
+        let config = tls::server(daemon_id).unwrap();
+        let (mut driver, sender) = Driver::bind(
+            "127.0.0.1:0".parse().unwrap(),
+            Some(config),
+            handler,
+            tls::Known::Never,
+        )
+        .unwrap();
+        let _ = tx.send((driver.local().unwrap(), sender));
+        let _ = driver.run();
+    });
+    let (address, sender) = patiently(&bound, &[], "the daemon's bind");
+    let _stops = Stops(sender);
+    let remote = Remote {
+        address,
+        daemon: daemon_id.fingerprint(),
+        known: tls::Known::Never,
+    };
+    let (status, _, _) = run(laptop, remote, &["anything"], None).get();
+    assert_eq!(status, Ok(0));
+}
+
+/// A client the machine enrolled keeps its connection through its command's silence: neither
+/// side keeps it alive on a path where none was found dead, and neither has an idle timer.
+#[test]
+fn an_enrolled_clients_silent_command_lives_with_no_keep_alive() {
     let daemon_id = leak(Identity::generate().unwrap());
     let laptop = leak(Identity::generate().unwrap());
     let d = daemon(
@@ -1083,30 +1805,31 @@ fn an_enrolled_clients_command_runs_past_the_idle_bound() {
         vec![("laptop".into(), laptop.spki().to_vec())],
         Vec::new(),
     );
-    let past = (tls::IDLE.as_secs() + 1).to_string();
-    let (status, _, _) = run(laptop, d.remote, &["sleep", &past], None).get();
+    let silence = 2;
+    let (status, _, _) = run(laptop, d.remote, &["sleep", &silence.to_string()], None)
+        .get_through(Duration::from_secs(silence));
     assert_eq!(status, Ok(0));
 }
 
-/// A client of an address no daemon answers at is told so at its handshake's bound, the
-/// idle bound, never at the longer silence an established connection lives through
-/// (`tls::QUIET`), which its transport's own idle timeout now is.
-#[test]
-fn no_daemon_answering_is_told_at_the_handshakes_bound() {
+/// Asks `true` of `remote` as `client::exec_with` does, giving up the handshake at the probe
+/// `give_up` says to: its answer, every probe told, and what its connection saw.
+fn asked(
+    remote: Remote,
+    mut give_up: impl FnMut(client::Unanswered, Option<&net::View>) -> bool,
+) -> (
+    Result<Result<i32, String>, Error>,
+    Vec<client::Unanswered>,
+    net::Seen,
+) {
     let laptop = leak(Identity::generate().unwrap());
-    // A socket that takes datagrams and answers none.
-    let silent = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
-    let remote = Remote {
-        address: silent.local_addr().unwrap(),
-        daemon: Identity::generate().unwrap().fingerprint(),
-    };
     let request = Request {
         args: vec![b"true".to_vec()],
         env: Vec::new(),
         terminal: None,
     };
-    let start = Instant::now();
-    let said = client::exec(
+    let mut told = Vec::new();
+    let view = std::cell::OnceCell::new();
+    let (ran, seen) = client::exec_with(
         laptop,
         remote,
         request,
@@ -1114,12 +1837,586 @@ fn no_daemon_answering_is_told_at_the_handshakes_bound() {
         std::io::sink(),
         std::io::sink(),
         |_| {},
-    )
-    .unwrap_err();
-    let took = start.elapsed();
-    assert!(took >= tls::IDLE && took < tls::QUIET, "{took:?}");
-    assert!(said.to_string().contains("no shards daemon answered"), "{said}");
+        |_| {},
+        |unanswered| {
+            told.push(unanswered);
+            !give_up(unanswered, view.get())
+        },
+        |_| {},
+        |hang_up: client::HangUp| {
+            let _ = view.set(hang_up.view());
+        },
+    );
+    (ran, told, seen)
+}
+
+/// A daemon never reached that answers nothing is probed as QUIC's loss recovery probes
+/// (RFC 9002 §6.2), each probe told its caller, typed, for as long as its caller waits: no
+/// deadline of shards' own ends it, and the caller's giving up does.
+#[test]
+fn no_daemon_answering_is_probed_until_its_caller_gives_up() {
+    // A socket that takes datagrams and answers none.
+    let silent = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let remote = Remote {
+        address: silent.local_addr().unwrap(),
+        daemon: Identity::generate().unwrap().fingerprint(),
+        known: tls::Known::Never,
+    };
+    let (ran, told, seen) = asked(remote, |u, _| u.probes >= 3);
+    let said = ran.unwrap_err().to_string();
+    assert!(said.contains("no shards daemon answered"), "{said}");
+    assert!(told.len() >= 2, "{told:?}");
+    assert!(
+        told.windows(2)
+            .all(|w| w[0].probes < w[1].probes && w[0].waited <= w[1].waited),
+        "{told:?}"
+    );
+    assert_eq!((seen.handshake, seen.ran_out, seen.refused), (None, false, false));
+    assert_eq!(remote.known.after(&seen), tls::Known::Never);
     drop(silent);
+}
+
+/// What ends a command from another thread ends it while its handshake still waits on a daemon
+/// never reached, which has no deadline of its own: its holder's end (a daemon's stop) is what
+/// ends that wait, at once, not at a probe its backoff (RFC 9002 §6.2.1) puts ever further off.
+#[test]
+fn a_hang_up_ends_a_command_whose_daemon_never_answered() {
+    let silent = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let remote = Remote {
+        address: silent.local_addr().unwrap(),
+        daemon: Identity::generate().unwrap().fingerprint(),
+        known: tls::Known::Never,
+    };
+    let laptop = leak(Identity::generate().unwrap());
+    let request = Request {
+        args: vec![b"true".to_vec()],
+        env: Vec::new(),
+        terminal: None,
+    };
+    let (held_tx, held_rx) = mpsc::channel();
+    let (probed_tx, probed) = mpsc::channel();
+    std::thread::scope(|s| {
+        let asking = s.spawn(move || {
+            client::exec_with(
+                laptop,
+                remote,
+                request,
+                None,
+                std::io::sink(),
+                std::io::sink(),
+                |_| {},
+                |_| {},
+                move |_| {
+                    let _ = probed_tx.send(Instant::now());
+                    true
+                },
+                |_| {},
+                move |hang_up| {
+                    let _ = held_tx.send(hang_up);
+                },
+            )
+        });
+        let hang_up = held_rx.recv().unwrap();
+        // Its first Initial has come: the handshake waits on.
+        let mut first = [0u8; 2048];
+        silent.recv_from(&mut first).unwrap();
+        let start = Instant::now();
+        hang_up.now().unwrap();
+        let (ran, seen) = asking.join().unwrap();
+        let said = ran.unwrap_err().to_string();
+        assert!(said.contains("hung up"), "{said}");
+        // At once: no probe after the one already due as it was hung up.
+        let after: Vec<Instant> = probed.try_iter().filter(|at| *at > start).collect();
+        assert!(after.len() <= 1, "probed on after its hang-up: {after:?}");
+        assert_eq!(seen.handshake, None);
+        assert_eq!(remote.known.after(&seen), tls::Known::Never);
+    });
+}
+
+/// An address where nothing listens is refused at once: its host's ICMP port-unreachable reads
+/// on the client's socket, connected to its one peer, as a definite refusal, whichever of its
+/// next send and read is told of it (on Linux's loopback, its first flight's second datagram's
+/// send). Its caller gives up once its [`Patience`] is out, so that a refusal never told fails it
+/// rather than hangs it (ROOT's KVM run at 237f3ebe7 ended it after 22 minutes).
+#[test]
+fn a_closed_port_refuses_its_client_at_once() {
+    let closed = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let address = closed.local_addr().unwrap();
+    drop(closed);
+    let remote = Remote {
+        address,
+        daemon: Identity::generate().unwrap().fingerprint(),
+        known: tls::Known::Never,
+    };
+    // Given up once its own connection's patience is out ([`Patience`]), made at its first probe.
+    let mut patience: Option<Patience> = None;
+    let (ran, _, seen) = asked(remote, |_, view| {
+        patience
+            .get_or_insert_with(|| Patience::on(&view.into_iter().collect::<Vec<_>>()))
+            .left()
+            .is_none()
+    });
+    // Refused, not given up: a caller's giving up says "no shards daemon answered".
+    let said = ran.unwrap_err().to_string();
+    assert!(said.contains("refused"), "{said}");
+    assert!(seen.refused, "{seen:?}");
+}
+
+/// A daemon reached before that answers nothing runs out once the slowest handshake seen from
+/// it has passed with nothing heard from it, past its probe timeout: marked, so that the next
+/// attempt waits as for a daemon never reached, and probed on as one never reached is, each
+/// probe told its caller, until its caller gives up (the person's ruling, 2026-11-13: every wait
+/// after a run-out follows the party's liveness). Red with the run-out its end: given up at it
+/// at 476f77d7b, "no answer from the shards daemon at ADDR: nothing heard from it in 328ms, its
+/// probe timeout (28ms) and then the slowest handshake seen from it (300ms)".
+#[test]
+fn a_daemon_reached_before_that_answers_nothing_runs_out_and_is_probed_on() {
+    let silent = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let path = tls::Path {
+        rtt: Duration::from_millis(1),
+        handshake: Duration::from_millis(300),
+        answer: Duration::from_millis(1),
+        lost: None,
+    };
+    let remote = Remote {
+        address: silent.local_addr().unwrap(),
+        daemon: Identity::generate().unwrap().fingerprint(),
+        known: tls::Known::Reached(path),
+    };
+    let start = Instant::now();
+    // Its caller gives up at the first probe told past twice its slowest handshake: well past
+    // its run-out, which comes a probe timeout and its slowest handshake in.
+    let (ran, _, seen) = asked(remote, |u, _| u.waited >= path.handshake * 2);
+    let took = start.elapsed();
+    let said = ran.unwrap_err().to_string();
+    assert!(said.contains("no shards daemon answered"), "{said}");
+    assert!(took >= path.handshake * 2, "{took:?}");
+    assert!(seen.ran_out, "{seen:?}");
+    assert_eq!(remote.known.after(&seen), tls::Known::RanOut(path));
+    drop(silent);
+}
+
+/// A stand-in for a daemon slow to answer a handshake: a relay on loopback in front of a real
+/// one, which passes what each client sends on at once, and holds what the daemon sends back
+/// to a client that came after [`Relay::hold`] said a hold: everything that comes in that long
+/// from the first datagram on, released at once at its end (one wait, its answer's), and
+/// nothing after it. Held datagram by datagram, every answer slowed, a wait of the relay's own
+/// thread past its time (2 ms sleeps on adacachy2 took 124 ms at their p99) stalled the path
+/// past both ends' windows, and its daemon took a live client for dead.
+struct Relay {
+    address: SocketAddr,
+    hold: &'static Mutex<Duration>,
+}
+
+impl Relay {
+    fn new(daemon: SocketAddr) -> Relay {
+        let front = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let address = front.local_addr().unwrap();
+        let hold: &'static Mutex<Duration> = Box::leak(Box::new(Mutex::new(Duration::ZERO)));
+        let (due_tx, due) = mpsc::channel::<(Instant, SocketAddr, Vec<u8>)>();
+        let back = front.try_clone().unwrap();
+        std::thread::spawn(move || {
+            while let Ok((at, to, bytes)) = due.recv() {
+                std::thread::sleep(at.saturating_duration_since(Instant::now()));
+                let _ = back.send_to(&bytes, to);
+            }
+        });
+        std::thread::spawn(move || {
+            // A socket to the daemon of each client's own, which the daemon's answers to that
+            // client come back on.
+            let mut upstream: HashMap<SocketAddr, std::net::UdpSocket> = HashMap::new();
+            let mut datagram = vec![0u8; 65536];
+            while let Ok((n, from)) = front.recv_from(&mut datagram) {
+                let up = upstream.entry(from).or_insert_with(|| {
+                    let up = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+                    up.connect(daemon).unwrap();
+                    let (answers, due_tx) = (up.try_clone().unwrap(), due_tx.clone());
+                    // The hold its client comes under, from what the daemon first sends it.
+                    let hold = *hold.lock().unwrap();
+                    std::thread::spawn(move || {
+                        let mut datagram = vec![0u8; 65536];
+                        let mut until = None;
+                        while let Ok(n) = answers.recv(&mut datagram) {
+                            let now = Instant::now();
+                            let at = match hold.is_zero() {
+                                true => now,
+                                false => (*until.get_or_insert(now + hold)).max(now),
+                            };
+                            if due_tx.send((at, from, datagram[..n].to_vec())).is_err() {
+                                break;
+                            }
+                        }
+                    });
+                    up
+                });
+                let _ = up.send(&datagram[..n]);
+            }
+        });
+        Relay { address, hold }
+    }
+
+    /// Holds what the daemon sends back to each client that comes from now on, for `hold` from
+    /// the first of it.
+    fn hold(&self, hold: Duration) {
+        *self.hold.lock().unwrap() = hold;
+    }
+}
+
+/// Runs `args` on `remote` as `identity`: its status, or why it was not run, and what its
+/// connection saw.
+fn ran_seen(identity: &'static Identity, remote: Remote, args: &[&str]) -> (Result<i32, String>, net::Seen) {
+    let request = Request {
+        args: args.iter().map(|a| a.as_bytes().to_vec()).collect(),
+        env: Vec::new(),
+        terminal: None,
+    };
+    let (ran, seen) = client::exec_with(
+        identity,
+        remote,
+        request,
+        None,
+        std::io::sink(),
+        std::io::sink(),
+        |_| {},
+        |_| {},
+        |_| true,
+        |_| {},
+        |_| {},
+    );
+    (
+        ran.unwrap_or_else(|e| panic!("{args:?}: {e}; its connection saw {seen:?}")),
+        seen,
+    )
+}
+
+/// A daemon reached before whose next handshake is slower than any seen from it, but within the
+/// probe timeout its client computes (a host loaded as it answers; a stand-in holding what the
+/// daemon sends back), is answered, and its slower handshake learned: a handshake is judged as
+/// a send is, a whole window of the slowest seen with nothing heard from its daemon, past its
+/// probe timeout (`net::Liveness::due`). Red with the slowest handshake its deadline: ROOT's runs
+/// of tests/context.rs at 084891178, a daemon reached before refused "within the slowest
+/// handshake seen from it" of 0.93-4.2 ms under the suite's own load (8 of 21 on HVF, 1 on KVM).
+/// The hold is chosen from what the first connection measured, its handshake and its client's
+/// probe timeout (`net::Seen::pto`), never a figure of the test's: ROOT's run at load 59
+/// (8bfa6150e, r678) took a first handshake past 12.5 ms, and a hold of twice it reached the
+/// 25 ms floor the test once assumed. Where no hold fits between them, the test says so.
+#[test]
+fn a_daemon_reached_before_slower_to_shake_hands_within_a_probe_timeout_is_answered() {
+    let daemon_id = leak(Identity::generate().unwrap());
+    let laptop = leak(Identity::generate().unwrap());
+    let d = daemon(
+        daemon_id,
+        vec![("laptop".into(), laptop.spki().to_vec())],
+        Vec::new(),
+    );
+    let relay = Relay::new(d.remote.address);
+    let remote = Remote {
+        address: relay.address,
+        ..d.remote
+    };
+    let (status, seen) = ran_seen(laptop, remote, &["say", "first", "x", "0"]);
+    assert_eq!(status, Ok(0));
+    let known = remote.known.after(&seen);
+    let tls::Known::Reached(path) = known else {
+        panic!("{known:?}");
+    };
+    // Slower than the first, within the probe timeout its client computes: twice the first,
+    // past it by its own length, where that fits, leaving the timeout's rest to the host's
+    // scheduling of this test's threads, the relay's among them; else halfway between them.
+    let Some(hold) = [path.handshake * 2, (path.handshake + seen.pto) / 2]
+        .into_iter()
+        .find(|hold| *hold > path.handshake && *hold < seen.pto)
+    else {
+        eprintln!(
+            "no hold fits: the first handshake took {:?}, its client's probe timeout {:?}; {seen:?}",
+            path.handshake, seen.pto
+        );
+        return;
+    };
+    eprintln!("first {seen:?}; hold {hold:?}");
+    relay.hold(hold);
+    let (status, seen) = ran_seen(laptop, Remote { known, ..remote }, &["say", "second", "x", "0"]);
+    assert_eq!(status, Ok(0), "{seen:?}");
+    let slower = seen.handshake.unwrap();
+    assert!(slower > hold, "{slower:?}, {path:?}");
+    assert_eq!(known.after(&seen).path().map(|p| p.handshake), Some(slower));
+}
+
+/// A daemon reached before whose next handshake goes unheard past the slowest handshake seen
+/// from it and its probe timeout (its host descheduling it: ROOT's run of this file on
+/// adas-macbook-pro-2 at ea6f4b53b, load1 about 44, "nothing heard from it in 30.075715ms, its
+/// probe timeout (26.36784ms) and then the slowest handshake seen from it (3.707875ms): is it
+/// listening there"; here a relay holding what it sends back four times that long) runs out,
+/// marked, and is waited for as a daemon never reached is: answered once it is heard, its
+/// run-out kept, so that its next handshake waits as a cold one does. Red with the run-out its
+/// end, in those words, at 476f77d7b on an unloaded host: "nothing heard from it in 39.906044ms,
+/// its probe timeout (38.234002ms) and then the slowest handshake seen from it (1.672042ms)".
+#[test]
+fn a_daemon_reached_before_unheard_past_its_window_runs_out_and_is_waited_for() {
+    let daemon_id = leak(Identity::generate().unwrap());
+    let laptop = leak(Identity::generate().unwrap());
+    let d = daemon(
+        daemon_id,
+        vec![("laptop".into(), laptop.spki().to_vec())],
+        Vec::new(),
+    );
+    let relay = Relay::new(d.remote.address);
+    let remote = Remote {
+        address: relay.address,
+        ..d.remote
+    };
+    let (status, seen) = ran_seen(laptop, remote, &["say", "first", "x", "0"]);
+    assert_eq!(status, Ok(0));
+    let known = remote.known.after(&seen);
+    let tls::Known::Reached(path) = known else {
+        panic!("{known:?}");
+    };
+    // What the client waits before its run-out: its probe timeout from the path's RTT (RFC 9002
+    // §6.2.1: the smoothed RTT, the larger of four times its variation, half the RTT to start
+    // from, §6.2.2, and the 1 ms granularity, §6.1.2, and the daemon's max_ack_delay, 25 ms
+    // where its transport parameters say none, RFC 9000 §18.2), then the slowest handshake
+    // seen. Held four times that.
+    let ms = Duration::from_millis;
+    let past = path.rtt + (path.rtt * 2).max(ms(1)) + ms(25) + path.handshake;
+    let hold = past * 4;
+    eprintln!("first {seen:?}; hold {hold:?}");
+    relay.hold(hold);
+    let (status, seen) = ran_seen(laptop, Remote { known, ..remote }, &["say", "second", "x", "0"]);
+    assert_eq!(status, Ok(0), "{seen:?}");
+    // Its handshake's time is not held to the hold: the client's own absence, its driver
+    // descheduled, is taken out of it (`net::Liveness::absent`), and at load 28 a handshake held
+    // 194.6 ms measured 191.3 ms (adas-mac-studio.local, kiln r829).
+    assert!(seen.ran_out && seen.handshake.is_some(), "{seen:?}");
+    assert!(matches!(known.after(&seen), tls::Known::RanOut(_)), "{seen:?}");
+}
+
+/// A whole process frozen past every window (a host that stops or starves it: kiln's runners
+/// froze whole processes for up to 124 ms, a 2 ms sleep's p99 on adacachy2) keeps its
+/// connections: each driver takes the time its thread neither ran nor waited as planned for its
+/// own absence (`net::Liveness::absent`), which its peer is not held to. A command echoes its
+/// stdin as it trickles in, a chunk every 2 ms, so that sends of both its client's and its
+/// daemon's wait for their answers through most of the run, and in a turn's midst as often as
+/// in a wait; the test's whole process, its daemon and its client, is frozen for 200 ms in its
+/// midst, and the command ends whole. Red with no absence taken: a side takes its live peer for
+/// dead as both resume. In a process of its own, as a freeze stops every thread of the process it
+/// is sent to.
+#[cfg(unix)]
+#[test]
+fn a_process_frozen_past_every_window_keeps_its_connections() {
+    const CHILD: &str = "SHARDS_TEST_FROZEN_PROCESS";
+    if std::env::var_os(CHILD).is_none() {
+        let output = this_test(
+            "a_process_frozen_past_every_window_keeps_its_connections",
+            (CHILD, "1".as_ref()),
+        )
+        .output();
+        assert!(
+            output.status == 0,
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    /// A KiB every 2 ms, `left` more.
+    struct Trickle {
+        left: usize,
+    }
+    impl Read for Trickle {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.left == 0 {
+                return Ok(0);
+            }
+            std::thread::sleep(Duration::from_millis(2));
+            self.left -= 1;
+            let n = buf.len().min(1 << 10);
+            buf[..n].fill(b'x');
+            Ok(n)
+        }
+    }
+    let daemon_id = leak(Identity::generate().unwrap());
+    let laptop = leak(Identity::generate().unwrap());
+    let d = daemon(
+        daemon_id,
+        vec![("laptop".into(), laptop.spki().to_vec())],
+        Vec::new(),
+    );
+    let remote = d.remote;
+    let out = Captured::default();
+    let (tx, ended) = mpsc::channel();
+    let written = out.clone();
+    std::thread::spawn(move || {
+        let request = Request {
+            args: vec![b"cat".to_vec()],
+            env: Vec::new(),
+            terminal: None,
+        };
+        let stdin: Box<dyn Read + Send> = Box::new(Trickle { left: 400 });
+        let ran = client::exec(
+            laptop,
+            remote,
+            request,
+            Some(stdin),
+            written,
+            std::io::sink(),
+            |_| {},
+        );
+        let _ = tx.send(ran.map_err(|e| e.to_string()));
+    });
+    // 300 ms in, frozen for 200 ms: longer than any window here, and than kiln's freezes.
+    std::thread::sleep(Duration::from_millis(300));
+    let pid = std::process::id();
+    let frozen = Command::new("sh")
+        .arg("-c")
+        .arg(format!("kill -STOP {pid}; sleep 0.2; kill -CONT {pid}"))
+        .status()
+        .unwrap();
+    assert!(frozen.success());
+    let ran = patiently(&ended, &[&d.view()], "the trickled command's end");
+    assert_eq!(ran, Ok(Ok(0)));
+    assert_eq!(out.bytes().len(), 400 << 10);
+}
+
+/// What a client sends a command that reads it slowly crosses whole, as a moved microVM's import
+/// does, its files written as they come: the daemon's flow control holds the client back while
+/// the command reads (RFC 9000 §4.1), and each credit it grants as the command reads on is a send
+/// its liveness waits on (`net::Liveness::note`), answered as the client sends on. Its stdin is
+/// several times what the daemon's stream window (quinn-proto's 1.25 MB) holds.
+#[test]
+fn a_slow_readers_stdin_crosses_whole() {
+    let daemon_id = leak(Identity::generate().unwrap());
+    let laptop = leak(Identity::generate().unwrap());
+    let d = daemon(
+        daemon_id,
+        vec![("laptop".into(), laptop.spki().to_vec())],
+        Vec::new(),
+    );
+    let size = 8usize << 20;
+    let (status, out, _) = run(laptop, d.remote, &["drip", "2"], input(&vec![7; size])).get();
+    assert_eq!(status, Ok(0));
+    assert_eq!(String::from_utf8_lossy(&out), format!("{size}\n"));
+}
+
+/// A client frozen mid-import past the window its daemon learned, its process stopped as a
+/// loaded host deschedules one (ROOT's HVF run of moved.rs's shared volume at ea6f4b53b, load1
+/// about 44: `shards move`'s import "closed by peer: unanswered past the slowest answer seen"),
+/// keeps its connection, and its import crosses whole: the client streams to a command that reads
+/// slowly, so that its daemon reads on through the freeze and grants credit, sends its liveness
+/// waits on. The client is a process of its own, this test's binary again, so that its daemon is
+/// not frozen with it, as `a_process_frozen_past_every_window_keeps_its_connections`' is. Red at
+/// 476f77d7b (kiln r619, adas-mac-studio.local-2): "the connection to 127.0.0.1:49844 ended:
+/// closed by peer: unanswered past the slowest answer seen (code 0)", the daemon's `Look::Dead`;
+/// green once a stall is a run-out that follows the peer's liveness (ROOT's ruling A), its
+/// daemon telling the stall once (`Host::unheard`) where its window was past.
+#[cfg(unix)]
+#[test]
+fn a_client_frozen_mid_import_past_its_daemons_window_keeps_its_connection() {
+    const CLIENT: &str = "SHARDS_TEST_FROZEN_CLIENT";
+    /// What the client sends: many times its daemon's stream window, so that its import goes on
+    /// through the freeze.
+    const SIZE: usize = 16 << 20;
+    if let Some(dir) = std::env::var_os(CLIENT) {
+        let dir = std::path::PathBuf::from(dir);
+        let laptop = leak(Identity::load_or_create(&dir.join("laptop")).unwrap());
+        let daemon = Invitation::parse(&std::fs::read_to_string(dir.join("daemon")).unwrap()).unwrap();
+        let remote = Remote {
+            address: daemon.address,
+            daemon: daemon.daemon,
+            known: tls::Known::Never,
+        };
+        let request = Request {
+            args: vec![b"drip".to_vec(), b"2".to_vec()],
+            env: Vec::new(),
+            terminal: None,
+        };
+        let out = Captured::default();
+        let (ran, seen) = client::exec_with(
+            laptop,
+            remote,
+            request,
+            input(&vec![7; SIZE]),
+            out.clone(),
+            std::io::sink(),
+            |_| {},
+            |_| {},
+            |_| true,
+            |_| {},
+            |_| {},
+        );
+        let ran = ran.map_err(|e| e.to_string());
+        println!("ran {ran:?} {}", String::from_utf8_lossy(&out.bytes()).trim());
+        println!("saw {seen:?}");
+        return;
+    }
+    let dir = TempDir::new("remote-frozen").unwrap();
+    let laptop = Identity::load_or_create(&dir.path().join("laptop")).unwrap();
+    let daemon_id = leak(Identity::generate().unwrap());
+    let mut d = daemon(
+        daemon_id,
+        vec![("laptop".into(), laptop.spki().to_vec())],
+        Vec::new(),
+    );
+    let at = Invitation::new("daemon", d.remote.address, daemon_id.fingerprint()).unwrap();
+    std::fs::write(dir.path().join("daemon"), at.text()).unwrap();
+    let child = this_test(
+        "a_client_frozen_mid_import_past_its_daemons_window_keeps_its_connection",
+        (CLIENT, dir.path().as_os_str()),
+    );
+    let pid = child.child.id();
+    let (tx, ended) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(child.output());
+    });
+    let began = Instant::now();
+    d.seen.saw(&Seen::Started("drip 2".into()));
+    let started = began.elapsed();
+    // Frozen once its import is under way and its daemon's window learned from its first sends'
+    // answers: a connection still cold has no window, its daemon's sends followed for as long as
+    // they take and never told stalled (`net::Liveness::look`), so that one frozen as its command
+    // started was never told (ROOT's loop of 498f63f15, adas-mac-studio.local: "nothing heard or seen for a
+    // whole window (7.168s …)", its cold bound, seven of a backed-off 1.024 s probe timeout).
+    let window = learned(&d.view());
+    let learned_at = began.elapsed();
+    // Held frozen until its daemon has told it unheard past that window: a send of
+    // the daemon's (the credit it grants as `drip` reads on) waited through the freeze, which a
+    // freeze of a fixed length met only now and then (main at 8bfa6150e passed a 200 ms one at
+    // load 7, kiln r714). Resumed as the guard drops, whatever becomes of this test meanwhile.
+    // Signalled by kill(2), not a kill(1) of std's spawning, which would hold whatever pipe of
+    // another test's std had made and not yet marked close-on-exec as it ran
+    // (`a_command_holds_no_descriptor_it_was_not_given`). Its pid is its own until it is
+    // reaped, which its wait does only once it has ended.
+    let pid = libc::pid_t::try_from(pid).unwrap();
+    struct Frozen(libc::pid_t);
+    impl Drop for Frozen {
+        fn drop(&mut self) {
+            // SAFETY: kill(2) of this test's own child, not yet reaped.
+            unsafe { libc::kill(self.0, libc::SIGCONT) };
+        }
+    }
+    let frozen = Frozen(pid);
+    // SAFETY: as above.
+    assert_eq!(unsafe { libc::kill(pid, libc::SIGSTOP) }, 0);
+    let stopped_at = began.elapsed();
+    d.seen.saw(&Seen::Unheard("laptop".into()));
+    let told = began.elapsed();
+    drop(frozen);
+    let output = patiently(&ended, &[&d.view()], "the frozen client's end");
+    let said = String::from_utf8_lossy(&output.stdout);
+    let stalls = d
+        .seen
+        .now()
+        .iter()
+        .filter(|seen| matches!(seen, Seen::Unheard(_)))
+        .count();
+    eprintln!(
+        "started {started:?}, window {window:?} learned {learned_at:?}, stopped {stopped_at:?}, its stall told {told:?}, ended {:?}; stalls told: {stalls}",
+        began.elapsed()
+    );
+    assert!(
+        said.contains(&format!("ran Ok(Ok(0)) {SIZE}\n")),
+        "{said}{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 /// A command whose client leaves its stream, resetting it or reading no more of it, is hung
@@ -1172,7 +2469,7 @@ fn what_a_command_of_a_connection_gone_writes_reaches_no_other() {
         let raw = RawClient::new(laptop, d.remote);
         let outlives: Vec<&str> = ["outlives-hangup"].into_iter().chain(stale).collect();
         raw.open(exec(&outlives));
-        until_there(&ready);
+        until_there(&ready, &d.view());
         raw.ask(Ask::Close);
     }
     d.seen.saw(&Seen::HungUp(stale.join(" ")));

@@ -8,12 +8,10 @@ mod common;
 use std::fmt::Write as _;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use common::{TempDir, cannot_run_vms, kernel, test_guest, vm_run};
 use shards_image::erofs::{self, DataRef, Dir, Kind, Meta, Node, NodeId, Source, Tree};
 
-const TIMEOUT: Duration = Duration::from_secs(60);
 /// The source id that stands for the manifest; every other id is a pattern salt.
 const MANIFEST: u32 = u32::MAX;
 
@@ -234,21 +232,18 @@ fn a_guest_mounts_our_erofs_images_with_dax_and_finds_every_entry() {
     }
     let dir = TempDir::new("erofs");
     let (image, entries) = build(&dir);
-    let r = vm_run(
-        &[
-            "--kernel".as_ref(),
-            kernel().as_os_str(),
-            "--init".as_ref(),
-            test_guest().as_os_str(),
-            "--memory".as_ref(),
-            "256".as_ref(),
-            "--pmem".as_ref(),
-            image.as_os_str(),
-            "--cmdline".as_ref(),
-            "console=ttyS0 quiet shards_test=erofs".as_ref(),
-        ],
-        TIMEOUT,
-    );
+    let r = vm_run(&[
+        "--kernel".as_ref(),
+        kernel().as_os_str(),
+        "--init".as_ref(),
+        test_guest().as_os_str(),
+        "--memory".as_ref(),
+        "256".as_ref(),
+        "--pmem".as_ref(),
+        image.as_os_str(),
+        "--cmdline".as_ref(),
+        "console=ttyS0 quiet shards_test=erofs".as_ref(),
+    ]);
     assert!(r.stdout.contains("SHARDS-TEST PASS"), "{r}");
     assert!(r.stdout.contains(&format!("checked {entries} entries")), "{r}");
 }

@@ -6,18 +6,29 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::SocketAddr;
 use std::sync::mpsc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use hyper_quic::{StreamId, VarInt};
 
 use crate::frame::{self, Request, Tag};
 use crate::identity::Identity;
 use crate::invite;
-use crate::net::{Close, Command, ConnKey, Driver, Handler, Io, Read as StreamRead, Sender};
+use crate::net::{Close, Command, ConnKey, Driver, Handler, Io, RanOut, Read as StreamRead, Sender};
 use crate::{Error, tls};
 
-/// How many bytes of a command's output wait unsent before its readers wait too.
-const HIGH_WATER: usize = 1 << 20;
+/// What one read of a command's output takes at most: what a pipe holds to be read at once,
+/// Linux's default 16 pages (`PIPE_DEF_BUFFERS`, include/linux/pipe_fs_i.h; pipe(7): 65536
+/// bytes on 4 KiB pages) and macOS's most (`BIG_PIPE_SIZE`, xnu-12377.101.15 bsd/sys/pipe.h
+/// l. 80), as synced.rs's frames and the exec host's pipes cite them. A source that holds more
+/// gives the rest to the next read.
+pub(crate) const READ_MOST: usize = 64 << 10;
+
+/// The chunks of a command's input queued for the thread that writes them: one, which the
+/// writer takes as it finishes the last, so that it waits on the driver only when nothing has
+/// come; none would lose a wake, as the writer tells the driver it took a chunk before it
+/// takes the next, and the driver's offer meanwhile finds no taker. The client's flow control
+/// holds the rest (RFC 9000 §4.1).
+pub(crate) const QUEUED_CHUNKS: usize = 1;
 
 /// A command a client asked for, started: its stdio, and a wait for its exit status.
 #[allow(missing_debug_implementations)]
@@ -43,18 +54,31 @@ pub struct Running {
 /// the 32 random bytes of moby's stringid.GenerateRandomID (shards' `containers::new_id`).
 const MADE_MOST: u64 = 2 * 32;
 
-/// The machine a daemon serves its clients on.
-pub trait Host: Send {
+/// The machine a daemon serves its clients on, shared by the workers its starts run on
+/// ([`Host::start`]).
+pub trait Host: Send + Sync {
     /// The name of the enrolled client whose key's SubjectPublicKeyInfo is `spki`, if one is.
     fn enrolled(&self, spki: &[u8]) -> Option<String>;
     /// Redeems invitation `name`, whose secret `proof` must prove over the connection whose
     /// exporter gave `exported`, enrolling the client `spki` under it.
     fn join(&self, name: &str, proof: &[u8], exported: &[u8; 32], spki: &[u8]) -> Result<(), Error>;
-    /// Starts `request`'s command for the enrolled client `client`.
+    /// Starts `request`'s command for the enrolled client `client`: on a worker of its own,
+    /// apart from the driver, which acknowledges every client's packets while it does.
     fn start(&self, client: &str, request: Request) -> Result<Running, Error>;
     /// How many invitations the machine holds open: as many clients it has not enrolled may
     /// be connected at once, to join, as an invitation enrolls one client.
     fn invited(&self) -> usize;
+    /// How many connections the machine holds at once, its own resources' bound (at the daemon,
+    /// the process's descriptors, as each connection served may hold a command and its stdio):
+    /// handshakes and established connections alike, past which a newcomer is refused and takes
+    /// the place of a holder, its handshake in flight or ended, that does not answer the PING it
+    /// was sent within its probe timeout (ROOT's rulings on #72, `net::Driver::hold_connections`).
+    fn handshakes(&self) -> usize;
+    /// A peer at `at` went `unheard` past the window its path has shown, a send of the daemon's
+    /// unanswered (`net::RanOut::Stalled`): told once a stall, for the machine's log, as its
+    /// connection waits on with no window and its commands run on (ROOT's ruling A). `client`,
+    /// the name it enrolled, where the machine has said whom its key is. Nothing, by default.
+    fn unheard(&self, _client: Option<&str>, _at: SocketAddr, _unheard: Duration) {}
 }
 
 /// The daemon's answer to any join that failed, whatever made it fail: a refusal tells
@@ -88,6 +112,27 @@ enum Event {
     },
     /// The command's stdin took what it was given, or takes no more: the stream is read on.
     InputTaken { conn: ConnKey, stream: StreamId },
+    /// The command's start, on its worker ([`start_apart`]), ended: started, or why not.
+    Started {
+        conn: ConnKey,
+        stream: StreamId,
+        started: Result<Running, Error>,
+    },
+    /// What the machine says of a peer whose handshake ended, on its worker ([`judge_apart`]):
+    /// the name of the client it enrolled under the peer's key, if one is, and how many
+    /// invitations it holds open.
+    Judged {
+        conn: ConnKey,
+        client: Option<String>,
+        invited: usize,
+    },
+    /// A stranger's join, on its worker ([`join_apart`]), ended: enrolled as `name`, or not.
+    Joined {
+        conn: ConnKey,
+        stream: StreamId,
+        name: String,
+        joined: bool,
+    },
 }
 
 #[derive(Default)]
@@ -111,6 +156,13 @@ struct Stream {
     hangup: Option<Box<dyn Fn() + Send>>,
     /// The request frame came.
     asked: bool,
+    /// Its command's start is under way, apart from the driver ([`Event::Started`]): what its
+    /// client sent after the request, and on the control streams that steer it, is read once
+    /// the start has ended, its flow control holding the client back meanwhile.
+    starting: bool,
+    /// Its command started (`Host::start`): a refusal from here on is [`Tag::Cut`], as it may
+    /// have run, never [`Tag::Refused`], which tells a client nothing of it ran.
+    started: bool,
     /// The client finished its side: all it sent is read.
     ended: bool,
     /// The stream's last frame is queued: its exit, refusal or join.
@@ -148,7 +200,10 @@ impl Stream {
                 }
             }
         }
-        if self.starved && self.pending.len() < HIGH_WATER {
+        // Its readers read on once the transport has taken all they read: what the client's
+        // flow control lets through (RFC 9000 §4.1) is the output's only read-ahead, and the
+        // pipe the command writes holds its next bytes meanwhile.
+        if self.starved && self.pending.is_empty() {
             self.starved = false;
             for credit in &self.credits {
                 let _ = credit.try_send(());
@@ -163,13 +218,15 @@ impl Stream {
     /// Queues `tag`'s frame as the stream's last. A command still running is hung up, as its
     /// client hears no more of it, and what the client still sends goes unread: it is asked
     /// to stop (STOP_SENDING), as an HTTP/3 server that needs no more of a request's body
-    /// does (RFC 9114 §4.1.2).
+    /// does (RFC 9114 §4.1.2). A refusal of a command that started is its cut.
     fn end(&mut self, io: &mut Io<'_>, conn: ConnKey, id: StreamId, tag: Tag, payload: &[u8]) {
         if self.last {
             return;
         }
+        let refused = if self.started { Tag::Cut } else { Tag::Refused };
+        let tag = if tag == Tag::Refused { refused } else { tag };
         if frame::put(&mut self.pending, tag, payload).is_err() {
-            let _ = frame::put(&mut self.pending, Tag::Refused, b"an answer too long");
+            let _ = frame::put(&mut self.pending, refused, b"an answer too long");
         }
         self.last = true;
         if self.running()
@@ -219,12 +276,21 @@ struct Peer {
     spki: Vec<u8>,
     client: Option<String>,
     streams: HashMap<StreamId, Stream>,
-    /// When its handshake was done.
+    /// When its handshake ended: of the strangers holding the machine's invitations, the oldest
+    /// gives its place to a newer one.
     since: Instant,
+    /// Its join is under way, apart from the driver: its place is not given up meanwhile, as its
+    /// invitation may be spent by then.
+    joining: bool,
+    /// The machine has said whom its key is ([`Event::Judged`]): till then it is no stranger and
+    /// no client, and nothing it sends is read.
+    judged: bool,
 }
 
-struct Server<H: Host> {
-    host: H,
+struct Server<'s, 'e, H: Host> {
+    host: &'e H,
+    /// Where each command's start runs, a worker of its own ([`start_apart`]).
+    starts: &'s std::thread::Scope<'s, 'e>,
     peers: HashMap<ConnKey, Peer>,
     sender: Option<Sender<Event>>,
 }
@@ -240,28 +306,38 @@ enum Taken {
     Waiting,
 }
 
-impl<H: Host> Server<H> {
+impl<H: Host> Server<'_, '_, H> {
     fn stream(&mut self, conn: ConnKey, id: StreamId) -> Option<&mut Stream> {
         self.peers.get_mut(&conn).and_then(|p| p.streams.get_mut(&id))
     }
 
-    /// The connections of peers the machine has not enrolled, and when each is due to have
-    /// joined: as long after its handshake as a client waits for its daemon, the idle bound.
-    fn strangers(&self) -> impl Iterator<Item = (ConnKey, Option<Instant>)> + '_ {
+    /// The connections of peers the machine has not enrolled, and when each connected.
+    fn strangers(&self) -> impl Iterator<Item = (ConnKey, Instant, bool)> + '_ {
         self.peers
             .iter()
-            .filter(|(_, p)| p.client.is_none())
-            .map(|(conn, p)| (*conn, p.since.checked_add(tls::IDLE)))
+            .filter(|(_, p)| p.judged && p.client.is_none())
+            .map(|(conn, p)| (*conn, p.since, p.joining))
     }
 
     /// Reads `id` and acts on its frames: each whole one before reading more, and none while
-    /// its command's stdin has no room for what came before.
+    /// its command's stdin has no room for what came before, or its command's start is under
+    /// way.
     fn serve(&mut self, io: &mut Io<'_>, conn: ConnKey, id: StreamId) {
+        // A peer the machine has not yet said whom its key is sends nothing read (its verdict
+        // reads on, [`Server::judged`]).
+        if !self.peers.get(&conn).is_some_and(|p| p.judged) {
+            return;
+        }
         loop {
             let Some(stream) = self.stream(conn, id) else {
                 return;
             };
-            if stream.last || stream.gone || !stream.deliver() {
+            let steers = stream.steers;
+            if stream.last || stream.gone || stream.starting || !stream.deliver() {
+                break;
+            }
+            // A control stream is read on once the start of the command it steers has ended.
+            if steers.is_some_and(|target| self.stream(conn, target).is_some_and(|t| t.starting)) {
                 break;
             }
             match self.frame(io, conn, id) {
@@ -359,21 +435,22 @@ impl<H: Host> Server<H> {
                     stream.end(io, conn, id, Tag::Refused, NOT_ENROLLED.as_bytes());
                     return Taken::Frame;
                 };
-                let started = Request::decode(&payload).and_then(|request| self.host.start(client, request));
-                let relayed = match (started, &self.sender) {
-                    (Ok(running), Some(sender)) => relay(running, conn, id, sender),
+                // Started apart from the driver, which acknowledges every client meanwhile.
+                let starting = match (Request::decode(&payload), &self.sender) {
+                    (Ok(request), Some(sender)) => start_apart(
+                        self.starts,
+                        self.host,
+                        sender,
+                        conn,
+                        id,
+                        client.to_string(),
+                        request,
+                    ),
                     (Ok(_), None) => Err(Error::new("the daemon's listener is not running")),
                     (Err(e), _) => Err(e),
                 };
-                match relayed {
-                    Ok(relayed) => {
-                        stream.stdin = Some(relayed.stdin);
-                        stream.credits = relayed.credits;
-                        stream.made_done = !relayed.tells;
-                        stream.hangup = Some(relayed.hangup);
-                        stream.resize = relayed.resize;
-                        stream.signal = Some(relayed.signal);
-                    }
+                match starting {
+                    Ok(()) => stream.starting = true,
                     Err(e) => stream.end(io, conn, id, Tag::Refused, e.to_string().as_bytes()),
                 }
             }
@@ -382,13 +459,26 @@ impl<H: Host> Server<H> {
                 let mut parts = payload.splitn(2, |b| *b == 0);
                 let name = String::from_utf8_lossy(parts.next().unwrap_or_default()).into_owned();
                 let proof = parts.next().unwrap_or_default();
-                let joined = io
-                    .export(conn, invite::EXPORTER_LABEL)
-                    .and_then(|exported| self.host.join(&name, proof, &exported, &peer.spki));
-                match joined {
+                // Judged apart from the driver, which acknowledges every client meanwhile: a host's
+                // join keeps a client's record on disk, which takes as long as its sync does.
+                let joining = match (io.export(conn, invite::EXPORTER_LABEL), &self.sender) {
+                    (Ok(exported), Some(sender)) => join_apart(
+                        self.starts,
+                        self.host,
+                        sender,
+                        (conn, id),
+                        name,
+                        proof.to_vec(),
+                        exported,
+                        peer.spki.clone(),
+                    ),
+                    (Ok(_), None) => Err(Error::new("the daemon's listener is not running")),
+                    (Err(e), _) => Err(e),
+                };
+                match joining {
                     Ok(()) => {
-                        peer.client = Some(name);
-                        stream.end(io, conn, id, Tag::Joined, &[]);
+                        stream.starting = true;
+                        peer.joining = true;
                     }
                     Err(_) => stream.end(io, conn, id, Tag::Refused, NOT_INVITED.as_bytes()),
                 }
@@ -422,10 +512,11 @@ impl<H: Host> Server<H> {
         let Some(peer) = self.peers.get_mut(&conn) else {
             return;
         };
+        // A command whose start is under way is steered as it runs, once it does (`serve`).
         let command = peer
             .streams
             .get(&target)
-            .filter(|t| t.steers.is_none() && t.running());
+            .filter(|t| t.steers.is_none() && (t.running() || t.starting));
         match tag {
             Tag::Controls => match (command.is_some(), peer.streams.get_mut(&id)) {
                 (true, Some(stream)) => {
@@ -504,6 +595,122 @@ impl<H: Host> Server<H> {
 
 /// What [`relay`] keeps of a command for its stream: where its stdin goes, its output's
 /// credits, and what hangs it up, sizes its terminal and signals it.
+impl<H: Host> Server<'_, '_, H> {
+    /// The machine said whom peer `conn`'s key is: an enrolled client is served, under its name;
+    /// one it has not enrolled connects to join alone, in a place an invitation holds for it:
+    /// none while the machine holds none, and where every place is taken, the oldest stranger's,
+    /// which has not joined in all the time since (the person's ruling, 2026-11-13: no deadline
+    /// of shards' own, the slots its resources hold, the oldest unanswered given up). One whose
+    /// join is under way keeps its place, as its invitation may be spent by then: where every
+    /// place is so held, the newcomer has none. What it sent meanwhile is read on.
+    fn judged(&mut self, io: &mut Io<'_>, conn: ConnKey, client: Option<String>, invited: usize) {
+        if !self.peers.contains_key(&conn) {
+            return;
+        }
+        if client.is_none() {
+            if invited == 0 {
+                io.close(conn, UNENROLLED, "not enrolled");
+                self.peers.remove(&conn);
+                return;
+            }
+            if self.strangers().count() >= invited {
+                let oldest = self
+                    .strangers()
+                    .filter(|(_, _, joining)| !joining)
+                    .min_by_key(|(_, since, _)| *since);
+                let Some((oldest, _, _)) = oldest else {
+                    io.close(
+                        conn,
+                        UNENROLLED,
+                        "not enrolled: every place is held by a join under way",
+                    );
+                    self.peers.remove(&conn);
+                    return;
+                };
+                io.close(
+                    oldest,
+                    UNENROLLED,
+                    "not enrolled: a newer stranger took its place",
+                );
+                self.peers.remove(&oldest);
+            }
+        }
+        let Some(peer) = self.peers.get_mut(&conn) else {
+            return;
+        };
+        peer.client = client;
+        peer.judged = true;
+        let streams: Vec<StreamId> = peer.streams.keys().copied().collect();
+        for id in streams {
+            self.serve(io, conn, id);
+        }
+    }
+
+    /// A stranger's join ended on its worker ([`Event::Joined`]): enrolled, its peer is the
+    /// client `name` from then on and its join answered so; refused, answered so.
+    fn joined(&mut self, io: &mut Io<'_>, conn: ConnKey, id: StreamId, name: String, joined: bool) {
+        let Some(peer) = self.peers.get_mut(&conn) else {
+            return;
+        };
+        peer.joining = false;
+        if joined {
+            peer.client = Some(name);
+        }
+        let Some(stream) = peer.streams.get_mut(&id).filter(|s| !s.last) else {
+            return;
+        };
+        stream.starting = false;
+        if joined {
+            stream.end(io, conn, id, Tag::Joined, &[]);
+        } else {
+            stream.end(io, conn, id, Tag::Refused, NOT_INVITED.as_bytes());
+        }
+        self.settle(io, conn, id);
+    }
+
+    /// A command's start ended ([`Event::Started`]): its stdio relayed, and what its client
+    /// sent meanwhile read on, its control streams' too; refused, said so; its stream gone
+    /// meanwhile (its client left, or its connection) or ended, hung up, its relay reaping it.
+    fn started(&mut self, io: &mut Io<'_>, conn: ConnKey, id: StreamId, started: Result<Running, Error>) {
+        let began = started.is_ok();
+        let relayed = match (started, &self.sender) {
+            (Ok(running), Some(sender)) => relay(running, conn, id, sender),
+            (Ok(_), None) => Err(Error::new("the daemon's listener is not running")),
+            (Err(e), _) => Err(e),
+        };
+        let Some(stream) = self.stream(conn, id).filter(|s| !s.last) else {
+            if let Ok(relayed) = &relayed {
+                (relayed.hangup)();
+            }
+            return;
+        };
+        stream.starting = false;
+        stream.started = began;
+        match relayed {
+            Ok(relayed) => {
+                stream.stdin = Some(relayed.stdin);
+                stream.credits = relayed.credits;
+                stream.made_done = !relayed.tells;
+                stream.hangup = Some(relayed.hangup);
+                stream.resize = relayed.resize;
+                stream.signal = Some(relayed.signal);
+            }
+            Err(e) => stream.end(io, conn, id, Tag::Refused, e.to_string().as_bytes()),
+        }
+        self.serve(io, conn, id);
+        let controls: Vec<StreamId> = self.peers.get(&conn).map_or_else(Vec::new, |peer| {
+            peer.streams
+                .iter()
+                .filter(|(_, s)| s.steers == Some(id))
+                .map(|(control, _)| *control)
+                .collect()
+        });
+        for control in controls {
+            self.serve(io, conn, control);
+        }
+    }
+}
+
 struct Relayed {
     stdin: mpsc::SyncSender<Vec<u8>>,
     credits: Vec<mpsc::SyncSender<()>>,
@@ -540,7 +747,7 @@ fn relay(
             .map(drop)
             .map_err(|e| Error::new(format!("a thread for a client's command: {e}")))
     };
-    let (stdin_tx, stdin_rx) = mpsc::sync_channel::<Vec<u8>>(4);
+    let (stdin_tx, stdin_rx) = mpsc::sync_channel::<Vec<u8>>(QUEUED_CHUNKS);
     let to = sender.try_clone()?;
     spawn(
         "remote-stdin",
@@ -567,7 +774,7 @@ fn relay(
         spawn(
             "remote-out",
             Box::new(move || {
-                let mut buffer = vec![0u8; 64 << 10];
+                let mut buffer = vec![0u8; READ_MOST];
                 while credit_rx.recv().is_ok() {
                     match from.read(&mut buffer) {
                         Ok(0) | Err(_) => break,
@@ -633,26 +840,35 @@ fn relay(
     })
 }
 
-impl<H: Host> Handler for Server<H> {
+impl<H: Host> Handler for Server<'_, '_, H> {
     type Command = Event;
 
+    /// Whom the peer's key is, the machine says on a worker of its own ([`judge_apart`]): its
+    /// files are read for it, which takes as long as their disk does, and the driver, which
+    /// acknowledges every client meanwhile, waits on none. Nothing the peer sends is read
+    /// before the verdict ([`Server::judged`]).
     fn connected(&mut self, io: &mut Io<'_>, conn: ConnKey, peer: &[u8]) -> Result<(), Close> {
-        let client = self.host.enrolled(peer);
-        // A peer the machine has not enrolled connects to join alone, while an invitation is
-        // free for it.
-        if client.is_none() && self.strangers().count() >= self.host.invited() {
+        let Some(sender) = &self.sender else {
             return Err(Close {
                 code: UNENROLLED,
-                why: "not enrolled",
+                why: "the daemon's listener is not running",
+            });
+        };
+        if judge_apart(self.starts, self.host, sender, conn, peer.to_vec()).is_err() {
+            return Err(Close {
+                code: UNENROLLED,
+                why: "no thread to judge its key",
             });
         }
         self.peers.insert(
             conn,
             Peer {
                 spki: peer.to_vec(),
-                client,
+                client: None,
                 streams: HashMap::new(),
                 since: io.now(),
+                joining: false,
+                judged: false,
             },
         );
         Ok(())
@@ -684,8 +900,20 @@ impl<H: Host> Handler for Server<H> {
         self.settle(io, conn, id);
     }
 
+    /// A client unheard past its window is said once to the machine's log ([`Host::unheard`]),
+    /// and waited for with no window: nothing here takes it for gone, so that its commands run
+    /// to their own end, as `docker exec`'s over a dead SSH session do.
+    fn ran_out(&mut self, io: &mut Io<'_>, conn: ConnKey, what: RanOut) {
+        if let RanOut::Stalled { unheard, .. } = what
+            && let Some(at) = io.peer(conn)
+        {
+            let client = self.peers.get(&conn).and_then(|p| p.client.as_deref());
+            self.host.unheard(client, at, unheard);
+        }
+    }
+
     fn lost(&mut self, _io: &mut Io<'_>, conn: ConnKey, _why: &str, _code: Option<u64>) {
-        // Its commands lose their terminal.
+        // Its commands lose their terminal: its client closed it, or its own end did.
         if let Some(peer) = self.peers.remove(&conn) {
             for stream in peer.streams.values() {
                 if stream.running()
@@ -698,14 +926,28 @@ impl<H: Host> Handler for Server<H> {
     }
 
     fn command(&mut self, io: &mut Io<'_>, event: Event) {
-        let (Event::Output { conn, stream: id, .. }
-        | Event::OutputEnd { conn, stream: id, .. }
-        | Event::Exited { conn, stream: id, .. }
-        | Event::InputTaken { conn, stream: id }) = &event;
-        let (conn, id) = (*conn, *id);
-        if let Event::InputTaken { .. } = event {
-            return self.serve(io, conn, id);
-        }
+        let (conn, id) = match event {
+            Event::Started {
+                conn,
+                stream,
+                started,
+            } => return self.started(io, conn, stream, started),
+            Event::InputTaken { conn, stream } => return self.serve(io, conn, stream),
+            Event::Judged {
+                conn,
+                client,
+                invited,
+            } => return self.judged(io, conn, client, invited),
+            Event::Joined {
+                conn,
+                stream,
+                name,
+                joined,
+            } => return self.joined(io, conn, stream, name, joined),
+            Event::Output { conn, stream, .. }
+            | Event::OutputEnd { conn, stream, .. }
+            | Event::Exited { conn, stream, .. } => (conn, stream),
+        };
         let Some(stream) = self.stream(conn, id) else {
             return;
         };
@@ -719,7 +961,10 @@ impl<H: Host> Handler for Server<H> {
             Event::OutputEnd { tag: Tag::Made, .. } => stream.made_done = true,
             Event::OutputEnd { .. } => stream.stderr_done = true,
             Event::Exited { status, .. } => stream.status = Some(status),
-            Event::InputTaken { .. } => {}
+            Event::InputTaken { .. }
+            | Event::Started { .. }
+            | Event::Joined { .. }
+            | Event::Judged { .. } => {}
         }
         stream.exit_when_done(io, conn, id);
         self.settle(io, conn, id);
@@ -727,23 +972,6 @@ impl<H: Host> Handler for Server<H> {
 
     fn done(&self) -> bool {
         false
-    }
-
-    fn due(&self) -> Option<Instant> {
-        self.strangers().filter_map(|(_, due)| due).min()
-    }
-
-    /// A peer the machine has not enrolled that has not joined in its time is let go.
-    fn timeout(&mut self, io: &mut Io<'_>, now: Instant) {
-        let late: Vec<ConnKey> = self
-            .strangers()
-            .filter(|(_, due)| due.is_some_and(|at| at <= now))
-            .map(|(conn, _)| conn)
-            .collect();
-        for conn in late {
-            io.close(conn, UNENROLLED, "not enrolled in time");
-            self.peers.remove(&conn);
-        }
     }
 }
 
@@ -754,6 +982,12 @@ pub struct Stopper(Sender<Event>);
 impl Stopper {
     pub fn stop(&self) -> Result<(), Error> {
         self.0.send(Command::Stop)
+    }
+
+    /// What the daemon's driver has heard, and the window its connections have shown
+    /// ([`crate::net::View`]).
+    pub fn view(&self) -> crate::net::View {
+        self.0.view()
     }
 }
 
@@ -766,13 +1000,116 @@ pub fn serve<H: Host>(
     ready: impl FnOnce(SocketAddr, Stopper),
 ) -> Result<(), Error> {
     let config = tls::server(identity)?;
-    let server = Server {
-        host,
-        peers: HashMap::new(),
-        sender: None,
-    };
-    let (mut driver, sender) = Driver::bind(at, Some(config), server)?;
-    driver.handler_mut().sender = Some(sender.try_clone()?);
-    ready(driver.local()?, Stopper(sender));
-    driver.run()
+    let places = host.handshakes();
+    // Each start's worker is the scope's, the host shared with them: the listener returns once
+    // every start under way as it stops has ended, each hung up where none relays it.
+    std::thread::scope(|starts| {
+        let server = Server {
+            host: &host,
+            starts,
+            peers: HashMap::new(),
+            sender: None,
+        };
+        // A client is not known before its handshake says whose key it holds: each is held as
+        // a peer never reached, its handshake waited for as long as its probing goes on.
+        let (mut driver, sender) = Driver::bind(at, Some(config), server, tls::Known::Never)?;
+        driver.hold_connections(places);
+        driver.handler_mut().sender = Some(sender.try_clone()?);
+        ready(driver.local()?, Stopper(sender));
+        driver.run()
+    })
+}
+
+/// Says whom `spki` is on a worker of `starts` of its own, as [`start_apart`] starts a command:
+/// `host`'s client of that key, if it enrolled one, and the invitations it holds open, told
+/// the driver through `sender` ([`Event::Judged`]).
+fn judge_apart<'s, 'e, H: Host>(
+    starts: &'s std::thread::Scope<'s, 'e>,
+    host: &'e H,
+    sender: &Sender<Event>,
+    conn: ConnKey,
+    spki: Vec<u8>,
+) -> Result<(), Error> {
+    let sender = sender.try_clone()?;
+    std::thread::Builder::new()
+        .name("remote-judge".into())
+        .spawn_scoped(starts, move || {
+            let client = host.enrolled(&spki);
+            let invited = if client.is_some() { 0 } else { host.invited() };
+            let _ = sender.send(Command::Handler(Event::Judged {
+                conn,
+                client,
+                invited,
+            }));
+        })
+        .map(|_| ())
+        .map_err(|e| Error::new(format!("a thread to judge a key: {e}")))
+}
+
+/// Judges `name`'s join on a worker of `starts` of its own, as [`start_apart`] starts a command:
+/// `host` redeems the invitation `proof` proves over the connection whose exporter gave
+/// `exported`, enrolling `spki`, and tells the driver through `sender` ([`Event::Joined`]).
+#[allow(clippy::too_many_arguments)]
+fn join_apart<'s, 'e, H: Host>(
+    starts: &'s std::thread::Scope<'s, 'e>,
+    host: &'e H,
+    sender: &Sender<Event>,
+    (conn, stream): (ConnKey, StreamId),
+    name: String,
+    proof: Vec<u8>,
+    exported: [u8; 32],
+    spki: Vec<u8>,
+) -> Result<(), Error> {
+    let sender = sender.try_clone()?;
+    std::thread::Builder::new()
+        .name("remote-join".into())
+        .spawn_scoped(starts, move || {
+            let joined = host.join(&name, &proof, &exported, &spki).is_ok();
+            let _ = sender.send(Command::Handler(Event::Joined {
+                conn,
+                stream,
+                name,
+                joined,
+            }));
+        })
+        .map(|_| ())
+        .map_err(|e| Error::new(format!("a thread for the join: {e}")))
+}
+
+/// Starts `request` for `client` on a worker of `starts` of its own, which tells the driver
+/// through `sender` once `host` has ([`Event::Started`]): a start takes as long as its host's
+/// spawn does, and the driver, which acknowledges every client's packets, waits on none. A
+/// command started once the driver has ended is hung up, as none relays it.
+fn start_apart<'s, 'e, H: Host>(
+    starts: &'s std::thread::Scope<'s, 'e>,
+    host: &'e H,
+    sender: &Sender<Event>,
+    conn: ConnKey,
+    stream: StreamId,
+    client: String,
+    request: Request,
+) -> Result<(), Error> {
+    let sender = sender.try_clone()?;
+    std::thread::Builder::new()
+        .name("remote-start".into())
+        .spawn_scoped(starts, move || {
+            let started = host.start(&client, request);
+            if let Err(
+                mpsc::TrySendError::Disconnected(Command::Handler(Event::Started {
+                    started: Ok(running),
+                    ..
+                }))
+                | mpsc::TrySendError::Full(Command::Handler(Event::Started {
+                    started: Ok(running), ..
+                })),
+            ) = sender.try_send(Command::Handler(Event::Started {
+                conn,
+                stream,
+                started,
+            })) {
+                (running.hangup)();
+            }
+        })
+        .map(|_| ())
+        .map_err(|e| Error::new(format!("a thread for the command's start: {e}")))
 }

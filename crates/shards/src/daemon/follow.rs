@@ -20,6 +20,7 @@ use shards_ipc::{ExitWatch, Poller};
 #[cfg(unix)]
 use shards_vmm::platform::{ExitWatch, Poller};
 
+use super::ends::End;
 use super::{Daemon, Inbox, Threads, lock, log};
 use crate::containers::{Disk, Removal};
 
@@ -42,12 +43,20 @@ enum Process {
     },
     /// A VM's network process: its VM's pid, whose ports are freed once both have ended,
     /// and whether that VM still runs; once it has ended, the VM, not yet reaped, so that
-    /// its pid names no new process before its ports are freed (review 2.25).
+    /// its pid names no new process before its ports are freed (review 2.25); and from then
+    /// on, when, and what the network process does since (D217's `Followed`), which each of
+    /// its deadlines looks at: none once it was ended for doing nothing. While its VM runs,
+    /// from its VM's word that it waits on it to close the run's ports (`UNPUBLISHING`) to
+    /// its answer (`PORTS_FREE`), what it does since (`unpublishing`). `due` is when its
+    /// look is next: a deadline before it, or with none, one left from a follow since ended.
     Net {
         child: Arc<shards_ipc::Child>,
         vm: u32,
         vm_running: bool,
         ended_vm: Option<Arc<shards_ipc::Child>>,
+        following: Option<(Instant, super::ends::Followed)>,
+        unpublishing: Option<Box<super::ends::Followed>>,
+        due: Option<Instant>,
         watch: Option<ExitWatch>,
     },
     /// A run's share process (D38), which ends as its VM's connections close: Unix's
@@ -66,7 +75,7 @@ pub(super) struct Followers {
     pub(super) runs: Mutex<HashMap<u64, Followed>>,
     /// Each process followed, by its token.
     processes: Mutex<HashMap<u64, Process>>,
-    /// When network processes whose VMs have gone are ended, and microVMs waiting to
+    /// When network processes whose VMs have gone are looked at, and microVMs waiting to
     /// restart start again, by their tokens.
     pub(super) deadlines: Mutex<BinaryHeap<Reverse<(Instant, u64)>>>,
     /// The microVMs waiting to restart, by their deadlines' tokens (restart.rs).
@@ -226,7 +235,7 @@ impl<D: Disk> Daemon<D> {
             let due = lock(&f.deadlines)
                 .peek()
                 .map(|Reverse((at, _))| at.saturating_duration_since(Instant::now()));
-            if let Err(e) = f.poller.wait(&mut ready, due) {
+            if let Err(e) = super::timed(due, || f.poller.wait(&mut ready, due)) {
                 log(format!("the followers' wait: {e}"));
                 return;
             }
@@ -265,9 +274,50 @@ impl<D: Disk> Daemon<D> {
                     self.restart_due(threads, &id);
                     continue;
                 }
-                // Its end follows, which frees its VM's ports.
-                if let Some(Process::Net { child, .. }) = lock(&f.processes).get(&token) {
-                    let _ = child.kill(shards_ipc::signal::SIGKILL);
+                // A network process whose VM has gone, or whose VM waits on it to close the
+                // run's ports: given another slice while it goes on with it (D217, PM M546),
+                // ended once it has run nothing and freed nothing for one. Its end follows,
+                // which frees its VM's ports, and ends its VM's wait.
+                let again = {
+                    let mut processes = lock(&f.processes);
+                    let Some(Process::Net {
+                        child,
+                        following,
+                        unpublishing,
+                        due,
+                        ..
+                    }) = processes.get_mut(&token)
+                    else {
+                        continue;
+                    };
+                    // One left from a follow since ended, or come before its look is due.
+                    if due.is_none_or(|at| now < at) {
+                        continue;
+                    }
+                    let goes_on = match unpublishing.as_mut() {
+                        Some(followed) => Some(followed.goes_on().is_some()),
+                        None => following
+                            .as_mut()
+                            .map(|(_, followed)| followed.goes_on().is_some()),
+                    };
+                    let next = match goes_on {
+                        Some(true) => self
+                            .ends
+                            .slice(End::Helper)
+                            .and_then(|slice| Instant::now().checked_add(slice)),
+                        Some(false) => {
+                            *following = None;
+                            *unpublishing = None;
+                            let _ = child.kill(shards_ipc::signal::SIGKILL);
+                            None
+                        }
+                        None => None,
+                    };
+                    *due = next;
+                    next
+                };
+                if let Some(at) = again {
+                    lock(&f.deadlines).push(Reverse((at, token)));
                 }
             }
         }
@@ -275,9 +325,9 @@ impl<D: Disk> Daemon<D> {
 
     /// Follows VM `vm`, and its network process `net`, to their ends on the followers'
     /// loop, rather than on a thread each (PM M90): each reaped as it ends, the VM taken
-    /// out of `pool` if it ends waiting there, its network process given
-    /// [`netproc::GRACE`](crate::netproc::GRACE) to follow it, and its ports freed once
-    /// both have gone. A process whose end cannot be watched (Linux before 5.3, or no
+    /// out of `pool` if it ends waiting there, its network process followed to its end as
+    /// [`netproc::reap`](crate::netproc::reap) follows one, and its ports freed once both
+    /// have gone. A process whose end cannot be watched (Linux before 5.3, or no
     /// descriptor to spare) is waited for on a thread of its own.
     pub(super) fn follow_vm<'s, 'e>(
         &'s self,
@@ -302,6 +352,9 @@ impl<D: Disk> Daemon<D> {
                         vm: vm.id(),
                         vm_running: true,
                         ended_vm: None,
+                        following: None,
+                        unpublishing: None,
+                        due: None,
                         watch: None,
                     },
                 );
@@ -359,8 +412,9 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// What follows process `token`'s end: a VM reaped, out of its pool if it ended
-    /// waiting there, its network process given its grace; a network process reaped, and
-    /// its VM's ports freed once the VM has gone too.
+    /// waiting there, its network process followed to its end; a network process reaped,
+    /// its end after its VM's kept as this host's (D217), and its VM's ports freed once the
+    /// VM has gone too.
     fn process_ended<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, token: u64) {
         let f = &self.followers;
         let Some(process) = lock(&f.processes).remove(&token) else {
@@ -396,14 +450,32 @@ impl<D: Disk> Daemon<D> {
                 };
                 let mut processes = lock(&f.processes);
                 if let Some(Process::Net {
-                    vm_running, ended_vm, ..
+                    child,
+                    vm_running,
+                    ended_vm,
+                    following,
+                    unpublishing,
+                    due,
+                    ..
                 }) = processes.get_mut(&net)
                 {
                     *vm_running = false;
                     *ended_vm = Some(vm);
+                    let now = Instant::now();
+                    *following = Some((now, super::ends::Followed::of(Some(child.id()))));
+                    *unpublishing = None;
+                    // A slice past what a clock holds, or none heard yet: its end alone,
+                    // which reaps it.
+                    let at = self
+                        .ends
+                        .slice(End::Helper)
+                        .and_then(|slice| now.checked_add(slice));
+                    *due = at;
                     drop(processes);
-                    lock(&f.deadlines).push(Reverse((Instant::now() + crate::netproc::GRACE, net)));
-                    f.wake();
+                    if let Some(at) = at {
+                        lock(&f.deadlines).push(Reverse((at, net)));
+                        f.wake();
+                    }
                 } else {
                     drop(processes);
                     self.free_ports(None, Some(pid));
@@ -415,9 +487,15 @@ impl<D: Disk> Daemon<D> {
                 vm,
                 vm_running,
                 ended_vm,
+                following,
                 ..
             } => {
                 let _ = child.wait();
+                if let Some((since, _)) = following
+                    && let Err(e) = self.ends.heard(End::Helper, since.elapsed())
+                {
+                    log(e);
+                }
                 if !vm_running {
                     self.free_ports(None, Some(vm));
                 }
@@ -427,6 +505,65 @@ impl<D: Disk> Daemon<D> {
             }
             Process::Share { child, .. } => {
                 let _ = child.wait();
+            }
+        }
+    }
+
+    /// VM `vm`'s word that it has asked its network process to close its run's ports and
+    /// waits on it (`UNPUBLISHING`): that process followed from now, as one whose VM has gone
+    /// is (D217's helper slice): looked at once a slice has passed, and each slice after while
+    /// it goes on, ended where it goes on with nothing for one, which ends its VM's wait. The
+    /// VM process, confined, sees nothing of its progress (ROOT's (A), 2026-11-13). A home
+    /// that has heard no helper's end yet has no slice: its liveness alone, as its VM's wait.
+    pub(super) fn follow_unpublish(&self, vm: u32) {
+        let f = &self.followers;
+        let mut processes = lock(&f.processes);
+        let Some((
+            token,
+            Process::Net {
+                child,
+                unpublishing,
+                due,
+                ..
+            },
+        )) = processes
+            .iter_mut()
+            .find(|(_, p)| matches!(p, Process::Net { vm: of, vm_running: true, .. } if *of == vm))
+        else {
+            return;
+        };
+        *unpublishing = Some(Box::new(super::ends::Followed::of(Some(child.id()))));
+        let at = self
+            .ends
+            .slice(End::Helper)
+            .and_then(|slice| Instant::now().checked_add(slice));
+        *due = at;
+        let token = *token;
+        drop(processes);
+        if let Some(at) = at {
+            lock(&f.deadlines).push(Reverse((at, token)));
+            f.wake();
+        }
+    }
+
+    /// VM `vm`'s network process answered its ports' closing (`PORTS_FREE`): followed no more
+    /// for it, its VM's wait over.
+    pub(super) fn unpublished(&self, vm: u32) {
+        let f = &self.followers;
+        let mut processes = lock(&f.processes);
+        for process in processes.values_mut() {
+            if let Process::Net {
+                vm: of,
+                unpublishing,
+                following,
+                due,
+                ..
+            } = process
+                && *of == vm
+                && unpublishing.take().is_some()
+                && following.is_none()
+            {
+                *due = None;
             }
         }
     }

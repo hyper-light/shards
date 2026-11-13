@@ -16,13 +16,25 @@ use crate::MAX_PAYLOAD;
 #[cfg(unix)]
 mod fifo;
 #[cfg(unix)]
-pub use fifo::{Client, Opened, Reader, Requests, Sender, Session, Slot, Stopper, served, take, unoffer};
+pub use fifo::{
+    Client, Opened, Reader, Requests, Sender, Session, Slot, Stopper, served, take, unoffer,
+    write_all_waiting,
+};
 #[cfg(windows)]
 mod named;
 #[cfg(windows)]
 pub use named::{
-    Client, Opened, Reader, Requests, Sender, Session, Slot, Stopper, read_frame_until, served, take, unoffer,
+    Client, Opened, Reader, Requests, Sender, Session, Slot, Stopper, read_frame_until, served, take,
+    unoffer, write_all_waiting,
 };
+
+/// A wait of [`write_all_waiting`]'s on a slot's client to make room: as it begins, and as it
+/// ends, how long it took.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wait {
+    Began(std::time::Instant),
+    Ended(std::time::Duration),
+}
 
 /// What carries a slot's messages, each way: a FIFO on Unix (`say`'s, `answer`'s); on
 /// Windows the slot's instance of its list's pipe, which carries both.
@@ -198,7 +210,7 @@ pub enum Requested {
     Asked(Asked),
     /// The client ended before it was whole.
     Gone,
-    /// Not whole by its deadline: the session, its client to let go of.
+    /// Nothing of its rest came within its stall: the session, its client to let go of.
     Late(Session),
     /// Its daemon ended its clients first: the session, for the daemon to answer.
     Ended(Session),
@@ -211,6 +223,10 @@ pub struct Asked {
     pub session: Session,
     pub fds: Vec<u8>,
     pub request: Frame,
+    /// Whether its client was waited on for its rest: a read found none of what was left
+    /// there, and waited for the client to write it. A rest there as it was read, as one
+    /// write puts a request whole (`Client::ask`), waited on no client (D185).
+    pub waited: bool,
 }
 
 /// What a client's ask for a slot came to.
@@ -264,6 +280,7 @@ mod tests {
                     session,
                     request,
                     fds: named,
+                    ..
                 } = asked(slot);
                 assert_eq!(
                     request,

@@ -103,6 +103,20 @@ pub(crate) fn demanding_registry() -> (CertificateDer<'static>, String, String, 
     )
 }
 
+/// A client of a test's whose server answers from a script, each answer the next request's:
+/// its waits follow their connections' liveness alone, as a path's that has shown nothing
+/// do (D222), so that no asking again past a run-out takes a scripted answer out of turn. A
+/// fresh path's k-th answer is the slowest it has shown with chance 1/k where its times are
+/// alike (Glick, "Breaking records and breaking boards", Amer. Math. Monthly 85(1), 1978),
+/// and runs out past its slowest; the waits' own tests use clients of their own.
+pub(crate) fn client() -> crate::http::Client {
+    crate::http::Client::new(
+        Box::new(|_| crate::tls::client_config(Vec::new(), None)),
+        "shards-test",
+    )
+    .following_liveness()
+}
+
 /// What the server does with a connection after a scripted response.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum After {
@@ -226,7 +240,8 @@ pub(crate) fn route(
                     }
                 }
                 let _closes = Closes(closer);
-                let _ = tcp.set_read_timeout(Some(Duration::from_secs(10)));
+                // Its reads wait as its client's connection lives: the client's end, or the
+                // server's drop, which shuts the connection down, ends each.
                 // A plain server asked for TLS answers as Go's net/http answers a request
                 // it cannot read, as a registry does (server.go, publicErr).
                 let mut first = [0u8; 1];
@@ -314,6 +329,25 @@ fn read_request(io: &mut Box<dyn Io>) -> io::Result<Vec<u8>> {
 mod tests {
     use super::*;
 
+    /// A scripted server waits for its client's next request as long as the client's
+    /// connection lives, its own drop the cancel: a second request on a kept connection, sent
+    /// 10.5 s after the first's answer, past the 10 s a read of the server's had before, is
+    /// answered (R03: the client's end or the server's drop ends its wait, no figure of the
+    /// tests').
+    #[test]
+    fn a_scripted_server_waits_for_its_client_as_long_as_it_lives() {
+        let ok = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec();
+        let server = serve(None, vec![(ok.clone(), After::Keep), (ok, After::Keep)]);
+        let mut kept = TcpStream::connect(("127.0.0.1", server.port)).unwrap();
+        let mut answer = [0u8; 38];
+        kept.write_all(b"GET / HTTP/1.1\r\n\r\n").unwrap();
+        kept.read_exact(&mut answer).unwrap();
+        std::thread::sleep(Duration::from_millis(10_500));
+        kept.write_all(b"GET / HTTP/1.1\r\n\r\n").unwrap();
+        kept.read_exact(&mut answer).unwrap();
+        assert!(answer.starts_with(b"HTTP/1.1 200 OK"), "{answer:?}");
+    }
+
     /// A server dropped is gone: its accept loop has returned and its listener closed, so
     /// its port refuses connections, and a connection it held is closed.
     #[test]
@@ -334,8 +368,7 @@ mod tests {
         // Not probed by connecting to its port again: the tests beside it are given freed
         // ports at once, so another's server may answer there. Its threads are joined, its
         // listener gone with its accept loop's; what is left to see is the connection it
-        // held, closed.
-        held.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        // held, closed: its end, read as the connection lives.
         assert_eq!(
             held.read(&mut [0u8; 1]).unwrap(),
             0,

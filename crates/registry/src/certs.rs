@@ -11,6 +11,11 @@
 //!   Windows.
 //!
 //! Each holds one directory per `host[:port]`; on Windows the colon is dropped.
+//!
+//! Where `SHARDS_CERTS_D` ([`CERTS_D`]) names a directory, that one alone is read, in their
+//! place, as `SHARDS_DAEMON_JSON` names the one daemon.json (registries.rs), and as there one
+//! named must be there: what shards is told of registries' certificates apart from the
+//! Docker on its machine. The tests name their own (tests/common, `as_tests_run`).
 
 use std::path::{Path, PathBuf};
 
@@ -32,6 +37,9 @@ pub struct Material {
     pub client: Option<ClientCertificate>,
 }
 
+/// The variable that names the one certs.d shards reads, in place of Docker's daemons'.
+pub const CERTS_D: &str = "SHARDS_CERTS_D";
+
 /// The material for `host` (`host[:port]`, as a reference names it).
 pub fn load(host: &str, env: Env<'_>) -> Result<Material, Error> {
     let name = if cfg!(windows) {
@@ -39,8 +47,24 @@ pub fn load(host: &str, env: Env<'_>) -> Result<Material, Error> {
     } else {
         host.to_string()
     };
+    let dirs = match env(CERTS_D).filter(|d| !d.is_empty()) {
+        Some(named) => {
+            let named = PathBuf::from(named);
+            match std::fs::metadata(&named) {
+                Ok(meta) if meta.is_dir() => vec![named],
+                Ok(_) => {
+                    return Err(Error::new(format!(
+                        "{}: not a directory ({CERTS_D})",
+                        named.display()
+                    )));
+                }
+                Err(e) => return Err(Error::from(e).context(named.display())),
+            }
+        }
+        None => dirs(env),
+    };
     let mut material = Material::default();
-    for dir in dirs(env) {
+    for dir in dirs {
         read(&dir.join(&name), &mut material)?;
     }
     Ok(material)
@@ -246,5 +270,30 @@ mod tests {
                 .roots
                 .is_empty()
         );
+    }
+
+    /// The directory `SHARDS_CERTS_D` names is read alone, Docker's beside it not at all,
+    /// however they are; one named and missing is an error naming it; an empty name names
+    /// none.
+    #[test]
+    fn the_certs_d_named_is_read_alone() {
+        let (home, mut env) = certs_d("named", "r.example", &[("client.key", "x")]);
+        let named = home.join("own");
+        std::fs::create_dir_all(&named).unwrap();
+        env.insert(CERTS_D.to_string(), named.to_string_lossy().into_owned());
+        let material = load("r.example", &|k| env.get(k).cloned()).unwrap();
+        assert!(material.roots.is_empty() && material.client.is_none());
+        let missing = home.join("missing");
+        env.insert(CERTS_D.to_string(), missing.to_string_lossy().into_owned());
+        let said = load("r.example", &|k| env.get(k).cloned())
+            .unwrap_err()
+            .to_string();
+        assert!(said.contains(&missing.display().to_string()), "{said}");
+        env.insert(CERTS_D.to_string(), String::new());
+        let said = load("r.example", &|k| env.get(k).cloned())
+            .unwrap_err()
+            .to_string();
+        assert!(said.contains("missing client certificate"), "{said}");
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

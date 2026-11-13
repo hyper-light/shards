@@ -3,18 +3,13 @@ use super::*;
 use std::sync::mpsc;
 
 #[cfg(windows)]
-use shards_afunix::UnixListener;
+use shards_afunix::{UnixListener, UnixStream};
 #[cfg(unix)]
-use std::os::unix::net::UnixListener;
+use std::os::unix::net::{UnixListener, UnixStream};
 
 fn identity(path: PathBuf) -> Identity {
     let pid = std::process::id();
-    #[cfg(unix)]
     let started = crate::taken::started(pid).unwrap();
-    #[cfg(windows)]
-    // SAFETY: current-process pseudo-handle stays valid and is never owned/closed here.
-    let started =
-        created_handle(unsafe { windows_sys::Win32::System::Threading::GetCurrentProcess() }).unwrap();
     Identity {
         pid,
         started,
@@ -32,6 +27,53 @@ fn request(stream: &mut impl io::Read, port: u32) {
 #[path = "contract.rs"]
 mod contract;
 
+/// A fixture for one attempt, at a socket of its own: its one dial accepted on a thread of
+/// its own and its CONNECT read, then `then` given the stream. [`Fixture::end`] dials it once
+/// more, which ends a fixture whose attempt never dialed, and joins it.
+struct Fixture {
+    dir: shards_testdir::TempDir,
+    server: std::thread::JoinHandle<()>,
+}
+
+impl Fixture {
+    fn new(name: &str, then: impl FnOnce(UnixStream) + Send + 'static) -> Fixture {
+        let dir = shards_testdir::TempDir::new(name).unwrap();
+        let listener = UnixListener::bind(dir.join("v")).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut peer, _) = listener.accept().unwrap();
+            let mut asked = [0; "CONNECT 1234\n".len()];
+            // A dial whose patience ran out before its CONNECT was whole, or the end's own.
+            if peer.read_exact(&mut asked).is_ok() && asked == *b"CONNECT 1234\n" {
+                then(peer);
+            }
+        });
+        Fixture { dir, server }
+    }
+
+    fn path(&self) -> PathBuf {
+        self.dir.join("v")
+    }
+
+    fn end(self) {
+        drop(UnixStream::connect(self.path()));
+        self.server.join().unwrap();
+    }
+}
+
+/// Whether a borrowed connect's patience ran out before its CONNECT was written: no read of
+/// its answer was reached.
+fn sooner(result: &Result<Box<dyn Stream>, Refusal>) -> bool {
+    matches!(
+        result,
+        Err(Refusal::Borrowed {
+            failure: BorrowFailure::Channel(HandshakeError::Expired {
+                phase: HandshakePhase::Dial | HandshakePhase::Write
+            }),
+            ..
+        })
+    )
+}
+
 #[test]
 fn changed_identity_is_rejected_before_dial() {
     let dir = shards_testdir::TempDir::new("nb-id").unwrap();
@@ -40,7 +82,7 @@ fn changed_identity_is_rejected_before_dial() {
     let mut id = identity(dir.join("v"));
     let observed = id.started;
     id.started = id.started.wrapping_add(1);
-    for patience in [Duration::ZERO, crate::conformance::UNSERVED_PATIENCE] {
+    for patience in [Duration::ZERO, crate::while_runs::unreached()] {
         let result = connect_borrowed(&id, 1234, patience);
         assert!(matches!(result, Err(Refusal::Process { pid, expected_started,
             failure: crate::ProcessFailure::DifferentStart { observed: actual } })
@@ -62,12 +104,8 @@ fn exact_bytes_clone_and_half_close() {
         assert_eq!(bytes, [0xff, 0, b'\n']);
         assert_eq!(peer.read(&mut [0; 1]).unwrap(), 0);
     });
-    let mut stream = connect_borrowed(
-        &identity(dir.join("v")),
-        u32::MAX,
-        crate::conformance::UNSERVED_PATIENCE,
-    )
-    .unwrap();
+    let mut stream =
+        connect_borrowed(&identity(dir.join("v")), u32::MAX, crate::while_runs::unreached()).unwrap();
     let mut bytes = [0; 3];
     stream.read_exact(&mut bytes).unwrap();
     assert_eq!(bytes, [0, 0xff, b'\n']);
@@ -79,62 +117,87 @@ fn exact_bytes_clone_and_half_close() {
     server.join().unwrap();
 }
 
+/// A reply its fixture withholds until released: the connect expires at its patience, in its
+/// read, before the release. Its patience is this host's own, one its dial and CONNECT fit in
+/// (`while_runs::until_reached`).
 #[test]
 fn withheld_reply_expires_before_fixture_release() {
-    let dir = shards_testdir::TempDir::new("nb-held").unwrap();
-    let listener = UnixListener::bind(dir.join("v")).unwrap();
-    let id = identity(dir.join("v"));
-    let (release, hold) = mpsc::sync_channel(1);
-    let server = std::thread::spawn(move || {
-        let (mut peer, _) = listener.accept().unwrap();
-        request(&mut peer, 1234);
-        hold.recv().unwrap();
+    use crate::while_runs::Reached;
+    let (result, release, fixture) = crate::while_runs::until_reached(|patience| {
+        let (release, hold) = mpsc::sync_channel::<()>(1);
+        let fixture = Fixture::new("nb-held", move |_peer| {
+            let _ = hold.recv();
+        });
+        let result = connect_borrowed(&identity(fixture.path()), 1234, patience);
+        if sooner(&result) {
+            drop(release);
+            fixture.end();
+            return Reached::Sooner;
+        }
+        Reached::Done((result, release, fixture))
     });
-    let (sent, answer) = mpsc::sync_channel(1);
-    let patience = crate::conformance::UNSERVED_PATIENCE;
-    let worker = std::thread::spawn(move || sent.send(connect_borrowed(&id, 1234, patience)).unwrap());
-    // Fixture-release watchdog only; the caller still receives exactly its original budget.
-    let result = answer.recv_timeout(patience.saturating_mul(2));
     release.send(()).unwrap();
-    server.join().unwrap();
-    worker.join().unwrap();
-    assert!(matches!(
-        result.unwrap(),
-        Err(Refusal::Borrowed {
-            failure: BorrowFailure::Channel(HandshakeError::Expired {
-                phase: HandshakePhase::Read
-            }),
-            ..
-        })
-    ));
+    fixture.end();
+    assert!(
+        matches!(
+            result,
+            Err(Refusal::Borrowed {
+                failure: BorrowFailure::Channel(HandshakeError::Expired {
+                    phase: HandshakePhase::Read
+                }),
+                ..
+            })
+        ),
+        "{:?}",
+        result.as_ref().err()
+    );
 }
 
+/// A reply dribbled a byte at a time does not renew the deadline: one byte each quarter of
+/// the patience (the reply's length less one), the whole reply past it, each byte well inside
+/// a patience a renewing read would restart. Its patience is this host's own, one its dial and
+/// CONNECT fit in (`while_runs::until_reached`): an attempt whose patience runs out in its
+/// dial is expired there, and asked again with more. Before, Windows' dial said the end of its
+/// patience as a failure of its own (`shards_afunix`'s TimedOut, `Io { phase: Dial }`), the one
+/// step of the handshake that did, so an attempt whose dial outlasted the first patience (the
+/// least wait its streams keep, `kept_wait`: WSAPoll's millisecond or more) was taken for its
+/// end (CI's aarch64 Windows job at f5c0c8b04 failed here, its assertion saying nothing of what
+/// came; each now says).
 #[test]
 fn dribbled_reply_does_not_renew_deadline() {
-    let dir = shards_testdir::TempDir::new("nb-drip").unwrap();
-    let listener = UnixListener::bind(dir.join("v")).unwrap();
-    let patience = crate::conformance::UNSERVED_PATIENCE;
-    let server = std::thread::spawn(move || {
-        let (mut peer, _) = listener.accept().unwrap();
-        request(&mut peer, 1234);
-        for byte in b"OK 7\n" {
-            std::thread::sleep(patience / 2);
-            if peer.write_all(&[*byte]).is_err() {
-                break;
+    use crate::while_runs::Reached;
+    const REPLY: &[u8] = b"OK 7\n";
+    let (result, fixture) = crate::while_runs::until_reached(|patience| {
+        let interval = patience / u32::try_from(REPLY.len() - 1).unwrap();
+        let fixture = Fixture::new("nb-drip", move |mut peer| {
+            for byte in REPLY {
+                std::thread::sleep(interval);
+                if peer.write_all(&[*byte]).is_err() {
+                    break;
+                }
             }
+        });
+        let result = connect_borrowed(&identity(fixture.path()), 1234, patience);
+        if sooner(&result) {
+            fixture.end();
+            return Reached::Sooner;
         }
+        Reached::Done((result, fixture))
     });
-    let result = connect_borrowed(&identity(dir.join("v")), 1234, patience);
-    server.join().unwrap();
-    assert!(matches!(
-        result,
-        Err(Refusal::Borrowed {
-            failure: BorrowFailure::Channel(HandshakeError::Expired {
-                phase: HandshakePhase::Read
-            }),
-            ..
-        })
-    ));
+    fixture.end();
+    assert!(
+        matches!(
+            result,
+            Err(Refusal::Borrowed {
+                failure: BorrowFailure::Channel(HandshakeError::Expired {
+                    phase: HandshakePhase::Read
+                }),
+                ..
+            })
+        ),
+        "{:?}",
+        result.as_ref().err()
+    );
 }
 
 #[test]
@@ -153,11 +216,7 @@ fn malformed_and_closed_replies_remain_typed() {
             request(&mut peer, 1234);
             peer.write_all(reply).unwrap();
         });
-        let result = connect_borrowed(
-            &identity(dir.join("v")),
-            1234,
-            crate::conformance::UNSERVED_PATIENCE,
-        );
+        let result = connect_borrowed(&identity(dir.join("v")), 1234, crate::while_runs::unreached());
         server.join().unwrap();
         assert!(matches!(
             result,
@@ -198,7 +257,7 @@ fn private_refcounts_are_bounded_by_retained_socket_storage() {
 #[test]
 fn raw_ready_operations_do_not_enter_the_normal_wait_path() {
     let (mut stream, mut peer) = crate::stream::pair().unwrap();
-    let patience = crate::conformance::UNSERVED_PATIENCE;
+    let patience = crate::while_runs::kept_wait();
     Stream::set_read_timeout(&stream, Some(patience)).unwrap();
     assert_eq!(
         stream.read_nowait(&mut [0; 1]).unwrap_err().kind(),

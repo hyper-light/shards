@@ -837,7 +837,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             ..Default::default()
         };
         let (status, out, said) = if kind == builtin::STAT {
-            match self.exec_quietly(&id, &spec, None, 1 << 16, super::TAKE_TIMEOUT) {
+            match self.exec_answered(&id, &spec, 1 << 16) {
                 Ok(q) => (q.status, q.output, Vec::new()),
                 Err(e) => return refuse(e.to_string()),
             }
@@ -1081,7 +1081,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             builtin: shards_abi::run::builtin::PROCESSES,
             ..Default::default()
         };
-        let quiet = match self.exec_quietly(id, &spec, None, top_limit(), super::TAKE_TIMEOUT) {
+        let quiet = match self.exec_answered(id, &spec, top_limit()) {
             Ok(q) if q.status == Some(0) && !q.more => q,
             Ok(_) => return Err(format!("{given}: its processes could not be read")),
             Err(e) => return Err(format!("{given}: reading its processes: {e}")),
@@ -1222,7 +1222,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         };
         let format = shards_cmdline::format::stats::format(source);
         loop {
-            std::thread::sleep(Duration::from_secs(1));
+            super::slept(Duration::from_secs(1));
             let (rows, measured) = sample();
             if !measured && parsed.bool("no-stream") && !resampled {
                 resampled = true;
@@ -1480,27 +1480,26 @@ impl<D: crate::containers::Disk> Daemon<D> {
             builtin: shards_abi::run::builtin::LISTENS,
             ..Default::default()
         };
-        let listening: Vec<(u16, String)> =
-            match self.exec_quietly(id, &spec, None, 1 << 16, crate::daemon::TAKE_TIMEOUT) {
-                Ok(quiet) if quiet.status == Some(0) => String::from_utf8_lossy(&quiet.output)
-                    .lines()
-                    .filter_map(|l| {
-                        let (proto, port) = l.split_once(' ')?;
-                        Some((port.parse().ok()?, proto.to_string()))
-                    })
-                    .collect(),
-                Ok(quiet) => {
-                    reply.err(&format!(
-                        "shards: what {id} listens on: {}",
-                        String::from_utf8_lossy(&quiet.output).trim()
-                    ));
-                    return 1;
-                }
-                Err(e) => {
-                    reply.err(&format!("shards: what {id} listens on: {e}"));
-                    return 1;
-                }
-            };
+        let listening: Vec<(u16, String)> = match self.exec_answered(id, &spec, 1 << 16) {
+            Ok(quiet) if quiet.status == Some(0) => String::from_utf8_lossy(&quiet.output)
+                .lines()
+                .filter_map(|l| {
+                    let (proto, port) = l.split_once(' ')?;
+                    Some((port.parse().ok()?, proto.to_string()))
+                })
+                .collect(),
+            Ok(quiet) => {
+                reply.err(&format!(
+                    "shards: what {id} listens on: {}",
+                    String::from_utf8_lossy(&quiet.output).trim()
+                ));
+                return 1;
+            }
+            Err(e) => {
+                reply.err(&format!("shards: what {id} listens on: {e}"));
+                return 1;
+            }
+        };
         // Its networks whose members are its peers.
         let peered: Vec<String> = {
             let registry = lock(&self.containers);
@@ -1725,7 +1724,9 @@ impl<D: crate::containers::Disk> Daemon<D> {
             lock(&inbox).guest_times.retain(|(n, _)| *n != number);
             return Err(format!("asking its microVM: {e}"));
         }
-        let answered = answer.recv_timeout(super::TAKE_TIMEOUT);
+        let answered = super::timed(Some(super::TAKE_TIMEOUT), || {
+            answer.recv_timeout(super::TAKE_TIMEOUT)
+        });
         if answered.is_err() {
             lock(&inbox).guest_times.retain(|(n, _)| *n != number);
         }
@@ -1776,10 +1777,11 @@ impl<D: crate::containers::Disk> Daemon<D> {
     }
 
     /// SIGKILL sent to the command of run `id` ([`signal`](Self::signal)): how long its
-    /// teardown is given before it is looked at (this host's slice, D217), and the teardown
-    /// followed from then on, in its microVM where that is its own. A SIGKILL that cannot
-    /// be sent leaves its guest nothing to end it by, nor to say its end on: no wait.
-    fn kill_command(&self, id: &str) -> (Duration, Followed) {
+    /// teardown is given before it is looked at (this host's slice, D217: none while this
+    /// home has heard no teardown, which is then followed by its liveness alone), and the
+    /// teardown followed from then on, in its microVM where that is its own. A SIGKILL that
+    /// cannot be sent leaves its guest nothing to end it by, nor to say its end on: no wait.
+    fn kill_command(&self, id: &str) -> (Option<Duration>, Followed) {
         let own = match lock(&self.runs).get(id) {
             Some(RunState::Tracked(t)) => t.joined.is_none().then(|| t.vm.id()),
             _ => None,
@@ -1788,7 +1790,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         let wait = if self.signal(id, 9) {
             self.ends.slice(End::Teardown)
         } else {
-            Duration::ZERO
+            Some(Duration::ZERO)
         };
         (wait, teardown)
     }
@@ -2059,7 +2061,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             // guest, and its VM is killed at once.
             let (phase, deadline, followed) = if linux == 9 {
                 let (wait, teardown) = self.kill_command(&id);
-                (Phase::Killed, after(wait), teardown)
+                (Phase::Killed, wait.and_then(after), teardown)
             } else if self.signal(&id, linux) {
                 (Phase::Signalled, grace.and_then(after), Followed::of(None))
             } else {
@@ -2107,7 +2109,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                         Phase::Signalled => {
                             let (wait, teardown) = self.kill_command(&e.id);
                             e.phase = Phase::Escalated;
-                            e.deadline = after(wait);
+                            e.deadline = wait.and_then(after);
                             (e.followed, e.since) = (teardown, Instant::now());
                         }
                         Phase::Killed | Phase::Escalated => {
@@ -2118,7 +2120,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                                     e.id,
                                     Duration::from_secs(e.since.elapsed().as_secs())
                                 ));
-                                e.deadline = after(self.ends.slice(End::Teardown));
+                                e.deadline = self.ends.slice(End::Teardown).and_then(after);
                                 i += 1;
                                 continue;
                             }
@@ -2130,7 +2132,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
                                         "container {}: its command not ended {:?} after it was signalled, its microVM gone on with nothing of its end for {:?}: its microVM killed",
                                         e.id,
                                         Duration::from_secs(e.since.elapsed().as_secs()),
-                                        self.ends.slice(End::Teardown)
+                                        // Its deadline came: the home has a slice.
+                                        self.ends.slice(End::Teardown).unwrap_or_default()
                                     ));
                                     if let Err(err) = t.vm.kill(shards_ipc::signal::SIGKILL) {
                                         super::log(format!("container {}: killing its microVM: {err}", e.id));
@@ -2145,7 +2148,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                             }
                             e.phase = Phase::VmKilled;
                             (e.followed, e.since) = (Followed::of(vm), Instant::now());
-                            e.deadline = after(self.ends.slice(End::Exit));
+                            e.deadline = self.ends.slice(End::Exit).and_then(after);
                         }
                         Phase::VmKilled => {
                             if let Some(look) = e.followed.goes_on() {
@@ -2155,7 +2158,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                                     e.id,
                                     Duration::from_secs(e.since.elapsed().as_secs())
                                 ));
-                                e.deadline = after(self.ends.slice(End::Exit));
+                                e.deadline = self.ends.slice(End::Exit).and_then(after);
                                 i += 1;
                                 continue;
                             }
@@ -2167,13 +2170,16 @@ impl<D: crate::containers::Disk> Daemon<D> {
                             let mut byte = [0u8; 1];
                             let ended = matches!((&gone.told).read(&mut byte), Ok(1));
                             if ended {
-                                self.ends.heard(End::Exit, gone.since.elapsed());
+                                if let Err(e) = self.ends.heard(End::Exit, gone.since.elapsed()) {
+                                    super::log(e);
+                                }
                             } else {
                                 super::log(format!(
                                     "microVM {}: no end heard {:?} after it was killed, its process gone on with nothing of its end for {:?}: {}",
                                     gone.id,
                                     Duration::from_secs(gone.since.elapsed().as_secs()),
-                                    self.ends.slice(End::Exit),
+                                    // Its deadline came: the home has a slice.
+                                    self.ends.slice(End::Exit).unwrap_or_default(),
                                     self.unheard(&gone.id)
                                 ));
                             }
@@ -2192,7 +2198,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 .filter_map(|e| e.deadline)
                 .min()
                 .map(|d| d.saturating_duration_since(Instant::now()));
-            if let Err(e) = poller.wait(&mut ready, timeout) {
+            if let Err(e) = super::timed(timeout, || poller.wait(&mut ready, timeout)) {
                 super::log(format!("waiting for containers' ends: {e}"));
                 // Nothing to wait on: what is left is given up, as its time would be.
                 for gone in going.drain(..) {
@@ -2214,11 +2220,14 @@ impl<D: crate::containers::Disk> Daemon<D> {
                     self.forget_waiter(&gone.id, gone.waiter);
                 }
                 // What this host's ends take, kept for the next (D217).
-                match gone.phase {
-                    _ if !ended => {}
+                let kept = match gone.phase {
+                    _ if !ended => Ok(()),
                     Phase::Killed | Phase::Escalated => self.ends.heard(End::Teardown, gone.since.elapsed()),
                     Phase::VmKilled => self.ends.heard(End::Exit, gone.since.elapsed()),
-                    Phase::Signalled => {}
+                    Phase::Signalled => Ok(()),
+                };
+                if let Err(e) = kept {
+                    super::log(e);
                 }
                 done(
                     gone.index,
@@ -2483,6 +2492,21 @@ impl<D: crate::containers::Disk> Daemon<D> {
         Ok(id)
     }
 
+    /// Stops run `id` as it stops (its own signal, then SIGKILL past its grace,
+    /// [`own_stop`](Self::own_stop)), for a failure of the daemon's own that leaves its run no
+    /// way on (managed.rs `capture_failed`, D258): once it runs, where it is still starting, as
+    /// `stop` stops one; nothing of one that has ended. Its restart is its policy's, as a run
+    /// that fails is.
+    pub(super) fn stop_for_failure(&self, id: &str) {
+        self.await_start(id);
+        if !self.running(id) {
+            return;
+        }
+        let (signal, grace) = self.own_stop(id);
+        let (linux, grace) = signal.map_or((9, None), |l| (l, grace));
+        self.end_all(vec![(0, id.to_owned(), linux, grace)], &mut |_, _, _| {});
+    }
+
     /// The stop microVM `id` asks for when nothing else is told, as dockerd reads it
     /// (moby daemon/stop.go, container.StopSignal and StopTimeout): its stop signal, else
     /// SIGTERM, `None` where Linux has no signal of its number; and how long its command
@@ -2737,7 +2761,9 @@ impl<D: crate::containers::Disk> Daemon<D> {
     /// the last N lines with `--tail`, of which those from `--since` on and to `--until`,
     /// each after its time with `-t`, and more as it comes until the microVM ends with
     /// `-f`. Lines carry no attributes here, so `--details` adds only the space that would
-    /// follow them (moby daemon/server/httputils/logstream/logstream.go).
+    /// follow them (moby daemon/server/httputils/logstream/logstream.go). Then its members'
+    /// that the daemon drained (D240), each line on stderr after its member's label, as a
+    /// client attached to the run is shown them, each member's log as the run's own is read.
     fn logs(&self, parsed: &Parsed, asker: &Asker, reply: &Reply<'_>) -> u8 {
         let Some(reference) = parsed.args.first() else {
             return 1;
@@ -2835,68 +2861,121 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 return 1;
             }
         };
-        let mut show = Show {
+        // Its members' kept lines (D240), each after its label on stderr, as a client attached
+        // to the run is shown them: after the run's own, each member's in its declared order.
+        let members = match super::managed::member_logs(&dir) {
+            Ok(members) => members,
+            Err(e) => {
+                reply.err(&format!("shards: {reference}: its members' logs: {e}"));
+                return 1;
+            }
+        };
+        // What the run's one log cap, shared by its command and its members, let go of each log
+        // (D240): said first, on stderr, each where it let some go.
+        let owners =
+            std::iter::once((None, &log)).chain(members.iter().map(|(label, log)| (Some(label), log)));
+        for (label, kept) in owners {
+            let whose = label.map_or_else(|| "its".to_string(), |label| format!("[{label}]'s"));
+            match super::managed::capped(kept.dir()) {
+                Ok(capped) if capped.segments > 0 => reply.err(&format!(
+                    "shards: {reference}: {whose} older output went to its run's one log cap, shared by its command and its members: {} bytes, {} segments",
+                    capped.bytes, capped.segments
+                )),
+                Ok(_) => {}
+                Err(e) => reply.err(&format!(
+                    "shards: {reference}: {whose} log cap's record: {e}"
+                )),
+            }
+        }
+        let show = |label: Option<&str>| Show {
             reply,
-            shown,
+            shown: shown.clone(),
             window,
             admitted: [Admit::Pass, Admit::Pass],
             stream: LOG_STDOUT,
             gathered: Vec::new(),
             unsent: None,
+            label: label.map(|l| format!("[{l}] ").into_bytes()),
         };
+        let mut followed: Vec<LogSource<'_, '_>> = std::iter::once((None, log))
+            .chain(members.into_iter().map(|(label, log)| (Some(label), log)))
+            .map(|(label, log)| LogSource {
+                show: show(label.as_deref()),
+                log,
+                reader: Reader::new(),
+                watch: None,
+                watched: None,
+                done: false,
+            })
+            .collect();
         // Without -f, what is there is all there is: a line in progress too.
         let ended = !follow || !self.running(&id);
         let read = (|| -> io::Result<()> {
-            let mut reader = match tail {
-                Some(n) => Reader::from(logs::tail(&log, n as u64, ended)?),
-                None => Reader::new(),
-            };
-            if !show.read(&mut reader, &log)? {
-                return Ok(());
+            for each in &mut followed {
+                if let Some(n) = tail {
+                    each.reader = Reader::from(logs::tail(&each.log, n as u64, ended)?);
+                }
             }
             if ended {
-                show.finish(&mut reader)?;
+                for each in &mut followed {
+                    if !each.read_to_end()? {
+                        return Ok(());
+                    }
+                }
                 return Ok(());
             }
-            // Followed as it grows: woken by an append to the segment it is read from, by
+            for each in &mut followed {
+                if !each.read()? {
+                    return Ok(());
+                }
+            }
+            // Followed as they grow: woken by an append to the segment each is read from, by
             // a segment's coming, by the run's end, or by the client's hanging up, not by
             // a timer (audit A12). Each watch comes before a read, so no append between
-            // them goes unseen. Where no watch can be had (on Linux, its user's inotify
-            // instances spent: PM M257), it reads again every UNWATCHED, as the listener looks,
-            // rather than end the follow.
-            let mut watch = shards_vmm::platform::FileWatch::new(log.dir()).ok();
-            let mut watched = None;
+            // them goes unseen. Where a log has no watch (on Linux, its user's inotify
+            // instances spent: PM M257), they are read again every UNWATCHED, as the listener
+            // looks, rather than end the follow.
+            for each in &mut followed {
+                each.watch = shards_vmm::platform::FileWatch::new(each.log.dir()).ok();
+            }
             let Some((number, end)) = self.wake_at_end(&id)? else {
-                if show.read(&mut reader, &log)? {
-                    show.finish(&mut reader)?;
+                for each in &mut followed {
+                    if !each.read_to_end()? {
+                        return Ok(());
+                    }
                 }
                 return Ok(());
             };
             // Its client waits long: it shuts no other out (review 7.9).
             self.waits_long(asker.client);
-            let followed = (|| -> io::Result<()> {
+            let outcome = (|| -> io::Result<()> {
                 loop {
-                    if !show.read(&mut reader, &log)? {
+                    let mut rewatched = false;
+                    for each in &mut followed {
+                        if !each.read()? {
+                            return Ok(());
+                        }
+                        rewatched |= each.rewatch()?;
+                    }
+                    // Each past `--until`: nothing more is shown.
+                    if followed.iter().all(|each| each.done) {
                         return Ok(());
                     }
-                    if let Some(segment) = reader.segment()
-                        && watched != Some(segment.seq())
-                        && let Some(watch) = watch.as_mut()
-                    {
-                        watch.file(segment.index())?;
-                        watched = Some(segment.seq());
+                    if rewatched {
                         continue;
                     }
-                    let ready = wait_readable(
-                        watch.as_ref(),
-                        &end,
-                        reply.0,
-                        watch.is_none().then_some(super::UNWATCHED),
-                    )?;
-                    // Once the microVM has ended, what is left of a line is all of it.
+                    let watches: Vec<&shards_vmm::platform::FileWatch> =
+                        followed.iter().filter_map(|each| each.watch.as_ref()).collect();
+                    let unwatched = followed.iter().any(|each| each.watch.is_none());
+                    let ready =
+                        wait_readable(&watches, &end, reply.0, unwatched.then_some(super::UNWATCHED))?;
+                    // Once the microVM has ended, what is left of a line is all of it; and
+                    // its members' logs are whole, its end told once they are (D240).
                     if ready[1] {
-                        if show.read(&mut reader, &log)? {
-                            show.finish(&mut reader)?;
+                        for each in &mut followed {
+                            if !each.read_to_end()? {
+                                return Ok(());
+                            }
                         }
                         return Ok(());
                     }
@@ -2904,15 +2983,17 @@ impl<D: crate::containers::Disk> Daemon<D> {
                     if ready[2] {
                         return Ok(());
                     }
-                    if let Some(watch) = &watch {
-                        watch.clear();
+                    for each in &followed {
+                        if let Some(watch) = &each.watch {
+                            watch.clear();
+                        }
                     }
                 }
             })();
             self.forget_waiter(&id, number);
-            followed
+            outcome
         })();
-        if let Some(e) = show.unsent {
+        if let Some(e) = followed.iter_mut().find_map(|each| each.show.unsent.take()) {
             return undelivered(&e, reply);
         }
         if let Err(e) = read {
@@ -2954,6 +3035,58 @@ struct Show<'r, 'a> {
     gathered: Vec<u8>,
     /// Why the client was not sent what it was to be, if it was not.
     unsent: Option<io::Error>,
+    /// A member's log's (D240): what goes before each of its lines, `[agent main] `, which
+    /// go to stderr, as a client attached to the run is shown them (drain.rs): each piece a
+    /// line, one cut short at its log's end ended.
+    label: Option<Vec<u8>>,
+}
+
+/// A log `logs` reads: its run's own, or one of its members' (D240), and how far its follow
+/// has come.
+struct LogSource<'r, 'a> {
+    show: Show<'r, 'a>,
+    log: LogFile,
+    reader: Reader,
+    watch: Option<shards_vmm::platform::FileWatch>,
+    /// The segment its watch watches.
+    watched: Option<u64>,
+    /// Its lines have passed `--until`: nothing more of it is shown.
+    done: bool,
+}
+
+impl LogSource<'_, '_> {
+    /// Shows what its log has whole: whether to go on, as long as its client takes what it
+    /// is sent.
+    fn read(&mut self) -> io::Result<bool> {
+        if !self.done && !self.show.read(&mut self.reader, &self.log)? {
+            self.done = true;
+        }
+        Ok(self.show.unsent.is_none())
+    }
+
+    /// [`read`](Self::read), and what is left of its unfinished lines: its log has ended, or
+    /// what is there is all there is.
+    fn read_to_end(&mut self) -> io::Result<bool> {
+        if !self.done && self.show.read(&mut self.reader, &self.log)? {
+            self.show.finish(&mut self.reader)?;
+        }
+        self.done = true;
+        Ok(self.show.unsent.is_none())
+    }
+
+    /// Watches the segment its reader reads, where its watch is of another: whether it does
+    /// now, and so must be read again before the follow waits.
+    fn rewatch(&mut self) -> io::Result<bool> {
+        if let Some(segment) = self.reader.segment()
+            && self.watched != Some(segment.seq())
+            && let Some(watch) = self.watch.as_mut()
+        {
+            watch.file(segment.index())?;
+            self.watched = Some(segment.seq());
+            return Ok(true);
+        }
+        Ok(false)
+    }
 }
 
 impl Show<'_, '_> {
@@ -2981,19 +3114,29 @@ impl Show<'_, '_> {
             Admit::Skip => Ok(true),
             Admit::Stop => Ok(false),
             Admit::Pass => {
-                if piece.stream != self.stream && !self.send() {
+                // A member's every piece is a line of its own, on stderr.
+                let labelled = self.label.is_some();
+                let stream = if labelled { LOG_STDERR } else { piece.stream };
+                if stream != self.stream && !self.send() {
                     return Ok(false);
                 }
-                self.stream = piece.stream;
-                if piece.first && self.shown.stamps {
+                self.stream = stream;
+                let starts = piece.first || labelled;
+                if starts && self.shown.stamps {
                     self.gathered.extend_from_slice(rfc3339_nano(piece.at).as_bytes());
                     self.gathered.push(b' ');
                 }
-                if piece.first && self.shown.details {
+                if starts && self.shown.details {
                     self.gathered.extend_from_slice(&self.shown.attributes);
                     self.gathered.push(b' ');
                 }
+                if let Some(label) = &self.label {
+                    self.gathered.extend_from_slice(label);
+                }
                 self.gathered.extend_from_slice(piece.bytes);
+                if labelled && piece.bytes.last() != Some(&b'\n') {
+                    self.gathered.push(b'\n');
+                }
                 Ok(self.gathered.len() < logs::CHUNK || self.send())
             }
         }
@@ -3135,6 +3278,7 @@ mod tests {
             stream: LOG_STDOUT,
             gathered: Vec::new(),
             unsent: None,
+            label: None,
         };
         fn piece(stream: u8, bytes: &[u8]) -> Piece<'_> {
             Piece {
@@ -3465,7 +3609,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             ..Default::default()
         };
         // A sample not taken is said in the daemon's log: the row shows it unmeasured.
-        let u = match self.exec_quietly(id, &spec, None, 1 << 12, super::TAKE_TIMEOUT) {
+        let u = match self.exec_answered(id, &spec, 1 << 12) {
             Ok(q) if q.status == Some(0) => Usage::parse(&String::from_utf8_lossy(&q.output)),
             Ok(q) => {
                 super::log(format!("container {id}: its stats: status {:?}", q.status));
@@ -3819,7 +3963,7 @@ impl Asker {
 
 /// The times `logs` shows lines between, as dockerd's log forwarder keeps them (moby
 /// daemon/logger/loggerutils/logfile.go, forwarder.Do), in nanoseconds since the epoch.
-#[derive(Default)]
+#[derive(Default, Clone, Copy)]
 struct Window {
     since: Option<i128>,
     until: Option<i128>,
@@ -3853,35 +3997,38 @@ impl Window {
     }
 }
 
-/// Waits, for `timeout` at most, until a follow has more to do: its log's `watch` has seen
-/// a change, the run has ended (`end`), or its `client` has said more or hung up; which
-/// have.
+/// Waits, for `timeout` at most, until a follow has more to do: one of its logs' `watches`
+/// has seen a change, the run has ended (`end`), or its `client` has said more or hung up;
+/// which have, the watches as one.
 #[cfg(unix)]
 pub(super) fn wait_readable(
-    watch: Option<&shards_vmm::platform::FileWatch>,
+    watches: &[&shards_vmm::platform::FileWatch],
     end: &UnixStream,
     client: &UnixStream,
     timeout: Option<Duration>,
 ) -> io::Result<[bool; 3]> {
     use std::os::fd::AsRawFd as _;
-    let fds = [
-        watch.map(shards_vmm::platform::FileWatch::fd),
-        Some(end.as_fd()),
-        Some(client.as_fd()),
-    ];
-    // One not given is no descriptor, which poll(2) passes over.
-    let mut polled = fds.map(|fd| libc::pollfd {
-        fd: fd.map_or(-1, |fd| fd.as_raw_fd()),
+    let mut polled = Vec::new();
+    polled
+        .try_reserve_exact(watches.len().saturating_add(2))
+        .map_err(io::Error::other)?;
+    let fds = watches
+        .iter()
+        .map(|watch| watch.fd())
+        .chain([end.as_fd(), client.as_fd()]);
+    polled.extend(fds.map(|fd| libc::pollfd {
+        fd: fd.as_raw_fd(),
         events: libc::POLLIN,
         revents: 0,
-    });
+    }));
+    let count = libc::nfds_t::try_from(polled.len()).map_err(io::Error::other)?;
     // Rounded up: a wait of 0 ms would return at once, and spin.
     let ms = timeout.map_or(-1, |t| {
         libc::c_int::try_from(t.as_micros().div_ceil(1000)).unwrap_or(libc::c_int::MAX)
     });
     loop {
-        // SAFETY: poll(2) on three pollfds of descriptors the caller holds open, or none.
-        let n = unsafe { libc::poll(polled.as_mut_ptr(), 3, ms) };
+        // SAFETY: poll(2) on `count` pollfds, of descriptors the caller holds open.
+        let n = unsafe { libc::poll(polled.as_mut_ptr(), count, ms) };
         if n >= 0 {
             break;
         }
@@ -3890,26 +4037,27 @@ pub(super) fn wait_readable(
             return Err(e);
         }
     }
-    Ok(polled.map(|p| p.revents != 0))
+    let (watched, streams) = polled.split_at(watches.len());
+    let ready = |at: usize| streams.get(at).is_some_and(|p| p.revents != 0);
+    Ok([watched.iter().any(|p| p.revents != 0), ready(0), ready(1)])
 }
 
-/// Waits, for `timeout` at most, until a follow has more to do, as Unix's does: the watch's
+/// Waits, for `timeout` at most, until a follow has more to do, as Unix's does: a watch's
 /// event, and the streams by reads of no bytes (`shards_ipc::await_any`).
 #[cfg(windows)]
 pub(super) fn wait_readable(
-    watch: Option<&shards_vmm::platform::FileWatch>,
+    watches: &[&shards_vmm::platform::FileWatch],
     end: &UnixStream,
     client: &UnixStream,
     timeout: Option<Duration>,
 ) -> io::Result<[bool; 3]> {
     let deadline = timeout.and_then(|t| Instant::now().checked_add(t));
-    let events: Vec<_> = watch
-        .map(shards_vmm::platform::FileWatch::fd)
-        .into_iter()
-        .collect();
-    let (streams, signalled) = shards_ipc::await_any(&[end, client], &events, deadline)?;
+    let events: Vec<_> = watches.iter().map(|watch| watch.fd()).collect();
+    let (streams, signalled) = super::timed(timeout, || {
+        shards_ipc::await_any(&[end, client], &events, deadline)
+    })?;
     Ok([
-        signalled.first().copied().unwrap_or(false),
+        signalled.iter().any(|&s| s),
         streams.first().copied().unwrap_or(false),
         streams.get(1).copied().unwrap_or(false),
     ])

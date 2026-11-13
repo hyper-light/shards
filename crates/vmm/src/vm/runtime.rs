@@ -353,14 +353,16 @@ impl Handle {
         }
     }
 
-    /// Holds its vCPUs together to `cpus` CPUs' time of the host's each period, its run's
-    /// limit (D191), whatever its guest does with its own cgroups; 0, or as many CPUs as
-    /// it has vCPUs, lets them be. Its governor's thread is made with the first limit.
-    pub fn hold_cpus(&self, cpus: u32) -> Result<(), String> {
+    /// Holds its vCPUs together to `milli` milli-CPU of the host's time each period
+    /// ([`MILLI_PER_CPU`](super::MILLI_PER_CPU) a whole CPU's), its run's limit (D191) or
+    /// its orchestrator's rate (D247), whatever its guest does with its own cgroups; 0, or
+    /// every vCPU's whole CPU, lets them be. Returns what it holds them to, none where it
+    /// lets them be. Its governor's thread is made with the first limit.
+    pub fn hold_rate(&self, milli: u64) -> Result<Option<std::num::NonZeroU64>, String> {
         let sh = &self.shared;
-        sh.hold.set(cpus);
-        if cpus == 0 {
-            return Ok(());
+        let held = sh.hold.set(milli);
+        if held.is_none() {
+            return Ok(None);
         }
         let mut governor = lock(&sh.governor);
         // Under the lock the teardown takes it by, once the machine stops: none is made
@@ -373,7 +375,7 @@ impl Handle {
                 .map_err(|e| format!("starting the hold on its vCPUs: {e}"))?;
             *governor = Some(made);
         }
-        Ok(())
+        Ok(held)
     }
 
     /// Holds its vCPUs by their group's CPU budget too (D183, slice 3), `group`, which
@@ -1665,9 +1667,9 @@ fn vcpu_thread(
 }
 
 /// How vCPU `vcpu`'s guest time is read, from any thread: its hypervisor's clock.
-fn guest_clock(vcpu: &hv::Vcpu) -> Result<guest_time::Read, String> {
-    let clock = vcpu.guest_clock().map_err(|e| e.to_string())?;
-    Ok(Box::new(move || clock.read().map_err(|e| e.to_string())))
+fn guest_clock(vcpu: &hv::Vcpu) -> guest_time::Read {
+    let clock = vcpu.guest_clock();
+    Box::new(move || clock.read())
 }
 
 /// Writes the snapshot the guest asks for, once every vCPU has parked.

@@ -14,8 +14,12 @@ bytes = "1"
 # quinn-proto 0.11.18 and rustls 0.23.45 (D180). Without its qlog traces, whose crate turns on
 # serde_json's `preserve_order` for the whole build: shards' JSON is Docker's, its maps sorted
 # (hyper-quic's VENDORED.md §20).
-# RPK certificate-type policy: hyper-tls VENDORED.md §10.
-hyper-quic = { git = "https://github.com/hyper-light/hyper-raft", rev = "233b7fcef7a363327c5439b191724a38065062cd", default-features = false }
+# hyper-raft's branch p/q35-handshake-progress-v1, main once its consumers' suites pass: the
+# negotiated idle timeout read by patch Q34 (hyper-quic VENDORED.md §50), and a handshake's
+# progress by patch Q35 (§51).
+# No certificate compression on a raw public key's link: shards' own TLS configs offer and use
+# none (tls.rs, `tls_client`/`tls_server`).
+hyper-quic = { git = "https://github.com/hyper-light/hyper-raft", rev = "e0613f524b0df198cc61dc1e82b33c22d604cf7b", default-features = false }
 sha2 = "0.11"
 # A file of its user's alone wherever it is: an identity's, an invitation's.
 shards-ipc = { path = "../ipc" }

@@ -17,13 +17,14 @@
 
 mod common;
 
+use std::collections::HashMap;
 use std::ffi::OsStr;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use common::{Patience, Run, TempDir, Told, cannot_run_vms, guest_init, kernel, run_shards_env, served};
-
-const TIMEOUT: Duration = Duration::from_secs(600);
+use shards_api::{Found, Judge, Record, Seen, Stall};
 
 fn shards_in(home: &Path, args: &[&str]) -> Run {
     shards_with(home, args, &[])
@@ -40,7 +41,7 @@ fn shards_with(home: &Path, args: &[&str], more: &[(&str, &OsStr)]) -> Run {
         ("SHARDS_INIT", init.as_os_str()),
     ];
     env.extend_from_slice(more);
-    run_shards_env(&[], args, &env, TIMEOUT)
+    run_shards_env(&[], args, &env)
 }
 
 /// A home whose daemon runs, the test image pulled into it.
@@ -73,14 +74,16 @@ fn prov(home: &Path, image: &str, run: &[&str]) {
 }
 
 /// Waits until `prov`'s engine answers.
+#[track_caller]
 fn answering(home: &Path) {
-    let mut patience = Patience::of(home, TIMEOUT);
+    let mut patience = Patience::of(home);
     loop {
         let out = shards_in(
             home,
             &["exec", "prov", "/bin/testguest", "api", "GET", "/_ping", ""],
         );
         if out.status == Some(0) && out.stdout == "api HTTP/1.1 200 OK\nOK" {
+            patience.done();
             return;
         }
         assert!(patience.holds(), "its engine never answered: {out}");
@@ -235,7 +238,11 @@ struct Rings {
 }
 
 fn rings(home: &Path) -> Rings {
-    let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
+    rings_of(&std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default())
+}
+
+/// The device's word of its rings in a daemon's log `log`.
+fn rings_of(log: &str) -> Rings {
     let bytes = |line: &str, before: &str| -> u64 {
         line.split(before)
             .next()
@@ -285,32 +292,209 @@ fn pinned(home: &Path, name: &str) -> u64 {
     value("nr_foll_pin_acquired").saturating_sub(value("nr_foll_pin_released"))
 }
 
-/// Waits until `name`'s guest pins `want` pages again: the relay unpins a slot once it has heard
-/// its device let go and passed on what the slot held, which a reading after a stream's end may
-/// come before. A slot never freed keeps its pages pinned: the test fails at its own deadline,
-/// `TIMEOUT`, saying `what`.
-fn settled(home: &Path, name: &str, want: u64, what: &str) {
-    let start = std::time::Instant::now();
-    loop {
-        let now = pinned(home, name);
-        if now == want {
-            return;
+/// The work whose slots a settle waits for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Work {
+    /// The setup's: the engine calls that made `emitter`, a connection at a time, and its
+    /// wait.
+    Setup,
+    /// The streams': as many at once as the microVM has vCPUs, then twice that.
+    Streams,
+}
+
+impl std::fmt::Display for Work {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Work::Setup => "the setup's slots",
+            Work::Streams => "every stream's slot",
+        })
+    }
+}
+
+/// A settle's kind: its work at its microVM's vCPU count. The release it waits for is as
+/// large as the slots its work leaves the relay to free once the device has let go of every
+/// ring, and as quick as the vCPUs that run the relay's streams free them, and the work and
+/// the microVM's size set both. So one kind's answers say nothing of another's: at
+/// dc7f45bc6 on HVF (ROOT's run) the streams' slots of 1 and 2 vCPUs were freed within as
+/// long as their streams took, and 21 pages of 18 vCPUs' were still pinned 207 ms into their
+/// settle, where their streams had taken 177 ms.
+type SettleKind = (Work, usize);
+
+/// What this test has seen of its settles: each kind's record apart (D215's records,
+/// shared), in its memory alone, none until that kind's first answer (the person's ruling
+/// of 2026-11-13: no record seeds).
+#[derive(Default)]
+struct Settles {
+    records: HashMap<SettleKind, Record>,
+}
+
+impl Settles {
+    /// A settle of `kind` beginning now, which waits for its guest's pins to come to `want`;
+    /// `work` how long the work it follows took, to the reading of the device's word that it
+    /// let go of every ring, for its report alone. That time was its bound before (a2c887eeb):
+    /// a seed of no answer of the kind's own, which refused 18 vCPUs on HVF at dc7f45bc6.
+    fn begin(&mut self, kind: SettleKind, want: u64, work: Duration) -> Settle<'_> {
+        let record: &Record = self.records.entry(kind).or_default();
+        Settle {
+            judge: Judge::begin(record),
+            record,
+            kind,
+            want,
+            work,
+            began: Instant::now(),
+            lowest: u64::MAX,
+            judged: None,
         }
-        assert!(
-            start.elapsed() < TIMEOUT,
-            "{what}: {now} pages pinned after {TIMEOUT:?}, not {want}"
-        );
-        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// A settle under way: it looks at its guest's pinned pages until they come to its count,
+/// judged by its kind's record (D215's judge, shared), as the person ruled on 2026-11-13: the
+/// cold start, and every wait after a run-out, follows the party's liveness and progress;
+/// after that the bound is the slowest answer seen; no x2.
+/// - Of a kind not yet seen, it follows its microVM's liveness alone: each look is an exec its
+///   microVM answers, and one it does not answer fails the test. Its progress is told as it
+///   comes ([`settled`]).
+/// - Of a kind seen, its judge looks once each W* past the look before, W* the slowest settle
+///   of its kind seen, and refuses it where no slot was freed since ([`Stalled`]). Past W*
+///   with slots still freed it goes on, and its answer raises W*.
+/// - Its gap: a slot never freed while its microVM lives is refused by no settle of a kind
+///   not yet seen. Its looks go on, paced, with what it has come to told.
+/// - A look reads no hold of its host's on the microVM (shards-api reads that within its own
+///   followers), so a host that held the relay's vCPUs for a whole W* would refuse one of a
+///   kind seen.
+struct Settle<'a> {
+    judge: Judge<'a>,
+    record: &'a Record,
+    kind: SettleKind,
+    want: u64,
+    work: Duration,
+    began: Instant,
+    /// The fewest pages a look has found pinned, and the fewest as its judge last looked:
+    /// none before its first look, which is its baseline.
+    lowest: u64,
+    judged: Option<u64>,
+}
+
+impl Settle<'_> {
+    /// A look found `pins` pages pinned: true where they are its count, which teaches its
+    /// kind the time since it began; refused where its judge's look is due and no slot was
+    /// freed since the last.
+    fn looked(&mut self, pins: u64) -> Result<bool, Stalled> {
+        if pins == self.want {
+            // Its microVM's CPU is not read here: R*, which only a refusal reports, is none.
+            self.judge.answered(Duration::ZERO);
+            return Ok(true);
+        }
+        self.lowest = self.lowest.min(pins);
+        let judged = *self.judged.get_or_insert(self.lowest);
+        if self.judge.due().is_some_and(|due| Instant::now() >= due) {
+            let found = if self.lowest < judged {
+                Found::Progressed
+            } else {
+                Found::Still
+            };
+            self.judged = Some(self.lowest);
+            self.judge.found(found).map_err(|stall| Stalled {
+                now: pins,
+                want: self.want,
+                stall,
+            })?;
+        }
+        Ok(false)
+    }
+
+    /// How long to wait before its next look, `look` the one it just made (an exec into its
+    /// microVM): D215's `sqrt(2 c w)` of that look's cost and the wait so far, at most until
+    /// its judge's next look. A few looks early and fewer as the wait grows.
+    fn pause(&self, look: Duration) -> Duration {
+        let left = self
+            .judge
+            .due()
+            .map_or(Duration::MAX, |due| due.saturating_duration_since(Instant::now()));
+        shards_api::pause(look, self.began.elapsed(), left)
+    }
+
+    /// What it has come to, `pins` pages pinned now.
+    fn progress(&self, pins: u64) -> String {
+        let (work, cpus) = self.kind;
+        let seen = match self.record.seen() {
+            Seen::Cold => "its kind not yet seen: followed while its microVM answers".to_string(),
+            Seen::Learned { slowest, .. } => format!("the slowest settle of its kind seen {slowest:?}"),
+        };
+        format!(
+            "{cpus} vCPUs: {work}: {pins} pages pinned, not {}, {:?} into its settle (its work took {:?}); {seen}",
+            self.want,
+            self.began.elapsed(),
+            self.work
+        )
+    }
+}
+
+/// A settle refused: no slot freed over a whole W*, the slowest settle of its kind seen,
+/// since its judge's look before.
+#[derive(Debug, PartialEq, Eq)]
+struct Stalled {
+    /// Pages pinned at the look that refused it, and the count it waits for.
+    now: u64,
+    want: u64,
+    stall: Stall,
+}
+
+impl std::fmt::Display for Stalled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} pages pinned, not {}, after {:?}: none released over the last {:?}, the slowest settle of its kind seen {:?}",
+            self.now,
+            self.want,
+            self.stall.waited(),
+            self.stall.over(),
+            self.stall.slowest()
+        )
+    }
+}
+
+/// Waits until `name`'s guest pins `want` pages again, its relay having freed the slots of
+/// `kind`'s work, which took `work` to the device's word that it let go of every ring. The
+/// relay frees a slot once it has heard its device let go and has passed on what the slot
+/// held, which a reading after that word may come before ([`Settle`]). How long it took.
+fn settled(
+    settles: &mut Settles,
+    home: &Path,
+    name: &str,
+    want: u64,
+    kind: SettleKind,
+    work: Duration,
+) -> Result<Duration, Stalled> {
+    let mut settle = settles.begin(kind, want, work);
+    let mut told: Option<u64> = None;
+    loop {
+        let look = Instant::now();
+        let now = pinned(home, name);
+        if settle.looked(now)? {
+            return Ok(settle.began.elapsed());
+        }
+        // Told as it comes, straight to stderr, which libtest does not hold back: its first
+        // look short of its count, and each after it that finds a slot freed. Its home is
+        // named, where a settle that goes on can be looked into as it does.
+        if told.is_none_or(|t| now < t) {
+            told = Some(now);
+            let _ = writeln!(std::io::stderr(), "{} ({})", settle.progress(now), home.display());
+        }
+        std::thread::sleep(settle.pause(look.elapsed()));
     }
 }
 
 /// Waits until `ready` holds of the device's word.
+#[track_caller]
 fn await_rings(home: &Path, what: &str, ready: impl Fn(&Rings) -> bool) {
-    let mut patience = Patience::of(home, TIMEOUT);
+    let mut patience = Patience::of(home);
     while !ready(&rings(home)) {
         assert!(patience.holds(), "{what}: {:?}", rings(home));
         std::thread::sleep(Duration::from_millis(50));
     }
+    patience.done();
 }
 
 /// vCPU counts a microVM is run with: one, two and every CPU of the host (D230's V > 1).
@@ -326,6 +510,14 @@ fn vcpus() -> Vec<usize> {
 /// made alone, and neither `GET /events` nor calls on `prov` itself (engine/scope.rs, which
 /// answers them 501 and 404 and closes); a wait writes its head at once and nothing after it
 /// until its joiner ends. The connection ends as `prov.idle` is removed.
+///
+/// It returns once the device has said the ring attached, a word its log keeps
+/// ([`held_attached`]). That the ring is attached still is no such word: an idle slot goes at
+/// whatever asks for it (a give-back, a room told short). At f5c0c8b04 a give-back for its CI
+/// runner's own memory pressure let it go 31 ms after it attached, between two of this wait's
+/// looks, and the wait, looking for it attached still, waited on for a state already gone
+/// (CI run 43435318858, x86_64-unknown-linux-gnu). What asks for the slot is its caller's to
+/// hold to its own word.
 fn held_open(home: &Path, image: &str) -> std::thread::JoinHandle<Run> {
     answering(home);
     joiner(home, image, "idle", r#""sleep""#);
@@ -349,10 +541,27 @@ fn held_open(home: &Path, image: &str) -> std::thread::JoinHandle<Run> {
             )
         }
     });
-    await_rings(home, "the held connection's ring", |r| {
-        r.attached > before && r.attached > r.let_go
-    });
+    await_rings(home, "the held connection's ring", |r| held_attached(r, before));
     held
+}
+
+/// Whether the held connection's ring has attached, the `before` rings attached before it
+/// each let go: the device's word that it did, which its log keeps whatever came of the ring
+/// since.
+fn held_attached(r: &Rings, before: u64) -> bool {
+    r.attached > before
+}
+
+/// The device's word, as its caller begins to ask for the held connection's slot, that
+/// nothing asked for it before: its ring is attached still. Once let go a ring stays let go,
+/// so a ring found attached here was attached all along.
+fn held_still(home: &Path) -> Rings {
+    let r = rings(home);
+    assert!(
+        r.let_go < r.attached,
+        "the held connection's ring let go before anything was asked of it: {r:?}"
+    );
+    r
 }
 
 /// As many engine streams at once as `prov`'s microVM has vCPUs (`cpus`), then twice that,
@@ -388,7 +597,8 @@ fn streams(home: &Path, cpus: usize, bytes: &str) -> Vec<Run> {
 /// nothing pins the pages the same run without the engine's socket (no relay at all) pins;
 /// then as many engine streams at once as it has vCPUs, and twice that, each byte-checked;
 /// once they end, every ring the device attached it has let go, bytes for bytes, and the
-/// guest's pinned pages come back to what they were idle, exactly.
+/// guest's pinned pages come back to what they were idle, exactly ([`Settle`]: each size's
+/// settles are kinds of their own).
 #[test]
 fn an_idle_microvm_pins_nothing_and_each_streams_pins_go_as_it_ends() {
     if cannot_run_vms() {
@@ -396,6 +606,7 @@ fn an_idle_microvm_pins_nothing_and_each_streams_pins_go_as_it_ends() {
     }
     let (image, _) = served();
     let bytes = (4u64 << 20).to_string();
+    let mut settles = Settles::default();
     for cpus in vcpus() {
         let home = TempDir::new(&format!("eng-pins-{cpus}"));
         let debug: [(&str, &OsStr); 1] = [("SHARDS_LOG", "debug".as_ref())];
@@ -415,16 +626,15 @@ fn an_idle_microvm_pins_nothing_and_each_streams_pins_go_as_it_ends() {
             "{cpus} vCPUs: an idle engine's microVM pins pages its run without the socket does not"
         );
         assert_eq!(rings(&home).attached, 0, "{cpus} vCPUs: a ring before any stream");
+        let began = Instant::now();
         emitter(&home, &image, 4 << 20);
         await_rings(&home, "the setup's rings let go", |r| {
             r.attached > 0 && r.let_go == r.attached
         });
-        settled(
-            &home,
-            "prov",
-            idle,
-            &format!("{cpus} vCPUs: the setup's slots freed"),
-        );
+        let (kind, work) = ((Work::Setup, cpus), began.elapsed());
+        let setup = settled(&mut settles, &home, "prov", idle, kind, work)
+            .unwrap_or_else(|stalled| panic!("{cpus} vCPUs: {} freed: {stalled}", kind.0));
+        let began = Instant::now();
         for (said, at_once) in streams(&home, cpus, &bytes).iter().zip([cpus, 2 * cpus]) {
             assert_eq!(said.status, Some(0), "{said}");
             assert_eq!(said.stdout.trim(), format!("streams {at_once} {bytes}"), "{said}");
@@ -432,14 +642,11 @@ fn an_idle_microvm_pins_nothing_and_each_streams_pins_go_as_it_ends() {
         await_rings(&home, "every stream's ring let go", |r| r.let_go == r.attached);
         let r = rings(&home);
         assert_eq!(r.unpinned, r.pinned, "{cpus} vCPUs: {r:?}");
-        settled(
-            &home,
-            "prov",
-            idle,
-            &format!("{cpus} vCPUs: every stream's slot freed"),
-        );
+        let (kind, took) = ((Work::Streams, cpus), began.elapsed());
+        let freed = settled(&mut settles, &home, "prov", idle, kind, took)
+            .unwrap_or_else(|stalled| panic!("{cpus} vCPUs: {} freed: {stalled}", kind.0));
         eprintln!(
-            "{cpus} vCPUs: {} rings attached and let go, {} bytes pinned and unpinned; {idle} pages pinned again",
+            "{cpus} vCPUs: {} rings attached and let go, {} bytes pinned and unpinned; {idle} pages pinned again: the setup's slots {setup:?} into their settle (it took {work:?}), the streams' {freed:?} into theirs (they took {took:?})",
             r.attached, r.pinned
         );
         let removed = shards_in(&home, &["rm", "-f", "prov", "bare"]);
@@ -468,7 +675,9 @@ fn a_give_back_lets_an_idle_slot_go() {
     assert_eq!(pulled.status, Some(0), "{pulled}");
     prov(&home, &image, &[]);
     let held = held_open(&home, &image);
-    let before = rings(&home);
+    // Nothing has asked for its slot: its host's word comes through `told` alone, and no
+    // budget holds its run.
+    let before = held_still(&home);
     // The host's word: short of memory.
     told.say();
     await_rings(&home, "the idle slot given back", |r| {
@@ -558,14 +767,16 @@ impl Budget {
 
     /// What its runs hold now, its `memory.current`: waited for where the daemon has yet
     /// to write it (a group's, each pressure window).
+    #[track_caller]
     fn held(&self, home: &Path) -> u64 {
-        let mut patience = Patience::of(home, TIMEOUT);
+        let mut patience = Patience::of(home);
         loop {
             let read = std::fs::read_to_string(self.dir.join("memory.current"))
                 .ok()
                 .and_then(|t| t.trim().parse::<u64>().ok())
                 .filter(|&bytes| bytes > 0);
             if let Some(bytes) = read {
+                patience.done();
                 return bytes;
             }
             assert!(patience.holds(), "{}: no memory.current", self.dir.display());
@@ -629,13 +840,21 @@ fn a_shrinking_room_lets_an_idle_slot_go_and_a_stream_past_it_goes_plain() {
             return;
         }
     };
-    let debug: [(&str, &OsStr); 1] = [("SHARDS_LOG", "debug".as_ref())];
-    let pulled = shards_with(&home, &["pull", "-q", &image], &debug);
+    // Its host's word through a pipe never said: a host short of memory has every idle slot
+    // given back (D188, D230), the held one among them, which its CI runner's own pressure
+    // took before its room shrank at f5c0c8b04. Here the room alone asks for it, as `told`
+    // alone does in the give-back test.
+    let told = Told::new(&home);
+    let more: [(&str, &OsStr); 2] = [
+        ("SHARDS_LOG", "debug".as_ref()),
+        ("SHARDS_PRESSURE", told.path.as_os_str()),
+    ];
+    let pulled = shards_with(&home, &["pull", "-q", &image], &more);
     assert_eq!(pulled.status, Some(0), "{pulled}");
     // Its budget made by the run, with none set yet: room for a slot.
     prov(&home, &image, &["--cgroup-parent", &budget.parent]);
     let held = held_open(&home, &image);
-    let before = rings(&home);
+    let before = held_still(&home);
     // The budget brought down to what its run holds: no room past it.
     budget.hold_to(budget.held(&home));
     await_rings(&home, "the idle slot let go for the room", |r| {
@@ -649,4 +868,162 @@ fn a_shrinking_room_lets_an_idle_slot_go_and_a_stream_past_it_goes_plain() {
     let removed = shards_in(&home, &["rm", "-f", "prov.idle", "prov"]);
     assert_eq!(removed.status, Some(0), "{removed}");
     let _ = held.join();
+}
+
+/// A settle of a size not yet seen follows its microVM's liveness, whatever other kinds
+/// answered (no VM: the settle fed the looks of ROOT's HVF run at dc7f45bc6). There the
+/// setup's slots of 18 vCPUs and the streams' of 1 and 2 were freed as they went, and then
+/// the streams' of 18 still held 21 pages 207 ms into their settle: its window, the 177 ms
+/// their streams took (a2c887eeb), refused it there. Here it is looked at past both, never
+/// refused, and its answer, when it comes, teaches its kind alone.
+#[test]
+fn a_settle_of_a_size_not_yet_seen_follows_its_liveness_whatever_other_kinds_answered() {
+    let ms = Duration::from_millis;
+    let mut settles = Settles::default();
+    let others = [
+        ((Work::Setup, 18), 3),
+        ((Work::Streams, 1), 6),
+        ((Work::Streams, 2), 12),
+    ];
+    for (kind, pins) in others {
+        let mut settle = settles.begin(kind, 0, ms(60));
+        assert_eq!(settle.looked(pins), Ok(false), "{kind:?}");
+        std::thread::sleep(ms(5));
+        assert_eq!(settle.looked(0), Ok(true), "{kind:?}");
+    }
+    let taught = |settles: &Settles| others.map(|(kind, _)| settles.records.get(&kind).map(Record::seen));
+    let before = taught(&settles);
+    let hvf = (Work::Streams, 18);
+    let (refused_at, took) = (Duration::from_micros(206_907), Duration::from_micros(176_722));
+    let looked = {
+        let mut settle = settles.begin(hvf, 0, took);
+        let mut looked = 0;
+        // Its last look begins past the time HVF's was refused at, however late a pause ends.
+        loop {
+            let at = settle.began.elapsed();
+            assert_eq!(settle.looked(21), Ok(false), "{at:?} in");
+            looked += 1;
+            if at > refused_at {
+                break;
+            }
+            // A look's cost its exec's time: HVF's first answered 5.824 ms into its settle (its
+            // 206.907 ms waited less the 201.082 ms its refusal looked over).
+            std::thread::sleep(settle.pause(Duration::from_micros(5_824)));
+        }
+        assert_eq!(settle.looked(0), Ok(true));
+        looked
+    };
+    assert!(looked > 1, "{looked} looks");
+    let Seen::Learned { slowest, .. } = settles.records[&hvf].seen() else {
+        panic!("its answer taught nothing");
+    };
+    assert!(slowest > refused_at, "{slowest:?}");
+    assert_eq!(taught(&settles), before, "another kind learned of its answer");
+}
+
+/// A settle of a kind seen is refused a whole W* after its last freed slot, W* the slowest
+/// settle of its kind seen (D215's judge): a slot freed within its first W* is progress, and
+/// a slot never freed after it is refused at the look W* after, with how far in, the time
+/// looked over and W*.
+#[test]
+fn a_settle_of_a_kind_seen_is_refused_a_whole_w_star_after_its_last_freed_slot() {
+    let ms = Duration::from_millis;
+    let kind = (Work::Streams, 4);
+    let mut settles = Settles::default();
+    {
+        let mut first = settles.begin(kind, 0, ms(10));
+        assert_eq!(first.looked(9), Ok(false));
+        std::thread::sleep(ms(30));
+        assert_eq!(first.looked(0), Ok(true));
+    }
+    let Seen::Learned { slowest, .. } = settles.records[&kind].seen() else {
+        panic!("its first answer taught nothing");
+    };
+    let mut settle = settles.begin(kind, 0, ms(10));
+    assert_eq!(settle.looked(9), Ok(false));
+    let stalled = loop {
+        std::thread::sleep(settle.pause(ms(1)));
+        match settle.looked(6) {
+            Ok(false) => {}
+            Ok(true) => panic!("settled at 6 pages, not 0"),
+            Err(stalled) => break stalled,
+        }
+    };
+    assert_eq!((stalled.now, stalled.want), (6, 0));
+    assert_eq!(stalled.stall.slowest(), slowest);
+    assert!(stalled.stall.over() >= slowest, "{stalled}");
+    assert!(stalled.stall.waited() >= slowest * 2, "{stalled}");
+}
+
+/// A settle of a kind seen goes on past W* while its slots are still freed, every W* one at
+/// least, and its answer raises its kind's W* to its own time: a run-out followed by its
+/// progress (the person's ruling of 2026-11-13).
+#[test]
+fn a_settle_of_a_kind_seen_goes_on_past_w_star_while_its_slots_are_freed() {
+    let ms = Duration::from_millis;
+    let kind = (Work::Setup, 2);
+    let mut settles = Settles::default();
+    {
+        let mut first = settles.begin(kind, 0, ms(10));
+        assert_eq!(first.looked(3), Ok(false));
+        std::thread::sleep(ms(20));
+        assert_eq!(first.looked(0), Ok(true));
+    }
+    let Seen::Learned { slowest, .. } = settles.records[&kind].seen() else {
+        panic!("its first answer taught nothing");
+    };
+    let took = {
+        let mut settle = settles.begin(kind, 0, ms(10));
+        // A slot freed each third of W*: 9 pages to none over three W*.
+        let pins = |settle: &Settle<'_>| {
+            let thirds = settle.began.elapsed().as_nanos() * 3 / slowest.as_nanos().max(1);
+            9u64.saturating_sub(u64::try_from(thirds).unwrap_or(u64::MAX))
+        };
+        while !settle
+            .looked(pins(&settle))
+            .unwrap_or_else(|s| panic!("refused: {s}"))
+        {
+            std::thread::sleep(settle.pause(ms(1)));
+        }
+        settle.began.elapsed()
+    };
+    assert!(took > slowest * 2, "{took:?} {slowest:?}");
+    let Seen::Learned { slowest: now, .. } = settles.records[&kind].seen() else {
+        panic!("its answers taught nothing");
+    };
+    assert!(now > slowest * 2, "{now:?} {slowest:?}");
+}
+
+/// The held connection's wait reads the device's word that its ring attached, which its log
+/// keeps (no VM: the device's lines of CI's x86_64-unknown-linux-gnu run 43435318858 at
+/// f5c0c8b04, the daemon's give-back for its runner's memory pressure among them). That give-
+/// back let the ring go 31 ms after it attached, between two of the wait's looks, and the
+/// wait, looking for it attached still, waited 600 s on a state already gone.
+#[test]
+fn the_held_connections_wait_reads_a_word_its_log_keeps() {
+    let log = "\
+[460995     1030851us DEBUG] vsock: port 1029: an engine ring attached, 12288 bytes pinned
+[460995     1031775us DEBUG] vsock: port 1029: an engine ring let go, 12288 bytes unpinned (HostEnded)
+[460995     1051771us DEBUG] vsock: port 1029: an engine ring attached, 12288 bytes pinned
+[460995     1060806us DEBUG] vsock: port 1029: an engine ring let go, 12288 bytes unpinned (HostEnded)
+[460995     1083997us DEBUG] vsock: port 1029: an engine ring attached, 12288 bytes pinned
+[460995     1249784us DEBUG] vsock: port 1029: an engine ring let go, 12288 bytes unpinned (HostEnded)
+[460995     1272652us DEBUG] vsock: port 1029: an engine ring attached, 12288 bytes pinned
+[460805    1289572us DEBUG] container 114ca3cfef2e5bac44abe381fecd7314fc4935ce5661780df16074dc233a73f5: giving back what it holds cold: answered after 69.022659ms
+[460995     1303913us DEBUG] vsock: port 1029: an engine ring let go, 12288 bytes unpinned (Asked)
+";
+    let r = rings_of(log);
+    assert_eq!(
+        r,
+        Rings {
+            attached: 4,
+            pinned: 49152,
+            let_go: 4,
+            unpinned: 49152,
+            asked: 1
+        }
+    );
+    // The setup's three rings, each let go before the held connection's attached.
+    assert!(held_attached(&r, 3));
+    assert!(!held_attached(&r, 4));
 }

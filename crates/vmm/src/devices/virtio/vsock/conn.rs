@@ -3,7 +3,10 @@
 //! The protocol follows Firecracker's connection state machine (vsock/csm/connection.rs),
 //! with one difference: EOF from the host is a half-close. It reaches the guest as
 //! SHUTDOWN(SEND), and the guest may keep sending, as with `docker exec -i` after stdin
-//! ends. A host socket that is gone both ways shows up as a failed write.
+//! ends. A host socket that is gone both ways shows up as a failed write. The guest's
+//! SHUTDOWN(SEND) is the host socket's half-close; its SHUTDOWN(RCV) while the host's way is
+//! open, its SEND not ended first, is its going, the socket closed with no half-close first
+//! ([`HostWrites::Cut`], D251).
 
 use std::collections::VecDeque;
 use std::io::{self, Write as _};
@@ -61,6 +64,21 @@ struct Pending {
     credit_answer: bool,
 }
 
+/// How a connection's host socket ends its writes, the guest's end told the host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HostWrites {
+    Open,
+    /// Shut down after the guest's writes' end (SHUTDOWN(SEND)), its bytes all taken: the
+    /// host reads the end of them and may write on.
+    Shut,
+    /// The guest ended its reads while the host's way was open (SHUTDOWN(RCV), its SEND
+    /// with it or after): it is gone, not half-closed, as D251's cut carries a workload's
+    /// going (shards-init's relay). The socket is closed with no shutdown first, its bytes
+    /// all taken, and the host finds it hung up rather than reading an end it would take
+    /// for a half-close (PM M559).
+    Cut,
+}
+
 pub struct Conn {
     stream: UnixStream,
     guest_cid: u64,
@@ -72,8 +90,8 @@ pub struct Conn {
     /// What the guest's SHUTDOWN flags said.
     guest_rcv_closed: bool,
     guest_send_closed: bool,
-    /// Our side toward the host is shut for writing, after the guest's SEND shutdown.
-    host_write_shut: bool,
+    /// How our side toward the host ends its writes.
+    host_writes: HostWrites,
     killed: bool,
     pending: Pending,
     // Credit counters, free-running (virtio 1.3 §5.10.6.3).
@@ -115,7 +133,7 @@ impl std::fmt::Debug for Conn {
 #[cfg(windows)]
 impl Drop for Conn {
     fn drop(&mut self) {
-        if !self.host_write_shut {
+        if self.host_writes == HostWrites::Open {
             let _ = self.stream.shutdown(Shutdown::Write);
         }
     }
@@ -132,7 +150,7 @@ impl Conn {
             host_eof: false,
             guest_rcv_closed: false,
             guest_send_closed: false,
-            host_write_shut: false,
+            host_writes: HostWrites::Open,
             killed: false,
             pending: Pending::default(),
             fwd_cnt: Wrapping(0),
@@ -201,13 +219,23 @@ impl Conn {
     ///
     /// What the guest sent that the host had not taken goes as its connection ends, as on
     /// Unix: its socket takes no more, and the muxer counts nothing a lingering one holds.
+    /// A cut one ([`HostWrites::Cut`]) closes at once, resetting: its peer is to lose what
+    /// it had not read, as a cut promises no byte before it (D251), and read a reset, never
+    /// end-of-stream, which a plain close with nothing of its peer's unread reads as (PM
+    /// M358) and the VM process's relay would carry on as a half-close (`warm.rs` `pass`).
     #[cfg(windows)]
     pub fn linger(mut self) -> Option<Conn> {
+        if self.host_writes == HostWrites::Cut {
+            if let Err(e) = self.stream.close_resets() {
+                debug!("vsock: resetting port {}'s cut host socket: {e}", self.local_port);
+            }
+            return None;
+        }
         self.tx_buf = TxBuf::default();
         // Its ring goes with the connection; only the host socket lingers.
         self.ringing = Ringing::Plain;
-        if !self.host_write_shut {
-            self.host_write_shut = true;
+        if self.host_writes == HostWrites::Open {
+            self.host_writes = HostWrites::Shut;
             let _ = self.stream.shutdown(Shutdown::Write);
         }
         (!self.host_eof && !self.drained()).then_some(self)
@@ -496,6 +524,13 @@ impl Conn {
                 }
             }
             (op::SHUTDOWN, Phase::Established) => {
+                if h.flags & shutdown::RCV != 0
+                    && !self.guest_send_closed
+                    && !self.host_eof
+                    && self.host_writes == HostWrites::Open
+                {
+                    self.host_writes = HostWrites::Cut;
+                }
                 self.guest_rcv_closed |= h.flags & shutdown::RCV != 0;
                 self.guest_send_closed |= h.flags & shutdown::SEND != 0;
                 if self.guest_rcv_closed {
@@ -566,8 +601,8 @@ impl Conn {
         if !self.tx_buf.is_empty() || !self.ring_drained()? {
             return Ok(());
         }
-        if self.guest_send_closed && !self.host_write_shut {
-            self.host_write_shut = true;
+        if self.guest_send_closed && self.host_writes == HostWrites::Open {
+            self.host_writes = HostWrites::Shut;
             // The host reads EOF. It may already be gone, which the next read shows.
             let _ = self.stream.shutdown(Shutdown::Write);
         }

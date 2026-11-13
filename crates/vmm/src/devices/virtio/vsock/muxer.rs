@@ -3,6 +3,10 @@
 //! - A host client connects to the device's socket, writes `CONNECT <port>\n`, and reads
 //!   `OK <host port>\n` once the guest accepts. Then the socket is the stream.
 //! - A guest connection to host port P reaches the socket `<path>_P`.
+//! - A managed machine's host client may write `RATE <milli>\n` in place of `CONNECT` (D255,
+//!   `shards_abi::rate`): its connection goes to the machine's rate ([`VsockHost::rate`]),
+//!   whose owner answers on it. Only a dial on the socket says one; a machine without a rate
+//!   closes such a dial unanswered.
 //!
 //! Host ports the VM's own process serves ([`VsockHost::ports`]) are reached without a
 //! socket file: a guest connection to one is one end of a socket pair, and the other end
@@ -40,12 +44,19 @@ use crate::vm::VsockHost;
 
 /// RSTs owed, at most, for the largest rings a guest may negotiate ([`stray_rsts_bound`]).
 const MAX_STRAY_RSTS: usize = stray_rsts_bound(super::QUEUE_SIZE, super::QUEUE_SIZE);
-/// The shortest handshake line, `CONNECT 0\n`. Reading this much first, then a byte at a
-/// time, never consumes data a client sends after its line.
+/// The shortest `CONNECT` line, `CONNECT 0\n`. Reading this much first, then a byte at a
+/// time, never consumes data a client sends after its line. A managed machine's `RATE` line
+/// may be shorter (`RATE 0\n`), but nothing follows it: its client waits for its answer
+/// (D255).
 const MIN_HANDSHAKE: usize = handshake_len(decimal_digits(0), LF);
-/// The longest handshake line: `CONNECT 4294967295\r\n`. A longer one is refused before
-/// its end: a port has at most `u32::MAX`'s digits, and its words one space between them.
-const MAX_HANDSHAKE: usize = handshake_len(decimal_digits(u32::MAX), CRLF);
+/// The longest handshake line: `CONNECT 4294967295\r\n`, or a managed machine's
+/// `RATE 18446744073709551615\r\n` (`shards_abi::rate::ASK_MOST`), the longer. A longer one is
+/// refused before its end: a port has at most `u32::MAX`'s digits, a rate `u64::MAX`'s, and
+/// their words one space between them.
+const MAX_HANDSHAKE: usize = longer(
+    handshake_len(decimal_digits(u32::MAX), CRLF),
+    shards_abi::rate::ASK_MOST,
+);
 /// Host ports for host-initiated connections come from [2^30, 2^31), as in Firecracker.
 const LOCAL_PORT_BASE: u32 = 1 << 30;
 /// What a connection's host socket is asked to buffer each way (SO_SNDBUF, SO_RCVBUF), as
@@ -82,6 +93,19 @@ const fn decimal_digits(mut n: u32) -> usize {
 /// A handshake line's length: its words, a port of `digits` digits, and `end`.
 const fn handshake_len(digits: usize, end: &[u8]) -> usize {
     CONNECT.len() + SPACE.len() + digits + end.len()
+}
+
+/// The longer of `a` and `b`.
+const fn longer(a: usize, b: usize) -> usize {
+    if a > b { a } else { b }
+}
+
+/// A host client's handshake line: a guest's port to connect to, or a managed machine's
+/// rate (D255).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Line {
+    Connect(u32),
+    Rate(u64),
 }
 
 /// RSTs owed for packets that matched no connection, beyond which more are dropped, for a
@@ -186,6 +210,9 @@ pub struct Muxer {
     served: HashMap<u32, Sender<UnixStream>>,
     /// Host ports served in this process for every connection.
     every: HashMap<u32, crate::vm::ServedPort>,
+    /// Where a host client's `RATE` line goes with its connection, on a managed machine
+    /// ([`VsockHost::rate`], D255).
+    rate: Option<Sender<(UnixStream, u64)>>,
     handshakes: Vec<Handshake>,
     conns: HashMap<Key, Conn>,
     /// Ended connections whose host sockets are held until their peers end their sides
@@ -255,6 +282,7 @@ impl Muxer {
             listener,
             served: host.ports.into_iter().collect(),
             every: host.every.into_iter().collect(),
+            rate: host.rate,
             handshakes: Vec::new(),
             conns: HashMap::new(),
             #[cfg(windows)]
@@ -692,7 +720,24 @@ impl Muxer {
         };
         match read_handshake(h) {
             Ok(None) => {}
-            Ok(Some(peer_port)) => {
+            // Its connection goes to its owner, who answers on it; with none, it closes
+            // unanswered, as a line of no handshake's does.
+            Ok(Some(Line::Rate(milli))) => {
+                let h = self.handshakes.swap_remove(i);
+                match &self.rate {
+                    Some(to) => {
+                        // Out of the muxer's waits, to be written blocking by its owner.
+                        if let Err(e) = super::poll::release(h.stream.raw_socket()) {
+                            debug!("vsock: a rate's dial kept in the muxer's waits: {e}");
+                        }
+                        if to.send((h.stream, milli)).is_err() {
+                            debug!("vsock: a rate no one takes any more; its dial closed");
+                        }
+                    }
+                    None => debug!("vsock: a rate asked of a machine that takes none; its dial closed"),
+                }
+            }
+            Ok(Some(Line::Connect(peer_port))) => {
                 let h = self.handshakes.swap_remove(i);
                 let local_port = self.allocate_local_port();
                 let key = Key {
@@ -873,9 +918,9 @@ fn buffer_size(socket: crate::platform::RawSocket, option: i32) -> io::Result<us
     usize::try_from(got).map_err(io::Error::other)
 }
 
-/// Reads a handshake line without consuming anything after it. `Some(port)` once the line
-/// is complete and valid; `None` while more is to come.
-fn read_handshake(h: &mut Handshake) -> io::Result<Option<u32>> {
+/// Reads a handshake line without consuming anything after it. `Some` once the line is
+/// complete and valid; `None` while more is to come.
+fn read_handshake(h: &mut Handshake) -> io::Result<Option<Line>> {
     loop {
         let want = MIN_HANDSHAKE.saturating_sub(h.line.len()).max(1);
         let mut buf = [0u8; MIN_HANDSHAKE];
@@ -886,9 +931,9 @@ fn read_handshake(h: &mut Handshake) -> io::Result<Option<u32>> {
                 h.heard = Instant::now();
                 h.line.extend(dst.iter().take(n));
                 if h.line.contains(&b'\n') {
-                    return parse_connect(&h.line)
+                    return parse_line(&h.line)
                         .map(Some)
-                        .ok_or_else(|| io::Error::other("expected `CONNECT <port>`"));
+                        .ok_or_else(|| io::Error::other("expected `CONNECT <port>` or `RATE <milli>`"));
                 }
                 if h.line.len() >= MAX_HANDSHAKE {
                     return Err(io::Error::other("handshake line too long"));
@@ -899,6 +944,14 @@ fn read_handshake(h: &mut Handshake) -> io::Result<Option<u32>> {
             Err(e) => return Err(e),
         }
     }
+}
+
+/// A whole handshake line: `CONNECT <port>`, or a managed machine's `RATE <milli>`
+/// (`shards_abi::rate::read_ask`, D255).
+fn parse_line(line: &[u8]) -> Option<Line> {
+    parse_connect(line)
+        .map(Line::Connect)
+        .or_else(|| shards_abi::rate::read_ask(line).map(Line::Rate))
 }
 
 /// `CONNECT <port>` followed by a newline (case-insensitive, as Firecracker).
@@ -1031,6 +1084,147 @@ mod tests {
         ] {
             assert_eq!(parse_connect(bad), None, "{:?}", String::from_utf8_lossy(bad));
         }
+        assert_eq!(parse_line(b"CONNECT 52\n"), Some(Line::Connect(52)));
+        assert_eq!(parse_line(b"rate 250\r\n"), Some(Line::Rate(250)));
+        assert_eq!(parse_line(b"RATE 4294967296\n"), Some(Line::Rate(1 << 32)));
+        for bad in [&b"RATE\n"[..], b"RATE 1 2\n", b"RATED 1 2\n", b"RATE 1\nrest"] {
+            assert_eq!(parse_line(bad), None, "{:?}", String::from_utf8_lossy(bad));
+        }
+    }
+
+    /// A rate comes from a dial on the device's socket alone (D255): a host client's `RATE`
+    /// line reaches the machine's rate with its connection, which the answer goes back on.
+    /// The guest's connections, to a port this process serves and to ports none serves, and
+    /// what it sends on them (a `RATE` line among it) never do; the bytes go to the port's
+    /// owner. A machine that takes no rate closes such a dial unanswered.
+    #[test]
+    fn a_rate_comes_from_a_dial_on_the_socket_alone() {
+        let dir_guard = shards_testdir::TempDir::new("vsock-rate").unwrap();
+        let dir = dir_guard.join("v");
+        let (served, arrived) = std::sync::mpsc::channel();
+        let (rates, rated) = std::sync::mpsc::channel();
+        let host = VsockHost {
+            path: Some(dir.clone()),
+            ports: Vec::new(),
+            every: vec![(54, served.into())],
+            rate: Some(rates),
+        };
+        let mut m = Muxer::new(host, 3).unwrap();
+        let mem = GuestMemory::anonymous(&[(0x8000_0000, 1 << 16)]).unwrap();
+        m.on_guest_packet(&request(54, 49_152), &[], &mem);
+        assert_eq!(m.next_rx(&[]).map(|h| h.op), Some(op::RESPONSE));
+        let mut theirs = arrived.try_recv().unwrap();
+        let line = b"RATE 250\n";
+        mem.access().unwrap().write(0x8000_0000, line).unwrap();
+        let span = Span {
+            gpa: 0x8000_0000,
+            ptr: mem.host_ptr(0x8000_0000, line.len()).unwrap(),
+            len: line.len(),
+        };
+        let rw = Header {
+            op: op::RW,
+            len: line.len() as u32,
+            ..request(54, 49_152)
+        };
+        m.on_guest_packet(&rw, &[span], &mem);
+        for port in [0, 1, 1024, u32::MAX] {
+            m.on_guest_packet(&request(port, 49_153), &[], &mem);
+        }
+        assert!(rated.try_recv().is_err(), "a guest's connection reached the rate");
+        let mut got = [0u8; 9];
+        theirs.read_exact(&mut got).unwrap();
+        assert_eq!(&got, line, "the guest's bytes are its port's owner's");
+        let mut client = UnixStream::connect(&dir).unwrap();
+        m.on_events(&[Ready {
+            token: Some(Token::Listener),
+            read: true,
+            write: false,
+        }]);
+        client.write_all(b"RATE 250\n").unwrap();
+        m.on_events(&[Ready {
+            token: Some(Token::Handshake(0)),
+            read: true,
+            write: false,
+        }]);
+        let (mut asked, milli) = rated.try_recv().unwrap();
+        assert_eq!(milli, 250);
+        assert!(m.handshakes.is_empty(), "the dial is the rate's owner's");
+        assert_eq!(m.conns.len(), 1, "the guest's connection alone");
+        asked.set_nonblocking(false).unwrap();
+        asked.write_all(b"RATED 250 100000000\n").unwrap();
+        drop(asked);
+        let mut answer = String::new();
+        client.read_to_string(&mut answer).unwrap();
+        assert_eq!(answer, "RATED 250 100000000\n");
+        // A machine that takes no rate: the dial closes unanswered.
+        let none_guard = shards_testdir::TempDir::new("vsock-norate").unwrap();
+        let none_at = none_guard.join("v");
+        let mut none = Muxer::new(VsockHost::at(none_at.clone()), 3).unwrap();
+        let mut client = UnixStream::connect(&none_at).unwrap();
+        none.on_events(&[Ready {
+            token: Some(Token::Listener),
+            read: true,
+            write: false,
+        }]);
+        client.write_all(b"RATE 250\n").unwrap();
+        none.on_events(&[Ready {
+            token: Some(Token::Handshake(0)),
+            read: true,
+            write: false,
+        }]);
+        assert!(none.handshakes.is_empty());
+        let end = client.read(&mut [0u8; 1]);
+        assert!(
+            matches!(&end, Ok(0))
+                || end
+                    .as_ref()
+                    .is_err_and(|e| e.kind() == io::ErrorKind::ConnectionReset),
+            "{end:?}"
+        );
+    }
+
+    /// A rate's dial, read through the muxer's own waits as its device's thread makes them,
+    /// is handed out able to block: on Windows a wait's WSAEventSelect held its socket
+    /// non-blocking, so its owner's set_nonblocking(false) failed WSAEINVAL, its answer was
+    /// never written, and its client read the dial closed unanswered (CI run 43435318858,
+    /// boot.rs's a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket on
+    /// windows-2022).
+    #[test]
+    fn a_rates_dial_is_handed_out_able_to_block() {
+        let dir_guard = shards_testdir::TempDir::new("vsock-rate-wait").unwrap();
+        let dir = dir_guard.join("v");
+        let (rates, rated) = std::sync::mpsc::channel();
+        let host = VsockHost {
+            rate: Some(rates),
+            ..VsockHost::at(dir.clone())
+        };
+        let mut m = Muxer::new(host, 3).unwrap();
+        let mut poller = super::super::poll::Poller::new().unwrap();
+        let mut client = UnixStream::connect(&dir).unwrap();
+        client.write_all(b"RATE 250\n").unwrap();
+        // The device's loop: what the muxer asks waited on, then what came handed to it.
+        let mut handed = None;
+        for _ in 0..8 {
+            let mut interests = Vec::new();
+            m.interests(&mut interests);
+            let mut ready = Vec::new();
+            poller
+                .wait(&interests, Some(Duration::from_millis(250)), &mut ready)
+                .unwrap();
+            m.on_events(&ready);
+            if let Ok(dial) = rated.try_recv() {
+                handed = Some(dial);
+                break;
+            }
+        }
+        let (mut asked, milli) = handed.expect("the rate's dial never reached its owner");
+        assert_eq!(milli, 250);
+        asked.set_nonblocking(false).unwrap();
+        asked.write_all(b"RATED 250 100000000\n").unwrap();
+        drop(asked);
+        let mut answer = String::new();
+        client.read_to_string(&mut answer).unwrap();
+        assert_eq!(answer, "RATED 250 100000000\n");
     }
 
     /// The handshake's bounds are its own words': `CONNECT 0\n` the shortest line, and
@@ -1039,7 +1233,7 @@ mod tests {
     #[test]
     fn handshake_lines_are_bounded_by_the_protocols_words() {
         assert_eq!(MIN_HANDSHAKE, b"CONNECT 0\n".len());
-        assert_eq!(MAX_HANDSHAKE, b"CONNECT 4294967295\r\n".len());
+        assert_eq!(MAX_HANDSHAKE, b"RATE 18446744073709551615\r\n".len());
         assert_eq!(decimal_digits(9), 1);
         assert_eq!(decimal_digits(10), 2);
         let read = |line: &[u8]| {
@@ -1053,9 +1247,20 @@ mod tests {
             client.write_all(line).unwrap();
             read_handshake(&mut h)
         };
-        assert_eq!(read(b"CONNECT 4294967295\r\n").unwrap(), Some(u32::MAX));
-        assert_eq!(read(b"connect 4294967295\n").unwrap(), Some(u32::MAX));
-        assert!(read(b"CONNECT  4294967295\r\n").is_err());
+        assert_eq!(
+            read(b"CONNECT 4294967295\r\n").unwrap(),
+            Some(Line::Connect(u32::MAX))
+        );
+        assert_eq!(
+            read(b"connect 4294967295\n").unwrap(),
+            Some(Line::Connect(u32::MAX))
+        );
+        assert_eq!(
+            read(b"RATE 18446744073709551615\r\n").unwrap(),
+            Some(Line::Rate(u64::MAX))
+        );
+        assert_eq!(read(b"RATE 0\n").unwrap(), Some(Line::Rate(0)));
+        assert!(read(b"RATE  18446744073709551615\r\n").is_err());
     }
 
     /// Set in the child `past_its_descriptors_a_dial_is_refused_at_once` runs.
@@ -1147,6 +1352,7 @@ mod tests {
             path: Some(dir.clone()),
             ports: Vec::new(),
             every: vec![(54, sender.into())],
+            rate: None,
         };
         let mut m = Muxer::new(host, 3).unwrap();
         // An input: one slot, which the guest's connection holds.
@@ -1228,6 +1434,7 @@ mod tests {
             path: None,
             ports: Vec::new(),
             every: Vec::new(),
+            rate: None,
         };
         let mut m = Muxer::new(host, 3).unwrap();
         assert_eq!(m.max_stray_rsts, MAX_STRAY_RSTS);
@@ -1253,7 +1460,7 @@ mod tests {
         client.write_all(b"ECT 77").unwrap();
         assert_eq!(read_handshake(&mut h).unwrap(), None);
         client.write_all(b"\npayload").unwrap();
-        assert_eq!(read_handshake(&mut h).unwrap(), Some(77));
+        assert_eq!(read_handshake(&mut h).unwrap(), Some(Line::Connect(77)));
         let mut rest = [0u8; 7];
         h.stream.read_exact(&mut rest).unwrap();
         assert_eq!(&rest, b"payload");
@@ -1336,6 +1543,7 @@ mod tests {
             path: None,
             ports: vec![(52, sender), (53, gone)],
             every: Vec::new(),
+            rate: None,
         };
         let mut m = Muxer::new(host, 3).unwrap();
         let mem = GuestMemory::anonymous(&[(0x8000_0000, 1 << 16)]).unwrap();
@@ -1380,6 +1588,7 @@ mod tests {
             path: None,
             ports: Vec::new(),
             every: vec![(54, sender.into())],
+            rate: None,
         };
         let mut m = Muxer::new(host, 3).unwrap();
         let mem = GuestMemory::anonymous(&[(0x8000_0000, 1 << 16)]).unwrap();
@@ -1402,48 +1611,59 @@ mod tests {
         assert_eq!(arrived.try_iter().count(), 3);
     }
 
-    /// What the guest sent before it ended a connection is the host's to read whole, then
-    /// end-of-stream, though the host had sent data the guest took none of and writes again
-    /// after the guest's end, as an exec's stdin's end can come after a command that ended
-    /// at once: on Windows a socket closed while its peer may still read loses the peer what
-    /// it had not read (PM M358), so the muxer holds its end until the host ends its own.
-    #[test]
-    fn what_the_guest_sent_before_its_end_is_read_whole_whatever_the_host_writes() {
-        use super::super::packet::shutdown;
+    /// A muxer with one guest connection to host port 54 that has sent `SAID`, the host's
+    /// end of it having written data the guest took none of: the muxer, the host's end and
+    /// the guest's memory.
+    fn spoken() -> (Muxer, crate::platform::UnixStream, GuestMemory) {
+        spoken_after(b"stdin")
+    }
+
+    /// [`spoken`]'s connection, the host's end having written `host_sent` first, which the
+    /// muxer has not read.
+    fn spoken_after(host_sent: &[u8]) -> (Muxer, crate::platform::UnixStream, GuestMemory) {
         let (sender, arrived) = std::sync::mpsc::channel();
         let host = VsockHost {
             path: None,
             ports: Vec::new(),
             every: vec![(54, sender.into())],
+            rate: None,
         };
         let mut m = Muxer::new(host, 3).unwrap();
         let mem = GuestMemory::anonymous(&[(0x8000_0000, 1 << 16)]).unwrap();
         m.on_guest_packet(&request(54, 49_152), &[], &mem);
         assert_eq!(m.next_rx(&[]).map(|h| h.op), Some(op::RESPONSE));
         let mut theirs = arrived.try_recv().unwrap();
-        theirs.write_all(b"stdin").unwrap();
-        let said = b"the command's output, then its exit status";
-        mem.access().unwrap().write(0x8000_0000, said).unwrap();
+        theirs.write_all(host_sent).unwrap();
+        mem.access().unwrap().write(0x8000_0000, SAID).unwrap();
         let output = Span {
             gpa: 0x8000_0000,
-            ptr: mem.host_ptr(0x8000_0000, said.len()).unwrap(),
-            len: said.len(),
+            ptr: mem.host_ptr(0x8000_0000, SAID.len()).unwrap(),
+            len: SAID.len(),
         };
         let rw = Header {
             op: op::RW,
-            len: said.len() as u32,
+            len: SAID.len() as u32,
             ..request(54, 49_152)
         };
         m.on_guest_packet(&rw, &[output], &mem);
+        (m, theirs, mem)
+    }
+
+    const SAID: &[u8] = b"the command's output, then its exit status";
+
+    /// The guest's SHUTDOWN with `flags` on [`spoken`]'s connection.
+    fn guest_shuts(m: &mut Muxer, flags: u32, mem: &GuestMemory) {
         let ended = Header {
             op: op::SHUTDOWN,
-            flags: shutdown::RCV | shutdown::SEND,
+            flags,
             ..request(54, 49_152)
         };
-        m.on_guest_packet(&ended, &[], &mem);
-        assert_eq!(m.next_rx(&[]).map(|h| h.op), Some(op::RST));
-        assert!(m.conns.is_empty(), "the guest's connection is over");
-        let _ = theirs.write_all(b" and more");
+        m.on_guest_packet(&ended, &[], mem);
+    }
+
+    /// What `theirs` reads until it ends: its bytes, and the error that ended it, none for
+    /// end-of-stream.
+    fn read_out(theirs: &mut crate::platform::UnixStream) -> (Vec<u8>, Option<io::ErrorKind>) {
         let mut got = Vec::new();
         let mut buf = [0u8; 256];
         let end = loop {
@@ -1453,7 +1673,27 @@ mod tests {
                 Err(e) => break Some(e.kind()),
             }
         };
-        assert_eq!(got, said, "what the guest sent, whole");
+        (got, end)
+    }
+
+    /// What the guest sent before it ended a connection in order (its writes' end, then its
+    /// close, as init's run connection ends: run.rs `shutdown_and_wait`) is the host's to
+    /// read whole, then end-of-stream, though the host had sent data the guest took none of
+    /// and writes again after the guest's end, as an exec's stdin's end can come after a
+    /// command that ended at once: on Windows a socket closed while its peer may still read
+    /// loses the peer what it had not read (PM M358), so the muxer holds its end until the
+    /// host ends its own.
+    #[test]
+    fn what_the_guest_sent_before_its_end_is_read_whole_whatever_the_host_writes() {
+        use super::super::packet::shutdown;
+        let (mut m, mut theirs, mem) = spoken();
+        guest_shuts(&mut m, shutdown::SEND, &mem);
+        guest_shuts(&mut m, shutdown::RCV | shutdown::SEND, &mem);
+        assert_eq!(m.next_rx(&[]).map(|h| h.op), Some(op::RST));
+        assert!(m.conns.is_empty(), "the guest's connection is over");
+        let _ = theirs.write_all(b" and more");
+        let (got, end) = read_out(&mut theirs);
+        assert_eq!(got, SAID, "what the guest sent, whole");
         // End-of-stream; on Linux, whose muxer closed its end holding what the host sent
         // unread, a reset after it (unix_release_sock).
         assert!(
@@ -1482,6 +1722,105 @@ mod tests {
         }
     }
 
+    /// A guest that ends its connection both ways at once while its host still sends (its
+    /// relay's workload gone mid-stream, D251's cut) has the host's socket closed with no end
+    /// of its writes first: the host reads no end until the connection has gone, then finds
+    /// it hung up (POLLHUP, PM M559), as a cut, never a half-close it could take for the
+    /// guest's writes' end alone. On Windows the socket closes at once, held for nothing.
+    #[test]
+    fn a_guest_gone_both_ways_while_its_host_sends_is_no_half_close() {
+        use super::super::packet::shutdown;
+        let (mut m, mut theirs, mem) = spoken();
+        guest_shuts(&mut m, shutdown::RCV | shutdown::SEND, &mem);
+        #[cfg(unix)]
+        {
+            theirs.set_nonblocking(true).unwrap();
+            let (got, end) = read_out(&mut theirs);
+            assert_eq!(got, SAID, "what the guest sent, whole");
+            assert_eq!(
+                end,
+                Some(io::ErrorKind::WouldBlock),
+                "no end before the connection goes"
+            );
+            theirs.set_nonblocking(false).unwrap();
+        }
+        assert_eq!(m.next_rx(&[]).map(|h| h.op), Some(op::RST));
+        assert!(m.conns.is_empty(), "the guest's connection is over");
+        #[cfg(unix)]
+        {
+            let (got, end) = read_out(&mut theirs);
+            assert!(got.is_empty(), "{got:?}");
+            // End-of-stream; on Linux, whose muxer closed its end holding what the host sent
+            // unread, a reset (unix_release_sock).
+            assert!(
+                end.is_none() || cfg!(target_os = "linux") && end == Some(io::ErrorKind::ConnectionReset),
+                "{end:?}"
+            );
+            let mut fd = libc::pollfd {
+                fd: std::os::fd::AsRawFd::as_raw_fd(&theirs),
+                events: libc::POLLOUT,
+                revents: 0,
+            };
+            // SAFETY: one pollfd of a socket this test holds; a timeout of 0 waits for none.
+            assert!(unsafe { libc::poll(&raw mut fd, 1, 0) } >= 0);
+            assert_ne!(fd.revents & (libc::POLLHUP | libc::POLLERR), 0, "hung up");
+        }
+        #[cfg(windows)]
+        {
+            assert!(
+                m.lingering.is_empty(),
+                "a cut holds the host's socket for nothing"
+            );
+            // A socket closed without its writes shut down, holding what its peer sent
+            // unread, reads as a reset (PM M358).
+            let (_, end) = read_out(&mut theirs);
+            assert_eq!(end, Some(io::ErrorKind::ConnectionReset));
+        }
+    }
+
+    /// D251's cut with nothing of the host's unread, as a workload that read all its
+    /// controller sent, then closed: the host still finds a cut, never an end in order. On
+    /// Unix it reads an end hung up (POLLHUP, PM M559). On Windows a socket closed with
+    /// nothing of its peer's unread reads as end-of-stream (PM M358's first row), which the
+    /// VM process's relay passes on as a half-close (`warm.rs` `pass`): the cut closes with
+    /// a reset instead, so its host reads `ConnectionReset`, after a prefix of what the
+    /// guest sent at most (a cut promises no byte before it).
+    #[test]
+    fn a_guest_gone_both_ways_with_nothing_of_its_hosts_unread_is_a_cut() {
+        use super::super::packet::shutdown;
+        let (mut m, mut theirs, mem) = spoken_after(b"");
+        guest_shuts(&mut m, shutdown::RCV | shutdown::SEND, &mem);
+        assert_eq!(m.next_rx(&[]).map(|h| h.op), Some(op::RST));
+        assert!(m.conns.is_empty(), "the guest's connection is over");
+        let (got, end) = read_out(&mut theirs);
+        assert!(SAID.starts_with(&got), "{got:?}");
+        #[cfg(unix)]
+        {
+            assert_eq!(got, SAID, "what the guest sent, whole");
+            assert_eq!(end, None, "end-of-stream, nothing of the host's unread");
+            let mut fd = libc::pollfd {
+                fd: std::os::fd::AsRawFd::as_raw_fd(&theirs),
+                events: libc::POLLOUT,
+                revents: 0,
+            };
+            // SAFETY: one pollfd of a socket this test holds; a timeout of 0 waits for none.
+            assert!(unsafe { libc::poll(&raw mut fd, 1, 0) } >= 0);
+            assert_ne!(fd.revents & (libc::POLLHUP | libc::POLLERR), 0, "hung up");
+        }
+        #[cfg(windows)]
+        {
+            assert!(
+                m.lingering.is_empty(),
+                "a cut holds the host's socket for nothing"
+            );
+            assert_eq!(
+                end,
+                Some(io::ErrorKind::ConnectionReset),
+                "a cut read as an end in order"
+            );
+        }
+    }
+
     /// A save holds one save's worth of streams, however many saves came before it with
     /// none of their resets sent between: its connections, then the newest resets owed, as
     /// many as a muxer never restored holds at most, its slots and a ring's worth of resets
@@ -1495,6 +1834,7 @@ mod tests {
             path: Some(dir_guard.join("v")),
             ports: Vec::new(),
             every: vec![(54, sender.into())],
+            rate: None,
         };
         let mut m = Muxer::new(host, 3).unwrap();
         // An input: few slots and small rings, which saves in a row outgrow.
@@ -1573,6 +1913,7 @@ mod tests {
             path: None,
             ports: Vec::new(),
             every: vec![(54, sender.into())],
+            rate: None,
         };
         (Muxer::new(host, 3).unwrap(), arrived)
     }

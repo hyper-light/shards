@@ -192,12 +192,18 @@ pub fn now() -> u128 {
 /// record cut short, or bytes a guest wrote to look like one, are never taken for
 /// records, and `--tail` reads back from the end (audit A12). A log without an index is
 /// from an earlier shards, and is indexed as it is first read.
+///
+/// A member's log, which its daemon keeps (D240), may hold a gap's record too, its index
+/// entry [`INDEX_GAP`] beside [`INDEX_STDERR`] for the channel whose output it did not keep
+/// (daemon/logs.rs, `LOG_GAP`). Readers of output pass over it; the log lane says it (D238).
+/// A run's own log, which its VM writes, holds none.
 pub const LOG_STDOUT: u8 = 1;
 pub const LOG_STDERR: u8 = 2;
 pub const INDEX_STDERR: u64 = 1 << 63;
 pub const INDEX_LINE: u64 = 1 << 62;
+pub const INDEX_GAP: u64 = 1 << 61;
 /// A record's start, in an index entry.
-pub const INDEX_START: u64 = INDEX_LINE - 1;
+pub const INDEX_START: u64 = INDEX_GAP - 1;
 /// A record's bytes before its output.
 pub const LOG_HEAD: u64 = 13;
 
@@ -276,8 +282,25 @@ pub const RUN_VALUED: &[&str] = &[
 /// there as needing one, every time, and never read as a flag where the line is read ahead
 /// of it (cli/shares.rs `take`), which reads it through this too.
 pub fn next_word<T: AsRef<std::ffi::OsStr>>(args: &mut impl Iterator<Item = T>) -> Option<(T, Option<T>)> {
+    next_vm_word(args, false)
+}
+
+/// The flags `restore` reads a value after besides [`RUN_VALUED`]'s, whose `Common` options
+/// it shares (vm_run.rs `parse_restore`, which takes every value it reads through
+/// [`next_vm_word`], so a flag it reads a value after that neither lists is refused there).
+pub const RESTORE_VALUED: &[&str] = &["--backing", "--layer-cloned", "--resume", "--working-set"];
+
+/// [`next_word`] for `run`'s command line, or with `restore`, `restore`'s: its own valued
+/// flags ([`RESTORE_VALUED`]) given their values too.
+pub fn next_vm_word<T: AsRef<std::ffi::OsStr>>(
+    args: &mut impl Iterator<Item = T>,
+    restore: bool,
+) -> Option<(T, Option<T>)> {
     let word = args.next()?;
-    let valued = word.as_ref().to_str().is_some_and(|w| RUN_VALUED.contains(&w));
+    let valued = word
+        .as_ref()
+        .to_str()
+        .is_some_and(|w| RUN_VALUED.contains(&w) || (restore && RESTORE_VALUED.contains(&w)));
     let value = if valued { args.next() } else { None };
     Some((word, value))
 }

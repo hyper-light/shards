@@ -67,23 +67,17 @@ fn boot_and_snapshot_in(dir: &Path, disk: &str, s: &Scratch, then: &str) -> Run 
             "--snapshot-then",
             then,
         ],
-        TIMEOUT,
     )
 }
 
 fn restore(dir: &Path) -> Run {
-    run_shards(&["restore"], &[dir.to_str().unwrap()], TIMEOUT)
+    run_shards(&["restore"], &[dir.to_str().unwrap()])
 }
 
 /// [`restore`], logging at `info`, which says what the restore dropped once set up.
 fn restore_logged(dir: &Path) -> Run {
     let info = std::ffi::OsStr::new("info");
-    common::run_shards_env(
-        &["restore"],
-        &[dir.to_str().unwrap()],
-        &[("SHARDS_LOG", info)],
-        TIMEOUT,
-    )
+    common::run_shards_env(&["restore"], &[dir.to_str().unwrap()], &[("SHARDS_LOG", info)])
 }
 
 /// KVM's counters of a restored VM, as the Firecracker comparison reads them from debugfs
@@ -215,11 +209,7 @@ fn a_restore_given_its_files_refuses_a_snapshot_naming_others() {
     assert_eq!(r.status, Some(0), "{r}");
     let dir = s.snapshot();
     let ours = s.disk();
-    let given = run_shards(
-        &["restore"],
-        &[dir.to_str().unwrap(), "--backing", &ours],
-        TIMEOUT,
-    );
+    let given = run_shards(&["restore"], &[dir.to_str().unwrap(), "--backing", &ours]);
     assert!(given.stdout.contains("SHARDS-TEST PASS"), "{given}");
     // Given through a link, it is the file the snapshot names, which it named resolved:
     // macOS's temporary directory, under /var, a link to /private/var, is one such path.
@@ -234,7 +224,6 @@ fn a_restore_given_its_files_refuses_a_snapshot_naming_others() {
                 "--backing",
                 &format!("{}:ro", link.display()),
             ],
-            TIMEOUT,
         );
         assert!(through.stdout.contains("SHARDS-TEST PASS"), "{through}");
     }
@@ -242,11 +231,7 @@ fn a_restore_given_its_files_refuses_a_snapshot_naming_others() {
     // which then names one it was not given.
     std::fs::copy(s.0.join("ro.img"), s.0.join("other.img")).unwrap();
     let other = format!("{}:ro", s.0.join("other.img").display());
-    let refused = run_shards(
-        &["restore"],
-        &[dir.to_str().unwrap(), "--backing", &other],
-        TIMEOUT,
-    );
+    let refused = run_shards(&["restore"], &[dir.to_str().unwrap(), "--backing", &other]);
     assert_ne!(refused.status, Some(0), "{refused}");
     let named = format!(
         "{}:ro",
@@ -355,7 +340,7 @@ fn restores_elsewhere_read_the_disks_the_snapshot_was_taken_with() {
     assert_eq!(original.status, Some(0), "{original}");
 
     let snapshot = s.snapshot();
-    let moved = run_shards_in(&elsewhere, &["restore"], &[snapshot.as_os_str()], TIMEOUT);
+    let moved = run_shards_in(&elsewhere, &["restore"], &[snapshot.as_os_str()]);
     assert_eq!(moved.status, Some(0), "{moved}");
     assert!(moved.stdout.contains("SHARDS-TEST PASS"), "{moved}");
 
@@ -427,11 +412,8 @@ mod storm {
             sock.as_os_str().to_owned(),
             "--cmdline".into(),
             format!(
-                "console=ttyS0 quiet panic=-1 shards_test=storm shards_vda_bytes={RO_BYTES} shards_vdb_bytes={RW_BYTES} shards_storm_ms={} shards_quiet_ms={}",
+                "console=ttyS0 quiet panic=-1 shards_test=storm shards_vda_bytes={RO_BYTES} shards_vdb_bytes={RW_BYTES} shards_storm_ms={}",
                 std::env::var("SHARDS_STORM_MS").unwrap_or_else(|_| "0".into()),
-                // The host's own quiet, which the guest's waits are (the test guest's
-                // `host_quiet`).
-                common::DAEMON_QUIET.as_millis()
             )
             .into(),
             "--snapshot-dir".into(),
@@ -538,7 +520,8 @@ mod storm {
     /// The most a host takes is what it is held to, however slowly it runs them: 64 vCPUs
     /// on the nested arm64 Windows host's 4 TCG CPUs left woken threads unrun for 15 s
     /// before any snapshot, and lost no interrupt (M427); the guest's watchdog gives the
-    /// kernel's account of a stall only once it has lasted `STREAM_QUIET`.
+    /// kernel's account of a stall only once its main thread and the stream through its
+    /// echo have both stood still past their own pace (the test guest's `stall::Watch`).
     fn storm_cpus() -> Vec<u32> {
         let max = shards_vmm::vm::max_vcpus().unwrap().min(common::kernel_nr_cpus());
         if let Ok(only) = std::env::var("SHARDS_STORM_CPUS") {

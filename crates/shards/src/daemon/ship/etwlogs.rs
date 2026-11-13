@@ -252,14 +252,19 @@ mod tests {
         assert_eq!(l.most(), 4000);
     }
 
-    /// Do: while a session of logman's default buffers listens for a provider of the test's
-    /// own, write events of the learner's next try, each answered as ETW answers it, until
-    /// the try holds. Expect the try then taken and a unit more refused: what the session
-    /// takes, learned from its answers alone. Skips where no session can be started (one is
-    /// an administrator's or Performance Log Users').
+    /// Do: while a session of logman's default buffer size listens for a provider of the
+    /// test's own, write events of the learner's next try, each answered as ETW answers it,
+    /// until the try holds. Expect the try then taken and a unit more refused: what the
+    /// session takes, learned from its answers alone. The session has as many buffers as the
+    /// test can fill before one is flushed (`-nb`): with fewer, a disk slower than the writes
+    /// leaves no buffer free and the event is dropped, ERROR_NOT_ENOUGH_MEMORY, an answer
+    /// about the disk and not the event's size (EventWriteString, Microsoft Learn), as each
+    /// of CI's Windows runners gave. Skips where no session can be started (one is an
+    /// administrator's or Performance Log Users').
     #[test]
     fn a_sessions_bound_is_learned_from_a_real_sessions_answers() {
         use windows_sys::Win32::System::Diagnostics::Etw::EventUnregister;
+        use windows_sys::Win32::System::Threading::{ALL_PROCESSOR_GROUPS, GetActiveProcessorCount};
         let id = 0x5a4d_0000_4e00_0000_0000_0000_0000_0000 | u128::from(std::process::id());
         let hex = format!("{id:032x}");
         let at = |r: std::ops::Range<usize>| hex.get(r).unwrap();
@@ -274,10 +279,20 @@ mod tests {
         let name = format!("shards-tests-etw-{}", std::process::id());
         let dir = shards_testdir::TempDir::new("etw").unwrap();
         let etl = dir.path().join("t.etl");
+        // The learner's tries, then the bound taken and a unit more.
+        let tries = 64;
+        // A buffer for each event written, as each fills at most one (ETW splits no event
+        // across buffers, EVENT_TRACE_PROPERTIES), and one for each processor, as ETW keeps
+        // buffers by processor ("ETW buffers are associated with a processor", Logging Mode
+        // Constants; at least two each, EVENT_TRACE_PROPERTIES), one of which the events may
+        // leave unfilled.
+        // SAFETY: a call that takes a group number alone.
+        let processors = unsafe { GetActiveProcessorCount(ALL_PROCESSOR_GROUPS) };
+        let buffers = (tries + 2 + usize::try_from(processors).unwrap()).to_string();
         let started = std::process::Command::new("logman")
             .args(["start", &name, "-p", &format!("{{{guid}}}"), "-o"])
             .arg(&etl)
-            .arg("-ets")
+            .args(["-nb", &buffers, &buffers, "-ets"])
             .output()
             .unwrap();
         if !started.status.success() {
@@ -296,7 +311,7 @@ mod tests {
             unsafe { EventWriteString(handle, 0, 0, s.as_ptr()) }
         };
         let mut l = Learned::default();
-        for _ in 0..64 {
+        for _ in 0..tries {
             let n = l.most();
             let answer = write(n);
             assert!(matches!(answer, 0 | SOME_REFUSED | ALL_REFUSED), "{answer}");

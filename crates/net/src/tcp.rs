@@ -13,16 +13,17 @@ use std::net::{IpAddr, Shutdown, SocketAddr, TcpStream};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use crate::inject::{Flow, Queues, Run, Said};
 use crate::ring::Ring;
 use crate::sys::{AsRawSock, RawSock, UnixStream};
 use crate::wire::{self, ACK, FIN, PSH, RST, SYN};
 
 /// What a connection holds of the guest's bytes the host has not taken yet, and so the
 /// most this side ever advertises: 4 MiB, with a window scale of 7.
-const TO_HOST: usize = 4 << 20;
+pub(crate) const TO_HOST: usize = 4 << 20;
 const OUR_WSCALE: u8 = 7;
 /// The most host bytes a connection holds unacknowledged by the guest.
-const TO_GUEST: usize = 4 << 20;
+pub(crate) const TO_GUEST: usize = 4 << 20;
 /// The largest segment this side takes, and sends: the device's MTU less IPv4 and TCP's
 /// headers (vmm virtio-net, MTU 65520).
 pub const MSS: u16 = 65520 - 40;
@@ -196,6 +197,13 @@ pub struct Conn {
     /// A connection to the host's resolver for the guest's DNS over TCP: its questions and
     /// answers read, as the guest's by UDP are.
     pub dns: Option<crate::dns::Stream>,
+    /// A flow of a run with credential grants (D242): the injector's, from the guest's first
+    /// byte until it passes a flow to a host no grant names; the guest's bytes and the host's
+    /// go through it, and what it holds of the guest's is a part of the window.
+    pub inject: Option<Box<Flow>>,
+    /// The injector has ended its flow's host side: the host's write side is shut once
+    /// `to_host` drains, as after the guest's FIN.
+    host_close: bool,
     /// When both queues last drained while holding memory, which goes once they have
     /// stayed empty for [`IDLE`].
     drained_at: Option<Instant>,
@@ -337,6 +345,8 @@ impl Conn {
             recover: isn,
             repair: None,
             dns: None,
+            inject: None,
+            host_close: false,
             drained_at: None,
         }
     }
@@ -374,6 +384,8 @@ impl Conn {
             recover: isn,
             repair: None,
             dns: None,
+            inject: None,
+            host_close: false,
             drained_at: None,
         };
         c.send_syn(out);
@@ -425,11 +437,19 @@ impl Conn {
         self.ack(out);
     }
 
-    /// The window this side advertises, scaled if the guest scales.
+    /// The window this side advertises, scaled if the guest scales: what `to_host` and the
+    /// injector, where it holds the guest's bytes, have room for.
     fn window(&self) -> u16 {
-        let free = TO_HOST.saturating_sub(self.to_host.len());
+        let free = TO_HOST.saturating_sub(self.held());
         let shift = self.our_scale();
         u16::try_from(free >> shift).unwrap_or(u16::MAX)
+    }
+
+    /// The guest's bytes this side holds and the host has not taken: `to_host`'s, and the
+    /// injector's.
+    fn held(&self) -> usize {
+        let injector = self.inject.as_ref().map_or(0, |f| f.held());
+        self.to_host.len().saturating_add(injector)
     }
 
     /// The shift of the window this side advertises: its own scale, if the guest scales.
@@ -575,20 +595,109 @@ impl Conn {
                 }
             }
         }
-        if self.to_host.is_empty() && self.guest_fin && !self.host_shut {
+        if self.to_host.is_empty() && (self.guest_fin || self.host_close) && !self.host_shut {
             let _ = self.sock.shutdown(Shutdown::Write);
             self.host_shut = true;
         }
-        // A window that opened from shut, or by a half, is announced.
+        self.announce(before_window, out);
+    }
+
+    /// A window that opened from shut, or by a half, since it was `before`, is announced.
+    fn announce(&self, before: u16, out: &mut dyn ToGuest) {
         let now = self.window();
-        if before_window == 0 && now > 0 || u32::from(now) > 2 * u32::from(before_window).max(1) {
+        if before == 0 && now > 0 || u32::from(now) > 2 * u32::from(before).max(1) {
             self.ack(out);
         }
     }
 
+    /// Takes what the injector said of its flow: `Pass`'s guest bytes to the host and, where
+    /// they came with it, `got` of the host's to the guest, the injector let go of; `Close`
+    /// ends both sides once what is queued goes; `Reset` resets. False once the connection
+    /// was reset.
+    fn heard(&mut self, said: Said, got: Option<&[u8]>, out: &mut dyn ToGuest) -> bool {
+        match said {
+            Said::Going => true,
+            Said::Pass(seen) => {
+                self.inject = None;
+                let passed = self.to_host.extend(&seen).is_ok()
+                    && got.is_none_or(|got| self.to_guest.extend(got).is_ok());
+                if !passed {
+                    self.reset(out);
+                }
+                passed
+            }
+            Said::Close => {
+                self.host_eof = true;
+                self.host_close = true;
+                true
+            }
+            Said::Reset => {
+                self.reset(out);
+                false
+            }
+        }
+    }
+
+    /// Gives the injector's flow its turn, `step`, with its run, and takes what it said, `got`
+    /// being the host's bytes the step was given. A flow given no run cannot be served, and
+    /// its connection is reset. False once the connection was reset.
+    fn inject_step(
+        &mut self,
+        out: &mut dyn ToGuest,
+        run: Option<&mut Run<'_>>,
+        got: Option<&[u8]>,
+        step: impl FnOnce(&mut Flow, &mut Run<'_>, &mut Queues<'_>) -> Said,
+    ) -> bool {
+        if self.inject.is_none() {
+            return true;
+        }
+        let Some(run) = run else {
+            let _ = writeln!(
+                io::stderr(),
+                "shards-net: guest port {}'s injected flow to {:?} reset: served without its run's credentials",
+                self.key.guest_port,
+                self.key.remote
+            );
+            self.reset(out);
+            return false;
+        };
+        let Some(flow) = self.inject.as_mut() else {
+            return true;
+        };
+        let said = step(
+            flow,
+            run,
+            &mut Queues {
+                to_host: &mut self.to_host,
+                to_guest: &mut self.to_guest,
+            },
+        );
+        self.heard(said, got, out)
+    }
+
+    /// A lease the injector's flow waited on was answered: the flow goes on, the window it
+    /// held of the guest's bytes announced as it opens.
+    pub fn resume(&mut self, out: &mut dyn ToGuest, run: &mut Run<'_>) {
+        let before = self.window();
+        let Some(flow) = self.inject.as_mut() else { return };
+        let said = flow.resume(
+            run,
+            &mut Queues {
+                to_host: &mut self.to_host,
+                to_guest: &mut self.to_guest,
+            },
+        );
+        if !self.heard(said, None, out) {
+            return;
+        }
+        self.flush_to_host(out);
+        self.announce(before, out);
+        self.send_new(out);
+    }
+
     /// The host socket may be readable: its bytes to the guest, while the guest's window
-    /// takes them.
-    pub fn on_readable(&mut self, out: &mut dyn ToGuest, buf: &mut [u8]) {
+    /// takes them; through the injector, given `run`, where it serves the flow.
+    pub fn on_readable(&mut self, out: &mut dyn ToGuest, buf: &mut [u8], mut run: Option<&mut Run<'_>>) {
         while self.wants_read() {
             let room = TO_GUEST
                 .min(self.guest_wnd as usize + 1)
@@ -600,7 +709,18 @@ impl Conn {
             match (&self.sock).read(buf.get_mut(..want).unwrap_or_default()) {
                 Ok(0) => {
                     self.host_eof = true;
+                    if !self.inject_step(out, run.as_deref_mut(), None, |f, run, q| f.host_ended(run, q)) {
+                        return;
+                    }
                     break;
+                }
+                Ok(n) if self.inject.is_some() => {
+                    let got = buf.get(..n).unwrap_or_default();
+                    if !self.inject_step(out, run.as_deref_mut(), Some(got), |f, run, q| {
+                        f.from_host(got, run, q)
+                    }) {
+                        return;
+                    }
                 }
                 Ok(n) => {
                     let got = buf.get(..n).unwrap_or_default();
@@ -627,6 +747,10 @@ impl Conn {
                     return;
                 }
             }
+        }
+        // What the injector answered the host (its TLS's handshake, a close) goes at once.
+        if self.inject.is_some() && !self.to_host.is_empty() && !self.host_shut {
+            self.flush_to_host(out);
         }
         self.send_new(out);
     }
@@ -823,8 +947,9 @@ impl Conn {
         }
     }
 
-    /// A segment from the guest for this connection.
-    pub fn on_segment(&mut self, seg: &wire::Tcp<'_>, out: &mut dyn ToGuest) {
+    /// A segment from the guest for this connection; its bytes through the injector, given
+    /// `run`, where it serves the flow.
+    pub fn on_segment(&mut self, seg: &wire::Tcp<'_>, out: &mut dyn ToGuest, mut run: Option<&mut Run<'_>>) {
         if self.state == State::SynSent {
             self.on_syn_sent(seg, out);
             return;
@@ -899,8 +1024,17 @@ impl Conn {
         }
         let mut answer = false;
         if seq == self.rcv_nxt && !data.is_empty() && !self.guest_fin {
-            let room = TO_HOST.saturating_sub(self.to_host.len());
+            let room = TO_HOST.saturating_sub(self.held());
             let taken = data.get(..data.len().min(room)).unwrap_or_default();
+            // DNS's stream and the injector take the guest's bytes themselves.
+            let hooked = self.dns.is_some() || self.inject.is_some();
+            if self.inject.is_some()
+                && !self.inject_step(out, run.as_deref_mut(), None, |f, run, q| {
+                    f.from_guest(taken, run, q)
+                })
+            {
+                return;
+            }
             if let Some(d) = self.dns.as_mut() {
                 // Questions go whole, if granted; refusals where no answer is part way.
                 let granted = d.from_guest(taken);
@@ -915,7 +1049,7 @@ impl Conn {
             }
             // Straight from the frame to the host's socket while nothing waits before them;
             // what it has no room for now waits in `to_host`.
-            let written = if self.dns.is_some() {
+            let written = if hooked {
                 0
             } else if self.to_host.is_empty() {
                 match write_now(&self.sock, [taken, &[]]) {
@@ -928,7 +1062,7 @@ impl Conn {
             } else {
                 0
             };
-            if self.dns.is_none()
+            if !hooked
                 && self
                     .to_host
                     .extend(taken.get(written..).unwrap_or_default())
@@ -953,6 +1087,9 @@ impl Conn {
             self.guest_fin = true;
             self.rcv_nxt = self.rcv_nxt.wrapping_add(1);
             answer = true;
+            if !self.inject_step(out, run, None, |f, run, q| f.guest_ended(run, q)) {
+                return;
+            }
         }
         self.flush_to_host(out);
         if answer && !self.closed {
@@ -1228,7 +1365,7 @@ mod tests {
             remote: (IpAddr::from([172, 17, 0, 1]), 40_000),
         };
         let mut c = Conn::accept(key, sock, 1000, sent);
-        c.on_segment(&segment(5000, 1001, SYN | ACK), sent);
+        c.on_segment(&segment(5000, 1001, SYN | ACK), sent, None);
         (c, client)
     }
 
@@ -1249,17 +1386,17 @@ mod tests {
                 payload: chunk,
                 ..segment(seq, 1001, ACK)
             };
-            c.on_segment(&seg, &mut sent);
+            c.on_segment(&seg, &mut sent, None);
             seq = seq.wrapping_add(chunk.len() as u32);
         }
         assert!(!c.to_host.is_empty());
         sent.take();
-        c.on_segment(&segment(seq.wrapping_add(10), 0, RST), &mut sent);
+        c.on_segment(&segment(seq.wrapping_add(10), 0, RST), &mut sent, None);
         assert_eq!(sent.take(), [(1001, seq, ACK, vec![])], "a challenge");
-        c.on_segment(&segment(seq.wrapping_add(1 << 30), 0, RST), &mut sent);
+        c.on_segment(&segment(seq.wrapping_add(1 << 30), 0, RST), &mut sent, None);
         assert_eq!(sent.take(), []);
         assert!(!c.closed);
-        c.on_segment(&segment(seq, 0, RST), &mut sent);
+        c.on_segment(&segment(seq, 0, RST), &mut sent, None);
         let reader = std::thread::spawn(move || {
             let mut got = Vec::new();
             client.read_to_end(&mut got).unwrap();
@@ -1291,9 +1428,9 @@ mod tests {
         let mut sent = Sent::default();
         let (mut c, _client) = opened(&mut sent);
         sent.take();
-        c.on_segment(&segment(5000, 1001, ACK), &mut sent);
+        c.on_segment(&segment(5000, 1001, ACK), &mut sent, None);
         assert_eq!(sent.take(), [(1001, 5001, ACK, vec![])]);
-        c.on_segment(&segment(5001, 1001, ACK), &mut sent);
+        c.on_segment(&segment(5001, 1001, ACK), &mut sent, None);
         assert_eq!(sent.take(), []);
     }
 
@@ -1307,7 +1444,7 @@ mod tests {
             payload: b"straight",
             ..segment(5001, 1001, ACK)
         };
-        c.on_segment(&straight, &mut sent);
+        c.on_segment(&straight, &mut sent, None);
         // Taken at once, they never touched the queue, nor made it take memory.
         assert_eq!(c.to_host.capacity(), 0);
         let q = Ring::wrapped(b"abc", b"defg").unwrap();
@@ -1357,7 +1494,7 @@ mod tests {
                 payload: &chunk,
                 ..segment(seq, 1001, ACK)
             };
-            c.on_segment(&bytes, &mut sent);
+            c.on_segment(&bytes, &mut sent, None);
             seq = seq.wrapping_add(chunk.len() as u32);
             total += chunk.len();
         }
@@ -1429,7 +1566,7 @@ mod tests {
         c.on_timer(due, &mut sent);
         assert_eq!(sent.take(), [(1001, 5001, ACK, data[..536].to_vec())]);
         assert_eq!(c.deadline(), Some(due + 2 * RTO));
-        c.on_segment(&segment(5001, 5001, ACK), &mut sent);
+        c.on_segment(&segment(5001, 5001, ACK), &mut sent, None);
         assert_eq!(sent.take(), []);
         assert_eq!(c.retransmission(), None);
     }
@@ -1443,26 +1580,26 @@ mod tests {
         let (mut c, _client, data) = sending(&mut sent);
         // The first and the fourth lost: each of the six that came says where the guest is.
         let dup = segment(5001, 1001, ACK);
-        c.on_segment(&dup, &mut sent);
+        c.on_segment(&dup, &mut sent, None);
         assert_eq!(sent.take(), [(1001, 5001, ACK, data[..536].to_vec())]);
         for _ in 0..5 {
-            c.on_segment(&dup, &mut sent);
+            c.on_segment(&dup, &mut sent, None);
         }
         assert_eq!(sent.take(), []);
         // The first filled, the guest acknowledges up to the fourth: sent again at once.
-        c.on_segment(&segment(5001, 1001 + 3 * 536, ACK), &mut sent);
+        c.on_segment(&segment(5001, 1001 + 3 * 536, ACK), &mut sent, None);
         assert_eq!(
             sent.take(),
             [(1001 + 3 * 536, 5001, ACK, data[3 * 536..4 * 536].to_vec())]
         );
-        c.on_segment(&segment(5001, 5001, ACK), &mut sent);
+        c.on_segment(&segment(5001, 5001, ACK), &mut sent, None);
         assert_eq!(sent.take(), []);
         assert_eq!(c.retransmission(), None);
         // A later loss is repaired as the first was.
         c.to_guest.extend(&data[..1000]).unwrap();
         c.send_new(&mut sent);
         assert_eq!(sent.take().len(), 2);
-        c.on_segment(&segment(5001, 5001, ACK), &mut sent);
+        c.on_segment(&segment(5001, 5001, ACK), &mut sent, None);
         assert_eq!(sent.take(), [(5001, 5001, ACK, data[..536].to_vec())]);
     }
 
@@ -1477,17 +1614,17 @@ mod tests {
                 window: 65_534 + i % 2,
                 ..segment(5001, 1001, ACK)
             };
-            c.on_segment(&window, &mut sent);
+            c.on_segment(&window, &mut sent, None);
         }
         for i in 0..4u32 {
             let bytes = wire::Tcp {
                 payload: b"x",
                 ..segment(5001 + i, 1001, ACK)
             };
-            c.on_segment(&bytes, &mut sent);
+            c.on_segment(&bytes, &mut sent, None);
         }
         let fin = segment(5005, 1001, ACK | FIN);
-        c.on_segment(&fin, &mut sent);
+        c.on_segment(&fin, &mut sent, None);
         assert!(sent.take().iter().all(|s| s.3.is_empty()));
     }
 
@@ -1501,12 +1638,12 @@ mod tests {
         c.on_timer(c.deadline().unwrap(), &mut sent);
         assert_eq!(sent.take(), [(1001, 5001, ACK, data[..536].to_vec())]);
         // Late, not lost: the guest had it all, and says so again for each copy.
-        c.on_segment(&segment(5001, 5001, ACK), &mut sent);
+        c.on_segment(&segment(5001, 5001, ACK), &mut sent, None);
         c.to_guest.extend(&data[..2000]).unwrap();
         c.send_new(&mut sent);
         assert_eq!(sent.take().len(), 4);
         for _ in 0..3 {
-            c.on_segment(&segment(5001, 5001, ACK), &mut sent);
+            c.on_segment(&segment(5001, 5001, ACK), &mut sent, None);
         }
         assert_eq!(sent.take(), []);
     }
@@ -1523,26 +1660,26 @@ mod tests {
             window: 0,
             ..segment(5001, 1001 + 536, ACK)
         };
-        c.on_segment(&closed, &mut sent);
+        c.on_segment(&closed, &mut sent, None);
         // Nothing in flight, nothing awaited but the window: the guest is probed for it.
         let probe = c.deadline().unwrap();
         // What it drops past its edge, it says so of: nothing for it.
         for _ in 0..4 {
-            c.on_segment(&closed, &mut sent);
+            c.on_segment(&closed, &mut sent, None);
         }
         assert_eq!(sent.take(), []);
         assert_eq!(c.deadline(), Some(probe));
-        c.on_segment(&segment(5001, 1001 + 536, ACK), &mut sent);
+        c.on_segment(&segment(5001, 1001 + 536, ACK), &mut sent, None);
         let again = sent.take();
         assert_eq!(again.first().map(|s| s.0), Some(1001 + 536));
         let bytes: Vec<u8> = again.iter().flat_map(|s| s.3.clone()).collect();
         assert_eq!(bytes, data[536..]);
         // Segments past the edge still on their way when it shrank reach a guest whose
         // window has opened, before those sent again: what it says of them is no loss.
-        c.on_segment(&segment(5001, 1001 + 536, ACK), &mut sent);
+        c.on_segment(&segment(5001, 1001 + 536, ACK), &mut sent, None);
         assert_eq!(sent.take(), []);
         // Had the guest had them after all, its acknowledgement of them all is taken.
-        c.on_segment(&segment(5001, 5001, ACK), &mut sent);
+        c.on_segment(&segment(5001, 5001, ACK), &mut sent, None);
         assert_eq!(c.retransmission(), None);
         assert!(c.to_guest.is_empty());
     }
@@ -1558,7 +1695,7 @@ mod tests {
             window: 0,
             ..segment(5001, 1001, ACK)
         };
-        c.on_segment(&shut, &mut sent);
+        c.on_segment(&shut, &mut sent, None);
         c.to_guest.extend(b"waiting").unwrap();
         c.send_new(&mut sent);
         sent.take();
@@ -1569,10 +1706,10 @@ mod tests {
             let next = c.deadline().unwrap();
             assert_eq!(next - due, RTO * 2u32.pow(i.min(RETRIES)));
             due = next;
-            c.on_segment(&shut, &mut sent);
+            c.on_segment(&shut, &mut sent, None);
             assert!(!c.closed);
         }
-        c.on_segment(&segment(5001, 1001, ACK), &mut sent);
+        c.on_segment(&segment(5001, 1001, ACK), &mut sent, None);
         assert_eq!(sent.take(), [(1001, 5001, ACK | PSH, b"waiting".to_vec())]);
     }
 
@@ -1585,7 +1722,7 @@ mod tests {
             window: 0,
             ..segment(5001, 1001, ACK)
         };
-        c.on_segment(&shut, &mut sent);
+        c.on_segment(&shut, &mut sent, None);
         c.to_guest.extend(b"waiting").unwrap();
         c.send_new(&mut sent);
         for _ in 0..RETRIES {
@@ -1621,8 +1758,9 @@ mod tests {
                 ..segment(5001, 1001, ACK)
             },
             &mut sent,
+            None,
         );
-        c.on_segment(&segment(5001, 1001, ACK), &mut sent);
+        c.on_segment(&segment(5001, 1001, ACK), &mut sent, None);
         assert_eq!(
             sent.take(),
             [
@@ -1630,7 +1768,7 @@ mod tests {
                 (1011, 5001, FIN | ACK, vec![])
             ]
         );
-        c.on_segment(&segment(5001, 1012, ACK | FIN), &mut sent);
+        c.on_segment(&segment(5001, 1012, ACK | FIN), &mut sent, None);
         c.flush_to_host(&mut sent);
         assert!(c.closed);
     }
@@ -1646,12 +1784,12 @@ mod tests {
             window: 2 * 536,
             ..segment(seq, ack, ACK)
         };
-        c.on_segment(&small(5001, 1001), &mut sent);
+        c.on_segment(&small(5001, 1001), &mut sent, None);
         let data: Vec<u8> = (0..4000u32).map(|i| (i % 251) as u8).collect();
         c.to_guest.extend(&data).unwrap();
         c.send_new(&mut sent);
         assert_eq!(sent.take().len(), 2);
-        c.on_segment(&small(5001, 1001), &mut sent);
+        c.on_segment(&small(5001, 1001), &mut sent, None);
         assert_eq!(sent.take(), [(1001, 5001, ACK, data[..536].to_vec())]);
     }
 
@@ -1666,7 +1804,7 @@ mod tests {
         sent.full = true;
         let dup = segment(5001, 1001, ACK);
         for _ in 0..3 {
-            c.on_segment(&dup, &mut sent);
+            c.on_segment(&dup, &mut sent, None);
         }
         assert!(c.blocked());
         assert_eq!(sent.take(), []);
@@ -1680,6 +1818,166 @@ mod tests {
             ]
         );
         assert!(!c.blocked());
+    }
+
+    /// A run's credentials, toward `host` alone, its injector's host side trusting `root` beside
+    /// the host's own roots.
+    fn credentials(host: &str, root: &rcgen::CertifiedIssuer<'static, rcgen::KeyPair>) -> crate::Credentials {
+        crate::Credentials {
+            grants: vec![crate::Grant {
+                reference: "anthropic/claude-max".into(),
+                toward: vec![host.into()],
+                placeholder: "kiln-placeholder-0a".into(),
+            }],
+            ca: crate::ca::Ca::new(crate::ca::Key::generate().unwrap(), &[host]).unwrap(),
+            leases: crate::lease::Leases::new(vec!["anthropic/claude-max".into()]),
+            upstream: crate::inject::Upstream::new(vec![root.der().clone()]).unwrap(),
+            sign_ins: crate::signin::SignIns::new(Vec::new()),
+        }
+    }
+
+    /// A guest's TLS client of `name`, trusting `ca`: its ClientHello, as it sends it.
+    fn hello(ca: &[u8], name: &str) -> (rustls::ClientConnection, Vec<u8>) {
+        let mut roots = rustls::RootCertStore::empty();
+        roots
+            .add(rustls::pki_types::CertificateDer::from(ca.to_vec()))
+            .unwrap();
+        let config = rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(
+            rustls::crypto::aws_lc_rs::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+        let name = rustls::pki_types::ServerName::try_from(name.to_string()).unwrap();
+        let mut guest = rustls::ClientConnection::new(std::sync::Arc::new(config), name).unwrap();
+        let mut bytes = Vec::new();
+        while guest.wants_write() {
+            guest.write_tls(&mut bytes).unwrap();
+        }
+        (guest, bytes)
+    }
+
+    /// Blocks until the host's bytes, or its end, are there for `c` to read: an event, waited on
+    /// without a clock.
+    fn readable(c: &Conn) {
+        let HostSock::Tcp(sock) = &c.sock else {
+            panic!("a host connection that is no TCP stream")
+        };
+        sock.set_nonblocking(false).unwrap();
+        sock.peek(&mut [0u8; 1]).unwrap();
+        sock.set_nonblocking(true).unwrap();
+    }
+
+    /// The injector's handoff (D242). Do: send a connection of a run with credential grants a
+    /// ClientHello for a host no grant names, in two segments; then another connection one for
+    /// the granted host, whose TLS server answers the injector. Expect: the first's bytes held by
+    /// the injector, and out of the window, until its ClientHello is whole, then passed to the
+    /// host as they came, the injector let go of. The second's guest answered nothing while the
+    /// injector opens the host's TLS (f41); the host given the injector's own ClientHello for the
+    /// granted host; once the host has answered, the guest answered with its TLS's handshake as
+    /// segments, which it takes under the run's CA alone, and the host's TLS made with the
+    /// injector under the host's own certificate.
+    #[test]
+    fn the_injector_passes_an_ungranted_flow_and_ends_a_granted_ones_tls() {
+        fn run(credentials: &mut crate::Credentials) -> crate::inject::Run<'_> {
+            crate::inject::Run {
+                credentials,
+                waiter: 1,
+                now: Instant::now(),
+                audit: Vec::new(),
+                refused: Vec::new(),
+            }
+        }
+        let root = crate::inject::tests::root("the host's root");
+        let mut credentials = credentials("api.example.test", &root);
+        let mut sent = Sent::default();
+        let (mut c, mut client) = opened(&mut sent);
+        c.inject = Some(Box::default());
+        // A guest that scales its window, as Linux's does, so that this side's is not held at
+        // an unscaled window's 65535.
+        c.scaled = true;
+        sent.take();
+        let (_, bytes) = hello(credentials.ca.der(), "free.example.test");
+        let (first, second) = bytes.split_at(bytes.len() / 2);
+        let full = c.window();
+        let seg = wire::Tcp {
+            payload: first,
+            ..segment(5001, 1001, ACK)
+        };
+        c.on_segment(&seg, &mut sent, Some(&mut run(&mut credentials)));
+        assert_eq!(c.held(), first.len(), "the ClientHello's first part was not held");
+        assert!(
+            c.window() < full,
+            "what the injector held was not out of the window"
+        );
+        let seg = wire::Tcp {
+            payload: second,
+            ..segment(5001 + first.len() as u32, 1001, ACK)
+        };
+        c.on_segment(&seg, &mut sent, Some(&mut run(&mut credentials)));
+        assert!(c.inject.is_none(), "a flow to a host no grant names was kept");
+        c.on_writable(&mut sent);
+        let mut got = vec![0u8; bytes.len()];
+        client.read_exact(&mut got).unwrap();
+        assert_eq!(got, bytes, "the ClientHello did not reach the host as it came");
+        // The granted host's.
+        let mut sent = Sent::default();
+        let (mut c, mut client) = opened(&mut sent);
+        c.inject = Some(Box::default());
+        sent.take();
+        let (mut guest, bytes) = hello(credentials.ca.der(), "api.example.test");
+        let seg = wire::Tcp {
+            payload: &bytes,
+            ..segment(5001, 1001, ACK)
+        };
+        c.on_segment(&seg, &mut sent, Some(&mut run(&mut credentials)));
+        assert!(c.inject.is_some());
+        assert!(
+            sent.take().iter().all(|s| s.3.is_empty()),
+            "the guest was answered before the host's TLS was made"
+        );
+        c.on_writable(&mut sent);
+        let mut host =
+            rustls::ServerConnection::new(crate::inject::tests::leaf_config(&root, &["api.example.test"]))
+                .unwrap();
+        while !host.wants_write() {
+            assert!(
+                host.read_tls(&mut client).unwrap() > 0,
+                "the connection ended before the injector's ClientHello"
+            );
+            host.process_new_packets().unwrap();
+        }
+        assert_eq!(host.server_name(), Some("api.example.test"));
+        while host.wants_write() {
+            host.write_tls(&mut client).unwrap();
+        }
+        // The host's answer, read as it comes, until the injector has made the host's TLS.
+        let mut buf = vec![0u8; 64 << 10];
+        while format!("{:?}", c.inject) == "Some(Flow(Opening))" {
+            readable(&c);
+            c.on_readable(&mut sent, &mut buf, Some(&mut run(&mut credentials)));
+        }
+        assert!(c.inject.is_some(), "the injector let a granted flow go");
+        let answer: Vec<u8> = sent.take().into_iter().flat_map(|s| s.3).collect();
+        assert!(!answer.is_empty(), "no handshake for the guest");
+        let mut rest = &answer[..];
+        while !rest.is_empty() {
+            guest.read_tls(&mut rest).unwrap();
+            guest.process_new_packets().unwrap();
+        }
+        assert!(
+            !guest.is_handshaking(),
+            "the guest's TLS was not ended under the run's CA"
+        );
+        // The injector's Finished, which went to the host as the host's TLS was made.
+        while host.is_handshaking() {
+            assert!(
+                host.read_tls(&mut client).unwrap() > 0,
+                "the connection ended before the injector's Finished"
+            );
+            host.process_new_packets().unwrap();
+        }
     }
 
     /// A connection that moved bytes and then idles holds no memory for them: its queues
@@ -1697,11 +1995,15 @@ mod tests {
         let mut had = 0usize;
         let deadline = Instant::now() + Duration::from_secs(10);
         while had < data.len() && Instant::now() < deadline {
-            c.on_readable(&mut sent, &mut buf);
+            c.on_readable(&mut sent, &mut buf, None);
             let segments = sent.take();
             had += segments.iter().map(|(_, _, _, b)| b.len()).sum::<usize>();
             if let Some((seq, _, _, b)) = segments.last() {
-                c.on_segment(&segment(5001, seq.wrapping_add(b.len() as u32), ACK), &mut sent);
+                c.on_segment(
+                    &segment(5001, seq.wrapping_add(b.len() as u32), ACK),
+                    &mut sent,
+                    None,
+                );
             }
         }
         assert_eq!(had, data.len());
@@ -1723,7 +2025,7 @@ mod tests {
                 payload: chunk,
                 ..segment(seq, 1001u32.wrapping_add(had as u32), ACK)
             };
-            c.on_segment(&seg, &mut sent);
+            c.on_segment(&seg, &mut sent, None);
             seq = seq.wrapping_add(chunk.len() as u32);
         }
         assert!(!c.to_host.is_empty());

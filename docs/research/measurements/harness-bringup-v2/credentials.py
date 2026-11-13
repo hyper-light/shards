@@ -17,6 +17,8 @@ mode. Every output line is a status, a count or a path: no value, no hash.
 
 import base64
 import calendar
+import ctypes
+import errno
 import hashlib
 import json
 import os
@@ -28,15 +30,18 @@ import time
 
 # A secret is a string a credential file holds under one of these names (Codex's
 # auth.json: OPENAI_API_KEY, tokens.{access,id,refresh}_token, tokens.account_id; Claude
-# Code's .credentials.json: claudeAiOauth.{access,refresh}Token).
+# Code's .credentials.json: claudeAiOauth.{access,refresh}Token), whatever its length; an
+# empty one holds none.
 SECRET_NAME = re.compile(r"token|key|secret|account_id", re.IGNORECASE)
-# A file is a leak where it holds a whole secret, or any run of WINDOW + STRIDE - 1 = 31 or
-# more consecutive bytes of one (a log can cut a token): every WINDOW-byte window of each
-# secret is kept, and the file's windows are looked up at every STRIDE-th offset, of which
-# one falls in such a run's first STRIDE bytes. JWTs of one issuer share their header, so a
-# leak is reported by path for a person to look at, never by value.
-WINDOW = 24
-STRIDE = 8
+# A file is a leak where it holds a whole secret, or a run of a secret's consecutive bytes
+# (a log can cut a token) longer than the most a provider itself shows of a credential:
+# OpenAI's refusal names a key by its first SHOWN = 8 and last 4 characters, the rest masked
+# one for one (harness-bringup-v1/records/codex-login-volume/stdout.bin,
+# "sk-shard*******************-key" for "sk-shards-placeholder-not-a-key"). Every RUN-byte run
+# of each secret is kept, and every offset of every file is looked up. JWTs of one issuer
+# share their header, so a leak is reported by path for a person to look at, never by value.
+SHOWN = 8
+RUN = SHOWN + 1
 
 
 def state_path(private):
@@ -58,15 +63,22 @@ def save_state(private, state):
     os.replace(state_path(private) + ".new", state_path(private))
 
 
-def secrets(value, name=""):
+def named_secrets(value, name=""):
+    """Each secret of `value` with the name it is held under (the leak scan of plan step 33
+    reports a find by that name, never by value)."""
     if isinstance(value, dict):
         for key, item in value.items():
-            yield from secrets(item, key)
+            yield from named_secrets(item, key)
     elif isinstance(value, list):
         for item in value:
-            yield from secrets(item, name)
-    elif isinstance(value, str) and SECRET_NAME.search(name) and len(value) >= 16:
-        yield value
+            yield from named_secrets(item, name)
+    elif isinstance(value, str) and value and SECRET_NAME.search(name):
+        yield name, value
+
+
+def secrets(value, name=""):
+    for _, found in named_secrets(value, name):
+        yield found
 
 
 def validity(document):
@@ -140,23 +152,23 @@ def all_secrets(state):
                     found.update(secrets(json.loads(f.read())))
             except (FileNotFoundError, ValueError):
                 pass
-    windows, whole = set(), set()
+    runs, whole = set(), set()
     for value in found:
         data = value.encode()
         whole.add(data)
-        windows.update(data[i : i + WINDOW] for i in range(len(data) - WINDOW + 1))
-    return found, windows, whole
+        runs.update(data[i : i + RUN] for i in range(len(data) - RUN + 1))
+    return found, runs, whole
 
 
-def leaked(data, windows, whole):
+def leaked(data, runs, whole):
     if any(value in data for value in whole):
         return True
-    return any(data[i : i + WINDOW] in windows for i in range(0, len(data) - WINDOW + 1, STRIDE))
+    return any(data[i : i + RUN] in runs for i in range(len(data) - RUN + 1))
 
 
 def leakcheck(private, paths):
     state = load_state(private)
-    found, windows, whole = all_secrets(state)
+    found, runs, whole = all_secrets(state)
     files = scanned = 0
     leaks = []
     for root in paths:
@@ -170,10 +182,11 @@ def leakcheck(private, paths):
                     data = f.read()
                 files += 1
                 scanned += len(data)
-                if leaked(data, windows, whole):
+                if leaked(data, runs, whole):
                     leaks.append(path)
-    print(f"leak check: {len(found)} secret values of {len(state)} credentials, "
-          f"{files} files ({scanned} bytes) scanned: " + ("FOUND in " + ", ".join(leaks) if leaks else "not found"))
+    print(f"leak check: {len(found)} secret values of {len(state)} credentials, whole or any run of "
+          f"{RUN} bytes, {files} files ({scanned} bytes) scanned: "
+          + ("FOUND in " + ", ".join(leaks) if leaks else "not found"))
     return 3 if leaks else 0
 
 
@@ -181,27 +194,64 @@ def tokens_of(document):
     return sorted(secrets(document))
 
 
-def write_back(src, data, mode):
+def exchange(a, b):
+    """Swaps the files named `a` and `b`, in one step of the kernel's: renamex_np(2)'s
+    RENAME_SWAP on macOS (sys/stdio.h, 0x2; macOS 10.12 on), renameat2(2)'s RENAME_EXCHANGE on
+    Linux (include/uapi/linux/fs.h, 1 << 1; Linux 3.15 on, where the file system takes it), each
+    name relative to the working directory (AT_FDCWD, -100 in include/uapi/linux/fcntl.h, as the
+    names are absolute it is not read). Win32's renames replace a name, never swap two
+    (MoveFileExW, ReplaceFileW): there, and where the C library has no renameat2, ENOSYS."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    first, second = os.fsencode(a), os.fsencode(b)
+    if sys.platform == "darwin":
+        rc = libc.renamex_np(first, second, ctypes.c_uint(0x2))
+    elif sys.platform.startswith("linux") and hasattr(libc, "renameat2"):
+        rc = libc.renameat2(ctypes.c_int(-100), first, ctypes.c_int(-100), second, ctypes.c_uint(1 << 1))
+    else:
+        raise OSError(errno.ENOSYS, "this host swaps no two names in one step")
+    if rc != 0:
+        code = ctypes.get_errno()
+        raise OSError(code, os.strerror(code))
+
+
+def write_back(src, data, mode, was_sha256):
+    """Writes `data` over `src`, in the one step that also takes what `src` held then: a new
+    file of `data` and the original swap names ([`exchange`]). A change made to the original
+    after settle last read it is so in what was swapped out, never lost: where that is not the
+    original whose SHA-256 is `was_sha256`, it is swapped back. None where written back, else
+    why not; a third version, written between the two swaps, is kept beside the original."""
     if os.stat(src).st_uid != os.getuid():
         raise PermissionError(f"{src} is not this user's")
     directory = os.path.dirname(src)
     fd, tmp = tempfile.mkstemp(dir=directory, prefix=".shards-writeback-")
+    why = None
     try:
         os.fchmod(fd, mode)
         with os.fdopen(fd, "wb") as f:
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, src)
-    except BaseException:
-        if os.path.exists(tmp):
+        exchange(tmp, src)
+        with open(tmp, "rb") as f:
+            was = f.read()
+        if hashlib.sha256(was).hexdigest() != was_sha256:
+            exchange(tmp, src)
+            with open(tmp, "rb") as f:
+                back = f.read()
+            if back != data:
+                why = f"the original changed twice as it was written back: the newest is kept at {tmp}"
+                tmp = None
+            else:
+                why = "the original changed on the host as it was written back"
+    finally:
+        if tmp is not None and os.path.exists(tmp):
             os.unlink(tmp)
-        raise
     dfd = os.open(directory, os.O_DIRECTORY)
     try:
         os.fsync(dfd)
     finally:
         os.close(dfd)
+    return why
 
 
 def settle(private):
@@ -228,9 +278,15 @@ def settle(private):
             print(f"{name}: CONFLICT: the harness refreshed its tokens, and the original changed on "
                   "the host during the run: not written back")
             continue
-        write_back(entry["src"], data, entry["mode"])
-        print(f"{name}: the harness refreshed its tokens in the microVM: written back over the "
-              "original atomically, its mode kept")
+        try:
+            why = write_back(entry["src"], data, entry["mode"], entry["sha256"])
+        except OSError as e:
+            why = f"it could not be written back in one step ({e.strerror})"
+        if why is None:
+            print(f"{name}: the harness refreshed its tokens in the microVM: written back over the "
+                  "original in one step, its mode kept")
+        else:
+            print(f"{name}: CONFLICT: the harness refreshed its tokens, and {why}: not written back")
 
 
 def scrub(private):

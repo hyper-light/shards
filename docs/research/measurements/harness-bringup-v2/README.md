@@ -79,11 +79,15 @@ sign-in, from this repository; [credentials.py](credentials.py) does each step i
    PROJECT:/work:ro …`, on the volume declared for that harness alone.
 3. **Afterwards, whatever the test did,** the exit trap runs three steps:
    - **leakcheck** reads every file under `WORK` and looks for every secret of the original
-     and of the copy: each string of 16 or more characters held under a name with `token`,
-     `key`, `secret` or `account_id` in it. A file is a leak if it holds a whole secret, or a
-     run of 31 or more of a secret's consecutive bytes: every 24-byte window of each secret is
-     kept, and the file's windows are looked up at every 8th offset. The step prints found or
-     not found, and a leak's path, never a value.
+     and of the copy: each string held under a name with `token`, `key`, `secret` or
+     `account_id` in it, whatever its length. A file is a leak if it holds a whole secret, or
+     a run of a secret's consecutive bytes one longer than the most a provider shows of a key
+     (OpenAI's refusal shows a key's first 8 and last 4 characters: v1's
+     `records/codex-login-volume/stdout.bin`). Every 9-byte run of each secret is kept, and
+     looked up at every offset of every file. The step prints found or not found, and a leak's
+     path, never a value. The runs below used its first form, which skipped values under 16
+     characters and promised runs of 31 bytes; the review (plan step 2,
+     [review.md](review.md)) replaced both.
    - **settle** compares the copy with its original by SHA-256. A copy whose tokens the
      harness refreshed is written back over the original atomically: a temporary file in the
      original's directory, fsync, rename, then the directory fsync'd, with the original's
@@ -95,7 +99,8 @@ sign-in, from this repository; [credentials.py](credentials.py) does each step i
 
 Every line the script prints is a status, a count, a duration or a path.
 
-**Self-tests** ran on fake sign-ins on the Mac, with no real credential:
+**Self-tests** ran on fake sign-ins on the Mac, with no real credential (committed since the
+review as [credentials_test.py](credentials_test.py)):
 - **copy:** done as specified.
 - **leakcheck:** found a planted whole value, and planted unaligned pieces of 31 bytes (and,
   in that run, of 30, below what it promises). Its first version looked at fixed-stride
@@ -111,7 +116,7 @@ Every line the script prints is a status, a count, a duration or a path.
 - **This is native delegation (G18), not an opaque credential.** The harness and every
   process it starts can read the copy, and could send it anywhere its grants reach (any
   address on TCP 443: v1's H2). The leak check sees only the files the test keeps.
-- **The leak check promises runs of 31 bytes or more.** The committed records were also
+- **The leak check promised runs of 31 bytes or more** in these runs (9 since the review). The committed records were also
   scanned for the shapes credentials take: Anthropic and OpenAI key prefixes, JWT headers,
   bearer headers and token field names. None was found. No email address, and no account
   or organization field, is in them.
@@ -265,7 +270,7 @@ alone. The harness would still want a writable home of its own for its state.
 |---|---|
 | R01 | No production code changed: one test file, the examples and these scripts. `credentials.py` never raises with a credential in its message: `validity` answers "unknown". |
 | R02 | No architecture decided. Sources: the publishers' CLIs (`codex exec --help`, `claude --help`) and their documented homes (`CODEX_HOME`, `CLAUDE_CONFIG_DIR`); v1's measured volume ownership (a run-time share shows as the harness's own). Native delegation is G18's label; the opaque broker remains the person's choice (v1). |
-| R03 | No production literal. The leak check's 24-byte window, 8-byte stride and 16-character floor are test parameters, with its guarantee derived in the script. |
+| R03 | No production literal. The leak check's 24-byte window, 8-byte stride and 16-character floor were chosen test parameters; the review replaced them with every value whatever its length and every run one longer than a provider shows of a key ([review.md](review.md)). |
 | R04 | No state machine added. Settle's outcomes are named in its output: unchanged, format only, refresh written back, conflict. |
 | R05 | No production interface, wait or cache. Two cases join v1's `Case` and `bring_up`. |
 | R06, R07, R13 | Two cases and two small scripts. Comments state safety obligations and sources; an unused helper was removed. |
@@ -273,7 +278,7 @@ alone. The harness would still want a writable home of its own for its state.
 | R09 | Each pass is a live run. S1 was corrected before any run, not reproduced (said so above). The leak check's alignment gap was found by a planted-piece test, fixed and tested again. |
 | R10 | The harness, records and self-tests are here. No production guard changed. The cases' guards are the kernel's record of `ls` in the harness's domain, and both names in the tool's output and in the answer. Their removal mutation (a prompt asking for no tool must fail) costs a real turn and was not run (owed). |
 | R11 | Verified: Linux x86_64 on KVM only. Unverified: macOS arm64 (HVF), Windows (WHP), Linux arm64. Both publishers ship arm64 builds, which fetch.sh does not fetch yet. |
-| R12 | Nothing platform-specific in shards. The script's private store is Linux's per-user tmpfs; another host needs another. |
+| R12 | Nothing platform-specific in shards. The script's private store is Linux's per-user tmpfs; another host needs another. Since the review ([review.md](review.md), F9) it runs on macOS too, its copy in macOS's per-user temporary directory, and writes a refresh back in one swap; Windows is refused, saying why. |
 | R15 | Implementer scope: two single-VM turns and light checks. The person's rule of 2026-11-12, relayed by the coordinator, has the implementer merge its work to main; the checks it leaves owed are below. |
 | R16 | adacachy keeps `~/.cache/shards-harness-bringup-v2`: v1's verified binaries, this build's target, and the work directories with the raw Claude stream (for the redaction's check). v1's 6.9 GB there was removed. Nothing was built on this Mac. |
 
@@ -286,9 +291,11 @@ alone. The harness would still want a writable home of its own for its state.
     adacachy (x86_64 Linux): clean, 1 min 29 s;
   - `scripts/check-development-policy`: passed.
 - **Other hosts.** The signed-in turns on macOS arm64, Windows and Linux arm64 hosts.
-- **The mutation.** R10's check: a prompt asking for no tool must fail a case.
+- **The mutation.** R10's check: a prompt asking for no tool must fail a case. Done without a
+  prompt by the review ([review.md](review.md), F7): the recorded turns less their tool fail
+  their cases. A real turn of such a prompt stays ROOT's to decide.
 - **A long turn.** A turn with a silence past the owner endpoint's former 100 s bound, now
-  that H1 is fixed on main.
+  that H1 is fixed on main. The test keeps no clock of its own since the review (F2, F4).
 - **The person's choices (G18).** A refresh, rotation and revocation contract; a per-member
   secret primitive; an opaque broker.
 - **The merge.** This branch merges `origin/main` before its push, but the runs above used

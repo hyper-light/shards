@@ -87,7 +87,6 @@ fn the_agentignore_is_read_before_the_dockerignore() {
                 ctx.to_str().unwrap(),
             ],
             &env,
-            TIMEOUT,
         );
         let mut kept: Vec<String> = std::fs::read_dir(&out)
             .map(|d| {
@@ -270,12 +269,7 @@ fn an_image_built_of_settings_runs_as_built() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let built = run_shards_env(
-        &["build"],
-        &["-t", "built:1", ctx.to_str().unwrap()],
-        &env,
-        TIMEOUT,
-    );
+    let built = run_shards_env(&["build"], &["-t", "built:1", ctx.to_str().unwrap()], &env);
     let shown = format!("--- stdout\n{}\n--- stderr\n{}", built.stdout, built.stderr);
     assert_eq!(built.status, Some(0), "{shown}");
     assert!(
@@ -295,14 +289,9 @@ fn an_image_built_of_settings_runs_as_built() {
     let id = |r: &common::Run| r.stdout.trim().to_string();
     let mut plain = env.to_vec();
     plain.push(("BUILDX_NO_DEFAULT_ATTESTATIONS", std::ffi::OsStr::new("1")));
-    let q1 = run_shards_env(&["build"], &["-q", ctx.to_str().unwrap()], &plain, TIMEOUT);
-    let q2 = run_shards_env(
-        &["image", "build"],
-        &["-q", ctx.to_str().unwrap()],
-        &plain,
-        TIMEOUT,
-    );
-    let attested = run_shards_env(&["build"], &["-q", ctx.to_str().unwrap()], &env, TIMEOUT);
+    let q1 = run_shards_env(&["build"], &["-q", ctx.to_str().unwrap()], &plain);
+    let q2 = run_shards_env(&["image", "build"], &["-q", ctx.to_str().unwrap()], &plain);
+    let attested = run_shards_env(&["build"], &["-q", ctx.to_str().unwrap()], &env);
     assert_eq!(attested.status, Some(0), "{}", attested.stderr);
     assert_ne!(id(&attested), id(&q1));
     assert_eq!(q1.status, Some(0), "{}", q1.stderr);
@@ -320,7 +309,7 @@ fn an_image_built_of_settings_runs_as_built() {
     );
     // The manifest an unattested build writes is the ID its -q prints (Docker's types,
     // D83); an attested build's manifest is OCI's, and another.
-    let shown_plain = run_shards_env(&["build"], &[ctx.to_str().unwrap()], &plain, TIMEOUT);
+    let shown_plain = run_shards_env(&["build"], &[ctx.to_str().unwrap()], &plain);
     assert!(
         shown_plain
             .stderr
@@ -333,7 +322,7 @@ fn an_image_built_of_settings_runs_as_built() {
         eprintln!("SKIP: this host cannot run VMs");
         return;
     }
-    let ran = run_shards_env(&["run"], &["--pull", "never", "--rm", "built:1"], &env, TIMEOUT);
+    let ran = run_shards_env(&["run"], &["--pull", "never", "--rm", "built:1"], &env);
     let shown = format!("--- stdout\n{}\n--- stderr\n{}", ran.stdout, ran.stderr);
     assert_eq!(ran.status, Some(0), "{shown}");
     for line in [
@@ -419,7 +408,6 @@ fn a_builders_steps_see_the_memory_it_may_have() {
             &["build"],
             &["--progress=plain", "--no-cache", ctx.to_str().unwrap()],
             &env,
-            TIMEOUT,
         );
         let shown = format!("--- stdout\n{}\n--- stderr\n{}", built.stdout, built.stderr);
         (built, shown)
@@ -529,7 +517,6 @@ fn a_builders_ceiling_comes_from_its_host_and_its_homes_builds() {
             &["build"],
             &["--progress=plain", "--no-cache", ctx.to_str().unwrap()],
             &env,
-            TIMEOUT,
         );
         let shown = format!("--- stdout\n{}\n--- stderr\n{}", seen.stdout, seen.stderr);
         (seen, shown)
@@ -633,25 +620,21 @@ fn a_builders_memory_is_plugged_as_its_build_needs_it() {
         &["build"],
         &["--progress=plain", "-t", "plugged:1", ctx.to_str().unwrap()],
         &env,
-        TIMEOUT,
     );
     let shown = format!("--- stdout\n{}\n--- stderr\n{}", built.stdout, built.stderr);
     assert_eq!(built.status, Some(0), "{shown}");
     assert!(built.stderr.contains("allocated 1536"), "{shown}");
 
-    let full = common::vm_run(
-        &[
-            "--kernel",
-            kernel().to_str().unwrap(),
-            "--init",
-            common::test_guest().to_str().unwrap(),
-            "--memory",
-            "2560",
-            "--cmdline",
-            "console=ttyS0 panic=-1 shards_test=limits",
-        ],
-        TIMEOUT,
-    );
+    let full = common::vm_run(&[
+        "--kernel",
+        kernel().to_str().unwrap(),
+        "--init",
+        common::test_guest().to_str().unwrap(),
+        "--memory",
+        "2560",
+        "--cmdline",
+        "console=ttyS0 panic=-1 shards_test=limits",
+    ]);
     assert_eq!(full.status, Some(0), "{full}");
     let (stepped, booted) = (limits_said(&built.stderr), limits_said(&full.stdout));
     let mut wrong = Vec::new();
@@ -679,12 +662,7 @@ fn a_builders_memory_is_plugged_as_its_build_needs_it() {
         "build-plug-over-ctx",
         &format!("FROM {image}\nRUN [\"/bin/testguest\", \"alloc\", \"3072\"]\n"),
     );
-    let over = run_shards_env(
-        &["build"],
-        &["--progress=plain", ctx.to_str().unwrap()],
-        &env,
-        TIMEOUT,
-    );
+    let over = run_shards_env(&["build"], &["--progress=plain", ctx.to_str().unwrap()], &env);
     let shown = format!("--- stdout\n{}\n--- stderr\n{}", over.stdout, over.stderr);
     assert_eq!(over.status, Some(1), "{shown}");
     assert!(
@@ -731,12 +709,7 @@ fn a_builders_memory_is_plugged_as_fast_as_its_jobs_take_it() {
              RUN --mount=type=tmpfs,target=/held,size=2g [\"/bin/testguest\", \"alloc-par\", \"{jobs}\", \"3072\", \"/held/big\", \"1024\"]\n"
         ),
     );
-    let built = run_shards_env(
-        &["build"],
-        &["--progress=plain", ctx.to_str().unwrap()],
-        &env,
-        TIMEOUT,
-    );
+    let built = run_shards_env(&["build"], &["--progress=plain", ctx.to_str().unwrap()], &env);
     let shown = format!("--- stdout\n{}\n--- stderr\n{}", built.stdout, built.stderr);
     eprintln!(
         "{jobs} jobs: {}",
@@ -782,12 +755,7 @@ fn a_builder_gives_back_what_it_holds_cold_at_its_builds_word() {
             "FROM {image}\nUSER root\nRUN --mount=type=cache,target=/c [\"/bin/testguest\", \"big\", \"/c/big\", \"{MIB}\"]\n"
         ),
     );
-    let filled = run_shards_env(
-        &["build"],
-        &["--progress=plain", fill.to_str().unwrap()],
-        &env,
-        TIMEOUT,
-    );
+    let filled = run_shards_env(&["build"], &["--progress=plain", fill.to_str().unwrap()], &env);
     assert_eq!(filled.status, Some(0), "{filled}");
     let ctx = context(
         "build-give-ctx",
@@ -934,12 +902,7 @@ fn a_build_held_short_of_memory_has_its_builder_give_back() {
             "FROM {image}\nUSER root\nRUN --mount=type=cache,target=/c [\"/bin/testguest\", \"big\", \"/c/big\", \"{MIB}\"]\n"
         ),
     );
-    let filled = run_shards_env(
-        &["build"],
-        &["--progress=plain", fill.to_str().unwrap()],
-        &env,
-        TIMEOUT,
-    );
+    let filled = run_shards_env(&["build"], &["--progress=plain", fill.to_str().unwrap()], &env);
     assert_eq!(filled.status, Some(0), "{filled}");
     let ctx = context(
         "build-psi-ctx",
@@ -1268,12 +1231,7 @@ fn a_killed_build_takes_its_builder_with_it() {
         "kill-next-ctx",
         &format!("FROM {image}\nRUN [\"/bin/testguest\", \"report\"]\n"),
     );
-    let built = run_shards_env(
-        &["build"],
-        &["--progress=plain", next.to_str().unwrap()],
-        &env,
-        TIMEOUT,
-    );
+    let built = run_shards_env(&["build"], &["--progress=plain", next.to_str().unwrap()], &env);
     assert_eq!(built.status, Some(0), "{}", built.stderr);
     assert!(!left[0].exists(), "the killed build's directory is left");
 }
@@ -1316,7 +1274,6 @@ fn run_steps_run_in_a_builder_microvm() {
         &["build"],
         &["--progress=plain", "-t", "ran:1", ctx.to_str().unwrap()],
         &env,
-        TIMEOUT,
     );
     let shown = format!("--- stdout\n{}\n--- stderr\n{}", built.stdout, built.stderr);
     assert_eq!(built.status, Some(0), "{shown}");
@@ -1363,7 +1320,7 @@ fn run_steps_run_in_a_builder_microvm() {
     assert_eq!(exported_from(&built.stderr), "snapshot", "{shown}");
     assert_rootfs_is_its_layers(&home, "ran:1");
 
-    let ran = run_shards_env(&["run"], &["--rm", "ran:1"], &env, TIMEOUT);
+    let ran = run_shards_env(&["run"], &["--rm", "ran:1"], &env);
     // stat's status says a path was missing: /etc/group, removed.
     assert_eq!(ran.status, Some(1), "{}", ran.stderr);
     assert_eq!(
@@ -1383,7 +1340,7 @@ fn run_steps_run_in_a_builder_microvm() {
         "build-run-fail-ctx",
         &format!("FROM {image}\nRUN [\"/bin/testguest\", \"exit\", \"3\"]\n"),
     );
-    let failed = run_shards_env(&["build"], &[ctx.to_str().unwrap()], &env, TIMEOUT);
+    let failed = run_shards_env(&["build"], &[ctx.to_str().unwrap()], &env);
     assert_eq!(failed.status, Some(1), "{}", failed.stderr);
     assert!(
         failed.stderr.ends_with(
@@ -1399,7 +1356,7 @@ fn run_steps_run_in_a_builder_microvm() {
         "build-run-empty-path-ctx",
         &format!("FROM {image}\nENV PATH=\nWORKDIR /bin\nRUN [\"testguest\", \"exit\", \"0\"]\n"),
     );
-    let failed = run_shards_env(&["build"], &[ctx.to_str().unwrap()], &env, TIMEOUT);
+    let failed = run_shards_env(&["build"], &[ctx.to_str().unwrap()], &env);
     assert_eq!(failed.status, Some(1), "{}", failed.stderr);
     assert!(
         failed
@@ -1462,7 +1419,7 @@ fn run_steps_take_the_builds_secrets_ulimits_and_entitlements() {
         "given:1",
         ctx.to_str().unwrap(),
     ];
-    let built = run_shards_env(&["build"], &args, &env, TIMEOUT);
+    let built = run_shards_env(&["build"], &args, &env);
     let shown = format!("--- stdout\n{}\n--- stderr\n{}", built.stdout, built.stderr);
     assert_eq!(built.status, Some(0), "{shown}");
     for line in [
@@ -1499,7 +1456,7 @@ fn run_steps_take_the_builds_secrets_ulimits_and_entitlements() {
     assert_eq!(seccomp(&reports[3]), "0", "an insecure step's none\n{shown}");
 
     // Nothing of the secrets in the image.
-    let ran = run_shards_env(&["run"], &["--rm", "given:1"], &env, TIMEOUT);
+    let ran = run_shards_env(&["run"], &["--rm", "given:1"], &env);
     assert_eq!(ran.status, Some(1), "{}", ran.stderr);
     assert!(ran.stdout.contains("/run/secrets/tok missing"), "{}", ran.stdout);
     assert!(ran.stdout.contains("/s missing"), "{}", ran.stdout);
@@ -1509,7 +1466,7 @@ fn run_steps_take_the_builds_secrets_ulimits_and_entitlements() {
         "build-given-insecure-ctx",
         &format!("FROM {image}\nRUN --security=insecure [\"/bin/testguest\", \"exit\", \"0\"]\n"),
     );
-    let failed = run_shards_env(&["build"], &[insecure.to_str().unwrap()], &env, TIMEOUT);
+    let failed = run_shards_env(&["build"], &[insecure.to_str().unwrap()], &env);
     assert_eq!(failed.status, Some(1), "{}", failed.stderr);
     assert!(
         failed.stderr.contains("security.insecure is not allowed"),
@@ -1522,7 +1479,7 @@ fn run_steps_take_the_builds_secrets_ulimits_and_entitlements() {
             "FROM {image}\nRUN --mount=type=secret,id=tok,required=true [\"/bin/testguest\", \"exit\", \"0\"]\n"
         ),
     );
-    let failed = run_shards_env(&["build"], &[required.to_str().unwrap()], &env, TIMEOUT);
+    let failed = run_shards_env(&["build"], &[required.to_str().unwrap()], &env);
     assert_eq!(failed.status, Some(1), "{}", failed.stderr);
     assert!(
         failed.stderr.contains("secret tok: not found"),
@@ -1556,7 +1513,6 @@ fn run_steps_start_with_high_file_and_process_limits() {
         &["build"],
         &["--progress=plain", "--no-cache", ctx.to_str().unwrap()],
         &env,
-        TIMEOUT,
     );
     let shown = format!("--- stdout\n{}\n--- stderr\n{}", built.stdout, built.stderr);
     assert_eq!(built.status, Some(0), "{shown}");
@@ -1622,12 +1578,7 @@ fn run_steps_reach_the_network_unless_it_is_none() {
         ("SHARDS_INIT", guest_init().as_os_str()),
         ("SHARDS_BUILD_MEMORY", "1024".as_ref()),
     ];
-    let built = run_shards_env(
-        &["build"],
-        &["--progress=plain", ctx.to_str().unwrap()],
-        &env,
-        TIMEOUT,
-    );
+    let built = run_shards_env(&["build"], &["--progress=plain", ctx.to_str().unwrap()], &env);
     let _ = built_tx.send(());
     serving.join().unwrap();
     assert!(
@@ -1802,7 +1753,6 @@ fn steps_under_the_proxy_cap_reach_the_network_through_it_alone() {
                 ctx.to_str().unwrap(),
             ],
             &env,
-            TIMEOUT,
         )
     };
     let built = build();
@@ -2057,7 +2007,6 @@ fn proxy_request_costs_in_microvms() {
             &["build"],
             &["--progress=plain", "--no-cache", ctx.to_str().unwrap()],
             &env,
-            TIMEOUT,
         );
         assert_eq!(built.status, Some(0), "{}", built.stderr);
         let line = built
@@ -2095,7 +2044,7 @@ fn a_build_given_no_name_is_kept_dangling() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let ctx = context("build-unnamed-ctx", &format!("FROM {image}\nLABEL unnamed=1\n"));
     let untagged = |out: &str| out.lines().filter(|row| row.starts_with("<untagged>")).count();
     let built = shards(&["build", "-q", ctx.to_str().unwrap()]);
@@ -2124,7 +2073,7 @@ fn a_build_file_error_shows_its_lines() {
     let home = TempDir::new("build-error-home");
     let ctx = context("build-error-ctx", "FROM scratch\nFOO bar\n");
     let env = [("SHARDS_HOME", home.as_os_str())];
-    let r = run_shards_env(&["build"], &[ctx.to_str().unwrap()], &env, TIMEOUT);
+    let r = run_shards_env(&["build"], &[ctx.to_str().unwrap()], &env);
     assert_eq!(r.status, Some(1), "{}", r.stderr);
     let want = "Dockerfile:2\n--------------------\n   1 |     FROM scratch\n   2 | >>> FOO bar\n   3 |     \n--------------------\nERROR: failed to build: failed to solve: dockerfile parse error on line 2: unknown instruction: FOO (did you mean FROM?)\n";
     assert!(r.stderr.ends_with(want), "{}", r.stderr);
@@ -2159,12 +2108,7 @@ fn steps_bind_one_layer_trees() {
         ("SHARDS_INIT", guest_init().as_os_str()),
         ("SHARDS_BUILD_MEMORY", "1024".as_ref()),
     ];
-    let built = run_shards_env(
-        &["build"],
-        &["--progress=plain", ctx.to_str().unwrap()],
-        &env,
-        TIMEOUT,
-    );
+    let built = run_shards_env(&["build"], &["--progress=plain", ctx.to_str().unwrap()], &env);
     assert_eq!(built.status, Some(1), "{}", built.stderr);
     assert!(
         built
@@ -2226,10 +2170,9 @@ fn steps_resolve_their_paths_in_their_root() {
         &["build"],
         &["--progress=plain", "-t", "inroot:1", ctx.to_str().unwrap()],
         &env,
-        TIMEOUT,
     );
     assert_eq!(built.status, Some(0), "{}", built.stderr);
-    let ran = run_shards_env(&["run"], &["--rm", "inroot:1"], &env, TIMEOUT);
+    let ran = run_shards_env(&["run"], &["--rm", "inroot:1"], &env);
     assert_eq!(
         ran.stdout,
         "/inside/x missing No such file or directory (os error 2)\n\
@@ -2246,7 +2189,7 @@ fn steps_resolve_their_paths_in_their_root() {
             tg("\"rmdir:/w\", \"write:/w=x\"")
         ),
     );
-    let failed = run_shards_env(&["build"], &[ctx.to_str().unwrap()], &env, TIMEOUT);
+    let failed = run_shards_env(&["build"], &[ctx.to_str().unwrap()], &env);
     assert_eq!(failed.status, Some(1), "{}", failed.stderr);
     assert!(
         failed.stderr.ends_with(
@@ -2292,12 +2235,7 @@ fn files_a_build_copies_are_in_the_vm_as_built() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let built = run_shards_env(
-        &["build"],
-        &["-t", "files:1", ctx.to_str().unwrap()],
-        &env,
-        TIMEOUT,
-    );
+    let built = run_shards_env(&["build"], &["-t", "files:1", ctx.to_str().unwrap()], &env);
     let shown = format!("--- stdout\n{}\n--- stderr\n{}", built.stdout, built.stderr);
     assert_eq!(built.status, Some(0), "{shown}");
     for step in [
@@ -2319,7 +2257,7 @@ fn files_a_build_copies_are_in_the_vm_as_built() {
         eprintln!("SKIP: this host cannot run VMs");
         return;
     }
-    let ran = run_shards_env(&["run"], &["--pull", "never", "--rm", "files:1"], &env, TIMEOUT);
+    let ran = run_shards_env(&["run"], &["--pull", "never", "--rm", "files:1"], &env);
     let shown = format!("--- stdout\n{}\n--- stderr\n{}", ran.stdout, ran.stderr);
     assert_eq!(
         ran.status,
@@ -2381,19 +2319,13 @@ fn a_staged_build_copies_from_its_stages_and_images() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let built = run_shards_env(
-        &["build"],
-        &["-t", "stages:1", ctx.to_str().unwrap()],
-        &env,
-        TIMEOUT,
-    );
+    let built = run_shards_env(&["build"], &["-t", "stages:1", ctx.to_str().unwrap()], &env);
     let shown = format!("--- stdout\n{}\n--- stderr\n{}", built.stdout, built.stderr);
     assert_eq!(built.status, Some(0), "{shown}");
     let target = run_shards_env(
         &["build"],
         &["--target", "base", "-t", "stages:base", ctx.to_str().unwrap()],
         &env,
-        TIMEOUT,
     );
     let shown_target = format!("--- stdout\n{}\n--- stderr\n{}", target.stdout, target.stderr);
     assert_eq!(target.status, Some(0), "{shown_target}");
@@ -2407,7 +2339,6 @@ fn a_staged_build_copies_from_its_stages_and_images() {
         &["build"],
         &["--target", "files", "-t", "stages:files", ctx.to_str().unwrap()],
         &env,
-        TIMEOUT,
     );
     let shown_files = format!("--- stdout\n{}\n--- stderr\n{}", files.stdout, files.stderr);
     assert_eq!(files.status, Some(0), "{shown_files}");
@@ -2422,7 +2353,7 @@ fn a_staged_build_copies_from_its_stages_and_images() {
         eprintln!("SKIP: this host cannot run VMs");
         return;
     }
-    let ran = run_shards_env(&["run"], &["--pull", "never", "--rm", "stages:1"], &env, TIMEOUT);
+    let ran = run_shards_env(&["run"], &["--pull", "never", "--rm", "stages:1"], &env);
     let shown = format!("--- stdout\n{}\n--- stderr\n{}", ran.stdout, ran.stderr);
     assert_eq!(ran.status, Some(1), "/src is the base stage's alone\n{shown}");
     let group = "root:x:0:\\napp:x:1000:\\nstaff:x:50:app\\n";
@@ -2456,7 +2387,6 @@ fn a_staged_build_copies_from_its_stages_and_images() {
             "/out",
         ],
         &env,
-        TIMEOUT,
     );
     let shown = format!("--- stdout\n{}\n--- stderr\n{}", base.stdout, base.stderr);
     assert!(
@@ -2524,7 +2454,7 @@ fn add_unpacks_archives_of_every_compression_in_the_vm() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let built = run_shards_env(&["build"], &["-t", "add:1", ctx.to_str().unwrap()], &env, TIMEOUT);
+    let built = run_shards_env(&["build"], &["-t", "add:1", ctx.to_str().unwrap()], &env);
     let shown = format!("--- stdout\n{}\n--- stderr\n{}", built.stdout, built.stderr);
     assert_eq!(built.status, Some(0), "{shown}");
     assert_eq!(exported_from(&built.stderr), "snapshot", "{shown}");
@@ -2534,7 +2464,7 @@ fn add_unpacks_archives_of_every_compression_in_the_vm() {
         eprintln!("SKIP: this host cannot run VMs");
         return;
     }
-    let ran = run_shards_env(&["run"], &["--pull", "never", "--rm", "add:1"], &env, TIMEOUT);
+    let ran = run_shards_env(&["run"], &["--pull", "never", "--rm", "add:1"], &env);
     let shown = format!("--- stdout\n{}\n--- stderr\n{}", ran.stdout, ran.stderr);
     assert_eq!(ran.status, Some(0), "{shown}");
     // a/x is the file a/h links to: the link's header, the archive's later word, set it.
@@ -2585,7 +2515,7 @@ fn add_stops_at_the_image_limits_and_leaves_nothing() {
         std::fs::write(ctx.join(archive_name), archive(archive_name)).unwrap();
         let limit = std::ffi::OsString::from(limit);
         let env = [("SHARDS_HOME", home.as_os_str()), (setting, limit.as_os_str())];
-        let r = run_shards_env(&["build"], &[ctx.to_str().unwrap()], &env, TIMEOUT);
+        let r = run_shards_env(&["build"], &[ctx.to_str().unwrap()], &env);
         let shown = format!("--- stdout\n{}\n--- stderr\n{}", r.stdout, r.stderr);
         assert_eq!(r.status, Some(1), "{shown}");
         // ADD's own limit, before the archive is written out whole: not the export's.
@@ -2618,23 +2548,13 @@ fn an_images_stop_signal_is_what_stop_sends() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let built = run_shards_env(
-        &["build"],
-        &["-t", "usr1:1", ctx.to_str().unwrap()],
-        &env,
-        TIMEOUT,
-    );
+    let built = run_shards_env(&["build"], &["-t", "usr1:1", ctx.to_str().unwrap()], &env);
     assert_eq!(built.status, Some(0), "{}", built.stderr);
-    let ran = run_shards_env(
-        &["run"],
-        &["-d", "--init", "--name", "usr1", "usr1:1"],
-        &env,
-        TIMEOUT,
-    );
+    let ran = run_shards_env(&["run"], &["-d", "--init", "--name", "usr1", "usr1:1"], &env);
     assert_eq!(ran.status, Some(0), "{}", ran.stderr);
-    let stopped = run_shards_env(&["stop"], &["usr1"], &env, TIMEOUT);
+    let stopped = run_shards_env(&["stop"], &["usr1"], &env);
     assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
-    let waited = run_shards_env(&["wait"], &["usr1"], &env, TIMEOUT);
+    let waited = run_shards_env(&["wait"], &["usr1"], &env);
     assert_eq!(waited.stdout, "138\n", "{}", waited.stderr);
 }
 
@@ -2663,7 +2583,6 @@ fn an_images_healthcheck_probes_its_microvm() {
             &["build"],
             &["-t", &format!("{tag}:1"), ctx.to_str().unwrap()],
             &env,
-            TIMEOUT,
         );
         assert_eq!(built.status, Some(0), "{}", built.stderr);
     };
@@ -2689,11 +2608,11 @@ fn an_images_healthcheck_probes_its_microvm() {
         let mut args = vec!["-d", "--name", name];
         args.extend_from_slice(options);
         args.push(image);
-        let ran = run_shards_env(&["run"], &args, &env, TIMEOUT);
+        let ran = run_shards_env(&["run"], &args, &env);
         assert_eq!(ran.status, Some(0), "{}", ran.stderr);
     }
     let status = |name: &str| {
-        let ps = run_shards_env(&["ps"], &["--no-trunc"], &env, TIMEOUT);
+        let ps = run_shards_env(&["ps"], &["--no-trunc"], &env);
         ps.stdout
             .lines()
             .find(|l| l.ends_with(&format!(" {name}")))
@@ -2733,12 +2652,7 @@ fn an_images_healthcheck_probes_its_microvm() {
     // its failing streak, and its last five probes, each with its times, exit code and
     // output, a probe past its timeout -1 and dockerd's words (D26).
     let health = |name: &str| -> serde_json::Value {
-        let shown = run_shards_env(
-            &["inspect"],
-            &["-f", "{{json .State.Health}}", name],
-            &env,
-            TIMEOUT,
-        );
+        let shown = run_shards_env(&["inspect"], &["-f", "{{json .State.Health}}", name], &env);
         assert_eq!(shown.status, Some(0), "{}", shown.stderr);
         serde_json::from_str(&shown.stdout).unwrap()
     };
@@ -2795,7 +2709,7 @@ fn an_images_healthcheck_probes_its_microvm() {
         }
     }
     for name in ["good", "bad", "slow", "patient"] {
-        let _ = run_shards_env(&["rm"], &["-f", name], &env, TIMEOUT);
+        let _ = run_shards_env(&["rm"], &["-f", name], &env);
     }
 }
 
@@ -2818,7 +2732,7 @@ fn an_images_exposed_ports_publish_with_publish_all() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let built = shards(&["build", "-t", "exposes:1", ctx.to_str().unwrap()]);
     assert_eq!(built.status, Some(0), "{}", built.stderr);
     let ran = shards(&["run", "-d", "--name", "plain", "exposes:1", "sleep"]);
@@ -2877,7 +2791,7 @@ fn an_images_volumes_are_anonymous_volumes_at_run() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let built = shards(&["build", "-t", "volumed:1", ctx.to_str().unwrap()]);
     assert_eq!(built.status, Some(0), "{}", built.stderr);
     let ran = shards(&[
@@ -2936,7 +2850,7 @@ fn call_answers_the_frontends_subrequests() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let outline = shards(&[
         "build",
         "--call=outline",
@@ -3003,7 +2917,7 @@ fn sboms_are_scanned() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     // The scanner: the test guest's, as an image of its own.
     let scanner_ctx = context(
         "build-sbom-scanner",
@@ -3170,7 +3084,7 @@ fn provenance_max_records_a_builds_steps_and_layers() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let meta = home.join("meta.json");
     let built = shards(&[
         "build",
@@ -3318,7 +3232,7 @@ fn builds_attest_their_provenance() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let meta = home.join("meta.json");
     let built = shards(&[
         "build",
@@ -3598,7 +3512,7 @@ fn builds_attest_their_provenance() {
     // the image output asks for them.
     let mut plain = env.to_vec();
     plain.push(("BUILDX_NO_DEFAULT_ATTESTATIONS", std::ffi::OsStr::new("1")));
-    let quiet = run_shards_env(&[], &["build", "-q", ctx.to_str().unwrap()], &plain, TIMEOUT);
+    let quiet = run_shards_env(&[], &["build", "-q", ctx.to_str().unwrap()], &plain);
     assert_eq!(quiet.status, Some(0), "{}", quiet.stderr);
     assert_eq!(
         blob(quiet.stdout.trim())["mediaType"],
@@ -3614,7 +3528,6 @@ fn builds_attest_their_provenance() {
             ctx.to_str().unwrap(),
         ],
         &plain,
-        TIMEOUT,
     );
     assert_eq!(asked.status, Some(0), "{}", asked.stderr);
     assert_eq!(
@@ -3631,7 +3544,6 @@ fn builds_attest_their_provenance() {
             ctx.to_str().unwrap(),
         ],
         &plain,
-        TIMEOUT,
     );
     assert_ne!(refused.status, Some(0));
     assert!(
@@ -3831,7 +3743,7 @@ fn source_date_epoch_is_taken_from_a_source_stage() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let sum: String = sha2::Sha256::digest(crafted("links.tar"))
         .iter()
         .map(|b| format!("{b:02x}"))
@@ -3945,7 +3857,7 @@ fn source_date_epoch_is_taken_from_a_named_or_remote_context() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let built = |n: usize, extra: &[&str], epoch: &str, context: &str| {
         let tag = format!("epoch2:{n}");
         let arg = format!("SOURCE_DATE_EPOCH={epoch}");
@@ -4062,7 +3974,7 @@ fn files_the_frontend_reads_are_read_whole() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     // Lines of 64 bytes: the FROM, then comments.
     let mut exact = format!("FROM scratch{}\n", " ".repeat(51)).into_bytes();
     let comment = format!("#{}\n", "x".repeat(62));
@@ -4118,7 +4030,6 @@ fn a_steps_output_is_clipped() {
             &[],
             &["build", "--no-cache", "--progress=plain", ctx.to_str().unwrap()],
             &env,
-            TIMEOUT,
         );
         assert_eq!(built.status, Some(0), "{}", built.stderr);
         built.stderr
@@ -4166,7 +4077,7 @@ fn add_checks_a_checksum_by_its_own_algorithm() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
     let sha384 = format!("sha384:{}", hex(&sha2::Sha384::digest(b"x")));
     let sha512 = format!("sha512:{}", hex(&sha2::Sha512::digest(b"x")));
@@ -4220,7 +4131,7 @@ fn add_fetches_urls() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let url = format!("http://127.0.0.1:{port}");
     let ctx = context(
         "build-add-url-ctx",
@@ -4346,7 +4257,7 @@ fn add_fetches_urls() {
         let limit_value = std::ffi::OsString::from(limit);
         let mut limited = env.to_vec();
         limited.push(("SHARDS_MAX_IMAGE_BYTES", limit_value.as_os_str()));
-        let over = run_shards_env(&[], &["build", ctx.to_str().unwrap()], &limited, TIMEOUT);
+        let over = run_shards_env(&[], &["build", ctx.to_str().unwrap()], &limited);
         assert!(
             over.stderr.contains(&format!(
                 "what ADD fetches and unpacks comes to more than {limit} bytes (SHARDS_MAX_IMAGE_BYTES)"
@@ -4385,7 +4296,7 @@ fn bases_whose_names_share_a_start_are_each_their_own() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let base = format!("127.0.0.1:{port}/test/base");
     let ctx = context(
         "build-two-bases",
@@ -4418,7 +4329,7 @@ fn an_agentfile_is_found_first_and_built() {
     )
     .unwrap();
     let env = [("SHARDS_HOME", home.as_os_str())];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let built = shards(&[
         "build",
         "--progress=plain",
@@ -4678,7 +4589,7 @@ fn a_layerless_image_inspects_whole() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let built = shards(&["build", "-q", "-t", "layerless:1", ctx.to_str().unwrap()]);
     assert_eq!(built.status, Some(0), "{built}");
     let shown = shards(&[
@@ -4722,7 +4633,6 @@ fn frontend_build_args_are_read() {
                 ctx.to_str().unwrap(),
             ],
             &env,
-            TIMEOUT,
         )
     };
     let refused = build("BUILDKIT_DISABLE_FILEOP=1");
@@ -4783,7 +4693,7 @@ fn run_steps_take_cdi_devices() {
         let mut args = vec!["build", "--progress=plain", "--no-cache"];
         args.extend_from_slice(extra);
         args.push(ctx.to_str().unwrap());
-        let r = run_shards_env(&[], &args, &env, TIMEOUT);
+        let r = run_shards_env(&[], &args, &env);
         (r.status, r.stderr)
     };
     let run = format!(
@@ -4881,7 +4791,7 @@ fn run_steps_reach_the_devices_buildkit_gives_them_alone() {
         let mut args = vec!["build", "--progress=plain", "--no-cache"];
         args.extend_from_slice(extra);
         args.push(ctx.to_str().unwrap());
-        let r = run_shards_env(&[], &args, &env, TIMEOUT);
+        let r = run_shards_env(&[], &args, &env);
         (r.status, r.stderr)
     };
     let (code, log) = build(
@@ -5294,7 +5204,7 @@ fn add_fetches_git_repositories() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let g = format!("git://127.0.0.1:{dport}/repo.git");
     let h = format!("http://127.0.0.1:{hport}/repo.git");
     let ctx = context(
@@ -5679,7 +5589,7 @@ fn add_fetches_git_over_ssh() {
         let mut args = vec!["build", "--no-cache", "-t", "sshed:1"];
         args.extend_from_slice(ssh);
         args.push(ctx.to_str().unwrap());
-        run_shards_env(&[], &args, &env, TIMEOUT)
+        run_shards_env(&[], &args, &env)
     };
     let with_key = format!("default={}", client.display());
     let built = build(&user_home, &["--ssh", &with_key]);
@@ -5703,7 +5613,7 @@ fn add_fetches_git_over_ssh() {
     }
     let mut args = vec!["run", "--rm", "-u", "root", "sshed:1", "stat"];
     args.extend(paths.iter().map(String::as_str));
-    let stat = run_shards_env(&[], &args, &env, TIMEOUT);
+    let stat = run_shards_env(&[], &args, &env);
     let mut want = String::new();
     for i in 0..urls.len() {
         want.push_str(&format!(
@@ -5711,12 +5621,7 @@ fn add_fetches_git_over_ssh() {
         ));
     }
     assert_eq!(stat.stdout, want, "{}", stat.stderr);
-    let noise_size = run_shards_env(
-        &[],
-        &["run", "--rm", "sshed:1", "stat", "/s1/noise.bin"],
-        &env,
-        TIMEOUT,
-    );
+    let noise_size = run_shards_env(&[], &["run", "--rm", "sshed:1", "stat", "/s1/noise.bin"], &env);
     assert!(
         noise_size
             .stdout
@@ -5765,7 +5670,6 @@ fn add_fetches_git_over_ssh() {
         &[],
         &["build", "--ssh", &with_key, missing_ctx.to_str().unwrap()],
         &env_home,
-        TIMEOUT,
     );
     assert_ne!(missing.status, Some(0));
     assert!(
@@ -5855,7 +5759,7 @@ fn add_fetches_a_commit_a_server_will_not_send_alone() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let ctx = context(
         "build-add-git-strict-ctx",
         &format!("FROM {image}\nADD --keep-git-dir=true {url}#{first} /r\n"),
@@ -5936,7 +5840,7 @@ fn add_fetches_git_with_the_builds_secrets() {
         ("TOK", std::ffi::OsStr::new("s3cr3t")),
         ("HDR", std::ffi::OsStr::new("Bearer h3ad3r")),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let ctx = context(
         "build-add-git-auth-ctx",
         &format!("FROM {image}\nADD http://127.0.0.1:{hport}/private/repo.git /p\n"),
@@ -5986,7 +5890,7 @@ fn builds_reuse_the_steps_they_have_run() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let ctx = context(
         "build-cache-ctx",
         &format!(
@@ -6101,7 +6005,7 @@ fn steps_are_kept_by_what_they_read() {
         ("SHARDS_INIT", guest_init().as_os_str()),
         ("SHARDS_BUILD_MEMORY", "1024".as_ref()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let ctx = context(
         "read-keys-ctx",
         &format!(
@@ -6185,7 +6089,7 @@ fn run_caches_are_kept_across_builds() {
         ("SHARDS_INIT", guest_init().as_os_str()),
         ("SHARDS_BUILD_MEMORY", "1024".as_ref()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     // Each build its own context, and steps no other build has, which the build cache
     // answers none of.
     let n = std::cell::Cell::new(0);
@@ -6348,7 +6252,7 @@ fn a_caches_changes_are_layered_as_a_directory_shows_them() {
         ("SHARDS_INIT", guest_init().as_os_str()),
         ("SHARDS_BUILD_MEMORY", "1024".as_ref()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let n = std::cell::Cell::new(0);
     // A build of `ops` on the cache `id`, then a step that lists it.
     let build = |id: &str, ops: &[&str]| {
@@ -6591,12 +6495,7 @@ fn a_caches_changes_are_layered_as_a_directory_shows_them() {
             "FROM {image}\nUSER root\nRUN --mount=type=cache,target=/c,id=room [\"/bin/testguest\", \"big\", \"/c/f\", \"32\"]\n"
         ),
     );
-    let over = run_shards_env(
-        &[],
-        &["build", "--progress=plain", ctx.to_str().unwrap()],
-        &tight,
-        TIMEOUT,
-    );
+    let over = run_shards_env(&[], &["build", "--progress=plain", ctx.to_str().unwrap()], &tight);
     assert_ne!(over.status, Some(0), "{}", over.stderr);
     assert!(
         over.stderr
@@ -6625,7 +6524,7 @@ fn run_caches_are_shared_among_concurrent_builds() {
         ("SHARDS_INIT", guest_init().as_os_str()),
         ("SHARDS_BUILD_MEMORY", "1024".as_ref()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     for sharing in ["shared", "private", "locked"] {
         let build = |name: &str, ops: &str| {
             let ctx = context(
@@ -6735,7 +6634,7 @@ fn build_cache_usage_lists_every_record() {
         ("SHARDS_INIT", guest_init().as_os_str()),
         ("SHARDS_BUILD_MEMORY", "1024".as_ref()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let ok = |args: &[&str]| {
         let r = shards(args);
         assert_eq!(r.status, Some(0), "{args:?}\n{}", r.stderr);
@@ -6867,7 +6766,7 @@ fn builds_take_steps_from_caches_written_elsewhere() {
             ("SHARDS_KERNEL", kernel().as_os_str()),
             ("SHARDS_INIT", guest_init().as_os_str()),
         ];
-        run_shards_env(&[], args, &env, TIMEOUT)
+        run_shards_env(&[], args, &env)
     };
     let ctx = context(
         "remote-cache-ctx",
@@ -7042,7 +6941,7 @@ fn builds_take_steps_from_an_s3_cache() {
             ("AWS_CONFIG_FILE", nowhere.as_os_str()),
         ];
         env.extend_from_slice(extra);
-        run_shards_env(&[], args, &env, TIMEOUT)
+        run_shards_env(&[], args, &env)
     };
     let ctx = context(
         "s3-cache-ctx",
@@ -7234,7 +7133,7 @@ fn builds_take_steps_from_an_azure_blob_cache() {
             ("SHARDS_KERNEL", kernel().as_os_str()),
             ("SHARDS_INIT", guest_init().as_os_str()),
         ];
-        run_shards_env(&[], args, &env, TIMEOUT)
+        run_shards_env(&[], args, &env)
     };
     let ctx = context(
         "azblob-cache-ctx",
@@ -7368,7 +7267,7 @@ fn builds_take_steps_from_a_github_actions_cache() {
             ("ACTIONS_CACHE_SERVICE_V2", std::ffi::OsStr::new("")),
         ];
         env.extend_from_slice(extra);
-        run_shards_env(&[], args, &env, TIMEOUT)
+        run_shards_env(&[], args, &env)
     };
     let ctx = context(
         "gha-cache-ctx",
@@ -7603,7 +7502,7 @@ fn run_steps_take_the_builds_hosts_shm_and_limits() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let ctx = context(
         "build-limits-ctx",
         &format!(
@@ -7721,7 +7620,7 @@ fn squash_makes_a_builds_layers_one() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let blob = |d: &str| -> Vec<u8> {
         std::fs::read(
             home.join("images/blobs/sha256")
@@ -7916,7 +7815,7 @@ fn builder_prune_removes_the_build_cache() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let ctx = context(
         "builder-prune-ctx",
         &format!("FROM {image}\nUSER root\nRUN [\"/bin/testguest\", \"fs\", \"write:/one=1\"]\n"),
@@ -7985,7 +7884,7 @@ fn a_builds_cache_is_kept_as_its_user_set() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let ctx = context(
         "disk-cache-ctx",
         &format!("FROM {image}\nUSER root\nRUN [\"/bin/testguest\", \"fs\", \"write:/one=1\"]\n"),
@@ -8031,7 +7930,7 @@ fn annotations_land_on_the_manifest_or_descriptor_named() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let ctx = context("annotate-ctx", &format!("FROM {image}\nLABEL a=b\n"));
     let out = TempDir::new("annotate-out");
     let meta = out.join("meta.json");
@@ -8121,7 +8020,7 @@ fn check_says_the_builds_warnings() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let ctx = context("check-ctx", &format!("FROM {image} as Build\nLABEL a=b\n"));
     let checked = shards(&["build", "--check", ctx.to_str().unwrap()]);
     assert_eq!(checked.status, Some(1), "{}", checked.stderr);
@@ -8326,7 +8225,7 @@ fn run_steps_reach_the_clients_ssh_agent() {
         ("SHARDS_INIT", guest_init().as_os_str()),
         ("SSH_AUTH_SOCK", sock.as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let ctx = context(
         "build-ssh-ctx",
         &format!(
@@ -8465,7 +8364,7 @@ fn builds_push_what_they_build() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let ctx = context("build-push-ctx", &format!("FROM {image}\nLABEL pushed=yes\n"));
     let refused = shards(&["build", "--push", ctx.to_str().unwrap()]);
     assert_ne!(refused.status, Some(0));
@@ -8559,7 +8458,7 @@ fn builds_write_each_output() {
     );
     std::fs::write(ctx.join("a.txt"), "owned\n").unwrap();
     let out = TempDir::new("build-out-dest");
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let path = |p: &str| out.join(p).to_str().unwrap().to_string();
 
     // Refused before the build: no step reported.
@@ -8835,7 +8734,7 @@ fn named_contexts_stand_in_for_what_they_name() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let ctx = context(
         "build-named-ctx",
         "FROM scratch AS deps\nCOPY never /d\n\
@@ -8922,7 +8821,7 @@ fn oci_layout_contexts_are_the_images_they_hold() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let out = TempDir::new("build-layout-out");
     let layout = out.join("layout");
     let first = context("build-layout-first", &format!("FROM {image}\nCOPY made /made\n"));
@@ -9033,7 +8932,6 @@ fn supplied_agents_and_harness_archives_start_their_declared_entrypoints() {
         &["build", "image"],
         &["-t", "supplied-startup:1", ctx.to_str().unwrap()],
         &env,
-        TIMEOUT,
     );
     assert_eq!(built.status, Some(0), "{}", built.stderr);
     // The existing handshake observes each domain process from init, then releases the
@@ -9058,6 +8956,11 @@ fn supplied_agents_and_harness_archives_start_their_declared_entrypoints() {
     assert_eq!(ran.status, Some(0), "{}{}", ran.stdout, ran.stderr);
 }
 
+/// A run's supplied members' output never rewrites its command's own (G01): its stdout stays
+/// exactly the command's JSON-RPC, and its stderr bytes whole, while the daemon drains its
+/// members' output into their logs and shows the attached client each of their lines on its
+/// stderr after its label, to the members' ends (their tails cut short as the run ends them
+/// included), before the client's own end says its timing (D59 "Its stdio", PM M543).
 #[test]
 fn supplied_member_output_does_not_rewrite_the_main_protocol() {
     if cannot_run_vms() {
@@ -9099,7 +9002,6 @@ fn supplied_member_output_does_not_rewrite_the_main_protocol() {
         &["build", "image"],
         &["-t", "capture-protocol:1", ctx.to_str().unwrap()],
         &env,
-        TIMEOUT,
     );
     assert_eq!(built.status, Some(0), "{built}");
     let ran = common::run_awaiting(
@@ -9119,12 +9021,43 @@ fn supplied_member_output_does_not_rewrite_the_main_protocol() {
     );
     assert_eq!(ran.status, Some(0), "{ran}");
     assert_eq!(ran.stdout, r#"{"jsonrpc":"2.0","id":1,"result":"main"}"#, "{ran}");
-    let timing = ran
+    // Its stderr: main's own bytes, whole, and its members' lines, which the daemon drains
+    // and shows the client attached, each after its label (D59 "Its stdio", PM M543), the
+    // host's timing last. Main's are one write of its command's, so they lie whole between
+    // two of the members' lines, or within one, each of which is one write too.
+    let (said, timing) = ran
         .stderr
-        .strip_prefix("main-stderrshards-timing ")
-        .and_then(|s| s.strip_suffix('\n'))
-        .expect("only main stderr and one final host timing diagnostic");
+        .rsplit_once("shards-timing ")
+        .expect("a final host timing diagnostic");
+    let timing = timing
+        .strip_suffix('\n')
+        .expect("the timing line ends the stderr");
     assert!(!timing.contains('\n'), "{ran}");
+    let members = said.replacen("main-stderr", "", 1);
+    assert_eq!(
+        said.len() - members.len(),
+        "main-stderr".len(),
+        "main's stderr whole: {ran}"
+    );
+    assert!(members.is_empty() || members.ends_with('\n'), "{ran}");
+    let mut shown: Vec<&str> = members.lines().collect();
+    shown.sort_unstable();
+    // What each member writes (testguest `managed_capture_bytes`), its lines as shown: a line
+    // cut short at its stream's end ended.
+    let mut expected: Vec<String> = [("agent helper", "agent"), ("harness driver", "harness")]
+        .iter()
+        .flat_map(|(label, member)| {
+            [
+                format!("{member}\0stdout").into_bytes(),
+                b"\xff\x1b[2Jout-tail".to_vec(),
+                format!("{member}\0stderr").into_bytes(),
+                b"\x80\xfeerr-tail".to_vec(),
+            ]
+            .map(|line| format!("[{label}] {}", String::from_utf8_lossy(&line)))
+        })
+        .collect();
+    expected.sort_unstable();
+    assert_eq!(shown, expected, "{ran}");
     let value: serde_json::Value = serde_json::from_str(timing).expect("host timing JSON");
     let timing = value.as_object().expect("host timing object");
     let numbers = [
@@ -9176,7 +9109,7 @@ fn agentfile_directives_lay_out_what_they_bring() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let ctx = context("build-domains-ctx", &format!("FROM {image}\n"));
     let write = |rel: &str, text: &str| {
         let p = ctx.join(rel);
@@ -9282,7 +9215,7 @@ fn agents_are_osi_artifacts_made_pushed_and_taken() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let dir = TempDir::new("build-osi-agent");
     std::fs::create_dir_all(dir.join("bin")).unwrap();
     std::fs::write(dir.join("bin/run"), "#!/bin/sh\necho agent\n").unwrap();
@@ -9391,7 +9324,7 @@ fn agents_come_from_the_oci_layouts_build_contexts_give() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let dir = TempDir::new("build-osi-layout-agent");
     std::fs::create_dir_all(dir.join("bin")).unwrap();
     std::fs::write(dir.join("bin/run"), "#!/bin/sh\necho agent\n").unwrap();
@@ -9526,7 +9459,7 @@ fn osi_artifacts_of_several_platforms_are_an_index() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let guest = if cfg!(target_arch = "aarch64") {
         "arm64"
     } else {
@@ -9638,7 +9571,7 @@ fn domains_are_checked_before_an_image_leaves_the_build() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let ctx = context("build-isolation-ctx", &format!("FROM {image}\n"));
     std::fs::create_dir_all(ctx.join("agent")).unwrap();
     std::fs::write(ctx.join("agent/run"), "run\n").unwrap();
@@ -9710,7 +9643,7 @@ fn an_internal_agent_reaches_the_world_through_nothing() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let ctx = context("reach-ctx", &format!("FROM {image}\n"));
     for d in ["a", "b", "h"] {
         std::fs::create_dir_all(ctx.join(d)).unwrap();
@@ -9805,7 +9738,7 @@ fn only_a_domains_own_directives_write_in_it() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let ctx = context("build-writes-ctx", &format!("FROM {image}\n"));
     std::fs::create_dir_all(ctx.join("agent")).unwrap();
     std::fs::write(ctx.join("agent/run"), "run\n").unwrap();
@@ -9857,7 +9790,7 @@ fn agents_expand_their_words_and_are_copied_from() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let ctx = context("build-q19-ctx", &format!("FROM {image}\n"));
     std::fs::create_dir_all(ctx.join("agent/bin")).unwrap();
     std::fs::write(ctx.join("agent/bin/run"), "run\n").unwrap();
@@ -9920,7 +9853,7 @@ fn an_agentfiles_manifest_says_what_it_holds() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let ctx = context("build-annot-ctx", &format!("FROM {image}\nLABEL plain=yes\n"));
     std::fs::create_dir_all(ctx.join("a")).unwrap();
     std::fs::write(ctx.join("a/run"), "run\n").unwrap();
@@ -9979,7 +9912,7 @@ fn agents_run_in_their_domains() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let dir = TempDir::new("domains-agent");
     std::fs::create_dir_all(dir.join("bin")).unwrap();
     std::fs::copy(common::test_guest(), dir.join("bin/testguest")).unwrap();
@@ -10060,7 +9993,9 @@ fn agents_run_in_their_domains() {
         .collect();
     for want in [
         "confined uid=200000 gid=200000 groups=0",
-        "confined pid=1 procs=1",
+        // PID 2 of its PID namespace, whose PID 1 is init's sealed reaper, the two alone
+        // in its /proc (D59, "owned native domain lifetime": its actor is PID 2).
+        "confined pid=2 procs=2",
         "confined hostname=agent-main",
         "confined caps eff=0000000000000000 prm=0000000000000000 inh=0000000000000000 bnd=0000000000000000 amb=0000000000000000 nnp=1",
         // Another domain, and /sys, hidden; its own /dev.
@@ -10168,7 +10103,7 @@ fn agents_reach_by_ipv6_only_what_connect_grants() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let agent = |name: &str, args: &[&str]| -> String {
         let dir = TempDir::new(&format!("links6-agent-{name}"));
         std::fs::create_dir_all(dir.join("bin")).unwrap();
@@ -10356,7 +10291,7 @@ fn agents_reach_past_the_microvm_by_ipv6_what_their_networks_grant() {
         ("SHARDS_INIT", guest_init().as_os_str()),
         ("SHARDS_DNS", std::ffi::OsStr::new(&resolver_at)),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let to = |p: u16| format!("[{host}]:{p}");
     let dir = TempDir::new("egress6-agent-a");
     std::fs::create_dir_all(dir.join("bin")).unwrap();
@@ -10487,7 +10422,7 @@ fn agents_reach_only_what_connect_grants() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let agent = |name: &str, args: &[&str]| -> String {
         let dir = TempDir::new(&format!("links-agent-{name}"));
         std::fs::create_dir_all(dir.join("bin")).unwrap();
@@ -10681,7 +10616,7 @@ fn an_engines_member_reaches_no_farther_than_the_command_beside_agents() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let to = format!("{host}:{granted}");
     let heard = format!("{host}:{word}");
     // The member of the network its engine makes, at an address of that network's subnet.
@@ -10910,7 +10845,7 @@ fn agents_reach_past_the_microvm_what_their_networks_grant() {
         ("SHARDS_INIT", guest_init().as_os_str()),
         ("SHARDS_DNS", std::ffi::OsStr::new(&resolver_at)),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let agent = |name: &str, args: &[String]| -> String {
         let dir = TempDir::new(&format!("egress-agent-{name}"));
         std::fs::create_dir_all(dir.join("bin")).unwrap();
@@ -11084,7 +11019,7 @@ fn agents_answer_what_their_networks_let_in() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let dir = TempDir::new("ingress-agent");
     std::fs::create_dir_all(dir.join("bin")).unwrap();
     std::fs::copy(common::test_guest(), dir.join("bin/testguest")).unwrap();
@@ -11201,7 +11136,7 @@ fn each_agent_answers_the_port_its_expose_names() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let mut agents = String::new();
     for name in ["web", "api"] {
         let dir = TempDir::new(&format!("members-{name}"));
@@ -11325,7 +11260,7 @@ fn a_port_comes_in_to_the_member_listening_on_it() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let mut agents = String::new();
     for (name, listens) in [("web", 7100), ("api", 7200), ("ops", 7300), ("idle", 7400)] {
         let dir = TempDir::new(&format!("listening-{name}"));
@@ -11456,7 +11391,7 @@ fn chooser_round_trip_costs() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let mut agents = String::new();
     let ops = [
         ("cand", format!(r#""listencost","{n}:7600","{n}:7700""#)),
@@ -11529,7 +11464,7 @@ fn a_udp_flow_goes_to_its_ports_next_holder() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let mut agents = String::new();
     for (name, spec) in [("web", "7500:0:20000"), ("api", "7500:25000:0")] {
         let dir = TempDir::new(&format!("udpholder-{name}"));
@@ -11781,7 +11716,7 @@ fn a_remote_mcp_server_is_a_grant_of_that_server_alone() {
         ("SHARDS_INIT", guest_init().as_os_str()),
         ("SHARDS_DNS", std::ffi::OsStr::new(&resolver_at)),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let agent = |name: &str, args: &[String]| -> String {
         let dir = TempDir::new(&format!("mcp-agent-{name}"));
         std::fs::create_dir_all(dir.join("bin")).unwrap();
@@ -11976,7 +11911,7 @@ fn a_skill_an_agent_lists_is_taken_from_it() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let dir = TempDir::new("skill-from-agent");
     std::fs::create_dir_all(dir.join("skills/pdf")).unwrap();
     std::fs::write(
@@ -12057,7 +11992,7 @@ fn a_domains_user_owns_nothing_past_its_domain() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let ctx = context("owners-ctx", &format!("FROM {image}\n"));
     std::fs::create_dir_all(ctx.join("agent")).unwrap();
     std::fs::write(ctx.join("agent/run"), "run\n").unwrap();
@@ -12100,7 +12035,7 @@ fn an_agent_reaches_no_socket_of_the_runs_own() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let dir = TempDir::new("unix-agent");
     std::fs::create_dir_all(dir.join("bin")).unwrap();
     std::fs::copy(common::test_guest(), dir.join("bin/testguest")).unwrap();
@@ -12218,7 +12153,7 @@ fn agents_out_of_memory_end_whole_and_spare_the_run() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let agent = |name: &str, verbs: &[&str], asks: &str| {
         let dir = TempDir::new(&format!("oom-agent-{name}"));
         std::fs::create_dir_all(dir.join("bin")).unwrap();
@@ -12416,7 +12351,7 @@ fn agents_reach_only_the_unix_sockets_granted() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let tools = "/run/networks/n/tools/sock";
     let secret = "/run/networks/n/secret/sock";
     let mut agents = String::new();
@@ -12507,7 +12442,7 @@ fn an_agents_flood_of_flows_takes_no_others() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let flood = std::env::var("SHARDS_FLOOD_SECS").unwrap_or_else(|_| "10".to_string());
     let mut agents = String::new();
     for (name, verbs) in [
@@ -12599,7 +12534,7 @@ fn an_agents_assured_flows_take_no_others() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let flood: u64 = std::env::var("SHARDS_FLOOD_SECS").map_or(10, |s| s.parse().unwrap());
     let mut agents = String::new();
     for (name, verbs) in [
@@ -12711,7 +12646,7 @@ fn an_agents_own_flows_take_no_port_it_accepts() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let mut agents = String::new();
     for (name, verbs) in [
         ("x", "\"listen\",\"7002\""),
@@ -12789,7 +12724,7 @@ fn an_agent_reaches_nothing_past_its_grants() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     // Where the microVM is, from a run of its own: its address and gateway.
     let probe = shards(&["run", "--rm", &image, "sweep-target", "7100", "none", "0"]);
     let where_ = |all: &str| -> (String, String) {
@@ -12919,7 +12854,7 @@ fn an_agents_daemon_ends_with_it() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let dir = TempDir::new("daemon-agent");
     std::fs::create_dir_all(dir.join("bin")).unwrap();
     std::fs::copy(common::test_guest(), dir.join("bin/testguest")).unwrap();
@@ -12998,7 +12933,7 @@ fn no_kernel_channel_joins_two_agents() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let mut agents = String::new();
     for (name, verbs) in [
         ("a", "\"ipc-make\",\"ipc-try\""),
@@ -13070,7 +13005,7 @@ fn the_in_vm_server_knows_each_agent() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let mut agents = String::new();
     for name in ["x", "y"] {
         let dir = TempDir::new(&format!("server-agent-{name}"));
@@ -13186,7 +13121,7 @@ fn agents_message_one_another_as_granted() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let mut agents = String::new();
     for (name, verbs) in [
         ("a", r#""srv-peers","srv-send","agent b|hi","srv-receive","30""#),
@@ -13295,7 +13230,7 @@ fn code_mode_runs_a_program_with_the_callers_grants() {
     let shards = |args: &[&str]| {
         let left = until.saturating_duration_since(Instant::now());
         assert!(!left.is_zero(), "original code-mode deadline");
-        run_shards_env(&[], args, &env, left)
+        run_shards_env(&[], args, &env)
     };
     let body = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let a_program = r#"const me = await shards.whoami();
@@ -13356,6 +13291,9 @@ return { me, peers, sent, refused };"#;
         let started = shards(&[
             "run",
             "-d",
+            // Its owner reads the agents' output (D240): the daemon drains none of it.
+            "--annotation",
+            "shards.output=agent:a,agent:b,agent:c",
             "--name",
             "aw-code",
             "code:1",
@@ -13552,12 +13490,7 @@ return { me, peers, sent, refused };"#;
         observer.sender.request_stop();
     }
     let stopped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        run_shards_env(
-            &[],
-            &["stop", "daemon"],
-            &env,
-            cleanup_until.saturating_duration_since(Instant::now()),
-        )
+        run_shards_env(&[], &["stop", "daemon"], &env)
     }));
     let mut errors = Vec::new();
     match stopped {
@@ -13602,7 +13535,7 @@ fn a_harness_is_handed_files_and_no_link_fifo_or_giant() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let mut domains = String::new();
     for (kind, name, verbs) in [
         (
@@ -13716,7 +13649,7 @@ fn the_in_vm_server_speaks_each_revision() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let dir = TempDir::new("revisions-agent");
     std::fs::create_dir_all(dir.join("bin")).unwrap();
     std::fs::copy(common::test_guest(), dir.join("bin/testguest")).unwrap();
@@ -13837,7 +13770,7 @@ fn code_mode_costs_in_microvms() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let dir = TempDir::new("code-cost-agent");
     std::fs::create_dir_all(dir.join("bin")).unwrap();
     std::fs::copy(common::test_guest(), dir.join("bin/testguest")).unwrap();
@@ -13902,7 +13835,7 @@ fn mcp_servers_are_offered_to_those_in_scope() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let mut agents = String::new();
     for name in ["a", "b"] {
         let dir = TempDir::new(&format!("offer-agent-{name}"));
@@ -13989,7 +13922,7 @@ fn a_builds_platform_defaults_to_the_default_platforms() {
             ("SHARDS_INIT", guest_init().as_os_str()),
         ];
         env.extend(defaults.iter().map(|(k, v)| (*k, std::ffi::OsStr::new(*v))));
-        let ran = run_shards_env(&[], args, &env, TIMEOUT);
+        let ran = run_shards_env(&[], args, &env);
         assert_eq!(ran.status, Some(0), "{defaults:?} {args:?}: {}", ran.stderr);
         ran.stdout.trim().to_string()
     };
@@ -14034,7 +13967,7 @@ fn builds_for_another_platform_run_only_the_build_platforms_steps() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let (arch, other) = if cfg!(target_arch = "aarch64") {
         ("arm64", "amd64")
     } else {
@@ -14153,13 +14086,18 @@ fn a_step_for_another_cpu_runs_under_its_emulator() {
     if cannot_run_vms() {
         return;
     }
+    if common::cannot_reach_docker_hub(
+        "alpine:3.22 for other CPUs, and the build's emulator image (EMULATOR_IMAGE)",
+    ) {
+        return;
+    }
     let home = TempDir::new("emulated-home");
     let env = [
         ("SHARDS_HOME", home.as_os_str()),
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let (ours, theirs) = if cfg!(target_arch = "aarch64") {
         (("arm64", "aarch64"), ("amd64", "x86_64"))
     } else {
@@ -14321,7 +14259,7 @@ fn layers_are_compressed() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let ctx = context(
         "compress-ctx",
         &format!(
@@ -14574,7 +14512,7 @@ fn rewrite_timestamp_rewrites_the_builds_layers() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let ctx = context(
         "rewrite-ctx",
         &format!("FROM {image}\nRUN [\"/bin/testguest\", \"fs\", \"write:/work/made=made now\"]\n"),
@@ -14678,7 +14616,7 @@ fn several_platforms_make_one_image_of_their_manifests() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let (arch, other) = if cfg!(target_arch = "aarch64") {
         ("arm64", "amd64")
     } else {
@@ -14870,7 +14808,6 @@ fn several_platforms_make_one_image_of_their_manifests() {
             ctx.to_str().unwrap(),
         ],
         &fresh_env,
-        TIMEOUT,
     );
     assert_eq!(again.status, Some(0), "{}", again.stderr);
     for p in [other, arch] {
@@ -14923,7 +14860,7 @@ fn an_agentfile_made_from_an_image_builds_its_config() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let ctx = context(
         "from-image-ctx",
         &format!(
@@ -14993,7 +14930,7 @@ fn builds_are_reproducible_byte_for_byte() {
         serde_json::from_slice(&std::fs::read(dir.join("docker.json")).unwrap()).unwrap();
     let home = TempDir::new("repro-home");
     let env = [("SHARDS_HOME", home.as_os_str())];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let mut failures = Vec::new();
     for (case, want) in spec["cases"]
         .as_array()
@@ -15181,7 +15118,7 @@ fn policies_hold_over_remote_contexts() {
         args.extend_from_slice(extra);
         let ctx = format!("{repo}#{branch}");
         args.push(&ctx);
-        common::run_shards_env_in(&cwd, &[], &args, &env, TIMEOUT)
+        common::run_shards_env_in(&cwd, &[], &args, &env)
     };
     let tail = |s: &str| s.lines().last().unwrap_or_default().to_string();
     let source = |branch: &str| format!("git://127.0.0.1:{port}/repo.git#{branch}");
@@ -15318,7 +15255,7 @@ fn a_policys_own_error_ends_the_build() {
         let mut args = vec!["build", "--progress=plain"];
         args.extend_from_slice(extra);
         args.push(".");
-        common::run_shards_env_in(ctx, &[], &args, &env, TIMEOUT)
+        common::run_shards_env_in(ctx, &[], &args, &env)
     };
     let tail = |s: &str| s.lines().last().unwrap_or_default().to_string();
     let conflict = |on: &str| {
@@ -15422,7 +15359,7 @@ fn builds_heed_their_policies() {
         let mut args = vec!["build", "--progress=plain"];
         args.extend_from_slice(extra);
         args.push(ctx);
-        common::run_shards_env_in(cwd, &[], &args, &env, TIMEOUT)
+        common::run_shards_env_in(cwd, &[], &args, &env)
     };
     // Built from inside its context, as `.`, as measured.
     let build = |ctx: &std::path::Path, extra: &[&str]| build_in(ctx, ".", extra);
@@ -15759,7 +15696,7 @@ fn policies_read_git_and_http_sources() {
         "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if {\n  input.git.commit.tree != \"\"\n  print(\"git\", input.git)\n}\n\nallow if {\n  input.http.checksum != \"\"\n  print(\"http\", input.http)\n}\n\ndecision := {\"allow\": allow}\n",
     )
     .unwrap();
-    let built = common::run_shards_env_in(&ctx, &[], &["build", "--progress=plain", "."], &env, TIMEOUT);
+    let built = common::run_shards_env_in(&ctx, &[], &["build", "--progress=plain", "."], &env);
     assert_eq!(built.status, Some(0), "{}", built.stderr);
     let log = policy_log(&built.stderr);
     let git_src = format!("git://127.0.0.1:{git_port}/repo.git#v1");
@@ -15891,13 +15828,7 @@ fn policies_verify_git_and_http_signatures() {
     let build = |signer: &str, key: &str| {
         std::fs::write(ctx.join("signer.pub"), signer).unwrap();
         std::fs::write(ctx.join("key.asc"), key).unwrap();
-        common::run_shards_env_in(
-            &ctx,
-            &[],
-            &["build", "--progress=plain", "--no-cache", "."],
-            &env,
-            TIMEOUT,
-        )
+        common::run_shards_env_in(&ctx, &[], &["build", "--progress=plain", "--no-cache", "."], &env)
     };
     let decisions = |stderr: &str, src: &str| -> Vec<String> {
         policy_log(stderr)
@@ -15974,13 +15905,7 @@ fn policies_verify_artifact_attestations() {
             include_bytes!("../src/build/testdata/gh-2.102.0-linux-arm64.sigstore.json"),
         )
         .unwrap();
-        common::run_shards_env_in(
-            &ctx,
-            &[],
-            &["build", "--progress=plain", "--no-cache", "."],
-            &env,
-            TIMEOUT,
-        )
+        common::run_shards_env_in(&ctx, &[], &["build", "--progress=plain", "--no-cache", "."], &env)
     };
     let limited = |log: &[String], dgst: &str| {
         log.iter().any(|l| {
@@ -16075,6 +16000,9 @@ fn policies_read_image_provenance_and_signatures() {
     if cannot_run_vms() {
         return;
     }
+    if common::cannot_reach_docker_hub("moby/buildkit:v0.28.1's attestation chain") {
+        return;
+    }
     let home = TempDir::new("policy-image-sig-home");
     let env = [
         ("SHARDS_HOME", home.as_os_str()),
@@ -16091,7 +16019,6 @@ fn policies_read_image_provenance_and_signatures() {
         &[],
         &["build", "--progress=plain", "--platform", "linux/arm64", "."],
         &env,
-        TIMEOUT,
     );
     assert_eq!(built.status, Some(0), "{}", built.stderr);
     let got: Vec<String> = policy_log(&built.stderr)
@@ -16126,7 +16053,7 @@ fn a_policy_asking_a_single_manifests_chain_is_answered() {
         "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if {\n\tinput.image\n\tprint(\"PROV\", input.image.hasProvenance)\n\tprint(\"SIG\", count(object.get(input.image, \"signatures\", [])))\n}\n\ndecision := {\"allow\": allow}\n",
     )
     .unwrap();
-    let built = common::run_shards_env_in(&ctx, &[], &["build", "--progress=plain", "."], &env, TIMEOUT);
+    let built = common::run_shards_env_in(&ctx, &[], &["build", "--progress=plain", "."], &env);
     assert_eq!(built.status, Some(0), "{}", built.stderr);
     let host = match std::env::consts::ARCH {
         "aarch64" => "arm64",
@@ -16175,6 +16102,9 @@ fn policies_check_the_frontend_and_the_default_policy() {
     if cannot_run_vms() {
         return;
     }
+    if common::cannot_reach_docker_hub("docker/dockerfile:1, alpine:3.20 and moby/buildkit's signatures") {
+        return;
+    }
     let host = match std::env::consts::ARCH {
         "aarch64" => "arm64",
         "x86_64" => "amd64",
@@ -16210,7 +16140,6 @@ fn policies_check_the_frontend_and_the_default_policy() {
             &[],
             &["build", "--progress=plain", "--platform", platform, "."],
             &env,
-            TIMEOUT,
         );
         let checks: Vec<String> = policy_log(&out.stderr)
             .into_iter()
@@ -16330,6 +16259,9 @@ fn policies_check_the_frontend_and_the_default_policy() {
 /// refuses.
 #[test]
 fn policy_eval_answers() {
+    if common::cannot_reach_docker_hub("alpine:3.20's metadata") {
+        return;
+    }
     let home = TempDir::new("policy-eval-home");
     let dir = TempDir::new("policy-eval");
     let write = |sub: &str, rego: &str| {
@@ -16352,7 +16284,7 @@ fn policy_eval_answers() {
     let eval = |sub: &str, args: &[&str]| {
         let mut argv = vec!["buildx", "policy", "eval"];
         argv.extend_from_slice(args);
-        let out = common::run_shards_env_in(&dir.join(sub), &[], &argv, &env, TIMEOUT);
+        let out = common::run_shards_env_in(&dir.join(sub), &[], &argv, &env);
         (out.status, out.stdout, out.stderr)
     };
     let alpine = |extra: &str| {
@@ -16465,6 +16397,9 @@ fn policy_eval_answers() {
 /// platform), `--run`, a test file named alone, and the paths and policies buildx refuses.
 #[test]
 fn policy_test_runs() {
+    if common::cannot_reach_docker_hub("alpine's metadata") {
+        return;
+    }
     let home = TempDir::new("policy-test-home");
     let dir = TempDir::new("policy-test");
     for sub in ["basic", "notests"] {
@@ -16489,7 +16424,7 @@ fn policy_test_runs() {
     let test = |sub: &str, args: &[&str]| {
         let mut argv = vec!["buildx", "policy", "test"];
         argv.extend_from_slice(args);
-        let out = common::run_shards_env_in(&dir.join(sub), &[], &argv, &env, TIMEOUT);
+        let out = common::run_shards_env_in(&dir.join(sub), &[], &argv, &env);
         (out.status, out.stdout, out.stderr)
     };
     let refused = |e: &str| (Some(1), String::new(), format!("ERROR: {e}\n"));
@@ -16545,16 +16480,21 @@ fn a_failing_step_cites_its_build_file_lines() {
     if cannot_run_vms() {
         return;
     }
+    // A home of its own, and alpine:3.22 as Docker 29.3.1 ran it for D115 (Docker Hub,
+    // 2026-10-15) from the tests' own registry.
+    let home = TempDir::new("excerpt-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let alpine =
+        common::hub("alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8");
     let ctx = context(
         "excerpt-ctx",
-        "FROM alpine:3.22 as base\nRUN echo one\nRUN echo hi && \\\n  exit 3\n",
+        &format!("FROM {alpine} as base\nRUN echo one\nRUN echo hi && \\\n  exit 3\n"),
     );
-    let out = common::run_shards_in(
-        &ctx,
-        &[],
-        &["build", "--progress=plain", "--no-cache", "."],
-        TIMEOUT,
-    );
+    let out = common::run_shards_env_in(&ctx, &[], &["build", "--progress=plain", "--no-cache", "."], &env);
     assert_eq!(out.status, Some(1), "{}", out.stderr);
     let tail = out
         .stderr
@@ -16594,13 +16534,11 @@ fn a_failing_step_cites_its_build_file_lines() {
     // A source the context lacks: the step's error is the checksum's, the build's the
     // cache key's that failed to load (BuildKit names its internal reference where shards
     // names the context).
-    let ctx = context("excerpt-copy-ctx", "FROM alpine:3.22\nCOPY missing.txt /m\n");
-    let out = common::run_shards_in(
-        &ctx,
-        &[],
-        &["build", "--progress=plain", "--no-cache", "."],
-        TIMEOUT,
+    let ctx = context(
+        "excerpt-copy-ctx",
+        &format!("FROM {alpine}\nCOPY missing.txt /m\n"),
     );
+    let out = common::run_shards_env_in(&ctx, &[], &["build", "--progress=plain", "--no-cache", "."], &env);
     assert_eq!(out.status, Some(1), "{}", out.stderr);
     assert!(
         out.stderr
@@ -16609,9 +16547,9 @@ fn a_failing_step_cites_its_build_file_lines() {
         out.stderr
     );
     assert!(
-        out.stderr.ends_with(
-            "------\n > [2/2] COPY missing.txt /m:\n------\nDockerfile:2\n--------------------\n   1 |     FROM alpine:3.22\n   2 | >>> COPY missing.txt /m\n   3 |     \n--------------------\nERROR: failed to build: failed to solve: failed to compute cache key: failed to calculate checksum of ref context: \"/missing.txt\": not found\n"
-        ),
+        out.stderr.ends_with(&format!(
+            "------\n > [2/2] COPY missing.txt /m:\n------\nDockerfile:2\n--------------------\n   1 |     FROM {alpine}\n   2 | >>> COPY missing.txt /m\n   3 |     \n--------------------\nERROR: failed to build: failed to solve: failed to compute cache key: failed to calculate checksum of ref context: \"/missing.txt\": not found\n"
+        )),
         "{}",
         out.stderr
     );
@@ -16711,13 +16649,7 @@ fn policies_verify_git_signatures_by_ssh_certificates() {
     let src = format!("git://127.0.0.1:{port}/repo.git#main");
     let build = |key: &str| {
         std::fs::write(ctx.join("signer.pub"), key).unwrap();
-        common::run_shards_env_in(
-            &ctx,
-            &[],
-            &["build", "--progress=plain", "--no-cache", "."],
-            &env,
-            TIMEOUT,
-        )
+        common::run_shards_env_in(&ctx, &[], &["build", "--progress=plain", "--no-cache", "."], &env)
     };
     let last = |stderr: &str| {
         policy_log(stderr)
@@ -16758,7 +16690,7 @@ fn harnesses_message_their_attached_agents() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let mut domains = String::new();
     for (kind, name, verbs) in [
         (
@@ -16849,7 +16781,7 @@ fn agentfile_volumes_reach_whom_they_are_for() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let mut agents = String::new();
     for (name, verbs) in [
         (
@@ -17146,7 +17078,7 @@ fn a_run_reaches_none_of_its_images_agents() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     // One agent that reaches past the microVM (egress), so its flows cross the command's
     // network namespace: it holds until the run ends.
     let dir = TempDir::new("beside-agent");
@@ -17385,7 +17317,7 @@ fn a_steps_directories_keep_their_numbers() {
         "security.insecure",
         ctx.to_str().unwrap(),
     ];
-    let built = run_shards_env(&["build"], &args, &env, TIMEOUT);
+    let built = run_shards_env(&["build"], &args, &env);
     let shown = format!("--- stdout\n{}\n--- stderr\n{}", built.stdout, built.stderr);
     assert_eq!(built.status, Some(0), "{shown}");
     // The step's lines, `#N T.TTT PATH DEV:INO`.

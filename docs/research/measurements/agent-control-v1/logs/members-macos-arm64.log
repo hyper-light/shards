@@ -1,0 +1,31 @@
+# Green on the merged tree: adas-mac-studio-3.local (hostname Adas-Mac-Studio-4.local), macOS 26.2
+# arm64 (14 CPUs), rustc 1.98.1, 2026-11-13 ~16:02Z. Revision e8f578800 (8bb81584d and 991d741e9
+# merged with origin/main 740fa3726). CARGO_INCREMENTAL=0 SHARDS_HELPERS=skip
+# SHARDS_INIT_BINARY=/usr/bin/true SHARDS_SERVER_BINARY=/usr/bin/true.
+# Commands, each exit 0:
+#   cargo test -p shards-remote --lib control                          54 passed, 49 filtered out
+#   cargo clippy -p shards-remote --all-targets -- -D warnings          clean
+#   cargo clippy -p shards --all-targets -- -D warnings                 clean
+#   cargo test -p shards --bin shards -- daemon::managed                41 passed, 6 ignored (ROOT's native fixtures)
+#   cargo test -p shards --bin shards -- every_entry_the_composers_spell  1 passed (D257's census)
+# This lane's tests among them:
+test control::exec::tests::an_ask_reads_back_as_it_was_sent ... ok
+test control::exec::tests::what_an_exec_lane_is_told_reads_back ... ok
+test control::exec::tests::a_steers_refusals_are_codes_of_their_own ... ok
+test control::exec::tests::a_members_lane_holds_its_own_windows_alone ... ok
+test control::tests::lanes::an_exec_that_starts_and_exits_at_once_is_told_both_in_order ... ok
+test control::tests::lanes::a_members_lane_tells_it_runs_answers_each_steer_and_tells_its_end ... ok
+test control::tests::lanes::a_members_lane_asked_amiss_is_refused_and_one_ended_is_told_its_end ... ok
+test control::tests::lanes::a_members_lane_gone_with_its_connection_closes_its_steering ... ok
+test control::tests::lanes::the_controller_controls_a_member_its_state_steering_and_end ... ok
+test daemon::managed::members::tests::a_members_end_is_kept_and_told_as_it_comes ... ok
+test daemon::managed::members::tests::a_status_is_told_as_its_init_said_it ... ok
+test daemon::managed::tests::terminal_members_are_named_as_inputs_are ... ok
+test daemon::managed::tests::a_runs_member_host_tells_a_members_state_steers_it_and_tells_its_end ... ok
+(the latter's budget refusal logged: "agent-control member 0, lane 2: 202 bytes: Overflow")
+# And the existing exec, MCP and stdio lanes' tests beside them, each ok, e.g.:
+test control::tests::lanes::the_controller_execs_into_a_member_and_drives_its_stdio_steering_and_exit ... ok
+test control::tests::lanes::the_controller_takes_a_members_mcp_connection_as_an_exec ... ok
+test daemon::managed::tests::a_runs_exec_host_runs_a_members_exec_through_its_vm_process ... ok
+test result: ok. 54 passed; 0 failed; 0 ignored; 0 measured; 49 filtered out; finished in 1.21s
+test result: ok. 41 passed; 0 failed; 6 ignored; 0 measured; 781 filtered out; finished in 0.03s

@@ -1,0 +1,33 @@
+# #72 log-lane slice 3, red: 5ca8129ec (tree 62b8078457528937d4f9650c5573777a1e906dc8), each behaviour absent
+# host: adalundhe-MacBook-Pro macOS 26.5.2 arm64, 18 CPUs, 64 GiB; rustc 1.98.1 (48a229cea 2026-09-01)
+# SHARDS_HELPERS=skip, placeholder guest binaries, CARGO_INCREMENTAL=0
+# cargo test --locked -j 8 -p shards --bin shards -- daemon::logs daemon::managed daemon::packed daemon::files log_writer
+test daemon::managed::drain::tests::a_members_log_is_kept_and_counted_in_its_runs_cap ... FAILED
+test daemon::managed::cap::tests::each_log_loses_its_oldest_first_and_keeps_its_newest ... FAILED
+test daemon::managed::drain::tests::a_members_rotated_segment_is_compressed_when_the_runs_options_say_so ... FAILED
+test daemon::managed::cap::tests::the_newest_segment_rotation_keeps_the_bound_within_one_segment ... FAILED
+test daemon::managed::cap::tests::a_drop_across_owners_records_the_loss_per_owner ... FAILED
+test daemon::managed::log_lanes::tests::a_lane_from_the_oldest_says_what_the_cap_let_go ... FAILED
+---- daemon::managed::drain::tests::a_members_log_is_kept_and_counted_in_its_runs_cap stdout ----
+thread 'daemon::managed::drain::tests::a_members_log_is_kept_and_counted_in_its_runs_cap' (23418768) panicked at crates/shards/src/daemon/managed/drain.rs:1005:9:
+an owned channel is kept, not drained
+---- daemon::managed::cap::tests::each_log_loses_its_oldest_first_and_keeps_its_newest stdout ----
+thread 'daemon::managed::cap::tests::each_log_loses_its_oldest_first_and_keeps_its_newest' (23418762) panicked at crates/shards/src/daemon/managed/cap.rs:395:9:
+  left: []
+ right: [0, 1, 2]
+---- daemon::managed::drain::tests::a_members_rotated_segment_is_compressed_when_the_runs_options_say_so stdout ----
+thread 'daemon::managed::drain::tests::a_members_rotated_segment_is_compressed_when_the_runs_options_say_so' (23418769) panicked at crates/shards/src/daemon/managed/drain.rs:1046:26:
+called `Result::unwrap()` on an `Err` value: Custom { kind: InvalidData, error: "a record of a channel not kept" }
+---- daemon::managed::cap::tests::the_newest_segment_rotation_keeps_the_bound_within_one_segment stdout ----
+thread 'daemon::managed::cap::tests::the_newest_segment_rotation_keeps_the_bound_within_one_segment' (23418763) panicked at crates/shards/src/daemon/managed/cap.rs:428:9:
+  left: []
+ right: [0, 1, 2]
+---- daemon::managed::cap::tests::a_drop_across_owners_records_the_loss_per_owner stdout ----
+thread 'daemon::managed::cap::tests::a_drop_across_owners_records_the_loss_per_owner' (23418761) panicked at crates/shards/src/daemon/managed/cap.rs:340:9:
+  left: []
+ right: [Dropped { owner: Command, seq: 0, bytes: 17 }, Dropped { owner: Member(1), seq: 0, bytes: 17 }]
+---- daemon::managed::log_lanes::tests::a_lane_from_the_oldest_says_what_the_cap_let_go stdout ----
+thread 'daemon::managed::log_lanes::tests::a_lane_from_the_oldest_says_what_the_cap_let_go' (23418782) panicked at crates/shards/src/daemon/managed/log_lanes.rs:474:9:
+  left: [[115, 105, 120, 10]]
+ right: [[114, 111, 116, 97, 116, 101, 100, 32, 50], [115, 105, 120, 10]]
+test result: FAILED. 68 passed; 6 failed; 6 ignored; 0 measured; 794 filtered out; finished in 181.93s

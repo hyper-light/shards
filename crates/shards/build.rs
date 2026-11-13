@@ -16,7 +16,7 @@
 //!   that carries `shards` and writes its helpers out beside it, signed as that program
 //!   signs them (kiln, D237), and such a `shards` starts the ones beside it.
 //! - The GPU's VM process (`shards-vm-gpu`, D144, D201, D202): the VM process built with
-//!   its renderer, on Apple silicon, on Linux (glibc's and musl's) and on x86_64 Windows where
+//!   its renderer, on Apple silicon, on Linux (glibc's and musl's) and on amd64/arm64 Windows where
 //!   `SHARDS_GPU_LIBS` names the renderer's libraries (scripts/gpu-libs), into
 //!   `target/helpers-gpu`, signed as the VM process is on macOS; or `SHARDS_HELPERS_DIR`'s.
 //!   Without it, `shards` carries none and refuses a GPU.
@@ -203,20 +203,7 @@ fn compile(
     // is built; its paths remapped as the Rust's are (`-ffile-prefix-map`). A compiler
     // named for the target already is used instead.
     let var = triple.replace('-', "_");
-    if std::env::var_os(format!("CC_{var}")).is_none() {
-        let tool = |name: &str| {
-            let script = root.join("scripts").join(name);
-            if cfg!(windows) {
-                format!("sh {}", sh_path(&script))
-            } else {
-                script.display().to_string()
-            }
-        };
-        command
-            .env(format!("CC_{var}"), tool("zig-cc"))
-            .env(format!("AR_{var}"), tool("zig-ar"))
-            .env("ZIG_TARGET", format!("{arch}-linux-musl"));
-    }
+    zig_c(&mut command, root, &triple);
     let maps: Vec<String> = remaps
         .iter()
         .filter_map(|r| r.strip_prefix("--remap-path-prefix="))
@@ -382,6 +369,7 @@ fn compile_helpers(out: &mut impl io::Write) -> Result<PathBuf, String> {
         "crates/vmm",
         "crates/net",
         "crates/netring",
+        "crates/verify",
         "crates/dns",
         "crates/ipc",
         "crates/abi",
@@ -429,6 +417,8 @@ fn compile_helpers(out: &mut impl io::Write) -> Result<PathBuf, String> {
             ),
             "rust-lld",
         );
+        // The network process's AWS-LC (D242) is C, compiled as the init's is.
+        zig_c(&mut command, &root, &target);
     }
     command
         .current_dir(&root)
@@ -454,6 +444,13 @@ fn compile_helpers(out: &mut impl io::Write) -> Result<PathBuf, String> {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let tail: Vec<&str> = stderr.lines().rev().take(20).collect();
         let mut message = format!("building the VM and network processes for {target} failed");
+        if stderr.contains("aws-lc") || stderr.contains("zig") {
+            message.push_str(&format!(
+                "\nits C (AWS-LC) is compiled by zig 0.16.0: install it (https://ziglang.org/download/, \
+                 `brew install zig`), or name a compiler with CC_{}",
+                target.replace('-', "_")
+            ));
+        }
         message.push_str("\nor name prebuilt ones with SHARDS_HELPERS_DIR");
         for line in tail.iter().rev() {
             message.push('\n');
@@ -464,10 +461,34 @@ fn compile_helpers(out: &mut impl io::Write) -> Result<PathBuf, String> {
     Ok(target_dir.join(&target).join(dir_name))
 }
 
+/// AWS-LC's C for a musl `triple` (the init's TLS, AGENTFILE_ARCH.md §12 answer 18; the
+/// network process's, D242), by zig on every host (scripts/zig-cc, which drops the Rust triple
+/// cc-rs passes): one compiler, so that what is built is the same wherever it is. A compiler
+/// named for the target already is used instead.
+fn zig_c(command: &mut Command, root: &Path, triple: &str) {
+    let var = triple.replace('-', "_");
+    if env::var_os(format!("CC_{var}")).is_some() {
+        return;
+    }
+    let arch = triple.split('-').next().unwrap_or(triple);
+    let tool = |name: &str| {
+        let script = root.join("scripts").join(name);
+        if cfg!(windows) {
+            format!("sh {}", sh_path(&script))
+        } else {
+            script.display().to_string()
+        }
+    };
+    command
+        .env(format!("CC_{var}"), tool("zig-cc"))
+        .env(format!("AR_{var}"), tool("zig-ar"))
+        .env("ZIG_TARGET", format!("{arch}-linux-musl"));
+}
+
 /// Whether `target` carries a GPU's VM process where its renderer's libraries are given
 /// (D144, D201, D202): Apple silicon's, Linux's, glibc's and musl's, whose GPU's VM process
 /// links its C library dynamically, as it opens the host's Vulkan driver, a library of the
-/// host's C library (on Linux the other helpers are static, PM M281), and x86_64
+/// host's C library (on Linux the other helpers are static, PM M281), and amd64/arm64
 /// Windows's, whose VMs WHP runs.
 fn gpu_target(target: &str) -> bool {
     matches!(
@@ -478,6 +499,7 @@ fn gpu_target(target: &str) -> bool {
             | "x86_64-unknown-linux-musl"
             | "aarch64-unknown-linux-musl"
             | "x86_64-pc-windows-msvc"
+            | "aarch64-pc-windows-msvc"
     )
 }
 
@@ -494,9 +516,19 @@ fn compile_gpu_helper(out: &mut impl io::Write, libs: &Path) -> Result<PathBuf, 
     }
     let os = var("CARGO_CFG_TARGET_OS")?;
     let given: &[&str] = match os.as_str() {
-        "macos" => &["libvirglrenderer.a", "libepoxy.a", "libMoltenVK.a"],
-        "windows" => &["virglrenderer.lib", "epoxy.lib"],
-        _ => &["libvirglrenderer.a", "librender_server.a", "libepoxy.a"],
+        "macos" => &[
+            "libvirglrenderer.a",
+            "libepoxy.a",
+            "libMoltenVK.a",
+            "libshards_gpu_selection.a",
+        ],
+        "windows" => &["virglrenderer.lib", "epoxy.lib", "shards_gpu_selection.lib"],
+        _ => &[
+            "libvirglrenderer.a",
+            "librender_server.a",
+            "libepoxy.a",
+            "libshards_gpu_selection.a",
+        ],
     };
     for lib in given {
         let _ = writeln!(out, "cargo::rerun-if-changed={}", libs.join(lib).display());

@@ -72,12 +72,7 @@ fn build(home: &TempDir, tag: &str, options: &[&str]) {
         format!("FROM {image}\nHARNESS codex FROM ./harness.tar\n"),
     )
     .unwrap();
-    let built = run_shards_env(
-        &["build", "image"],
-        &["-t", tag, ctx.to_str().unwrap()],
-        &env,
-        TIMEOUT,
-    );
+    let built = run_shards_env(&["build", "image"], &["-t", tag, ctx.to_str().unwrap()], &env);
     assert_eq!(built.status, Some(0), "{}", built.stderr);
 }
 
@@ -101,15 +96,21 @@ fn boot_member(home: &TempDir, image: &str, terminal: bool, stdin: bool) -> Box<
             workdir: None,
             stdin,
             terminal,
+            args: Vec::new(),
+            mcp: false,
         }],
         publish: Vec::new(),
         egress: Narrowing::default(),
         credentials: Vec::new(),
+        lessor: None,
         shares: Vec::new(),
         nesting: false,
         ready_by: None,
         binary: Some(common::shards().to_path_buf()),
         env: host_env(home),
+        control: None,
+        gpu_devices: Vec::new(),
+        sign_ins: Vec::new(),
     };
     ImageShards::new().boot(&spec, TIMEOUT).unwrap()
 }
@@ -171,7 +172,7 @@ fn shards_in(home: &TempDir, args: &[&str]) -> Run {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    run_shards_env(&[], args, &env, TIMEOUT)
+    run_shards_env(&[], args, &env)
 }
 
 /// Runs, detached as `name`, an image whose agent `other` (member 0, uid 200000) holds a
@@ -183,6 +184,18 @@ fn run_two(home: &TempDir, name: &str) {
     let binary = std::fs::read(common::test_guest()).unwrap();
     std::fs::create_dir_all(ctx.join("other/bin")).unwrap();
     std::fs::write(ctx.join("other/bin/testguest"), &binary).unwrap();
+    // A context's files keep their modes on a Unix host, as fsutil walks them, and a
+    // written file is no program (0644 under the usual umask): its member's launch would
+    // be refused (EACCES). A Windows host's context gives every file 0755.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(
+            ctx.join("other/bin/testguest"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+    }
     std::fs::write(ctx.join("other/secret"), "the other member's\n").unwrap();
     std::fs::write(
         ctx.join("other/agent.json"),
@@ -419,13 +432,21 @@ fn terminal_lines(guest: &dyn ImageGuest) -> std::sync::mpsc::Receiver<String> {
     rx
 }
 
-/// The lines `lines` gives up to the first that begins with `last`, that one included.
-fn until(lines: &std::sync::mpsc::Receiver<String>, last: &str) -> Vec<String> {
+/// The lines `lines` gives up to the first that begins with `last`, that one included;
+/// where none comes, how the harness and the run ended is said beside what came: its end
+/// waited for where its terminal closed, which it follows.
+fn until(guest: &dyn ImageGuest, lines: &std::sync::mpsc::Receiver<String>, last: &str) -> Vec<String> {
     let mut said = Vec::new();
     loop {
-        let line = lines
-            .recv_timeout(TIMEOUT)
-            .unwrap_or_else(|e| panic!("no {last:?} in time ({e}) after:\n{}", said.join("\n")));
+        let line = lines.recv_timeout(TIMEOUT).unwrap_or_else(|e| {
+            let closed = matches!(e, std::sync::mpsc::RecvTimeoutError::Disconnected);
+            panic!(
+                "no {last:?} in time ({e}) after:\n{}\nthe harness's end: {:?}; the run's: {:?}",
+                said.join("\n"),
+                guest.wait_member(&codex(), if closed { TIMEOUT } else { Duration::ZERO }),
+                guest.wait_for(Duration::ZERO)
+            )
+        });
         let done = line.starts_with(last);
         said.push(line);
         if done {
@@ -451,7 +472,7 @@ fn a_harness_on_a_terminal_of_its_own_is_shown_and_sized_by_its_owner() {
     std::io::Read::read_to_end(&mut stderr, &mut rest).unwrap();
     assert!(rest.is_empty(), "its stderr is its terminal: {rest:?}");
     let lines = terminal_lines(&*guest);
-    let said = until(&lines, "ready");
+    let said = until(&*guest, &lines, "ready");
     for want in [
         "stdin tty true",
         "stdout tty true",
@@ -463,7 +484,7 @@ fn a_harness_on_a_terminal_of_its_own_is_shown_and_sized_by_its_owner() {
         assert!(said.iter().any(|l| l == want), "no {want:?} in {said:?}");
     }
     guest.resize(&codex(), 40, 120, TIMEOUT).unwrap();
-    let said = until(&lines, "resized");
+    let said = until(&*guest, &lines, "resized");
     assert_eq!(said.last().map(String::as_str), Some("resized 40 120"));
     guest.stop().unwrap();
     assert_eq!(guest.wait_for(TIMEOUT).unwrap(), Some(RunEnd::Stopped));
@@ -480,10 +501,10 @@ fn a_harness_on_a_terminal_of_its_own_reads_what_its_owner_types() {
     build(&home, "mx-keys:1", &["tty", "read"]);
     let guest = boot_member(&home, "mx-keys:1", true, true);
     let lines = terminal_lines(&*guest);
-    until(&lines, "ready");
+    until(&*guest, &lines, "ready");
     let mut keys = guest.take_input(&codex()).unwrap();
     std::io::Write::write_all(&mut keys, b"hello\n").unwrap();
-    let said = until(&lines, "read ");
+    let said = until(&*guest, &lines, "read ");
     assert_eq!(said.last().map(String::as_str), Some("read hello"));
     assert!(
         said.iter().any(|l| l == "hello"),

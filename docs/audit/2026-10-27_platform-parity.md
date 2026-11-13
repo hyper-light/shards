@@ -4,6 +4,9 @@ The user's criterion: every feature of shards built for Windows, macOS and Linux
 and arm64, macOS on x86_64 aside (Intel Macs are out, 2026-10-13). This audit finds where the
 existing work falls short of it.
 
+**Closed 2026-11-13** (the plan's step 14): no code gap remains. What stays unrun is hardware
+this project lacks and ROOT's runs, listed under [Closed](#closed-2026-11-13).
+
 ## How found
 
 - `scripts/audit/platform-parity.py crates` lists each item a source file compiles for some
@@ -549,5 +552,59 @@ Open, each waiting on what this step cannot give it:
   Device Assignment (the plan's step 13), x86_64 and arm64; x86_64 Linux's VFIO on hardware
   with a function to spare.
 
-The plan's step 14 closes once those are closed and a run of CI on the closing commit passes
-on every target, Windows' E2E included.
+## Closed (2026-11-13)
+
+platform-parity.py over crates/ found 58 items alone on main (2026-11-13), with five tsv lines
+naming relay.rs's `relay_polled`, gone since fb1f28d42. Each now stands with its twin, or with
+its hosts' reason none is needed (platform-parity.tsv, fe6dc59b7):
+- D235's host edits: inotify, FSEvents and ReadDirectoryChangesW;
+- each vCPU's guest time: KVM's /proc stat, HVF's exec time and WHP's counters;
+- D12's console report;
+- the managed GPU report and its lifeline (a Windows Job ends its processes as its owner goes,
+  D233);
+- shares given a VM, a client's share told apart, a refused client's reserve, an awaited
+  input and children's inherited descriptors;
+- a guest taken back.
+
+The script now leaves out a file its parent declares a test module. It fails on a tsv line
+whose item is no longer in its file, so a stale line can hide no later item of that name.
+Main's merges since brought one item more: client.rs's `system_root`, Windows' alone because
+Winsock names its providers under %SystemRoot%. Its line is 8db4c3755.
+
+One of the 58 was a real gap: `attach` of a guest its client lost (D215) was refused on
+Windows. Yet the guest's process, the `shards` that holds its VM in a Job (D141), outlives
+the client, and Windows' API can hold it.
+- Built in 43670dc18: held by a handle of its own with query, synchronize and terminate
+  rights; its start read by GetProcessTimes; its end made by TerminateProcess, which ends its
+  Job and so its VM.
+- In b4548fcf6, the conformance suite's case and the simulator take a guest back on every
+  host as well.
+
+Step 14's own runs, as its agent gave them when kiln marked the step met (ROOT's goal stack,
+kiln agent `01a148884a4770fdaf0111f3f792a248`: goal `01a17b1beb75724ab5ead1ffa61d0b4e`, step 14
+of plan `01a17b18aa0676509a394733d1471f4a`, its evidence at 2026-11-13T05:23:16Z), as written:
+
+> Tests: macOS arm64 (adas-mac-studio.local) at 3e76620e7: shards-api sim conformance 1/1,
+> take-back/borrowed tests 18 passed and 1 ignored by design, clippy -D warnings exit 0.
+> jupiter (Windows x86_64) at 5a6255b9c: 10/10, clippy 0.
+
+The parity goal's own evidence (goal `efa444a23c94830c90c053a68a6e5a56`, at
+2026-11-13T05:23:26Z) says of them, as written: "Tests: macOS arm64 shards-api tests and clippy
+green at 3e76620e7; jupiter 10/10 at 5a6255b9c."
+
+ROOT closed the audit with step 14. Every row's code is built on each host whose OS allows
+it, and a refusal names the OS's own limit where it doesn't (row 9, step 13). Rows 5, 6 and 9
+stay open above for runs, not code. A run that fails reopens its row:
+
+- Row 5: Windows arm64's full real-VM suite (step 10), and with it Windows arm64's cells of
+  rows 1, 6, 9 and 16.
+- Row 6: arm64 Linux's GPU, as no arm64 Linux host here has one.
+- Row 9: DDA's E2E on a Windows Server host that assigns a function, and x86_64 Linux's VFIO
+  on hardware with a function to spare.
+- On main, ROOT's:
+  - platform-parity.py over crates/, expected to find 0 items alone;
+  - CI's run on the fix's commit, Windows' E2E included: the Windows build,
+    `attach_takes_back_a_guest_on_windows`,
+    `a_guest_taken_back_on_windows_ends_as_it_drops_or_by_itself`, and boot.rs's
+    `shards_api_conforms_on_real_guests`, whose attach case runs on WHP now;
+  - that case on KVM and HVF again, for PM M541's reap fix.

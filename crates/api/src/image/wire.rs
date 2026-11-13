@@ -6,10 +6,11 @@
 //! payload is read whole or refused: a field past its end, bytes after its last field, an
 //! unknown tag or a bad UTF-8 string is a [`WireError`], never a default.
 //!
-//! Credentials ride only in [`Request`], each in a [`Secret`], whose `Debug` prints its
-//! length alone.
+//! Credentials ride only in [`Request`] and in a lease's answer ([`LeaseAnswer`]), each in a
+//! [`Secret`], whose `Debug` prints its length alone and whose bytes are wiped as it drops.
 
 use std::net::{IpAddr, SocketAddr};
+use std::num::NonZeroU64;
 
 use shards_abi::run;
 pub use shards_abi::run::nesting::Ready;
@@ -31,8 +32,38 @@ pub use shards_abi::run::nesting::Ready;
 /// its size (`RESIZE`, answered `RESIZED`; D244), so that a side that has no terminals refuses
 /// the run as it is asked, before any resize is; 12, each member's reach of the names kept
 /// ([`Narrowing::members`], D246), which the run host holds every member the image declares
-/// to before its microVM starts.
-pub const VERSION: u8 = 12;
+/// to before its microVM starts; 13, the CPU rate its orchestrator holds the run's vCPUs to
+/// (`RATE`, answered `RATED`; D191, D247), so that a side that holds none refuses the run as
+/// it is asked, before any rate is: a host of an earlier version ends a run at a frame it has
+/// no kind for; 14, why a vCPU's guest time went unread, typed ([`VcpuTime::unread`],
+/// `shards_abi::guest_time::Unread`, guest-cpu-time-v1's R04): its cause and code in their text
+/// form, which an earlier version's free words never parse as; 15, the run's agent-control
+/// endpoint ([`Request::control`], [`Started::control`]; D238, D251, D252), so that a side that
+/// binds none refuses the run as it is asked; 16, the host GPUs the run names
+/// ([`Request::gpu_devices`], D232, D234's `gpus=`), so that a side that binds none starts no
+/// run without them; 17, the period the run's governor holds its rate over
+/// ([`Started::rate_period`], D191, D247), so that its orchestrator derives its window from
+/// the run's own period, never from a number of its own; 18, each member's run-time arguments
+/// ([`MemberStage::args`], D256), so that a side that passes none starts no member without
+/// the flags its orchestrator asked; 19, how the run's microVM started ([`Started::from`],
+/// D253): from its image's template, booted saving one, or booted where its template did not
+/// restore, so that its orchestrator hears a template replaced; 20, a credential's lease, asked by the run host
+/// just in time (`LEASE`, answered `LEASED`), and the run's release of every lease
+/// (`RELEASED`; D242), so that a side that leases nothing refuses the run as it is asked,
+/// before any lease is: a client of an earlier version ends a run at a frame it has no kind
+/// for; 21, warm run hosts ([`to_host::WARM`], [`to_client::WARMED`], [`Cause::Unfit`],
+/// [`StartedFrom::Warm`]; D253's pools), so that a side that keeps none is never asked to;
+/// 22, each credential grant's placeholder ([`CredentialGrant::placeholder`], D242), what
+/// stands for its credential in a request, so that the run's injector fills a value in where
+/// its own placeholder stands and nowhere else; 23, the run's microVM saved whole for its
+/// owner ([`to_host::SAVE`], answered [`to_client::SAVED`]; D259), so that a side that saves
+/// none refuses the run as it is asked, before any save is; 24, the run's sign-in grants
+/// ([`Request::sign_ins`], D242 step 8) and their words ([`to_client::CAPTURE`],
+/// [`to_client::REFRESH`] and [`to_client::REVOKE`], answered [`to_host::CAPTURED`] and
+/// [`to_host::REFRESHED`]), so that a side that knows no sign-in refuses the run by its version; 25, each member's MCP
+/// bridge ([`MemberStage::mcp`], D254), so that a side that makes none never starts a harness
+/// whose MCP config names one that is not there.
+pub const VERSION: u8 = 25;
 
 /// What the orchestrator's side sends.
 pub mod to_host {
@@ -59,6 +90,25 @@ pub mod to_host {
     pub const ROOM: u8 = 10;
     /// A [`ResizeAsk`](super::ResizeAsk): a member's own terminal sized (D244).
     pub const RESIZE: u8 = 11;
+    /// A [`RateAsk`](super::RateAsk): the CPU rate the orchestrator holds the run's vCPUs to
+    /// (D191, D247).
+    pub const RATE: u8 = 12;
+    /// A [`LeaseAnswer`](super::LeaseAnswer): a lease its run host asked, given or refused,
+    /// by its ask's id (D242).
+    pub const LEASED: u8 = 13;
+    /// A [`Request`](super::Request), first and once, in place of `CREATE`: a warm run host's
+    /// exemplar ([`Request::exemplar`](super::Request::exemplar), D253's pools), its microVM
+    /// started for runs of it and waiting, `WARMED`, for one, whose `CREATE` follows.
+    pub const WARM: u8 = 14;
+    /// A [`SaveAsk`](super::SaveAsk): the run's microVM saved whole into a directory its
+    /// owner names (D259).
+    pub const SAVE: u8 = 15;
+    /// A [`CaptureAnswer`](super::CaptureAnswer): a sign-in's tokens kept and their
+    /// placeholders given, or why not, by its ask's id (D242, step 8).
+    pub const CAPTURED: u8 = 34;
+    /// A [`RefreshAnswer`](super::RefreshAnswer): the token response a sign-in's CLI is to
+    /// have, refreshed outside, or why not, by its ask's id.
+    pub const REFRESHED: u8 = 35;
 }
 
 /// What the run host sends.
@@ -91,6 +141,27 @@ pub mod to_client {
     /// [`ResizeAnswer`](super::ResizeAnswer): whether a member's terminal took its size, by
     /// its ask's id.
     pub const RESIZED: u8 = 28;
+    /// [`RateAnswer`](super::RateAnswer): what the run's vCPUs are held to, by its ask's id.
+    pub const RATED: u8 = 29;
+    /// A [`LeaseAsk`](super::LeaseAsk): a credential's lease, asked just in time by reference
+    /// (D242).
+    pub const LEASE: u8 = 30;
+    /// Every lease of the run released ([`released`](super::released)): the run has ended,
+    /// and nothing of any value it was leased is held (D242). Before [`ENDED`].
+    pub const RELEASED: u8 = 31;
+    /// How a warm run host's microVM started ([`StartedFrom`](super::StartedFrom), its one
+    /// byte): it is ready, and waits for its run's `CREATE` (D253's pools).
+    pub const WARMED: u8 = 32;
+    /// [`SaveAnswer`](super::SaveAnswer): a save's outcome, by its ask's id (D259).
+    pub const SAVED: u8 = 33;
+    /// A [`CaptureAsk`](super::CaptureAsk): a sign-in's tokens, as the run's injector took them
+    /// from its CLI's token response, to keep outside (D242, step 8).
+    pub const CAPTURE: u8 = 36;
+    /// A [`RefreshAsk`](super::RefreshAsk): a sign-in's refresh, as its CLI asked it.
+    pub const REFRESH: u8 = 37;
+    /// [`Revoked`](super::Revoked): the run's VM revoked a sign-in, answered in its network
+    /// process; told, unanswered.
+    pub const REVOKE: u8 = 38;
 }
 
 /// Why a payload could not be read or written.
@@ -110,6 +181,10 @@ pub enum WireError {
     TooLong,
     /// A list whose items come out of the order the channel keeps them in.
     Order { what: &'static str },
+    /// A vCPU's unread cause not in its text form (`shards_abi::guest_time::Unread::write`).
+    Unread,
+    /// A GPU's identity not in D232's grammar, or a selection D232 refuses (`shards_abi::gpu`).
+    Gpu,
 }
 
 impl std::fmt::Display for WireError {
@@ -122,6 +197,8 @@ impl std::fmt::Display for WireError {
             Self::Version(v) => write!(f, "channel version {v}, where this side speaks {VERSION}"),
             Self::TooLong => f.write_str("a payload past the channel's bound"),
             Self::Order { what } => write!(f, "{what} out of order"),
+            Self::Unread => f.write_str("a vCPU's unread cause this side does not parse"),
+            Self::Gpu => f.write_str("a GPU's identity D232's grammar or selection refuses"),
         }
     }
 }
@@ -129,13 +206,19 @@ impl std::fmt::Display for WireError {
 impl std::error::Error for WireError {}
 
 /// Bytes a caller would not have printed: a credential, as often as not. Its `Debug` says
-/// how many there are, never what.
+/// how many there are, never what, and its bytes are wiped as it drops (D242).
 #[derive(Clone, PartialEq, Eq, Default)]
 pub struct Secret(pub Vec<u8>);
 
 impl std::fmt::Debug for Secret {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Secret({} bytes)", self.0.len())
+    }
+}
+
+impl Drop for Secret {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.0);
     }
 }
 
@@ -191,6 +274,14 @@ pub struct MemberStage {
     /// Its stdio is a terminal of its own (D244): what it shows is its stdout channel, its
     /// stdin goes to it, and [`ResizeAsk`] sizes it.
     pub terminal: bool,
+    /// Its run-time arguments (D256), on its command line after its config's `run.command`
+    /// (its entrypoint and options), in their order; none, its command alone.
+    pub args: Vec<String>,
+    /// An MCP bridge of its own (D254): a stdio server at `/run/shards/mcp` that its harness's
+    /// MCP config names, each connection to which reaches the run's controller as a lane of
+    /// its agent-control endpoint ([`Request::control`], which it needs); none, and it has
+    /// neither the bridge nor its socket.
+    pub mcp: bool,
 }
 
 /// A guest port published on the host.
@@ -257,57 +348,130 @@ pub struct MemberReach {
     pub destinations: Vec<String>,
 }
 
-/// A credential grant by reference (D242): the credential named `reference` (a secret's
-/// path in the orchestrator's store, never a value) may be filled in at the VM's egress
-/// toward the hosts in `toward`, and no others. The grant carries no value, so it may
-/// print; the value rides a lease the injector pulls just in time, never this channel.
-///
-/// Each host in `toward` is a DNS name lowered, as a network's `--egress=HOST:PORT` names a
-/// destination's host by name (D236), or [`host.docker.internal`](shards_dns::HOST), the
-/// host itself; never an address (TLS names a server by its DNS name alone, RFC 6066 §3),
-/// never with a port, and never `localhost`. The orchestrator's side checks that where it builds the request
-/// ([`super::request`]); a side reading the wire takes them as bytes.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct CredentialGrant {
-    pub reference: String,
-    pub toward: Vec<String>,
-}
+/// A run's credential grants and the injector's decision with them (D242): shards-dns's, which
+/// the network process's injector decides with too (both name a grant's hosts by its rules).
+/// A grant rides this channel by reference with the hosts it may be filled in toward and the
+/// placeholder that stands for it; its value rides a lease the injector pulls just in time,
+/// never this channel. The orchestrator's side checks it where it builds the request
+/// ([`super::request`]).
+pub use shards_dns::credential::{CredentialGrant, Fill, decide};
 
-/// What the credential injector (a gateway, not a proxy: RFC 9110 §3.7, so it may set the
-/// `Authorization` header a proxy may not, §11.6.2) does with a request it has terminated,
-/// decided by [`decide`] from the TLS name the flow arrived on, the request's host and the
-/// VM's grants (D242). The injector renders the outcome; this enum is the decision.
+/// A credential's lease, asked by the run's host just in time (D242): the credential its
+/// network process first needs, by reference, one of the run's grants and never a value;
+/// answered by its id ([`LeaseAnswer`]). It names the run by the channel it comes on, which
+/// the orchestrator that started the run's host alone speaks on (D231, D248).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Fill {
-    /// Fill the credential named `reference` into the request, then forward it.
-    With(String),
-    /// No grant names this host: forward the request with no credential (default deny).
-    Pass,
-    /// The request's host disagrees with the TLS name the flow arrived on, so the flow is
-    /// misdirected (RFC 9110 §7.4): refuse it 421, never guessing which host was meant.
-    Misdirected,
+pub struct LeaseAsk {
+    pub id: u32,
+    pub reference: String,
 }
 
-/// Decide what the injector fills into a request to a credential-granted host (D242).
-/// `sni` is the TLS server name the flow was terminated on, `host` the request's host (its
-/// HTTP/1.1 `Host` or HTTP/2 `:authority`, the authority alone, without a port); `grants`
-/// are the VM's. A value is filled only when the SNI, the host and a grant's host all
-/// agree: the SNI alone is not enough (a client picks its `Host` freely; domain fronting),
-/// so a `Host` that differs from the SNI is [`Misdirected`](Fill::Misdirected), and
-/// otherwise the first grant whose `toward` names the host fills it, else
-/// [`Pass`](Fill::Pass). Matching is ASCII case-insensitive, as DNS names compare (RFC
-/// 9549 §2.3); callers that also require the request to carry the credential's placeholder
-/// add that where they substitute.
-pub fn decide(grants: &[CredentialGrant], sni: &str, host: &str) -> Fill {
-    if !sni.eq_ignore_ascii_case(host) {
-        return Fill::Misdirected;
-    }
-    for grant in grants {
-        if grant.toward.iter().any(|h| h.eq_ignore_ascii_case(host)) {
-            return Fill::With(grant.reference.clone());
-        }
-    }
-    Fill::Pass
+/// A lease given (D242): the credential's value, and how long its lease lives past its
+/// answer, in nanoseconds, never none. Its holder wipes the value as it ends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Lease {
+    pub value: Secret,
+    pub lives: NonZeroU64,
+}
+
+/// Why no lease was given (D242), typed (R04): the run's host relays it to the network
+/// process that asked, whose asker matches it, never its words.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LeaseRefusal {
+    /// The orchestrator's broker leases the run none of it, in its words: a credential its
+    /// store does not hold, or one its policy keeps from the run.
+    Denied(String),
+    /// Asked under the key the run had before a move replaced it (D238, D176 part 6, as the
+    /// daemon's `move step key` refuses one): that key, and the run's key now where it has
+    /// one, each 64 lowercase hex digits. The broker alone says which key is current.
+    KeyReplaced { asked: String, current: Option<String> },
+    /// Its broker could not be asked, or failed, in its words: a later ask may be leased.
+    Unavailable(String),
+    /// The run has ended: nothing is leased after its release.
+    Ended,
+    /// Its lease ended before it was answered: a later ask is leased anew.
+    Lapsed,
+}
+
+/// A lease's answer, by its ask's id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeaseAnswer {
+    pub id: u32,
+    pub result: Result<Lease, LeaseRefusal>,
+}
+
+/// A run's sign-in grant and what its capture gave (D242, step 8): shards-dns', which the
+/// network process holds too.
+pub use shards_dns::credential::{Captured, Cli, SignInGrant};
+
+/// A sign-in's tokens as its run's injector took them (D242, step 8), each wiped as it drops:
+/// its access token, its refresh token where its response had one, and the access token's
+/// life in seconds where its response said (RFC 6749 §5.1); and, no credential, what its CLI's
+/// own file records beside them, for its orchestrator to stage into a later run's: its ID token
+/// made inert as its CLI was given it (its header and claims, no signature: Codex's `auth.json`
+/// parses it for its account), and the scope its access token was granted (Claude Code's
+/// `scopes`). The real ID token stays nowhere.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignInTokens {
+    pub access: Secret,
+    pub refresh: Option<Secret>,
+    pub expires_in: Option<u64>,
+    pub id_token: Option<Secret>,
+    pub scope: Option<String>,
+}
+
+/// A sign-in's capture, asked by the run's host (D242, step 8): keep its tokens, and give the
+/// placeholders its CLI is to hold in their places; answered by its id ([`CaptureAnswer`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CaptureAsk {
+    pub id: u32,
+    pub sign_in: String,
+    pub tokens: SignInTokens,
+}
+
+/// A sign-in's refresh, asked by the run's host as its CLI asked it (D242, step 8): refreshed
+/// by its broker once for every run of it at a time, answered by its id ([`RefreshAnswer`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefreshAsk {
+    pub id: u32,
+    pub sign_in: String,
+}
+
+/// A sign-in the run's VM revoked (its CLI's logout, or a sign-in anew), answered in its
+/// network process and its stored tokens kept (D242, step 8): told, unanswered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Revoked {
+    pub sign_in: String,
+}
+
+/// Why a sign-in's ask was not answered (D242, step 8), typed (R04): the run's host relays it
+/// to its network process, whose injector matches it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SignInRefusal {
+    /// The orchestrator's broker refused it, in its words: a sign-in its store does not hold, or
+    /// a refresh its provider refused.
+    Denied(String),
+    /// Its broker could not be asked, or failed, in its words: a later ask may be answered.
+    Unavailable(String),
+    /// The run has ended.
+    Ended,
+    /// The run's orchestrator answers no sign-in.
+    Unanswered,
+}
+
+/// A capture's answer, by its ask's id: the placeholders the sign-in's CLI is to hold.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CaptureAnswer {
+    pub id: u32,
+    pub result: Result<Captured, SignInRefusal>,
+}
+
+/// A refresh's answer, by its ask's id: the token response the sign-in's CLI is to have, its
+/// tokens the placeholders it holds (the run's injector gives them those whatever comes).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefreshAnswer {
+    pub id: u32,
+    pub result: Result<Secret, SignInRefusal>,
 }
 
 /// A host directory the guest sees at a path, as `-v HOST:PATH[:ro]` gives one (D109).
@@ -345,6 +509,47 @@ pub struct Request {
     /// hosts the injector may fill it in toward. Empty for a run with none, as every run
     /// is until an orchestrator asks for one (default deny).
     pub credentials: Vec<CredentialGrant>,
+    /// The run's agent-control endpoint (D252), bound by its host for this run alone; none,
+    /// and it has none. Appended in version 15.
+    pub control: Option<ControlAsk>,
+    /// The host GPUs its VM renders on, each by its exact identity (D232), which its command
+    /// reads under the nesting grant (D234's `gpus=`); none, no GPU. Appended in version 16.
+    pub gpu_devices: Vec<shards_abi::gpu::PhysicalGpu>,
+    /// The run's sign-in grants (D242, step 8): each a sign-in its CLI may sign in as, its
+    /// tokens kept outside and its CLI given placeholders. Empty for a run with none. Appended
+    /// in version 24.
+    pub sign_ins: Vec<SignInGrant>,
+}
+
+/// What a run's agent-control endpoint takes and serves (D252): the one key it takes, its
+/// controller's, and the lanes to the run's own command's sockets (D251).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControlAsk {
+    /// The SHA-256 of the controller's key (D180's raw public key, RFC 7250): the one key the
+    /// endpoint takes.
+    pub controller: [u8; 32],
+    /// The run's socket directory and what it admits of lanes to it; none, and none.
+    pub sockets: Option<SocketGrant>,
+}
+
+/// The one directory of the run's own command's sockets its controller may reach (D251), and
+/// what the run admits of lanes to them (R03: the caller's numbers).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SocketGrant {
+    /// Absolute and plain, in the command's root (`shards_abi::run::socket::dir_ok`).
+    pub dir: String,
+    /// The most lanes open at once.
+    pub lanes: u32,
+    /// Each lane's bytes in flight each way.
+    pub window: u32,
+}
+
+/// Where a run's agent-control endpoint is bound, and the SHA-256 of its microVM's own key,
+/// which its controller pins (D252).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ControlAt {
+    pub address: SocketAddr,
+    pub vm: [u8; 32],
 }
 
 /// Room for `bytes` more of member `member`'s `channel`.
@@ -411,6 +616,33 @@ pub struct Receiving {
 pub struct Started {
     pub members: Vec<MemberInfo>,
     pub published: Vec<Bound>,
+    /// Where the run's endpoint is bound, where it asked for one (D252); appended in version
+    /// 15.
+    pub control: Option<ControlAt>,
+    /// The period its VM's governor holds a rate over (D191, D247), as its host's build
+    /// holds one: on the channel in nanoseconds, never none; appended in
+    /// version 17.
+    pub rate_period: std::time::Duration,
+    /// How its microVM started (D253); appended in version 19.
+    pub from: StartedFrom,
+}
+
+/// How a run's microVM came to be ready (D253), as its run host started it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartedFrom {
+    /// Booted, with no template to restore or save: a guest its caller gave, or a host whose
+    /// hypervisor restores no snapshot.
+    Booted = 0,
+    /// Booted, saving its image's template on the way, none being saved.
+    Saved = 1,
+    /// Restored from its image's template.
+    Restored = 2,
+    /// Booted, saving another, its image's template having failed to restore: that one
+    /// removed.
+    Replaced = 3,
+    /// A warm run host's, its microVM ready before its run asked (D253's pools); appended in
+    /// version 21.
+    Warm = 4,
 }
 
 /// Why the run host will not run it, typed by what failed: the client maps each to its
@@ -433,6 +665,9 @@ pub enum Cause {
     Boot = 3,
     /// What the run host does not do yet.
     Unsupported = 4,
+    /// A warm run host's microVM is another request's than the run's (D253's pools): the run
+    /// is its orchestrator's to start on a host of its own.
+    Unfit = 5,
 }
 
 /// A member's bytes.
@@ -444,11 +679,12 @@ pub struct Output {
 }
 
 /// Bytes for a member's stdin, at most the room its host has given and the orchestrator has
-/// not used.
+/// not used: what a person typed into the member, a credential as often as not, so its bytes
+/// are a [`Secret`]'s, wiped as they drop and never printed (D242).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Input {
     pub member: u32,
-    pub bytes: Vec<u8>,
+    pub bytes: Secret,
 }
 
 /// The orchestrator's end of a member's stdin ([`StreamEnd::Closed`]), every byte before it
@@ -566,8 +802,8 @@ pub struct VcpuTime {
     pub index: u32,
     /// Nanoseconds, never less than an earlier sample of the same vCPU said.
     pub guest_ns: u64,
-    /// Why this sample did not read it: `guest_ns` is then the most it read before.
-    pub unread: Option<String>,
+    /// Why this sample did not read it, typed: `guest_ns` is then the most it read before.
+    pub unread: Option<shards_abi::guest_time::Unread>,
 }
 
 impl Stats {
@@ -638,6 +874,22 @@ pub struct ResizeAsk {
 pub struct ResizeAnswer {
     pub id: u32,
     pub result: Result<(), String>,
+}
+
+/// The CPU rate the orchestrator holds the run's vCPUs to together (D191, D247), in
+/// milli-CPU of the host's time; none for no hold, the microVM's vCPUs its ceiling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RateAsk {
+    pub id: u32,
+    pub rate: Option<NonZeroU64>,
+}
+
+/// What the run's VM holds its vCPUs to, by its ask's id: the milli-CPU, none where it lets
+/// them be (no rate, or every vCPU's whole CPU or more), or why it holds them to nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RateAnswer {
+    pub id: u32,
+    pub result: Result<Option<NonZeroU64>, String>,
 }
 
 /// A host directory plugged into running member `member` as the run goes (D235), as
@@ -711,6 +963,52 @@ pub struct PlugAnswer {
     pub result: Result<(), (PlugRefusal, String)>,
 }
 
+/// The run's microVM saved whole into directory `to`, which the save makes (D259): absolute,
+/// beneath the run's home, beneath no directory its guest reaches, and nothing there yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SaveAsk {
+    pub id: u32,
+    /// Absolute, UTF-8: the directory the save makes.
+    pub to: String,
+}
+
+/// Why a save was refused, by what refused it (D259).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SaveRefusal {
+    /// Where it was to be written is not its owner's to name: not absolute, outside the run's
+    /// home, beneath a directory its guest reaches, or something there already.
+    Destination = 0,
+    /// The run is in no state to save: a save of it under way, or its microVM gone.
+    State = 1,
+    /// This host's microVMs take no snapshots (`shards_vmm::vm::SNAPSHOTS`).
+    Unsupported = 2,
+    /// It was not made, in the words of what failed: its VM's (what its snapshot cannot keep
+    /// whole, its guest not going quiet) or its files' writing.
+    Failed = 3,
+}
+
+fn save_refusal(tag: u8) -> Result<SaveRefusal, WireError> {
+    Ok(match tag {
+        0 => SaveRefusal::Destination,
+        1 => SaveRefusal::State,
+        2 => SaveRefusal::Unsupported,
+        3 => SaveRefusal::Failed,
+        tag => {
+            return Err(WireError::Tag {
+                what: "a save's refusal",
+                tag,
+            });
+        }
+    })
+}
+
+/// A save's outcome, by its ask's id: saved, or refused and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SaveAnswer {
+    pub id: u32,
+    pub result: Result<(), (SaveRefusal, String)>,
+}
+
 /// How the run ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunEnd {
@@ -718,7 +1016,8 @@ pub enum RunEnd {
     Exited(u32),
     /// `STOP`: its VM killed at once.
     Stopped,
-    /// Its VM, its host or its guest failed.
+    /// Its VM, its host or its guest failed, or its own command never started, in its VM's
+    /// words (D249).
     Failed(String),
 }
 
@@ -742,6 +1041,18 @@ pub fn frame(kind: u8, payload: &[u8]) -> Result<Vec<u8>, WireError> {
 /// Reads one frame from `from`: its kind and payload, none at a clean end before a header,
 /// an error past the bound or cut short.
 pub fn read_frame(from: &mut impl std::io::Read) -> std::io::Result<Option<(u8, Vec<u8>)>> {
+    let mut payload = Vec::new();
+    Ok(read_frame_into(from, &mut payload)?.map(|(kind, _)| (kind, payload)))
+}
+
+/// Reads one frame from `from` as [`read_frame`] does, its payload into `buf[..length]`:
+/// its kind and length. `buf` is grown with zeros where it is shorter, and never shrunk or
+/// read past, so that a reader that wipes each payload as it lets it go of holds no frame's
+/// bytes between frames (the run host's channel, D242), and reads nothing past its frame.
+pub fn read_frame_into(
+    from: &mut impl std::io::Read,
+    buf: &mut Vec<u8>,
+) -> std::io::Result<Option<(u8, usize)>> {
     let mut h = [0u8; run::HEADER];
     let mut got = 0;
     while got < h.len() {
@@ -757,13 +1068,18 @@ pub fn read_frame(from: &mut impl std::io::Read) -> std::io::Result<Option<(u8, 
     }
     let (kind, len) = run::parse_header(h)
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, WireError::TooLong))?;
-    let mut payload = Vec::new();
-    payload
-        .try_reserve_exact(len as usize)
-        .map_err(|_| std::io::Error::new(std::io::ErrorKind::OutOfMemory, "a frame's payload"))?;
-    payload.resize(len as usize, 0);
-    from.read_exact(&mut payload)?;
-    Ok(Some((kind, payload)))
+    let len = usize::try_from(len)
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, WireError::TooLong))?;
+    if let Some(more) = len.checked_sub(buf.len()).filter(|more| *more > 0) {
+        buf.try_reserve_exact(more)
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::OutOfMemory, "a frame's payload"))?;
+        buf.resize(len, 0);
+    }
+    let payload = buf
+        .get_mut(..len)
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::OutOfMemory, "a frame's payload"))?;
+    from.read_exact(payload)?;
+    Ok(Some((kind, len)))
 }
 
 struct Writer(Vec<u8>);
@@ -798,6 +1114,20 @@ impl Writer {
     }
     fn text(&mut self, s: &str) -> Result<(), WireError> {
         self.bytes(s.as_bytes())
+    }
+    /// A capture's access reference and its placeholder, then 1 and its refresh token's
+    /// placeholder where it has one, else 0 (D242, step 8).
+    fn captured(&mut self, c: &Captured) -> Result<(), WireError> {
+        self.text(&c.access)?;
+        self.text(&c.access_placeholder)?;
+        match &c.refresh_placeholder {
+            None => self.u8(0),
+            Some(refresh) => {
+                self.u8(1);
+                self.text(refresh)?;
+            }
+        }
+        Ok(())
     }
     fn ip(&mut self, ip: Option<IpAddr>) {
         match ip {
@@ -869,7 +1199,9 @@ impl Writer {
                 None => self.u8(0),
                 Some(why) => {
                     self.u8(1);
-                    self.text(why)?;
+                    let mut text = String::new();
+                    let _ = why.write(&mut text);
+                    self.text(&text)?;
                 }
             }
         }
@@ -886,6 +1218,14 @@ impl Writer {
 struct Reader<'a>(&'a [u8]);
 
 impl<'a> Reader<'a> {
+    /// What [`Writer::captured`] wrote.
+    fn captured(&mut self) -> Result<Captured, WireError> {
+        Ok(Captured {
+            access: self.text()?,
+            access_placeholder: self.text()?,
+            refresh_placeholder: if self.flag()? { Some(self.text()?) } else { None },
+        })
+    }
     fn take(&mut self, n: usize) -> Result<&'a [u8], WireError> {
         let data: &'a [u8] = self.0;
         let (head, rest) = data.split_at_checked(n).ok_or(WireError::Short)?;
@@ -1007,7 +1347,9 @@ impl<'a> Reader<'a> {
                     let guest_ns = self.u64()?;
                     let unread = match self.u8()? {
                         0 => None,
-                        1 => Some(self.text()?),
+                        1 => Some(
+                            shards_abi::guest_time::Unread::parse(&self.text()?).ok_or(WireError::Unread)?,
+                        ),
                         tag => {
                             return Err(WireError::Tag {
                                 what: "a vCPU's guest time",
@@ -1064,6 +1406,20 @@ fn channel(tag: u8) -> Result<Channel, WireError> {
         2 => Ok(Channel::Stderr),
         tag => Err(WireError::Tag {
             what: "a channel",
+            tag,
+        }),
+    }
+}
+
+fn started_from(tag: u8) -> Result<StartedFrom, WireError> {
+    match tag {
+        0 => Ok(StartedFrom::Booted),
+        1 => Ok(StartedFrom::Saved),
+        2 => Ok(StartedFrom::Restored),
+        3 => Ok(StartedFrom::Replaced),
+        4 => Ok(StartedFrom::Warm),
+        tag => Err(WireError::Tag {
+            what: "how a run started",
             tag,
         }),
     }
@@ -1182,6 +1538,64 @@ impl Request {
                 }
             }
         }
+        // The run's agent-control endpoint, appended in version 15 (D252): whether it asks one,
+        // its controller's key, then whether it grants sockets, their directory and admission.
+        match &self.control {
+            None => w.u8(0),
+            Some(control) => {
+                w.u8(1);
+                w.0.extend_from_slice(&control.controller);
+                match &control.sockets {
+                    None => w.u8(0),
+                    Some(grant) => {
+                        w.u8(1);
+                        w.text(&grant.dir)?;
+                        w.u32(grant.lanes);
+                        w.u32(grant.window);
+                    }
+                }
+            }
+        }
+        // The GPUs the run names, appended in version 16 (D232): each in `--gpu-device`'s text.
+        w.count(self.gpu_devices.len())?;
+        for gpu in &self.gpu_devices {
+            w.text(&gpu.to_string())?;
+        }
+        // Each member's run-time arguments, in the members' order, appended in version 18
+        // (D256): its count, then each.
+        for m in &self.members {
+            w.count(m.args.len())?;
+            for a in &m.args {
+                w.text(a)?;
+            }
+        }
+        // Each credential grant's placeholder, in the grants' order, appended in version 22
+        // (D242).
+        for grant in &self.credentials {
+            w.text(&grant.placeholder)?;
+        }
+        // The run's sign-in grants, appended in version 24 (D242, step 8): each its name, its
+        // CLI's code, its hosts, and whether a capture gave it placeholders, which follow.
+        w.count(self.sign_ins.len())?;
+        for s in &self.sign_ins {
+            w.text(&s.sign_in)?;
+            w.u8(s.cli.code());
+            w.count(s.toward.len())?;
+            for host in &s.toward {
+                w.text(host)?;
+            }
+            match &s.captured {
+                None => w.u8(0),
+                Some(c) => {
+                    w.u8(1);
+                    w.captured(c)?;
+                }
+            }
+        }
+        // Each member's MCP bridge, in the members' order, appended in version 25 (D254).
+        for m in &self.members {
+            w.u8(u8::from(m.mcp));
+        }
         w.done()
     }
 
@@ -1205,8 +1619,9 @@ impl Request {
             None
         };
         // Each member's kind, name, env and files, and, appended last, its working
-        // directory's flag, its input's and its terminal's.
-        let n = r.count(1 + 4 + 4 + 4 + 1 + 1 + 1)?;
+        // directory's flag, its input's, its terminal's, its arguments' count and its MCP
+        // bridge's flag.
+        let n = r.count(1 + 4 + 4 + 4 + 1 + 1 + 1 + 4 + 1)?;
         let mut members = Vec::with_capacity(n);
         for _ in 0..n {
             let kind = member_kind(r.u8()?)?;
@@ -1229,11 +1644,13 @@ impl Request {
                 name,
                 env,
                 files,
-                // Read with the members' working directories, inputs and terminals, appended
-                // last.
+                // Read with the members' working directories, inputs, terminals, arguments and
+                // MCP bridges, appended last.
                 workdir: None,
                 input: false,
                 terminal: false,
+                args: Vec::new(),
+                mcp: false,
             });
         }
         let n = r.count(2 + 1 + 1 + 2)?;
@@ -1288,7 +1705,12 @@ impl Request {
             for _ in 0..toward_n {
                 toward.push(r.text()?);
             }
-            credentials.push(CredentialGrant { reference, toward });
+            // Its placeholder, read with the members' arguments, appended last.
+            credentials.push(CredentialGrant {
+                reference,
+                toward,
+                placeholder: String::new(),
+            });
         }
         // Each member's terminal, in the members' order, appended in version 11 (D244).
         for m in &mut members {
@@ -1318,6 +1740,73 @@ impl Request {
         } else {
             None
         };
+        // The run's agent-control endpoint, appended in version 15 (D252).
+        let control = if r.flag()? {
+            let controller = r.array::<32>()?;
+            let sockets = if r.flag()? {
+                Some(SocketGrant {
+                    dir: r.text()?,
+                    lanes: r.u32()?,
+                    window: r.u32()?,
+                })
+            } else {
+                None
+            };
+            Some(ControlAsk { controller, sockets })
+        } else {
+            None
+        };
+        // The GPUs the run names, appended in version 16 (D232): each at least its text's
+        // length (four bytes), parsed and the selection checked as D232 checks one.
+        let n = r.count(4)?;
+        let mut gpu_devices = Vec::with_capacity(n);
+        for _ in 0..n {
+            gpu_devices.push(r.text()?.parse().map_err(|_| WireError::Gpu)?);
+        }
+        shards_abi::gpu::check_selection(&gpu_devices).map_err(|_| WireError::Gpu)?;
+        // Each member's run-time arguments, appended in version 18 (D256): each at least its
+        // text's length (four bytes).
+        for m in &mut members {
+            let n = r.count(4)?;
+            let mut args = Vec::with_capacity(n);
+            for _ in 0..n {
+                args.push(r.text()?);
+            }
+            m.args = args;
+        }
+        // Each credential grant's placeholder, in the grants' order, appended in version 22
+        // (D242).
+        for grant in &mut credentials {
+            grant.placeholder = r.text()?;
+        }
+        // The run's sign-in grants, appended in version 24 (D242, step 8): each at least its
+        // name's length (four bytes), its CLI (one), its hosts' count (four) and its flag (one).
+        let n = r.count(4 + 1 + 4 + 1)?;
+        let mut sign_ins = Vec::with_capacity(n);
+        for _ in 0..n {
+            let sign_in = r.text()?;
+            let code = r.u8()?;
+            let cli = Cli::from_code(code).ok_or(WireError::Tag {
+                what: "a sign-in's CLI",
+                tag: code,
+            })?;
+            let k = r.count(4)?;
+            let mut toward = Vec::with_capacity(k);
+            for _ in 0..k {
+                toward.push(r.text()?);
+            }
+            let captured = if r.flag()? { Some(r.captured()?) } else { None };
+            sign_ins.push(SignInGrant {
+                sign_in,
+                cli,
+                toward,
+                captured,
+            });
+        }
+        // Each member's MCP bridge, appended in version 25 (D254).
+        for m in &mut members {
+            m.mcp = r.flag()?;
+        }
         r.end()?;
         Ok(Request {
             image,
@@ -1331,7 +1820,235 @@ impl Request {
             nesting,
             ready_by,
             credentials,
+            control,
+            gpu_devices,
+            sign_ins,
         })
+    }
+}
+
+impl SignInRefusal {
+    fn write(&self, w: &mut Writer) -> Result<(), WireError> {
+        match self {
+            SignInRefusal::Denied(why) => {
+                w.u8(1);
+                w.text(why)
+            }
+            SignInRefusal::Unavailable(why) => {
+                w.u8(2);
+                w.text(why)
+            }
+            SignInRefusal::Ended => {
+                w.u8(3);
+                Ok(())
+            }
+            SignInRefusal::Unanswered => {
+                w.u8(4);
+                Ok(())
+            }
+        }
+    }
+
+    fn read(r: &mut Reader<'_>) -> Result<SignInRefusal, WireError> {
+        Ok(match r.u8()? {
+            1 => SignInRefusal::Denied(r.text()?),
+            2 => SignInRefusal::Unavailable(r.text()?),
+            3 => SignInRefusal::Ended,
+            4 => SignInRefusal::Unanswered,
+            tag => {
+                return Err(WireError::Tag {
+                    what: "a sign-in's refusal",
+                    tag,
+                });
+            }
+        })
+    }
+}
+
+impl CaptureAsk {
+    /// Its id, its sign-in, the life and the scope where it has them (1 and each, else 0), then
+    /// its tokens last, the refresh token's and the ID token's flags before them, in one buffer
+    /// made to its length at once: no buffer let go of as one grows holds a part of a token. The
+    /// caller wipes what it returns.
+    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
+        let t = &self.tokens;
+        let sized = |v: Option<usize>| v.map_or(0, |n| n.saturating_add(4));
+        let mut w = Writer(Vec::with_capacity(
+            self.sign_in
+                .len()
+                .saturating_add(t.access.0.len())
+                .saturating_add(sized(t.refresh.as_ref().map(|r| r.0.len())))
+                .saturating_add(sized(t.id_token.as_ref().map(|i| i.0.len())))
+                .saturating_add(sized(t.scope.as_ref().map(String::len)))
+                .saturating_add(4 + 4 + 9 + 1 + 1 + 1 + 4),
+        ));
+        w.u32(self.id);
+        w.text(&self.sign_in)?;
+        match t.expires_in {
+            None => w.u8(0),
+            Some(s) => {
+                w.u8(1);
+                w.u64(s);
+            }
+        }
+        match &t.scope {
+            None => w.u8(0),
+            Some(scope) => {
+                w.u8(1);
+                w.text(scope)?;
+            }
+        }
+        w.u8(u8::from(t.refresh.is_some()));
+        w.u8(u8::from(t.id_token.is_some()));
+        w.bytes(&t.access.0)?;
+        if let Some(r) = &t.refresh {
+            w.bytes(&r.0)?;
+        }
+        if let Some(i) = &t.id_token {
+            w.bytes(&i.0)?;
+        }
+        w.done()
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<CaptureAsk, WireError> {
+        let mut r = Reader(payload);
+        let id = r.u32()?;
+        let sign_in = r.text()?;
+        let expires_in = if r.flag()? { Some(r.u64()?) } else { None };
+        let scope = if r.flag()? { Some(r.text()?) } else { None };
+        let (refreshes, identified) = (r.flag()?, r.flag()?);
+        let access = Secret(r.bytes()?.to_vec());
+        let refresh = if refreshes {
+            Some(Secret(r.bytes()?.to_vec()))
+        } else {
+            None
+        };
+        let id_token = if identified {
+            Some(Secret(r.bytes()?.to_vec()))
+        } else {
+            None
+        };
+        r.end()?;
+        Ok(CaptureAsk {
+            id,
+            sign_in,
+            tokens: SignInTokens {
+                access,
+                refresh,
+                expires_in,
+                id_token,
+                scope,
+            },
+        })
+    }
+}
+
+impl RefreshAsk {
+    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
+        let mut w = Writer(Vec::new());
+        w.u32(self.id);
+        w.text(&self.sign_in)?;
+        w.done()
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<RefreshAsk, WireError> {
+        let mut r = Reader(payload);
+        let ask = RefreshAsk {
+            id: r.u32()?,
+            sign_in: r.text()?,
+        };
+        r.end()?;
+        Ok(ask)
+    }
+}
+
+impl Revoked {
+    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
+        let mut w = Writer(Vec::new());
+        w.text(&self.sign_in)?;
+        w.done()
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<Revoked, WireError> {
+        let mut r = Reader(payload);
+        let told = Revoked { sign_in: r.text()? };
+        r.end()?;
+        Ok(told)
+    }
+}
+
+impl CaptureAnswer {
+    /// Its id, then 0 and the access token's reference and its placeholder, then 1 and the
+    /// refresh token's where it has one, else 0; or 1 and its refusal.
+    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
+        let mut w = Writer(Vec::new());
+        w.u32(self.id);
+        match &self.result {
+            Ok(c) => {
+                w.u8(0);
+                w.captured(c)?;
+            }
+            Err(refusal) => {
+                w.u8(1);
+                refusal.write(&mut w)?;
+            }
+        }
+        w.done()
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<CaptureAnswer, WireError> {
+        let mut r = Reader(payload);
+        let id = r.u32()?;
+        let result = match r.u8()? {
+            0 => Ok(r.captured()?),
+            1 => Err(SignInRefusal::read(&mut r)?),
+            tag => {
+                return Err(WireError::Tag {
+                    what: "a capture's answer",
+                    tag,
+                });
+            }
+        };
+        r.end()?;
+        Ok(CaptureAnswer { id, result })
+    }
+}
+
+impl RefreshAnswer {
+    /// Its id, then 0 and the token response, last, in one buffer made to its length at once;
+    /// or 1 and its refusal. The caller wipes what it returns.
+    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
+        let body = self.result.as_ref().map_or(0, |b| b.0.len());
+        let mut w = Writer(Vec::with_capacity(body.saturating_add(4 + 1 + 4)));
+        w.u32(self.id);
+        match &self.result {
+            Ok(body) => {
+                w.u8(0);
+                w.bytes(&body.0)?;
+            }
+            Err(refusal) => {
+                w.u8(1);
+                refusal.write(&mut w)?;
+            }
+        }
+        w.done()
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<RefreshAnswer, WireError> {
+        let mut r = Reader(payload);
+        let id = r.u32()?;
+        let result = match r.u8()? {
+            0 => Ok(Secret(r.bytes()?.to_vec())),
+            1 => Err(SignInRefusal::read(&mut r)?),
+            tag => {
+                return Err(WireError::Tag {
+                    what: "a refresh's answer",
+                    tag,
+                });
+            }
+        };
+        r.end()?;
+        Ok(RefreshAnswer { id, result })
     }
 }
 
@@ -1434,6 +2151,59 @@ impl PlugAnswer {
     }
 }
 
+impl SaveAsk {
+    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
+        let mut w = Writer(Vec::new());
+        w.u32(self.id);
+        w.text(&self.to)?;
+        w.done()
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<SaveAsk, WireError> {
+        let mut r = Reader(payload);
+        let ask = SaveAsk {
+            id: r.u32()?,
+            to: r.text()?,
+        };
+        r.end()?;
+        Ok(ask)
+    }
+}
+
+impl SaveAnswer {
+    /// Its id, then 0, or 1, its refusal's tag and why.
+    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
+        let mut w = Writer(Vec::new());
+        w.u32(self.id);
+        match &self.result {
+            Ok(()) => w.u8(0),
+            Err((cause, why)) => {
+                w.u8(1);
+                w.u8(*cause as u8);
+                w.text(why)?;
+            }
+        }
+        w.done()
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<SaveAnswer, WireError> {
+        let mut r = Reader(payload);
+        let id = r.u32()?;
+        let result = match r.u8()? {
+            0 => Ok(()),
+            1 => Err((save_refusal(r.u8()?)?, r.text()?)),
+            tag => {
+                return Err(WireError::Tag {
+                    what: "a save's answer",
+                    tag,
+                });
+            }
+        };
+        r.end()?;
+        Ok(SaveAnswer { id, result })
+    }
+}
+
 impl StatsAsk {
     pub fn encode(&self) -> Vec<u8> {
         let mut w = Writer(Vec::new());
@@ -1490,6 +2260,20 @@ impl Started {
                 w.u16(r.port);
             }
         }
+        // Where the run's endpoint is bound and its microVM's key, appended in version 15.
+        match &self.control {
+            None => w.u8(0),
+            Some(at) => {
+                w.u8(1);
+                w.ip(Some(at.address.ip()));
+                w.u16(at.address.port());
+                w.0.extend_from_slice(&at.vm);
+            }
+        }
+        // The rate's period, appended in version 17 (D247).
+        w.u64(u64::try_from(self.rate_period.as_nanos()).map_err(|_| WireError::TooLong)?);
+        // How its microVM started, appended in version 19 (D253).
+        w.u8(self.from as u8);
         w.done()
     }
 
@@ -1530,8 +2314,67 @@ impl Started {
                 to,
             });
         }
+        let control = if r.flag()? {
+            let ip = r.ip()?.ok_or(WireError::Tag {
+                what: "an endpoint's address",
+                tag: 0,
+            })?;
+            let port = r.u16()?;
+            Some(ControlAt {
+                address: SocketAddr::new(ip, port),
+                vm: r.array::<32>()?,
+            })
+        } else {
+            None
+        };
+        // A governor holds over some time: a period of none is no period.
+        let rate_period = NonZeroU64::new(r.u64()?)
+            .map(|ns| std::time::Duration::from_nanos(ns.get()))
+            .ok_or(WireError::Tag {
+                what: "a rate period",
+                tag: 0,
+            })?;
+        let from = started_from(r.u8()?)?;
         r.end()?;
-        Ok(Started { members, published })
+        Ok(Started {
+            members,
+            published,
+            control,
+            rate_period,
+            from,
+        })
+    }
+}
+
+impl Request {
+    /// What a warm run host is started with and holds each run it is handed to (D253's
+    /// pools): this request with its members' stages, its deadline and its control ask taken
+    /// out, what alone may differ between the runs of one microVM; none of a run's secrets
+    /// is in it. Everything else is the microVM's: its image, size, command, ports, network,
+    /// shares, nesting, credential grants and GPUs.
+    pub fn exemplar(&self) -> Request {
+        Request {
+            members: Vec::new(),
+            ready_by: None,
+            control: None,
+            ..self.clone()
+        }
+    }
+}
+
+/// [`to_client::WARMED`]'s payload: how the warm host's microVM started.
+pub fn warmed(from: StartedFrom) -> [u8; 1] {
+    [from as u8]
+}
+
+/// How a warm host's microVM started, as [`warmed`] wrote it.
+pub fn read_warmed(payload: &[u8]) -> Result<StartedFrom, WireError> {
+    match payload {
+        [tag] => started_from(*tag),
+        _ => Err(WireError::Tag {
+            what: "a warm host's start",
+            tag: payload.first().copied().unwrap_or(0),
+        }),
     }
 }
 
@@ -1551,6 +2394,7 @@ impl Refused {
             2 => Cause::Widening,
             3 => Cause::Boot,
             4 => Cause::Unsupported,
+            5 => Cause::Unfit,
             tag => {
                 return Err(WireError::Tag {
                     what: "a refusal's cause",
@@ -1593,7 +2437,7 @@ impl Input {
         let (head, bytes) = payload.split_first_chunk::<4>().ok_or(WireError::Short)?;
         Ok(Input {
             member: u32::from_be_bytes(*head),
-            bytes: bytes.to_vec(),
+            bytes: Secret(bytes.to_vec()),
         })
     }
 }
@@ -1874,6 +2718,163 @@ impl ResizeAnswer {
     }
 }
 
+impl RateAsk {
+    /// Its id, then the rate, 0 for no hold: no rate of nothing, which is a pause, not a
+    /// rate.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut w = Writer(Vec::new());
+        w.u32(self.id);
+        w.u64(self.rate.map_or(0, NonZeroU64::get));
+        w.0
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<RateAsk, WireError> {
+        let mut r = Reader(payload);
+        let id = r.u32()?;
+        let rate = NonZeroU64::new(r.u64()?);
+        r.end()?;
+        Ok(RateAsk { id, rate })
+    }
+}
+
+impl RateAnswer {
+    /// Its id, then 0 and the milli-CPU the vCPUs are held to (0 for none), or 1 and why.
+    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
+        let mut w = Writer(Vec::new());
+        w.u32(self.id);
+        match &self.result {
+            Ok(held) => {
+                w.u8(0);
+                w.u64(held.map_or(0, NonZeroU64::get));
+            }
+            Err(why) => {
+                w.u8(1);
+                w.text(why)?;
+            }
+        }
+        w.done()
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<RateAnswer, WireError> {
+        let mut r = Reader(payload);
+        let id = r.u32()?;
+        let result = match r.u8()? {
+            0 => Ok(NonZeroU64::new(r.u64()?)),
+            1 => Err(r.text()?),
+            tag => {
+                return Err(WireError::Tag {
+                    what: "a rate's answer",
+                    tag,
+                });
+            }
+        };
+        r.end()?;
+        Ok(RateAnswer { id, result })
+    }
+}
+
+impl LeaseAsk {
+    /// Its id, then the credential's reference.
+    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
+        let mut w = Writer(Vec::new());
+        w.u32(self.id);
+        w.text(&self.reference)?;
+        w.done()
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<LeaseAsk, WireError> {
+        let mut r = Reader(payload);
+        let ask = LeaseAsk {
+            id: r.u32()?,
+            reference: r.text()?,
+        };
+        r.end()?;
+        Ok(ask)
+    }
+}
+
+impl LeaseAnswer {
+    /// Its id, then 0, how long the lease lives in nanoseconds and the value, last, so that
+    /// the buffer holding it is made once; or its refusal's tag and fields: 1 and the
+    /// broker's words, 2 and the key asked under and the run's key (0 for none, or 1 and the
+    /// key), 3 and the broker's words, 4, or 5. The caller wipes what it returns.
+    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
+        let mut w = Writer(Vec::new());
+        w.u32(self.id);
+        match &self.result {
+            Ok(lease) => {
+                w.u8(0);
+                w.u64(lease.lives.get());
+                w.bytes(&lease.value.0)?;
+            }
+            Err(LeaseRefusal::Denied(why)) => {
+                w.u8(1);
+                w.text(why)?;
+            }
+            Err(LeaseRefusal::KeyReplaced { asked, current }) => {
+                w.u8(2);
+                w.text(asked)?;
+                match current {
+                    None => w.u8(0),
+                    Some(current) => {
+                        w.u8(1);
+                        w.text(current)?;
+                    }
+                }
+            }
+            Err(LeaseRefusal::Unavailable(why)) => {
+                w.u8(3);
+                w.text(why)?;
+            }
+            Err(LeaseRefusal::Ended) => w.u8(4),
+            Err(LeaseRefusal::Lapsed) => w.u8(5),
+        }
+        w.done()
+    }
+
+    /// A lease that lives no time is no lease: refused, as [`Started`]'s bound address of
+    /// none is.
+    pub fn decode(payload: &[u8]) -> Result<LeaseAnswer, WireError> {
+        let mut r = Reader(payload);
+        let id = r.u32()?;
+        let result = match r.u8()? {
+            0 => {
+                let lives = NonZeroU64::new(r.u64()?).ok_or(WireError::Tag {
+                    what: "a lease's life",
+                    tag: 0,
+                })?;
+                Ok(Lease {
+                    lives,
+                    value: Secret(r.bytes()?.to_vec()),
+                })
+            }
+            1 => Err(LeaseRefusal::Denied(r.text()?)),
+            2 => {
+                let asked = r.text()?;
+                let current = if r.flag()? { Some(r.text()?) } else { None };
+                Err(LeaseRefusal::KeyReplaced { asked, current })
+            }
+            3 => Err(LeaseRefusal::Unavailable(r.text()?)),
+            4 => Err(LeaseRefusal::Ended),
+            5 => Err(LeaseRefusal::Lapsed),
+            tag => {
+                return Err(WireError::Tag {
+                    what: "a lease's answer",
+                    tag,
+                });
+            }
+        };
+        r.end()?;
+        Ok(LeaseAnswer { id, result })
+    }
+}
+
+/// What a [`to_client::RELEASED`] says: every lease of the run released. Its payload is
+/// none; anything else is refused.
+pub fn released(payload: &[u8]) -> Result<(), WireError> {
+    Reader(payload).end()
+}
+
 impl RunEnd {
     pub fn encode(&self) -> Result<Vec<u8>, WireError> {
         let mut w = Writer(Vec::new());
@@ -1977,55 +2978,49 @@ mod tests {
         ));
     }
 
-    /// The injector fills a credential only when the TLS name, the request's host and a
-    /// grant's host all agree (D242): a grant toward one host does not fill a request to
-    /// another, a host that differs from the SNI is misdirected, and matching ignores
-    /// ASCII case.
+    /// A save's ask and its answer come back as they went, each refusal by its tag (D259); a
+    /// truncated, trailing or unknown-tagged one is refused, never a default.
     #[test]
-    fn decide_fills_only_on_an_agreed_granted_host() {
-        let grants = vec![
-            CredentialGrant {
-                reference: "anthropic/claude-max".into(),
-                toward: vec!["api.anthropic.com".into(), "platform.claude.com".into()],
-            },
-            CredentialGrant {
-                reference: "openai/chatgpt".into(),
-                toward: vec!["chatgpt.com".into()],
-            },
-        ];
-        // SNI == Host == a grant's host: filled, the first grant that names it.
+    fn saves_round_trip_and_bad_ones_are_refused() {
+        let ask = SaveAsk {
+            id: 7,
+            to: "/Users/u/Library/Application Support/shards/saves/s1".into(),
+        };
+        let bytes = ask.encode().unwrap();
+        assert_eq!(SaveAsk::decode(&bytes).unwrap(), ask);
+        assert_eq!(SaveAsk::decode(&bytes[..bytes.len() - 1]), Err(WireError::Short));
         assert_eq!(
-            decide(&grants, "api.anthropic.com", "api.anthropic.com"),
-            Fill::With("anthropic/claude-max".into())
+            SaveAsk::decode(&[bytes.as_slice(), &[0]].concat()),
+            Err(WireError::Trailing)
         );
         assert_eq!(
-            decide(&grants, "chatgpt.com", "chatgpt.com"),
-            Fill::With("openai/chatgpt".into())
+            SaveAsk::decode(&[0, 0, 0, 7, 0, 0, 0, 1, 0xff]),
+            Err(WireError::Text)
         );
-        // Case folds, as DNS names compare (RFC 9549 §2.3).
-        assert_eq!(
-            decide(&grants, "API.Anthropic.Com", "api.anthropic.com"),
-            Fill::With("anthropic/claude-max".into())
-        );
-        // A host no grant names: forwarded bare (default deny).
-        assert_eq!(decide(&grants, "example.com", "example.com"), Fill::Pass);
-        assert_eq!(decide(&[], "api.anthropic.com", "api.anthropic.com"), Fill::Pass);
-        // A grant toward host A does not fill a request whose host is B.
-        assert_eq!(decide(&grants, "evil.example", "evil.example"), Fill::Pass);
-        // The request's host disagrees with the TLS name it arrived on: misdirected, and
-        // never filled even though the SNI is a granted host (the SNI alone is not enough).
-        assert_eq!(
-            decide(&grants, "api.anthropic.com", "evil.example"),
-            Fill::Misdirected
-        );
-        assert_eq!(
-            decide(&grants, "chatgpt.com", "api.anthropic.com"),
-            Fill::Misdirected
-        );
+        for result in [
+            Ok(()),
+            Err((SaveRefusal::Destination, "outside the run's home".to_string())),
+            Err((SaveRefusal::State, String::new())),
+            Err((SaveRefusal::Unsupported, String::new())),
+            Err((SaveRefusal::Failed, "its guest did not go quiet".into())),
+        ] {
+            let answer = SaveAnswer { id: 9, result };
+            assert_eq!(SaveAnswer::decode(&answer.encode().unwrap()).unwrap(), answer);
+        }
+        assert!(matches!(
+            SaveAnswer::decode(&[0, 0, 0, 9, 1, 4, 0, 0, 0, 0]),
+            Err(WireError::Tag { .. })
+        ));
+        assert!(matches!(
+            SaveAnswer::decode(&[0, 0, 0, 9, 2]),
+            Err(WireError::Tag { .. })
+        ));
+        assert_eq!(SaveAnswer::decode(&[0, 0, 0, 9, 0, 0]), Err(WireError::Trailing));
     }
 
     /// A credential's value never prints: a [`Secret`]'s `Debug` says only its length, and
-    /// a [`CredentialGrant`] carries no value to print (reference and hosts alone).
+    /// a [`CredentialGrant`] carries no value to print (its reference and hosts; of its
+    /// placeholder, its length alone).
     #[test]
     fn a_value_never_prints() {
         let secret = Secret(b"sk-ant-very-secret-value".to_vec());
@@ -2038,8 +3033,13 @@ mod tests {
         let grant = CredentialGrant {
             reference: "anthropic/claude-max".into(),
             toward: vec!["api.anthropic.com".into()],
+            placeholder: "kiln-placeholder-5ec2e7".into(),
         };
         let shown = format!("{grant:?}");
+        assert!(
+            !shown.contains("5ec2e7"),
+            "a grant's Debug showed its placeholder: {shown}"
+        );
         assert!(
             shown.contains("anthropic/claude-max"),
             "the reference is a name, not a value"
@@ -2058,12 +3058,120 @@ mod tests {
             workdir: None,
             input: false,
             terminal: false,
+            args: Vec::new(),
+            mcp: false,
         };
         let shown = format!("{staged:?}");
         assert!(
             !shown.contains("DEADBEEF"),
             "a staged value leaked into Debug: {shown}"
         );
+        // A lease's value is a Secret too, redacted in its answer's Debug (D242).
+        let answer = LeaseAnswer {
+            id: 1,
+            result: Ok(Lease {
+                value: Secret::from("sk-ant-lease-DEADBEEF"),
+                lives: NonZeroU64::MIN,
+            }),
+        };
+        let shown = format!("{answer:?}");
+        assert!(
+            !shown.contains("DEADBEEF"),
+            "a lease's value leaked into Debug: {shown}"
+        );
+        assert!(shown.contains("Secret(21 bytes)"), "{shown}");
+    }
+
+    /// A lease's ask and its answer read back as written, each refusal by its tag, and the
+    /// run's release as none (D242); one cut short, padded or of an unknown tag is refused,
+    /// as is a lease that lives no time, never a default.
+    #[test]
+    fn leases_round_trip_and_bad_ones_are_refused() {
+        let ask = LeaseAsk {
+            id: 3,
+            reference: "anthropic/claude-max".into(),
+        };
+        let bytes = ask.encode().unwrap();
+        assert_eq!(LeaseAsk::decode(&bytes).unwrap(), ask);
+        assert_eq!(LeaseAsk::decode(&bytes[..bytes.len() - 1]), Err(WireError::Short));
+        assert_eq!(
+            LeaseAsk::decode(&[bytes.as_slice(), &[0]].concat()),
+            Err(WireError::Trailing)
+        );
+        let given = Lease {
+            value: Secret::from("sk-ant-api03-lease"),
+            lives: NonZeroU64::new(3_600_000_000_000).unwrap(),
+        };
+        for result in [
+            Ok(given.clone()),
+            Ok(Lease {
+                value: Secret::default(),
+                lives: NonZeroU64::MIN,
+            }),
+            Err(LeaseRefusal::Denied("no such secret".into())),
+            Err(LeaseRefusal::KeyReplaced {
+                asked: "a".repeat(64),
+                current: Some("b".repeat(64)),
+            }),
+            Err(LeaseRefusal::KeyReplaced {
+                asked: "a".repeat(64),
+                current: None,
+            }),
+            Err(LeaseRefusal::Unavailable(String::new())),
+            Err(LeaseRefusal::Ended),
+            Err(LeaseRefusal::Lapsed),
+        ] {
+            let answer = LeaseAnswer { id: u32::MAX, result };
+            let bytes = answer.encode().unwrap();
+            assert_eq!(LeaseAnswer::decode(&bytes).unwrap(), answer);
+            assert_eq!(
+                LeaseAnswer::decode(&bytes[..bytes.len() - 1]),
+                Err(WireError::Short),
+                "{answer:?}"
+            );
+            assert_eq!(
+                LeaseAnswer::decode(&[bytes.as_slice(), &[0]].concat()),
+                Err(WireError::Trailing),
+                "{answer:?}"
+            );
+        }
+        assert!(matches!(
+            LeaseAnswer::decode(&[0, 0, 0, 1, 6]),
+            Err(WireError::Tag { tag: 6, .. })
+        ));
+        let mut flag = LeaseAnswer {
+            id: 1,
+            result: Err(LeaseRefusal::KeyReplaced {
+                asked: "a".into(),
+                current: None,
+            }),
+        }
+        .encode()
+        .unwrap();
+        *flag.last_mut().unwrap() = 2;
+        assert_eq!(
+            LeaseAnswer::decode(&flag),
+            Err(WireError::Tag {
+                what: "a flag",
+                tag: 2
+            })
+        );
+        let mut none = LeaseAnswer {
+            id: 1,
+            result: Ok(given),
+        }
+        .encode()
+        .unwrap();
+        none[5..13].fill(0);
+        assert_eq!(
+            LeaseAnswer::decode(&none),
+            Err(WireError::Tag {
+                what: "a lease's life",
+                tag: 0
+            })
+        );
+        assert_eq!(released(&[]), Ok(()));
+        assert_eq!(released(&[0]), Err(WireError::Trailing));
     }
 
     fn request() -> Request {
@@ -2084,6 +3192,8 @@ mod tests {
                 workdir: None,
                 input: true,
                 terminal: false,
+                args: Vec::new(),
+                mcp: false,
             }],
             publish: vec![
                 Publish {
@@ -2114,6 +3224,9 @@ mod tests {
             nesting: false,
             ready_by: None,
             credentials: Vec::new(),
+            control: None,
+            gpu_devices: Vec::new(),
+            sign_ins: Vec::new(),
         }
     }
 
@@ -2123,23 +3236,31 @@ mod tests {
         let r = request();
         assert_eq!(Request::decode(&r.encode().unwrap()).unwrap(), r);
         // The run's credential grants (version 8, D242): none, one with several hosts, and
-        // one with none, each reading back as written.
+        // one with none, each reading back as written, with its placeholder (version 22).
         let mut credited = request();
         credited.credentials = vec![
             CredentialGrant {
                 reference: "anthropic/claude-max".into(),
                 toward: vec!["api.anthropic.com".into(), "platform.claude.com".into()],
+                placeholder: "kiln-placeholder-0a1b".into(),
             },
             CredentialGrant {
                 reference: "openai/chatgpt".into(),
                 toward: Vec::new(),
+                placeholder: String::new(),
             },
         ];
         assert_eq!(Request::decode(&credited.encode().unwrap()).unwrap(), credited);
-        // Each member's working directory, or none, in the members' order (version 5), and
-        // whether its input is the orchestrator's (version 6).
+        // A placeholder is the grants' last field, before the sign-ins' count (version 24) and
+        // the member's MCP bridge's flag (version 25): a request cut in it is refused.
+        let bytes = credited.encode().unwrap();
+        assert!(Request::decode(&bytes[..bytes.len() - 1 - 4 - 1]).is_err());
+        // Each member's working directory, or none, in the members' order (version 5),
+        // whether its input is the orchestrator's (version 6), and its run-time arguments, none,
+        // several, or an empty one among others (version 18).
         let mut worked = request();
         worked.members[0].workdir = Some("/Users/ada/proj".into());
+        worked.members[0].args = vec!["--resume".into(), "s-1".into()];
         worked.members.push(MemberStage {
             kind: MemberKind::Agent,
             name: "helper".into(),
@@ -2148,11 +3269,16 @@ mod tests {
             workdir: None,
             input: false,
             terminal: false,
+            args: Vec::new(),
+            mcp: false,
         });
+        // ... and its MCP bridge (version 25, D254).
         worked.members.push(MemberStage {
             workdir: Some("/".into()),
             input: true,
             terminal: true,
+            args: vec![String::new(), "two words".into(), "--model=opüs".into()],
+            mcp: true,
             ..worked.members[1].clone()
         });
         assert_eq!(Request::decode(&worked.encode().unwrap()).unwrap(), worked);
@@ -2186,13 +3312,21 @@ mod tests {
         }
         .encode()
         .unwrap();
+        // ... the control ask's absence (version 15), the GPUs' count (version 16), the
+        // member's arguments' count (version 18), the sign-ins' count (version 24) and the
+        // member's MCP bridge (version 25) last.
         assert_eq!(
-            asked.get(asked.len() - 19..).unwrap(),
-            [1, 1, 1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 1, 0, 0, 0, 0, 0, 0],
+            asked.get(asked.len() - 33..).unwrap(),
+            [
+                1, 1, 1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0
+            ],
             "appended: the grant's flag, the deadline's, the destinations kept (all), the one \
              member's working directory (none) and its input, the credential grants' count \
-             (zero, version 8), the member's terminal (none, version 11), then whether the \
-             members are held apart (no, version 12)"
+             (zero, version 8), the member's terminal (none, version 11), whether the members \
+             are held apart (no, version 12), the control ask (none, version 15), the GPUs' \
+             count (zero, version 16), the member's arguments' count (zero, version 18), then \
+             the sign-ins' count (zero, version 24), then its MCP bridge (none, version 25)"
         );
         // Destinations kept by name, the host itself among them (D236), and none.
         for destinations in [
@@ -2264,6 +3398,9 @@ mod tests {
                     ],
                 },
             ],
+            control: None,
+            rate_period: std::time::Duration::from_millis(100),
+            from: StartedFrom::Saved,
         };
         assert_eq!(Started::decode(&started.encode().unwrap()).unwrap(), started);
         let bytes = started.encode().unwrap();
@@ -2330,7 +3467,7 @@ mod tests {
             Input::decode(&bytes).unwrap(),
             Input {
                 member: 7,
-                bytes: b"\0\xff\x80{\"id\":1}\nno-newline".to_vec()
+                bytes: Secret(b"\0\xff\x80{\"id\":1}\nno-newline".to_vec())
             }
         );
         assert_eq!(Input::decode(&[0, 0, 1]), Err(WireError::Short));
@@ -2358,10 +3495,11 @@ mod tests {
         ));
         // A member's input flag, before the credential grants' count (version 8), its
         // terminal's flag (version 11) and the members' reach (version 12), that is no flag.
-        // One member, so its input is the seventh byte from the end (the count's four, its
-        // terminal's one and the reach's flag follow it).
+        // One member, so its input is the twentieth byte from the end (the count's four, its
+        // terminal's one, the reach's flag, the control ask's, the GPUs' count, its arguments'
+        // count and the sign-ins' count follow it).
         let mut bad = request().encode().unwrap();
-        let at = bad.len() - 7;
+        let at = bad.len() - 21;
         assert_eq!(
             bad[at], 1,
             "the member's input flag precedes the credentials' count"
@@ -2440,9 +3578,10 @@ mod tests {
                 );
             }
         }
-        // The reach's flag, last where none is held apart.
+        // The reach's flag, before the control ask's, the GPUs' count, the member's arguments'
+        // count and the sign-ins' count where none is held apart.
         let mut flag = held(None).encode().unwrap();
-        let at = flag.len() - 1;
+        let at = flag.len() - 15;
         flag[at] = 2;
         assert_eq!(
             Request::decode(&flag),
@@ -2455,7 +3594,9 @@ mod tests {
         let mut kindless = held(Some(vec![reach(MemberKind::Agent, "helper", &[])]))
             .encode()
             .unwrap();
-        let at = kindless.len() - (1 + 4 + "helper".len() + 4);
+        // ... then the control ask's absence (version 15), the GPUs' count (version 16), the
+        // one member's arguments' count (version 18) and the sign-ins' count (version 24).
+        let at = kindless.len() - (1 + 4 + "helper".len() + 4 + 1 + 4 + 4 + 4 + 1);
         assert_eq!(kindless[at], MemberKind::Agent as u8);
         kindless[at] = 2;
         assert_eq!(
@@ -2465,11 +3606,77 @@ mod tests {
                 tag: 2
             })
         );
+        // Held apart, with four billion members in a few bytes, in place of the reach's flag
+        // and what follows it.
         let mut hostile = held(None).encode().unwrap();
-        hostile.pop();
+        hostile.truncate(hostile.len() - 15);
         hostile.push(1);
         hostile.extend_from_slice(&u32::MAX.to_be_bytes());
         assert_eq!(Request::decode(&hostile), Err(WireError::Short));
+    }
+
+    /// Each member's run-time arguments (version 18, D256). Do: give two members none, an
+    /// empty one, and several (a space, `=`, past ASCII). Expect: each reads back exactly, each
+    /// member's own in its order, last in the request, and one cut anywhere short refused. Do:
+    /// write an argument that is no UTF-8, and a count of four billion arguments in a few
+    /// bytes. Expect: each refused by type. Do: arguments past the channel's bound, one alone
+    /// or two halves. Expect: the request refused `TooLong` as it is written, never cut to fit.
+    #[test]
+    fn each_members_arguments_ride_the_request_last() {
+        const {
+            assert!(
+                VERSION >= 18,
+                "the channel's version 18 carries each member's arguments"
+            )
+        };
+        let with = |first: &[&str], second: &[&str]| {
+            let mut r = request();
+            let mut helper = r.members[0].clone();
+            helper.kind = MemberKind::Agent;
+            helper.name = "helper".into();
+            helper.args = second.iter().map(|a| (*a).to_string()).collect();
+            r.members[0].args = first.iter().map(|a| (*a).to_string()).collect();
+            r.members.push(helper);
+            r
+        };
+        let cases: [(&[&str], &[&str]); 3] = [
+            (&[], &[]),
+            (&[""], &[]),
+            (
+                &["--resume", "s-1", "--model", "claude-opus-4"],
+                &["--permission-mode=plan", "two words", "ü"],
+            ),
+        ];
+        for (first, second) in cases {
+            let asked = with(first, second);
+            let bytes = asked.encode().unwrap();
+            assert_eq!(Request::decode(&bytes).unwrap(), asked);
+            for cut in 0..bytes.len() {
+                assert!(
+                    Request::decode(bytes.get(..cut).unwrap()).is_err(),
+                    "cut at {cut}"
+                );
+            }
+        }
+        // The second member's one argument, "ü", last before the sign-ins' count (version 24):
+        // its bytes made no UTF-8.
+        let mut bad = with(&["--resume"], &["ü"]).encode().unwrap();
+        let at = bad.len() - 2 - 4 - "ü".len();
+        bad[at] = 0xff;
+        assert_eq!(Request::decode(&bad), Err(WireError::Text));
+        // The second member's count, before the sign-ins', said as four billion in no bytes.
+        let mut hostile = with(&[], &[]).encode().unwrap();
+        hostile.truncate(hostile.len() - 2 - 4);
+        let at = hostile.len() - 4;
+        hostile[at..].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert_eq!(Request::decode(&hostile), Err(WireError::Short));
+        // Past the channel's bound, one argument alone or two halves: refused, never cut.
+        let most = run::MAX_PAYLOAD as usize;
+        let mut past = request();
+        past.members[0].args = vec!["x".repeat(most)];
+        assert_eq!(past.encode(), Err(WireError::TooLong));
+        past.members[0].args = vec!["x".repeat(most / 2), "x".repeat(most / 2)];
+        assert_eq!(past.encode(), Err(WireError::TooLong));
     }
 
     /// Unknown versions and tags are refused, never defaulted.
@@ -2481,48 +3688,103 @@ mod tests {
         // A request of version 1, without the nesting grant's fields and the destinations',
         // of version 4, without its members' working directories, or of version 5, without
         // their inputs, is no request of this one's: refused by its version, never read with
-        // them defaulted. The request's one member makes each of those one byte.
+        // them defaulted. The request's one member makes each of those one byte, its
+        // arguments' count (version 18) four bytes, which every version before 18 lacks, and the
+        // sign-ins' count (version 24) four, which every version before 24 lacks.
         let mut v1 = request().encode().unwrap();
-        v1.truncate(v1.len() - 11);
+        v1.truncate(v1.len() - 25);
         v1[0] = 1;
         assert_eq!(Request::decode(&v1), Err(WireError::Version(1)));
         let mut v4 = request().encode().unwrap();
-        v4.truncate(v4.len() - 8);
+        v4.truncate(v4.len() - 22);
         v4[0] = 4;
         assert_eq!(Request::decode(&v4), Err(WireError::Version(4)));
         let mut v5 = request().encode().unwrap();
-        v5.truncate(v5.len() - 7);
+        v5.truncate(v5.len() - 21);
         v5[0] = 5;
         assert_eq!(Request::decode(&v5), Err(WireError::Version(5)));
         // One of version 6 carries every field version 7 does, but its host ends the run at
         // a room: refused by its version, before any room is told (D241).
         let mut v6 = request().encode().unwrap();
-        v6.truncate(v6.len() - 6);
+        v6.truncate(v6.len() - 20);
         v6[0] = 6;
         assert_eq!(Request::decode(&v6), Err(WireError::Version(6)));
         // One of version 7, without the credential grants' count: refused by its version
         // (D242), so an older reader never reads a grant with its field defaulted.
         let mut v7 = request().encode().unwrap();
-        v7.truncate(v7.len() - 6);
+        v7.truncate(v7.len() - 20);
         v7[0] = 7;
         assert_eq!(Request::decode(&v7), Err(WireError::Version(7)));
         // One of version 8, without its members' terminals: refused by its version (D244), so
         // an older reader never starts a member with pipes where its owner asked a terminal.
         let mut v8 = request().encode().unwrap();
-        v8.truncate(v8.len() - 2);
+        v8.truncate(v8.len() - 16);
         v8[0] = 8;
         assert_eq!(Request::decode(&v8), Err(WireError::Version(8)));
         // One of version 11, without the members' reach: refused by its version (D246), so a
         // run host never takes a request that holds its members apart as one that holds none.
         let mut v11 = request().encode().unwrap();
-        v11.truncate(v11.len() - 1);
+        v11.truncate(v11.len() - 15);
         v11[0] = 11;
         assert_eq!(Request::decode(&v11), Err(WireError::Version(11)));
+        // One of version 12 carries every field version 13 does, but its host ends the run at
+        // a rate: refused by its version, before any rate is told (D247).
+        let mut v12 = request().encode().unwrap();
+        v12.truncate(v12.len() - 14);
+        v12[0] = 12;
+        assert_eq!(Request::decode(&v12), Err(WireError::Version(12)));
+        // One of version 14, without the control ask: refused by its version (D252), so a run
+        // host never takes a run that asked an endpoint as one that asked none.
+        let mut v14 = request().encode().unwrap();
+        v14.truncate(v14.len() - 14);
+        v14[0] = 14;
+        assert_eq!(Request::decode(&v14), Err(WireError::Version(14)));
+        // One of version 15, without the GPUs it names: refused by its version (D232), so a run
+        // host never starts a run without the GPUs its orchestrator asked.
+        let mut v15 = request().encode().unwrap();
+        v15.truncate(v15.len() - 13);
+        v15[0] = 15;
+        assert_eq!(Request::decode(&v15), Err(WireError::Version(15)));
+        // One of version 16 asks what version 17 does, but its host tells no rate's period as
+        // the run starts: refused by its version, so no orchestrator waits on one (D247).
+        let mut v16 = request().encode().unwrap();
+        v16.truncate(v16.len() - 9);
+        v16[0] = 16;
+        assert_eq!(Request::decode(&v16), Err(WireError::Version(16)));
+        // One of version 17, without its members' arguments: refused by its version (D256), so
+        // a run host never starts a member without the flags its orchestrator asked.
+        let mut v17 = request().encode().unwrap();
+        v17.truncate(v17.len() - 9);
+        v17[0] = 17;
+        assert_eq!(Request::decode(&v17), Err(WireError::Version(17)));
+        // One of version 23, without the sign-ins' count: refused by its version (D242 step 8),
+        // so a run host never takes a run that signs in as one that signs nothing in.
+        let mut v23 = request().encode().unwrap();
+        v23.truncate(v23.len() - 1 - 4);
+        v23[0] = 23;
+        assert_eq!(Request::decode(&v23), Err(WireError::Version(23)));
+        // One of version 24, without its members' MCP bridges: refused by its version (D254),
+        // so a run host never starts a harness without the bridge its MCP config names.
+        let mut v24 = request().encode().unwrap();
+        v24.truncate(v24.len() - 1);
+        v24[0] = 24;
+        assert_eq!(Request::decode(&v24), Err(WireError::Version(24)));
+        // One of version 13 reads a vCPU's unread guest time as free words
+        // (guest-cpu-time-v1), and one of 19 carries every field version 20 does, but its
+        // client ends the run at a lease its host asks: each refused by its version, before
+        // any lease is (D242).
+        for old in [13, 19] {
+            let mut bytes = request().encode().unwrap();
+            bytes[0] = old;
+            assert_eq!(Request::decode(&bytes), Err(WireError::Version(old)));
+        }
         // The nesting flag, before the deadline's tag, the destinations', the one member's
         // working directory's and input's, the credential grants' count (version 8), the
-        // member's terminal's (version 11) and the members' reach (version 12): no flag.
+        // member's terminal's (version 11), the members' reach (version 12), the control ask
+        // (version 15), the GPUs' count (version 16), its arguments' count (version 18) and the
+        // sign-ins' count (version 24): no flag.
         let mut flag = request().encode().unwrap();
-        let at = flag.len() - 11;
+        let at = flag.len() - 25;
         flag[at] = 2;
         assert_eq!(
             Request::decode(&flag),
@@ -2532,10 +3794,11 @@ mod tests {
             })
         );
         // The destinations' list, before the member's working directory and input, the
-        // credential grants' count, the member's terminal and the members' reach: no list of
+        // credential grants' count, the member's terminal, the members' reach, the control ask,
+        // the GPUs' count, the member's arguments' count and the sign-ins' count: no list of
         // version 3's and on.
         let mut list = request().encode().unwrap();
-        let at = list.len() - 9;
+        let at = list.len() - 23;
         list[at] = 2;
         assert_eq!(
             Request::decode(&list),
@@ -2747,10 +4010,11 @@ mod tests {
         };
         assert_eq!(long.encode(), Err(WireError::TooLong));
         let mut bad = request().encode().unwrap();
-        let at = bad.len() - 2;
+        let at = bad.len() - 16;
         assert_eq!(
             bad[at], 0,
-            "the member's terminal flag precedes the members' reach"
+            "the member's terminal flag precedes the members' reach, the control ask, the GPUs, \
+             its arguments and the sign-ins"
         );
         bad[at] = 2;
         assert_eq!(
@@ -2760,6 +4024,234 @@ mod tests {
                 tag: 2
             })
         );
+    }
+
+    /// A rate and its answer read back as they were said (D247): no hold, the least rate,
+    /// a CPU and a half, the most a u64 holds; held to none, to a rate, and why not. Cut
+    /// short, padded or of a tag no version has, refused.
+    #[test]
+    fn rates_and_their_answers_read_back_as_said() {
+        for rate in [
+            None,
+            NonZeroU64::new(1),
+            NonZeroU64::new(1500),
+            NonZeroU64::new(u64::MAX),
+        ] {
+            let ask = RateAsk { id: 7, rate };
+            assert_eq!(RateAsk::decode(&ask.encode()), Ok(ask));
+        }
+        for result in [
+            Ok(None),
+            Ok(NonZeroU64::new(1)),
+            Ok(NonZeroU64::new(u64::MAX)),
+            Err("the microVM has not started".to_string()),
+        ] {
+            let answer = RateAnswer { id: u32::MAX, result };
+            assert_eq!(RateAnswer::decode(&answer.encode().unwrap()), Ok(answer));
+        }
+        // A rate of nothing reads as no hold: the wire has no rate of no CPU to say.
+        assert_eq!(
+            RateAsk::decode(&[0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0]),
+            Ok(RateAsk { id: 3, rate: None })
+        );
+        let ask = RateAsk {
+            id: 1,
+            rate: NonZeroU64::new(250),
+        }
+        .encode();
+        for cut in 0..ask.len() {
+            assert_eq!(
+                RateAsk::decode(&ask[..cut]),
+                Err(WireError::Short),
+                "cut at {cut}"
+            );
+        }
+        let mut padded = ask.clone();
+        padded.push(0);
+        assert_eq!(RateAsk::decode(&padded), Err(WireError::Trailing));
+        let answer = RateAnswer {
+            id: 1,
+            result: Ok(NonZeroU64::new(250)),
+        }
+        .encode()
+        .unwrap();
+        for cut in 0..answer.len() {
+            assert_eq!(
+                RateAnswer::decode(&answer[..cut]),
+                Err(WireError::Short),
+                "cut at {cut}"
+            );
+        }
+        let mut padded = answer.clone();
+        padded.push(0);
+        assert_eq!(RateAnswer::decode(&padded), Err(WireError::Trailing));
+        assert_eq!(
+            RateAnswer::decode(&[0, 0, 0, 1, 2]),
+            Err(WireError::Tag {
+                what: "a rate's answer",
+                tag: 2
+            })
+        );
+        let long = RateAnswer {
+            id: 1,
+            result: Err("x".repeat(run::MAX_PAYLOAD as usize)),
+        };
+        assert_eq!(long.encode(), Err(WireError::TooLong));
+    }
+
+    /// The period a run's rate is held over reads back as its host said it, from a
+    /// nanosecond to the most a u64 counts (D247), its eight bytes last; a period of none, or
+    /// one past what a u64 counts in nanoseconds, is no period, refused each way.
+    #[test]
+    fn a_runs_rate_period_reads_back_as_its_host_said_it() {
+        use std::time::Duration;
+        let started = |rate_period| Started {
+            members: Vec::new(),
+            published: Vec::new(),
+            control: None,
+            rate_period,
+            from: StartedFrom::Booted,
+        };
+        for period in [
+            Duration::from_nanos(1),
+            Duration::from_millis(100),
+            Duration::from_nanos(u64::MAX),
+        ] {
+            let said = started(period);
+            let bytes = said.encode().unwrap();
+            let last = bytes.get(bytes.len() - 9..bytes.len() - 1).unwrap();
+            assert_eq!(last, u64::try_from(period.as_nanos()).unwrap().to_be_bytes());
+            assert_eq!(Started::decode(&bytes).unwrap(), said);
+        }
+        let mut none = started(Duration::from_millis(100)).encode().unwrap();
+        let at = none.len() - 9;
+        none.get_mut(at..at + 8).unwrap().fill(0);
+        assert_eq!(
+            Started::decode(&none),
+            Err(WireError::Tag {
+                what: "a rate period",
+                tag: 0
+            })
+        );
+        assert_eq!(
+            started(Duration::from_nanos(u64::MAX) + Duration::from_nanos(1)).encode(),
+            Err(WireError::TooLong)
+        );
+        assert_eq!(started(Duration::MAX).encode(), Err(WireError::TooLong));
+    }
+
+    /// How a run's microVM started (D253) reads back as its host said it, its byte last; a
+    /// byte that names no way is refused, as a host of a later version's would be read.
+    #[test]
+    fn how_a_run_started_reads_back_as_its_host_said_it() {
+        const {
+            assert!(
+                VERSION >= 19,
+                "the channel's version 19 carries how a run started"
+            )
+        };
+        for from in [
+            StartedFrom::Booted,
+            StartedFrom::Saved,
+            StartedFrom::Restored,
+            StartedFrom::Replaced,
+            StartedFrom::Warm,
+        ] {
+            let said = Started {
+                members: Vec::new(),
+                published: Vec::new(),
+                control: None,
+                rate_period: std::time::Duration::from_millis(100),
+                from,
+            };
+            let mut bytes = said.encode().unwrap();
+            assert_eq!(bytes.last(), Some(&(from as u8)));
+            assert_eq!(Started::decode(&bytes).unwrap(), said);
+            if let Some(last) = bytes.last_mut() {
+                *last = 5;
+            }
+            assert_eq!(
+                Started::decode(&bytes),
+                Err(WireError::Tag {
+                    what: "how a run started",
+                    tag: 5
+                })
+            );
+        }
+    }
+
+    /// D253's pools: a warm run host's exemplar is its request with its members' stages, its
+    /// deadline and its control ask taken out, all else kept, so that two runs alike in all
+    /// but those share it; its start's one byte reads back, and a refusal of a run of another
+    /// microVM's is `Unfit`.
+    #[test]
+    fn a_warm_hosts_exemplar_keeps_all_but_a_runs_own() {
+        const { assert!(VERSION >= 21, "the channel's version 21 carries warm run hosts") };
+        let full = Request {
+            image: "agents/codex:1".into(),
+            vcpus: 2,
+            memory_mib: 1024,
+            command: Some(vec!["node".into()]),
+            members: vec![MemberStage {
+                kind: MemberKind::Harness,
+                name: "codex".into(),
+                env: vec![Secret(b"KEY=secret".to_vec())],
+                files: Vec::new(),
+                workdir: None,
+                input: false,
+                terminal: false,
+                args: Vec::new(),
+                mcp: false,
+            }],
+            publish: Vec::new(),
+            egress: Narrowing::default(),
+            shares: Vec::new(),
+            nesting: true,
+            ready_by: Some(7),
+            credentials: Vec::new(),
+            control: Some(ControlAsk {
+                controller: [1; 32],
+                sockets: None,
+            }),
+            gpu_devices: Vec::new(),
+            sign_ins: Vec::new(),
+        };
+        let exemplar = full.exemplar();
+        assert!(exemplar.members.is_empty() && exemplar.ready_by.is_none() && exemplar.control.is_none());
+        assert_eq!(
+            Request {
+                members: full.members.clone(),
+                ready_by: full.ready_by,
+                control: full.control.clone(),
+                ..exemplar.clone()
+            },
+            full
+        );
+        let other = Request {
+            members: Vec::new(),
+            ready_by: Some(9),
+            control: None,
+            ..full.clone()
+        };
+        assert_eq!(other.exemplar(), exemplar);
+        assert_ne!(
+            Request {
+                vcpus: 4,
+                ..full.clone()
+            }
+            .exemplar(),
+            exemplar
+        );
+        assert_eq!(Request::decode(&exemplar.encode().unwrap()).unwrap(), exemplar);
+        for from in [StartedFrom::Saved, StartedFrom::Restored, StartedFrom::Warm] {
+            assert_eq!(read_warmed(&warmed(from)), Ok(from));
+        }
+        assert!(read_warmed(&[]).is_err() && read_warmed(&[1, 2]).is_err() && read_warmed(&[9]).is_err());
+        let unfit = Refused {
+            cause: Cause::Unfit,
+            why: "another microVM's".into(),
+        };
+        assert_eq!(Refused::decode(&unfit.encode().unwrap()).unwrap(), unfit);
     }
 
     /// The run's stats carry what its microVM costs its host and what its vCPUs ran of its
@@ -2779,7 +4271,7 @@ mod tests {
                 VcpuTime {
                     index: 2,
                     guest_ns: u64::MAX,
-                    unread: Some("its vCPU had left its guest".into()),
+                    unread: Some(shards_abi::guest_time::Unread::HvfExecTime(-85377023)),
                 },
             ],
             departed_ns: 1_500,
@@ -2839,6 +4331,13 @@ mod tests {
                 what: "a microVM's vCPUs"
             })
         );
+        // A vCPU's unread cause only in its text form: a code signed `+`, which no side writes,
+        // is refused, not taken as words.
+        let token = b"hvf-exec-time -85377023";
+        let at = bytes.windows(token.len()).position(|w| w == token).unwrap();
+        let mut free = bytes.clone();
+        free[at + 14] = b'+';
+        assert_eq!(StatsAnswer::decode(&free), Err(WireError::Unread));
         let microvm_tag = 4 + 1 + 4 + lines.len();
         for (at, tag, what) in [
             (microvm_tag, 2, "a microVM's cost"),
@@ -2872,5 +4371,238 @@ mod tests {
         let mut long = run::header(1, run::MAX_PAYLOAD).to_vec();
         long[4..8].copy_from_slice(&(run::MAX_PAYLOAD + 1).to_be_bytes());
         assert!(read_frame(&mut &long[..]).is_err());
+    }
+
+    /// A run asked of `control`, otherwise as Hex asks for its node VM (joint plan step 39):
+    /// its init the run's own command under the nesting grant.
+    fn asked(control: Option<ControlAsk>) -> Request {
+        Request {
+            image: "hex-node@sha256:0000000000000000000000000000000000000000000000000000000000000000".into(),
+            vcpus: 2,
+            memory_mib: 2048,
+            command: Some(vec!["/init".into()]),
+            members: Vec::new(),
+            publish: Vec::new(),
+            egress: Narrowing::default(),
+            shares: Vec::new(),
+            nesting: true,
+            ready_by: None,
+            credentials: Vec::new(),
+            control,
+            gpu_devices: Vec::new(),
+            sign_ins: Vec::new(),
+        }
+    }
+
+    /// Step 11 (b), D252 (Hex's acceptance): the run's control ask crosses the image channel
+    /// whole, at its next version, and a run that asks none encodes as one at v13 did but for
+    /// its version byte: control is absent, never a default. The controller's key, the socket
+    /// grant's directory and both its numbers are read back exactly.
+    #[test]
+    fn a_runs_control_ask_crosses_the_image_channel_whole() {
+        const { assert!(VERSION >= 15, "the channel's version 15 carries the control ask") };
+        for control in [
+            None,
+            Some(ControlAsk {
+                controller: [9u8; 32],
+                sockets: None,
+            }),
+            Some(ControlAsk {
+                controller: [9u8; 32],
+                sockets: Some(SocketGrant {
+                    dir: "/run/hex/channel".into(),
+                    lanes: 8,
+                    window: 65_536,
+                }),
+            }),
+        ] {
+            let request = asked(control);
+            assert_eq!(Request::decode(&request.encode().unwrap()).unwrap(), request);
+        }
+        // None asked: one byte past v13's encoding, its absence.
+        let none = asked(None).encode().unwrap();
+        assert_eq!(none.last(), Some(&0));
+    }
+
+    /// Step 11 (b), D252: a started run tells where its endpoint is bound and the microVM's own
+    /// key, which the controller pins; a run asked for no endpoint tells none.
+    #[test]
+    fn a_started_run_tells_where_its_endpoint_is_and_its_vms_key() {
+        for control in [
+            None,
+            Some(ControlAt {
+                address: "127.0.0.1:40123".parse().unwrap(),
+                vm: [3u8; 32],
+            }),
+            Some(ControlAt {
+                address: "[::1]:40123".parse().unwrap(),
+                vm: [4u8; 32],
+            }),
+        ] {
+            let started = Started {
+                members: Vec::new(),
+                published: Vec::new(),
+                control,
+                rate_period: std::time::Duration::from_millis(100),
+                from: StartedFrom::Restored,
+            };
+            assert_eq!(Started::decode(&started.encode().unwrap()).unwrap(), started);
+        }
+    }
+
+    /// D232 through D231 (D234's `gpus=`): the GPUs a run names cross the image channel in
+    /// `--gpu-device`'s grammar, whole and in order; an identity that grammar refuses, or a
+    /// selection D232 refuses (one GPU twice), is refused as the request is read.
+    #[test]
+    fn a_runs_gpus_cross_the_image_channel_in_d232s_grammar() {
+        use shards_abi::gpu::PhysicalGpu;
+        let gpus = vec![
+            PhysicalGpu::Pci {
+                domain: 0,
+                bus: 1,
+                device: 0,
+                function: 0,
+            },
+            PhysicalGpu::MetalRegistry(0x1_0000_02a1),
+        ];
+        let named = Request {
+            gpu_devices: gpus.clone(),
+            ..request()
+        };
+        let bytes = named.encode().unwrap();
+        assert_eq!(Request::decode(&bytes).unwrap().gpu_devices, gpus);
+        // The last identity's text, "metal:00000001000002a1", before the one member's arguments'
+        // count (version 18) and the sign-ins' (version 24), made one D232's grammar refuses.
+        let mut unnamed = bytes.clone();
+        let at = unnamed.len() - 1 - 4 - 4 - "metal:00000001000002a1".len();
+        unnamed[at] = b'x';
+        assert_eq!(Request::decode(&unnamed), Err(WireError::Gpu));
+        let twice = Request {
+            gpu_devices: vec![gpus[1], gpus[1]],
+            ..request()
+        };
+        assert_eq!(Request::decode(&twice.encode().unwrap()), Err(WireError::Gpu));
+    }
+
+    /// A run's sign-ins and their words (version 24, D242 step 8). Do: carry a sign-in captured
+    /// before, with and without a refresh token's placeholder, and one never captured; each word
+    /// of a capture (its tokens, its ID token made inert and its scope where it has them), a
+    /// refresh, a revocation and their answers, given and refused each way; cut each, and give a
+    /// CLI or a refusal no version has. Expect: each read back exactly; each cut and each unknown
+    /// tag refused; no token or placeholder in any `Debug`.
+    #[test]
+    fn a_runs_sign_ins_and_their_words_cross_the_channel() {
+        let captured = |refresh: Option<&str>| Captured {
+            access: "sign-ins/claude/acct-1/access".into(),
+            access_placeholder: "kiln-placeholder-access-0123".into(),
+            refresh_placeholder: refresh.map(Into::into),
+        };
+        let signed = Request {
+            sign_ins: vec![
+                SignInGrant {
+                    sign_in: "claude/acct-1".into(),
+                    cli: Cli::ClaudeCode,
+                    toward: vec!["api.anthropic.com".into()],
+                    captured: Some(captured(Some("kiln-placeholder-refresh-4567"))),
+                },
+                SignInGrant {
+                    sign_in: "codex/acct-2".into(),
+                    cli: Cli::Codex,
+                    toward: vec!["chatgpt.com".into(), "api.openai.com".into()],
+                    captured: None,
+                },
+            ],
+            ..request()
+        };
+        let bytes = signed.encode().unwrap();
+        assert_eq!(Request::decode(&bytes).unwrap(), signed);
+        let unrefreshed = Request {
+            sign_ins: vec![SignInGrant {
+                captured: Some(captured(None)),
+                ..signed.sign_ins[0].clone()
+            }],
+            ..request()
+        };
+        assert_eq!(
+            Request::decode(&unrefreshed.encode().unwrap()).unwrap(),
+            unrefreshed
+        );
+        for cut in 1..=bytes.len() - request().encode().unwrap().len() {
+            assert!(Request::decode(&bytes[..bytes.len() - cut]).is_err(), "cut {cut}");
+        }
+        // The second sign-in's CLI, its code after its name, made one no version has; the one
+        // member's MCP bridge's flag (version 25) after it.
+        let mut cli = bytes.clone();
+        let at = cli.len() - (4 + "chatgpt.com".len() + 4 + "api.openai.com".len() + 4 + 1 + 1 + 1);
+        assert_eq!(cli[at], Cli::Codex.code());
+        cli[at] = 9;
+        assert!(matches!(Request::decode(&cli), Err(WireError::Tag { .. })));
+        let tokens = |refresh: bool, id: bool, scope: bool| SignInTokens {
+            access: Secret::from("sk-ant-oat01-access"),
+            refresh: refresh.then(|| Secret::from("sk-ant-ort01-refresh")),
+            expires_in: refresh.then_some(28800),
+            id_token: id.then(|| Secret::from("eyJh.eyJw.shards-placeholder")),
+            scope: scope.then(|| "user:inference user:profile".into()),
+        };
+        for (refresh, id, scope) in [(true, true, true), (false, false, false), (true, false, true)] {
+            let ask = CaptureAsk {
+                id: 7,
+                sign_in: "claude/acct-1".into(),
+                tokens: tokens(refresh, id, scope),
+            };
+            let bytes = ask.encode().unwrap();
+            assert_eq!(CaptureAsk::decode(&bytes).unwrap(), ask);
+            assert!(CaptureAsk::decode(&bytes[..bytes.len() - 1]).is_err());
+            let shown = format!("{ask:?}");
+            assert!(!shown.contains("sk-ant") && !shown.contains("eyJ"), "{shown}");
+        }
+        let refresh = RefreshAsk {
+            id: 8,
+            sign_in: "claude/acct-1".into(),
+        };
+        assert_eq!(RefreshAsk::decode(&refresh.encode().unwrap()).unwrap(), refresh);
+        let revoked = Revoked {
+            sign_in: "claude/acct-1".into(),
+        };
+        assert_eq!(Revoked::decode(&revoked.encode().unwrap()).unwrap(), revoked);
+        let refusals = [
+            SignInRefusal::Denied("no such sign-in".into()),
+            SignInRefusal::Unavailable("the broker is down".into()),
+            SignInRefusal::Ended,
+            SignInRefusal::Unanswered,
+        ];
+        for result in [
+            Ok(captured(Some("kiln-placeholder-refresh-4567"))),
+            Ok(captured(None)),
+        ]
+        .into_iter()
+        .chain(refusals.iter().cloned().map(Err))
+        {
+            let answer = CaptureAnswer { id: 9, result };
+            let bytes = answer.encode().unwrap();
+            assert_eq!(CaptureAnswer::decode(&bytes).unwrap(), answer);
+            assert!(CaptureAnswer::decode(&bytes[..bytes.len() - 1]).is_err());
+            let shown = format!("{answer:?}");
+            assert!(!shown.contains("kiln-placeholder"), "{shown}");
+        }
+        for result in [Ok(Secret::from(r#"{"access_token":"sk-ant-oat01-rotated"}"#))]
+            .into_iter()
+            .chain(refusals.iter().cloned().map(Err))
+        {
+            let answer = RefreshAnswer { id: 10, result };
+            let bytes = answer.encode().unwrap();
+            assert_eq!(RefreshAnswer::decode(&bytes).unwrap(), answer);
+            assert!(RefreshAnswer::decode(&bytes[..bytes.len() - 1]).is_err());
+            assert!(!format!("{answer:?}").contains("sk-ant"));
+        }
+        // A refusal's tag no version has.
+        let mut bad = CaptureAnswer {
+            id: 9,
+            result: Err(SignInRefusal::Ended),
+        }
+        .encode()
+        .unwrap();
+        *bad.last_mut().unwrap() = 9;
+        assert!(matches!(CaptureAnswer::decode(&bad), Err(WireError::Tag { .. })));
     }
 }

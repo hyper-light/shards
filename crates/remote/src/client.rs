@@ -13,19 +13,105 @@ use hyper_quic::StreamId;
 use crate::frame::{self, Request, Tag};
 use crate::identity::{Fingerprint, Identity};
 use crate::invite::{self, Invitation};
-use crate::net::{Close, Command, ConnKey, Driver, Handler, Io, Read as StreamRead, Seen, Sender};
+use crate::net::{
+    Close, Command, ConnKey, Driver, Handler, Io, RanOut, Read as StreamRead, Seen, Sender, View,
+};
 use crate::{Error, server, tls};
 
-/// How many bytes of a stream's frames wait unsent before its reader waits too: a QUIC
-/// stream's own receive window upstream, which the connection's flow control then keeps.
-const HIGH_WATER: usize = 1 << 20;
-
-/// Where the daemon is: its address, and its key's SHA-256.
+/// Where the daemon is: its address, its key's SHA-256, and what this home knows of it from its
+/// connections before ([`tls::Known`]), which its handshake and its waits start from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Remote {
     pub address: SocketAddr,
     pub daemon: Fingerprint,
+    pub known: tls::Known,
 }
+
+/// A daemon's handshake that has not ended, asked of its caller as each probe goes (RFC 9002
+/// §6.2): the datagrams sent in all, and how long it has waited. Its caller says whether it
+/// waits on: a handshake has no deadline but its caller's, one with a daemon reached before
+/// running out past the slowest seen from it and going on as one never reached does
+/// (`net::RanOut::Handshake`). What its user is told of it is a stall's ([`Stall::Unreached`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Unanswered {
+    pub probes: u64,
+    pub waited: std::time::Duration,
+}
+
+/// Whether a handshake that has not ended waits on ([`Unanswered`]).
+type Waits<'a> = Box<dyn FnMut(Unanswered) -> bool + 'a>;
+
+/// A stall of the daemon's as a command waits on its answer (R04), each told once: unheard past
+/// the window its path has shown, the command waiting on with no window for as long as its
+/// caller does, the daemon busy, its host loaded, or gone (ROOT's ruling A); then answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stall {
+    /// Unheard `unheard` long, past `window` (`net::RanOut::Stalled`).
+    Unheard {
+        unheard: std::time::Duration,
+        window: std::time::Duration,
+    },
+    /// Answered at last, `after` the send it stalled on (`net::RanOut::Answered`).
+    Answered { after: std::time::Duration },
+    /// Its handshake not ended `waited` since it began, unheard past what its path has shown
+    /// ([`Told`]): `window`, the slowest handshake seen from it (`net::RanOut::Handshake`), or
+    /// none on a path with no window, never reached or marked, told past the probe timeout
+    /// RFC 9002 gives a path with no RTT sample (`tls::Known::COLD_PTO`). Told once a
+    /// handshake; it goes on for as long as its caller waits.
+    Unreached {
+        waited: std::time::Duration,
+        window: Option<std::time::Duration>,
+    },
+}
+
+/// Whether a handshake that has not ended has been told its caller as a stall (R04), as an
+/// established connection's stall is, once, past the window its path has shown (D180, ROOT's
+/// ruling A). A probe within it is no stall: a loaded host's sub-millisecond probe timeout
+/// told every probe, "4 probes over 424.6µs" on a command's stderr (ROOT's KVM run at
+/// 21a65b459).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Told {
+    /// Nothing told of it yet.
+    Not,
+    /// Told once ([`Stall::Unreached`]): nothing more of it is.
+    Once,
+}
+
+impl Told {
+    /// A probe of a handshake on a path known as `known`, `waited` since it began: the stall to
+    /// tell, where its path has no window (never reached, or marked, `tls::Known::handshake_window`)
+    /// and its probes have gone past the probe timeout a path with no RTT sample has
+    /// (`tls::Known::COLD_PTO`), none told yet. A path with a window is told at its run-out
+    /// ([`Told::ran_out`]).
+    fn probe(&mut self, known: tls::Known, waited: std::time::Duration) -> Option<Stall> {
+        match self {
+            Told::Once => None,
+            Told::Not if known.handshake_window().is_some() || waited < tls::Known::COLD_PTO => None,
+            Told::Not => {
+                *self = Told::Once;
+                Some(Stall::Unreached { waited, window: None })
+            }
+        }
+    }
+
+    /// Its handshake ran out of its path's window, `waited` since it began
+    /// (`RanOut::Handshake`): the stall to tell, none told yet.
+    fn ran_out(&mut self, waited: std::time::Duration, window: std::time::Duration) -> Option<Stall> {
+        match self {
+            Told::Once => None,
+            Told::Not => {
+                *self = Told::Once;
+                Some(Stall::Unreached {
+                    waited,
+                    window: Some(window),
+                })
+            }
+        }
+    }
+}
+
+/// What is told of a stall ([`Stall`]).
+type Stalls<'a> = Box<dyn FnMut(Stall) + 'a>;
 
 enum Ask {
     /// A command; `input`, whether its stdin is sent: a command given none reads the end of
@@ -79,10 +165,33 @@ impl Controls {
     }
 }
 
+/// What ends a command [`exec_with`] runs, from another thread, from the moment its connection
+/// is made: before its daemon answers too, whose handshake has no deadline of its own
+/// ([`Unanswered`]), so that only its holder's own end, a daemon's stop, ends that wait.
+#[derive(Debug)]
+pub struct HangUp(Sender<Event>);
+
+impl HangUp {
+    /// Ends the command's connection, as [`Controls::hang_up`] does, whether or not its
+    /// handshake has ended: [`exec_with`] returns.
+    pub fn now(&self) -> Result<(), Error> {
+        self.0.send(Command::Handler(Event::HangUp))
+    }
+
+    /// What its connection's driver has heard, and the window it has shown ([`View`]).
+    pub fn view(&self) -> View {
+        self.0.view()
+    }
+}
+
 /// What the daemon answered.
 enum Answer {
     Exit(i32),
+    /// Refused before any command of it started: nothing of it ran.
     Refused(String),
+    /// Its command started, and the daemon ended its stream before its end ([`Tag::Cut`]):
+    /// it may have run.
+    Cut(String),
     Joined,
 }
 
@@ -123,6 +232,12 @@ struct Client<'a> {
     steering: Option<Steering<'a>>,
     /// Given what the command tells of the microVM it made ([`Tag::Made`]).
     made: Option<Made<'a>>,
+    /// Asked, as each probe of a handshake that has not ended goes, whether it waits on.
+    waits: Option<Waits<'a>>,
+    /// Told of each stall of its daemon's.
+    stalls: Option<Stalls<'a>>,
+    /// Whether its handshake has been told as a stall.
+    told: Told,
     answer: Option<Answer>,
     failed: Option<String>,
     done: bool,
@@ -131,6 +246,13 @@ struct Client<'a> {
 }
 
 impl Client<'_> {
+    /// Tells its caller of a stall ([`Stall`]).
+    fn stall(&mut self, stall: Stall) {
+        if let Some(stalls) = self.stalls.as_mut() {
+            stalls(stall);
+        }
+    }
+
     /// What its connection saw, kept before it goes.
     fn note(&mut self, io: &mut Io<'_>) {
         if let Some(seen) = self.conn.and_then(|conn| io.seen(conn)) {
@@ -155,7 +277,9 @@ impl Client<'_> {
                 }
             }
         }
-        if self.starved && self.pending.len() < HIGH_WATER {
+        // Its reader reads on once the transport has taken all it read: the daemon's flow
+        // control (RFC 9000 §4.1) is stdin's only read-ahead.
+        if self.starved && self.pending.is_empty() {
             self.starved = false;
             if let Some(credit) = &self.credit {
                 let _ = credit.try_send(());
@@ -267,6 +391,10 @@ impl Client<'_> {
                             io,
                             Answer::Refused(String::from_utf8_lossy(&payload).into_owned()),
                         );
+                        return;
+                    }
+                    Tag::Cut => {
+                        self.answered(io, Answer::Cut(String::from_utf8_lossy(&payload).into_owned()));
                         return;
                     }
                     Tag::Joined => {
@@ -428,23 +556,54 @@ impl Handler for Client<'_> {
             self.answer = Some(Answer::Refused(words.to_string()));
         }
         if self.answer.is_none() && self.failed.is_none() {
+            let at = self.remote.address;
             self.failed = Some(match self.stream {
-                // Its handshake never ended: no daemon answered there.
+                Some(_) => format!("the connection to {at} ended: {why}"),
                 None => format!(
-                    "no shards daemon answered at {} within {:?} ({why}): is it listening there (shards run daemon --listen ADDR:PORT)?",
-                    self.remote.address,
-                    tls::IDLE
+                    "no shards daemon answered at {at} ({why}): is it listening there (shards run daemon --listen ADDR:PORT)?"
                 ),
-                Some(_) => format!("the connection to {} ended: {why}", self.remote.address),
             });
         }
         self.done = true;
     }
 
+    fn unanswered(&mut self, io: &mut Io<'_>, _conn: ConnKey, probes: u64, waited: std::time::Duration) {
+        if let Some(stall) = self.told.probe(self.remote.known, waited) {
+            self.stall(stall);
+        }
+        let asked = Unanswered { probes, waited };
+        let goes_on = self.waits.as_mut().is_none_or(|waits| waits(asked));
+        if !goes_on {
+            self.fail(
+                io,
+                format!(
+                    "no shards daemon answered at {}: {probes} probes over {waited:?}",
+                    self.remote.address
+                ),
+            );
+        }
+    }
+
+    /// Its daemon unheard past its window, and answered after, or its handshake past its
+    /// path's window: told its caller ([`Stall`]).
+    fn ran_out(&mut self, _io: &mut Io<'_>, _conn: ConnKey, what: RanOut) {
+        let stall = match what {
+            RanOut::Stalled { unheard, window } => Stall::Unheard { unheard, window },
+            RanOut::Answered { after } => Stall::Answered { after },
+            RanOut::Handshake { waited, window } => match self.told.ran_out(waited, window) {
+                Some(stall) => stall,
+                None => return,
+            },
+            RanOut::Send { .. } => return,
+        };
+        self.stall(stall);
+    }
+
     fn command(&mut self, io: &mut Io<'_>, command: Event) {
         match command {
             Event::Connect => {
-                let Some(config) = self.identity.take() else {
+                // Hung up before its connection was made ([`HangUp`]): none is.
+                let Some(config) = self.identity.take().filter(|_| !self.done) else {
                     return;
                 };
                 match io.connect(self.remote.address, config) {
@@ -486,7 +645,7 @@ fn writer<'scope>(
     mut out: impl Write + Send + 'static,
     sender: Sender<Event>,
 ) -> Result<mpsc::SyncSender<Vec<u8>>, Error> {
-    let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(4);
+    let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(server::QUEUED_CHUNKS);
     std::thread::Builder::new()
         .name("remote-out".into())
         .spawn_scoped(scope, move || {
@@ -540,31 +699,37 @@ pub fn exec_made(
         Ask::Exec { request, input },
         stdin,
         Some((Box::new(stdout), Box::new(stderr))),
-        Some(Box::new(steered)),
-        Some(Box::new(made)),
+        Hooks {
+            steered: Some(Box::new(steered)),
+            made: Some(Box::new(made)),
+            ..Hooks::default()
+        },
         &mut seen,
     )?;
     exit_of(answer)
 }
 
-fn exit_of(answer: Answer) -> Result<Result<i32, String>, Error> {
-    match answer {
-        Answer::Exit(status) => Ok(Ok(status)),
-        Answer::Refused(why) => Ok(Err(why)),
-        Answer::Joined => Err(Error::new("the daemon answered a command as a join")),
-    }
-}
-
-/// [`exec`], nothing steering it, and what its connection saw of the path it crossed
-/// ([`Seen`]), whether it was answered or not: a move's record of the link it crossed
-/// (D176 part 6).
-pub fn exec_seen(
+/// [`exec_made`], `unanswered` asked as each probe of a handshake that has not ended goes
+/// whether it waits on ([`Unanswered`]: a handshake is waited for as long as its caller does,
+/// one with a daemon reached before past its run-out too), `stalled` told of each stall of its
+/// daemon's and its end, its handshake's once past what its path has shown ([`Stall`]: waited
+/// through for as long as its caller waits), `hang_up` given what
+/// ends it from another thread once its connection is made ([`HangUp`]), and what its connection
+/// saw ([`Seen`]), answered or not, for what its caller keeps of the daemon
+/// ([`tls::Known::after`]).
+#[allow(clippy::too_many_arguments)]
+pub fn exec_with(
     identity: &Identity,
     remote: Remote,
     request: Request,
     stdin: Option<Box<dyn Read + Send>>,
     stdout: impl Write + Send + 'static,
     stderr: impl Write + Send + 'static,
+    steered: impl FnOnce(Controls),
+    made: impl FnMut(&[u8]),
+    unanswered: impl FnMut(Unanswered) -> bool,
+    stalled: impl FnMut(Stall),
+    hang_up: impl FnOnce(HangUp),
 ) -> (Result<Result<i32, String>, Error>, Seen) {
     let input = stdin.is_some();
     let mut seen = Seen::default();
@@ -574,38 +739,53 @@ pub fn exec_seen(
         Ask::Exec { request, input },
         stdin,
         Some((Box::new(stdout), Box::new(stderr))),
-        None,
-        None,
+        Hooks {
+            steered: Some(Box::new(steered)),
+            made: Some(Box::new(made)),
+            waits: Some(Box::new(unanswered)),
+            stalls: Some(Box::new(stalled)),
+            hang_up: Some(Box::new(hang_up)),
+        },
         &mut seen,
     );
     (answer.and_then(exit_of), seen)
 }
 
+/// A command's end: its status, its refusal before it ran, or, cut after it started, no
+/// answer, as a connection lost then is: it may have run (D176 part 6).
+fn exit_of(answer: Answer) -> Result<Result<i32, String>, Error> {
+    match answer {
+        Answer::Exit(status) => Ok(Ok(status)),
+        Answer::Refused(why) => Ok(Err(why)),
+        Answer::Cut(why) => Err(Error::new(format!(
+            "{why}, after the command started: it may have run"
+        ))),
+        Answer::Joined => Err(Error::new("the daemon answered a command as a join")),
+    }
+}
+
 /// Joins the daemon `invitation` names, as the home whose identity is `identity`: Ok once
-/// the daemon has enrolled it, or the daemon's reason for refusing.
-pub fn join(identity: &Identity, invitation: &Invitation) -> Result<Result<(), String>, Error> {
+/// the daemon has enrolled it, or the daemon's reason for refusing; and what its connection
+/// saw ([`Seen`]), the first of the daemon's path its home keeps ([`tls::Known::after`]).
+pub fn join(identity: &Identity, invitation: &Invitation) -> (Result<Result<(), String>, Error>, Seen) {
+    // A daemon joined is one this home has never reached.
     let remote = Remote {
         address: invitation.address,
         daemon: invitation.daemon,
+        known: tls::Known::Never,
     };
     let ask = Ask::Join {
         name: invitation.name.clone(),
         secret: invitation.secret,
     };
-    match run(
-        identity,
-        remote,
-        ask,
-        None,
-        None,
-        None,
-        None,
-        &mut Seen::default(),
-    )? {
-        Answer::Joined => Ok(Ok(())),
-        Answer::Refused(why) => Ok(Err(why)),
-        Answer::Exit(_) => Err(Error::new("the daemon answered a join as a command")),
-    }
+    let mut seen = Seen::default();
+    let joined =
+        run(identity, remote, ask, None, None, Hooks::default(), &mut seen).and_then(|answer| match answer {
+            Answer::Joined => Ok(Ok(())),
+            Answer::Refused(why) => Ok(Err(why)),
+            Answer::Exit(_) | Answer::Cut(_) => Err(Error::new("the daemon answered a join as a command")),
+        });
+    (joined, seen)
 }
 
 type Outputs = (Box<dyn Write + Send>, Box<dyn Write + Send>);
@@ -613,19 +793,37 @@ type Outputs = (Box<dyn Write + Send>, Box<dyn Write + Send>);
 /// What is given what a command tells of the microVM it made ([`exec_made`]).
 type Made<'a> = Box<dyn FnMut(&[u8]) + 'a>;
 
+/// What a run's caller is given and asked as it goes, besides its output: what steers the
+/// command once it is asked for, what it tells of the microVM it made, whether a handshake
+/// that has not ended waits on, each stall of its daemon's, and what ends it from another
+/// thread from the start.
+#[derive(Default)]
+struct Hooks<'a> {
+    steered: Option<Box<dyn FnOnce(Controls) + 'a>>,
+    made: Option<Made<'a>>,
+    waits: Option<Waits<'a>>,
+    stalls: Option<Stalls<'a>>,
+    hang_up: Option<Box<dyn FnOnce(HangUp) + 'a>>,
+}
+
 /// Asks `ask` of `remote`; `seen` given what its connection saw, once it has ended.
-#[allow(clippy::too_many_arguments)]
 fn run(
     identity: &Identity,
     remote: Remote,
     ask: Ask,
     stdin: Option<Box<dyn Read + Send>>,
     outputs: Option<Outputs>,
-    steered: Option<Box<dyn FnOnce(Controls) + '_>>,
-    made: Option<Made<'_>>,
+    hooks: Hooks<'_>,
     seen: &mut Seen,
 ) -> Result<Answer, Error> {
-    let config = tls::client(identity, remote.daemon)?;
+    let Hooks {
+        steered,
+        made,
+        waits,
+        stalls,
+        hang_up,
+    } = hooks;
+    let config = tls::client(identity, remote.daemon, remote.known)?;
     let any: SocketAddr = if remote.address.is_ipv4() {
         SocketAddr::from(([0, 0, 0, 0], 0))
     } else {
@@ -654,12 +852,17 @@ fn run(
             uncontrolled: false,
             steering: None,
             made,
+            waits,
+            stalls,
+            told: Told::Not,
             answer: None,
             failed: None,
             done: false,
             seen: Seen::default(),
         };
-        let (mut driver, sender) = Driver::bind(any, None, client)?;
+        let (mut driver, sender) = Driver::bind(any, None, client, remote.known)?;
+        // Its one peer: a refusal of its host's (ICMP) reads as one.
+        driver.aim(remote.address)?;
         if let Some((stdout, stderr)) = outputs {
             let handler = &mut driver_handler(&mut driver);
             handler.stdout = Some(writer(scope, stdout, sender.try_clone()?)?);
@@ -674,7 +877,7 @@ fn run(
             std::thread::Builder::new()
                 .name("remote-in".into())
                 .spawn(move || {
-                    let mut buffer = vec![0u8; 64 << 10];
+                    let mut buffer = vec![0u8; server::READ_MOST];
                     while credit_rx.recv().is_ok() {
                         match stdin.read(&mut buffer) {
                             Ok(0) | Err(_) => {
@@ -695,6 +898,9 @@ fn run(
         if let Some(steered) = steered {
             driver_handler(&mut driver).steering = Some((steered, sender.try_clone()?));
         }
+        if let Some(hang_up) = hang_up {
+            hang_up(HangUp(sender.try_clone()?));
+        }
         sender.send(Command::Handler(Event::Connect))?;
         driver.run()?;
         let mut client = driver.into_handler();
@@ -713,4 +919,107 @@ fn run(
 
 fn driver_handler<'d, 'a>(driver: &'d mut Driver<Client<'a>>) -> &'d mut Client<'a> {
     driver.handler_mut()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A command refused before it started is its refusal; one cut after it started is no
+    /// answer, as a lost connection is, for it may have run; its exit is its status (D176
+    /// part 6).
+    #[test]
+    fn a_cut_command_is_unanswered_and_a_refused_one_refused() {
+        assert_eq!(exit_of(Answer::Exit(3)).unwrap(), Ok(3));
+        assert_eq!(
+            exit_of(Answer::Refused("not enrolled".into())).unwrap(),
+            Err("not enrolled".to_string())
+        );
+        let cut = exit_of(Answer::Cut("a frame out of place (Joined)".into())).unwrap_err();
+        assert_eq!(
+            cut.to_string(),
+            "a frame out of place (Joined), after the command started: it may have run"
+        );
+    }
+
+    fn ms(n: u64) -> std::time::Duration {
+        std::time::Duration::from_millis(n)
+    }
+
+    fn us(n: u64) -> std::time::Duration {
+        std::time::Duration::from_micros(n)
+    }
+
+    /// A daemon reached before, whose slowest handshake was 1.7 ms: its handshake's probes
+    /// within that window are told nothing, however many go (ROOT's KVM run at 21a65b459 on a
+    /// loaded adacachy2: "shards: gpu: no answer yet from 127.0.0.1:44476: 4 probes over
+    /// 424.6µs" on a command's stderr); its run-out past the window is told once, and nothing
+    /// after it, its probes going on (D180, ROOT's ruling A).
+    #[test]
+    fn a_handshake_within_its_paths_window_is_told_nothing_and_once_past_it() {
+        let known = tls::Known::Reached(tls::Path {
+            rtt: us(60),
+            handshake: us(1700),
+            answer: us(900),
+            lost: None,
+        });
+        let mut told = Told::Not;
+        for waited in [us(110), us(220), us(424), us(900)] {
+            assert_eq!(told.probe(known, waited), None, "a probe {waited:?} in");
+        }
+        assert_eq!(
+            told.ran_out(ms(31), us(1700)),
+            Some(Stall::Unreached {
+                waited: ms(31),
+                window: Some(us(1700))
+            })
+        );
+        for waited in [ms(40), ms(80), ms(2000)] {
+            assert_eq!(
+                told.probe(known, waited),
+                None,
+                "a probe {waited:?} in, past its run-out"
+            );
+        }
+        assert_eq!(told.ran_out(ms(90), us(1700)), None);
+    }
+
+    /// A path with no window, never reached or whose last wait ran out: its handshake is told
+    /// once its probes have gone past the probe timeout RFC 9002 gives a path with no RTT
+    /// sample (`tls::Known::COLD_PTO`), and once only; a marked path's own short RTT, which
+    /// its probes start from, tells nothing sooner.
+    #[test]
+    fn a_handshake_with_no_window_is_told_once_past_the_cold_probe_timeout() {
+        let marked = tls::Known::RanOut(tls::Path {
+            rtt: us(60),
+            handshake: us(1700),
+            answer: us(900),
+            lost: None,
+        });
+        for known in [tls::Known::Never, marked] {
+            let mut told = Told::Not;
+            for waited in [us(424), ms(30), ms(500), ms(998)] {
+                assert_eq!(
+                    told.probe(known, waited),
+                    None,
+                    "{known:?}: a probe {waited:?} in"
+                );
+            }
+            assert_eq!(
+                told.probe(known, ms(1000)),
+                Some(Stall::Unreached {
+                    waited: ms(1000),
+                    window: None
+                }),
+                "{known:?}"
+            );
+            for waited in [ms(2000), ms(4000)] {
+                assert_eq!(
+                    told.probe(known, waited),
+                    None,
+                    "{known:?}: a probe {waited:?} in"
+                );
+            }
+        }
+    }
 }

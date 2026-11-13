@@ -4,16 +4,21 @@
 
 mod probe;
 pub use probe::{
-    GPU_NAME_BYTES, GpuName, GpuProbe, GpuProbeError, GpuReport, ResolvedGpu, probe_bytes, report_bytes,
-    uuid_from_hex,
+    GPU_NAME_BYTES, GpuName, GpuProbe, GpuProbeError, GpuRefusal, GpuReport, ResolvedGpu, fixed_name,
+    probe_bytes, report_bytes, uuid_from_hex,
 };
 
 use alloc::vec::Vec;
 use core::fmt;
 use core::str::FromStr;
 
-/// The most GPUs a selection names: a u16's every index, the bound the render server's
-/// selection transport holds a context's identities to (D232).
+/// The most GPUs a selection names: the renderer's own bound, to which its patches hold a
+/// context's selection and, for a selected context, the host's Vulkan devices
+/// (`VIRGL_DEVICE_UUID_MAX_COUNT`, `VKR_PHYSICAL_DEVICE_FILTER_MAX_COUNT`, `1 + UINT16_MAX`,
+/// resources/gpu/physical-*.patch), so that nothing here takes a selection the renderer
+/// refuses. Below it, before a host's GPUs are enumerated, a count is bounded by what carries
+/// it (a receipt's lines, a snapshot's bytes) and after, by the host's GPUs, each named once.
+/// The renderer's figure is still owed its derivation from its transport's own bound (D232).
 pub const MAX_PHYSICAL_GPUS: usize = 1 << u16::BITS;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -152,6 +157,42 @@ impl fmt::Display for PhysicalGpuError {
 }
 
 impl core::error::Error for PhysicalGpuError {}
+
+/// Why a selection's identities join no exact live Vulkan device of their host's (D232): the
+/// VM process's join (shards-vmm's `gpu_selection`), which its client reads typed in its
+/// refusal ([`GpuRefusal::Join`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JoinError {
+    Selection(PhysicalGpuError),
+    Count,
+    Allocation,
+    Missing,
+    Ambiguous,
+    Aliased,
+    InvalidUuid,
+    InvalidNative,
+    Memory,
+}
+
+impl fmt::Display for JoinError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Selection(error) => error.fmt(f),
+            Self::Count => f.write_str("Vulkan device count exceeds the physical device-index space"),
+            Self::Allocation => f.write_str("native GPU join storage is unavailable"),
+            Self::Missing => f.write_str("a selected native GPU has no exact live Vulkan identity"),
+            Self::Ambiguous => f.write_str("native GPU or Vulkan UUID correspondence is ambiguous"),
+            Self::Aliased => f.write_str("multiple native selectors resolve to the same physical GPU"),
+            Self::InvalidUuid => f.write_str("selected Vulkan GPU has no nonzero device UUID"),
+            Self::InvalidNative => {
+                f.write_str("native Vulkan GPU properties exceed their identity representation")
+            }
+            Self::Memory => f.write_str("selected device-local Vulkan heap sizes overflow"),
+        }
+    }
+}
+
+impl core::error::Error for JoinError {}
 
 #[cfg(test)]
 #[allow(

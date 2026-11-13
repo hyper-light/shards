@@ -18,12 +18,9 @@ mod common;
 
 use std::ffi::OsStr;
 use std::path::Path;
-use std::time::Duration;
 
 use common::terminal::{Terminal, cooked};
 use common::{Run, TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, served};
-
-const TIMEOUT: Duration = Duration::from_secs(60);
 
 fn shards_in(home: &Path, args: &[&str]) -> Run {
     let (kernel, init) = (kernel(), guest_init());
@@ -32,7 +29,7 @@ fn shards_in(home: &Path, args: &[&str]) -> Run {
         ("SHARDS_KERNEL", kernel.as_os_str()),
         ("SHARDS_INIT", init.as_os_str()),
     ];
-    run_shards_env(&[], args, &env, TIMEOUT)
+    run_shards_env(&[], args, &env)
 }
 
 /// A home with the test image pulled, and the image's name.
@@ -118,7 +115,7 @@ fn a_terminal_is_told_its_clients_type_where_its_image_describes_it() {
             ("TERM", term.as_ref()),
             ("COLORTERM", colorterm.as_ref()),
         ];
-        let r = run_shards_env(&[], args, &env, TIMEOUT);
+        let r = run_shards_env(&[], args, &env);
         assert_eq!(r.status, Some(0), "{args:?}: {}", r.stderr);
         r.stdout
             .lines()
@@ -247,6 +244,38 @@ fn a_resize_reaches_the_command() {
     term.wait_for("resized 40 120\r\n");
     let (_, status, restored) = term.exit();
     assert_eq!((status, restored), (0, true));
+}
+
+/// An exec's terminal follows its client's as a run's does: sized as the client's as it
+/// starts, and resized as the client's is, as `docker exec -it` resizes its exec's pty.
+#[test]
+fn an_execs_terminal_follows_its_clients() {
+    let Some((home, image)) = home("tty-exec-resize") else {
+        return;
+    };
+    let held = shards_in(
+        &home,
+        &[
+            "run", "vm", "-d", "--pull", "never", "--name", "resized", &image, "sleep",
+        ],
+    );
+    assert_eq!(held.status, Some(0), "{}", held.stderr);
+    let mut term = Terminal::run(
+        &home,
+        &["exec", "vm", "-it", "resized", "/bin/testguest", "tty", "winch"],
+        24,
+        80,
+    );
+    let shown = term.wait_for("ready\r\n");
+    assert!(shown.contains("size 24 80\r\n"), "{shown}");
+    term.resize(40, 120);
+    term.wait_for("resized 40 120\r\n");
+    let (_, status, restored) = term.exit();
+    assert_eq!((status, restored), (0, true));
+    assert_eq!(
+        shards_in(&home, &["remove", "vm", "-f", "resized"]).status,
+        Some(0)
+    );
 }
 
 #[test]

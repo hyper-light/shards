@@ -49,6 +49,16 @@ fn setup_failed(message: impl Into<String>) -> Failure {
     }
 }
 
+/// A spec the host sent, as its workload's or an exec's frame carries it, read before any
+/// of it is applied: refused in `malformed`'s words where it is no spec, and at an entry of
+/// its setup of a key the run protocol does not register (D257), naming the key, which this
+/// init has no reader for, and would otherwise neither apply nor say anything of.
+fn host_spec(payload: &[u8], malformed: &str) -> Result<Spec, String> {
+    let spec = Spec::decode(payload).ok_or_else(|| malformed.to_string())?;
+    run::setup::check(&spec.setup).map_err(|e| format!("its setup: {e}"))?;
+    Ok(spec)
+}
+
 /// Whether the run's owner hears each member's end (`member-ends`, D231): set as its spec
 /// arrives, once a boot, as init serves one run.
 static MEMBER_ENDS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -139,6 +149,46 @@ fn room_of(said: &[u8]) -> io::Result<i64> {
         .ok()
         .and_then(|s| s.trim().parse::<i64>().ok())
         .ok_or_else(|| io::Error::other("a room that is no number of bytes"))
+}
+
+/// What its host's word leaves the run (`ROOM`, D188), R04: no budget; a room; or, where the
+/// word said the footprint its VM process held as that room was read (a group's, D183) and
+/// its VMM cannot say what it holds now, that room as said, which its answer says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Told {
+    Unbudgeted,
+    Room(i64),
+    AsSaid(i64),
+}
+
+impl Told {
+    fn room(self) -> Option<i64> {
+        match self {
+            Told::Unbudgeted => None,
+            Told::Room(room) | Told::AsSaid(room) => Some(room),
+        }
+    }
+}
+
+/// [`Told`] by its host's word `args`: a room in signed decimal, and, where a second word says
+/// in decimal the footprint its VM process held as that room was read, that room as of what
+/// it holds now, read from its VMM (`control::FOOTPRINT`) just before the hold reads what
+/// the run uses (`run::room_now`): what it came to hold since that read counts once.
+fn told(args: &[Vec<u8>]) -> io::Result<Told> {
+    let Some(room) = args.first() else {
+        return Ok(Told::Unbudgeted);
+    };
+    let room = room_of(room)?;
+    let Some(at) = args.get(1) else {
+        return Ok(Told::Room(room));
+    };
+    let at = std::str::from_utf8(at)
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .ok_or_else(|| io::Error::other("a footprint that is no number of bytes"))?;
+    // A read that fails is a footprint its VMM cannot say, as 0 is.
+    let now = crate::linux::control_read64(control::FOOTPRINT).unwrap_or(0);
+    Ok(run::room_now(room, at, now).map_or(Told::AsSaid(room), Told::Room))
 }
 
 /// Reports at once the memory the guest holds free that waits to be reported to its
@@ -895,6 +945,10 @@ fn sort_setup(entries: &[Vec<u8>], into: &mut Inherited) -> Result<Sorted, Failu
             // Init's, as the run starts (`Standby::start`).
         } else if entry.starts_with(b"devices=") {
             // Init's, done as the workload's limits are (`limit`).
+        } else if entry.starts_with(run::socket::DIR) {
+            // Init's, its lanes' to the command's sockets (D251, `Standby::start`).
+        } else if entry.starts_with(run::mcp::TOKEN_KEY) || entry.starts_with(run::mcp::MEMBER_KEY) {
+            // Init's, its members' MCP bridges (D254, `domains::start`).
         } else if entry == run::nesting::GRANT {
             // The nesting grant (D234): the standby's part of it, made after the run's
             // mounts (below).
@@ -2366,7 +2420,7 @@ fn receive(conn: &File, standby: Standby) -> Result<(Spec, Standby), Failure> {
     let mut payload = vec![0u8; len as usize];
     r.read_exact(&mut payload)
         .map_err(|e| setup_failed(format!("reading the workload: {e}")))?;
-    let spec = Spec::decode(&payload).ok_or_else(|| setup_failed("malformed workload"))?;
+    let spec = host_spec(&payload, "malformed workload").map_err(setup_failed)?;
     Ok((spec, standby))
 }
 
@@ -2475,6 +2529,9 @@ struct Workload {
     notify: Option<OwnedFd>,
     /// Its readiness, init's to move, under the nesting grant (D234).
     readiness: Option<crate::readiness::Readiness>,
+    /// The directory of its sockets its controller may reach (D251), none where the run
+    /// grants none.
+    sockets: crate::lanes::Granted,
 }
 
 /// A pty's master, and the path of its peer, which the standby opens as the workload's
@@ -3080,6 +3137,10 @@ impl Standby {
             .transpose()
             .map_err(|e| setup_failed(format!("its microVM's engine: {e}")))?;
         let mut w = standby.launch(spec, false, setup, &inherited)?;
+        // The directory of its sockets its controller may reach (D251): a run's own command's
+        // alone, so none for an orchestrator's run of its image's members (`ATTEND`).
+        w.sockets = crate::lanes::Granted::read(&spec.setup, spec.builtin != run::builtin::ATTEND)
+            .map_err(setup_failed)?;
         if let (Some(hosts), Some(listener)) = (&hosts, w.binds.take()) {
             hosts.listener(&listener, 0);
         }
@@ -3182,6 +3243,7 @@ impl Standby {
             engine: None,
             notify: None,
             readiness: None,
+            sockets: crate::lanes::Granted::default(),
         })
     }
 
@@ -3356,6 +3418,7 @@ impl Standby {
                 engine,
                 notify,
                 readiness: None,
+                sockets: crate::lanes::Granted::default(),
             });
         };
         // The terminal carries everything; the pipes go unused.
@@ -3380,6 +3443,7 @@ impl Standby {
             engine,
             notify,
             readiness: None,
+            sockets: crate::lanes::Granted::default(),
         })
     }
 }
@@ -3865,19 +3929,22 @@ fn builtin(
             }),
             // Its engine's relay told first, which lets its idle ring slots go where the room
             // is short of what the run needs to go on (D230); with no slot made, nothing.
-            run::builtin::ROOM => args
-                .first()
-                .map(|a| room_of(a))
-                .transpose()
-                .inspect(|room| crate::ring::told(*room))
-                .and_then(|room| crate::plug::hold_within(RUN_CGROUP, room))
-                .and_then(|held| held.map_or(Ok(()), |held| write!(out, "{held}"))),
+            run::builtin::ROOM => told(args).and_then(|told| {
+                crate::ring::told(told.room());
+                match (crate::plug::hold_within(RUN_CGROUP, told.room())?, told) {
+                    (Some(held), Told::AsSaid(_)) => write!(out, "{held} {}", run::builtin::ROOM_UNREAD),
+                    (Some(held), _) => write!(out, "{held}"),
+                    (None, _) => Ok(()),
+                }
+            }),
             run::builtin::FREEZE => freeze(&cgroup, args.first().is_some_and(|a| a == b"1")),
             // A device plugged in or let go of, or a disk grown, in the workload's mounts
             // (D214), or a domain's (D235).
             run::builtin::DEVICE => crate::hotplug::device(args, workload, domains, &mut out),
             // A member's own terminal sized (plan step 6, D244).
             run::builtin::RESIZE => resize_member(args, domains),
+            // A member's command signalled (D238, goal 58's step 5).
+            run::builtin::SIGNAL => signal_member(args, domains),
             run::builtin::SIZE => match &layers {
                 Some((_, upper)) => Some(format!("/proc/self/fd/{}", upper.as_raw_fd())),
                 None => crate::changes::upper(),
@@ -3926,12 +3993,7 @@ fn builtin(
             Ok(()) => 0,
             Err(e) => {
                 let _ = writeln!(File::from(stderr_w), "{e}");
-                // A device in use, said apart, for its host to say so by its kind (D235).
-                if kind == run::builtin::DEVICE && e.kind() == io::ErrorKind::ResourceBusy {
-                    i32::from(run::builtin::DEVICE_BUSY)
-                } else {
-                    1
-                }
+                failed_status(kind, &e)
             }
         };
         // SAFETY: _exit(2) ends the child without running init's exit paths.
@@ -4422,7 +4484,7 @@ impl Exec {
         let (token, rest) = payload.split_at_checked(run::TOKEN).ok_or(None)?;
         let (id, spec) = rest.split_at_checked(4).ok_or(None)?;
         let id = u32::from_be_bytes(id.try_into().map_err(|_| None)?);
-        let spec = Spec::decode(spec).ok_or_else(|| Some((id, "a malformed command".to_string())))?;
+        let spec = host_spec(spec, "a malformed command").map_err(|why| Some((id, why)))?;
         let conn = dial(run::EXEC_PORT, false)
             .map_err(|e| Some((id, format!("connecting to the host for the command: {e}"))))?;
         let mut exec = Exec {
@@ -4991,8 +5053,15 @@ impl Workload {
             }
             if exited {
                 for domain in &mut self.domains {
-                    domain.stdout.abort();
-                    domain.stderr.abort();
+                    // What the host drains (D240) goes on to its end, which the run's end
+                    // brings it: its members are killed with the run, and their pipes hold
+                    // what they wrote. The capture is let go once each such channel has ended
+                    // and nothing of it is in flight (below). Every other member's output
+                    // ends here, aborted: its owner's credit may never come.
+                    if !self.capture.as_ref().is_some_and(|c| c.drains(domain.member)) {
+                        domain.stdout.abort();
+                        domain.stderr.abort();
+                    }
                     // An input that ended is told before the scope ends; one still open goes
                     // with the run, whose end says it.
                     if let Some(ended) = domain.input.as_ref().and_then(crate::input::Input::report)
@@ -5004,7 +5073,6 @@ impl Workload {
                     }
                     domain.input = None;
                 }
-                self.capture = None;
                 if let Some(control) = self.capture_control.as_mut()
                     && let Err(e) = control.end()
                 {
@@ -5131,6 +5199,8 @@ impl Workload {
                 && !reported
                 && self.stdout.is_none()
                 && self.stderr.is_none()
+                // What its members wrote sent whole first (D240).
+                && self.capture.is_none()
                 && self
                     .domains
                     .iter()
@@ -5171,6 +5241,8 @@ impl Workload {
                     .capture_control
                     .as_ref()
                     .is_none_or(crate::capture::ControlQueue::ended)
+                // Its members' last records sent whole, none cut in flight (D240).
+                && self.capture.is_none()
                 && cut.open()
                 && self.stdout.is_none()
                 && self.stderr.is_none()
@@ -5659,6 +5731,19 @@ impl Workload {
                                             Err(Some((id, why))) => exec_failed(&mut exec_failures, id, &why),
                                             Err(None) => {}
                                         },
+                                        // A lane to a socket of the run's own command (D251):
+                                        // refused at once where the host hears it, as an
+                                        // exec without its connection is.
+                                        kind::SOCKET => {
+                                            if let Err(Some((id, errno))) = crate::lanes::open(
+                                                payload,
+                                                &self.sockets,
+                                                running.then_some(pid),
+                                            ) {
+                                                exec_failures
+                                                    .extend(&[crate::lanes::refused(id, errno).as_slice()]);
+                                            }
+                                        }
                                         kind::EXEC_SIGNAL => {
                                             if let Some((id, rest)) = id_and(payload)
                                                 && let Some(sig) = sig(&rest)
@@ -5716,6 +5801,20 @@ impl Workload {
                             && let Err(e) = capture.progress()
                             && !e.transient()
                         {
+                            // Once the command has ended its status stands: the members'
+                            // output, drained to its end (D240), ends where its host went.
+                            if status.is_some() {
+                                let _ = writeln!(
+                                    io::stderr(),
+                                    "shards-init: the members' output as the run ends: {e}"
+                                );
+                                for domain in &mut self.domains {
+                                    domain.stdout.abort();
+                                    domain.stderr.abort();
+                                }
+                                self.capture = None;
+                                continue;
+                            }
                             fatal = Some(setup_failed(format!("managed output connection: {e}")));
                             break 'relay;
                         }
@@ -6149,6 +6248,201 @@ fn resize(fd: RawFd, size: Size) {
     };
     // SAFETY: TIOCSWINSZ reads one winsize.
     unsafe { libc::ioctl(fd, libc::TIOCSWINSZ, &ws) };
+}
+
+/// A built-in's exit status for its failure `e`: 1, but where its host tells the cause apart by
+/// its kind: a device in use (`DEVICE_BUSY`, D235); a member whose command has ended or that
+/// never started (`SIGNAL_ENDED`, `SIGNAL_UNKNOWN`).
+fn failed_status(kind: u8, e: &io::Error) -> i32 {
+    let unsignalled = e.get_ref().and_then(|inner| inner.downcast_ref::<Unsignalled>());
+    match (kind, unsignalled) {
+        (run::builtin::DEVICE, _) if e.kind() == io::ErrorKind::ResourceBusy => {
+            i32::from(run::builtin::DEVICE_BUSY)
+        }
+        (run::builtin::SIGNAL, Some(Unsignalled::Ended(_))) => i32::from(run::builtin::SIGNAL_ENDED),
+        (run::builtin::SIGNAL, Some(Unsignalled::Unknown(_))) => i32::from(run::builtin::SIGNAL_UNKNOWN),
+        _ => 1,
+    }
+}
+
+/// Why `builtin::SIGNAL` signalled nothing, by a cause its host tells apart.
+#[derive(Debug)]
+enum Unsignalled {
+    /// No member of this index started in this run.
+    Unknown(u32),
+    /// Its command has ended, its population with it or going: the member's label.
+    Ended(String),
+}
+
+impl std::fmt::Display for Unsignalled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Unsignalled::Unknown(member) => write!(f, "member {member} did not start in this run"),
+            Unsignalled::Ended(label) => write!(f, "{label}: its command has ended"),
+        }
+    }
+}
+
+impl std::error::Error for Unsignalled {}
+
+/// `builtin::SIGNAL`: the command of the member `args` names signalled as they say (D238, goal
+/// 58's step 5), found among its cgroup's processes ([`signal_command`]); refused, typed, for a
+/// member that never started or whose command has ended ([`Unsignalled`]).
+fn signal_member(args: &[Vec<u8>], domains: &[crate::domains::Started]) -> io::Result<()> {
+    let (member, signal) = run::members::parse_signal(args)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.to_string()))?;
+    let started = domains
+        .iter()
+        .find(|d| d.member == member)
+        .ok_or_else(|| io::Error::other(Unsignalled::Unknown(member)))?;
+    let ended = || io::Error::other(Unsignalled::Ended(started.label.clone()));
+    if !started.lifecycle.running() {
+        return Err(ended());
+    }
+    let signal = libc::c_int::try_from(signal).map_err(io::Error::other)?;
+    // SAFETY: openat(2) of a fixed name under the cgroup directory init holds for the member.
+    let procs = unsafe {
+        libc::openat(
+            started.lifecycle.group().as_raw_fd(),
+            c"cgroup.procs".as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC,
+        )
+    };
+    if procs < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut listed = Vec::new();
+    // SAFETY: the descriptor just opened, owned here alone.
+    File::from(unsafe { OwnedFd::from_raw_fd(procs) }).read_to_end(&mut listed)?;
+    match signal_command(&listed, started.lifecycle.pid(), signal)? {
+        true => Ok(()),
+        false => Err(ended()),
+    }
+}
+
+/// Signals the member's command among `listed`'s processes (its cgroup's, `cgroup.procs`):
+/// whether it ran on to be signalled. Its command is PID 2 under its reaper `reaper`
+/// ([`crate::managed::ACTOR`]): each process listed is opened as its `/proc` directory, a
+/// descriptor of that process alone ([`process_dir`]), which its status is read through and
+/// which pidfd_send_signal(2) takes, so that the process found ([`command_state`]) is the one
+/// signalled whatever PIDs are reused meanwhile. Not its reaper: from init's namespace a signal
+/// reaches a namespace's init only for a handler it has (pid_namespaces(7)), and the reaper has
+/// SIGCHLD's alone.
+fn signal_command(listed: &[u8], reaper: libc::pid_t, signal: libc::c_int) -> io::Result<bool> {
+    let pids = listed.split(|&b| b == b'\n').filter_map(|line| {
+        std::str::from_utf8(line)
+            .ok()
+            .and_then(|l| l.trim().parse::<libc::pid_t>().ok())
+    });
+    for pid in pids.filter(|&pid| pid != reaper) {
+        // Gone since its cgroup said it: not the member's command, or its command has ended.
+        let Ok(dir) = process_dir(pid) else {
+            continue;
+        };
+        // SAFETY: openat(2) of a fixed name under the process directory just opened.
+        let status = unsafe {
+            libc::openat(
+                dir.as_raw_fd(),
+                c"status".as_ptr(),
+                libc::O_RDONLY | libc::O_CLOEXEC,
+            )
+        };
+        if status < 0 {
+            continue;
+        }
+        let mut said = Vec::new();
+        // SAFETY: the descriptor just opened, owned here alone.
+        if File::from(unsafe { OwnedFd::from_raw_fd(status) })
+            .read_to_end(&mut said)
+            .is_err()
+        {
+            continue;
+        }
+        match command_state(&said, reaper) {
+            Seen::Other => continue,
+            Seen::Ended => return Ok(false),
+            Seen::Running => {}
+        }
+        // SAFETY: pidfd_send_signal(2) of the process the `/proc` directory `dir` names, with no
+        // siginfo and no flags.
+        let sent = unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                dir.as_raw_fd(),
+                signal,
+                std::ptr::null::<libc::siginfo_t>(),
+                0,
+            )
+        };
+        if sent == 0 {
+            return Ok(true);
+        }
+        let e = io::Error::last_os_error();
+        return match e.raw_os_error() {
+            Some(libc::ESRCH) => Ok(false),
+            _ => Err(e),
+        };
+    }
+    Ok(false)
+}
+
+/// Process `pid`'s `/proc` directory, opened to be read: a descriptor of that process alone,
+/// whose files are its own and which pidfd_send_signal(2) takes. Not a path descriptor
+/// (`crate::opath`): pidfd_send_signal(2) takes none.
+fn process_dir(pid: libc::pid_t) -> io::Result<OwnedFd> {
+    let path = CString::new(format!("/proc/{pid}")).map_err(io::Error::other)?;
+    loop {
+        // SAFETY: open(2) of a NUL-terminated path; no O_CREAT, so no mode is read.
+        let fd = unsafe {
+            libc::open(
+                path.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+            )
+        };
+        if fd >= 0 {
+            // SAFETY: a descriptor just opened, owned here alone.
+            return Ok(unsafe { OwnedFd::from_raw_fd(fd) });
+        }
+        let e = io::Error::last_os_error();
+        if e.kind() != io::ErrorKind::Interrupted {
+            return Err(e);
+        }
+    }
+}
+
+/// What a process's status says of it, as a member's command (R04).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Seen {
+    /// Not the member's command.
+    Other,
+    /// Its command, running on.
+    Running,
+    /// Its command, ended: a zombie its reaper has not yet reaped.
+    Ended,
+}
+
+/// What `status`, a process's `/proc/PID/status`, says of it (proc(5)): the member's command
+/// where its parent is the member's reaper `reaper` and its PIDs from init's namespace down
+/// (`NSpid`) are its own there and [`crate::managed::ACTOR`] in the reaper's, the namespace
+/// under init's; ended where its state is a zombie's (`Z`).
+fn command_state(status: &[u8], reaper: libc::pid_t) -> Seen {
+    let field = |name: &[u8]| {
+        status
+            .split(|&b| b == b'\n')
+            .find_map(|line| line.strip_prefix(name))
+            .and_then(|value| std::str::from_utf8(value).ok())
+            .map(str::trim)
+    };
+    let ppid = field(b"PPid:").and_then(|v| v.parse::<libc::pid_t>().ok());
+    let nspid: Option<Vec<libc::pid_t>> =
+        field(b"NSpid:").map(|v| v.split_whitespace().filter_map(|p| p.parse().ok()).collect());
+    let its = ppid == Some(reaper)
+        && nspid.is_some_and(|ns| ns.len() == 2 && ns.get(1) == Some(&crate::managed::ACTOR));
+    match (its, field(b"State:").and_then(|s| s.chars().next())) {
+        (false, _) => Seen::Other,
+        (true, Some('Z')) => Seen::Ended,
+        (true, _) => Seen::Running,
+    }
 }
 
 /// `builtin::RESIZE`: the own terminal of the member `args` names sized as they say (plan
@@ -7399,5 +7693,250 @@ mod nesting_tests {
         for dir in [format!("{w}/boxes"), format!("{w}/{LEAF}"), w] {
             std::fs::remove_dir(&dir).unwrap();
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod host_spec_tests {
+    use super::*;
+
+    fn payload(setup: &[&[u8]]) -> Vec<u8> {
+        Spec {
+            argv: vec![b"/bin/true".to_vec()],
+            setup: setup.iter().map(|e| e.to_vec()).collect(),
+            ..Spec::default()
+        }
+        .encode()
+    }
+
+    /// D257: a spec whose every setup entry is of a key the run protocol registers is read
+    /// as the host sent it; one holding an entry of a key it does not register is refused by
+    /// that key before any of it is applied, its value never said; and one that is no spec, in
+    /// its frame's words. The workload's frame and an exec's both read theirs through
+    /// `host_spec`.
+    #[test]
+    fn a_spec_holding_an_unregistered_setup_key_is_refused_by_it() {
+        let registered: [&[u8]; 4] = [
+            b"readonly",
+            b"tmpfs=/t\0rw",
+            b"member-arg=0\0--resume",
+            b"pid=host",
+        ];
+        let spec = host_spec(&payload(&registered), "malformed workload").unwrap();
+        assert_eq!(spec.setup, registered.map(<[u8]>::to_vec));
+        let refused = host_spec(
+            &payload(&[b"readonly", b"member-flag=0\0sk-secret", b"tmpfs=/t\0rw"]),
+            "malformed workload",
+        )
+        .unwrap_err();
+        assert!(
+            refused.contains("its setup")
+                && refused.contains("\"member-flag\"")
+                && !refused.contains("sk-secret"),
+            "{refused}"
+        );
+        assert_eq!(
+            host_spec(&[], "a malformed command").unwrap_err(),
+            "a malformed command"
+        );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
+mod member_signal_tests {
+    use super::*;
+
+    fn status(state: &str, ppid: i32, nspid: &str) -> Vec<u8> {
+        format!(
+            "Name:\tclaude\nUmask:\t0022\nState:\t{state}\nTgid:\t42\nNgid:\t0\nPid:\t42\n\
+             PPid:\t{ppid}\nTracerPid:\t0\nNSpid:\t{nspid}\nNSpgid:\t42\t2\n"
+        )
+        .into_bytes()
+    }
+
+    /// A member's command is its reaper's child of PID 2 in the reaper's namespace, running on
+    /// or ended (a zombie); an orphan its reaper took, a process of a namespace nested in the
+    /// member's, another member's command, and a status missing a field, are not.
+    #[test]
+    fn a_members_command_is_its_reapers_child_of_pid_2() {
+        assert_eq!(
+            command_state(&status("S (sleeping)", 41, "42\t2"), 41),
+            Seen::Running
+        );
+        assert_eq!(
+            command_state(&status("R (running)", 41, "42\t2"), 41),
+            Seen::Running
+        );
+        assert_eq!(command_state(&status("Z (zombie)", 41, "42\t2"), 41), Seen::Ended);
+        assert_eq!(
+            command_state(&status("S (sleeping)", 41, "57\t9"), 41),
+            Seen::Other
+        );
+        assert_eq!(
+            command_state(&status("S (sleeping)", 41, "60\t2\t1"), 41),
+            Seen::Other
+        );
+        assert_eq!(
+            command_state(&status("S (sleeping)", 77, "78\t2"), 41),
+            Seen::Other
+        );
+        assert_eq!(command_state(&status("S (sleeping)", 41, "42"), 41), Seen::Other);
+        assert_eq!(command_state(b"Name:\tclaude\nPPid:\t41\n", 41), Seen::Other);
+        assert_eq!(command_state(b"", 41), Seen::Other);
+    }
+
+    /// A signal refused is said by its kind: a member's command that has ended, and a member that
+    /// never started, each its own exit status; any other failure, or another built-in's, 1.
+    #[test]
+    fn a_signal_refused_exits_by_its_kind() {
+        let signal = run::builtin::SIGNAL;
+        let ended = io::Error::other(Unsignalled::Ended("harness claude".into()));
+        assert_eq!(
+            failed_status(signal, &ended),
+            i32::from(run::builtin::SIGNAL_ENDED)
+        );
+        let unknown = io::Error::other(Unsignalled::Unknown(9));
+        assert_eq!(
+            failed_status(signal, &unknown),
+            i32::from(run::builtin::SIGNAL_UNKNOWN)
+        );
+        assert_eq!(
+            failed_status(signal, &io::Error::from_raw_os_error(libc::EPERM)),
+            1
+        );
+        assert_eq!(failed_status(run::builtin::RESIZE, &unknown), 1);
+        let busy = io::Error::from(io::ErrorKind::ResourceBusy);
+        assert_eq!(
+            failed_status(run::builtin::DEVICE, &busy),
+            i32::from(run::builtin::DEVICE_BUSY)
+        );
+    }
+
+    /// A member that never started, or arguments that are no signal, are refused before anything
+    /// is signalled, each by its kind.
+    #[test]
+    fn a_signal_for_no_member_or_of_no_signal_is_refused() {
+        let unknown = signal_member(&run::members::signal_args(3, 15), &[]).unwrap_err();
+        assert_eq!(
+            failed_status(run::builtin::SIGNAL, &unknown),
+            i32::from(run::builtin::SIGNAL_UNKNOWN)
+        );
+        let refused = signal_member(&[b"3".to_vec(), b"65".to_vec()], &[]).unwrap_err();
+        assert_eq!(refused.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(failed_status(run::builtin::SIGNAL, &refused), 1);
+    }
+
+    /// Each process of /proc whose parent is `parent`, with its status.
+    fn children_of(parent: u32) -> Vec<(libc::pid_t, Vec<u8>)> {
+        let mut found = Vec::new();
+        for entry in std::fs::read_dir("/proc").unwrap().flatten() {
+            let Some(pid) = entry
+                .file_name()
+                .to_str()
+                .and_then(|n| n.parse::<libc::pid_t>().ok())
+            else {
+                continue;
+            };
+            let Ok(status) = std::fs::read(entry.path().join("status")) else {
+                continue;
+            };
+            let ppid = status
+                .split(|&b| b == b'\n')
+                .find_map(|l| l.strip_prefix(b"PPid:"))
+                .and_then(|v| std::str::from_utf8(v).ok())
+                .and_then(|v| v.trim().parse::<u32>().ok());
+            if ppid == Some(parent) {
+                found.push((pid, status));
+            }
+        }
+        found
+    }
+
+    /// Its PID in the innermost namespace it is in, from its status's `NSpid`.
+    fn inner_pid(status: &[u8]) -> Option<libc::pid_t> {
+        status
+            .split(|&b| b == b'\n')
+            .find_map(|l| l.strip_prefix(b"NSpid:"))
+            .and_then(|v| std::str::from_utf8(v).ok())
+            .and_then(|v| v.split_whitespace().last()?.parse().ok())
+    }
+
+    /// unshare(1), killed with its namespace as the test ends however it ends (`--kill-child`).
+    struct Unshared(std::process::Child);
+
+    impl Drop for Unshared {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    /// The command of a namespace's init, PID 2 under it as a member's command is under its
+    /// reaper, is found among the namespace's processes and signalled alone, its sibling of PID 3
+    /// running on; once it has ended there is none to signal, whatever its cgroup's list still
+    /// says. The namespace is a user and a PID namespace that unshare(1) makes, unprivileged; a
+    /// host that makes none says SKIP.
+    #[test]
+    fn a_namespaces_command_is_found_and_signalled_alone() {
+        use std::process::{Command, Stdio};
+        let spawned = Command::new("unshare")
+            .args([
+                "--user",
+                "--map-root-user",
+                "--pid",
+                "--fork",
+                "--kill-child",
+                "sh",
+                "-c",
+                "sleep 600 & sleep 600 & wait",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+        let Ok(unshare) = spawned else {
+            println!("SKIP: no unshare(1) on this host");
+            return;
+        };
+        let mut unshare = Unshared(unshare);
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let (init, command, sibling) = loop {
+            if let [(init, _)] = children_of(unshare.0.id())[..] {
+                let children = children_of(init as u32);
+                let by = |n| {
+                    children
+                        .iter()
+                        .find(|(_, s)| inner_pid(s) == Some(n))
+                        .map(|(p, _)| *p)
+                };
+                if let (2, Some(command), Some(sibling)) = (children.len(), by(2), by(3)) {
+                    break (init, command, sibling);
+                }
+            }
+            if let Ok(Some(status)) = unshare.0.try_wait() {
+                println!("SKIP: unshare(1) made no user and PID namespace here ({status})");
+                return;
+            }
+            assert!(Instant::now() < deadline, "the namespace's processes never came");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let listed = format!("{init}\n{sibling}\n{command}\n");
+        assert!(signal_command(listed.as_bytes(), init, libc::SIGTERM).unwrap());
+        // Its end, which its init reaps: a zombie until it does, then gone.
+        loop {
+            let ended = std::fs::read(format!("/proc/{command}/status"))
+                .map_or(true, |s| command_state(&s, init) == Seen::Ended);
+            if ended {
+                break;
+            }
+            assert!(Instant::now() < deadline, "its command never ended");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!signal_command(listed.as_bytes(), init, libc::SIGTERM).unwrap());
+        let sibling_status = std::fs::read(format!("/proc/{sibling}/status")).unwrap();
+        assert_eq!(command_state(&sibling_status, init), Seen::Other);
+        assert!(!sibling_status.windows(3).any(|w| w == b"\tZ "));
     }
 }

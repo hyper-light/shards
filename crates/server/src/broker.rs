@@ -53,14 +53,79 @@ pub(crate) enum Reason {
     Capacity,
     DurableEvidenceUnavailable,
     NoScratch,
+    /// A handed path not in the caller's scratch as it sees it, `/tmp/...`.
     Path,
     PathNul,
-    TooLong,
-    FileKind,
+    /// A message past what one to its peer holds: `most` bytes past its kind and ID (D60).
+    TooLong {
+        most: usize,
+    },
+    /// A handed path that names no regular file, but this.
+    FileKind(Kind),
+    /// A handed file's open, stat or read refused, with the OS's code. Beneath the scratch
+    /// (D139's openat2(2) resolution) ELOOP is a link, EXDEV a path past the scratch, ENXIO a
+    /// socket, and EACCES a file its server, of the caller's group, may not read.
     FileIo(Option<i32>),
+    /// A handed file of `size` bytes, as its size says: more than the `most` a message to its
+    /// peer holds of a file of its name.
+    FileSize {
+        size: u64,
+        most: usize,
+    },
+    /// A handed file that grew past that `most` as it was read.
+    FileGrew {
+        most: usize,
+    },
     PeerFull,
     PeerIo(Option<i32>),
-    Partial { accepted: usize, expected: usize },
+    Partial {
+        accepted: usize,
+        expected: usize,
+    },
+}
+impl Reason {
+    /// A message of more than `message` bytes, its kind and ID among them.
+    fn too_long(message: usize) -> Self {
+        Self::TooLong {
+            most: message.saturating_sub(crate::server::MESSAGE_HEAD),
+        }
+    }
+}
+/// What a handed path names where it is no regular file (stat(2)'s `st_mode`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Kind {
+    Directory,
+    Fifo,
+    Socket,
+    /// A block or a character device.
+    Device,
+    /// None of these.
+    Other,
+}
+impl Kind {
+    fn of(kind: std::fs::FileType) -> Self {
+        use std::os::unix::fs::FileTypeExt as _;
+        if kind.is_dir() {
+            Self::Directory
+        } else if kind.is_fifo() {
+            Self::Fifo
+        } else if kind.is_socket() {
+            Self::Socket
+        } else if kind.is_block_device() || kind.is_char_device() {
+            Self::Device
+        } else {
+            Self::Other
+        }
+    }
+    fn name(self) -> &'static str {
+        match self {
+            Self::Directory => "directory",
+            Self::Fifo => "fifo",
+            Self::Socket => "socket",
+            Self::Device => "device",
+            Self::Other => "other",
+        }
+    }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Refusal {
@@ -105,7 +170,7 @@ pub(crate) enum Outcome {
 pub(crate) struct Terminal<'a> {
     pub receipt: Receipt<'a>,
     pub outcome: Outcome,
-    response: ResponseSlot,
+    response: ResponseSlot<'a>,
 }
 impl Terminal<'_> {
     pub fn present(self) -> Reply {
@@ -213,6 +278,13 @@ impl<'a> Request<'a> {
     pub fn destination(&self) -> &'a str {
         self.to
     }
+    /// The file a hand names, as its caller named it, which its refusals name (D139).
+    pub fn path(&self) -> Option<&'a str> {
+        match self.body {
+            Body::Hand(path) => Some(path),
+            Body::Text(_) => None,
+        }
+    }
     pub fn authorize<'b>(
         self,
         context: Context<'b>,
@@ -259,7 +331,7 @@ pub(crate) struct Reserved<'a, 'b> {
     body: ReservedBody<'a, 'b>,
     peer: Peer<'b>,
     packet: Vec<u8>,
-    response: ResponseSlot,
+    response: ResponseSlot<'b>,
     receipt: Receipt<'b>,
 }
 enum ReservedBody<'a, 'b> {
@@ -269,7 +341,7 @@ enum ReservedBody<'a, 'b> {
 fn capacity(phase: Phase) -> Refusal {
     Refusal::at(phase, Reason::Capacity)
 }
-impl<'a, 'b> Authorized<'a, 'b> {
+impl<'a: 'b, 'b> Authorized<'a, 'b> {
     pub fn reserve(self, format: Format) -> Result<Reserved<'a, 'b>, Refusal> {
         let id = match self.request.id {
             Some(id) => id,
@@ -279,6 +351,7 @@ impl<'a, 'b> Authorized<'a, 'b> {
                 .checked_add(1)
                 .ok_or(Refusal::at(Phase::Authorized, Reason::IdExhausted))?,
         };
+        let path = self.request.path();
         let body = match self.request.body {
             Body::Hand(path) => ReservedBody::Hand(Hand::prepare(
                 self.context
@@ -293,7 +366,7 @@ impl<'a, 'b> Authorized<'a, 'b> {
             ReservedBody::Text(text) => crate::server::MESSAGE_HEAD
                 .checked_add(text.len())
                 .filter(|n| *n <= self.peer.most)
-                .ok_or(Refusal::at(Phase::Authorized, Reason::TooLong))?,
+                .ok_or(Refusal::at(Phase::Authorized, Reason::too_long(self.peer.most)))?,
             // The file's bytes once its size is read (Hand::read).
             ReservedBody::Hand(hand) => hand.head,
         };
@@ -314,7 +387,7 @@ impl<'a, 'b> Authorized<'a, 'b> {
             request: id,
             effect: Effect::NotStarted,
         };
-        let response = ResponseSlot::reserve(format, &receipt)?;
+        let response = ResponseSlot::reserve(format, &receipt, path)?;
         // Reserved IDs are consumed even on later local failure; never wrap or reuse.
         if self.request.id.is_none() {
             *self.peer.last = id;
@@ -399,6 +472,7 @@ impl Format {
         out: &mut impl fmt::Write,
         principal: &str,
         peer: &str,
+        path: Option<&str>,
         receipt: Option<&Receipt<'_>>,
         outcome: Outcome,
     ) -> fmt::Result {
@@ -415,7 +489,8 @@ impl Format {
                     Human {
                         error,
                         principal,
-                        peer
+                        peer,
+                        path
                     }
                 ),
             )?,
@@ -512,9 +587,10 @@ impl Format {
             }
         })
     }
-    pub fn refused(self, error: Refusal, principal: &str, peer: &str) -> Reply {
+    /// `path` is the file a hand names, as its caller named it: none for a text.
+    pub fn refused(self, error: Refusal, principal: &str, peer: &str, path: Option<&str>) -> Reply {
         let mut out = Growing(String::new());
-        match self.response(&mut out, principal, peer, None, Outcome::Refused(error)) {
+        match self.response(&mut out, principal, peer, path, None, Outcome::Refused(error)) {
             Ok(()) => Reply::Owned(out.0),
             Err(_) => self.refusal_literal(),
         }
@@ -552,9 +628,11 @@ impl Reason {
                 Self::NoScratch => "no_scratch",
                 Self::Path => "path",
                 Self::PathNul => "path_nul",
-                Self::TooLong => "too_long",
-                Self::FileKind => "file_kind",
+                Self::TooLong { .. } => "too_long",
+                Self::FileKind(_) => "file_kind",
                 Self::FileIo(_) => "file_io",
+                Self::FileSize { .. } => "file_too_large",
+                Self::FileGrew { .. } => "file_grew",
                 Self::PeerFull => "peer_full",
                 Self::PeerIo(_) => "peer_io",
                 Self::Partial { .. } => "short_send",
@@ -572,6 +650,12 @@ impl Reason {
                     None => out.write_str("null")?,
                 }
             }
+            Self::FileKind(kind) => {
+                out.write_str(",\"file\":")?;
+                quoted(out, kind.name())?;
+            }
+            Self::FileSize { size, most } => write!(out, ",\"size\":{size},\"most\":{most}")?,
+            Self::TooLong { most } | Self::FileGrew { most } => write!(out, ",\"most\":{most}")?,
             _ => {}
         }
         out.write_str("}")
@@ -582,11 +666,14 @@ struct Human<'a> {
     error: Refusal,
     principal: &'a str,
     peer: &'a str,
+    /// The file a hand names, as its caller named it.
+    path: Option<&'a str>,
 }
 impl fmt::Display for Human<'_> {
     fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
         let caller = self.principal;
         let peer = self.peer;
+        let path = self.path.unwrap_or_default();
         match self.error.reason {
             Reason::Arguments(field) => write!(out, "{field} is missing or has the wrong type"),
             Reason::Grant => write!(out, "{caller} may not send {peer} requests"),
@@ -598,14 +685,47 @@ impl fmt::Display for Human<'_> {
             Reason::DurableEvidenceUnavailable => {
                 out.write_str("required durable evidence is unavailable; no effect was admitted")
             }
+            // D139's words for what a hand refuses, and D60's for a message past its bound.
             Reason::NoScratch => out.write_str("its caller has no scratch, /tmp, to hand files from"),
-            Reason::Path => out.write_str("a handed file must be beneath the caller's /tmp scratch"),
-            Reason::PathNul => out.write_str("a handed file path contains NUL"),
-            Reason::TooLong => write!(out, "the message or file exceeds {peer}'s admitted channel size"),
-            Reason::FileKind => out.write_str("a handed file must be a regular scratch file"),
-            Reason::FileIo(code) => write!(out, "the checked scratch file could not be read (OS {code:?})"),
+            Reason::Path => write!(out, "{path} is not in /tmp, the scratch files are handed from"),
+            Reason::PathNul => write!(out, "{path} holds a NUL"),
+            Reason::TooLong { most } => write!(out, "a message to {peer} holds at most {most} bytes"),
+            Reason::FileKind(kind) => {
+                let what = match kind {
+                    Kind::Directory => "a directory",
+                    Kind::Fifo => "a FIFO",
+                    Kind::Socket => "a socket",
+                    Kind::Device => "a device",
+                    Kind::Other => return write!(out, "{path} is not a regular file"),
+                };
+                write!(out, "{path} is {what}, not a regular file")
+            }
+            Reason::FileIo(Some(libc::ELOOP)) => write!(
+                out,
+                "{path} is a symbolic link, or lies past one: a file handed across is a regular file of the caller's scratch"
+            ),
+            Reason::FileIo(Some(libc::EXDEV)) => write!(out, "{path} lies past the caller's scratch"),
+            Reason::FileIo(Some(libc::ENXIO)) => write!(out, "{path} is a socket, not a regular file"),
+            Reason::FileIo(Some(libc::EACCES)) => write!(
+                out,
+                "{path}: its server may not read it; a file handed across is one the caller's group may read"
+            ),
+            Reason::FileIo(Some(code)) => write!(out, "{path} could not be read (OS error {code})"),
+            Reason::FileIo(None) => write!(out, "{path} could not be read"),
+            Reason::FileSize { size, most } => write!(
+                out,
+                "{path} is {size} bytes, more than the {most} a file handed across holds"
+            ),
+            Reason::FileGrew { most } => write!(
+                out,
+                "{path} grew past the {most} bytes a file handed across holds"
+            ),
             Reason::PeerFull => write!(out, "{peer} has not taken what was sent it; try again later"),
-            Reason::PeerIo(code) => write!(out, "{peer}'s channel did not accept the message (OS {code:?})"),
+            Reason::PeerIo(Some(code)) => write!(
+                out,
+                "{peer}'s channel did not accept the message (OS error {code})"
+            ),
+            Reason::PeerIo(None) => write!(out, "{peer}'s channel did not accept the message"),
             Reason::Partial { accepted, expected } => write!(
                 out,
                 "local channel acceptance is uncertain: {accepted} of {expected} bytes; do not replay this ID"
@@ -614,37 +734,49 @@ impl fmt::Display for Human<'_> {
     }
 }
 #[derive(Debug)]
-struct ResponseSlot {
+struct ResponseSlot<'a> {
     format: Format,
+    /// The file a hand names, which its refusals name.
+    path: Option<&'a str>,
     bytes: String,
 }
-impl ResponseSlot {
-    fn reserve(format: Format, receipt: &Receipt<'_>) -> Result<Self, Refusal> {
+impl<'a> ResponseSlot<'a> {
+    fn reserve(format: Format, receipt: &Receipt<'_>, path: Option<&'a str>) -> Result<Self, Refusal> {
+        let most = usize::MAX;
         let partial = Reason::Partial {
             accepted: usize::MAX,
             expected: usize::MAX,
         };
+        // What a hand's file can still come to once its effect is reserved, each cause with
+        // its own words; a text's comes to none of them.
+        let file = [
+            Reason::FileIo(Some(libc::ELOOP)),
+            Reason::FileIo(Some(libc::EXDEV)),
+            Reason::FileIo(Some(libc::ENXIO)),
+            Reason::FileIo(Some(libc::EACCES)),
+            Reason::FileIo(Some(i32::MIN)),
+            Reason::FileKind(Kind::Directory),
+            Reason::FileKind(Kind::Fifo),
+            Reason::FileKind(Kind::Socket),
+            Reason::FileKind(Kind::Device),
+            Reason::FileKind(Kind::Other),
+            Reason::FileSize { size: u64::MAX, most },
+            Reason::FileGrew { most },
+        ];
+        let not_started = [Reason::Capacity, Reason::TooLong { most }]
+            .into_iter()
+            .chain(file.into_iter().filter(|_| path.is_some()))
+            .map(|reason| {
+                (
+                    Outcome::Failed(Refusal::at(Phase::Executing, reason)),
+                    Effect::NotStarted,
+                )
+            });
         let mut bound = 0;
         // Count complete real outcome shapes, actual escaped identities and maximum
         // native integer representations with the same encoder used after the effect.
         for (outcome, effect) in [
             (Outcome::Completed, Effect::KernelAccepted { bytes: usize::MAX }),
-            (
-                Outcome::Failed(Refusal::at(Phase::Executing, Reason::Capacity)),
-                Effect::NotStarted,
-            ),
-            (
-                Outcome::Failed(Refusal::at(Phase::Executing, Reason::TooLong)),
-                Effect::NotStarted,
-            ),
-            (
-                Outcome::Failed(Refusal::at(Phase::Executing, Reason::FileKind)),
-                Effect::NotStarted,
-            ),
-            (
-                Outcome::Failed(Refusal::at(Phase::Executing, Reason::FileIo(Some(i32::MIN)))),
-                Effect::NotStarted,
-            ),
             (
                 Outcome::Failed(Refusal::at(Phase::Executing, Reason::PeerFull)),
                 Effect::NotAccepted,
@@ -660,11 +792,21 @@ impl ResponseSlot {
                     expected: usize::MAX,
                 },
             ),
-        ] {
+        ]
+        .into_iter()
+        .chain(not_started)
+        {
             let sample = Receipt { effect, ..*receipt };
             let mut count = Count(0);
             format
-                .response(&mut count, sample.principal, sample.peer, Some(&sample), outcome)
+                .response(
+                    &mut count,
+                    sample.principal,
+                    sample.peer,
+                    path,
+                    Some(&sample),
+                    outcome,
+                )
                 .map_err(|_| capacity(Phase::Authorized))?;
             bound = bound.max(count.0);
         }
@@ -672,13 +814,14 @@ impl ResponseSlot {
         bytes
             .try_reserve_exact(bound)
             .map_err(|_| capacity(Phase::Authorized))?;
-        Ok(Self { format, bytes })
+        Ok(Self { format, path, bytes })
     }
     fn render(mut self, receipt: &Receipt<'_>, outcome: Outcome) -> Reply {
         match self.format.response(
             &mut Fixed(&mut self.bytes),
             receipt.principal,
             receipt.peer,
+            self.path,
             Some(receipt),
             outcome,
         ) {
@@ -692,9 +835,12 @@ struct Hand<'a, 'b> {
     root: BorrowedFd<'b>,
     path: std::ffi::CString,
     name: &'a str,
+    /// The name's length, as its message carries it.
+    name_len: u16,
     /// What its message holds before the file's bytes: its kind and ID, and the file's
     /// name and that name's length.
     head: usize,
+    /// The most a message to its peer holds of the file's bytes.
     limit: usize,
 }
 impl<'a, 'b> Hand<'a, 'b> {
@@ -708,15 +854,18 @@ impl<'a, 'b> Hand<'a, 'b> {
             return Err(denied(Reason::PathNul));
         }
         let name = rel.rsplit('/').next().unwrap_or(rel);
-        let name_bytes = u16::try_from(name.len()).map_err(|_| denied(Reason::TooLong))?;
+        // Its message is too long for its name: one past what its u16 length carries, or
+        // with its kind and ID past what one message holds.
+        let long = || denied(Reason::too_long(message));
+        let name_len = u16::try_from(name.len()).map_err(|_| long())?;
         let head = crate::server::MESSAGE_HEAD
-            .checked_add(std::mem::size_of_val(&name_bytes))
+            .checked_add(std::mem::size_of_val(&name_len))
             .and_then(|n| n.checked_add(name.len()))
-            .ok_or_else(|| denied(Reason::TooLong))?;
-        let limit = message.checked_sub(head).ok_or_else(|| denied(Reason::TooLong))?;
+            .ok_or_else(long)?;
+        let limit = message.checked_sub(head).ok_or_else(long)?;
         let mut bytes = Vec::new();
         bytes
-            .try_reserve_exact(rel.len().checked_add(1).ok_or_else(|| denied(Reason::TooLong))?)
+            .try_reserve_exact(rel.len().checked_add(1).ok_or_else(long)?)
             .map_err(|_| capacity(Phase::Authorized))?;
         bytes.extend_from_slice(rel.as_bytes());
         bytes.push(0);
@@ -725,6 +874,7 @@ impl<'a, 'b> Hand<'a, 'b> {
             root,
             path,
             name,
+            name_len,
             head,
             limit,
         })
@@ -764,24 +914,30 @@ impl<'a, 'b> Hand<'a, 'b> {
             .metadata()
             .map_err(|e| failed(Reason::FileIo(e.raw_os_error())))?;
         if !meta.is_file() {
-            return Err(failed(Reason::FileKind));
+            return Err(failed(Reason::FileKind(Kind::of(meta.file_type()))));
         }
-        if meta.len() > u64::try_from(self.limit).map_err(|_| failed(Reason::TooLong))? {
-            return Err(failed(Reason::TooLong));
-        }
-        let len = u16::try_from(self.name.len()).map_err(|_| failed(Reason::TooLong))?;
-        append(packet, &len.to_be_bytes())?;
+        let size = usize::try_from(meta.len())
+            .ok()
+            .filter(|size| *size <= self.limit)
+            .ok_or_else(|| {
+                failed(Reason::FileSize {
+                    size: meta.len(),
+                    most: self.limit,
+                })
+            })?;
+        append(packet, &self.name_len.to_be_bytes())?;
         append(packet, self.name.as_bytes())?;
         let head = packet.len();
-        // Room for `bytes` of the file and one probe byte past them, which finds it longer.
+        // Room for `bytes` of the file and one probe byte past them, which finds it longer;
+        // a sum past what memory addresses is storage no packet holds.
         let room = |bytes: usize| {
             head.checked_add(bytes)
                 .and_then(|n| n.checked_add(1))
-                .ok_or_else(|| failed(Reason::TooLong))
+                .ok_or_else(|| failed(Reason::Capacity))
         };
         let full = room(self.limit)?;
         // What its size says first: within the limit, checked above.
-        let mut end = room(usize::try_from(meta.len()).map_err(|_| failed(Reason::TooLong))?)?;
+        let mut end = room(size)?;
         let reserve = |packet: &mut Vec<u8>, end: usize| {
             packet
                 .try_reserve_exact(end.saturating_sub(packet.len()))
@@ -813,11 +969,11 @@ impl<'a, 'b> Hand<'a, 'b> {
             let used = packet
                 .len()
                 .checked_add(n)
-                .ok_or_else(|| failed(Reason::TooLong))?;
+                .ok_or_else(|| failed(Reason::Capacity))?;
             // SAFETY: read(2) initialized these n bytes of the spare capacity it was given.
             unsafe { packet.set_len(used) };
             if used.saturating_sub(head) > self.limit {
-                return Err(failed(Reason::TooLong));
+                return Err(failed(Reason::FileGrew { most: self.limit }));
             }
             if used == end {
                 // Longer than its size said, and within the limit: room for all the limit
@@ -829,13 +985,14 @@ impl<'a, 'b> Hand<'a, 'b> {
     }
 }
 
+/// Appends `bytes` within the packet's storage, reserved before any effect.
 fn append(packet: &mut Vec<u8>, bytes: &[u8]) -> Result<(), Refusal> {
     if packet
         .len()
         .checked_add(bytes.len())
         .is_none_or(|n| n > packet.capacity())
     {
-        return Err(Refusal::at(Phase::Executing, Reason::TooLong));
+        return Err(capacity(Phase::Executing));
     }
     packet.extend_from_slice(bytes);
     Ok(())
@@ -860,7 +1017,8 @@ impl<'a, 'b> Reserved<'a, 'b> {
             return self.failed(error, Effect::NotStarted);
         }
         if self.packet.len() > self.peer.most {
-            return self.failed(Refusal::at(Phase::Executing, Reason::TooLong), Effect::NotStarted);
+            let long = Refusal::at(Phase::Executing, Reason::too_long(self.peer.most));
+            return self.failed(long, Effect::NotStarted);
         }
         // SAFETY: complete owned packet, held peer socket; no blocking or SIGPIPE.
         let sent = unsafe {
@@ -940,20 +1098,15 @@ pub(crate) fn read_for_test(
     let hand = Hand::prepare(root, path, message)?;
     let mut packet = Vec::new();
     packet
-        .try_reserve_exact(
-            message
-                .checked_add(1)
-                .ok_or(Refusal::at(Phase::Authorized, Reason::TooLong))?,
-        )
+        .try_reserve_exact(message.checked_add(1).ok_or(capacity(Phase::Authorized))?)
         .map_err(|_| capacity(Phase::Authorized))?;
     packet.resize(crate::server::MESSAGE_HEAD, 0);
     hand.read(&mut packet)?;
-    let head = crate::server::MESSAGE_HEAD + std::mem::size_of::<u16>() + hand.name.len();
     Ok((
         hand.name.to_string(),
         packet
-            .get(head..)
-            .ok_or(Refusal::at(Phase::Executing, Reason::TooLong))?
+            .get(hand.head..)
+            .ok_or(capacity(Phase::Executing))?
             .to_vec(),
     ))
 }
@@ -1146,7 +1299,7 @@ mod tests {
         fn submit<'a>(
             ledger: &'a mut Ledger,
             fd: &'a OwnedFd,
-            args: &Value,
+            args: &'a Value,
         ) -> Result<Terminal<'a>, Refusal> {
             Request::receive("answer", Some(args))
                 .unwrap()
@@ -1265,7 +1418,7 @@ mod tests {
         for format in [Format::Program, Format::Mcp] {
             // Each one's first allocation refused: that of its answer.
             let (refused, _) = crate::program_admission_allocation::during(1, || {
-                format.refused(refusal, "agent caller", "agent peer")
+                format.refused(refusal, "agent caller", "agent peer", None)
             });
             let (displayed, _) = crate::program_admission_allocation::during(1, || {
                 format.display_refusal(format_args!("code mode is not available here"))
@@ -1293,6 +1446,159 @@ mod tests {
                 assert_eq!(effect, Some("not_started"), "{path}: {reply}");
             }
         }
+    }
+
+    /// Each cause a hand is refused for is worded as D139 words it, naming the path, and
+    /// typed with what those words name; a message past its bound says how much one holds
+    /// (D60). The causes the server's own test cannot plant are here: a file its server may
+    /// not read, other OS codes, none, a device and no kind it knows.
+    #[test]
+    fn a_refused_hand_is_worded_as_d139_and_typed() {
+        let path = "/tmp/f";
+        let os = |code: i32| format!(r#"{{"kind":"file_io","os_code":{code}}}"#);
+        for (reason, words, cause) in [
+            (
+                Reason::NoScratch,
+                "its caller has no scratch, /tmp, to hand files from".to_string(),
+                r#"{"kind":"no_scratch"}"#.to_string(),
+            ),
+            (
+                Reason::Path,
+                "/tmp/f is not in /tmp, the scratch files are handed from".to_string(),
+                r#"{"kind":"path"}"#.to_string(),
+            ),
+            (
+                Reason::PathNul,
+                "/tmp/f holds a NUL".to_string(),
+                r#"{"kind":"path_nul"}"#.to_string(),
+            ),
+            (
+                Reason::FileIo(Some(libc::ELOOP)),
+                "/tmp/f is a symbolic link, or lies past one: a file handed across is a regular file of the caller's scratch".to_string(),
+                os(libc::ELOOP),
+            ),
+            (
+                Reason::FileIo(Some(libc::EXDEV)),
+                "/tmp/f lies past the caller's scratch".to_string(),
+                os(libc::EXDEV),
+            ),
+            (
+                Reason::FileIo(Some(libc::ENXIO)),
+                "/tmp/f is a socket, not a regular file".to_string(),
+                os(libc::ENXIO),
+            ),
+            (
+                Reason::FileIo(Some(libc::EACCES)),
+                "/tmp/f: its server may not read it; a file handed across is one the caller's group may read".to_string(),
+                os(libc::EACCES),
+            ),
+            (
+                Reason::FileIo(Some(libc::ENOENT)),
+                format!("/tmp/f could not be read (OS error {})", libc::ENOENT),
+                os(libc::ENOENT),
+            ),
+            (
+                Reason::FileIo(None),
+                "/tmp/f could not be read".to_string(),
+                r#"{"kind":"file_io","os_code":null}"#.to_string(),
+            ),
+            (
+                Reason::FileKind(Kind::Directory),
+                "/tmp/f is a directory, not a regular file".to_string(),
+                r#"{"kind":"file_kind","file":"directory"}"#.to_string(),
+            ),
+            (
+                Reason::FileKind(Kind::Fifo),
+                "/tmp/f is a FIFO, not a regular file".to_string(),
+                r#"{"kind":"file_kind","file":"fifo"}"#.to_string(),
+            ),
+            (
+                Reason::FileKind(Kind::Socket),
+                "/tmp/f is a socket, not a regular file".to_string(),
+                r#"{"kind":"file_kind","file":"socket"}"#.to_string(),
+            ),
+            (
+                Reason::FileKind(Kind::Device),
+                "/tmp/f is a device, not a regular file".to_string(),
+                r#"{"kind":"file_kind","file":"device"}"#.to_string(),
+            ),
+            (
+                Reason::FileKind(Kind::Other),
+                "/tmp/f is not a regular file".to_string(),
+                r#"{"kind":"file_kind","file":"other"}"#.to_string(),
+            ),
+            (
+                Reason::FileSize { size: 9, most: 8 },
+                "/tmp/f is 9 bytes, more than the 8 a file handed across holds".to_string(),
+                r#"{"kind":"file_too_large","size":9,"most":8}"#.to_string(),
+            ),
+            (
+                Reason::FileGrew { most: 8 },
+                "/tmp/f grew past the 8 bytes a file handed across holds".to_string(),
+                r#"{"kind":"file_grew","most":8}"#.to_string(),
+            ),
+            (
+                Reason::TooLong { most: 8 },
+                "a message to harness h holds at most 8 bytes".to_string(),
+                r#"{"kind":"too_long","most":8}"#.to_string(),
+            ),
+        ] {
+            for format in [Format::Program, Format::Mcp] {
+                let error = Refusal::at(Phase::Executing, reason);
+                let reply = format.refused(error, "agent a", "harness h", Some(path));
+                let json = parse_args(reply.as_bytes());
+                let (said, metadata) = match format {
+                    Format::Program => (json.get("error"), json.get("broker")),
+                    Format::Mcp => (
+                        json.get("content")
+                            .and_then(|c| c.array().first())
+                            .and_then(|c| c.get("text")),
+                        json.get("structuredContent"),
+                    ),
+                };
+                assert_eq!(said.and_then(Value::str), Some(words.as_str()), "{format:?}");
+                assert_eq!(
+                    metadata.and_then(|m| m.get("cause")),
+                    Some(&parse_args(cause.as_bytes())),
+                    "{format:?} {words}"
+                );
+            }
+        }
+    }
+
+    /// A text past what a message to its peer holds is refused before any ID is taken or
+    /// anything sent, saying how much one holds of it (D60).
+    #[test]
+    fn a_text_past_its_bound_says_how_much_a_message_holds() {
+        let (fd, other) = pair();
+        let mut ledger = Ledger {
+            last: 0,
+            sent: vec![],
+            asked: vec![],
+        };
+        let most = 1024 - crate::server::MESSAGE_HEAD;
+        let args = format!(r#"{{"to":"agent peer","text":"{}"}}"#, "x".repeat(most + 1));
+        let args = parse_args(args.as_bytes());
+        let error = Request::receive("send", Some(&args))
+            .unwrap()
+            .unwrap()
+            .authorize(context(), Some(ledger.peer(&fd)))
+            .unwrap()
+            .reserve(Format::Program)
+            .err()
+            .unwrap();
+        assert_eq!(error, Refusal::at(Phase::Authorized, Reason::TooLong { most }));
+        let reply = parse_args(
+            Format::Program
+                .refused(error, "agent caller", "agent peer", None)
+                .as_bytes(),
+        );
+        assert_eq!(
+            reply.get("error").and_then(Value::str),
+            Some(format!("a message to agent peer holds at most {most} bytes").as_str())
+        );
+        assert_eq!(ledger.last, 0);
+        empty(&other);
     }
 
     /// What one message on `fd` holds, as the instance reads it (`server::message_most`):
@@ -1412,50 +1718,97 @@ mod tests {
             } else {
                 assert_eq!(
                     terminal.outcome,
-                    Outcome::Failed(Refusal::at(Phase::Executing, Reason::TooLong))
+                    Outcome::Failed(Refusal::at(Phase::Executing, Reason::FileGrew { most: 16 }))
+                );
+                let reply = parse_args(terminal.present().as_bytes());
+                assert_eq!(
+                    reply.get("error").and_then(Value::str),
+                    Some("/tmp/status grew past the 16 bytes a file handed across holds")
                 );
                 empty(&other);
             }
         }
     }
 
+    /// Each outcome an effect reserved can come to fits the response reserved for it before
+    /// the effect, its caller, peer and a hand's path escaped and each number at its widest:
+    /// none falls back to the literal that says its effect is unknown.
     #[test]
     fn broker_prebuilt_error_capacity_covers_actual_escaped_completion() {
+        let most = usize::MAX;
+        let text = [
+            Reason::Capacity,
+            Reason::TooLong { most },
+            Reason::PeerFull,
+            Reason::PeerIo(None),
+            Reason::PeerIo(Some(i32::MIN)),
+            Reason::Partial {
+                accepted: usize::MAX,
+                expected: usize::MAX,
+            },
+        ];
+        let file = [
+            Reason::FileIo(None),
+            Reason::FileIo(Some(i32::MIN)),
+            Reason::FileIo(Some(libc::ELOOP)),
+            Reason::FileIo(Some(libc::EXDEV)),
+            Reason::FileIo(Some(libc::ENXIO)),
+            Reason::FileIo(Some(libc::EACCES)),
+            Reason::FileKind(Kind::Directory),
+            Reason::FileKind(Kind::Fifo),
+            Reason::FileKind(Kind::Socket),
+            Reason::FileKind(Kind::Device),
+            Reason::FileKind(Kind::Other),
+            Reason::FileSize { size: u64::MAX, most },
+            Reason::FileGrew { most },
+        ];
+        let named = "/tmp/a\"\\\u{1}世界";
+        let hand = text
+            .iter()
+            .chain(&file)
+            .map(|r| (Operation::HandRequest, Some(named), *r));
+        let send = text.iter().map(|r| (Operation::Send, None, *r));
+        let cases: Vec<_> = hand.chain(send).collect();
         for format in [Format::Program, Format::Mcp] {
-            for reason in [
-                Reason::FileIo(None),
-                Reason::FileIo(Some(i32::MIN)),
-                Reason::PeerIo(Some(i32::MAX)),
-                Reason::Partial {
-                    accepted: usize::MAX,
-                    expected: usize::MAX,
-                },
-            ] {
+            for &(operation, path, reason) in &cases {
                 let error = Refusal::at(Phase::Executing, reason);
                 let principal = "caller\"\n\\\u{0}";
                 let peer = "peer世界\"\n";
                 let mut receipt = Receipt {
                     principal,
                     peer,
-                    operation: Operation::HandRequest,
+                    operation,
                     request: u64::MAX,
                     effect: Effect::NotStarted,
                 };
-                let slot = ResponseSlot::reserve(format, &receipt).unwrap();
+                let slot = ResponseSlot::reserve(format, &receipt, path).unwrap();
                 let outcome = match reason {
                     Reason::Partial { accepted, expected } => {
                         receipt.effect = Effect::Uncertain { accepted, expected };
                         Outcome::Uncertain(error)
                     }
-                    Reason::PeerIo(_) => {
+                    Reason::PeerFull | Reason::PeerIo(_) => {
                         receipt.effect = Effect::NotAccepted;
                         Outcome::Failed(error)
                     }
                     _ => Outcome::Failed(error),
                 };
                 let reply = slot.render(&receipt, outcome);
-                assert!(matches!(reply, Reply::Owned(_)));
+                assert!(matches!(reply, Reply::Owned(_)), "{format:?} {reason:?}: {reply}");
                 let json = parse_args(reply.as_bytes());
+                let words = match format {
+                    Format::Program => json.get("error"),
+                    Format::Mcp => json
+                        .get("content")
+                        .and_then(|c| c.array().first())
+                        .and_then(|c| c.get("text")),
+                };
+                if file.contains(&reason) {
+                    assert!(
+                        words.and_then(Value::str).is_some_and(|w| w.starts_with(named)),
+                        "{format:?} {reason:?}: {reply}"
+                    );
+                }
                 let metadata = json
                     .get(match format {
                         Format::Program => "broker",

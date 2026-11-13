@@ -27,7 +27,7 @@ use shards_image::erofs::{self, DataRef, Dir, Kind, Meta, Node, NodeId, Source, 
 /// `restarts`): a thousand restarts each way, of layers holding 0 to 64 MiB evenly, on two
 /// exact lines meeting at `from`, packing's the steeper, so that the few a test's own
 /// restarts add move neither. The home's daemon is stopped, as the next reads them.
-pub fn restarts_cross_at(home: &Path, from: u64, timeout: Duration) {
+pub fn restarts_cross_at(home: &Path, from: u64) {
     let mib = f64::from(1u32 << 20);
     let (n, top) = (1000.0f64, 64.0 * mib);
     let (mean, xx) = (top / 2.0, (top / (n - 1.0)).powi(2) * n * (n * n - 1.0) / 12.0);
@@ -51,7 +51,7 @@ pub fn restarts_cross_at(home: &Path, from: u64, timeout: Duration) {
     )
     .unwrap();
     let env = [("SHARDS_HOME", home.as_os_str())];
-    let _ = run_shards_env(&["daemon"], &["stop"], &env, timeout);
+    let _ = run_shards_env(&["daemon"], &["stop"], &env);
 }
 
 /// Which file is at `path`: its device and inode on Unix, its volume's serial number and
@@ -128,7 +128,7 @@ pub fn program_copy(from: &Path, to: &Path) {
 }
 
 /// A home whose guest is the test kernel and init, recorded before its daemon starts.
-pub fn home_with(name: &str, timeout: Duration) -> TempDir {
+pub fn home_with(name: &str) -> TempDir {
     let home = TempDir::new(name);
     let args = [
         "use".as_ref(),
@@ -137,7 +137,7 @@ pub fn home_with(name: &str, timeout: Duration) -> TempDir {
         "--init".as_ref(),
         guest_init().as_os_str(),
     ];
-    let recorded = run_shards_env(&["guest"], &args, &[("SHARDS_HOME", home.as_os_str())], timeout);
+    let recorded = run_shards_env(&["guest"], &args, &[("SHARDS_HOME", home.as_os_str())]);
     assert_eq!(recorded.status, Some(0), "{}", recorded.stderr);
     home
 }
@@ -274,6 +274,24 @@ pub fn pools() -> bool {
 /// Whether tests of the snapshots a daemon keeps skip here ([`pools`]), saying why.
 pub fn cannot_pool() -> bool {
     cannot_snapshot()
+}
+
+/// Whether a test that must reach Docker Hub itself skips here, saying why: unless
+/// `SHARDS_TESTS_DOCKER_HUB=1` says it runs, as CI's test step does. Docker Hub counts
+/// anonymous pulls by address, and every machine behind one shares them: 100 an hour for
+/// this LAN's whole IPv6 /64, which tests that pulled each run spent (CI cluster 13). What
+/// such a test reads is Docker Hub's own (`what`: attestation chains and signatures, tags as
+/// they move, other CPUs' images and the emulator image), which the tests' own registry
+/// ([`hub`]) does not serve.
+pub fn cannot_reach_docker_hub(what: &str) -> bool {
+    if std::env::var_os("SHARDS_TESTS_DOCKER_HUB").is_some_and(|v| v == "1") {
+        return false;
+    }
+    let _ = writeln!(
+        std::io::stderr(),
+        "SKIP: {what} is Docker Hub's, whose anonymous pulls every machine behind this address shares: SHARDS_TESTS_DOCKER_HUB=1 runs it"
+    );
+    true
 }
 
 /// The kernel shards pins for its guests (src/kernel.rs), which the tests boot too.
@@ -441,14 +459,14 @@ pub fn kvm_kernel() -> Option<&'static Path> {
         let pinned = match ARCH {
             _ if cfg!(windows) => return None,
             "aarch64" => Artifact {
-                name: "Image-6.18.48-aarch64-kvm-17c3ba205400",
-                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-17c3ba205400/Image-6.18.48-aarch64-kvm",
-                sha256: "eb06ef6171a207fe7739687342d0ec50204ff4f7a86a1ee2fcc385e8871ad6e6",
+                name: "Image-6.18.48-aarch64-kvm-54fba99afaee",
+                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-54fba99afaee/Image-6.18.48-aarch64-kvm",
+                sha256: "ed1e6dabf2f4088b37e3405a40b12962eb5eff76afe4303730e9d76ee1a7a3ba",
             },
             "x86_64" => Artifact {
-                name: "vmlinux-6.18.48-x86_64-kvm-17c3ba205400",
-                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-17c3ba205400/vmlinux-6.18.48-x86_64-kvm",
-                sha256: "0d7e6b69d43a3ad1373c68164243f633c12c87a3f3782917a741d7703f337b60",
+                name: "vmlinux-6.18.48-x86_64-kvm-54fba99afaee",
+                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-54fba99afaee/vmlinux-6.18.48-x86_64-kvm",
+                sha256: "71b5de5f7c9b4abfc543e230ad09bc1736e2ca15f7e76cbd28efbc546e6fa89e",
             },
             _ => return None,
         };
@@ -767,11 +785,14 @@ pub fn command() -> Command {
 /// publishing the microVMs it makes to no local image store (pull.rs `publish`), so that no
 /// test writes to the Docker engine of the host it runs on (a test of publishing names an
 /// engine of its own), and given the tests' own docker config ([`docker_config`]), so that
-/// none reads this host's or runs its credential helpers. No default platform of the
-/// host's user's reaches it.
+/// none reads this host's or runs its credential helpers, and their own daemon.json and
+/// certs.d in place of the host's Docker's (`SHARDS_DAEMON_JSON`, D194; `SHARDS_CERTS_D`,
+/// D23), so that no mirror, insecure registry or certificate of the host's reaches one. No default platform of the host's user's reaches it.
 pub fn as_tests_run(cmd: &mut Command) -> &mut Command {
     cmd.env("SHARDS_LOCAL_STORE", "none")
         .env("DOCKER_CONFIG", docker_config())
+        .env("SHARDS_DAEMON_JSON", docker_config().join("daemon.json"))
+        .env("SHARDS_CERTS_D", docker_config().join("certs.d"))
         .env_remove("DOCKER_AUTH_CONFIG")
         // A platform this host's user prefers is no test's: a test names its own.
         .env_remove("SHARDS_DEFAULT_PLATFORM")
@@ -781,7 +802,9 @@ pub fn as_tests_run(cmd: &mut Command) -> &mut Command {
 /// The tests' own docker config, which every command is given unless a test gives its
 /// own: no test, nor any daemon one starts, reads this host's docker config or its
 /// credential helpers. Its `auths` name a host no test reaches, so that no platform helper
-/// is looked for either (D184: a config that holds credentials keeps them itself).
+/// is looked for either (D184: a config that holds credentials keeps them itself). Beside it,
+/// the tests' own daemon.json, which names no registry, and certs.d, which holds nothing
+/// ([`as_tests_run`]).
 pub fn docker_config() -> &'static Path {
     static CONFIG: OnceLock<TempDir> = OnceLock::new();
     CONFIG.get_or_init(|| {
@@ -791,6 +814,8 @@ pub fn docker_config() -> &'static Path {
             r#"{"auths":{"shards-tests.invalid":{}}}"#,
         )
         .unwrap();
+        std::fs::write(dir.join("daemon.json"), "{}").unwrap();
+        std::fs::create_dir(dir.join("certs.d")).unwrap();
         dir
     })
 }
@@ -1800,24 +1825,26 @@ impl Run {
     }
 }
 
-/// Runs `shards run <args>`, `<args>` starting `--kernel`, killing it (and failing) after `timeout`.
-pub fn vm_run<S: AsRef<std::ffi::OsStr>>(args: &[S], timeout: Duration) -> Run {
-    run_shards(&["run"], args, timeout)
+/// Runs `shards run <args>`, `<args>` starting `--kernel`, as [`run_command`] waits on it.
+#[track_caller]
+pub fn vm_run<S: AsRef<std::ffi::OsStr>>(args: &[S]) -> Run {
+    run_shards(&["run"], args)
 }
 
-/// Runs `shards <command...> <args...>`, killing it (and failing) after `timeout`.
-pub fn run_shards<S: AsRef<std::ffi::OsStr>>(command: &[&str], args: &[S], timeout: Duration) -> Run {
-    run_shards_env(command, args, &[], timeout)
+/// Runs `shards <command...> <args...>`, as [`run_command`] waits on it.
+#[track_caller]
+pub fn run_shards<S: AsRef<std::ffi::OsStr>>(command: &[&str], args: &[S]) -> Run {
+    run_shards_env(command, args, &[])
 }
 
 /// [`run_shards`], with `env` added to shards' environment.
+#[track_caller]
 pub fn run_shards_env<S: AsRef<std::ffi::OsStr>>(
     command: &[&str],
     args: &[S],
     env: &[(&str, &std::ffi::OsStr)],
-    timeout: Duration,
 ) -> Run {
-    run_shards_with(command, args, env, None, timeout)
+    run_shards_with(command, args, env, None)
 }
 
 /// `shards <args>` (`run` or `start -a`) of microVM `container`, whose command waits for
@@ -1848,17 +1875,12 @@ pub fn run_watching(
     let with_pid = format!("pid,caught,comm,{fields}");
     let start = Instant::now();
     std::thread::scope(|scope| {
-        let ran = scope.spawn(|| run_shards_env(&[], args, env, timeout));
+        let ran = scope.spawn(|| run_shards_env(&[], args, env));
         let mut last = String::new();
         let mut signalled = false;
         let mut was_ready = false;
         while !ran.is_finished() && start.elapsed() < timeout {
-            let top = run_shards_env(
-                &["top"],
-                &[container, "-o", &with_pid],
-                env,
-                Duration::from_secs(30),
-            );
+            let top = run_shards_env(&["top"], &[container, "-o", &with_pid], env);
             let all: Vec<Vec<String>> = top
                 .stdout
                 .lines()
@@ -1877,12 +1899,7 @@ pub fn run_watching(
             let rows: Vec<Vec<String>> = all.into_iter().map(|r| r.into_iter().skip(2).collect()).collect();
             was_ready = was_ready || (top.status == Some(0) && ready(&rows));
             if was_ready && awaiting {
-                let sent = run_shards_env(
-                    &["kill"],
-                    &["-s", "USR1", container],
-                    env,
-                    Duration::from_secs(30),
-                );
+                let sent = run_shards_env(&["kill"], &["-s", "USR1", container], env);
                 assert_eq!(sent.status, Some(0), "{sent}");
                 signalled = true;
                 break;
@@ -1928,24 +1945,20 @@ pub fn run_awaiting(
 }
 
 /// [`run_shards_env`], in the working directory `dir`.
+#[track_caller]
 pub fn run_shards_env_in<S: AsRef<std::ffi::OsStr>>(
     dir: &Path,
     command: &[&str],
     args: &[S],
     env: &[(&str, &std::ffi::OsStr)],
-    timeout: Duration,
 ) -> Run {
-    run_shards_with(command, args, env, Some(dir), timeout)
+    run_shards_with(command, args, env, Some(dir))
 }
 
 /// [`run_shards`], in the working directory `dir`.
-pub fn run_shards_in<S: AsRef<std::ffi::OsStr>>(
-    dir: &Path,
-    command: &[&str],
-    args: &[S],
-    timeout: Duration,
-) -> Run {
-    run_shards_with(command, args, &[], Some(dir), timeout)
+#[track_caller]
+pub fn run_shards_in<S: AsRef<std::ffi::OsStr>>(dir: &Path, command: &[&str], args: &[S]) -> Run {
+    run_shards_with(command, args, &[], Some(dir))
 }
 
 /// `cmd`'s output, as [`Command::output`] gives it, within `timeout`: a client of shards'
@@ -2014,12 +2027,12 @@ pub fn output_within(cmd: &mut Command, timeout: Duration) -> std::process::Outp
     }
 }
 
+#[track_caller]
 fn run_shards_with<S: AsRef<std::ffi::OsStr>>(
     command: &[&str],
     args: &[S],
     env: &[(&str, &std::ffi::OsStr)],
     dir: Option<&Path>,
-    timeout: Duration,
 ) -> Run {
     // What it was asked, for the failure that names it.
     let asked: Vec<String> = std::iter::once("shards".to_string())
@@ -2031,32 +2044,64 @@ fn run_shards_with<S: AsRef<std::ffi::OsStr>>(
         cmd.current_dir(dir);
     }
     cmd.args(command).args(args).envs(env.iter().copied());
-    run_command(cmd, &asked, timeout)
+    run_command(cmd, &asked)
 }
 
 /// What a client that never ended shows before it is killed: its home's runs as its daemon
-/// has them (`ps -a`), whether the daemon took its run at all; and on Windows its threads'
-/// stacks and its daemon's, where this host has Microsoft's console debugger (cdb, the
-/// Windows SDK's Debugging Tools), attached without stopping them (`-pv`).
+/// has them (`ps -a`), whether the daemon took its run at all, and what each running one's
+/// guest runs ([`guests_processes`]); and on Windows its threads' stacks and its daemon's,
+/// where this host has Microsoft's console debugger (cdb, the Windows SDK's Debugging
+/// Tools), attached without stopping them (`-pv`).
 fn stuck(pid: u32, home: Option<&Path>) -> String {
     stacks_of(&[("its client", pid)], home)
 }
 
-/// [`stuck`]'s view of processes `pids`, each named, as a test that found one of them stuck
-/// shows them: its home's runs, and on Windows their stacks and its daemon's.
-pub fn stacks_of(pids: &[(&str, u32)], home: Option<&Path>) -> String {
-    // What `cmd` said by `timeout`; a word that it said nothing where it never ended, so
-    // that the failure this adds to is never lost to one of its own.
-    let said_by = |cmd: &mut Command, timeout: Duration| match std::panic::catch_unwind(
-        std::panic::AssertUnwindSafe(|| output_within(cmd, timeout)),
-    ) {
+/// What `cmd` said by `timeout`, its stdout then its stderr; a word that it said nothing
+/// where it never ended, so that the failure this adds to is never lost to one of its own.
+fn said_within(cmd: &mut Command, timeout: Duration) -> String {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| output_within(cmd, timeout))) {
         Ok(out) => format!(
             "{}{}",
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr)
         ),
         Err(_) => format!("(it did not end within {timeout:?})"),
-    };
+    }
+}
+
+/// What each microVM running in `home` runs, as `top` lays its processes out (init's dump
+/// of the guest's `/proc`), with each one's state and the kernel function it waits in
+/// (`stat`, `wchan`): where in its guest a client that never ended, or a command that said
+/// nothing more, is held.
+pub fn guests_processes(home: &Path) -> String {
+    let mut ids = command();
+    ids.args(["ps", "-q", "--no-trunc"])
+        .env("SHARDS_HOME", home)
+        .stdin(Stdio::null());
+    let listed = said_within(&mut ids, Duration::from_secs(20));
+    let mut said = String::new();
+    for id in listed
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && l.bytes().all(|b| b.is_ascii_hexdigit()))
+    {
+        let mut top = command();
+        top.args(["top", id, "-o", "pid,ppid,stat,wchan:32,args"])
+            .env("SHARDS_HOME", home)
+            .stdin(Stdio::null());
+        said.push_str(&format!(
+            "\n--- the processes of its microVM {}\n{}",
+            id.get(..12).unwrap_or(id),
+            said_within(&mut top, Duration::from_secs(20))
+        ));
+    }
+    said
+}
+
+/// [`stuck`]'s view of processes `pids`, each named, as a test that found one of them stuck
+/// shows them: its home's runs and their guests' processes, and on Windows their stacks and
+/// its daemon's.
+pub fn stacks_of(pids: &[(&str, u32)], home: Option<&Path>) -> String {
     let mut said = String::new();
     if let Some(home) = home {
         let mut ps = command();
@@ -2065,8 +2110,9 @@ pub fn stacks_of(pids: &[(&str, u32)], home: Option<&Path>) -> String {
             .stdin(Stdio::null());
         said.push_str(&format!(
             "\n--- ps -a in its home\n{}",
-            said_by(&mut ps, Duration::from_secs(20))
+            said_within(&mut ps, Duration::from_secs(20))
         ));
+        said.push_str(&guests_processes(home));
         // What its daemon said last, of its runs and their groups' budgets: a run held or
         // stopped says why there alone.
         let log = std::fs::read(home.join("daemon.log")).unwrap_or_default();
@@ -2107,7 +2153,7 @@ pub fn stacks_of(pids: &[(&str, u32)], home: Option<&Path>) -> String {
                     .stdin(Stdio::null());
                 said.push_str(&format!(
                     "\n--- {who} ({pid}): its threads' stacks (cdb)\n{}",
-                    said_by(&mut stacks, Duration::from_secs(120))
+                    said_within(&mut stacks, Duration::from_secs(120))
                 ));
             }
         } else {
@@ -2120,29 +2166,118 @@ pub fn stacks_of(pids: &[(&str, u32)], home: Option<&Path>) -> String {
     said
 }
 
-/// How long a home's daemon may say nothing while a client of it is past its deadline
-/// before the client is taken for stuck ([`Said`]): the daemon's own `READY_TIMEOUT`
-/// (daemon.rs), the longest it waits on a starting microVM that runs nothing of its start.
-/// While one runs its start, however slowly its host runs it, the daemon says so each
-/// `READY_STALL` (10 s), and says why it gave up on one when it does; and while a microVM
-/// a client waits on runs its workload, a run's or an exec's, it says that each as long
-/// (D209), saying nothing of one that runs nothing.
+/// How long a home's daemon may say nothing of a client's subject while the client is past
+/// its deadline before the client is taken for stuck ([`Said`]): the daemon's own
+/// `READY_TIMEOUT` (daemon.rs), the longest it waits on a starting microVM that runs nothing
+/// of its start. While one runs its start, however slowly its host runs it, the daemon says
+/// so each `READY_STALL` (10 s), and says why it gave up on one when it does. What it says
+/// each as long of a microVM a client waits on as it runs its workload ([`HEARTBEAT`],
+/// D209) counts by what the microVM did ([`Floor`]).
 pub const DAEMON_QUIET: Duration = Duration::from_secs(60);
 
+/// The daemon's heartbeat of a microVM a client waits on (daemon.rs `log_progress`, D209),
+/// in each of its lines: said each `READY_STALL` while the microVM's CPU runs, whatever it
+/// runs, the same line again with its numbers grown. A nesting test whose runc hung waited
+/// on it to Linux CI's 56-minute limit, its guest idle: it counts by its deltas alone, as
+/// [`Floor`] judges them (ROOT's rulings, 2026-11-13).
+pub const HEARTBEAT: &str = " runs as its client waits: ";
+
+/// What this test process has learned of a microVM's work, as D215's judge learns a kind of
+/// answer in its process's memory (shards_api's `Record`): the least CPU rate at which its run
+/// still answered, its floor (ROOT's ruling, 2026-11-13). A slice of its work counts as
+/// progress during its cold start, before its run has answered, by liveness alone (as a wait
+/// begun before its kind's first answer follows its party's liveness); past it, only where
+/// its CPU rate is not below that floor, compared by cross-multiplication (`Rate::below`):
+/// an idle microVM's timer ticks are no progress of a test's subject, and a workload's CPU,
+/// past what its run answered at, is. A window its run answered within teaches its record,
+/// from its last teaching to the slice that closes it, as an answer teaches a wait's.
+pub struct Floor {
+    record: shards_api::Record,
+    /// Its CPU time, and the wall time it was had over, since its record last learned.
+    since: (Duration, Duration),
+    /// Whether its run has answered since then.
+    answered: bool,
+}
+
+/// The floors of every microVM this process's tests have followed, by its home and its run's
+/// container and VM process (a daemon's heartbeats, [`Said`]) or its VM process ([`Ran`]).
+static FLOORS: std::sync::Mutex<std::collections::BTreeMap<String, Floor>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+fn floors() -> std::sync::MutexGuard<'static, std::collections::BTreeMap<String, Floor>> {
+    FLOORS.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+impl Floor {
+    /// A microVM first seen, its run having answered meanwhile or not.
+    pub fn new(answered: bool) -> Floor {
+        Floor {
+            record: shards_api::Record::new(),
+            since: (Duration::ZERO, Duration::ZERO),
+            answered,
+        }
+    }
+
+    /// A slice of its work, `cpu` over `over`, `live` as its follower's liveness judges it:
+    /// whether it is progress, judged by what its record learned before it; then, where its
+    /// run answered within the window this slice closes, that window taught.
+    pub fn slice(&mut self, cpu: Duration, over: Duration, live: bool) -> bool {
+        let progressed = match self.record.seen() {
+            shards_api::Seen::Cold => live,
+            shards_api::Seen::Learned { least, .. } => !shards_api::Rate { cpu, over }.below(&least),
+        };
+        self.since = (
+            self.since.0.saturating_add(cpu),
+            self.since.1.saturating_add(over),
+        );
+        if std::mem::take(&mut self.answered) {
+            let (work, wall) = std::mem::take(&mut self.since);
+            self.record.teach(wall, work);
+        }
+        progressed
+    }
+
+    /// Its run answered: the window its next slice closes teaches its record.
+    pub fn answered(&mut self) {
+        self.answered = true;
+    }
+}
+
+/// A heartbeat's microVM, by its run's container and its VM process, and the CPU time it ran
+/// over the slice it says (`+N ms in Ss`, platform::Progress's `Look`).
+fn heartbeat(line: &str) -> Option<(&str, Duration, Duration)> {
+    let (vm, look) = line.split_once(HEARTBEAT)?;
+    let vm = vm.split_once(": container ").map_or(vm, |(_, vm)| vm);
+    let slice = look.split_once("(+")?.1.split_once(')')?.0;
+    let (ms, secs) = slice.split_once(" ms in ")?;
+    let secs = secs.strip_suffix('s')?;
+    Some((
+        vm,
+        Duration::from_millis(ms.parse().ok()?),
+        Duration::from_secs(secs.parse().ok()?),
+    ))
+}
+
 /// What the daemon of a home has said in its log since this began watching: a client past
-/// its deadline is waited on while its daemon says something within [`DAEMON_QUIET`], as
-/// it does while it waits on a microVM its host boots slowly, or a client waits on one that
-/// runs its workload slowly (the parity plan's step 10: boots past a minute, and gigabytes
-/// allocated past four minutes, on an arm64 Windows host nested under QEMU's TCG). A test's
-/// deadline then holds where its host is fast, and follows the daemon's own judgment of
-/// progress where it is slow: never a fixed guess at the host's speed.
+/// its deadline is waited on while its daemon says something of it within [`DAEMON_QUIET`],
+/// as it does while it waits on a microVM its host boots slowly (the parity plan's step 10:
+/// boots past a minute on an arm64 Windows host nested under QEMU's TCG): each line but its
+/// [`HEARTBEAT`], and that by what its microVM did ([`Floor`]). A test's deadline then holds
+/// where its host is fast, and follows the daemon's own judgment of a start, and its
+/// microVMs' own work, where it is slow: never a fixed guess at the host's speed.
 pub struct Said {
     log: PathBuf,
+    /// Its microVMs' floors' prefix in [`FLOORS`]: its home's.
+    home: String,
+    /// How far the log has been read: to the end of the last whole line in it.
     len: u64,
-    /// When the log last grew, since this began watching, to within a second.
+    /// When it last said something of its subject, since this began watching, to within a
+    /// second.
     at: Option<Instant>,
-    /// When its length was last read: once a second at most.
+    /// When it was last read: once a second at most.
     read: Option<Instant>,
+    /// Whether its run has answered since it was last read, and since this began watching.
+    answers: (bool, bool),
 }
 
 impl Said {
@@ -2151,24 +2286,102 @@ impl Said {
         let len = std::fs::metadata(&log).map(|m| m.len()).unwrap_or(0);
         Said {
             log,
+            home: format!("{}|", home.display()),
             len,
             at: None,
             read: None,
+            answers: (false, false),
         }
     }
 
-    /// Whether the daemon has said something within [`DAEMON_QUIET`]. Asked as often as
-    /// its caller likes, it reads the log's length once a second.
+    /// Its run answered, as its client's own output says ([`run_command`]'s client): the
+    /// window each of its microVMs' next heartbeat closes teaches its floor.
+    pub fn answered(&mut self) {
+        self.answers = (true, true);
+    }
+
+    /// Whether the daemon has said something but its [`HEARTBEAT`] within [`DAEMON_QUIET`]:
+    /// a microVM's start said slowly among it (daemon.rs `ready`: liveness governs a cold
+    /// start, which the daemon gives up on itself past its `READY_TIMEOUT`). Asked as often
+    /// as its caller likes, it reads the log once a second.
     pub fn lately(&mut self) -> bool {
         if self.read.is_none_or(|r| r.elapsed() >= Duration::from_secs(1)) {
             self.read = Some(Instant::now());
-            let len = std::fs::metadata(&self.log).map(|m| m.len()).unwrap_or(0);
-            if len != self.len {
-                self.len = len;
+            if self.said_anew() {
                 self.at = Some(Instant::now());
             }
         }
         self.at.is_some_and(|at| at.elapsed() < DAEMON_QUIET)
+    }
+
+    /// Whether the daemon has said something since the call before, read now: a [`Wait`]'s
+    /// look at its party, which its judge paces.
+    pub fn said(&mut self) -> bool {
+        self.said_anew()
+    }
+
+    /// Whether the whole lines the log gained since its last read say anything of its
+    /// subject, read to the end of the last of them: each but its heartbeat, and that where
+    /// its microVM's floor takes it for progress; a log begun again is read from its start.
+    fn said_anew(&mut self) -> bool {
+        use std::io::Seek as _;
+        let Ok(mut log) = std::fs::File::open(&self.log) else {
+            return false;
+        };
+        let size = log.metadata().map(|m| m.len()).unwrap_or(0);
+        if size < self.len {
+            self.len = 0;
+        }
+        let mut new = Vec::new();
+        if size == self.len
+            || log.seek(io::SeekFrom::Start(self.len)).is_err()
+            || log.take(size - self.len).read_to_end(&mut new).is_err()
+        {
+            return false;
+        }
+        let Some(last) = new.iter().rposition(|&b| b == b'\n') else {
+            return false;
+        };
+        self.len += last as u64 + 1;
+        let mut floors = floors();
+        if std::mem::take(&mut self.answers.0) {
+            for (_, floor) in floors
+                .range_mut(self.home.clone()..)
+                .take_while(|(k, _)| k.starts_with(&self.home))
+            {
+                floor.answered();
+            }
+        }
+        let mut said = false;
+        for line in new[..last].split(|&b| b == b'\n').filter(|l| !l.is_empty()) {
+            let line = String::from_utf8_lossy(line);
+            match line.contains(HEARTBEAT).then(|| heartbeat(&line)) {
+                // One whose slice cannot be read says nothing of what its microVM did.
+                Some(None) => {}
+                Some(Some((vm, cpu, over))) => {
+                    let floor = floors
+                        .entry(format!("{}{vm}", self.home))
+                        .or_insert_with(|| Floor::new(self.answers.1));
+                    // The daemon says it only where its microVM ran past an idle one
+                    // (`progressed`): its liveness.
+                    said |= floor.slice(cpu, over, true);
+                }
+                None => {
+                    // A run's own line answers for its microVMs.
+                    if let Some(id) = line.split_once("container ").and_then(|(_, r)| r.split_once(':')) {
+                        let of = format!("{}{}", self.home, id.0);
+                        for (_, floor) in floors
+                            .range_mut(of.clone()..)
+                            .take_while(|(k, _)| k.starts_with(&of))
+                        {
+                            floor.answered();
+                        }
+                    }
+                    said = true;
+                }
+            }
+        }
+        said
     }
 }
 
@@ -2186,15 +2399,21 @@ pub const PROGRESS_SLICE: Duration = Duration::from_secs(10);
 /// client past its deadline is waited on while one of them ran within [`DAEMON_QUIET`], as
 /// a guest's workload runs at its host's speed (the parity plan's step 10: a 64-vCPU storm
 /// and a 3 GiB build step on an arm64 Windows host nested under QEMU's TCG). One that runs
-/// nothing for as long fails it as before. Not caught: a guest that spins for ever, as
-/// D209 says of a start, which its CI job's limit ends.
+/// nothing for as long fails it as before. Its first look is its first ask, and each VM
+/// process found at a look is judged a slice later. Not caught: a guest that spins for ever,
+/// as D209 says of a start, which its CI job's limit ends.
 pub struct Ran {
     client: u32,
     followed: std::collections::HashMap<u32, shards_vmm::platform::Progress>,
-    /// When its processes were last looked at.
-    looked: Instant,
+    /// When its processes were last looked at; none before its first ask.
+    looked: Option<Instant>,
+    /// Whether its last look judged every VM process under its client over a whole slice:
+    /// none found anew then, or none at all.
+    whole: bool,
     /// When one of them last ran, since this began watching.
     at: Option<Instant>,
+    /// Whether its client's run has answered since this began watching.
+    answered: bool,
 }
 
 impl Ran {
@@ -2202,115 +2421,172 @@ impl Ran {
         Ran {
             client,
             followed: std::collections::HashMap::new(),
-            looked: Instant::now(),
+            looked: None,
+            whole: false,
             at: None,
+            answered: false,
         }
     }
 
-    /// Whether a VM process under its client ran within [`DAEMON_QUIET`]. Asked as often as
-    /// its caller likes, it looks once each [`PROGRESS_SLICE`]; one found anew is judged
-    /// from the next look on.
+    /// Its client's run answered, as its output says ([`run_command`]): the window each of
+    /// its VM processes' next look closes teaches its floor.
+    pub fn answered(&mut self) {
+        self.answered = true;
+        let mut floors = floors();
+        for pid in self.followed.keys() {
+            if let Some(floor) = floors.get_mut(&format!("vm process {pid}")) {
+                floor.answered();
+            }
+        }
+    }
+
+    /// Whether a VM process under its client ran within [`DAEMON_QUIET`], as its [`Floor`]
+    /// judges what it ran: during its cold start, past an idle microVM's
+    /// (`platform::progressed`); past it, not below its floor. Asked as often as its caller
+    /// likes, it looks at its first ask and once each [`PROGRESS_SLICE`] after; one found
+    /// anew is judged from the next look on.
     pub fn lately(&mut self) -> bool {
-        if self.looked.elapsed() >= PROGRESS_SLICE {
-            self.looked = Instant::now();
+        if self.looked.is_none_or(|l| l.elapsed() >= PROGRESS_SLICE) {
+            self.looked = Some(Instant::now());
+            self.whole = true;
             let vms = vm_processes_under(self.client);
             self.followed.retain(|pid, _| vms.contains(pid));
+            let mut floors = floors();
             for pid in vms {
+                let floor = floors
+                    .entry(format!("vm process {pid}"))
+                    .or_insert_with(|| Floor::new(self.answered));
                 match self.followed.entry(pid) {
                     std::collections::hash_map::Entry::Occupied(mut p) => {
-                        if p.get_mut().look().ran {
+                        let look = p.get_mut().look();
+                        let ran = look
+                            .before
+                            .zip(look.now)
+                            .map(|(b, n)| Duration::from_nanos(n.cpu_ns.saturating_sub(b.cpu_ns)));
+                        if let Some(ran) = ran
+                            && floor.slice(ran, look.over, look.ran)
+                        {
                             self.at = Some(Instant::now());
                         }
                     }
                     std::collections::hash_map::Entry::Vacant(v) => {
                         v.insert(shards_vmm::platform::Progress::of(pid));
+                        self.whole = false;
                     }
                 }
             }
         }
         self.at.is_some_and(|at| at.elapsed() < DAEMON_QUIET)
     }
+
+    /// Whether its last look judged a whole slice of every VM process under its client, or
+    /// found none: before it has, its silence says nothing of them.
+    pub fn watched(&self) -> bool {
+        self.whole
+    }
 }
 
-/// How long a test waits on a state a home's daemon or its microVMs come to (a pool
-/// filled, a restored run's VM up, a VM gone): `timeout`, as before, or past it for as long
-/// as they progress, as [`run_command`] waits on a client: while the home's daemon says
-/// something within [`DAEMON_QUIET`] ([`Said`]), or a VM process under it, or under this
-/// test's process (its clients' own, `run --kernel` and `restore`'s), ran within as long
-/// ([`Ran`]). Fast hosts keep `timeout`; a slow one (the parity plan's step 10, an arm64
-/// Windows host nested under QEMU's TCG, whose template saves took 20 s and pool restores
-/// a further minute) is waited on while it works, and a stuck one fails a minute after its
-/// last progress. The look that fails a wait begins past it: one that takes long itself,
-/// as a PowerShell's look at Windows' processes does, is never what the wait runs out in.
+/// A test's wait on a state a home's daemon or its microVMs come to (a pool filled, a
+/// restored run's VM up, a VM gone), judged as [`run_command`]'s wait on a command is
+/// ([`Wait`], D215's judge; the person's ruling of 2026-11-13, D209): its kind is its call
+/// site (`#[track_caller]` through the helpers that make one), whose answers ([`done`]) teach
+/// W*, the slowest. Its party ([`Party`]) is its home's daemon and what descends from it,
+/// this test's own VM processes and theirs, and the daemon's words ([`Said`]). Cold (no
+/// answer of its kind on this host), it follows its party's liveness alone; learned, it is
+/// looked at each W* past its start and refused at a look that finds its party made no
+/// progress at all since the look before, its host not holding it. Cold or learned, it is
+/// refused at a look that finds its party gone: none of it running and its daemon saying
+/// nothing, its liveness ended. Its caller gives it no bound (R03).
+///
+/// [`done`]: Patience::done
 pub struct Patience {
-    start: Instant,
-    timeout: Duration,
-    home: Option<PathBuf>,
-    said: Option<Said>,
-    /// The VM processes under this test's process.
-    own: Ran,
-    /// The home's daemon, and the VM processes under it, followed anew as it changes.
-    daemon: Option<(u32, Ran)>,
-    /// When the daemon's pid was last read: once a second at most.
-    read: Option<Instant>,
-    /// Whether patience has run out, the look after it still to come.
-    out: bool,
+    wait: Wait,
+    state: Patient,
+}
+
+/// Where a [`Patience`] is: each refusal said once, and followed by one look more, so that a
+/// state that came as its party ended or stalled is still seen.
+enum Patient {
+    /// Waiting.
+    Holds,
+    /// Refused, what it said of itself kept for its look after.
+    Refused(String),
+    /// Its look after the refusal spent: no more.
+    Spent,
 }
 
 impl Patience {
     /// Patience with the daemon of `home` and its microVMs, and this test's own.
-    pub fn of(home: &Path, timeout: Duration) -> Patience {
-        Patience::with(Some(home), timeout)
+    #[track_caller]
+    pub fn of(home: &Path) -> Patience {
+        Patience::with(Some(home), std::panic::Location::caller())
     }
 
     /// Patience with this test's own microVMs, where no home's daemon serves them.
-    pub fn own(timeout: Duration) -> Patience {
-        Patience::with(None, timeout)
+    #[track_caller]
+    pub fn own() -> Patience {
+        Patience::with(None, std::panic::Location::caller())
     }
 
-    fn with(home: Option<&Path>, timeout: Duration) -> Patience {
+    fn with(home: Option<&Path>, site: &'static std::panic::Location<'static>) -> Patience {
         Patience {
-            start: Instant::now(),
-            timeout,
-            home: home.map(Path::to_path_buf),
-            said: home.map(Said::of),
-            own: Ran::of(std::process::id()),
-            daemon: None,
-            read: None,
-            out: false,
+            wait: Wait::on(
+                WaitKind::at(site),
+                Party::of(None, home),
+                "a state its party comes to",
+            ),
+            state: Patient::Holds,
         }
     }
 
-    /// Whether to look again: within its timeout, or past it while the daemon or a microVM
-    /// progresses; once neither does, once more, the look after this one, and then no more.
-    /// Ask it after each look that found the state not yet come, as often as they come.
+    /// Whether to look again: while its judge holds it and its party lives; once either
+    /// refuses it, once more, the look after this one, and then no more, its account said on
+    /// stderr. Ask it after each look that found the state not yet come, as often as they
+    /// come: it looks at its party only as its pace says.
     pub fn holds(&mut self) -> bool {
-        let due = self.read.is_none_or(|r| r.elapsed() >= Duration::from_secs(1));
-        if let Some(home) = self.home.as_ref().filter(|_| due) {
-            self.read = Some(Instant::now());
-            let pid = std::fs::read_to_string(home.join("daemon.pid"))
-                .ok()
-                .and_then(|p| p.split_ascii_whitespace().next()?.parse::<u32>().ok());
-            if pid != self.daemon.as_ref().map(|(d, _)| *d) {
-                self.daemon = pid.map(|d| (d, Ran::of(d)));
+        match std::mem::replace(&mut self.state, Patient::Spent) {
+            Patient::Holds => {
+                let refused = match self.wait.look(false) {
+                    Err(stall) => Some(self.wait.refused(&stall)),
+                    Ok(()) if self.wait.gone() => Some(format!(
+                        "its party is gone, its liveness ended\n--- its wait\n{}",
+                        self.wait.account()
+                    )),
+                    Ok(()) => None,
+                };
+                self.state = refused.map_or(Patient::Holds, Patient::Refused);
+                true
             }
+            Patient::Refused(said) => {
+                let _ = writeln!(io::stderr(), "{said}");
+                false
+            }
+            Patient::Spent => false,
         }
-        // Each asked each time, so that each sees when it last progressed.
-        let said = self.said.as_mut().is_some_and(Said::lately);
-        let ran = self.own.lately();
-        let daemons = self.daemon.as_mut().is_some_and(|(_, r)| r.lately());
-        if self.start.elapsed() < self.timeout || said || ran || daemons {
-            self.out = false;
-            return true;
+    }
+
+    /// The state came: its kind's answer, which teaches its record, kept on this host. A
+    /// state seen only at the look after a refusal teaches nothing.
+    pub fn done(mut self) {
+        if matches!(self.state, Patient::Holds) {
+            self.wait.answered();
         }
-        !std::mem::replace(&mut self.out, true)
+    }
+
+    /// What its kind has learned on this host.
+    pub fn seen(&self) -> shards_api::Seen {
+        self.wait.kind.record().seen()
     }
 }
 
 /// The VM processes `client` is, or started, as far down as its descendants go: shards-vm's
 /// and the GPU's (shards-vm-gpu), from Windows' table of processes or `ps`.
 pub fn vm_processes_under(client: u32) -> Vec<u32> {
-    let listed = processes();
+    vm_processes_among(&processes(), client)
+}
+
+/// [`vm_processes_under`] `client`, among the processes `listed`.
+fn vm_processes_among(listed: &[(u32, u32, String)], client: u32) -> Vec<u32> {
     let is_vm = |name: &str| {
         let name = name
             .rsplit(['/', '\\'])
@@ -2323,7 +2599,7 @@ pub fn vm_processes_under(client: u32) -> Vec<u32> {
     let mut under = vec![client];
     let mut i = 0;
     while let Some(&parent) = under.get(i) {
-        for (pid, ppid, _) in &listed {
+        for (pid, ppid, _) in listed {
             if *ppid == parent && !under.contains(pid) {
                 under.push(*pid);
             }
@@ -2360,28 +2636,32 @@ pub fn processes() -> Vec<(u32, u32, String)> {
 }
 
 /// Runs `cmd` as built, `shards` itself ([`run_shards_with`]) or a program that runs it
-/// (given [`as_tests_run`]'s environment), its output collected; killed, failing the test,
-/// after `timeout`, `asked` naming it then, or, where its home's daemon still says
-/// something then, once it has said nothing for [`DAEMON_QUIET`] ([`Said`]), or where a
-/// microVM of its own still runs then, once none has run for as long ([`Ran`]).
-pub fn run_command(cmd: Command, asked: &[String], timeout: Duration) -> Run {
-    run_ending(cmd, asked, timeout, Leftovers::Ended).unwrap_or_else(|ended| panic!("{}", ended.said))
+/// (given [`as_tests_run`]'s environment), its output collected, for as long as it goes on:
+/// a wait on its party ([`Party`]) judged by its kind's record ([`WaitKind`]: its caller's
+/// call site), as D215's judge judges a wait ([`Wait`]). Its kind cold, it follows its
+/// client's liveness alone; once its kind has an answer, it is looked at each W* past its
+/// start, and the test fails, `asked` naming the command, at a look that finds its party
+/// made no progress at all since the look before, its host not holding it (the person's
+/// ruling of 2026-11-13, D209).
+#[track_caller]
+pub fn run_command(cmd: Command, asked: &[String]) -> Run {
+    run_ending(cmd, asked, None, Leftovers::Ended).unwrap_or_else(|ended| panic!("{}", ended.said))
 }
 
-/// What a run ended at its deadline leaves of the processes under it ([`end_run`]).
+/// What a run ended at its end or its stall leaves of the processes under it ([`end_run`]).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Leftovers {
-    /// Ended by the harness with it, on Windows: a test that fails at its deadline leaves
-    /// no process, whatever the run started (a daemon among them).
+    /// Ended by the harness with it, on Windows: a test that fails on a stall leaves no
+    /// process, whatever the run started (a daemon among them).
     Ended,
     /// Waited for, as the run's own end should end them: those still running then are
     /// [`Ended::left`], and only then ended by the harness.
     Awaited,
 }
 
-/// A run [`run_until`] ended at its deadline: what it had said and shown ([`stuck`]), the
-/// processes it had started (those under it, each named), and those of them still running
-/// once it was ended and they were waited for.
+/// A run [`run_until`] ended at its end, or one ended on its stall: what it had said and
+/// shown ([`stuck`]), the processes it had started (those under it, each named), and those
+/// of them still running once it was ended and they were waited for.
 pub struct Ended {
     pub said: String,
     pub started: Vec<Process>,
@@ -2391,20 +2671,29 @@ pub struct Ended {
 /// A process by its ID and its executable's name.
 pub type Process = (u32, String);
 
-/// [`run_command`]'s run, ended at its deadline as [`Ended`] says rather than failing the
+/// [`run_command`]'s run, ended at `end` past its start, a time of its test's own (boot.rs:
+/// this host's own time for its guest to answer), as [`Ended`] says rather than failing the
 /// test there, for a test of what an ended run leaves: the processes under it are left to
-/// end as its own end ends them ([`Leftovers::Awaited`]).
-pub fn run_until(cmd: Command, asked: &[String], timeout: Duration) -> Result<Run, Ended> {
-    run_ending(cmd, asked, timeout, Leftovers::Awaited)
+/// end as its own end ends them ([`Leftovers::Awaited`]). Until then its wait is
+/// [`run_command`]'s.
+#[track_caller]
+pub fn run_until(cmd: Command, asked: &[String], end: Duration) -> Result<Run, Ended> {
+    run_ending(cmd, asked, Some(end), Leftovers::Awaited)
 }
 
-/// [`run_until`]'s run, the processes under it at its deadline as `leftovers` says.
+/// [`run_command`]'s wait, ended at `end` where its test gave one ([`run_until`]) or at its
+/// stall, the processes under it then as `leftovers` says. Its output is read to its end, as
+/// long as the wait goes on: a stream another process holds past the client (a VM given the
+/// client's stdio), which the wait finds doing nothing of its own past the slowest answer
+/// of its kind, is said held open, with what came of it.
+#[track_caller]
 fn run_ending(
     mut cmd: Command,
     asked: &[String],
-    timeout: Duration,
+    end: Option<Duration>,
     leftovers: Leftovers,
 ) -> Result<Run, Ended> {
+    let kind = WaitKind::at(std::panic::Location::caller());
     let start = Instant::now();
     // Its home, for what is shown of a run that never ends ([`stuck`]).
     let home: Option<PathBuf> = cmd
@@ -2419,9 +2708,8 @@ fn run_ending(
         .spawn()
         .expect("spawning shards");
     // Read on threads of their own and handed over by channel as it comes, so that a pipe
-    // another process still holds (a VM given the client's stdio) costs the test its
-    // deadline, never a hang, and what came before it is kept: a command that never ends
-    // shows how far it got.
+    // another process still holds (a VM given the client's stdio) never holds the wait, and
+    // what came before it is kept: a command that never ends shows how far it got.
     let collect = |mut r: Box<dyn Read + Send>| {
         let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
         std::thread::spawn(move || {
@@ -2434,71 +2722,668 @@ fn run_ending(
         });
         rx
     };
-    // All it wrote, to its end; or what came by the deadline, where it never ends.
-    // Lossily: a step's output is printed as it came, bytes that are no UTF-8 included,
-    // which a strict conversion would drop the whole of.
-    let took = |rx: &std::sync::mpsc::Receiver<Vec<u8>>| {
-        let until = Instant::now()
-            .max(start + timeout)
-            .max(Instant::now() + Duration::from_secs(1));
-        let mut got = Vec::new();
+    let out = collect(Box::new(child.stdout.take().unwrap()));
+    let err = collect(Box::new(child.stderr.take().unwrap()));
+    // What it wrote, each stream with whether it has ended, its every writer gone.
+    let (mut out_got, mut err_got) = ((Vec::new(), false), (Vec::new(), false));
+    // Whether more came of a stream since the call before.
+    let came = |rx: &std::sync::mpsc::Receiver<Vec<u8>>, got: &mut (Vec<u8>, bool)| {
+        let mut came = false;
         loop {
-            match rx.recv_timeout(until.saturating_duration_since(Instant::now())) {
-                Ok(chunk) => got.extend_from_slice(&chunk),
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    break String::from_utf8_lossy(&got).into_owned();
+            match rx.try_recv() {
+                Ok(chunk) => {
+                    got.0.extend_from_slice(&chunk);
+                    came = true;
                 }
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    break format!(
-                        "{}\n(still held open by another process)",
-                        String::from_utf8_lossy(&got)
-                    );
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    got.1 = true;
+                    return came;
                 }
+                Err(std::sync::mpsc::TryRecvError::Empty) => return came,
             }
         }
     };
-    let out = collect(Box::new(child.stdout.take().unwrap()));
-    let err = collect(Box::new(child.stderr.take().unwrap()));
-    let mut said = home.as_deref().map(Said::of);
-    let mut ran = Ran::of(child.id());
-    let status = loop {
-        if let Some(st) = child.try_wait().unwrap() {
-            break st;
+    // Lossily: a step's output is printed as it came, bytes that are no UTF-8 included,
+    // which a strict conversion would drop the whole of.
+    let text = |got: &(Vec<u8>, bool)| {
+        let said = String::from_utf8_lossy(&got.0).into_owned();
+        if got.1 {
+            said
+        } else {
+            format!("{said}\n(still held open by another process)")
         }
-        // Each asked each time, so that it sees when the daemon last said something, and
-        // when a microVM of the client's own last ran.
-        let said_lately = said.as_mut().is_some_and(Said::lately);
-        let ran_lately = ran.lately();
-        if start.elapsed() > timeout && !said_lately && !ran_lately {
+    };
+    let mut wait = Wait::begin(kind, child.id(), home.as_deref(), &asked.join(" "));
+    let mut status = None;
+    loop {
+        if status.is_none()
+            && let Some(st) = child.try_wait().unwrap()
+        {
+            // Its client's own end: its kind's answer.
+            wait.answered();
+            status = Some(st);
+        }
+        let output = came(&out, &mut out_got) | came(&err, &mut err_got);
+        if let Some(status) = status.filter(|_| out_got.1 && err_got.1) {
+            break Ok(finished(status, text(&out_got), text(&err_got), start));
+        }
+        if status.is_none()
+            && let Some(end) = end.filter(|end| start.elapsed() >= *end)
+        {
             let seen = stuck(child.id(), home.as_deref());
-            let (started, left) = end_run(&mut child, timeout, leftovers);
+            let (started, left) = end_run(&mut child, end, leftovers);
+            came(&out, &mut out_got);
+            came(&err, &mut err_got);
             return Err(Ended {
                 said: format!(
-                    "{} did not exit within {timeout:?}\n--- stdout\n{}\n--- stderr\n{}{seen}",
+                    "{} did not exit within {end:?}, its end\n--- stdout\n{}\n--- stderr\n{}{seen}",
                     asked.join(" "),
-                    took(&out),
-                    took(&err)
+                    text(&out_got),
+                    text(&err_got)
                 ),
                 started,
                 left,
             });
         }
+        match (wait.look(output), status) {
+            (Ok(()), _) => {}
+            // Its streams' end never came, their holder doing nothing of its own past the
+            // slowest answer of its kind: what came is what it said.
+            (Err(_), Some(status)) => break Ok(finished(status, text(&out_got), text(&err_got), start)),
+            (Err(stall), None) => {
+                let said = wait.refused(&stall);
+                let seen = stuck(child.id(), home.as_deref());
+                let (started, left) = end_run(&mut child, stall.slowest(), leftovers);
+                came(&out, &mut out_got);
+                came(&err, &mut err_got);
+                return Err(Ended {
+                    said: format!(
+                        "{said}\n--- stdout\n{}\n--- stderr\n{}{seen}",
+                        text(&out_got),
+                        text(&err_got)
+                    ),
+                    started,
+                    left,
+                });
+            }
+        }
         std::thread::sleep(Duration::from_millis(2));
-    };
+    }
+}
+
+/// A run that ended with `status`, its streams as they came.
+fn finished(status: std::process::ExitStatus, stdout: String, stderr: String, start: Instant) -> Run {
     #[cfg(unix)]
     let signal = std::os::unix::process::ExitStatusExt::signal(&status);
     #[cfg(not(unix))]
     let signal = None;
-    Ok(Run {
+    Run {
         status: status.code(),
         signal,
-        stdout: took(&out),
-        stderr: took(&err),
+        stdout,
+        stderr,
         elapsed: start.elapsed(),
-    })
+    }
 }
 
-/// Ends `child`, a run past its deadline, and gives the processes under it, each named,
+/// A kind of the tests' own waits: the call site that waits ([`run_command`]'s caller,
+/// `#[track_caller]` through its wrappers), with what its answers have taught D215's record:
+/// W*, the slowest, from a wait's start to its client's own end, and R*, the least rate its
+/// party ran at meanwhile, a refusal's diagnosis and never its bound. None on a host until
+/// its first answer there; then kept under `target/judge-records`, by the host and the call
+/// site, so that a later run on the host begins from what it learned (ROOT, 2026-11-13: a
+/// record learned on the host is data, not a seed), and taught again by each answer. The
+/// person's ruling of 2026-11-13 holds each of them: "No record seeds. The cold start, and
+/// every wait after a run-out, follows the party's liveness and progress. After that the
+/// bound is the slowest answer seen. No ×2."
+pub struct WaitKind {
+    site: &'static std::panic::Location<'static>,
+    record: shards_api::Record,
+    file: PathBuf,
+}
+
+impl WaitKind {
+    /// The kind of `site`, its record taught what this host kept of it the first time a wait
+    /// of it begins in this process.
+    pub fn at(site: &'static std::panic::Location<'static>) -> &'static WaitKind {
+        type Site = (&'static str, u32, u32);
+        static KINDS: std::sync::Mutex<std::collections::BTreeMap<Site, &'static WaitKind>> =
+            std::sync::Mutex::new(std::collections::BTreeMap::new());
+        let mut kinds = KINDS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        kinds
+            .entry((site.file(), site.line(), site.column()))
+            .or_insert_with(|| {
+                let name: String = format!("{}-{}-{}", site.file(), site.line(), site.column())
+                    .chars()
+                    .map(|c| {
+                        if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                            c
+                        } else {
+                            '_'
+                        }
+                    })
+                    .collect();
+                let kind: &'static WaitKind = Box::leak(Box::new(WaitKind {
+                    site,
+                    record: shards_api::Record::new(),
+                    file: workspace()
+                        .join("target/judge-records")
+                        .join(host_class())
+                        .join(name),
+                }));
+                kind.learn_kept();
+                kind
+            })
+    }
+
+    /// What its waits have taught it.
+    pub fn record(&self) -> &shards_api::Record {
+        &self.record
+    }
+
+    /// Teaches its record what this host kept of it: R*'s own answer, then W*'s with work no
+    /// rate is below, so that each comes back as it was kept. Nothing where nothing whole is
+    /// kept.
+    fn learn_kept(&self) {
+        let kept = std::fs::read_to_string(&self.file).unwrap_or_default();
+        let ns: Vec<u64> = kept.split_whitespace().filter_map(|n| n.parse().ok()).collect();
+        if let [slowest, cpu, over] = ns[..] {
+            self.record
+                .teach(Duration::from_nanos(over), Duration::from_nanos(cpu));
+            self.record.teach(Duration::from_nanos(slowest), Duration::MAX);
+        }
+    }
+
+    /// Keeps its record on this host: what another process kept of it since taught in
+    /// first, then written whole and renamed into place. A keep that fails is the next
+    /// answer's to make: what this process learned stays in its memory meanwhile.
+    fn keep(&self) {
+        self.learn_kept();
+        let shards_api::Seen::Learned { slowest, least } = self.record.seen() else {
+            return;
+        };
+        let ns = |d: Duration| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX);
+        let (Some(dir), Some(name)) = (self.file.parent(), self.file.file_name()) else {
+            return;
+        };
+        let mut temporary = std::ffi::OsString::from(".");
+        temporary.push(name);
+        temporary.push(format!(".{}", std::process::id()));
+        let temporary = dir.join(temporary);
+        let _ = std::fs::create_dir_all(dir)
+            .and_then(|()| {
+                std::fs::write(
+                    &temporary,
+                    format!("{} {} {}\n", ns(slowest), ns(least.cpu), ns(least.over)),
+                )
+            })
+            .and_then(|()| std::fs::rename(&temporary, &self.file));
+    }
+}
+
+/// This host, as the records of its waits are kept for it ([`WaitKind`]): its OS, its
+/// architecture and its logical CPUs, which tell two machines' own target directories apart
+/// and which every runner of one CI image shares, whose cached target a CI cache restores.
+fn host_class() -> String {
+    format!(
+        "{}-{}-{}",
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        std::thread::available_parallelism().map_or(0, std::num::NonZero::get)
+    )
+}
+
+/// What a wait on a command follows, the ruling's party: what the command prints (its
+/// caller's to tell, [`Wait::look`]), what its home's daemon says ([`Said`]), and the
+/// processes that serve it: its client and what descends from it, and its home's daemon and
+/// what descends from that (its spawner, VM, network and share processes), each followed by
+/// D215's readers (`shards_api::Watch`) from the look that first finds it on. A wait on a
+/// state ([`Patience`]) has no client: its party is its home's daemon, and this test's own
+/// VM processes (`run --kernel`'s and `restore`'s) with what descends from them.
+pub struct Party {
+    /// Its client; none for this test's own VM processes.
+    client: Option<u32>,
+    home: Option<PathBuf>,
+    said: Option<Said>,
+    watched: std::collections::BTreeMap<u32, shards_api::Watch>,
+}
+
+/// What a look at a party found since the look before ([`Party::look`]).
+pub struct Looked {
+    pub found: shards_api::Found,
+    /// What showed it.
+    pub what: String,
+    /// The CPU its processes ran since the look before.
+    pub cpu: Duration,
+}
+
+impl Party {
+    /// The party of client `client`, whose home is `home` where it has one: of this test's
+    /// own VM processes where it has no client.
+    pub fn of(client: Option<u32>, home: Option<&Path>) -> Party {
+        Party {
+            client,
+            home: home.map(Path::to_path_buf),
+            said: home.map(Said::of),
+            watched: std::collections::BTreeMap::new(),
+        }
+    }
+
+    /// Its home's daemon now, as its pid file says.
+    fn daemon(&self) -> Option<u32> {
+        let home = self.home.as_ref()?;
+        std::fs::read_to_string(home.join("daemon.pid"))
+            .ok()?
+            .split_ascii_whitespace()
+            .next()?
+            .parse()
+            .ok()
+    }
+
+    /// The processes it is now: its client (or this test's own VM processes) and its
+    /// daemon, and on Unix what descends from them, from one listing of the system's
+    /// ([`processes`]); on Windows each is followed with what descends from it (shards-api's
+    /// tree of a process, Toolhelp32).
+    fn members(&self) -> Vec<u32> {
+        let listed = match self.client {
+            Some(_) if cfg!(windows) => Vec::new(),
+            _ => processes(),
+        };
+        let own = match self.client {
+            Some(client) => vec![client],
+            None => vm_processes_among(&listed, std::process::id()),
+        };
+        let roots: Vec<u32> = own.into_iter().chain(self.daemon()).collect();
+        #[cfg(windows)]
+        return roots;
+        #[cfg(unix)]
+        {
+            let mut tree = roots;
+            let mut i = 0;
+            while let Some(&parent) = tree.get(i) {
+                for (pid, ppid, _) in &listed {
+                    if *ppid == parent && !tree.contains(pid) {
+                        tree.push(*pid);
+                    }
+                }
+                i += 1;
+            }
+            tree
+        }
+    }
+
+    /// What it did since the look before: progressed where its daemon said something or a
+    /// process of it ran (D215's look: any CPU at all, or an end under way); else held where
+    /// its host held one from running (runnable on no CPU, stalled on its memory), or
+    /// stopped or suspended one, which D215's look finds `Still` and a test's wait counts as
+    /// its host's hold: a kiln runner's headroom guard suspends a run's processes as it
+    /// paces them (ROOT, 2026-11-13); else still; and gone where no process of it runs and
+    /// its daemon said nothing, its liveness ended. A process found anew is judged from the
+    /// look after.
+    pub fn look(&mut self) -> Looked {
+        use shards_api::Found;
+        let members = self.members();
+        self.watched.retain(|pid, _| members.contains(pid));
+        let mut looked = Looked {
+            found: Found::Still,
+            what: String::new(),
+            cpu: Duration::ZERO,
+        };
+        if self.said.as_mut().is_some_and(Said::said) {
+            looked.found = Found::Progressed;
+            looked.what = "its daemon said something".into();
+        }
+        // Whether a process of it was found live: one found anew, or one still to be read.
+        let mut live = false;
+        for pid in members {
+            let Some(watch) = self.watched.get_mut(&pid) else {
+                let watch = shards_api::Followed::of_pid(pid)
+                    .ok()
+                    .flatten()
+                    .and_then(|followed| shards_api::Watch::of(followed).ok().flatten());
+                if let Some(watch) = watch {
+                    self.watched.insert(pid, watch);
+                    live = true;
+                }
+                continue;
+            };
+            let before = watch.cpu();
+            let found = watch.look();
+            looked.cpu = looked.cpu.saturating_add(watch.cpu().saturating_sub(before));
+            live |= matches!(found, Ok(Found::Progressed | Found::Held | Found::Still));
+            match found {
+                Ok(Found::Progressed) if looked.found != Found::Progressed => {
+                    looked.found = Found::Progressed;
+                    looked.what = format!("process {pid} ran");
+                }
+                Ok(Found::Held) if looked.found == Found::Still => {
+                    looked.found = Found::Held;
+                    looked.what = format!("its host held process {pid} from running");
+                }
+                Ok(Found::Still) if watch.stopped() && looked.found == Found::Still => {
+                    looked.found = Found::Held;
+                    looked.what = format!("process {pid} stopped or suspended");
+                }
+                _ => {}
+            }
+        }
+        if !live && looked.found == Found::Still {
+            looked.found = Found::Gone;
+            looked.what = "none of it runs".into();
+        }
+        looked
+    }
+
+    /// Who it is, for a wait's account of itself.
+    fn named(&self) -> String {
+        let client = self.client.map_or_else(
+            || "this test's own VM processes".to_string(),
+            |c| format!("client {c}"),
+        );
+        match (&self.home, self.daemon()) {
+            (Some(home), Some(daemon)) => format!("{client}, daemon {daemon} of {}", home.display()),
+            (Some(home), None) => format!("{client}, no daemon yet in {}", home.display()),
+            (None, _) => client,
+        }
+    }
+}
+
+/// A wait of the tests' own on a party ([`Party`]), judged by its kind's record ([`WaitKind`])
+/// as D215's judge judges a wait (`shards_api::Judge`): cold, its party's liveness alone,
+/// which its caller holds (its client's end); learned, looked at each W* past its start and
+/// refused at a look that finds its party made no progress at all since the look before,
+/// its host not holding it. Looked at between those too, paced as D215 paces looks
+/// (`shards_api::pause`: a look's own cost against the wait so far), so that what it last
+/// did is known, for its account of itself at a refusal or as the test process is ended
+/// ([`dump_live_waits`]).
+pub struct Wait {
+    kind: &'static WaitKind,
+    judge: shards_api::Judge<'static>,
+    party: Party,
+    asked: String,
+    began: Instant,
+    /// When the next look is due, before the judge's own.
+    next: Instant,
+    /// What showed progress since the judge's look before, and its host's hold.
+    progressed: Option<String>,
+    held: Option<String>,
+    /// Its last progress, and when.
+    last: (Instant, String),
+    /// Whether its last look found its host holding it, and what showed it.
+    holding: Option<String>,
+    /// Whether its last look found its party gone: nothing of it running, nor its daemon
+    /// saying anything.
+    gone: bool,
+    /// Its party's CPU since it began.
+    work: Duration,
+    live: Live,
+}
+
+impl Wait {
+    /// A wait beginning now on client `client`'s party, `asked` naming its command.
+    pub fn begin(kind: &'static WaitKind, client: u32, home: Option<&Path>, asked: &str) -> Wait {
+        Wait::on(kind, Party::of(Some(client), home), asked)
+    }
+
+    /// A wait beginning now on `party`, `asked` naming what it waits for.
+    fn on(kind: &'static WaitKind, party: Party, asked: &str) -> Wait {
+        let began = Instant::now();
+        Wait {
+            kind,
+            judge: shards_api::Judge::begin(&kind.record),
+            party,
+            asked: asked.to_string(),
+            began,
+            next: began,
+            progressed: None,
+            held: None,
+            last: (began, "its start".into()),
+            holding: None,
+            gone: false,
+            work: Duration::ZERO,
+            live: Live::new(),
+        }
+    }
+
+    /// Its client ended of its own: its kind's answer, which teaches its record, kept on
+    /// this host.
+    pub fn answered(&mut self) {
+        self.judge.answered(self.work);
+        self.kind.keep();
+    }
+
+    /// Looks at its party where a look is due, `output` whether its command printed since
+    /// the call before: refused where its judge refuses it.
+    pub fn look(&mut self, output: bool) -> Result<(), shards_api::Stall> {
+        use shards_api::Found;
+        let now = Instant::now();
+        if output {
+            self.last = (now, "its output".into());
+            self.progressed.get_or_insert_with(|| "its output".into());
+        }
+        let due = self.judge.due();
+        if now < self.next && due.is_none_or(|due| now < due) {
+            return Ok(());
+        }
+        let looked = self.party.look();
+        self.work = self.work.saturating_add(looked.cpu);
+        self.holding = None;
+        self.gone = looked.found == Found::Gone;
+        match looked.found {
+            Found::Progressed => {
+                self.last = (now, looked.what.clone());
+                self.progressed.get_or_insert(looked.what);
+            }
+            Found::Held => {
+                self.holding = Some(looked.what.clone());
+                self.held.get_or_insert(looked.what);
+            }
+            Found::Still | Found::Gone => {}
+        }
+        let mut judged = Ok(());
+        if due.is_some_and(|due| now >= due) {
+            judged = self.judge.found(if self.progressed.take().is_some() {
+                Found::Progressed
+            } else if self.held.take().is_some() {
+                Found::Held
+            } else {
+                Found::Still
+            });
+        }
+        self.live.set(self.account());
+        let left = self
+            .judge
+            .due()
+            .map_or(Duration::MAX, |due| due.saturating_duration_since(Instant::now()));
+        self.next = Instant::now() + shards_api::pause(now.elapsed(), self.began.elapsed(), left);
+        judged
+    }
+
+    /// Its account: its call site and command, its party, its last progress, its host's
+    /// hold at its last look, and its kind's record.
+    pub fn account(&self) -> String {
+        let record = match self.kind.record.seen() {
+            shards_api::Seen::Cold => "none yet on this host: its client's liveness alone".to_string(),
+            shards_api::Seen::Learned { slowest, least } => {
+                format!("W* {slowest:?}, R* {:?} of CPU in {:?}", least.cpu, least.over)
+            }
+        };
+        format!(
+            "{}: {} ({}), {:?} in: its last progress {} {:?} ago; {}; its record {record}",
+            self.kind.site,
+            self.asked,
+            self.party.named(),
+            self.began.elapsed(),
+            self.last.1,
+            self.last.0.elapsed(),
+            self.holding.as_deref().map_or_else(
+                || "its host not holding it".to_string(),
+                |held| format!("held: {held}")
+            ),
+        )
+    }
+
+    /// Whether its last look found its party gone ([`Party::look`]).
+    pub fn gone(&self) -> bool {
+        self.gone
+    }
+
+    /// What a refusal says of it.
+    pub fn refused(&self, stall: &shards_api::Stall) -> String {
+        format!(
+            "{} made no progress for {:?}, past the slowest answer of its kind seen on this host ({:?}), {:?} into its wait\n--- its wait\n{}",
+            self.asked,
+            stall.over(),
+            stall.slowest(),
+            stall.waited(),
+            self.account()
+        )
+    }
+}
+
+/// Each live wait's account as its last look gave it, by a number of its own: what
+/// [`dump_live_waits`] says as the test process is ended.
+static LIVE: std::sync::Mutex<std::collections::BTreeMap<u64, String>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+fn live_waits() -> std::sync::MutexGuard<'static, std::collections::BTreeMap<u64, String>> {
+    LIVE.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// A wait's place among [`LIVE`]'s, let go of as it ends.
+struct Live(u64);
+
+impl Live {
+    fn new() -> Live {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        dump_at_the_end();
+        Live(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+
+    fn set(&self, account: String) {
+        live_waits().insert(self.0, account);
+    }
+}
+
+impl Drop for Live {
+    fn drop(&mut self) {
+        live_waits().remove(&self.0);
+    }
+}
+
+/// Says each live wait's account on stderr: as the test process is ended by SIGINT or
+/// SIGTERM (CI's job limit, a person's ^C), or by Windows' console control event, so that a
+/// wait that never ends, cold or not, leaves what it knew (ROOT, 2026-11-13).
+fn dump_live_waits(why: &str) {
+    let live = live_waits();
+    let mut said = format!("shards tests: ended by {why}, {} wait(s) under way", live.len());
+    for account in live.values() {
+        said.push_str("\n  ");
+        said.push_str(account);
+    }
+    let _ = writeln!(io::stderr(), "{said}");
+}
+
+/// The write end of the pipe on which [`ended_by`] tells [`dump_at_the_end`]'s thread a
+/// signal came, and the process it is of.
+#[cfg(unix)]
+static TOLD: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+#[cfg(unix)]
+static OWNER: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+/// SIGINT's and SIGTERM's handler: the signal's number written to [`dump_at_the_end`]'s
+/// thread by this process alone (a child between its fork and its exec runs it too), with
+/// getpid(2) and write(2), each async-signal-safe (POSIX.1-2024, XSH 2.4.3).
+#[cfg(unix)]
+extern "C" fn ended_by(signal: libc::c_int) {
+    let to = TOLD.load(Ordering::Relaxed);
+    let byte = u8::try_from(signal).unwrap_or(u8::MAX);
+    // SAFETY: getpid(2), then write(2) of one byte of ours to a descriptor of ours.
+    unsafe {
+        if to >= 0 && libc::getpid() == OWNER.load(Ordering::Relaxed) {
+            libc::write(to, (&raw const byte).cast(), 1);
+        }
+    }
+}
+
+/// Has this process say its live waits as it is ended ([`dump_live_waits`]), once: on Unix a
+/// thread that SIGINT's and SIGTERM's handler wakes, which says them, then gives the signal
+/// its default action and raises it again, so that the process ends as it would have; on
+/// Windows a console control handler that says them and lets the system's own end it.
+#[cfg(unix)]
+fn dump_at_the_end() {
+    static INSTALLED: OnceLock<()> = OnceLock::new();
+    INSTALLED.get_or_init(|| {
+        let mut fds = [0 as libc::c_int; 2];
+        // SAFETY: pipe(2) into two descriptors of ours.
+        if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+            return;
+        }
+        for fd in fds {
+            // SAFETY: fcntl(2) of a descriptor just made, which no child is given.
+            unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+        }
+        let [from, to] = fds;
+        TOLD.store(to, Ordering::SeqCst);
+        // SAFETY: getpid(2).
+        OWNER.store(unsafe { libc::getpid() }, Ordering::SeqCst);
+        let spawned = std::thread::Builder::new()
+            .name("waits at the end".into())
+            .spawn(move || {
+                let mut signal = 0u8;
+                loop {
+                    // SAFETY: read(2) of one byte into a local.
+                    match unsafe { libc::read(from, (&raw mut signal).cast(), 1) } {
+                        1 => break,
+                        -1 if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted => {}
+                        _ => return,
+                    }
+                }
+                let signal = libc::c_int::from(signal);
+                dump_live_waits(if signal == libc::SIGINT {
+                    "SIGINT"
+                } else {
+                    "SIGTERM"
+                });
+                // SAFETY: signal(2) back to the default action, then raise(3) of it.
+                unsafe {
+                    libc::signal(signal, libc::SIG_DFL);
+                    libc::raise(signal);
+                }
+            });
+        if spawned.is_err() {
+            return;
+        }
+        for signal in [libc::SIGINT, libc::SIGTERM] {
+            // SAFETY: a sigaction of ours, all its fields set, for a handler that is
+            // async-signal-safe ([`ended_by`]).
+            unsafe {
+                let mut action: libc::sigaction = std::mem::zeroed();
+                action.sa_sigaction = ended_by as *const () as libc::sighandler_t;
+                action.sa_flags = libc::SA_RESTART;
+                libc::sigemptyset(&raw mut action.sa_mask);
+                libc::sigaction(signal, &raw const action, std::ptr::null_mut());
+            }
+        }
+    });
+}
+
+#[cfg(windows)]
+fn dump_at_the_end() {
+    /// HandlerRoutine: the live waits said, then FALSE, so that the next handler, the
+    /// system's own, ends the process as it would have.
+    unsafe extern "system" fn ended_by(event: u32) -> windows_sys::core::BOOL {
+        dump_live_waits(&format!("console control event {event}"));
+        0
+    }
+    static INSTALLED: OnceLock<()> = OnceLock::new();
+    INSTALLED.get_or_init(|| {
+        // SAFETY: a handler of this process's own, added to its list for its life.
+        unsafe { windows_sys::Win32::System::Console::SetConsoleCtrlHandler(Some(ended_by), 1) };
+    });
+}
+
+/// Ends `child`, a run at its end or its stall, and gives the processes under it, each named,
 /// with any still running `within` after: read from one snapshot while it still runs, so
 /// that each is the run's by its parent. With [`Leftovers::Ended`] the harness ends those
 /// on Windows as it ends the run (on Unix a run's share process ends with its VM, the
@@ -2972,6 +3857,8 @@ fn registry_serving_at(
                     let kind = |doc: &[u8]| {
                         if has(doc, b"image.index") {
                             "application/vnd.oci.image.index.v1+json"
+                        } else if has(doc, b"application/vnd.docker.distribution.manifest.list.v2+json") {
+                            "application/vnd.docker.distribution.manifest.list.v2+json"
                         } else if has(doc, b"application/vnd.docker.distribution.manifest.v2+json") {
                             "application/vnd.docker.distribution.manifest.v2+json"
                         } else {
@@ -3303,6 +4190,178 @@ pub fn served_counting() -> (String, Arc<AtomicUsize>) {
     let (manifest, blobs) = test_image();
     let (port, served) = registry(manifest, blobs);
     (format!("127.0.0.1:{port}/test/image:v1"), served)
+}
+
+/// A remote registry's image `reference` (Docker Hub's, ghcr.io's), pinned by its digest,
+/// served by a registry of the tests' own as `127.0.0.1:<port>/test/image@<digest>`: the
+/// same image, never pulled from its registry as a test runs. Docker Hub counts its
+/// anonymous pulls by address, here the whole LAN's IPv6 /64, 100 an hour, and test homes
+/// that pulled their base from it each run spent them for every machine there (CI cluster
+/// 13: api_image.rs's builds, refused from its eighth round of 30 on); ghcr.io limits its own.
+/// What it serves is what a pull of the image for this host's platform fetches, pulled once
+/// per checkout ([`hub_seed`]); one registry serves each image to every test of the binary.
+pub fn hub(reference: &str) -> String {
+    static SERVED: OnceLock<std::sync::Mutex<std::collections::HashMap<String, String>>> = OnceLock::new();
+    let mut served = SERVED
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(at) = served.get(reference) {
+        return at.clone();
+    }
+    let (top, blobs) = hub_seed(reference);
+    let digest = sha256_digest(&top);
+    let (port, _) = registry(top, blobs);
+    let at = format!("127.0.0.1:{port}/test/image@{digest}");
+    served.insert(reference.to_string(), at.clone());
+    at
+}
+
+/// `reference` as a test pulls it: a remote registry's image pinned by its digest from the
+/// tests' own registry ([`hub`]), any other (a loopback registry's, a tag) as it is.
+pub fn hubless(reference: &str) -> String {
+    match shards_image::reference::Reference::parse(reference) {
+        Ok(r) if remote(&r) && r.digest.is_some() => hub(reference),
+        _ => reference.to_string(),
+    }
+}
+
+/// Whether `r` names a registry off this machine: not `localhost`, nor a loopback address.
+fn remote(r: &shards_image::reference::Reference) -> bool {
+    let domain = r.domain.as_str();
+    let host = match domain.strip_prefix('[') {
+        Some(bracketed) => bracketed.split(']').next().unwrap_or(bracketed),
+        None => domain.split(':').next().unwrap_or(domain),
+    };
+    host != "localhost" && !host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+}
+
+/// `agentfile` with each base it takes `FROM` a remote registry by a digest taken from the
+/// tests' own registry instead ([`hubless`]): the same image, every other word as it was.
+pub fn hub_bases(agentfile: &str) -> String {
+    agentfile
+        .split_inclusive('\n')
+        .map(|line| {
+            let base = line
+                .strip_prefix("FROM ")
+                .and_then(|rest| rest.split_whitespace().find(|w| !w.starts_with("--")));
+            match base {
+                Some(base) => line.replacen(base, &hubless(base), 1),
+                None => line.to_string(),
+            }
+        })
+        .collect()
+}
+
+/// What [`hub`] serves of `reference`: the document its digest names, then each manifest,
+/// config and layer of it a pull for this host's platform fetched (the platform's manifest
+/// and its attestations), from the store of target/artifacts/hub, a home of the tests' own
+/// that a build pulls each into from its registry the first time it is asked for, in
+/// process, as a build pulls its base (no daemon): once per checkout, as the pinned kernel
+/// is downloaded once into target/artifacts ([`fetch`]), one test process at a time.
+fn hub_seed(reference: &str) -> (Vec<u8>, Vec<Vec<u8>>) {
+    let pinned = shards_image::reference::Reference::parse(reference).unwrap();
+    assert!(
+        remote(&pinned) && pinned.digest.is_some(),
+        "{reference}: a remote registry's image pinned by its digest"
+    );
+    let home = workspace().join("target/artifacts/hub");
+    shards_vmm::platform::create_private_dir(&home).unwrap();
+    let _seeding = shards_image::store::Locked::exclusive(&home.join("seeding.lock")).unwrap();
+    if let Ok(seed) = hub_held(&home, &pinned) {
+        return seed;
+    }
+    let ctx = TempDir::new("hub-seed");
+    std::fs::write(ctx.join("Dockerfile"), format!("FROM {reference}\n")).unwrap();
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let built = run_shards_env(&["build"], &[ctx.as_os_str()], &env);
+    assert_eq!(
+        built.status,
+        Some(0),
+        "{reference}, pulled from its registry once into {}: {}",
+        home.display(),
+        built.stderr
+    );
+    hub_held(&home, &pinned).unwrap_or_else(|missing| panic!("{reference}, pulled once: {missing}"))
+}
+
+/// What `home`'s store holds of `pinned`, found by its digest as content is, whoever's
+/// record holds it: a pull of an index holds its platform's manifest by its own digest, under
+/// the index's name alone, and a seed's build that finds a digest held pulls nothing (D78).
+/// The document the digest names; then, of an index, this host's platform's manifest and
+/// its attestations, which a pull of it fetches, and of each manifest its config and
+/// layers. Where one is not there whole, what is missing.
+pub fn hub_held(
+    home: &Path,
+    pinned: &shards_image::reference::Reference,
+) -> Result<(Vec<u8>, Vec<Vec<u8>>), String> {
+    let store = shards_image::store::Store::open(&home.join("images")).map_err(|e| e.to_string())?;
+    let read = |what: &str, d: &str| {
+        let path = shards_image::reference::Digest::parse(d)
+            .map(|digest| store.blob_path(&digest))
+            .map_err(|e| format!("{pinned}: {what} {d}: {e}"))?;
+        match std::fs::read(&path) {
+            Ok(bytes) if sha256_digest(&bytes) == d => Ok(bytes),
+            Ok(_) => Err(format!(
+                "{pinned}: {what} {d}: {} is not what its digest says",
+                path.display()
+            )),
+            Err(e) => Err(format!("{pinned}: {what} {d}: {}: {e}", path.display())),
+        }
+    };
+    let parse = |what: &str, bytes: &[u8]| {
+        serde_json::from_slice::<serde_json::Value>(bytes).map_err(|e| format!("{pinned}: {what}: {e}"))
+    };
+    let digest = pinned
+        .digest
+        .as_ref()
+        .ok_or_else(|| format!("{pinned}: pinned by no digest"))?
+        .to_string();
+    let top = read("the document", &digest)?;
+    let doc = parse("the document", &top)?;
+    let manifests = match doc["manifests"].as_array() {
+        None => vec![top.clone()],
+        Some(listed) => {
+            let arch = match ARCH {
+                "aarch64" => "arm64",
+                "x86_64" => "amd64",
+                other => other,
+            };
+            let ours = listed
+                .iter()
+                .find(|m| m["platform"]["os"] == "linux" && m["platform"]["architecture"] == arch)
+                .and_then(|m| m["digest"].as_str())
+                .ok_or_else(|| format!("{pinned}: its index lists no linux/{arch} manifest"))?;
+            let mut held = vec![read(&format!("its linux/{arch} manifest"), ours)?];
+            for attestation in listed
+                .iter()
+                .filter(|m| m["annotations"]["vnd.docker.reference.digest"] == ours)
+            {
+                let d = attestation["digest"].as_str().unwrap_or_default();
+                held.push(read("an attestation of it", d)?);
+            }
+            held
+        }
+    };
+    let mut blobs = Vec::new();
+    for manifest in manifests {
+        let parsed = parse("a manifest", &manifest)?;
+        let layers = parsed["layers"].as_array().map(Vec::as_slice).unwrap_or_default();
+        for part in std::iter::once(&parsed["config"]).chain(layers) {
+            blobs.push(read(
+                "a manifest's part",
+                part["digest"].as_str().unwrap_or_default(),
+            )?);
+        }
+        if doc["manifests"].is_array() {
+            blobs.push(manifest);
+        }
+    }
+    Ok((top, blobs))
 }
 
 /// A running `shards` whose output lines arrive on a channel, killed when dropped.
@@ -4913,7 +5972,10 @@ pub fn noise(path: &Path, mib: usize) {
 
 /// The pipe a test tells its daemon its host is short of memory through
 /// (`SHARDS_PRESSURE`, D188), each line a word: a FIFO on Unix, a named pipe on Windows,
-/// there before the daemon opens it as it starts.
+/// there before the daemon opens it as it starts. One never said keeps a daemon from its
+/// host's own word (engine_ring.rs's shrinking room). Each is its own, as many at once as a
+/// test process's tests make: a named pipe of one instance, named by the process alone,
+/// would refuse a second.
 pub struct Told {
     pub path: std::ffi::OsString,
     #[cfg(windows)]
@@ -4939,7 +6001,9 @@ impl Told {
             use windows_sys::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
             use windows_sys::Win32::System::Pipes::{CreateNamedPipeW, PIPE_TYPE_BYTE, PIPE_WAIT};
             let _ = home;
-            let pipe = format!(r"\\.\pipe\shards-test-pressure-{}", std::process::id());
+            static MADE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let n = MADE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let pipe = format!(r"\\.\pipe\shards-test-pressure-{}-{n}", std::process::id());
             let name: Vec<u16> = pipe.encode_utf16().chain(Some(0)).collect();
             // SAFETY: a NUL-terminated name and plain arguments.
             let server = unsafe {
@@ -5015,4 +6079,142 @@ pub fn plug_roots(bound: &Path) -> Vec<String> {
         roots.push(top);
     }
     roots
+}
+
+/// A file held open sharing nothing under a Read-Handle oplock (FSCTL_REQUEST_OPLOCK): an
+/// open of it by another handle that reads, writes or deletes it, which its sharing
+/// refuses, breaks the oplock and waits for the break to be acknowledged, which closing
+/// the oplock's handle does as this drops. The wait has no end: "the system would wait
+/// forever to receive the acknowledgment as there's no timeout" ("Breaking Oplocks"); "the
+/// open operation is blocked and the Read-Handle oplock breaks. The application that owns
+/// the oplock may acknowledge the break by closing the handle" ("Types of Opportunistic
+/// Locks"). An open that reads its attributes alone shares nothing and waits for nothing.
+#[cfg(windows)]
+pub struct Oplocked {
+    file: Option<std::fs::File>,
+    // Written as the request completes, which may be after it is made: boxed, not to move,
+    // and kept until it has.
+    overlapped: Box<windows_sys::Win32::System::IO::OVERLAPPED>,
+    _answer: Box<windows_sys::Win32::System::Ioctl::REQUEST_OPLOCK_OUTPUT_BUFFER>,
+    event: std::os::windows::io::OwnedHandle,
+}
+
+#[cfg(windows)]
+impl Oplocked {
+    /// `path` held so, waiting out at most `timeout` another's handle that shares nothing.
+    pub fn new(path: &Path, timeout: Duration) -> Oplocked {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
+        use windows_sys::Win32::Foundation::{ERROR_IO_PENDING, ERROR_SHARING_VIOLATION};
+        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED;
+        use windows_sys::Win32::System::IO::{DeviceIoControl, OVERLAPPED};
+        use windows_sys::Win32::System::Ioctl::{
+            FSCTL_REQUEST_OPLOCK, OPLOCK_LEVEL_CACHE_HANDLE, OPLOCK_LEVEL_CACHE_READ,
+            REQUEST_OPLOCK_CURRENT_VERSION, REQUEST_OPLOCK_INPUT_BUFFER, REQUEST_OPLOCK_INPUT_FLAG_REQUEST,
+            REQUEST_OPLOCK_OUTPUT_BUFFER,
+        };
+        use windows_sys::Win32::System::Threading::CreateEventW;
+        // A handle that shares nothing is refused while another reads the file: Defender's,
+        // scanning the copy just written, is waited out.
+        let deadline = Instant::now() + timeout;
+        let file = loop {
+            match std::fs::OpenOptions::new()
+                .read(true)
+                .share_mode(0)
+                .custom_flags(FILE_FLAG_OVERLAPPED)
+                .open(path)
+            {
+                Ok(file) => break file,
+                Err(e)
+                    if e.raw_os_error() == Some(ERROR_SHARING_VIOLATION.cast_signed())
+                        && Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(e) => panic!("{}: {e}", path.display()),
+            }
+        };
+        // SAFETY: an unnamed manual-reset event, owned from here.
+        let event = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
+        assert!(!event.is_null(), "an event: {}", std::io::Error::last_os_error());
+        // SAFETY: the event just made, this alone holds.
+        let event = unsafe { OwnedHandle::from_raw_handle(event) };
+        // SAFETY: OVERLAPPED and REQUEST_OPLOCK_OUTPUT_BUFFER are plain data, zeroes valid
+        // values of them.
+        let (mut overlapped, mut answer): (Box<OVERLAPPED>, Box<REQUEST_OPLOCK_OUTPUT_BUFFER>) =
+            unsafe { (Box::new(std::mem::zeroed()), Box::new(std::mem::zeroed())) };
+        overlapped.hEvent = event.as_raw_handle();
+        let version = u16::try_from(REQUEST_OPLOCK_CURRENT_VERSION).unwrap();
+        answer.StructureVersion = version;
+        answer.StructureLength = u16::try_from(size_of::<REQUEST_OPLOCK_OUTPUT_BUFFER>()).unwrap();
+        let asked = REQUEST_OPLOCK_INPUT_BUFFER {
+            StructureVersion: version,
+            StructureLength: u16::try_from(size_of::<REQUEST_OPLOCK_INPUT_BUFFER>()).unwrap(),
+            RequestedOplockLevel: OPLOCK_LEVEL_CACHE_READ | OPLOCK_LEVEL_CACHE_HANDLE,
+            Flags: REQUEST_OPLOCK_INPUT_FLAG_REQUEST,
+        };
+        // SAFETY: the request is copied in as it is made (METHOD_BUFFERED), and its answer
+        // and OVERLAPPED live until it has completed, which dropping this waits for.
+        let done = unsafe {
+            DeviceIoControl(
+                file.as_raw_handle(),
+                FSCTL_REQUEST_OPLOCK,
+                (&raw const asked).cast(),
+                u32::try_from(size_of::<REQUEST_OPLOCK_INPUT_BUFFER>()).unwrap(),
+                (&raw mut *answer).cast(),
+                u32::try_from(size_of::<REQUEST_OPLOCK_OUTPUT_BUFFER>()).unwrap(),
+                std::ptr::null_mut(),
+                &raw mut *overlapped,
+            )
+        };
+        // Granted, the request pends until the oplock breaks.
+        let e = std::io::Error::last_os_error();
+        assert!(
+            done == 0 && e.raw_os_error() == Some(ERROR_IO_PENDING.cast_signed()),
+            "an oplock on {}: {e}",
+            path.display()
+        );
+        Oplocked {
+            file: Some(file),
+            overlapped,
+            _answer: answer,
+            event,
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Oplocked {
+    /// The event its request signals as it completes: as an open of the file breaks the
+    /// oplock, its opener then waiting until this drops.
+    pub fn breaking(&self) -> std::os::windows::io::BorrowedHandle<'_> {
+        use std::os::windows::io::AsHandle as _;
+        self.event.as_handle()
+    }
+}
+
+#[cfg(windows)]
+impl Drop for Oplocked {
+    fn drop(&mut self) {
+        use std::os::windows::io::AsRawHandle as _;
+        use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult};
+        let Some(file) = self.file.take() else {
+            return;
+        };
+        // The request, still pending or completed by a break, ended and waited for before
+        // its buffers go; then the handle is closed, which acknowledges a break, and an open
+        // that waits on it goes on.
+        // SAFETY: the request made on this handle with this OVERLAPPED.
+        unsafe {
+            CancelIoEx(file.as_raw_handle(), &raw const *self.overlapped);
+            let mut moved = 0;
+            GetOverlappedResult(
+                file.as_raw_handle(),
+                &raw const *self.overlapped,
+                &raw mut moved,
+                1,
+            );
+        }
+        drop(file);
+    }
 }

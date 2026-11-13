@@ -20,12 +20,12 @@ use shards_vmm::platform::UnixStream;
 pub mod capture;
 #[path = "workload/hellos.rs"]
 mod hellos;
+pub use crate::log_writer::NextSegment;
+use crate::log_writer::Writer;
 pub use hellos::exec_port;
 use hellos::register;
 
-use crate::spec::{
-    INDEX_LINE, INDEX_START, INDEX_STDERR, LOG_HEAD, LOG_STDERR, LOG_STDOUT, LogRetention, now,
-};
+use crate::spec::{LOG_STDERR, LOG_STDOUT, LogRetention};
 
 /// Where the guest's connections to a host port this process serves arrive
 /// ([`shards_vmm::vm::VsockHost::ports`]).
@@ -485,40 +485,21 @@ pub struct Ended {
     pub pids: Option<Vec<u8>>,
 }
 
-/// Keeps a microVM's output (spec.rs, `LOG_STDOUT`): each record appended to its log,
-/// then its entry to the log's index once the record is whole, in segments kept as its
-/// retention says (segments.rs). A record that cannot be kept, on a full disk
-/// or a log removed, costs the log, not the run: it is taken back, so neither file holds
-/// any of it, and its bytes are counted as lost (audit A12).
+/// Keeps a microVM's output in its log ([`Writer`], log_writer.rs): each record at once,
+/// or, non-blocking (D162), through a queue of its own ([`Queue`]).
 pub struct Logger {
-    /// Makes the next segment: in a VM, its daemon, since no VM reaches a microVM's
-    /// directory (D30).
-    next: NextSegment,
-    retention: LogRetention,
-    /// The segment written, and its files.
-    seq: u64,
-    log: fs::File,
-    index: fs::File,
-    /// The log's and the index's lengths, where a record that fails is cut back to.
-    logged: u64,
-    indexed: u64,
-    lost: u64,
+    writer: Writer,
     /// Non-blocking (D162): the most bytes of output queued for it ([`Queue`]); none
     /// where the run waits for its log.
     queue: Option<u64>,
 }
 
-/// Makes a log's segment `seq`, its log and index to append to, and removes the oldest
-/// past the log's retention ([`new_segment`]).
-pub type NextSegment = Box<dyn FnMut(u64) -> io::Result<(fs::File, fs::File)> + Send>;
-
 impl std::fmt::Debug for Logger {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Logger")
-            .field("seq", &self.seq)
-            .field("logged", &self.logged)
-            .field("lost", &self.lost)
-            .finish_non_exhaustive()
+            .field("writer", &self.writer)
+            .field("queue", &self.queue)
+            .finish()
     }
 }
 
@@ -533,22 +514,8 @@ impl Logger {
         retention: LogRetention,
         next: NextSegment,
     ) -> io::Result<Logger> {
-        let logged = log.metadata()?.len();
-        let mut indexed = index.metadata()?.len();
-        // A partial entry an earlier writer left is not one.
-        if indexed % 8 != 0 {
-            indexed -= indexed % 8;
-            index.set_len(indexed)?;
-        }
         Ok(Logger {
-            next,
-            retention,
-            seq,
-            log,
-            index,
-            logged,
-            indexed,
-            lost: 0,
+            writer: Writer::new(log, index, seq, retention, next)?,
             queue: None,
         })
     }
@@ -559,72 +526,13 @@ impl Logger {
         self
     }
 
-    /// Keeps `bytes` of `stream` as records: as much as the segment written has room for,
-    /// then the rest in the next, so that each segment is as long as its size and the log
-    /// keeps all its retention allows. A segment's first record takes a byte at least,
-    /// however small its size. Each record says whether it ends a line (INDEX_LINE), so a
-    /// line cut across records, or segments, is read whole. Before, a record that did not
-    /// fit went whole into the next segment: a guest's 32 KiB records left segments of
-    /// 64,000 bytes half full, and a log half its retention (CI's x86_64 Linux, D162).
-    fn keep(&mut self, stream: u8, mut bytes: &[u8]) {
-        while !bytes.is_empty() {
-            let room = self
-                .retention
-                .size
-                .saturating_sub(self.logged)
-                .saturating_sub(LOG_HEAD);
-            let room = if self.logged == 0 { room.max(1) } else { room };
-            if room == 0 {
-                if self.rotate().is_err() {
-                    // A log that cannot go on within its bound keeps nothing more.
-                    self.lost = self.lost.saturating_add(bytes.len() as u64);
-                    return;
-                }
-                continue;
-            }
-            let (part, rest) = bytes.split_at(usize::try_from(room).unwrap_or(usize::MAX).min(bytes.len()));
-            self.record(stream, part);
-            bytes = rest;
-        }
-    }
-
-    /// Writes `bytes` of `stream` as one record of the segment written.
-    fn record(&mut self, stream: u8, bytes: &[u8]) {
-        let head = log_head(stream, bytes);
-        let record_len = LOG_HEAD + bytes.len() as u64;
-        let mut entry = self.logged & INDEX_START;
-        if stream == LOG_STDERR {
-            entry |= INDEX_STDERR;
-        }
-        if bytes.last() == Some(&b'\n') {
-            entry |= INDEX_LINE;
-        }
-        let kept = write_parts(&self.log, &mut [io::IoSlice::new(&head), io::IoSlice::new(bytes)])
-            .and_then(|()| (&self.index).write_all(&entry.to_be_bytes()));
-        match kept {
-            Ok(()) => {
-                self.logged += record_len;
-                self.indexed += 8;
-            }
-            Err(_) => {
-                self.lost = self.lost.saturating_add(bytes.len() as u64);
-                let _ = self.index.set_len(self.indexed);
-                let _ = self.log.set_len(self.logged);
-            }
-        }
-    }
-
-    /// Starts the next segment.
-    fn rotate(&mut self) -> io::Result<()> {
-        let next = self.seq + 1;
-        let (log, index) = (self.next)(next)?;
-        (self.seq, self.log, self.index, self.logged, self.indexed) = (next, log, index, 0, 0);
-        Ok(())
+    fn keep(&mut self, stream: u8, bytes: &[u8]) {
+        self.writer.keep(stream, bytes);
     }
 
     /// Bytes of output not kept.
     pub fn lost(&self) -> u64 {
-        self.lost
+        self.writer.lost()
     }
 }
 
@@ -846,7 +754,10 @@ pub fn serve(
             if resuming {
                 return Err("managed output restore generation is not admitted".into());
             }
-            Some(capture::start(&mut spec, capture)?)
+            let run = conn
+                .try_clone()
+                .map_err(|e| format!("managed capture's copy of the run's connection: {e}"))?;
+            Some(capture::start(&mut spec, capture, run)?)
         }
         None => None,
     };
@@ -910,6 +821,13 @@ pub fn serve(
         host_net,
     };
     let status = relay(&mut reader, timing, log.as_mut(), started, records);
+    // A relay of its members' output that broke ended the run's connection here, which its
+    // relay failed for: why, in place of that end (capture.rs `relay_ending`).
+    let status = status.map_err(|e| {
+        capture::ended_run().map_or(e, |why| {
+            format!("its members' output could not be relayed: {why}")
+        })
+    });
     // A save waiting for the guest to go quiet waits no more: its command has ended.
     quiescing().end();
     QUIET.notify_all();
@@ -1081,6 +999,7 @@ fn relay_frames(
             }
             kind::SYSTEM_ERR => not_run = Some(String::from_utf8_lossy(payload).into_owned()),
             kind::EXEC_FAILED => exec_failed(payload),
+            kind::SOCKET_REFUSED => socket_refused(payload),
             // All the guest held is here, the save it was asked for waits on it (D176).
             kind::QUIESCED => {
                 quiescing().quiet();
@@ -1201,28 +1120,6 @@ fn write_fd(fd: i32, mut bytes: &[u8]) -> io::Result<()> {
             return Err(io::ErrorKind::WriteZero.into());
         }
         bytes = bytes.get(n as usize..).unwrap_or_default();
-    }
-    Ok(())
-}
-
-/// The head of a log record for `bytes` on `stream`, stamped now: its bytes follow it.
-fn log_head(stream: u8, bytes: &[u8]) -> [u8; LOG_HEAD as usize] {
-    let [t0, t1, t2, t3, t4, t5, t6, t7] = u64::try_from(now()).unwrap_or(u64::MAX).to_be_bytes();
-    let [l0, l1, l2, l3] = u32::try_from(bytes.len()).unwrap_or(u32::MAX).to_be_bytes();
-    [stream, t0, t1, t2, t3, t4, t5, t6, t7, l0, l1, l2, l3]
-}
-
-/// Writes `parts` in order with as few writes as they take, a short or interrupted one
-/// going on from where it stopped: a log record's head and bytes, without copying the
-/// bytes after their head (audit D08).
-fn write_parts(mut w: impl Write, mut rest: &mut [io::IoSlice<'_>]) -> io::Result<()> {
-    while !rest.is_empty() {
-        match w.write_vectored(rest) {
-            Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
-            Ok(n) => io::IoSlice::advance_slices(&mut rest, n),
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-            Err(e) => return Err(e),
-        }
     }
     Ok(())
 }
@@ -1381,18 +1278,28 @@ enum Target {
         member: u32,
         to: std::sync::mpsc::SyncSender<(u32, UnixStream)>,
     },
+    /// A lane to a socket of the run's own command (D251), by the id its guest's
+    /// [`kind::SOCKET_REFUSED`] names.
+    Socket {
+        id: u32,
+        to: std::sync::mpsc::SyncSender<Result<UnixStream, Unopened>>,
+    },
 }
 
 impl Target {
     fn id(&self) -> Option<u32> {
         match self {
-            Self::Exec { id, .. } => Some(*id),
+            Self::Exec { id, .. } | Self::Socket { id, .. } => Some(*id),
             _ => None,
         }
     }
     fn deliver(self, result: Result<UnixStream, String>) {
         let to = match self {
             Self::Exec { to, .. } | Self::Resumed(to) | Self::Capture(to) => to,
+            Self::Socket { to, .. } => {
+                let _ = to.try_send(result.map_err(Unopened::Ended));
+                return;
+            }
             // An input that never comes is its init's to tell (`managed::InputEnded`), as the
             // connection it dialed fails there: nothing waits on it here.
             Self::Input { member, to } => {
@@ -1407,6 +1314,17 @@ impl Target {
 }
 
 static NEXT_EXEC: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+
+/// Lane `id` (D251) will have no connection: its guest refused it before connecting
+/// anything, as it said.
+fn socket_refused(payload: &[u8]) {
+    let Some((id, errno)) = run::socket::read_refused(payload) else {
+        return;
+    };
+    if let Some(Target::Socket { to, .. }) = hellos::fail(id) {
+        let _ = to.try_send(Err(Unopened::Refused(errno)));
+    }
+}
 
 /// Exec `id` will have no connection, for `why`, as the guest said: it fails with it.
 fn exec_failed(payload: &[u8]) {
@@ -1636,12 +1554,63 @@ pub fn null() -> io::Result<fs::File> {
         .try_clone()
 }
 
+/// Why a lane to a socket of the run's own command (D251) did not open.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Unopened {
+    /// Its guest refused it, with Linux's errno for why (`shards_abi::run::socket`): its
+    /// connect's own, or init's for a run that grants no sockets, a name that is no file name
+    /// in its directory, or a command not running.
+    Refused(std::num::NonZeroU32),
+    /// It could not be asked of its guest, or its connection will not come: the workload
+    /// has ended, or its connections failed. Why.
+    Ended(String),
+}
+
+impl std::fmt::Display for Unopened {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Refused(errno) => write!(f, "refused, errno {errno}"),
+            Self::Ended(why) => f.write_str(why),
+        }
+    }
+}
+
+/// Opens a lane to the socket `name` in the run's own command's socket directory (D251): asks
+/// the guest for it, waits for its connection to the exec port, and reads its status.
+/// Connected, the connection, its bytes the socket's each way from here on; else why not.
+pub fn open_socket(to: &'static ToGuest, name: &[u8]) -> Result<UnixStream, Unopened> {
+    let mut token = [0u8; run::TOKEN];
+    shards_vmm::platform::fill_random(&mut token)
+        .map_err(|e| Unopened::Ended(format!("a lane's token: {e}")))?;
+    let id = NEXT_EXEC.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let payload = run::socket::Ask { token, id, name }.encode();
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    register(token, Target::Socket { id, to: tx }).map_err(Unopened::Ended)?;
+    if let Err(unsent) = to_guest(to, kind::SOCKET, &payload) {
+        hellos::forget(&token);
+        return Err(Unopened::Ended(unsent.to_string()));
+    }
+    let conn = rx
+        .recv()
+        .map_err(|_| Unopened::Ended("the run's command ended before the lane opened".into()))??;
+    let mut status = [0u8; run::socket::STATUS];
+    conn.set_nonblocking(false)
+        .and_then(|()| Read::read_exact(&mut shards_ipc::Polled(&conn), &mut status))
+        .map_err(|e| Unopened::Ended(format!("the lane's status: {e}")))?;
+    match std::num::NonZeroU32::new(u32::from_be_bytes(status)) {
+        None => Ok(conn),
+        Some(errno) => Err(Unopened::Refused(errno)),
+    }
+}
+
 /// A command to run beside the workload (`docker exec`), and its client's: the
 /// connection it is answered on, and its stdio.
 pub struct ExecRequest {
     pub spec: Spec,
     pub interactive: bool,
     pub detached: bool,
+    /// Its client is told its start, or why it never started (`EXEC_TOLD`, D238).
+    pub told: bool,
     /// The daemon's number for it, and its connection, told of its end (`EXEC_ENDED`).
     pub number: u64,
     pub daemon: Option<shards_ipc::Stream>,
@@ -1787,6 +1756,10 @@ fn exec_session(to: &'static ToGuest, req: &mut ExecRequest) -> Result<u8, Strin
                     }
                 }
             }
+            // Its start, to a client that types it (the agent-control endpoint's host, D238).
+            kind::STARTED if req.told => {
+                let _ = shards_ipc::send(&req.client, shards_ipc::kind::STARTED, &[], &[]);
+            }
             kind::STARTED => {}
             // A detached exec's output goes nowhere, as `docker exec -d`'s does.
             kind::STDOUT if !req.detached => {
@@ -1806,6 +1779,12 @@ fn exec_session(to: &'static ToGuest, req: &mut ExecRequest) -> Result<u8, Strin
                 // Ended, every copy, its stdin's too: the VMM's end on Windows is held until
                 // this one ends (PM M358).
                 end_guest(conn.get_ref().0);
+                // Why it never started, by its class, to a client that types it (D238): the
+                // guest's own failure, within what its frame carried.
+                if let (true, Some((class, why))) = (req.told, &not_started) {
+                    let said = [&[*class][..], why.as_slice()].concat();
+                    let _ = shards_ipc::send(&req.client, shards_ipc::kind::EXEC_UNSTARTED, &said, &[]);
+                }
                 return Ok(match not_started {
                     None => status,
                     Some((run::exec_failed::DAEMON, why)) => {
@@ -2642,7 +2621,9 @@ mod tests {
     use std::path::Path;
 
     use super::*;
+    use crate::log_writer::{log_head, write_parts};
     use crate::segments::{log_segment, new_segment};
+    use crate::spec::{INDEX_LINE, INDEX_STDERR};
 
     /// The exec port's tests one at a time, each with a port of its own.
     fn exec_port_test() -> (
@@ -3348,6 +3329,7 @@ mod tests {
             },
             interactive: false,
             detached: false,
+            told: false,
             number: 1,
             daemon: None,
             client,
@@ -3544,6 +3526,80 @@ mod tests {
         hellos::close();
     }
 
+    /// An exec whose client types its start (`EXEC_TOLD`, D238) is told `STARTED` as its guest
+    /// starts it, and of one its guest never starts, why, by its class and the guest's words
+    /// whole, before its end; an exec not so asked tells neither. The client's `EXIT` is
+    /// `exec`'s, sent here as it sends it.
+    #[test]
+    fn a_told_exec_hears_its_start_or_why_it_never_started() {
+        static TO: ToGuest = ToGuest::new(Signals::new());
+        let (_serial, port, acceptor) = exec_port_test();
+        let server = std::thread::spawn(move || acceptor.run());
+        let ((sending, watched), mut guest) = connected(&TO);
+        let sender = std::thread::spawn(move || send_frames(&TO, sending));
+        let frame =
+            |which: u8, payload: &[u8]| [&run::header(which, payload.len() as u32)[..], payload].concat();
+        let ended = run::members::Refusal::Ended.encode(b"member 0 has ended");
+        let refused = [&[run::exec_failed::MEMBER][..], &ended[..]].concat();
+        for (told, refusal) in [
+            (true, None),
+            (true, Some(&refused)),
+            (false, None),
+            (false, Some(&refused)),
+        ] {
+            let (client, peer) = shards_ipc::Stream::pair().unwrap();
+            let mut req = ExecRequest {
+                told,
+                client,
+                ..exec_request()
+            };
+            let session = std::thread::spawn(move || {
+                let status = exec_session(&TO, &mut req);
+                let code = *status.as_ref().unwrap_or(&1);
+                shards_ipc::send(&req.client, shards_ipc::kind::EXIT, &[code], &[]).unwrap();
+                status
+            });
+            // Its guest takes its frame and dials its connection with its token.
+            let (which, asked) = next_frame(&mut guest);
+            assert_eq!(which, kind::EXEC);
+            let (mut conn, host) = UnixStream::pair().unwrap();
+            conn.write_all(&frame(kind::HELLO, &asked[..run::TOKEN])).unwrap();
+            assert_eq!(port.accept(host), shards_vmm::vm::Admission::Accepted);
+            match refusal {
+                None => conn.write_all(&frame(kind::STARTED, &[])).unwrap(),
+                Some(why) => conn.write_all(&frame(kind::SYSTEM_ERR, why)).unwrap(),
+            }
+            conn.write_all(&frame(kind::EXIT, &0u32.to_be_bytes())).unwrap();
+            let status = session.join().unwrap().unwrap();
+            let mut heard = Vec::new();
+            loop {
+                let said = shards_ipc::recv(&peer).unwrap().unwrap();
+                let last = said.kind == shards_ipc::kind::EXIT;
+                heard.push((said.kind, said.payload));
+                if last {
+                    break;
+                }
+            }
+            let mut expected = match (told, refusal) {
+                (true, None) => vec![(shards_ipc::kind::STARTED, Vec::new())],
+                (true, Some(why)) => vec![(shards_ipc::kind::EXEC_UNSTARTED, why.clone())],
+                (false, _) => Vec::new(),
+            };
+            expected.push((shards_ipc::kind::EXIT, vec![status]));
+            assert_eq!(heard, expected, "told {told}, refused {}", refusal.is_some());
+            // A member that has ended refuses it: `docker exec`'s 1, as the daemon refuses.
+            assert_eq!(status, if refusal.is_some() { 1 } else { 0 });
+        }
+        guest.write_all(&run::header(kind::SIGNALS_END, 0)).unwrap();
+        drop(guest);
+        signal_guest(&TO, 15).unwrap();
+        sender.join().unwrap();
+        watch(&TO, &watched);
+        hellos::close();
+        drop(port);
+        server.join().unwrap();
+    }
+
     /// The signal connection is taken as it comes: what waited goes on it, and its end is
     /// watched from then on.
     #[test]
@@ -3702,6 +3758,85 @@ mod tests {
             *lock(&to) = Signals::default();
             to.changed.notify_all();
         });
+    }
+
+    /// A lane to a socket of the run's own command (D251): its ask reaches the guest on the
+    /// signal connection, a fresh token and the lane's name; the guest's connection whose
+    /// HELLO says that token is the lane once its status says connected, its bytes the
+    /// socket's from there; a status of an errno is the lane's refusal; and the guest's
+    /// SOCKET_REFUSED, by the lane's id, fails a lane that waits.
+    #[test]
+    fn a_lane_is_the_connection_its_token_names_once_its_status_says_connected() {
+        use std::num::NonZeroU32;
+        static TO: ToGuest = ToGuest::new(Signals::new());
+        let (_serial, port, acceptor) = exec_port_test();
+        let server = std::thread::spawn(move || acceptor.run());
+        will_run(&TO);
+        let ((sending, _watched), mut guest) = {
+            let (host, guest) = pair();
+            (dialed(&TO, host).unwrap(), guest)
+        };
+        let dial = |token: &[u8], status: u32, then: &[u8]| {
+            let (mut theirs, host) = UnixStream::pair().unwrap();
+            theirs
+                .write_all(&run::header(kind::HELLO, run::TOKEN as u32))
+                .unwrap();
+            theirs.write_all(token).unwrap();
+            theirs.write_all(&status.to_be_bytes()).unwrap();
+            theirs.write_all(then).unwrap();
+            assert_eq!(port.accept(host), shards_vmm::vm::Admission::Accepted);
+            theirs
+        };
+        std::thread::scope(|s| {
+            s.spawn(|| send_frames(&TO, sending));
+            let opened = s.spawn(|| open_socket(&TO, b"control.sock"));
+            let (which, asked) = next_frame(&mut guest);
+            assert_eq!(which, kind::SOCKET);
+            let ask = run::socket::Ask::decode(&asked).unwrap();
+            assert_eq!(ask.name, b"control.sock");
+            let mut theirs = dial(&ask.token, 0, b"after");
+            let mut lane = opened.join().unwrap().unwrap();
+            let mut got = [0u8; 5];
+            Read::read_exact(&mut lane, &mut got).unwrap();
+            assert_eq!(&got, b"after", "the bytes past the status are the socket's");
+            lane.write_all(b"back").unwrap();
+            let mut back = [0u8; 4];
+            theirs.read_exact(&mut back).unwrap();
+            assert_eq!(&back, b"back");
+
+            let unreached = s.spawn(|| open_socket(&TO, b"absent.sock"));
+            let (_, asked) = next_frame(&mut guest);
+            let ask = run::socket::Ask::decode(&asked).unwrap();
+            let _theirs = dial(&ask.token, 2, b"");
+            assert_eq!(
+                unreached.join().unwrap().unwrap_err(),
+                Unopened::Refused(NonZeroU32::new(2).unwrap())
+            );
+
+            let early = s.spawn(|| open_socket(&TO, b"x.sock"));
+            let (_, asked) = next_frame(&mut guest);
+            let ask = run::socket::Ask::decode(&asked).unwrap();
+            socket_refused(&run::socket::refused(ask.id, run::socket::errno::EACCES));
+            assert_eq!(
+                early.join().unwrap().unwrap_err(),
+                Unopened::Refused(NonZeroU32::new(run::socket::errno::EACCES).unwrap())
+            );
+            // A lane that waits fails as the signal connection goes, as an exec does.
+            let waiting = s.spawn(|| open_socket(&TO, b"y.sock"));
+            let _ = next_frame(&mut guest);
+            while hellos::fail_execs("lost") == 0 {
+                std::thread::yield_now();
+            }
+            assert_eq!(
+                waiting.join().unwrap().unwrap_err(),
+                Unopened::Ended("lost".into())
+            );
+            *lock(&TO) = Signals::default();
+            TO.changed.notify_all();
+        });
+        hellos::close();
+        drop(port);
+        server.join().unwrap();
     }
 
     /// What waits for a dial whose sends fail is lost with it: an exec it asked for fails

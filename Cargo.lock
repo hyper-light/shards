@@ -493,7 +493,7 @@ dependencies = [
 [[package]]
 name = "hyper-quic"
 version = "0.1.0"
-source = "git+https://github.com/hyper-light/hyper-raft?rev=233b7fcef7a363327c5439b191724a38065062cd#233b7fcef7a363327c5439b191724a38065062cd"
+source = "git+https://github.com/hyper-light/hyper-raft?rev=e0613f524b0df198cc61dc1e82b33c22d604cf7b#e0613f524b0df198cc61dc1e82b33c22d604cf7b"
 dependencies = [
  "aws-lc-rs",
  "bytes",
@@ -512,7 +512,7 @@ dependencies = [
 [[package]]
 name = "hyper-tls"
 version = "0.1.0"
-source = "git+https://github.com/hyper-light/hyper-raft?rev=233b7fcef7a363327c5439b191724a38065062cd#233b7fcef7a363327c5439b191724a38065062cd"
+source = "git+https://github.com/hyper-light/hyper-raft?rev=e0613f524b0df198cc61dc1e82b33c22d604cf7b#e0613f524b0df198cc61dc1e82b33c22d604cf7b"
 dependencies = [
  "aws-lc-rs",
  "brotli",
@@ -1235,10 +1235,13 @@ dependencies = [
  "shards-abi",
  "shards-afunix",
  "shards-dns",
+ "shards-ipc",
+ "shards-remote",
  "shards-testdir",
  "triomphe",
  "unsize",
  "windows-sys 0.61.2",
+ "zeroize",
 ]
 
 [[package]]
@@ -1404,7 +1407,11 @@ dependencies = [
 name = "shards-net"
 version = "0.1.0"
 dependencies = [
+ "flate2",
+ "httparse",
  "libc",
+ "rcgen",
+ "rustls",
  "shards-abi",
  "shards-afunix",
  "shards-dns",
@@ -1412,7 +1419,10 @@ dependencies = [
  "shards-netring",
  "shards-syscall-filter",
  "shards-testdir",
+ "shards-verify",
+ "time",
  "windows-sys 0.61.2",
+ "zeroize",
 ]
 
 [[package]]
@@ -1454,15 +1464,14 @@ dependencies = [
  "libc",
  "rcgen",
  "rustls",
- "rustls-platform-verifier",
  "ruzstd",
  "serde",
  "serde_json",
  "sha2",
- "shards-apple",
  "shards-image",
  "shards-ipc",
  "shards-testdir",
+ "shards-verify",
  "time",
  "windows-sys 0.61.2",
 ]
@@ -1581,6 +1590,17 @@ name = "shards-user"
 version = "0.1.0"
 
 [[package]]
+name = "shards-verify"
+version = "0.1.0"
+dependencies = [
+ "rcgen",
+ "rustls",
+ "rustls-platform-verifier",
+ "shards-apple",
+ "time",
+]
+
+[[package]]
 name = "shards-vm-process"
 version = "0.1.0"
 dependencies = [
@@ -1588,7 +1608,6 @@ dependencies = [
  "shards-abi",
  "shards-cmdline",
  "shards-ipc",
- "shards-net",
  "shards-netring",
  "shards-testdir",
  "shards-vmm",

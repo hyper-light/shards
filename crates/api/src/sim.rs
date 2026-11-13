@@ -1,7 +1,9 @@
 //! A simulator of [`Guests`]: its "guest" is a closure a test gives, run on a thread of its
 //! own as PID 1 would be, serving vsock ports over in-process socket pairs. It refuses what
 //! [`Shards`](crate::Shards) refuses (the same [`check`] and allowlist), and ends as a guest
-//! does: as its closure returns, or as it is stopped.
+//! does: as its closure returns, or as it is stopped. It has no VM process: its waits that
+//! follow one ([`Guest::connect_while_runs`], [`Guest::wait_while_runs`]) follow liveness
+//! alone, the trait's defaults, as a wait before its kind's first answer does (D215).
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
@@ -281,14 +283,6 @@ impl Guests for SimGuests {
             pid: identity.pid,
             why,
         };
-        // As shards on Windows, where a guest's VM ends with the process that booted it (D141).
-        if cfg!(windows) {
-            return Err(gone(
-                "on Windows a guest's VM ends with the process that booted it (D141): none \
-                 outlives its client to be taken back"
-                    .into(),
-            ));
-        }
         let shared = {
             let booted = self.booted.lock().unwrap_or_else(PoisonError::into_inner);
             match booted.guests.get(&identity.pid) {
@@ -533,20 +527,19 @@ mod absolute_tests {
             })
         ));
         assert!(lock(&shared).pending.is_empty());
-        let patience = crate::conformance::PATIENCE.get();
-        let mut ours = guest
-            .connect_before(5, Instant::now().checked_add(patience).unwrap())
-            .unwrap();
+        // Each wait here is for its fact: a deadline no wait reaches, and no read timeout.
+        let at = crate::while_runs::latest();
+        let mut ours = guest.connect_before(5, at).unwrap();
         let (port, mut peer) = lock(&shared).pending.pop_front().unwrap();
         assert_eq!(port, 5);
-        peer.set_read_timeout(Some(patience)).unwrap();
+        peer.set_read_timeout(None).unwrap();
         std::io::Write::write_all(&mut ours, b"paid").unwrap();
         let mut payload = [0; 4];
         std::io::Read::read_exact(&mut peer, &mut payload).unwrap();
         assert_eq!(&payload, b"paid");
         guest.stop().unwrap();
         assert!(matches!(
-            guest.connect_before(5, Instant::now().checked_add(patience).unwrap()),
+            guest.connect_before(5, at),
             Err(Refusal::Ended(End::Stopped))
         ));
     }

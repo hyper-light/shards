@@ -659,6 +659,16 @@ fn executable(d: &Domain, env: &[CString]) -> Result<CString, String> {
         })
 }
 
+/// `d`'s command line (D256): its program as found ([`executable`]), the rest of its config's
+/// `run.command` (its entrypoint's words, then its options), then the run-time arguments its
+/// run stages, in their order; none staged, its config's alone.
+fn command_line<'a>(program: &'a CStr, d: &'a Domain, args: &'a [CString]) -> Vec<&'a CStr> {
+    std::iter::once(program)
+        .chain(d.argv.iter().skip(1).map(CString::as_c_str))
+        .chain(args.iter().map(CString::as_c_str))
+        .collect()
+}
+
 /// Where `home`, a member's `HOME`, lies among the mounts it may write as it starts, each by
 /// its mount point in its view (`points`: its scratch's `/tmp`, a writable volume's as
 /// declared and as it lies in the image): the deepest that is `home` or holds it, by its
@@ -872,6 +882,9 @@ struct Prepared {
     hosts: Option<Vec<u8>>,
     /// Its `/etc/resolv.conf`, where it reaches past the microVM.
     resolv: Option<Vec<u8>>,
+    /// Where its image's trust bundle lies, and the bundle with the run's CA laid over it
+    /// (D242), where its link reaches a host the run's credential grants name.
+    trust: Option<(CString, Vec<u8>)>,
     /// Where it waits for its link, before it holds nothing of init's.
     go: Option<RawFd>,
     /// Where it sends the listener of the chooser's filter, and the filter, for a domain
@@ -918,7 +931,7 @@ mod tree {
 /// A copy of the mount of directory `dir`, attached nowhere, with `attr` set: a mount of
 /// init's own, as `open_tree` has copied since Linux 5.2, and `mount_setattr` changes since
 /// 5.12.
-fn copy_of(dir: &str, attr: u64) -> io::Result<OwnedFd> {
+pub(crate) fn copy_of(dir: &str, attr: u64) -> io::Result<OwnedFd> {
     let path = CString::new(dir).map_err(io::Error::other)?;
     // SAFETY: open_tree(2) of a NUL-terminated path.
     let fd = unsafe {
@@ -1773,6 +1786,15 @@ pub fn start(
         .map_err(|e| format!("the image's layers: {e}"))?;
     let passwd = built_file(&built, "/etc/passwd")?;
     let group = built_file(&built, "/etc/group")?;
+    // The run's CA (D242), for each member whose link reaches a host the run's credential
+    // grants name: the image's own bundle with the CA appended, made once.
+    let trust = crate::trust::Run::of(setup).map_err(|e| e.to_string())?;
+    let laid = match &trust {
+        Some(t) if domains.iter().any(|d| t.reaches(d.link.as_ref())) => {
+            Some(t.lay(&built).map_err(|e| e.to_string())?)
+        }
+        _ => None,
+    };
     // Each share staged, and where it lies in the image.
     let mut staged: Vec<(Share, String, String)> = Vec::new();
     for (k, sh) in shares_of(setup).into_iter().enumerate() {
@@ -1973,6 +1995,22 @@ pub fn start(
             "a terminal is asked for member {member}, which this image starts no program for"
         ));
     }
+    // The members with an MCP bridge and socket (D254): each one that starts here, else the
+    // run is refused, as a terminal is.
+    let mcp = crate::mcp::Asked::read(setup)?;
+    if let Some(member) = mcp
+        .iter()
+        .flat_map(|a| &a.members)
+        .find(|m| !domains.iter().any(|d| d.id.checked_sub(FIRST_ID) == Some(**m)))
+    {
+        return Err(format!(
+            "an MCP bridge is asked for member {member}, which this image starts no program for"
+        ));
+    }
+    // Their sockets, carried once every member has started, and their bridges' mounts, held
+    // until each member's view has its own.
+    let mut mcp_listeners = Vec::new();
+    let mut bridges = Vec::new();
     let mut started = Vec::new();
     for (i, d) in domains.iter().enumerate() {
         let member =
@@ -2041,8 +2079,21 @@ pub fn start(
             .into_iter()
             .map(|e| CString::new(e).map_err(|_| format!("{}: a NUL in its environment", d.label)))
             .collect::<Result<Vec<_>, _>>()?;
-        let env = crate::staged::env(&own, member, setup).map_err(|e| format!("{}: {e}", d.label))?;
+        let mut env = crate::staged::env(&own, member, setup).map_err(|e| format!("{}: {e}", d.label))?;
+        // The run's CA, where its link reaches a host the run's credential grants name: its
+        // bundle named by each variable its TLS stacks read roots from, and laid as it starts.
+        let given = laid
+            .as_ref()
+            .filter(|_| trust.as_ref().is_some_and(|t| t.reaches(d.link.as_ref())));
+        if let Some(l) = given {
+            if scratch.is_none() {
+                return Err(format!("{}: {}", d.label, crate::trust::Refused::NoScratch));
+            }
+            l.name_in(&mut env).map_err(|e| format!("{}: {e}", d.label))?;
+        }
         let argv0 = executable(d, &env)?;
+        // Its run-time arguments (D256): its command line points into them until it execs.
+        let given_args = crate::staged::args(member, setup).map_err(|e| format!("{}: {e}", d.label))?;
         let workdir = crate::staged::workdir(member, setup)
             .map_err(|e| format!("{}: {e}", d.label))?
             .unwrap_or_else(|| d.workdir.clone());
@@ -2089,11 +2140,27 @@ pub fn start(
             &peers,
             scratch.as_ref().map(AsRawFd::as_raw_fd),
         )?;
+        // Its MCP socket and its bridge's mount point beside the server's (D254), where its run
+        // asks for them: in its own directory, which no other member sees.
+        let bridged = mcp.as_ref().is_some_and(|a| a.members.contains(&member));
+        if bridged {
+            let listener = crate::mcp::listen(std::path::Path::new(&dir), d.id)
+                .map_err(|e| format!("{}: its MCP socket: {e}", d.label))?;
+            mcp_listeners.push((listener, member));
+        }
         let quiet = libc::MOUNT_ATTR_NOSUID | libc::MOUNT_ATTR_NODEV | libc::MOUNT_ATTR_NOEXEC;
         let copy = copy_of(&dir, quiet | libc::MOUNT_ATTR_RDONLY)
             .map_err(|e| format!("{}: the in-VM server: {e}", d.label))?;
         sockets.push((copy.as_raw_fd(), cstr_of(SERVER_AT)?));
         copies.push((copy, cstr_of(SERVER_AT.trim_start_matches('/'))?));
+        // Its bridge, this binary, mounted on the empty file beside its socket, after the
+        // directory it lies in: runnable, where that directory is not.
+        if bridged {
+            let bridge =
+                crate::mcp::bridge_mount().map_err(|e| format!("{}: its MCP bridge: {e}", d.label))?;
+            sockets.push((bridge.as_raw_fd(), cstr_of(shards_abi::run::mcp::BRIDGE)?));
+            bridges.push(bridge);
+        }
         // Its volumes, each a copy of the run's mount of it, at its mount point.
         let mut volumes = Vec::new();
         let mut volume_rules = Vec::new();
@@ -2149,14 +2216,15 @@ pub fn start(
                 .collect(),
             hostname: CString::new(d.cgroup.as_str())
                 .map_err(|_| format!("{}: a NUL in its name", d.label))?,
-            argv: [argv0.as_ptr()]
+            argv: command_line(&argv0, d, &given_args)
                 .into_iter()
-                .chain(d.argv.iter().skip(1).map(|a| a.as_ptr()))
+                .map(CStr::as_ptr)
                 .chain([std::ptr::null()])
                 .collect(),
             envp: env.iter().map(|a| a.as_ptr()).chain([std::ptr::null()]).collect(),
             hosts: d.link.as_ref().map(|l| l.hosts.clone()),
             resolv: d.resolv.clone(),
+            trust: given.map(|l| (l.path.clone(), l.bundle.clone())),
             go: None,
             chooser: None,
             stdin: None,
@@ -2335,6 +2403,15 @@ pub fn start(
         });
     }
     drop(joined);
+    drop(bridges);
+    // Each member's MCP connections carried to its host from here on, every member started
+    // (D254).
+    if let Some(asked) = &mcp {
+        for (listener, member) in mcp_listeners {
+            crate::mcp::serve(listener, member, asked.token)
+                .map_err(|e| format!("member {member}'s MCP socket: {e}"))?;
+        }
+    }
     Ok(started)
 }
 
@@ -2850,6 +2927,27 @@ fn child(d: &Domain, p: &Prepared, c: &Confinement, stdout: RawFd, out: RawFd, s
                 || libc::unlink(made.as_ptr()) != 0
             {
                 fail(out, mounting);
+            }
+        }
+        // Its trust bundle with the run's CA (D242), over its image's, read-only, made as its
+        // names are; never passed over, as a member given it does not start without it (its
+        // bundle and its scratch were found before the clone).
+        if let Some((target, content)) = &p.trust {
+            let made = c"/tmp/.trust";
+            let fd = libc::open(
+                made.as_ptr(),
+                libc::O_CREAT | libc::O_EXCL | libc::O_WRONLY | libc::O_CLOEXEC,
+                0o444,
+            );
+            if fd < 0 || libc::write(fd, content.as_ptr().cast(), content.len()) != content.len() as isize {
+                fail(out, c"writing its trust bundle");
+            }
+            libc::close(fd);
+            if libc::mount(made.as_ptr(), target.as_ptr(), null, libc::MS_BIND, nil) != 0
+                || libc::mount(null, target.as_ptr(), null, ro, nil) != 0
+                || libc::unlink(made.as_ptr()) != 0
+            {
+                fail(out, c"mounting its trust bundle");
             }
         }
         // Its Unix sockets' directories, each its own mount, read-only where it only
@@ -3486,6 +3584,39 @@ mod tests {
         );
         let e = found(&["tool"], "PATH=/nowhere".into()).unwrap_err();
         assert!(e.contains("\"tool\" is on no directory of PATH"), "{e}");
+    }
+
+    /// A member's command line (D256): its program as found, the rest of its config's
+    /// `run.command` (its entrypoint's words, then its options), then its run's arguments in
+    /// their order, an empty one among them; none staged, its config's alone, as before.
+    #[test]
+    fn a_members_command_line_is_its_command_then_its_runs_arguments() {
+        let d = domain_at(
+            "/agents/claude",
+            &["claude", "-p", "--output-format", "stream-json"],
+        );
+        let program = CString::new("/usr/local/bin/claude").unwrap();
+        let line = |args: &[CString]| -> Vec<Vec<u8>> {
+            command_line(&program, &d, args)
+                .iter()
+                .map(|a| a.to_bytes().to_vec())
+                .collect()
+        };
+        let own = [
+            &b"/usr/local/bin/claude"[..],
+            b"-p",
+            b"--output-format",
+            b"stream-json",
+        ];
+        assert_eq!(line(&[]), own);
+        let given: Vec<CString> = ["--resume", "s-1", "", "--model"]
+            .iter()
+            .map(|a| CString::new(*a).unwrap())
+            .collect();
+        assert_eq!(
+            line(&given),
+            [&own[..], &[&b"--resume"[..], b"s-1", b"", b"--model"][..]].concat()
+        );
     }
 
     /// The host's entries (volumes.rs, `open`): those for the domains, with their tag,

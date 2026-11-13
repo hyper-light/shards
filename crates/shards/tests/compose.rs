@@ -77,7 +77,7 @@ fn home(name: &str) -> Option<(TempDir, String)> {
         ("SHARDS_KERNEL", kernel.as_os_str()),
         ("SHARDS_INIT", init.as_os_str()),
     ];
-    let pulled = run_shards_env(&["pull"], &["-q", image.as_str()], &env, TIMEOUT);
+    let pulled = run_shards_env(&["pull"], &["-q", image.as_str()], &env);
     assert_eq!(pulled.status, Some(0), "{pulled}");
     Some((home, image))
 }
@@ -212,9 +212,9 @@ volumes:
     let (status, out, _) = run(&["ps", "-a", "-q"]);
     assert_eq!((status, out.trim()), (Some(0), ""));
     let env: [(&str, &OsStr); 1] = [("SHARDS_HOME", home.as_os_str())];
-    let volumes = run_shards_env(&["volume", "ls"], &["-q"], &env, TIMEOUT);
+    let volumes = run_shards_env(&["volume", "ls"], &["-q"], &env);
     assert!(!volumes.stdout.lines().any(|v| v == "shp_data"), "{volumes}");
-    let networks = run_shards_env(&["network", "ls"], &["--format", "{{.Name}}"], &env, TIMEOUT);
+    let networks = run_shards_env(&["network", "ls"], &["--format", "{{.Name}}"], &env);
     assert!(!networks.stdout.lines().any(|n| n == "shp_back"), "{networks}");
 }
 

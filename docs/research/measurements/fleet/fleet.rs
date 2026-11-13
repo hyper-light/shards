@@ -34,8 +34,6 @@ use super::common::{
     TempDir, cannot_run_vms, cannot_snapshot, guest_init, kernel, registry, run_shards_env, test_image_with,
 };
 
-const TIMEOUT: Duration = Duration::from_secs(120);
-
 fn setting(name: &str, default: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| default.to_string())
 }
@@ -176,9 +174,9 @@ fn fleet() {
             "--init".as_ref(),
             guest_init().as_os_str(),
         ];
-        let recorded = run_shards_env(&["guest"], &args, &env, TIMEOUT);
+        let recorded = run_shards_env(&["guest"], &args, &env);
         assert_eq!(recorded.status, Some(0), "{}", recorded.stderr);
-        let run = |image: &str| run_shards_env(&["run"], &[image, "exit", "0"], &env, TIMEOUT);
+        let run = |image: &str| run_shards_env(&["run"], &[image, "exit", "0"], &env);
         println!("\n== {n} templates");
         for pass in ["first (pull, boot, save)", "second (restore)"] {
             let t0 = Instant::now();
@@ -240,7 +238,7 @@ fn fleet() {
                     let (image, home) = (image.to_string(), home.to_path_buf());
                     std::thread::spawn(move || {
                         let env: [(&str, &OsStr); 1] = [("SHARDS_HOME", home.as_os_str())];
-                        run_shards_env(&["run"], &[image.as_str(), "exit", "0"], &env, TIMEOUT)
+                        run_shards_env(&["run"], &[image.as_str(), "exit", "0"], &env)
                     })
                 })
                 .collect();
@@ -262,7 +260,7 @@ fn fleet() {
         println!("bursts of {burst}: {} ms | failed {failed}", summary(&mut bursts));
         let warm_after = processes_with(&templates.to_string_lossy()).len();
         let t0 = Instant::now();
-        let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+        let stopped = run_shards_env(&["daemon"], &["stop"], &env);
         assert_eq!(stopped.status, Some(0));
         let stop_ms = t0.elapsed().as_secs_f64() * 1000.0;
         std::thread::sleep(Duration::from_millis(500));

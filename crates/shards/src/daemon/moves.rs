@@ -124,7 +124,17 @@ pub(crate) struct Plan {
     pub published: Vec<Published>,
     #[serde(default)]
     pub network: String,
+    /// The SHA-256 of its run's own key where it ran (D238, plan step 11), as its managed
+    /// metadata names it, in lowercase hex: the key the move replaces, as its run makes a key
+    /// of its own where it lands (D176 part 6). None where its run has none, and from a
+    /// daemon of an earlier build.
+    #[serde(default)]
+    pub key: Option<String>,
 }
+
+/// What a run moved here keeps of the key its run had where it ran (`Plan::key`), which no
+/// lease is served under here.
+const KEY_REPLACED: &str = "key-replaced";
 
 /// What a run keeps the CPU baseline its guest was told in, in its container's directory
 /// (D176 part 6), as its home keeps its own (`cli::moves::BASELINE`): written as the run
@@ -133,7 +143,7 @@ pub(super) const RUN_BASELINE: &str = "cpu-baseline";
 
 /// The CPU baseline `home`'s microVMs are told ([`crate::cli::moves::BASELINE`]); none
 /// where it keeps none, or none it can read.
-pub(super) fn home_baseline(home: &Path) -> shards_vmm::arch::cpu::Id {
+pub(crate) fn home_baseline(home: &Path) -> shards_vmm::arch::cpu::Id {
     read_baseline(&home.join(crate::cli::moves::BASELINE))
 }
 
@@ -347,10 +357,11 @@ pub(crate) struct Needs {
     pub unpacks: Vec<String>,
 }
 
-/// Why a machine refuses a microVM moved to it, before anything of it moves: its `ready`
-/// step's answer, as JSON on stdout beside its words on stderr, so that the mover matches
-/// what was refused (cli/moves.rs `Refused`) and a client of an earlier build still reads
-/// why.
+/// Why a move is refused before anything of its microVM moves (the `ready` step's answer on
+/// the machine moved to, the `save` or `plan` step's where it runs), or a lease asked under
+/// the key a move replaced (the `key` step's): as JSON on stdout beside its words on
+/// stderr, so that the mover matches what was refused (cli/moves.rs `unready`) and a client
+/// of an earlier build still reads why.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "refused", rename_all = "kebab-case")]
 pub(crate) enum Refused {
@@ -397,6 +408,16 @@ pub(crate) enum Refused {
         host_ip: String,
         host_port: String,
         why: String,
+    },
+    /// Its run has a managed scope (its owner's streams, its agent-control endpoint), which a
+    /// restore does not take yet: refused where it runs, before it is saved.
+    Managed { name: String },
+    /// A lease asked under the key its run had before it moved here, which its move replaced
+    /// (D176 part 6): the key its run has here, where it has one.
+    KeyReplaced {
+        name: String,
+        asked: String,
+        current: Option<String>,
     },
 }
 
@@ -447,6 +468,23 @@ fn identity_refused<T: PartialEq>(name: &str, here: &[T], theirs: &[T]) -> Optio
     (here != theirs).then(|| Refused::CpuIdentity {
         name: name.to_string(),
     })
+}
+
+/// What a lease asked under fingerprint `asked` for microVM `name` is refused here: the key
+/// its move replaced (`replaced`), under which no lease is served once it has moved (D176
+/// part 6); `current`, its run's key here, where it has one.
+fn key_refused(name: &str, asked: &str, replaced: Option<&str>, current: Option<&str>) -> Option<Refused> {
+    (replaced == Some(asked)).then(|| Refused::KeyReplaced {
+        name: name.to_string(),
+        asked: asked.to_string(),
+        current: current.map(str::to_string),
+    })
+}
+
+/// The run's own key, in lowercase hex, as the managed metadata in its directory `own` names
+/// it: none for a run without one.
+fn run_key(own: &Path) -> Option<String> {
+    super::managed::vm_key(own).map(|k| shards_remote::identity::hex(&k))
 }
 
 /// What `lacks`, of this build's architecture, refuses of microVM `name`'s CPU baseline.
@@ -585,6 +623,20 @@ impl std::fmt::Display for Refused {
                 f,
                 "{path}, which {name} binds, is not on this machine: a move takes a bind's host path shared at the same place"
             ),
+            Refused::Managed { name } => write!(
+                f,
+                "{name} has a managed scope, which a restore does not take yet: moved, it could run neither there nor here"
+            ),
+            Refused::KeyReplaced { name, asked, current } => match current {
+                Some(current) => write!(
+                    f,
+                    "{asked} is the key {name} had before it moved, which no lease is served under: its key is {current}"
+                ),
+                None => write!(
+                    f,
+                    "{asked} is the key {name} had before it moved, which no lease is served under: it has no key here yet"
+                ),
+            },
             Refused::PortTaken {
                 name,
                 port,
@@ -1189,24 +1241,25 @@ impl<D: Disk> Daemon<D> {
     /// `shards move vm`'s steps (D176 part 6), for its client (cli/moves.rs) or a context's
     /// (remote.rs): `args` after [`shards_ipc::MOVE_STEP`].
     pub(super) fn move_step(&self, args: &[String], asker: &Asker, reply: &Reply<'_>) -> u8 {
+        // A refusal goes typed on stdout, for the mover to match, and in words on stderr, as
+        // any step's failure does, for a client of an earlier build.
+        let typed = |done: Result<String, Unready>| match done {
+            Ok(said) => Ok(said),
+            Err(Unready::Failed(e)) => Err(e),
+            Err(Unready::Refused(refused)) => {
+                if let Ok(json) = serde_json::to_string(&refused) {
+                    reply.out(&json);
+                }
+                Err(refused.to_string())
+            }
+        };
         let done = match args.first().map(String::as_str) {
-            Some("save") => self.move_save(args.get(1).map_or("", String::as_str)),
-            Some("plan") => self.move_plan(args.get(1).map_or("", String::as_str)),
+            Some("save") => typed(self.move_save(args.get(1).map_or("", String::as_str))),
+            Some("plan") => typed(self.move_plan(args.get(1).map_or("", String::as_str))),
             Some("live") => self.move_live(args.get(1..).unwrap_or_default(), asker, reply),
             Some("done") => self.move_done(args.get(1..).unwrap_or_default()),
-            Some("ready") => match self.move_ready(args.get(1).map_or("", String::as_str), asker, reply) {
-                Ok(needs) => Ok(needs),
-                Err(Unready::Failed(e)) => Err(e),
-                // Typed on stdout, for the mover to match; in words on stderr, as any step's
-                // failure is, for a client of an earlier build.
-                Err(Unready::Refused(refused)) => {
-                    if let Ok(json) = serde_json::to_string(&refused) {
-                        reply.out(&json);
-                    }
-                    reply.err(&format!("shards: {refused}"));
-                    return 1;
-                }
-            },
+            Some("ready") => typed(self.move_ready(args.get(1).map_or("", String::as_str), asker, reply)),
+            Some("key") => typed(self.move_key(args.get(1..).unwrap_or_default())),
             Some("cpu") if restores_on_its_own_cpu_alone() => {
                 Err(shards_vmm::vm::NO_BASELINE_ON_WHP.to_string())
             }
@@ -1231,8 +1284,11 @@ impl<D: Disk> Daemon<D> {
 
     /// `save NAME`: the microVM saved, stopping it, or the snapshot a save stopped it as;
     /// its plan, as JSON.
-    fn move_save(&self, reference: &str) -> Result<String, String> {
+    fn move_save(&self, reference: &str) -> Result<String, Unready> {
         let id = self.resolve(reference)?;
+        if let Some(refused) = self.unmovable(&id) {
+            return Err(refused.into());
+        }
         self.await_start(&id);
         // On WHP its plan names this CPU (`exact_cpu`), asked of the VM process once a
         // daemon: asked before the save, not in the time the microVM runs nowhere.
@@ -1249,20 +1305,21 @@ impl<D: Disk> Daemon<D> {
             })?
         };
         let plan = self.plan(&id, &snapshot)?;
-        serde_json::to_string(&plan).map_err(|e| e.to_string())
+        serde_json::to_string(&plan).map_err(|e| Unready::Failed(e.to_string()))
     }
 
     /// `plan NAME`: what another machine needs of the running microVM, before a live move
     /// (D176 part 7): its image's root filesystem by its digest, the file a save of it
     /// restores against; any other its last save names is sent as the move ends. The
     /// snapshot a live move saves it as, by the time.
-    fn move_plan(&self, reference: &str) -> Result<String, String> {
+    fn move_plan(&self, reference: &str) -> Result<String, Unready> {
         let id = self.resolve(reference)?;
+        if let Some(refused) = self.unmovable(&id) {
+            return Err(refused.into());
+        }
         self.await_start(&id);
         if !self.running(&id) {
-            return Err(format!(
-                "{reference} is not running: a live move moves a running microVM"
-            ));
+            return Err(format!("{reference} is not running: a live move moves a running microVM").into());
         }
         let c = lock(&self.containers)
             .get(&id)
@@ -1311,6 +1368,9 @@ impl<D: Disk> Daemon<D> {
             shards_cmdline::format::rfc3339_at(now, 0).replace(':', "-")
         );
         let (published, network) = self.published_of(&c);
+        // The run's directory, in a statement of its own: the containers' lock taken in a
+        // field of the plan would be held to the plan's end, across the fields after it.
+        let own = lock(&self.containers).dir(&c.id);
         let plan = Plan {
             id: c.id.clone(),
             name: c.name.clone(),
@@ -1326,12 +1386,13 @@ impl<D: Disk> Daemon<D> {
             binds,
             cpu: host_cpu(),
             guest: self.boots_stored_guest(&c.id),
-            baseline: read_baseline(&lock(&self.containers).dir(&c.id).join(RUN_BASELINE)),
+            baseline: read_baseline(&own.join(RUN_BASELINE)),
             cpu_identity: self.exact_cpu(),
             published,
             network,
+            key: run_key(&own),
         };
-        serde_json::to_string(&plan).map_err(|e| e.to_string())
+        serde_json::to_string(&plan).map_err(|e| Unready::Failed(e.to_string()))
     }
 
     /// `live NAME SNAPSHOT [--need FILE]... [--checked FILE]...`: the running microVM moved
@@ -1543,6 +1604,8 @@ impl<D: Disk> Daemon<D> {
         volumes.sort();
         volumes.dedup();
         let (published, network) = self.published_of(&c);
+        // As in `move_plan`: the run's directory, in a statement of its own.
+        let own = lock(&self.containers).dir(id);
         Ok(Plan {
             id: c.id.clone(),
             name: c.name.clone(),
@@ -1558,10 +1621,11 @@ impl<D: Disk> Daemon<D> {
             binds,
             cpu: host_cpu(),
             guest: self.boots_stored_guest(id),
-            baseline: read_baseline(&lock(&self.containers).dir(id).join(RUN_BASELINE)),
+            baseline: read_baseline(&own.join(RUN_BASELINE)),
             cpu_identity: self.exact_cpu(),
             published,
             network,
+            key: run_key(&own),
         })
     }
 
@@ -1610,6 +1674,45 @@ impl<D: Disk> Daemon<D> {
             shards_vmm::arch::cpu::decode(out.trim())
         })()?;
         Ok(HOST.get_or_init(|| asked).clone())
+    }
+
+    /// Why container `id` may not move at all, refused before anything of it moves: a managed
+    /// scope, which a restore refuses (the start path's "cannot yet be restored"), so that a
+    /// cold move's save would leave it stopped here, its resume refused as well.
+    fn unmovable(&self, id: &str) -> Option<Refused> {
+        let (dir, name) = {
+            let containers = lock(&self.containers);
+            let name = containers
+                .get(id)
+                .map_or_else(|| id.to_string(), |c| c.name.clone());
+            (containers.dir(id), name)
+        };
+        super::managed::has_scope(&dir).then_some(Refused::Managed { name })
+    }
+
+    /// `key NAME [ASKED]`, on the machine a microVM moved to (D176 part 6): its run's own key
+    /// and the key its move replaced, as JSON (`key`, `replaces`: lowercase hex, or null);
+    /// given ASKED, the fingerprint a lease is asked under, refused typed where it is the
+    /// replaced one.
+    fn move_key(&self, args: &[String]) -> Result<String, Unready> {
+        let (name, asked) = match args {
+            [name] => (name, None),
+            [name, asked] => (name, Some(asked.as_str())),
+            other => return Err(format!("key: {other:?}").into()),
+        };
+        let id = self.resolve(name)?;
+        let own = lock(&self.containers).dir(&id);
+        let current = run_key(&own);
+        let replaced = std::fs::read_to_string(own.join(KEY_REPLACED))
+            .ok()
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty());
+        if let Some(asked) = asked
+            && let Some(refused) = key_refused(name, asked, replaced.as_deref(), current.as_deref())
+        {
+            return Err(refused.into());
+        }
+        Ok(serde_json::json!({ "key": current, "replaces": replaced }).to_string())
     }
 
     /// The ports container `c`'s run publishes on this machine's addresses, as its request
@@ -1981,6 +2084,22 @@ impl<D: Disk> Daemon<D> {
         }
         c.saved = Some(plan.snapshot.clone());
         c.moved = true;
+        // The key its run had where it ran: its run makes one of its own here after its
+        // restore (D238), and no lease is served under the old (`key_refused`). Kept as a
+        // key's fingerprint alone, and none an earlier move kept in the directory sent.
+        let kept = staged_dir.join(KEY_REPLACED);
+        match plan.key.as_deref().and_then(crate::context::unhex32) {
+            Some(key) => {
+                std::fs::write(&kept, shards_remote::identity::hex(&key)).map_err(|e| at(&kept, &e))?
+            }
+            None => {
+                if let Err(e) = std::fs::remove_file(&kept)
+                    && e.kind() != io::ErrorKind::NotFound
+                {
+                    return Err(at(&kept, &e));
+                }
+            }
+        }
         c.ports.clear();
         // Its request names its image by the digest it was made of, which this machine
         // found it by: a tag here may name another.
@@ -2268,6 +2387,7 @@ mod tests {
             cpu_identity: Vec::new(),
             published: Vec::new(),
             network: String::new(),
+            key: None,
         }
     }
 
@@ -2346,6 +2466,53 @@ mod tests {
         assert!(earlier.cpu_identity.is_empty());
     }
 
+    /// A moved run's key (D176 part 6, D238): its run's own key is the `vm` line of its managed
+    /// metadata, none for a run without one or with none written right; a lease asked under
+    /// the key its move replaced is refused typed with its key here, and one under any other
+    /// key is no move's to refuse; a plan of an earlier build names none.
+    #[test]
+    fn a_lease_under_the_key_a_move_replaced_is_refused_and_the_run_names_its_own() {
+        let dir = shards_testdir::TempDir::new("mv-key").unwrap();
+        assert!(!super::super::managed::has_scope(&dir));
+        assert_eq!(super::super::managed::vm_key(&dir), None);
+        let key = [0xab_u8; 32];
+        let metadata = format!(
+            "shards managed output 1\nserver {}\nowner {}\nrun x\ngeneration 1\ncapacity 1\n\
+             control 127.0.0.1:1\nvm {}\n",
+            "c".repeat(64),
+            "d".repeat(64),
+            shards_remote::identity::hex(&key)
+        );
+        std::fs::write(dir.join("managed-output"), &metadata).unwrap();
+        assert!(super::super::managed::has_scope(&dir));
+        assert_eq!(super::super::managed::vm_key(&dir), Some(key));
+        std::fs::write(dir.join("managed-output"), metadata.replace("\nvm ", "\nvm z")).unwrap();
+        assert_eq!(super::super::managed::vm_key(&dir), None, "64 hex digits or none");
+        std::fs::write(dir.join("managed-output"), "shards managed output 1\nserver x\n").unwrap();
+        assert_eq!(
+            super::super::managed::vm_key(&dir),
+            None,
+            "no agent-control endpoint"
+        );
+
+        let (old, new) = ("a".repeat(64), "b".repeat(64));
+        assert_eq!(
+            key_refused("web", &old, Some(&old), Some(&new)),
+            Some(Refused::KeyReplaced {
+                name: "web".into(),
+                asked: old.clone(),
+                current: Some(new.clone()),
+            })
+        );
+        assert_eq!(key_refused("web", &new, Some(&old), Some(&new)), None);
+        assert_eq!(key_refused("web", &old, None, Some(&new)), None);
+
+        let mut earlier = serde_json::to_value(plan()).unwrap();
+        earlier.as_object_mut().unwrap().remove("key");
+        let earlier: Plan = serde_json::from_value(earlier).unwrap();
+        assert_eq!(earlier.key, None);
+    }
+
     /// A refusal goes as JSON, tagged by what refused it, and reads back as it went; its
     /// words are those each refusal said before it was typed, which a mover of an earlier
     /// build still prints.
@@ -2418,6 +2585,29 @@ mod tests {
                 },
                 "web publishes its port 80/tcp at 127.0.0.1:8080, which this machine cannot \
                  bind: Bind for 127.0.0.1:8080 failed: port is already allocated",
+            ),
+            (
+                Refused::Managed { name: "web".into() },
+                "web has a managed scope, which a restore does not take yet: moved, it could \
+                 run neither there nor here",
+            ),
+            (
+                Refused::KeyReplaced {
+                    name: "web".into(),
+                    asked: "aa11".into(),
+                    current: Some("bb22".into()),
+                },
+                "aa11 is the key web had before it moved, which no lease is served under: its \
+                 key is bb22",
+            ),
+            (
+                Refused::KeyReplaced {
+                    name: "web".into(),
+                    asked: "aa11".into(),
+                    current: None,
+                },
+                "aa11 is the key web had before it moved, which no lease is served under: it has \
+                 no key here yet",
             ),
             (
                 Refused::CpuIdentity { name: "web".into() },

@@ -1,0 +1,440 @@
+# Harness bring-up v1 and v2: review (plan step 2)
+
+Goal 52's plan step 8, a child of goal 52's agent (`a88ba9336b2a5c118`) for ROOT's plan step 2:
+harness-bringup-v1 and -v2 (a real Codex CLI and a real Claude Code as `HARNESS` members),
+read against R01–R16 and AGENTS.md's review rules, its defects cured on main and the rest
+recorded as owed. No vendor CLI was sent a prompt, and no credential was read.
+
+## Identity
+
+| | |
+|---|---|
+| Role | implementer (goal 52's child for step 8); coordinator ROOT |
+| Policy | read at origin/main `ecd19d38cd756219238650111eb9278a312fa97e`: AGENTS.md sha256 `f66d304c033ad4001d3d7347b67faa3bb3137d637860793e8e74f1eb6266db41`, docs/development-rules.md `df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3`, docs/development-evidence.md `61613a244106d95b2759b38c8b6660ff29a616983e7afd6e9faabdc38368fb63`, CLAUDE.md `588b00202791c500679393b9e6cda023d4cc233995198fb575806c25e5438010`; with ROOT's briefs (`/tmp/g121-shot/goal-agent-brief.md`, `brief-common.md`) and goal 52's (`/tmp/s2/child-brief.md`, its addendum of 2026-11-13, `steps/step-8.txt`, `steps/step-8-findings-so-far.md`) |
+| Worktree | `.claude/worktrees/s2-harness`, branch `p/s2-harness-v1`, landed on main fast-forward, signed |
+| Owned | `crates/shards/tests/harness_bringup.rs`; `docs/examples/harness-{codex,claude,codex-signed-in,claude-signed-in}`; `docs/research/measurements/harness-bringup-v1/` and `-v2/`; in `docs/design/architecture.md`, D236's list of examples to move and this review's pointer |
+| Runner | adas-mac-studio-3.local (kiln runner `2768d0d5…`, hostname Adas-Mac-Studio-4.local): macOS 26.2 (Darwin 25.2.0), arm64, 14 cores, 36 GiB; Python 3.9.6, rustc 1.98.1. No gpg, zig or cargo-xwin there. Every run went through a carrier of this step's (a patch over main applied to a clone of its own, `~/g121-tmp/s2-8-src` and `-py`) |
+
+## Commits reviewed
+
+Each read whole (`git show`), on main since before this review:
+
+| Commit | What it landed |
+|---|---|
+| `6e17b36b9` | v1: the examples `harness-codex`, `harness-claude`; `harness_bringup.rs`'s nine cases; `fetch.sh`, `bringup.sh`; the records |
+| `4c2fcfb08` | v2 step 1: the `-signed-in` examples, `credentials.py`, `signed-in.sh`, two signed-in cases |
+| `4c1f595f9` | v2: a tool's run is its program's exec in the kernel's record |
+| `7da26ccf4` | v2: Claude Code's prompt before its variadic options; token validity in minutes |
+| `df1d34af0` | v2: settle writes back only a refresh |
+| `ab73c9628` | v2: the two real signed-in turns recorded, README |
+
+## Secrets: none committed
+
+Goal 52's agent scanned the 162 files these six commits touch (at main `308895ef4`, with
+redaction) for API keys (`sk-…`), JWTs, bearer tokens, token or key fields, GitHub and AWS
+keys, private keys, emails, and account, organization and user IDs
+(`/tmp/s2/steps/step-8-findings-so-far.md`). Every hit was benign: the placeholder
+`sk-shards-placeholder-not-a-key` (`harness_bringup.rs`' `PLACEHOLDER` and its uses;
+`records/codex-run-env/run.log`'s `-e …_API_KEY=` is it), and v1's
+`fetch/verify.status`, a GnuPG `GOODSIG` of Anthropic's public release-signing identity. By
+key name, v2's records hold no token, key, password, account, organization or email value,
+and `credential_expires_at` is redacted. Claude Code's stream
+(`records/claude-signed-in/stdout.bin`) carries request identifiers: one `session_id`, 8
+message `uuid`s and 2 `request_id`s. These are not credentials or account IDs, and they are
+left as recorded. This review did not scan again.
+
+## Findings
+
+R-numbers are the rules each finding is held to. "Fixed" names the landing commit; each fix
+was red before, green after, and red again with its guard removed, each its one focused test.
+
+### F1. The leak check skipped short values and chose its run length (R03): fixed
+
+`credentials.py`'s `secrets` (line 68 at `ecd19d38c`) took a value under a secret's name only
+at 16 characters or more, so a shorter secret was never looked for. Its fragment check
+(lines 38–39) kept every 24-byte window of a secret and looked at every 8th offset of a file,
+which promised runs of 31 bytes. All three numbers were chosen.
+
+Now every value under a secret's name is a secret, whatever its length; an empty one holds
+none. A file leaks where it holds a whole secret, or a run of one longer than the most a
+provider itself shows of a credential. That length comes from data: OpenAI's refusal shows a
+key's first 8 and last 4 characters, the rest masked one for one
+(`harness-bringup-v1/records/codex-login-volume/stdout.bin`: `sk-shard*******************-key`
+for the 31-character placeholder). So the run is 9 bytes, looked up at every offset.
+`credentials_test.py` reads the 8 from that record itself, not from the script.
+
+v2's self-tests were never committed. `credentials_test.py` now holds them (copy, settle's
+four outcomes, scrub, validity), with the leak check's. Every fake secret is a digest of a
+label, and the leak check also runs over v1's and v2's committed records.
+
+`python3 -I docs/research/measurements/harness-bringup-v2/credentials_test.py`, on the runner
+(`~/g121-tmp/s2-8-slice-a.log`):
+
+| Tree | Result |
+|---|---|
+| this change | 14 passed |
+| red: `credentials.py` as on main, the new test | 2 failed: a 9-byte run not found at offset 0; a 12-character secret not found (`0 != 3`) |
+| M1: the 16-character floor back | `test_a_secret_however_short_is_looked_for_whole` failed |
+| M2: every 8th offset alone looked up | `test_a_run_one_longer_than_a_provider_shows_is_found_at_every_offset` failed, at offset 1 |
+| M3: an empty value taken for a secret | `test_an_empty_value_is_no_secret` failed: FOUND in every file |
+| this change again | 14 passed |
+
+### F2. The real-VM test kept a 600 s clock over every wait (R03, R05): fixed
+
+`harness_bringup.rs`'s `WITHIN` (line 34 at `ecd19d38c`) bounded every wait: each `shards`
+command (`run_shards_env`'s timeout), each channel's read (`recv_timeout`, failing "past the
+test's patience"), the owner observers' deadlines and their joins. v1's slowest case already
+read for 247.2 s (`claude-key-volume`), and a model's long turn has no bound of its own. ROOT
+ruled that the tests' bounds go (D215; s37 decision inventory, row 2): no clock, wait on
+facts.
+
+Now every wait ends at its fact. `read` waits on `recv()` alone: the channel's end record, its
+subscription's transport event, or its driver's end. A command is waited on to its exit, and
+the observers are started and joined with `until` = now + `NO_CLOCK`, u64's most nanoseconds,
+because those fixtures take a deadline that is finite by contract (D215's tests give theirs
+the same; `checked_add`, so a platform whose `Instant` can't hold it fails with its name).
+An observer's subscription still ends at its connection's typed end, held to the endpoint's
+own liveness. When this landed, the owner's patience was `until`'s, far past the endpoint's
+`tls::QUIET`, and a connection took the lesser of its two sides' idle timeouts (RFC 9000
+§10.1). No QUIET-based value was put in their place, as ROOT asked. Since goal 58's call C
+(`212301f98`, D180's liveness at use) neither side has an idle timeout or a keep-alive:
+`until` is the observer's own deadline alone, the far instant none. A connection that stops
+making progress ends `TimedOut`, and a vanished owner is let go at its endpoint's next send.
+Call C kept `Observer::start`'s signature and reworded this test's comment to say so.
+
+### F3. The test polled the process record every 200 ms (R03, R05): fixed
+
+Once the harness's output had ended, the test read `shards read processes` again every 200 ms
+(line 262) until the harness's exit row came, or its patience ran out: a periodic probe of a
+record that announces its own growth. `shards watch processes` (D123) prints the record, then
+each row as the daemon's file watch sees it, until the run ends. The test now follows that
+stream until `followed_far_enough`: the exit of the harness's own exec, by that exec's PID
+(not a child's), or a `lost` row (init's, member `-` and PID 0, past which the record waits for
+no process's end). It also stops if the record ends with the run. Then it reads the record
+whole once, as the last poll did.
+
+### F4. The run's own command ended at 600 s (R03): fixed
+
+Every case ran its microVM's command as `sleep 600`, as did `bringup.sh` and the four
+examples' usage comments. The run ends with its command and its members with it, so that was
+a second 600 s bound on any harness. Now it is `sleep infinity`: busybox's `sleep` takes "inf"
+for no end, as GNU's does, since busybox `edca770d11` (2019-01-07, release 1.31.0). Alpine
+v3.24's main repository ships busybox 1.37.0-r31 (pkgs.alpinelinux.org, read 2026-11-13). The test or the script removes the run when it is done.
+
+### F5. bringup.sh's 300 s deadline, polled every 2 s (R03, R05): fixed
+
+`bringup.sh` (lines 66–82) read `shards read processes` every 2 s for 300 s. It now follows
+`shards watch processes` through a FIFO, row by row, until the harness's exit by its exec's
+PID, or a `lost` row, or the record's end. Then it ends the follow it started and reads the
+record whole.
+
+`bringup-test.sh` holds it to v1's record of Codex's run, with no VM, binary or network. A
+stand-in `shards` gives that record through `watch processes`, then keeps the follow open as a
+real one does. Its `read processes` gives the record without Codex's exit. The script runs
+twice: once with a stand-in `date` that moves 301 s at each call, then with the host's own.
+
+A correction. Slice B also changed `step`'s timing, on the belief that macOS's `date` prints
+`%N` as a literal `N`, and its commit message (`da5c744b8`) says so. On the runner, macOS
+26.2's `/bin/date +%s%N` gives nanoseconds (`1794557386924763000`), so that was never
+reproduced (R09). This slice puts `step` back as it was. Older macOS releases were not
+checked.
+
+### F6. H1's live test still said it was red (R07): fixed
+
+`an_owners_subscription_outlives_a_quiet_harness` was ignored as "red: finding H1, the owner
+endpoint's transport keeps no quiet subscription alive". H1 is fixed on main
+(owner-keepalive-v1, `4e291dfc3`'s merge; D180's managed-output paragraph), so the test is
+expected green. Its text now says so, and both of H1's tests say they need a real VM (ROOT's).
+Goal 58's call C (`212301f98`) then removed the managed transport's idle timeout and
+`tls::QUIET` with it. It restated the pair's silences from `H1_BOUND`, 100 s, the endpoint's
+bound when H1 was found (v1's `records/probe-quiet`, lost at 102.9 s): still 125 s and 75 s. That
+number is the record's own, kept to bracket where H1 was, not a bound anything holds to now.
+The tests' claim, that a quiet subscription lives, stands.
+
+### F7. R10's owed check of the signed-in turns, with no prompt sent: done
+
+v2 owed a mutation: "a prompt asking for no tool must fail a case". That costs a real turn,
+which is ROOT's to decide. The cases' checks now live in `codex_ran_its_tool` and
+`claude_ran_its_tool`, which the real cases call. Light tests hold them to v2's two recorded
+turns (`records/*-signed-in`): each recorded turn passes. Each fails with what a turn that ran
+no tool leaves: its stream without the tool's events (Codex's `command_execution` items,
+Claude Code's `tool_use` call), though the answer still names the project's files, or its
+kernel record without the `ls` exec in the harness's domain. A sixth light test holds the
+follow's end (F3) to v1's record of Codex's run: Codex's own exit ends it, at its exec's PID,
+after its children's exits, and a `lost` row ends it too.
+
+### Slice B's runs
+
+On the runner, at `4e53fcdfe` plus this slice (`~/g121-tmp/s2-8-slice-b.log`):
+
+| Check | Result |
+|---|---|
+| `cargo test -p shards --test harness_bringup` | 6 passed, 12 ignored (the 11 real-VM cases and `common::port_probe`) |
+| MT1: Codex's tool check takes any item | `a_codex_turn_that_ran_no_tool_fails_its_case` failed: its panic was not "no ls ran" |
+| MT2: Claude's tool check takes any content | `a_claude_turn_that_ran_no_tool_fails_its_case` failed: no panic |
+| MT3: Codex's domain check removed | `a_codex_tool_the_kernel_never_saw_fails_its_case` failed: no panic |
+| MT4: Claude's domain check removed | `a_claude_tool_the_kernel_never_saw_fails_its_case` failed: no panic |
+| MF: a row's event taken whatever its PID (`row`) | `a_follow_ends_at_the_harness_own_exit` failed |
+| `bringup-test.sh`, this slice's `bringup.sh` | the follow ended at Codex's own exit (86 rows), its watch ended. The first run exited 1 after its PASS: the test's own exit trap ran `kill` under `set -e` on a watch already ended. Fixed (`\|\| true`) before landing |
+| `bringup-test.sh`, `ecd19d38c`'s `bringup.sh` | red: "the harness's process did not end within 300 s", no follow |
+| MB: `bringup.sh`'s exit taken whatever its PID | red: the follow ended at child 1741's exit (`code 127`) |
+| `cargo fmt -p shards -- --check` | clean |
+| `cargo clippy -p shards --all-targets -- -D warnings` | clean (aarch64-apple-darwin) |
+
+Merged with main twice before landing (`9b9da26c7`, then `5b91d43de`), the same checks ran on
+each merged tree (`~/g121-tmp/s2-8-slice-b-merged.log`, `-merged2.log`): 6 passed, 12 ignored;
+`bringup-test.sh` passed and exited 0; fmt and clippy clean; `credentials_test.py` 14 passed.
+
+### Slice C's runs
+
+`bringup-test.sh` now runs the script twice, with the stand-in clock and with the host's own
+`date`. Slice B's clock change is taken back (F5). At `29dde4f4c` plus this slice
+(`~/g121-tmp/s2-8-slice-c.log`):
+
+| Check | Result |
+|---|---|
+| this slice's `bringup.sh` | both runs: the follow ended at Codex's own exit (86 rows), its watch ended |
+| `ecd19d38c`'s `bringup.sh` | red, both runs: no follow; under the stand-in clock, "the harness's process did not end within 300 s" |
+| MB: the harness's exit taken whatever its PID | red, both runs: the follow ended at child 1741's exit |
+| this slice's again | both runs passed |
+
+### F8. fetch.sh's verification (O1 to O3, owed at first): fixed
+
+These three were first recorded as owed. Goal 52's agent, by ROOT's word, then gave the cure
+to this step, offline and with no download, in `8bccab8ad`.
+
+- **O1. fetch.sh trusted the cosign its release served (R10 for its verification).** Lines
+  65–72 at `ecd19d38c` fetched `cosign-linux-amd64` and `cosign_checksums.txt` from the same
+  release and checked one against the other, so the verifier's identity rested on that release
+  alone. The Codex archives and bundles were pinned in the script. Now cosign is checked
+  against its pin before it runs: GitHub's own digest of the asset (`gh api
+  repos/sigstore/cosign/releases/tags/v3.1.4`, read 2026-11-13), the same as the release's
+  `cosign_checksums.txt` and, for linux-amd64, as v1's `fetch/fetched.json`
+  (`424e2c97…bbfa`).
+- **O2. fetch.sh took a signature GnuPG doesn't call good (R10).** Lines 112–121 accepted any
+  `VALIDSIG` whose primary-key fingerprint was Anthropic's. GnuPG writes `VALIDSIG` whenever a
+  signature verifies (`!rc`), beside `EXPSIG`, `EXPKEYSIG` or `REVKEYSIG` as well as `GOODSIG`
+  (gnupg `g10/mainproc.c` at master `ab9c746e9`, `check_sig_and_print`: lines 2363–2372 choose
+  BADSIG, EXPSIG, EXPKEYSIG, REVKEYSIG or GOODSIG, 2581–2594 write VALIDSIG, 2712–2723 write
+  ERRSIG and NO_PUBKEY). gpg itself exits 0 for an expired or a revoked key's signature (the
+  recordings below), so main's script accepted both; it stopped at gpg's exit 1 for an expired
+  signature, a bad one and one it couldn't check, with no word of why. Now `verdict` takes
+  only a `GOODSIG` whose key ID ends a `VALIDSIG` of the pinned key, and refuses each other way
+  a signature checks with its own exit and words: 10 BADSIG, 11 ERRSIG, 12 EXPSIG, 13
+  EXPKEYSIG, 14 REVKEYSIG, 15 no good signature by the pinned key. gpg's own exit no longer
+  decides.
+- **O3. fetch.sh fetched x86_64 alone (R11).** It now takes the guest's architecture (amd64 or
+  arm64, OCI's names; by default the host's, as a guest's is). arm64's Codex archives and
+  bundles are pinned beside amd64's, each GitHub's digest of the asset (`gh api
+  repos/openai/codex/releases/tags/rust-v0.167.2`, read 2026-11-13). Claude Code's
+  `linux-arm64-musl` comes from its signed manifest, as `linux-x64-musl`'s does (both in v1's
+  committed `fetch/manifest.json`). It runs the cosign for its own host, each pinned: Linux
+  amd64, Linux arm64, macOS arm64. Intel Mac is refused. Its digests and sizes no longer need
+  GNU's tools (`sha256sum` or `shasum`, `wc -c`).
+
+`fetch-test.sh` holds it to recorded data. GnuPG's statuses are eight real recordings
+(`fetch-test/*.status`): `record.sh` made seven of them with throwaway keys in `.invalid`, gpg
+2.5.20, and `goodsig.status` is v1's record of Anthropic's own manifest. They were recorded on
+adas-macbook-pro-2, this session's own Mac and the one machine here with gpg (Homebrew's), in a
+GnuPG home of their own that was removed after; no runner has gpg. The releases' digests are recorded in `fetch-test/*.assets`,
+and a stand-in curl serves a cosign that is not sigstore's, with a checksums file that names
+it. On the runner (`~/g121-tmp/s2-8-slice-d.log`; bash 3.2):
+
+| Check | Result |
+|---|---|
+| `bash -n` of fetch.sh, fetch-test.sh, record.sh | clean |
+| `fetch-test.sh` | all pass: goodsig and goodsig-throwaway 0; badsig 10, errsig 11, expsig 12, expkeysig 13, revkeysig 14, other-key 15, each in its words; pins; cosign-first |
+| red: main's signature rule (`VALIDSIG` of the key alone) as `verdict` | expsig, expkeysig, revkeysig taken (0); badsig, errsig, other-key refused untyped (1) |
+| red: no arm64 build | pins: "arm64: no build" |
+| red: main's own fetch.sh (`ecd19d38c`), cosign-first | it took the stand-in's cosign and asked for Codex's archive next (3 URLs, exit 22) |
+| M-O2a: any good signature taken, whatever its key | other-key taken (0, not 15) |
+| M-O2b: REVKEYSIG not refused by name | revkeysig refused as 15, not 14 |
+| M-O3: arm64's Codex archive pinned to amd64's digest | pins: "pinned 8246e846…, its release's digest ed81fa2c…" |
+| M-O1: cosign run without its pin checked | cosign-first: it asked for Codex's archive next |
+| `fetch-test.sh` again | all pass |
+
+The real fetch and verify of both architectures, on Linux and on macOS, is owed to ROOT below.
+
+### F9. signed-in.sh's platforms, settle's write-back and the probe's modes (O4 to O6, owed at first): fixed
+
+Goal 52's agent, by ROOT's word, gave these three to this step as well. Each was cured in
+`bfb46e2c4`, red before, green after, and red again with its guard removed, each its one
+focused test.
+
+- **O5. settle's last check and its write were two steps.** Between reading the original's
+  hash (`credentials.py` 220–227 at `ecd19d38c`) and `os.replace` in `write_back`, a host
+  process that refreshed the same login was overwritten. Now the write is one step that also
+  takes what the original held then: the refreshed file and the original swap names
+  (`exchange`: renamex_np(2)'s RENAME_SWAP on macOS, sys/stdio.h; renameat2(2)'s
+  RENAME_EXCHANGE on Linux, include/uapi/linux/fs.h, through ctypes), and what was swapped out
+  is compared with the original settle read. A change made meanwhile is swapped back in, kept,
+  and reported as a conflict. A version written between the two swaps is kept beside the
+  original for a person. Win32's renames replace a name and never swap two (MoveFileExW,
+  ReplaceFileW), so nothing is written back there (ENOSYS, said), nor where the C library has
+  no renameat2.
+- **O4. signed-in.sh ran on Linux alone.** It now takes each harness's login where the
+  harness keeps it: Codex's `auth.json` in CODEX_HOME (its default store is that file:
+  `cli_auth_credentials_store = "file"`, codex-rs/config/defaults.toml at rust-v0.167.2) and
+  Claude Code's `.credentials.json` in CLAUDE_CONFIG_DIR. It copies the login to each system's
+  own per-user store: Linux's tmpfs ($XDG_RUNTIME_DIR), or macOS's per-user temporary
+  directory ($TMPDIR, else confstr's DARWIN_USER_TEMP_DIR, 0700 to its user). The macOS store
+  is on disk, as macOS gives a user no memory-backed file system: a RAM disk (hdiutil's
+  `ram://`) takes a size fixed before the harness writes its state, which v2's S3 found was
+  hundreds of files. It runs under bash 3.2 with POSIX tools (`mktemp` with a template, `df -P`,
+  `tr`). Where a platform fact confines it, the fact is recorded and the script says so:
+  - On macOS, Claude Code keeps its sign-in in the Keychain, and writes
+    `~/.claude/.credentials.json` only when the Keychain refuses the write
+    (code.claude.com/docs/en/iam, "Credential management"). The Keychain item's name is not
+    documented, and this script reads no Keychain, so on macOS it takes that file or refuses.
+  - On Windows it refuses. credentials.py guards the copy by its mode (0600 in 0700), and
+    Python's `os.chmod` sets only Windows' read-only flag, all other bits ignored
+    (docs.python.org, `os.chmod`), so it could neither make nor check that protection. A
+    Windows store is a design of its own: the profile's inherited ACL, which Claude Code's own
+    file there has (Anthropic's docs), with a write-back that Win32 cannot make one step.
+- **O6. The volume probe expected Unix modes on every host.**
+  `a_volume_given_at_run_time_is_the_harness_own` asserted `drwx------` and `-rw-------`. On
+  Windows, `set_mode` does nothing, and the share shows a host-made file with the mode
+  `ntfs::stat` reads (crates/ntfs/src/lib.rs, `stat`: WSL's mode where NTFS keeps one, else
+  its kind's, 0755, or 0555 for a read-only file; server.rs keeps a host-made file's mode). It
+  now takes each host's own answer: `shared_mode` gives the host's mode on Unix and that same
+  `ntfs::stat` on Windows, and `ls_mode` writes it as `ls` does. The owner the share shows is
+  the run's user on every host (server.rs), 200000 as before.
+
+Runs (`~/g121-tmp/s2-8-slice-e.log`, `-xwin.log`, `-xwin2.log`):
+
+| Check | Result |
+|---|---|
+| `credentials_test.py` (adas-mac-studio-3.local) | 15 passed |
+| O5 red: `af15d4532`'s credentials.py, `test_a_change_to_the_original_as_it_is_written_back_is_kept` | failed: the host's change overwritten |
+| M-O5: what was swapped out taken, unread | the same test failed |
+| `signed-in-test.sh` | codex: a 0600 copy in a 0700 directory of `$TMPDIR`, the refresh written back through renamex_np's swap, the copy scrubbed; claude: the Keychain refusal |
+| O4 red: `af15d4532`'s signed-in.sh | codex failed (`mktemp` on `/run/user/501`); claude failed (its refusal didn't say why) |
+| M-O4: no macOS store | both refused (exit 2) |
+| `cargo test -p shards --test harness_bringup` | 8 passed (`modes_are_written_as_ls_writes_them`, `a_shared_files_mode_is_the_hosts_own` among them), 12 ignored |
+| M-O6: `ls`'s `rwx` out of order | `modes_are_written_as_ls_writes_them` failed (`dxwr------`) |
+| fmt, clippy `-p shards --all-targets -D warnings` (aarch64-apple-darwin) | clean |
+| `cargo xwin clippy -p shards --test harness_bringup -D warnings` (adas-mac-studio.local), x86_64- and aarch64-pc-windows-msvc | clean. The whole crate's (`--all-targets`) fails on both, on main's `crates/shards/src/daemon/health.rs:824` (`TRICKLE`, unused on Windows): another lane's, reported, not touched |
+
+O6's red is not on this host: here main's literal modes are the host's own. On Windows
+`ntfs::stat`'s source gives 0755 where main's probe expects `drwx------`; the live run (WHP)
+is owed below. `a_shared_files_mode_is_the_hosts_own` runs on CI's Windows legs as a light
+test.
+
+### O7, goal 58's: done
+
+- **O7. Goal 58's call C.** It removed `tls::QUIET`'s fixed window from the managed transport:
+  landed as `212301f98` (pushed `ed0088495..e72239dd3`). H1's two cases now take their
+  silences from `H1_BOUND` (F6), and the observers' call sites stand unchanged (F2). No O-item
+  of this review remains owed; the real-VM and other-host runs below do.
+
+Also observed, and left as recorded: the signed-in Codex example runs
+`--dangerously-bypass-approvals-and-sandbox` (Codex's own sandbox off, "the microVM and its
+grants are the boundary under test", v2's README), with its login on a writable volume and
+the project read-only.
+
+Outside this lane, reported and not touched:
+- `shards_ntfs::stat`'s doc comment says a file with no mode of WSL's is "644, or 444 where NTFS
+  keeps it read-only"; its code gives 0755 and 0555 (crates/ntfs/src/lib.rs, `stat`'s comment
+  against its `mode`). F9 follows the code, which is what the share answers.
+- `cargo xwin clippy -p shards --all-targets -D warnings` fails for both Windows targets on
+  main (`af15d4532`): `crates/shards/src/daemon/health.rs:824`, `const TRICKLE` never used
+  there.
+
+## Default deny
+
+All four examples grant the harness alone (`FOR <harness>`, `--harnesses=<harness>`), TCP 443
+only, outward only (`EXPOSE … AS egress`, `NETWORK --egress=443/tcp`), and names through the
+microVM's resolver (`--dns`). What none names is to whom: any host on 443, any name (v1's H2).
+D236 (built, its real-VM validation owed to ROOT) gives `--egress=HOST:PORT` for that, and
+moves the bring-up's examples to destinations once it is run. That list now holds all four
+(the two `-signed-in` examples added), with their hosts to come from that run's resolver
+answers. The records' host mentions (api.openai.com, claude.ai, platform.openai.com,
+chatgpt.com, code.claude.com, downloads.claude.ai) include help-text URLs, so they don't
+show where the harnesses connect.
+
+## R01–R16
+
+| Rule | Account |
+|---|---|
+| R01 | No production code in this lane. The test may panic. `no_clock` panics with the platform's name where an `Instant` can't hold the far instant: every supported platform's can (std's `Instant` is a `Timespec` on Unix and a `Duration` on Windows). |
+| R02 | No architecture decided. Sources: D215 (the no-clock idiom), D123 (`watch processes`), RFC 9000 §10.1, busybox `edca770d11`, Alpine's package index, GnuPG's `mainproc.c`, GitHub's release digests and sigstore's checksums file, v1's records. |
+| R03 | F1 to F5 removed every chosen number in the lane's test and scripts: `WITHIN`, the 200 ms and 2 s polls, the 300 s deadline, `sleep 600`, the 16/24/8 of the leak check. What stays is derived: the leak run (one longer than a provider shows of a key, from v1's record), `NO_CLOCK` (u64's bound, D215's idiom), H1's silences (`H1_BOUND ± H1_BOUND/4`: 100 s, the endpoint's bound when H1 was found, v1's records, kept to bracket that finding; F6). |
+| R04 | No state machine added. The follow ends at one of three named facts; settle's outcomes are named in its output (unchanged, format only, refresh written back, conflict); fetch.sh's signature refusals are typed by GnuPG's own statuses, an exit and words each (F8). |
+| R05 | Waits: the 200 ms and 2 s polls of the record became a follow of its change stream (F3, F5); every other wait ends at its fact (F2). No cache. Abstractions: two check functions serve the real cases and the light tests; `follow` and `followed_far_enough` serve one caller each, the second also the light test. |
+| R06, R07, R13 | Small functions; comments carry sources and derivations. H1's stale "red" text corrected (F6). |
+| R08, R14 | No performance claim. |
+| R09 | F1 reproduced red by the new self-test against main's script; F5 by the stand-in test against `ecd19d38c`'s `bringup.sh` (its 300 s deadline). F2 to F4 remove literals, so their red is the literal at `ecd19d38c`, not a run. F8's O1 to O3 reproduced red by fetch-test.sh against main's rule, its arm64 gap and its own fetch.sh; F9's O4 and O5 reproduced red by their tests against `af15d4532`'s scripts; O6's red is Windows' (`ntfs::stat`'s source), not this host's. A clock cure slice B made without reproducing it is taken back (F5's correction). |
+| R10 | Each fix red, green, and red with its guard removed, each one focused test (F1: three; F3/F7: five; F5: one; F8: four; F9: three). The harnesses are committed (`credentials_test.py`, `bringup-test.sh`, `fetch-test.sh` and its recordings, `signed-in-test.sh`, the light tests). |
+| R11 | Light checks on macOS arm64 only (`bringup.sh` under its stand-in there, with the host's `date` too; `fetch-test.sh` with bash 3.2). fetch.sh now fetches arm64's builds and runs on macOS arm64 and Linux arm64 too (F8); signed-in.sh runs on macOS as on Linux, Windows refused with its fact (F9); the probe takes Windows' own modes, its Windows lint clean (F9). Linux and Windows clippy of the test target, and the cases on every backend, are owed below. |
+| R12 | Nothing platform-specific added. |
+| R15 | Implementer: light tests on one runner; landed fast-forward as ROOT directs. |
+| R16 | The runner's `~/g121-tmp/s2-8-src`, `-py`, `-target` and `-logs` are removed at the step's end. |
+
+## What ran where
+
+All on adas-mac-studio-3.local (macOS 26.2, arm64), through the step's carrier:
+`python3 -I …/credentials_test.py`; `cargo test -p shards --test harness_bringup`;
+`bash …/bringup-test.sh`; `bash …/fetch-test.sh`; `cargo fmt -p shards -- --check`; `cargo
+clippy -p shards --all-targets -- -D warnings`. Results are in F1's, F8's and the slices' tables. fetch-test's
+GnuPG recordings were made on adas-macbook-pro-2, the one machine with gpg (F8). Not run: anything on
+Linux or Windows, any real VM, scripts/lint, scripts/check-development-policy, and any vendor
+CLI.
+
+## Landed
+
+| Commit | What |
+|---|---|
+| `037fa7322`, merge `4e53fcdfe` | F1: the leak check, `credentials_test.py`, this record begun |
+| `da5c744b8`, merges `fe816ed63`, `29dde4f4c` | F2 to F7: the test and `bringup.sh` without a clock, the follow, `sleep infinity`, H1's text, R10's light tests, `bringup-test.sh` |
+| `73e9f1b42`, merges `23fd1813e`, `a57047fe3` | this record's rest; D236's list of examples and its pointer here; v1's and v2's READMEs pointed here; `bringup.sh`'s `step` as it was (F5's correction); `bringup-test.sh` runs the script with the host's `date` too |
+| `8bccab8ad` | F8: fetch.sh's O1 to O3, `fetch-test.sh` and its recordings |
+| `c8decf253`, merge `3c9920fef` | F8 here, O1 to O3 moved from owed |
+| `bfb46e2c4` | F9: O4 to O6, `signed-in-test.sh` |
+| `32f492c2b`, merges `60767b3c7`, `6d5661377`, `e38695b92`, `e3b5cf0b3` | F9 here, O4 to O6 moved from owed |
+| this commit | O7 done by goal 58's call C (`212301f98`); F2, F6 and R03 say so |
+
+## Owed to ROOT
+
+Each command runs from a checkout at or after this record's landing.
+
+- **The lane's real-VM cases** (`crates/shards/tests/harness_bringup.rs`, all ignored), on
+  every backend: KVM x86_64 (Linux), HVF arm64 (macOS), KVM arm64 through L1 (an M3 or later
+  Mac), WHP x86_64 (jupiter). WHP arm64 is unverified (no host). With the publishers'
+  binaries for the guest's architecture (O3) in `OUTDIR`:
+
+      SHARDS_HARNESS_CODEX=OUTDIR/codex SHARDS_HARNESS_CLAUDE=OUTDIR/claude \
+      SHARDS_HARNESS_RECORDS=/abs/new/dir \
+      cargo test --profile test-release -p shards --test harness_bringup -- --ignored --test-threads=1
+
+  The probes alone (no publisher's binary, no vendor CLI):
+
+      cargo test --profile test-release -p shards --test harness_bringup -- --ignored --exact \
+        a_volume_given_at_run_time_is_the_harness_own \
+        an_owners_subscription_outlives_a_quiet_harness \
+        an_owners_subscription_outlives_a_silence_within_its_idle_bound --test-threads=1
+
+  Every Codex and Claude Code case starts its CLI with a prompt: without a credential, or with
+  the placeholder, the provider (or Claude Code itself) refuses it. Whether to run them is
+  ROOT's, as are the signed-in turns (`a_real_codex_signed_in_runs_a_tool_and_answers`,
+  `a_real_claude_code_signed_in_answers`), which run through
+  `docs/research/measurements/harness-bringup-v2/signed-in.sh codex|claude BIN_ROOT WORK` on the
+  Linux host that holds the sign-in (O4).
+- **A long turn** past the owner endpoint's patience: the H1 pair above, and a real harness
+  silent for longer; now that the test keeps no clock (F2, F4), nothing but the run's facts
+  bound it.
+- **The user path** on each host: `docs/research/measurements/harness-bringup-v1/bringup.sh
+  target/test-release/shards docs/examples/harness-codex OUTDIR/codex WORKDIR`, and `…-claude`.
+- **The light gates off this runner:** the test target's clippy on Linux x86_64 (`cargo clippy -p
+  shards --all-targets --target x86_64-unknown-linux-gnu -- -D warnings`, with scripts/lint's zig
+  CC) and Windows x86_64 (`cargo xwin clippy -p shards --all-targets --target
+  x86_64-pc-windows-msvc -- -D warnings`); `scripts/check-development-policy`; `scripts/lint`.
+  The runner has no zig or cargo-xwin. CI on main runs the matrix.
+- **F9's runs off this host.** On a Linux host: `python3 -I
+  docs/research/measurements/harness-bringup-v2/credentials_test.py` (settle's renameat2 swap)
+  and `bash docs/research/measurements/harness-bringup-v2/signed-in-test.sh`; the volume probe
+  `a_volume_given_at_run_time_is_the_harness_own` on WHP x86_64, as above. The signed-in turns
+  now run from macOS for Codex, and for Claude Code where its file form exists; a Windows
+  host's turns wait on a Windows store (F9, O4).
+- **fetch.sh's real fetch and verify (F8)** of both architectures: `fetch.sh OUTDIR amd64` and
+  `fetch.sh OUTDIR arm64` on a Linux host and on macOS arm64, with gpg, each leaving
+  `fetched.json`.

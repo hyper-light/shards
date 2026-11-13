@@ -241,6 +241,23 @@ fn numbered() -> impl Iterator<Item = (libc::c_int, u32)> {
 /// The handler that keeps a blocked signal pending for sigwait(3) on XNU; it never runs.
 extern "C" fn kept_for_sigwait(_: libc::c_int) {}
 
+/// Gives `sig` [`kept_for_sigwait`], so that XNU keeps it pending for sigwait(3) where its
+/// default is to ignore it (SIGWINCH, SIGIO; M31). Whether this process was started
+/// ignoring it.
+fn keep_for_sigwait(sig: libc::c_int) -> io::Result<bool> {
+    // SAFETY: sigaction(2) reads and writes of a disposition, on valid structures.
+    unsafe {
+        let mut kept: libc::sigaction = std::mem::zeroed();
+        kept.sa_sigaction = kept_for_sigwait as extern "C" fn(libc::c_int) as libc::sighandler_t;
+        kept.sa_flags = libc::SA_RESTART;
+        let mut was: libc::sigaction = std::mem::zeroed();
+        if libc::sigaction(sig, &kept, &mut was) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(was.sa_sigaction == libc::SIG_IGN)
+    }
+}
+
 /// Readies this process to take the signals it forwards (`forwarded(reads_terminal)`)
 /// with sigwait(3). It blocks them in the calling thread, whose later threads inherit the
 /// mask, then makes any that this process was started ignoring default again, as Go's
@@ -267,14 +284,7 @@ pub fn take_forwarded(reads_terminal: bool) -> io::Result<(libc::sigset_t, Vec<l
         let mut ignored = Vec::new();
         for (sig, _) in forwarded(reads_terminal) {
             if sig == libc::SIGWINCH || sig == libc::SIGIO {
-                let mut kept: libc::sigaction = std::mem::zeroed();
-                kept.sa_sigaction = kept_for_sigwait as extern "C" fn(libc::c_int) as libc::sighandler_t;
-                kept.sa_flags = libc::SA_RESTART;
-                let mut was: libc::sigaction = std::mem::zeroed();
-                if libc::sigaction(sig, &kept, &mut was) != 0 {
-                    return Err(io::Error::last_os_error());
-                }
-                if was.sa_sigaction == libc::SIG_IGN {
+                if keep_for_sigwait(sig)? {
                     ignored.push(sig);
                 }
                 continue;
@@ -294,6 +304,26 @@ pub fn take_forwarded(reads_terminal: bool) -> io::Result<(libc::sigset_t, Vec<l
         }
         Ok((set, ignored))
     }
+}
+
+/// Readies this process to take SIGWINCH with sigwait(3), as a client that forwards no
+/// other signal follows its terminal's size (an exec's): blocked in the calling thread,
+/// whose later threads inherit the mask, and kept pending on XNU as [`take_forwarded`]
+/// keeps it, where its default would drop it as it is sent. Returns the set to wait on.
+pub fn take_resizes() -> io::Result<libc::sigset_t> {
+    // SAFETY: sigset operations on a local set, and pthread_sigmask on this thread.
+    let set = unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        libc::sigaddset(&mut set, libc::SIGWINCH);
+        let blocked = libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
+        if blocked != 0 {
+            return Err(io::Error::from_raw_os_error(blocked));
+        }
+        set
+    };
+    keep_for_sigwait(libc::SIGWINCH)?;
+    Ok(set)
 }
 
 impl Identity {
@@ -580,6 +610,35 @@ pub fn end(sock: &UnixStream) {
     let _ = sock.shutdown(Shutdown::Read);
 }
 
+/// Whether `sock` has hung up, asked at once: it takes no more writes, its peer gone (its
+/// close; on Linux its reads shut too) or this side's own writes ended (on Linux, once its
+/// reads have ended as well), poll(2)'s POLLHUP or POLLERR for a socket asked for POLLOUT. A
+/// peer that ended only its writes, a half-close, leaves it POLLOUT alone: so what a read's
+/// end was, measured on macOS 26 and Linux 7.3 (PM M559). XNU shows no peer's
+/// shutdown(SHUT_RDWR), whose socket takes writes on (M236).
+pub fn hung_up(sock: &UnixStream) -> io::Result<bool> {
+    let mut fds = [libc::pollfd {
+        fd: sock.as_raw_fd(),
+        events: libc::POLLOUT,
+        revents: 0,
+    }];
+    loop {
+        // SAFETY: one pollfd of a descriptor `sock` holds open; a timeout of 0 waits for none.
+        if unsafe { libc::poll(fds.as_mut_ptr(), 1, 0) } >= 0 {
+            break;
+        }
+        let e = io::Error::last_os_error();
+        if e.kind() != io::ErrorKind::Interrupted {
+            return Err(e);
+        }
+    }
+    let revents = fds.first().map_or(0, |fd| fd.revents);
+    if revents & libc::POLLNVAL != 0 {
+        return Err(io::Error::from_raw_os_error(libc::EBADF));
+    }
+    Ok(revents & (libc::POLLHUP | libc::POLLERR) != 0)
+}
+
 /// Waits in poll(2) until `fd` has something to read, or has ended: until `deadline`
 /// where there is one (`TimedOut`); else as a read would, not at all where `fd` is set
 /// not to block, and no longer than a socket's receive timeout (`WouldBlock`).
@@ -688,12 +747,93 @@ pub fn await_fifo(fd: BorrowedFd<'_>) -> io::Result<()> {
     }
 }
 
+/// Waits until the FIFO or pipe `fd`, a write end, has room for some of what is to be written,
+/// or its reader has gone, which the write that follows says. On macOS in select(2): there
+/// poll(2) for POLLOUT slept through a full FIFO's reader's end, 3 s of 3, where select saw it
+/// in 0.13 s (PM M549), as a read can sleep through its writer's end (PM M253). Elsewhere in
+/// poll(2), which says POLLERR as a pipe's last reader goes (Linux fs/pipe.c, `pipe_poll`).
+pub fn await_fifo_room(fd: BorrowedFd<'_>) -> io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: as `await_fifo`'s.
+        unsafe extern "C" {
+            #[link_name = "select$DARWIN_EXTSN"]
+            fn select_any(
+                nfds: libc::c_int,
+                read: *mut u32,
+                write: *mut u32,
+                error: *mut u32,
+                timeout: *mut libc::timeval,
+            ) -> libc::c_int;
+        }
+        let raw = fd.as_raw_fd();
+        let at = usize::try_from(raw).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+        let bound = raw
+            .checked_add(1)
+            .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+        // An fd_set's bits, 32 to a word, as FD_SET sets them.
+        let mut set = vec![0u32; at / 32 + 1];
+        loop {
+            if let Some(word) = set.get_mut(at / 32) {
+                *word = 1 << (at % 32);
+            }
+            // SAFETY: a set of `bound` descriptors' bits, as long as that, and no timeout:
+            // select(2) waits until `fd` is writable, or a signal cuts it short.
+            let n = unsafe {
+                select_any(
+                    bound,
+                    std::ptr::null_mut(),
+                    set.as_mut_ptr(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                )
+            };
+            if n > 0 {
+                return Ok(());
+            }
+            let e = io::Error::last_os_error();
+            if n < 0 && e.kind() != io::ErrorKind::Interrupted {
+                return Err(e);
+            }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let mut pfd = libc::pollfd {
+            fd: fd.as_raw_fd(),
+            events: libc::POLLOUT,
+            revents: 0,
+        };
+        loop {
+            // SAFETY: poll(2) of one pollfd, of a descriptor `fd` borrows, with no timeout.
+            match unsafe { libc::poll(&mut pfd, 1, -1) } {
+                n if n > 0 => return Ok(()),
+                0 => {}
+                _ => {
+                    let e = io::Error::last_os_error();
+                    if e.kind() != io::ErrorKind::Interrupted {
+                        return Err(e);
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Waits until one of `fds`, FIFOs or pipes, has something to read or has ended, and says
 /// which, in their order: on macOS in select(2), as [`await_fifo`] waits, every descriptor
 /// however high; elsewhere in poll(2), which sees a FIFO's end there (PM M253).
 pub fn await_any(fds: &[BorrowedFd<'_>]) -> io::Result<Vec<bool>> {
     await_any_within(fds, None)
 }
+
+/// The longest one select(2) waits on macOS: XNU refuses a longer timeout with EINVAL
+/// (bsd/kern/kern_time.c, `itimerfix`: `tv_sec > 100000000`), checked before it looks at
+/// any descriptor (bsd/kern/sys_generic.c, `select_nocancel`). A longer wait is several
+/// selects: a daemon's patience for a request doubles with each cut in a row (D222), past
+/// this after 27, and every slot's wait then failed at once (PM M542).
+#[cfg(target_os = "macos")]
+const SELECT_MOST: Duration = Duration::from_secs(100_000_000);
 
 /// [`await_any`], waiting no longer than `timeout` where one is given: then none is ready.
 pub fn await_any_within(fds: &[BorrowedFd<'_>], timeout: Option<Duration>) -> io::Result<Vec<bool>> {
@@ -734,9 +874,14 @@ pub fn await_any_within(fds: &[BorrowedFd<'_>], timeout: Option<Duration>) -> io
                     *word |= 1 << (fd % 32);
                 }
             }
-            let mut tv = left().map(|l| libc::timeval {
-                tv_sec: libc::time_t::try_from(l.as_secs()).unwrap_or(libc::time_t::MAX),
-                tv_usec: libc::suseconds_t::try_from(l.subsec_micros()).unwrap_or(0),
+            let wait = left();
+            let cut = wait.is_some_and(|l| l > SELECT_MOST);
+            let mut tv = wait.map(|l| {
+                let l = l.min(SELECT_MOST);
+                libc::timeval {
+                    tv_sec: libc::time_t::try_from(l.as_secs()).unwrap_or(libc::time_t::MAX),
+                    tv_usec: libc::suseconds_t::try_from(l.subsec_micros()).unwrap_or(0),
+                }
             });
             let tv_at = tv.as_mut().map_or(std::ptr::null_mut(), std::ptr::from_mut);
             // SAFETY: a set of `bound` descriptors' bits, as long as that, and a timeout of
@@ -756,8 +901,12 @@ pub fn await_any_within(fds: &[BorrowedFd<'_>], timeout: Option<Duration>) -> io
                     .map(|fd| set.get(fd / 32).is_some_and(|w| w & (1 << (fd % 32)) != 0))
                     .collect());
             }
-            if n == 0 {
+            // A wait cut to select's most goes on to its own deadline.
+            if n == 0 && !cut {
                 return Ok(vec![false; at.len()]);
+            }
+            if n == 0 {
+                continue;
             }
             let e = io::Error::last_os_error();
             if e.kind() != io::ErrorKind::Interrupted {
@@ -1088,21 +1237,31 @@ pub fn peak_commit_kib() -> u64 {
     0
 }
 
-/// This process's own memory now, in KiB, as memory per VM is counted (PM M30's
+/// This process's own memory now, in KiB ([`footprint`]); 0 where unknown.
+pub fn footprint_kib() -> u64 {
+    footprint().map_or(0, |bytes| bytes / 1024)
+}
+
+/// This process's own memory now, in bytes, as memory per VM is counted (PM M30's
 /// `phys_footprint`): macOS's physical footprint, its private and copied pages, without the
 /// file pages it shares with every process mapping them, a template's among them; Linux's
 /// anonymous resident pages (`RssAnon`, proc(5)), which a written page of a private file
-/// mapping becomes. 0 where unknown.
-pub fn footprint_kib() -> u64 {
+/// mapping becomes. As the daemon reads a VM process's (`platform::process_usage`). None
+/// where it cannot be read.
+pub fn footprint() -> Option<u64> {
     #[cfg(target_os = "linux")]
     {
         std::fs::read_to_string("/proc/self/status")
             .ok()
             .and_then(|status| {
                 let line = status.lines().find_map(|l| l.strip_prefix("RssAnon:"))?;
-                line.trim().strip_suffix("kB")?.trim().parse().ok()
+                line.trim()
+                    .strip_suffix("kB")?
+                    .trim()
+                    .parse::<u64>()
+                    .ok()?
+                    .checked_mul(1024)
             })
-            .unwrap_or(0)
     }
     #[cfg(target_vendor = "apple")]
     {
@@ -1117,13 +1276,10 @@ pub fn footprint_kib() -> u64 {
                 (&raw mut info).cast::<libc::rusage_info_t>(),
             )
         };
-        if got != 0 {
-            return 0;
-        }
-        info.ri_phys_footprint / 1024
+        (got == 0).then_some(info.ri_phys_footprint)
     }
     #[cfg(not(any(target_os = "linux", target_vendor = "apple")))]
-    0
+    None
 }
 
 /// The effective user ID of the process at the other end of `sock`, as it connected:
@@ -1635,6 +1791,46 @@ pub(crate) mod tests {
 
     use super::*;
 
+    /// SIGWINCH, taken for sigwait(3) by a client that forwards no other signal (an exec's
+    /// under `-it`), stays pending as its terminal sends it, and sigwait takes it: XNU drops
+    /// it at its default, blocked or not (M31), and no exec's terminal followed its client's
+    /// on the Mac (ROOT's HVF run at 41d35bde1: tty.rs `an_execs_terminal_follows_its_clients`
+    /// and member_exec's resize case, each exec's command still in sigsuspend).
+    #[test]
+    fn a_resize_taken_alone_stays_pending_for_sigwait() {
+        let set = take_resizes().unwrap();
+        // Sent to this thread alone, which blocks it.
+        // SAFETY: pthread_kill of this thread; sigpending and sigwait into locals.
+        unsafe {
+            assert_eq!(libc::pthread_kill(libc::pthread_self(), libc::SIGWINCH), 0);
+            let mut pending: libc::sigset_t = std::mem::zeroed();
+            assert_eq!(libc::sigpending(&mut pending), 0);
+            assert_eq!(
+                libc::sigismember(&pending, libc::SIGWINCH),
+                1,
+                "SIGWINCH was dropped as it was sent"
+            );
+            let mut sig = 0;
+            assert_eq!(libc::sigwait(&set, &mut sig), 0);
+            assert_eq!(sig, libc::SIGWINCH);
+        }
+    }
+
+    /// A wait longer than one select(2) may take on macOS is waited, not refused: a ready
+    /// pipe is told ready under a timeout of 2^34 s, past XNU's most, as under any other
+    /// (EINVAL before, PM M542). Elsewhere poll(2) took it already.
+    #[test]
+    fn a_wait_past_selects_most_is_waited_not_refused() {
+        let (read, mut write) = std::io::pipe().unwrap();
+        std::io::Write::write_all(&mut write, b"x").unwrap();
+        let ready = await_any_within(&[read.as_fd()], Some(Duration::from_secs(1 << 34))).unwrap();
+        assert_eq!(ready, vec![true]);
+        // And one that nothing comes on is told so within its own short wait.
+        let (quiet, _held) = std::io::pipe().unwrap();
+        let none = await_any_within(&[quiet.as_fd()], Some(Duration::from_millis(1))).unwrap();
+        assert_eq!(none, vec![false]);
+    }
+
     /// What [`take_rest`] does to a process, done in a child of its own, this binary run
     /// for [`signal_child`] alone, `case` naming what it does: this process keeps its
     /// signals as they were. Its status, and what it printed, once it ends or is ended
@@ -1964,6 +2160,35 @@ pub(crate) mod tests {
         assert_eq!((m.kind, m.payload.as_slice(), m.fds.len()), (5, &b"abc"[..], 0));
         drop(split.join().unwrap());
         assert!(recv_by(&b, deadline).unwrap().is_none(), "a clean end");
+    }
+
+    /// A socket whose peer has gone has hung up, and one whose peer ended its writes alone has
+    /// not, its reads ending alike (D251's cut and half-close); this side's own end of writes
+    /// before its peer's hangs it up too.
+    #[test]
+    fn hung_up_tells_a_peer_gone_from_a_half_close() {
+        let mut byte = [0u8; 1];
+        let (here, peer) = UnixStream::pair().unwrap();
+        assert!(!hung_up(&here).unwrap(), "open both ways");
+        peer.shutdown(Shutdown::Write).unwrap();
+        assert_eq!(read(&here, &mut byte).unwrap(), 0, "its end");
+        assert!(!hung_up(&here).unwrap(), "a half-close");
+        (&here).write_all(b"on").unwrap();
+
+        let (here, peer) = UnixStream::pair().unwrap();
+        drop(peer);
+        assert_eq!(read(&here, &mut byte).unwrap(), 0, "its end");
+        assert!(hung_up(&here).unwrap(), "its peer gone");
+        assert_eq!(
+            (&here).write_all(b"x").unwrap_err().kind(),
+            io::ErrorKind::BrokenPipe
+        );
+
+        let (here, peer) = UnixStream::pair().unwrap();
+        here.shutdown(Shutdown::Write).unwrap();
+        peer.shutdown(Shutdown::Write).unwrap();
+        assert_eq!(read(&here, &mut byte).unwrap(), 0, "its end");
+        assert!(hung_up(&here).unwrap(), "its own writes ended, then its peer's");
     }
 
     #[test]
@@ -2359,9 +2584,12 @@ pub(crate) mod tests {
         }
     }
 
-    /// [`read`] waits as a read would: no longer than its socket's receive timeout, and
-    /// not at all where it is set not to block, as messages do; and it reads a pipe once
-    /// something comes, and a socket to its end through [`Polled`].
+    /// [`read`] waits as a read would: until its socket's receive timeout, and not at all
+    /// where it is set not to block, as messages do; and it reads a pipe once something
+    /// comes, and a socket to its end through [`Polled`]. Nothing comes on these sockets,
+    /// so a read that waited past its timeout would never end: `WouldBlock` is its proof,
+    /// and its time is held only to the timeout from below. A ceiling would be a chosen
+    /// multiple, and a host that pauses the process (a cgroup frozen by a pacer) passes it.
     #[test]
     fn a_read_waits_as_a_read_would() {
         use std::time::Duration;
@@ -2377,17 +2605,16 @@ pub(crate) mod tests {
             };
             assert_eq!(failed.kind(), io::ErrorKind::WouldBlock);
             let waited = start.elapsed();
-            assert!(waited >= timeout && waited < 50 * timeout, "{waited:?}");
+            assert!(waited >= timeout, "{waited:?}");
         }
+        // Set not to block, with no timeout left: one that waited would wait for ever.
         b.set_read_timeout(None).unwrap();
         b.set_nonblocking(true).unwrap();
-        let start = Instant::now();
         assert_eq!(
             read(&b, &mut [0u8; 8]).unwrap_err().kind(),
             io::ErrorKind::WouldBlock
         );
         assert_eq!(recv(&b).unwrap_err().kind(), io::ErrorKind::WouldBlock);
-        assert!(start.elapsed() < Duration::from_secs(1));
 
         let (r, mut w) = pipe();
         let writer = std::thread::spawn(move || {

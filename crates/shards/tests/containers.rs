@@ -29,9 +29,18 @@ use common::{shards, shards_vm};
 
 const TIMEOUT: Duration = Duration::from_secs(60);
 
-/// `shards ARGS` in `home`, whose runs boot the test kernel and init.
+/// `shards ARGS` in `home`, whose runs boot the test kernel and init, waited on as long as
+/// it goes on (`common::run_command`): a large `-m` whose guest plugs and touches gigabytes
+/// on a slow, contended CI runner progresses for minutes (`run_limits_a_microvms_resources`
+/// took 199 s under 32 busy loops where it took 30 idle).
 fn shards_in(home: &Path, args: &[&str]) -> Run {
-    shards_in_within(home, args, TIMEOUT)
+    let (kernel, init) = (kernel(), guest_init());
+    let env: [(&str, &OsStr); 3] = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel.as_os_str()),
+        ("SHARDS_INIT", init.as_os_str()),
+    ];
+    run_shards_env(&[], args, &env)
 }
 
 /// Stops run `name` of `home`, as a test that needs it stopped does. A stop that hears no
@@ -65,20 +74,6 @@ fn stop_run(home: &Path, name: &str) {
     );
 }
 
-/// [`shards_in`] with a timeout of its own, for a run whose work is heavier than a start:
-/// a large `-m` whose guest plugs and touches gigabytes takes far longer than [`TIMEOUT`]
-/// on a slow, contended CI runner (it progresses, it is not hung: the whole of
-/// `run_limits_a_microvms_resources` took 199 s under 32 busy loops where it took 30 idle).
-fn shards_in_within(home: &Path, args: &[&str], timeout: Duration) -> Run {
-    let (kernel, init) = (kernel(), guest_init());
-    let env: [(&str, &OsStr); 3] = [
-        ("SHARDS_HOME", home.as_os_str()),
-        ("SHARDS_KERNEL", kernel.as_os_str()),
-        ("SHARDS_INIT", init.as_os_str()),
-    ];
-    run_shards_env(&[], args, &env, timeout)
-}
-
 /// `shards run` of the test image, with `options` before the image and `command` after it.
 fn run_args(image: &str, options: &[&str], command: &[&str]) -> Vec<String> {
     let mut args: Vec<String> = ["run", "--pull", "never"].map(String::from).to_vec();
@@ -89,14 +84,9 @@ fn run_args(image: &str, options: &[&str], command: &[&str]) -> Vec<String> {
 }
 
 fn run_in(home: &Path, image: &str, options: &[&str], command: &[&str]) -> Run {
-    run_in_within(home, image, options, command, TIMEOUT)
-}
-
-/// [`run_in`] with a timeout of its own ([`shards_in_within`]), for a memory-heavy run.
-fn run_in_within(home: &Path, image: &str, options: &[&str], command: &[&str], timeout: Duration) -> Run {
     let args = run_args(image, options, command);
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    shards_in_within(home, &args, timeout)
+    shards_in(home, &args)
 }
 
 /// What `home`'s daemon logged of processes ended for want of memory, for a failure's
@@ -171,16 +161,19 @@ fn ended(child: &mut Child, stderr: Option<&Path>) -> String {
 }
 
 /// Waits for a child, a client of `home`'s daemon, failing the test rather than hanging it:
-/// within [`TIMEOUT`], or past it while the daemon or its microVMs progress ([`Patience`]).
+/// for as long as the daemon or its microVMs progress ([`Patience`], its kind its caller's
+/// call site).
+#[track_caller]
 fn exit(child: &mut Child, home: &Path) -> Option<i32> {
-    let mut patience = Patience::of(home, TIMEOUT);
+    let mut patience = Patience::of(home);
     loop {
         if let Some(status) = child.try_wait().unwrap() {
+            patience.done();
             return status.code();
         }
         if !patience.holds() {
             let _ = child.kill();
-            panic!("shards run did not exit within {TIMEOUT:?}");
+            panic!("shards run did not exit, its daemon and microVMs no longer progressing");
         }
         std::thread::sleep(Duration::from_millis(5));
     }
@@ -278,11 +271,12 @@ fn a_joiner_is_a_container_of_its_own() {
         &["trap", "TERM"],
     );
     assert_eq!(detached.status, Some(0), "{detached}");
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     while !shards(&["logs", "joiner"]).stdout.contains("ready") {
         assert!(patience.holds(), "the joiner never said it was ready");
         std::thread::sleep(Duration::from_millis(20));
     }
+    patience.done();
     let hostname = shards(&["inspect", "-f", "{{.Config.Hostname}}", "prov"]);
     let hostname = hostname.stdout.trim().to_string();
     assert_eq!(hostname.len(), 12, "the provider's hostname: {hostname:?}");
@@ -689,13 +683,14 @@ fn a_joiner_may_share_its_providers_pid_namespace() {
     let left = shards(&["exec", "-d", "joiner", "/bin/testguest", "fs", "sleep:600000"]);
     assert_eq!(left.status, Some(0), "{left}");
     let seen = || shards(&["exec", "prov", "/bin/testguest", "ps"]).stdout;
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     while !seen().contains("fs sleep:600000") {
         assert!(patience.holds(), "the exec never showed: {}", seen());
         std::thread::sleep(Duration::from_millis(20));
     }
+    patience.done();
     assert_eq!(shards(&["stop", "-t", "1", "joiner"]).status, Some(0));
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     while seen().contains("fs sleep:600000") {
         assert!(
             patience.holds(),
@@ -704,6 +699,7 @@ fn a_joiner_may_share_its_providers_pid_namespace() {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
+    patience.done();
     // The microVM's own, with `--pid host`: init its PID 1.
     let host = run_in(
         &home,
@@ -801,11 +797,12 @@ fn a_joiner_may_share_another_joiners_pid_namespace() {
     // j1's end is its namespace's: j2's command goes with it, killed.
     assert_eq!(shards(&["stop", "-t", "1", "j1"]).status, Some(0));
     let state = || shards(&["inspect", "-f", "{{.State.Status}} {{.State.ExitCode}}", "j2"]).stdout;
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     while state() != "exited 137\n" {
         assert!(patience.holds(), "j2 outlived its namespace: {}", state());
         std::thread::sleep(Duration::from_millis(20));
     }
+    patience.done();
     assert_eq!(shards(&["stop", "-t", "1", "j3"]).status, Some(0));
     assert_eq!(shards(&["stop", "-t", "1", "prov"]).status, Some(0));
     let _ = exit(&mut provider, &home);
@@ -1236,15 +1233,18 @@ fn stats_measures_each_microvm_from_its_guest() {
 /// M145): its shell and ps say what a command sees of its PID namespace.
 const ALPINE: &str = "alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8";
 
-/// A home with `image` pulled from its registry.
-fn pulled(name: &str, image: &str) -> Option<TempDir> {
+/// A home with `image`, a remote registry's pinned by its digest, pulled from the tests'
+/// own registry (`common::hub`), never from its own as a test runs; and the name it is run
+/// by there.
+fn pulled(name: &str, image: &str) -> Option<(TempDir, String)> {
     if cannot_run_vms() {
         return None;
     }
+    let image = common::hub(image);
     let home = TempDir::new(name);
-    let pulled = shards_in(&home, &["pull", "-q", image]);
+    let pulled = shards_in(&home, &["pull", "-q", &image]);
     assert_eq!(pulled.status, Some(0), "{pulled}");
-    Some(home)
+    Some((home, image))
 }
 
 /// A run's command is PID 1 of a PID namespace of its own, as a container's is (D115), with
@@ -1256,9 +1256,10 @@ fn pulled(name: &str, image: &str) -> Option<TempDir> {
 /// `--init`'s command, which is 0 here, its parent being init, outside the namespace.
 #[test]
 fn a_command_is_pid_1_as_a_containers_is() {
-    let Some(home) = pulled("containers-pid1", ALPINE) else {
+    let Some((home, alpine)) = pulled("containers-pid1", ALPINE) else {
         return;
     };
+    let alpine = alpine.as_str();
     let shards = |args: &[&str]| shards_in(&home, args);
     let run = |args: &[&str]| {
         let mut all = vec!["run", "--rm"];
@@ -1266,18 +1267,18 @@ fn a_command_is_pid_1_as_a_containers_is() {
         shards(&all)
     };
     let said = |r: &Run| (r.status, r.stdout.clone());
-    let r = run(&[ALPINE, "sh", "-c", "echo $$"]);
+    let r = run(&[alpine, "sh", "-c", "echo $$"]);
     assert_eq!(said(&r), (Some(0), "1\n".into()), "{r}");
     // From inside, PID 1 hears only what it handles: TERM and KILL alike go unheard.
-    let r = run(&[ALPINE, "sh", "-c", "kill -TERM 1; kill -KILL 1; echo alive"]);
+    let r = run(&[alpine, "sh", "-c", "kill -TERM 1; kill -KILL 1; echo alive"]);
     assert_eq!(said(&r), (Some(0), "alive\n".into()), "{r}");
-    let r = run(&[ALPINE, "ps", "-o", "pid,ppid,comm"]);
+    let r = run(&[alpine, "ps", "-o", "pid,ppid,comm"]);
     assert_eq!(
         said(&r),
         (Some(0), "PID   PPID  COMMAND\n    1     0 ps\n".into()),
         "{r}"
     );
-    let r = run(&["--init", ALPINE, "ps", "-o", "pid,ppid,comm"]);
+    let r = run(&["--init", alpine, "ps", "-o", "pid,ppid,comm"]);
     assert_eq!(
         said(&r),
         (
@@ -1293,7 +1294,7 @@ fn a_command_is_pid_1_as_a_containers_is() {
             "--init",
             "-u",
             user,
-            ALPINE,
+            alpine,
             "sh",
             "-c",
             "kill -TERM 1; sleep 5; echo alive",
@@ -1336,7 +1337,7 @@ fn a_command_is_pid_1_as_a_containers_is() {
     ] {
         let mut args = vec!["run", "-d", "--name", name];
         args.extend_from_slice(flags);
-        args.push(ALPINE);
+        args.push(alpine);
         args.extend_from_slice(command);
         let started = shards(&args);
         assert_eq!(started.status, Some(0), "{started}");
@@ -1344,11 +1345,12 @@ fn a_command_is_pid_1_as_a_containers_is() {
         // neither handles nor blocks (kernel/signal.c, sig_task_ignored), as a container's
         // does under Docker, and a shell may not have run `trap` as `run -d` returns.
         if let Some(ready) = ready {
-            let mut patience = Patience::of(&home, TIMEOUT);
+            let mut patience = Patience::of(&home);
             while !shards(&["logs", name]).stdout.contains(ready) {
                 assert!(patience.holds(), "{name} never said {ready:?}");
                 std::thread::sleep(Duration::from_millis(20));
             }
+            patience.done();
         }
         let at = Instant::now();
         let stopped = shards(&["stop", "-t", timeout, name]);
@@ -1417,7 +1419,7 @@ fn a_command_is_pid_1_as_a_containers_is() {
     // `kill -s TERM` leaves it running; `kill`, SIGKILL, which PID 1 hears from outside,
     // ends it.
     assert_eq!(
-        shards(&["run", "-d", "--name", "deaf", ALPINE, "sleep", "1000"]).status,
+        shards(&["run", "-d", "--name", "deaf", alpine, "sleep", "1000"]).status,
         Some(0)
     );
     assert_eq!(shards(&["kill", "-s", "TERM", "deaf"]).status, Some(0));
@@ -1443,7 +1445,7 @@ fn a_command_is_pid_1_as_a_containers_is() {
     assert_eq!(code("deaf"), "137\n");
     // `top` lists the reaper under --init, as `docker top` lists docker-init.
     assert_eq!(
-        shards(&["run", "-d", "--init", "--name", "listed", ALPINE, "sleep", "1000"]).status,
+        shards(&["run", "-d", "--init", "--name", "listed", alpine, "sleep", "1000"]).status,
         Some(0)
     );
     let top = shards(&["top", "listed", "-o", "pid,comm"]);
@@ -1464,18 +1466,19 @@ fn a_command_is_pid_1_as_a_containers_is() {
         "on-failure:2",
         "--name",
         "again",
-        ALPINE,
+        alpine,
         "sh",
         "-c",
         "echo $$; exit 3",
     ]);
     assert_eq!(started.status, Some(0), "{started}");
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     let format = "{{.RestartCount}} {{.State.ExitCode}} {{.State.Status}}";
     while shards(&["inspect", "-f", format, "again"]).stdout != "2 3 exited\n" {
         assert!(patience.holds(), "again did not end its restarts");
         std::thread::sleep(Duration::from_millis(100));
     }
+    patience.done();
     assert_eq!(shards(&["logs", "again"]).stdout, "1\n1\n1\n");
 
     // `--pid host`: the microVM's own namespace, in which kthreadd is PID 2, and whose
@@ -1483,7 +1486,7 @@ fn a_command_is_pid_1_as_a_containers_is() {
     let r = run(&[
         "--pid",
         "host",
-        ALPINE,
+        alpine,
         "sh",
         "-c",
         "echo $$; cat /proc/2/comm; ls /proc/1/root >/dev/null 2>&1 && echo reached || echo denied",
@@ -1494,14 +1497,14 @@ fn a_command_is_pid_1_as_a_containers_is() {
         "{r}"
     );
     // The rest, refused in shards' words.
-    let r = run(&["--pid", "foo", ALPINE, "true"]);
+    let r = run(&["--pid", "foo", alpine, "true"]);
     assert!(
         r.status == Some(125)
             && r.stderr
                 .contains("--pid foo: give host (the microVM's PID namespace) or container:NAME"),
         "{r}"
     );
-    let r = shards(&["create", "--pid", "container:nope", ALPINE, "true"]);
+    let r = shards(&["create", "--pid", "container:nope", alpine, "true"]);
     assert_eq!(
         (r.status, r.stderr.as_str()),
         (Some(1), "shards: --pid container:nope: no run is named nope\n"),
@@ -1515,14 +1518,14 @@ fn a_command_is_pid_1_as_a_containers_is() {
     ] {
         let mut args = vec!["create", "--name", name];
         args.extend_from_slice(flags);
-        args.extend([ALPINE, "true"]);
+        args.extend([alpine, "true"]);
         assert_eq!(shards(&args).status, Some(0));
         let format = "{{json .HostConfig.Init}} {{json .HostConfig.PidMode}} {{if .HostConfig.Init}}set{{else}}unset{{end}}";
         assert_eq!(shards(&["inspect", "-f", format, name]).stdout, want, "{name}");
     }
     // Another run's, a microVM of its own: none of its processes' namespaces is ours,
     // but a joiner's of its network, in its microVM (D119).
-    let r = shards(&["create", "--pid", "container:i0", ALPINE, "true"]);
+    let r = shards(&["create", "--pid", "container:i0", alpine, "true"]);
     assert_eq!(
         (r.status, r.stderr.as_str()),
         (
@@ -1539,9 +1542,10 @@ fn a_command_is_pid_1_as_a_containers_is() {
 /// Docker 29.3.1 answered (M145).
 #[test]
 fn default_sysctls_let_ping_go_without_net_raw() {
-    let Some(home) = pulled("containers-sysctls", ALPINE) else {
+    let Some((home, alpine)) = pulled("containers-sysctls", ALPINE) else {
         return;
     };
+    let alpine = alpine.as_str();
     let run = |args: &[&str]| {
         let mut all = vec!["run", "--rm"];
         all.extend_from_slice(args);
@@ -1552,7 +1556,7 @@ fn default_sysctls_let_ping_go_without_net_raw() {
         "net.ipv4.ping_group_range",
         "net.ipv4.ip_unprivileged_port_start",
     ];
-    let mut args = vec![ALPINE];
+    let mut args = vec![alpine];
     args.extend(keys);
     let r = run(&args);
     assert_eq!(
@@ -1563,7 +1567,7 @@ fn default_sysctls_let_ping_go_without_net_raw() {
         ),
         "{r}"
     );
-    let mut args = vec!["--sysctl", "net.ipv4.ip_unprivileged_port_start=1024", ALPINE];
+    let mut args = vec!["--sysctl", "net.ipv4.ip_unprivileged_port_start=1024", alpine];
     args.extend(keys);
     let r = run(&args);
     assert!(
@@ -1575,7 +1579,7 @@ fn default_sysctls_let_ping_go_without_net_raw() {
         "NET_RAW",
         "-u",
         "1000",
-        ALPINE,
+        alpine,
         "ping",
         "-c",
         "1",
@@ -1596,13 +1600,13 @@ const S6: &str = "ghcr.io/linuxserver/baseimage-alpine:3.22@sha256:ab81abc99e45e
 
 #[test]
 fn an_s6_overlay_image_runs_as_pid_1() {
-    let Some(home) = pulled("containers-s6", S6) else {
+    let Some((home, s6)) = pulled("containers-s6", S6) else {
         return;
     };
     let run = |args: &[&str]| {
         let mut all = vec!["run", "--rm"];
         all.extend_from_slice(args);
-        all.extend([S6, "echo", "hello from s6"]);
+        all.extend([s6.as_str(), "echo", "hello from s6"]);
         shards_in(&home, &all)
     };
     let r = run(&[]);
@@ -1747,7 +1751,7 @@ fn a_volumes_large_files_go_through_its_dax_window() {
         ("SHARDS_INIT", init.as_os_str()),
         ("SHARDS_SHARE_WINDOW_MIB", "64".as_ref()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let pulled = shards(&["pull", "-q", &image]);
     assert_eq!(pulled.status, Some(0), "{pulled}");
     let dir = TempDir::new("containers-dax-v");
@@ -1757,6 +1761,19 @@ fn a_volumes_large_files_go_through_its_dax_window() {
         .collect();
     std::fs::write(dir.join("big"), &big).unwrap();
     std::fs::write(dir.join("small"), b"small").unwrap();
+    // Each file is made before the microVM runs: one the host makes while it runs is
+    // touched by its notice (D235) as the host writes it, and the guest's kernel decides a
+    // file's DAX as it first makes its inode (fs/fuse/dax.c, `fuse_dax_inode_init`), which
+    // a file not yet 1 MiB long then goes without until its inode is made again (PM M550).
+    let odd: Vec<u8> = (0..(3u32 << 20) + 5000)
+        .map(|i| (i.wrapping_mul(40_503) >> 8) as u8)
+        .collect();
+    std::fs::write(dir.join("odd"), &odd).unwrap();
+    std::fs::write(dir.join("held"), &odd).unwrap();
+    let pages: Vec<u8> = (0..4u32 << 20)
+        .map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8)
+        .collect();
+    std::fs::write(dir.join("pages"), &pages).unwrap();
     let volume = format!("{}:/v", dir.display());
     let run = shards(&[
         "run", "-d", "--pull", "never", "--name", "dax", "-u", "0", "-v", &volume, &image, "sleep",
@@ -1814,10 +1831,6 @@ fn a_volumes_large_files_go_through_its_dax_window() {
     // A file whose end is no range's: its last range is mapped past its end, where the
     // guest reads nothing. Grown past it, by the guest through FUSE and by the host, within
     // a range the guest maps, the guest reads through the window what each wrote.
-    let odd: Vec<u8> = (0..(3u32 << 20) + 5000)
-        .map(|i| (i.wrapping_mul(40_503) >> 8) as u8)
-        .collect();
-    std::fs::write(dir.join("odd"), &odd).unwrap();
     let digest = format!("{:016x}", shards_testguest::fnv1a(&odd));
     assert_eq!(exec(&["fs", "dax:/v/odd"]), "dax /v/odd yes\n");
     assert_eq!(exec(&["digest", "/v/odd"]), format!("digest /v/odd {digest}\n"));
@@ -1830,7 +1843,8 @@ fn a_volumes_large_files_go_through_its_dax_window() {
             format!("peek /v/odd {at} 7\n")
         );
     }
-    // The host's, which the guest reads once it asks the file's size again (VALID_S).
+    // The host's, which the guest reads once it learns the file's size again: as its notice
+    // is touched (D235), or as it asks once the size it holds has aged (VALID_S).
     let at = end + 40_000;
     {
         let odd_file = std::fs::OpenOptions::new()
@@ -1839,7 +1853,7 @@ fn a_volumes_large_files_go_through_its_dax_window() {
             .unwrap();
         common::write_at(&odd_file, &[9], at as u64);
     }
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     loop {
         let r = shards(&[
             "exec",
@@ -1850,15 +1864,17 @@ fn a_volumes_large_files_go_through_its_dax_window() {
         ]);
         if r.status == Some(0) {
             assert_eq!(r.stdout, format!("peek /v/odd {at} 9\n"));
+            patience.done();
             break;
         }
         assert!(patience.holds(), "{r}");
         std::thread::sleep(Duration::from_millis(100));
     }
-    // Cut short by the host under the guest's mapping: read there before the guest asks
-    // its size again, its window gives zeros past the file's end, where the host has no
-    // page to give, and the microVM runs on (D189); after, the guest is at the file's end.
-    // Written there again by the host, the guest reads the file's byte through the window.
+    // Cut short by the host under the guest's mapping: read there before the guest learns
+    // its size, its window gives zeros past the file's end, where the host has no page to
+    // give, and the microVM runs on (D189); after, by its notice or its asking again, the
+    // guest is at the file's end. Written there again by the host, the guest reads the
+    // file's byte through the window.
     let odd_file = std::fs::OpenOptions::new()
         .write(true)
         .open(dir.join("odd"))
@@ -1879,10 +1895,11 @@ fn a_volumes_large_files_go_through_its_dax_window() {
             "{cut}"
         );
         common::write_at(&odd_file, &[5], 3 << 20);
-        let mut patience = Patience::of(&home, TIMEOUT);
+        let mut patience = Patience::of(&home);
         loop {
             let r = shards(&["exec", "dax", "/bin/testguest", "fs", "peek:/v/odd:3145728"]);
             if r.stdout == "peek /v/odd 3145728 5\n" {
+                patience.done();
                 break;
             }
             assert!(
@@ -1894,11 +1911,13 @@ fn a_volumes_large_files_go_through_its_dax_window() {
             std::thread::sleep(Duration::from_millis(100));
         }
     }
-    // Cut short by the host while a process holds it open, read whole: with nothing asked
-    // about the file between, the holder's read past the new end goes through the mapping
-    // it holds, and reads zeros (Linux: the daemon's watch told the VM, PM M273; HVF: the
-    // read faults), its vCPU never spinning.
-    std::fs::write(dir.join("held"), &odd).unwrap();
+    // Moved out of the volume and cut short by the host while a process holds it open, read
+    // whole: the move is told the guest as its name goes, and the cut, of a file no name of
+    // the volume's is, nothing tells it of (D235), so that with nothing asked about the file
+    // between, the holder's read past the new end goes through the mapping it holds, and
+    // reads zeros (Linux: the daemon's watch told the VM, PM M273; HVF: the read faults),
+    // its vCPU never spinning. Cut in the volume, the guest learns the size as the cut's
+    // notice is touched, and reads the file's end (PM M550).
     let holder = {
         let home = home.to_path_buf();
         std::thread::spawn(move || {
@@ -1915,20 +1934,29 @@ fn a_volumes_large_files_go_through_its_dax_window() {
                 "fs",
                 "hold:/v/held:3145728:/v/held-go",
             ];
-            run_shards_env(&[], &hold, &env, TIMEOUT)
+            run_shards_env(&[], &hold, &env)
         })
     };
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     while !dir.join("held-go.ready").exists() {
         assert!(patience.holds(), "the holder never read the file");
         std::thread::sleep(Duration::from_millis(10));
     }
+    patience.done();
+    // Moved out first on Unix. Windows refuses the cut wherever the file is, its window
+    // mapping it, and the holder reads on (PM M412).
+    let elsewhere = TempDir::new("containers-dax-o");
+    let held_at = if cfg!(windows) {
+        dir.join("held")
+    } else {
+        std::fs::rename(dir.join("held"), elsewhere.join("held")).unwrap();
+        elsewhere.join("held")
+    };
     let cut = std::fs::OpenOptions::new()
         .write(true)
-        .open(dir.join("held"))
+        .open(held_at)
         .unwrap()
         .set_len(1 << 20);
-    // Refused on Windows, its window mapping it, which the holder reads on (PM M412).
     let past = if cfg!(windows) {
         assert_eq!(cut.unwrap_err().raw_os_error(), Some(1224));
         odd[3 << 20]
@@ -1943,10 +1971,6 @@ fn a_volumes_large_files_go_through_its_dax_window() {
     // 0009): on Linux the host lets go of the file's pages first, and the guest's kernel
     // writes them as a FUSE_WRITE, by its window's record; elsewhere through the window.
     // Either way the host reads them, and the guest reads them through its window.
-    let pages: Vec<u8> = (0..4u32 << 20)
-        .map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8)
-        .collect();
-    std::fs::write(dir.join("pages"), &pages).unwrap();
     #[cfg(target_os = "linux")]
     {
         use std::os::fd::AsRawFd as _;
@@ -1973,11 +1997,12 @@ fn a_volumes_large_files_go_through_its_dax_window() {
     }
     assert_eq!(shards(&["rm", "-f", "dax"]).status, Some(0));
     // Mapped 2 MiB at a time by a process as the host grows it, then stat'ed and opened
-    // again: the guest learns the new size, and lets go of none of the entries the process
-    // still maps, which Linux's FUSE did at both (PM M274): the device keeps them at the
-    // open, shards' kernel at the size (resources/kernel/patches/0007). No warning of
-    // fs/dax.c in the guest's log, which a privileged microVM's exec reads (syslog(2)'s
-    // CAP_SYSLOG is the first user namespace's).
+    // again: the guest learns the new size, from the reply to its notice's touch (D235) and
+    // as it stats the file, and lets go of none of the entries the process still maps,
+    // which Linux's FUSE did at each (PM M274, M550): the device keeps them at the open,
+    // shards' kernel at the size its attributes and a SETATTR's reply say
+    // (resources/kernel/patches/0007). No warning of fs/dax.c in the guest's log, which a
+    // privileged microVM's exec reads (syslog(2)'s CAP_SYSLOG is the first user namespace's).
     std::fs::write(dir.join("mapped"), [&big[..], &big[..1 << 20]].concat()).unwrap();
     let run = shards(&[
         "run",
@@ -2011,14 +2036,15 @@ fn a_volumes_large_files_go_through_its_dax_window() {
                 "fs",
                 "map2m:/v/mapped:/v/mapped-go",
             ];
-            run_shards_env(&[], &map, &env, TIMEOUT)
+            run_shards_env(&[], &map, &env)
         })
     };
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     while !dir.join("mapped-go.ready").exists() {
         assert!(patience.holds(), "the mapper never mapped the file");
         std::thread::sleep(Duration::from_millis(10));
     }
+    patience.done();
     {
         let file = std::fs::OpenOptions::new()
             .write(true)
@@ -2076,7 +2102,7 @@ fn a_volumes_files_are_mapped_from_dax_smallest_bytes() {
         ("SHARDS_INIT", init.as_os_str()),
         ("SHARDS_SHARE_WINDOW_MIB", "64".as_ref()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let pulled = shards(&["pull", "-q", &image]);
     assert_eq!(pulled.status, Some(0), "{pulled}");
     let dir = TempDir::new("containers-daxs-v");
@@ -2161,7 +2187,7 @@ fn a_volumes_large_files_go_through_a_dax_window_by_default() {
         if let Some(mib) = window {
             env.push(("SHARDS_SHARE_WINDOW_MIB", mib.as_ref()));
         }
-        let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+        let shards = |args: &[&str]| run_shards_env(&[], args, &env);
         let pulled = shards(&["pull", "-q", &image]);
         assert_eq!(pulled.status, Some(0), "{pulled}");
         let r = shards(&[
@@ -2224,7 +2250,7 @@ fn a_volumes_long_dax_window_takes_its_guest_no_mapping_for_each_range() {
             ("SHARDS_INIT", init.as_os_str()),
             ("SHARDS_SHARE_WINDOW_MIB", window.as_ref()),
         ];
-        let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+        let shards = |args: &[&str]| run_shards_env(&[], args, &env);
         let pulled = shards(&["pull", "-q", &image]);
         assert_eq!(pulled.status, Some(0), "{pulled}");
         let r = shards(&[
@@ -2277,7 +2303,7 @@ fn a_microvms_devices_reach_the_pages_of_the_files_it_maps() {
         ("SHARDS_INIT", init.as_os_str()),
         ("SHARDS_SHARE_WINDOW_MIB", "64".as_ref()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let pulled = shards(&["pull", "-q", &image]);
     assert_eq!(pulled.status, Some(0), "{pulled}");
     let dir = TempDir::new("containers-dma-v");
@@ -2375,6 +2401,7 @@ fn a_microvm_is_made_under_the_slice_its_cgroup_parent_names() {
 /// [`a_microvm_is_made_under_the_slice_its_cgroup_parent_names`] on Linux, whose groups are
 /// its user's systemd manager's slices: a path refused as one.
 #[cfg(target_os = "linux")]
+#[track_caller]
 fn placed_under_slices(home: &Path, image: &str, path: &Run) {
     use std::io::Write as _;
     let shards = |args: &[&str]| shards_in(home, args);
@@ -2546,11 +2573,12 @@ fn placed_under_slices(home: &Path, image: &str, path: &Run) {
     // The scope goes with the daemon, each of its processes ended.
     let stopped = shards(&["stop", "daemon"]);
     assert_eq!(stopped.status, Some(0), "{stopped}");
-    let mut patience = Patience::of(home, TIMEOUT);
+    let mut patience = Patience::of(home);
     while scope_dir.exists() {
         assert!(patience.holds(), "{} outlived the daemon", scope_dir.display());
         std::thread::sleep(Duration::from_millis(50));
     }
+    patience.done();
     // The slice is the test's, stopped as its user would.
     let _ = std::process::Command::new("systemctl")
         .args(["--user", "stop", &slice])
@@ -2855,7 +2883,7 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
         env.push(("SHARDS_PRESSURE", pipe.as_os_str()));
     }
     let _saying = told.zip(every).map(|(told, every)| Saying::start(told, every));
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let pulled = shards(&["pull", "-q", &image]);
     assert_eq!(pulled.status, Some(0), "{pulled}");
     let bus = std::env::var_os("XDG_RUNTIME_DIR")
@@ -2924,10 +2952,11 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
     };
     // The daemon's first line past `at` in its log with `words` in it.
     let first = |at: usize, words: &[&str]| -> String {
-        let mut patience = Patience::of(&home, TIMEOUT);
+        let mut patience = Patience::of(&home);
         loop {
             let after = said().get(at..).unwrap_or_default().to_string();
             if let Some(line) = after.lines().find(|l| words.iter().any(|w| l.contains(w))) {
+                patience.done();
                 return line.to_string();
             }
             assert!(patience.holds(), "none of {words:?} said:\n{}", said());
@@ -2965,7 +2994,7 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
     let booted = current();
     let grown = shards(&["exec", "budget", "/bin/testguest", "alloc-free", "1024", "0"]);
     assert_eq!(grown.status, Some(0), "{grown}");
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     while current() >= booted + (128 << 20) {
         assert!(
             patience.holds(),
@@ -2974,6 +3003,7 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
         );
         std::thread::sleep(Duration::from_millis(50));
     }
+    patience.done();
     // Half of them read with no budget, held in its guest's page cache; then a budget past
     // what the slice holds, whose first word says what the daemon counts it holding (what
     // its host may take back from its processes alone: not the page cache no process maps,
@@ -2997,7 +3027,7 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
         // Its host's own pressure has it give back what it read as it reads it on a busy
         // host (Fedora beside a CI job: 231 MiB given back of 512 read, and its slice never
         // held them): read again until it holds them.
-        let mut patience = Patience::of(&home, TIMEOUT);
+        let mut patience = Patience::of(&home);
         while current() <= 512 << 20 {
             assert!(
                 patience.holds(),
@@ -3008,6 +3038,7 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
             std::thread::sleep(Duration::from_millis(50));
             read(files.get(..512).unwrap());
         }
+        patience.done();
         let counting = said().len();
         set(&(current() + (1 << 30)).to_string());
         let counted = first(counting, &["held within its budget", "budget is short by"]);
@@ -3071,7 +3102,7 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
     if gave.contains("budget is short by") {
         let holds = mib_after(&gave, "MiB, holds ");
         set(&((holds + 128) << 20).to_string());
-        let mut patience = Patience::of(&home, TIMEOUT);
+        let mut patience = Patience::of(&home);
         loop {
             let log = said();
             let words = [
@@ -3084,6 +3115,7 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
                 .rfind(|l| words.iter().any(|w| l.contains(w)))
                 .unwrap_or_default();
             if !last.contains("budget is short by") {
+                patience.done();
                 break;
             }
             assert!(patience.holds(), "short still, its budget raised:\n{log}");
@@ -3457,10 +3489,11 @@ fn a_groups_job_holds_its_microvms_to_its_memory_max() {
 /// of the home, its budget files `max`, the group's `memory.current` its VM processes'
 /// footprints; with its `memory.high` written short of what it holds, what it read of a
 /// host directory through FUSE (D197 on Windows), told so and asked to give back what it
-/// holds cold, its group within its budget again; and, on macOS, a microVM of the group that
-/// holds past its `memory.max` with nothing to give back stopped, OOM-killed, as a cgroup's
-/// OOM killer kills within it. On Windows the group's job holds its VM processes to its
-/// `memory.max` by what they commit (`a_groups_job_holds_its_microvms_to_its_memory_max`).
+/// holds cold, its group within its budget again; and, on macOS, a microVM of the group with
+/// no swap that holds past its `memory.max` with nothing to give back stopped, OOM-killed,
+/// as a cgroup's OOM killer kills within it. On Windows the group's job holds its VM
+/// processes to its `memory.max` by what they commit
+/// (`a_groups_job_holds_its_microvms_to_its_memory_max`).
 #[test]
 fn a_microvm_under_a_group_is_held_to_its_budget() {
     if !cfg!(any(target_os = "macos", windows)) || cannot_run_vms() {
@@ -3477,7 +3510,7 @@ fn a_microvm_under_a_group_is_held_to_its_budget() {
         ("SHARDS_INIT", init.as_os_str()),
         ("SHARDS_SHARE_WINDOW_MIB", "0".as_ref()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let pulled = shards(&["pull", "-q", &image]);
     assert_eq!(pulled.status, Some(0), "{pulled}");
     let vol = TempDir::new("group-vol");
@@ -3513,11 +3546,12 @@ fn a_microvm_under_a_group_is_held_to_its_budget() {
             .unwrap_or(0)
     };
     let until = |what: &str, check: &dyn Fn() -> bool| {
-        let mut patience = Patience::of(&home, TIMEOUT);
+        let mut patience = Patience::of(&home);
         while !check() {
             assert!(patience.holds(), "{what}:\n{}", said());
             std::thread::sleep(Duration::from_millis(50));
         }
+        patience.done();
     };
     let mut read = vec!["exec", "held", "/bin/testguest", "read"];
     read.extend(files.iter().map(String::as_str));
@@ -3539,22 +3573,53 @@ fn a_microvm_under_a_group_is_held_to_its_budget() {
         said().contains("within its budget of") && current() <= high
     });
     if cfg!(target_os = "macos") {
-        // Past its memory.max, which a microVM that holds 768 MiB its guest uses takes it
-        // past, with nothing to give back.
+        // Past its memory.max, which a microVM whose guest uses 768 MiB and may swap none of
+        // it (`--memory-swap` its memory, D159) takes it past, with nothing to give back. One
+        // that may swap, as much again as its memory by default, is held within its room by
+        // its guest, which swaps what passes it to a file of its host's, whose pages its VM
+        // process's footprint leaves out (XNU's phys_footprint counts anonymous memory, and
+        // what the compressor holds of it, alone): its group within memory.max, it runs on.
         std::fs::write(group.join("memory.high"), "max\n").unwrap();
-        std::fs::write(group.join("memory.max"), format!("{}\n", current() + (512 << 20))).unwrap();
+        let max = current() + (512 << 20);
+        std::fs::write(group.join("memory.max"), format!("{max}\n")).unwrap();
         let args = run_args(
             &image,
-            &["-d", "--name", "hog", "--cgroup-parent", "agents", "-m", "1g"],
+            &[
+                "-d",
+                "--name",
+                "hog",
+                "--cgroup-parent",
+                "agents",
+                "-m",
+                "1g",
+                "--memory-swap",
+                "1g",
+            ],
             &["alloc-hold", "768", "600"],
         );
         let hog = shards(&args.iter().map(String::as_str).collect::<Vec<_>>());
         assert_eq!(hog.status, Some(0), "{hog}");
+        // Said as the daemon stops it. Where it never is: what its group held as its last
+        // pass wrote it, and how long ago, beside what its guests run.
+        let mut patience = Patience::of(&home);
+        while !said().contains("past its memory.max") {
+            assert!(
+                patience.holds(),
+                "its group held {} bytes, written {:?} ago, under a memory.max of {max}, and stopped none:{}",
+                current(),
+                std::fs::metadata(group.join("memory.current"))
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.elapsed().ok()),
+                common::guests_processes(&home)
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        patience.done();
         let waited = shards(&["wait", "hog"]);
         assert_eq!(waited.stdout.trim(), "137", "{waited}\n{}", said());
         let oom = shards(&["inspect", "-f", "{{.State.OOMKilled}}", "hog"]);
         assert_eq!(oom.stdout.trim(), "true", "{oom}");
-        assert!(said().contains("past its memory.max"), "{}", said());
     }
     // The other runs on: what it held it gave back, and held no more.
     let ps = shards(&["ps", "-q", "--filter", "name=held"]);
@@ -3594,11 +3659,7 @@ fn what_a_joiner_reads_of_its_image_is_given_back_at_its_groups_budget() {
     std::fs::create_dir(&ctx).unwrap();
     std::fs::write(ctx.join("Dockerfile"), format!("FROM {image}\nCOPY big /big\n")).unwrap();
     noise(&ctx.join("big"), 512);
-    let built = shards_in_within(
-        &home,
-        &["build", "-q", "-t", "big:1", ctx.to_str().unwrap()],
-        Duration::from_secs(600),
-    );
+    let built = shards_in(&home, &["build", "-q", "-t", "big:1", ctx.to_str().unwrap()]);
     assert_eq!(built.status, Some(0), "{built}");
     std::fs::remove_file(ctx.join("big")).unwrap();
     let provider = run_in(
@@ -3625,7 +3686,7 @@ fn what_a_joiner_reads_of_its_image_is_given_back_at_its_groups_budget() {
             .unwrap_or(0)
     };
     let until = |what: &str, check: &dyn Fn() -> bool| {
-        let mut patience = Patience::of(&home, TIMEOUT);
+        let mut patience = Patience::of(&home);
         while !check() {
             assert!(
                 patience.holds(),
@@ -3635,6 +3696,7 @@ fn what_a_joiner_reads_of_its_image_is_given_back_at_its_groups_budget() {
             );
             std::thread::sleep(Duration::from_millis(50));
         }
+        patience.done();
     };
     // What its VM process holds idle, as the daemon writes it each pressure window.
     until("its group's memory.current never written", &|| current() > 0);
@@ -3765,7 +3827,7 @@ fn what_a_microvm_holds_cold_is_given_back_at_its_hosts_word() {
         ("SHARDS_INIT", init.as_os_str()),
         ("SHARDS_PRESSURE", pipe.as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     // Its daemon, started by the pull, hears its host's word from the pipe.
     let pulled = shards(&["pull", "-q", &image]);
     assert_eq!(pulled.status, Some(0), "{pulled}");
@@ -3773,12 +3835,7 @@ fn what_a_microvm_holds_cold_is_given_back_at_its_hosts_word() {
     std::fs::create_dir(&ctx).unwrap();
     std::fs::write(ctx.join("Dockerfile"), format!("FROM {image}\nCOPY big /big\n")).unwrap();
     noise(&ctx.join("big"), 512);
-    let built = run_shards_env(
-        &[],
-        &["build", "-q", "-t", "big:1", ctx.to_str().unwrap()],
-        &env,
-        Duration::from_secs(600),
-    );
+    let built = run_shards_env(&[], &["build", "-q", "-t", "big:1", ctx.to_str().unwrap()], &env);
     assert_eq!(built.status, Some(0), "{built}");
     std::fs::remove_file(ctx.join("big")).unwrap();
     let provider = shards(
@@ -3818,12 +3875,13 @@ fn what_a_microvm_holds_cold_is_given_back_at_its_hosts_word() {
     // pages active, which a give-back takes none of (`reclaim_cold`, `inactive_file`), and
     // an idle measured as it went on giving back had the file read twice and gave back
     // nothing of it on Fedora, once in 6.
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     let mut last = held();
     loop {
         std::thread::sleep(Duration::from_millis(500));
         let now = held();
         if now < booted + (128 << 20) && now.abs_diff(last) < 4 << 20 {
+            patience.done();
             break;
         }
         assert!(
@@ -3880,7 +3938,7 @@ fn what_a_microvm_holds_cold_is_given_back_at_its_hosts_word() {
     // Its VM process holds that much less, or half of it, once its guest has given it back:
     // what it reported free, and what its device unplugs as it was asked to, after the
     // give-back's answer (D148, D151).
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     while before.saturating_sub(held()) < (gave << 20) / 2 {
         assert!(
             patience.holds(),
@@ -3890,6 +3948,7 @@ fn what_a_microvm_holds_cold_is_given_back_at_its_hosts_word() {
         );
         std::thread::sleep(Duration::from_millis(50));
     }
+    patience.done();
     eprintln!(
         "a joiner's 512 MiB read: {idle} bytes held idle, {before} after {reads} reads, {} {:?} after its host's word, {gave} MiB given back",
         held(),
@@ -3941,7 +4000,7 @@ fn a_microvm_held_to_a_budget_reads_a_large_file_through_its_window_to_its_end()
         ("SHARDS_INIT", init.as_os_str()),
         ("SHARDS_SHARE_WINDOW_MIB", "4096".as_ref()),
     ];
-    let shards = |args: &[&str], within: Duration| run_shards_env(&[], args, &env, within);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let vol = TempDir::new("budget-dax-vol");
     // A tmpfs's file is memory nothing reclaims without swap, its pages the file itself:
     // read through the window under a budget short of it, its microVM is never within it,
@@ -3984,12 +4043,9 @@ fn a_microvm_held_to_a_budget_reads_a_large_file_through_its_window_to_its_end()
         &["sleep"],
     );
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    let started = shards(&args, TIMEOUT);
+    let started = shards(&args);
     assert_eq!(started.status, Some(0), "{started}");
-    let dax = shards(
-        &["exec", "budget", "/bin/testguest", "fs", "dax:/vol/big"],
-        TIMEOUT,
-    );
+    let dax = shards(&["exec", "budget", "/bin/testguest", "fs", "dax:/vol/big"]);
     assert_eq!(dax.stdout, "dax /vol/big yes\n", "{dax}");
     // SAFETY: getuid(2) takes nothing and cannot fail.
     let uid = unsafe { libc::getuid() };
@@ -4011,10 +4067,7 @@ fn a_microvm_held_to_a_budget_reads_a_large_file_through_its_window_to_its_end()
         .output()
         .unwrap();
     assert!(set.status.success(), "{}", String::from_utf8_lossy(&set.stderr));
-    let read = shards(
-        &["exec", "budget", "/bin/testguest", "read", "/vol/big"],
-        Duration::from_secs(300),
-    );
+    let read = shards(&["exec", "budget", "/bin/testguest", "read", "/vol/big"]);
     assert_eq!(read.status, Some(0), "{read}");
     assert!(read.stdout.starts_with("read /vol/big 536870912 "), "{read}");
     let events = std::fs::read_to_string(format!("{cgroup}/memory.events")).unwrap();
@@ -4024,7 +4077,7 @@ fn a_microvm_held_to_a_budget_reads_a_large_file_through_its_window_to_its_end()
         .and_then(|n| n.trim().parse().ok())
         .unwrap_or(0);
     assert!(high > 0, "the slice's budget was never met: {events}");
-    assert_eq!(shards(&["kill", "budget"], TIMEOUT).status, Some(0));
+    assert_eq!(shards(&["kill", "budget"]).status, Some(0));
 }
 
 #[test]
@@ -5033,7 +5086,7 @@ fn a_networks_egress_is_a_grant_of_its_destinations_alone() {
         ("SHARDS_INIT", init.as_os_str()),
         ("SHARDS_DNS", OsStr::new(&resolver_at)),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let pulled = shards(&["pull", "-q", &image]);
     assert_eq!(pulled.status, Some(0), "{pulled}");
     // Refused as the network is made: a destination of no port, none at all, a pattern,
@@ -5586,7 +5639,7 @@ fn a_runs_link_local_addresses_are_its_own() {
         &["--name", "ll-client", "--network", "llnet6"],
         &["sleep"],
     );
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     loop {
         let table = shards(&[
             "exec",
@@ -5603,6 +5656,7 @@ fn a_runs_link_local_addresses_are_its_own() {
                     .is_some_and(|x| x & 0x40 == 0)
         });
         if checked {
+            patience.done();
             break;
         }
         assert!(
@@ -5994,11 +6048,12 @@ fn a_stopped_microvms_layer_stays_in_its_file() {
     };
     // Kept once its microVM has gone, after its end is told.
     let settled = |dir: &Path| {
-        let mut patience = Patience::of(&home, TIMEOUT);
+        let mut patience = Patience::of(&home);
         while !(dir.join("layer.ext4").exists() && !dir.join("layer.new").exists()) {
             assert!(patience.holds(), "no layer kept in {}", dir.display());
             std::thread::sleep(Duration::from_millis(20));
         }
+        patience.done();
     };
     let dir = dir_of("kept");
     settled(&dir);
@@ -6035,10 +6090,11 @@ fn a_stopped_microvms_layer_stays_in_its_file() {
         ],
     );
     assert_eq!(killed.status, Some(0), "{killed}");
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     loop {
         let logs = shards(&["logs", "killed"]);
         if logs.stdout == "two\n" {
+            patience.done();
             break;
         }
         assert!(patience.holds(), "the run never committed its file: {logs}");
@@ -6081,7 +6137,7 @@ fn a_stopped_microvms_next_run_goes_on_over_its_kept_file() {
     let Some((home, image)) = home("containers-over") else {
         return;
     };
-    common::restarts_cross_at(&home, 4 << 20, TIMEOUT);
+    common::restarts_cross_at(&home, 4 << 20);
     let shards = |args: &[&str]| shards_in(&home, args);
     let big = 32u64 << 20;
     // Each run writes a file, 8 MiB it keeps and 32 MiB it removes, and makes a directory: a
@@ -7029,17 +7085,16 @@ fn run_limits_a_microvms_resources() {
     ] {
         // It holds all but what its own process and page tables take of its limit, in a
         // microVM that boots with less and plugs the rest as it needs it (D148). Plugging
-        // and touching gigabytes is far slower than a start on a contended CI runner, so
-        // these runs get a timeout of their own, well past TIMEOUT (measured 199 s for the
-        // whole test under 32 busy loops; it progresses, it never hangs).
+        // and touching gigabytes is far slower than a start on a contended CI runner
+        // (measured 199 s for the whole test under 32 busy loops): its wait follows it as it
+        // progresses (`shards_in`).
         let limit_mib = limit.trim_end_matches('m').parse::<u64>().unwrap();
         let wanted = (limit_mib - 16).to_string();
-        let held = run_in_within(
+        let held = run_in(
             &home,
             &image,
             &["--rm", "-m", limit, "--cpus", cpus],
             &["alloc", &wanted],
-            Duration::from_secs(240),
         );
         assert_eq!(
             held.status,
@@ -7595,14 +7650,16 @@ fn untimed(text: &str) -> String {
         .collect()
 }
 
-/// Checks `check` until it holds, failing the test after TIMEOUT, or past it once `home`'s
-/// daemon and its microVMs have progressed no more for as long ([`Patience`]).
+/// Checks `check` until it holds, failing the test once `home`'s daemon and its microVMs
+/// progress no more ([`Patience`], its kind its caller's call site).
+#[track_caller]
 fn eventually(home: &Path, what: &str, mut check: impl FnMut() -> bool) {
-    let mut patience = Patience::of(home, TIMEOUT);
+    let mut patience = Patience::of(home);
     while !check() {
         assert!(patience.holds(), "{what}");
         std::thread::sleep(Duration::from_millis(20));
     }
+    patience.done();
 }
 
 /// An exec into a microVM whose command nests its own cgroups, as a nested runtime does
@@ -7838,7 +7895,7 @@ fn a_command_that_cannot_start_says_why() {
 
 /// `shards ARGS` in `home`, where no run is meant to boot.
 fn without_vms(home: &Path, args: &[&str]) -> Run {
-    run_shards_env(&[], args, &[("SHARDS_HOME", home.as_os_str())], TIMEOUT)
+    run_shards_env(&[], args, &[("SHARDS_HOME", home.as_os_str())])
 }
 
 /// `-h` is help on every form of shards' grammar, and each form's page is its own: named
@@ -7930,13 +7987,13 @@ fn usage_mistakes_are_answered_without_a_daemon() {
 /// that waits for the gate to open before it becomes this build's. Windows has no exec,
 /// and a VM process opens nothing but what its daemon opens for it (D30): there the gate
 /// is a copy of the init its runs boot, held open sharing nothing under an oplock
-/// ([`Oplocked`]), so that the daemon's open of it for a VM waits until the gate opens.
+/// ([`common::Oplocked`]), so that the daemon's open of it for a VM waits until the gate opens.
 /// Not the kernel's: the daemon reads that as it makes the run, before its microVM, for
 /// the version its seccomp profile is held to (`guest::version_of`).
 struct Gated {
     // Before the directory: the gate opens before its init is removed.
     #[cfg(windows)]
-    held: std::cell::RefCell<Option<Oplocked>>,
+    held: std::cell::RefCell<Option<common::Oplocked>>,
     dir: TempDir,
 }
 
@@ -7967,7 +8024,7 @@ impl Gated {
     fn new(name: &str) -> Gated {
         let dir = TempDir::new(name);
         std::fs::copy(guest_init(), dir.join("init")).unwrap();
-        let held = Oplocked::new(&dir.join("init"));
+        let held = common::Oplocked::new(&dir.join("init"), TIMEOUT);
         Gated {
             held: std::cell::RefCell::new(Some(held)),
             dir,
@@ -8044,133 +8101,6 @@ impl Gated {
     }
 }
 
-/// A file held open sharing nothing under a Read-Handle oplock (FSCTL_REQUEST_OPLOCK): an
-/// open of it by another handle that reads, writes or deletes it, which its sharing
-/// refuses, breaks the oplock and waits for the break to be acknowledged, which closing
-/// the oplock's handle does as this drops. The wait has no end: "the system would wait
-/// forever to receive the acknowledgment as there's no timeout" ("Breaking Oplocks"); "the
-/// open operation is blocked and the Read-Handle oplock breaks. The application that owns
-/// the oplock may acknowledge the break by closing the handle" ("Types of Opportunistic
-/// Locks"). An open that reads its attributes alone shares nothing and waits for nothing.
-#[cfg(windows)]
-struct Oplocked {
-    file: Option<std::fs::File>,
-    // Written as the request completes, which may be after it is made: boxed, not to move,
-    // and kept until it has.
-    overlapped: Box<windows_sys::Win32::System::IO::OVERLAPPED>,
-    _answer: Box<windows_sys::Win32::System::Ioctl::REQUEST_OPLOCK_OUTPUT_BUFFER>,
-    _event: std::os::windows::io::OwnedHandle,
-}
-
-#[cfg(windows)]
-impl Oplocked {
-    fn new(path: &Path) -> Oplocked {
-        use std::os::windows::fs::OpenOptionsExt as _;
-        use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
-        use windows_sys::Win32::Foundation::{ERROR_IO_PENDING, ERROR_SHARING_VIOLATION};
-        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED;
-        use windows_sys::Win32::System::IO::{DeviceIoControl, OVERLAPPED};
-        use windows_sys::Win32::System::Ioctl::{
-            FSCTL_REQUEST_OPLOCK, OPLOCK_LEVEL_CACHE_HANDLE, OPLOCK_LEVEL_CACHE_READ,
-            REQUEST_OPLOCK_CURRENT_VERSION, REQUEST_OPLOCK_INPUT_BUFFER, REQUEST_OPLOCK_INPUT_FLAG_REQUEST,
-            REQUEST_OPLOCK_OUTPUT_BUFFER,
-        };
-        use windows_sys::Win32::System::Threading::CreateEventW;
-        // A handle that shares nothing is refused while another reads the file: Defender's,
-        // scanning the copy just written, is waited out.
-        let deadline = Instant::now() + TIMEOUT;
-        let file = loop {
-            match std::fs::OpenOptions::new()
-                .read(true)
-                .share_mode(0)
-                .custom_flags(FILE_FLAG_OVERLAPPED)
-                .open(path)
-            {
-                Ok(file) => break file,
-                Err(e)
-                    if e.raw_os_error() == Some(ERROR_SHARING_VIOLATION.cast_signed())
-                        && Instant::now() < deadline =>
-                {
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                Err(e) => panic!("{}: {e}", path.display()),
-            }
-        };
-        // SAFETY: an unnamed manual-reset event, owned from here.
-        let event = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
-        assert!(!event.is_null(), "an event: {}", std::io::Error::last_os_error());
-        // SAFETY: the event just made, this alone holds.
-        let event = unsafe { OwnedHandle::from_raw_handle(event) };
-        // SAFETY: OVERLAPPED and REQUEST_OPLOCK_OUTPUT_BUFFER are plain data, zeroes valid
-        // values of them.
-        let (mut overlapped, mut answer): (Box<OVERLAPPED>, Box<REQUEST_OPLOCK_OUTPUT_BUFFER>) =
-            unsafe { (Box::new(std::mem::zeroed()), Box::new(std::mem::zeroed())) };
-        overlapped.hEvent = event.as_raw_handle();
-        let version = u16::try_from(REQUEST_OPLOCK_CURRENT_VERSION).unwrap();
-        answer.StructureVersion = version;
-        answer.StructureLength = u16::try_from(size_of::<REQUEST_OPLOCK_OUTPUT_BUFFER>()).unwrap();
-        let asked = REQUEST_OPLOCK_INPUT_BUFFER {
-            StructureVersion: version,
-            StructureLength: u16::try_from(size_of::<REQUEST_OPLOCK_INPUT_BUFFER>()).unwrap(),
-            RequestedOplockLevel: OPLOCK_LEVEL_CACHE_READ | OPLOCK_LEVEL_CACHE_HANDLE,
-            Flags: REQUEST_OPLOCK_INPUT_FLAG_REQUEST,
-        };
-        // SAFETY: the request is copied in as it is made (METHOD_BUFFERED), and its answer
-        // and OVERLAPPED live until it has completed, which dropping this waits for.
-        let done = unsafe {
-            DeviceIoControl(
-                file.as_raw_handle(),
-                FSCTL_REQUEST_OPLOCK,
-                (&raw const asked).cast(),
-                u32::try_from(size_of::<REQUEST_OPLOCK_INPUT_BUFFER>()).unwrap(),
-                (&raw mut *answer).cast(),
-                u32::try_from(size_of::<REQUEST_OPLOCK_OUTPUT_BUFFER>()).unwrap(),
-                std::ptr::null_mut(),
-                &raw mut *overlapped,
-            )
-        };
-        // Granted, the request pends until the oplock breaks.
-        let e = std::io::Error::last_os_error();
-        assert!(
-            done == 0 && e.raw_os_error() == Some(ERROR_IO_PENDING.cast_signed()),
-            "an oplock on {}: {e}",
-            path.display()
-        );
-        Oplocked {
-            file: Some(file),
-            overlapped,
-            _answer: answer,
-            _event: event,
-        }
-    }
-}
-
-#[cfg(windows)]
-impl Drop for Oplocked {
-    fn drop(&mut self) {
-        use std::os::windows::io::AsRawHandle as _;
-        use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult};
-        let Some(file) = self.file.take() else {
-            return;
-        };
-        // The request, still pending or completed by a break, ended and waited for before
-        // its buffers go; then the handle is closed, which acknowledges a break, and an open
-        // that waits on it goes on.
-        // SAFETY: the request made on this handle with this OVERLAPPED.
-        unsafe {
-            CancelIoEx(file.as_raw_handle(), &raw const *self.overlapped);
-            let mut moved = 0;
-            GetOverlappedResult(
-                file.as_raw_handle(),
-                &raw const *self.overlapped,
-                &raw mut moved,
-                1,
-            );
-        }
-        drop(file);
-    }
-}
-
 /// A command left going, its output collected as it comes.
 struct Going {
     child: Child,
@@ -8194,14 +8124,16 @@ impl Going {
 }
 
 /// The ID of the one microVM in `home`, once it is there: created, its run pending.
+#[track_caller]
 fn created(gated: &Gated, home: &Path, run: &mut Going) -> String {
     let id = std::cell::RefCell::new(String::new());
     let last = std::cell::RefCell::new(String::new());
-    let mut patience = Patience::of(home, TIMEOUT);
+    let mut patience = Patience::of(home);
     loop {
         let listed = gated.shards(home, &["ps", "-a", "-q", "--no-trunc"]);
         *id.borrow_mut() = listed.stdout.clone();
         if !id.borrow().is_empty() {
+            patience.done();
             break;
         }
         *last.borrow_mut() = listed.to_string();
@@ -8223,7 +8155,7 @@ fn created(gated: &Gated, home: &Path, run: &mut Going) -> String {
                 Err(e) => format!("unknown: {e}"),
             };
             panic!(
-                "the run's container never showed in {TIMEOUT:?}; the last ps: {}\nthe run's client: {client}\ndaemon.log, last first:\n{}\nprocesses:\n{procs}",
+                "the run's container never showed while its daemon progressed; the last ps: {}\nthe run's client: {client}\ndaemon.log, last first:\n{}\nprocesses:\n{procs}",
                 last.borrow(),
                 tail.join("\n")
             );
@@ -8641,7 +8573,7 @@ fn a_log_keeps_its_newest_output_within_its_retention() {
                 .collect();
             stdin.write_all(lines.as_bytes()).unwrap();
             sent.extend_from_slice(lines.as_bytes());
-            let mut patience = Patience::of(&home, TIMEOUT);
+            let mut patience = Patience::of(&home);
             // Each chunk is followed before the next is written: only a follower woken by
             // appends, not only by segments' coming, gets there.
             while received.load(std::sync::atomic::Ordering::Acquire) < sent.len() {
@@ -8653,6 +8585,7 @@ fn a_log_keeps_its_newest_output_within_its_retention() {
                 );
                 std::thread::sleep(Duration::from_millis(1));
             }
+            patience.done();
         }
     }
     assert_eq!(exit(&mut run, &home), Some(0));
@@ -9869,10 +9802,11 @@ fn execs_at_once_each_end_with_their_commands_status() {
         .stderr(std::fs::File::create(&said).unwrap())
         .spawn()
         .unwrap();
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     let met = loop {
         let state = shards_in(&home, &["inspect", "-f", "{{.State.Status}}", "fresh"]);
         if state.status == Some(0) {
+            patience.done();
             break state.stdout;
         }
         if let Some(ended) = fresh.try_wait().unwrap().filter(|s| !s.success()) {
@@ -9925,12 +9859,13 @@ fn execs_at_once(home: &Path, name: &str, n: usize) -> Vec<(String, Child)> {
 /// exec's time into the same run, they would all end within their number of paces: one still
 /// waiting once that long has passed with none of them ending, since now or since the last
 /// that ended, fails the test, unless the daemon or its microVM still progresses
-/// ([`Patience`]), naming each still waiting with what it said. Gives how long after now the
-/// last ended.
+/// ([`Patience`], its kind its caller's call site), naming each still waiting with what it
+/// said. Gives how long after now the last ended.
+#[track_caller]
 fn each_ends(home: &Path, mut execs: Vec<(String, Child)>, pace: Duration) -> Duration {
     let (all, began) = (execs.len(), Instant::now());
     let bound = pace * u32::try_from(all).unwrap();
-    let mut patience = Patience::of(home, bound);
+    let mut patience = Patience::of(home);
     let (mut last, mut ended) = (began, Vec::with_capacity(all));
     let said = |mode: &str, of: &str| {
         std::fs::read_to_string(home.join(format!("{mode}.{of}"))).unwrap_or_else(|e| format!("({e})"))
@@ -9965,6 +9900,7 @@ fn each_ends(home: &Path, mut execs: Vec<(String, Child)>, pace: Duration) -> Du
         }
         std::thread::sleep(Duration::from_millis(5));
     }
+    patience.done();
     let wrong: Vec<String> = ended
         .iter()
         .map(|(mode, status)| (mode, *status, said(mode, "out"), said(mode, "err")))
@@ -12178,7 +12114,7 @@ fn a_push_goes_with_its_clients_credentials() {
             ("SHARDS_KERNEL", kernel.as_os_str()),
             ("SHARDS_INIT", init.as_os_str()),
         ];
-        run_shards_env(&[], args, &env, TIMEOUT)
+        run_shards_env(&[], args, &env)
     };
     // The daemon starts from a client with no credentials.
     assert_eq!(shards(&none, &["pull", "-q", &source]).status, Some(0));
@@ -12866,11 +12802,12 @@ fn restart_policies_start_microvms_again() {
     let inspect =
         |name: &str, format: &str| shards(&["inspect", "-f", format, name]).stdout.trim().to_string();
     let until = |what: &str, check: &dyn Fn() -> bool| {
-        let mut patience = Patience::of(&home, TIMEOUT);
+        let mut patience = Patience::of(&home);
         while !check() {
             assert!(patience.holds(), "{what}");
             std::thread::sleep(Duration::from_millis(20));
         }
+        patience.done();
     };
     let failing = run_in(
         &home,
@@ -13026,7 +12963,7 @@ fn a_run_past_its_pids_limit_says_so() {
     assert!(joined.stdout.contains("of 8 threads"), "{joined}");
     // Its microVM's word of the limit reached comes on its own, maybe after its command's
     // end on a loaded host: the home's events read again until it is there (D187).
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     let events = loop {
         let until = (now() + 1).to_string();
         let events = shards_in(
@@ -13043,7 +12980,11 @@ fn a_run_past_its_pids_limit_says_so() {
                 r#"{{.Actor.Attributes.name}} {{index .Actor.Attributes "pids.max"}}"#,
             ],
         );
-        if !events.stdout.is_empty() || !patience.holds() {
+        if !events.stdout.is_empty() {
+            patience.done();
+            break events;
+        }
+        if !patience.holds() {
             break events;
         }
     };
@@ -13146,7 +13087,7 @@ fn update_under_pressure_stress() {
         ("SHARDS_INIT", init.as_os_str()),
         ("SHARDS_PRESSURE", pipe.as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let pulled = shards(&["pull", "image", "-q", &image]);
     assert_eq!(pulled.status, Some(0), "{pulled}");
     // Privileged, so that its exec may read its guest's kernel log (CAP_SYSLOG).
@@ -13751,7 +13692,7 @@ fn microvms_are_reached_in_shards_grammar_by_their_names_and_their_images() {
         "20000",
     ]);
     assert_eq!(ran.status, Some(0), "{ran}");
-    let waited = shards_in_within(&home, &["wait", "vm", &image], Duration::from_secs(120));
+    let waited = shards_in(&home, &["wait", "vm", &image]);
     assert_eq!(
         (waited.status, waited.stdout.as_str()),
         (Some(0), "0\n"),
@@ -13869,7 +13810,7 @@ fn created_microvms_are_published_to_the_local_store() {
             ("SHARDS_LOCAL_STORE", OsStr::new("")),
             ("DOCKER_HOST", host.as_os_str()),
         ];
-        run_shards_env(&[], args, &env, Duration::from_secs(120))
+        run_shards_env(&[], args, &env)
     };
     let mut loads: Vec<String> = Vec::new();
     let mut published = |name: &str| {
@@ -15318,7 +15259,7 @@ fn cdi_devices_are_given_to_microvms() {
         ("SHARDS_INIT", init.as_os_str()),
         ("SHARDS_CDI_SPEC_DIRS", specs.as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let run = |options: &[&str], command: &[&str]| {
         let args = run_args(&image, options, command);
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -15545,18 +15486,12 @@ fn stops_beside_a_gigabyte_build() {
                 ("SHARDS_KERNEL", kernel.as_os_str()),
                 ("SHARDS_INIT", init.as_os_str()),
             ];
-            let built = run_shards_env(
-                &[],
-                &["build", "-q", "-t", "big:1", ctx.to_str().unwrap()],
-                &env,
-                Duration::from_secs(600),
-            );
+            let built = run_shards_env(&[], &["build", "-q", "-t", "big:1", ctx.to_str().unwrap()], &env);
             reading.store(true, Ordering::SeqCst);
             let ran = run_shards_env(
                 &[],
                 &["run", "--pull", "never", "--rm", "big:1", "fs", "open:r:/big"],
                 &env,
-                Duration::from_secs(60),
             );
             done.store(true, Ordering::SeqCst);
             format!(
@@ -15778,7 +15713,7 @@ fn kills_cost_by_what_the_command_holds() {
                     let (name, mut run, vm, gib) = held(mib, threads, procs);
                     let cpu = || shards_vmm::platform::process_usage(vm).ok().map(|u| u.cpu_ns);
                     let (cpu0, t0) = (cpu(), Instant::now());
-                    let killed = shards_in_within(&home, &["kill", &name], timeout);
+                    let killed = shards_in(&home, &["kill", &name]);
                     let ms = t0.elapsed().as_secs_f64() * 1e3;
                     // Its VM process's CPU over the teardown, where it is still there to read.
                     if let (Some(a), Some(b)) = (cpu0, cpu()) {
@@ -15923,13 +15858,12 @@ fn a_runs_memory_freed_goes_back_to_the_host() {
             init.to_str().unwrap(),
         ],
         &env,
-        TIMEOUT,
     );
     assert_eq!(recorded.status, Some(0), "{recorded}");
     let run = |command: &[&str]| {
         let args = run_args(&image, &["--rm"], command);
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        run_shards_env(&[], &args, &env, TIMEOUT)
+        run_shards_env(&[], &args, &env)
     };
     // The microVM that saves the template, then one restored from it, each idle as long
     // as the run that frees memory.
@@ -16003,13 +15937,12 @@ fn a_runs_memory_grows_as_its_workload_needs_it() {
             init.to_str().unwrap(),
         ],
         &env,
-        TIMEOUT,
     );
     assert_eq!(recorded.status, Some(0), "{recorded}");
     let run = |options: &[&str], command: &[&str]| {
         let args = run_args(&image, options, command);
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        run_shards_env(&[], &args, &env, TIMEOUT)
+        run_shards_env(&[], &args, &env)
     };
     let r = run(&["--rm"], &["alloc", "1024"]);
     assert_eq!(r.status, Some(0), "{r}");
@@ -16629,7 +16562,7 @@ fn a_microvm_swaps_and_throttles_as_its_limits_say() {
     // Its end said in the daemon's log, as a run's is, as the daemon hears it, which may be
     // as its client has the exit: what its cgroup was allowed and held, none of it swap,
     // and what its kernel said of it.
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     let (log, said) = loop {
         let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
         let said = log
@@ -16638,6 +16571,7 @@ fn a_microvm_swaps_and_throttles_as_its_limits_say() {
             .find(|l| l.contains("a process ended for want of memory"))
             .map(str::to_string);
         if let Some(said) = said {
+            patience.done();
             break (log, said);
         }
         assert!(patience.holds(), "no kill said in the daemon's log:\n{log}");
@@ -16864,7 +16798,7 @@ fn a_microvm_takes_its_ipc_hostname_cgroups_umask_and_writable_layer() {
         all.extend(flags);
         let r = run_in(&home, &image, &all, &["ipc-hold", key]);
         assert_eq!(r.status, Some(0), "{name}: {r}");
-        let mut patience = Patience::of(&home, TIMEOUT);
+        let mut patience = Patience::of(&home);
         while !shards(&["logs", name]).stdout.contains("held") {
             assert!(
                 patience.holds(),
@@ -16873,6 +16807,7 @@ fn a_microvm_takes_its_ipc_hostname_cgroups_umask_and_writable_layer() {
             );
             std::thread::sleep(Duration::from_millis(20));
         }
+        patience.done();
     };
     held("owner", &["--ipc", "shareable", "--umask", "027"], "42");
     let exec = shards(&["exec", "owner", "/bin/testguest", "ipc", "42"]);
@@ -18332,7 +18267,7 @@ fn a_runs_log_is_sent_to_journald_as_its_options_say() {
             ("SHARDS_INIT", init.as_os_str()),
             ("SHARDS_JOURNAL_SOCKET", path.as_os_str()),
         ];
-        let pulled = run_shards_env(&[], &["pull", "-q", &image], &env, TIMEOUT);
+        let pulled = run_shards_env(&[], &["pull", "-q", &image], &env);
         assert_eq!(pulled.status, Some(0), "{}", pulled.stderr);
         let journald = |name: &str, flags: &[&str], command: &[&str]| {
             let mut all = vec!["--name", name, "--log-driver", "journald"];
@@ -18901,7 +18836,7 @@ fn a_runs_log_is_sent_to_cloudwatch_logs_as_its_options_say() {
             env.push((k, (*v).into()));
         }
         let env: Vec<(&str, &std::ffi::OsStr)> = env.iter().map(|(k, v)| (*k, v.as_os_str())).collect();
-        run_shards_env(&[], args, &env, TIMEOUT)
+        run_shards_env(&[], args, &env)
     };
     let shards = |args: &[&str]| shards_in(&home, args);
     let id_of = |name: &str| {
@@ -19573,7 +19508,7 @@ fn a_runs_log_is_sent_to_cloud_logging_as_its_options_say() {
             env.push((k, (*v).into()));
         }
         let env: Vec<(&str, &std::ffi::OsStr)> = env.iter().map(|(k, v)| (*k, v.as_os_str())).collect();
-        run_shards_env(&[], args, &env, TIMEOUT)
+        run_shards_env(&[], args, &env)
     };
     let shards = |args: &[&str]| shards_in(&home, args);
     let gcplogs = |name: &str, opts: &[&str], command: &[&str], google: &[(&str, &str)]| {

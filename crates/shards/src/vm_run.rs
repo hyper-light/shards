@@ -57,6 +57,8 @@ const RUN_USAGE: &str = "usage: shards run vm --kernel PATH [--initrd PATH | --i
                contexts accept them, and ends. Implies --gpu; no workload, devices or snapshot.
   --host-managed: the program that started shards contains it (D233): the processes shards
                   starts beside the VM stay in its process group, not sessions of their own.
+                  A client that dials its --vsock socket may hold its vCPUs to a rate,
+                  `RATE <milli>` in place of `CONNECT <port>` (D255).
   --pci-test: a PCI bus with a test function at 00:01.0, the identification and liveness
               registers of QEMU's edu device in its BAR 0, for testing the bus. Not with
               --snapshot-dir.
@@ -204,6 +206,9 @@ struct Common {
     workload: Options,
     /// Whether a workload option was given.
     workload_options: bool,
+    /// `--host-managed`: its native launcher contains it (D233), and its host's clients may
+    /// hold its vCPUs to a rate on its vsock socket (D255).
+    host_managed: bool,
 }
 
 impl Common {
@@ -218,6 +223,7 @@ impl Common {
             net: None,
             workload: Options::default(),
             workload_options: false,
+            host_managed: false,
         }
     }
 
@@ -230,8 +236,9 @@ impl Common {
         let w = &mut self.workload;
         match arg {
             // Containment is established by the native launcher and interpreted
-            // by the parent CLI only. It grants no guest/device authority.
-            "--host-managed" => {}
+            // by the parent CLI only. It grants no guest/device authority; its host's
+            // clients may hold its vCPUs to a rate (D255).
+            "--host-managed" => self.host_managed = true,
             #[cfg(unix)]
             "--host-lifeline" => {
                 // run() already armed this explicit reader before parser effects.
@@ -396,6 +403,8 @@ struct Run {
     /// Where it tells its spawner how its console's report came out ([`Common::said_to`]).
     said_to: Option<LinkArg>,
     gpu_report: Option<GpuReportTarget>,
+    /// `--host-managed`: a plain boot takes rates from its host's clients (D255).
+    managed: bool,
 }
 
 struct GpuReportTarget {
@@ -421,6 +430,23 @@ fn gpu_report_arg(value: String) -> Result<LinkArg, String> {
         return Err("--gpu-report requires its exact named-Given writer".into());
     }
     Ok(value)
+}
+
+/// `--gpu-device`'s identity, checked alone and added to `selection`, which `parse_run` checks
+/// whole once every flag is read (D232): checked whole after each flag, it was copied and
+/// sorted again for every one, quadratic in the flags given.
+fn gpu_device(selection: &mut Vec<vm::gpu_selection::PhysicalGpu>, value: OsString) -> Result<(), String> {
+    let device = text(value)?
+        .parse::<vm::gpu_selection::PhysicalGpu>()
+        .map_err(|error| format!("--gpu-device: {error}"))?;
+    if selection.len() >= vm::gpu_selection::MAX_PHYSICAL_GPUS {
+        return Err("--gpu-device count exceeds the physical device-index space".into());
+    }
+    selection
+        .try_reserve(1)
+        .map_err(|_| "--gpu-device storage unavailable")?;
+    selection.push(device);
+    Ok(())
 }
 
 fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
@@ -546,18 +572,7 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
                 cfg.gpu = true;
             }
             "--gpu-device" => {
-                let device = text(value("--gpu-device")?)?
-                    .parse::<vm::gpu_selection::PhysicalGpu>()
-                    .map_err(|error| format!("--gpu-device: {error}"))?;
-                if cfg.gpu_devices.len() >= vm::gpu_selection::MAX_PHYSICAL_GPUS {
-                    return Err("--gpu-device count exceeds the physical device-index space".into());
-                }
-                cfg.gpu_devices
-                    .try_reserve(1)
-                    .map_err(|_| "--gpu-device storage unavailable")?;
-                cfg.gpu_devices.push(device);
-                vm::gpu_selection::check_selection(&cfg.gpu_devices)
-                    .map_err(|error| format!("--gpu-device: {error}"))?;
+                gpu_device(&mut cfg.gpu_devices, value("--gpu-device")?)?;
                 cfg.gpu = true;
             }
             "--pci-test" => cfg.pci_test = vec![(vm::TEST_DEVICE, 0)],
@@ -589,6 +604,7 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
             other => return Err(format!("unknown argument {other:?}")),
         }
     }
+    vm::gpu_selection::check_selection(&cfg.gpu_devices).map_err(|error| format!("--gpu-device: {error}"))?;
     common.check_workload()?;
     served_shares(&mut cfg, &served, warm.is_some())?;
     if !cfg.pci_test.is_empty() && common.snapshot_dir.is_some() {
@@ -669,6 +685,7 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
             attach,
             said_to: None,
             gpu_report: None,
+            managed: false,
         });
     }
     let mode = match rootfs {
@@ -698,6 +715,7 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
         said_to: common.said_to.take(),
         attach,
         gpu_report,
+        managed: common.host_managed,
     })
 }
 
@@ -724,7 +742,10 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
     let mut layer = None;
     let mut layer_cloned = None;
     let mut working_set_to = None;
-    while let Some(arg) = args.next() {
+    // Each word with the value `spec::next_vm_word` gives it, a value only for a flag
+    // `spec::RUN_VALUED` or `spec::RESTORE_VALUED` lists, as the command line is read ahead
+    // of this (cli/mod.rs `vm_options`).
+    while let Some((arg, mut given)) = crate::spec::next_vm_word(&mut args, true) {
         // The snapshot directory is a path, in whatever bytes; every option is text.
         let Some(flag) = arg.to_str().map(str::to_owned) else {
             if dir.is_some() {
@@ -733,7 +754,7 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
             dir = Some(PathBuf::from(arg));
             continue;
         };
-        let mut value = |name: &str| args.next().ok_or_else(|| format!("{name} needs a value"));
+        let mut value = |name: &str| given.take().ok_or_else(|| format!("{name} needs a value"));
         if common.option(&flag, &mut value)? {
             continue;
         }
@@ -1010,13 +1031,68 @@ fn function(
     Err(vm::passthrough_refused().to_string())
 }
 
-/// Holds this VM's vCPUs together to `cpus` CPUs' time of the host's, its run's CPU
-/// limits updated (`CPUS`, D191).
-pub fn hold_cpus(cpus: u32) -> Result<(), String> {
+/// Holds this VM's vCPUs together to `milli` milli-CPU of the host's time, its run's CPU
+/// limits updated (`CPUS`, D191) or its orchestrator's rate (`RATE`, D247): what it holds
+/// them to, none where it lets them be.
+pub fn hold_rate(milli: u64) -> Result<Option<std::num::NonZeroU64>, String> {
     RUNNING
         .get()
         .ok_or("the microVM has not started")?
-        .hold_cpus(cpus)
+        .hold_rate(milli)
+}
+
+/// Takes the rates a managed machine's host's clients ask on its vsock socket (D255): the
+/// muxer hands each `RATE` line's connection here ([`VsockHost::rate`]), and a thread of its
+/// own holds the vCPUs to each in turn and answers on its connection ([`serve_rates`]).
+/// Nothing where the machine has no socket, which no client dials.
+fn take_rates(vsock: &mut Option<VsockHost>) -> Result<(), String> {
+    let Some(vsock) = vsock.as_mut() else {
+        return Ok(());
+    };
+    let (asks, asked) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("rates".into())
+        .spawn(move || serve_rates(&asked))
+        .map_err(|e| format!("its rates' thread: {e}"))?;
+    vsock.rate = Some(asks);
+    Ok(())
+}
+
+/// Answers each rate asked of this machine, in turn, until its muxer goes: the hold
+/// [`hold_rate`] makes of it, with its hold's period, or why not (`shards_abi::rate`).
+fn serve_rates(asked: &std::sync::mpsc::Receiver<(shards_vmm::platform::UnixStream, u64)>) {
+    use shards_abi::rate::{Answer, answer};
+    for (mut stream, milli) in asked {
+        let line = match rate_answer(shards_vmm::vm::hold_period(), || hold_rate(milli)) {
+            Ok((milli, period_ns)) => answer(&Answer::Held { milli, period_ns }),
+            Err(why) => answer(&Answer::Refused(&why)),
+        };
+        // Blocking: one line, which its socket takes whole, and its client waits for.
+        let answered = stream
+            .set_nonblocking(false)
+            .and_then(|()| stream.write_all(line.as_bytes()));
+        if let Err(e) = answered {
+            shards_vmm::debug!("a rate's answer: {e}");
+        }
+    }
+}
+
+/// What a rate's ask holds: what `hold` held the vCPUs to, none where it lets them be, and
+/// the hold's `period` in nanoseconds; or why not. A period no u64 counts in nanoseconds
+/// holds nothing, as no client could hear it.
+fn rate_answer(
+    period: std::time::Duration,
+    hold: impl FnOnce() -> Result<Option<std::num::NonZeroU64>, String>,
+) -> Result<(Option<std::num::NonZeroU64>, std::num::NonZeroU64), String> {
+    let Some(period_ns) = u64::try_from(period.as_nanos())
+        .ok()
+        .and_then(std::num::NonZeroU64::new)
+    else {
+        return Err(format!(
+            "its hold's period, {period:?}, is no nanoseconds a u64 counts"
+        ));
+    };
+    hold().map(|milli| (milli, period_ns))
 }
 
 /// What each of this VM's vCPUs has run of its guest, by index, read now, and what those it
@@ -1490,6 +1566,7 @@ pub fn run(args: impl Iterator<Item = OsString>) -> ExitCode {
         attach,
         said_to,
         gpu_report,
+        managed,
     } = match parsed(parse_run(args.into_iter()), RUN_USAGE) {
         Ok(run) => run,
         Err(code) => return code,
@@ -1518,11 +1595,9 @@ pub fn run(args: impl Iterator<Item = OsString>) -> ExitCode {
         }
     };
     match mode {
-        Mode::GpuProbe => match vm::probe_gpu(&cfg.gpu_devices)
-            .and_then(|probe| probe.encode().map_err(|error| error.to_string()))
-        {
-            Ok(text) => match std::io::stdout().lock().write_all(text.as_bytes()) {
-                Ok(()) => ExitCode::SUCCESS,
+        Mode::GpuProbe => match probe_answer(vm::probe_gpu(&cfg.gpu_devices)) {
+            Ok((text, code)) => match std::io::stdout().lock().write_all(text.as_bytes()) {
+                Ok(()) => code,
                 Err(error) => {
                     report(error);
                     ExitCode::FAILURE
@@ -1533,13 +1608,18 @@ pub fn run(args: impl Iterator<Item = OsString>) -> ExitCode {
                 ExitCode::FAILURE
             }
         },
-        Mode::Plain => supervise(
-            start_reported(&cfg, gpu_report),
-            cfg.console,
-            false,
-            said_to,
-            input,
-        ),
+        Mode::Plain => {
+            if managed && let Err(e) = take_rates(&mut cfg.vsock) {
+                report(e);
+                return ExitCode::FAILURE;
+            }
+            let started = start_reported(&cfg, gpu_report);
+            // Its rates hold the running machine (`hold_rate`).
+            if managed && let Ok((handle, _)) = &started {
+                let _ = RUNNING.set(handle.clone());
+            }
+            supervise(started, cfg.console, false, said_to, input)
+        }
         Mode::Template(rootfs) => {
             boot_into(&mut cfg, rootfs, true);
             // Restored copies dial the host through this device, served by whatever
@@ -1853,6 +1933,16 @@ fn serve_workload(
             ));
             engines
         });
+        // So may its members' MCP connections (D254), each its owner's: as its engine's,
+        // its port's connections wait for the run, which takes them or lets the port go.
+        let mcps = matches!(command, Command::Warm(..)).then(|| {
+            let (mcp_port, mcps) = std::sync::mpsc::channel();
+            vsock.every.push((
+                shards_abi::run::MCP_PORT,
+                shards_vmm::vm::ServedPort::Ringed(mcp_port),
+            ));
+            mcps
+        });
         // A warm VM's signals come from its client. The command line's are this process's:
         // blocked before the VM's threads start, so that they inherit the mask.
         // One workload a process (M34): what its threads share lives as long as they do.
@@ -1945,6 +2035,7 @@ fn serve_workload(
                         let client: std::sync::OnceLock<Option<shards_ipc::Stream>> =
                             std::sync::OnceLock::new();
                         let engines = std::cell::Cell::new(engines);
+                        let mcps = std::cell::Cell::new(mcps);
                         let started = || {
                             crate::warm::started(&link);
                             end_recording_in(&stopper, RECORD_FOR);
@@ -2016,15 +2107,30 @@ fn serve_workload(
                             );
                             // Its own engine (D181), before its guest hears of the run, where
                             // it has one; where not, its port is let go, and refuses. A resumed
-                            // run's token comes after its save's (D176): its guest's relay says
-                            // the one it said before.
-                            let (tokens, engine) = match &request.tokens {
-                                Some(t) => {
-                                    let (run, engine) = t.split_at_checked(2 * shards_abi::run::TOKEN).unwrap_or((t, &[]));
-                                    (Some(run.to_vec()), <[u8; shards_abi::run::TOKEN]>::try_from(engine).ok())
-                                }
-                                None => (None, crate::warm::engine_token(&request.spec)),
+                            // run's tokens come after its save's (D176): its guest's relay says
+                            // the ones it said before.
+                            let brought = request
+                                .tokens
+                                .as_deref()
+                                .map(|t| {
+                                    crate::warm::resumed_tokens(t)
+                                        .ok_or_else(|| "a resumed run's tokens, malformed".to_string())
+                                })
+                                .transpose()
+                                .inspect_err(|e| report(e))?;
+                            let (tokens, engine, mcp) = match &brought {
+                                Some((run, kept)) => (
+                                    Some(run.to_vec()),
+                                    crate::warm::engine_token(kept),
+                                    crate::warm::mcp_token(kept),
+                                ),
+                                None => (
+                                    None,
+                                    crate::warm::engine_token(&request.spec),
+                                    crate::warm::mcp_token(&request.spec),
+                                ),
                             };
+                            drop(brought);
                             let engine_served = match (engines.take(), engine) {
                                 (Some(engines), Some(token)) => {
                                     crate::warm::serve_engine(&link, token, engines).inspect_err(|e| report(e))?;
@@ -2032,6 +2138,12 @@ fn serve_workload(
                                 }
                                 _ => false,
                             };
+                            // Its members' MCP connections (D254), where it asks for them,
+                            // before its guest hears of the run; where not, its port is let
+                            // go, and refuses. A resumed run's token is its save's (D176).
+                            if let (Some(mcps), Some(token)) = (mcps.take(), mcp) {
+                                crate::warm::serve_mcp(&link, token, mcps).inspect_err(|e| report(e))?;
+                            }
                             // The run's own most memory to plug, before its guest hears of
                             // it (D148), none included: the template's is the host's. A VM
                             // with none to plug has what it booted with.
@@ -2041,7 +2153,9 @@ fn serve_workload(
                             // The CPUs its vCPUs are held to (D191), before its guest
                             // hears of the run: what its workload may use whatever its
                             // guest does.
-                            stopper.hold_cpus(request.cpus).inspect_err(|e| report(e))?;
+                            stopper
+                                .hold_rate(u64::from(request.cpus).saturating_mul(vm::MILLI_PER_CPU))
+                                .inspect_err(|e| report(e))?;
                             // Its group's CPU budget too (D183), which every microVM of
                             // the group charges, before its guest hears of the run.
                             if let Some(file) = request.group {
@@ -2392,21 +2506,46 @@ fn start_reported(
         None => vm::start(cfg),
         Some((scope, writer)) => {
             let mut writer = Some(writer);
-            let mut report = |probe| {
-                let mut to = writer
-                    .take()
-                    .ok_or_else(|| shards_abi::gpu::GpuProbeError::Scope.to_string())?;
-                let frame = shards_abi::gpu::GpuReport { scope, probe }
-                    .encode()
-                    .map_err(|why| why.to_string())?;
-                to.write_all(frame.as_bytes()).map_err(|why| why.to_string())?;
-                // This sole VMM writer closes before any guest vCPU starts.
-                drop(to);
-                Ok(())
-            };
-            vm::start_gpu_report(cfg, &mut report)
+            vm::start_gpu_report(cfg, &mut |selection| write_report(&mut writer, scope, selection))
         }
     }
+}
+
+/// A managed boot's report (D232, D233), written once by its sole writer: the selection's
+/// receipt, or the refusal its renderer typed, in a frame scoped to its launch, and the
+/// writer closed, before any guest vCPU starts. Taken again, it is refused as taken.
+fn write_report(
+    writer: &mut Option<impl Write>,
+    scope: [u8; 16],
+    selection: Result<shards_abi::gpu::GpuProbe, shards_abi::gpu::GpuRefusal>,
+) -> Result<(), String> {
+    let mut to = writer
+        .take()
+        .ok_or_else(|| shards_abi::gpu::GpuProbeError::ReportTaken.to_string())?;
+    let frame = match selection {
+        Ok(probe) => shards_abi::gpu::GpuReport { scope, probe }.encode(),
+        Err(refusal) => shards_abi::gpu::GpuReport::refusal(scope, refusal),
+    }
+    .map_err(|why| why.to_string())?;
+    to.write_all(frame.as_bytes()).map_err(|why| why.to_string())?;
+    drop(to);
+    Ok(())
+}
+
+/// What `--gpu-probe` prints on stdout, and how it exits (D232): its selection's receipt; or
+/// the refusal its renderer typed, the probe failing; or, any other failure, nothing, that
+/// failure its own report.
+fn probe_answer(
+    probed: Result<shards_abi::gpu::GpuProbe, vm::StartError>,
+) -> Result<(String, ExitCode), String> {
+    let (answer, code) = match probed {
+        Ok(probe) => (probe.encode(), ExitCode::SUCCESS),
+        Err(why) => match why.gpu_refusal() {
+            Some(refusal) => (refusal.encode(), ExitCode::FAILURE),
+            None => return Err(why.to_string()),
+        },
+    };
+    Ok((answer.map_err(|why| why.to_string())?, code))
 }
 
 /// A host whose microVMs take no snapshots, arm64 KVM's (D154), says so before a VM starts
@@ -2743,7 +2882,7 @@ fn net_host(spec: &str) -> Result<shards_vmm::devices::virtio::net::NetHost, Str
     let wake_me = adopt("WAKE_ME", me)?;
     let wake_peer = adopt("WAKE_PEER", peer)?;
     let mac = mac
-        .parse::<shards_net::Mac>()
+        .parse::<shards_ipc::Mac>()
         .map_err(|e| format!("--net: {e}"))?
         .0;
     // Asked as the command ends, so that what it sent goes before the run does.
@@ -2808,7 +2947,7 @@ fn net_host(spec: &str) -> Result<shards_vmm::devices::virtio::net::NetHost, Str
         crate::warm::adopt_release(release)?;
     }
     let mac = spec
-        .parse::<shards_net::Mac>()
+        .parse::<shards_ipc::Mac>()
         .map_err(|e| format!("--net: {e}"))?
         .0;
     // Asked as the command ends, so that what it sent goes before the run does.
@@ -3263,6 +3402,59 @@ fn last_said(said: &[u8], report: shards_abi::bounds::ConsoleReport) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod rate_tests {
+    use super::{rate_answer, serve_rates};
+    use shards_abi::rate::{Answer, read_answer};
+    use std::io::Read as _;
+    use std::num::NonZeroU64;
+    use std::time::Duration;
+
+    /// A rate's answer is what its hold held the vCPUs to, a rate or none, with the hold's
+    /// period in nanoseconds, or the hold's words of why not; a period no u64 counts in
+    /// nanoseconds asks for no hold at all (D255).
+    #[test]
+    fn a_rates_answer_is_its_hold_and_its_period() {
+        let period = Duration::from_millis(100);
+        let ns = NonZeroU64::new(100_000_000).unwrap();
+        assert_eq!(
+            rate_answer(period, || Ok(NonZeroU64::new(250))),
+            Ok((NonZeroU64::new(250), ns))
+        );
+        assert_eq!(rate_answer(period, || Ok(None)), Ok((None, ns)));
+        assert_eq!(
+            rate_answer(period, || Err("the microVM has not started".into())),
+            Err("the microVM has not started".into())
+        );
+        let mut asked = false;
+        let refused = rate_answer(Duration::MAX, || {
+            asked = true;
+            Ok(None)
+        });
+        assert!(refused.is_err(), "{refused:?}");
+        assert!(!asked, "a period no client could hear holds nothing");
+    }
+
+    /// Each rate the muxer hands over is answered on its own connection, one line, then
+    /// closed; with no machine running here, its hold's refusal (D255).
+    #[test]
+    fn each_rate_handed_over_is_answered_on_its_connection() {
+        let (asks, asked) = std::sync::mpsc::channel();
+        let (ours, mut theirs) = shards_vmm::platform::UnixStream::pair().unwrap();
+        ours.set_nonblocking(true).unwrap();
+        asks.send((ours, 250)).unwrap();
+        drop(asks);
+        serve_rates(&asked);
+        let mut line = String::new();
+        theirs.read_to_string(&mut line).unwrap();
+        assert_eq!(
+            read_answer(line.as_bytes()).unwrap(),
+            Answer::Refused("the microVM has not started")
+        );
+    }
+}
+
+#[cfg(test)]
 mod said {
     use super::last_said;
     use shards_abi::bounds::ConsoleReport::{Cut, Whole};
@@ -3384,6 +3576,77 @@ mod managed_report_tests {
         );
     }
 
+    const PHYSICAL: vm::gpu_selection::PhysicalGpu = vm::gpu_selection::PhysicalGpu::MetalRegistry(7);
+
+    fn probe() -> shards_abi::gpu::GpuProbe {
+        shards_abi::gpu::GpuProbe {
+            devices: vec![shards_abi::gpu::ResolvedGpu {
+                physical: PHYSICAL,
+                uuid: [1; 16],
+                pci: None,
+                luid: Some(7u64.to_be_bytes()),
+                name: None,
+                device_local_bytes: None,
+            }],
+            host_visible_bytes: 4096,
+        }
+    }
+
+    /// D232: a managed boot's report is written once, by its one writer, and taken again
+    /// says it was taken (`ReportTaken`), not that its frame's scope differs (`Scope`).
+    #[test]
+    fn a_report_written_once_is_refused_as_taken() {
+        use shards_abi::gpu::{GpuProbeError, GpuReport};
+        let mut frame = Vec::new();
+        let mut writer = Some(&mut frame);
+        write_report(&mut writer, [3; 16], Ok(probe())).unwrap();
+        assert_eq!(
+            write_report(&mut writer, [3; 16], Ok(probe())),
+            Err(GpuProbeError::ReportTaken.to_string())
+        );
+        let written = GpuReport::parse(std::str::from_utf8(&frame).unwrap(), [3; 16], &[PHYSICAL]).unwrap();
+        assert_eq!(written.probe, probe());
+    }
+
+    /// D232: a selection its renderer refused is reported as that refusal, in its launch's
+    /// scoped frame, by the same one writer, where the writer was closed unwritten.
+    #[test]
+    fn a_refused_selection_is_reported_as_its_refusal() {
+        use shards_abi::gpu::{GpuProbeError, GpuRefusal, GpuReport, JoinError};
+        let refusal = GpuRefusal::Join(JoinError::Missing);
+        let mut frame = Vec::new();
+        let mut writer = Some(&mut frame);
+        write_report(&mut writer, [3; 16], Err(refusal)).unwrap();
+        assert_eq!(
+            write_report(&mut writer, [3; 16], Err(refusal)),
+            Err(GpuProbeError::ReportTaken.to_string())
+        );
+        assert_eq!(
+            GpuReport::parse(std::str::from_utf8(&frame).unwrap(), [3; 16], &[PHYSICAL]),
+            Err(GpuProbeError::Refused(refusal))
+        );
+    }
+
+    /// D232: `--gpu-probe` prints its receipt and succeeds, or prints the refusal its
+    /// renderer typed and fails; any other failure it reports itself, printing nothing.
+    #[test]
+    fn a_probe_answers_its_receipt_or_its_refusal() {
+        use shards_abi::gpu::{GpuProbe, GpuProbeError, GpuRefusal, JoinError};
+        let refusal = GpuRefusal::Join(JoinError::Ambiguous);
+        let (text, code) =
+            probe_answer(Err(vm::StartError::GpuProbe(GpuProbeError::Refused(refusal)))).unwrap();
+        assert_eq!(GpuProbe::parse(&text), Err(GpuProbeError::Refused(refusal)));
+        assert_eq!(code, ExitCode::FAILURE);
+        let (text, code) = probe_answer(Ok(probe())).unwrap();
+        assert_eq!(GpuProbe::parse(&text).unwrap(), probe());
+        assert_eq!(code, ExitCode::SUCCESS);
+        let failed = vm::StartError::Legacy("this host has no Vulkan loader".into());
+        assert_eq!(
+            probe_answer(Err(failed)),
+            Err("this host has no Vulkan loader".to_string())
+        );
+    }
+
     #[test]
     fn managed_report_names_in_values_and_guest_argv_are_never_host_flags() {
         let run = parse(&["--cmdline", "--gpu-report"]).unwrap();
@@ -3398,6 +3661,124 @@ mod managed_report_tests {
         for value in ["9", "ask", "answer", "working-set", "said-to"] {
             assert!(gpu_report_arg(value.into()).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod gpu_device_tests {
+    use super::*;
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::cell::Cell;
+    use vm::gpu_selection::{MAX_PHYSICAL_GPUS, PhysicalGpuError};
+
+    /// The system's allocator, counting what the thread that asks allocates while it asks
+    /// ([`allocations`]): no other test of this binary asks.
+    struct Counting;
+
+    thread_local! {
+        static COUNTING: Cell<bool> = const { Cell::new(false) };
+        static COUNTED: Cell<usize> = const { Cell::new(0) };
+    }
+
+    fn count() {
+        if COUNTING.with(Cell::get) {
+            COUNTED.with(|n| n.set(n.get().saturating_add(1)));
+        }
+    }
+
+    // SAFETY: every call goes to the system allocator unchanged.
+    unsafe impl GlobalAlloc for Counting {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            count();
+            // SAFETY: the caller's contract, passed on.
+            unsafe { System.alloc(layout) }
+        }
+
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            // SAFETY: the caller's contract, passed on.
+            unsafe { System.dealloc(ptr, layout) }
+        }
+
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            count();
+            // SAFETY: the caller's contract, passed on.
+            unsafe { System.realloc(ptr, layout, new_size) }
+        }
+    }
+
+    #[global_allocator]
+    static ALLOCATOR: Counting = Counting;
+
+    /// `f`'s result, and the allocations and reallocations it made on this thread.
+    fn allocations<T>(f: impl FnOnce() -> T) -> (T, usize) {
+        COUNTED.with(|n| n.set(0));
+        COUNTING.with(|c| c.set(true));
+        let out = f();
+        COUNTING.with(|c| c.set(false));
+        (out, COUNTED.with(Cell::get))
+    }
+
+    fn flag(value: &str) -> [OsString; 2] {
+        [OsString::from("--gpu-device"), OsString::from(value)]
+    }
+
+    fn refusal(gpu: impl Iterator<Item = OsString>) -> String {
+        let words = ["--kernel", "/never-opened/kernel"]
+            .into_iter()
+            .map(OsString::from);
+        parse_run(words.chain(gpu)).err().expect("refused")
+    }
+
+    /// D232: a `--gpu-device` adds its identity alone, copying no selection: the selection
+    /// is checked whole once its flags are read, where checked after every flag it was
+    /// copied and sorted for each, quadratic in the flags given.
+    #[test]
+    fn a_gpu_device_copies_no_selection() {
+        let given = 64;
+        let mut selection = Vec::with_capacity(given + 1);
+        for i in 0..given {
+            gpu_device(&mut selection, OsString::from(format!("luid:{i:x}"))).unwrap();
+        }
+        let next = OsString::from(format!("luid:{given:x}"));
+        let (added, allocated) = allocations(|| gpu_device(&mut selection, next));
+        added.unwrap();
+        assert_eq!(allocated, 0, "a --gpu-device beside {given} others allocated");
+    }
+
+    /// D232: `--gpu-device`'s refusals, each as it was given while the selection was checked
+    /// whole after every flag: the same text, the same flag named.
+    #[test]
+    fn a_gpu_devices_refusals_name_it() {
+        assert_eq!(
+            refusal([OsString::from("--gpu-device")].into_iter()),
+            "--gpu-device needs a value"
+        );
+        assert_eq!(
+            refusal(flag("NVIDIA").into_iter()),
+            format!("--gpu-device: {}", PhysicalGpuError::Syntax)
+        );
+        assert_eq!(
+            refusal(flag("pci:0000:01:20.0").into_iter()),
+            format!("--gpu-device: {}", PhysicalGpuError::PciAddress)
+        );
+        let repeated = flag("luid:7")
+            .into_iter()
+            .chain(flag("luid:8"))
+            .chain(flag("luid:7"));
+        assert_eq!(
+            refusal(repeated),
+            format!("--gpu-device: {}", PhysicalGpuError::Duplicate)
+        );
+    }
+
+    /// D232: one identity past the physical device-index space is refused at its flag.
+    #[test]
+    fn a_gpu_device_past_the_index_space_is_refused() {
+        let past = (0..=MAX_PHYSICAL_GPUS).flat_map(|i| flag(&format!("luid:{i:x}")));
+        assert_eq!(
+            refusal(past),
+            "--gpu-device count exceeds the physical device-index space"
+        );
     }
 }
 
@@ -3519,6 +3900,22 @@ mod tests {
                 .unwrap_or_else(|| panic!("{flag}: taken without a value"));
             assert!(e.contains("needs a value"), "{flag}: {e}");
         }
+    }
+
+    /// What `restore` alone reads a value after, as `spec::RESTORE_VALUED` tells what reads
+    /// its command line ahead of it (cli/mod.rs `vm_options`): each needs its value, which
+    /// it takes whatever it reads as (D232).
+    #[test]
+    fn a_restores_own_valued_flags_take_their_values() {
+        for flag in crate::spec::RESTORE_VALUED {
+            let e = parse_restore(args(&[b"/t", flag.as_bytes()]))
+                .err()
+                .unwrap_or_else(|| panic!("{flag}: taken without a value"));
+            assert!(e.contains("needs a value"), "{flag}: {e}");
+        }
+        let restore = parse_restore(args(&[b"/t", b"--layer", b"/l", b"--layer-cloned", b"--hold"])).unwrap();
+        assert_eq!(restore.cfg.layer_cloned.as_deref(), Some("--hold"));
+        assert!(!restore.cfg.hold);
     }
 
     fn args(list: &[&[u8]]) -> impl Iterator<Item = OsString> {

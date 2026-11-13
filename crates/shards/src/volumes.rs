@@ -605,10 +605,14 @@ pub fn validate_options(opts: &BTreeMap<String, String>) -> Result<(), String> {
     Ok(())
 }
 
+/// Where a home keeps its volumes' files, every run's that has any (`Store`): a directory
+/// whose volumes guests reach.
+pub(crate) const ROOT: &str = "volumes";
+
 impl Store {
     pub fn new(home: &Path) -> Store {
         Store {
-            root: home.join("volumes"),
+            root: home.join(ROOT),
         }
     }
 
@@ -1418,6 +1422,8 @@ mod tests {
                 b"join-volume=b\0/etc/x.conf\0ro\0x.conf".to_vec(),
             ]
         );
+        // Each of a key the run protocol registers (D257), as the guest refuses any other.
+        assert_eq!(shards_abi::run::setup::check(&setup), Ok(()));
         let mut past = vec![b"volume=shards2\0/d\0\0".to_vec()];
         assert!(joined(&mut past, &["a".into()]).is_err());
     }
@@ -1534,6 +1540,10 @@ mod tests {
         };
         assert!(entry("/data").starts_with("domain-volume="), "{}", entry("/data"));
         assert!(entry("/scratch").starts_with("domain-volume="));
+        // Each of a key the run protocol registers (D257), the one chosen as they are opened
+        // among them, as the guest refuses any other.
+        let entries: Vec<Vec<u8>> = opened.mounts.iter().map(|(_, e)| e.clone()).collect();
+        assert_eq!(shards_abi::run::setup::check(&entries), Ok(()));
         for dest in ["/shared", "/cache"] {
             assert!(entry(dest).starts_with("volume="), "{}", entry(dest));
         }

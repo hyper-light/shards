@@ -10,6 +10,7 @@
 // Where shards has no daemon yet (Windows), nothing prepares a run.
 #![cfg_attr(not(unix), allow(dead_code))]
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use sha2::{Digest as _, Sha256};
@@ -1047,7 +1048,7 @@ pub fn template(
     ) + &pmem(cfg)
         + &plug(cfg)
         + &swap(cfg)
-        + gpu(cfg)
+        + &gpu(cfg)
         + JOIN_SHARE
         + &share_window(cfg)
         + &cpu_baseline(cfg)
@@ -1076,9 +1077,19 @@ fn cpu_baseline(cfg: &Config) -> String {
 /// a join disk: in its key, so that none saved without one is restored as one with it.
 const JOIN_SHARE: &str = "join share\n";
 
-/// A GPU's template (D150), in its key where it has one.
-fn gpu(cfg: &Config) -> &'static str {
-    if cfg.gpu { "gpu\n" } else { "" }
+/// A GPU's template (D150), in its key where it has one, and the host GPUs it renders on where
+/// its run names them (D232), which its snapshot keeps and its restores rejoin: a template
+/// saved on one selection is none of another's. The keys of those that name none stay as
+/// they were.
+fn gpu(cfg: &Config) -> String {
+    if !cfg.gpu {
+        return String::new();
+    }
+    if cfg.gpu_devices.is_empty() {
+        return "gpu\n".into();
+    }
+    let named: Vec<String> = cfg.gpu_devices.iter().map(ToString::to_string).collect();
+    format!("gpu\ngpu devices {}\n", named.join(","))
 }
 
 /// A template's memory to plug (D148), in its key where it has any.
@@ -1123,6 +1134,211 @@ fn shares(cfg: &Config) -> String {
     }
     let _ = cfg;
     String::new()
+}
+
+/// The guest of a run given its GPU: `guest`'s init with the pinned GPU kernel at `kernel`
+/// (D144), keyed by that kernel's digest, whose templates are its own, saved before its guest
+/// made anything of the GPU's, which its host driver would hold (D150): the daemon's runs'
+/// and an orchestrator's alike (D253).
+pub fn gpu_guest(guest: &Guest, kernel: &Path) -> Guest {
+    Guest {
+        kernel: kernel.to_path_buf(),
+        init: guest.init.clone(),
+        kernel_digest: crate::kernel::KERNEL_GPU
+            .map(|k| format!("sha256:{}", k.sha256))
+            .unwrap_or_default(),
+        init_digest: guest.init_digest.clone(),
+    }
+}
+
+/// How a run's microVM is made beside its guest, as every microVM a run boots is made, the
+/// daemon's and an orchestrator's run host's alike (D253): what goes into its template's name
+/// with its guest ([`template`]), so that a template's name means one machine, whichever
+/// process saved it.
+pub struct Shape<'a> {
+    /// Its vCPUs and the memory it boots with, in MiB ([`sizes`]).
+    pub size: (u32, u64),
+    /// The CPU baseline its home's microVMs are told (D176 part 6).
+    pub cpu_baseline: &'a shards_vmm::arch::cpu::Id,
+    /// The host's memory, in bytes, where it is known (`build::host_memory`).
+    pub host_memory: Option<u64>,
+    /// The in-VM server's device, where its image is an Agentfile's (D60).
+    pub server: Option<&'a Path>,
+    /// The emulator its image's programs run under, where its image is another CPU's (D179).
+    pub emulator: Option<&'a Emulated>,
+    /// How many directories it shares (D38).
+    pub shares: u32,
+    /// Each share's DAX window in MiB, as its spawner gives them (D189).
+    pub share_window_mib: u64,
+    /// Linux's `vm.max_map_count`, where the host has such a limit.
+    pub max_map_count: Option<u64>,
+    /// Its PCI slots, empty until a device is plugged into its run (D214).
+    pub pci_slots: u8,
+    /// The bridge its guest is on (D31), where it is on a network.
+    pub bridge: Option<&'a shards_net::bridge::Bridge>,
+}
+
+impl Shape<'_> {
+    /// `cfg`, its guest's, made this shape.
+    pub fn give(&self, cfg: &mut Config) {
+        // Sized as a run without a limit, with the host's memory to plug, which each run
+        // asks for as its workload needs it within its own most (D148): one template for
+        // every limit ([`template`]). Plugged memory comes online as the kernel's own, as a
+        // builder's does (D133).
+        (cfg.vcpus, cfg.memory_mib) = self.size;
+        cfg.cpu_baseline.clone_from(self.cpu_baseline);
+        let host_mib = self.host_memory.map(|bytes| (bytes >> 20) & !1);
+        cfg.hotplug_mib = host_mib.map_or(0, |mib| mib.saturating_sub(cfg.memory_mib));
+        if cfg.hotplug_mib > 0 {
+            cfg.cmdline.push_str(" memhp_default_state=online_kernel");
+        }
+        // And memory its workload frees given back to the host, as it reports it free, as a
+        // microVM's own is (D151).
+        cfg.reporting = true;
+        // And a swap window as long as the host's memory (D159), which a run with a memory
+        // limit swaps to: as much as the most memory a run may have, the swap that limit
+        // gives by default.
+        cfg.swap_mib = host_mib.unwrap_or(0);
+        cfg.pmem.extend(self.server.map(Path::to_path_buf));
+        // Another CPU's image (D179): the emulator image's root after them, and its init told
+        // the device and the architecture to register, before its root is mounted.
+        if let Some(e) = self.emulator {
+            cfg.pmem.push(e.root.clone());
+            cfg.cmdline.push_str(&format!(
+                " shards_emulate=/dev/pmem{}:{}",
+                cfg.pmem.len(),
+                e.architecture
+            ));
+        }
+        // A slot for each directory it shares (D38), which its run fills.
+        cfg.shares = (0..self.shares).map(|_| std::sync::Arc::default()).collect();
+        // And each share's DAX window, where its spawner gives one (D189), as its join share's,
+        // every range of all of them within the host's mappings where it limits them: on
+        // Windows of the files its share process gives (D197's slice 4).
+        cfg.share_window_mib = self.share_window_mib;
+        if let Some(limit) = self.max_map_count {
+            let windows = u64::try_from(cfg.shares.len())
+                .unwrap_or(u64::MAX)
+                .saturating_add(1);
+            let bound = crate::daemon::share_window_bound_mib(limit, windows, u64::from(cfg.vcpus));
+            cfg.share_window_mib = cfg.share_window_mib.min(bound);
+        }
+        cfg.pci_slots = self.pci_slots;
+        if let Some(bridge) = self.bridge {
+            cfg.cmdline.push(' ');
+            cfg.cmdline.push_str(&bridge.cmdline());
+        }
+    }
+}
+
+/// The VM process's words for a warm VM booted as `cfg` says, `rootfs` its root filesystem,
+/// told its link is `link` (`--warm`), saving its template at `save` where it is given one:
+/// every microVM a run boots, the daemon's and an orchestrator's run host's alike (D253). A
+/// join disk and a join share in every one, empty and unserved until a joiner joins its
+/// network (D119), and its PCI slots behind its own IOMMU where it was booted to take a
+/// host's functions (D214): its templates have them, and so every restore of them.
+pub fn boot_args(cfg: &Config, rootfs: &Path, save: Option<&Path>, link: &str) -> Vec<OsString> {
+    let mut args: Vec<OsString> = vec![
+        "run".into(),
+        "--kernel".into(),
+        cfg.kernel.clone().into(),
+        "--cmdline".into(),
+        cfg.cmdline.clone().into(),
+        "--cpus".into(),
+        cfg.vcpus.to_string().into(),
+        "--memory".into(),
+        cfg.memory_mib.to_string().into(),
+        "--rootfs".into(),
+        rootfs.into(),
+    ];
+    if cfg.hotplug_mib > 0 {
+        let max = cfg.memory_mib.saturating_add(cfg.hotplug_mib);
+        args.extend(["--memory-max".into(), max.to_string().into()]);
+    }
+    if cfg.reporting {
+        args.push("--reporting".into());
+    }
+    if cfg.swap_mib > 0 {
+        args.extend(["--swap-window".into(), cfg.swap_mib.to_string().into()]);
+    }
+    if let Some(init) = &cfg.init {
+        args.extend(["--init".into(), init.into()]);
+    }
+    for pmem in &cfg.pmem {
+        args.extend(["--pmem".into(), pmem.into()]);
+    }
+    if let Some(fresh) = save {
+        args.extend(["--snapshot-dir".into(), fresh.into()]);
+    }
+    if cfg.gpu {
+        args.push("--gpu".into());
+    }
+    // The host GPUs it renders on, where its run names them (D232), in `--gpu-device`'s
+    // grammar.
+    for device in &cfg.gpu_devices {
+        args.extend(["--gpu-device".into(), device.to_string().into()]);
+    }
+    for f in &cfg.vfio {
+        let flag = if f.iommu { "--vfio-iommu" } else { "--vfio" };
+        // By its device node where it is taken by that (D154).
+        let given: OsString = f
+            .cdev
+            .as_ref()
+            .map_or_else(|| f.name.clone().into(), |c| c.clone().into_os_string());
+        args.extend([flag.into(), given]);
+    }
+    if !cfg.shares.is_empty() {
+        args.extend(["--shares".into(), cfg.shares.len().to_string().into()]);
+    }
+    if cfg.share_window_mib > 0 {
+        args.extend(["--share-window".into(), cfg.share_window_mib.to_string().into()]);
+    }
+    if cfg.pci_slots > 0 {
+        args.extend(["--pci-slots".into(), cfg.pci_slots.to_string().into()]);
+        if cfg.pci_slots_iommu {
+            args.push("--pci-slots-iommu".into());
+        }
+    }
+    // The CPU baseline its guest is told (D176 part 6).
+    if !cfg.cpu_baseline.is_empty() {
+        args.extend([
+            "--cpu-baseline".into(),
+            shards_vmm::arch::cpu::encode(&cfg.cpu_baseline).into(),
+        ]);
+    }
+    args.push("--join".into());
+    args.push("--join-share".into());
+    args.extend(["--warm".into(), link.into()]);
+    args
+}
+
+/// What a restore of a template is given beside it, read only, in the order its cold boot was
+/// given them (D25), each as the VM saving the template named it: its root filesystem, the
+/// in-VM server's device where its image is an Agentfile's (D60), without which every restore
+/// is refused, and the emulator image's root where its image is another CPU's (D179).
+pub struct Backings<'a> {
+    pub rootfs: Option<&'a Path>,
+    pub server: Option<&'a Path>,
+    pub emulator: Option<&'a Path>,
+}
+
+/// The VM process's words for a warm VM restoring template `dir` against its `backings`,
+/// told its link is `link`: in the GPU's VM process where it is a GPU's (D150). It writes no
+/// file of the home: its spawner gives it its microVM's log (D30).
+pub fn restore_args(dir: &Path, backings: &Backings<'_>, gpu: bool, link: &str) -> Vec<OsString> {
+    let mut args: Vec<OsString> = vec!["restore".into(), dir.into(), "--warm".into(), link.into()];
+    for backing in [backings.rootfs, backings.server, backings.emulator]
+        .into_iter()
+        .flatten()
+    {
+        let mut read_only = backing.as_os_str().to_os_string();
+        read_only.push(":ro");
+        args.extend(["--backing".into(), read_only]);
+    }
+    if gpu {
+        args.push("--gpu".into());
+    }
+    args
 }
 
 /// What a template was saved from: its root filesystem and its guest. It is live while
@@ -1298,6 +1514,26 @@ pub fn settle(fresh: &Path, dir: &Path) {
         return;
     }
     let _ = std::fs::remove_dir_all(fresh);
+}
+
+/// The save at `fresh` a boot made of template `dir`, as the boot ended, the daemon's and an
+/// orchestrator's run host's alike (D25, D253): where its VM was `ready`, the template's
+/// record written beside it (`record`) and the save made the template ([`settle`]); where it
+/// never was, no template, whatever its VM wrote before it failed (a snapshot saved, then its
+/// VM gone before `READY`), its save removed. What `record` refused, for its caller to say.
+pub fn settle_boot(
+    ready: bool,
+    fresh: &Path,
+    dir: &Path,
+    record: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    if !ready {
+        let _ = std::fs::remove_dir_all(fresh);
+        return Ok(());
+    }
+    let recorded = record();
+    settle(fresh, dir);
+    recorded
 }
 
 /// The workload: the command line's settings merged over the image's, as dockerd merges
@@ -1781,5 +2017,261 @@ mod tests {
             let e = merge_labels(image.clone(), &strings(&[bad])).unwrap_err();
             assert!(e.contains("is reserved"), "{bad}: {e}");
         }
+    }
+
+    /// What `Shape` makes of a guest's config, as the daemon made each run's microVM before
+    /// it was shared (D253): its size and CPU baseline; the host's memory to plug, in even
+    /// MiB past what it boots with, onlined as the kernel's own, and as long a swap window;
+    /// memory given back as reported; the in-VM server's device, then the emulator's root,
+    /// which its init is told of; a slot for each share and their DAX windows within the
+    /// host's mappings; its PCI slots; its bridge on its command line last. On a host whose
+    /// memory is not known, nothing to plug and no swap window.
+    #[test]
+    fn a_runs_microvm_is_shaped_alike_wherever_it_boots() {
+        let baseline = shards_vmm::arch::cpu::Id::default();
+        let emulator = Emulated {
+            root: "/h/emulator.erofs".into(),
+            architecture: "x86_64",
+        };
+        let bridge = shards_net::bridge::Bridge::elect(&[]).unwrap();
+        let shape = Shape {
+            size: (2, 256),
+            cpu_baseline: &baseline,
+            host_memory: Some((8193 << 20) + 123),
+            server: Some(Path::new("/h/server.erofs")),
+            emulator: Some(&emulator),
+            shares: 2,
+            share_window_mib: 4096,
+            max_map_count: Some(3_000),
+            pci_slots: 4,
+            bridge: Some(&bridge),
+        };
+        let mut cfg = Config::new("/k/vmlinux".into(), Some("/k/init".into()));
+        let base = cfg.cmdline.clone();
+        shape.give(&mut cfg);
+        assert_eq!((cfg.vcpus, cfg.memory_mib), (2, 256));
+        assert_eq!((cfg.hotplug_mib, cfg.swap_mib), (8192 - 256, 8192));
+        assert!(cfg.reporting);
+        assert_eq!(
+            cfg.pmem,
+            [
+                PathBuf::from("/h/server.erofs"),
+                PathBuf::from("/h/emulator.erofs")
+            ]
+        );
+        assert_eq!(cfg.shares.len(), 2);
+        let bound = crate::daemon::share_window_bound_mib(3_000, 3, 2);
+        assert!(bound < 4096);
+        assert_eq!(cfg.share_window_mib, bound);
+        assert_eq!(cfg.pci_slots, 4);
+        assert_eq!(
+            cfg.cmdline,
+            format!(
+                "{base} memhp_default_state=online_kernel shards_emulate=/dev/pmem2:x86_64 {}",
+                bridge.cmdline()
+            )
+        );
+
+        let unknown = Shape {
+            host_memory: None,
+            server: None,
+            emulator: None,
+            shares: 0,
+            max_map_count: None,
+            bridge: None,
+            ..shape
+        };
+        let mut cfg = Config::new("/k/vmlinux".into(), Some("/k/init".into()));
+        unknown.give(&mut cfg);
+        assert_eq!((cfg.hotplug_mib, cfg.swap_mib), (0, 0));
+        assert_eq!(cfg.cmdline, base);
+        assert!(cfg.pmem.is_empty() && cfg.shares.is_empty());
+        assert_eq!(cfg.share_window_mib, 4096);
+    }
+
+    fn words(args: &[OsString]) -> Vec<&str> {
+        args.iter().map(|a| a.to_str().unwrap()).collect()
+    }
+
+    /// A boot's words are its config's, in the order the daemon gave them before they were
+    /// shared (D253): every one a run's microVM may have, then its join disk and share and its
+    /// link; a config of none of them has those alone.
+    #[test]
+    fn a_boots_words_are_its_configs() {
+        let mut cfg = Config::new("/k/vmlinux".into(), Some("/k/init".into()));
+        cfg.cmdline = "console=hvc0".into();
+        (cfg.vcpus, cfg.memory_mib) = (2, 256);
+        cfg.hotplug_mib = 7936;
+        cfg.reporting = true;
+        cfg.swap_mib = 8192;
+        cfg.pmem = vec!["/h/server.erofs".into(), "/h/emulator.erofs".into()];
+        cfg.gpu = true;
+        cfg.shares = (0..2).map(|_| std::sync::Arc::default()).collect();
+        cfg.share_window_mib = 870;
+        cfg.pci_slots = 4;
+        cfg.pci_slots_iommu = true;
+        #[cfg(target_arch = "aarch64")]
+        let baseline: shards_vmm::arch::cpu::Id = vec![(0xc000, 0x11)];
+        #[cfg(target_arch = "x86_64")]
+        let baseline: shards_vmm::arch::cpu::Id = vec![[1, 0, 0, 0, 0, 0, 0]];
+        cfg.cpu_baseline.clone_from(&baseline);
+        let encoded = shards_vmm::arch::cpu::encode(&baseline);
+        let args = boot_args(&cfg, Path::new("/s/root.erofs"), Some(Path::new("/t/fresh")), "3");
+        assert_eq!(
+            words(&args),
+            [
+                "run",
+                "--kernel",
+                "/k/vmlinux",
+                "--cmdline",
+                "console=hvc0",
+                "--cpus",
+                "2",
+                "--memory",
+                "256",
+                "--rootfs",
+                "/s/root.erofs",
+                "--memory-max",
+                "8192",
+                "--reporting",
+                "--swap-window",
+                "8192",
+                "--init",
+                "/k/init",
+                "--pmem",
+                "/h/server.erofs",
+                "--pmem",
+                "/h/emulator.erofs",
+                "--snapshot-dir",
+                "/t/fresh",
+                "--gpu",
+                "--shares",
+                "2",
+                "--share-window",
+                "870",
+                "--pci-slots",
+                "4",
+                "--pci-slots-iommu",
+                "--cpu-baseline",
+                encoded.as_str(),
+                "--join",
+                "--join-share",
+                "--warm",
+                "3",
+            ]
+        );
+        let plain = Config::new("/k/vmlinux".into(), None);
+        let memory = shards_vmm::vm::MEMORY_MIB.to_string();
+        assert_eq!(
+            words(&boot_args(&plain, Path::new("/s/root.erofs"), None, "daemon")),
+            [
+                "run",
+                "--kernel",
+                "/k/vmlinux",
+                "--cmdline",
+                plain.cmdline.as_str(),
+                "--cpus",
+                "1",
+                "--memory",
+                memory.as_str(),
+                "--rootfs",
+                "/s/root.erofs",
+                "--join",
+                "--join-share",
+                "--warm",
+                "daemon",
+            ]
+        );
+    }
+
+    /// A restore's words name its template, its link, then each of its backing files read
+    /// only in the order its cold boot was given them, whichever it has, and a GPU's last.
+    #[test]
+    fn a_restores_words_are_its_templates() {
+        let all = Backings {
+            rootfs: Some(Path::new("/s/root.erofs")),
+            server: Some(Path::new("/h/server.erofs")),
+            emulator: Some(Path::new("/h/emulator.erofs")),
+        };
+        assert_eq!(
+            words(&restore_args(Path::new("/t/abc"), &all, true, "3")),
+            [
+                "restore",
+                "/t/abc",
+                "--warm",
+                "3",
+                "--backing",
+                "/s/root.erofs:ro",
+                "--backing",
+                "/h/server.erofs:ro",
+                "--backing",
+                "/h/emulator.erofs:ro",
+                "--gpu",
+            ]
+        );
+        let some = Backings { server: None, ..all };
+        assert_eq!(
+            words(&restore_args(Path::new("/t/abc"), &some, false, "3")),
+            [
+                "restore",
+                "/t/abc",
+                "--warm",
+                "3",
+                "--backing",
+                "/s/root.erofs:ro",
+                "--backing",
+                "/h/emulator.erofs:ro",
+            ]
+        );
+        let none = Backings {
+            rootfs: None,
+            server: None,
+            emulator: None,
+        };
+        assert_eq!(
+            words(&restore_args(Path::new("/t/abc"), &none, false, "3")),
+            ["restore", "/t/abc", "--warm", "3"]
+        );
+    }
+
+    /// A stand-in snapshot at `dir`, as a VM's save leaves one (`snapshot::exists`).
+    fn snapshot_at(dir: &Path) {
+        std::fs::create_dir_all(dir.join("g-1")).unwrap();
+        std::fs::write(dir.join("current"), b"g-1\n").unwrap();
+        std::fs::write(dir.join("g-1").join("state"), b"").unwrap();
+    }
+
+    /// D25, D253: a boot's save is its template only where its VM was ready, its record
+    /// written first; one whose VM saved its snapshot and then failed before it was ready
+    /// makes no template and writes no record, its save removed; where another run's template
+    /// was saved first, that one stays and the save goes.
+    #[test]
+    fn only_a_ready_boots_save_becomes_the_template() {
+        let home = shards_testdir::TempDir::new("settle").unwrap();
+        let dir = home.path().join("templates").join("abc");
+        let fresh = dir.with_extension("new-1-0");
+        let mut recorded = 0;
+        snapshot_at(&fresh);
+        settle_boot(false, &fresh, &dir, || {
+            recorded += 1;
+            Ok(())
+        })
+        .unwrap();
+        assert!(!dir.exists(), "a boot never ready made a template");
+        assert!(!fresh.exists() && recorded == 0);
+
+        snapshot_at(&fresh);
+        settle_boot(true, &fresh, &dir, || {
+            recorded += 1;
+            Ok(())
+        })
+        .unwrap();
+        assert!(shards_vmm::snapshot::exists(&dir) && !fresh.exists() && recorded == 1);
+
+        snapshot_at(&fresh);
+        std::fs::write(fresh.join("g-1").join("second"), b"").unwrap();
+        let refused = settle_boot(true, &fresh, &dir, || Err("its record: no room".into()));
+        assert_eq!(refused, Err("its record: no room".into()));
+        assert!(!fresh.exists() && !dir.join("g-1").join("second").exists());
     }
 }

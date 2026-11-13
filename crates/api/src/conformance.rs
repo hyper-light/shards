@@ -2,18 +2,22 @@
 //! [`Shards`](crate::Shards) on each backend's real guests (`crates/shards/tests/boot.rs`
 //! `shards_api_conforms_on_real_guests`): a spec past the bounds is refused before boot,
 //! and one past the hypervisor's vCPUs as `Bounds`; a served port carries bytes both ways
-//! and a half-close; an unserved port is refused as `Channel` within its patience, one off
-//! the allowlist at once; `stop` ends a guest as `Stopped`, and every later `connect` is
-//! refused `Ended`; a guest that powers off ends as `PowerOff`; and the hosts without a
-//! backend are refused naming them.
+//! and a half-close; an unserved port is refused as `Channel` once its patience is out, never
+//! before, one off the allowlist at once; `stop` ends a guest as `Stopped`, and every later
+//! connect is refused `Ended`; a guest that powers off ends as `PowerOff`; and the hosts
+//! without a backend are refused naming them.
+//!
+//! Every wait for a guest's answer, a served port's `OK` or a guest's end, follows its VM
+//! process ([`Guest::connect_while_runs`], [`Guest::wait_while_runs`]): no clock, and no
+//! number of ours (R03). The one patience the suite gives, an unserved port's, is this
+//! host's own: what one refused attempt there took.
 
 use std::io::{Read as _, Write as _};
 use std::net::Shutdown;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 #[cfg(unix)]
 use crate::ProcessOperation;
-use crate::record::Learned;
 use crate::{
     Backend, End, Guest, GuestSpec, Guests, Identity, ProcessFailure, Refusal, backend_of, min_memory_mib,
 };
@@ -29,8 +33,6 @@ pub struct Subject<'a> {
     pub unserved: u32,
     /// A guest that powers off by itself.
     pub powering_off: GuestSpec,
-    /// How long a guest may take to boot and listen, or to end.
-    pub patience: Duration,
 }
 
 impl std::fmt::Debug for Subject<'_> {
@@ -40,7 +42,6 @@ impl std::fmt::Debug for Subject<'_> {
             .field("port", &self.port)
             .field("unserved", &self.unserved)
             .field("powering_off", &self.powering_off)
-            .field("patience", &self.patience)
             .finish_non_exhaustive()
     }
 }
@@ -155,7 +156,7 @@ pub fn more_vcpus_than_the_hypervisor_runs_are_refused_as_bounds(s: &Subject<'_>
     };
     let refused = match s.guests.boot(&spec) {
         Err(refused) => refused,
-        Ok(guest) => match guest.connect(s.port, s.patience) {
+        Ok(guest) => match guest.connect_while_runs(s.port) {
             Err(refused) => refused,
             Ok(_) => return Err(fail(CASE, "connected")),
         },
@@ -176,9 +177,10 @@ pub fn a_served_port_carries_bytes_and_a_half_close(s: &Subject<'_>) -> Result<(
     const CASE: &str = "a served port carries bytes and a half-close";
     let guest = boot(CASE, s, &s.serving)?;
     let mut conn = guest
-        .connect(s.port, s.patience)
+        .connect_while_runs(s.port)
         .map_err(|e| fail(CASE, format!("connect: {e}")))?;
-    conn.set_read_timeout(Some(s.patience))
+    // Its echo, read to the guest's half-close, waited for as such: no read timeout.
+    conn.set_read_timeout(None)
         .map_err(|e| fail(CASE, format!("its read timeout: {e}")))?;
     // An input, sized to exercise a bound: one byte more than shards' device holds of a
     // connection's (`BUF_ALLOC`, 64 KiB, `crates/vmm/src/devices/virtio/vsock/conn.rs:21`),
@@ -229,14 +231,18 @@ pub fn a_served_port_carries_bytes_and_a_half_close(s: &Subject<'_>) -> Result<(
 }
 
 /// A port off the allowlist is refused as `Channel` at once; one on it that the guest does
-/// not serve, as `Channel` once its patience is out, and not long after.
+/// not serve, as `Channel` once its patience is out, never before. That patience is this
+/// host's own: what one refused single attempt to the unserved port took. How long past it
+/// the refusal may come has no bound here: a bound on it would be a multiple of some time of
+/// this host's, a number of ours (R03).
 pub fn an_unserved_port_is_refused(s: &Subject<'_>) -> Result<(), Failure> {
     const CASE: &str = "an unserved port is refused";
+    let began = Instant::now();
     let guest = boot(CASE, s, &s.serving)?;
     // Ready first: a boot's time is not the refusal's.
     drop(
         guest
-            .connect(s.port, s.patience)
+            .connect_while_runs(s.port)
             .map_err(|e| fail(CASE, format!("connect to the served port: {e}")))?,
     );
     // A spec allows its ports alone, so one of the first of them plus one is off it.
@@ -244,7 +250,7 @@ pub fn an_unserved_port_is_refused(s: &Subject<'_>) -> Result<(), Failure> {
         .take(s.serving.ports.len().saturating_add(1))
         .find(|p| !s.serving.ports.contains(p))
         .ok_or_else(|| fail(CASE, "every port is allowed"))?;
-    match guest.connect(off, s.patience) {
+    match guest.connect_while_runs(off) {
         Err(Refusal::Channel { port, .. }) if port == off => {}
         other => {
             return Err(fail(
@@ -253,7 +259,22 @@ pub fn an_unserved_port_is_refused(s: &Subject<'_>) -> Result<(), Failure> {
             ));
         }
     }
-    let patience = UNSERVED_PATIENCE;
+    // A single attempt there, bounded by this boot's own time to answer, which holds a dial
+    // and more: what it took is the patience the retrying form is asked with.
+    let at = Instant::now()
+        .checked_add(began.elapsed())
+        .ok_or_else(|| fail(CASE, "this boot's time is past a deadline"))?;
+    let once = Instant::now();
+    match guest.connect_once_before(s.unserved, at) {
+        Err(Refusal::Connect { port, .. }) if port == s.unserved => {}
+        other => {
+            return Err(fail(
+                CASE,
+                format!("a single attempt to port {}: {:?}", s.unserved, other.err()),
+            ));
+        }
+    }
+    let patience = once.elapsed();
     let start = Instant::now();
     let refused = guest.connect(s.unserved, patience);
     let took = start.elapsed();
@@ -261,16 +282,12 @@ pub fn an_unserved_port_is_refused(s: &Subject<'_>) -> Result<(), Failure> {
         Err(Refusal::Channel { port, .. }) if port == s.unserved => {}
         other => return Err(fail(CASE, format!("port {}: {:?}", s.unserved, other.err()))),
     }
-    // A handshake under way when patience runs out ends at it (its timeouts are what is
-    // left), so a refusal comes at the patience and its thread's wake.
-    let overshoot = OVERSHOOT.get();
-    if took < patience || took > patience.saturating_add(overshoot) {
+    if took < patience {
         return Err(fail(
             CASE,
-            format!("refused after {took:?}, with patience {patience:?} and {overshoot:?} past it"),
+            format!("refused after {took:?}, before its patience {patience:?}"),
         ));
     }
-    OVERSHOOT.saw(took.saturating_sub(patience));
     let _ = guest.stop();
     Ok(())
 }
@@ -281,16 +298,19 @@ pub fn a_single_attempt_is_refused_at_once_where_the_guest_does_not_listen(
     s: &Subject<'_>,
 ) -> Result<(), Failure> {
     const CASE: &str = "a single attempt is refused at once where the guest does not listen";
+    let began = Instant::now();
     let guest = boot(CASE, s, &s.serving)?;
     // Ready first: waiting for a boot is the retrying form's.
     drop(
         guest
-            .connect(s.port, s.patience)
+            .connect_while_runs(s.port)
             .map_err(|e| fail(CASE, format!("connect to the served port: {e}")))?,
     );
+    // A deadline as long as this boot took to answer, which holds a dial and more: what a
+    // single attempt is refused within, at once, is far inside it.
     let at = Instant::now()
-        .checked_add(s.patience)
-        .ok_or_else(|| fail(CASE, "the patience is past a deadline"))?;
+        .checked_add(began.elapsed())
+        .ok_or_else(|| fail(CASE, "this boot's time is past a deadline"))?;
     drop(
         guest
             .connect_once_before(s.port, at)
@@ -310,44 +330,21 @@ pub fn a_single_attempt_is_refused_at_once_where_the_guest_does_not_listen(
     Ok(())
 }
 
-/// How long a real guest may take to boot and listen, to echo, or to end (`record::Learned`):
-/// a hang guard, each wait returning at its fact. Recorded, the slowest of those waits by
-/// the client as it is (`docs/research/platform-measurements.md` M463): macOS-HVF's, a boot
-/// to power-off, 134.161917 ms; Linux-KVM's, a boot to power-off, 478.557376 ms.
-pub static PATIENCE: Learned = Learned::new(
-    "conformance::PATIENCE",
-    &[
-        ("macOS-HVF", Duration::from_nanos(134_161_917)),
-        ("Linux-KVM", Duration::from_nanos(478_557_376)),
-    ],
-);
-
-/// The patience an unserved port is asked with: an input, as any shows the patience kept;
-/// short, so the case is.
-pub const UNSERVED_PATIENCE: Duration = Duration::from_millis(200);
-
-/// How long past its patience an unserved port's refusal may come (`record::Learned`).
-/// Recorded: macOS-HVF's slowest, 150.85425 ms, the simulator's, its timer leeway on a 200
-/// ms wait (`docs/research/platform-measurements.md` M515, above M463's real guests' 138.7
-/// ms).
-pub static OVERSHOOT: Learned =
-    Learned::new("OVERSHOOT", &[("macOS-HVF", Duration::from_nanos(150_854_250))]);
-
 /// `stop` ends a guest as `Stopped`, and a `connect` after it is refused `Ended(Stopped)`.
 pub fn stop_ends_it_and_later_connects_are_refused(s: &Subject<'_>) -> Result<(), Failure> {
     const CASE: &str = "stop ends it and later connects are refused";
     let guest = boot(CASE, s, &s.serving)?;
     drop(
         guest
-            .connect(s.port, s.patience)
+            .connect_while_runs(s.port)
             .map_err(|e| fail(CASE, format!("connect: {e}")))?,
     );
     guest.stop().map_err(|e| fail(CASE, format!("stop: {e}")))?;
-    match guest.wait_for(s.patience) {
-        Ok(Some(End::Stopped)) => {}
+    match guest.wait_while_runs() {
+        Ok(End::Stopped) => {}
         other => return Err(fail(CASE, format!("its end: {other:?}"))),
     }
-    match guest.connect(s.port, s.patience) {
+    match guest.connect_while_runs(s.port) {
         Err(Refusal::Ended(End::Stopped)) => Ok(()),
         other => Err(fail(CASE, format!("connect after stop: {:?}", other.err()))),
     }
@@ -357,23 +354,14 @@ pub fn stop_ends_it_and_later_connects_are_refused(s: &Subject<'_>) -> Result<()
 /// on) is taken back by `attach` of its identity: the attached guest serves its port and stops as
 /// any guest does; once it has ended, attach of it is refused `Ended` or `Gone`, and attach of an
 /// identity whose start time differs is refused with its observed start (or simulator `Gone`). On
-/// Windows a guest's VM ends with the process that booted it (D141), so none outlives its client to
-/// be taken back: attach of it answers `Gone`, the guest still its booter's.
+/// every host: on Windows the guest's process is the `shards` that booted its VM, whose Job ends
+/// the VM as it ends (D141), and it outlives its client as on Unix (D215).
 pub fn a_guest_its_client_lost_is_taken_back_by_attach(s: &Subject<'_>) -> Result<(), Failure> {
     const CASE: &str = "a guest its client lost is taken back by attach";
     let guest = boot(CASE, s, &s.serving)?;
     let identity = guest
         .identity()
         .map_err(|e| fail(CASE, format!("identity: {e}")))?;
-    // On Windows a guest's VM ends with the process that booted it (D141), so none outlives
-    // its client to be taken back: attach answers Gone, and the guest stays its booter's,
-    // ended as it drops here.
-    if cfg!(windows) {
-        return match s.guests.attach(&identity, &s.serving) {
-            Err(Refusal::Gone { .. }) => Ok(()),
-            other => Err(fail(CASE, format!("attach on Windows: {:?}", other.err()))),
-        };
-    }
     // The client's crash: its handle goes without its drop, which would end the guest.
     std::mem::forget(guest);
     let other = Identity {
@@ -399,9 +387,9 @@ pub fn a_guest_its_client_lost_is_taken_back_by_attach(s: &Subject<'_>) -> Resul
         .attach(&identity, &s.serving)
         .map_err(|e| fail(CASE, format!("attach: {e}")))?;
     let mut conn = back
-        .connect(s.port, s.patience)
+        .connect_while_runs(s.port)
         .map_err(|e| fail(CASE, format!("connect after attach: {e}")))?;
-    conn.set_read_timeout(Some(s.patience))
+    conn.set_read_timeout(None)
         .map_err(|e| fail(CASE, format!("its read timeout: {e}")))?;
     conn.write_all(b"back")
         .and_then(|()| conn.shutdown(Shutdown::Write))
@@ -413,8 +401,8 @@ pub fn a_guest_its_client_lost_is_taken_back_by_attach(s: &Subject<'_>) -> Resul
         return Err(fail(CASE, format!("echoed {got:?} after attach")));
     }
     back.stop().map_err(|e| fail(CASE, format!("stop: {e}")))?;
-    match back.wait_for(s.patience) {
-        Ok(Some(End::Stopped)) => {}
+    match back.wait_while_runs() {
+        Ok(End::Stopped) => {}
         other => return Err(fail(CASE, format!("its end: {other:?}"))),
     }
     match s.guests.attach(&identity, &s.serving) {
@@ -455,8 +443,8 @@ pub fn a_guest_its_client_lost_is_taken_back_by_attach(s: &Subject<'_>) -> Resul
 pub fn a_guest_that_powers_off_ends_as_power_off(s: &Subject<'_>) -> Result<(), Failure> {
     const CASE: &str = "a guest that powers off ends as PowerOff";
     let guest = boot(CASE, s, &s.powering_off)?;
-    match guest.wait_for(s.patience) {
-        Ok(Some(End::PowerOff)) => Ok(()),
+    match guest.wait_while_runs() {
+        Ok(End::PowerOff) => Ok(()),
         other => Err(fail(CASE, format!("its end: {other:?}"))),
     }
 }

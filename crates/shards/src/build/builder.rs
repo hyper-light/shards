@@ -24,6 +24,7 @@ use std::time::{Duration, Instant};
 
 use shards_abi::build::{self, Kept, Step, Tree, kind};
 use shards_abi::run;
+use shards_api::{Follow, Followed, Record, Unfollowed};
 use shards_build::sync::{self, Scope};
 use shards_build::upper::Applier;
 use shards_build::vfs::Fs;
@@ -36,6 +37,15 @@ use shards_vmm::platform::{AsRawSocket as _, UnixListener, UnixStream};
 /// starting microVM (`shards_vmm::platform::progressed`, PM M357), a slice of `daemon::READY_STALL` at a
 /// time.
 const BOOT_PATIENCE: Duration = Duration::from_secs(30);
+
+/// What this process has learned of its builders (D215's judge, shared, R12): the slowest
+/// answer of a guest's to `NEEDS`, from its asking, and the slowest end of a builder's VM,
+/// from its connection's end, which powers its guest off, to its process's exit; each with
+/// the least CPU rate a VM still gave it at. In this process's memory, none before its
+/// first: a `shards build`, which boots one builder, follows its VM's liveness alone, and a
+/// daemon that serves builds (the Engine API) learns from its first.
+static NEEDED: Record = Record::new();
+static ENDED: Record = Record::new();
 
 /// The memory a builder boots with, in MiB, where it may have more: what its page
 /// structures cost it at boot grows with it (PM M82), and the rest is plugged as the build
@@ -95,14 +105,9 @@ pub enum Ended {
 /// A builder VM, and the layers it holds.
 pub struct Builder {
     vm: shards_ipc::Child,
-    /// Its network process, which ends with the VM.
-    #[cfg(unix)]
-    net: shards_ipc::Child,
-    #[cfg(windows)]
-    net: crate::netproc::NetProcess,
-    /// Its VM's AppContainer (Windows, D141), whose profile goes once the VM has.
-    #[cfg(windows)]
-    _container: shards_ipc::AppContainer,
+    /// Its network process, which ends with the VM: the one its launch made, as a builder's
+    /// asks for one.
+    net: Option<crate::netproc::NetProcess>,
     conn: UnixStream,
     /// Where its host asks it to give back what it holds cold (build::GIVE_PORT, D188),
     /// where its init dialed it.
@@ -124,6 +129,9 @@ pub struct Builder {
     /// Where its home records what its builds needed of memory (D133), which it adds its
     /// own build's to as it ends.
     needs: Option<PathBuf>,
+    /// Its home's record of this host's ends, by which its network process is followed to
+    /// its end (`netproc::reap`, D217).
+    ends: crate::daemon::ends::Ends,
 }
 
 /// A builder's give-back connection, as its build's memory pressure watcher asks through it
@@ -460,21 +468,6 @@ fn lock_free(lock: &Path) -> bool {
     }
 }
 
-/// Where a builder's VM process finds its `--attach` socket (D134): a descriptor on Unix,
-/// the name its spawner handed it by on Windows.
-#[cfg(unix)]
-const ATTACH: &str = "4";
-#[cfg(windows)]
-const ATTACH: &str = "attach";
-
-/// Where a builder's VM process finds the pipe it tells how its console's report came out on
-/// (`--said-to`, D12): a descriptor past the others it is given on Unix, the name its
-/// spawner handed it by on Windows.
-#[cfg(unix)]
-const SAID_TO: i32 = 9;
-#[cfg(windows)]
-const SAID_TO: &str = "said-to";
-
 /// The longest socket path a host binds, less the `_<port>` the vsock muxer adds: what
 /// both Linux (108 bytes of sun_path) and macOS (104) take, and Windows' afunix (108, its
 /// NUL among them).
@@ -550,195 +543,6 @@ fn socket_dir() -> Result<SocketDir, String> {
     Err("a directory for the builder: every name tried was taken".into())
 }
 
-/// A builder's VM process and network process, started: and on Windows the AppContainer
-/// its VM runs in.
-struct Launched {
-    vm: shards_ipc::Child,
-    #[cfg(unix)]
-    net: shards_ipc::Child,
-    #[cfg(windows)]
-    net: crate::netproc::NetProcess,
-    #[cfg(windows)]
-    container: shards_ipc::AppContainer,
-}
-
-/// Starts a builder's network process and its VM process, the VM's command `args`, its
-/// `--attach` socket `attach`: the network process first, whose side of the ring the VM is
-/// given, as a VM's (D31); the VM in App Sandbox on macOS, asking this process for what it
-/// opens (D30).
-#[cfg(unix)]
-fn launch(
-    args: &[OsString],
-    policy: shards_net::Policy,
-    mac: &[u8; 6],
-    bridge: &shards_net::bridge::Bridge,
-    attach: UnixStream,
-    said_to: io::PipeWriter,
-) -> Result<Launched, String> {
-    let (net, side) = crate::netproc::start(policy, mac, bridge, None)?;
-    let grants = if cfg!(target_os = "macos") {
-        Some(UnixStream::pair().map_err(|e| format!("the builder's grants: {e}"))?)
-    } else {
-        None
-    };
-    let null = std::fs::File::open("/dev/null").map_err(|e| format!("/dev/null: {e}"))?;
-    let err = io::stderr();
-    let fds: Vec<_> = [
-        (null.as_fd(), 0),
-        (err.as_fd(), 1),
-        (err.as_fd(), 2),
-        (side.region.as_fd(), crate::netproc::VM_FDS[0]),
-        (side.sleeps.as_fd(), crate::netproc::VM_FDS[1]),
-        (side.rings.as_fd(), crate::netproc::VM_FDS[2]),
-        (attach.as_fd(), 4),
-        (said_to.as_fd(), SAID_TO),
-    ]
-    .into_iter()
-    .chain(grants.as_ref().map(|(_, theirs)| (theirs.as_fd(), 3)))
-    .collect();
-    let given: &[OsString] = if grants.is_some() {
-        &["--grants".into(), "3".into()]
-    } else {
-        &[]
-    };
-    let argv: Vec<&std::ffi::OsStr> = args
-        .iter()
-        .take(1)
-        .chain(given)
-        .chain(args.iter().skip(1))
-        .map(OsString::as_os_str)
-        .collect();
-    let mut env = crate::netproc::child_env();
-    // A GPU's builder is the GPU's VM process (D144), which says MoltenVK's errors alone.
-    let vm_binary = if args.iter().any(|a| *a == "--gpu") {
-        env.push(("MVK_CONFIG_LOG_LEVEL", "1".into()));
-        crate::helpers::vm_gpu()?
-    } else {
-        crate::helpers::vm()?
-    };
-    let vm = match shards_ipc::spawn_in(&vm_binary, &argv, &fds, false, &crate::netproc::env_pairs(&env)) {
-        Ok(vm) => vm,
-        Err(e) => {
-            let _ = net.kill(libc::SIGKILL);
-            let _ = net.wait();
-            return Err(format!("starting the builder: {e}"));
-        }
-    };
-    // The two processes hold the ring now: once the VM goes, its network process hears
-    // its doorbell hang up and goes too.
-    drop(fds);
-    drop(side);
-    drop(attach);
-    drop(said_to);
-    if let Some((ours, _)) = grants {
-        #[cfg(target_os = "macos")]
-        std::thread::Builder::new()
-            .name("builder grants".into())
-            .spawn(move || {
-                let _ = crate::grant_answer::serve(&ours, None);
-            })
-            .map_err(|e| format!("answering the builder: {e}"))?;
-        #[cfg(not(target_os = "macos"))]
-        drop(ours);
-    }
-    Ok(Launched { vm, net })
-}
-
-/// Starts a builder's VM process and network process (Windows, D141, D142): the VM
-/// confined in an AppContainer of its own, made suspended, so that its network process,
-/// started next in one holding the network's capabilities, is given the VM's process to
-/// watch for its end; then the VM runs, and this process answers what it asks for (its
-/// base images, its vsock socket, its dials to this process's ports) on a thread of its
-/// own, which ends as the VM does.
-#[cfg(windows)]
-fn launch(
-    args: &[OsString],
-    policy: shards_net::Policy,
-    mac: &[u8; 6],
-    bridge: &shards_net::bridge::Bridge,
-    attach: UnixStream,
-    said_to: io::PipeWriter,
-) -> Result<Launched, String> {
-    use std::os::windows::io::{AsHandle as _, OwnedHandle};
-    let (ready, side) = crate::netproc::prepare(policy, mac, bridge)?;
-    // A GPU's builder is the GPU's VM process, which runs its host's GPU driver (D144,
-    // D202).
-    let gpu = args.iter().any(|a| *a == "--gpu");
-    let vm_binary = if gpu {
-        crate::helpers::vm_gpu()?
-    } else {
-        crate::helpers::vm()?
-    };
-    let container = crate::helpers::containers().and_then(|records| {
-        shards_ipc::AppContainer::new("vm", &records).map_err(|e| format!("the builder's AppContainer: {e}"))
-    })?;
-    // A pipe each way: the VM's requests, and the answers.
-    let pipes = std::io::pipe().and_then(|asks| Ok((asks, std::io::pipe()?)));
-    let ((asks_from, asks_to), (answers_from, answers_to)) =
-        pipes.map_err(|e| format!("the builder's grants: {e}"))?;
-    let (asks_to, answers_from) = (OwnedHandle::from(asks_to), OwnedHandle::from(answers_from));
-    let argv: Vec<&std::ffi::OsStr> = args.iter().map(OsString::as_os_str).collect();
-    let mut given = vec![
-        shards_ipc::Given {
-            name: "ask",
-            handle: asks_to.as_handle(),
-        },
-        shards_ipc::Given {
-            name: "answer",
-            handle: answers_from.as_handle(),
-        },
-    ];
-    given.extend(side.given());
-    let said_to = OwnedHandle::from(said_to);
-    given.push(shards_ipc::Given {
-        name: SAID_TO,
-        handle: said_to.as_handle(),
-    });
-    let err = io::stderr();
-    let env = crate::netproc::child_env();
-    let vm = shards_ipc::spawn_suspended(&shards_ipc::Spawn {
-        program: &vm_binary,
-        args: &argv,
-        grants_at: 1,
-        given: &given,
-        stdin: None,
-        stdout: err.as_handle(),
-        stderr: err.as_handle(),
-        sockets: &[
-            shards_ipc::Shared {
-                name: ATTACH,
-                socket: attach.raw_socket() as u64,
-            },
-            side.shared(),
-        ],
-        env: &crate::netproc::env_pairs(&env),
-        container: Some(&container),
-        holds: shards_ipc::Holds::Hypervisor,
-        group: None,
-        graphics: gpu,
-    })
-    .map_err(|e| format!("starting the builder: {e}"))?;
-    // Ended with the suspended VM, a Job's, where its network process does not start.
-    let net = crate::netproc::start(ready, &vm, None)?;
-    let giver = vm.giver().map_err(|e| format!("answering the builder: {e}"))?;
-    let vm = vm.resume().map_err(|e| format!("starting the builder: {e}"))?;
-    // Its ends are the VM's now: its exit ends its requests, and its network process,
-    // which watches it, goes with it.
-    drop(given);
-    drop((asks_to, answers_from, side, attach, said_to));
-    let link = crate::grant::Link {
-        from: std::fs::File::from(OwnedHandle::from(asks_from)),
-        to: std::fs::File::from(OwnedHandle::from(answers_to)),
-    };
-    std::thread::Builder::new()
-        .name("builder grants".into())
-        .spawn(move || {
-            let _ = crate::grant_answer::serve(&link, &giver);
-        })
-        .map_err(|e| format!("answering the builder: {e}"))?;
-    Ok(Launched { vm, net, container })
-}
-
 /// Records what a builder's VM tells on `from_vm` of its console's report as it ends
 /// (said.rs), on a thread of its own; none where it ends with nothing to tell.
 fn record_said(home: &Path, said: crate::said::Learned, from_vm: io::PipeReader) {
@@ -755,6 +559,78 @@ fn record_said(home: &Path, said: crate::said::Learned, from_vm: io::PipeReader)
         });
     if let Err(e) = recorder {
         shards_vmm::debug!("not recording the builder's console report: {e}");
+    }
+}
+
+/// The connection a builder's init dials on `listener` (non-blocking), its VM process `vm`
+/// waited for while it runs its boot: one that runs nothing of it for [`BOOT_PATIENCE`] is
+/// given up on, and said apart where the host never let it run (PM M166), as is one that
+/// ends.
+fn dialed(vm: &shards_ipc::Child, listener: &UnixListener) -> Result<UnixStream, String> {
+    let began = Instant::now();
+    // Its process's CPU time when last judged, and when it last ran its boot.
+    let cpu = || {
+        shards_vmm::platform::process_usage(vm.id())
+            .ok()
+            .map(|u| u.cpu_ns)
+    };
+    let (mut seen, mut judged, mut ran) = (cpu(), began, began);
+    let conn = loop {
+        match listener.accept() {
+            Ok((conn, _)) => break conn,
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                let now = Instant::now();
+                let slice = now.saturating_duration_since(judged);
+                if slice >= crate::daemon::READY_STALL {
+                    let cpu_now = cpu();
+                    if shards_vmm::platform::progressed(seen, cpu_now, slice) {
+                        ran = now;
+                    }
+                    (seen, judged) = (cpu_now, now);
+                }
+                if now.saturating_duration_since(ran) > BOOT_PATIENCE {
+                    // One the host has not let run yet is not the builder's failure to boot,
+                    // and says so (PM M166).
+                    #[cfg(unix)]
+                    let unstarted = shards_vmm::platform::launched(vm.id()) == Some(false);
+                    #[cfg(windows)]
+                    let unstarted = false;
+                    if unstarted {
+                        return Err(format!(
+                            "the builder was not started by the host in {BOOT_PATIENCE:?}: its \
+                             process ran nothing, as macOS admits each launch after it has \
+                             assessed the executables launched before it"
+                        ));
+                    }
+                    return Err("the builder did not start".into());
+                }
+                if vm.try_wait().is_some() {
+                    return Err("the builder ended as it started".into());
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Err(e) => return Err(format!("the builder's port: {e}")),
+        }
+    };
+    conn.set_nonblocking(false)
+        .map_err(|e| format!("the builder's connection: {e}"))?;
+    Ok(conn)
+}
+
+/// [`dialed`], for the builder `launched`; where it does not dial, what its launch started is
+/// ended: its VM process killed and waited for, then its network process, which goes as its
+/// VM does, followed to its end by `ends` (`netproc::reap`, D217).
+fn connect(
+    launched: crate::launch::Launched,
+    listener: &UnixListener,
+    ends: &crate::daemon::ends::Ends,
+) -> Result<(crate::launch::Launched, UnixStream), String> {
+    match dialed(&launched.vm, listener) {
+        Ok(conn) => Ok((launched, conn)),
+        Err(e) => {
+            launched.end(ends);
+            Err(e)
+        }
     }
 }
 
@@ -851,20 +727,13 @@ impl Builder {
             boot.memory_mib.to_string().into(),
             "--vsock".into(),
             vsock.clone().into(),
-            "--net".into(),
-            crate::netproc::VmSide::arg(&mac).into(),
             "--no-console".into(),
         ];
         // What it keeps of its console to quote as it fails, as its kernel's records say,
-        // and the pipe it tells how that report came out on (D12).
+        // and the pipe it tells how that report came out on (D12), which its launch hands it.
         let said = crate::said::learn(boot.home, Some(boot.kernel));
         let (from_vm, said_to) = io::pipe().map_err(|e| format!("the builder's console report: {e}"))?;
-        args.extend([
-            "--console-said".into(),
-            said.kept.to_string().into(),
-            "--said-to".into(),
-            SAID_TO.to_string().into(),
-        ]);
+        args.extend(["--console-said".into(), said.kept.to_string().into()]);
         for base in boot.bases {
             args.extend(["--pmem".into(), base.into()]);
         }
@@ -878,69 +747,43 @@ impl Builder {
         // (D151): a build's peak is not held to its end, on WHP as a run's is
         // (`platform::discard`).
         args.push("--reporting".into());
-        // The files this process attaches to its join disk for its steps' caches (D134).
+        // The files this process attaches to its join disk for its steps' caches (D134), on
+        // the socket its launch hands it (`--attach`).
         let (attach, attach_theirs) =
             UnixStream::pair().map_err(|e| format!("the builder's join disk: {e}"))?;
-        args.extend(["--attach".into(), ATTACH.into()]);
-        let launched = launch(&args, policy, &mac, &bridge, attach_theirs, said_to)?;
-        let vm = launched.vm;
+        let vm_binary = crate::helpers::vm()?;
+        let ends = crate::daemon::ends::Ends::kept_in(boot.home);
+        let argv: Vec<&std::ffi::OsStr> = args.iter().map(OsString::as_os_str).collect();
+        // The network process first, whose side of the ring the VM is given, as a VM's
+        // (D31); the VM in App Sandbox on macOS, asking this process for what it opens
+        // (D30), and on Windows in an AppContainer (D141, D142).
+        let launched = crate::launch::builder(
+            crate::launch::Plan {
+                args: &argv,
+                vm: &vm_binary,
+                network: Some(crate::launch::Network {
+                    policy,
+                    mac,
+                    bridge: &bridge,
+                    credentials: false,
+                }),
+                ends: &ends,
+                group: None,
+                #[cfg(target_os = "macos")]
+                grants: crate::launch::Grants::Answered,
+            },
+            attach_theirs,
+            said_to,
+        )?;
         record_said(boot.home, said, from_vm);
-        let began = Instant::now();
-        // Its process's CPU time when last judged, and when it last ran its boot.
-        let cpu = || {
-            shards_vmm::platform::process_usage(vm.id())
-                .ok()
-                .map(|u| u.cpu_ns)
-        };
-        let (mut seen, mut judged, mut ran) = (cpu(), began, began);
-        let conn = loop {
-            match listener.accept() {
-                Ok((conn, _)) => break conn,
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    let now = Instant::now();
-                    let slice = now.saturating_duration_since(judged);
-                    if slice >= crate::daemon::READY_STALL {
-                        let cpu_now = cpu();
-                        if shards_vmm::platform::progressed(seen, cpu_now, slice) {
-                            ran = now;
-                        }
-                        (seen, judged) = (cpu_now, now);
-                    }
-                    if now.saturating_duration_since(ran) > BOOT_PATIENCE {
-                        // One the host has not let run yet is not the builder's failure
-                        // to boot, and says so (PM M166).
-                        #[cfg(unix)]
-                        let unstarted = shards_vmm::platform::launched(vm.id()) == Some(false);
-                        #[cfg(windows)]
-                        let unstarted = false;
-                        kill(&vm);
-                        if unstarted {
-                            return Err(format!(
-                                "the builder was not started by the host in {BOOT_PATIENCE:?}: its \
-                                 process ran nothing, as macOS admits each launch after it has \
-                                 assessed the executables launched before it"
-                            ));
-                        }
-                        return Err("the builder did not start".into());
-                    }
-                    if vm.try_wait().is_some() {
-                        return Err("the builder ended as it started".into());
-                    }
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-                Err(e) => return Err(format!("the builder's port: {e}")),
-            }
-        };
-        conn.set_nonblocking(false)
-            .map_err(|e| format!("the builder's connection: {e}"))?;
+        let (launched, conn) = connect(launched, &listener, &ends)?;
         // Its init dialed its give-back connection before the build's, so it waits now, or
         // there is none (an init that gives nothing back).
         let give = take_first(give);
+        // Its control is let go of: a build publishes no port.
         let mut builder = Builder {
-            vm,
-            net: launched.net,
-            #[cfg(windows)]
-            _container: launched.container,
+            vm: launched.vm,
+            net: launched.net.map(|(process, _)| process),
             conn,
             give,
             ssh,
@@ -951,6 +794,7 @@ impl Builder {
             attach,
             attached: HashMap::new(),
             needs: boot.needs.map(Path::to_path_buf),
+            ends,
         };
         if let Some((_, architectures)) = boot.emulators {
             let device = u32::try_from(boot.bases.len()).map_err(|_| "too many base images")?;
@@ -1092,53 +936,11 @@ impl Builder {
     }
 
     fn frame(&self, which: u8, payload: &[u8]) -> Result<(), String> {
-        let len = u32::try_from(payload.len()).map_err(|_| "a frame too long".to_string())?;
-        let mut w = &self.conn;
-        io::Write::write_all(&mut w, &run::header(which, len))
-            .and_then(|()| io::Write::write_all(&mut w, payload))
-            .map_err(|e| format!("telling the builder: {e}"))
-    }
-
-    /// What its build has needed of memory so far, as its guest says it (`NEEDED`): the
-    /// bytes, and the processes ended for want of it; its answer waited for until
-    /// `deadline`, past the frames of a step still running, which come before it. None
-    /// where it has not come by then, Err where its guest cannot say.
-    fn needed(&self, deadline: Instant) -> Result<Option<(u64, u64)>, String> {
-        self.frame(kind::NEEDS, b"")?;
-        let mut buf = Vec::new();
-        loop {
-            let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                return Ok(None);
-            }
-            self.conn
-                .set_read_timeout(Some(left))
-                .map_err(|e| format!("hearing the builder: {e}"))?;
-            match self.read_frame(&mut buf) {
-                Ok(kind::NEEDED) => break,
-                Ok(_) => continue,
-                Err(_) if Instant::now() >= deadline => return Ok(None),
-                Err(e) => return Err(e),
-            }
-        }
-        let said = String::from_utf8_lossy(&buf);
-        let mut words = said.split_whitespace().map(str::parse::<u64>);
-        match (words.next(), words.next(), words.next()) {
-            (Some(Ok(need)), Some(Ok(killed)), None) => Ok(Some((need, killed))),
-            _ => Err(format!("the builder cannot say what its build needed: {said}")),
-        }
+        frame_to(&self.conn, which, payload)
     }
 
     fn read_frame(&self, buf: &mut Vec<u8>) -> Result<u8, String> {
-        let mut h = [0u8; run::HEADER];
-        let mut r = super::reading(&self.conn);
-        r.read_exact(&mut h)
-            .map_err(|e| format!("hearing the builder: {e}"))?;
-        let (which, len) = run::parse_header(h).ok_or("the builder sent a malformed frame")?;
-        buf.resize(len as usize, 0);
-        r.read_exact(buf)
-            .map_err(|e| format!("hearing the builder: {e}"))?;
-        Ok(which)
+        read_frame_from(&self.conn, buf)
     }
 
     /// A fresh layer id.
@@ -1538,35 +1340,344 @@ fn whole_of(origin: &Origin) -> Option<(u64, Rc<Fs>)> {
     }
 }
 
+/// A frame to a builder's guest over `conn`.
+fn frame_to(conn: &UnixStream, which: u8, payload: &[u8]) -> Result<(), String> {
+    let len = u32::try_from(payload.len()).map_err(|_| "a frame too long".to_string())?;
+    let mut w = conn;
+    io::Write::write_all(&mut w, &run::header(which, len))
+        .and_then(|()| io::Write::write_all(&mut w, payload))
+        .map_err(|e| format!("telling the builder: {e}"))
+}
+
+/// The next frame from a builder's guest over `conn`, its payload in `buf`: its kind.
+fn read_frame_from(conn: &UnixStream, buf: &mut Vec<u8>) -> Result<u8, String> {
+    let mut h = [0u8; run::HEADER];
+    let mut r = super::reading(conn);
+    r.read_exact(&mut h)
+        .map_err(|e| format!("hearing the builder: {e}"))?;
+    let (which, len) = run::parse_header(h).ok_or("the builder sent a malformed frame")?;
+    buf.resize(len as usize, 0);
+    r.read_exact(buf)
+        .map_err(|e| format!("hearing the builder: {e}"))?;
+    Ok(which)
+}
+
+/// A wait on builder VM `vm`, judged by `record` (D215's judge), begun now: none where its
+/// process has gone or cannot be read, whose wait then follows its liveness alone.
+fn following<'r>(vm: &shards_ipc::Child, record: &'r Record) -> Option<Follow<'r>> {
+    let followed = Followed::of_pid(vm.id()).ok().flatten()?;
+    Follow::begin(record, followed).ok().flatten()
+}
+
+/// What a build has needed of memory, as its builder's guest says it over `conn`
+/// (`NEEDED`, D133): the bytes, and the processes ended for want of it. Its answer is
+/// waited for past the frames of a step still running, which come before it, as its VM
+/// `vm` goes on, judged by `record` (D215's judge): before its kind's first answer, as long
+/// as its connection and its VM live; after, given up on at a look, each the slowest answer
+/// seen past the look before, that finds its VM ran nothing at all since. A frame begun is
+/// read whole, as it comes. None where it was given up on, Err where its guest cannot say.
+fn ask_needed(
+    conn: &UnixStream,
+    vm: &shards_ipc::Child,
+    record: &Record,
+) -> Result<Option<(u64, u64)>, String> {
+    frame_to(conn, kind::NEEDS, b"")?;
+    let mut follow = following(vm, record);
+    let mut buf = Vec::new();
+    loop {
+        let left = follow
+            .as_ref()
+            .and_then(Follow::due)
+            .map(|due| due.saturating_duration_since(Instant::now()));
+        let ready = shards_vmm::platform::wait_readable(&[conn.raw_socket()], left)
+            .map_err(|e| format!("hearing the builder: {e}"))?;
+        if ready.first() != Some(&true) {
+            match follow.as_mut().map(Follow::look) {
+                Some(Err(Unfollowed::Stalled(_))) => return Ok(None),
+                // Unreadable while it lives: never taken for no progress.
+                Some(Err(Unfollowed::Process { .. })) => follow = None,
+                Some(Ok(())) | None => {}
+            }
+            continue;
+        }
+        conn.set_read_timeout(None)
+            .map_err(|e| format!("hearing the builder: {e}"))?;
+        if read_frame_from(conn, &mut buf)? == kind::NEEDED {
+            break;
+        }
+    }
+    if let Some(follow) = follow.as_mut() {
+        follow.answered();
+    }
+    let said = String::from_utf8_lossy(&buf);
+    let mut words = said.split_whitespace().map(str::parse::<u64>);
+    match (words.next(), words.next(), words.next()) {
+        (Some(Ok(need)), Some(Ok(killed)), None) => Ok(Some((need, killed))),
+        _ => Err(format!("the builder cannot say what its build needed: {said}")),
+    }
+}
+
+/// How a builder's VM ended, its guest told to power off.
+#[derive(Debug)]
+enum VmEnd {
+    /// Of itself.
+    Exited,
+    /// Killed: it ran nothing at all over the slowest end of a builder's seen, or more, since
+    /// the look before.
+    Stalled(shards_api::Stall),
+}
+
+/// Follows builder VM `vm` to its end, its guest told to power off as its connection
+/// ended, judged by `record` (D215's judge): its exit, woken by it; once a builder's end has
+/// been seen, a look at it each slowest end seen past the look before, and its kill where it
+/// ran nothing at all since; before, its liveness alone. Its own end teaches its kind, its
+/// CPU read before it is reaped; a kill teaches nothing.
+fn follow_to_end(vm: &shards_ipc::Child, record: &Record) -> VmEnd {
+    let mut follow = following(vm, record);
+    loop {
+        // Until its next look; without end while it follows its liveness alone.
+        if exits_by(vm, follow.as_ref().and_then(Follow::due)) {
+            break;
+        }
+        match follow.as_mut().map(Follow::look) {
+            Some(Err(Unfollowed::Stalled(stall))) => {
+                kill(vm);
+                let _ = vm.wait();
+                return VmEnd::Stalled(stall);
+            }
+            // Unreadable while it lives: never taken for no progress.
+            Some(Err(Unfollowed::Process { .. })) => follow = None,
+            Some(Ok(())) | None => {}
+        }
+    }
+    if let Some(follow) = follow.as_mut() {
+        follow.answered();
+    }
+    let _ = vm.wait();
+    VmEnd::Exited
+}
+
+/// Whether `vm` ends by `by` (none: whenever it does), by its kernel's own word of its exit
+/// (`Poller::add_exit`: kqueue's NOTE_EXIT, Linux's pidfd), not reaped, so that its CPU can
+/// still be read. Never waitid(2)'s: on macOS it says a child has ended that has not (PM
+/// M442), which took a stopped stand-in here for ended, its kind taught an end that had not
+/// come, and its reap then waited on for ever. One whose end cannot be watched is waited for
+/// and reaped as it lives, its kind taught nothing.
+#[cfg(unix)]
+fn exits_by(vm: &shards_ipc::Child, by: Option<Instant>) -> bool {
+    let watched = shards_vmm::platform::Poller::new()
+        .and_then(|poller| poller.add_exit(vm.id(), 0).map(|watch| (poller, watch)));
+    match watched {
+        Ok((poller, _watch)) => {
+            let mut ready = Vec::new();
+            // A signal's interruption is an empty wait: until its end, or `by`.
+            while ready.is_empty() {
+                let left = by.map(|by| by.saturating_duration_since(Instant::now()));
+                if left.is_some_and(|left| left.is_zero()) || poller.wait(&mut ready, left).is_err() {
+                    break;
+                }
+            }
+            !ready.is_empty()
+        }
+        // Ended already, a zombie (macOS refuses to watch it then).
+        Err(e) if e.raw_os_error() == Some(libc::ESRCH) => true,
+        Err(_) => {
+            let _ = vm.wait();
+            true
+        }
+    }
+}
+
+/// Whether `vm` ends by `by` (none: whenever it does; Windows: its process's handle), in
+/// whole milliseconds rounded up, so that a wait never ends before it.
+#[cfg(windows)]
+fn exits_by(vm: &shards_ipc::Child, by: Option<Instant>) -> bool {
+    let ms = by.map_or(u32::MAX, |by| {
+        let left = by.saturating_duration_since(Instant::now());
+        u32::try_from(left.as_micros().div_ceil(1000)).unwrap_or(u32::MAX - 1)
+    });
+    vm.ended_within(ms)
+}
+
 impl Drop for Builder {
     fn drop(&mut self) {
-        let deadline = Instant::now() + Duration::from_secs(5);
         // What its build needed added to its home's record, the next builders' evidence
-        // (D133), within the time its guest has to power off: one that cannot say leaves
-        // the record as it was.
+        // (D133), its guest's answer waited for while its VM goes on: one that cannot say
+        // leaves the record as it was.
         if let Some(path) = &self.needs
-            && let Ok(Some((need, killed))) = self.needed(deadline)
+            && let Ok(Some((need, killed))) = ask_needed(&self.conn, &self.vm, &NEEDED)
         {
             let _ = super::record_need(path, need, killed > 0);
         }
-        // The guest powers off as its connection closes.
+        // The guest powers off as its connection closes: its VM followed to its end.
         super::end(&self.conn);
-        while self.vm.try_wait().is_none() {
-            if Instant::now() > deadline {
-                kill(&self.vm);
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(1));
+        if let VmEnd::Stalled(stall) = follow_to_end(&self.vm, &ENDED) {
+            shards_vmm::debug!(
+                "the builder's VM ran nothing over {:?} after its guest was told to power off, past the slowest builder end seen, {:?}: killed",
+                stall.over(),
+                stall.slowest()
+            );
         }
-        // The network process goes with its VM; its directory and AppContainer, fields,
-        // after this.
-        crate::netproc::reap(&self.net);
+        // The network process goes with its VM; its directory, a field, after this.
+        if let Some(net) = &self.net {
+            crate::netproc::reap(net, &self.ends);
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A shell running `script` with `arg` as its `$0`, given nothing else: a builder VM's
+    /// stand-in.
+    #[cfg(unix)]
+    fn sh(script: &str, arg: &Path) -> shards_ipc::Child {
+        use std::ffi::OsStr;
+        let args = [OsStr::new("-c"), OsStr::new(script), arg.as_os_str()];
+        shards_ipc::spawn_in(Path::new("/bin/sh"), &args, &[], false, &[]).unwrap()
+    }
+
+    /// A record of builder ends whose slowest is `slowest`, its VM having run a thousandth
+    /// of it meanwhile.
+    #[cfg(unix)]
+    fn learned(slowest: Duration) -> Record {
+        let record = Record::new();
+        record.teach(slowest, slowest / 1000);
+        record
+    }
+
+    /// A builder's VM, its guest told to power off, is followed to its end (D215's judge):
+    /// before its kind's first end, by its liveness alone, however long it takes (6 s, past
+    /// the 5 s it was given before), its end then learned; once one has been seen, waited on
+    /// while it runs, however long, and killed at the first look past the slowest that finds
+    /// it made no progress: a stopped one, which the judge holds stalled whatever its host
+    /// does, where an asleep one may be held live by its host's pressure.
+    #[cfg(unix)]
+    #[test]
+    fn a_builders_vm_is_followed_to_its_end_while_it_goes_on() {
+        let dir = shards_testdir::TempDir::new("builder-end").unwrap();
+        let cold = Record::new();
+        let slow = sh("exec /bin/sleep 6", &dir);
+        let began = Instant::now();
+        assert!(matches!(follow_to_end(&slow, &cold), VmEnd::Exited));
+        assert!(began.elapsed() >= Duration::from_secs(6), "{:?}", began.elapsed());
+        let shards_api::Seen::Learned { slowest, .. } = cold.seen() else {
+            panic!("its own end taught nothing");
+        };
+        assert!(slowest >= Duration::from_secs(6), "{slowest:?}");
+        let slowest = Duration::from_millis(200);
+        let record = learned(slowest);
+        // Busy, as one writing its disks back is, until its file comes: then it ends.
+        let stop = dir.join("stop");
+        let busy = sh("while [ ! -e \"$0\" ]; do :; done", &stop);
+        let began = Instant::now();
+        let ended = std::thread::scope(|s| {
+            s.spawn(|| {
+                std::thread::sleep(slowest * 5);
+                std::fs::write(&stop, b"").unwrap();
+            });
+            follow_to_end(&busy, &record)
+        });
+        assert!(matches!(ended, VmEnd::Exited), "{ended:?}");
+        assert!(began.elapsed() >= slowest * 5, "{:?}", began.elapsed());
+        let stopped = sh("exec /bin/sleep 60", &dir);
+        stopped.kill(libc::SIGSTOP).unwrap();
+        let record = learned(slowest);
+        let began = Instant::now();
+        let ended = follow_to_end(&stopped, &record);
+        let took = began.elapsed();
+        assert!(matches!(ended, VmEnd::Stalled(_)), "{ended:?}");
+        assert!(took >= slowest && took < slowest * 4, "{took:?}");
+    }
+
+    /// A builder's guest's answer to `NEEDS` is waited for while its VM goes on (D215's
+    /// judge): before its kind's first answer, as long as its connection and VM live (6 s,
+    /// past the 5 s it was given before), past a step's frames that come first; once one has
+    /// been seen, given up on at the first look past the slowest that finds its VM made no
+    /// progress, stopped.
+    #[cfg(unix)]
+    #[test]
+    fn a_builders_needs_are_waited_for_while_its_vm_goes_on() {
+        let dir = shards_testdir::TempDir::new("builder-needs").unwrap();
+        let vm = sh("exec /bin/sleep 60", &dir);
+        let (host, guest) = UnixStream::pair().unwrap();
+        let answering = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            assert_eq!(read_frame_from(&guest, &mut buf).unwrap(), kind::NEEDS);
+            std::thread::sleep(Duration::from_secs(6));
+            frame_to(&guest, run::kind::STDOUT, b"a step's last words").unwrap();
+            frame_to(&guest, kind::NEEDED, b"1048576 0").unwrap();
+            guest
+        });
+        let cold = Record::new();
+        assert_eq!(ask_needed(&host, &vm, &cold), Ok(Some((1 << 20, 0))));
+        let _guest = answering.join().unwrap();
+        vm.kill(libc::SIGSTOP).unwrap();
+        let slowest = Duration::from_millis(200);
+        let record = learned(slowest);
+        let (host, _silent) = UnixStream::pair().unwrap();
+        let began = Instant::now();
+        assert_eq!(ask_needed(&host, &vm, &record), Ok(None));
+        let took = began.elapsed();
+        assert!(took >= slowest && took < slowest * 4, "{took:?}");
+        kill(&vm);
+        let _ = vm.wait();
+    }
+
+    /// A builder that does not boot leaves nothing running: what its launch started is ended,
+    /// its network process reaped. Its VM here is a stand-in that ends at once, holding the
+    /// doorbell a stand-in network process (`cat`) reads, which goes as that VM goes, as
+    /// shards-net goes as its ring's doorbell hangs up. Reaped, neither's pid is any
+    /// process's, not even a zombie's.
+    #[cfg(unix)]
+    #[test]
+    fn a_builder_that_does_not_boot_leaves_its_network_process_reaped() {
+        let null = std::fs::File::open("/dev/null").unwrap();
+        let (doorbell, rings) = io::pipe().unwrap();
+        let net = shards_ipc::spawn(
+            Path::new("/bin/cat"),
+            &[],
+            &[(doorbell.as_fd(), 0), (null.as_fd(), 1), (null.as_fd(), 2)],
+            false,
+        )
+        .unwrap();
+        drop(doorbell);
+        let args = ["-c", "exit 0"].map(std::ffi::OsStr::new);
+        let vm = shards_ipc::spawn(
+            Path::new("/bin/sh"),
+            &args,
+            &[
+                (null.as_fd(), 0),
+                (null.as_fd(), 1),
+                (null.as_fd(), 2),
+                (rings.as_fd(), 3),
+            ],
+            false,
+        )
+        .unwrap();
+        drop(rings);
+        let pids = [vm.id(), net.id()];
+        let home = shards_testdir::TempDir::new("bboot").unwrap();
+        let listener = UnixListener::bind(home.join("v")).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let ends = crate::daemon::ends::Ends::kept_in(&home);
+        let launched = crate::launch::Launched {
+            vm,
+            net: Some((net, UnixStream::pair().unwrap().0)),
+            #[cfg(target_os = "macos")]
+            grants: None,
+        };
+        let e = connect(launched, &listener, &ends).unwrap_err();
+        assert_eq!(e, "the builder ended as it started");
+        for pid in pids {
+            let pid = libc::pid_t::try_from(pid).unwrap();
+            // SAFETY: kill(2) of signal 0 sends nothing; it asks whether `pid` is a process's.
+            let gone = unsafe { libc::kill(pid, 0) } != 0
+                && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+            assert!(gone, "process {pid} is left");
+        }
+    }
 
     /// The give-back port takes its peer's first connection, blocking, and refuses any after
     /// it, so that no step's process reaches it (build::GIVE_PORT, D188); where none was

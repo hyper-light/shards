@@ -8,31 +8,43 @@
 mod common;
 
 use std::ffi::OsStr;
-use std::io::Write;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::process::{Command, Stdio};
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use common::{
-    Patience, TempDir, cannot_pool, cannot_run_vms, home_with, processes_with, run_shards_env, served,
+    DAEMON_QUIET, Patience, TempDir, cannot_pool, cannot_run_vms, home_with, processes_with, run_shards_env,
+    served,
 };
+use shards_vmm::devices::virtio::fs::headroom::reads_room;
 
 const TIMEOUT: Duration = Duration::from_secs(60);
 
-/// A microVM held to a budget reads through FUSE within twice the time one held to none
-/// takes (D188): under a slice of the user's manager whose `MemoryHigh` its idle microVMs
-/// leave 128 MiB of, with no swap, runs restored from its template read a gigabyte of a
-/// volume through FUSE (no DAX window), each held within the room the budget leaves it, so
-/// that its own kernel drops its page cache. Its guest's page cache had filled the slice,
-/// and its host took back the only memory it could, the guest's own RAM, its template's
-/// file pages: 400 to 600 s a read on CI's AMD runners, 3 to 5 s with none (PM M308, M309).
-/// A budget set as a run goes holds it too; and one short of what a run alone in the
-/// slice holds holds it within the least room a run goes on in, which reads as fast.
+/// The file every phase reads, a gigabyte, and its reader's block, a MiB (as large as a
+/// share's largest request).
+const GIB: u64 = 1 << 30;
+const MIB: u64 = 1 << 20;
+
+/// A microVM held to a budget reads through FUSE at the pace reads held to none keep
+/// (D188): under a slice of the user's manager whose `MemoryHigh` its idle microVMs leave
+/// 128 MiB of, with no swap, runs restored from its template read a gigabyte of a volume
+/// through FUSE (no DAX window), each held within the room the budget leaves it, so that
+/// its own kernel drops its page cache. Its guest's page cache had filled the slice, and its
+/// host took back the only memory it could, the guest's own RAM, its template's file pages:
+/// 400 to 600 s a read on CI's AMD runners, 3 to 5 s with none (PM M308, M309). A budget set
+/// as a run goes holds it too; and one short of what a run alone in the slice holds holds it
+/// within the least room a run goes on in, which reads as fast. Each read is followed by the
+/// marks its guest prints as it reads and judged by the reads held to none before it
+/// ([`follow`], D215's shape: no fixed bound, no multiple of one): past the slowest of them,
+/// a read goes on while each window as long reads what their slowest MiB keeps over it, and
+/// is refused, typed, at the first that does not. The first read, with nothing seen before
+/// it, follows its microVM's liveness alone.
 // Linux's user systemd manager and cgroup budget; other hosts exercise shards' groups.
 #[cfg(unix)]
 #[test]
-fn a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_one() {
+fn a_microvm_held_to_a_budget_reads_through_fuse_at_the_pace_of_reads_held_to_none() {
     if !cfg!(target_os = "linux") || cannot_run_vms() || cannot_pool() {
         return;
     }
@@ -51,11 +63,11 @@ fn a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_o
         return;
     }
     let (image, _) = served();
-    let home = home_with("daemon-budget-fuse", TIMEOUT);
+    let home = home_with("daemon-budget-fuse");
     let vol = TempDir::new("budget-fuse-vol");
     std::fs::File::create(vol.join("big"))
         .unwrap()
-        .set_len(1 << 30)
+        .set_len(GIB)
         .unwrap();
     let env: [(&str, &OsStr); 2] = [
         ("SHARDS_HOME", home.as_os_str()),
@@ -108,40 +120,38 @@ fn a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_o
         assert!(set.status.success(), "{}", String::from_utf8_lossy(&set.stderr));
     };
     let mount = format!("{}:/vol", vol.display());
-    // Each read's milliseconds, as the test guest says them.
-    let took = |what: &str, out: &str| -> u64 {
-        out.lines()
-            .find_map(|l| {
-                l.strip_prefix("read /vol/big 1073741824 in ")?
-                    .strip_suffix(" ms")
-            })
-            .and_then(|ms| ms.parse().ok())
-            .unwrap_or_else(|| panic!("{what}: no whole read in {out:?}\nthe daemon's log:\n{}", said()))
-    };
-    let read = |what: &str| -> u64 {
-        let run = run_shards_env(
-            &["run"],
-            &[
-                "--rm",
-                "--cgroup-parent",
-                &slice,
-                "-v",
-                &mount,
-                &image,
-                "read",
-                "/vol/big",
-            ],
-            &env,
-            Duration::from_secs(600),
-        );
-        assert_eq!(
-            run.status,
-            Some(0),
-            "{what}: {run}\nthe daemon's log:\n{}",
+    // Each read followed and judged by the record of the reads held to none so far
+    // ([`follow`]): refused, or ended without the whole gigabyte, it fails the test, with
+    // the slice's state and the daemon's log. Its milliseconds, as its guest says them.
+    let judged = |what: &str, args: &[&str], record: &Record, env: &[(&str, &OsStr)]| -> Followed {
+        let read = follow(args, env, &home, record, &cgroup).unwrap_or_else(|stalled| {
+            panic!(
+                "{what}: refused, {stalled}\n{}\nthe daemon's log:\n{}",
+                slice_state(&cgroup),
+                said()
+            )
+        });
+        assert!(
+            read.status == Some(0) && read.took().is_some(),
+            "{what}: exit {:?}, no whole read in {:?}\n{}\nthe daemon's log:\n{}",
+            read.status,
+            read.stdout,
+            read.stderr,
             said()
         );
-        took(what, &run.stdout)
+        read
     };
+    let run_read: [&str; 9] = [
+        "run",
+        "--rm",
+        "--cgroup-parent",
+        &slice,
+        "-v",
+        &mount,
+        &image,
+        "read-marked",
+        "/vol/big",
+    ];
     // The image's template saved under the slice, and its pool warm there.
     let first = run_shards_env(
         &["run"],
@@ -156,11 +166,10 @@ fn a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_o
             "0",
         ],
         &env,
-        TIMEOUT,
     );
     assert_eq!(first.status, Some(0), "{first}\nthe daemon's log:\n{}", said());
     let templates = home.join("templates").to_string_lossy().into_owned();
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     while !processes_with(&templates).into_iter().any(|pid| {
         std::fs::read_to_string(format!("/proc/{pid}/cgroup"))
             .is_ok_and(|c| c.contains(&format!("/{slice}/")))
@@ -172,22 +181,27 @@ fn a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_o
         );
         std::thread::sleep(Duration::from_millis(20));
     }
-    let median = |mut xs: Vec<u64>| {
-        xs.sort_unstable();
-        xs[xs.len() / 2]
-    };
-    let unbudgeted = median((0..3).map(|_| read("a read under no budget")).collect());
+    patience.done();
+    // The reads held to none, which make the record every later read is judged by: the
+    // first, with none before it, follows its microVM's liveness alone.
+    let mut record = Record::default();
+    let mut unbudgeted = Vec::new();
+    for _ in 0..3 {
+        let read = judged("a read under no budget", &run_read, &record, &env);
+        record = record.with(&read);
+        unbudgeted.push(read.took().unwrap_or_default());
+    }
     // A budget its idle microVMs leave 128 MiB of: short of the gigabyte a read caches in
     // its guest, as one takes with none.
     let held = slice_holds() + (128 << 20);
     budget(&held.to_string());
-    let budgeted: Vec<u64> = (0..3).map(|_| read("a read under the budget")).collect();
-    assert!(
-        median(budgeted.clone()) <= 2 * unbudgeted,
-        "reads under a budget of {} MiB took {budgeted:?} ms, under none {unbudgeted} ms\nthe daemon's log:\n{}",
-        held >> 20,
-        said()
-    );
+    let budgeted: Vec<u64> = (0..3)
+        .map(|_| {
+            judged("a read under the budget", &run_read, &record, &env)
+                .took()
+                .unwrap_or_default()
+        })
+        .collect();
     // Held, as its first word said: within its budget's room, or within the least room a
     // run goes on in where its read had filled that room before the word came, which comes
     // once its run has begun (budget E2E 40193342168: short by 1 to 56 MiB at each read's
@@ -213,7 +227,6 @@ fn a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_o
             "sleep",
         ],
         &env,
-        TIMEOUT,
     );
     assert_eq!(
         started.status,
@@ -222,29 +235,22 @@ fn a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_o
         said()
     );
     budget(&held.to_string());
-    // Three reads, each in the run begun under no budget, their median held to the bound
-    // as each phase's is: one read alone, beside the whole suite on a CI runner, once took
-    // 2.09 times (CI 40088873246).
+    // Three reads, each in the run begun under no budget, each judged as every phase's is.
     let late: Vec<u64> = (0..3)
         .map(|_| {
-            let exec = run_shards_env(
-                &["exec"],
-                &["held", "/bin/testguest", "read", "/vol/big"],
+            judged(
+                "a read under a budget set as its run went",
+                &["exec", "held", "/bin/testguest", "read-marked", "/vol/big"],
+                &record,
                 &env,
-                Duration::from_secs(600),
-            );
-            assert_eq!(exec.status, Some(0), "{exec}\nthe daemon's log:\n{}", said());
-            took("a read under a budget set as its run went", &exec.stdout)
+            )
+            .took()
+            .unwrap_or_default()
         })
         .collect();
-    assert!(
-        median(late.clone()) <= 2 * unbudgeted,
-        "reads under a budget set as their run went took {late:?} ms, under none {unbudgeted} ms\nthe daemon's log:\n{}",
-        said()
-    );
     // Its VM process, which `rm -f` leaves ending once its run has: until it has, the
     // slice still holds its guest's page cache of the read, as its own memory.
-    let pid = run_shards_env(&["inspect"], &["-f", "{{.State.Pid}}", "held"], &env, TIMEOUT);
+    let pid = run_shards_env(&["inspect"], &["-f", "{{.State.Pid}}", "held"], &env);
     let pid: u32 = pid.stdout.trim().parse().unwrap_or_else(|_| panic!("{pid}"));
     // Its state and start (proc_pid_stat(5) fields 3 and 22), past its name's parentheses.
     let stat_of_pid = || {
@@ -261,8 +267,8 @@ fn a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_o
             })
     };
     let (_, started) = stat_of_pid().unwrap_or_else(|| panic!("held's VM process {pid} is not running"));
-    let _ = run_shards_env(&["rm"], &["-f", "held"], &env, TIMEOUT);
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let _ = run_shards_env(&["rm"], &["-f", "held"], &env);
+    let mut patience = Patience::of(&home);
     while let Some((state, start)) = stat_of_pid()
         && !matches!(state.as_str(), "Z" | "X")
         && start == started
@@ -274,6 +280,7 @@ fn a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_o
         );
         std::thread::sleep(Duration::from_millis(20));
     }
+    patience.done();
     // A run held within the least room a run goes on in for its whole reads, not at what it
     // uses, which stalled a read of 1 MiB blocks at 140 KB/s (PM M309): a run of its own
     // alone in the slice, its daemon keeping no warm microVM there (a budget short of the
@@ -281,12 +288,14 @@ fn a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_o
     // short, PM M314), its guest's way to the share warmed by a small file's read. Then a
     // budget short of what the slice holds and the inactive page cache its kernel keeps
     // beside the files it maps (memory.stat's `file_mapped`, as many as the mapped under a
-    // GiB of them, mm/vmscan.c `inactive_is_low`), by a mebibyte, as the daemon counts a
-    // budget's room (daemon/budget.rs), read once the slice's statistics have caught up
-    // with its counter, which a microVM just ended leaves them behind (they counted 1.1 GB
-    // of one a second after it ended, PM M309): no more anonymous and file memory than it
-    // holds.
-    let _ = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    // GiB of them, mm/vmscan.c `inactive_is_low`) and the room its host's own reads need
+    // below it (its kernel's charge ahead on each of its CPUs, a share's request and its
+    // read-ahead: `reads_room`, which the daemon leaves out of every room it tells), by a
+    // mebibyte, as the daemon counts a budget's room (daemon/budget.rs), read once the
+    // slice's statistics have caught up with its counter, which a microVM just ended leaves
+    // them behind (they counted 1.1 GB of one a second after it ended, PM M309): no more
+    // anonymous and file memory than it holds.
+    let _ = run_shards_env(&["daemon"], &["stop"], &env);
     let pool_of_none: [(&str, &OsStr); 3] = [env[0], env[1], ("SHARDS_POOL", "0".as_ref())];
     budget("infinity");
     std::fs::write(vol.join("small"), vec![1u8; 1 << 20]).unwrap();
@@ -304,7 +313,6 @@ fn a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_o
             "sleep",
         ],
         &pool_of_none,
-        TIMEOUT,
     );
     assert_eq!(
         started.status,
@@ -316,7 +324,6 @@ fn a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_o
         &["exec"],
         &["short", "/bin/testguest", "read", "/vol/small"],
         &pool_of_none,
-        TIMEOUT,
     );
     assert_eq!(warmed.status, Some(0), "{warmed}\nthe daemon's log:\n{}", said());
     let stat_of = |stat: &str, key: &str| -> u64 {
@@ -348,7 +355,7 @@ fn a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_o
             .saturating_sub(stat_of(&stat, "shmem"));
         let gb = (mapped * 2) >> 30;
         let ratio = if gb == 0 { 1 } else { (gb * 10).isqrt() };
-        (current.saturating_sub(unmapped) + mapped / ratio).saturating_sub(1 << 20)
+        (current.saturating_sub(unmapped) + mapped / ratio + reads_room()).saturating_sub(1 << 20)
     };
     let id = started.stdout.trim().to_string();
     let held_least = || {
@@ -379,69 +386,589 @@ fn a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_o
     }
     let held_short: Vec<u64> = (0..3)
         .map(|_| {
-            let exec = watching(&cgroup, "a read held within the least room", || {
-                run_shards_env(
-                    &["exec"],
-                    &["short", "/bin/testguest", "read", "/vol/big"],
-                    &pool_of_none,
-                    Duration::from_secs(600),
-                )
-            });
-            assert_eq!(exec.status, Some(0), "{exec}\nthe daemon's log:\n{}", said());
-            took("a read held within the least room", &exec.stdout)
+            judged(
+                "a read held within the least room",
+                &["exec", "short", "/bin/testguest", "read-marked", "/vol/big"],
+                &record,
+                &pool_of_none,
+            )
+            .took()
+            .unwrap_or_default()
         })
         .collect();
-    assert!(
-        median(held_short.clone()) <= 2 * unbudgeted,
-        "reads under a budget of {} MiB, held within the least room, took {held_short:?} ms, under none {unbudgeted} ms\nthe daemon's log:\n{}",
-        short >> 20,
-        said()
-    );
-    let _ = run_shards_env(&["rm"], &["-f", "short"], &pool_of_none, TIMEOUT);
+    let _ = run_shards_env(&["rm"], &["-f", "short"], &pool_of_none);
     // Each phase's reads, for a run's record (.github/workflows/budget-e2e.yml).
     eprintln!(
-        "reads in ms: under none {unbudgeted} (the median); under {} MiB {budgeted:?}; under it set as its run went {late:?}; held within the least room under {} MiB {held_short:?}",
+        "reads in ms: under none {unbudgeted:?}; under {} MiB {budgeted:?}; under it set as its run went {late:?}; held within the least room under {} MiB {held_short:?}; judged by {record}",
         held >> 20,
         short >> 20
     );
-    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env);
     assert_eq!(stopped.status, Some(0), "{stopped}");
 }
 
-/// Runs `f`, and while it runs past a minute, every 30 s, says on stderr what the slice
-/// `cgroup` and the processes in it are doing ([`slice_state`]): a read held short takes
-/// seconds, and one that stalls (40079524601's (d): 600 s, its guest answering nothing)
-/// leaves in CI's log where its time went.
-#[cfg(unix)]
-fn watching<T>(cgroup: &Path, what: &str, f: impl FnOnce() -> T) -> T {
-    /// Set as `f` returns or unwinds, which ends the watch.
-    struct Done<'a>(&'a AtomicBool);
-    impl Drop for Done<'_> {
-        fn drop(&mut self) {
-            self.0.store(true, Ordering::Release);
+/// What the reads held to none showed, by which every later read is judged (D215's shape:
+/// the slowest answer seen, and none before the first, whose read follows its microVM's
+/// liveness alone): the longest one took from its guest's first mark to its last, the
+/// longest between two of its marks a MiB apart (its reader's block), and the longest from
+/// its command's start to its first mark. Learned from this run's reads held to none alone,
+/// never seeded: the test asks what a budget does to a read, so a budget's reads never
+/// raise the bound they are judged by. A read under a budget once took 2.06 times its time
+/// under none beside the whole suite (CI 41365265628), and one held within the least room
+/// on a 32-CPU host 28 minutes, reading all along (adacachy2, 237f3ebe7): no multiple of a
+/// read's time tells a slow read from one that has stopped, and progress alone, with no
+/// least, takes almost none for some.
+#[derive(Debug, Clone, Copy, Default)]
+struct Record {
+    read: Option<Duration>,
+    block: Option<Duration>,
+    start: Option<Duration>,
+}
+
+impl Record {
+    /// The record with `read`'s times in it, each the slowest seen.
+    fn with(self, read: &Followed) -> Record {
+        Record {
+            read: self.read.max(read.read()),
+            block: self.block.max(read.block()),
+            start: self.start.max(read.start()),
         }
     }
-    let done = AtomicBool::new(false);
+
+    /// What a read is judged by past the slowest read seen: a window as long as that read,
+    /// and the bytes it must read over each, what the slowest MiB seen keeps over as long.
+    /// None until a read with two marks has been seen.
+    fn judging(&self) -> Option<(Duration, u64)> {
+        let (window, block) = (self.read?, self.block?);
+        let least = window.as_nanos().saturating_mul(u128::from(MIB)) / block.as_nanos().max(1);
+        Some((window, u64::try_from(least).unwrap_or(u64::MAX)))
+    }
+}
+
+impl std::fmt::Display for Record {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the reads held to none: the slowest {:?} from its first mark to its last, the slowest MiB {:?}, the slowest start {:?}",
+            self.read, self.block, self.start
+        )
+    }
+}
+
+/// A read followed to its end: when its command began, each of its guest's marks as it
+/// came (when, and how far it had read), what it wrote and its exit status.
+struct Followed {
+    began: Instant,
+    marks: Vec<(Instant, u64)>,
+    stdout: String,
+    stderr: String,
+    status: Option<i32>,
+}
+
+impl Followed {
+    /// Its milliseconds, as its guest says them of the whole gigabyte.
+    fn took(&self) -> Option<u64> {
+        let said = format!("read /vol/big {GIB} in ");
+        self.stdout
+            .lines()
+            .find_map(|l| l.strip_prefix(said.as_str())?.strip_suffix(" ms")?.parse().ok())
+    }
+
+    /// From its command's start to its first mark.
+    fn start(&self) -> Option<Duration> {
+        Some(self.marks.first()?.0.saturating_duration_since(self.began))
+    }
+
+    /// From its first mark to its last.
+    fn read(&self) -> Option<Duration> {
+        let (first, last) = (self.marks.first()?, self.marks.last()?);
+        Some(last.0.saturating_duration_since(first.0))
+    }
+
+    /// The longest between two of its marks.
+    fn block(&self) -> Option<Duration> {
+        self.marks
+            .windows(2)
+            .map(|w| w[1].0.saturating_duration_since(w[0].0))
+            .max()
+    }
+}
+
+/// A read refused ([`follow`]).
+#[derive(Debug)]
+enum Stalled {
+    /// No mark past the slowest start seen, its daemon and microVMs showing no progress for
+    /// as long as [`Patience`] waits on them, and its slice held by its host within none of
+    /// it ([`stalled`]).
+    Unstarted { waited: Duration, record: Record },
+    /// Past the slowest read seen from its first mark, a window as long over which it read
+    /// less than the slowest MiB seen keeps over it: how far it had read and how long after
+    /// its first mark, and what it read over the window and what it had to.
+    Slow {
+        read: u64,
+        after: Duration,
+        window: Duration,
+        moved: u64,
+        least: u64,
+        record: Record,
+    },
+}
+
+impl std::fmt::Display for Stalled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Stalled::Unstarted { waited, record } => write!(
+                f,
+                "no mark {waited:?} after its command began, past the slowest start seen, its daemon and microVMs showing nothing and its slice held by nothing; {record}"
+            ),
+            Stalled::Slow {
+                read,
+                after,
+                window,
+                moved,
+                least,
+                record,
+            } => write!(
+                f,
+                "{read} bytes read {after:?} after its first mark, {moved} of them over the last {window:?}, where the slowest MiB seen keeps {least}; {record}"
+            ),
+        }
+    }
+}
+
+/// What a followed read's command did: a line it wrote (when it came), or its end.
+enum Heard {
+    Line(Instant, String),
+    Stderr(String),
+    /// Its stdout or stderr closed.
+    Closed,
+    Exited(Option<i32>),
+}
+
+/// Where a followed read is (R04): its command begun and no mark yet, past the slowest start
+/// seen looked at once each as long; reading from its first mark, past the slowest read seen
+/// looked at once each window as long, each look with how far it had read by then; or its
+/// whole read said, its command's end awaited.
+enum Phase {
+    Starting {
+        looked: Option<Instant>,
+    },
+    Reading {
+        first: Instant,
+        looked: Option<(Instant, u64)>,
+    },
+    Read,
+}
+
+/// Runs `shards ARGS`, a `read-marked` read of the gigabyte, following its guest's marks as
+/// they come, judged by `record` ([`Record`]). Before its first mark it is waited on for the
+/// slowest start seen, and past it for as long as its daemon or a microVM shows progress
+/// ([`Patience`], judged as D215's judge judges a wait, its first mark its answer) or the
+/// slice `cgroup` has been held by its host within [`DAEMON_QUIET`] ([`stalled`]); from its first mark, for the slowest read seen, and past that looked at
+/// once each window as long, each having to read what the slowest MiB seen keeps over it
+/// ([`Record::judging`]); with nothing seen yet, until it ends. Each look past the slowest
+/// read seen says the slice `cgroup`'s state on stderr. Refused, its command is ended and
+/// waited for.
+fn follow(
+    args: &[&str],
+    env: &[(&str, &OsStr)],
+    home: &Path,
+    record: &Record,
+    cgroup: &Path,
+) -> Result<Followed, Stalled> {
+    let mut cmd = common::command();
+    cmd.args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let began = Instant::now();
+    let mut child = common::spawn(&mut cmd).unwrap();
+    let pid = child.id();
+    let (tell, heard) = mpsc::channel();
+    // Read on threads of their own, as `run_command` reads: a pipe another process still
+    // holds never holds up a read whose command has said its whole read and ended.
+    let (out, err) = (child.stdout.take().unwrap(), child.stderr.take().unwrap());
+    let to = tell.clone();
+    std::thread::spawn(move || {
+        for line in BufReader::new(out).lines().map_while(Result::ok) {
+            if to.send(Heard::Line(Instant::now(), line)).is_err() {
+                return;
+            }
+        }
+        let _ = to.send(Heard::Closed);
+    });
+    let to = tell.clone();
+    std::thread::spawn(move || {
+        let mut said = String::new();
+        let _ = BufReader::new(err).read_to_string(&mut said);
+        let _ = to.send(Heard::Stderr(said));
+        let _ = to.send(Heard::Closed);
+    });
+    std::thread::scope(|s| {
+        s.spawn(move || {
+            let status = child.wait().ok().and_then(|st| st.code());
+            let _ = tell.send(Heard::Exited(status));
+        });
+        let judged = judge(&heard, began, home, record, cgroup);
+        if judged.is_err() {
+            // Killed, not asked to end: a client asked waits on its exec, which a refused
+            // read's microVM may never end. The slice's stop takes the microVM (`Stopped`).
+            // SAFETY: kill(2) of this test's child, its read refused; its waiter reaps it.
+            unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+        }
+        judged
+    })
+}
+
+/// [`follow`]'s judge: what `heard` brings of a read whose command began at `began`, until
+/// its command has ended having said its whole read, or with both its pipes closed.
+fn judge(
+    heard: &mpsc::Receiver<Heard>,
+    began: Instant,
+    home: &Path,
+    record: &Record,
+    cgroup: &Path,
+) -> Result<Followed, Stalled> {
+    // Its start's wait, taught its answer by the first mark.
+    let mut patience = Some(Patience::of(home));
+    // The slice's stall total when last looked at, and when it last grew: a hold.
+    let mut stalls = (stalled(cgroup), None::<Instant>);
+    let mut phase = Phase::Starting { looked: None };
+    let (mut marks, mut stdout, mut stderr) = (Vec::new(), String::new(), String::new());
+    let (mut status, mut closed) = (None::<Option<i32>>, 0);
+    loop {
+        if let Some(status) = status
+            && (matches!(phase, Phase::Read) || closed == 2)
+        {
+            return Ok(Followed {
+                began,
+                marks,
+                stdout,
+                stderr,
+                status,
+            });
+        }
+        let next = match &phase {
+            Phase::Starting { looked } => record.start.map(|s| looked.map_or(began + s, |t| t + s)),
+            Phase::Reading { first, looked } => record
+                .judging()
+                .map(|(w, _)| looked.map_or(*first + w, |(t, _)| t + w)),
+            Phase::Read => None,
+        };
+        let got = match next {
+            // Its end awaited: what it says, or its pipes' close, or its exit.
+            _ if status.is_some() => heard.recv().map_err(|_| RecvTimeoutError::Disconnected),
+            Some(at) => heard.recv_timeout(at.saturating_duration_since(Instant::now())),
+            None => heard.recv().map_err(|_| RecvTimeoutError::Disconnected),
+        };
+        match got {
+            Ok(Heard::Line(at, line)) => {
+                if let Some(bytes) = line.strip_prefix("at ").and_then(|b| b.parse::<u64>().ok()) {
+                    marks.push((at, bytes));
+                    if matches!(phase, Phase::Starting { .. }) {
+                        if let Some(patience) = patience.take() {
+                            patience.done();
+                        }
+                        phase = Phase::Reading {
+                            first: at,
+                            looked: None,
+                        };
+                    }
+                    // The whole file read: its result line and its end awaited.
+                    if bytes >= GIB {
+                        phase = Phase::Read;
+                    }
+                } else if line.starts_with("read /vol/big ") {
+                    phase = Phase::Read;
+                }
+                stdout.push_str(&line);
+                stdout.push('\n');
+                continue;
+            }
+            Ok(Heard::Stderr(said)) => {
+                stderr = said;
+                continue;
+            }
+            Ok(Heard::Closed) => {
+                closed += 1;
+                continue;
+            }
+            Ok(Heard::Exited(code)) => {
+                status = Some(code);
+                continue;
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                return Ok(Followed {
+                    began,
+                    marks,
+                    stdout,
+                    stderr,
+                    status: status.flatten(),
+                });
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+        }
+        // A look is due.
+        let at = Instant::now();
+        match &mut phase {
+            Phase::Starting { looked } => {
+                let progresses = patience.as_mut().is_some_and(Patience::holds);
+                let now = stalled(cgroup);
+                if now > stalls.0 {
+                    stalls = (now, Some(at));
+                }
+                let held = stalls
+                    .1
+                    .is_some_and(|t| at.saturating_duration_since(t) < DAEMON_QUIET);
+                if !progresses && !held {
+                    return Err(Stalled::Unstarted {
+                        waited: at.saturating_duration_since(began),
+                        record: *record,
+                    });
+                }
+                *looked = Some(at);
+            }
+            Phase::Reading { first, looked } => {
+                let Some((window, least)) = record.judging() else {
+                    continue;
+                };
+                let read = marks.last().map_or(0, |&(_, b)| b);
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "a read {:?} after its first mark, {read} bytes read, past the slowest read seen: {}",
+                    at.saturating_duration_since(*first),
+                    slice_state(cgroup)
+                );
+                // No more than the file has left, which a read that reads it all is done with.
+                if let Some((_, before)) = *looked
+                    && read.saturating_sub(before) < least.min(GIB.saturating_sub(before))
+                {
+                    return Err(Stalled::Slow {
+                        read,
+                        after: at.saturating_duration_since(*first),
+                        window,
+                        moved: read.saturating_sub(before),
+                        least: least.min(GIB.saturating_sub(before)),
+                        record: *record,
+                    });
+                }
+                *looked = Some((at, read));
+            }
+            Phase::Read => {}
+        }
+    }
+}
+
+/// A read is judged by the reads held to none ([`judge`]): past the slowest of them, a read
+/// that reads less over a window as long than their slowest MiB keeps over it is refused,
+/// as the read held short on adacachy2 should have been, reading all along (237f3ebe7); one
+/// that keeps that pace past the bound goes on to its end; with nothing seen, a read is
+/// followed to its end however it stops and starts; and one with no mark past the slowest
+/// start seen, nothing of its daemon's or microVMs' showing progress, is refused. Its reads'
+/// marks are played on threads of their own, each window's pace far from the bound.
+#[test]
+fn a_read_is_judged_by_the_pace_of_the_reads_held_to_none() {
+    let home = TempDir::new("budget-judge");
+    let cgroup = home.join("no-slice");
+    // Its first mark `start` after now, then a MiB each `gap`, `pause` after `at` MiB; then
+    // its result and end.
+    let play = |start: Duration, gap: Duration, pause: (u64, Duration)| {
+        let (tell, heard) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mark = |b: u64| tell.send(Heard::Line(Instant::now(), format!("at {b}")));
+            std::thread::sleep(start);
+            if mark(0).is_err() {
+                return;
+            }
+            for mib in 1..=GIB / MIB {
+                std::thread::sleep(if mib == pause.0 { pause.1 } else { gap });
+                if mark(mib * MIB).is_err() {
+                    return;
+                }
+            }
+            let _ = tell.send(Heard::Line(
+                Instant::now(),
+                format!("read /vol/big {GIB} in 1 ms"),
+            ));
+            let _ = tell.send(Heard::Exited(Some(0)));
+        });
+        heard
+    };
+    let seen = Record {
+        read: Some(Duration::from_secs(1)),
+        block: Some(Duration::from_millis(40)),
+        start: Some(Duration::from_millis(100)),
+    };
+    // 25 MiB a window of a second, the slowest MiB 40 ms.
+    assert_eq!(seen.judging(), Some((Duration::from_secs(1), 25 * MIB)));
+    // A MiB each 50 ms or longer, 21 at most a window: refused at its second look, a window
+    // past the bound.
+    match judge(
+        &play(Duration::ZERO, Duration::from_millis(50), (0, Duration::ZERO)),
+        Instant::now(),
+        &home,
+        &seen,
+        &cgroup,
+    ) {
+        Err(Stalled::Slow { moved, least, .. }) => assert!(moved < least, "{moved} of {least}"),
+        Err(other) => panic!("refused otherwise: {other}"),
+        Ok(read) => panic!("not refused: {} marks", read.marks.len()),
+    }
+    // About 400 MiB a second, 16 times what it must, past the bound for two windows: to its
+    // end.
+    let read = judge(
+        &play(Duration::ZERO, Duration::from_micros(2_400), (0, Duration::ZERO)),
+        Instant::now(),
+        &home,
+        &seen,
+        &cgroup,
+    )
+    .unwrap_or_else(|stalled| panic!("refused: {stalled}"));
+    assert_eq!((read.status, read.took()), (Some(0), Some(1)));
+    assert!(
+        read.read() > seen.read,
+        "its read past the bound: {:?}",
+        read.read()
+    );
+    // With nothing seen, a read with a stop of a second in it, followed to its end.
+    let cold = Record::default();
+    assert_eq!(cold.judging(), None);
+    let read = judge(
+        &play(Duration::ZERO, Duration::ZERO, (512, Duration::from_secs(1))),
+        Instant::now(),
+        &home,
+        &cold,
+        &cgroup,
+    )
+    .unwrap_or_else(|stalled| panic!("refused cold: {stalled}"));
+    assert_eq!(read.marks.len(), 1025);
+    assert!(read.block() >= Some(Duration::from_secs(1)));
+    // No mark past the slowest start seen, no daemon in its home and no microVM under this
+    // test's process showing progress: refused, the look after its patience ran out.
+    let (tell, heard) = mpsc::channel::<Heard>();
+    match judge(&heard, Instant::now(), &home, &seen, &cgroup) {
+        Err(Stalled::Unstarted { waited, .. }) => assert!(waited >= Duration::from_millis(100)),
+        Err(other) => panic!("refused otherwise: {other}"),
+        Ok(_) => panic!("not refused"),
+    }
+    drop(tell);
+}
+
+/// A start slower than the slowest seen is refused only once a whole slice of its microVMs
+/// has shown no progress (R03: past the bound, a wait goes on while progress shows, and is
+/// refused only after a whole window with none), and a host's hold of its slice counts as
+/// held. adacachy2 at 8bfa6150e and 9d2da923d refused a read under the budget 97.49 ms after
+/// its command began, the third look of 32.44 ms, the slowest start seen, while its daemon's
+/// warm microVMs had not been looked at once ([`common::Ran`] judges each over a slice) and
+/// its slice was at its `memory.high` (4345 `high` events). Do: a stand-in VM process under
+/// this test's, idle, and a start of 500 ms against a slowest seen of 30 ms; then a start of
+/// as long in a slice whose tasks stall on memory, as PSI counts them, no microVM to follow;
+/// then a start that never comes, the stand-in idle. Expect: the first two followed to their
+/// ends, the third refused, past a whole slice.
+#[test]
+fn a_slow_start_is_refused_only_past_a_whole_slice_without_progress_or_hold() {
+    let home = TempDir::new("budget-start");
+    let seen = Record {
+        read: Some(Duration::from_secs(1)),
+        block: Some(Duration::from_millis(40)),
+        start: Some(Duration::from_millis(30)),
+    };
+    // Its first mark `start` from now, then the whole gigabyte at once, its result and end.
+    let late = |start: Duration| {
+        let (tell, heard) = mpsc::channel();
+        std::thread::spawn(move || {
+            std::thread::sleep(start);
+            for mib in 0..=GIB / MIB {
+                let _ = tell.send(Heard::Line(Instant::now(), format!("at {}", mib * MIB)));
+            }
+            let _ = tell.send(Heard::Line(
+                Instant::now(),
+                format!("read /vol/big {GIB} in 1 ms"),
+            ));
+            let _ = tell.send(Heard::Exited(Some(0)));
+        });
+        heard
+    };
+    let start = Duration::from_millis(500);
+    {
+        let _vm = StandIn::under(&home);
+        let read = judge(&late(start), Instant::now(), &home, &seen, &home.join("no-slice")).unwrap_or_else(
+            |stalled| panic!("a start of {start:?} with a VM not yet judged refused: {stalled}"),
+        );
+        assert!(read.start() >= Some(start), "{:?}", read.start());
+    }
+    // A slice whose tasks stall on memory all along, as PSI says it (`some ... total=` µs).
+    let slice = home.join("held");
+    std::fs::create_dir(&slice).unwrap();
+    let holding = std::sync::atomic::AtomicBool::new(true);
     std::thread::scope(|s| {
         s.spawn(|| {
-            let start = Instant::now();
-            let mut next = Duration::from_secs(60);
-            while !done.load(Ordering::Acquire) {
-                if start.elapsed() >= next {
-                    let _ = writeln!(
-                        std::io::stderr(),
-                        "{what}, {} s in: {}",
-                        start.elapsed().as_secs(),
-                        slice_state(cgroup)
-                    );
-                    next += Duration::from_secs(30);
-                }
-                std::thread::sleep(Duration::from_millis(200));
+            let mut total = 0u64;
+            while holding.load(std::sync::atomic::Ordering::Relaxed) {
+                total += 5_000;
+                let pressure = format!(
+                    "some avg10=0.00 avg60=0.00 avg300=0.00 total={total}\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
+                );
+                let staged = slice.join("pressure.new");
+                std::fs::write(&staged, pressure).unwrap();
+                std::fs::rename(&staged, slice.join("memory.pressure")).unwrap();
+                std::thread::sleep(Duration::from_millis(5));
             }
         });
-        let _done = Done(&done);
-        f()
-    })
+        let read = judge(&late(start), Instant::now(), &home, &seen, &slice);
+        holding.store(false, std::sync::atomic::Ordering::Relaxed);
+        let read =
+            read.unwrap_or_else(|stalled| panic!("a start of {start:?} held by its host refused: {stalled}"));
+        assert!(read.start() >= Some(start), "{:?}", read.start());
+    });
+    let _vm = StandIn::under(&home);
+    let (tell, heard) = mpsc::channel::<Heard>();
+    match judge(&heard, Instant::now(), &home, &seen, &home.join("no-slice")) {
+        Err(Stalled::Unstarted { waited, .. }) => assert!(waited >= common::PROGRESS_SLICE, "{waited:?}"),
+        Err(other) => panic!("refused otherwise: {other}"),
+        Ok(_) => panic!("not refused"),
+    }
+    drop(tell);
+}
+
+/// An idle stand-in for a VM process under this test's: `sleep` run through a link named as
+/// `common::vm_processes_under` finds VM processes (Linux names a process after the path it
+/// ran, a link's own name; its first argument stays `sleep`, as busybox's applets need),
+/// ended as it drops.
+struct StandIn(std::process::Child);
+
+impl StandIn {
+    fn under(dir: &Path) -> StandIn {
+        use std::os::unix::process::CommandExt as _;
+        let link = dir.join("shards-vm");
+        if !link.exists() {
+            std::os::unix::fs::symlink("/bin/sleep", &link).unwrap();
+        }
+        StandIn(Command::new(&link).arg0("sleep").arg("600").spawn().unwrap())
+    }
+}
+
+impl Drop for StandIn {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// How long the tasks of the slice `cgroup` have stalled on memory, in microseconds: PSI's
+/// `some` total (Linux's Documentation/accounting/psi.rst), which grows while its host holds
+/// any of them in reclaim, at its `memory.high`, or refaulting what it took back. None where
+/// its kernel keeps none.
+fn stalled(cgroup: &Path) -> Option<u64> {
+    std::fs::read_to_string(cgroup.join("memory.pressure"))
+        .ok()?
+        .lines()
+        .find(|l| l.starts_with("some "))?
+        .split_whitespace()
+        .find_map(|f| f.strip_prefix("total=")?.parse().ok())
 }
 
 /// The slice's memory, its events and pressure, and for each process in its tree its

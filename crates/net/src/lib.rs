@@ -8,6 +8,7 @@
 //! Sandbox) is still to be built (architecture.md D31).
 
 pub mod bridge;
+pub mod ca;
 #[cfg(target_os = "linux")]
 pub mod confine;
 #[cfg(windows)]
@@ -15,9 +16,14 @@ mod dial;
 /// The answers its resolver gives a network's members (D46): shards-dns, shared with the
 /// agents' resolver in the guest (D181).
 pub use shards_dns as dns;
+pub mod hpack;
+pub mod http2;
+pub mod inject;
+pub mod lease;
 pub mod pktinfo;
 mod poll;
 mod ring;
+pub mod signin;
 mod siphash;
 pub mod sys;
 pub mod tcp;
@@ -129,6 +135,107 @@ pub fn encode_policy(ports: &Ports, named: &[(String, u16)], dns_all: bool) -> V
         out.extend_from_slice(host.as_bytes());
     }
     out
+}
+
+/// A run's credential grant as its network process holds it (D242): a credential named by
+/// reference (a secret's path in the orchestrator's store, never a value), the hosts it may be
+/// filled in toward, each a DNS name, lowered, and the placeholder that stands for it in a
+/// request; shards-dns's, which the orchestrator's side checks and carries too.
+pub use shards_dns::credential::CredentialGrant as Grant;
+
+/// `NET_CREDENTIALS`'s payload: each grant as its reference's length (two bytes, network
+/// order) and the reference, its hosts' count (two bytes) and each host as its length's
+/// byte and the name, then its placeholder's length (two bytes) and the placeholder. None
+/// where a reference or a placeholder passes 65535 bytes, or a name 255, which no DNS name
+/// does (RFC 1035 §2.3.4, 255), no store's reference (kiln-seams' NAME_MAX, 512), and no
+/// placeholder of kiln's broker (81 bytes: its marker and 256 random bits in hex).
+pub fn encode_grants(grants: &[Grant]) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    for g in grants {
+        out.extend_from_slice(&u16::try_from(g.reference.len()).ok()?.to_be_bytes());
+        out.extend_from_slice(g.reference.as_bytes());
+        out.extend_from_slice(&u16::try_from(g.toward.len()).ok()?.to_be_bytes());
+        for host in &g.toward {
+            out.push(u8::try_from(host.len()).ok()?);
+            out.extend_from_slice(host.as_bytes());
+        }
+        out.extend_from_slice(&u16::try_from(g.placeholder.len()).ok()?.to_be_bytes());
+        out.extend_from_slice(g.placeholder.as_bytes());
+    }
+    Some(out)
+}
+
+/// What [`encode_grants`] wrote; None for a malformed payload, or one of a grant toward no
+/// host, which could never be filled.
+pub fn decode_grants(mut bytes: &[u8]) -> Option<Vec<Grant>> {
+    let text = |b: &[u8]| String::from_utf8(b.to_vec()).ok();
+    let mut grants = Vec::new();
+    while !bytes.is_empty() {
+        let (len, rest) = bytes.split_first_chunk::<2>()?;
+        let (reference, rest) = rest.split_at_checked(usize::from(u16::from_be_bytes(*len)))?;
+        let (count, mut rest) = rest.split_first_chunk::<2>()?;
+        let mut toward = Vec::new();
+        for _ in 0..u16::from_be_bytes(*count) {
+            let (&len, after) = rest.split_first()?;
+            let (name, after) = after.split_at_checked(usize::from(len))?;
+            toward.push(text(name)?);
+            rest = after;
+        }
+        if toward.is_empty() {
+            return None;
+        }
+        let (len, rest) = rest.split_first_chunk::<2>()?;
+        let (placeholder, rest) = rest.split_at_checked(usize::from(u16::from_be_bytes(*len)))?;
+        grants.push(Grant {
+            reference: text(reference)?,
+            toward,
+            placeholder: text(placeholder)?,
+        });
+        bytes = rest;
+    }
+    Some(grants)
+}
+
+/// A run's credentials as its network process holds them (D242): its grants, its CA, made
+/// for their hosts alone, their leases (a value comes by lease, asked of the run host as a
+/// request first needs it and held while its lease lives), and its injector's TLS to a granted
+/// host.
+#[derive(Debug)]
+pub struct Credentials {
+    pub grants: Vec<Grant>,
+    pub ca: ca::Ca,
+    pub leases: lease::Leases,
+    pub upstream: inject::Upstream,
+    /// The run's sign-ins (D242, step 8): each one's grant and what its capture gave, and their
+    /// asks of the run host. A captured sign-in's access token is among `grants` too.
+    pub sign_ins: signin::SignIns,
+}
+
+/// What a run with credential grants makes as its network process starts, before it confines
+/// itself (D242): its CA's key ([`ca::Key`]) and its injector's TLS to a granted host, whose
+/// verifier reads the host's roots then on Linux ([`inject::Upstream`]). A run with none makes
+/// neither and pays nothing.
+#[derive(Debug)]
+pub struct Prepared {
+    pub key: ca::Key,
+    pub upstream: inject::Upstream,
+}
+
+impl Prepared {
+    pub fn new() -> Result<Prepared, String> {
+        Ok(Prepared {
+            key: ca::Key::generate()?,
+            upstream: inject::Upstream::new(Vec::new())?,
+        })
+    }
+}
+
+/// Whether a flow to `host` may leave the microVM under an Agentfile's egress grants (D59,
+/// D236), so a credential could be filled in toward it (D242): a destination its grants
+/// name, or any host on a TCP port they open.
+pub fn reaches(ports: &Ports, named: &[(String, u16)], host: &str) -> bool {
+    named.iter().any(|(name, _)| name.eq_ignore_ascii_case(host))
+        || ports.0.iter().any(|(proto, _, _)| *proto == Proto::Tcp)
 }
 
 /// A policy as `NET_POLICY` carries it: the ports, the names granted with their ports, and
@@ -310,38 +417,7 @@ fn policy_tcp_ports(
     tcp
 }
 
-/// A MAC address as shards' processes pass it to one another (review 2.32): its six
-/// bytes in hex, two digits each, between colons, as Linux and Docker write one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Mac(pub [u8; 6]);
-
-impl std::fmt::Display for Mac {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let [a, b, c, d, e, g] = self.0;
-        write!(f, "{a:02x}:{b:02x}:{c:02x}:{d:02x}:{e:02x}:{g:02x}")
-    }
-}
-
-impl std::str::FromStr for Mac {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Mac, String> {
-        let not = || format!("{s:?} is not a MAC");
-        let mut octets = s.split(':');
-        let mut mac = [0u8; 6];
-        for byte in &mut mac {
-            let hex = octets
-                .next()
-                .filter(|h| h.len() == 2 && h.bytes().all(|c| c.is_ascii_hexdigit()))
-                .ok_or_else(not)?;
-            *byte = u8::from_str_radix(hex, 16).map_err(|_| not())?;
-        }
-        match octets.next() {
-            Some(_) => Err(not()),
-            None => Ok(Mac(mac)),
-        }
-    }
-}
+pub use shards_ipc::Mac;
 
 /// Addresses as the daemon and a network process pass them (`NET_LINK_LOCAL`, `NET_PEER`):
 /// each its length, 4 or 16, then its octets.
@@ -753,6 +829,14 @@ struct Stack<'r> {
     /// Whether the process is held to an Agentfile's TCP ports already (D31, `NET_POLICY`).
     #[cfg(target_os = "linux")]
     ports_confined: bool,
+    /// What the run's credentials need made before the process confined itself, where its
+    /// spawner said the run has credential grants ([`Prepared`]); taken as the grants come.
+    prepared: Option<Prepared>,
+    /// The run's credential grants and its CA, once given (`NET_CREDENTIALS`, D242).
+    credentials: Option<Credentials>,
+    /// The run's sign-in grants, once given (`NET_SIGN_INS`, D242 step 8), until its
+    /// `NET_CREDENTIALS` takes them.
+    sign_ins: Option<Vec<signin::SignInGrant>>,
     /// The spawner's dialer (Windows, dial.rs), and what the poller waits on it for.
     #[cfg(windows)]
     dialer: Option<Dialer>,
@@ -903,27 +987,42 @@ impl Control {
                     | shards_ipc::kind::NET_PEER
                     | shards_ipc::kind::NET_NAMES
                     | shards_ipc::kind::NET_POLICY
+                    | shards_ipc::kind::NET_CREDENTIALS
+                    | shards_ipc::kind::NET_LEASE
+                    | shards_ipc::kind::NET_SIGN_INS
+                    | shards_ipc::kind::NET_SIGN_IN
             ),
             Control::Release => kind == shards_ipc::kind::UNPUBLISH,
         }
     }
 }
 
+/// What the network process has on Windows that it needs nowhere else: its VM's process,
+/// whose end is the VM's going (Windows' doorbells are events, which don't hang up), and the
+/// dialer through which goes what its AppContainer keeps it from.
+#[cfg(windows)]
+#[derive(Debug)]
+pub struct Contained {
+    pub vm: std::os::windows::io::OwnedHandle,
+    pub dialer: Option<Dialer>,
+}
+
 /// Serves the guest on `region`'s rings until the VM goes, ringing `wake_peer` and sleeping
-/// on `wake_me`: on Unix the VM goes as its doorbell hangs up; on Windows, whose doorbells
-/// are events, as its process (`vm`) ends, and what its AppContainer keeps it from goes
-/// through `dialer`. Published ports come and go on `controls`, each of whom [`Control`]
-/// says; their messages are taken as each comes whole, so that one cut short holds up
-/// nothing.
+/// on `wake_me`: on Unix the VM goes as its doorbell hangs up; on Windows as its process
+/// ends, what its AppContainer keeps it from going through its dialer ([`Contained`]).
+/// Published ports come and go on `controls`, each of whom [`Control`] says; their messages
+/// are taken as each comes whole, so that one cut short holds up nothing.
 pub fn serve(
     region: Handle,
     wake_me: shards_netring::Bell,
     wake_peer: shards_netring::Bell,
-    #[cfg(windows)] vm: std::os::windows::io::OwnedHandle,
-    #[cfg(windows)] dialer: Option<Dialer>,
+    #[cfg(windows)] contained: Contained,
     cfg: Config,
+    prepared: Option<Prepared>,
     controls: Vec<(Control, UnixStream)>,
 ) -> io::Result<()> {
+    #[cfg(windows)]
+    let Contained { vm, dialer } = contained;
     // Each control socket keeps its place, a token's index, until it hangs up.
     let mut controls: Vec<Option<(Control, UnixStream, shards_ipc::Incoming)>> = controls
         .into_iter()
@@ -967,6 +1066,9 @@ pub fn serve(
         names: None,
         #[cfg(target_os = "linux")]
         ports_confined: false,
+        prepared,
+        credentials: None,
+        sign_ins: None,
         #[cfg(windows)]
         dialer,
         #[cfg(windows)]
@@ -1055,8 +1157,15 @@ pub fn serve(
                         .as_mut()
                         .is_some_and(|(role, sock, incoming)| control(&mut stack, *role, sock, incoming));
                     // Hung up, or said what was not its: forgotten, and closed. What is
-                    // published stays, as the VM runs on.
-                    if !keep && let Some((_, sock, _)) = entry.take() {
+                    // published stays, as the VM runs on; the run's leases end with its
+                    // host's control, which alone answers them (D242).
+                    if !keep && let Some((role, sock, _)) = entry.take() {
+                        if role == Control::Daemon
+                            && let Some(c) = stack.credentials.as_mut()
+                        {
+                            c.leases.end();
+                            c.sign_ins.end();
+                        }
                         stack.forget(sock.raw_sock(), e.token, poll::Interest::READ);
                     }
                 }
@@ -1074,6 +1183,90 @@ pub fn serve(
             }
         }
         stack.timers(Instant::now());
+        // Flows whose leases were answered go on, and what they ask goes out, until neither
+        // moves: nothing waits on the poller that this pass could do.
+        while stack.resume_flows() | ask_run_host(&mut stack, &controls) {}
+    }
+}
+
+/// Says on stderr (the run host's diagnostics) each value a flow filled in (D242, f26): its
+/// host, its credential's reference and when, never the value.
+fn audit(run: Option<inject::Run<'_>>) {
+    use std::io::Write as _;
+    for filled in run.into_iter().flat_map(|run| run.audit) {
+        let _ = writeln!(io::stderr(), "{filled}");
+    }
+}
+
+/// Sends the run host the leases asked since the last pass (D242), on its control
+/// ([`Control::Daemon`]'s), so that no ask holds up the loop that made it. Where that control
+/// is gone or will not take one, no lease can come: the run's leases end, their waiting flows
+/// told so. Whether there was any ask.
+fn ask_run_host(
+    stack: &mut Stack<'_>,
+    controls: &[Option<(Control, UnixStream, shards_ipc::Incoming)>],
+) -> bool {
+    let Some(c) = stack.credentials.as_mut() else {
+        return false;
+    };
+    let asks = c.leases.asks();
+    let told = c.sign_ins.asks();
+    if asks.is_empty() && told.is_empty() {
+        return false;
+    }
+    let host = controls
+        .iter()
+        .flatten()
+        .find(|(role, ..)| *role == Control::Daemon);
+    let sent = host.is_some_and(|(_, sock, _)| {
+        asks.iter()
+            .all(|ask| reply(sock, shards_ipc::kind::NET_LEASE, ask).is_ok())
+            && told
+                .iter()
+                .all(|t| tell(sock, shards_ipc::kind::NET_SIGN_IN, t).is_ok())
+    });
+    if !sent {
+        c.leases.end();
+        c.sign_ins.end();
+    }
+    true
+}
+
+/// Tells the run host `payload`, which may carry a sign-in's tokens (D242, step 8), as it lies,
+/// no other copy made: on Unix in one sendmsg of its parts, on Windows in two writes.
+fn tell(sock: &UnixStream, kind: u8, payload: &[u8]) -> io::Result<()> {
+    #[cfg(unix)]
+    return shards_ipc::send(sock, kind, payload, &[]);
+    #[cfg(windows)]
+    return shards_ipc::write_message_parts(sock, kind, payload);
+}
+
+/// What a sign-in's answer changed, followed by the run's credentials (D242, step 8): a
+/// capture's access token granted toward its sign-in's hosts in place of the one it replaced,
+/// and a lease of its reference held before released; a refresh's access token's held lease
+/// released, its value rotated, so that the next flow that needs it asks anew.
+fn follow(c: &mut Credentials, changed: signin::Changed) {
+    match changed {
+        signin::Changed::Captured { index, replaced } => {
+            let Some(grant) = c.sign_ins.grants.get(index) else {
+                return;
+            };
+            let Some(captured) = &grant.captured else {
+                return;
+            };
+            if let Some(old) = replaced {
+                c.grants.retain(|g| g.placeholder != old.access_placeholder);
+            }
+            c.grants.push(captured.grant(&grant.toward));
+            c.leases.grant(&captured.access);
+            c.leases.forget(&captured.access);
+        }
+        signin::Changed::Refreshed { index } => {
+            if let Some(captured) = c.sign_ins.grants.get(index).and_then(|g| g.captured.as_ref()) {
+                c.leases.forget(&captured.access);
+            }
+        }
+        signin::Changed::Nothing => {}
     }
 }
 
@@ -1087,7 +1280,7 @@ fn control(
     incoming: &mut shards_ipc::Incoming,
 ) -> bool {
     loop {
-        let m = match incoming.take(sock) {
+        let mut m = match incoming.take(sock) {
             Ok(shards_ipc::Took::Message(m)) => m,
             Ok(shards_ipc::Took::Partial) => return true,
             Ok(shards_ipc::Took::Ended) | Err(_) => return false,
@@ -1105,7 +1298,13 @@ fn control(
             };
             handed(stack, sock, m.kind, payload, fds)
         } else {
-            answer_other(stack, sock, &m)
+            let answered = answer_other(stack, sock, &m);
+            // A lease's value is held by its lease alone once taken (D242), and a refresh's
+            // answer by its flow (step 8): the message's copy is wiped as it goes.
+            if m.kind == shards_ipc::kind::NET_LEASE || m.kind == shards_ipc::kind::NET_SIGN_IN {
+                zeroize::Zeroize::zeroize(&mut m.payload);
+            }
+            answered
         };
         if answered.is_err() {
             return false;
@@ -1214,6 +1413,111 @@ fn answer_other(stack: &mut Stack<'_>, sock: &UnixStream, m: &shards_ipc::Messag
             stack.cfg.named = named;
             stack.cfg.dns_all = dns_all;
             answer(sock, shards_ipc::kind::NET_POLICY)
+        } else if m.kind == shards_ipc::kind::NET_SIGN_INS {
+            // The run's sign-in grants (D242, step 8), once, after its policy and before its
+            // credential grants, which make its CA: each host its access token goes to, and its
+            // CLI's token host, one its egress grants reach, checked again here as its run host
+            // checked them (D109); each captured placeholder a token, and one credential's alone.
+            let Some(sign_ins) = signin::decode_grants(&m.payload) else {
+                return Err(malformed());
+            };
+            let reached = |host: &str| match &stack.cfg.policy {
+                Policy::AllowAll | Policy::Host => true,
+                Policy::Ports(ports) => reaches(ports, &stack.cfg.named, host),
+                Policy::DenyAll | Policy::Proxy { .. } => false,
+            };
+            if stack.credentials.is_some()
+                || stack.sign_ins.is_some()
+                || sign_ins.is_empty()
+                || !sign_ins.iter().all(|s| {
+                    reached(signin::profile(s.cli).token.host) && s.toward.iter().all(|h| reached(h))
+                })
+                || dns::credential::check_sign_ins(&[], &sign_ins).is_err()
+            {
+                return Err(malformed());
+            }
+            stack.sign_ins = Some(sign_ins);
+            answer(sock, shards_ipc::kind::NET_SIGN_INS)
+        } else if m.kind == shards_ipc::kind::NET_CREDENTIALS {
+            // The run's credential grants (D242), once, after its policy (and its sign-ins,
+            // where it has any): each host one its egress grants name (D236), checked again here
+            // as its run host checked it (D109), as a grant toward a host the run cannot reach
+            // could never be filled; each placeholder a token, and one credential's alone.
+            let Some(grants) = decode_grants(&m.payload) else {
+                return Err(malformed());
+            };
+            let sign_ins = stack.sign_ins.take().unwrap_or_default();
+            let reached = |host: &str| match &stack.cfg.policy {
+                Policy::AllowAll | Policy::Host => true,
+                Policy::Ports(ports) => reaches(ports, &stack.cfg.named, host),
+                Policy::DenyAll | Policy::Proxy { .. } => false,
+            };
+            if stack.credentials.is_some()
+                || (grants.is_empty() && sign_ins.is_empty())
+                || !grants.iter().flat_map(|g| &g.toward).all(|h| reached(h))
+                || dns::credential::check_sign_ins(&grants, &sign_ins).is_err()
+            {
+                return Err(malformed());
+            }
+            // Its key and its injector's TLS, made as the process started, where its spawner
+            // said they would come.
+            let Some(prepared) = stack.prepared.take() else {
+                return Err(malformed());
+            };
+            // Its CA names each host a value may be filled toward, and each sign-in's token host,
+            // whose responses its injector reads.
+            let mut hosts: Vec<&str> = grants
+                .iter()
+                .flat_map(|g| g.toward.iter().map(String::as_str))
+                .chain(sign_ins.iter().flat_map(|s| {
+                    s.toward
+                        .iter()
+                        .map(String::as_str)
+                        .chain([signin::profile(s.cli).token.host])
+                }))
+                .collect();
+            hosts.sort_unstable();
+            hosts.dedup();
+            let ca = ca::Ca::new(prepared.key, &hosts).map_err(io::Error::other)?;
+            let der = ca.der().to_vec();
+            let mut grants = grants;
+            grants.extend(
+                sign_ins
+                    .iter()
+                    .filter_map(|s| s.captured.as_ref().map(|c| c.grant(&s.toward))),
+            );
+            let leases = lease::Leases::new(grants.iter().map(|g| g.reference.clone()).collect());
+            stack.credentials = Some(Credentials {
+                grants,
+                ca,
+                leases,
+                upstream: prepared.upstream,
+                sign_ins: signin::SignIns::new(sign_ins),
+            });
+            reply(sock, shards_ipc::kind::NET_CREDENTIALS, &der)
+        } else if m.kind == shards_ipc::kind::NET_SIGN_IN {
+            // A sign-in's answer (D242, step 8), to an ask of this process's: its flows resumed,
+            // the run's credentials following what it changed. Not answered: it is the answer. One
+            // to no ask, or of a run with no sign-ins, breaks the run host's contract.
+            let Some(c) = stack.credentials.as_mut() else {
+                return Err(malformed());
+            };
+            let Some(changed) = c.sign_ins.answered(&m.payload, &c.grants) else {
+                return Err(malformed());
+            };
+            follow(c, changed);
+            Ok(())
+        } else if m.kind == shards_ipc::kind::NET_LEASE {
+            // A lease's answer (D242), to an ask of this process's: held, or refused, its
+            // waiting flows resumed. Not answered: it is the answer. One to no ask, or of a run
+            // with no grants, breaks the run host's contract.
+            let Some(credentials) = stack.credentials.as_mut() else {
+                return Err(malformed());
+            };
+            if !credentials.leases.answered(&m.payload, Instant::now()) {
+                return Err(malformed());
+            }
+            Ok(())
         } else if m.kind == shards_ipc::kind::NET_LINK_LOCAL {
             let Some(addresses) = decode_addresses(&m.payload) else {
                 return Err(malformed());
@@ -1250,10 +1554,15 @@ fn answer_other(stack: &mut Stack<'_>, sock: &UnixStream, m: &shards_ipc::Messag
 
 /// Answers a control message of `kind`, with nothing more: that it was taken.
 fn answer(sock: &UnixStream, kind: u8) -> io::Result<()> {
+    reply(sock, kind, &[])
+}
+
+/// Answers a control message of `kind` with `payload`.
+fn reply(sock: &UnixStream, kind: u8, payload: &[u8]) -> io::Result<()> {
     #[cfg(unix)]
-    return shards_ipc::send(sock, kind, &[], &[]);
+    return shards_ipc::send(sock, kind, payload, &[]);
     #[cfg(windows)]
-    return shards_ipc::write_message(sock, kind, &[]);
+    return shards_ipc::write_message(sock, kind, payload);
 }
 
 /// Takes the guest's frames from the ring, `frames` of them at most, until it is empty or
@@ -2154,7 +2463,8 @@ impl<'r> Stack<'r> {
                         (self.cfg.host_side(ip.dst, Proto::Tcp, seg.dst_port), seg.dst_port),
                         &seg,
                         self.isn(&key),
-                    ),
+                    )
+                    .map(|c| self.injected(c)),
                 },
             };
             match opened {
@@ -2193,10 +2503,79 @@ impl<'r> Stack<'r> {
             }
         };
         {
-            let mut o = self.out();
-            c.on_segment(&seg, &mut o);
+            let waiter = self.tcp.token(slot);
+            let (mut o, credentials) = self.split();
+            let mut run = credentials.map(|credentials| inject::Run {
+                credentials,
+                waiter,
+                now: Instant::now(),
+                audit: Vec::new(),
+                refused: Vec::new(),
+            });
+            c.on_segment(&seg, &mut o, run.as_mut());
+            audit(run);
         }
         self.settle(slot, c);
+    }
+
+    /// A connection of a run with credential grants, whose flow the injector reads first
+    /// (D242): every flow may be to a granted host, which its ClientHello says, never its
+    /// address (D236 holds names by address; TLS names a server by its name alone).
+    fn injected(&self, mut c: Conn) -> Conn {
+        if self.credentials.is_some() {
+            c.inject = Some(Box::default());
+        }
+        c
+    }
+
+    /// Where segments to the guest are made, and the run's credentials, apart: what a flow
+    /// the injector serves is given.
+    fn split(&mut self) -> (Out<'_, 'r>, Option<&mut Credentials>) {
+        (
+            Out {
+                frames: &self.frames,
+                to_guest: &mut self.to_guest,
+                backlog: &mut self.backlog,
+                guest_ip: self.cfg.guest_ip,
+                guest_ip6: self.cfg.guest_ip6,
+                scratch: &mut self.scratch,
+            },
+            self.credentials.as_mut(),
+        )
+    }
+
+    /// The flows whose leases were answered or ended since the last pass go on (D242), each
+    /// once however many of its leases were, carrying the refusals of the asks it waited on:
+    /// whether any did.
+    fn resume_flows(&mut self) -> bool {
+        let Some(c) = self.credentials.as_mut() else {
+            return false;
+        };
+        let resumed = c.leases.resumed();
+        let mut waiters: Vec<u64> = Vec::new();
+        for waiter in resumed.iter().map(|r| r.waiter).chain(c.sign_ins.resumed()) {
+            if !waiters.contains(&waiter) {
+                waiters.push(waiter);
+            }
+        }
+        for &waiter in &waiters {
+            let Some(slot) = self.tcp.slot_of(waiter) else {
+                continue;
+            };
+            let Some(mut conn) = self.tcp.take(slot) else {
+                continue;
+            };
+            {
+                let (mut o, credentials) = self.split();
+                if let Some(credentials) = credentials {
+                    let mut run = inject::Run::resumed(credentials, waiter, &resumed, Instant::now());
+                    conn.resume(&mut o, &mut run);
+                    audit(Some(run));
+                }
+            }
+            self.settle(slot, conn);
+        }
+        !waiters.is_empty()
     }
 
     /// Asks the spawner's dialer for the guest's SYN `seg` to `key`'s far end, at `to`, or
@@ -2272,6 +2651,8 @@ impl<'r> Stack<'r> {
                 if d.dns {
                     let names = self.cfg.asked_names();
                     c.dns = Some(dns::Stream::new(self.cfg.dns_all, names));
+                } else {
+                    c = self.injected(c);
                 }
                 let slot = self.tcp.reserve(d.key);
                 self.settle(slot, c);
@@ -2343,7 +2724,7 @@ impl<'r> Stack<'r> {
             if let Some(had) = self.tcp.slot(slot).map(|s| s.interest) {
                 self.forget(c.fd(), self.tcp.token(slot), had);
             }
-            self.tcp.release(slot);
+            self.release(slot);
             return;
         }
         let named = self.tcp.token(slot);
@@ -2361,7 +2742,7 @@ impl<'r> Stack<'r> {
             self.forget(fd, named, had);
             let mut o = self.out();
             c.reset(&mut o);
-            self.tcp.release(slot);
+            self.release(slot);
             return;
         }
         let Some(s) = self.tcp.slot(slot) else { return };
@@ -2377,6 +2758,15 @@ impl<'r> Stack<'r> {
             self.blocked.push_back(named);
         }
         s.conn = Some(c);
+    }
+
+    /// Empties `slot`, its connection gone, and with it what the run's sign-ins keep for its
+    /// flow (D242, #74 step 8): an answer, which may be a token response, outlives no flow.
+    fn release(&mut self, slot: u32) {
+        if let Some(c) = self.credentials.as_mut() {
+            c.sign_ins.gone(self.tcp.token(slot));
+        }
+        self.tcp.release(slot);
     }
 
     /// Connections a full ring held back, sent again in the order they were held, until
@@ -2417,20 +2807,22 @@ impl<'r> Stack<'r> {
         let Some(mut c) = self.tcp.take(slot) else { return };
         let mut buf = std::mem::take(&mut self.buf);
         {
-            let mut o = Out {
-                frames: &self.frames,
-                to_guest: &mut self.to_guest,
-                backlog: &mut self.backlog,
-                guest_ip: self.cfg.guest_ip,
-                guest_ip6: self.cfg.guest_ip6,
-                scratch: &mut self.scratch,
-            };
+            let waiter = self.tcp.token(slot);
+            let (mut o, credentials) = self.split();
+            let mut run = credentials.map(|credentials| inject::Run {
+                credentials,
+                waiter,
+                now: Instant::now(),
+                audit: Vec::new(),
+                refused: Vec::new(),
+            });
             if e.write {
                 c.on_writable(&mut o);
             }
             if !c.closed && e.read {
-                c.on_readable(&mut o, &mut buf);
+                c.on_readable(&mut o, &mut buf, run.as_mut());
             }
+            audit(run);
         }
         self.buf = buf;
         // What answers of the guest's DNS over TCP resolved granted names to.
@@ -2451,6 +2843,10 @@ impl<'r> Stack<'r> {
     /// on, does nothing, or is armed again for when it ends (review 2.14).
     fn timers(&mut self, now: Instant) {
         ring::expire(now);
+        // Each credential's value goes as its lease ends (D242), wiped.
+        if let Some(c) = self.credentials.as_mut() {
+            c.leases.lapse(now);
+        }
         while let Some(&Reverse((at, named))) = self.timers.peek() {
             if at > now {
                 break;
@@ -2517,14 +2913,15 @@ impl<'r> Stack<'r> {
         }
     }
 
-    /// The earliest timer's time: a connection's, a flow's, or the memory its queues let
-    /// go of going back to the OS (ring.rs).
+    /// The earliest timer's time: a connection's, a flow's, a credential's lease's end
+    /// (D242), or the memory its queues let go of going back to the OS (ring.rs).
     fn next_timer(&self) -> Option<Instant> {
         let timer = self.timers.peek().map(|Reverse((at, _))| *at);
-        match (timer, ring::expire(Instant::now())) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        }
+        let lease = self.credentials.as_ref().and_then(|c| c.leases.next_end());
+        [timer, lease, ring::expire(Instant::now())]
+            .into_iter()
+            .flatten()
+            .min()
     }
 }
 
@@ -2532,6 +2929,63 @@ impl<'r> Stack<'r> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// The run's credential grants ride `NET_CREDENTIALS` by reference, never a value, each
+    /// with its placeholder, and read back as written; a grant toward no host, which could
+    /// never be filled, a payload cut short, a name no DNS name is long enough to be and a
+    /// placeholder past its length's two bytes are refused.
+    #[test]
+    fn credential_grants_round_trip() {
+        let grants = vec![
+            Grant {
+                reference: "anthropic/claude-max".into(),
+                toward: vec!["api.anthropic.com".into(), "platform.claude.com".into()],
+                placeholder: "kiln-placeholder-0a".into(),
+            },
+            Grant {
+                reference: "openai/chatgpt".into(),
+                toward: vec!["chatgpt.com".into()],
+                placeholder: "kiln-placeholder-1b".into(),
+            },
+        ];
+        let bytes = encode_grants(&grants).unwrap();
+        assert_eq!(decode_grants(&bytes), Some(grants.clone()));
+        assert_eq!(
+            decode_grants(&bytes[..bytes.len() - 1]),
+            None,
+            "a placeholder cut short was read"
+        );
+        assert_eq!(decode_grants(&bytes[..3]), None, "a reference cut short was read");
+        let toward_none = encode_grants(&[Grant {
+            reference: "x".into(),
+            toward: Vec::new(),
+            placeholder: "p".into(),
+        }])
+        .unwrap();
+        assert_eq!(decode_grants(&toward_none), None);
+        let long = Grant {
+            reference: "x".into(),
+            toward: vec!["a".repeat(256)],
+            placeholder: "p".into(),
+        };
+        assert_eq!(encode_grants(&[long]), None);
+        let long = Grant {
+            placeholder: "p".repeat(65536),
+            ..grants[0].clone()
+        };
+        assert_eq!(encode_grants(&[long]), None);
+    }
+
+    /// A credential may be filled in toward a host its egress grants reach (D242): one they
+    /// name, in any case, or any host on a TCP port they open; never one past them.
+    #[test]
+    fn a_credential_reaches_what_egress_grants_reach() {
+        let named = vec![("api.anthropic.com".to_string(), 443)];
+        assert!(reaches(&Ports::default(), &named, "API.anthropic.com"));
+        assert!(!reaches(&Ports::default(), &named, "chatgpt.com"));
+        assert!(reaches(&Ports(vec![(Proto::Tcp, 443, 443)]), &[], "chatgpt.com"));
+        assert!(!reaches(&Ports(vec![(Proto::Udp, 53, 53)]), &[], "chatgpt.com"));
+    }
 
     /// The ports the network process is held to: the grants' TCP ports and the named
     /// servers', and where names may be resolved, the port of the resolver it asks, the
@@ -2615,6 +3069,9 @@ mod tests {
             names: None,
             #[cfg(target_os = "linux")]
             ports_confined: false,
+            prepared: None,
+            credentials: None,
+            sign_ins: None,
             #[cfg(windows)]
             dialer: None,
             #[cfg(windows)]
@@ -2875,6 +3332,132 @@ mod tests {
         assert!(stack.next_timer().unwrap() > due);
     }
 
+    /// A run's credentials with one sign-in, not yet captured (D242, step 8).
+    fn signing() -> Credentials {
+        Credentials {
+            grants: Vec::new(),
+            ca: ca::Ca::new(ca::Key::generate().unwrap(), &["platform.claude.com"]).unwrap(),
+            leases: lease::Leases::new(Vec::new()),
+            upstream: inject::Upstream::new(Vec::new()).unwrap(),
+            sign_ins: signin::SignIns::new(vec![signin::SignInGrant {
+                sign_in: "claude/acct-1".into(),
+                cli: signin::Cli::ClaudeCode,
+                toward: vec!["api.anthropic.com".into()],
+                captured: None,
+            }]),
+        }
+    }
+
+    /// A connection to the guest settled into a slot of `stack`'s, its socket's far end kept
+    /// open by the caller: its slot.
+    fn opened(stack: &mut Stack<'_>, port: u16) -> (u32, std::net::TcpStream) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (sock, _) = listener.accept().unwrap();
+        sock.set_nonblocking(true).unwrap();
+        let key = Key {
+            guest_port: port,
+            remote: (IpAddr::V4(stack.cfg.gateway_ip), 49152),
+        };
+        let c = Conn::accept(key, sock, 1000, &mut stack.out());
+        let slot = stack.tcp.reserve(key);
+        stack.settle(slot, c);
+        (slot, client)
+    }
+
+    /// Ends the connection in `slot` as a reset ends it, and settles it.
+    fn reset(stack: &mut Stack<'_>, slot: u32) {
+        let mut c = stack.tcp.take(slot).unwrap();
+        c.reset(&mut stack.out());
+        assert!(c.closed);
+        stack.settle(slot, c);
+    }
+
+    /// The run host answers the one refresh asked with a token response.
+    fn refreshed(stack: &mut Stack<'_>) -> zeroize::Zeroizing<Vec<u8>> {
+        let s = &mut stack.credentials.as_mut().unwrap().sign_ins;
+        let asks = s.asks();
+        assert_eq!(asks.len(), 1, "one refresh asked");
+        let Some(signin::Told::Refresh { id, .. }) = signin::Told::decode(&asks[0]) else {
+            panic!("no refresh asked")
+        };
+        let body = zeroize::Zeroizing::new(
+            br#"{"access_token":"sk-ant-oat01-not-real","refresh_token":"sk-ant-ort01-not-real"}"#.to_vec(),
+        );
+        let answer = signin::Answered::Refreshed {
+            id,
+            result: Ok(body.clone()),
+        };
+        assert_eq!(
+            s.answered(&answer.encode().unwrap(), &[]),
+            Some(signin::Changed::Refreshed { index: 0 }),
+            "the refresh stands for the sign-in whoever waited on it"
+        );
+        body
+    }
+
+    /// An HTTP/1.1 flow that ends while its sign-in's refresh is under way keeps nothing of its
+    /// answer (D242, #74 step 8): a token response outlives no flow it was for. Do: two flows ask
+    /// one refresh; the first is reset; the run host answers. Expect: one flow waiting once the
+    /// first ends; no answer for the first, the second's its own.
+    #[test]
+    fn a_flow_that_ends_mid_refresh_keeps_no_answer() {
+        let region = Region::map(shards_netring::memory().unwrap()).unwrap();
+        let (_, rings) = shards_netring::doorbell().unwrap();
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let cfg = Config::on_bridge(Policy::DenyAll, [2, 0, 0, 0, 0, 1], &bridge);
+        let mut stack = stack(cfg, region.producer(1, rings));
+        stack.credentials = Some(signing());
+        let (a, _a) = opened(&mut stack, 80);
+        let (b, _b) = opened(&mut stack, 81);
+        let (gone, kept) = (stack.tcp.token(a), stack.tcp.token(b));
+        let s = &mut stack.credentials.as_mut().unwrap().sign_ins;
+        s.refresh(0, gone).unwrap();
+        s.refresh(0, kept).unwrap();
+        reset(&mut stack, a);
+        let s = &mut stack.credentials.as_mut().unwrap().sign_ins;
+        assert_eq!(s.waiting(), 1, "a flow gone still waits on its ask");
+        let body = refreshed(&mut stack);
+        let s = &mut stack.credentials.as_mut().unwrap().sign_ins;
+        assert!(s.take(gone).is_none(), "an answer kept for a flow gone");
+        assert!(matches!(s.take(kept), Some(signin::Answer::Refreshed(b)) if b == body));
+    }
+
+    /// An HTTP/2 connection that ends with streams mid-ask keeps no answer for any of them
+    /// (D242, #74 step 8), and another flow's streams take theirs. Do: streams 1 and 3 of one
+    /// flow and stream 1 of another ask one refresh; the first flow is reset; the run host
+    /// answers. Expect: one stream waiting once the first flow ends; no answer for either of its
+    /// streams, the other flow's stream its own.
+    #[test]
+    fn an_h2_flow_that_ends_mid_ask_keeps_no_answer_for_its_streams() {
+        let region = Region::map(shards_netring::memory().unwrap()).unwrap();
+        let (_, rings) = shards_netring::doorbell().unwrap();
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let cfg = Config::on_bridge(Policy::DenyAll, [2, 0, 0, 0, 0, 1], &bridge);
+        let mut stack = stack(cfg, region.producer(1, rings));
+        stack.credentials = Some(signing());
+        let (a, _a) = opened(&mut stack, 80);
+        let (b, _b) = opened(&mut stack, 81);
+        let on = |flow, stream| signin::Asker { flow, stream };
+        let (gone, kept) = (stack.tcp.token(a), stack.tcp.token(b));
+        let s = &mut stack.credentials.as_mut().unwrap().sign_ins;
+        for asker in [on(gone, 1), on(gone, 3), on(kept, 1)] {
+            s.refresh(0, asker).unwrap();
+        }
+        reset(&mut stack, a);
+        let s = &mut stack.credentials.as_mut().unwrap().sign_ins;
+        assert_eq!(s.waiting(), 1, "a flow gone's streams still wait on its ask");
+        let body = refreshed(&mut stack);
+        let s = &mut stack.credentials.as_mut().unwrap().sign_ins;
+        for stream in [1, 3] {
+            assert!(
+                s.take(on(gone, stream)).is_none(),
+                "an answer kept for stream {stream} of a flow gone"
+            );
+        }
+        assert!(matches!(s.take(on(kept, 1)), Some(signin::Answer::Refreshed(b)) if b == body));
+    }
+
     /// A segment's headers and its bytes, from both halves of a queue that wraps, reach the
     /// ring as one frame, as does a datagram; while frames wait in the backlog, a segment
     /// of bytes waits for room, and a bare one queues behind them.
@@ -2928,28 +3511,6 @@ mod tests {
         let u = wire::udp(ip.payload).unwrap();
         assert_eq!((u.src_port, u.dst_port, u.payload), (53, 5353, &b"an answer"[..]));
         assert_eq!(take(), None);
-    }
-
-    /// A MAC goes as text and comes back the same; what is not six two-digit hex bytes
-    /// between colons is no MAC.
-    #[test]
-    fn macs_read_back_as_written() {
-        let mac = Mac([0x02, 0x42, 0xac, 0x11, 0x00, 0xff]);
-        assert_eq!(mac.to_string(), "02:42:ac:11:00:ff");
-        assert_eq!("02:42:ac:11:00:ff".parse(), Ok(mac));
-        assert_eq!("02:42:AC:11:00:FF".parse(), Ok(mac));
-        for not in [
-            "",
-            "02:42:ac:11:00",
-            "02:42:ac:11:00:ff:01",
-            "2:42:ac:11:00:ff",
-            "+2:42:ac:11:00:ff",
-            "02:42:ac:11:00:fg",
-            "02-42-ac-11-00-ff",
-            "02:42:ac:11:00:ff:",
-        ] {
-            assert!(not.parse::<Mac>().is_err(), "{not:?}");
-        }
     }
 
     /// The host's network (D124): every unicast address the host reaches, the host's own
@@ -3359,9 +3920,149 @@ mod tests {
     /// other's: a VM gives the network process nothing to serve (review 2.19).
     #[test]
     fn each_control_socket_says_only_its_own() {
-        use shards_ipc::kind::{PUBLISH, UNPUBLISH};
+        use shards_ipc::kind::{NET_LEASE, PUBLISH, UNPUBLISH};
         assert!(Control::Daemon.says(PUBLISH) && !Control::Daemon.says(UNPUBLISH));
         assert!(Control::Release.says(UNPUBLISH) && !Control::Release.says(PUBLISH));
+        // A lease is answered by the run host alone (D242), never by the VM.
+        assert!(Control::Daemon.says(NET_LEASE) && !Control::Release.says(NET_LEASE));
+    }
+
+    /// The loop's side of a lease (D242). Do: answer a lease of a stack with no grants; give
+    /// it the run's grants and ask one; send the loop's asks; answer it, then answer an ask it
+    /// never made; ask another with no run host's control left. Expect: the first refused;
+    /// the ask on the run host's control, by its reference; its answer taken and its value
+    /// held; the stray answer refused, breaking the control; and with no control left the
+    /// run's leases ended, the waiting flow told so.
+    #[cfg(unix)]
+    #[test]
+    fn a_lease_is_asked_on_the_run_hosts_control_and_taken_as_its_answer() {
+        use std::num::NonZeroU64;
+        use std::os::unix::net::UnixStream;
+        const CLAUDE: &str = "anthropic/claude-max";
+        let region = Region::map(shards_netring::memory().unwrap()).unwrap();
+        let (_, pr) = shards_netring::doorbell().unwrap();
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let mut stack = stack(
+            Config::on_bridge(Policy::Host, [2, 0, 0, 0, 0, 1], &bridge),
+            region.producer(1, pr),
+        );
+        let (host, hosts) = UnixStream::pair().unwrap();
+        let controls = vec![Some((Control::Daemon, hosts, shards_ipc::Incoming::default()))];
+        let sock = &controls[0].as_ref().unwrap().1;
+        let message = |payload: &[u8]| shards_ipc::Message {
+            kind: shards_ipc::kind::NET_LEASE,
+            payload: payload.to_vec(),
+            fds: Vec::new(),
+        };
+        let ended = lease::encode_answer(0, Err(&lease::Refusal::Ended)).unwrap();
+        assert!(
+            answer_other(&mut stack, sock, &message(&ended)).is_err(),
+            "a lease answered to a run with no grants"
+        );
+        stack.credentials = Some(Credentials {
+            grants: vec![Grant {
+                reference: CLAUDE.into(),
+                toward: vec!["api.anthropic.com".into()],
+                placeholder: "kiln-placeholder-0a".into(),
+            }],
+            ca: ca::Ca::new(ca::Key::generate().unwrap(), &["api.anthropic.com"]).unwrap(),
+            leases: lease::Leases::new(vec![CLAUDE.into(), "openai/chatgpt".into()]),
+            upstream: inject::Upstream::new(Vec::new()).unwrap(),
+            sign_ins: signin::SignIns::new(Vec::new()),
+        });
+        let now = Instant::now();
+        let leases = &mut stack.credentials.as_mut().unwrap().leases;
+        assert!(matches!(leases.ask(CLAUDE, 1, now), lease::Asked::Waiting));
+        ask_run_host(&mut stack, &controls);
+        let asked = shards_ipc::recv_by(&host, now + Duration::from_secs(10))
+            .unwrap()
+            .unwrap();
+        assert_eq!(asked.kind, shards_ipc::kind::NET_LEASE);
+        let (id, reference) = lease::decode_ask(&asked.payload).unwrap();
+        assert_eq!(reference, CLAUDE);
+        let value = b"sk-ant-lease-test-value";
+        let life = NonZeroU64::new(60_000_000_000).unwrap();
+        let answer = lease::encode_answer(id, Ok((life, value))).unwrap();
+        assert!(answer_other(&mut stack, sock, &message(&answer)).is_ok());
+        let leases = &mut stack.credentials.as_mut().unwrap().leases;
+        assert_eq!(leases.held(CLAUDE, Instant::now()), Some(&value[..]));
+        assert_eq!(leases.resumed().len(), 1);
+        let stray = lease::encode_answer(id.wrapping_add(7), Err(&lease::Refusal::Ended)).unwrap();
+        assert!(answer_other(&mut stack, sock, &message(&stray)).is_err());
+        let leases = &mut stack.credentials.as_mut().unwrap().leases;
+        assert!(matches!(
+            leases.ask("openai/chatgpt", 2, Instant::now()),
+            lease::Asked::Waiting
+        ));
+        ask_run_host(&mut stack, &[]);
+        let leases = &mut stack.credentials.as_mut().unwrap().leases;
+        assert_eq!(
+            leases.resumed(),
+            [lease::Resumed {
+                waiter: 2,
+                reference: "openai/chatgpt".into(),
+                outcome: Err(lease::Refusal::Ended),
+            }]
+        );
+        assert_eq!(
+            leases.held(CLAUDE, Instant::now()),
+            None,
+            "held past its run's end"
+        );
+    }
+
+    /// The run's credential grants are taken with each placeholder checked again, as its run
+    /// host checked them (D109). Do: send grants whose placeholder is no token, then two
+    /// credentials sharing one, then one credential granted twice with one. Expect: the
+    /// first two refused, the control broken and nothing taken; the last answered with the
+    /// run's CA.
+    #[cfg(unix)]
+    #[test]
+    fn credential_grants_are_taken_with_their_placeholders_checked() {
+        use std::os::unix::net::UnixStream;
+        let region = Region::map(shards_netring::memory().unwrap()).unwrap();
+        let (_, pr) = shards_netring::doorbell().unwrap();
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let mut stack = stack(
+            Config::on_bridge(Policy::Host, [2, 0, 0, 0, 0, 1], &bridge),
+            region.producer(1, pr),
+        );
+        let (host, ours) = UnixStream::pair().unwrap();
+        let grant = |reference: &str, placeholder: &str| Grant {
+            reference: reference.into(),
+            toward: vec!["api.anthropic.com".into()],
+            placeholder: placeholder.into(),
+        };
+        let message = |grants: &[Grant]| shards_ipc::Message {
+            kind: shards_ipc::kind::NET_CREDENTIALS,
+            payload: encode_grants(grants).unwrap(),
+            fds: Vec::new(),
+        };
+        for refused in [
+            vec![grant("anthropic/claude-max", "two words")],
+            vec![
+                grant("anthropic/claude-max", "p"),
+                grant("anthropic/console", "p"),
+            ],
+        ] {
+            stack.prepared = Some(Prepared::new().unwrap());
+            assert!(
+                answer_other(&mut stack, &ours, &message(&refused)).is_err(),
+                "{refused:?} taken"
+            );
+            assert!(stack.credentials.is_none());
+        }
+        stack.prepared = Some(Prepared::new().unwrap());
+        let twice = [
+            grant("anthropic/claude-max", "p"),
+            grant("anthropic/claude-max", "p"),
+        ];
+        assert!(answer_other(&mut stack, &ours, &message(&twice)).is_ok());
+        let answer = shards_ipc::recv_by(&host, Instant::now() + Duration::from_secs(10))
+            .unwrap()
+            .unwrap();
+        assert_eq!(answer.kind, shards_ipc::kind::NET_CREDENTIALS);
+        assert_eq!(answer.payload, stack.credentials.as_ref().unwrap().ca.der());
     }
 
     /// An initial sequence number is its connection's and its secret's alone, plus its
@@ -3477,6 +4178,7 @@ mod tests {
                     net_waits,
                     net_rings,
                     cfg,
+                    None,
                     vec![(Control::Daemon, daemons), (Control::Release, vms)],
                 )
             });
@@ -3555,6 +4257,7 @@ mod tests {
                     net_waits,
                     net_rings,
                     cfg,
+                    None,
                     vec![(Control::Daemon, daemons), (Control::Release, vms)],
                 )
             });

@@ -197,7 +197,7 @@ mod handshake {
         };
         let (server, client) = connect(
             tls::server(&server_id).unwrap(),
-            tls::client(&client_id, pinned).unwrap(),
+            tls::client(&client_id, pinned, tls::Known::Never).unwrap(),
         );
         (server, client, server_id, client_id)
     }

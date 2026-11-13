@@ -69,7 +69,7 @@ impl<D: Disk> Daemon<D> {
             ..Default::default()
         };
         let quiet = self
-            .exec_quietly(&scope.provider, &spec, None, 1 << 12, crate::daemon::TAKE_TIMEOUT)
+            .exec_answered(&scope.provider, &spec, 1 << 12)
             .map_err(|e| format!("its microVM's switch: {e}"))?;
         let said = String::from_utf8_lossy(&quiet.output).trim().to_string();
         match quiet.status {
@@ -714,6 +714,7 @@ impl<D: Disk> Daemon<D> {
         id: &str,
         change: impl FnOnce(&mut shards_ipc::Run) -> Result<(), (u16, String)>,
     ) -> Result<(), (u16, String)> {
+        let _turn = self.request_turn(id);
         let dir = lock(&self.containers).dir(id);
         let path = dir.join(crate::daemon::REQUEST);
         let mut run = std::fs::read(&path)

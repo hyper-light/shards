@@ -169,6 +169,65 @@ clean.
 | R15 | Implementer: light tests only; real-VM E2E written for ROOT, not run. |
 | R16 | Build output under `~/g121-tmp/s5-*` (adacachy), `~/s5-*` (Mac Studio). |
 
+## First real-VM runs, and their fixes (2026-11-13)
+
+The first real-VM runs found every run asking a member's stdin refused before its start:
+- HVF (ROOT, main 27ed7cccd, macOS 26 arm64): `api_image`'s stdin case broke its pipe, "the
+  harness said Some(\"\") and ended Ok(Some(WithRun)); the run's end Ok(Some(Stopped))";
+  `member_exec`'s terminal-with-stdin case saw its terminal close before `ready`, the run
+  `Stopped`. Log `/tmp/g121-shot/e2e-hvf3-27ed7cccd.log`.
+- Linux CI (x86_64 gnu, 5b4a561e5, run 43385596626 job 131753477108): `managed_output`'s two
+  `member_stdin` runs exited 125, "shards: " with no words after it.
+
+The cause was the VM process's `workload::capture::start`: it checked that a request brings
+no input token with `managed::input_tokens`, which holds a setup to one token for each
+member `managed-input=` names, so a request asking one input (no token yet) was refused,
+"managed output member was not admitted", said on the VM's stderr alone. 72a204fb9 checks
+for a `managed-input-token=` entry instead (red with its test alone, c0d1dd752; green after).
+On the same path, shards-api made a member's input flow only once `Session::start` ran
+again after the reader took `STARTED`, which a room (`INPUT_ROOM`) the reader took first
+broke; 35f12476b makes the flows with the start, under its lock (red/green
+`a_stdins_room_right_after_the_start_is_its_members`). Both landed in 22101e85e.
+
+At main 41d35bde1 (with 22101e85e), ROOT's HVF run: the `api_image` stdin case and
+`member_exec`'s terminal-with-stdin case pass. `managed_output`'s `member_stdin` runs on
+Linux alone: owed, CI's next x86_64 run.
+
+### A closed connection held the endpoint's one place (2026-11-13)
+
+Goal 71's CI cluster 6c; implementer, policy at d5afadbc8 (`development-rules.md` sha256
+`df2acf47…13d3`), worktree `g71-input`, branch `p/g71-input-v1`.
+
+- **Symptom** (ROOT, KVM x86_64 on adacachy2, d5afadbc8, `cargo test -p shards --profile
+  test-release --test managed_output -- member_stdin --nocapture --test-threads 1`, log
+  `/home/adalundhe/g121-carrier/kvm-ci2-d5afadbc8.log` lines 176-241): the member that ends
+  passes; the stdin case's writer panics at `member_stdin.rs:70`, the owner's *first*
+  `InputWriter::start` after the stranger's (refused) one, `Err(Lost(None))`, and its observer
+  then waits out its deadline (`managed_capture.rs:439`).
+- **Cause**: the input endpoint's driver holds one connection (`DriverLimits::connections`
+  1) and counted a closed one against it, the stranger's refused at its TLS handshake
+  (`tls::AnyClient`), closing for three probe timeouts (RFC 9000 §10.2); the owner's Initial
+  meanwhile was refused (`Endpoint::refuse`: CONNECTION_REFUSED, a transport error, so no
+  application code: `Lost(None)`). The same held for an owner that closed its connection
+  without its end and subscribed again at once (`member_stdin.rs:73`). The remote test's owner
+  retried every 100 ms (`subscribed`) since e7825cb32, which hid it.
+- **Red** (macOS 26 arm64, adas-mac-studio-3.local, 4a91ff6cc = d5afadbc8 and the tests alone,
+  `cargo test -p shards-remote --lib -- managed::input`): 5 pass, 2 fail, both
+  `no taken: Lost("aborted by peer: the server refused to accept a new connection (None)")`:
+  `over_the_real_transport_input_goes_exactly_paced_resumed_ended_and_only_from_its_owner`
+  (its owner now subscribing once after the stranger) and
+  `an_owner_closed_without_its_end_resubscribes_at_its_first_attempt_where_its_last_was_taken`.
+  This tree is the fix's guard removed.
+- **Fix**: net.rs `Driver::free_closed`: a newcomer that finds its places full takes the
+  place of the closed connection nearest its drain, its CONNECTION_CLOSE queued first and its
+  endpoint told it drained (architecture.md, D180's "A closed connection holds no place").
+- **Green** (the same host, ba9952066: this change's code before it was folded into one
+  commit, and again merged with main before it landed): `cargo test -p shards-remote` 96 lib
+  and 21 `tests/loopback.rs`, all pass; `managed::input` 7 of 7;
+  `cargo clippy -p shards-remote --all-targets -- -D warnings` clean.
+- **Not run here** (ROOT's): the real-VM `member_stdin` on KVM x86_64 (and HVF once the
+  parity child's change builds the target off Linux); other targets' light tests (CI).
+
 ## Owed to ROOT
 
 - The real-VM E2E above on KVM x86_64 and arm64, HVF and WHP: `tests/managed_output.rs`'s

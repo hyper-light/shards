@@ -481,6 +481,37 @@ fn mkdir_all(path: &str) -> io::Result<()> {
         .create(path)
 }
 
+/// Whether setup `entry` is init's, for the run's members, and not the standby's: the
+/// domains init starts (D59) and the volumes it gives them alone (D111), the managed capture
+/// of their output and input (D240), and what a run stages for them (D231). Their values may
+/// be any bytes (an input token as the VM process mints it, a staged file), and the standby
+/// applies none of them, so it never reads them as text.
+fn members_own(entry: &[u8]) -> bool {
+    use shards_abi::run::{managed, members};
+    entry == members::ENDS
+        || [
+            &b"domains-seccomp="[..],
+            b"domains-seccomp-none=",
+            b"domain-volume=",
+            managed::CAPACITY_KEY,
+            managed::TOKEN_KEY,
+            managed::MEMBERS_KEY,
+            managed::ACTIVE_KEY,
+            managed::INPUT_KEY,
+            managed::INPUT_TOKEN_KEY,
+            managed::DRAINED_KEY,
+            members::ENV_KEY,
+            members::FILE_KEY,
+            members::WORKDIR_KEY,
+            members::IMAGE_ENV_KEY,
+            members::TERMINAL_KEY,
+            members::ARG_KEY,
+            members::EXEC_KEY,
+        ]
+        .iter()
+        .any(|key| entry.starts_with(key))
+}
+
 /// Applies setup `entry` in this process's namespaces: in the standby, the single-threaded
 /// fork of init, before it execs. The errno of what failed.
 pub fn apply(entry: &[u8]) -> Result<(), i32> {
@@ -493,19 +524,7 @@ pub fn apply(entry: &[u8]) -> Result<(), i32> {
     {
         return Ok(());
     }
-    // Init's, for the domains it starts (D59), and the volumes it gives them alone (D111).
-    if entry.starts_with(b"domains-seccomp=")
-        || entry.starts_with(b"domains-seccomp-none=")
-        || entry.starts_with(b"domain-volume=")
-        || [
-            shards_abi::run::managed::CAPACITY_KEY,
-            shards_abi::run::managed::TOKEN_KEY,
-            shards_abi::run::managed::MEMBERS_KEY,
-            shards_abi::run::managed::ACTIVE_KEY,
-        ]
-        .iter()
-        .any(|key| entry.starts_with(key))
-    {
+    if members_own(entry) {
         return Ok(());
     }
     let text = std::str::from_utf8(entry).map_err(|_| libc::EINVAL)?;
@@ -1317,7 +1336,16 @@ pub fn failed(entry: &[u8], errno: i32) -> String {
         let dest = rest.split('\0').nth(1).unwrap_or_default();
         return format!("error mounting a shared directory to rootfs at \"{dest}\": {err}");
     }
-    format!("error remounting the root read-only: {err}")
+    if text == "readonly" {
+        return format!("error remounting the root read-only: {err}");
+    }
+    // An entry runc has no words for, said by its key alone (D257), never its value, which
+    // may be a credential. Each such entry was once said as the root's remount, the managed
+    // capture's binary entries among them (ba2484420; 72a204fb9's input tokens).
+    format!(
+        "applying its setup entry \"{}\": {err}",
+        shards_abi::run::setup::key(entry).escape_ascii()
+    )
 }
 
 #[cfg(test)]
@@ -1341,6 +1369,55 @@ mod tests {
             assert_eq!(apply(&entry), Ok(()));
         }
         assert_eq!(apply(&[0xff]), Err(libc::EINVAL));
+    }
+
+    /// What init reads for a run's members, of any bytes, is no entry of the standby's: a
+    /// member's input token as the VM process mints it (72a204fb9, which every run asking
+    /// a member's stdin met as "error remounting the root read-only: invalid argument"),
+    /// the members naming one, and what a run stages for its members (a file, an argument,
+    /// a variable, a working directory) that is no UTF-8.
+    #[test]
+    fn what_init_reads_for_its_members_is_no_workload_setup() {
+        use shards_abi::run::{self, managed, members};
+
+        let entries = [
+            [managed::INPUT_KEY, &1u32.to_be_bytes()[..]].concat(),
+            [managed::DRAINED_KEY, &b"1,2"[..]].concat(),
+            [
+                managed::INPUT_TOKEN_KEY,
+                &1u32.to_be_bytes()[..],
+                &[0xff; run::TOKEN],
+            ]
+            .concat(),
+            members::file(0, 0o600, b"key", &[0xff, 0xfe, 0x80]).unwrap(),
+            members::arg(0, &[0xc3, 0x28]).unwrap(),
+            members::env(0, b"K=\xff").unwrap(),
+            [members::WORKDIR_KEY, b"0\0/w\xff"].concat(),
+            [members::IMAGE_ENV_KEY, b"K=\xfe"].concat(),
+            members::terminal(0),
+            members::exec_in(0),
+            members::ENDS.to_vec(),
+        ];
+        for entry in &entries {
+            assert_eq!(apply(entry), Ok(()), "{}", entry.escape_ascii());
+        }
+        assert_eq!(apply(&[0xff]), Err(libc::EINVAL));
+        assert_eq!(apply(b"tmpfs=/t\xff\0rw"), Err(libc::EINVAL));
+    }
+
+    /// A failed entry is said as itself, by its key: an entry the remount is not names its
+    /// own key, never its value, which may be a credential.
+    #[test]
+    fn a_failed_entry_is_said_by_its_own_key() {
+        assert!(failed(b"readonly", libc::EINVAL).starts_with("error remounting the root read-only: "));
+        let said = failed(b"umask=9", libc::EINVAL);
+        assert!(said.contains("\"umask\""), "{said}");
+        assert!(!said.contains("remounting"), "{said}");
+        let said = failed(b"managed-input-token=\x00\x00\x00\x01sk-secret", libc::EINVAL);
+        assert!(
+            said.contains("\"managed-input-token\"") && !said.contains("sk-secret"),
+            "{said}"
+        );
     }
 
     /// Each volume is told the run's owner, once: its share's server gives them the host's

@@ -1,0 +1,18 @@
+host=adalundhe-MacBook-Pro Darwin 25.5.0 arm64 load={ 6.31 5.65 4.59 } base=db4168345a683e46d4f517b78e99a198931f1167 patch=s11-logs.patch c6cc76842c310dad
+rustc 1.98.1 (48a229cea 2026-09-01)
+== cargo clippy -p shards -p shards-vm-process --all-targets -- -D warnings 2>&1 | tail -40; cargo test -p shards --bin shards -- daemon::logs daemon::managed log_writer 2>&1 | grep -E "test result|FAILED|panicked"
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 10.67s
+test result: ok. 62 passed; 0 failed; 6 ignored; 0 measured; 796 filtered out; finished in 79.92s
+rc=0
+
+# The new tests, by name (the same patch's tree, before the walk callback's type alias, which changed no behaviour):
+== cargo test -p shards --bin shards -- daemon::logs::tests::records daemon::managed::tests::a_runs_log_host 2>&1 | grep -E "^test |test result"
+test daemon::logs::tests::records_give_a_log_as_written_from_any_place ... ok
+test daemon::logs::tests::records_say_a_gap_and_the_segments_let_go ... ok
+test daemon::managed::tests::a_runs_log_host_serves_its_logs_from_the_store ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 861 filtered out; finished in 0.02s
+
+# The 6 ignored are ROOT's native fixtures (daemon::managed::terminal_order_tests::native_*, tests::torn_append_child).
+# The daemon's own log lines of the log host test:
+shards daemon 30131: agent-control log lane 1: a place in segment 0, past which its log keeps segment 1 on
+shards daemon 30131: agent-control log lane 2: member 2, which the run has not

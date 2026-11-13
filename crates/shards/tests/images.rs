@@ -9,14 +9,11 @@
 mod common;
 
 use std::sync::atomic::Ordering;
-use std::time::Duration;
 
 use common::{
     TempDir, cannot_run_vms, guest_init, kernel, rootfs_dir, run_shards_env, served, served_counting,
     sha256_digest, test_image,
 };
-
-const TIMEOUT: Duration = Duration::from_secs(120);
 
 /// The report's lines as a map from each line's first word.
 fn report(stdout: &str) -> std::collections::BTreeMap<String, String> {
@@ -49,7 +46,7 @@ fn images_run_from_a_registry() {
     ];
 
     // Not here yet: pulled, then run with the image's settings.
-    let first = run_shards_env(&["run"], &[image.as_str()], &env, TIMEOUT);
+    let first = run_shards_env(&["run"], &[image.as_str()], &env);
     let shown = format!("--- stdout\n{}\n--- stderr\n{}", first.stdout, first.stderr);
     assert_eq!(first.status, Some(0), "{shown}");
     assert!(
@@ -76,7 +73,7 @@ fn images_run_from_a_registry() {
         image.as_str(),
         "report",
     ];
-    let second = run_shards_env(&["run"], &args, &env, TIMEOUT);
+    let second = run_shards_env(&["run"], &args, &env);
     let shown = format!("--- stdout\n{}\n--- stderr\n{}", second.stdout, second.stderr);
     assert_eq!(second.status, Some(0), "{shown}");
     for line in ["uid 0", "cwd /", "env FROM_IMAGE=cli"] {
@@ -94,13 +91,12 @@ fn images_run_from_a_registry() {
         &["image"],
         &["inspect", "--format", "{{index .RepoDigests 0}}", image.as_str()],
         &env,
-        TIMEOUT,
     );
     assert_eq!(digests.status, Some(0), "{}", digests.stderr);
     let pinned = digests.stdout.trim().to_string();
     assert!(pinned.contains("@sha256:"), "{pinned}");
     for pull in ["never", "missing"] {
-        let run = run_shards_env(&["run"], &["--pull", pull, pinned.as_str()], &env, TIMEOUT);
+        let run = run_shards_env(&["run"], &["--pull", pull, pinned.as_str()], &env);
         let shown = format!("--- stdout\n{}\n--- stderr\n{}", run.stdout, run.stderr);
         assert_eq!(run.status, Some(0), "--pull {pull}\n{shown}");
         assert!(
@@ -132,7 +128,7 @@ fn images_run_from_a_registry() {
     let changed = text.replace(r#""Cmd":["report"]"#, r#""Cmd":["exit","9"]"#);
     assert_ne!(changed, text);
     std::fs::write(&stored, changed).unwrap();
-    let refused = run_shards_env(&["run"], &["--pull", "never", image.as_str()], &env, TIMEOUT);
+    let refused = run_shards_env(&["run"], &["--pull", "never", image.as_str()], &env);
     let shown = format!("--- stdout\n{}\n--- stderr\n{}", refused.stdout, refused.stderr);
     assert_eq!(refused.status, Some(125), "{shown}");
     assert!(
@@ -141,7 +137,7 @@ fn images_run_from_a_registry() {
         )),
         "{shown}"
     );
-    let mended = run_shards_env(&["run"], &["--pull", "missing", image.as_str()], &env, TIMEOUT);
+    let mended = run_shards_env(&["run"], &["--pull", "missing", image.as_str()], &env);
     let shown = format!("--- stdout\n{}\n--- stderr\n{}", mended.stdout, mended.stderr);
     assert_eq!(mended.status, Some(0), "{shown}");
     assert!(
@@ -175,7 +171,7 @@ fn an_image_past_its_limits_is_refused() {
         ("SHARDS_INIT", guest_init().as_os_str()),
         ("SHARDS_MAX_IMAGE_ENTRIES", "3".as_ref()),
     ];
-    let refused = run_shards_env(&["run"], &[image.as_str()], &env, TIMEOUT);
+    let refused = run_shards_env(&["run"], &[image.as_str()], &env);
     let shown = format!("--- stdout\n{}\n--- stderr\n{}", refused.stdout, refused.stderr);
     assert_eq!(refused.status, Some(125), "{shown}");
     assert!(
@@ -189,7 +185,7 @@ fn an_image_past_its_limits_is_refused() {
         .filter(|e| !e.as_ref().unwrap().file_name().to_string_lossy().starts_with('.'))
         .count();
     assert_eq!(built, 0, "{shown}");
-    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env);
     assert_eq!(stopped.status, Some(0));
 }
 
@@ -234,13 +230,12 @@ fn a_pulls_platform_defaults_to_the_default_platforms() {
             args.extend(["--platform", p]);
         }
         args.extend(["-q", image.as_str()]);
-        let pulled = run_shards_env(&["pull"], &args, &env, TIMEOUT);
+        let pulled = run_shards_env(&["pull"], &args, &env);
         assert_eq!(pulled.status, Some(0), "{defaults:?} {named:?}: {pulled}");
         let inspected = run_shards_env(
             &["image", "inspect"],
             &["--format", "{{.Architecture}}", image.as_str()],
             &env,
-            TIMEOUT,
         );
         assert_eq!(inspected.status, Some(0), "{inspected}");
         assert_eq!(inspected.stdout.trim(), want, "{defaults:?} {named:?}");
@@ -248,10 +243,9 @@ fn a_pulls_platform_defaults_to_the_default_platforms() {
 }
 
 /// A registry off loopback that speaks plain HTTP is pulled from once Docker's daemon
-/// configuration names it insecure (D194), as dockerd pulls from one: the rootless
-/// engine's daemon.json, under `XDG_CONFIG_HOME` (the native one's on Windows, under
-/// `PROGRAMDATA`). Not named, it is asked in HTTPS alone, and its plain answer is the
-/// pull's failure.
+/// configuration names it insecure (D194), as dockerd pulls from one: the daemon.json
+/// `SHARDS_DAEMON_JSON` names, the test's own, as `dockerd --config-file` names one. Not
+/// named, it is asked in HTTPS alone, and its plain answer is the pull's failure.
 #[test]
 fn a_registry_daemon_json_names_insecure_is_pulled_from_in_plain_http() {
     let Some(ip) = common::routable_v4() else {
@@ -262,13 +256,13 @@ fn a_registry_daemon_json_names_insecure_is_pulled_from_in_plain_http() {
     let (port, _) = common::registry_at(ip.into(), manifest, blobs);
     let image = format!("{ip}:{port}/test/image:v1");
     let home = TempDir::new("insecure");
-    let config = home.join("config");
+    let file = home.join("daemon.json");
+    std::fs::write(&file, "{}").unwrap();
     let env = [
         ("SHARDS_HOME", home.as_os_str()),
-        ("XDG_CONFIG_HOME", config.as_os_str()),
-        ("PROGRAMDATA", config.as_os_str()),
+        ("SHARDS_DAEMON_JSON", file.as_os_str()),
     ];
-    let unnamed = run_shards_env(&["pull"], &["-q", image.as_str()], &env, TIMEOUT);
+    let unnamed = run_shards_env(&["pull"], &["-q", image.as_str()], &env);
     assert_ne!(unnamed.status, Some(0), "{unnamed}");
     assert!(
         unnamed
@@ -276,42 +270,31 @@ fn a_registry_daemon_json_names_insecure_is_pulled_from_in_plain_http() {
             .contains("server gave HTTP response to HTTPS client"),
         "{unnamed}"
     );
-    let file = if cfg!(windows) {
-        config.join("docker").join("config").join("daemon.json")
-    } else {
-        config.join("docker").join("daemon.json")
-    };
-    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
     std::fs::write(&file, format!(r#"{{"insecure-registries": ["{ip}:{port}"]}}"#)).unwrap();
-    let pulled = run_shards_env(&["pull"], &["-q", image.as_str()], &env, TIMEOUT);
+    let pulled = run_shards_env(&["pull"], &["-q", image.as_str()], &env);
     assert_eq!(pulled.status, Some(0), "{pulled}");
     assert_eq!(pulled.stdout.trim(), image, "{pulled}");
     // A configuration dockerd would not start with fails the pull, saying where it is.
     std::fs::write(&file, r#"{"insecure-registries": ["ftp://a"]}"#).unwrap();
-    let refused = run_shards_env(&["pull"], &["-q", image.as_str()], &env, TIMEOUT);
+    let refused = run_shards_env(&["pull"], &["-q", image.as_str()], &env);
     assert_ne!(refused.status, Some(0), "{refused}");
     assert!(refused.stderr.contains("should not contain '://'"), "{refused}");
-    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env);
     assert_eq!(stopped.status, Some(0), "{stopped}");
 }
 
 /// Docker Hub's mirrors (D194): a pull of a Docker Hub repository asks the mirror Docker's
 /// daemon configuration names first, as dockerd does, and an image the mirror holds is
 /// the one pulled: the test image, at a Docker Hub name it is not at, served by a
-/// registry on loopback. Its digest is the test image's, which Docker Hub has not.
+/// registry on loopback, named in the daemon.json `SHARDS_DAEMON_JSON` names. Its digest is
+/// the test image's, which Docker Hub has not.
 #[test]
 fn a_mirror_daemon_json_names_serves_docker_hubs_pull() {
     let (manifest, blobs) = test_image();
     let digest = sha256_digest(&manifest);
     let (port, served) = common::registry(manifest, blobs);
     let home = TempDir::new("mirror");
-    let config = home.join("config");
-    let file = if cfg!(windows) {
-        config.join("docker").join("config").join("daemon.json")
-    } else {
-        config.join("docker").join("daemon.json")
-    };
-    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    let file = home.join("daemon.json");
     std::fs::write(
         &file,
         format!(r#"{{"registry-mirrors": ["http://127.0.0.1:{port}"]}}"#),
@@ -319,10 +302,9 @@ fn a_mirror_daemon_json_names_serves_docker_hubs_pull() {
     .unwrap();
     let env = [
         ("SHARDS_HOME", home.as_os_str()),
-        ("XDG_CONFIG_HOME", config.as_os_str()),
-        ("PROGRAMDATA", config.as_os_str()),
+        ("SHARDS_DAEMON_JSON", file.as_os_str()),
     ];
-    let pulled = run_shards_env(&["pull"], &["-q", "test/image:v1"], &env, TIMEOUT);
+    let pulled = run_shards_env(&["pull"], &["-q", "test/image:v1"], &env);
     assert_eq!(pulled.status, Some(0), "{pulled}");
     assert_eq!(pulled.stdout.trim(), "docker.io/test/image:v1", "{pulled}");
     assert!(served.load(Ordering::SeqCst) > 0, "the mirror served it");
@@ -330,12 +312,113 @@ fn a_mirror_daemon_json_names_serves_docker_hubs_pull() {
         &["image", "inspect"],
         &["--format", "{{json .RepoDigests}}", "test/image:v1"],
         &env,
-        TIMEOUT,
     );
     assert_eq!(digests.status, Some(0), "{digests}");
     assert!(digests.stdout.contains(&digest), "{digests}");
-    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env);
     assert_eq!(stopped.status, Some(0), "{stopped}");
+}
+
+/// A test's `shards` reads the tests' own daemon.json (`common::as_tests_run`), never the
+/// host's (D194): a host's file, standing in here as the rootless engine's (under
+/// `XDG_CONFIG_HOME`; the native one's on Windows, under `PROGRAMDATA`), holds what dockerd
+/// would not start with, which fails every pull that reads it, and a build of the test image
+/// from the tests' own registry reads none of it. No VM: a build of a base alone runs no
+/// step.
+#[test]
+fn a_hosts_daemon_json_reaches_no_test() {
+    let (image, _) = served();
+    let home = TempDir::new("host-daemon-json");
+    let config = home.join("config");
+    let file = if cfg!(windows) {
+        config.join("docker").join("config").join("daemon.json")
+    } else {
+        config.join("docker").join("daemon.json")
+    };
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, r#"{"registry-mirrors": ["no scheme"]}"#).unwrap();
+    let ctx = TempDir::new("host-daemon-json-ctx");
+    std::fs::write(ctx.join("Dockerfile"), format!("FROM {image}\n")).unwrap();
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("XDG_CONFIG_HOME", config.as_os_str()),
+        ("PROGRAMDATA", config.as_os_str()),
+    ];
+    let built = run_shards_env(&["build"], &[ctx.as_os_str()], &env);
+    assert_eq!(built.status, Some(0), "{built}");
+}
+
+/// A test's `shards` reads the tests' own certs.d (`common::as_tests_run`), never the host's
+/// (D23): a host's, standing in here as the rootless engine's (under `XDG_CONFIG_HOME`; the
+/// native one's on Windows, under `PROGRAMDATA`), holds for the tests' own registry a client
+/// key with no certificate, which dockerd refuses and which fails every pull that reads it,
+/// and a build from that registry reads none of it. No VM: a build of a base alone runs no
+/// step.
+#[test]
+fn a_hosts_certs_d_reaches_no_test() {
+    let (image, _) = served();
+    let host = image.split('/').next().unwrap();
+    let home = TempDir::new("host-certs-d");
+    let config = home.join("config");
+    let certs = config.join("docker").join("certs.d");
+    let dir = if cfg!(windows) {
+        certs.join(host.replace(':', ""))
+    } else {
+        certs.join(host)
+    };
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("client.key"), "").unwrap();
+    let ctx = TempDir::new("host-certs-d-ctx");
+    std::fs::write(ctx.join("Dockerfile"), format!("FROM {image}\n")).unwrap();
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("XDG_CONFIG_HOME", config.as_os_str()),
+        ("PROGRAMDATA", config.as_os_str()),
+    ];
+    let built = run_shards_env(&["build"], &[ctx.as_os_str()], &env);
+    assert_eq!(built.status, Some(0), "{built}");
+}
+
+/// The tests' seed of a remote image (`common::hub_held`) holds a manifest an index it pulled
+/// lists, which a test may pin alone: on an x86_64 host images.rs's x86-64 level test pins
+/// alpine:3.22's amd64 manifest, whose index containers.rs's seed holds, and the seed's build
+/// of it found it held (D78) and pulled nothing, so no record named it (KVM at ea6f4b53b: "not
+/// held whole ... once pulled"). Here an index is pulled as the seed pulls one; its
+/// platform's manifest, then the index, are what the seed serves of each. No VM: a build of a
+/// base alone runs no step.
+#[test]
+fn a_seed_holds_the_manifests_its_index_pulled() {
+    let (index, blobs) = common::test_index();
+    let (port, _) = common::registry(index.clone(), blobs);
+    let at = |digest: &str| {
+        shards_image::reference::Reference::parse(&format!("127.0.0.1:{port}/test/image@{digest}")).unwrap()
+    };
+    let home = TempDir::new("seed-held");
+    let ctx = TempDir::new("seed-held-ctx");
+    std::fs::write(
+        ctx.join("Dockerfile"),
+        format!("FROM {}\n", at(&sha256_digest(&index))),
+    )
+    .unwrap();
+    let built = run_shards_env(
+        &["build"],
+        &[ctx.as_os_str()],
+        &[("SHARDS_HOME", home.as_os_str())],
+    );
+    assert_eq!(built.status, Some(0), "{built}");
+    let (manifest, parts) = test_image();
+    let (top, served) =
+        common::hub_held(&home, &at(&sha256_digest(&manifest))).unwrap_or_else(|missing| panic!("{missing}"));
+    assert!(
+        top == manifest && served == parts,
+        "the manifest, then its config and layer"
+    );
+    let (top, served) =
+        common::hub_held(&home, &at(&sha256_digest(&index))).unwrap_or_else(|missing| panic!("{missing}"));
+    assert!(
+        top == index && served.contains(&manifest),
+        "the index, its manifest among its parts"
+    );
 }
 
 /// `pull --output-agentfile` writes the Agentfile of the image it pulled once it is
@@ -356,7 +439,7 @@ fn a_pull_writes_its_images_agentfile_where_asked() {
     let out = home.join("out");
     std::fs::create_dir_all(&out).unwrap();
     let env = [("SHARDS_HOME", home.as_os_str())];
-    let shards = |command: &[&str], args: &[&str]| run_shards_env(command, args, &env, TIMEOUT);
+    let shards = |command: &[&str], args: &[&str]| run_shards_env(command, args, &env);
     let names = || {
         let mut names: Vec<String> = std::fs::read_dir(&out)
             .unwrap()
@@ -444,6 +527,9 @@ fn a_run_of_another_cpus_image_runs_under_its_emulator() {
         eprintln!("SKIP: this host cannot run VMs");
         return;
     }
+    if common::cannot_reach_docker_hub("alpine:3.22 for other CPUs, and the run's emulator image") {
+        return;
+    }
     let home = TempDir::new("emulated-runs");
     let env = [("SHARDS_HOME", home.as_os_str())];
     let args = [
@@ -453,7 +539,7 @@ fn a_run_of_another_cpus_image_runs_under_its_emulator() {
         "--init".as_ref(),
         guest_init().as_os_str(),
     ];
-    let recorded = run_shards_env(&["guest"], &args, &env, TIMEOUT);
+    let recorded = run_shards_env(&["guest"], &args, &env);
     assert_eq!(recorded.status, Some(0), "{}", recorded.stderr);
     let booted = |run: &common::Run| run.marker_us(shards_abi::marker::INIT_STARTED).is_some();
     // alpine:3.22's index and its 64-bit manifests (Docker Hub, 2026-10-15).
@@ -479,13 +565,13 @@ fn a_run_of_another_cpus_image_runs_under_its_emulator() {
     } else {
         "amd64"
     };
-    let run = |args: &[&str]| run_shards_env(&["run"], args, &env, TIMEOUT);
+    let run = |args: &[&str]| run_shards_env(&["run"], args, &env);
     let shown = |r: &common::Run| format!("--- stdout\n{}\n--- stderr\n{}", r.stdout, r.stderr);
-    let pulled = run_shards_env(&["pull"], &[INDEX], &env, TIMEOUT);
+    let pulled = run_shards_env(&["pull"], &[INDEX], &env);
     assert_eq!(pulled.status, Some(0), "{}", shown(&pulled));
     // By its digest alone: here by another name of its repository, so up to date.
     let digest_only = INDEX.replace(":3.22@", "@");
-    let again = run_shards_env(&["pull"], &[&digest_only], &env, TIMEOUT);
+    let again = run_shards_env(&["pull"], &[&digest_only], &env);
     let shown_again = shown(&again);
     assert_eq!(again.status, Some(0), "{shown_again}");
     assert!(
@@ -651,9 +737,9 @@ fn a_run_of_another_cpus_image_runs_under_its_emulator() {
             )),
         "{shown_strict}"
     );
-    let lenient = run_shards_env(&["pull"], &["--platform", &asked, lone], &env, TIMEOUT);
+    let lenient = run_shards_env(&["pull"], &["--platform", &asked, lone], &env);
     assert_eq!(lenient.status, Some(0), "{}", shown(&lenient));
-    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env);
     assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
 }
 
@@ -680,11 +766,12 @@ fn a_guest_runs_its_hosts_x86_64_level() {
         "--init".as_ref(),
         guest_init().as_os_str(),
     ];
-    let recorded = run_shards_env(&["guest"], &args, &env, TIMEOUT);
+    let recorded = run_shards_env(&["guest"], &args, &env);
     assert_eq!(recorded.status, Some(0), "{}", recorded.stderr);
-    // Docker Hub's alpine:3.22, amd64's manifest (2026-10-15).
-    let alpine = "alpine@sha256:3e9b4b680bfc9fb5269227cffbd6d42be39fbf7c0b908123913864aa4447e764";
-    let read = run_shards_env(&["run"], &["--rm", alpine, "cat", "/proc/cpuinfo"], &env, TIMEOUT);
+    // Docker Hub's alpine:3.22, amd64's manifest (2026-10-15), from the tests' own registry.
+    let alpine =
+        common::hub("alpine@sha256:3e9b4b680bfc9fb5269227cffbd6d42be39fbf7c0b908123913864aa4447e764");
+    let read = run_shards_env(&["run"], &["--rm", alpine.as_str(), "cat", "/proc/cpuinfo"], &env);
     assert_eq!(read.status, Some(0), "{}", read.stderr);
     let flags = read
         .stdout
@@ -712,7 +799,7 @@ fn a_guest_runs_its_hosts_x86_64_level() {
         shards_image::platform::maximum().variant,
         "the guest's flags: {flags}"
     );
-    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env);
     assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
 }
 
@@ -735,7 +822,7 @@ fn repeat_runs_restore_a_template_of_the_image() {
         "--init".as_ref(),
         guest_init().as_os_str(),
     ];
-    let recorded = run_shards_env(&["guest"], &args, &env, TIMEOUT);
+    let recorded = run_shards_env(&["guest"], &args, &env);
     assert_eq!(recorded.status, Some(0), "{}", recorded.stderr);
     let booted = |run: &common::Run| run.marker_us(shards_abi::marker::INIT_STARTED).is_some();
     // The templates, each a directory: the daemon's record of each is a file beside it.
@@ -750,7 +837,7 @@ fn repeat_runs_restore_a_template_of_the_image() {
             .unwrap_or_default()
     };
 
-    let first = run_shards_env(&["run"], &[image.as_str()], &env, TIMEOUT);
+    let first = run_shards_env(&["run"], &[image.as_str()], &env);
     assert_eq!(first.status, Some(0), "{}", first.stderr);
     assert!(booted(&first), "{}", first.stderr);
     if !common::pools() {
@@ -766,14 +853,14 @@ fn repeat_runs_restore_a_template_of_the_image() {
     // run's (KVM, `vm::RESTORES_RECORD`). The daemon's pool was restored before it
     // existed, so a new daemon restores the next run.
     if shards_vmm::vm::RESTORES_RECORD {
-        let recording = run_shards_env(&["run"], &["--pull", "never", image.as_str()], &env, TIMEOUT);
+        let recording = run_shards_env(&["run"], &["--pull", "never", image.as_str()], &env);
         assert_eq!(recording.status, Some(0), "{}", recording.stderr);
         assert!(!booted(&recording), "{}", recording.stderr);
         assert_eq!(recording.prefetched(), Some(0), "{}", recording.stderr);
     }
     // Stopped at once, the daemon writes it before it exits, which `daemon stop` waits
     // for: no restore here records it again where restores record none.
-    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env);
     assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
     let working_set = common::snapshot_file(&home.join("templates").join(&saved[0]), "working-set");
     let recorded = std::fs::metadata(&working_set).map(|m| m.len()).unwrap_or(0);
@@ -783,7 +870,7 @@ fn repeat_runs_restore_a_template_of_the_image() {
     );
 
     let before = now_ns();
-    let second = run_shards_env(&["run"], &["--pull", "never", image.as_str()], &env, TIMEOUT);
+    let second = run_shards_env(&["run"], &["--pull", "never", image.as_str()], &env);
     let after = now_ns();
     let shown = format!("--- stdout\n{}\n--- stderr\n{}", second.stdout, second.stderr);
     assert_eq!(second.status, Some(0), "{shown}");
@@ -807,9 +894,9 @@ fn repeat_runs_restore_a_template_of_the_image() {
     // A damaged working set is only a lost prefetch; without working sets, a file that is
     // none is ignored alike.
     std::fs::write(&working_set, b"not a working set").unwrap();
-    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env);
     assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
-    let unprefetched = run_shards_env(&["run"], &["--pull", "never", image.as_str()], &env, TIMEOUT);
+    let unprefetched = run_shards_env(&["run"], &["--pull", "never", image.as_str()], &env);
     assert_eq!(unprefetched.status, Some(0), "{}", unprefetched.stderr);
     assert!(!booted(&unprefetched), "{}", unprefetched.stderr);
     assert_eq!(unprefetched.prefetched(), Some(0), "{}", unprefetched.stderr);
@@ -827,9 +914,9 @@ fn repeat_runs_restore_a_template_of_the_image() {
         b"not a snapshot",
     )
     .unwrap();
-    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env);
     assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
-    let third = run_shards_env(&["run"], &["--pull", "never", image.as_str()], &env, TIMEOUT);
+    let third = run_shards_env(&["run"], &["--pull", "never", image.as_str()], &env);
     assert_eq!(third.status, Some(0), "{}", third.stderr);
     assert!(booted(&third), "{}", third.stderr);
     assert!(
@@ -838,7 +925,7 @@ fn repeat_runs_restore_a_template_of_the_image() {
         third.stderr
     );
     assert_eq!(templates(), saved, "saved again under the same key");
-    let fourth = run_shards_env(&["run"], &["--pull", "never", image.as_str()], &env, TIMEOUT);
+    let fourth = run_shards_env(&["run"], &["--pull", "never", image.as_str()], &env);
     assert_eq!(fourth.status, Some(0), "{}", fourth.stderr);
     assert!(
         !booted(&fourth),
@@ -868,7 +955,7 @@ fn an_agentfiles_image_restores_its_template_too() {
         "--init".as_ref(),
         guest_init().as_os_str(),
     ];
-    let recorded = run_shards_env(&["guest"], &args, &env, TIMEOUT);
+    let recorded = run_shards_env(&["guest"], &args, &env);
     assert_eq!(recorded.status, Some(0), "{}", recorded.stderr);
     let ctx = TempDir::new("agentfile-templates-ctx");
     std::fs::create_dir_all(ctx.join("agent")).unwrap();
@@ -878,22 +965,17 @@ fn an_agentfiles_image_restores_its_template_too() {
         format!("FROM {image}\nAGENT main FROM ./agent\n"),
     )
     .unwrap();
-    let built = run_shards_env(
-        &["build"],
-        &["-t", "agents:1", ctx.to_str().unwrap()],
-        &env,
-        TIMEOUT,
-    );
+    let built = run_shards_env(&["build"], &["-t", "agents:1", ctx.to_str().unwrap()], &env);
     assert_eq!(built.status, Some(0), "{}", built.stderr);
     let booted = |run: &common::Run| run.marker_us(shards_abi::marker::INIT_STARTED).is_some();
-    let first = run_shards_env(&["run"], &["agents:1"], &env, TIMEOUT);
+    let first = run_shards_env(&["run"], &["agents:1"], &env);
     assert_eq!(first.status, Some(0), "{}", first.stderr);
     assert!(booted(&first), "{}", first.stderr);
     if !common::pools() {
         return;
     }
     for _ in 0..2 {
-        let again = run_shards_env(&["run"], &["agents:1"], &env, TIMEOUT);
+        let again = run_shards_env(&["run"], &["agents:1"], &env);
         let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
         let shown = format!(
             "--- stdout\n{}\n--- stderr\n{}\n--- daemon.log\n{log}",
@@ -906,7 +988,7 @@ fn an_agentfiles_image_restores_its_template_too() {
     }
     let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
     assert!(!log.contains("names files it was not given"), "{log}");
-    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env);
     assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
 }
 
@@ -921,7 +1003,7 @@ fn record_guest(env: &[(&str, &std::ffi::OsStr)]) {
         "--init".as_ref(),
         guest_init().as_os_str(),
     ];
-    let recorded = run_shards_env(&["guest"], &args, env, TIMEOUT);
+    let recorded = run_shards_env(&["guest"], &args, env);
     assert_eq!(recorded.status, Some(0), "{}", recorded.stderr);
 }
 
@@ -973,7 +1055,7 @@ fn a_templates_saver_leaves_nothing_the_daemon_writes_through() {
     ];
     record_guest(&env);
     let booted = |run: &common::Run| run.marker_us(shards_abi::marker::INIT_STARTED).is_some();
-    let first = run_shards_env(&["run"], &[image.as_str()], &env, TIMEOUT);
+    let first = run_shards_env(&["run"], &[image.as_str()], &env);
     assert_eq!(first.status, Some(0), "{}", first.stderr);
     assert!(booted(&first), "{}", first.stderr);
     let template = the_template(&home);
@@ -986,11 +1068,11 @@ fn a_templates_saver_leaves_nothing_the_daemon_writes_through() {
         b"the user's\n",
         "written through the link"
     );
-    let second = run_shards_env(&["run"], &["--pull", "never", image.as_str()], &env, TIMEOUT);
+    let second = run_shards_env(&["run"], &["--pull", "never", image.as_str()], &env);
     assert_eq!(second.status, Some(0), "{}", second.stderr);
     assert!(!booted(&second), "restored, not booted: {}", second.stderr);
     assert_eq!(std::fs::read(&canary).unwrap(), b"the user's\n");
-    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env);
     assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
 }
 
@@ -1013,9 +1095,9 @@ fn a_restore_reaches_nothing_its_saver_left_in_its_template() {
     let outside = TempDir::new("saver-left-outside");
     let env = [("SHARDS_HOME", home.as_os_str())];
     record_guest(&env);
-    let first = run_shards_env(&["run"], &[image.as_str()], &env, TIMEOUT);
+    let first = run_shards_env(&["run"], &[image.as_str()], &env);
     assert_eq!(first.status, Some(0), "{}", first.stderr);
-    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env);
     assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
     let template = the_template(&home);
     let fifo = |path: &std::path::Path| {
@@ -1036,7 +1118,7 @@ fn a_restore_reaches_nothing_its_saver_left_in_its_template() {
     let (again, home_path) = (image.clone(), home.to_path_buf());
     let runner = std::thread::spawn(move || {
         let env = [("SHARDS_HOME", home_path.as_os_str())];
-        run_shards_env(&["run"], &["--pull", "never", again.as_str()], &env, TIMEOUT)
+        run_shards_env(&["run"], &["--pull", "never", again.as_str()], &env)
     });
     // A FIFO opened for writing without waiting is opened only while a reader holds it.
     let mut held: Vec<String> = Vec::new();
@@ -1050,7 +1132,7 @@ fn a_restore_reaches_nothing_its_saver_left_in_its_template() {
                 held.push(path.display().to_string());
             }
         }
-        std::thread::sleep(Duration::from_millis(5));
+        std::thread::sleep(std::time::Duration::from_millis(5));
     }
     let second = runner.join().unwrap();
     assert!(held.is_empty(), "read by a restore: {held:?}");
@@ -1060,7 +1142,7 @@ fn a_restore_reaches_nothing_its_saver_left_in_its_template() {
         "{}",
         second.stderr
     );
-    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env);
     assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
 }
 
@@ -1083,7 +1165,7 @@ fn actions_on_an_image_not_here_convert_it_first() {
     ];
     let shards = |args: &[&str]| {
         let (command, rest) = args.split_first().unwrap();
-        run_shards_env(&[command], rest, &env, TIMEOUT)
+        run_shards_env(&[command], rest, &env)
     };
     let shown = |r: &common::Run| format!("--- stdout\n{}\n--- stderr\n{}", r.stdout, r.stderr);
     let rmi = || {
@@ -1263,7 +1345,7 @@ fn one_platforms_microvm_of_an_image_is_chosen_wherever_a_command_names_it() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let shown = |r: &common::Run| format!("--- stdout\n{}\n--- stderr\n{}", r.stdout, r.stderr);
     let image = format!("127.0.0.1:{port}/test/multi:v1");
     let absent = |r: &common::Run, platform: &str| {

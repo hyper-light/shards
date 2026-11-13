@@ -122,7 +122,6 @@ impl Inputs {
                 &cmdline,
             ],
             &[("SHARDS_HOME", home.as_os_str())],
-            self.boot,
         );
         std::fs::write(self.records.join(format!("{name}.stdout")), &run.stdout).unwrap();
         std::fs::write(self.records.join(format!("{name}.stderr")), &run.stderr).unwrap();

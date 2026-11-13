@@ -50,7 +50,7 @@ fn a_workload_reaches_no_host_port_over_vsock() {
         args.extend(ports.iter().map(String::as_str));
         // The first run boots the image; the second restores its template.
         for _ in 0..2 {
-            let ran = run_shards_env(&["run"], &args, &env, TIMEOUT);
+            let ran = run_shards_env(&["run"], &args, &env);
             let shown = format!("--- stdout\n{}\n--- stderr\n{}", ran.stdout, ran.stderr);
             assert_eq!(ran.status, Some(0), "{shown}");
             let lines: Vec<&str> = ran.stdout.lines().collect();
@@ -63,7 +63,7 @@ fn a_workload_reaches_no_host_port_over_vsock() {
             }
         }
     }
-    let _ = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    let _ = run_shards_env(&["daemon"], &["stop"], &env);
 }
 
 /// A run's own engine (D181) is its command's through the socket its init made alone: a
@@ -105,7 +105,7 @@ fn a_microvms_engine_port_answers_its_inits_token_alone() {
         args.extend_from_slice(options);
         args.push(image.as_str());
         args.extend_from_slice(command);
-        let ran = run_shards_env(&["run"], &args, &env, TIMEOUT);
+        let ran = run_shards_env(&["run"], &args, &env);
         assert_eq!(
             (ran.status, ran.stdout.as_str()),
             (Some(0), said.as_str()),
@@ -113,7 +113,7 @@ fn a_microvms_engine_port_answers_its_inits_token_alone() {
             ran.stderr
         );
     }
-    let _ = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    let _ = run_shards_env(&["daemon"], &["stop"], &env);
 }
 
 /// A local MCP server reaches what its caller reaches and nothing more (§9.6, §9.10): the
@@ -134,7 +134,7 @@ fn a_local_mcp_server_reaches_only_what_its_caller_reaches() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let artifact = |kind: &str, name: &str, config: &str, secret: Option<&str>| {
         let dir = TempDir::new(&format!("isolation-mcp-{kind}-{name}"));
         std::fs::create_dir_all(dir.join("bin")).unwrap();

@@ -3,13 +3,32 @@
 //! stand-in nested runtime) and the kernel's own interfaces, and says what each step met;
 //! `nesting-box WHAT` is what each box runs. Every line is one fact the host test matches.
 
-use std::io::{self, Write as _};
+use std::io::{self, Read as _, Write as _};
 use std::os::unix::process::ExitStatusExt as _;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 /// Where the image puts the stand-in runtime (the test's Agentfile `COPY`s it there).
 const RUNC: &str = "/usr/local/bin/runc";
+/// The most a runc of a case may take before it is said where it waits and ended
+/// ([`bounded`]): a third of the host test's bound on the whole run (tests/nesting.rs
+/// `TIMEOUT`, 180 s), so that what it says comes back within that bound.
+const RUNC_MOST: Duration = Duration::from_secs(60);
+
+/// runc, as this stand-in nested runtime runs it for its boxes: without the grant's
+/// `NOTIFY_SOCKET` (D234), which runc takes for its own supervisor's and proxies for its
+/// container (runc v1.5.2 notify_socket.go): it then waits for the box to say `READY=1`,
+/// `run --detach` until the box says it or ends, `run` until it says it, as it watches its
+/// own pid there, before it reaps the box (signals.go, `forward`). No box here says it, so
+/// every runc case hung on real VMs (HVF at 27ed7cccd, Linux CI at 8a50a9742). A process
+/// handed `NOTIFY_SOCKET` keeps it from the children that do not answer for its readiness
+/// (sd_notify(3), `unset_environment`).
+fn runc() -> Command {
+    let mut runc = Command::new(RUNC);
+    runc.env_remove("NOTIFY_SOCKET");
+    runc
+}
 /// runc's state, in the run's own `/run`, a tmpfs the run asks for (`--tmpfs /run`).
 const STATE: &str = "/run/runc";
 /// Each box's bundle, and the one root every box is given, read-only.
@@ -36,6 +55,14 @@ pub fn nesting(args: &[String]) -> i32 {
         "gpu" => gpu(),
         "exit" => exit_leaving_a_box(arg(1).parse().unwrap_or(1)),
         "hold" => hold(),
+        "listen" => listen(arg(1), args.get(2..).unwrap_or_default()),
+        "ends" => match arg(2).parse() {
+            Ok(len) => ends(arg(1), len),
+            Err(_) => {
+                let _ = writeln!(io::stderr(), "nesting ends: no length {:?}", arg(2));
+                2
+            }
+        },
         other => {
             let _ = writeln!(io::stderr(), "nesting: no case {other:?}");
             2
@@ -115,12 +142,15 @@ fn run_box(id: &str, args: &[&str], resources: &str, devices: &str) -> Option<i3
             return None;
         }
     };
-    let ran = Command::new(RUNC)
+    let ran = runc()
         .args(["--root", STATE, "run", "--keep", "--no-new-keyring", "--bundle"])
         .arg(&dir)
         .arg(id)
         .stdin(Stdio::null())
-        .output();
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .and_then(|runc| bounded(runc, id, RUNC_MOST));
     match ran {
         Ok(out) => {
             for line in String::from_utf8_lossy(&out.stdout).lines() {
@@ -143,6 +173,110 @@ fn run_box(id: &str, args: &[&str], resources: &str, devices: &str) -> Option<i3
     }
 }
 
+/// `runc`'s output, as `Command::output` gives it; where it has not ended within `most`, once
+/// it has said where it waits ([`where_it_waits`]) and been killed, so that a runtime that
+/// hangs says where (box `what`) within the host test's bound. No other signal ends a runc
+/// that waits, nor has Go's runtime say where its goroutines are: runc takes every signal it
+/// can catch for its own before it starts its box (runc v1.5.2 signals.go, `signal.Notify(s)`,
+/// from `runner.run` in utils_linux.go) and relays them to the box once it runs, SIGQUIT among
+/// them (HVF at fafe35efc: asked by SIGQUIT, runc went on waiting).
+fn bounded(mut runc: std::process::Child, what: &str, most: Duration) -> io::Result<std::process::Output> {
+    let read = |pipe: Option<Box<dyn io::Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut bytes);
+            }
+            bytes
+        })
+    };
+    let out = read(
+        runc.stdout
+            .take()
+            .map(|p| Box::new(p) as Box<dyn io::Read + Send>),
+    );
+    let err = read(
+        runc.stderr
+            .take()
+            .map(|p| Box::new(p) as Box<dyn io::Read + Send>),
+    );
+    let deadline = Instant::now() + most;
+    let status = loop {
+        if let Some(status) = runc.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            say(&format!(
+                "box {what}: runc did not end within {most:?}, killed where it waits:"
+            ));
+            for line in where_it_waits(runc.id()) {
+                say(&format!("box {what}: runc {line}"));
+            }
+            runc.kill()?;
+            break runc.wait()?;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    Ok(std::process::Output {
+        status,
+        stdout: out.join().unwrap_or_default(),
+        stderr: err.join().unwrap_or_default(),
+    })
+}
+
+/// Where process `pid` waits, as procfs shows it (proc(5)): each of its threads' wait channel
+/// in the kernel and the system call it is in (its number and arguments), then each
+/// descriptor it holds, a Unix socket by the name it is bound to where it has one
+/// (`/proc/net/unix`): a runc waiting for its box's `READY=1` holds its notify socket
+/// (`--root`'s `ID/notify/notify.sock`, runc v1.5.2 notify_socket.go).
+fn where_it_waits(pid: u32) -> Vec<String> {
+    let read =
+        |path: &str| std::fs::read_to_string(path).map_or_else(|e| errno(&e), |text| text.trim().to_string());
+    let numbered = |dir: &str| {
+        let mut them: Vec<u32> = std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|entry| entry.file_name().to_str()?.parse().ok())
+            .collect();
+        them.sort_unstable();
+        them
+    };
+    let mut said = Vec::new();
+    for tid in numbered(&format!("/proc/{pid}/task")) {
+        let task = format!("/proc/{pid}/task/{tid}");
+        said.push(format!(
+            "thread {tid} waits in {} (syscall {})",
+            read(&format!("{task}/wchan")),
+            read(&format!("{task}/syscall"))
+        ));
+    }
+    let sockets = read("/proc/net/unix");
+    let named = |inode: &str| {
+        sockets.lines().skip(1).find_map(|line| {
+            let mut fields = line.split_whitespace().skip(6);
+            if fields.next()? == inode {
+                fields.next()
+            } else {
+                None
+            }
+        })
+    };
+    for fd in numbered(&format!("/proc/{pid}/fd")) {
+        let target = std::fs::read_link(format!("/proc/{pid}/fd/{fd}"))
+            .map_or_else(|e| errno(&e), |t| t.to_string_lossy().into_owned());
+        let name = target
+            .strip_prefix("socket:[")
+            .and_then(|t| t.strip_suffix(']'))
+            .and_then(named);
+        said.push(match name {
+            Some(name) => format!("fd {fd}: {target} {name}"),
+            None => format!("fd {fd}: {target}"),
+        });
+    }
+    said
+}
+
 /// `KEY`'s count in the kept box's cgroup file `FILE`, as the workload reads it from inside
 /// its own subtree.
 fn event(id: &str, file: &str, key: &str) {
@@ -158,7 +292,7 @@ fn event(id: &str, file: &str, key: &str) {
 }
 
 fn delete(id: &str) {
-    let _ = Command::new(RUNC)
+    let _ = runc()
         .args(["--root", STATE, "delete", "--force", id])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -418,15 +552,28 @@ fn exit_leaving_a_box(code: i32) -> i32 {
             return 1;
         }
     };
-    let started = Command::new(RUNC)
-        .args(["--root", STATE, "run", "--detach", "--no-new-keyring", "--bundle"])
-        .arg(&dir)
-        .arg("held")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    let state = Command::new(RUNC)
+    // What runc says goes to a file, not a pipe: the held box takes runc's stdio for its
+    // own (`--detach`), and would hold a pipe open past runc. Said where runc did not end
+    // as it should ([`bounded`]).
+    let said = format!("{BUNDLES}/held.runc-stderr");
+    let started = std::fs::File::create(&said).and_then(|stderr| {
+        runc()
+            .args(["--root", STATE, "run", "--detach", "--no-new-keyring", "--bundle"])
+            .arg(&dir)
+            .arg("held")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(stderr)
+            .spawn()
+            .and_then(|runc| bounded(runc, "held", RUNC_MOST))
+            .map(|out| out.status)
+    });
+    if !started.as_ref().is_ok_and(std::process::ExitStatus::success) {
+        for line in std::fs::read_to_string(&said).unwrap_or_default().lines() {
+            say(&format!("box held runc: {line}"));
+        }
+    }
+    let state = runc()
         .args(["--root", STATE, "state", "held"])
         .stdin(Stdio::null())
         .stderr(Stdio::null())
@@ -450,6 +597,160 @@ fn exit_leaving_a_box(code: i32) -> i32 {
     ));
     say(&format!("exiting {code}"));
     code
+}
+
+/// `nesting listen DIR NAME...` (D251; Hex's step 39 fixture): the workload as Hex's relay is
+/// under shards-init. It binds an AF_UNIX stream listener for each name in `dir`, says READY=1
+/// once all of them listen (so READY means every socket is there), then serves each connection
+/// on a thread of its own: it reads the connection to its end (its controller's half-close),
+/// writes back the socket's name, a newline and what it read reversed, and ends its own half.
+fn listen(dir: &str, names: &[String]) -> i32 {
+    use std::io::{Read as _, Write as _};
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        say(&format!("mkdir {dir}: {}", errno(&e)));
+        return 1;
+    }
+    let mut listeners = Vec::new();
+    for name in names {
+        match std::os::unix::net::UnixListener::bind(Path::new(dir).join(name)) {
+            Ok(listener) => listeners.push((name.clone(), listener)),
+            Err(e) => {
+                say(&format!("bind {name}: {}", errno(&e)));
+                return 1;
+            }
+        }
+    }
+    let Some(sent) = tell_ready() else {
+        return 1;
+    };
+    say(&format!(
+        "listening {} in {dir}; sent READY=1: {sent}",
+        names.join(" ")
+    ));
+    for (name, listener) in listeners {
+        std::thread::spawn(move || {
+            for conn in listener.incoming() {
+                let Ok(mut conn) = conn else { continue };
+                let name = name.clone();
+                std::thread::spawn(move || {
+                    let mut got = Vec::new();
+                    if let Err(e) = conn.read_to_end(&mut got) {
+                        say(&format!("{name}: read {}", errno(&e)));
+                        return;
+                    }
+                    let mut back = format!("{name}\n").into_bytes();
+                    back.extend(got.iter().rev());
+                    let wrote = conn
+                        .write_all(&back)
+                        .and_then(|()| conn.shutdown(std::net::Shutdown::Write));
+                    say(&format!(
+                        "{name}: read {} wrote {}",
+                        got.len(),
+                        wrote.map_or_else(|e| errno(&e), |()| back.len().to_string())
+                    ));
+                });
+            }
+        });
+    }
+    hold()
+}
+
+/// Tells the run's readiness socket `READY=1`, as sd_notify(3) does, and what the send
+/// answered; none where the run gave no socket, which it says.
+fn tell_ready() -> Option<String> {
+    let Some(socket) = std::env::var_os("NOTIFY_SOCKET") else {
+        say("notify none");
+        return None;
+    };
+    let sent = std::os::unix::net::UnixDatagram::unbound().and_then(|s| s.send_to(b"READY=1", &socket));
+    Some(sent.map_or_else(|e| errno(&e), |n| format!("{n} bytes")))
+}
+
+/// `nesting ends DIR LEN` (D251's cut through the guest's legs, for tests/nesting.rs): the
+/// workload's two ends of a socket, each beside a `.said` socket that tells the host what
+/// reached the workload over it. It binds them in `dir`, then says READY=1.
+/// - `cut.sock`: reads exactly `len` bytes, all its controller sends, writes back its name, a
+///   newline and them reversed, and closes, its controller's way still open: a cut.
+/// - `half.sock`: writes its name and a newline, half-closes (SHUT_WR), and reads to its
+///   controller's end.
+/// - `NAME.said`: each connection is written what NAME's next connection read (or its errno),
+///   half-closed, and read to its end before it closes, so that it ends in order.
+fn ends(dir: &str, len: usize) -> i32 {
+    use std::os::unix::net::{UnixListener, UnixStream};
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        say(&format!("mkdir {dir}: {}", errno(&e)));
+        return 1;
+    }
+    let bind = |name: &str| {
+        UnixListener::bind(Path::new(dir).join(name)).map_err(|e| say(&format!("bind {name}: {}", errno(&e))))
+    };
+    let (Ok(cut), Ok(cut_said), Ok(half), Ok(half_said)) = (
+        bind("cut.sock"),
+        bind("cut.said"),
+        bind("half.sock"),
+        bind("half.said"),
+    ) else {
+        return 1;
+    };
+    let cut_end = move |mut conn: UnixStream| -> io::Result<Vec<u8>> {
+        let mut got = vec![0; len];
+        conn.read_exact(&mut got)?;
+        let mut back = b"cut.sock\n".to_vec();
+        back.extend(got.iter().rev());
+        conn.write_all(&back)?;
+        // Closed as it drops, its controller's way still open.
+        Ok(got)
+    };
+    let half_end = |mut conn: UnixStream| -> io::Result<Vec<u8>> {
+        conn.write_all(b"half.sock\n")?;
+        conn.shutdown(std::net::Shutdown::Write)?;
+        let mut got = Vec::new();
+        conn.read_to_end(&mut got)?;
+        Ok(got)
+    };
+    serve_end("cut.sock", cut, cut_said, cut_end);
+    serve_end("half.sock", half, half_said, half_end);
+    let Some(sent) = tell_ready() else {
+        return 1;
+    };
+    say(&format!("ends of {len} bytes in {dir}; sent READY=1: {sent}"));
+    hold()
+}
+
+/// Serves `listener`'s connections one at a time with `end`, and `said`'s, each with what the
+/// next of `end`'s read.
+fn serve_end(
+    name: &'static str,
+    listener: std::os::unix::net::UnixListener,
+    said: std::os::unix::net::UnixListener,
+    end: impl Fn(std::os::unix::net::UnixStream) -> io::Result<Vec<u8>> + Send + 'static,
+) {
+    let (reads, read) = std::sync::mpsc::channel::<Vec<u8>>();
+    std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(conn) = conn else { continue };
+            let got = end(conn).unwrap_or_else(|e| errno(&e).into_bytes());
+            say(&format!("{name}: read {}", got.len()));
+            if reads.send(got).is_err() {
+                return;
+            }
+        }
+    });
+    std::thread::spawn(move || {
+        for conn in said.incoming() {
+            let Ok(mut conn) = conn else { continue };
+            let Ok(got) = read.recv() else { return };
+            let mut rest = Vec::new();
+            let told = conn
+                .write_all(&got)
+                .and_then(|()| conn.shutdown(std::net::Shutdown::Write))
+                .and_then(|()| conn.read_to_end(&mut rest));
+            say(&format!(
+                "{name}: told {}",
+                told.map_or_else(|e| errno(&e), |_| got.len().to_string())
+            ));
+        }
+    });
 }
 
 fn hold() -> i32 {
@@ -538,4 +839,60 @@ fn open_said(path: &str) -> String {
 fn open(path: &str) -> i32 {
     say(&open_said(path));
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::linux::net::SocketAddrExt as _;
+    use std::os::unix::net::{SocketAddr, UnixListener};
+
+    /// A runc that does not end within its bound ends at it, though it takes SIGQUIT for
+    /// itself as runc v1.5.2 does (it relays every signal it can catch to its box,
+    /// signals.go): its stand-in here ignores SIGQUIT, and only SIGKILL ends it.
+    #[test]
+    fn a_runc_that_takes_sigquit_for_itself_ends_at_its_bound() {
+        let runc = Command::new("/bin/sh")
+            .args(["-c", "trap '' QUIT; exec sleep 600"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let pid = libc::pid_t::try_from(runc.id()).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(bounded(runc, "stand-in", Duration::from_millis(200)));
+        });
+        let ended = rx.recv_timeout(Duration::from_secs(30));
+        if ended.is_err() {
+            // SAFETY: kill(2) of the stand-in, which its bound left running.
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+        }
+        let out = ended
+            .expect("its bound passed 30 s ago and the stand-in still runs")
+            .unwrap();
+        assert_eq!(out.status.signal(), Some(libc::SIGKILL));
+    }
+
+    /// Where a process waits names each of its threads' waits and each descriptor it holds,
+    /// a Unix socket by the name it is bound to: as runc's notify socket would be named
+    /// (`--root`'s `ID/notify/notify.sock`, runc v1.5.2 notify_socket.go).
+    #[test]
+    fn where_a_process_waits_names_its_threads_and_its_sockets() {
+        let name = format!("shards-nesting-{}", std::process::id());
+        let addr = SocketAddr::from_abstract_name(name.as_bytes()).unwrap();
+        let _listener = UnixListener::bind_addr(&addr).unwrap();
+        let said = where_it_waits(std::process::id());
+        assert!(
+            said.iter()
+                .any(|l| l.starts_with("thread ") && l.contains(" waits in ")),
+            "{said:#?}"
+        );
+        let named = format!(" @{name}");
+        assert!(
+            said.iter().any(|l| l.starts_with("fd ") && l.ends_with(&named)),
+            "{said:#?}"
+        );
+    }
 }

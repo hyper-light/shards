@@ -17,19 +17,6 @@ use common::{
 
 const TIMEOUT: Duration = Duration::from_secs(60);
 const EXIT_RESET: i32 = 3;
-/// How long shards-api's waits here may take, side by side with this file's other boots as
-/// the suite runs them (`shards_api::record::Learned`): twice the slowest boot of the test
-/// guest to its port answering recorded under the suite on each host class
-/// (`shards_api_boot_under_the_suites_load`, docs/research/platform-measurements.md M465).
-static E2E: shards_api::record::Learned = shards_api::record::Learned::new(
-    "boot.rs E2E",
-    &[
-        ("macOS-HVF", Duration::from_nanos(230_018_375)),
-        ("Linux-KVM", Duration::from_nanos(1_206_822_260)),
-        ("Windows-WHP", Duration::from_nanos(2_406_838_900)),
-    ],
-);
-
 /// Kernel log lines that show the machine as each architecture's firmware describes it.
 fn machine_lines() -> Vec<String> {
     let lines: &[&str] = match common::ARCH {
@@ -68,17 +55,14 @@ fn boots_to_root_mount_without_a_root_device() {
         return;
     }
     let k = kernel().to_str().unwrap();
-    let r = vm_run(
-        &[
-            "--kernel",
-            k,
-            "--memory",
-            "256",
-            "--cmdline",
-            "console=ttyS0 panic=-1",
-        ],
-        TIMEOUT,
-    );
+    let r = vm_run(&[
+        "--kernel",
+        k,
+        "--memory",
+        "256",
+        "--cmdline",
+        "console=ttyS0 panic=-1",
+    ]);
     assert_eq!(r.status, Some(EXIT_RESET), "{r}");
     for line in machine_lines() {
         assert!(r.stdout.contains(&line), "missing {line:?}: {r}");
@@ -97,18 +81,15 @@ fn a_reset_with_no_console_says_its_guests_panic() {
     if cannot_run_vms() {
         return;
     }
-    let r = vm_run(
-        &[
-            "--kernel",
-            kernel().to_str().unwrap(),
-            "--memory",
-            "256",
-            "--no-console",
-            "--cmdline",
-            "console=ttyS0 panic=-1",
-        ],
-        TIMEOUT,
-    );
+    let r = vm_run(&[
+        "--kernel",
+        kernel().to_str().unwrap(),
+        "--memory",
+        "256",
+        "--no-console",
+        "--cmdline",
+        "console=ttyS0 panic=-1",
+    ]);
     assert_eq!(r.status, Some(EXIT_RESET), "{r}");
     assert!(
         r.stderr
@@ -138,23 +119,20 @@ fn a_dax_windows_page_structures_take_none_of_its_guests_memory() {
     let most_free = |window: &str| -> u64 {
         (0..3)
             .map(|_| {
-                let r = vm_run(
-                    &[
-                        "--kernel",
-                        k,
-                        "--init",
-                        guest,
-                        "--memory",
-                        "512",
-                        "--shares",
-                        "1",
-                        "--share-window",
-                        window,
-                        "--cmdline",
-                        "console=ttyS0 panic=-1 shards_test=memory",
-                    ],
-                    TIMEOUT,
-                );
+                let r = vm_run(&[
+                    "--kernel",
+                    k,
+                    "--init",
+                    guest,
+                    "--memory",
+                    "512",
+                    "--shares",
+                    "1",
+                    "--share-window",
+                    window,
+                    "--cmdline",
+                    "console=ttyS0 panic=-1 shards_test=memory",
+                ]);
                 assert_eq!(r.status, Some(0), "{r}");
                 // `SHARDS-TEST MEMORY <MemTotal> <MemFree> <MemAvailable> <uptime> <listed>`
                 let line = r.stdout.lines().find(|l| l.contains("SHARDS-TEST MEMORY"));
@@ -219,7 +197,6 @@ fn a_long_dax_window_costs_its_boot_next_to_nothing() {
                         "console=ttyS0 panic=-1 shards_test=memory",
                     ],
                     &[("SHARDS_TIMING", std::ffi::OsStr::new("1"))],
-                    TIMEOUT,
                 );
                 assert_eq!(r.status, Some(0), "{r}");
                 let peak = if cfg!(windows) {
@@ -250,18 +227,15 @@ fn a_pci_bus_reaches_its_function() {
         return;
     }
     let (k, g) = (kernel().to_str().unwrap(), test_guest().to_str().unwrap());
-    let r = vm_run(
-        &[
-            "--kernel",
-            k,
-            "--init",
-            g,
-            "--pci-test",
-            "--cmdline",
-            "console=ttyS0 panic=-1 shards_test=pci",
-        ],
-        TIMEOUT,
-    );
+    let r = vm_run(&[
+        "--kernel",
+        k,
+        "--init",
+        g,
+        "--pci-test",
+        "--cmdline",
+        "console=ttyS0 panic=-1 shards_test=pci",
+    ]);
     assert!(r.stdout.contains("SHARDS-TEST PASS"), "{r}");
     assert_eq!(r.status, Some(0), "{r}");
 }
@@ -275,19 +249,16 @@ fn brings_up_every_vcpu() {
     let k = kernel().to_str().unwrap();
     for n in [2u32, 7, 16] {
         let cpus = n.to_string();
-        let r = vm_run(
-            &[
-                "--kernel",
-                k,
-                "--cpus",
-                &cpus,
-                "--memory",
-                "512",
-                "--cmdline",
-                "console=ttyS0 panic=-1",
-            ],
-            TIMEOUT,
-        );
+        let r = vm_run(&[
+            "--kernel",
+            k,
+            "--cpus",
+            &cpus,
+            "--memory",
+            "512",
+            "--cmdline",
+            "console=ttyS0 panic=-1",
+        ]);
         assert!(
             r.stdout.contains(&format!("smp: Brought up 1 node, {n} CPUs")),
             "{n} vCPUs: {r}"
@@ -378,17 +349,14 @@ fn runs_init_as_pid_1_and_powers_off() {
         return;
     }
     let (k, init) = (kernel().to_str().unwrap(), guest_init().to_str().unwrap());
-    let r = vm_run(
-        &[
-            "--kernel",
-            k,
-            "--init",
-            init,
-            "--cmdline",
-            "console=ttyS0 quiet panic=-1",
-        ],
-        TIMEOUT,
-    );
+    let r = vm_run(&[
+        "--kernel",
+        k,
+        "--init",
+        init,
+        "--cmdline",
+        "console=ttyS0 quiet panic=-1",
+    ]);
     assert_eq!(r.status, Some(0), "{r}");
     assert!(r.stdout.contains("shards-init: pid 1 running"), "{r}");
     let (init_us, exit_us) = (
@@ -405,18 +373,15 @@ fn survives_back_to_back_boots() {
     }
     let (k, init) = (kernel().to_str().unwrap(), guest_init().to_str().unwrap());
     for i in 0..20 {
-        let r = vm_run(
-            &[
-                "--kernel",
-                k,
-                "--init",
-                init,
-                "--cmdline",
-                "quiet panic=-1",
-                "--no-console",
-            ],
-            TIMEOUT,
-        );
+        let r = vm_run(&[
+            "--kernel",
+            k,
+            "--init",
+            init,
+            "--cmdline",
+            "quiet panic=-1",
+            "--no-console",
+        ]);
         assert_eq!(r.status, Some(0), "boot {i}: {r}");
         assert!(r.marker_us(1).is_some(), "boot {i}: {r}");
     }
@@ -457,7 +422,7 @@ fn rejects_invalid_vm_configuration() {
         ),
     ];
     for (args, message) in cases {
-        let r = vm_run(args, TIMEOUT);
+        let r = vm_run(args);
         assert_ne!(r.status, Some(0), "{args:?} should fail: {r}");
         assert!(r.stderr.contains(message), "{args:?}: expected {message:?}: {r}");
     }
@@ -472,7 +437,7 @@ fn rejects_malformed_vm_arguments() {
         (&["--kernel", "k", "--cpus", "two"], "--cpus"),
     ];
     for (args, message) in cases {
-        let r = vm_run(args, TIMEOUT);
+        let r = vm_run(args);
         assert_eq!(r.status, Some(2), "{args:?}: {r}");
         assert!(r.stderr.contains(message), "{args:?}: expected {message:?}: {r}");
     }
@@ -497,7 +462,7 @@ fn explains_when_this_host_cannot_run_vms() {
     let Err(why) = shards_vmm::vm::check_host() else {
         return;
     };
-    let r = vm_run(&["--kernel", "k"], TIMEOUT);
+    let r = vm_run(&["--kernel", "k"]);
     assert_eq!(r.status, Some(1), "{r}");
     assert!(r.stderr.contains(&why), "{r}");
 }
@@ -505,11 +470,11 @@ fn explains_when_this_host_cannot_run_vms() {
 #[test]
 fn cli_reports_usage_and_rejects_unknown_commands() {
     let none: [&str; 0] = [];
-    let help = run_shards(&["--help"], &none, TIMEOUT);
+    let help = run_shards(&["--help"], &none);
     assert_eq!(help.status, Some(0), "{help}");
     assert!(help.stdout.contains("\n  run "), "{help}");
     // As docker/cli refuses one: status 1, its words.
-    let unknown = run_shards(&["frobnicate"], &none, TIMEOUT);
+    let unknown = run_shards(&["frobnicate"], &none);
     assert_eq!(unknown.status, Some(1), "{unknown}");
     assert!(
         unknown.stderr.contains("unknown command: shards frobnicate"),
@@ -519,21 +484,21 @@ fn cli_reports_usage_and_rejects_unknown_commands() {
     // starts it, and refuses to run without the build's connection: refused as unknown
     // there, every build held to a budget wrote under it (PM M442).
     if cfg!(target_os = "linux") {
-        let writer = run_shards(&["build-writer"], &none, TIMEOUT);
+        let writer = run_shards(&["build-writer"], &none);
         assert_eq!(writer.status, Some(1), "{writer}");
         assert!(writer.stderr.contains("shards: a build's writer: "), "{writer}");
     }
     // Piped, laid out as the scripts that read `version` parse it (cli/version.rs); the
     // server is this shards too.
-    let version = run_shards(&["version"], &none, TIMEOUT);
+    let version = run_shards(&["version"], &none);
     assert!(version.stdout.starts_with("Client:\n Version:"), "{version}");
     assert!(
         version.stdout.contains("\nServer: shards\n Engine:\n"),
         "{version}"
     );
-    let short = run_shards(&["--version"], &none, TIMEOUT);
+    let short = run_shards(&["--version"], &none);
     assert!(short.stdout.starts_with("shards version "), "{short}");
-    let server = run_shards(&["version", "-f", "{{.Server.Platform.Name}}"], &none, TIMEOUT);
+    let server = run_shards(&["version", "-f", "{{.Server.Platform.Name}}"], &none);
     assert_eq!(server.stdout, "shards\n", "{server}");
 }
 
@@ -546,23 +511,20 @@ fn a_nested_guest_is_a_kvm_host() {
     if cannot_run_vms() {
         return;
     }
-    let refused = vm_run(
-        &[
-            "--kernel",
-            kernel().to_str().unwrap(),
-            "--nested",
-            "--snapshot-dir",
-            "nowhere",
-        ],
-        TIMEOUT,
-    );
+    let refused = vm_run(&[
+        "--kernel",
+        kernel().to_str().unwrap(),
+        "--nested",
+        "--snapshot-dir",
+        "nowhere",
+    ]);
     assert_eq!(refused.status, Some(2), "{refused}");
     assert!(
         refused.stderr.contains("--nested with --snapshot-dir"),
         "{refused}"
     );
     let Some(nested) = common::nested_kernel() else {
-        let r = vm_run(&["--kernel", kernel().to_str().unwrap(), "--nested"], TIMEOUT);
+        let r = vm_run(&["--kernel", kernel().to_str().unwrap(), "--nested"]);
         let why = match (common::ARCH, std::env::consts::OS) {
             ("aarch64", "windows") => "Windows' hypervisor platform gives a guest no EL2 on arm64",
             ("x86_64", _) => "virtualization of a guest's own is not given on x86_64 yet",
@@ -572,22 +534,19 @@ fn a_nested_guest_is_a_kvm_host() {
         assert!(r.stderr.contains(why), "{r}");
         return;
     };
-    let r = vm_run(
-        &[
-            "--kernel",
-            nested.to_str().unwrap(),
-            "--init",
-            test_guest().to_str().unwrap(),
-            "--nested",
-            "--cpus",
-            "2",
-            "--memory",
-            "512",
-            "--cmdline",
-            "console=ttyS0 panic=-1 shards_test=kmsg",
-        ],
-        TIMEOUT,
-    );
+    let r = vm_run(&[
+        "--kernel",
+        nested.to_str().unwrap(),
+        "--init",
+        test_guest().to_str().unwrap(),
+        "--nested",
+        "--cpus",
+        "2",
+        "--memory",
+        "512",
+        "--cmdline",
+        "console=ttyS0 panic=-1 shards_test=kmsg",
+    ]);
     if r.stderr.contains("this Mac gives a guest no EL2") {
         eprintln!("SKIP: this Mac gives a guest no EL2");
         return;
@@ -637,21 +596,18 @@ fn a_pci_functions_interrupts_reach_the_guest() {
         eprintln!("SKIP: no pinned kernel with VFIO for {}", common::ARCH);
         return;
     };
-    let r = vm_run(
-        &[
-            "--kernel",
-            kernel.to_str().unwrap(),
-            "--init",
-            test_guest().to_str().unwrap(),
-            "--pci-test",
-            "--cmdline",
-            &format!(
-                "console=ttyS0 panic=-1 vfio.enable_unsafe_noiommu_mode=1{} shards_test=pci-irq",
-                unsafe_interrupts()
-            ),
-        ],
-        TIMEOUT,
-    );
+    let r = vm_run(&[
+        "--kernel",
+        kernel.to_str().unwrap(),
+        "--init",
+        test_guest().to_str().unwrap(),
+        "--pci-test",
+        "--cmdline",
+        &format!(
+            "console=ttyS0 panic=-1 vfio.enable_unsafe_noiommu_mode=1{} shards_test=pci-irq",
+            unsafe_interrupts()
+        ),
+    ]);
     assert_eq!(r.status, Some(0), "{r}");
     assert!(r.stdout.contains(INTERRUPTS), "{r}");
     assert!(
@@ -674,21 +630,18 @@ fn a_pci_functions_dma_goes_through_its_iommu() {
         eprintln!("SKIP: no pinned kernel with VFIO for {}", common::ARCH);
         return;
     };
-    let r = vm_run(
-        &[
-            "--kernel",
-            kernel.to_str().unwrap(),
-            "--init",
-            test_guest().to_str().unwrap(),
-            "--pci-test",
-            "--cmdline",
-            &format!(
-                "console=ttyS0 panic=-1{} shards_test=pci-dma",
-                unsafe_interrupts()
-            ),
-        ],
-        TIMEOUT,
-    );
+    let r = vm_run(&[
+        "--kernel",
+        kernel.to_str().unwrap(),
+        "--init",
+        test_guest().to_str().unwrap(),
+        "--pci-test",
+        "--cmdline",
+        &format!(
+            "console=ttyS0 panic=-1{} shards_test=pci-dma",
+            unsafe_interrupts()
+        ),
+    ]);
     assert_eq!(r.status, Some(0), "{r}");
     assert!(r.stdout.contains(DMA_THROUGH_IOMMU), "{r}");
     assert!(
@@ -756,7 +709,7 @@ fn a_nested_guest_runs_vms_of_its_own() {
             &cmdline,
         ];
         all.extend_from_slice(args);
-        vm_run(&all, TIMEOUT * 3)
+        vm_run(&all)
     };
     let passed = |r: &common::Run| {
         let line = |want: &str| r.stdout.lines().any(|l| l.trim_end() == want);
@@ -917,7 +870,7 @@ fn a_hosts_pci_function_is_refused_where_its_os_passes_none() {
         named.push("PCIROOT(0)#PCI(0202)#PCI(0000)");
     }
     for name in named {
-        let r = vm_run(&["--kernel", k, "--vfio", name], TIMEOUT);
+        let r = vm_run(&["--kernel", k, "--vfio", name]);
         assert_ne!(r.status, Some(0), "{name}: {r}");
         assert!(r.stderr.contains(&format!("{name}: {limit}")), "{name}: {r}");
     }
@@ -967,19 +920,16 @@ fn a_hosts_pci_function_is_assigned_where_its_hypervisor_assigns_one() {
         id("DEV_")
     );
     let (k, g) = (kernel().to_str().unwrap(), test_guest().to_str().unwrap());
-    let r = vm_run(
-        &[
-            "--kernel",
-            k,
-            "--init",
-            g,
-            "--vfio",
-            &function,
-            "--cmdline",
-            &cmdline,
-        ],
-        TIMEOUT,
-    );
+    let r = vm_run(&[
+        "--kernel",
+        k,
+        "--init",
+        g,
+        "--vfio",
+        &function,
+        "--cmdline",
+        &cmdline,
+    ]);
     assert!(r.stdout.contains("SHARDS-TEST PASS"), "{r}");
     assert_eq!(r.status, Some(0), "{r}");
 }
@@ -1017,24 +967,21 @@ fn a_run_is_given_a_hosts_vfio_group() {
     };
     let outer = |initrd: &std::path::Path, cmdline: &str| {
         let cmdline = format!("console=ttyS0 panic=-1 {cmdline}");
-        vm_run(
-            &[
-                "--kernel",
-                nested.to_str().unwrap(),
-                "--initrd",
-                initrd.to_str().unwrap(),
-                "--nested",
-                "--pci-tests",
-                "01.0,02.0,02.1",
-                "--cpus",
-                "2",
-                "--memory",
-                "2048",
-                "--cmdline",
-                &cmdline,
-            ],
-            TIMEOUT * 3,
-        )
+        vm_run(&[
+            "--kernel",
+            nested.to_str().unwrap(),
+            "--initrd",
+            initrd.to_str().unwrap(),
+            "--nested",
+            "--pci-tests",
+            "01.0,02.0,02.1",
+            "--cpus",
+            "2",
+            "--memory",
+            "2048",
+            "--cmdline",
+            &cmdline,
+        ])
     };
     // Whether this host gives a guest EL2, before shards is built for one.
     let probe = dir.join("probe.cpio");
@@ -1100,7 +1047,7 @@ fn snapshot_tests_pass_on_a_kvm_host_of_this_architecture() {
     // take them, whose MSIs its GICv2m frame does not isolate (D154; iommufd/device.c,
     // iommufd_device_bind, refused a node's bind with EPERM without it).
     let pci_tests = std::env::var("SHARDS_L1_PCI_TESTS").ok();
-    let outer = |initrd: &std::path::Path, cpus: &str, memory: &str, cmdline: &str, timeout| {
+    let outer = |initrd: &std::path::Path, cpus: &str, memory: &str, cmdline: &str| {
         let unsafe_msis = match &pci_tests {
             Some(_) => " vfio_iommu_type1.allow_unsafe_interrupts=1 iommufd.allow_unsafe_interrupts=1",
             None => "",
@@ -1122,12 +1069,12 @@ fn snapshot_tests_pass_on_a_kvm_host_of_this_architecture() {
         if let Some(places) = &pci_tests {
             args.extend(["--pci-tests", places.as_str()]);
         }
-        vm_run(&args, timeout)
+        vm_run(&args)
     };
     // Whether this host gives a guest EL2, before the tests are built for one.
     let probe = dir.join("probe.cpio");
     std::fs::write(&probe, shards_vmm::initramfs::with_init(&read(test_guest()))).unwrap();
-    let probed = outer(&probe, "1", "256", "shards_test=kmsg", TIMEOUT);
+    let probed = outer(&probe, "1", "256", "shards_test=kmsg");
     if probed.stderr.contains("gives a guest no EL2") {
         eprintln!("SKIP: this host gives a guest no EL2");
         return;
@@ -1263,13 +1210,7 @@ fn snapshot_tests_pass_on_a_kvm_host_of_this_architecture() {
         .file("e2e/env", 0o644, env.as_bytes());
     let initrd = dir.join("l1.cpio");
     std::fs::write(&initrd, cpio.finish()).unwrap();
-    let ran = outer(
-        &initrd,
-        "8",
-        "24576",
-        "shards_test=e2e",
-        Duration::from_secs(45 * 60),
-    );
+    let ran = outer(&initrd, "8", "24576", "shards_test=e2e");
     // SHARDS_L1_CONSOLE names a file its console is written to, passing or failing, for
     // what the tests in it say of themselves.
     if let Some(console) = std::env::var_os("SHARDS_L1_CONSOLE") {
@@ -1319,11 +1260,10 @@ fn a_snapshot_keeps_memory_to_plug() {
             "--snapshot-then",
             "resume",
         ],
-        TIMEOUT,
     );
     for run in [booted]
         .into_iter()
-        .chain((0..2).map(|_| run_shards(&["restore"], &[snapshot.to_str().unwrap()], TIMEOUT)))
+        .chain((0..2).map(|_| run_shards(&["restore"], &[snapshot.to_str().unwrap()])))
     {
         assert!(run.stdout.contains("SHARDS-TEST PLUGGED "), "{run}");
         assert!(run.stdout.contains("SHARDS-TEST PASS"), "{run}");
@@ -1359,11 +1299,10 @@ fn a_snapshot_keeps_the_memory_its_guest_plugged() {
             "--snapshot-then",
             "resume",
         ],
-        TIMEOUT,
     );
     for run in [booted]
         .into_iter()
-        .chain((0..2).map(|_| run_shards(&["restore"], &[snapshot.to_str().unwrap()], TIMEOUT)))
+        .chain((0..2).map(|_| run_shards(&["restore"], &[snapshot.to_str().unwrap()])))
     {
         assert!(run.stdout.contains("SHARDS-TEST KEPT 448"), "{run}");
         assert!(run.stdout.contains("SHARDS-TEST PASS"), "{run}");
@@ -1962,7 +1901,6 @@ fn cold_boots_profiled() {
                                 "console=ttyS0 panic=-1 quiet profile=4 initcall_debug log_buf_len=1M{told} shards_test=profile"
                             ),
                         ],
-                        Duration::from_secs(240),
                     )
                 })
             })
@@ -2072,7 +2010,6 @@ fn a_direct_boot_writes_through_a_share_and_not_through_a_read_only_one() {
             &read_only,
         ],
         &[("SHARDS_HOME", home.as_os_str())],
-        TIMEOUT,
     );
     assert_eq!(r.status, Some(0), "{r}");
     assert!(r.stdout.contains("SHARDS-TEST PASS"), "{r}");
@@ -2121,9 +2058,12 @@ fn a_direct_boot_ended_at_its_deadline_leaves_none_of_its_processes() {
         rw.to_str().unwrap(),
     ];
     let asked: Vec<String> = std::iter::once("shards").chain(args).map(String::from).collect();
+    // Its deadline is this host's own time for such a guest to answer: the share process,
+    // started before the VM, is under the run well before it.
+    let deadline = answered_boot();
     let mut cmd = common::command();
     cmd.args(args);
-    let Err(ended) = common::run_until(cmd, &asked, E2E.get()) else {
+    let Err(ended) = common::run_until(cmd, &asked, deadline) else {
         panic!("an echo guest's run ended by itself");
     };
     // Its share process is `shards` (its VM's, shards-vm, on Windows; on Unix the VM is
@@ -2185,15 +2125,18 @@ fn a_parent_that_started_after_its_child_is_not_its_parent() {
 
 /// shards-api's client of this build's `shards` conforms: every case of its conformance
 /// suite against real guests, the test guest as PID 1 (`echo` serves port 1234, `kmsg`
-/// powers off), each wait guarded by [`E2E`], recorded side by side with the suite's boots.
-/// A guest kernel's panic resets it at once (`panic=-1`), its case failing then, not at its
-/// patience.
+/// powers off), each wait for a guest's answer following its VM process (D215): it returns
+/// at the guest's listening, however long this host takes to boot it beside the suite's
+/// other boots, or at its end, which refuses the wait as it comes, and is refused `Stalled`
+/// only where the VM process ran nothing for as long as the slowest answer this test process
+/// has seen. Twice a boot recorded on another host was no bound for this one's (CI's x86_64
+/// KVM at d35c4cf79: "no OK within 2.41364452s", PM M465's Linux-KVM record doubled; R03). A
+/// guest kernel's panic resets it at once (`panic=-1`), its case failing then.
 #[test]
 fn shards_api_conforms_on_real_guests() {
     if cannot_run_vms() {
         return;
     }
-    let patience = E2E.get();
     let spec = |mode: &str| api_spec(&format!("console=ttyS0 quiet panic=-1 shards_test={mode}"));
     conformance::run(&conformance::Subject {
         guests: &shards_api::Shards,
@@ -2201,7 +2144,6 @@ fn shards_api_conforms_on_real_guests() {
         port: 1234,
         unserved: 1236,
         powering_off: spec("kmsg"),
-        patience,
     })
     .unwrap();
 }
@@ -2233,10 +2175,7 @@ fn shards_api_shares_a_directory_and_a_read_only_one() {
         ..api_spec("console=ttyS0 quiet panic=-1 shards_test=share")
     };
     let guest = shards_api::Shards.boot(&spec).unwrap();
-    assert_eq!(
-        guest.wait_for(E2E.get()).unwrap(),
-        Some(shards_api::End::PowerOff)
-    );
+    assert_eq!(guest.wait_while_runs().unwrap(), shards_api::End::PowerOff);
     assert_eq!(
         std::fs::read_to_string(rw.join("from-guest")).unwrap(),
         "written by a shards guest through --share\n"
@@ -2244,9 +2183,147 @@ fn shards_api_shares_a_directory_and_a_read_only_one() {
     assert!(!ro.join("from-guest").exists());
 }
 
+/// A managed guest's rate (D255): a guest booted `--host-managed`, spinning its one vCPU, is
+/// held by its VM's governor to the quarter CPU a client asks on its vsock socket (`RATE`,
+/// `shards_abi::rate`), as `ManagedGuest::rate` asks it. Its VM process uses no more of the
+/// host's CPU than a quarter of the time passing, two of its governor's periods (its share
+/// where the window and the periods do not line up, and what its vCPU overruns before the
+/// governor reads, at the window's two ends) and what its VMM's own threads used past its
+/// vCPU's whole CPU over a window unheld just before. Its vCPU's whole CPU holds nothing, and
+/// none lifts its hold; each answer says the period its build's hold holds over. A guest
+/// booted without `--host-managed` closes the ask unanswered.
+#[test]
+fn a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket() {
+    use shards_abi::rate::{Answer, ask, read_answer};
+    use std::io::{Read as _, Write as _};
+    use std::num::NonZeroU64;
+    use std::time::Instant;
+    if cannot_run_vms() {
+        return;
+    }
+    let dir = common::TempDir::new("rate");
+    let boot = |socket: &std::path::Path, managed: bool| {
+        let mut cmd = common::command();
+        cmd.args(["run", "--kernel", kernel().to_str().unwrap()])
+            .args(["--init", test_guest().to_str().unwrap()])
+            .args(["--cpus", "1", "--memory", "256", "--no-console", "--vsock"])
+            .arg(socket);
+        if managed {
+            cmd.arg("--host-managed");
+        }
+        cmd.arg("--cmdline")
+            .arg("console=ttyS0 panic=-1 quiet shards_test=spin shards_spin_ms=600000 shards_idle_ms=0")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap()
+    };
+    // Its socket accepts once its VM process has made its device and listens. On macOS and
+    // Windows its spawner binds the path first and a client is refused until the VM listens
+    // (grant_answer.rs `bound`), so the path's being there says nothing: a dial that connects
+    // does. Waited for while its VM process lives, each dial paced as shards-api paces its
+    // own (`shards_api::pause`), with no clock of the test's (WHP at 0a3dde0db: a dial as the
+    // path appeared was refused, WSAECONNREFUSED).
+    let listening = |socket: &std::path::Path, child: &mut std::process::Child| {
+        let began = Instant::now();
+        loop {
+            let dialed = Instant::now();
+            if socket.exists() {
+                match shards_vmm::platform::UnixStream::connect(socket) {
+                    Ok(_) => return,
+                    Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {}
+                    Err(e) => panic!("dialing {}: {e}", socket.display()),
+                }
+            }
+            assert!(
+                child.try_wait().unwrap().is_none(),
+                "its VM ended before it listened"
+            );
+            std::thread::sleep(shards_api::pause(
+                dialed.elapsed(),
+                began.elapsed(),
+                Duration::MAX,
+            ));
+        }
+    };
+    // One ask, and the line its VM answers before it closes the ask: none where it closes it
+    // unanswered.
+    let asked = |socket: &std::path::Path, milli: u64| {
+        let mut s = shards_vmm::platform::UnixStream::connect(socket).unwrap();
+        s.write_all(ask(milli).as_bytes()).unwrap();
+        let mut line = String::new();
+        s.read_to_string(&mut line).unwrap();
+        (!line.is_empty()).then_some(line)
+    };
+    let socket = dir.join("v");
+    let mut child = boot(&socket, true);
+    listening(&socket, &mut child);
+    // `shards run --kernel` becomes the VM process on Unix, the same pid; on Windows it
+    // starts the VM process, its child.
+    let pid = child.id();
+    #[cfg(windows)]
+    let pid = {
+        let found = common::vm_processes(pid);
+        assert_eq!(found.len(), 1, "shards {pid}'s VM processes: {found:?}");
+        found[0]
+    };
+    let cpu = || shards_vmm::platform::process_usage(pid).unwrap().cpu_ns;
+    let window = || {
+        let (start, before) = (Instant::now(), cpu());
+        std::thread::sleep(Duration::from_secs(2));
+        (cpu() - before, u64::try_from(start.elapsed().as_nanos()).unwrap())
+    };
+    let (free, free_wall) = window();
+    let line = asked(&socket, 250).unwrap();
+    let Ok(Answer::Held { milli, period_ns }) = read_answer(line.as_bytes()) else {
+        panic!("asked a quarter CPU: {line:?}");
+    };
+    assert_eq!(milli, NonZeroU64::new(250));
+    assert_eq!(
+        Duration::from_nanos(period_ns.get()),
+        shards_vmm::vm::hold_period()
+    );
+    let (used, wall) = window();
+    let own = free.saturating_sub(free_wall);
+    let most = wall / 4 + 2 * period_ns.get() + own;
+    assert!(
+        used <= most,
+        "{used} ns of CPU in {wall} ns, held to a quarter CPU (unheld: {free} ns in {free_wall} ns)"
+    );
+    assert!(
+        used >= wall / 20,
+        "{used} ns of CPU in {wall} ns: held, and never let go"
+    );
+    for (whole_or_none, said) in [(1000, "its one vCPU's whole CPU"), (0, "none")] {
+        let line = asked(&socket, whole_or_none).unwrap();
+        assert_eq!(
+            read_answer(line.as_bytes()),
+            Ok(Answer::Held {
+                milli: None,
+                period_ns
+            }),
+            "{said}"
+        );
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    let plain_socket = dir.join("u");
+    let mut plain = boot(&plain_socket, false);
+    listening(&plain_socket, &mut plain);
+    assert_eq!(
+        asked(&plain_socket, 250),
+        None,
+        "a guest not booted --host-managed"
+    );
+    let _ = plain.kill();
+    let _ = plain.wait();
+}
+
 /// Measures shards-api's boot of the test guest to its echo port answering, here, side by
-/// side with this file's other boots as the suite runs them, for [`E2E`]'s records:
-/// `SHARDS_API_E2E_N` (default 5) boots, printed as n, p50 and max with `--nocapture`.
+/// side with this file's other boots as the suite runs them, each wait following its VM
+/// process (D215): what such a boot costs here, `SHARDS_API_E2E_N` (default 5) boots, printed
+/// as n, p50 and max with `--nocapture`.
 #[test]
 fn shards_api_boot_under_the_suites_load() {
     if cannot_run_vms() {
@@ -2262,10 +2339,8 @@ fn shards_api_boot_under_the_suites_load() {
             let guest = shards_api::Shards
                 .boot(&api_spec("console=ttyS0 quiet shards_test=echo"))
                 .unwrap();
-            drop(guest.connect(1234, Duration::MAX).unwrap());
-            let took = start.elapsed();
-            E2E.saw(took);
-            took
+            drop(guest.connect_while_runs(1234).unwrap());
+            start.elapsed()
         })
         .collect();
     let mut ended: Vec<Duration> = (0..n)
@@ -2291,13 +2366,8 @@ fn shards_api_boot_under_the_suites_load() {
             };
             let start = std::time::Instant::now();
             let guest = shards_api::Shards.boot(&spec).unwrap();
-            assert_eq!(
-                guest.wait_for(Duration::MAX).unwrap(),
-                Some(shards_api::End::PowerOff)
-            );
-            let took = start.elapsed();
-            E2E.saw(took);
-            took
+            assert_eq!(guest.wait_while_runs().unwrap(), shards_api::End::PowerOff);
+            start.elapsed()
         })
         .collect();
     for (what, d) in [
@@ -2307,11 +2377,30 @@ fn shards_api_boot_under_the_suites_load() {
         d.sort();
         if let (Some(p50), Some(max)) = (d.get(n / 2), d.last()) {
             println!(
-                "e2e-wait shards-api {what} under the suite: n={n} p50={p50:?} max={max:?} ({})",
-                shards_api::record::CLASS
+                "e2e-wait shards-api {what} under the suite: n={n} p50={p50:?} max={max:?} ({} {})",
+                std::env::consts::OS,
+                std::env::consts::ARCH
             );
         }
     }
+}
+
+/// This host's own time for shards-api's boot of the test guest to its echo port answering,
+/// waited for while its VM process runs (D215): a deadline learned where the test runs, as it
+/// runs, never a number of ours (R03).
+fn answered_boot() -> Duration {
+    let start = std::time::Instant::now();
+    let guest = shards_api::Shards
+        .boot(&api_spec("console=ttyS0 quiet panic=-1 shards_test=echo"))
+        .unwrap_or_else(|e| panic!("boot: {e}"));
+    drop(
+        guest
+            .connect_while_runs(1234)
+            .unwrap_or_else(|e| panic!("connect: {e}")),
+    );
+    let took = start.elapsed();
+    guest.stop().unwrap_or_else(|e| panic!("stop: {e}"));
+    took
 }
 
 /// A shards-api spec of this build's `shards`, kernel and test guest: one vCPU, 256 MiB (as
