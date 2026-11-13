@@ -10218,11 +10218,12 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
   were nearly all microVMs given up on as they booted, each running its start the whole
   wait: their least 10 s of it, 3.3 s of CPU. The deadline was a wall clock's, a minute
   held to by CI's runners, where a cold boot takes 1.6 to 2.2 s (M357), which this host's
-  speed sets past it. Now the daemon judges a starting microVM by its process each
-  `READY_STALL` (10 s): one that took more CPU than an idle microVM takes in as long (63 ms
-  in 10 s, M357's most, `IDLE_VM_CPU`) ran its start, and is waited for; one given up on
-  has run no more than that for `READY_TIMEOUT`, as one that never runs is given up on a
-  minute after its start, as before. A claim of a pool whose VM is starting waits for it
+  speed sets past it. Now the daemon follows a starting microVM's process by D215's judge
+  (`ready`, ROOT's (3) slice 2, 2026-11-13; it was each `READY_STALL`'s 10 s, judged by an
+  idle microVM's CPU, 63 ms in 10 s, `IDLE_VM_CPU`, given up on after `READY_TIMEOUT`'s
+  minute): before this daemon's first READY, its liveness alone; then past W*, the slowest
+  start it has seen (`Answers::ready`, which each READY teaches), looked at each W* and given
+  up on where a whole W* shows it ran no CPU, its host not the reason. A claim of a pool whose VM is starting waits for it
   past its minute, its watcher waking it; and a builder's boot is judged so, past
   `BOOT_PATIENCE`'s 30 s. Not caught: a guest that spins before it is ready (a panic
   resets it, `panic=-1`, which ends its VM). Each slice is logged, the durable evidence by
@@ -27903,8 +27904,17 @@ carrier: a bundle over origin/main in a blobless clone):
     Its VM is played on the link's other end, and the link is followed as a run's is.
 - shards: `daemon::snapshots::tests::a_saves_ask_reads_as_its_vm_reads_it`.
 - The scan: `scan_test.py`, 7 tests; credentials.py's `credentials_test.py`, 15, unchanged.
-- Each guard was removed in turn and its test failed: the records are in the scan's README and
-  below.
+- R10, each guard removed by hand in turn, its focused test run, the tree restored (13 of 13
+  failed):
+  - the run host's: the VM's answer taken unasked; two saves at once; a save outside the home;
+    one where a guest reaches; one into a taken name; a failed save's directory left;
+  - the scan's: every 8th offset alone looked up (f18's stride); placeholders not public; no
+    base64 forms; no UTF-16LE form; a shape inside a longer word; no entropy floor; a run one
+    shorter.
+  - The run one shorter survived first: the scan's test took its bound from the scan itself. It
+    now holds the scan to credentials.py's run (d1d50e7f8). The failed save's directory, left,
+    first hung its test; the test's VM now bounds its reads, so the test fails rather than
+    hangs.
 
 **Owed** (ROOT).
 - `api_image`'s `a_saved_runs_memory_holds_what_its_harness_was_given_and_the_scan_finds_it` on
