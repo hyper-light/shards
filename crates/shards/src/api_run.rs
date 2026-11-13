@@ -158,6 +158,20 @@ fn gpu_args(gpus: &[shards_api::PhysicalGpu]) -> Vec<std::ffi::OsString> {
     args
 }
 
+/// The kernel and init a run's VM boots: its guest's, as `run::prepare` chose them, the GPU's
+/// guest kernel `gpu` in its kernel's place where the run is given its GPU (D144), as the
+/// daemon boots a run given one (daemon.rs `warm_for`); no init where a given guest names none.
+fn boot_of(
+    boot: &crate::run::Boot,
+    gpu: Option<&std::path::Path>,
+) -> (std::path::PathBuf, Option<std::path::PathBuf>) {
+    let (kernel, init) = match boot {
+        crate::run::Boot::Given(cfg) => (cfg.kernel.as_path(), cfg.init.clone()),
+        crate::run::Boot::Stored(guest) => (guest.kernel.as_path(), Some(guest.init.clone())),
+    };
+    (gpu.unwrap_or(kernel).to_path_buf(), init)
+}
+
 /// What the run's command is given of the nesting grant (D234), decided as the daemon
 /// decides it for a run of its own (`agentfile::nesting`), refused typed, in its words: the
 /// grant asked of an image whose Agentfile declares no `NESTING` a widening of its grants;
@@ -896,6 +910,14 @@ mod hosted {
             } else {
                 Vec::new()
             },
+            // GPUs named (D232) ask for the microVM's GPU as `--gpus 1` asks it, so that
+            // `run::prepare` gives it the GPU's guest kernel, DRM's virtio-gpu driver built in
+            // (D144), which its VM then boots (`super::boot_of`).
+            gpus: if request.gpu_devices.is_empty() {
+                Vec::new()
+            } else {
+                vec!["1".into()]
+            },
             ready_by,
             remove: true,
             ..Default::default()
@@ -907,6 +929,14 @@ mod hosted {
         let say = |line: &str| {
             let _ = writeln!(io::stderr(), "{line}");
         };
+        // A host that gives a microVM no GPU (`run::GIVES_GPU`) refuses GPUs named, before
+        // anything of the run is made.
+        if !request.gpu_devices.is_empty() && !crate::run::GIVES_GPU {
+            return Err(No(
+                Cause::Unsupported,
+                "this host gives a microVM no GPU (D144, D201, D202)".into(),
+            ));
+        }
         let cancel = shards_registry::http::Cancel::new();
         let mut prepared = crate::run::prepare(&run, home, &say, &cancel).map_err(no(Cause::Image))?;
         if request.vcpus > 0 {
@@ -993,10 +1023,7 @@ mod hosted {
             setup.retain(|e| !e.starts_with(b"caps="));
             setup.push(format!("caps={}", a.caps(&run)).into_bytes());
         }
-        let boot = match &prepared.boot {
-            crate::run::Boot::Given(cfg) => (cfg.kernel.clone(), cfg.init.clone()),
-            crate::run::Boot::Stored(guest) => (guest.kernel.clone(), Some(guest.init.clone())),
-        };
+        let boot = super::boot_of(&prepared.boot, prepared.gpu.as_deref());
         let (kernel, init) = (
             boot.0,
             boot.1.ok_or_else(|| No(Cause::Boot, "no init to boot".into()))?,
@@ -3992,6 +4019,60 @@ mod tests {
                 "metal:00000001000002a1"
             ]
             .map(std::ffi::OsString::from)
+        );
+    }
+
+    /// D232 through D231, what a run naming GPUs asks (2d60abb24 asked none, so its guest had
+    /// no GPU driver and its command no render node): the microVM's GPU, as `--gpus 1` asks
+    /// it, where this host gives one, so that `run::prepare` gives it the GPU's guest kernel
+    /// (D144), and its command the GPU's render node, as `--gpus` gives a run's; a run naming
+    /// none asks for neither.
+    #[test]
+    fn a_run_naming_gpus_asks_for_the_gpu_guest_and_its_render_node() {
+        let naming = wire::Request {
+            command: Some(vec!["node".into()]),
+            gpu_devices: vec![shards_api::PhysicalGpu::MetalRegistry(0x1_0000_02a1)],
+            ..request(Vec::new())
+        };
+        let gpus = hosted::as_run(&naming, None);
+        let none = hosted::as_run(&request(Vec::new()), None);
+        assert_eq!(
+            crate::run::wants_gpu(&gpus).is_ok_and(|wants| wants),
+            crate::run::GIVES_GPU
+        );
+        assert_eq!(crate::run::wants_gpu(&none), Ok(false));
+        let renders = |run: &shards_ipc::Run| {
+            let node = crate::run::RENDER_NODE.as_bytes();
+            let mut setup = Vec::new();
+            crate::setup::security_setup(&mut setup, run, shards_seccomp::Kernel(6, 18), None, &[], None)
+                .unwrap();
+            setup
+                .iter()
+                .any(|e| e.starts_with(b"devices=") && e.windows(node.len()).any(|w| w == node))
+        };
+        assert_eq!(renders(&gpus), crate::run::GIVES_GPU);
+        assert!(!renders(&none));
+    }
+
+    /// D232 through D231, what a run given its GPU boots (2d60abb24 booted its stored guest's
+    /// kernel): the GPU's guest kernel `run::prepare` gave it, with its guest's init, as the
+    /// daemon boots a run given one; a run given none, its guest's own.
+    #[test]
+    fn a_run_given_its_gpu_boots_the_gpu_guests_kernel() {
+        let stored = crate::run::Boot::Stored(crate::guest::Guest {
+            kernel: "/store/vmlinux".into(),
+            init: "/store/init".into(),
+            kernel_digest: String::new(),
+            init_digest: String::new(),
+        });
+        let gpu = std::path::Path::new("/store/vmlinux-gpu");
+        assert_eq!(
+            boot_of(&stored, Some(gpu)),
+            (gpu.to_path_buf(), Some("/store/init".into()))
+        );
+        assert_eq!(
+            boot_of(&stored, None),
+            ("/store/vmlinux".into(), Some("/store/init".into()))
         );
     }
 }
