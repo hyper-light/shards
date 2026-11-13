@@ -161,6 +161,8 @@ fn bring_up(case: &Case<'_>) -> Option<Seen> {
         .agentfile
         .clone()
         .unwrap_or_else(|| example(name, "Agentfile"));
+    // Its base, pinned by digest, from the tests' own registry: never Docker Hub's as it runs.
+    let file = common::hub_bases(&file, NO_CLOCK);
     std::fs::write(ctx.join("Agentfile"), &file).unwrap();
     save("Agentfile", file.as_bytes());
     std::fs::create_dir_all(ctx.join(name)).unwrap();

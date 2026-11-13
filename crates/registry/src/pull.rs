@@ -1421,10 +1421,7 @@ mod tests {
     }
 
     fn client() -> Client {
-        Client::new(
-            Box::new(|_| crate::tls::client_config(Vec::new(), None)),
-            "shards-test",
-        )
+        crate::testing::client()
     }
 
     fn count(server: &Server, prefix: &str) -> usize {
