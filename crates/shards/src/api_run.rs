@@ -869,6 +869,13 @@ trait Machine {
     fn say(&mut self, line: &str);
 }
 
+/// A run's microVM, ready, how it started, and its template's files held ([`started`]).
+type StartedVm<M> = (
+    <M as Machine>::Vm,
+    wire::StartedFrom,
+    Option<<M as Machine>::Held>,
+);
+
 /// The run's microVM, ready; how it started, which its orchestrator is told (`Started::from`);
 /// and its template's files, held open for the run's life where it has a template (D253), as
 /// the daemon starts a run's (daemon.rs `warm_for`):
@@ -884,7 +891,7 @@ trait Machine {
 /// - booting alone where it has no template.
 ///
 /// A boot that fails is the run's failure (`Cause::Boot`), its save removed.
-fn started<M: Machine>(m: &mut M, way: Way) -> Result<(M::Vm, wire::StartedFrom, Option<M::Held>), No> {
+fn started<M: Machine>(m: &mut M, way: Way) -> Result<StartedVm<M>, No> {
     let boot = |e: String| No(Cause::Boot, e);
     let (dir, fresh, replaced) = match way {
         Way::Boot => {
@@ -942,16 +949,17 @@ fn started<M: Machine>(m: &mut M, way: Way) -> Result<(M::Vm, wire::StartedFrom,
         dir: dir.clone(),
         fresh: fresh.clone(),
     };
+    // A VM never ready makes no template, whatever it wrote: its save is removed.
     let mut vm = match m.launch(&save) {
         Ok(vm) => vm,
         Err(e) => {
-            crate::run::settle(&fresh, &dir);
+            let _ = std::fs::remove_dir_all(&fresh);
             return Err(boot(e));
         }
     };
     if let Err(e) = m.ready(&mut vm) {
         m.end(vm);
-        crate::run::settle(&fresh, &dir);
+        let _ = std::fs::remove_dir_all(&fresh);
         return Err(boot(e));
     }
     if let Err(e) = m.record(&dir) {
@@ -4511,7 +4519,7 @@ mod tests {
             fresh: fresh.clone(),
         };
         assert!(matches!(started(&mut m, way.clone()), Err(No(Cause::Boot, _))));
-        assert_eq!(m.ended, [way.clone()]);
+        assert_eq!(m.ended, std::slice::from_ref(&way));
         assert!(!fresh.exists() && !dir.exists());
         assert!(m.recorded.is_empty() && m.held.is_empty());
 
@@ -4538,7 +4546,7 @@ mod tests {
         let dir = home.path().join("templates").join("abc");
         std::fs::create_dir_all(dir.join("g-1")).unwrap();
         std::fs::write(dir.join("g-1").join("memory"), b"").unwrap();
-        let way = way_of(Some(&dir), |d| shards_vmm::snapshot::exists(d));
+        let way = way_of(Some(&dir), shards_vmm::snapshot::exists);
         assert!(matches!(way, Way::Save { .. }));
         let mut m = Stand {
             saves: true,

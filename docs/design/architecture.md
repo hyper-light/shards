@@ -25760,9 +25760,11 @@ through it (Hex step 39), so every one of Hex's starts paid a boot.
     and for the run's life (`snapshot::hold`).
   - **Saved**, where none is. It boots with `--snapshot-dir` at a name of its process's alone;
     once its VM is ready its record is written (`run::Origin`) and the save becomes the
-    template, unless another run's got there first (`run::settle`). What is at the template's
-    name and is no snapshot (a removal cut short) is removed first, or it would keep every
-    save from becoming the template.
+    template, unless another run's got there first (`run::settle`). A save whose VM is never
+    ready makes no template, whatever it wrote: it is removed. (The daemon's `warm_for` settles
+    whatever its `cold` left, ready or not.) What is at the template's name and is no snapshot
+    (a removal cut short) is removed first, or it would keep every save from becoming the
+    template.
   - **Replaced**, where its template does not restore: its VM ends, or says anything else,
     before it is ready, or its template cannot be read. The template is removed with its
     record, and the run boots saving another.
