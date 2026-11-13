@@ -26380,6 +26380,60 @@ pin, read on Linux and never run), as data and pure functions the injector drive
   minting endpoint read widely; no token or placeholder in `Debug`; a 100 000-deep array read. clippy `-D warnings`
   clean. Each of 14 guards removed in turn fails its test (`scripts/step8-reds.py`).
 
+**Built: step 8's second slice, its first part: the injector takes a sign-in's tokens outside and answers its
+refresh and revocation there** (crates/net: `signin.rs`, `inject.rs`, `lib.rs`, `lease.rs`; shards-dns' sign-in grant;
+record docs/research/s33-veil-creds/STEP8.md).
+- *Question 1: who calls the provider.* The orchestrator's broker alone (kiln's `Turn`, step 5), for every run of the
+  sign-in: the injector never sends a refresh on. It reads a POST to the sign-in's token path whole (its body within the
+  connection's window) and, where it carries the sign-in's refresh placeholder (`signin::ask`), asks its run host
+  (`NET_SIGN_IN`, kind 105) and parks the request (`Request::Refreshing`); every flow of the run that asks the
+  sign-in's refresh meanwhile joins that one ask (`SignIns::refresh`), and the broker's `Turn` makes it one across
+  runs. Refused: the network process refreshing on its own, which would need the refresh token in it and would let two
+  runs rotate one sign-in's tokens out from under each other (RFC 6749 §6, f47).
+- *Question 2: the grant, its hosts, its placeholders.* A run captures a sign-in only where a sign-in grant
+  (`shards_dns::credential::SignInGrant`: the sign-in's name in the store, its CLI, the hosts its access token goes to,
+  and what an earlier capture gave) names its CLI, whose profile names its token host, and its egress reaches that host
+  and each host its access token goes to (checked again as the grants come, `NET_SIGN_INS`, kind 104, before
+  `NET_CREDENTIALS`, whose CA names them). TLS is ended at the token host for that CLI's sign-in alone; no value is
+  filled toward it. One sign-in of a CLI a run: a capture names no sign-in. The access token goes to the grant's hosts
+  alone, as a credential grant the capture adds (`Captured::grant`). After a refresh the VM keeps its placeholders: the
+  broker keeps the rotated tokens under the same references, and the network process lets its held lease of the access
+  token go (`Leases::forget`), so that the next flow that needs it asks anew. Refused: new placeholders at each refresh
+  (a grant changed mid-run, the CLI's file rewritten each time, every other run's staged placeholders stale); a
+  JWT-shaped access placeholder (above).
+- *Question 3: the one body rewritten.* A sign-in's token host is asked `Accept-Encoding: identity` (RFC 9110
+  §12.5.3), and each of its final responses with a body is read whole (`Response::Whole`) within the connection's
+  window (4 MiB, `TO_GUEST`, which already bounds each way: no bound of its own, R03), its chunks joined into a buffer
+  that, outgrown, is replaced by one of twice its size and wiped (`signin::append`); one coded otherwise is refused 502,
+  as its tokens could not be found. A body with tokens is held (`Response::Capturing`) while its run host keeps them
+  outside (`NET_SIGN_IN`), then written with the broker's placeholders and framed anew (RFC 9112 §6.3); none of it
+  reaches the guest before, and none of its real tokens after. A refresh's answer is rewritten as well, whatever its
+  broker sent (`write` gives the sign-in's placeholders in each token's place).
+- *Question 6: the VM's revocation.* A POST to the sign-in's revocation path naming either of its placeholders is
+  answered 200 here (RFC 7009 §2.2) and never sent on; its run host is told (`NET_SIGN_IN`), the stored tokens kept.
+  Claude Code revokes at logout and for a refused sign-in (`i3r`, `Ib`); Codex at logout and before each login
+  (auth/revoke.rs, cli/src/login.rs:133): neither ends the sign-in outside.
+- *The minting endpoint* (step 8's first slice): a request toward it carrying a captured sign-in's access placeholder
+  is answered 403 (`Refusal::Mints`), never sent, nothing leased.
+- *Refusals, typed (R04):* `signin::Declined` (`Denied`, `Unavailable`, `Ended`, `Unanswered`: an orchestrator that
+  answers no sign-in), rendered by the injector as `invalid_grant` (400, RFC 6749 §5.2) for a refresh its broker
+  refused, so that its CLI signs in anew, else 503; a capture not kept 502. The audit says each capture, refresh and
+  revocation by the sign-in's name and its host, with the time, never a token or a placeholder (`Did`).
+- *Literals.* Kinds 104 and 105 are sequence numbers (103 went first to `UNPUBLISHING`); the CLI's codes 1 and 2 and the
+  words' 1 to 3 are names on a wire. Lengths: a name or placeholder in two bytes, as `NET_CREDENTIALS`' are; a token or
+  a body in four, as `shards_ipc` frames its payload's length. No learned value.
+- *Tests (macOS arm64, adas-mac-studio.local; STEP8.md).* The plan's light test: a simulated token endpoint behind the
+  injector, real TLS both ways, and a test lessor standing for the run host and its broker. Claude Code's code exchange
+  reaches the host asking `identity`; its token response is held until the broker keeps the issued tokens, then reaches
+  the guest with the broker's placeholders, no real token in it; a request to the API host with the access placeholder
+  is filled with the kept token; the refresh never reaches the host, one call to the provider outside, the guest given
+  the same placeholders and no rotated token; the held lease of the rotated token let go; the revocation answered 200
+  here, the kept tokens as they were; two connections' refreshes at once one ask; the minting endpoint 403. Units: the
+  words' codecs, `SignIns`' single flight and end, placeholders that are no tokens or another's declined, a rotated
+  value's held lease let go and an ask under way kept. Each guard removed in turn fails its test (STEP8.md).
+- *Owed.* The run host's relay of `NET_SIGN_INS` and `NET_SIGN_IN` to its orchestrator, the image channel's next
+  version and `Lessor` grown (this slice's second part); kiln's broker answering them (step 8's third slice).
+
 **Owed (later slices of step 33, this plan's steps 7, 8 and 10).** The injector that
 fills HTTP/2 headers (step 7); the sign-in profiles' wiring (step 8's second slice: the network
 process telling its run host of a capture, a refresh and a revocation, the run host its
