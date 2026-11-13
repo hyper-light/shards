@@ -12589,12 +12589,22 @@ peer", each going on here as it should. What changed for them:
     before. Green on the merged tree (origin/main 5bc134861 with 005dce1da; adas-mac-studio.local,
     macOS 26.2 arm64): cli/moves.rs's tests 7 of 7, clippy clean; its real two-machine move,
     refused at the gate, is not run (ROOT's).
-  - Its gap: the remote server's relay can fail after `Host::start` has started a command
-    (a thread or a handle it could not make; server.rs `relay`, or no listener's sender).
-    It refuses that command though it goes on, its stdio closed, and a move takes it for a
-    restore that never ran. The wire tells the two apart nowhere. Owed to ROOT: the
-    refusal's kind on the wire (before the command started, or after), or the relay ending
-    what it started.
+  - *Refused before it started, or cut after* (ROOT's ruling, 2026-11-13). The remote
+    server's relay can fail once `Host::start` has started a command (a thread or a handle
+    it could not make; server.rs `relay`, or no listener's sender), and a frame out of place
+    or cut short ends a command that runs; each was told `Tag::Refused`, which a move took
+    for a restore that never ran, though it may have. Now the wire tells the two apart: a
+    stream whose command started (`Stream::started`, set as `Host::start` answers) ends a
+    refusal as `Tag::Cut` (42), and `Refused` says nothing of it ran. The client takes a cut
+    for no answer (`exit_of`: "…, after the command started: it may have run"), as it takes
+    a connection lost then, so a move asks whether it runs there (`running_there`), never
+    going on here unasked. A client of an earlier build fails on tag 42 as on any frame it
+    does not know, which is no answer too; a server of an earlier build still says
+    `Refused` after a start, so both machines need this build.
+  - Held by shards-remote's tests/loopback.rs `a_command_refused_after_it_started_is_cut` (a
+    raw client starts `cat`, then sends a daemon's frame: red at af15d4532, `Refused` for a
+    started command; green, `Cut`, and a stream whose command never started still
+    `Refused`) and client.rs `a_cut_command_is_unanswered_and_a_refused_one_refused`.
 - **What a move sends**, cold: the move's stream (`Writer`), its plan, then its directory
   but its other snapshots and its kept layer, its snapshot's state, memory, layer and swap
   among it; its volumes; and the files its snapshot restores against that the other machine
