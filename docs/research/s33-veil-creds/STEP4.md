@@ -146,6 +146,11 @@ e72239dd3 (`cure.sh` in the carrier; the guard's removal is the 17th entry of `s
   passed; the four crates' clippy, `--all-targets -- -D warnings`, clean. `write_message_parts`' own test (that it writes
   what `write_message` does, byte for byte) is Windows' and runs on CI's Windows runners.
 
+Run r17, head d7113c677 (merged with main dc7f45bc6, after the runner's network came back; r863, r867 and r874
+failed to reach GitHub from it, and the other allowed Macs were offline or swapping), the tree that lands: the cure's
+test 1, shards-net 12, shards-api `image::` 54, shards `api_run::` 33, shards-ipc 1 passed; the four crates' clippy
+clean.
+
 ## Not tested here
 
 - That a dropped `Secret`, `Zeroizing` value or wiped message holds zeros: zeroize's own guarantee (zeroize 1.9.0,
