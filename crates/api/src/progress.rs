@@ -238,13 +238,15 @@ impl Watch {
         };
         let before = std::mem::replace(&mut self.last, look);
         let hold = std::mem::replace(&mut self.hold, self.followed.hold());
-        // A diagnosis of what Windows shows of a VM process a look judges (W2: one inside
-        // WHP's partition calls, cut as stalled on CI's windows-2022).
+        let ran = look.ran_since(&before);
+        // A diagnosis of what Windows shows of a VM process a look finds ran nothing since the
+        // look before, the look that may cut it (W2: one inside WHP's partition calls, cut as
+        // stalled on CI's windows-2022): said only of those, so a passing run says nothing.
         #[cfg(windows)]
-        if std::env::var_os("SHARDS_JUDGE_TRACE").is_some() {
+        if !ran && std::env::var_os("SHARDS_JUDGE_TRACE").is_some() {
             self.followed.trace(&look);
         }
-        Ok(found(look.ran_since(&before), look.ending, &hold, &self.hold))
+        Ok(found(ran, look.ending, &hold, &self.hold))
     }
 
     /// The CPU time its process's threads have had by the look before.
@@ -847,6 +849,8 @@ mod os {
         /// QueryProcessCycleTime) and each thread of its live processes as the system's records
         /// show it now: its process and thread, state and wait reason (KWAIT_REASON), context
         /// switches, and kernel and user time in 100 ns units. What cannot be read is said so.
+        /// Each line names its VM process, and all go in one write, so that a log that
+        /// interleaves other tests' output keeps each line whole and its own.
         pub(super) fn trace(&self, look: &Look) {
             use std::io::Write as _;
             let mut said = format!(
@@ -858,7 +862,8 @@ mod os {
                 Some(records) => each_thread(&records, |pid, t| {
                     if self.members.iter().any(|m| m.pid == pid && !m.exited) {
                         said.push_str(&format!(
-                            "\n  pid {pid} tid {} state {} reason {} switches {} kernel {} user {}",
+                            "\nshards judge: VM process {}: thread pid {pid} tid {} state {} reason {} switches {} kernel {} user {}",
+                            self.pid,
                             t.ClientId.UniqueThread as usize,
                             t.ThreadState,
                             t.WaitReason,
