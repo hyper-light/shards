@@ -1,0 +1,22 @@
+--- a/crates/init/src/ring.rs
++++ b/crates/init/src/ring.rs
+@@ -466,8 +466,7 @@
+     /// between a read and a reservation apart would be counted by neither, the read before
+     /// it and `making` after it, and admit one past the room (review.md, F3). Its first has
+     /// the relay join the run's cgroup, before any slot's pages are charged.
+-    fn reserve(&mut self, ring: Option<u32>) -> Option<Making> {
+-        let supply = self.supply();
++    fn reserve(&mut self, ring: Option<u32>, supply: Supply) -> Option<Making> {
+         let ring = match ring {
+             Some(ring) => ring,
+             None => self.starting(&supply)?,
+@@ -728,7 +727,8 @@
+ /// A slot for a stream: of `ring`'s rings, or where none is asked the stream's start, made
+ /// where the room fits it; none where it does not, or the guest cannot make one now.
+ fn take(pool: &'static Mutex<Pool>, ring: Option<u32>) -> Option<Slot> {
+-    let making = lock(pool).reserve(ring)?;
++    let supply = lock(pool).supply();
++    let making = lock(pool).reserve(ring, supply)?;
+     let made = Slot::make(&making);
+     let (slot, first) = {
+         let mut p = lock(pool);
