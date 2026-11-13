@@ -1158,9 +1158,10 @@ impl Declined {
     }
 }
 
-const CAPTURE: u8 = 1;
-const REFRESH: u8 = 2;
-const REVOKE: u8 = 3;
+/// The words of `NET_SIGN_IN`, its first byte.
+const WORD_CAPTURE: u8 = 1;
+const WORD_REFRESH: u8 = 2;
+const WORD_REVOKE: u8 = 3;
 
 /// What the network process tells its run host of a sign-in (`NET_SIGN_IN`, R04).
 #[derive(Debug)]
@@ -1188,7 +1189,7 @@ impl Told {
                         .saturating_add(refresh)
                         .saturating_add(25),
                 );
-                out.push(CAPTURE);
+                out.push(WORD_CAPTURE);
                 out.extend_from_slice(&id.to_be_bytes());
                 put::<2>(&mut out, sign_in.as_bytes())?;
                 put::<4>(&mut out, &taken.access)?;
@@ -1208,12 +1209,12 @@ impl Told {
                 }
             }
             Told::Refresh { id, sign_in } => {
-                out.push(REFRESH);
+                out.push(WORD_REFRESH);
                 out.extend_from_slice(&id.to_be_bytes());
                 put::<2>(&mut out, sign_in.as_bytes())?;
             }
             Told::Revoke { sign_in } => {
-                out.push(REVOKE);
+                out.push(WORD_REVOKE);
                 put::<2>(&mut out, sign_in.as_bytes())?;
             }
         }
@@ -1224,7 +1225,7 @@ impl Told {
     pub fn decode(payload: &[u8]) -> Option<Told> {
         let mut r = Read(payload);
         let told = match r.byte()? {
-            CAPTURE => {
+            WORD_CAPTURE => {
                 let id = u32::try_from(r.number::<4>()?).ok()?;
                 let sign_in = r.text()?;
                 let access = r.secret()?;
@@ -1248,11 +1249,11 @@ impl Told {
                     },
                 }
             }
-            REFRESH => Told::Refresh {
+            WORD_REFRESH => Told::Refresh {
                 id: u32::try_from(r.number::<4>()?).ok()?,
                 sign_in: r.text()?,
             },
-            REVOKE => Told::Revoke { sign_in: r.text()? },
+            WORD_REVOKE => Told::Revoke { sign_in: r.text()? },
             _ => return None,
         };
         r.done().then_some(told)
@@ -1295,7 +1296,7 @@ impl Answered {
         let mut out = Zeroizing::new(Vec::new());
         match self {
             Answered::Captured { id, result } => {
-                out.push(CAPTURE);
+                out.push(WORD_CAPTURE);
                 out.extend_from_slice(&id.to_be_bytes());
                 match result {
                     Ok(c) => {
@@ -1312,7 +1313,7 @@ impl Answered {
             }
             Answered::Refreshed { id, result } => {
                 out.reserve_exact(result.as_ref().map_or(0, |b| b.len()).saturating_add(10));
-                out.push(REFRESH);
+                out.push(WORD_REFRESH);
                 out.extend_from_slice(&id.to_be_bytes());
                 match result {
                     Ok(body) => {
@@ -1339,7 +1340,7 @@ impl Answered {
             _ => return None,
         };
         let answered = match (tag, ok) {
-            (CAPTURE, true) => Answered::Captured {
+            (WORD_CAPTURE, true) => Answered::Captured {
                 id,
                 result: Ok(Captured {
                     access: r.text()?,
@@ -1347,15 +1348,15 @@ impl Answered {
                     refresh_placeholder: r.text()?,
                 }),
             },
-            (REFRESH, true) => Answered::Refreshed {
+            (WORD_REFRESH, true) => Answered::Refreshed {
                 id,
                 result: Ok(r.secret()?),
             },
-            (CAPTURE, false) => Answered::Captured {
+            (WORD_CAPTURE, false) => Answered::Captured {
                 id,
                 result: Err(Declined::decode(&mut r)?),
             },
-            (REFRESH, false) => Answered::Refreshed {
+            (WORD_REFRESH, false) => Answered::Refreshed {
                 id,
                 result: Err(Declined::decode(&mut r)?),
             },
