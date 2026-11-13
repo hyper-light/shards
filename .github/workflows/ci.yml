@@ -252,7 +252,9 @@ jobs:
             # KVM on Linux's, WHP on Windows' (D140); and on Linux, the user's systemd
             # manager (D183).
             x86_64-unknown-linux-gnu) export SHARDS_REQUIRE_VMS=1 SHARDS_REQUIRE_USER_MANAGER=1 ;;
-            x86_64-pc-windows-msvc) export SHARDS_REQUIRE_VMS=1 ;;
+            # And shards-api's judge says what each look that found a VM process idle saw
+            # of its threads (SHARDS_JUDGE_TRACE), so a stall cut on WHP leaves its evidence.
+            x86_64-pc-windows-msvc) export SHARDS_REQUIRE_VMS=1 SHARDS_JUDGE_TRACE=1 ;;
           esac
           # The tests that must reach Docker Hub itself run here, as before they were gated;
           # where a LAN's machines share an address and its pulls, they skip unless asked
