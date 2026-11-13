@@ -11,8 +11,9 @@ use crate::{ProcessFailure, ProcessOperation};
 use std::io;
 
 // Only the fixed File calls and native last_os_error producers at this process
-// seam use this conversion. A no-code representation remains explicitly unknown.
-fn io_failure(operation: ProcessOperation, error: io::Error) -> ProcessFailure {
+// seam (and `progress`'s readers) use this conversion. A no-code representation
+// remains explicitly unknown.
+pub(crate) fn io_failure(operation: ProcessOperation, error: io::Error) -> ProcessFailure {
     match error.raw_os_error() {
         Some(code) => ProcessFailure::Os { operation, code },
         None => ProcessFailure::UnrepresentedIo {
@@ -44,6 +45,13 @@ pub(crate) use windows::created;
 #[cfg(any(unix, test))]
 pub(crate) fn started(pid: u32) -> Result<u64, ProcessFailure> {
     os::started(pid)
+}
+
+/// Process `pid`'s start ([`started`]) and whether it has exited, from one read of its stat
+/// (Linux): its state, field 3, a zombie's `Z` or a dead one's `X` (proc(5)).
+#[cfg(target_os = "linux")]
+pub(crate) fn stat(pid: u32) -> Result<(u64, bool), ProcessFailure> {
+    os::stat(pid)
 }
 
 /// A process found by its pid and start.
@@ -102,6 +110,13 @@ impl Held {
     pub(crate) fn kill(&self) {
         self.os.kill(self.pid);
     }
+
+    /// Another handle to it (Windows), with its rights, for a wait that follows its CPU
+    /// (`progress`).
+    #[cfg(windows)]
+    pub(crate) fn duplicate(&self) -> std::io::Result<std::os::windows::io::OwnedHandle> {
+        self.os.duplicate()
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -127,11 +142,15 @@ mod linux {
     }
 
     pub(super) fn started(pid: u32) -> Result<u64, ProcessFailure> {
+        stat(pid).map(|(start, _)| start)
+    }
+
+    pub(super) fn stat(pid: u32) -> Result<(u64, bool), ProcessFailure> {
         let mut path = [0; STAT_PATH_BYTES];
         let file = std::fs::File::open(stat_path(pid, &mut path)?)
             .map_err(|error| io_failure(ProcessOperation::OpenStat, error))?;
         let stat = read_stat(file)?;
-        start_field(&stat)
+        Ok((start_field(&stat)?, exited_field(&stat)?))
     }
 
     const PREFIX: &[u8] = b"/proc/";
@@ -208,6 +227,20 @@ mod linux {
             })
             .and_then(|field| std::str::from_utf8(field).ok())
             .and_then(|f| f.parse().ok())
+            .ok_or(ProcessFailure::InvalidStartRecord)
+    }
+
+    fn exited_field(stat: &[u8]) -> Result<bool, ProcessFailure> {
+        // Its state, field 3, the first after the command's last ')'.
+        stat.iter()
+            .rposition(|byte| *byte == b')')
+            .and_then(|i| stat.get(i.saturating_add(1)..))
+            .and_then(|fields| {
+                fields
+                    .split(u8::is_ascii_whitespace)
+                    .find(|field| !field.is_empty())
+            })
+            .map(|state| matches!(state, b"Z" | b"X"))
             .ok_or(ProcessFailure::InvalidStartRecord)
     }
 
@@ -455,6 +488,10 @@ mod windows {
             // SAFETY: TerminateProcess of the process this handle holds, which no process given
             // its pid since can be.
             unsafe { TerminateProcess(self.0.as_raw_handle(), 1) };
+        }
+
+        pub(super) fn duplicate(&self) -> std::io::Result<OwnedHandle> {
+            self.0.try_clone()
         }
     }
 }
