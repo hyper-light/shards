@@ -135,7 +135,10 @@ impl Control {
     }
 }
 
-pub fn start(spec: &mut run::Spec, given: Given) -> Result<Control, String> {
+/// Starts the run's managed capture: its members' output relayed from its guest to its owner,
+/// on a thread of its own, once its guest dials it; `run`, a copy of the run's connection,
+/// which a relay that breaks ends ([`relay_ending`]).
+pub fn start(spec: &mut run::Spec, given: Given, run: UnixStream) -> Result<Control, String> {
     if managed::capacity(&spec.setup).map_err(|e| e.to_string())? != Some(given.capacity)
         || managed::members(&spec.setup).map_err(|e| e.to_string())? != Some(given.members)
         || managed::token(&spec.setup).map_err(|e| e.to_string())?.is_some()
@@ -216,7 +219,7 @@ pub fn start(spec: &mut run::Spec, given: Given) -> Result<Control, String> {
                 .recv()
                 .map_err(io::Error::other)
                 .and_then(|c| c.map_err(io::Error::other))
-                .and_then(|guest| relay(guest, given.stream, given.capacity, states));
+                .and_then(|guest| relay_ending(guest, given.stream, given.capacity, states, &run));
             if let Err(e) = result {
                 shards_vmm::debug!("managed capture aborted: {e}");
             }
@@ -295,6 +298,23 @@ fn start_inputs(spec: &mut run::Spec, inputs: &[[u8; 4]], owner: shards_ipc::Str
     }
     spec.setup.extend(entries);
     Ok(())
+}
+
+/// Why the run's managed capture ended its run, where it did ([`relay_ending`]): none, as yet.
+pub fn ended_run() -> Option<String> {
+    None
+}
+
+/// [`relay`], and how its end ends the run whose connection `run` is: not at all, as yet.
+fn relay_ending(
+    guest: UnixStream,
+    owner: shards_ipc::Stream,
+    capacity: usize,
+    streams: Vec<[Flow; 2]>,
+    run: &UnixStream,
+) -> io::Result<()> {
+    let _ = run;
+    relay(guest, owner, capacity, streams)
 }
 
 fn relay(
@@ -553,6 +573,52 @@ mod tests {
         assert!(worker.join().unwrap().is_err());
     }
 
+    /// A relay that breaks while its VM runs on (here its owner's credit for a channel given
+    /// again before the first was used, which it refuses) ends the run in the VM: the run's
+    /// connection ended, so that its guest powers off and its serve returns, and why kept for
+    /// that serve to say (UNSERVED, D258); goal 75's WHP case left such a run to its owner's
+    /// STOP. One whose guest ends its capture ends nothing of its run.
+    #[test]
+    fn a_relay_that_breaks_mid_run_ends_its_run_saying_why() {
+        let _serial = super::super::hellos::TESTS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let capacity = managed::HEADER + 16;
+        let relaying = |end: &dyn Fn(&mut shards_ipc::Stream, &mut UnixStream)| {
+            let (vm, mut guest) = UnixStream::pair().unwrap();
+            let (pipe, mut owner) = shards_ipc::Stream::pair().unwrap();
+            let (run, guests_run) = UnixStream::pair().unwrap();
+            // The run's connection as its serve holds it beside the relay's copy, which the
+            // relay's end drops.
+            let held = run.try_clone().unwrap();
+            guest.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            guests_run
+                .set_read_timeout(Some(Duration::from_millis(500)))
+                .unwrap();
+            let mut streams = vec![[Flow::NEW; 2]];
+            for slot in &mut streams[0] {
+                slot.credit = Credit::Waiting;
+            }
+            let worker = std::thread::spawn(move || relay_ending(vm, pipe, capacity, streams, &run));
+            send_credit(&mut owner, 0, Channel::Stdout, capacity);
+            assert_eq!(record(&mut guest).0, kind::MANAGED_CREDIT);
+            end(&mut owner, &mut guest);
+            let _ = worker.join().unwrap();
+            // Its run's end, as the guest's side of the run's connection reads it.
+            let ended = matches!((&guests_run).read(&mut [0]), Ok(0));
+            drop(held);
+            (ended, ended_run())
+        };
+        let (ended, why) = relaying(&|owner, _| send_credit(owner, 0, Channel::Stdout, capacity));
+        assert!(ended, "a relay that broke left its run's connection open");
+        assert_eq!(why.as_deref(), Some("duplicate or closed managed credit"));
+        let (ended, why) = relaying(&|_, guest| {
+            guest.shutdown(std::net::Shutdown::Both).unwrap();
+        });
+        assert!(!ended, "a guest's end of its capture ended its run");
+        assert_eq!(why, None);
+    }
+
     #[test]
     fn explicit_control_end_preserves_layer_connection_but_unannounced_eof_ends_it() {
         for graceful in [true, false] {
@@ -643,8 +709,9 @@ mod tests {
             capacity: 4096,
             members: 2,
         };
+        let run = || UnixStream::pair().unwrap().0;
         let mut asked = spec(None);
-        let started = start(&mut asked, given());
+        let started = start(&mut asked, given(), run());
         assert!(started.is_ok(), "{:?}", started.err());
         let minted = managed::input_tokens(&asked.setup).unwrap();
         assert_eq!(minted.iter().map(|(m, _)| *m).collect::<Vec<_>>(), [1]);
@@ -654,7 +721,7 @@ mod tests {
             &[7; run::TOKEN],
         ]
         .concat();
-        let refused = start(&mut spec(Some(brought)), given());
+        let refused = start(&mut spec(Some(brought)), given(), run());
         assert_eq!(
             refused.err().as_deref(),
             Some("managed input tokens are the VM's to mint")
