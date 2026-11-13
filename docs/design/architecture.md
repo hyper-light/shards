@@ -7909,7 +7909,12 @@ descriptors.
   given none, takes a shared lock of that file where there is one, and so returns once the
   daemon that stops has let go of its home, whatever its slot said; where there is none
   and the daemon it asked still holds the home (`daemon.pid`, `shards_ipc::Named`), it asks
-  again after that answer, within `RESTARTS`. No serving daemon holds that file (a starting
+  again after that answer, where that daemon is another than the one it last asked again,
+  by its ID and start (`Named`): the same one answering again as itself, nothing changed, is
+  no progress, and the stop fails naming it (`NotStopped::Untaken`), where a count of asks
+  bounded it first (`RESTARTS`, `slots::OFFERED` + 2, derived for one takeover's RESTARTs and
+  no basis for asking one daemon again; ROOT's R03 ruling, 2026-11-13). Each ask follows an
+  answer, never a clock. No serving daemon holds that file (a starting
   one removes a dead one's), so a stop never waits on a next daemon's lock of the home, as
   one blocked on `daemon.lock` could once a successor polling `take_lock` took it first;
   nor on a process's ID, whose exit Linux watches only from 5.3 (pidfd_open(2)). It is
@@ -7917,7 +7922,10 @@ descriptors.
   locks would refuse. Held by `a_stop_returns_once_its_daemon_has_let_go_of_its_home`
   (cli/client.rs: a stand-in daemon, this process, holding the home's lock and, closed,
   `STOPPING_LOCK`, serving real slots: a session ended early, a RESTART from a closed
-  daemon, no slot, a RESTART from one serving on), red before; and on real VMs by
+  daemon, no slot, a RESTART from one serving on), red before;
+  `a_stop_its_daemon_answers_again_as_itself_without_taking_it_fails_naming_it` (a stand-in
+  that answers every stop RESTART as itself: asked twice, then named; red before, asked four
+  times); and on real VMs by
   `a_stop_while_another_stops_its_daemon_waits_for_its_home_let_go_of` (tests/daemon.rs).
 - **Whose end a run's client heard** (PM M530). A run's, an exec's and an attach's slot
   passes on what its VM says, so the slot ends both where the VM's connection closes with no
@@ -25146,6 +25154,15 @@ member's are, so one stdio protocol carries both. The pieces:
   (D243). Its length is bound by the run protocol's own `MAX_PAYLOAD`, which is as large as Linux
   execs. An endpoint that admits no exec, or an ask for another run, generation or member,
   refuses the lane alone, typed.
+- *Its scope where it serves no member stream* (goal 58, for D252's run host and D254): the
+  run and generation an ask names are fixed as the endpoint binds (`exec::Execs::run`): its
+  member streams', or at an endpoint of none the zero run and generation 0, as its socket lanes
+  name them (D251); the controller names the same (`drive.rs`, its outputs' run else the zero
+  run), and gives `Execs` with no output subscribed. Such an endpoint leaves the member to its
+  host, which knows its run's members and refuses one it has not, typed. Before, the run was
+  read from the endpoint's first output: an endpoint of none refused every ask `Scope`, and
+  once an exec's own streams had joined its outputs, would have read the exec's run for its own.
+  Tested: `control::tests::lanes::an_endpoint_of_no_member_stream_takes_asks_in_the_zero_run`.
 - *Its streams*: the endpoint numbers each exec. The exec's stdout, its stderr (none on a
   terminal) and its stdin (where it reads one) are step 5's streams under a run of their own: the
   run's identity and the exec's number hashed (SHA-256), so the controller's subscriptions name
