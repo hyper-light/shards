@@ -13,7 +13,6 @@
 mod common;
 
 use std::ffi::OsStr;
-use std::time::Duration;
 
 use common::{TempDir, cannot_run_vms, guest_init, kernel, noise, run_shards_env, served};
 
@@ -33,7 +32,7 @@ fn an_image_of_gigabytes_boots() {
         ("SHARDS_KERNEL", kernel.as_os_str()),
         ("SHARDS_INIT", init.as_os_str()),
     ];
-    let pulled = run_shards_env(&[], &["pull", "-q", &image], &env, Duration::from_secs(60));
+    let pulled = run_shards_env(&[], &["pull", "-q", &image], &env);
     assert_eq!(pulled.status, Some(0), "{}", pulled.stderr);
     let ctx = home.join("big");
     std::fs::create_dir(&ctx).unwrap();
@@ -41,19 +40,13 @@ fn an_image_of_gigabytes_boots() {
     noise(&ctx.join("big"), 2048);
     // Its build copies 2 GiB through the builder: past a minute on CI's x86_64 runners,
     // where it stays a guard against a hang.
-    let built = run_shards_env(
-        &[],
-        &["build", "-q", "-t", "big:1", ctx.to_str().unwrap()],
-        &env,
-        Duration::from_secs(600),
-    );
+    let built = run_shards_env(&[], &["build", "-q", "-t", "big:1", ctx.to_str().unwrap()], &env);
     assert_eq!(built.status, Some(0), "{built}");
     std::fs::remove_file(ctx.join("big")).unwrap();
     let ran = run_shards_env(
         &[],
         &["run", "--pull", "never", "--rm", "big:1", "fs", "open:r:/big"],
         &env,
-        Duration::from_secs(60),
     );
     assert_eq!(ran.status, Some(0), "{ran}");
 }

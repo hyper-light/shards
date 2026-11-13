@@ -88,12 +88,10 @@ fn the_gpu_renders_through_venus_in_runs_and_build_steps() {
     };
     let home = TempDir::new("gpu-home");
     let ctx = TempDir::new("gpu-ctx");
-    let timeout = std::time::Duration::from_secs(900);
     // debian:trixie-slim as Docker Hub's API named it (2026-11-13, updated 2026-11-05), from
     // the tests' own registry: Debian's packages still come from its mirrors.
     let debian = common::hub(
         "debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2",
-        timeout,
     );
     std::fs::write(
         ctx.join("Dockerfile"),
@@ -112,14 +110,12 @@ fn the_gpu_renders_through_venus_in_runs_and_build_steps() {
         &["build"],
         &["-q", "-t", "gpu-venus:1", ctx.to_str().unwrap()],
         &env,
-        timeout,
     );
     assert_eq!(built.status, Some(0), "{}", built.stderr);
     let ran = run_shards_env(
         &["run"],
         &["--rm", "--gpus", "all", "gpu-venus:1", "vulkaninfo", "--summary"],
         &env,
-        timeout,
     );
     assert_eq!(ran.status, Some(0), "{}\n{}", ran.stdout, ran.stderr);
     assert!(
@@ -151,12 +147,11 @@ fn the_gpu_renders_through_venus_in_runs_and_build_steps() {
         &["build"],
         &["-q", "-t", "gpu-venus:2", ctx.to_str().unwrap()],
         &step_env,
-        timeout,
     );
     assert_eq!(built.status, Some(0), "{}", built.stderr);
     // Root's step, and a user's, whose render node is udev's 0666 as a host's is.
     for found in ["/venus.txt", "/tmp/venus.txt"] {
-        let ran = run_shards_env(&["run"], &["--rm", "gpu-venus:2", "cat", found], &env, timeout);
+        let ran = run_shards_env(&["run"], &["--rm", "gpu-venus:2", "cat", found], &env);
         assert_eq!(ran.status, Some(0), "{found}: {}\n{}", ran.stdout, ran.stderr);
         assert!(
             ran.stdout.contains("Virtio-GPU Venus ("),
@@ -166,7 +161,7 @@ fn the_gpu_renders_through_venus_in_runs_and_build_steps() {
     }
     // A run given the render node by CDI name has the GPU (D146): its daemon started again,
     // with the spec's directory.
-    let stopped = run_shards_env(&["stop"], &["daemon"], &env, timeout);
+    let stopped = run_shards_env(&["stop"], &["daemon"], &env);
     assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
     let ran = run_shards_env(
         &["run"],
@@ -179,7 +174,6 @@ fn the_gpu_renders_through_venus_in_runs_and_build_steps() {
             "--summary",
         ],
         &step_env,
-        timeout,
     );
     assert_eq!(ran.status, Some(0), "{}\n{}", ran.stdout, ran.stderr);
     assert!(ran.stdout.contains("Virtio-GPU Venus ("), "{}", ran.stdout);
@@ -197,7 +191,6 @@ fn the_gpu_renders_through_venus_in_runs_and_build_steps() {
             "--summary",
         ],
         &env,
-        timeout,
     );
     assert_eq!(ran.status, Some(0), "{}\n{}", ran.stdout, ran.stderr);
     assert!(ran.stdout.contains("Virtio-GPU Venus ("), "{}", ran.stdout);
@@ -206,7 +199,7 @@ fn the_gpu_renders_through_venus_in_runs_and_build_steps() {
     // boots every run), a GPU's its own, saved before its guest made anything of the
     // GPU's (D150). Its key is apart from the same image's runs without the GPU: with the
     // gpu kernel recorded, one saved first is not the GPU run's.
-    let stopped = run_shards_env(&["stop"], &["daemon"], &env, timeout);
+    let stopped = run_shards_env(&["stop"], &["daemon"], &env);
     assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
     let mut recorded_env: Vec<(&str, &OsStr)> = vec![("SHARDS_HOME", home.as_os_str())];
     if let Some(vm) = &vm {
@@ -223,19 +216,17 @@ fn the_gpu_renders_through_venus_in_runs_and_build_steps() {
                 guest_init().to_str().unwrap(),
             ],
             &recorded_env,
-            timeout,
         );
         assert_eq!(used.status, Some(0), "{}", used.stderr);
     };
     record(&kernel);
-    let ran = run_shards_env(&["run"], &["--rm", "gpu-venus:1", "true"], &recorded_env, timeout);
+    let ran = run_shards_env(&["run"], &["--rm", "gpu-venus:1", "true"], &recorded_env);
     assert_eq!(ran.status, Some(0), "{}\n{}", ran.stdout, ran.stderr);
     let gpu_run = |which: &str, booted: bool| {
         let ran = run_shards_env(
             &["run"],
             &["--rm", "--gpus", "all", "gpu-venus:1", "vulkaninfo", "--summary"],
             &recorded_env,
-            timeout,
         );
         assert_eq!(ran.status, Some(0), "{which}: {}\n{}", ran.stdout, ran.stderr);
         assert!(

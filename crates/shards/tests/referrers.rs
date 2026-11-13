@@ -7,11 +7,8 @@
 
 mod common;
 
-use std::time::Duration;
-
 use common::{TempDir, run_shards_env};
 
-const TIMEOUT: Duration = Duration::from_secs(120);
 const BUNDLE: &str = "application/vnd.dev.sigstore.bundle.v0.3+json";
 
 /// A key cosign v3.1.3 encrypted, and its password (crates/sigstore's oracle).
@@ -80,7 +77,7 @@ fn policies_hold_an_agent_to_its_signature() {
         ("SHARDS_HOME", home.as_os_str()),
         ("COSIGN_PASSWORD", std::ffi::OsStr::new(&password)),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let dir = TempDir::new("referrers-policy-agent");
     std::fs::write(dir.join("run.sh"), "#!/bin/sh\necho agent\n").unwrap();
     std::fs::write(dir.join("agent.json"), r#"{"name":"main","version":"1.0.0"}"#).unwrap();
@@ -112,7 +109,6 @@ fn policies_hold_an_agent_to_its_signature() {
             &[],
             &["build", "--progress=plain", "--no-cache", "."],
             &[("SHARDS_HOME", home.as_os_str())],
-            TIMEOUT,
         )
     };
 
@@ -139,7 +135,7 @@ fn policies_hold_an_agent_to_its_signature() {
     let eval = |args: &[&str]| {
         let mut argv = vec!["buildx", "policy", "eval", "--filename", "Agentfile"];
         argv.extend_from_slice(args);
-        common::run_shards_env_in(&ctx, &[], &argv, &[("SHARDS_HOME", home.as_os_str())], TIMEOUT)
+        common::run_shards_env_in(&ctx, &[], &argv, &[("SHARDS_HOME", home.as_os_str())])
     };
     std::fs::write(
         ctx.join("cosign.pub"),
@@ -212,7 +208,6 @@ fn policies_hold_an_agent_to_its_signature() {
             ".",
         ],
         &[("SHARDS_HOME", home.as_os_str())],
-        TIMEOUT,
     );
     assert_eq!(out.status, Some(0), "{}", out.stderr);
     let blob = |d: &str| -> serde_json::Value {
@@ -297,7 +292,7 @@ fn an_agents_sbom_is_a_scanned_referrer() {
         ("SHARDS_KERNEL", common::kernel().as_os_str()),
         ("SHARDS_INIT", common::guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     // The scanner: the test guest's, as sboms_are_scanned makes it.
     let scanner_ctx = TempDir::new("referrers-sbom-scanner");
     std::fs::write(
@@ -380,7 +375,7 @@ fn an_index_is_what_a_signature_of_several_platforms_names() {
         ("SHARDS_HOME", home.as_os_str()),
         ("COSIGN_PASSWORD", std::ffi::OsStr::new(&password)),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let dir = TempDir::new("referrers-index-agent");
     std::fs::write(dir.join("run.sh"), "#!/bin/sh\necho agent\n").unwrap();
     std::fs::write(dir.join("agent.json"), r#"{"name":"main","version":"1.0.0"}"#).unwrap();
@@ -439,7 +434,7 @@ fn signatures_are_referrers_pushed_pulled_and_deleted_as_cosigns_are() {
             ("SHARDS_HOME", home.as_os_str()),
             ("COSIGN_PASSWORD", std::ffi::OsStr::new(&password)),
         ];
-        let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+        let shards = |args: &[&str]| run_shards_env(&[], args, &env);
         let dir = TempDir::new("referrers-agent");
         std::fs::write(dir.join("run.sh"), "#!/bin/sh\necho agent\n").unwrap();
         std::fs::write(dir.join("agent.json"), r#"{"name":"main","version":"1.0.0"}"#).unwrap();
@@ -474,7 +469,6 @@ fn signatures_are_referrers_pushed_pulled_and_deleted_as_cosigns_are() {
                 ("SHARDS_HOME", home.as_os_str()),
                 ("COSIGN_PASSWORD", std::ffi::OsStr::new("another")),
             ],
-            TIMEOUT,
         );
         assert_ne!(bad.status, Some(0));
         assert!(

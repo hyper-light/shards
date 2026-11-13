@@ -59,7 +59,6 @@ fn a_tenant_observation_fault_leaves_a_mixed_sibling_and_workload_alive() {
         &["build", "image"],
         &["-t", "tenant-fault:1", ctx.to_str().unwrap()],
         &env,
-        TIMEOUT,
     );
     assert_eq!(built.status, Some(0), "{built}");
     let report_bind = format!("{}:/probe", reports.display());
@@ -94,7 +93,6 @@ fn a_tenant_observation_fault_leaves_a_mixed_sibling_and_workload_alive() {
         &["exec", "vm"],
         &["tenant-fault", "/bin/testguest", "report"],
         &env,
-        TIMEOUT,
     );
     eprintln!("main namespace execution after fault: {after_fault}");
     assert_eq!(
@@ -109,7 +107,7 @@ fn a_tenant_observation_fault_leaves_a_mixed_sibling_and_workload_alive() {
     challenge_healthy(&env, &reports, port);
     let facts = std::fs::read_to_string(faulty.join("result")).expect("faulty actor never ran");
     eprintln!("post-quarantine exact challenge answered; exiting actor facts:\n{facts}");
-    let top = run_shards_env(&["top"], &["tenant-fault", "-o", "pid,comm"], &env, TIMEOUT);
+    let top = run_shards_env(&["top"], &["tenant-fault", "-o", "pid,comm"], &env);
     assert_eq!(top.status, Some(0), "{top}");
     assert!(
         top.stdout.contains("testguest") && top.stdout.contains("lifecycle-ready"),
@@ -119,7 +117,7 @@ fn a_tenant_observation_fault_leaves_a_mixed_sibling_and_workload_alive() {
         "post-quarantine challenge answered; remaining processes:\n{}",
         top.stdout
     );
-    let stopped = run_shards_env(&["stop", "vm"], &["-t", "0", "tenant-fault"], &env, TIMEOUT);
+    let stopped = run_shards_env(&["stop", "vm"], &["-t", "0", "tenant-fault"], &env);
     assert_eq!(stopped.status, Some(0), "{stopped}");
     vm.wait_exit_following(TIMEOUT);
 }
@@ -174,7 +172,6 @@ fn repeated_orphan_crashes_are_reaped_while_a_mixed_neighbor_progresses() {
         &["build", "image"],
         &["-t", "reaping:1", ctx.to_str().unwrap()],
         &env,
-        TIMEOUT,
     );
     assert_eq!(built.status, Some(0), "{built}");
     let report_bind = format!("{}:/probe", reports.display());
@@ -221,11 +218,10 @@ fn repeated_orphan_crashes_are_reaped_while_a_mixed_neighbor_progresses() {
         &["exec", "vm"],
         &["tenant-fault", "/bin/testguest", "report"],
         &env,
-        TIMEOUT,
     );
     assert_eq!(after.status, Some(0), "{after}");
     challenge_healthy(&env, &healthy, port);
-    let stopped = run_shards_env(&["stop", "vm"], &["-t", "0", "tenant-fault"], &env, TIMEOUT);
+    let stopped = run_shards_env(&["stop", "vm"], &["-t", "0", "tenant-fault"], &env);
     assert_eq!(stopped.status, Some(0), "{stopped}");
     vm.wait_exit_following(TIMEOUT);
 }
@@ -349,7 +345,6 @@ fn supplied_agent(processes: Option<u64>, admission: Admission) {
         &["build", "image"],
         &["-t", "managed-life:1", ctx.to_str().unwrap()],
         &env,
-        TIMEOUT,
     );
     assert_eq!(built.status, Some(0), "{built}");
     let volume = format!("{}:/probe", reports.display());
@@ -418,7 +413,7 @@ fn challenge_healthy(env: &[(&str, &std::ffi::OsStr)], reports: &std::path::Path
         .as_nanos()
         .to_be_bytes();
     assert_eq!(published(reports, "ready", TIMEOUT), b"ready");
-    let ports = run_shards_env(&["read", "ports"], &["tenant-fault"], env, TIMEOUT);
+    let ports = run_shards_env(&["read", "ports"], &["tenant-fault"], env);
     assert_eq!(ports.status, Some(0), "{ports}");
     let host_port: u16 = ports
         .stdout

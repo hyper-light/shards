@@ -96,7 +96,6 @@ fn run_steps_run_in_a_confined_builder_and_their_changes_are_built() {
             ctx.to_str().unwrap(),
         ],
         &build_env(&home),
-        TIMEOUT,
     );
     let shown = format!("--- stdout\n{}\n--- stderr\n{}", built.stdout, built.stderr);
     assert_eq!(built.status, Some(0), "{shown}");
@@ -142,12 +141,7 @@ fn a_builders_memory_is_plugged_as_its_build_needs_it() {
         "bw-plug-ctx",
         &format!("FROM {image}\nUSER root\nRUN [\"/bin/testguest\", \"alloc\", \"1536\"]\n"),
     );
-    let built = run_shards_env(
-        &["build"],
-        &["--progress=plain", ctx.to_str().unwrap()],
-        &env,
-        TIMEOUT,
-    );
+    let built = run_shards_env(&["build"], &["--progress=plain", ctx.to_str().unwrap()], &env);
     let shown = format!("--- stdout\n{}\n--- stderr\n{}", built.stdout, built.stderr);
     assert_eq!(built.status, Some(0), "{shown}");
     assert!(built.stderr.contains("allocated 1536"), "{shown}");
@@ -180,12 +174,7 @@ fn a_builders_memory_is_plugged_as_fast_as_its_jobs_take_it() {
              RUN --mount=type=tmpfs,target=/held,size=2g [\"/bin/testguest\", \"alloc-par\", \"{jobs}\", \"3072\", \"/held/big\", \"1024\"]\n"
         ),
     );
-    let built = run_shards_env(
-        &["build"],
-        &["--progress=plain", ctx.to_str().unwrap()],
-        &env,
-        TIMEOUT,
-    );
+    let built = run_shards_env(&["build"], &["--progress=plain", ctx.to_str().unwrap()], &env);
     let shown = format!("--- stdout\n{}\n--- stderr\n{}", built.stdout, built.stderr);
     eprintln!(
         "{jobs} jobs: {}",
@@ -247,7 +236,6 @@ fn run_steps_reach_the_network_unless_it_is_none() {
         &["build"],
         &["--progress=plain", ctx.to_str().unwrap()],
         &build_env(&home),
-        TIMEOUT,
     );
     let _ = built_tx.send(());
     serving.join().unwrap();
@@ -386,7 +374,6 @@ fn run_steps_reach_the_clients_ssh_agent_by_socket_or_pipe() {
                 ctx.to_str().unwrap(),
             ],
             &build_env(&home),
-            TIMEOUT,
         );
         let shown = format!(
             "{what}\n--- stdout\n{}\n--- stderr\n{}",
@@ -492,12 +479,7 @@ fn a_builder_gives_back_what_it_holds_cold_at_its_builds_word() {
             "FROM {image}\nUSER root\nRUN --mount=type=cache,target=/c [\"/bin/testguest\", \"big\", \"/c/big\", \"{MIB}\"]\n"
         ),
     );
-    let filled = run_shards_env(
-        &["build"],
-        &["--progress=plain", fill.to_str().unwrap()],
-        &env,
-        TIMEOUT,
-    );
+    let filled = run_shards_env(&["build"], &["--progress=plain", fill.to_str().unwrap()], &env);
     assert_eq!(filled.status, Some(0), "{filled}");
     let ctx = context(
         "bw-give-ctx",

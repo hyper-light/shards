@@ -67,12 +67,7 @@ fn build(home: &TempDir, tag: &str, options: &[&str], agentfile: &str) {
         format!("FROM {image}\nAGENT helper FROM ./helper\nHARNESS codex FROM ./harness.tar\n{agentfile}"),
     )
     .unwrap();
-    let built = run_shards_env(
-        &["build", "image"],
-        &["-t", tag, ctx.to_str().unwrap()],
-        &env,
-        TIMEOUT,
-    );
+    let built = run_shards_env(&["build", "image"], &["-t", tag, ctx.to_str().unwrap()], &env);
     assert_eq!(built.status, Some(0), "{}", built.stderr);
 }
 
@@ -650,7 +645,7 @@ fn build_example(home: &TempDir, tag: &str) {
     let ctx = TempDir::new("api-example-ctx");
     std::fs::create_dir_all(ctx.join("codex/bin")).unwrap();
     let agentfile = std::fs::read_to_string(example.join("Agentfile")).unwrap();
-    std::fs::write(ctx.join("Agentfile"), common::hub_bases(&agentfile, TIMEOUT)).unwrap();
+    std::fs::write(ctx.join("Agentfile"), common::hub_bases(&agentfile)).unwrap();
     std::fs::copy(example.join("codex/harness.json"), ctx.join("codex/harness.json")).unwrap();
     std::fs::copy(common::test_guest(), ctx.join("codex/bin/codex")).unwrap();
     // A context's files keep their modes on a Unix host, as fsutil walks them; a Windows
@@ -669,12 +664,7 @@ fn build_example(home: &TempDir, tag: &str) {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let built = run_shards_env(
-        &["build", "image"],
-        &["-t", tag, ctx.to_str().unwrap()],
-        &env,
-        TIMEOUT,
-    );
+    let built = run_shards_env(&["build", "image"], &["-t", tag, ctx.to_str().unwrap()], &env);
     assert_eq!(built.status, Some(0), "{}", built.stderr);
 }
 
@@ -714,7 +704,7 @@ fn an_images_next_run_restores_the_template_its_first_saved() {
     if cannot_run_vms() {
         return;
     }
-    let home = common::home_with("api-tmpl-home", TIMEOUT);
+    let home = common::home_with("api-tmpl-home");
     build_example(&home, "api-tmpl:1");
     let mut given = spec(&home, "api-tmpl:1");
     given.command = Some(["/bin/sh", "-c", "exit 3"].map(String::from).to_vec());
@@ -767,7 +757,7 @@ fn an_images_next_run_takes_a_warm_host_of_its_pool() {
     if cannot_run_vms() {
         return;
     }
-    let home = common::home_with("api-pool-home", TIMEOUT);
+    let home = common::home_with("api-pool-home");
     build_example(&home, "api-pool:1");
     let mut s = spec(&home, "api-pool:1");
     s.command = Some(["/bin/sh", "-c", "exit 3"].map(String::from).to_vec());

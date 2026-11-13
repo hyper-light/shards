@@ -29,9 +29,18 @@ use common::{shards, shards_vm};
 
 const TIMEOUT: Duration = Duration::from_secs(60);
 
-/// `shards ARGS` in `home`, whose runs boot the test kernel and init.
+/// `shards ARGS` in `home`, whose runs boot the test kernel and init, waited on as long as
+/// it goes on (`common::run_command`): a large `-m` whose guest plugs and touches gigabytes
+/// on a slow, contended CI runner progresses for minutes (`run_limits_a_microvms_resources`
+/// took 199 s under 32 busy loops where it took 30 idle).
 fn shards_in(home: &Path, args: &[&str]) -> Run {
-    shards_in_within(home, args, TIMEOUT)
+    let (kernel, init) = (kernel(), guest_init());
+    let env: [(&str, &OsStr); 3] = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel.as_os_str()),
+        ("SHARDS_INIT", init.as_os_str()),
+    ];
+    run_shards_env(&[], args, &env)
 }
 
 /// Stops run `name` of `home`, as a test that needs it stopped does. A stop that hears no
@@ -65,20 +74,6 @@ fn stop_run(home: &Path, name: &str) {
     );
 }
 
-/// [`shards_in`] with a timeout of its own, for a run whose work is heavier than a start:
-/// a large `-m` whose guest plugs and touches gigabytes takes far longer than [`TIMEOUT`]
-/// on a slow, contended CI runner (it progresses, it is not hung: the whole of
-/// `run_limits_a_microvms_resources` took 199 s under 32 busy loops where it took 30 idle).
-fn shards_in_within(home: &Path, args: &[&str], timeout: Duration) -> Run {
-    let (kernel, init) = (kernel(), guest_init());
-    let env: [(&str, &OsStr); 3] = [
-        ("SHARDS_HOME", home.as_os_str()),
-        ("SHARDS_KERNEL", kernel.as_os_str()),
-        ("SHARDS_INIT", init.as_os_str()),
-    ];
-    run_shards_env(&[], args, &env, timeout)
-}
-
 /// `shards run` of the test image, with `options` before the image and `command` after it.
 fn run_args(image: &str, options: &[&str], command: &[&str]) -> Vec<String> {
     let mut args: Vec<String> = ["run", "--pull", "never"].map(String::from).to_vec();
@@ -89,14 +84,9 @@ fn run_args(image: &str, options: &[&str], command: &[&str]) -> Vec<String> {
 }
 
 fn run_in(home: &Path, image: &str, options: &[&str], command: &[&str]) -> Run {
-    run_in_within(home, image, options, command, TIMEOUT)
-}
-
-/// [`run_in`] with a timeout of its own ([`shards_in_within`]), for a memory-heavy run.
-fn run_in_within(home: &Path, image: &str, options: &[&str], command: &[&str], timeout: Duration) -> Run {
     let args = run_args(image, options, command);
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    shards_in_within(home, &args, timeout)
+    shards_in(home, &args)
 }
 
 /// What `home`'s daemon logged of processes ended for want of memory, for a failure's
@@ -1243,7 +1233,7 @@ fn pulled(name: &str, image: &str) -> Option<(TempDir, String)> {
     if cannot_run_vms() {
         return None;
     }
-    let image = common::hub(image, TIMEOUT);
+    let image = common::hub(image);
     let home = TempDir::new(name);
     let pulled = shards_in(&home, &["pull", "-q", &image]);
     assert_eq!(pulled.status, Some(0), "{pulled}");
@@ -1752,7 +1742,7 @@ fn a_volumes_large_files_go_through_its_dax_window() {
         ("SHARDS_INIT", init.as_os_str()),
         ("SHARDS_SHARE_WINDOW_MIB", "64".as_ref()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let pulled = shards(&["pull", "-q", &image]);
     assert_eq!(pulled.status, Some(0), "{pulled}");
     let dir = TempDir::new("containers-dax-v");
@@ -1933,7 +1923,7 @@ fn a_volumes_large_files_go_through_its_dax_window() {
                 "fs",
                 "hold:/v/held:3145728:/v/held-go",
             ];
-            run_shards_env(&[], &hold, &env, TIMEOUT)
+            run_shards_env(&[], &hold, &env)
         })
     };
     let mut patience = Patience::of(&home, TIMEOUT);
@@ -2034,7 +2024,7 @@ fn a_volumes_large_files_go_through_its_dax_window() {
                 "fs",
                 "map2m:/v/mapped:/v/mapped-go",
             ];
-            run_shards_env(&[], &map, &env, TIMEOUT)
+            run_shards_env(&[], &map, &env)
         })
     };
     let mut patience = Patience::of(&home, TIMEOUT);
@@ -2099,7 +2089,7 @@ fn a_volumes_files_are_mapped_from_dax_smallest_bytes() {
         ("SHARDS_INIT", init.as_os_str()),
         ("SHARDS_SHARE_WINDOW_MIB", "64".as_ref()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let pulled = shards(&["pull", "-q", &image]);
     assert_eq!(pulled.status, Some(0), "{pulled}");
     let dir = TempDir::new("containers-daxs-v");
@@ -2184,7 +2174,7 @@ fn a_volumes_large_files_go_through_a_dax_window_by_default() {
         if let Some(mib) = window {
             env.push(("SHARDS_SHARE_WINDOW_MIB", mib.as_ref()));
         }
-        let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+        let shards = |args: &[&str]| run_shards_env(&[], args, &env);
         let pulled = shards(&["pull", "-q", &image]);
         assert_eq!(pulled.status, Some(0), "{pulled}");
         let r = shards(&[
@@ -2247,7 +2237,7 @@ fn a_volumes_long_dax_window_takes_its_guest_no_mapping_for_each_range() {
             ("SHARDS_INIT", init.as_os_str()),
             ("SHARDS_SHARE_WINDOW_MIB", window.as_ref()),
         ];
-        let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+        let shards = |args: &[&str]| run_shards_env(&[], args, &env);
         let pulled = shards(&["pull", "-q", &image]);
         assert_eq!(pulled.status, Some(0), "{pulled}");
         let r = shards(&[
@@ -2300,7 +2290,7 @@ fn a_microvms_devices_reach_the_pages_of_the_files_it_maps() {
         ("SHARDS_INIT", init.as_os_str()),
         ("SHARDS_SHARE_WINDOW_MIB", "64".as_ref()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let pulled = shards(&["pull", "-q", &image]);
     assert_eq!(pulled.status, Some(0), "{pulled}");
     let dir = TempDir::new("containers-dma-v");
@@ -2878,7 +2868,7 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
         env.push(("SHARDS_PRESSURE", pipe.as_os_str()));
     }
     let _saying = told.zip(every).map(|(told, every)| Saying::start(told, every));
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let pulled = shards(&["pull", "-q", &image]);
     assert_eq!(pulled.status, Some(0), "{pulled}");
     let bus = std::env::var_os("XDG_RUNTIME_DIR")
@@ -3501,7 +3491,7 @@ fn a_microvm_under_a_group_is_held_to_its_budget() {
         ("SHARDS_INIT", init.as_os_str()),
         ("SHARDS_SHARE_WINDOW_MIB", "0".as_ref()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let pulled = shards(&["pull", "-q", &image]);
     assert_eq!(pulled.status, Some(0), "{pulled}");
     let vol = TempDir::new("group-vol");
@@ -3648,11 +3638,7 @@ fn what_a_joiner_reads_of_its_image_is_given_back_at_its_groups_budget() {
     std::fs::create_dir(&ctx).unwrap();
     std::fs::write(ctx.join("Dockerfile"), format!("FROM {image}\nCOPY big /big\n")).unwrap();
     noise(&ctx.join("big"), 512);
-    let built = shards_in_within(
-        &home,
-        &["build", "-q", "-t", "big:1", ctx.to_str().unwrap()],
-        Duration::from_secs(600),
-    );
+    let built = shards_in(&home, &["build", "-q", "-t", "big:1", ctx.to_str().unwrap()]);
     assert_eq!(built.status, Some(0), "{built}");
     std::fs::remove_file(ctx.join("big")).unwrap();
     let provider = run_in(
@@ -3819,7 +3805,7 @@ fn what_a_microvm_holds_cold_is_given_back_at_its_hosts_word() {
         ("SHARDS_INIT", init.as_os_str()),
         ("SHARDS_PRESSURE", pipe.as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     // Its daemon, started by the pull, hears its host's word from the pipe.
     let pulled = shards(&["pull", "-q", &image]);
     assert_eq!(pulled.status, Some(0), "{pulled}");
@@ -3827,12 +3813,7 @@ fn what_a_microvm_holds_cold_is_given_back_at_its_hosts_word() {
     std::fs::create_dir(&ctx).unwrap();
     std::fs::write(ctx.join("Dockerfile"), format!("FROM {image}\nCOPY big /big\n")).unwrap();
     noise(&ctx.join("big"), 512);
-    let built = run_shards_env(
-        &[],
-        &["build", "-q", "-t", "big:1", ctx.to_str().unwrap()],
-        &env,
-        Duration::from_secs(600),
-    );
+    let built = run_shards_env(&[], &["build", "-q", "-t", "big:1", ctx.to_str().unwrap()], &env);
     assert_eq!(built.status, Some(0), "{built}");
     std::fs::remove_file(ctx.join("big")).unwrap();
     let provider = shards(
@@ -3995,7 +3976,7 @@ fn a_microvm_held_to_a_budget_reads_a_large_file_through_its_window_to_its_end()
         ("SHARDS_INIT", init.as_os_str()),
         ("SHARDS_SHARE_WINDOW_MIB", "4096".as_ref()),
     ];
-    let shards = |args: &[&str], within: Duration| run_shards_env(&[], args, &env, within);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let vol = TempDir::new("budget-dax-vol");
     // A tmpfs's file is memory nothing reclaims without swap, its pages the file itself:
     // read through the window under a budget short of it, its microVM is never within it,
@@ -4038,12 +4019,9 @@ fn a_microvm_held_to_a_budget_reads_a_large_file_through_its_window_to_its_end()
         &["sleep"],
     );
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    let started = shards(&args, TIMEOUT);
+    let started = shards(&args);
     assert_eq!(started.status, Some(0), "{started}");
-    let dax = shards(
-        &["exec", "budget", "/bin/testguest", "fs", "dax:/vol/big"],
-        TIMEOUT,
-    );
+    let dax = shards(&["exec", "budget", "/bin/testguest", "fs", "dax:/vol/big"]);
     assert_eq!(dax.stdout, "dax /vol/big yes\n", "{dax}");
     // SAFETY: getuid(2) takes nothing and cannot fail.
     let uid = unsafe { libc::getuid() };
@@ -4065,10 +4043,7 @@ fn a_microvm_held_to_a_budget_reads_a_large_file_through_its_window_to_its_end()
         .output()
         .unwrap();
     assert!(set.status.success(), "{}", String::from_utf8_lossy(&set.stderr));
-    let read = shards(
-        &["exec", "budget", "/bin/testguest", "read", "/vol/big"],
-        Duration::from_secs(300),
-    );
+    let read = shards(&["exec", "budget", "/bin/testguest", "read", "/vol/big"]);
     assert_eq!(read.status, Some(0), "{read}");
     assert!(read.stdout.starts_with("read /vol/big 536870912 "), "{read}");
     let events = std::fs::read_to_string(format!("{cgroup}/memory.events")).unwrap();
@@ -4078,7 +4053,7 @@ fn a_microvm_held_to_a_budget_reads_a_large_file_through_its_window_to_its_end()
         .and_then(|n| n.trim().parse().ok())
         .unwrap_or(0);
     assert!(high > 0, "the slice's budget was never met: {events}");
-    assert_eq!(shards(&["kill", "budget"], TIMEOUT).status, Some(0));
+    assert_eq!(shards(&["kill", "budget"]).status, Some(0));
 }
 
 #[test]
@@ -5087,7 +5062,7 @@ fn a_networks_egress_is_a_grant_of_its_destinations_alone() {
         ("SHARDS_INIT", init.as_os_str()),
         ("SHARDS_DNS", OsStr::new(&resolver_at)),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let pulled = shards(&["pull", "-q", &image]);
     assert_eq!(pulled.status, Some(0), "{pulled}");
     // Refused as the network is made: a destination of no port, none at all, a pattern,
@@ -6135,7 +6110,7 @@ fn a_stopped_microvms_next_run_goes_on_over_its_kept_file() {
     let Some((home, image)) = home("containers-over") else {
         return;
     };
-    common::restarts_cross_at(&home, 4 << 20, TIMEOUT);
+    common::restarts_cross_at(&home, 4 << 20);
     let shards = |args: &[&str]| shards_in(&home, args);
     let big = 32u64 << 20;
     // Each run writes a file, 8 MiB it keeps and 32 MiB it removes, and makes a directory: a
@@ -7083,17 +7058,16 @@ fn run_limits_a_microvms_resources() {
     ] {
         // It holds all but what its own process and page tables take of its limit, in a
         // microVM that boots with less and plugs the rest as it needs it (D148). Plugging
-        // and touching gigabytes is far slower than a start on a contended CI runner, so
-        // these runs get a timeout of their own, well past TIMEOUT (measured 199 s for the
-        // whole test under 32 busy loops; it progresses, it never hangs).
+        // and touching gigabytes is far slower than a start on a contended CI runner
+        // (measured 199 s for the whole test under 32 busy loops): its wait follows it as it
+        // progresses (`shards_in`).
         let limit_mib = limit.trim_end_matches('m').parse::<u64>().unwrap();
         let wanted = (limit_mib - 16).to_string();
-        let held = run_in_within(
+        let held = run_in(
             &home,
             &image,
             &["--rm", "-m", limit, "--cpus", cpus],
             &["alloc", &wanted],
-            Duration::from_secs(240),
         );
         assert_eq!(
             held.status,
@@ -7892,7 +7866,7 @@ fn a_command_that_cannot_start_says_why() {
 
 /// `shards ARGS` in `home`, where no run is meant to boot.
 fn without_vms(home: &Path, args: &[&str]) -> Run {
-    run_shards_env(&[], args, &[("SHARDS_HOME", home.as_os_str())], TIMEOUT)
+    run_shards_env(&[], args, &[("SHARDS_HOME", home.as_os_str())])
 }
 
 /// `-h` is help on every form of shards' grammar, and each form's page is its own: named
@@ -12232,7 +12206,7 @@ fn a_push_goes_with_its_clients_credentials() {
             ("SHARDS_KERNEL", kernel.as_os_str()),
             ("SHARDS_INIT", init.as_os_str()),
         ];
-        run_shards_env(&[], args, &env, TIMEOUT)
+        run_shards_env(&[], args, &env)
     };
     // The daemon starts from a client with no credentials.
     assert_eq!(shards(&none, &["pull", "-q", &source]).status, Some(0));
@@ -13200,7 +13174,7 @@ fn update_under_pressure_stress() {
         ("SHARDS_INIT", init.as_os_str()),
         ("SHARDS_PRESSURE", pipe.as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let pulled = shards(&["pull", "image", "-q", &image]);
     assert_eq!(pulled.status, Some(0), "{pulled}");
     // Privileged, so that its exec may read its guest's kernel log (CAP_SYSLOG).
@@ -13805,7 +13779,7 @@ fn microvms_are_reached_in_shards_grammar_by_their_names_and_their_images() {
         "20000",
     ]);
     assert_eq!(ran.status, Some(0), "{ran}");
-    let waited = shards_in_within(&home, &["wait", "vm", &image], Duration::from_secs(120));
+    let waited = shards_in(&home, &["wait", "vm", &image]);
     assert_eq!(
         (waited.status, waited.stdout.as_str()),
         (Some(0), "0\n"),
@@ -13923,7 +13897,7 @@ fn created_microvms_are_published_to_the_local_store() {
             ("SHARDS_LOCAL_STORE", OsStr::new("")),
             ("DOCKER_HOST", host.as_os_str()),
         ];
-        run_shards_env(&[], args, &env, Duration::from_secs(120))
+        run_shards_env(&[], args, &env)
     };
     let mut loads: Vec<String> = Vec::new();
     let mut published = |name: &str| {
@@ -15372,7 +15346,7 @@ fn cdi_devices_are_given_to_microvms() {
         ("SHARDS_INIT", init.as_os_str()),
         ("SHARDS_CDI_SPEC_DIRS", specs.as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let run = |options: &[&str], command: &[&str]| {
         let args = run_args(&image, options, command);
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -15599,18 +15573,12 @@ fn stops_beside_a_gigabyte_build() {
                 ("SHARDS_KERNEL", kernel.as_os_str()),
                 ("SHARDS_INIT", init.as_os_str()),
             ];
-            let built = run_shards_env(
-                &[],
-                &["build", "-q", "-t", "big:1", ctx.to_str().unwrap()],
-                &env,
-                Duration::from_secs(600),
-            );
+            let built = run_shards_env(&[], &["build", "-q", "-t", "big:1", ctx.to_str().unwrap()], &env);
             reading.store(true, Ordering::SeqCst);
             let ran = run_shards_env(
                 &[],
                 &["run", "--pull", "never", "--rm", "big:1", "fs", "open:r:/big"],
                 &env,
-                Duration::from_secs(60),
             );
             done.store(true, Ordering::SeqCst);
             format!(
@@ -15832,7 +15800,7 @@ fn kills_cost_by_what_the_command_holds() {
                     let (name, mut run, vm, gib) = held(mib, threads, procs);
                     let cpu = || shards_vmm::platform::process_usage(vm).ok().map(|u| u.cpu_ns);
                     let (cpu0, t0) = (cpu(), Instant::now());
-                    let killed = shards_in_within(&home, &["kill", &name], timeout);
+                    let killed = shards_in(&home, &["kill", &name]);
                     let ms = t0.elapsed().as_secs_f64() * 1e3;
                     // Its VM process's CPU over the teardown, where it is still there to read.
                     if let (Some(a), Some(b)) = (cpu0, cpu()) {
@@ -15977,13 +15945,12 @@ fn a_runs_memory_freed_goes_back_to_the_host() {
             init.to_str().unwrap(),
         ],
         &env,
-        TIMEOUT,
     );
     assert_eq!(recorded.status, Some(0), "{recorded}");
     let run = |command: &[&str]| {
         let args = run_args(&image, &["--rm"], command);
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        run_shards_env(&[], &args, &env, TIMEOUT)
+        run_shards_env(&[], &args, &env)
     };
     // The microVM that saves the template, then one restored from it, each idle as long
     // as the run that frees memory.
@@ -16057,13 +16024,12 @@ fn a_runs_memory_grows_as_its_workload_needs_it() {
             init.to_str().unwrap(),
         ],
         &env,
-        TIMEOUT,
     );
     assert_eq!(recorded.status, Some(0), "{recorded}");
     let run = |options: &[&str], command: &[&str]| {
         let args = run_args(&image, options, command);
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        run_shards_env(&[], &args, &env, TIMEOUT)
+        run_shards_env(&[], &args, &env)
     };
     let r = run(&["--rm"], &["alloc", "1024"]);
     assert_eq!(r.status, Some(0), "{r}");
@@ -18386,7 +18352,7 @@ fn a_runs_log_is_sent_to_journald_as_its_options_say() {
             ("SHARDS_INIT", init.as_os_str()),
             ("SHARDS_JOURNAL_SOCKET", path.as_os_str()),
         ];
-        let pulled = run_shards_env(&[], &["pull", "-q", &image], &env, TIMEOUT);
+        let pulled = run_shards_env(&[], &["pull", "-q", &image], &env);
         assert_eq!(pulled.status, Some(0), "{}", pulled.stderr);
         let journald = |name: &str, flags: &[&str], command: &[&str]| {
             let mut all = vec!["--name", name, "--log-driver", "journald"];
@@ -18955,7 +18921,7 @@ fn a_runs_log_is_sent_to_cloudwatch_logs_as_its_options_say() {
             env.push((k, (*v).into()));
         }
         let env: Vec<(&str, &std::ffi::OsStr)> = env.iter().map(|(k, v)| (*k, v.as_os_str())).collect();
-        run_shards_env(&[], args, &env, TIMEOUT)
+        run_shards_env(&[], args, &env)
     };
     let shards = |args: &[&str]| shards_in(&home, args);
     let id_of = |name: &str| {
@@ -19627,7 +19593,7 @@ fn a_runs_log_is_sent_to_cloud_logging_as_its_options_say() {
             env.push((k, (*v).into()));
         }
         let env: Vec<(&str, &std::ffi::OsStr)> = env.iter().map(|(k, v)| (*k, v.as_os_str())).collect();
-        run_shards_env(&[], args, &env, TIMEOUT)
+        run_shards_env(&[], args, &env)
     };
     let shards = |args: &[&str]| shards_in(&home, args);
     let gcplogs = |name: &str, opts: &[&str], command: &[&str], google: &[(&str, &str)]| {

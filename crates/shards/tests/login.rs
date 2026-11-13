@@ -120,12 +120,12 @@ fn logins_are_checked_kept_used_and_forgotten() {
         ("DOCKER_CONFIG", config.as_os_str()),
         ("PATH", path.as_os_str()),
     ];
-    let pulled = run_shards_env(&["pull"], &["-q", image.as_str()], &env, TIMEOUT);
+    let pulled = run_shards_env(&["pull"], &["-q", image.as_str()], &env);
     assert_eq!(pulled.status, Some(0), "{pulled}");
     let target = format!("{registry}/team/app:1");
-    let tagged = run_shards_env(&["tag"], &[image.as_str(), target.as_str()], &env, TIMEOUT);
+    let tagged = run_shards_env(&["tag"], &[image.as_str(), target.as_str()], &env);
     assert_eq!(tagged.status, Some(0), "{tagged}");
-    let pushed = run_shards_env(&["push"], &[target.as_str()], &env, TIMEOUT);
+    let pushed = run_shards_env(&["push"], &[target.as_str()], &env);
     assert_eq!(pushed.status, Some(0), "{pushed}");
     assert!(repos.lock().unwrap().manifests["team/app"].contains_key("1"));
     // Forgotten, and the push refused after.
@@ -140,7 +140,7 @@ fn logins_are_checked_kept_used_and_forgotten() {
     );
     let doc: serde_json::Value = serde_json::from_slice(&std::fs::read(&kept).unwrap()).unwrap();
     assert!(doc["auths"].get(&registry).is_none(), "{doc}");
-    let refused = run_shards_env(&["push"], &[target.as_str()], &env, TIMEOUT);
+    let refused = run_shards_env(&["push"], &[target.as_str()], &env);
     assert_ne!(refused.status, Some(0), "{refused}");
     // shards' grammar says it so too.
     let (status, out, err) = shards(

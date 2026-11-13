@@ -8,12 +8,9 @@ mod common;
 
 use std::fs::File;
 use std::io::{self, BufReader, Write};
-use std::time::Duration;
 
 use common::{TempDir, cannot_run_vms, kernel, test_guest, vm_run};
 use shards_image::{erofs, layer};
-
-const TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Writes a ustar archive, as layer tools do.
 #[derive(Default)]
@@ -255,21 +252,18 @@ fn a_guest_sees_its_image_layers_stacked() {
     erofs::write(&tree, &mut layer::Archives(files), &mut out).unwrap();
     out.flush().unwrap();
     drop(out);
-    let r = vm_run(
-        &[
-            "--kernel".as_ref(),
-            kernel().as_os_str(),
-            "--init".as_ref(),
-            test_guest().as_os_str(),
-            "--memory".as_ref(),
-            "256".as_ref(),
-            "--pmem".as_ref(),
-            image.as_os_str(),
-            "--cmdline".as_ref(),
-            "console=ttyS0 quiet shards_test=erofs".as_ref(),
-        ],
-        TIMEOUT,
-    );
+    let r = vm_run(&[
+        "--kernel".as_ref(),
+        kernel().as_os_str(),
+        "--init".as_ref(),
+        test_guest().as_os_str(),
+        "--memory".as_ref(),
+        "256".as_ref(),
+        "--pmem".as_ref(),
+        image.as_os_str(),
+        "--cmdline".as_ref(),
+        "console=ttyS0 quiet shards_test=erofs".as_ref(),
+    ]);
     assert!(r.stdout.contains("SHARDS-TEST PASS"), "{r}");
     let entries = manifest.lines().count();
     assert!(r.stdout.contains(&format!("checked {entries} entries")), "{r}");

@@ -31,7 +31,7 @@ fn shards_in(home: &Path, args: &[&str]) -> Run {
         ("SHARDS_KERNEL", kernel.as_os_str()),
         ("SHARDS_INIT", init.as_os_str()),
     ];
-    run_shards_env(&[], args, &env, TIMEOUT)
+    run_shards_env(&[], args, &env)
 }
 
 /// A home with the test image pulled, and the image's name.
@@ -601,7 +601,7 @@ fn a_saved_microvm_reads_on_through_its_dax_window() {
         ("SHARDS_INIT", init.as_os_str()),
         ("SHARDS_SHARE_WINDOW_MIB", "64".as_ref()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let pulled = shards(&["pull", "-q", &image]);
     assert_eq!(pulled.status, Some(0), "{pulled}");
     let dir = TempDir::new("saved-dax-v");

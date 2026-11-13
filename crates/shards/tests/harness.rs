@@ -176,17 +176,18 @@ fn stand_in_doing(what: &str) -> std::process::Command {
     cmd
 }
 
-/// A command that works past the bound its caller gave its wait is waited on while it
-/// works, and not cut at that bound: a wait follows its party's liveness and progress (the
-/// person's ruling of 2026-11-13). api_image's and build.rs's builds on jupiter were cut at
-/// their tests' 120 s while they worked under its headroom guard (WHP chain B, 8cc1f6673),
-/// as a command that is no microVM's was cut at its bound however it worked. Do: run a
-/// stand-in busy past the bound given. Expect: its own end, status 0, past the bound.
+/// A command is waited on while it works: its caller gives its wait no bound, as a wait
+/// follows its party's liveness and progress (the person's ruling of 2026-11-13).
+/// api_image's and build.rs's builds on jupiter were cut at their tests' 120 s while they
+/// worked under its headroom guard (WHP chain B, 8cc1f6673), as a command that is no
+/// microVM's was cut at its caller's bound however it worked: red so at f370b8b60, a
+/// stand-in busy for 1 s cut at a bound of 100 ms. Do: run a stand-in busy for a second.
+/// Expect: its own end, status 0, past its work.
 #[test]
-fn a_command_working_past_its_bound_is_waited_on() {
-    let (bound, busy) = (Duration::from_millis(100), Duration::from_secs(1));
+fn a_command_is_waited_on_while_it_works() {
+    let busy = Duration::from_secs(1);
     let asked = ["stand-in".to_string(), format!("busy {}", busy.as_millis())];
-    let run = common::run_command(stand_in_doing(&asked[1]), &asked, bound);
+    let run = common::run_command(stand_in_doing(&asked[1]), &asked);
     assert_eq!(run.status, Some(0), "{run}");
     assert!(
         run.elapsed >= busy,

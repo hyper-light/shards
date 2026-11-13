@@ -27,7 +27,7 @@ use shards_image::erofs::{self, DataRef, Dir, Kind, Meta, Node, NodeId, Source, 
 /// `restarts`): a thousand restarts each way, of layers holding 0 to 64 MiB evenly, on two
 /// exact lines meeting at `from`, packing's the steeper, so that the few a test's own
 /// restarts add move neither. The home's daemon is stopped, as the next reads them.
-pub fn restarts_cross_at(home: &Path, from: u64, timeout: Duration) {
+pub fn restarts_cross_at(home: &Path, from: u64) {
     let mib = f64::from(1u32 << 20);
     let (n, top) = (1000.0f64, 64.0 * mib);
     let (mean, xx) = (top / 2.0, (top / (n - 1.0)).powi(2) * n * (n * n - 1.0) / 12.0);
@@ -51,7 +51,7 @@ pub fn restarts_cross_at(home: &Path, from: u64, timeout: Duration) {
     )
     .unwrap();
     let env = [("SHARDS_HOME", home.as_os_str())];
-    let _ = run_shards_env(&["daemon"], &["stop"], &env, timeout);
+    let _ = run_shards_env(&["daemon"], &["stop"], &env);
 }
 
 /// Which file is at `path`: its device and inode on Unix, its volume's serial number and
@@ -128,7 +128,7 @@ pub fn program_copy(from: &Path, to: &Path) {
 }
 
 /// A home whose guest is the test kernel and init, recorded before its daemon starts.
-pub fn home_with(name: &str, timeout: Duration) -> TempDir {
+pub fn home_with(name: &str) -> TempDir {
     let home = TempDir::new(name);
     let args = [
         "use".as_ref(),
@@ -137,7 +137,7 @@ pub fn home_with(name: &str, timeout: Duration) -> TempDir {
         "--init".as_ref(),
         guest_init().as_os_str(),
     ];
-    let recorded = run_shards_env(&["guest"], &args, &[("SHARDS_HOME", home.as_os_str())], timeout);
+    let recorded = run_shards_env(&["guest"], &args, &[("SHARDS_HOME", home.as_os_str())]);
     assert_eq!(recorded.status, Some(0), "{}", recorded.stderr);
     home
 }
@@ -1825,16 +1825,16 @@ impl Run {
     }
 }
 
-/// Runs `shards run <args>`, `<args>` starting `--kernel`, killing it (and failing) after `timeout`.
+/// Runs `shards run <args>`, `<args>` starting `--kernel`, as [`run_command`] waits on it.
 #[track_caller]
-pub fn vm_run<S: AsRef<std::ffi::OsStr>>(args: &[S], timeout: Duration) -> Run {
-    run_shards(&["run"], args, timeout)
+pub fn vm_run<S: AsRef<std::ffi::OsStr>>(args: &[S]) -> Run {
+    run_shards(&["run"], args)
 }
 
-/// Runs `shards <command...> <args...>`, killing it (and failing) after `timeout`.
+/// Runs `shards <command...> <args...>`, as [`run_command`] waits on it.
 #[track_caller]
-pub fn run_shards<S: AsRef<std::ffi::OsStr>>(command: &[&str], args: &[S], timeout: Duration) -> Run {
-    run_shards_env(command, args, &[], timeout)
+pub fn run_shards<S: AsRef<std::ffi::OsStr>>(command: &[&str], args: &[S]) -> Run {
+    run_shards_env(command, args, &[])
 }
 
 /// [`run_shards`], with `env` added to shards' environment.
@@ -1843,9 +1843,8 @@ pub fn run_shards_env<S: AsRef<std::ffi::OsStr>>(
     command: &[&str],
     args: &[S],
     env: &[(&str, &std::ffi::OsStr)],
-    timeout: Duration,
 ) -> Run {
-    run_shards_with(command, args, env, None, timeout)
+    run_shards_with(command, args, env, None)
 }
 
 /// `shards <args>` (`run` or `start -a`) of microVM `container`, whose command waits for
@@ -1876,17 +1875,12 @@ pub fn run_watching(
     let with_pid = format!("pid,caught,comm,{fields}");
     let start = Instant::now();
     std::thread::scope(|scope| {
-        let ran = scope.spawn(|| run_shards_env(&[], args, env, timeout));
+        let ran = scope.spawn(|| run_shards_env(&[], args, env));
         let mut last = String::new();
         let mut signalled = false;
         let mut was_ready = false;
         while !ran.is_finished() && start.elapsed() < timeout {
-            let top = run_shards_env(
-                &["top"],
-                &[container, "-o", &with_pid],
-                env,
-                Duration::from_secs(30),
-            );
+            let top = run_shards_env(&["top"], &[container, "-o", &with_pid], env);
             let all: Vec<Vec<String>> = top
                 .stdout
                 .lines()
@@ -1905,12 +1899,7 @@ pub fn run_watching(
             let rows: Vec<Vec<String>> = all.into_iter().map(|r| r.into_iter().skip(2).collect()).collect();
             was_ready = was_ready || (top.status == Some(0) && ready(&rows));
             if was_ready && awaiting {
-                let sent = run_shards_env(
-                    &["kill"],
-                    &["-s", "USR1", container],
-                    env,
-                    Duration::from_secs(30),
-                );
+                let sent = run_shards_env(&["kill"], &["-s", "USR1", container], env);
                 assert_eq!(sent.status, Some(0), "{sent}");
                 signalled = true;
                 break;
@@ -1962,20 +1951,14 @@ pub fn run_shards_env_in<S: AsRef<std::ffi::OsStr>>(
     command: &[&str],
     args: &[S],
     env: &[(&str, &std::ffi::OsStr)],
-    timeout: Duration,
 ) -> Run {
-    run_shards_with(command, args, env, Some(dir), timeout)
+    run_shards_with(command, args, env, Some(dir))
 }
 
 /// [`run_shards`], in the working directory `dir`.
 #[track_caller]
-pub fn run_shards_in<S: AsRef<std::ffi::OsStr>>(
-    dir: &Path,
-    command: &[&str],
-    args: &[S],
-    timeout: Duration,
-) -> Run {
-    run_shards_with(command, args, &[], Some(dir), timeout)
+pub fn run_shards_in<S: AsRef<std::ffi::OsStr>>(dir: &Path, command: &[&str], args: &[S]) -> Run {
+    run_shards_with(command, args, &[], Some(dir))
 }
 
 /// `cmd`'s output, as [`Command::output`] gives it, within `timeout`: a client of shards'
@@ -2050,7 +2033,6 @@ fn run_shards_with<S: AsRef<std::ffi::OsStr>>(
     args: &[S],
     env: &[(&str, &std::ffi::OsStr)],
     dir: Option<&Path>,
-    timeout: Duration,
 ) -> Run {
     // What it was asked, for the failure that names it.
     let asked: Vec<String> = std::iter::once("shards".to_string())
@@ -2062,7 +2044,7 @@ fn run_shards_with<S: AsRef<std::ffi::OsStr>>(
         cmd.current_dir(dir);
     }
     cmd.args(command).args(args).envs(env.iter().copied());
-    run_command(cmd, &asked, timeout)
+    run_command(cmd, &asked)
 }
 
 /// What a client that never ended shows before it is killed: its home's runs as its daemon
@@ -2625,9 +2607,9 @@ pub fn processes() -> Vec<(u32, u32, String)> {
 /// client's liveness alone; once its kind has an answer, it is looked at each W* past its
 /// start, and the test fails, `asked` naming the command, at a look that finds its party
 /// made no progress at all since the look before, its host not holding it (the person's
-/// ruling of 2026-11-13, D209). `_timeout` is read no more, and goes with every caller's.
+/// ruling of 2026-11-13, D209).
 #[track_caller]
-pub fn run_command(cmd: Command, asked: &[String], _timeout: Duration) -> Run {
+pub fn run_command(cmd: Command, asked: &[String]) -> Run {
     run_ending(cmd, asked, None, Leftovers::Ended).unwrap_or_else(|ended| panic!("{}", ended.said))
 }
 
@@ -4145,7 +4127,7 @@ pub fn served_counting() -> (String, Arc<AtomicUsize>) {
 /// 13: api_image.rs's builds, refused from its eighth round of 30 on); ghcr.io limits its own.
 /// What it serves is what a pull of the image for this host's platform fetches, pulled once
 /// per checkout ([`hub_seed`]); one registry serves each image to every test of the binary.
-pub fn hub(reference: &str, timeout: Duration) -> String {
+pub fn hub(reference: &str) -> String {
     static SERVED: OnceLock<std::sync::Mutex<std::collections::HashMap<String, String>>> = OnceLock::new();
     let mut served = SERVED
         .get_or_init(Default::default)
@@ -4154,7 +4136,7 @@ pub fn hub(reference: &str, timeout: Duration) -> String {
     if let Some(at) = served.get(reference) {
         return at.clone();
     }
-    let (top, blobs) = hub_seed(reference, timeout);
+    let (top, blobs) = hub_seed(reference);
     let digest = sha256_digest(&top);
     let (port, _) = registry(top, blobs);
     let at = format!("127.0.0.1:{port}/test/image@{digest}");
@@ -4164,9 +4146,9 @@ pub fn hub(reference: &str, timeout: Duration) -> String {
 
 /// `reference` as a test pulls it: a remote registry's image pinned by its digest from the
 /// tests' own registry ([`hub`]), any other (a loopback registry's, a tag) as it is.
-pub fn hubless(reference: &str, timeout: Duration) -> String {
+pub fn hubless(reference: &str) -> String {
     match shards_image::reference::Reference::parse(reference) {
-        Ok(r) if remote(&r) && r.digest.is_some() => hub(reference, timeout),
+        Ok(r) if remote(&r) && r.digest.is_some() => hub(reference),
         _ => reference.to_string(),
     }
 }
@@ -4183,7 +4165,7 @@ fn remote(r: &shards_image::reference::Reference) -> bool {
 
 /// `agentfile` with each base it takes `FROM` a remote registry by a digest taken from the
 /// tests' own registry instead ([`hubless`]): the same image, every other word as it was.
-pub fn hub_bases(agentfile: &str, timeout: Duration) -> String {
+pub fn hub_bases(agentfile: &str) -> String {
     agentfile
         .split_inclusive('\n')
         .map(|line| {
@@ -4191,7 +4173,7 @@ pub fn hub_bases(agentfile: &str, timeout: Duration) -> String {
                 .strip_prefix("FROM ")
                 .and_then(|rest| rest.split_whitespace().find(|w| !w.starts_with("--")));
             match base {
-                Some(base) => line.replacen(base, &hubless(base, timeout), 1),
+                Some(base) => line.replacen(base, &hubless(base), 1),
                 None => line.to_string(),
             }
         })
@@ -4204,7 +4186,7 @@ pub fn hub_bases(agentfile: &str, timeout: Duration) -> String {
 /// that a build pulls each into from its registry the first time it is asked for, in
 /// process, as a build pulls its base (no daemon): once per checkout, as the pinned kernel
 /// is downloaded once into target/artifacts ([`fetch`]), one test process at a time.
-fn hub_seed(reference: &str, timeout: Duration) -> (Vec<u8>, Vec<Vec<u8>>) {
+fn hub_seed(reference: &str) -> (Vec<u8>, Vec<Vec<u8>>) {
     let pinned = shards_image::reference::Reference::parse(reference).unwrap();
     assert!(
         remote(&pinned) && pinned.digest.is_some(),
@@ -4223,7 +4205,7 @@ fn hub_seed(reference: &str, timeout: Duration) -> (Vec<u8>, Vec<Vec<u8>>) {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let built = run_shards_env(&["build"], &[ctx.as_os_str()], &env, timeout);
+    let built = run_shards_env(&["build"], &[ctx.as_os_str()], &env);
     assert_eq!(
         built.status,
         Some(0),
