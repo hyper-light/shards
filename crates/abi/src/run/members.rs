@@ -30,6 +30,11 @@ pub const ENDS: &[u8] = b"member-ends";
 /// stdin goes to it, and [`builtin::RESIZE`](super::builtin::RESIZE) sizes it. One for a
 /// member at most.
 pub const TERMINAL_KEY: &[u8] = b"member-terminal=";
+/// `member-arg=<index>\0<argument>`: one of the member's run-time arguments (D256), on its
+/// command line after its config's `run.command` (its startup descriptor's entrypoint and
+/// options), in the order staged: what its run adds, as a harness's own flags. Any bytes but
+/// a NUL; an empty one is an argument too.
+pub const ARG_KEY: &[u8] = b"member-arg=";
 /// The variable that names a member's domain to its processes: init's to set
 /// (init domains.rs), never a stager's.
 pub const DOMAIN_VARIABLE: &[u8] = b"SHARDS_DOMAIN";
@@ -69,6 +74,9 @@ pub enum Error {
     SecondTerminal,
     /// A terminal's size that is not its rows and columns, each a decimal u16.
     Size,
+    /// An argument holding a NUL, which no command line exec'd holds (execve(2)'s strings
+    /// end at one).
+    Argument,
 }
 
 impl core::fmt::Display for Error {
@@ -85,6 +93,7 @@ impl core::fmt::Display for Error {
             Error::SecondMember => "a second member for one exec",
             Error::SecondTerminal => "a second terminal for one member",
             Error::Size => "a terminal size that is not its rows and columns in decimal u16s",
+            Error::Argument => "an argument holding a NUL",
         })
     }
 }
@@ -188,6 +197,46 @@ pub fn workdir_of(setup: &[Vec<u8>], member: u32) -> Result<Option<&[u8]>, Error
         }
     }
     Ok(found)
+}
+
+/// `arg` as a run-time argument may be (D256): any bytes but a NUL.
+pub fn arg_ok(arg: &[u8]) -> Result<(), Error> {
+    if arg.contains(&0) {
+        return Err(Error::Argument);
+    }
+    Ok(())
+}
+
+/// The setup entry giving member `member` the run-time argument `arg` (D256), refused as
+/// [`arg_ok`] refuses it.
+pub fn arg(member: u32, arg: &[u8]) -> Result<Vec<u8>, Error> {
+    arg_ok(arg)?;
+    let mut entry = Vec::new();
+    entry.extend_from_slice(ARG_KEY);
+    push_decimal(&mut entry, member);
+    entry.push(0);
+    entry.extend_from_slice(arg);
+    Ok(entry)
+}
+
+/// A `member-arg=` entry's value, checked: its member and its argument.
+pub fn parse_arg(value: &[u8]) -> Result<(u32, &[u8]), Error> {
+    let (index, arg) = split_once(value, 0).ok_or(Error::Shape)?;
+    arg_ok(arg)?;
+    Ok((decimal(index)?, arg))
+}
+
+/// Member `member`'s run-time arguments, in the order `setup` stages them; every entry is
+/// checked, and the first refused ends it with its error.
+pub fn args_of(setup: &[Vec<u8>], member: u32) -> Result<Vec<&[u8]>, Error> {
+    let mut out = Vec::new();
+    for value in setup.iter().filter_map(|e| e.strip_prefix(ARG_KEY)) {
+        let (m, arg) = parse_arg(value)?;
+        if m == member {
+            out.push(arg);
+        }
+    }
+    Ok(out)
 }
 
 /// `variable` as a staged variable may be: `KEY=VALUE`, its key nonempty, no NUL, and not
@@ -318,6 +367,8 @@ pub fn staged_members(setup: &[Vec<u8>]) -> Result<Vec<u32>, Error> {
             parse_file(value)?.member
         } else if let Some(value) = entry.strip_prefix(WORKDIR_KEY) {
             parse_workdir(value)?.0
+        } else if let Some(value) = entry.strip_prefix(ARG_KEY) {
+            parse_arg(value)?.0
         } else {
             continue;
         };
@@ -704,6 +755,47 @@ mod tests {
         assert_eq!(workdir_of(&twice, 2), Err(Error::Twice));
         assert_eq!(parse_workdir(b"0"), Err(Error::Shape));
         assert_eq!(parse_workdir(b"01\0/x"), Err(Error::Index));
+    }
+
+    /// A member's run-time arguments (D256) are made and read alike, any bytes but a NUL, an
+    /// empty one among them; each is its member's, in the order staged, and stages into it.
+    /// One holding a NUL is refused as it is made and as it is read, and refuses the whole.
+    #[test]
+    fn a_members_arguments_are_its_own_in_order() {
+        for member in [0, 7, u32::MAX] {
+            for a in [
+                &b"--resume"[..],
+                b"",
+                b"--model=claude-opus",
+                b"two words",
+                b"a=b\tc",
+                b"\xff\xfe",
+            ] {
+                let entry = arg(member, a).unwrap();
+                assert_eq!(parse_arg(entry.strip_prefix(ARG_KEY).unwrap()), Ok((member, a)));
+            }
+        }
+        assert_eq!(arg_ok(b"a\0b"), Err(Error::Argument));
+        assert_eq!(arg(0, b"a\0b"), Err(Error::Argument));
+        assert_eq!(parse_arg(b"0\0a\0b"), Err(Error::Argument));
+        assert_eq!(parse_arg(b"0"), Err(Error::Shape));
+        assert_eq!(parse_arg(b"01\0x"), Err(Error::Index));
+        let setup = vec![
+            arg(2, b"--resume").unwrap(),
+            env(2, b"A=b").unwrap(),
+            arg(1, b"--model").unwrap(),
+            arg(2, b"").unwrap(),
+            arg(2, b"session-1").unwrap(),
+        ];
+        assert_eq!(args_of(&setup, 2).unwrap(), [&b"--resume"[..], b"", b"session-1"]);
+        assert_eq!(args_of(&setup, 1).unwrap(), [&b"--model"[..]]);
+        assert!(args_of(&setup, 0).unwrap().is_empty());
+        assert_eq!(staged_members(&setup).unwrap(), [1, 2]);
+        assert_eq!(staged_members(&[arg(4, b"-p").unwrap()]).unwrap(), [4]);
+        let mut bad = setup.clone();
+        bad.push([ARG_KEY, b"3\0a\0b"].concat());
+        assert_eq!(args_of(&bad, 2), Err(Error::Argument));
+        assert_eq!(staged_members(&bad), Err(Error::Argument));
     }
 
     /// The image's variables reach every member in order, each checked as a staged one

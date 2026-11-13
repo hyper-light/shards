@@ -472,7 +472,7 @@ impl<D: Disk> Daemon<D> {
         for m in members {
             // Waited on while its VM process runs, as a budget's slice is (D209, PM M467):
             // a host short of CPU slows a member as much here as Linux's throttle does there.
-            if let Some(gave) = self.give_back_of(&m.id, super::health::Wait::WhileRuns(m.pid)) {
+            if let Some(gave) = self.give_back_of(&m.id, m.pid) {
                 freed = freed.saturating_add(gave.freed);
                 unplugging = unplugging.saturating_add(gave.unplugging);
             }
@@ -521,8 +521,14 @@ impl<D: Disk> Daemon<D> {
             argv: vec![room.to_string().into_bytes()],
             ..Default::default()
         };
-        match self.exec_waiting(id, &spec, None, 1 << 12, super::health::Wait::WhileRuns(pid)) {
-            Ok(q) if q.status == Some(0) && !q.timed_out => {}
+        match self.exec_waiting(
+            id,
+            &spec,
+            None,
+            1 << 12,
+            super::health::Wait::WhileRuns(pid, &self.answers.room),
+        ) {
+            Ok(q) if q.status == Some(0) && q.cut.is_none() => {}
             Ok(q) => log(format!(
                 "container {id}: telling its microVM its group's room: {}",
                 super::reclaim::said_of(&q)

@@ -5,8 +5,8 @@ use std::io::{self, Write as _};
 use shards_ipc::fd::{AsFd as _, OwnedFd};
 
 use super::commands::{Asker, Reply};
-use super::health::Wait;
-use super::{Daemon, Disk, RunState, TAKE_TIMEOUT, lock};
+use super::health::{Cut, Wait};
+use super::{Daemon, Disk, RunState, lock};
 
 /// Why a run's metrics were not read, as `read metrics` says it.
 enum Failure {
@@ -21,10 +21,11 @@ enum Failure {
         given: String,
         provider: Option<String>,
     },
-    /// Its microVM's process ran nothing for as long as the read's wait judges it by
-    /// ([`Wait::WhileRuns`]): its exec was ended.
-    Stalled {
+    /// Its read's wait ([`Wait::WhileRuns`]) ended its exec: its microVM's process ran no CPU
+    /// at all over a whole W* past the slowest metrics read seen, or could not be read.
+    Cut {
         given: String,
+        cut: Cut,
     },
     Io(io::Error),
 }
@@ -55,11 +56,7 @@ impl std::fmt::Display for Failure {
                 "{given} runs in {provider}'s microVM, which is paused: its metrics can be read \
                  once {provider} is unpaused"
             ),
-            Self::Stalled { given } => write!(
-                out,
-                "{given}: its microVM ran nothing for {} s, so its metrics were not read",
-                TAKE_TIMEOUT.as_secs()
-            ),
+            Self::Cut { given, cut } => write!(out, "{given}: {cut}, so its metrics were not read"),
             Self::Io(error) => write!(out, "{:?}, native code {:?}", error.kind(), error.raw_os_error()),
         }
     }
@@ -162,23 +159,25 @@ impl<D: Disk> Daemon<D> {
                         let _ = io::copy(&mut errors, &mut io::sink());
                     }
                 })?;
-            // Waited for as long as its microVM's process runs (D209): one that runs nothing
-            // (its guest paused since it was looked at, or stalled) is told SIGKILL, and its
-            // end waited for, so that its output never outlives its asker.
+            // Waited for while its microVM's process runs (D215's judge): past the slowest
+            // read this daemon has seen, one that ran nothing for a whole W* (its guest paused
+            // since it was looked at, or stalled) is told SIGKILL, and its end waited for, so
+            // that its output never outlives its asker; before the first, its liveness alone.
             let ended = self.exec_on(
                 &id,
                 &spec,
                 false,
                 [null.as_fd(), out.as_fd(), into.as_fd()],
-                Wait::WhileRuns(vm),
+                Wait::WhileRuns(vm, &self.answers.metrics),
             );
             drop(into);
             let _ = drain.join();
             ended
         })?;
-        if ended.timed_out {
-            return Err(Failure::Stalled {
+        if let Some(cut) = ended.cut {
+            return Err(Failure::Cut {
                 given: given.to_owned(),
+                cut,
             });
         }
         Ok(ended.status == Some(0))

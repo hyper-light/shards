@@ -7942,14 +7942,70 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   before asked nothing more until it has answered or been ended: passes that asked one
   microVM after another, each waiting up to 10 s for an answer and then for its end,
   waited on a guest whose own memory its host had taken for minutes, and gave back 3 times
-  in 600 s (PM M308). Each is waited for as long as its microVM's process runs (more CPU
-  in each 10 s than an idle microVM takes, M357's bound, as D209's waits judge a start),
-  and one that runs nothing for 10 s is said to have had no answer, and is ended: a
-  microVM over its budget's `memory.high` is slowed by its host for as long as it is over
-  it, and the answers of one asked to give back what would bring it under, and to hear
-  its room after, came past a 10 s deadline as its host let it run, which ended them, its
-  budget's word never said or saying nothing given back (PM M467). A group's give-backs,
-  macOS's and Windows', which no kernel slows, keep the 10 s.
+  in 600 s (PM M308). Each is waited for while its microVM's process runs, and ended, said
+  to have had no answer, only once that process stalls (below): a microVM over its
+  budget's `memory.high` is slowed by its host for as long as it is over it, and the
+  answers of one asked to give back what would bring it under, and to hear its room after,
+  came past a 10 s deadline as its host let it run, which ended them, its budget's word
+  never said or saying nothing given back (PM M467). A group's give-backs and rooms,
+  macOS's and Windows' among them, are waited for the same way.
+- **What a microVM's own answers are waited for by is learned, not set**
+  (`health::Wait::WhileRuns`; R03, the person's rule of 2026-11-13). It was PM M357's idle
+  microVM, 63 ms of CPU in 10 s (`shards_vmm::platform::IDLE_VM_CPU`), judged each 10 s
+  (`TAKE_TIMEOUT`): two figures of our machines, which ended any microVM that ran slower
+  than an idle one over a slice, its answer however near (red at e0cc059c7, below). It is
+  now D215's judge, shared, not copied (R12):
+  - *Records*: each kind of answer apart, in the daemon's memory (`health::Answers`): a
+    give-back (`RECLAIM`, at its host's pressure, a budget's or a group's), a room told
+    (`ROOM`), metrics read (`METRICS`). Each keeps W*, the slowest answer seen from a
+    wait's start to its exec's end, and R*, the least CPU rate a microVM still answered at
+    (`shards_api::Record`). Only an exec's own end teaches: one the daemon ended teaches
+    nothing.
+  - *Cold start*: before its kind's first answer, a wait follows its microVM's liveness
+    alone, to its exec's end or its microVM's.
+  - *The judge*: past W* from its start, the wait looks at the microVM's process once each
+    W*. A look that finds it ran no CPU at all since the look before ends the exec (SIGKILL,
+    its end waited for) and says so, typed (`health::Cut::Stalled`: how far into the wait,
+    the time looked over, R* and W*), where the client of a metrics read and the daemon's
+    log are told it. R* is diagnosis, never a bound. A process that cannot be read while it
+    lives ends its exec at once (`Cut::Unread`), never taken for one that ran nothing; one
+    gone is its exec's end.
+  - *Readers*: D215's (`shards_api::Followed::of_pid`): Linux's CPU clock, macOS's
+    proc_pid_rusage, Windows' QueryProcessCycleTime over the process and what descends from
+    it, each read with the start that tells it from a process given its pid later. The
+    judge's schedule and verdict moved into `crates/api/src/judge.rs` (`Record`, `Judge`,
+    `Found`), apart from the CPU it reads, for waits that follow something else.
+  - *Literals*: none. W*, R* and every window are this daemon's own; their durations
+    saturate at u64's nanoseconds (D215); a look due now is made, never a read with a zero
+    timeout.
+  - *Gaps*, owed to ROOT's runs and decisions:
+    - A cold kind's wait on a microVM whose init never answers holds its thread, and a
+      metrics read its client, until that microVM ends: audit-fix-host-v1's finding 4, now
+      only before the kind's first answer (`metrics_whose_microvm_runs_nothing_are_ended`
+      teaches its record first).
+    - Linux puts a task over its cgroup's `memory.high` to sleep up to
+      `MEMCG_MAX_HIGH_DELAY_JIFFIES` (2 s) at each return to user space (mm/memcontrol.c,
+      `mem_cgroup_handle_over_high`), and a loaded host's scheduler can keep a runnable
+      process off its CPUs for longer than a short W*. A microVM all of whose threads so wait
+      for a whole W* is ended though its host only slowed it. This is not measured: the
+      budget E2E under a `memory.high` (tests/budget.rs, tests/containers.rs) holds it.
+  - Tested (light), health.rs: `a_cold_wait_follows_its_microvm_while_it_lives`,
+    `a_microvm_that_runs_at_any_rate_is_waited_for` (a fiftieth of a CPU, below the idle
+    rate), `an_exec_is_ended_once_its_microvm_runs_nothing_for_a_whole_w_star`,
+    `an_unread_microvm_process_ends_its_exec_typed` (macOS) and
+    `a_timed_wait_ends_its_exec_and_an_untimed_one_waits`; reclaim.rs's
+    `a_give_back_says_what_it_gave_or_why_it_gave_nothing`; daemon.rs's
+    `metrics_whose_microvm_runs_nothing_are_ended`; shards-api's judge.rs and progress.rs
+    tests (`a_process_followed_by_its_pid_is_judged_by_its_cpu`). Red at e0cc059c7 with
+    the old wait and these tests (adas-mac-studio.local, macOS 26.2 arm64): the first two
+    each ended `(Some(7), true)`, ended by the daemon, where `(Some(7), false)` was due.
+    Green on the merged tree (origin/main 5bc134861 with 6fc62c231 and 005dce1da; same host,
+    rustc 1.98.1): health.rs 11 of 11, reclaim.rs 1, daemon.rs's `metrics_` 4, budget.rs 7,
+    groups.rs 5; shards-api's `judge::` 5, `progress::` 6, `client::tests` 37 (3 ignored);
+    clippy `--all-targets -D warnings` clean for shards and shards-api, and for shards-api
+    on x86_64-pc-windows-msvc (cargo xwin), whose reader is the one Windows code touched.
+    Not run: these tests on Linux or Windows, real microVMs (the budget E2E above among
+    them), and guard-removal mutations, all ROOT's.
 - **A budget falling short waits for its host's give-back** (PM M467): where a give-back
   of the host's pressure is under way in the microVM, the budget's own asks once it has
   ended, its room read again; and its word says what its host's pressure had it give back
@@ -12413,6 +12469,28 @@ peer", each going on here as it should. What changed for them:
   move between two machines takes in each connection's `Seen` so
   (`a_microvm_moves_to_another_host_saved_and_live`, tests/moved.rs); no test leaves a restore
   unanswered, a fault case owed.
+- **A restore refused at that machine's gate never ran there** (cli/moves.rs `resumed`;
+  2026-11-13). That machine's daemon refuses a command before it starts it
+  (`Answer::Refused`, typed on the wire): a client it no longer enrolls, words it refuses, a
+  command it could not start (daemon/remote.rs `Machine::start`, shards-remote server.rs).
+  The step's `there` flattened that refusal into its error, as it does an unanswered
+  restore's, so it went to `running_there`, whose asks that machine refused too. A move
+  whose restore was refused before it ran thus ended "not known", its copy held here.
+  - The restore's answer now stays typed (`Asked`). Refused there, by its own failure or at
+    the gate, what was made there of it is removed and the move goes on here. Only a restore
+    left unanswered is asked about.
+  - Held by `a_restore_refused_at_the_other_daemons_gate_goes_on_here`, with a fake `there`:
+    red at e0cc059c7 (`NotKnown(..)` where `Here(..)` was due), green since, nothing asked
+    of whether it runs there. A restore that failed, one done and one unanswered go as
+    before. Green on the merged tree (origin/main 5bc134861 with 005dce1da; adas-mac-studio.local,
+    macOS 26.2 arm64): cli/moves.rs's tests 7 of 7, clippy clean; its real two-machine move,
+    refused at the gate, is not run (ROOT's).
+  - Its gap: the remote server's relay can fail after `Host::start` has started a command
+    (a thread or a handle it could not make; server.rs `relay`, or no listener's sender).
+    It refuses that command though it goes on, its stdio closed, and a move takes it for a
+    restore that never ran. The wire tells the two apart nowhere. Owed to ROOT: the
+    refusal's kind on the wire (before the command started, or after), or the relay ending
+    what it started.
 - **What a move sends**, cold: the move's stream (`Writer`), its plan, then its directory
   but its other snapshots and its kept layer, its snapshot's state, memory, layer and swap
   among it; its volumes; and the files its snapshot restores against that the other machine
@@ -23068,6 +23146,12 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
   - *Other implementors*: the trait's defaults follow liveness alone, as a cold record does
     (`connect(port, Duration::MAX)`, `wait_for(Duration::MAX)`). So do the simulator, which
     has no VM process, and `ManagedGuest`, whose native owner holds its process.
+  - *Shared, not copied* (R12, 2026-11-13). The judge's records, schedule and verdict are
+    `crates/api/src/judge.rs` (`Record`, `Judge`, `Found`), apart from the CPU they judge.
+    The readers also follow a process by its pid alone (`Followed::of_pid`: its start read
+    with it, and on Windows the process and what descends from it). shards-api's `Follow`
+    is the two together. The daemon's waits on its microVMs' own answers are judged by it
+    (D188, `Wait::WhileRuns`), with records of their own.
   - *Its literals*: 10^9 nanoseconds a second, a timespec's bound (POSIX <time.h>); 100,
     FILETIME's nanoseconds (GetProcessTimes); a zero-time wait (WaitForSingleObject, 0),
     which is a look, not a wait. Nothing else: W*, R* and every time judged are this
@@ -23818,7 +23902,7 @@ harness-codex-signed-in, harness-claude-signed-in) moved to destinations once ru
 grants `--dns` and `--egress=443/tcp` today, any host on 443 (H2), and its hosts come from that
 run's resolver answers, not the records' host mentions, which include help-text URLs.
 
-**Review (plan step 2):** [harness-bringup-v2/review.md](../research/measurements/harness-bringup-v2/review.md) (F1–F7 fixed: the leak check's chosen numbers, the real-VM test's and bringup.sh's clocks and polls, `sleep 600`, H1's stale text, R10's no-tool check on the recorded turns; fetch.sh's findings and the real-VM runs owed to ROOT).
+**Review (plan step 2):** [harness-bringup-v2/review.md](../research/measurements/harness-bringup-v2/review.md) (F1–F8 fixed: the leak check's chosen numbers, the real-VM test's and bringup.sh's clocks and polls, `sleep 600`, H1's stale text, R10's no-tool check on the recorded turns, fetch.sh's signature verdict, cosign's pin and arm64's builds; the real-VM runs and fetch.sh's real fetch owed to ROOT).
 
 **What would falsify it.** A provider whose clients reach it at addresses its names never
 answer (then address ranges as grants); a member that must reach one port by name beside
@@ -25968,6 +26052,101 @@ the period from the first answer.
 **What would falsify it.** A guest that reaches the rate from inside (a connection or bytes of
 its own read as a `RATE` line); a managed guest held to a rate whose CPU over a window passes it
 by more than a period's share, its vCPUs' overrun and its VMM's own.
+
+### D256. A member's run-time arguments: its run's flags after its own command, on its command line (built: an orchestrator's runs; real-VM runs owed)
+
+**Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d step 17 launches kiln's harnesses through
+Hex, each a member of its Agentfile's image. A harness runs by its image's command
+(`harness.json`'s `run.command`), and what its session adds (its model, its mode, the
+conversation it resumes) are arguments past that command (kiln `docs/isolation.md` at
+`522f14c31`, "Its harness is a member of the image"). Claude Code, Antigravity and pi take
+theirs as flags (`--resume`, `--session-id`, `--model`, `--permission-mode`); Codex and the ACP
+harnesses take theirs over their protocols. shards-api's `MemberSpec` took a member's
+environment, files, working directory, stdin and terminal, and no arguments, so those three
+could not start as their sessions ask (goal 67's inventory, `docs/research/s37-decision-inventory.md`
+row 17; kiln `docs/isolation.md`, "A member's run-time arguments"). ROOT's decision,
+2026-11-13: `MemberSpec` takes them, as without them those harnesses break.
+
+**Alternatives** (R02):
+- OCI's and Docker's: a run's arguments replace the image's `Cmd`, the default arguments to its
+  `Entrypoint` ("These values act as defaults and may be replaced by any specified when
+  creating a container": OCI image-spec v1.1.0 config.md, `Cmd`), as `shards run IMAGE ARG…`
+  composes them (run.rs `compose`, moby's merge). A member's descriptor has no `Cmd`: its
+  `options` are its adapter's base arguments, which kiln holds each image's command to (kiln
+  `kinds::tests::s17_each_images_command_runs_its_harness_as_its_adapter_drives_it`). A run
+  that replaced them would drop the arguments its harness is built to be driven by.
+- A variable the member's program reads its arguments from: no harness kiln runs reads one;
+  each takes its flags on its command line.
+- Decided: appended. A member's command line is its config's `run.command` (its entrypoint's
+  words, then its options), then its run's arguments in their order. None given, its command
+  alone, as before.
+
+**Decided and built.**
+- *Asked.* `MemberSpec::args`, each a UTF-8 string. shards-api refuses one holding a NUL, which
+  no command line exec'd holds, before any run host starts (`ImageRefusal::Spec`, "a member's
+  argument"), naming its place, never its bytes.
+- *Carried.* `MemberStage::args`, appended to the image channel's request at version 18: each
+  member's count, then each argument as text, in the members' order. A side of version 17
+  refuses the run by its version, so no run host starts a member without the flags its
+  orchestrator asked.
+- *Bounded.* By the channel's own bound, with the rest of the request: `run::MAX_PAYLOAD`,
+  Linux's own on a command line and environment (`ARGS_MOST`, D16). Past it the request is
+  refused as it is written (`WireError::TooLong`; `ImageRefusal::Spec { what: "the spec" }`
+  before any run host starts), never cut to fit. The run host holds the run's spec, the
+  arguments staged in its setup among the rest, to the same bound (`spec::fits`), refused as
+  `Cause::Request`.
+- *Staged.* The run host gives the guest one `member-arg=<index>\0<argument>` setup entry each
+  (abi `run::members::ARG_KEY`), in order, after the member's other entries. It refuses one
+  holding a NUL, and arguments in two of one member's stages, which have no order between
+  them (`Cause::Request`). An argument stages into its member: the guest refuses one for a
+  member it starts no program for, as it refuses a variable (`staged::check`).
+- *Run.* Init reads them again (`staged::args`), refusing one holding a NUL. The member's
+  command line is its program as found, the rest of its config's `run.command`, then its
+  arguments (domains.rs `command_line`), made before its process is cloned, as nothing may
+  allocate after. A command line Linux does not exec (its strings with their NULs and
+  pointers, beside its environment's, past `ARGS_MOST`: fs/exec.c `bprm_stack_limits`) fails
+  its exec with `E2BIG`, which its launch reports (`managed::Step::Exec`): its run ends failed
+  in its init's words, the member never started without them.
+- *No secret.* A command line is read by whatever sees the member's processes (proc(5),
+  `/proc/PID/cmdline`), and its arguments print in `Debug`: a credential goes in the member's
+  environment or files, which `Secret` keeps out of `Debug`.
+
+**Literals** (none chosen):
+
+| Literal | Source |
+|---|---|
+| `member-arg=` | this wire's own, beside D231's `member-*=` entries |
+| the channel's version 18 | the next above main's 17 (D247's `rate_period`), ROOT's reservation |
+| `run::MAX_PAYLOAD` | the channel's own bound, `ARGS_MOST` (D16) |
+| 4, an argument's least bytes | its text's u32 length, the channel's encoding |
+
+**Cold start** (R03). Nothing is learned: a member's arguments are its orchestrator's, and none
+are none.
+
+**Tested** (light):
+- abi `run::members::tests::a_members_arguments_are_its_own_in_order`.
+- shards-api `wire::tests::each_members_arguments_ride_the_request_last`, `messages_round_trip`
+  and `unknown_versions_and_tags_are_refused` (a request of version 17 refused);
+  `image::tests::a_members_arguments_ride_its_request_in_order`,
+  `what_the_guest_refuses_is_refused_first` and `a_spec_past_the_bound_is_refused`.
+- The run host's `a_members_arguments_are_staged_after_its_own_in_order`.
+- init `staged::tests::a_members_arguments_are_read_again_in_the_guest` and
+  `staging_into_no_running_member_is_refused`;
+  `domains::tests::a_members_command_line_is_its_command_then_its_runs_arguments`.
+
+**Owed** (ROOT).
+- A real-VM test: a member whose command prints its own arguments (a test guest mode that
+  writes each with its NUL), booted through `ImageShards` with `MemberSpec::args` of `--resume`,
+  `s 1` and an empty one, its stdout its own options then those three, on HVF, KVM and WHP.
+- Guard-removal mutants, each of which must fail its test: init `command_line` without its
+  arguments, the run host's `member-arg=` entries unstaged, the wire's arguments unwritten, and
+  `arg_ok`'s NUL check.
+- These light tests on Linux and Windows (CI), and `scripts/lint` on the 7 targets.
+- Hex's re-vendor of the image channel at version 18; kiln's launch passing each harness's flags.
+
+**What would falsify it.** A member started without the arguments its spec gave, with them
+before its own options, or with one split, joined or cut; a request past the bound started
+with its arguments cut.
 
 ## 4. Start path (≤ 5 ms budget)
 
