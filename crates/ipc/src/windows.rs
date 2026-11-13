@@ -345,16 +345,16 @@ impl GroupJob {
 /// starts is made in too, and a handle of each process of the job's taken as the group is
 /// ended, for each to be followed to its end ([`Child::end_group`]).
 #[derive(Debug)]
-struct Group {
+struct ProcessGroup {
     job: GroupJob,
     /// The processes of the job's held, by their IDs: only added to while the group lives,
     /// so that each handle stays open, and its ID its process's, until the group drops.
     held: Mutex<Vec<(u32, OwnedHandle)>>,
 }
 
-impl Group {
-    fn new(job: GroupJob) -> Group {
-        Group {
+impl ProcessGroup {
+    fn new(job: GroupJob) -> ProcessGroup {
+        ProcessGroup {
             job,
             held: Mutex::new(Vec::new()),
         }
@@ -449,7 +449,7 @@ pub struct Child {
     /// A confined child's Job; none for one of [`spawn`]'s.
     job: Option<Job>,
     /// A grouped child's group ([`spawn_grouped`]): none for any other.
-    group: Option<Group>,
+    processes: Option<ProcessGroup>,
     /// Its window station and desktop, a GPU's child's ([`Spawn::graphics`]): closed after
     /// its Job has ended it.
     _station: Option<Station>,
@@ -490,7 +490,7 @@ impl Child {
     /// for [`end_group`](Self::end_group) to follow each to its end. Else as
     /// [`kill`](Self::kill), its Job, where it has one, ended with it.
     pub fn kill_group(&self, signal: i32) -> io::Result<()> {
-        let Some(group) = &self.group else {
+        let Some(group) = &self.processes else {
             return self.kill(signal);
         };
         let code = ending_code(signal)?;
@@ -516,7 +516,7 @@ impl Child {
     /// and goes again only where one joined the job meanwhile. A child of no group: ended
     /// and waited on.
     pub fn end_group(&self) -> io::Result<()> {
-        let Some(group) = &self.group else {
+        let Some(group) = &self.processes else {
             self.kill(SIGKILL)?;
             return self.ended();
         };
@@ -1795,7 +1795,7 @@ pub fn spawn_grouped(
 ) -> io::Result<Child> {
     let job = GroupJob::new()?;
     let mut child = spawn_env(program, args, fds, false, this_env_with(set), Some(&job), None)?;
-    child.group = Some(Group::new(job));
+    child.processes = Some(ProcessGroup::new(job));
     Ok(child)
 }
 
@@ -2202,7 +2202,7 @@ fn spawn_env(
         process,
         pid: made.dwProcessId,
         job: None,
-        group: None,
+        processes: None,
         _station: None,
         container: None,
     };
@@ -2451,7 +2451,7 @@ pub fn spawn_suspended(s: &Spawn<'_>) -> io::Result<Suspended> {
         process,
         pid: made.dwProcessId,
         job: Some(job),
-        group: None,
+        processes: None,
         _station: station,
         container: None,
     };
@@ -2920,7 +2920,7 @@ mod tests {
         let shell = std::env::var_os("ComSpec").unwrap();
         let args = [OsStr::new("/c"), OsStr::new("ping -n 600 127.0.0.1 >NUL")];
         let child = spawn_grouped(Path::new(&shell), &args, &[], &[]).unwrap();
-        let group = child.group.as_ref().unwrap();
+        let group = child.processes.as_ref().unwrap();
         let ping = loop {
             let others = group.job.processes().unwrap();
             if let Some(&pid) = others.iter().find(|&&pid| pid != child.id()) {
