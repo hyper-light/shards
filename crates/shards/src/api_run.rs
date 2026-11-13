@@ -3211,6 +3211,19 @@ mod hosted {
         }
     }
 
+    /// A member's MCP connection its VM handed over unprompted on `link` (`LANE_ACCEPTED`,
+    /// D254): no controller's ask is paired with one yet, so it is let go, its VM's copy with
+    /// it (M24), which ends its member's bridge. One its VM did not number as its own is let
+    /// go alone.
+    fn mcp_accepted(link: &Stream, payload: &[u8], fds: Vec<OwnedFd>) {
+        drop(fds);
+        if let Some(accepted) = shards_ipc::Accepted::decode(payload)
+            && let Err(e) = shards_ipc::send(link, kind::LANE_HELD, &accepted.number.to_be_bytes(), &[])
+        {
+            super::say(format_args!("letting go of a member's MCP connection: {e}"));
+        }
+    }
+
     /// Reads the VM's link until it closes: each member's end and the command's readiness
     /// to the orchestrator as they come (`super::relayed`), each exec's client end let go of
     /// as the VM takes it, the run's end from its `DONE` (`super::run_end`), and whether its
@@ -3256,6 +3269,8 @@ mod hosted {
                 input_ended(live, &m.payload);
             } else if m.kind == kind::LANE_OPEN {
                 lane_answered(live, m.payload, m.fds);
+            } else if m.kind == kind::LANE_ACCEPTED {
+                mcp_accepted(&lock(&live.link), &m.payload, m.fds);
             } else if let Some((answer, payload)) = super::relayed(m.kind, &m.payload) {
                 let _ = live.answers.send(answer, &[&payload]);
             }
@@ -4250,6 +4265,35 @@ mod hosted {
                 said.exists(),
                 "the share process was ended at the grace's end, not by its door's"
             );
+        }
+
+        /// D254: a member's MCP connection its VM hands over unprompted is answered as taken
+        /// (M24) and let go, no controller's ask being paired with one yet: its far end reads
+        /// its end. One its VM did not number as its own is let go unanswered.
+        #[test]
+        fn a_members_mcp_connection_is_answered_and_let_go_until_its_pairing() {
+            use std::io::Read as _;
+            let (link, vm) = Stream::pair().unwrap();
+            let (conn, mut far) = Stream::pair().unwrap();
+            let first = shards_abi::run::mcp::ACCEPTED_FIRST;
+            let owners = shards_ipc::Accepted {
+                number: first - 1,
+                member: 0,
+            };
+            mcp_accepted(&link, &owners.encode(), Vec::new());
+            let accepted = shards_ipc::Accepted {
+                number: first,
+                member: 0,
+            };
+            mcp_accepted(&link, &accepted.encode(), vec![OwnedFd::from(conn)]);
+            let m = shards_ipc::recv(&vm).unwrap().unwrap();
+            assert_eq!(
+                (m.kind, m.payload),
+                (kind::LANE_HELD, first.to_be_bytes().to_vec())
+            );
+            let mut rest = Vec::new();
+            far.read_to_end(&mut rest).unwrap();
+            assert_eq!(rest, b"");
         }
     }
 }

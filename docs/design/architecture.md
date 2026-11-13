@@ -26669,7 +26669,7 @@ tests unchanged.
 on HVF, KVM x86_64 and WHP; R14's start of a warm run against a restored one, the warm host's
 resident memory, and its start's time from `WARMED`.
 
-### D254. kiln's MCP rides the agent-control link: a stdio bridge in the harness's member, one lane of the link per connection, no network grant (decided; its asks built at the endpoint and the controller; the member's listener and bridge, the run hosts' pairing, kiln's side and every real-VM run owed)
+### D254. kiln's MCP rides the agent-control link: a stdio bridge in the harness's member, one lane of the link per connection, no network grant (decided; its asks built at the endpoint and the controller, the member's listener and bridge and its VM's hand-off built; the run hosts' pairing, kiln's side and every real-VM run owed)
 
 **Why.** A harness kiln drives in a microVM calls kiln's MCP server (kiln serves `/api/mcp`
 in-process). ROOT's first call was plain HTTP from the microVM to the runner's loopback
@@ -26752,6 +26752,10 @@ one form all nine take, and no other.
 | An `Mcp` ask's payload, 44 bytes | an exec ask's scope: the run (32), its generation (8), the member (4) |
 | `/run/shards/mcp`, `/run/shards/mcp.sock` | shards' own guest paths, beside D234's `/run/shards/notify` |
 | `mcp=TOKEN` | the run-wide token, as `engine=` carries it (D181) |
+| `member-mcp=INDEX` | the member by its declared index, as D231's `member-*` entries name one |
+| vsock port 1031 | the next after the run's (1024, 1025, 1027, 1029) and the builder's (1026, 1028, 1030) |
+| Preamble, 4 bytes | the member's declared index, a big-endian u32, as `member-*` entries count members |
+| `LANE_ACCEPTED` 102, numbers from 2^63 | the next shards_ipc kind above main's (`UNSERVED` 101); D251's split of lane numbers, a VM's own at or above 2^63 |
 
 **Built** (step 11). The endpoint's `Mcp` asks, on the exec lanes' machinery (`exec::Kind::Mcp`:
 one stream each way, no stderr, any steering let go by its host), and the controller's
@@ -26767,16 +26771,58 @@ controller's bytes and the harness's exact, its end told, a member with no bridg
 typed), `daemon::managed::tests` (the daemon's host refusing an MCP ask before its VM process
 hears of it).
 
-**Owed.** The listener, the bridge and `LANE_ACCEPTED` (D251's agent, building them; ipc kind
-101); the daemon's and the orchestrator's hosts pairing each connection with its ask, and the
-asking (the daemon's annotation, the orchestrator's MemberSpec field), goal 58's; kiln's harness
-configs naming the bridge. kiln's in-process server over the two streams is built (kiln main
-`dace992a6`, `reach::mcp::serve_lane`: one `Execs::mcp(member)` connection's newline-delimited
-JSON-RPC read from `McpConnection::from` and answered on `to`, in the runner's own process, no
-socket, on Windows too), its connection to a launch waiting on kiln's next re-vendor of Shards
-and this pairing (kiln's step 18, goal 61). Every real-VM run, ROOT's: each
-harness that takes MCP calling kiln's server through the bridge, on KVM, HVF and WHP, with the
-microVM and the kiln runner on one machine and on two.
+**Built** (the listen half). A run asks with two setup entries (`shards_abi::run::mcp`,
+registered in D257's `run::setup::KEYS`): `mcp=TOKEN`, the run-wide token in lowercase hex, and
+`member-mcp=INDEX` for each member that gets a bridge, each member once; init refuses members
+named without a token, or a token or a member entry malformed, typed, before the run starts,
+and a run naming a member its image starts no program for.
+- *In the member* (`crates/init/src/mcp.rs`, `domains::start`). Init binds `mcp.sock` in the
+  member's directory of `/run/shards`, which that member's domain alone sees (`SERVER_AT`),
+  owned by the member's identity, mode 0600, and an empty file `mcp` beside it, mode 0444, on
+  which the member's view mounts a copy of init's own binary (`open_tree` of
+  `/proc/self/exe`, read only, nosuid, nodev, runnable; `bridge_mount`). Run by that name, as no
+  PID 1, the binary is the bridge: its stdin to the socket and the socket to its stdout, its
+  stdin's end the socket's half-close, done once both ways have ended.
+- *The relay.* Each connection to the socket, on a thread of its own, dials port 1031, says
+  `HELLO` with the run's token and then the member's declared index, and carries the bytes each
+  way, each way's end that way's half-close (`native_relay::pump`, `EndPolicy::Independent`).
+  The member never holds the token.
+- *The VM process* (warm.rs `serve_mcp`). A warm VM serves port 1031 as it serves its engine's:
+  its connections wait for the run, which takes them where its spec carries `mcp=`, else lets
+  the port go, which then refuses. A connection whose hello says the token is read for its
+  member on a thread of its own, then handed to the run's owner unprompted (`LANE_ACCEPTED`,
+  `shards_ipc::Accepted`: its number, from 2^63 up, then its member), the connection beside it
+  on Unix and a copy held until its owner says `LANE_HELD` (M24); on Windows held until the
+  owner's `LANE_HELD` brings the socket it is relayed onto, as D251's lanes are. A hello that
+  offers a ring, which the relay never does on this port, is closed.
+- *The hosts, until goal 58's pairing.* The daemon's inbox and api-run's `follow` answer each
+  `LANE_ACCEPTED` with `LANE_HELD` and let the connection go, which ends the member's bridge;
+  one numbered below 2^63, as its owner numbers its own lanes, is let go unanswered.
+
+Tested: `shards_abi::run::mcp` (its entries read back; a member twice, a token malformed or
+twice refused), `run::setup` (both keys registered), `shards_ipc` (`Accepted` read back; one
+cut short, longer or numbered as its owner's refused), shards-init's `mcp::tests` (an ask is
+members and token together; the socket the member's, 0600, beside its mount point, a template's
+stale one replaced; the relay's token and member said before the member's bytes, each way's end
+its own; the bridge's copy each way), warm.rs's `mcp` tests (a member's connection handed as
+its relay named it, held until its owner has it; one ended before its member, or offering a
+ring, closed, its owner told nothing; the port's connections through its hellos), and the
+hosts' stubs (`daemon` through a stand-in VM, api-run's `mcp_accepted`).
+
+**Owed.** The daemon's and the orchestrator's hosts pairing each connection with its ask, and
+the runs' asking (goal 58: the daemon's annotation, the member spec's field, their tokens);
+a resumed run's members' connections (D176): its request brings the save's tokens in place of a
+spec, so its port refuses them until a save keeps the run's MCP token beside its engine's
+(`Resume::engine`) and its resumed request brings it; kiln's harness configs naming the bridge.
+kiln's in-process server over the two streams is built (kiln main `dace992a6`,
+`reach::mcp::serve_lane`: one `Execs::mcp(member)` connection's newline-delimited JSON-RPC read
+from `McpConnection::from` and answered on `to`, in the runner's own process, no socket, on
+Windows too), its connection to a launch waiting on kiln's next re-vendor of Shards and this
+pairing (kiln's step 18, goal 61). Every real-VM run, ROOT's: the bridge's mount of init's
+binary in a member's view (`open_tree` of an initramfs file, unproven on a real guest), a
+member's MCP connection reaching its host and its end, each harness that takes MCP calling
+kiln's server through the bridge, on KVM, HVF and WHP, with the microVM and the kiln runner on
+one machine and on two.
 
 **What would falsify it.** A harness that takes MCP and no stdio server; a byte of an MCP
 connection reaching the microVM's network; a member's connection told to the controller as
