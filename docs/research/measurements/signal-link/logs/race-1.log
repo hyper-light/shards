@@ -1,0 +1,861 @@
+# paused_exec_race_experiment: e8d19fc683cc 1 changed; 2026-11-12T23:10:19Z Linux 7.2.9-2-cachyos x86_64; rustc 1.98.1 (48a229cea 2026-09-01); load 96.25 105.34 104.35
+## stuck 12 s at: attempt 59: delay 11 ms, pause Some(0) in 29.177948ms, kill Some(0) in 3.879687ms, VM 2044275
+## its VM process 2044275's threads, 23:11:37: tid, name, state, wait channel
+2044275 shards-vm S futex_wait
+2044283 exec-hellos S __x64_sys_poll.cold
+2044331 vcpu0 S futex_wait
+2044332 vcpu1 S futex_wait
+2044333 vcpu2 S futex_wait
+2044334 vcpu3 S futex_wait
+2044335 vcpu4 S futex_wait
+2044336 vcpu5 S futex_wait
+2044337 vcpu6 S futex_wait
+2044338 vcpu7 S futex_wait
+2044339 vcpu8 S futex_wait
+2044340 vcpu9 S futex_wait
+2044341 vcpu10 S futex_wait
+2044343 vcpu11 S futex_wait
+2044344 vcpu12 S futex_wait
+2044345 vcpu13 S futex_wait
+2044346 vcpu14 S futex_wait
+2044347 vcpu15 S futex_wait
+2044348 vcpu16 S futex_wait
+2044349 vcpu17 S futex_wait
+2044350 vcpu18 S futex_wait
+2044352 vcpu19 S futex_wait
+2044354 vcpu20 S futex_wait
+2044355 vcpu21 S futex_wait
+2044356 vcpu22 S futex_wait
+2044357 vcpu23 S futex_wait
+2044358 vcpu24 S futex_wait
+2044360 vcpu25 S futex_wait
+2044361 vcpu26 S futex_wait
+2044362 vcpu27 S futex_wait
+2044363 vcpu28 S futex_wait
+2044364 vcpu29 S futex_wait
+2044365 vcpu30 S futex_wait
+2044366 vcpu31 S futex_wait
+2044367 kvm-nx-lpage-re S vhost_task_fn
+2044368 workload S unix_stream_read_generic
+2044685 virtio-fs S futex_wait
+2044686 virtio-fs S futex_wait
+2044692 virtio-balloon S futex_wait
+2044693 virtio-mem S futex_wait
+2044898 virtio-blk S futex_wait
+2044899 virtio-pmem S futex_wait
+2044901 virtio-pmem S futex_wait
+2044978 virtio-net S __x64_sys_poll.cold
+2045382 virtio-vsock S __x64_sys_poll.cold
+2046620 virtio-pmem S futex_wait
+2047761 daemon-signals S futex_wait
+2047762 client-signals S unix_stream_read_generic
+2047801 signal-conn S unix_stream_read_generic
+2047831 pauses S futex_wait
+2051972 exec S sock_alloc_send_pskb
+## eu-stack -p 2044275
+PID 2044275 - process
+TID 2044275:
+#0  0x00007fc65307097a syscall
+#1  0x00007fc65303a2d5 _RNvMNtNtNtNtCsiaXzZB6mOEP_3std3sys4sync7condvar5futexNtB2_7Condvar4wait
+#2  0x00007fc652f94269 _RNvMs2_NtNtCs2uutRqUV1nv_10shards_vmm2vm7runtimeNtB5_6Shared9wait_exit
+#3  0x00007fc652ee8891 _RINvMs3_NtNtCs2uutRqUV1nv_10shards_vmm2vm7runtimeNtB6_7Running9wait_thenNvNtCs72vBiAOQT8G_9shards_vm4warm9tell_keptEB1c_
+#4  0x00007fc652e8cf1b _RNvNtCs72vBiAOQT8G_9shards_vm6vm_run9warm_boot
+#5  0x00007fc652e700af _RINvNtCs72vBiAOQT8G_9shards_vm6vm_run3runINtNtNtNtCs9L9tuJX2du2_4core4iter8adapters4skip4SkipNtNtCsiaXzZB6mOEP_3std3env6ArgsOsEEB4_
+#6  0x00007fc652ee5c15 _RNvCs72vBiAOQT8G_9shards_vm4main
+#7  0x00007fc652ebb973 _RINvNtNtCsiaXzZB6mOEP_3std3sys9backtrace28___rust_begin_short_backtraceFENtNtB6_7process8ExitCodeB19_ECs72vBiAOQT8G_9shards_vm
+#8  0x00007fc652eec319 _RNCINvNtCsiaXzZB6mOEP_3std2rt10lang_startNtNtB6_7process8ExitCodeE0Cs72vBiAOQT8G_9shards_vm.llvm.4182714930949775334
+#9  0x00007fc65304a2ec _RNvNtCsiaXzZB6mOEP_3std2rt19lang_start_internal
+#10 0x00007fc652ee706c main
+#11 0x00007fc65306d89d libc_start_main_stage2
+#12 0x00007fc652e6e5b6 _start
+eu-stack: dwfl_thread_getframes tid 2044275 at 0x7fc652e6e5b5 in /home/adalundhe/.cache/shards/helpers/14cefe0647beafb80903ce17e3b0c44298fc/shards-vm: no matching address range
+TID 2044283:
+#0  0x00007fc653074830 sccp
+#1  0x00007fc653071142 poll
+#2  0x00007fc652f85d2e _RNvNtNtCs2uutRqUV1nv_10shards_vmm8platform4unix13wait_readable
+#3  0x00007fc652ea9296 _RINvNtCs72vBiAOQT8G_9shards_vm8workload12await_hellosINtNtNtNtCs9L9tuJX2du2_4core4iter8adapters3map3MapINtNtNtBY_5slice4iter4IterNtNtB2_6hellos9CandidateENCNvMs2_B25_NtB25_8Acceptor5drives_0EEB4_
+#4  0x00007fc652ee0b3b _RNvMs2_NtNtCs72vBiAOQT8G_9shards_vm8workload6hellosNtB5_8Acceptor3run
+#5  0x00007fc652ebb986 _RINvNtNtCsiaXzZB6mOEP_3std3sys9backtrace28___rust_begin_short_backtraceNCINvNtCs72vBiAOQT8G_9shards_vm6vm_run14serve_workloadNCINvB1c_7restoreINtNtNtNtCs9L9tuJX2du2_4core4iter8adapters4skip4SkipNtNtB6_3env6ArgsOsEEs_0Es0_0uEB1e_
+#6  0x00007fc652ea77bf _RNSNvYNCINvNtNtCsiaXzZB6mOEP_3std6thread9lifecycle15spawn_uncheckedNCINvNtCs72vBiAOQT8G_9shards_vm6vm_run14serve_workloadNCNvB18_9warm_boot0Es0_0uEs_0INtNtNtCs9L9tuJX2du2_4core3ops8function6FnOnceuE9call_once6vtableB1a_
+#7  0x00007fc65305063f _RNvNvMs0_NtNtNtCsiaXzZB6mOEP_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+#8  0x00007fc653074cd5 start
+#9  0x00007fc653076215 __clone
+#10 0x00007fc653076215 __clone
+#11 0x00007fc653076215 __clone
+#12 0x00007fc653076215 __clone
+#13 0x00007fc653076215 __clone
+#14 0x00007fc653076215 __clone
+#15 0x00007fc653076215 __clone
+#16 0x00007fc653076215 __clone
+#17 0x00007fc653076215 __clone
+#18 0x00007fc653076215 __clone
+#19 0x00007fc653076215 __clone
+#20 0x00007fc653076215 __clone
+#21 0x00007fc653076215 __clone
+#22 0x00007fc653076215 __clone
+#23 0x00007fc653076215 __clone
+#24 0x00007fc653076215 __clone
+#25 0x00007fc653076215 __clone
+#26 0x00007fc653076215 __clone
+#27 0x00007fc653076215 __clone
+#28 0x00007fc653076215 __clone
+#29 0x00007fc653076215 __clone
+#30 0x00007fc653076215 __clone
+#31 0x00007fc653076215 __clone
+#32 0x00007fc653076215 __clone
+#33 0x00007fc653076215 __clone
+#34 0x00007fc653076215 __clone
+#35 0x00007fc653076215 __clone
+#36 0x00007fc653076215 __clone
+#37 0x00007fc653076215 __clone
+#38 0x00007fc653076215 __clone
+#39 0x00007fc653076215 __clone
+#40 0x00007fc653076215 __clone
+#41 0x00007fc653076215 __clone
+#42 0x00007fc653076215 __clone
+#43 0x00007fc653076215 __clone
+#44 0x00007fc653076215 __clone
+#45 0x00007fc653076215 __clone
+#46 0x00007fc653076215 __clone
+#47 0x00007fc653076215 __clone
+#48 0x00007fc653076215 __clone
+#49 0x00007fc653076215 __clone
+#50 0x00007fc653076215 __clone
+#51 0x00007fc653076215 __clone
+#52 0x00007fc653076215 __clone
+#53 0x00007fc653076215 __clone
+#54 0x00007fc653076215 __clone
+#55 0x00007fc653076215 __clone
+#56 0x00007fc653076215 __clone
+#57 0x00007fc653076215 __clone
+#58 0x00007fc653076215 __clone
+#59 0x00007fc653076215 __clone
+#60 0x00007fc653076215 __clone
+#61 0x00007fc653076215 __clone
+#62 0x00007fc653076215 __clone
+#63 0x00007fc653076215 __clone
+#64 0x00007fc653076215 __clone
+#65 0x00007fc653076215 __clone
+#66 0x00007fc653076215 __clone
+#67 0x00007fc653076215 __clone
+#68 0x00007fc653076215 __clone
+#69 0x00007fc653076215 __clone
+#70 0x00007fc653076215 __clone
+#71 0x00007fc653076215 __clone
+#72 0x00007fc653076215 __clone
+#73 0x00007fc653076215 __clone
+#74 0x00007fc653076215 __clone
+#75 0x00007fc653076215 __clone
+#76 0x00007fc653076215 __clone
+#77 0x00007fc653076215 __clone
+#78 0x00007fc653076215 __clone
+#79 0x00007fc653076215 __clone
+#80 0x00007fc653076215 __clone
+#81 0x00007fc653076215 __clone
+#82 0x00007fc653076215 __clone
+#83 0x00007fc653076215 __clone
+#84 0x00007fc653076215 __clone
+#85 0x00007fc653076215 __clone
+#86 0x00007fc653076215 __clone
+#87 0x00007fc653076215 __clone
+#88 0x00007fc653076215 __clone
+#89 0x00007fc653076215 __clone
+#90 0x00007fc653076215 __clone
+#91 0x00007fc653076215 __clone
+#92 0x00007fc653076215 __clone
+#93 0x00007fc653076215 __clone
+#94 0x00007fc653076215 __clone
+#95 0x00007fc653076215 __clone
+#96 0x00007fc653076215 __clone
+#97 0x00007fc653076215 __clone
+#98 0x00007fc653076215 __clone
+#99 0x00007fc653076215 __clone
+#100 0x00007fc653076215 __clone
+#101 0x00007fc653076215 __clone
+#102 0x00007fc653076215 __clone
+#103 0x00007fc653076215 __clone
+#104 0x00007fc653076215 __clone
+#105 0x00007fc653076215 __clone
+#106 0x00007fc653076215 __clone
+#107 0x00007fc653076215 __clone
+#108 0x00007fc653076215 __clone
+#109 0x00007fc653076215 __clone
+#110 0x00007fc653076215 __clone
+#111 0x00007fc653076215 __clone
+#112 0x00007fc653076215 __clone
+#113 0x00007fc653076215 __clone
+#114 0x00007fc653076215 __clone
+#115 0x00007fc653076215 __clone
+#116 0x00007fc653076215 __clone
+#117 0x00007fc653076215 __clone
+#118 0x00007fc653076215 __clone
+#119 0x00007fc653076215 __clone
+#120 0x00007fc653076215 __clone
+#121 0x00007fc653076215 __clone
+#122 0x00007fc653076215 __clone
+#123 0x00007fc653076215 __clone
+#124 0x00007fc653076215 __clone
+#125 0x00007fc653076215 __clone
+#126 0x00007fc653076215 __clone
+#127 0x00007fc653076215 __clone
+#128 0x00007fc653076215 __clone
+#129 0x00007fc653076215 __clone
+#130 0x00007fc653076215 __clone
+#131 0x00007fc653076215 __clone
+#132 0x00007fc653076215 __clone
+#133 0x00007fc653076215 __clone
+#134 0x00007fc653076215 __clone
+#135 0x00007fc653076215 __clone
+#136 0x00007fc653076215 __clone
+#137 0x00007fc653076215 __clone
+#138 0x00007fc653076215 __clone
+#139 0x00007fc653076215 __clone
+#140 0x00007fc653076215 __clone
+#141 0x00007fc653076215 __clone
+#142 0x00007fc653076215 __clone
+#143 0x00007fc653076215 __clone
+#144 0x00007fc653076215 __clone
+#145 0x00007fc653076215 __clone
+#146 0x00007fc653076215 __clone
+#147 0x00007fc653076215 __clone
+#148 0x00007fc653076215 __clone
+#149 0x00007fc653076215 __clone
+#150 0x00007fc653076215 __clone
+#151 0x00007fc653076215 __clone
+#152 0x00007fc653076215 __clone
+#153 0x00007fc653076215 __clone
+#154 0x00007fc653076215 __clone
+#155 0x00007fc653076215 __clone
+#156 0x00007fc653076215 __clone
+#157 0x00007fc653076215 __clone
+#158 0x00007fc653076215 __clone
+#159 0x00007fc653076215 __clone
+#160 0x00007fc653076215 __clone
+#161 0x00007fc653076215 __clone
+#162 0x00007fc653076215 __clone
+#163 0x00007fc653076215 __clone
+#164 0x00007fc653076215 __clone
+#165 0x00007fc653076215 __clone
+#166 0x00007fc653076215 __clone
+#167 0x00007fc653076215 __clone
+#168 0x00007fc653076215 __clone
+#169 0x00007fc653076215 __clone
+#170 0x00007fc653076215 __clone
+#171 0x00007fc653076215 __clone
+#172 0x00007fc653076215 __clone
+#173 0x00007fc653076215 __clone
+#174 0x00007fc653076215 __clone
+#175 0x00007fc653076215 __clone
+#176 0x00007fc653076215 __clone
+#177 0x00007fc653076215 __clone
+#178 0x00007fc653076215 __clone
+#179 0x00007fc653076215 __clone
+#180 0x00007fc653076215 __clone
+#181 0x00007fc653076215 __clone
+#182 0x00007fc653076215 __clone
+#183 0x00007fc653076215 __clone
+#184 0x00007fc653076215 __clone
+#185 0x00007fc653076215 __clone
+#186 0x00007fc653076215 __clone
+#187 0x00007fc653076215 __clone
+#188 0x00007fc653076215 __clone
+#189 0x00007fc653076215 __clone
+#190 0x00007fc653076215 __clone
+#191 0x00007fc653076215 __clone
+#192 0x00007fc653076215 __clone
+#193 0x00007fc653076215 __clone
+#194 0x00007fc653076215 __clone
+#195 0x00007fc653076215 __clone
+#196 0x00007fc653076215 __clone
+#197 0x00007fc653076215 __clone
+#198 0x00007fc653076215 __clone
+#199 0x00007fc653076215 __clone
+#200 0x00007fc653076215 __clone
+#201 0x00007fc653076215 __clone
+#202 0x00007fc653076215 __clone
+#203 0x00007fc653076215 __clone
+#204 0x00007fc653076215 __clone
+#205 0x00007fc653076215 __clone
+#206 0x00007fc653076215 __clone
+#207 0x00007fc653076215 __clone
+#208 0x00007fc653076215 __clone
+#209 0x00007fc653076215 __clone
+#210 0x00007fc653076215 __clone
+#211 0x00007fc653076215 __clone
+#212 0x00007fc653076215 __clone
+#213 0x00007fc653076215 __clone
+#214 0x00007fc653076215 __clone
+#215 0x00007fc653076215 __clone
+#216 0x00007fc653076215 __clone
+#217 0x00007fc653076215 __clone
+#218 0x00007fc653076215 __clone
+#219 0x00007fc653076215 __clone
+#220 0x00007fc653076215 __clone
+#221 0x00007fc653076215 __clone
+#222 0x00007fc653076215 __clone
+#223 0x00007fc653076215 __clone
+#224 0x00007fc653076215 __clone
+#225 0x00007fc653076215 __clone
+#226 0x00007fc653076215 __clone
+#227 0x00007fc653076215 __clone
+#228 0x00007fc653076215 __clone
+#229 0x00007fc653076215 __clone
+#230 0x00007fc653076215 __clone
+#231 0x00007fc653076215 __clone
+#232 0x00007fc653076215 __clone
+#233 0x00007fc653076215 __clone
+#234 0x00007fc653076215 __clone
+#235 0x00007fc653076215 __clone
+#236 0x00007fc653076215 __clone
+#237 0x00007fc653076215 __clone
+#238 0x00007fc653076215 __clone
+#239 0x00007fc653076215 __clone
+#240 0x00007fc653076215 __clone
+#241 0x00007fc653076215 __clone
+#242 0x00007fc653076215 __clone
+#243 0x00007fc653076215 __clone
+#244 0x00007fc653076215 __clone
+#245 0x00007fc653076215 __clone
+#246 0x00007fc653076215 __clone
+#247 0x00007fc653076215 __clone
+#248 0x00007fc653076215 __clone
+#249 0x00007fc653076215 __clone
+#250 0x00007fc653076215 __clone
+#251 0x00007fc653076215 __clone
+#252 0x00007fc653076215 __clone
+#253 0x00007fc653076215 __clone
+#254 0x00007fc653076215 __clone
+#255 0x00007fc653076215 __clone
+eu-stack: tid 2044283: shown max number of frames (256, use -n 0 for unlimited)
+TID 2044331:
+#0  0x00007fc65307097a syscall
+#1  0x00007fc65303a2d5 _RNvMNtNtNtNtCsiaXzZB6mOEP_3std3sys4sync7condvar5futexNtB2_7Condvar4wait
+#2  0x00007fc652f7e3e9 _RNvMNtNtCs2uutRqUV1nv_10shards_vmm2vm4holdNtB2_4Hold4wait
+#3  0x00007fc652fa4af7 _RNvNtNtCs2uutRqUV1nv_10shards_vmm2vm7runtime11vcpu_thread
+#4  0x00007fc652f49906 _RINvNtNtCsiaXzZB6mOEP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtNtCs2uutRqUV1nv_10shards_vmm2vm7runtime6launchs1_0uEB1f_
+#5  0x00007fc652f4f972 _RNSNvYNCINvNtNtCsiaXzZB6mOEP_3std6thread9lifecycle15spawn_uncheckedNCNvNtNtCs2uutRqUV1nv_10shards_vmm2vm7runtime6launchs1_0uEs_0INtNtNtCs9L9tuJX2du2_4core3ops8function6FnOnceuE9call_once6vtableB1b_
+#6  0x00007fc65305063f _RNvNvMs0_NtNtNtCsiaXzZB6mOEP_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+#7  0x00007fc653074cd5 start
+#8  0x00007fc653076215 __clone
+#9  0x00007fc653076215 __clone
+#10 0x00007fc653076215 __clone
+#11 0x00007fc653076215 __clone
+#12 0x00007fc653076215 __clone
+#13 0x00007fc653076215 __clone
+#14 0x00007fc653076215 __clone
+#15 0x00007fc653076215 __clone
+#16 0x00007fc653076215 __clone
+#17 0x00007fc653076215 __clone
+#18 0x00007fc653076215 __clone
+#19 0x00007fc653076215 __clone
+#20 0x00007fc653076215 __clone
+#21 0x00007fc653076215 __clone
+#22 0x00007fc653076215 __clone
+#23 0x00007fc653076215 __clone
+#24 0x00007fc653076215 __clone
+#25 0x00007fc653076215 __clone
+#26 0x00007fc653076215 __clone
+#27 0x00007fc653076215 __clone
+#28 0x00007fc653076215 __clone
+#29 0x00007fc653076215 __clone
+#30 0x00007fc653076215 __clone
+#31 0x00007fc653076215 __clone
+#32 0x00007fc653076215 __clone
+#33 0x00007fc653076215 __clone
+#34 0x00007fc653076215 __clone
+#35 0x00007fc653076215 __clone
+#36 0x00007fc653076215 __clone
+#37 0x00007fc653076215 __clone
+#38 0x00007fc653076215 __clone
+#39 0x00007fc653076215 __clone
+#40 0x00007fc653076215 __clone
+#41 0x00007fc653076215 __clone
+#42 0x00007fc653076215 __clone
+#43 0x00007fc653076215 __clone
+#44 0x00007fc653076215 __clone
+#45 0x00007fc653076215 __clone
+#46 0x00007fc653076215 __clone
+#47 0x00007fc653076215 __clone
+#48 0x00007fc653076215 __clone
+#49 0x00007fc653076215 __clone
+#50 0x00007fc653076215 __clone
+#51 0x00007fc653076215 __clone
+#52 0x00007fc653076215 __clone
+#53 0x00007fc653076215 __clone
+#54 0x00007fc653076215 __clone
+#55 0x00007fc653076215 __clone
+#56 0x00007fc653076215 __clone
+#57 0x00007fc653076215 __clone
+#58 0x00007fc653076215 __clone
+#59 0x00007fc653076215 __clone
+#60 0x00007fc653076215 __clone
+#61 0x00007fc653076215 __clone
+#62 0x00007fc653076215 __clone
+#63 0x00007fc653076215 __clone
+#64 0x00007fc653076215 __clone
+#65 0x00007fc653076215 __clone
+#66 0x00007fc653076215 __clone
+#67 0x00007fc653076215 __clone
+#68 0x00007fc653076215 __clone
+#69 0x00007fc653076215 __clone
+#70 0x00007fc653076215 __clone
+#71 0x00007fc653076215 __clone
+#72 0x00007fc653076215 __clone
+#73 0x00007fc653076215 __clone
+#74 0x00007fc653076215 __clone
+#75 0x00007fc653076215 __clone
+#76 0x00007fc653076215 __clone
+#77 0x00007fc653076215 __clone
+#78 0x00007fc653076215 __clone
+#79 0x00007fc653076215 __clone
+#80 0x00007fc653076215 __clone
+#81 0x00007fc653076215 __clone
+#82 0x00007fc653076215 __clone
+#83 0x00007fc653076215 __clone
+#84 0x00007fc653076215 __clone
+#85 0x00007fc653076215 __clone
+#86 0x00007fc653076215 __clone
+#87 0x00007fc653076215 __clone
+#88 0x00007fc653076215 __clone
+#89 0x00007fc653076215 __clone
+#90 0x00007fc653076215 __clone
+#91 0x00007fc653076215 __clone
+#92 0x00007fc653076215 __clone
+#93 0x00007fc653076215 __clone
+#94 0x00007fc653076215 __clone
+#95 0x00007fc653076215 __clone
+#96 0x00007fc653076215 __clone
+#97 0x00007fc653076215 __clone
+#98 0x00007fc653076215 __clone
+#99 0x00007fc653076215 __clone
+#100 0x00007fc653076215 __clone
+#101 0x00007fc653076215 __clone
+#102 0x00007fc653076215 __clone
+#103 0x00007fc653076215 __clone
+#104 0x00007fc653076215 __clone
+#105 0x00007fc653076215 __clone
+#106 0x00007fc653076215 __clone
+#107 0x00007fc653076215 __clone
+#108 0x00007fc653076215 __clone
+#109 0x00007fc653076215 __clone
+#110 0x00007fc653076215 __clone
+#111 0x00007fc653076215 __clone
+#112 0x00007fc653076215 __clone
+#113 0x00007fc653076215 __clone
+#114 0x00007fc653076215 __clone
+#115 0x00007fc653076215 __clone
+#116 0x00007fc653076215 __clone
+#117 0x00007fc653076215 __clone
+#118 0x00007fc653076215 __clone
+#119 0x00007fc653076215 __clone
+#120 0x00007fc653076215 __clone
+#121 0x00007fc653076215 __clone
+#122 0x00007fc653076215 __clone
+#123 0x00007fc653076215 __clone
+#124 0x00007fc653076215 __clone
+#125 0x00007fc653076215 __clone
+#126 0x00007fc653076215 __clone
+#127 0x00007fc653076215 __clone
+#128 0x00007fc653076215 __clone
+#129 0x00007fc653076215 __clone
+#130 0x00007fc653076215 __clone
+#131 0x00007fc653076215 __clone
+#132 0x00007fc653076215 __clone
+#133 0x00007fc653076215 __clone
+#134 0x00007fc653076215 __clone
+#135 0x00007fc653076215 __clone
+#136 0x00007fc653076215 __clone
+#137 0x00007fc653076215 __clone
+#138 0x00007fc653076215 __clone
+#139 0x00007fc653076215 __clone
+#140 0x00007fc653076215 __clone
+#141 0x00007fc653076215 __clone
+#142 0x00007fc653076215 __clone
+#143 0x00007fc653076215 __clone
+#144 0x00007fc653076215 __clone
+#145 0x00007fc653076215 __clone
+#146 0x00007fc653076215 __clone
+#147 0x00007fc653076215 __clone
+#148 0x00007fc653076215 __clone
+#149 0x00007fc653076215 __clone
+#150 0x00007fc653076215 __clone
+#151 0x00007fc653076215 __clone
+#152 0x00007fc653076215 __clone
+#153 0x00007fc653076215 __clone
+#154 0x00007fc653076215 __clone
+#155 0x00007fc653076215 __clone
+#156 0x00007fc653076215 __clone
+#157 0x00007fc653076215 __clone
+#158 0x00007fc653076215 __clone
+#159 0x00007fc653076215 __clone
+#160 0x00007fc653076215 __clone
+#161 0x00007fc653076215 __clone
+#162 0x00007fc653076215 __clone
+#163 0x00007fc653076215 __clone
+#164 0x00007fc653076215 __clone
+#165 0x00007fc653076215 __clone
+#166 0x00007fc653076215 __clone
+#167 0x00007fc653076215 __clone
+#168 0x00007fc653076215 __clone
+#169 0x00007fc653076215 __clone
+#170 0x00007fc653076215 __clone
+#171 0x00007fc653076215 __clone
+#172 0x00007fc653076215 __clone
+#173 0x00007fc653076215 __clone
+#174 0x00007fc653076215 __clone
+#175 0x00007fc653076215 __clone
+#176 0x00007fc653076215 __clone
+#177 0x00007fc653076215 __clone
+#178 0x00007fc653076215 __clone
+#179 0x00007fc653076215 __clone
+#180 0x00007fc653076215 __clone
+#181 0x00007fc653076215 __clone
+#182 0x00007fc653076215 __clone
+#183 0x00007fc653076215 __clone
+#184 0x00007fc653076215 __clone
+#185 0x00007fc653076215 __clone
+#186 0x00007fc653076215 __clone
+#187 0x00007fc653076215 __clone
+#188 0x00007fc653076215 __clone
+#189 0x00007fc653076215 __clone
+#190 0x00007fc653076215 __clone
+#191 0x00007fc653076215 __clone
+#192 0x00007fc653076215 __clone
+#193 0x00007fc653076215 __clone
+#194 0x00007fc653076215 __clone
+#195 0x00007fc653076215 __clone
+#196 0x00007fc653076215 __clone
+#197 0x00007fc653076215 __clone
+#198 0x00007fc653076215 __clone
+#199 0x00007fc653076215 __clone
+#200 0x00007fc653076215 __clone
+#201 0x00007fc653076215 __clone
+#202 0x00007fc653076215 __clone
+#203 0x00007fc653076215 __clone
+#204 0x00007fc653076215 __clone
+#205 0x00007fc653076215 __clone
+#206 0x00007fc653076215 __clone
+#207 0x00007fc653076215 __clone
+#208 0x00007fc653076215 __clone
+#209 0x00007fc653076215 __clone
+#210 0x00007fc653076215 __clone
+#211 0x00007fc653076215 __clone
+#212 0x00007fc653076215 __clone
+#213 0x00007fc653076215 __clone
+#214 0x00007fc653076215 __clone
+#215 0x00007fc653076215 __clone
+#216 0x00007fc653076215 __clone
+#217 0x00007fc653076215 __clone
+#218 0x00007fc653076215 __clone
+#219 0x00007fc653076215 __clone
+#220 0x00007fc653076215 __clone
+#221 0x00007fc653076215 __clone
+#222 0x00007fc653076215 __clone
+#223 0x00007fc653076215 __clone
+#224 0x00007fc653076215 __clone
+#225 0x00007fc653076215 __clone
+#226 0x00007fc653076215 __clone
+#227 0x00007fc653076215 __clone
+#228 0x00007fc653076215 __clone
+#229 0x00007fc653076215 __clone
+#230 0x00007fc653076215 __clone
+#231 0x00007fc653076215 __clone
+#232 0x00007fc653076215 __clone
+#233 0x00007fc653076215 __clone
+#234 0x00007fc653076215 __clone
+#235 0x00007fc653076215 __clone
+#236 0x00007fc653076215 __clone
+#237 0x00007fc653076215 __clone
+#238 0x00007fc653076215 __clone
+#239 0x00007fc653076215 __clone
+#240 0x00007fc653076215 __clone
+#241 0x00007fc653076215 __clone
+#242 0x00007fc653076215 __clone
+#243 0x00007fc653076215 __clone
+#244 0x00007fc653076215 __clone
+#245 0x00007fc653076215 __clone
+#246 0x00007fc653076215 __clone
+#247 0x00007fc653076215 __clone
+#248 0x00007fc653076215 __clone
+#249 0x00007fc653076215 __clone
+#250 0x00007fc653076215 __clone
+#251 0x00007fc653076215 __clone
+#252 0x00007fc653076215 __clone
+#253 0x00007fc653076215 __clone
+#254 0x00007fc653076215 __clone
+#255 0x00007fc653076215 __clone
+eu-stack: tid 2044331: shown max number of frames (256, use -n 0 for unlimited)
+TID 2044332:
+#0  0x00007fc65307097a syscall
+#1  0x00007fc65303a2d5 _RNvMNtNtNtNtCsiaXzZB6mOEP_3std3sys4sync7condvar5futexNtB2_7Condvar4wait
+#2  0x00007fc652f7e3e9 _RNvMNtNtCs2uutRqUV1nv_10shards_vmm2vm4holdNtB2_4Hold4wait
+#3  0x00007fc652fa4af7 _RNvNtNtCs2uutRqUV1nv_10shards_vmm2vm7runtime11vcpu_thread
+#4  0x00007fc652f49906 _RINvNtNtCsiaXzZB6mOEP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtNtCs2uutRqUV1nv_10shards_vmm2vm7runtime6launchs1_0uEB1f_
+#5  0x00007fc652f4f972 _RNSNvYNCINvNtNtCsiaXzZB6mOEP_3std6thread9lifecycle15spawn_uncheckedNCNvNtNtCs2uutRqUV1nv_10shards_vmm2vm7runtime6launchs1_0uEs_0INtNtNtCs9L9tuJX2du2_4core3ops8function6FnOnceuE9call_once6vtableB1b_
+#6  0x00007fc65305063f _RNvNvMs0_NtNtNtCsiaXzZB6mOEP_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+#7  0x00007fc653074cd5 start
+#8  0x00007fc653076215 __clone
+#9  0x00007fc653076215 __clone
+#10 0x00007fc653076215 __clone
+#11 0x00007fc653076215 __clone
+#12 0x00007fc653076215 __clone
+#13 0x00007fc653076215 __clone
+#14 0x00007fc653076215 __clone
+#15 0x00007fc653076215 __clone
+#16 0x00007fc653076215 __clone
+#17 0x00007fc653076215 __clone
+#18 0x00007fc653076215 __clone
+#19 0x00007fc653076215 __clone
+#20 0x00007fc653076215 __clone
+#21 0x00007fc653076215 __clone
+#22 0x00007fc653076215 __clone
+#23 0x00007fc653076215 __clone
+#24 0x00007fc653076215 __clone
+#25 0x00007fc653076215 __clone
+#26 0x00007fc653076215 __clone
+#27 0x00007fc653076215 __clone
+#28 0x00007fc653076215 __clone
+#29 0x00007fc653076215 __clone
+#30 0x00007fc653076215 __clone
+#31 0x00007fc653076215 __clone
+#32 0x00007fc653076215 __clone
+#33 0x00007fc653076215 __clone
+#34 0x00007fc653076215 __clone
+#35 0x00007fc653076215 __clone
+#36 0x00007fc653076215 __clone
+#37 0x00007fc653076215 __clone
+#38 0x00007fc653076215 __clone
+#39 0x00007fc653076215 __clone
+#40 0x00007fc653076215 __clone
+#41 0x00007fc653076215 __clone
+#42 0x00007fc653076215 __clone
+#43 0x00007fc653076215 __clone
+#44 0x00007fc653076215 __clone
+#45 0x00007fc653076215 __clone
+#46 0x00007fc653076215 __clone
+#47 0x00007fc653076215 __clone
+#48 0x00007fc653076215 __clone
+#49 0x00007fc653076215 __clone
+#50 0x00007fc653076215 __clone
+#51 0x00007fc653076215 __clone
+#52 0x00007fc653076215 __clone
+#53 0x00007fc653076215 __clone
+#54 0x00007fc653076215 __clone
+#55 0x00007fc653076215 __clone
+#56 0x00007fc653076215 __clone
+#57 0x00007fc653076215 __clone
+#58 0x00007fc653076215 __clone
+#59 0x00007fc653076215 __clone
+#60 0x00007fc653076215 __clone
+#61 0x00007fc653076215 __clone
+#62 0x00007fc653076215 __clone
+#63 0x00007fc653076215 __clone
+#64 0x00007fc653076215 __clone
+#65 0x00007fc653076215 __clone
+#66 0x00007fc653076215 __clone
+## kernel stacks
+--- 2047761 daemon-signals
+[<0>] futex_wait+0x272/0x320
+[<0>] __x64_sys_futex+0x26c/0x2f0
+[<0>] do_syscall_64+0xa6/0x3e0
+[<0>] entry_SYSCALL_64_after_hwframe+0x76/0x7e
+--- 2047801 signal-conn
+[<0>] unix_stream_read_generic+0x4f6/0x680
+[<0>] sock_read_iter.cold+0x69/0x200
+[<0>] __x64_sys_read+0x236/0x450
+[<0>] do_syscall_64+0xa6/0x3e0
+[<0>] entry_SYSCALL_64_after_hwframe+0x76/0x7e
+--- 2047831 pauses
+[<0>] futex_wait+0x272/0x320
+[<0>] __x64_sys_futex+0x26c/0x2f0
+[<0>] do_syscall_64+0xa6/0x3e0
+[<0>] entry_SYSCALL_64_after_hwframe+0x76/0x7e
+--- 2051972 exec
+[<0>] sock_alloc_send_pskb+0x22c/0x2b0
+[<0>] unix_stream_sendmsg+0x1e0/0x510
+[<0>] __x64_sys_sendto.cold+0xb/0x17d
+[<0>] do_syscall_64+0xa6/0x3e0
+[<0>] entry_SYSCALL_64_after_hwframe+0x76/0x7e
+## test exit 101 23:12:27
+attempt 0: delay 0 ms, pause Some(0) in 18.972553ms, kill Some(0) in 4.7377ms, VM 2044275
+attempt 0: unpause Some(0) in 4.825504ms
+attempt 0: exec Some(128): shards: cannot start the command: exec /bin/testguest: argument list too long
+attempt 1: delay 1 ms, pause Some(0) in 12.743777ms, kill Some(0) in 7.021116ms, VM 2044275
+attempt 1: unpause Some(0) in 10.729545ms
+attempt 1: exec Some(128): shards: cannot start the command: exec /bin/testguest: argument list too long
+attempt 2: delay 2 ms, pause Some(0) in 20.435055ms, kill Some(0) in 6.757063ms, VM 2044275
+attempt 2: unpause Some(0) in 11.70706ms
+attempt 2: exec Some(128): shards: cannot start the command: exec /bin/testguest: argument list too long
+attempt 3: delay 3 ms, pause Some(0) in 22.508209ms, kill Some(0) in 9.701464ms, VM 2044275
+attempt 3: unpause Some(0) in 12.150839ms
+attempt 3: exec Some(128): shards: cannot start the command: exec /bin/testguest: argument list too long
+attempt 4: delay 4 ms, pause Some(0) in 22.900501ms, kill Some(0) in 8.83802ms, VM 2044275
+attempt 4: unpause Some(0) in 9.191601ms
+attempt 4: exec Some(128): shards: cannot start the command: exec /bin/testguest: argument list too long
+attempt 5: delay 5 ms, pause Some(0) in 29.941665ms, kill Some(0) in 7.241709ms, VM 2044275
+attempt 5: unpause Some(0) in 6.358408ms
+attempt 5: exec Some(1): shards: race is paused: unpause it to run a command in it
+attempt 6: delay 6 ms, pause Some(0) in 26.140775ms, kill Some(0) in 12.457542ms, VM 2044275
+attempt 6: unpause Some(0) in 12.508598ms
+attempt 6: exec Some(1): shards: race is paused: unpause it to run a command in it
+attempt 7: delay 7 ms, pause Some(0) in 33.351745ms, kill Some(0) in 4.656188ms, VM 2044275
+attempt 7: unpause Some(0) in 4.75369ms
+attempt 7: exec Some(128): shards: cannot start the command: exec /bin/testguest: argument list too long
+attempt 8: delay 8 ms, pause Some(0) in 17.352607ms, kill Some(0) in 4.873274ms, VM 2044275
+attempt 8: unpause Some(0) in 6.377955ms
+attempt 8: exec Some(1): shards: race is paused: unpause it to run a command in it
+attempt 9: delay 9 ms, pause Some(0) in 44.217875ms, kill Some(0) in 5.027743ms, VM 2044275
+attempt 9: unpause Some(0) in 8.896029ms
+attempt 9: exec Some(128): shards: cannot start the command: exec /bin/testguest: argument list too long
+attempt 10: delay 10 ms, pause Some(0) in 29.900328ms, kill Some(0) in 5.677977ms, VM 2044275
+attempt 10: unpause Some(0) in 11.047198ms
+attempt 10: exec Some(1): shards: race is paused: unpause it to run a command in it
+attempt 11: delay 11 ms, pause Some(0) in 10.546623ms, kill Some(0) in 5.420656ms, VM 2044275
+attempt 11: unpause Some(0) in 4.607868ms
+attempt 11: exec Some(128): shards: cannot start the command: exec /bin/testguest: argument list too long
+attempt 12: delay 0 ms, pause Some(0) in 14.267644ms, kill Some(0) in 7.031195ms, VM 2044275
+attempt 12: unpause Some(0) in 7.94372ms
+attempt 12: exec Some(128): shards: cannot start the command: exec /bin/testguest: argument list too long
+attempt 13: delay 1 ms, pause Some(0) in 12.159306ms, kill Some(0) in 20.97244ms, VM 2044275
+attempt 13: unpause Some(0) in 13.284197ms
+attempt 13: exec Some(128): shards: cannot start the command: exec /bin/testguest: argument list too long
+attempt 14: delay 2 ms, pause Some(0) in 32.175508ms, kill Some(0) in 7.809028ms, VM 2044275
+attempt 14: unpause Some(0) in 8.277714ms
+attempt 14: exec Some(1): shards: race is paused: unpause it to run a command in it
+attempt 15: delay 3 ms, pause Some(0) in 17.582346ms, kill Some(0) in 4.3896ms, VM 2044275
+attempt 15: unpause Some(0) in 37.750914ms
+attempt 15: exec Some(1): shards: race is paused: unpause it to run a command in it
+attempt 16: delay 4 ms, pause Some(0) in 12.729842ms, kill Some(0) in 5.253494ms, VM 2044275
+attempt 16: unpause Some(0) in 7.235326ms
+attempt 16: exec Some(128): shards: cannot start the command: exec /bin/testguest: argument list too long
+attempt 17: delay 5 ms, pause Some(0) in 13.729389ms, kill Some(0) in 4.543428ms, VM 2044275
+attempt 17: unpause Some(0) in 3.110341ms
+attempt 17: exec Some(1): shards: race is paused: unpause it to run a command in it
+attempt 18: delay 6 ms, pause Some(0) in 14.257765ms, kill Some(0) in 5.493442ms, VM 2044275
+attempt 18: unpause Some(0) in 4.520956ms
+attempt 18: exec Some(128): shards: cannot start the command: exec /bin/testguest: argument list too long
+attempt 19: delay 7 ms, pause Some(0) in 22.591974ms, kill Some(0) in 5.093185ms, VM 2044275
+attempt 19: unpause Some(0) in 13.347234ms
+attempt 19: exec Some(1): shards: race is paused: unpause it to run a command in it
+attempt 20: delay 8 ms, pause Some(0) in 16.615951ms, kill Some(0) in 5.681254ms, VM 2044275
+attempt 20: unpause Some(0) in 7.910598ms
+attempt 20: exec Some(1): shards: race is paused: unpause it to run a command in it
+attempt 21: delay 9 ms, pause Some(0) in 16.638834ms, kill Some(0) in 6.016931ms, VM 2044275
+attempt 21: unpause Some(0) in 13.239843ms
+attempt 21: exec Some(128): shards: cannot start the command: exec /bin/testguest: argument list too long
+attempt 22: delay 10 ms, pause Some(0) in 18.663617ms, kill Some(0) in 5.210794ms, VM 2044275
+attempt 22: unpause Some(0) in 4.350978ms
+attempt 22: exec Some(1): shards: race is paused: unpause it to run a command in it
+attempt 23: delay 11 ms, pause Some(0) in 10.010721ms, kill Some(0) in 5.953522ms, VM 2044275
+attempt 23: unpause Some(0) in 12.944382ms
+attempt 23: exec Some(1): shards: race is paused: unpause it to run a command in it
+attempt 24: delay 0 ms, pause Some(0) in 15.355986ms, kill Some(0) in 3.961921ms, VM 2044275
+attempt 24: unpause Some(0) in 3.047483ms
+attempt 24: exec Some(128): shards: cannot start the command: exec /bin/testguest: argument list too long
+attempt 25: delay 1 ms, pause Some(0) in 18.361081ms, kill Some(0) in 7.935345ms, VM 2044275
+attempt 25: unpause Some(0) in 6.945435ms
+attempt 25: exec Some(128): shards: cannot start the command: exec /bin/testguest: argument list too long
+attempt 26: delay 2 ms, pause Some(0) in 11.435132ms, kill Some(0) in 4.786952ms, VM 2044275
+attempt 26: unpause Some(0) in 4.361669ms
+attempt 26: exec Some(128): shards: cannot start the command: exec /bin/testguest: argument list too long
+attempt 27: delay 3 ms, pause Some(0) in 11.029274ms, kill Some(0) in 7.997791ms, VM 2044275
+attempt 27: unpause Some(0) in 11.08612ms
+attempt 27: exec Some(1): shards: race is paused: unpause it to run a command in it
+attempt 28: delay 4 ms, pause Some(0) in 12.476818ms, kill Some(0) in 10.439132ms, VM 2044275
+attempt 28: unpause Some(0) in 7.651965ms
+attempt 28: exec Some(128): shards: cannot start the command: exec /bin/testguest: argument list too long
+attempt 29: delay 5 ms, pause Some(0) in 13.510309ms, kill Some(0) in 4.36816ms, VM 2044275
+attempt 29: unpause Some(0) in 9.708647ms
+attempt 29: exec Some(128): shards: cannot start the command: exec /bin/testguest: argument list too long
+attempt 30: delay 6 ms, pause Some(0) in 15.913999ms, kill Some(0) in 5.012203ms, VM 2044275
+attempt 30: unpause Some(0) in 6.800604ms
+attempt 30: exec Some(128): shards: cannot start the command: exec /bin/testguest: argument list too long
+attempt 31: delay 7 ms, pause Some(0) in 13.314273ms, kill Some(0) in 7.264621ms, VM 2044275
+attempt 31: unpause Some(0) in 11.428039ms
+attempt 31: exec Some(1): shards: race is paused: unpause it to run a command in it
+attempt 32: delay 8 ms, pause Some(0) in 6.877709ms, kill Some(0) in 5.516255ms, VM 2044275
+attempt 32: unpause Some(0) in 5.10665ms
+attempt 32: exec Some(128): shards: cannot start the command: exec /bin/testguest: argument list too long
+attempt 33: delay 9 ms, pause Some(0) in 26.005252ms, kill Some(0) in 7.335363ms, VM 2044275
+attempt 33: unpause Some(0) in 19.135939ms
+attempt 33: exec Some(1): shards: race is paused: unpause it to run a command in it
+attempt 34: delay 10 ms, pause Some(0) in 12.869913ms, kill Some(0) in 4.864417ms, VM 2044275
+attempt 34: unpause Some(0) in 5.376284ms
+attempt 34: exec Some(128): shards: cannot start the command: exec /bin/testguest: argument list too long
+attempt 35: delay 11 ms, pause Some(0) in 10.173515ms, kill Some(0) in 6.287786ms, VM 2044275
+attempt 35: unpause Some(0) in 8.664246ms
+attempt 35: exec Some(128): shards: cannot start the command: exec /bin/testguest: argument list too long
+attempt 36: delay 0 ms, pause Some(0) in 14.751106ms, kill Some(0) in 3.110761ms, VM 2044275
+attempt 36: unpause Some(0) in 7.10363ms
+attempt 36: exec Some(128): shards: cannot start the command: exec /bin/testguest: argument list too long
+attempt 37: delay 1 ms, pause Some(0) in 15.164639ms, kill Some(0) in 12.65958ms, VM 2044275
+attempt 37: unpause Some(0) in 8.93961ms
+attempt 37: exec Some(128): shards: cannot start the command: exec /bin/testguest: argument list too long
+attempt 38: delay 2 ms, pause Some(0) in 19.198966ms, kill Some(0) in 9.327716ms, VM 2044275
+attempt 38: unpause Some(0) in 18.870743ms
+attempt 38: exec Some(128): shards: cannot start the command: exec /bin/testguest: argument list too long
+attempt 39: delay 3 ms, pause Some(0) in 13.540296ms, kill Some(0) in 4.008248ms, VM 2044275
+attempt 39: unpause Some(0) in 4.686705ms
+attempt 39: exec Some(128): shards: cannot start the command: exec /bin/testguest: argument list too long
+attempt 40: delay 4 ms, pause Some(0) in 19.802263ms, kill Some(0) in 14.280006ms, VM 2044275
+attempt 40: unpause Some(0) in 14.056209ms
+attempt 40: exec Some(128): shards: cannot start the command: exec /bin/testguest: argument list too long
+attempt 41: delay 5 ms, pause Some(0) in 8.436871ms, kill Some(0) in 10.319698ms, VM 2044275
+attempt 41: unpause Some(0) in 5.645376ms
+attempt 41: exec Some(128): shards: cannot start the command: exec /bin/testguest: argument list too long
+attempt 42: delay 6 ms, pause Some(0) in 22.633302ms, kill Some(0) in 10.736407ms, VM 2044275
+attempt 42: unpause Some(0) in 8.1201ms
+attempt 42: exec Some(128): shards: cannot start the command: exec /bin/testguest: argument list too long
+attempt 43: delay 7 ms, pause Some(0) in 27.753999ms, kill Some(0) in 12.578097ms, VM 2044275
+attempt 43: unpause Some(0) in 10.712292ms
+attempt 43: exec Some(128): shards: cannot start the command: exec /bin/testguest: argument list too long
+attempt 44: delay 8 ms, pause Some(0) in 20.404538ms, kill Some(0) in 14.289875ms, VM 2044275
+attempt 44: unpause Some(0) in 4.754102ms
+attempt 44: exec Some(1): shards: race is paused: unpause it to run a command in it
+attempt 45: delay 9 ms, pause Some(0) in 20.089229ms, kill Some(0) in 7.276754ms, VM 2044275
+attempt 45: unpause Some(0) in 8.156227ms
+attempt 45: exec Some(128): shards: cannot start the command: exec /bin/testguest: argument list too long
+attempt 46: delay 10 ms, pause Some(0) in 18.717437ms, kill Some(0) in 7.457231ms, VM 2044275
+attempt 46: unpause Some(0) in 11.124242ms
+attempt 46: exec Some(1): shards: race is paused: unpause it to run a command in it
+attempt 47: delay 11 ms, pause Some(0) in 18.453854ms, kill Some(0) in 6.784755ms, VM 2044275
+attempt 47: unpause Some(0) in 6.203629ms
+attempt 47: exec Some(1): shards: race is paused: unpause it to run a command in it
+attempt 48: delay 0 ms, pause Some(0) in 18.406917ms, kill Some(0) in 12.755369ms, VM 2044275
+attempt 48: unpause Some(0) in 8.228141ms
+attempt 48: exec Some(128): shards: cannot start the command: exec /bin/testguest: argument list too long
+attempt 49: delay 1 ms, pause Some(0) in 12.083443ms, kill Some(0) in 4.941771ms, VM 2044275
+attempt 49: unpause Some(0) in 5.268112ms
+attempt 49: exec Some(128): shards: cannot start the command: exec /bin/testguest: argument list too long
+attempt 50: delay 2 ms, pause Some(0) in 14.320162ms, kill Some(0) in 20.926974ms, VM 2044275
+attempt 50: unpause Some(0) in 38.377324ms
+attempt 50: exec Some(1): shards: race is paused: unpause it to run a command in it
+attempt 51: delay 3 ms, pause Some(0) in 20.147388ms, kill Some(0) in 6.636718ms, VM 2044275
+attempt 51: unpause Some(0) in 12.876464ms
+attempt 51: exec Some(128): shards: cannot start the command: exec /bin/testguest: argument list too long
+attempt 52: delay 4 ms, pause Some(0) in 17.128558ms, kill Some(0) in 12.865234ms, VM 2044275
+attempt 52: unpause Some(0) in 12.27428ms
+attempt 52: exec Some(128): shards: cannot start the command: exec /bin/testguest: argument list too long
+attempt 53: delay 5 ms, pause Some(0) in 6.469226ms, kill Some(0) in 4.37333ms, VM 2044275
+attempt 53: unpause Some(0) in 4.893522ms
+attempt 53: exec Some(128): shards: cannot start the command: exec /bin/testguest: argument list too long
+attempt 54: delay 6 ms, pause Some(0) in 30.75754ms, kill Some(0) in 7.225538ms, VM 2044275
+attempt 54: unpause Some(0) in 7.97052ms
+attempt 54: exec Some(1): shards: race is paused: unpause it to run a command in it
+attempt 55: delay 7 ms, pause Some(0) in 18.384064ms, kill Some(0) in 6.01109ms, VM 2044275
+attempt 55: unpause Some(0) in 16.274834ms
+attempt 55: exec Some(128): shards: cannot start the command: exec /bin/testguest: argument list too long
+attempt 56: delay 8 ms, pause Some(0) in 17.944573ms, kill Some(0) in 5.445723ms, VM 2044275
+attempt 56: unpause Some(0) in 9.414198ms
+attempt 56: exec Some(128): shards: cannot start the command: exec /bin/testguest: argument list too long
+attempt 57: delay 9 ms, pause Some(0) in 15.908399ms, kill Some(0) in 5.640938ms, VM 2044275
+attempt 57: unpause Some(0) in 5.324838ms
+attempt 57: exec Some(128): shards: cannot start the command: exec /bin/testguest: argument list too long
+attempt 58: delay 10 ms, pause Some(0) in 11.424973ms, kill Some(0) in 8.545554ms, VM 2044275
+attempt 58: unpause Some(0) in 10.15456ms
+attempt 58: exec Some(128): shards: cannot start the command: exec /bin/testguest: argument list too long
+attempt 59: delay 11 ms, pause Some(0) in 29.177948ms, kill Some(0) in 3.879687ms, VM 2044275
+thread 'paused_exec_race_experiment' (2043870) panicked at crates/shards/tests/common/mod.rs:2349:78:
+shards unpause race did not exit within 30s
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 161 filtered out; finished in 82.52s
+# done 23:12:27

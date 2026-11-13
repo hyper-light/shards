@@ -241,17 +241,29 @@ impl UnixStream {
     /// (PM M207): Winsock leaves a connection whose receive timed out in an indeterminate
     /// state, to be closed, where a poll that times out leaves it as it was.
     fn read_into(&self, buf: &mut [u8]) -> io::Result<usize> {
-        let ms = self.read_ms.load(Ordering::Relaxed);
-        if ms != 0
-            && !self.nonblocking.load(Ordering::Relaxed)
-            && !self.ready_within(false, i32::try_from(ms).unwrap_or(i32::MAX))?
-        {
+        self.await_readable(buf.is_empty())?;
+        read_into(self.socket.0, buf)
+    }
+
+    /// Waits, where this stream blocks, until it has something to read or has ended, in
+    /// WSAPoll: no longer than its read timeout, or with none for ever. Never in the recv
+    /// itself: one waiting there on afunix.sys can sleep through its peer's end for good,
+    /// which WSAPoll sees (PM M536). A read of nothing waits for nothing, as recv's.
+    fn await_readable(&self, nothing: bool) -> io::Result<()> {
+        if nothing || self.nonblocking.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        let wait = match self.read_ms.load(Ordering::Relaxed) {
+            0 => -1,
+            ms => i32::try_from(ms).unwrap_or(i32::MAX),
+        };
+        if !self.ready_within(false, wait)? {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "no data within the read timeout",
             ));
         }
-        read_into(self.socket.0, buf)
+        Ok(())
     }
 
     /// The socket, as Winsock's calls name it; this value still owns it.
@@ -444,10 +456,17 @@ impl UnixStream {
         Ok(())
     }
 
-    /// Another handle to this connection, as std's `try_clone`: shared with this process.
+    /// Another handle to this connection, as std's `try_clone`: shared with this process,
+    /// and as blocking as this one, as its socket is (WSADuplicateSocketW: "All of the
+    /// state information associated with a socket is held in common across all the
+    /// descriptors").
     pub fn try_clone(&self) -> io::Result<UnixStream> {
         let info = self.socket.protocol_info(std::process::id())?;
-        Socket::from_info(&info).map(UnixStream::wrap)
+        let clone = Socket::from_info(&info).map(UnixStream::wrap)?;
+        clone
+            .nonblocking
+            .store(self.nonblocking.load(Ordering::Relaxed), Ordering::Relaxed);
+        Ok(clone)
     }
 
     /// What process `pid` makes its own copy of this connection from, by [`Self::from_shared`]
@@ -536,6 +555,7 @@ impl UnixStream {
     /// # Safety
     /// Each `(ptr, len)` is writable for `len` bytes for the call's duration.
     pub unsafe fn readv(&self, bufs: &[(*mut u8, usize)]) -> io::Result<usize> {
+        self.await_readable(bufs.iter().all(|&(_, l)| l == 0))?;
         let wsabufs = wsabufs(bufs.iter().map(|&(p, l)| (p, l)));
         let (mut got, mut flags) = (0u32, 0u32);
         // SAFETY: buffers the caller vouches for; synchronous, so they outlive the call.
@@ -735,6 +755,11 @@ impl UnixListener {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
+#[path = "../../../docs/research/measurements/api-flakes/half-close.rs"]
+mod half_close;
+
+#[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
@@ -770,6 +795,21 @@ mod tests {
         let e = (&a).read(&mut [0u8; 1]).unwrap_err();
         assert_eq!(e.kind(), io::ErrorKind::TimedOut, "{e}");
         assert!(t.elapsed() >= Duration::from_millis(150), "{:?}", t.elapsed());
+    }
+
+    /// A clone of a stream that does not block blocks no more than it does, as their socket
+    /// does not: its read with nothing come says so at once, where one that waited in WSAPoll
+    /// would wait for data that never comes (PM M536). The wait here bounds only that.
+    #[test]
+    fn a_clone_blocks_as_its_stream_does() {
+        let (a, _b) = UnixStream::pair().unwrap();
+        a.set_nonblocking(true).unwrap();
+        let clone = a.try_clone().unwrap();
+        let (said, read) = std::sync::mpsc::channel();
+        std::thread::spawn(move || said.send((&clone).read(&mut [0u8; 1]).map_err(|e| e.kind())));
+        // libtest's own warning for a test still running.
+        let got = read.recv_timeout(std::time::Duration::from_secs(60)).unwrap();
+        assert_eq!(got, Err(io::ErrorKind::WouldBlock));
     }
 
     /// A pair carries bytes each way, scatter-gather included; a half-close reads as
