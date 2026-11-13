@@ -911,8 +911,13 @@ fn lease_asked(shared: &Arc<Shared>, payload: &[u8]) -> Result<(), String> {
             answer_lease(shared, ask.id, Err(LeaseRefusal::Ended));
             return Ok(());
         }
-        if state.leases.each.insert(ask.id, Holding::Asked).is_some() {
-            return Err(format!("a lease asked by {}, an id the run holds one by", ask.id));
+        match state.leases.each.entry(ask.id) {
+            std::collections::hash_map::Entry::Occupied(_) => {
+                return Err(format!("a lease asked by {}, an id the run holds one by", ask.id));
+            }
+            std::collections::hash_map::Entry::Vacant(asked) => {
+                asked.insert(Holding::Asked);
+            }
         }
     }
     let id = ask.id;

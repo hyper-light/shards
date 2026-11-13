@@ -386,10 +386,13 @@ fn take_text(rest: &mut &[u8]) -> Option<String> {
     String::from_utf8(s.to_vec()).ok()
 }
 
-/// What [`encode_answer`] wrote: the ask's id, and the lease's life and value, borrowed from
-/// `payload`, or its refusal. None for a payload cut short or padded, an unknown tag, a
-/// life of none, or a text that is not UTF-8.
-pub fn decode_answer(payload: &[u8]) -> Option<(u32, Result<(NonZeroU64, &[u8]), Refusal>)> {
+/// A lease's answer as [`decode_answer`] reads it: its ask's id, and the lease's life and
+/// value, or its refusal.
+pub type Answer<'a> = (u32, Result<(NonZeroU64, &'a [u8]), Refusal>);
+
+/// What [`encode_answer`] wrote, the value borrowed from `payload`. None for a payload cut
+/// short or padded, an unknown tag, a life of none, or a text that is not UTF-8.
+pub fn decode_answer(payload: &[u8]) -> Option<Answer<'_>> {
     let (id, rest) = payload.split_first_chunk::<4>()?;
     let id = u32::from_be_bytes(*id);
     let (&tag, mut rest) = rest.split_first()?;
