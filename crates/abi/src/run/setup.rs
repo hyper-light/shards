@@ -45,12 +45,14 @@ pub const KEYS: &[&[u8]] = &[
     b"managed-input-token",
     b"managed-members",
     b"managed-token",
+    b"mcp",
     b"member",
     b"member-accepts",
     b"member-arg",
     b"member-ends",
     b"member-env",
     b"member-file",
+    b"member-mcp",
     b"member-terminal",
     b"member-workdir",
     b"nesting",
@@ -157,8 +159,8 @@ mod tests {
     /// registered: what the guest and the host share of setup is here (D28).
     #[test]
     fn every_entry_this_crate_makes_is_registered() {
-        use super::super::{managed, members, nesting, plug, socket, trust};
-        let constants: [&[u8]; 22] = [
+        use super::super::{managed, mcp, members, nesting, plug, socket, trust};
+        let constants: [&[u8]; 24] = [
             members::ENV_KEY,
             members::FILE_KEY,
             members::WORKDIR_KEY,
@@ -173,6 +175,8 @@ mod tests {
             managed::ACTIVE_KEY,
             managed::INPUT_KEY,
             managed::INPUT_TOKEN_KEY,
+            mcp::TOKEN_KEY,
+            mcp::MEMBER_KEY,
             nesting::GRANT,
             nesting::READY_BY,
             nesting::GPUS,
@@ -193,6 +197,8 @@ mod tests {
             members::terminal(0),
             members::arg(0, b"--resume").unwrap(),
             members::exec_in(0),
+            mcp::entry(0),
+            mcp::token_entry(&[0; super::super::TOKEN]),
             socket::grant(b"/run/s").unwrap(),
             trust::ca(b"-----BEGIN CERTIFICATE-----").unwrap(),
             trust::host(b"api.example.com").unwrap(),

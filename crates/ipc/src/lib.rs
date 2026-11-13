@@ -623,6 +623,14 @@ pub mod kind {
     /// exits with for it (125, as `docker run` exits for dockerd's own failures), which no
     /// command gave: the run failed, in these words.
     pub const UNSERVED: u8 = 101;
+    /// A VM → its owner, unprompted: a connection a member made to its MCP socket (D254), its
+    /// guest's relay having carried it to the VM: the lane's number (8, big-endian, at or above
+    /// 2^63, `shards_abi::run::mcp::ACCEPTED_FIRST`, apart from every number its owner
+    /// chose), then the member's declared index (4, big-endian), as its guest's relay said it.
+    /// On Unix the connection beside it, held by the VM until its owner says it has it with
+    /// [`LANE_HELD`] (M24); on Windows none, its owner answering [`LANE_HELD`] with the socket
+    /// the VM relays it onto, or none for one it closes.
+    pub const LANE_ACCEPTED: u8 = 102;
 
     /// Whether a network process's control message of `kind` hands it sockets: published
     /// ports' (`PUBLISH`, `NET_PUBLISHED`) and a peer's link (`NET_PEER`). Beside the
@@ -772,6 +780,35 @@ impl Attach {
             daemon: r.identity()?,
         };
         r.0.is_empty().then_some(attach)
+    }
+}
+
+/// A member's MCP connection as its VM hands it to its owner ([`kind::LANE_ACCEPTED`], D254):
+/// its lane's number, the VM's own, and the member its guest's relay said it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Accepted {
+    /// At or above `shards_abi::run::mcp::ACCEPTED_FIRST`, apart from every lane its owner
+    /// opens.
+    pub number: u64,
+    /// The member's declared index.
+    pub member: u32,
+}
+
+impl Accepted {
+    pub fn encode(&self) -> [u8; 12] {
+        let [a, b, c, d, e, f, g, h] = self.number.to_be_bytes();
+        let [i, j, k, l] = self.member.to_be_bytes();
+        [a, b, c, d, e, f, g, h, i, j, k, l]
+    }
+
+    /// `None` for anything but a whole one whose number is a VM's own.
+    pub fn decode(bytes: &[u8]) -> Option<Accepted> {
+        let (number, member) = bytes.split_first_chunk::<8>()?;
+        let accepted = Accepted {
+            number: u64::from_be_bytes(*number),
+            member: u32::from_be_bytes(<[u8; 4]>::try_from(member).ok()?),
+        };
+        (accepted.number >= shards_abi::run::mcp::ACCEPTED_FIRST).then_some(accepted)
     }
 }
 
@@ -2615,6 +2652,43 @@ mod tests {
     }
 
     use super::*;
+
+    /// D254: a member's MCP connection reads back as its VM wrote it; one cut short, longer,
+    /// or numbered as its owner numbers its own lanes, is refused.
+    #[test]
+    fn an_accepted_mcp_connection_reads_back_as_written() {
+        let first = shards_abi::run::mcp::ACCEPTED_FIRST;
+        for accepted in [
+            Accepted {
+                number: first,
+                member: 0,
+            },
+            Accepted {
+                number: u64::MAX,
+                member: u32::MAX,
+            },
+        ] {
+            assert_eq!(Accepted::decode(&accepted.encode()), Some(accepted));
+        }
+        let written = Accepted {
+            number: first + 1,
+            member: 3,
+        }
+        .encode();
+        assert_eq!(&written[8..], &[0, 0, 0, 3]);
+        assert_eq!(Accepted::decode(&written[..11]), None);
+        assert_eq!(Accepted::decode(&[&written[..], &[0]].concat()), None);
+        assert_eq!(
+            Accepted::decode(
+                &Accepted {
+                    number: first - 1,
+                    member: 3
+                }
+                .encode()
+            ),
+            None
+        );
+    }
 
     /// A run's head reads back as written, with what follows it; one cut short, or of a
     /// mode no build writes, is refused.
