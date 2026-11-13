@@ -76,12 +76,11 @@ const WORKING: [&str; 2] = [
     "shards daemon 70625: container 212eb2365f9391311256a9c21cb9db1788808fd36abb04c7d64ddae90d121858: VM 70650 runs as its client waits: its CPU time 51032 ms (+18783 ms in 10s), 1231874 page faults (+419529)\n",
 ];
 
-/// A wait of `bound` on `home`'s daemon, which says `heartbeats` in turn between each two
-/// looks, as often as they come, until the wait gives up or `most` has passed: how long it
-/// waited.
-fn waited(home: &TempDir, bound: Duration, most: Duration, heartbeats: &[&str]) -> Duration {
+/// A wait on `home`'s daemon, which says `heartbeats` in turn between each two looks, as
+/// often as they come, until the wait gives up or `most` has passed: how long it waited.
+fn waited(home: &TempDir, most: Duration, heartbeats: &[&str]) -> Duration {
     let began = Instant::now();
-    let mut patience = Patience::of(home, bound);
+    let mut patience = Patience::of(home);
     for beat in heartbeats.iter().cycle() {
         say(home, beat);
         if !patience.holds() || began.elapsed() > most {
@@ -94,11 +93,11 @@ fn waited(home: &TempDir, bound: Duration, most: Duration, heartbeats: &[&str]) 
 
 /// Its run having answered, the nesting probe's microVM's heartbeat taught its floor (D215's
 /// least rate, ROOT's ruling of 2026-11-13: an answer's own); one wait on its daemon that
-/// then says only its idle heartbeats, as its runc hung, ends at its bound, and one that says
-/// its heartbeats of work goes on past it. Its wait may take its bound, a second for Said's
-/// next read and its own look after.
+/// then says only its idle heartbeats, as its runc hung, no process of it running, ends, its
+/// party's liveness gone, and one that says its heartbeats of work goes on. Its wait may
+/// take a second for Said's next read and its own look after.
 #[test]
-fn a_wait_on_idle_heartbeats_ends_at_its_bound_and_one_on_work_goes_on() {
+fn a_wait_on_idle_heartbeats_ends_and_one_on_work_goes_on() {
     let home = TempDir::new("said-wait");
     say(&home, "shards daemon 70625: serving it\n");
     // Its run answers, then its first heartbeat comes: the floor it teaches.
@@ -109,18 +108,11 @@ fn a_wait_on_idle_heartbeats_ends_at_its_bound_and_one_on_work_goes_on() {
         run.lately(),
         "the first heartbeat of its run, its cold start's, not liveness"
     );
-    let bound = Duration::from_millis(500);
-    let most = bound + Duration::from_secs(2);
-    let idle = waited(&home, bound, most, &IDLE);
-    assert!(
-        idle <= most,
-        "idle heartbeats alone held a wait of {bound:?} for {idle:?}"
-    );
-    let working = waited(&home, bound, most, &WORKING);
-    assert!(
-        working > most,
-        "heartbeats of work held a wait of {bound:?} only {working:?}"
-    );
+    let most = Duration::from_secs(2);
+    let idle = waited(&home, most, &IDLE);
+    assert!(idle <= most, "idle heartbeats alone held a wait for {idle:?}");
+    let working = waited(&home, most, &WORKING);
+    assert!(working > most, "heartbeats of work held a wait only {working:?}");
 }
 
 /// A VM process's slices of work as `common::Ran` looks at them each `PROGRESS_SLICE`, judged
@@ -249,29 +241,40 @@ fn a_stopped_process_is_its_hosts_hold_and_not_refused() {
 /// works, as a command's wait does (the person's ruling of 2026-11-13, D209): its caller
 /// gives it no bound. daemon.rs' and containers.rs' waits on pools and runs were cut at
 /// their tests' `TIMEOUT` however their daemon worked, as run_command's were before W6's
-/// slice 2. Do: a stand-in busy for a second, named its home's daemon; wait for its end.
-/// Expect: the wait holds until it ends.
+/// slice 2: red so at 3e9723c64, cut 0.1 s into a second's work at a bound of 100 ms. Do: a
+/// stand-in busy for a second, named its home's daemon; wait for its end, twice, from one
+/// call site. Expect: each wait holds until it ends, and its end, told `done`, teaches the
+/// call site's kind its answer.
 #[test]
 fn a_patient_wait_goes_on_while_its_party_works() {
     let home = TempDir::new("patient");
     let busy = Duration::from_secs(1);
-    let mut daemon = stand_in_doing(&format!("busy {}", busy.as_millis()))
-        .stdout(std::process::Stdio::null())
-        .spawn()
-        .unwrap();
-    std::fs::write(home.join("daemon.pid"), format!("{}\n", daemon.id())).unwrap();
-    let began = Instant::now();
-    let mut patience = Patience::of(&home, Duration::from_millis(100));
-    while daemon.try_wait().unwrap().is_none() {
-        if !patience.holds() {
-            let _ = daemon.kill();
-            let _ = daemon.wait();
-            panic!(
-                "a daemon busy for {busy:?} did not end within its wait: cut {:?} in",
-                began.elapsed()
-            );
+    for round in 0..2 {
+        let mut daemon = stand_in_doing(&format!("busy {}", busy.as_millis()))
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        std::fs::write(home.join("daemon.pid"), format!("{}\n", daemon.id())).unwrap();
+        let began = Instant::now();
+        let mut patience = Patience::of(&home);
+        while daemon.try_wait().unwrap().is_none() {
+            if !patience.holds() {
+                let _ = daemon.kill();
+                let _ = daemon.wait();
+                panic!(
+                    "a daemon busy for {busy:?} did not end within its wait: cut {:?} in, round {round}",
+                    began.elapsed()
+                );
+            }
+            std::thread::sleep(Duration::from_millis(5));
         }
-        std::thread::sleep(Duration::from_millis(5));
+        assert!(began.elapsed() >= busy, "it ended {:?} in", began.elapsed());
+        // The second round's kind is the first's, which its end taught.
+        assert!(
+            round == 0 || matches!(patience.seen(), shards_api::Seen::Learned { slowest, .. } if slowest >= busy),
+            "its kind learned no answer of a second's work: {:?}",
+            patience.seen()
+        );
+        patience.done();
     }
-    assert!(began.elapsed() >= busy, "it ended {:?} in", began.elapsed());
 }

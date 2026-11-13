@@ -100,32 +100,37 @@ fn spawn_run(home: &Path, args: &[&str]) -> Child {
 }
 
 /// Waits for a child, a client of `home`'s daemon, failing the test rather than hanging it:
-/// within [`TIMEOUT`], or past it while the daemon or its microVMs progress ([`Patience`]).
+/// for as long as its daemon and microVMs progress ([`Patience`], its kind its caller's
+/// call site).
+#[track_caller]
 fn wait(child: &mut Child, home: &Path) -> Option<i32> {
-    let mut patience = Patience::of(home, TIMEOUT);
+    let mut patience = Patience::of(home);
     loop {
         if let Some(status) = child.try_wait().unwrap() {
+            patience.done();
             return status.code();
         }
         if !patience.holds() {
             let _ = child.kill();
-            panic!("shards run did not exit within {TIMEOUT:?}, nor while its daemon or microVMs progressed");
+            panic!("shards run did not exit, its daemon and microVMs no longer progressing");
         }
         std::thread::sleep(Duration::from_millis(5));
     }
 }
 
-/// Waits until `check` holds, as long as a run is given ([`TIMEOUT`]): a loaded 4-CPU
-/// runner, each look at its processes a PowerShell's on Windows, took a pool past 5 s to
-/// settle (CI 40908704180); and past it while `home`'s daemon or its microVMs progress
-/// ([`Patience`]): an arm64 Windows host nested under QEMU's TCG saved a template in 20 s
-/// and filled its pool after it (D209).
+/// Waits until `check` holds, for as long as `home`'s daemon or its microVMs progress
+/// ([`Patience`], its kind its caller's call site): a loaded 4-CPU runner, each look at its
+/// processes a PowerShell's on Windows, took a pool past 5 s to settle (CI 40908704180), and
+/// an arm64 Windows host nested under QEMU's TCG saved a template in 20 s and filled its
+/// pool after it (D209).
+#[track_caller]
 fn eventually(home: &Path, what: &str, mut check: impl FnMut() -> bool) {
-    let mut patience = Patience::of(home, TIMEOUT);
+    let mut patience = Patience::of(home);
     while !check() {
         assert!(patience.holds(), "{what}");
         std::thread::sleep(Duration::from_millis(20));
     }
+    patience.done();
 }
 
 fn daemon_pid(home: &Path) -> Option<i32> {
@@ -623,16 +628,17 @@ fn signals_reach_a_warm_run() {
             let _ = out.read_to_string(&mut rest);
             let _ = read.send(rest);
         });
-        let mut patience = Patience::of(&home, TIMEOUT);
+        let mut patience = Patience::of(&home);
         let rest = loop {
             match rest.recv_timeout(Duration::from_millis(100)) {
-                Ok(rest) => break rest,
+                Ok(rest) => {
+                    patience.done();
+                    break rest;
+                }
                 Err(_) if patience.holds() => {}
                 Err(_) => {
                     let _ = child.kill();
-                    panic!(
-                        "the run outlived its SIGINT by {TIMEOUT:?}, and its progress by as long; ignored at start: {ignored}"
-                    );
+                    panic!("the run outlived its SIGINT and its progress; ignored at start: {ignored}");
                 }
             }
         };
@@ -1056,9 +1062,10 @@ fn a_rebuilt_binary_replaces_the_daemon() {
         read(Box::new(run.stdout.take().unwrap())),
         read(Box::new(run.stderr.take().unwrap())),
     );
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     let status = loop {
         if let Some(status) = run.try_wait().unwrap() {
+            patience.done();
             break Some(status);
         }
         if !patience.holds() {
@@ -1193,7 +1200,7 @@ fn interactive_stdin_ends_with_its_client() {
     // gone: the same for 300 ms. Patient past a run's time while its daemon or microVMs
     // progress, as `eventually` is.
     let mut waiting = processes_with(&templates);
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     let mut since = Instant::now();
     while waiting.is_empty() || since.elapsed() < Duration::from_millis(300) {
         assert!(patience.holds(), "the pool did not settle: {waiting:?}");
@@ -1203,6 +1210,7 @@ fn interactive_stdin_ends_with_its_client() {
             (waiting, since) = (now, Instant::now());
         }
     }
+    patience.done();
     let mut client = common::command()
         .args(["run", "-i", "--pull", "never", "--name", "reader", &image, "cat"])
         .env("SHARDS_HOME", &*home)
@@ -2411,7 +2419,7 @@ fn runs_under_a_slice_start_after_it_was_stopped() {
         })
     };
     run("the first run");
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     while !warm_in_slice() {
         assert!(
             patience.holds(),
@@ -2420,6 +2428,7 @@ fn runs_under_a_slice_start_after_it_was_stopped() {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
+    patience.done();
     let stopped = Command::new("systemctl")
         .args(["--user", "stop", &slice])
         .output()
@@ -2431,7 +2440,7 @@ fn runs_under_a_slice_start_after_it_was_stopped() {
     );
     run("the first run after the slice stopped");
     run("the second run after the slice stopped");
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     while !warm_in_slice() {
         assert!(
             patience.holds(),
@@ -2440,6 +2449,7 @@ fn runs_under_a_slice_start_after_it_was_stopped() {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
+    patience.done();
     let stopped = run_shards_env(&["daemon"], &["stop"], &env);
     assert_eq!(stopped.status, Some(0), "{stopped}");
 }
@@ -2678,7 +2688,7 @@ fn warm_vms_are_bounded_across_templates() {
         .unwrap();
     // As long as a run is given, or past it while the daemon or its microVMs progress, as
     // `eventually` waits.
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     while !(warm(newest) == 1 && warm(&templates) == 1) {
         assert!(
             patience.holds(),
@@ -2689,6 +2699,7 @@ fn warm_vms_are_bounded_across_templates() {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
+    patience.done();
     // Never more than the bound, as the first is served again: the pools' VMs are the
     // templates' processes but the run's own ([`Held`]). Its pool refills, and the warm VM
     // it took the room of, ended before the refill starts, goes as a VM process takes its
@@ -2715,15 +2726,16 @@ fn warm_vms_are_bounded_across_templates() {
     eventually(&home, "the first pool did not refill", || {
         !pooled(&first_dir).is_empty()
     });
-    let mut patience = Patience::of(&home, Duration::from_secs(10));
+    let mut patience = Patience::of(&home);
     while pooled(&templates_named).len() > 1 {
         assert!(
             patience.holds(),
-            "the pools came back to their bound in no 10 s, nor while they progressed: {:?}",
+            "the pools did not come back to their bound while they progressed: {:?}",
             pooled(&templates_named)
         );
         std::thread::sleep(Duration::from_millis(20));
     }
+    patience.done();
     let t0 = Instant::now();
     while t0.elapsed() < Duration::from_millis(500) {
         let now = pooled(&templates_named);
@@ -2804,21 +2816,23 @@ fn pools_keep_what_their_runs_need_while_they_come() {
             .filter(|vm| !runs_own.contains(vm))
             .count()
     };
-    // Whether the pool comes to keep as `want` says within 5 s: or, `patient`, past them
-    // while the daemon or its microVMs progress ([`Patience`]), as a pool a slow host
-    // refills does. A look begun within them is the last.
+    // Whether the pool comes to keep as `want` says within 5 s, a look begun within them
+    // the last: or, `patient`, for as long as the daemon or its microVMs progress
+    // ([`Patience`]), as a pool a slow host refills does.
     let comes = |want: &dyn Fn(usize) -> bool, patient: bool| {
-        let mut patience = Patience::of(&home, Duration::from_secs(5));
+        let mut patience = patient.then(|| Patience::of(&home));
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             let began = Instant::now();
             if want(warm()) {
+                if let Some(patience) = patience {
+                    patience.done();
+                }
                 return true;
             }
-            let more = if patient {
-                patience.holds()
-            } else {
-                began < deadline
+            let more = match patience.as_mut() {
+                Some(patience) => patience.holds(),
+                None => began < deadline,
             };
             if !more {
                 return false;
