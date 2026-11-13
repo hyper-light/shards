@@ -27060,8 +27060,12 @@ seen on real runs:
   (by its kind's name and the wire's words), a kind that is no ask, an input past its room,
   after its end, or for a member with no stdin, an input ended twice, and a lease's answer the
   run cannot take end it `Failed("its orchestrator's channel broke: …")`. An answer the host
-  could not send its orchestrator, or a credit it could not pass to its VM's capture, ends it
-  `Failed`, saying so. Each failed end is said on the host's stderr too. An end the VM said
+  could not send its orchestrator ends it `Failed`, saying so. A credit it could not pass to
+  its VM's capture ends nothing: that capture closes as its VM ends, before its `DONE` can
+  come, and killing the VM for it put a failure where the VM's own end belonged (WHP at
+  3a05bc3f1). The host says the first such credit on its stderr, which shows why a run whose
+  output stops while its VM runs on stopped; its `STOP` still ends that run. Each failed end is
+  said on the host's stderr too. An end the VM said
   first (its `DONE` came) stands, whatever the asks did meanwhile. Frames are read in place
   and wiped as they go (D242's channel), and a lease's answer is served from its frame.
 - *A VM that could not serve its run tells why* (`shards_ipc::kind::UNSERVED`, 101), before
