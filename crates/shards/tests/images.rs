@@ -682,9 +682,17 @@ fn a_guest_runs_its_hosts_x86_64_level() {
     ];
     let recorded = run_shards_env(&["guest"], &args, &env, TIMEOUT);
     assert_eq!(recorded.status, Some(0), "{}", recorded.stderr);
-    // Docker Hub's alpine:3.22, amd64's manifest (2026-10-15).
-    let alpine = "alpine@sha256:3e9b4b680bfc9fb5269227cffbd6d42be39fbf7c0b908123913864aa4447e764";
-    let read = run_shards_env(&["run"], &["--rm", alpine, "cat", "/proc/cpuinfo"], &env, TIMEOUT);
+    // Docker Hub's alpine:3.22, amd64's manifest (2026-10-15), from the tests' own registry.
+    let alpine = common::hub(
+        "alpine@sha256:3e9b4b680bfc9fb5269227cffbd6d42be39fbf7c0b908123913864aa4447e764",
+        TIMEOUT,
+    );
+    let read = run_shards_env(
+        &["run"],
+        &["--rm", alpine.as_str(), "cat", "/proc/cpuinfo"],
+        &env,
+        TIMEOUT,
+    );
     assert_eq!(read.status, Some(0), "{}", read.stderr);
     let flags = read
         .stdout

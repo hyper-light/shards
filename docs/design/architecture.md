@@ -21717,6 +21717,28 @@ mutation-checked (`$` unescaped, no lookup by digest);
 `values_are_written_so_that_nothing_in_them_expands`,
 `an_images_config_is_written_as_its_instructions`.
 
+**A base the store holds asks no registry (2026-11-13).** A build without `--pull` asks no
+registry for a base its store holds: one pinned by a digest held under any name is resolved
+to the digest asked (above); one named by a tag held under that name is taken as the store
+has it, as buildx's docker driver has Docker's builder take one (`image-resolve-mode=local`,
+buildx v0.37.1 build/opt.go:580-585; BuildKit v0.28.1 util/resolver/pool.go:243-263,
+`ResolveModePreferLocal`, the image store asked before the registry). A tag it does not
+hold, and every base with `--pull`, is asked of its registry. BuildKit takes a digest its
+content store holds from the same repository from there, whatever the resolve mode
+(v0.28.1 util/imageutil/config.go:87-111, `Config`; util/pull/pull.go:56-112,
+`tryLocalResolve`, `contentutil.HasSource`), yet its resolver's first fetcher still resolves
+the reference, the image store answering in `local` mode where it names the image at that
+digest, else the registry, whose answer it drops (util/resolver/pool.go:234-262); shards
+takes one held under any name, and asks nothing. Tested: `a_base_the_store_holds_is_resolved_without_asking_a_registry`
+(build/bases_tests.rs), an image pulled by its digest from a stand-in registry that counts
+what it is asked, then resolved under another registry's name and a tag of its own, and by
+a tag pulled once: no registry asked either time. It holds on the revision it was written
+against (7152fa749): what spent Docker Hub's anonymous pulls (100 an hour for the LAN's
+IPv6 /64) were E2E tests whose fresh homes each pulled their base, which now take Docker
+Hub's images from the tests' own registry, served from what a build pulled once per
+checkout into target/artifacts/hub (tests/common `hub`), as the pinned kernel is fetched
+once into target/artifacts.
+
 **A pull's Agentfile, and the platform's (2026-10-16).** §10 has a pull make an image a
 microVM, an Agentfile, or both; `pull --output-agentfile` was in pull's help from its first
 commit (f0c0ec2e, 2026-10-04), and nothing read it: a pull that named it wrote nothing,

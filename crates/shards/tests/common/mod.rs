@@ -3376,6 +3376,143 @@ pub fn served_counting() -> (String, Arc<AtomicUsize>) {
     (format!("127.0.0.1:{port}/test/image:v1"), served)
 }
 
+/// Docker Hub's image `reference`, pinned by its digest, served by a registry of the
+/// tests' own as `127.0.0.1:<port>/test/image@<digest>`: the same image, never pulled from
+/// Docker Hub as a test runs. Docker Hub counts its anonymous pulls by address, here the
+/// whole LAN's IPv6 /64, 100 an hour, and test homes that pulled their base from it each run
+/// spent them for every machine there (CI cluster 13: api_image.rs's builds, refused from its
+/// eighth round of 30 on). What it serves is what a pull of the image for this host's
+/// platform fetches, pulled once per checkout ([`hub_seed`]); one registry serves each image
+/// to every test of the binary.
+pub fn hub(reference: &str, timeout: Duration) -> String {
+    static SERVED: OnceLock<std::sync::Mutex<std::collections::HashMap<String, String>>> = OnceLock::new();
+    let mut served = SERVED
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(at) = served.get(reference) {
+        return at.clone();
+    }
+    let (top, blobs) = hub_seed(reference, timeout);
+    let digest = sha256_digest(&top);
+    let (port, _) = registry(top, blobs);
+    let at = format!("127.0.0.1:{port}/test/image@{digest}");
+    served.insert(reference.to_string(), at.clone());
+    at
+}
+
+/// `reference` as a test pulls it: a Docker Hub image pinned by its digest from the tests'
+/// own registry ([`hub`]), any other as it is.
+pub fn hubless(reference: &str, timeout: Duration) -> String {
+    match shards_image::reference::Reference::parse(reference) {
+        Ok(r) if r.domain == shards_image::reference::DOCKER_HUB && r.digest.is_some() => {
+            hub(reference, timeout)
+        }
+        _ => reference.to_string(),
+    }
+}
+
+/// `agentfile` with each base it takes `FROM` Docker Hub by a digest taken from the tests'
+/// own registry instead ([`hubless`]): the same image, every other word as it was.
+pub fn hub_bases(agentfile: &str, timeout: Duration) -> String {
+    agentfile
+        .split_inclusive('\n')
+        .map(|line| {
+            let base = line
+                .strip_prefix("FROM ")
+                .and_then(|rest| rest.split_whitespace().find(|w| !w.starts_with("--")));
+            match base {
+                Some(base) => line.replacen(base, &hubless(base, timeout), 1),
+                None => line.to_string(),
+            }
+        })
+        .collect()
+}
+
+/// What [`hub`] serves of `reference`: the document its digest names, then each manifest,
+/// config and layer of it a pull for this host's platform fetched (the platform's manifest
+/// and its attestations), from the store of target/artifacts/hub, a home of the tests' own
+/// that a build pulls each into from Docker Hub the first time it is asked for, in process,
+/// as a build pulls its base (no daemon): once per checkout, as the pinned kernel is
+/// downloaded once into target/artifacts ([`fetch`]), one test process at a time.
+fn hub_seed(reference: &str, timeout: Duration) -> (Vec<u8>, Vec<Vec<u8>>) {
+    let pinned = shards_image::reference::Reference::parse(reference).unwrap();
+    assert!(
+        pinned.domain == shards_image::reference::DOCKER_HUB && pinned.digest.is_some(),
+        "{reference}: a Docker Hub image pinned by its digest"
+    );
+    let home = workspace().join("target/artifacts/hub");
+    shards_vmm::platform::create_private_dir(&home).unwrap();
+    let _seeding = shards_image::store::Locked::exclusive(&home.join("seeding.lock")).unwrap();
+    if let Some(seed) = hub_held(&home, &pinned) {
+        return seed;
+    }
+    let ctx = TempDir::new("hub-seed");
+    std::fs::write(ctx.join("Dockerfile"), format!("FROM {reference}\n")).unwrap();
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let built = run_shards_env(&["build"], &[ctx.as_os_str()], &env, timeout);
+    assert_eq!(
+        built.status,
+        Some(0),
+        "{reference}, pulled from Docker Hub once into {}: {}",
+        home.display(),
+        built.stderr
+    );
+    hub_held(&home, &pinned)
+        .unwrap_or_else(|| panic!("{reference}: not held whole in {} once pulled", home.display()))
+}
+
+/// What `home`'s store holds of `pinned`, whole: none where a part is missing or is not
+/// what its digest says.
+fn hub_held(home: &Path, pinned: &shards_image::reference::Reference) -> Option<(Vec<u8>, Vec<Vec<u8>>)> {
+    let store = shards_image::store::Store::open(&home.join("images")).ok()?;
+    let digest = pinned.digest.as_ref()?.to_string();
+    if store.resolved(&pinned.to_string()).ok()??.to_string() != digest {
+        return None;
+    }
+    let read = |d: &str| {
+        let bytes = std::fs::read(store.blob_path(&shards_image::reference::Digest::parse(d).ok()?)).ok()?;
+        (sha256_digest(&bytes) == d).then_some(bytes)
+    };
+    let top = read(&digest)?;
+    let doc: serde_json::Value = serde_json::from_slice(&top).ok()?;
+    // The registry serves a document as the media type its words name, a Docker list's as
+    // a Docker manifest's (registry_serving_at): Docker Hub's official images are OCI's.
+    assert_ne!(
+        doc["mediaType"].as_str(),
+        Some("application/vnd.docker.distribution.manifest.list.v2+json"),
+        "{pinned}: a Docker manifest list, which the tests' registry serves as a manifest"
+    );
+    // An index's manifests that its pull fetched, which the registry serves among the blobs;
+    // a lone manifest is the document itself.
+    let listed = doc["manifests"].as_array();
+    let manifests: Vec<Vec<u8>> = match listed {
+        Some(listed) => listed
+            .iter()
+            .filter_map(|m| read(m["digest"].as_str()?))
+            .collect(),
+        None => vec![top.clone()],
+    };
+    if manifests.is_empty() {
+        return None;
+    }
+    let mut blobs = Vec::new();
+    for manifest in manifests {
+        let parsed: serde_json::Value = serde_json::from_slice(&manifest).ok()?;
+        for part in std::iter::once(&parsed["config"]).chain(parsed["layers"].as_array()?) {
+            blobs.push(read(part["digest"].as_str()?)?);
+        }
+        if listed.is_some() {
+            blobs.push(manifest);
+        }
+    }
+    Some((top, blobs))
+}
+
 /// A running `shards` whose output lines arrive on a channel, killed when dropped.
 pub struct Vm {
     child: std::process::Child,
