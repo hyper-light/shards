@@ -10602,7 +10602,8 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
   threads (jupiter's guard): its red is owed on WHP.
   The gap: a cold wait whose client hangs alive runs to its CI job's limit, its account
   said then. Owed to the next slice: `Patience`'s own timeout and `DAEMON_QUIET`'s other
-  users (`Said::lately`, `Ran`, `Heard`, guests' streams, `STREAM_QUIET` told to guests),
+  users (`Said::lately`, `Ran`, `Heard`, guests' streams; `STREAM_QUIET` told to guests is
+  gone, #77, below),
   and shards-api's `found()` taking a stopped process for held in production's waits too.
 - **A test's own waits on pools and microVMs follow them too** (M424). daemon.rs' rerun at
   b57cad27 failed 7 of 38, each a wait of the test's own past a fixed minute (a pool
@@ -10633,8 +10634,8 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
   (`common::Heard`): a line it has not printed before, or bytes more of the stream the test
   carries through it; its microVM's CPU time (`Ran`) only before its first line, while it
   starts. The storm's guest waits on its host as the host waits on it: for its stream's
-  8 MiB past a snapshot and for the host's word at its end, while the echo carries bytes
-  within a minute (`STREAM_QUIET`), never a fixed minute. No wall clock bounds a storm: at
+  8 MiB past a snapshot and for the host's word at its end with no bound of its own: the
+  host's reads and waits above judge a stream that stops (#77, below). No wall clock bounds a storm: at
   the rate that host streamed, 196,608 bytes in 120 s (1,638.4 B/s), the busy machine's
   restores carry 13 MiB (1 MiB before its snapshot, a whole 4 MiB round in each of three
   restores), 8,320 s, and the machine that goes on 12 MiB (1 MiB before, 8 MiB after and
@@ -10667,11 +10668,45 @@ beat.
 | Literal | Was | Now | Source |
 |---|---|---|---|
 | `STOOD_STILL` (testguest linux.rs) | 15 s | the longest the main thread stood still before | its watchers' looks |
-| `STREAM_QUIET` (testguest linux.rs) | 60 s, a copy | the host's `DAEMON_QUIET`, told | tests/common `DAEMON_QUIET` |
+| `STREAM_QUIET` (testguest linux.rs) | 60 s, a copy | the host's `DAEMON_QUIET`, told; since #77 none: no guest bound on the stream, and the account at both paces past | `stall::Watch`'s looks |
 | `AWAIT_MOST` (testdir shards-testhelper.rs) | 300 s | none: waits while its test's directory is | `TempDir`, removed as its test ends, failed or killed |
 
 Owed: the storm suites (tests/snapshot.rs) on KVM, Hypervisor.framework and the nested arm64
 Windows host, and the remote and build tests that run the helper's `await`.
+
+**The storm's quiet, learned in the guest (#77, 2026-11-13).** The told quiet was still the
+host's fixed minute, copied into the guest (R03). It decided three things, now each from
+the run itself, and the guest is told no quiet (`shards_quiet_ms` and `host_quiet` are gone):
+
+- **The stream after a snapshot and the host's word at the end** wait with no bound of the
+  guest's own (`waiting`, then a blocking `vsock_accept`), as the storm's other waits
+  already did. The host is the one judge of a stream that stops: it reads each byte within
+  its own quiet (`common::Following`) and waits on its guest while it says something new or
+  carries bytes (`Heard`), and ends the microVM when it gives up. The guest says the bytes
+  echoed since the snapshot as it waits, a line that changes only as they do, so a stopped
+  stream gives the host no new line.
+- **The kernel's account of a stalled main thread** (`stall::Watch`, testguest's library,
+  one per watcher) is given once the main thread has stood still for more of a watcher's
+  looks than it ever did before it moved on, and the echo has carried nothing for more
+  looks than it ever went without while it carried: D215's rule, past its own bound a wait
+  goes on while progress shows (the stream's bytes) and fails only after a whole window
+  without any (the stream's own longest gap). M427's 26 and 56 s stand-stills at a clock
+  check, with the stream carrying, are no stall; the account at the copied minute could
+  have held CPU 0 as M427's at 15 s did.
+- **Cold start, typed** (`Count::longest`): the main thread's pace starts at no
+  stand-still, so each stand past it is said, one cheap line a beat (`Verdict::PastItsPace`);
+  the echo's starts unlearned (`None`), so until it has carried a byte since the watch began
+  (a restore whose host has not streamed again yet) no stall is found and the host's own
+  reads say where its stream stopped. Counts saturate; the look is a second, the watchers'
+  sampling, which sets the rule's grain and no bound.
+
+Held by `stall.rs`' unit tests (red at daa598a12, the told minute; green with the learned
+rule): `a_slow_main_thread_while_the_stream_carries_is_no_stall` (M427's shape),
+`a_stall_is_both_past_their_pace` and `a_stream_not_yet_carried_makes_no_stall`. The gap: a
+main thread stuck for good while the stream goes on carrying gets its `PastItsPace` line and
+no account (the copied minute gave one), and the host, its stream carrying, waits on it
+(`Heard::of`) to its job's limit. Owed (ROOT): the storm suites (tests/snapshot.rs) on KVM,
+Hypervisor.framework and the nested arm64 Windows host.
 
 ### D207. A Windows host's bind sources: its drives' paths (built)
 
