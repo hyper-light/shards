@@ -131,8 +131,10 @@ impl Look {
 
 /// What its host was doing to a VM process as a look saw it, beside its CPU, by which one
 /// that ran nothing is told from one its host held (ROOT's ruling of 2026-11-13: a party its
-/// host starves is live, and a stopped or frozen one stalled). Each is as its OS keeps it
-/// (`os::hold`); what cannot be read shows nothing, and that look is judged by its CPU alone.
+/// host starves is live, and a stopped or frozen one stalled). Each is the process's own, as
+/// its OS keeps it (`os::hold`), never what shares a group with it: a sleeper beside a busy
+/// neighbour is still (ROOT, 2026-11-13). What cannot be read shows nothing, and that look is
+/// judged by its CPU alone.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct Hold {
     /// A thread of it is runnable on no CPU, or waits on its host's memory, as it is looked
@@ -140,24 +142,57 @@ struct Hold {
     runnable: bool,
     /// It is stopped (a stop signal's, a debugger's, a suspension's) or frozen.
     stopped: bool,
+    /// Linux: the time its threads have waited for a CPU.
+    #[cfg(target_os = "linux")]
+    queued: Queued,
     /// Linux: the time its cgroup's tasks have waited for a CPU or stalled on memory, in
-    /// microseconds: cpu.pressure's and memory.pressure's `some` totals, summed.
+    /// microseconds (cpu.pressure's and memory.pressure's `some` totals, summed), read only
+    /// where that cgroup holds this process alone, as a daemon's VM process its slice (D209):
+    /// a shared cgroup's is its neighbours' too.
     #[cfg(target_os = "linux")]
     pressure: Option<u64>,
 }
 
+/// Linux: what a look read of a process's threads' wait for a CPU.
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum Queued {
+    /// None read: the kernel keeps no schedstat (built without CONFIG_SCHED_INFO), or keeps
+    /// it as zeros (fs/proc/base.c, where `sched_info_on()` is false), or the process went.
+    /// Its looks are judged by its CPU and its runnable sample alone.
+    #[default]
+    Unread,
+    /// Its threads' run-queue wait, in nanoseconds, summed: each one's
+    /// `/proc/<pid>/task/<tid>/schedstat` second field, `run_delay`
+    /// (Documentation/scheduler/sched-stats.rst).
+    Waited(u64),
+}
+
 impl Hold {
     /// Whether its host held it since the look that saw `before`: a thread of it runnable,
-    /// or waiting on its host's memory, now; or (Linux) its cgroup's pressure grown since.
+    /// or waiting on its host's memory, now; or (Linux) its threads' wait for a CPU grown
+    /// since, or its own cgroup's pressure.
+    ///
+    /// The kernel adds a thread's wait to its `run_delay` as it reaches a CPU or leaves the
+    /// queue (kernel/sched/stats.h `sched_info_arrive`, `sched_info_dequeue`): a thread that
+    /// waited the whole time between two looks shows by its runnable state instead. A thread
+    /// gone since takes its wait out of the sum, which then shows growth only past it.
     fn held_since(&self, before: &Hold) -> bool {
         #[cfg(target_os = "linux")]
-        let pressed = matches!((before.pressure, self.pressure), (Some(b), Some(n)) if n > b);
+        let waited = {
+            let queued = matches!(
+                (before.queued, self.queued),
+                (Queued::Waited(b), Queued::Waited(n)) if n > b
+            );
+            let pressed = matches!((before.pressure, self.pressure), (Some(b), Some(n)) if n > b);
+            queued || pressed
+        };
         #[cfg(not(target_os = "linux"))]
-        let pressed = {
+        let waited = {
             let _ = before;
             false
         };
-        self.runnable || pressed
+        self.runnable || waited
     }
 }
 
@@ -404,7 +439,7 @@ pub use os::Followed;
 
 #[cfg(target_os = "linux")]
 mod os {
-    use super::{Hold, Look};
+    use super::{Hold, Look, Queued};
     use crate::{ProcessFailure, ProcessOperation};
     use std::path::{Path, PathBuf};
     use std::time::Duration;
@@ -433,22 +468,28 @@ mod os {
         Ok(stat(pid)?.map(|(started, _)| started))
     }
 
-    /// What its host is doing to process `pid` ([`Hold`]): a thread of it runnable, its state
-    /// `R` (`/proc/<pid>/task/<tid>/stat` field 3, proc(5)); it stopped, its leader's state
-    /// `T` or `t`, or its cgroup frozen (`cgroup.events`' `frozen 1`,
-    /// Documentation/admin-guide/cgroup-v2.rst); and its cgroup's pressure
+    /// What its host is doing to process `pid` ([`Hold`]), from its own evidence alone: a
+    /// thread of it runnable, its state `R` (`/proc/<pid>/task/<tid>/stat` field 3, proc(5));
+    /// it stopped, its leader's state `T` or `t`, or its cgroup frozen (`cgroup.events`'
+    /// `frozen 1`, Documentation/admin-guide/cgroup-v2.rst); its threads' run-queue wait
+    /// ([`Queued`]); and, where its cgroup holds it alone, that cgroup's pressure
     /// (Documentation/accounting/psi.rst), whose `some` totals grow while any of its tasks
     /// waits for a CPU, or is stalled on memory, a task held over its `memory.high` among them
-    /// (mm/memcontrol.c, `mem_cgroup_handle_over_high`). The root cgroup's is the host's own,
-    /// `/proc/pressure`. What it cannot read shows nothing.
+    /// (mm/memcontrol.c, `mem_cgroup_handle_over_high`). A cgroup it shares, the root's among
+    /// them (the host's, `/proc/pressure`), is not read: its pressure is its other tasks' as
+    /// much as this one's. What it cannot read shows nothing.
     pub(super) fn hold(pid: u32) -> Hold {
         let mut hold = Hold::default();
         if let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) {
             for task in tasks.flatten() {
-                let Some(state) = std::fs::read(task.path().join("stat"))
-                    .ok()
-                    .and_then(|stat| state(&stat))
-                else {
+                let dir = task.path();
+                if let Some(delay) = run_delay(&dir) {
+                    hold.queued = Queued::Waited(match hold.queued {
+                        Queued::Waited(sum) => sum.saturating_add(delay),
+                        Queued::Unread => delay,
+                    });
+                }
+                let Some(state) = std::fs::read(dir.join("stat")).ok().and_then(|stat| state(&stat)) else {
                     continue;
                 };
                 hold.runnable |= state == b'R';
@@ -458,20 +499,35 @@ mod os {
         }
         if let Some((dir, root)) = cgroup(pid) {
             hold.stopped |= frozen(&dir);
-            let (cpu, memory) = if root {
-                (
-                    PathBuf::from("/proc/pressure/cpu"),
-                    PathBuf::from("/proc/pressure/memory"),
-                )
-            } else {
-                (dir.join("cpu.pressure"), dir.join("memory.pressure"))
-            };
-            hold.pressure = match (some_total(&cpu), some_total(&memory)) {
-                (None, None) => None,
-                (cpu, memory) => Some(cpu.unwrap_or(0).saturating_add(memory.unwrap_or(0))),
-            };
+            if !root && alone(&dir, pid) {
+                hold.pressure = match (
+                    some_total(&dir.join("cpu.pressure")),
+                    some_total(&dir.join("memory.pressure")),
+                ) {
+                    (None, None) => None,
+                    (cpu, memory) => Some(cpu.unwrap_or(0).saturating_add(memory.unwrap_or(0))),
+                };
+            }
         }
         hold
+    }
+
+    /// A task's run-queue wait in nanoseconds, its `schedstat`'s second field; none where it
+    /// could not be read, or reads as zeros (no accounting, [`Queued::Unread`]).
+    fn run_delay(task: &Path) -> Option<u64> {
+        let text = std::fs::read_to_string(task.join("schedstat")).ok()?;
+        let mut fields = text.split_whitespace().map(str::parse::<u64>);
+        let (ran, waited, slices) = (fields.next()?.ok()?, fields.next()?.ok()?, fields.next()?.ok()?);
+        (ran != 0 || waited != 0 || slices != 0).then_some(waited)
+    }
+
+    /// Whether the cgroup at `dir` holds process `pid` alone: its `cgroup.procs` lists that
+    /// pid and no other.
+    fn alone(dir: &Path, pid: u32) -> bool {
+        std::fs::read_to_string(dir.join("cgroup.procs")).is_ok_and(|procs| {
+            let mut listed = procs.split_whitespace();
+            listed.next().and_then(|p| p.parse::<u32>().ok()) == Some(pid) && listed.next().is_none()
+        })
     }
 
     /// A task's state, its stat's field 3: the first after its command's last `)`, which may
@@ -1283,6 +1339,18 @@ mod tests {
                 Found::Still,
                 "no total before"
             );
+            let waited = |ns| Hold {
+                queued: Queued::Waited(ns),
+                ..Hold::default()
+            };
+            assert_eq!(found(false, false, &waited(10), &waited(11)), Found::Held);
+            assert_eq!(found(false, false, &waited(10), &waited(10)), Found::Still);
+            assert_eq!(
+                found(false, false, &idle, &waited(11)),
+                Found::Still,
+                "none read before"
+            );
+            assert_eq!(found(false, false, &waited(11), &stopped), Found::Still);
         }
     }
 
@@ -1406,18 +1474,28 @@ mod tests {
         let mut others = [spinner_on(cpu), spinner_on(cpu)];
         let followed = Followed::of_pid(starved.id()).unwrap().unwrap();
         let before = followed.hold();
+        // Its own wait grown where the kernel keeps it, else its runnable sample.
         let now = loop {
             let now = followed.hold();
-            if now.held_since(&before) {
+            let shown = match (before.queued, now.queued) {
+                (Queued::Waited(b), Queued::Waited(n)) => n > b,
+                _ => now.runnable,
+            };
+            if shown {
                 break now;
             }
             std::thread::yield_now();
         };
+        assert_eq!(now.pressure, None, "this test's cgroup is shared: {now:?}");
         for child in others.iter_mut().chain([&mut starved]) {
             drop(child.stdin.take());
             child.wait().unwrap();
         }
-        assert_eq!(found(false, false, &before, &now), Found::Held, "{before:?} {now:?}");
+        assert_eq!(
+            found(false, false, &before, &now),
+            Found::Held,
+            "{before:?} {now:?}"
+        );
     }
 
     /// The first CPU this process may run on (sched_getaffinity(2)).
@@ -1430,7 +1508,9 @@ mod tests {
         assert_eq!(got, 0);
         let cpus = usize::try_from(libc::CPU_SETSIZE).unwrap();
         // SAFETY: CPU_ISSET reads a bit of a set filled above, below CPU_SETSIZE.
-        (0..cpus).find(|&cpu| unsafe { libc::CPU_ISSET(cpu, &set) }).unwrap()
+        (0..cpus)
+            .find(|&cpu| unsafe { libc::CPU_ISSET(cpu, &set) })
+            .unwrap()
     }
 
     /// This test binary spinning until its stdin ends, each of its threads pinned to `cpu`
@@ -1474,11 +1554,16 @@ mod tests {
         let file = if relative.is_empty() {
             std::path::PathBuf::from("/proc/pressure/cpu")
         } else {
-            std::path::Path::new("/sys/fs/cgroup").join(relative).join("cpu.pressure")
+            std::path::Path::new("/sys/fs/cgroup")
+                .join(relative)
+                .join("cpu.pressure")
         };
         let text = std::fs::read_to_string(file).ok()?;
         let some = text.lines().find_map(|line| line.strip_prefix("some "))?;
-        some.split_whitespace().find_map(|field| field.strip_prefix("total="))?.parse().ok()
+        some.split_whitespace()
+            .find_map(|field| field.strip_prefix("total="))?
+            .parse()
+            .ok()
     }
 
     /// Each kind learns apart, from its first answer on: its slowest answer only rises, its
