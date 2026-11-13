@@ -1,0 +1,201 @@
+2026-11-13T01:02:01.7465429Z      Running tests/nesting.rs (target/x86_64-unknown-linux-gnu/test-release/deps/nesting-264972f954e6c535)
+2026-11-13T01:02:01.7474462Z 
+2026-11-13T01:02:01.7486151Z running 10 tests
+2026-11-13T01:02:01.7492949Z test a_granted_runs_boxes_reach_its_gpu_as_their_rules_and_its_own_say ... ok
+2026-11-13T01:02:01.8625028Z warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+2026-11-13T01:02:01.8636509Z warning: aws-lc-sys@0.45.0: Value: 0 is false.
+2026-11-13T01:02:01.8650864Z warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+2026-11-13T01:02:01.8658847Z warning: aws-lc-sys@0.45.0: Value: 1 is true.
+2026-11-13T01:02:01.8664592Z warning: aws-lc-sys@0.45.0: Environment Variable found 'CARGO_ENCODED_RUSTFLAGS': ''
+2026-11-13T01:02:01.8667952Z warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=universal
+2026-11-13T01:02:01.8673867Z warning: aws-lc-sys@0.45.0: Building with: CC
+2026-11-13T01:02:01.8680025Z warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+2026-11-13T01:02:01.8690586Z warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-musl'
+2026-11-13T01:02:01.8700584Z warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/runner/work/shards/shards/target/guest/x86_64-unknown-linux-musl/guest/build/aws-lc-sys-546722d66a375a49/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+2026-11-13T01:02:01.8709682Z warning: aws-lc-sys@0.45.0: Environment Variable found 'CC_x86_64_unknown_linux_musl': '/home/runner/work/shards/shards/scripts/zig-cc'
+2026-11-13T01:02:01.8714581Z warning: aws-lc-sys@0.45.0: Setting CC_x86_64_unknown_linux_musl: /home/runner/work/shards/shards/scripts/zig-cc
+2026-11-13T01:02:01.8721945Z warning: aws-lc-sys@0.45.0: Using flag: -ffile-prefix-map=/home/runner/work/shards/shards/vendor/aws-lc-sys=
+2026-11-13T01:02:01.8728404Z warning: aws-lc-sys@0.45.0: Size-optimized AWS-LC build enabled. Applying OPENSSL_SMALL and disabling AVX-512 assembly.
+2026-11-13T01:02:01.8733601Z warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/runner/work/shards/shards/target/guest/x86_64-unknown-linux-musl/guest/build/aws-lc-sys-546722d66a375a49/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+2026-11-13T01:02:01.8742294Z warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/runner/work/shards/shards/target/guest/x86_64-unknown-linux-musl/guest/build/aws-lc-sys-546722d66a375a49/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+2026-11-13T01:02:01.8751617Z warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/runner/work/shards/shards/target/guest/x86_64-unknown-linux-musl/guest/build/aws-lc-sys-546722d66a375a49/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+2026-11-13T01:02:01.8755020Z     Finished `guest` profile [optimized] target(s) in 0.06s
+2026-11-13T01:02:04.6788060Z --- /tmp/shards-tests/443211/nesting-d-api-3/daemon.log, its last 0 lines
+2026-11-13T01:02:04.6941599Z test a_deadline_given_through_shards_api_is_met_or_said_passed ... FAILED
+2026-11-13T01:02:04.9937598Z --- /tmp/shards-tests/443211/nesting-b-0/daemon.log, its last 6 lines
+2026-11-13T01:02:04.9951049Z shards daemon 443347: the default bridge is 172.18.0.0/16
+2026-11-13T01:02:04.9980782Z shards daemon 443347: serving /tmp/shards-tests/443211/nesting-b-0 through /tmp/shards-tests/443211/nesting-b-0/requests, with up to 65536 descriptors open
+2026-11-13T01:02:04.9998884Z shards daemon 443347: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/system.slice/hosted-compute-agent.service/memory.pressure: some task stalled on memory 140 ms in 2 s
+2026-11-13T01:02:05.0062879Z shards daemon 443347: the host is short of memory: its microVMs gave back 0 MiB they held cold of their files, and asked to unplug 0 MiB they held plugged past twice what they use and their peak since, in 1 passes over 24.613507ms
+2026-11-13T01:02:05.0078055Z test a_granted_workload_is_held_to_its_subtree ... FAILED
+2026-11-13T01:02:05.0107965Z shards daemon 443347: stepping aside: a client asked it to stop
+2026-11-13T01:02:05.0125847Z shards daemon 443347: exiting
+2026-11-13T01:02:05.0173729Z --- /tmp/shards-tests/443211/nesting-b-0/daemon.log, its last 740 of 740 bytes
+2026-11-13T01:02:05.0268160Z shards daemon 443347: the default bridge is 172.18.0.0/16
+2026-11-13T01:02:05.0289627Z shards daemon 443347: serving /tmp/shards-tests/443211/nesting-b-0 through /tmp/shards-tests/443211/nesting-b-0/requests, with up to 65536 descriptors open
+2026-11-13T01:02:05.0295530Z shards daemon 443347: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/system.slice/hosted-compute-agent.service/memory.pressure: some task stalled on memory 140 ms in 2 s
+2026-11-13T01:02:05.0308230Z shards daemon 443347: the host is short of memory: its microVMs gave back 0 MiB they held cold of their files, and asked to unplug 0 MiB they held plugged past twice what they use and their peak since, in 1 passes over 24.613507ms
+2026-11-13T01:02:05.0319803Z shards daemon 443347: stepping aside: a client asked it to stop
+2026-11-13T01:02:05.0324074Z shards daemon 443347: exiting
+2026-11-13T01:02:05.0326183Z 
+2026-11-13T01:02:05.1237797Z --- /tmp/shards-tests/443211/nesting-f-2/daemon.log, its last 6 lines
+2026-11-13T01:02:05.1265964Z shards daemon 443348: the default bridge is 172.18.0.0/16
+2026-11-13T01:02:05.1298929Z shards daemon 443348: serving /tmp/shards-tests/443211/nesting-f-2 through /tmp/shards-tests/443211/nesting-f-2/requests, with up to 65536 descriptors open
+2026-11-13T01:02:05.1323955Z shards daemon 443348: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/system.slice/hosted-compute-agent.service/memory.pressure: some task stalled on memory 140 ms in 2 s
+2026-11-13T01:02:05.1341305Z shards daemon 443348: the host is short of memory: its microVMs gave back 0 MiB they held cold of their files, and asked to unplug 0 MiB they held plugged past twice what they use and their peak since, in 1 passes over 24.787221ms
+2026-11-13T01:02:05.1351118Z shards daemon 443348: stepping aside: a client asked it to stop
+2026-11-13T01:02:05.1358459Z shards daemon 443348: exiting
+2026-11-13T01:02:05.1379221Z --- /tmp/shards-tests/443211/nesting-f-2/daemon.log, its last 740 of 740 bytes
+2026-11-13T01:02:05.1394962Z shards daemon 443348: the default bridge is 172.18.0.0/16
+2026-11-13T01:02:05.1411380Z shards daemon 443348: serving /tmp/shards-tests/443211/nesting-f-2 through /tmp/shards-tests/443211/nesting-f-2/requests, with up to 65536 descriptors open
+2026-11-13T01:02:05.1421190Z shards daemon 443348: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/system.slice/hosted-compute-agent.service/memory.pressure: some task stalled on memory 140 ms in 2 s
+2026-11-13T01:02:05.1448405Z shards daemon 443348: the host is short of memory: its microVMs gave back 0 MiB they held cold of their files, and asked to unplug 0 MiB they held plugged past twice what they use and their peak since, in 1 passes over 24.787221ms
+2026-11-13T01:02:05.1475257Z shards daemon 443348: stepping aside: a client asked it to stop
+2026-11-13T01:02:05.1490680Z shards daemon 443348: exiting
+2026-11-13T01:02:05.1491734Z 
+2026-11-13T01:02:05.1506701Z test a_granted_run_ends_with_its_command_and_its_boxes_with_it ... FAILED
+2026-11-13T01:02:05.1516038Z --- /tmp/shards-tests/443211/nesting-a-1/daemon.log, its last 6 lines
+2026-11-13T01:02:05.1528162Z shards daemon 443346: the default bridge is 172.18.0.0/16
+2026-11-13T01:02:05.1534647Z shards daemon 443346: serving /tmp/shards-tests/443211/nesting-a-1 through /tmp/shards-tests/443211/nesting-a-1/requests, with up to 65536 descriptors open
+2026-11-13T01:02:05.1560521Z shards daemon 443346: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/system.slice/hosted-compute-agent.service/memory.pressure: some task stalled on memory 140 ms in 2 s
+2026-11-13T01:02:05.1569551Z shards daemon 443346: the host is short of memory: its microVMs gave back 0 MiB they held cold of their files, and asked to unplug 0 MiB they held plugged past twice what they use and their peak since, in 1 passes over 33.083309ms
+2026-11-13T01:02:05.1601371Z shards daemon 443346: stepping aside: a client asked it to stop
+2026-11-13T01:02:05.1621505Z shards daemon 443346: exiting
+2026-11-13T01:02:05.1643499Z --- /tmp/shards-tests/443211/nesting-a-1/daemon.log, its last 740 of 740 bytes
+2026-11-13T01:02:05.1650560Z shards daemon 443346: the default bridge is 172.18.0.0/16
+2026-11-13T01:02:05.1687709Z shards daemon 443346: serving /tmp/shards-tests/443211/nesting-a-1 through /tmp/shards-tests/443211/nesting-a-1/requests, with up to 65536 descriptors open
+2026-11-13T01:02:05.1689895Z shards daemon 443346: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/system.slice/hosted-compute-agent.service/memory.pressure: some task stalled on memory 140 ms in 2 s
+2026-11-13T01:02:05.1694720Z shards daemon 443346: the host is short of memory: its microVMs gave back 0 MiB they held cold of their files, and asked to unplug 0 MiB they held plugged past twice what they use and their peak since, in 1 passes over 33.083309ms
+2026-11-13T01:02:05.1699419Z shards daemon 443346: stepping aside: a client asked it to stop
+2026-11-13T01:02:05.1708450Z shards daemon 443346: exiting
+2026-11-13T01:02:05.1712713Z 
+2026-11-13T01:02:05.1719891Z test a_granted_commands_runtime_makes_boxes_in_its_own_subtree ... FAILED
+2026-11-13T01:02:05.1737880Z test common::port_probe ... ignored, a process of its own for port_free and hold_port, which run it
+2026-11-13T01:02:06.2724042Z test a_granted_workload_still_reaches_no_host_port_over_vsock ... ok
+2026-11-13T01:02:07.0857706Z --- /tmp/shards-tests/443211/nesting-c-15/daemon.log, its last 5 lines
+2026-11-13T01:02:07.0861322Z shards daemon 443748: the default bridge is 172.18.0.0/16
+2026-11-13T01:02:07.0865134Z shards daemon 443748: serving /tmp/shards-tests/443211/nesting-c-15 through /tmp/shards-tests/443211/nesting-c-15/requests, with up to 65536 descriptors open
+2026-11-13T01:02:07.0871954Z shards daemon 443748: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/system.slice/hosted-compute-agent.service/memory.pressure: some task stalled on memory 140 ms in 2 s
+2026-11-13T01:02:07.0885431Z shards daemon 443748: stepping aside: a client asked it to stop
+2026-11-13T01:02:07.0901134Z shards daemon 443748: exiting
+2026-11-13T01:02:07.0904027Z --- /tmp/shards-tests/443211/nesting-c-15/daemon.log, its last 511 of 511 bytes
+2026-11-13T01:02:07.0909333Z shards daemon 443748: the default bridge is 172.18.0.0/16
+2026-11-13T01:02:07.0923213Z shards daemon 443748: serving /tmp/shards-tests/443211/nesting-c-15 through /tmp/shards-tests/443211/nesting-c-15/requests, with up to 65536 descriptors open
+2026-11-13T01:02:07.0932718Z shards daemon 443748: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/system.slice/hosted-compute-agent.service/memory.pressure: some task stalled on memory 140 ms in 2 s
+2026-11-13T01:02:07.0938694Z shards daemon 443748: stepping aside: a client asked it to stop
+2026-11-13T01:02:07.0971472Z shards daemon 443748: exiting
+2026-11-13T01:02:07.0977894Z 
+2026-11-13T01:02:07.0980679Z test no_box_is_made_without_both_words_or_beside_a_domain ... FAILED
+2026-11-13T01:02:07.4512536Z test a_granted_workloads_readiness_reaches_the_host ... ok
+2026-11-13T01:02:17.1455719Z --- /tmp/shards-tests/443211/nesting-exec-13/daemon.log, its last 5 lines
+2026-11-13T01:02:17.1463276Z shards daemon 443752: the default bridge is 172.18.0.0/16
+2026-11-13T01:02:17.1482540Z shards daemon 443752: serving /tmp/shards-tests/443211/nesting-exec-13 through /tmp/shards-tests/443211/nesting-exec-13/requests, with up to 65536 descriptors open
+2026-11-13T01:02:17.1492093Z shards daemon 443752: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/system.slice/hosted-compute-agent.service/memory.pressure: some task stalled on memory 140 ms in 2 s
+2026-11-13T01:02:17.1498197Z shards daemon 443752: stepping aside: a client asked it to stop
+2026-11-13T01:02:17.1507802Z shards daemon 443752: exiting
+2026-11-13T01:02:17.1512997Z --- /tmp/shards-tests/443211/nesting-exec-13/daemon.log, its last 517 of 517 bytes
+2026-11-13T01:02:17.1520862Z shards daemon 443752: the default bridge is 172.18.0.0/16
+2026-11-13T01:02:17.1523429Z shards daemon 443752: serving /tmp/shards-tests/443211/nesting-exec-13 through /tmp/shards-tests/443211/nesting-exec-13/requests, with up to 65536 descriptors open
+2026-11-13T01:02:17.1526603Z shards daemon 443752: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/system.slice/hosted-compute-agent.service/memory.pressure: some task stalled on memory 140 ms in 2 s
+2026-11-13T01:02:17.1529674Z shards daemon 443752: stepping aside: a client asked it to stop
+2026-11-13T01:02:17.1533753Z shards daemon 443752: exiting
+2026-11-13T01:02:17.1533961Z 
+2026-11-13T01:02:17.1535921Z test an_exec_takes_the_commands_grant_and_a_joiner_is_refused ... FAILED
+2026-11-13T01:02:17.1540382Z 
+2026-11-13T01:02:17.1547921Z failures:
+2026-11-13T01:02:17.1549890Z 
+2026-11-13T01:02:17.1556558Z ---- a_deadline_given_through_shards_api_is_met_or_said_passed stdout ----
+2026-11-13T01:02:17.1557475Z 
+2026-11-13T01:02:17.1558140Z thread 'a_deadline_given_through_shards_api_is_met_or_said_passed' (443213) panicked at crates/shards/tests/nesting.rs:494:48:
+2026-11-13T01:02:17.1564565Z called `Result::unwrap()` on an `Err` value: Ended(Exited(128))
+2026-11-13T01:02:17.1568579Z note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+2026-11-13T01:02:17.1571762Z 
+2026-11-13T01:02:17.1571985Z ---- a_granted_workload_is_held_to_its_subtree stdout ----
+2026-11-13T01:02:17.1572340Z 
+2026-11-13T01:02:17.1574783Z thread 'a_granted_workload_is_held_to_its_subtree' (443217) panicked at crates/shards/tests/nesting.rs:260:5:
+2026-11-13T01:02:17.1580241Z assertion `left == right` failed: --- stdout
+2026-11-13T01:02:17.1584396Z root memory.max: errno 13
+2026-11-13T01:02:17.1588730Z root pids.max: errno 13
+2026-11-13T01:02:17.1589147Z fresh mount: mount errno 1
+2026-11-13T01:02:17.1592119Z inner: errno 13
+2026-11-13T01:02:17.1594967Z 
+2026-11-13T01:02:17.1595118Z --- stderr
+2026-11-13T01:02:17.1596415Z shards-timing {"client_rss_kib":11128,"client_us":965004,"released_us":14692,"entry_us":14720,"exit_us":0,"request_us":815239,"answered_us":840198,"prefetched":0,"rss_kib":252984,"footprint_kib":234932,"peak_commit_kib":0,"hotplug_held_kib":0,"reported_kib":0,"markers":[[1,670794],[3,812495],[4,834072],[5,839127]]}
+2026-11-13T01:02:17.1599784Z 
+2026-11-13T01:02:17.1602675Z   left: Some(1)
+2026-11-13T01:02:17.1605006Z  right: Some(0)
+2026-11-13T01:02:17.1605188Z 
+2026-11-13T01:02:17.1605774Z ---- a_granted_run_ends_with_its_command_and_its_boxes_with_it stdout ----
+2026-11-13T01:02:17.1606125Z 
+2026-11-13T01:02:17.1606560Z thread 'a_granted_run_ends_with_its_command_and_its_boxes_with_it' (443215) panicked at crates/shards/tests/nesting.rs:595:5:
+2026-11-13T01:02:17.1607205Z --- stdout
+2026-11-13T01:02:17.1611309Z box held: status 1 pid none
+2026-11-13T01:02:17.1614304Z exiting 7
+2026-11-13T01:02:17.1614515Z 
+2026-11-13T01:02:17.1616506Z --- stderr
+2026-11-13T01:02:17.1621541Z shards-timing {"client_rss_kib":11128,"client_us":1090939,"released_us":26027,"entry_us":26111,"exit_us":0,"request_us":812050,"answered_us":962865,"prefetched":0,"rss_kib":265404,"footprint_kib":236832,"peak_commit_kib":0,"hotplug_held_kib":0,"reported_kib":0,"markers":[[1,704149],[3,812636],[4,830365],[5,958160]]}
+2026-11-13T01:02:17.1622473Z 
+2026-11-13T01:02:17.1622478Z 
+2026-11-13T01:02:17.1622729Z ---- a_granted_commands_runtime_makes_boxes_in_its_own_subtree stdout ----
+2026-11-13T01:02:17.1623050Z 
+2026-11-13T01:02:17.1623419Z thread 'a_granted_commands_runtime_makes_boxes_in_its_own_subtree' (443214) panicked at crates/shards/tests/nesting.rs:154:9:
+2026-11-13T01:02:17.1625683Z no "box pids: forked 7, then errno 11" in
+2026-11-13T01:02:17.1625992Z --- stdout
+2026-11-13T01:02:17.1628911Z workload cgroup /init
+2026-11-13T01:02:17.1633069Z box pids runc: time="2026-11-13T01:02:04Z" level=error msg="runc run failed: rootless container requires user namespaces"
+2026-11-13T01:02:17.1633839Z box pids: status 1
+2026-11-13T01:02:17.1634110Z box pids: pids.events max errno 2
+2026-11-13T01:02:17.1636493Z box memory runc: time="2026-11-13T01:02:05Z" level=error msg="runc run failed: rootless container requires user namespaces"
+2026-11-13T01:02:17.1636998Z box memory: status 1
+2026-11-13T01:02:17.1641180Z box memory: memory.events oom_kill errno 2
+2026-11-13T01:02:17.1643728Z box self runc: time="2026-11-13T01:02:05Z" level=error msg="runc run failed: rootless container requires user namespaces"
+2026-11-13T01:02:17.1644249Z box self: status 1
+2026-11-13T01:02:17.1644398Z 
+2026-11-13T01:02:17.1644490Z --- stderr
+2026-11-13T01:02:17.1645420Z shards-timing {"client_rss_kib":11380,"client_us":1121206,"released_us":14017,"entry_us":14038,"exit_us":0,"request_us":753128,"answered_us":1020406,"prefetched":0,"rss_kib":267412,"footprint_kib":240944,"peak_commit_kib":0,"hotplug_held_kib":0,"reported_kib":0,"markers":[[1,562113],[3,758439],[4,775062],[5,1015598]]}
+2026-11-13T01:02:17.1646234Z 
+2026-11-13T01:02:17.1646238Z 
+2026-11-13T01:02:17.1646441Z ---- no_box_is_made_without_both_words_or_beside_a_domain stdout ----
+2026-11-13T01:02:17.1646707Z 
+2026-11-13T01:02:17.1647030Z thread 'no_box_is_made_without_both_words_or_beside_a_domain' (443592) panicked at crates/shards/tests/nesting.rs:154:9:
+2026-11-13T01:02:17.1647821Z no "first cgroup step: done" in
+2026-11-13T01:02:17.1648090Z --- stdout
+2026-11-13T01:02:17.1648325Z first cgroup step: errno 13
+2026-11-13T01:02:17.1648840Z first namespace step: errno 1
+2026-11-13T01:02:17.1649333Z box first runc: time="2026-11-13T01:02:07Z" level=error msg="runc run failed: rootless container requires user namespaces"
+2026-11-13T01:02:17.1649808Z box first: status 1
+2026-11-13T01:02:17.1649945Z 
+2026-11-13T01:02:17.1650053Z --- stderr
+2026-11-13T01:02:17.1652994Z shards-timing {"client_rss_kib":11396,"client_us":920740,"released_us":17641,"entry_us":17672,"exit_us":0,"request_us":736947,"answered_us":825425,"prefetched":0,"rss_kib":263600,"footprint_kib":237128,"peak_commit_kib":0,"hotplug_held_kib":0,"reported_kib":0,"markers":[[1,642928],[3,735670],[4,750283],[5,823599]]}
+2026-11-13T01:02:17.1653803Z 
+2026-11-13T01:02:17.1653806Z 
+2026-11-13T01:02:17.1656403Z ---- an_exec_takes_the_commands_grant_and_a_joiner_is_refused stdout ----
+2026-11-13T01:02:17.1658791Z 
+2026-11-13T01:02:17.1661459Z thread 'an_exec_takes_the_commands_grant_and_a_joiner_is_refused' (443576) panicked at crates/shards/tests/nesting.rs:154:9:
+2026-11-13T01:02:17.1662026Z no "box pids: forked 7, then errno 11" in
+2026-11-13T01:02:17.1664714Z --- stdout
+2026-11-13T01:02:17.1668702Z workload cgroup /init
+2026-11-13T01:02:17.1669199Z box pids runc: time="2026-11-13T01:02:07Z" level=error msg="runc run failed: rootless container requires user namespaces"
+2026-11-13T01:02:17.1673365Z box pids: status 1
+2026-11-13T01:02:17.1673658Z box pids: pids.events max errno 2
+2026-11-13T01:02:17.1674157Z box memory runc: time="2026-11-13T01:02:07Z" level=error msg="runc run failed: rootless container requires user namespaces"
+2026-11-13T01:02:17.1676487Z box memory: status 1
+2026-11-13T01:02:17.1676776Z box memory: memory.events oom_kill errno 2
+2026-11-13T01:02:17.1679762Z box self runc: time="2026-11-13T01:02:07Z" level=error msg="runc run failed: rootless container requires user namespaces"
+2026-11-13T01:02:17.1683041Z box self: status 1
+2026-11-13T01:02:17.1688708Z 
+2026-11-13T01:02:17.1688929Z --- stderr
+2026-11-13T01:02:17.1689196Z 
+2026-11-13T01:02:17.1689225Z 
+2026-11-13T01:02:17.1689231Z 
+2026-11-13T01:02:17.1689389Z failures:
+2026-11-13T01:02:17.1693016Z     a_deadline_given_through_shards_api_is_met_or_said_passed
+2026-11-13T01:02:17.1697466Z     a_granted_commands_runtime_makes_boxes_in_its_own_subtree
+2026-11-13T01:02:17.1698200Z     a_granted_run_ends_with_its_command_and_its_boxes_with_it
+2026-11-13T01:02:17.1703688Z     a_granted_workload_is_held_to_its_subtree
+2026-11-13T01:02:17.1707832Z     an_exec_takes_the_commands_grant_and_a_joiner_is_refused
+2026-11-13T01:02:17.1708290Z     no_box_is_made_without_both_words_or_beside_a_domain
+2026-11-13T01:02:17.1708543Z 
+2026-11-13T01:02:17.1708806Z test result: FAILED. 3 passed; 6 failed; 1 ignored; 0 measured; 0 filtered out; finished in 15.40s
+2026-11-13T01:02:17.1715155Z 
+2026-11-13T01:02:17.1718082Z error: test failed, to rerun pass `-p shards --test nesting`
