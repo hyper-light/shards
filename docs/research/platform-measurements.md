@@ -22690,3 +22690,71 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   | R09, R10 | Red: CI's runs above. Green: the focused tests above. No mutation run (the person's rule). |
   | R11 | Written for every OS; tested on macOS arm64 alone. CI covers the rest. |
   | R15, R16 | No agents started; the target directories on adalundhe-macbook-pro and adas-mac-studio.local are removed after. |
+
+### M544. An orchestrator's share process waited for with its door still held, and a harness that ended with its run (D231)
+
+- **Question.** In three of main's CI runs (revisions ac87190d3, 87bf86b31 and 451672250;
+  GitHub's x86_64 Linux KVM runners) `tests/api_image.rs`'s
+  `a_share_at_a_granted_volume_reaches_the_harness` hung until the job's 56-minute limit:
+  who held the share's stream? And in run 43303186680 (83f0549ad, x86_64 Linux gnu)
+  `staged_credentials_reach_the_harness_and_its_output_and_end_come_back` saw its harness
+  end `WithRun` where `Exited(3)` was expected: why?
+- **The hang.**
+  - The hang watcher's snapshot (run 43280969775, job 131401806021): `shards api-run` in
+    `do_wait` for its child `shards share ro`, which sat in a Unix stream read with no VM
+    process left.
+  - The holder was the run host itself. Its teardown waited for the share process while it
+    still held the process's door: the share process's last connection where the VM never
+    took it (a run refused before `TAKEN`), so the process never saw its end.
+  - Fixed on main by 86f3c87b2, merged through 5333c2747 (11-12 20:14Z). The run host lets
+    go of the VM's link, the network's control and the share process's door before it
+    waits for each process: today's `Shares::end`. All three hanging revisions predate it
+    (`git merge-base --is-ancestor 86f3c87b2 <rev>` is false for each), and no retained run
+    since has hung.
+  - Nothing light held that order. `api_run::hosted::tests::a_share_process_goes_as_its_door_is_let_go_of`
+    (Unix) now does: a shell that reads its door to its end and then writes a file stands in
+    for the share process, and after `Shares::end` the file is there. With the door let go
+    of after the wait instead, `netproc::reap` kills the process at its grace's end and the
+    file is never written.
+- **The harness that ended with its run.**
+  - Seen once in the retained logs: 21 of the test's runs on Linux and macOS passed. Its 7
+    other failures were Windows' refusal at the time ("owed (D231)").
+  - `wait_member` says `WithRun` when the run's end (`ENDED`, or a failure the session
+    records) or the run host's exit comes before the member's `MEMBER_ENDED`
+    (crates/api/src/image/session.rs). An `ATTEND` run ends only as it is stopped (the abi's
+    `builtin::ATTEND`), and init tells a member's end once its whole population has ended,
+    before the run's own (crates/init/src/run.rs, the relay's `MEMBER_ENDS`). So this run
+    ended within seconds of its harness, and nothing in the test stopped it.
+  - Read and excluded, from code:
+    - A credit written to a capture the VM had closed. api-run grants under the same lock
+      that marks a channel ended, and the VM process takes no record without a grant, so no
+      credit is outstanding after a channel's end (crates/shards/src/workload/capture.rs and
+      api_run.rs, `records` and `grant`).
+    - Interleaved answers. `Answers::send` writes one frame at a time under its lock, and no
+      child of the run host holds its stdout.
+    - Interleaved asks. The session's `send` writes under its lock.
+  - Not excluded: a failure the session recorded (a breach of the channel's contract, or its
+    reader's error), the run host's exit, or the guest failing its run. The test printed only
+    `Some(WithRun)`, so the cause is not named (R09: not reproduced).
+  - The four tests that wait for the harness's end now say the run's own end beside one they
+    did not expect (`assert_ended`, printing `wait_for`'s `RunEnd`: `Stopped`, `Failed` in its
+    host's words, or `Exited`), so the next occurrence names it.
+- **Checked** (one host, adalundhe-macbook-pro, macOS arm64, on the tree merged with main
+  039f5019c): `cargo test -p shards --bin shards --
+  api_run::hosted::tests::a_share_process_goes_as_its_door_is_let_go_of`, green in 0.06 s;
+  red in 1.06 s with `Shares::end`'s door let go of after `reap`, the order before
+  86f3c87b2 (`/tmp/g51/carrier/red-s6.sh`); `cargo clippy -p shards --all-targets -- -D
+  warnings` clean.
+- **Owed** (ROOT): `cargo test -p shards --profile test-release --test api_image` on KVM and
+  HVF, repeated until `staged_credentials...` ends `WithRun` again, its message read; on WHP
+  once the Windows run host (D231, goal 110) lands. Linux's run of the new unit test is CI's.
+- **Rules** (policy df2acf47, role implementer):
+
+  | rule | proof, result, gap |
+  |---|---|
+  | R01 | Test code alone; production code unchanged. |
+  | R02, R03 | No decision or number of ours: the grace is `netproc::GRACE`'s (its own R03 standing is not this entry's). |
+  | R04, R05 | The share process's end is its own going, the wait after nothing of this process holds it up. |
+  | R09, R10 | The hang: CI's snapshot, fixed by 86f3c87b2; the new test red before that order, green after. `WithRun`: not reproduced, its cause not named; the test now says it. |
+  | R11 | The test is Unix's (the door is Unix's; Windows' shares go with its job). |
+  | R15, R16 | No agents started for this; `~/g51-carrier/src-s6b` and `~/g51-s2-target` on adalundhe-macbook-pro are removed after. |
