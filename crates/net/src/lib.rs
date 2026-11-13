@@ -2510,6 +2510,7 @@ impl<'r> Stack<'r> {
                 waiter,
                 now: Instant::now(),
                 audit: Vec::new(),
+                refused: Vec::new(),
             });
             c.on_segment(&seg, &mut o, run.as_mut());
             audit(run);
@@ -2544,19 +2545,15 @@ impl<'r> Stack<'r> {
     }
 
     /// The flows whose leases were answered or ended since the last pass go on (D242), each
-    /// once however many of its leases were: whether any did.
+    /// once however many of its leases were, carrying the refusals of the asks it waited on:
+    /// whether any did.
     fn resume_flows(&mut self) -> bool {
         let Some(c) = self.credentials.as_mut() else {
             return false;
         };
+        let resumed = c.leases.resumed();
         let mut waiters: Vec<u64> = Vec::new();
-        for waiter in c
-            .leases
-            .resumed()
-            .into_iter()
-            .map(|r| r.waiter)
-            .chain(c.sign_ins.resumed())
-        {
+        for waiter in resumed.iter().map(|r| r.waiter).chain(c.sign_ins.resumed()) {
             if !waiters.contains(&waiter) {
                 waiters.push(waiter);
             }
@@ -2571,12 +2568,7 @@ impl<'r> Stack<'r> {
             {
                 let (mut o, credentials) = self.split();
                 if let Some(credentials) = credentials {
-                    let mut run = inject::Run {
-                        credentials,
-                        waiter,
-                        now: Instant::now(),
-                        audit: Vec::new(),
-                    };
+                    let mut run = inject::Run::resumed(credentials, waiter, &resumed, Instant::now());
                     conn.resume(&mut o, &mut run);
                     audit(Some(run));
                 }
@@ -2822,6 +2814,7 @@ impl<'r> Stack<'r> {
                 waiter,
                 now: Instant::now(),
                 audit: Vec::new(),
+                refused: Vec::new(),
             });
             if e.write {
                 c.on_writable(&mut o);
