@@ -10,11 +10,7 @@
 
 mod common;
 
-use std::time::Duration;
-
 use common::{TempDir, Vm, cannot_run_vms, guest_init, kernel, run_shards_env, served};
-
-const TIMEOUT: Duration = Duration::from_secs(120);
 
 /// A detached run's microVM given a disk, made empty ext4 of 64 MiB, written through,
 /// grown to 128 MiB with its file system as it runs, unplugged, and plugged again with what
@@ -214,18 +210,15 @@ fn a_project_is_plugged_into_a_running_agent_at_its_host_path() {
     let said = shards(&["plug", "volume", "--for", "a", "plugm", &spec]);
     assert!(said.starts_with(&format!("{dest} ")), "{said}");
     let seen_at = proj.join("seen");
-    let started = std::time::Instant::now();
+    let mut patience = common::Patience::of(&home);
     let seen = loop {
         if let Ok(seen) = std::fs::read_to_string(&seen_at) {
             break seen;
         }
-        assert!(
-            started.elapsed() < TIMEOUT,
-            "the agent wrote no {}",
-            seen_at.display()
-        );
-        std::thread::sleep(Duration::from_millis(20));
+        assert!(patience.holds(), "the agent wrote no {}", seen_at.display());
+        std::thread::sleep(patience.next_look());
     };
+    patience.done();
     for root in &roots {
         let line = format!("root {root} mkdir errno 30 create errno 30");
         assert!(seen.lines().any(|l| l == line), "no {line:?} in\n{seen}");

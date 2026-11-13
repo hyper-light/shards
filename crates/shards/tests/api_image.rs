@@ -327,13 +327,14 @@ fn what_the_image_does_not_grant_is_refused_before_boot() {
     assert!(matches!(refused(s), ImageRefusal::Widening(_)));
     let mut s = spec(&home, "api-refused:1");
     s.nesting = true;
-    s.ready_by = Some(Duration::from_secs(60));
+    // A deadline of any length: what is refused is its asking, not its length.
+    s.ready_by = Some(Duration::ZERO);
     assert_eq!(
         refused(s),
         ImageRefusal::Widening(shards_abi::run::nesting::undeclared())
     );
     let mut s = spec(&home, "api-refused:1");
-    s.ready_by = Some(Duration::from_secs(60));
+    s.ready_by = Some(Duration::ZERO);
     assert_eq!(
         refused(s),
         ImageRefusal::Spec {

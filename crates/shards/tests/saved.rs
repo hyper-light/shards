@@ -21,8 +21,6 @@ use common::{
     Patience, Run, TempDir, cannot_pool, cannot_run_vms, guest_init, kernel, run_shards_env, served,
 };
 
-const TIMEOUT: Duration = Duration::from_secs(60);
-
 /// `shards ARGS` in `home`, whose runs boot the test kernel and init.
 fn shards_in(home: &Path, args: &[&str]) -> Run {
     let (kernel, init) = (kernel(), guest_init());
@@ -700,15 +698,16 @@ fn what_a_restoring_microvm_is_sent_goes_on_its_guests_dial() {
         let execs: Vec<_> = (0..4)
             .map(|_| {
                 s.spawn(|| {
-                    let deadline = Instant::now() + TIMEOUT;
+                    let mut patience = Patience::of(&home);
                     loop {
                         let ran = shards(&["exec", "redial", "/bin/testguest", "exit", "0"]);
                         // Asked before its restore was under way, it found it stopped.
                         if ran.status == Some(0) || !ran.stderr.contains("is not running") {
+                            patience.done();
                             return ran;
                         }
-                        assert!(Instant::now() < deadline, "{ran}");
-                        std::thread::sleep(Duration::from_millis(5));
+                        assert!(patience.holds(), "{ran}");
+                        std::thread::sleep(patience.next_look());
                     }
                 })
             })
@@ -1109,22 +1108,18 @@ fn a_saved_microvm_keeps_what_it_swapped() {
         let timed = shards(&["logs", "--timestamps", "swapped"]);
         format!("{}{}\n{}", timed.stdout, timed.stderr, evidence(&home, "swapped"))
     };
-    // A round's time on this host, from its first to its second: what the rounds after the
-    // restore are waited for by (CI's x86_64 runners took 20 s a round, CI 39249195872).
     until(
         &home,
         "its pattern kept",
         &mut || log().contains("kept 1\n"),
         &said,
     );
-    let first = Instant::now();
     until(
         &home,
         "its pattern kept again",
         &mut || log().contains("kept 2\n"),
         &said,
     );
-    let round = first.elapsed();
     let saved = shards(&["save", "vm", "swapped", "full"]);
     assert_eq!(saved.status, Some(0), "{saved}\n{}", evidence(&home, "swapped"));
     let snapshot = home
@@ -1148,38 +1143,28 @@ fn a_saved_microvm_keeps_what_it_swapped() {
     // memory and swap are mapped a page at a time as it touches them, which a host whose
     // faults cost much takes long for: a nested guest's first two rounds after the restore
     // took 15.8 and 16.9 s, its VM process faulting 36,900 pages, 0.9 ms each, and the
-    // next ones 0.9 s, as before the save (PM M346). So each round or host fault moves the
-    // wait's end on, the faults as many as twice the pages its memory and swap hold (each
-    // read, then written), and it fails after as long without either.
-    let memory = std::fs::metadata(common::snapshot_file(&snapshot, "memory")).unwrap();
-    let most = 2 * (memory.len() + kept.len()) / 4096;
+    // next ones 0.9 s, as before the save (PM M346). So it is waited on as its daemon and
+    // microVM go on (`Patience`): its faulting is its VM process's CPU, and a round its
+    // daemon's words; refused past the slowest of its kind after a whole window without.
     let pid = vm_pid(&shards(&["inspect", "-f", "{{json .State}}", "swapped"]).stdout);
     let faulted = || pid.and_then(host_faults).map(|(minor, major)| minor + major);
     let from = faulted();
-    let within = TIMEOUT + 2 * round;
-    let mut last = (rounds, from);
-    let mut deadline = Instant::now() + within;
+    let mut patience = Patience::of(&home);
     loop {
-        let now = (
-            log().matches("kept ").count(),
-            faulted().filter(|&f| f.saturating_sub(from.unwrap_or(f)) <= most),
-        );
-        if now.0 >= rounds + 2 {
+        let kept_rounds = log().matches("kept ").count();
+        if kept_rounds >= rounds + 2 {
             break;
         }
-        if now != last {
-            last = now;
-            deadline = Instant::now() + within;
-        }
         assert!(
-            Instant::now() < deadline,
+            patience.holds(),
             "its pattern kept after the restore, {} rounds and {:?} host faults on: {}",
-            now.0 - rounds,
-            now.1.zip(from).map(|(f, from)| f.saturating_sub(from)),
+            kept_rounds - rounds,
+            faulted().zip(from).map(|(f, from)| f.saturating_sub(from)),
             said()
         );
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(patience.next_look());
     }
+    patience.done();
     assert!(!log().contains("lost"), "{}", log());
     assert_eq!(shards(&["kill", "swapped"]).status, Some(0));
 }

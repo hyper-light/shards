@@ -10729,8 +10729,7 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
   - R03, the literals: none of the waits' bounds is left. The old `TIMEOUT`, `STREAMING` and
     `PATIENCE` arguments to these waits go (acg.rs', boot.rs', guest_time.rs', hotplug.rs',
     restore.rs', run.rs', snapshot.rs', engine.rs' `TIMEOUT` consts with them; vsock.rs',
-    confined.rs' and managed_lifecycle.rs' went in part 3, below; plug.rs' stays for its own
-    claim).
+    confined.rs', managed_lifecycle.rs' and plug.rs' went in part 3, below).
     Two remain and bound nothing. Two polls of a client's end (`Vm::wait_end`'s and
     terminal.rs' 5 ms) are no bound, only how soon an end with no event is seen. The least
     nonzero socket timeout is skipped: a look due now looks without reading.
@@ -10798,13 +10797,20 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     daemon is in-process, so its clients' waits are `Patience::started`, and its Windows
     console's waits are `Wait`s on its program. compose.rs', buildx.rs' and engine.rs'
     `CLIENT` (600 s) go with `client_output`. isolation.rs' and build.rs' `run_awaiting`
-    arguments go too (one of 600 s).
+    arguments go too (one of 600 s). login.rs' pull, its notice and its helper's pid are
+    `Wait`s on the client alone, not its home: `pull` runs in its client, and an idle daemon's
+    CPU would hide a pull held on a helper that never answers. Its helpers' ends are a
+    `Patience`. plug.rs' agent's file and saved.rs' exec retry are `Patience::of(home)`.
+    saved.rs' wait on the rounds after a restore was a window of `TIMEOUT` plus two rounds,
+    moved on by each round or host fault; it is a `Patience` too, whose party's CPU is the
+    faulting and whose daemon's words are the rounds.
   - *Values that are no wait, derived.* The fake lessor's lease life is the longest the
     wire carries (a u64 of nanoseconds, shards-api's session.rs), as far as the host's clock
     reaches. nesting.rs' budget a run meets is half the reach of the guest's clock its
     deadline is held on (init's readiness.rs: an i64 of CLOCK_BOOTTIME nanoseconds). The
     half leaves as much room for the guest's uptime and its host's delay as for its ready.
-    context_client.rs' 500 ms sleep "well into its handshake" goes: the claim holds for an
+    api_image.rs' refusals of a deadline asked without the grant ask one of zero, as any
+    length is refused alike. context_client.rs' 500 ms sleep "well into its handshake" goes: the claim holds for an
     end at any point before the machine answers, and the client's file shows it has begun.
   - Left as they are, being no wait. api_image.rs' 2 s window of a rate's hold is its
     measurement's window (its bound derives from the period). harness_bringup.rs' `NO_CLOCK`
@@ -10821,10 +10827,13 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     host in the same binary counts as progress, as `Own`'s VM processes do. context.rs'
     reads follow the laptop's daemon, not the machine it relays to. A cold `said_by` on a
     hung daemon holds the failure it adds to until its CI job's limit, as any cold wait does.
-  - Owed: the waits in the rest of the E2E files (containers.rs, daemon.rs, build.rs' own
-    `TIMEOUT`, managed_output.rs and its parts, managed_cleanup.rs, saved.rs, moved.rs,
-    warm.rs, budget.rs, login.rs, plug.rs, slates_fs.rs, build_windows.rs), the next part.
-    ROOT owes the real-VM runs of the files this part touched.
+  - Owed: the waits in the rest of the E2E files, the next part: containers.rs, daemon.rs,
+    build.rs' own `TIMEOUT`, managed_output.rs and its parts, managed_cleanup.rs, moved.rs,
+    warm.rs, budget.rs, slates_fs.rs and build_windows.rs. Some of them assert that a thing
+    does not happen: warm.rs' `ends`, a stdout's end within a second, and saved.rs' pipe full
+    for a second. A judged wait cannot refuse those while their microVM idles, since its CPU
+    is progress. They need a decision of their own, not a judge. ROOT owes the real-VM runs of
+    the files this part touched.
 
 **The storm's watch, by the host's word (audit of picked constants, 2026-11-09).** The test
 guest's storm said its main thread stood still after 15 s and took its host's stream for
