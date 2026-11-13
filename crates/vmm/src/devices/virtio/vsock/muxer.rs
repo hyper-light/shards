@@ -3,10 +3,10 @@
 //! - A host client connects to the device's socket, writes `CONNECT <port>\n`, and reads
 //!   `OK <host port>\n` once the guest accepts. Then the socket is the stream.
 //! - A guest connection to host port P reaches the socket `<path>_P`.
-//! - A managed machine's host client may write `RATE <milli>\n` in place of `CONNECT` (D255,
-//!   `shards_abi::rate`): its connection goes to the machine's rate ([`VsockHost::rate`]),
-//!   whose owner answers on it. Only a dial on the socket says one; a machine without a rate
-//!   closes such a dial unanswered.
+//! - A managed machine's host client may write `RATE <milli>\n` (D255) or `USE\n` (D260) in
+//!   place of `CONNECT` (`shards_abi::rate`): its connection goes to the machine's host asks
+//!   ([`VsockHost::rate`]), whose owner answers on it. Only a dial on the socket says one; a
+//!   machine that takes none closes such a dial unanswered.
 //!
 //! Host ports the VM's own process serves ([`VsockHost::ports`]) are reached without a
 //! socket file: a guest connection to one is one end of a socket pair, and the other end
@@ -101,11 +101,11 @@ const fn longer(a: usize, b: usize) -> usize {
 }
 
 /// A host client's handshake line: a guest's port to connect to, or a managed machine's
-/// rate (D255).
+/// host ask (D255, D260).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Line {
     Connect(u32),
-    Rate(u64),
+    Host(shards_abi::rate::Asked),
 }
 
 /// RSTs owed for packets that matched no connection, beyond which more are dropped, for a
@@ -210,9 +210,9 @@ pub struct Muxer {
     served: HashMap<u32, Sender<UnixStream>>,
     /// Host ports served in this process for every connection.
     every: HashMap<u32, crate::vm::ServedPort>,
-    /// Where a host client's `RATE` line goes with its connection, on a managed machine
-    /// ([`VsockHost::rate`], D255).
-    rate: Option<Sender<(UnixStream, u64)>>,
+    /// Where a host client's `RATE` or `USE` line goes with its connection, on a managed
+    /// machine ([`VsockHost::rate`], D255, D260).
+    rate: Option<Sender<(UnixStream, shards_abi::rate::Asked)>>,
     handshakes: Vec<Handshake>,
     conns: HashMap<Key, Conn>,
     /// Ended connections whose host sockets are held until their peers end their sides
@@ -722,19 +722,19 @@ impl Muxer {
             Ok(None) => {}
             // Its connection goes to its owner, who answers on it; with none, it closes
             // unanswered, as a line of no handshake's does.
-            Ok(Some(Line::Rate(milli))) => {
+            Ok(Some(Line::Host(asked))) => {
                 let h = self.handshakes.swap_remove(i);
                 match &self.rate {
                     Some(to) => {
                         // Out of the muxer's waits, to be written blocking by its owner.
                         if let Err(e) = super::poll::release(h.stream.raw_socket()) {
-                            debug!("vsock: a rate's dial kept in the muxer's waits: {e}");
+                            debug!("vsock: a host ask's dial kept in the muxer's waits: {e}");
                         }
-                        if to.send((h.stream, milli)).is_err() {
-                            debug!("vsock: a rate no one takes any more; its dial closed");
+                        if to.send((h.stream, asked)).is_err() {
+                            debug!("vsock: a host ask no one takes any more; its dial closed");
                         }
                     }
-                    None => debug!("vsock: a rate asked of a machine that takes none; its dial closed"),
+                    None => debug!("vsock: a host ask of a machine that takes none; its dial closed"),
                 }
             }
             Ok(Some(Line::Connect(peer_port))) => {
@@ -931,9 +931,9 @@ fn read_handshake(h: &mut Handshake) -> io::Result<Option<Line>> {
                 h.heard = Instant::now();
                 h.line.extend(dst.iter().take(n));
                 if h.line.contains(&b'\n') {
-                    return parse_line(&h.line)
-                        .map(Some)
-                        .ok_or_else(|| io::Error::other("expected `CONNECT <port>` or `RATE <milli>`"));
+                    return parse_line(&h.line).map(Some).ok_or_else(|| {
+                        io::Error::other("expected `CONNECT <port>`, `RATE <milli>` or `USE`")
+                    });
                 }
                 if h.line.len() >= MAX_HANDSHAKE {
                     return Err(io::Error::other("handshake line too long"));
@@ -946,12 +946,12 @@ fn read_handshake(h: &mut Handshake) -> io::Result<Option<Line>> {
     }
 }
 
-/// A whole handshake line: `CONNECT <port>`, or a managed machine's `RATE <milli>`
-/// (`shards_abi::rate::read_ask`, D255).
+/// A whole handshake line: `CONNECT <port>`, or a managed machine's `RATE <milli>` or `USE`
+/// (`shards_abi::rate::read_ask`, D255, D260).
 fn parse_line(line: &[u8]) -> Option<Line> {
     parse_connect(line)
         .map(Line::Connect)
-        .or_else(|| shards_abi::rate::read_ask(line).map(Line::Rate))
+        .or_else(|| shards_abi::rate::read_ask(line).map(Line::Host))
 }
 
 /// `CONNECT <port>` followed by a newline (case-insensitive, as Firecracker).
@@ -1062,6 +1062,7 @@ fn connect_nonblocking(path: &Path) -> io::Result<UnixStream> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
+    use shards_abi::rate::Asked;
     use std::io::Write as _;
     use std::time::Duration;
 
@@ -1085,9 +1086,19 @@ mod tests {
             assert_eq!(parse_connect(bad), None, "{:?}", String::from_utf8_lossy(bad));
         }
         assert_eq!(parse_line(b"CONNECT 52\n"), Some(Line::Connect(52)));
-        assert_eq!(parse_line(b"rate 250\r\n"), Some(Line::Rate(250)));
-        assert_eq!(parse_line(b"RATE 4294967296\n"), Some(Line::Rate(1 << 32)));
-        for bad in [&b"RATE\n"[..], b"RATE 1 2\n", b"RATED 1 2\n", b"RATE 1\nrest"] {
+        assert_eq!(parse_line(b"rate 250\r\n"), Some(Line::Host(Asked::Rate(250))));
+        assert_eq!(
+            parse_line(b"RATE 4294967296\n"),
+            Some(Line::Host(Asked::Rate(1 << 32)))
+        );
+        assert_eq!(parse_line(b"USE\n"), Some(Line::Host(Asked::Use)));
+        for bad in [
+            &b"RATE\n"[..],
+            b"RATE 1 2\n",
+            b"RATED 1 2\n",
+            b"RATE 1\nrest",
+            b"USE 1\n",
+        ] {
             assert_eq!(parse_line(bad), None, "{:?}", String::from_utf8_lossy(bad));
         }
     }
@@ -1147,7 +1158,7 @@ mod tests {
             write: false,
         }]);
         let (mut asked, milli) = rated.try_recv().unwrap();
-        assert_eq!(milli, 250);
+        assert_eq!(milli, Asked::Rate(250));
         assert!(m.handshakes.is_empty(), "the dial is the rate's owner's");
         assert_eq!(m.conns.len(), 1, "the guest's connection alone");
         asked.set_nonblocking(false).unwrap();
@@ -1218,7 +1229,7 @@ mod tests {
             }
         }
         let (mut asked, milli) = handed.expect("the rate's dial never reached its owner");
-        assert_eq!(milli, 250);
+        assert_eq!(milli, Asked::Rate(250));
         asked.set_nonblocking(false).unwrap();
         asked.write_all(b"RATED 250 100000000\n").unwrap();
         drop(asked);
@@ -1257,9 +1268,10 @@ mod tests {
         );
         assert_eq!(
             read(b"RATE 18446744073709551615\r\n").unwrap(),
-            Some(Line::Rate(u64::MAX))
+            Some(Line::Host(Asked::Rate(u64::MAX)))
         );
-        assert_eq!(read(b"RATE 0\n").unwrap(), Some(Line::Rate(0)));
+        assert_eq!(read(b"RATE 0\n").unwrap(), Some(Line::Host(Asked::Rate(0))));
+        assert_eq!(read(b"USE\n").unwrap(), Some(Line::Host(Asked::Use)));
         assert!(read(b"RATE  18446744073709551615\r\n").is_err());
     }
 
