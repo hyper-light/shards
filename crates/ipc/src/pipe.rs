@@ -425,10 +425,14 @@ pub(crate) fn attributes() -> io::Result<SECURITY_ATTRIBUTES> {
 
 /// [`crate::create_private`] on Windows: a new file at `path` made with the DACL
 /// [`attributes`] gives, this process's user's alone, protected from what its directory
-/// would give it; shared with no other open while this one is (share mode 0).
+/// would give it. While this open holds it, another of its user's may read it, as a reader
+/// opens a file on Unix that its writer holds (a run's managed-output record, held for the
+/// run's life, is how its owner finds the run: share mode 0 refused that read,
+/// ERROR_SHARING_VIOLATION); none may write, rename or delete it (no FILE_SHARE_WRITE or
+/// FILE_SHARE_DELETE).
 pub(crate) fn create_private(path: &std::path::Path) -> io::Result<std::fs::File> {
     use std::os::windows::ffi::OsStrExt as _;
-    use windows_sys::Win32::Storage::FileSystem::{CREATE_NEW, FILE_ATTRIBUTE_NORMAL};
+    use windows_sys::Win32::Storage::FileSystem::{CREATE_NEW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ};
     let attributes = attributes()?;
     let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
     // SAFETY: a NUL-terminated path, and attributes whose descriptor lives as long as the
@@ -437,7 +441,7 @@ pub(crate) fn create_private(path: &std::path::Path) -> io::Result<std::fs::File
         CreateFileW(
             wide.as_ptr(),
             GENERIC_READ | GENERIC_WRITE,
-            0,
+            FILE_SHARE_READ,
             &raw const attributes,
             CREATE_NEW,
             FILE_ATTRIBUTE_NORMAL,
