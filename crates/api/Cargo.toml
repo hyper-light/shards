@@ -23,9 +23,13 @@ libc = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 shards-afunix = { path = "../afunix" }
-# A guest's VM process followed (D215): Toolhelp32's snapshot of its descendants, and
-# QueryProcessCycleTime's count of the cycles they ran.
+# A guest's VM process followed (D215): Toolhelp32's snapshot of its descendants,
+# QueryProcessCycleTime's count of the cycles they ran, and NtQuerySystemInformation's
+# records of their threads' states and wait reasons (KWAIT_REASON), which tell one its host
+# holds from one that waits on itself.
 windows-sys = { workspace = true, features = [
+  "Wdk_System_SystemInformation",
+  "Wdk_System_SystemServices",
   "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_Pipes",
   "Win32_System_WindowsProgramming",
