@@ -86,6 +86,7 @@ fn spec(home: &TempDir, image: &str) -> ImageSpec {
         publish: Vec::new(),
         egress: Narrowing::default(),
         credentials: Vec::new(),
+        lessor: None,
         shares: Vec::new(),
         nesting: false,
         ready_by: None,

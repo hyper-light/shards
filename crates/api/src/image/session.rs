@@ -8,6 +8,10 @@
 //! state's lock as `exited` is set, and signalled only while it is unreaped
 //! (`shards_ipc::Child`), so no signal reaches another process that took its pid (as
 //! `crate::client` does a direct boot's).
+//!
+//! A lease the host asks (D242) is asked of the run's lessor on a thread of its own, and every
+//! lease it gives is released once: as the host says the run released them, as its answers
+//! end where it never does, or, given after either, as it comes.
 
 use std::collections::{HashMap, VecDeque};
 use std::ffi::{OsStr, OsString};
@@ -17,8 +21,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use super::wire::{self, Channel, MemberInfo, Ready, RunEnd, Stats, StatsScope};
-use super::{ImageGuest, ImageRefusal, ImageSpec, MemberEnd, MemberName};
+use super::wire::{self, Channel, LeaseRefusal, MemberInfo, Ready, RunEnd, Stats, StatsScope};
+use super::{ImageGuest, ImageRefusal, ImageSpec, Leased, Lessor, MemberEnd, MemberName, RunLessor};
 
 /// The most of a member channel's bytes the client lets its host send ahead of what the
 /// caller's pipe has taken: one read of the guest's (`run::CHUNK`), the most one of its
@@ -88,6 +92,25 @@ struct State {
     said: VecDeque<u8>,
     /// Its diagnostics have all been read: its stderr has ended, its VM's with it.
     said_all: bool,
+    /// The leases its host asked (D242).
+    leases: Leases,
+}
+
+/// A lease of the run's, as its orchestrator's side holds it (D242, R04): asked of the run's
+/// lessor and not yet answered; or given, the lessor's name for it kept for its release.
+/// Refused and released are its ends, where it leaves the ledger.
+#[derive(Debug)]
+enum Holding {
+    Asked,
+    Given(String),
+}
+
+/// The run's leases by their asks' ids, and whether the run has released them: once it has,
+/// a lease given after is released as it comes.
+#[derive(Debug, Default)]
+struct Leases {
+    each: HashMap<u32, Holding>,
+    released: bool,
 }
 
 /// Each ask of a kind awaited, by its id, and its answer once it came, or why its host
@@ -128,6 +151,10 @@ struct Shared {
     /// The host's stdin: closed once the run's end has come, which the host takes as the
     /// last of its owner, and by `stop`.
     to_host: Mutex<Option<io::PipeWriter>>,
+    /// What leases the run's credentials (D242), where its spec gave one.
+    lessor: Option<RunLessor>,
+    /// The references the run's grants name: no other is leased.
+    granted: Vec<String>,
 }
 
 impl Shared {
@@ -135,6 +162,19 @@ impl Shared {
         let frame = wire::frame(kind, payload).map_err(io::Error::other)?;
         match lock(&self.to_host).as_mut() {
             Some(stdin) => stdin.write_all(&frame).and_then(|()| stdin.flush()),
+            None => Err(io::ErrorKind::BrokenPipe.into()),
+        }
+    }
+
+    /// Sends a frame as its header, then its payload, never copied into one buffer: a payload
+    /// holding a credential's value (D242) is its caller's to wipe.
+    fn send_parts(&self, kind: u8, payload: &[u8]) -> io::Result<()> {
+        let header = wire::header(kind, payload.len()).map_err(io::Error::other)?;
+        match lock(&self.to_host).as_mut() {
+            Some(stdin) => stdin
+                .write_all(&header)
+                .and_then(|()| stdin.write_all(payload))
+                .and_then(|()| stdin.flush()),
             None => Err(io::ErrorKind::BrokenPipe.into()),
         }
     }
@@ -427,6 +467,8 @@ impl Session {
             state: Mutex::new(State::default()),
             changed: Condvar::new(),
             to_host: Mutex::new(Some(to_host)),
+            lessor: spec.lessor.clone(),
+            granted: request.credentials.iter().map(|g| g.reference.clone()).collect(),
         });
         // Shared: the session and its exit watcher, which outlives this call.
         let host = Arc::new(process);
@@ -700,15 +742,26 @@ fn feed(shared: &Shared, member: u32, mut reader: io::PipeReader) {
 
 /// Reads the host's answers until it closes its stdout, each into the state; one that
 /// breaks the channel's contract ends the session as a failed run. The run's end closes
-/// the host's stdin: the host then ends.
-fn read_answers(shared: &Shared, mut from_host: io::PipeReader) {
+/// the host's stdin: the host then ends. Every lease the run was given is released as its
+/// host says the run released them, or as its answers end where it never says so (D242).
+fn read_answers(shared: &Arc<Shared>, mut from_host: io::PipeReader) {
     let failed = loop {
         let (kind, payload) = match wire::read_frame(&mut from_host) {
             Ok(Some(frame)) => frame,
             Ok(None) => break None,
             Err(e) => break Some(format!("its answers: {e}")),
         };
-        match take(shared, kind, &payload) {
+        let taken = match kind {
+            wire::to_client::LEASE => lease_asked(shared, &payload).map(|()| false),
+            wire::to_client::RELEASED => wire::released(&payload)
+                .map(|()| {
+                    release(shared);
+                    false
+                })
+                .map_err(|e| e.to_string()),
+            _ => take(shared, kind, &payload),
+        };
+        match taken {
             Ok(true) => {
                 lock(&shared.to_host).take();
             }
@@ -719,6 +772,7 @@ fn read_answers(shared: &Shared, mut from_host: io::PipeReader) {
     if failed.is_some() {
         lock(&shared.to_host).take();
     }
+    release(shared);
     let mut state = lock(&shared.state);
     if let Some(why) = failed {
         state
@@ -833,6 +887,130 @@ fn take(shared: &Shared, kind: u8, payload: &[u8]) -> Result<bool, String> {
     }
     shared.changed.notify_all();
     Ok(ended)
+}
+
+/// A lease its host asks (D242), asked of the run's lessor on a thread of its own, so that
+/// no answer of the host's waits on it; refused at once once the run has released its
+/// leases. One of a run with no lessor, of a reference no grant of the run names, or by an id
+/// the run holds a lease by breaks the channel's contract.
+fn lease_asked(shared: &Arc<Shared>, payload: &[u8]) -> Result<(), String> {
+    let ask = wire::LeaseAsk::decode(payload).map_err(|e| e.to_string())?;
+    let Some(lessor) = shared.lessor.clone() else {
+        return Err("a lease asked of a run with no lessor".into());
+    };
+    if !shared.granted.contains(&ask.reference) {
+        return Err(format!(
+            "a lease of {}, which no grant of the run names",
+            ask.reference
+        ));
+    }
+    {
+        let mut state = lock(&shared.state);
+        if state.leases.released {
+            drop(state);
+            answer_lease(shared, ask.id, Err(LeaseRefusal::Ended));
+            return Ok(());
+        }
+        if state.leases.each.insert(ask.id, Holding::Asked).is_some() {
+            return Err(format!("a lease asked by {}, an id the run holds one by", ask.id));
+        }
+    }
+    let id = ask.id;
+    let asking = Arc::clone(shared);
+    let spawned = std::thread::Builder::new()
+        .name("shards-api-lease".into())
+        .spawn(move || {
+            let got = lessor.0.lease(&ask.reference);
+            let result = settle(&asking, &*lessor.0, ask.id, got, Instant::now());
+            answer_lease(&asking, ask.id, result);
+        });
+    if spawned.is_err() {
+        lock(&shared.state).leases.each.remove(&id);
+        let why = "no thread to ask its lessor on".to_string();
+        answer_lease(shared, id, Err(LeaseRefusal::Unavailable(why)));
+    }
+    Ok(())
+}
+
+/// What lease `id`, as the run's lessor answered it (`got`), becomes at `now` (R04): given,
+/// kept for its release, living what is left of it; refused as the lessor said; or, given
+/// after the run released its leases or with nothing of it left, released at once and
+/// refused as ended or lapsed.
+fn settle(
+    shared: &Shared,
+    lessor: &dyn Lessor,
+    id: u32,
+    got: Result<Leased, LeaseRefusal>,
+    now: Instant,
+) -> Result<wire::Lease, LeaseRefusal> {
+    let mut state = lock(&shared.state);
+    state.leases.each.remove(&id);
+    let leased = got?;
+    // Its life past a u64 of nanoseconds (584 years) is said as that much.
+    let lives = leased
+        .until
+        .checked_duration_since(now)
+        .and_then(|left| NonZeroU64::new(u64::try_from(left.as_nanos()).unwrap_or(u64::MAX)));
+    let refused = match lives {
+        _ if state.leases.released => LeaseRefusal::Ended,
+        None => LeaseRefusal::Lapsed,
+        Some(lives) => {
+            state.leases.each.insert(id, Holding::Given(leased.lease.clone()));
+            return Ok(wire::Lease {
+                value: leased.value,
+                lives,
+            });
+        }
+    };
+    drop(state);
+    lessor.release(&leased.lease);
+    Err(refused)
+}
+
+/// Tells the run's host lease `id`'s answer (`LEASED`), every copy of its value wiped once
+/// sent; one past the channel's bound is told unavailable, its lease released with the run's.
+fn answer_lease(shared: &Shared, id: u32, result: Result<wire::Lease, LeaseRefusal>) {
+    let answer = wire::LeaseAnswer { id, result };
+    let encoded = answer.encode().map(zeroize::Zeroizing::new);
+    drop(answer);
+    let payload = encoded.or_else(|e| {
+        let refused = wire::LeaseAnswer {
+            id,
+            result: Err(LeaseRefusal::Unavailable(format!("its value: {e}"))),
+        };
+        refused.encode().map(zeroize::Zeroizing::new)
+    });
+    // A host gone is told nothing: the run's end releases the lease.
+    if let Ok(payload) = payload {
+        let _ = shared.send_parts(wire::to_host::LEASED, &payload);
+    }
+}
+
+/// Releases every lease the run was given (D242), once; a lease given after is released as
+/// it comes ([`settle`]).
+fn release(shared: &Shared) {
+    let given: Vec<String> = {
+        let mut state = lock(&shared.state);
+        if state.leases.released {
+            return;
+        }
+        state.leases.released = true;
+        shared.changed.notify_all();
+        state
+            .leases
+            .each
+            .drain()
+            .filter_map(|(_, held)| match held {
+                Holding::Given(lease) => Some(lease),
+                Holding::Asked => None,
+            })
+            .collect()
+    };
+    if let Some(lessor) = &shared.lessor {
+        for lease in given {
+            lessor.0.release(&lease);
+        }
+    }
 }
 
 /// Keeps the host's last diagnostics until they end.
@@ -1129,6 +1307,8 @@ mod tests {
             state: Mutex::new(State::default()),
             changed: Condvar::new(),
             to_host: Mutex::new(None),
+            lessor: None,
+            granted: Vec::new(),
         }
     }
 
@@ -1171,6 +1351,8 @@ mod tests {
             state: Mutex::new(State::default()),
             changed: Condvar::new(),
             to_host: Mutex::new(Some(to_host)),
+            lessor: None,
+            granted: Vec::new(),
         });
         lock(&s.state).inputs.insert(1, InputFlow::default());
         let (reader, mut writer) = io::pipe().unwrap();
@@ -1625,5 +1807,238 @@ mod tests {
             gone.wait(BOUND, |st| ready_past(st, true, None)),
             Some(Err(ImageRefusal::Host(_)))
         ));
+    }
+
+    const CLAUDE: &str = "anthropic/claude-max";
+    const CHATGPT: &str = "openai/chatgpt";
+    const VALUE: &str = "sk-ant-lease-test-value";
+
+    /// What a simulated orchestrator's lessor did: each lease it gave, each it was told
+    /// released, and the asks it was in.
+    #[derive(Default)]
+    struct Ledger {
+        given: Vec<String>,
+        released: Vec<String>,
+        entered: usize,
+        /// Its answers held until a test lets them go.
+        held: bool,
+    }
+
+    /// A simulated orchestrator answering its run's leases (D242): each lease named by its
+    /// reference and number, its value `VALUE`, living an hour.
+    #[derive(Default)]
+    struct Orchestrator {
+        ledger: Mutex<Ledger>,
+        changed: Condvar,
+    }
+
+    impl Orchestrator {
+        /// Whether `done` comes to hold of its ledger within [`BOUND`].
+        fn until(&self, done: impl Fn(&Ledger) -> bool) -> bool {
+            let deadline = Instant::now() + BOUND;
+            let mut l = lock(&self.ledger);
+            while !done(&l) {
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    return false;
+                }
+                l = self.changed.wait_timeout(l, left).unwrap().0;
+            }
+            true
+        }
+    }
+
+    impl Lessor for Orchestrator {
+        fn lease(&self, reference: &str) -> Result<Leased, LeaseRefusal> {
+            let mut l = lock(&self.ledger);
+            l.entered += 1;
+            self.changed.notify_all();
+            while l.held {
+                l = self.changed.wait(l).unwrap();
+            }
+            let lease = format!("{reference}#{}", l.given.len());
+            l.given.push(lease.clone());
+            Ok(Leased {
+                lease,
+                value: wire::Secret::from(VALUE),
+                until: Instant::now() + Duration::from_secs(3600),
+            })
+        }
+
+        fn release(&self, lease: &str) {
+            lock(&self.ledger).released.push(lease.into());
+            self.changed.notify_all();
+        }
+    }
+
+    /// A session's state over pipes standing for its host's stdin, read back as `sent`, and
+    /// stdout, written as `host`; its reader taking what the test writes as its host does.
+    struct Hosted {
+        shared: Arc<Shared>,
+        sent: io::PipeReader,
+        host: io::PipeWriter,
+        reader: std::thread::JoinHandle<()>,
+    }
+
+    fn hosted(lessor: Option<Arc<Orchestrator>>, granted: &[&str]) -> Hosted {
+        let (sent, to_host) = io::pipe().unwrap();
+        let (from_host, host) = io::pipe().unwrap();
+        let shared = Arc::new(Shared {
+            state: Mutex::new(State::default()),
+            changed: Condvar::new(),
+            to_host: Mutex::new(Some(to_host)),
+            lessor: lessor.map(|l| RunLessor(l)),
+            granted: granted.iter().map(|g| (*g).to_string()).collect(),
+        });
+        let reader = {
+            let shared = Arc::clone(&shared);
+            std::thread::spawn(move || read_answers(&shared, from_host))
+        };
+        Hosted {
+            shared,
+            sent,
+            host,
+            reader,
+        }
+    }
+
+    fn says(host: &mut io::PipeWriter, kind: u8, payload: &[u8]) {
+        host.write_all(&wire::frame(kind, payload).unwrap()).unwrap();
+    }
+
+    fn ask(host: &mut io::PipeWriter, id: u32, reference: &str) {
+        let ask = wire::LeaseAsk {
+            id,
+            reference: reference.into(),
+        };
+        says(host, wire::to_client::LEASE, &ask.encode().unwrap());
+    }
+
+    /// The next lease's answer the session sent its host.
+    fn answered(sent: &mut io::PipeReader) -> wire::LeaseAnswer {
+        let (kind, payload) = wire::read_frame(sent).unwrap().unwrap();
+        assert_eq!(kind, wire::to_host::LEASED);
+        wire::LeaseAnswer::decode(&payload).unwrap()
+    }
+
+    /// A run with grants, its leases asked by its host on their first use and given by a
+    /// simulated orchestrator, then ended each way a run ends (D242). Do: ask two leases;
+    /// end the run as its host says it ended, as the orchestrator stops it, and as its host's
+    /// channel closes without saying so. Expect: nothing given before the first ask; each ask
+    /// answered with the orchestrator's value and what is left of its hour; the first two
+    /// ends releasing every lease as the host says the run released them, before its end; the
+    /// third releasing none until the channel closes, then every one; each lease released
+    /// once.
+    #[test]
+    fn a_runs_leases_are_given_as_asked_and_released_at_each_end() {
+        for end in ["exited", "stopped", "channel closed"] {
+            let orchestrator = Arc::new(Orchestrator::default());
+            let mut h = hosted(Some(Arc::clone(&orchestrator)), &[CLAUDE, CHATGPT]);
+            assert!(
+                lock(&orchestrator.ledger).given.is_empty(),
+                "leased before its first use"
+            );
+            for (id, reference) in [(1, CLAUDE), (2, CHATGPT)] {
+                ask(&mut h.host, id, reference);
+                let answer = answered(&mut h.sent);
+                assert_eq!(answer.id, id);
+                let lease = answer.result.unwrap();
+                assert_eq!(lease.value, wire::Secret::from(VALUE));
+                assert!(Duration::from_nanos(lease.lives.get()) <= Duration::from_secs(3600));
+            }
+            assert_eq!(lock(&orchestrator.ledger).given.len(), 2, "{end}");
+            let all_released = |l: &Ledger| l.released.len() == 2;
+            match end {
+                "exited" => {
+                    says(&mut h.host, wire::to_client::RELEASED, &[]);
+                    assert!(
+                        orchestrator.until(all_released),
+                        "{end}: not released as its host said"
+                    );
+                    says(
+                        &mut h.host,
+                        wire::to_client::ENDED,
+                        &RunEnd::Exited(0).encode().unwrap(),
+                    );
+                }
+                "stopped" => {
+                    h.shared.send(wire::to_host::STOP, &[]).unwrap();
+                    let (kind, _) = wire::read_frame(&mut h.sent).unwrap().unwrap();
+                    assert_eq!(kind, wire::to_host::STOP);
+                    says(&mut h.host, wire::to_client::RELEASED, &[]);
+                    assert!(
+                        orchestrator.until(all_released),
+                        "{end}: not released as its host said"
+                    );
+                    says(
+                        &mut h.host,
+                        wire::to_client::ENDED,
+                        &RunEnd::Stopped.encode().unwrap(),
+                    );
+                }
+                _ => assert!(lock(&orchestrator.ledger).released.is_empty()),
+            }
+            drop(h.host);
+            h.reader.join().unwrap();
+            let l = lock(&orchestrator.ledger);
+            let (mut given, mut released) = (l.given.clone(), l.released.clone());
+            given.sort();
+            released.sort();
+            assert_eq!(released, given, "{end}: each lease released once");
+        }
+    }
+
+    /// A lease given after the run released its leases is released at once (D242). Do: hold
+    /// the orchestrator's answer to an ask; have the host say the run released its leases;
+    /// then let the answer go, and ask again. Expect: the answer told the host as the run's
+    /// end, its lease released, and the next ask refused at once as ended, its lessor never
+    /// asked.
+    #[test]
+    fn a_lease_given_after_the_runs_release_is_released_as_it_comes() {
+        let orchestrator = Arc::new(Orchestrator::default());
+        lock(&orchestrator.ledger).held = true;
+        let mut h = hosted(Some(Arc::clone(&orchestrator)), &[CLAUDE]);
+        ask(&mut h.host, 1, CLAUDE);
+        assert!(orchestrator.until(|l| l.entered == 1));
+        says(&mut h.host, wire::to_client::RELEASED, &[]);
+        assert_eq!(
+            h.shared.wait(BOUND, |s| s.leases.released.then_some(())),
+            Some(())
+        );
+        lock(&orchestrator.ledger).held = false;
+        orchestrator.changed.notify_all();
+        assert_eq!(answered(&mut h.sent).result, Err(LeaseRefusal::Ended));
+        assert!(orchestrator.until(|l| l.released == l.given && l.given.len() == 1));
+        ask(&mut h.host, 2, CLAUDE);
+        assert_eq!(answered(&mut h.sent).result, Err(LeaseRefusal::Ended));
+        assert_eq!(lock(&orchestrator.ledger).entered, 1);
+        drop(h.host);
+        h.reader.join().unwrap();
+    }
+
+    /// Do: have the host ask a lease of a reference no grant of the run names, one of a run
+    /// with no lessor, and one by an id it holds a lease by. Expect: each breaks the
+    /// channel's contract, its run failed, and nothing leased.
+    #[test]
+    fn a_lease_the_run_was_not_granted_breaks_the_channel() {
+        for (lessor, twice) in [(true, false), (false, false), (true, true)] {
+            let orchestrator = Arc::new(Orchestrator::default());
+            let mut h = hosted(lessor.then(|| Arc::clone(&orchestrator)), &[CLAUDE]);
+            if twice {
+                ask(&mut h.host, 1, CLAUDE);
+                assert!(answered(&mut h.sent).result.is_ok());
+                ask(&mut h.host, 1, CLAUDE);
+            } else {
+                ask(&mut h.host, 1, if lessor { "github/token" } else { CLAUDE });
+            }
+            h.reader.join().unwrap();
+            assert!(
+                matches!(lock(&h.shared.state).end, Some(RunEnd::Failed(_))),
+                "{lessor} {twice}"
+            );
+            let l = lock(&orchestrator.ledger);
+            assert_eq!(l.given.len(), usize::from(twice));
+            assert_eq!(l.released, l.given, "a lease outlived its channel");
+        }
     }
 }

@@ -495,6 +495,7 @@ fn a_deadline_given_through_shards_api_is_met_or_said_passed() {
         publish: Vec::new(),
         egress: Narrowing::default(),
         credentials: Vec::new(),
+        lessor: None,
         shares: Vec::new(),
         binary: Some(common::shards().to_path_buf()),
         env: host_env(&home),
