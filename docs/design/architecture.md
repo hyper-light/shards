@@ -7538,6 +7538,15 @@ Decided by the user on 2026-10-14 ("so long as they apply appropriately to micro
     of it read values. So it grows into its room once, whichever comes first. Where its VMM
     cannot say its footprint, init holds the room as told and says so (`ROOM_UNREAD`),
     which the daemon logs. A one-word `ROOM`, a budget's (D188), holds as it did.
+  - **Each VM process once** (built, macOS and Windows). A joiner runs in its provider's VM
+    process (D119), and the group summed its footprint by run: a joiner in its provider's
+    group counted that process twice in `memory.current` and listed it twice in
+    `cgroup.procs` (`a_joiner_and_its_provider_in_one_group_count_their_vm_process_once`,
+    red at 9d7e74bc0: 1300 MiB where 700 were held). A member now keeps its VM process's
+    identity, its pid and when it started (`shards_ipc::started`, read as its run joins),
+    and the group reads each identity once: its `memory.current`, its `cgroup.procs` on
+    macOS, each member's room as of its process's footprint, and its verdict's largest. A
+    member whose pid now names a process that started at another time holds nothing of it.
   - **Windows** (built): every process of a microVM under NAME is made in a job object of
     NAME's, nested above the VM process's own (PROC_THREAD_ATTRIBUTE_JOB_LIST, the
     group's first; Job Objects, "Nested Jobs", Windows 8 on), its warm VMs too: a VM
@@ -7882,7 +7891,12 @@ descriptors.
   given none, takes a shared lock of that file where there is one, and so returns once the
   daemon that stops has let go of its home, whatever its slot said; where there is none
   and the daemon it asked still holds the home (`daemon.pid`, `shards_ipc::Named`), it asks
-  again after that answer, within `RESTARTS`. No serving daemon holds that file (a starting
+  again after that answer, where that daemon is another than the one it last asked again,
+  by its ID and start (`Named`): the same one answering again as itself, nothing changed, is
+  no progress, and the stop fails naming it (`NotStopped::Untaken`), where a count of asks
+  bounded it first (`RESTARTS`, `slots::OFFERED` + 2, derived for one takeover's RESTARTs and
+  no basis for asking one daemon again; ROOT's R03 ruling, 2026-11-13). Each ask follows an
+  answer, never a clock. No serving daemon holds that file (a starting
   one removes a dead one's), so a stop never waits on a next daemon's lock of the home, as
   one blocked on `daemon.lock` could once a successor polling `take_lock` took it first;
   nor on a process's ID, whose exit Linux watches only from 5.3 (pidfd_open(2)). It is
@@ -7890,7 +7904,10 @@ descriptors.
   locks would refuse. Held by `a_stop_returns_once_its_daemon_has_let_go_of_its_home`
   (cli/client.rs: a stand-in daemon, this process, holding the home's lock and, closed,
   `STOPPING_LOCK`, serving real slots: a session ended early, a RESTART from a closed
-  daemon, no slot, a RESTART from one serving on), red before; and on real VMs by
+  daemon, no slot, a RESTART from one serving on), red before;
+  `a_stop_its_daemon_answers_again_as_itself_without_taking_it_fails_naming_it` (a stand-in
+  that answers every stop RESTART as itself: asked twice, then named; red before, asked four
+  times); and on real VMs by
   `a_stop_while_another_stops_its_daemon_waits_for_its_home_let_go_of` (tests/daemon.rs).
 - **Whose end a run's client heard** (PM M530). A run's, an exec's and an attach's slot
   passes on what its VM says, so the slot ends both where the VM's connection closes with no
@@ -25119,6 +25136,15 @@ member's are, so one stdio protocol carries both. The pieces:
   (D243). Its length is bound by the run protocol's own `MAX_PAYLOAD`, which is as large as Linux
   execs. An endpoint that admits no exec, or an ask for another run, generation or member,
   refuses the lane alone, typed.
+- *Its scope where it serves no member stream* (goal 58, for D252's run host and D254): the
+  run and generation an ask names are fixed as the endpoint binds (`exec::Execs::run`): its
+  member streams', or at an endpoint of none the zero run and generation 0, as its socket lanes
+  name them (D251); the controller names the same (`drive.rs`, its outputs' run else the zero
+  run), and gives `Execs` with no output subscribed. Such an endpoint leaves the member to its
+  host, which knows its run's members and refuses one it has not, typed. Before, the run was
+  read from the endpoint's first output: an endpoint of none refused every ask `Scope`, and
+  once an exec's own streams had joined its outputs, would have read the exec's run for its own.
+  Tested: `control::tests::lanes::an_endpoint_of_no_member_stream_takes_asks_in_the_zero_run`.
 - *Its streams*: the endpoint numbers each exec. The exec's stdout, its stderr (none on a
   terminal) and its stdin (where it reads one) are step 5's streams under a run of their own: the
   run's identity and the exec's number hashed (SHA-256), so the controller's subscriptions name
@@ -25765,7 +25791,7 @@ memory its guest holds before its guest drops its page cache (D188's measure, PM
 image run); an orchestrator that needs D188's pressure give-back through its run host to keep
 its runs within its budget.
 
-### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; the injector built, step 3: TLS ended for granted hosts, HTTP/1.1 heads filled in, echoes masked; Hex filling a harness VM's grants and answering its leases from kiln's broker built, step 6, kiln's half on kiln main and Hex's with the Hex lead; the leak scan's harness built, step 10's first part, D259; HTTP/2 and the real-VM runs owed)
+### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; the injector built, step 3: TLS ended for granted hosts, HTTP/1.1 heads filled in, echoes masked; Hex filling a harness VM's grants and answering its leases from kiln's broker built, step 6, kiln's half on kiln main and Hex's with the Hex lead; the leak scan's harness built, step 10's first part, D259; the Claude Code and Codex sign-in profiles built, step 8's first slice; HTTP/2, the sign-ins' wiring and the real-VM runs owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 33: every kiln harness runs in a
 Shards microVM, and a harness needs its model-provider credential without the credential
@@ -26351,11 +26377,79 @@ s33-leak-scan).**
 - *Owed.* ROOT's runs of it on KVM, HVF and WHP (its README); step 10's second part, the
   injector's A/B latency harness, is another lane's.
 
+**Built: step 8's first slice, the sign-in profiles** (`crates/net/src/signin.rs`; kiln plan
+01a1d2b88be57304b972761e2a5c6781 step 8; research f16, f43, f47, f49, f50, f52–f55, f63, f64; record
+docs/research/s33-veil-creds/STEP8.md). What Claude Code's and Codex's own sign-ins say to their providers' token
+endpoints, as their pinned builds say it (Claude Code 2.1.311's bundle and Codex rust-v0.167.2, each held to its kiln
+pin, read on Linux and never run), as data and pure functions the injector drives (the second slice).
+- *The profiles.* Claude Code: platform.claude.com's `/v1/oauth/token`, where it exchanges its pasted code and
+  refreshes, JSON both (`grant_type`, `refresh_token`, `client_id`, `scope`), and `/v1/oauth/token/revoke` (JSON
+  `token`, `token_type_hint`, `client_id`); it reads `access_token`, `refresh_token` (keeping its old one where none
+  comes), `expires_in`, `refresh_token_expires_in` and `scope`. Codex: auth.openai.com's `/oauth/token` (its device
+  flow's code exchanged in form encoding, its refresh in JSON) and `/oauth/revoke` (JSON, its refresh token else its
+  access token); it reads `id_token`, `access_token` and `refresh_token`. signin.rs cites each to its build's offset or
+  line.
+- *A token response read where its tokens lie, and given placeholders* (`read`, `write`). Its whole body
+  (identity-coded, its chunks joined; a coded one refused, `readable`) is read as one JSON text (RFC 8259) by the
+  network process's own reader, which follows nesting with a stack of its own: no JSON parser is in its tree, and
+  serde_json's `Value` would let a token's copies go unwiped (refused for that). Each string read is decoded into a
+  buffer sized at once and wiped as it drops. The outermost object's `access_token`, `refresh_token` and `id_token`,
+  each a string once, are its tokens; such a name anywhere else (nested, twice, not a string) is refused (`Misplaced`),
+  as is a token's value in any other string, its escapes decoded (`Echoed`), so that replacing each token's own place
+  leaves none behind. A response naming no token (an error, a device flow's code) passes as it came. The body is
+  written in one buffer, each token's string replaced by its placeholder's (a b64token, which a JSON string holds as it
+  is), and its head framed anew (`frame`): its Content-Length and Transfer-Encoding cut and one Content-Length of the
+  new length written (RFC 9112 §6.3, RFC 9110 §8.6, f43).
+- *Question 4: Codex's ID token is a credential, made inert.* Codex's browser login exchanges its ID token at its
+  token endpoint for an API key (RFC 8693's token exchange, `requested_token=openai-api-key`: server.rs:446-450,
+  1036-1069); its device flow, kiln's, does not ask it (device_code_auth.rs:226), but the exchange is the issuer's,
+  open to any holder of an unexpired ID token. Codex reads an ID token's payload alone (token_data.rs:144-155: three
+  parts, none empty, the signature never read), so the VM's ID token keeps its header and payload (the identity Codex
+  reads: email, plan, account) and has `shards-placeholder` in its signature's place: no credential, and filled in
+  nowhere. Refused: the real ID token kept (the plan's first reading of f52); a JWT-shaped placeholder for the access
+  token too, whose `exp` would go stale at a refresh that keeps its placeholder, Codex then refreshing at every request
+  (manager.rs:3536-3541); an opaque ID token, which Codex cannot parse (server.rs:859).
+- *Question 5: no profile is at_hash-fallback.* Claude Code's `at_hash` check is panva's openid-client's
+  (`validateIdToken`, offset 267701855), used by its LLM gateway's OIDC sign-in and XAA's IdP login for MCP servers,
+  never by its Anthropic sign-in, which asks no `openid` scope and reads no `id_token` (`c9o`, `formatTokens`); Codex
+  has none. A run that signs in through Claude Code's LLM gateway or XAA is tmpfs-fallback: a placeholder access token
+  beside a real ID token fails that check (f50).
+- *Question 7: sender-constrained tokens.* Neither provider's sign-in: both send bearer tokens with no DPoP proof and
+  no client certificate. Claude Code's Bedrock credentials through `aws login` refresh with a DPoP proof (the AWS SDK's
+  `fromLoginCredentials`, offsets 261406663 and 261409863): fallback (f49).
+- *No value toward an endpoint that mints a key.* Claude Code's default scopes ask `org:create_api_key` (offset
+  238937512), and its `API_KEY_URL` answers a bearer token's POST with `raw_key`, an API key in the clear (`u9o`,
+  242107148), which the CLI asks only for its console sign-in (266757798). A member holding a captured token's
+  placeholder could ask it through the injector and hold a key, so the profile names it (`Profile::mints`) and the
+  injector fills no value toward it (the second slice), its path read as widely as a server may: percent-decoded,
+  empty and dot segments gone, lowered, anything under it. Claude Code's console sign-in, whose credential is that
+  key, is not served by capture; an API-key grant serves it. Whether a claude.ai sign-in's token is granted
+  `org:create_api_key` its token response's `scope` says, at ROOT's real sign-in.
+- *A refresh's or a revocation's placeholder found* (`ask`). A POST to the profile's token path whose body (JSON or a
+  form, by its Content-Type) has `grant_type` `refresh_token` and a sign-in's refresh placeholder, compared in
+  constant time as `decide` compares, is `Refresh`; one to its revocation path naming either of a sign-in's
+  placeholders is `Revoke`; anything else, or a field named twice, passes, its response read.
+- *The answers given outside* (`refreshed`, `REVOKED`): a refresh's token response with placeholders, kept from caches
+  (`Cache-Control: no-store`, `Pragma: no-cache`, RFC 6749 §5.1); a revocation's 200 with no body, which a server
+  answers to a token it revoked or never knew (RFC 7009 §2.2), so the VM's logout ends nothing outside.
+- *Literals.* None of its own: RFC 8259's grammar, RFC 6749's fields, RFC 7009's 200; what is read is bounded by its
+  connection's window, its caller's. `shards-placeholder` is a name.
+- *Tests (macOS arm64, adas-mac-studio.local; STEP8.md).* `cargo test -p shards-net --lib signin`, 17 passed: each
+  CLI's token response given placeholders, every other byte unchanged, Codex's ID token's header and payload kept and
+  its signature gone; a token nested, twice, not a string, or echoed elsewhere (escaped or not, or as a name) refused;
+  a body that is no JSON text refused and one naming no token passed; framing recomputed; a coded body not read; each
+  CLI's refresh (JSON and form) and revocation found, and a refresh of another or a near placeholder passed; the
+  minting endpoint read widely; no token or placeholder in `Debug`; a 100 000-deep array read. clippy `-D warnings`
+  clean. Each of 14 guards removed in turn fails its test (`scripts/step8-reds.py`).
+
 **Owed (later slices of step 33, this plan's steps 7, 8 and 10).** The injector that
-fills HTTP/2 headers (step 7); the Claude Code and Codex
-sign-in/refresh profiles (step 8); and ROOT's real-VM runs on KVM, HVF and WHP with a
-whole-guest-memory leak scan (its harness built, D259) and the injector's measured cost (step 10). Step 6's own owed
-items are its block's, above.
+fills HTTP/2 headers (step 7); the sign-in profiles' wiring (step 8's second slice: the network
+process telling its run host of a capture, a refresh and a revocation, the run host its
+orchestrator, the injector capturing and answering outside) and kiln's broker answering them
+(its third); and ROOT's real-VM runs on KVM, HVF and WHP with a whole-guest-memory leak scan
+(its harness built, D259), the injector's measured cost (step 10), and a real sign-in of each
+CLI surviving a refresh answered outside (step 8). Step 6's own owed items are its block's,
+above.
 
 **Literals.** None of its own: this slice adds no numeric bound. A credential's `reference`
 is bounded by the store it names (kiln-seams `NAME_MAX`, 512), not re-stated here; its hosts

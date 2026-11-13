@@ -1025,6 +1025,11 @@ impl Lane {
 /// hands its host each exec and each member's lane, and what the host says.
 #[derive(Debug)]
 pub(super) struct Execs {
+    /// The run an ask names and its generation: its member streams', or, at an endpoint of
+    /// none (an orchestrator's run host's, D252), the zero run and generation 0, as a socket
+    /// lane names them there (unix.rs). Fixed at its bind: an exec's own streams, which join
+    /// its outputs later, are never its scope.
+    pub(super) run: (RunId, u64),
     pub(super) admissions: Option<Admissions>,
     pub(super) starts: Option<mpsc::Sender<Start>>,
     /// Each member's lane, where its host runs execs: the same host serves both.
@@ -1043,7 +1048,7 @@ pub(super) struct Execs {
 pub(super) type Handed = (Option<mpsc::Receiver<Start>>, Option<mpsc::Receiver<MemberStart>>);
 
 impl Execs {
-    pub(super) fn new(admissions: Option<Admissions>, base: Limits) -> (Execs, Handed) {
+    pub(super) fn new(admissions: Option<Admissions>, base: Limits, run: (RunId, u64)) -> (Execs, Handed) {
         let (replies_tx, replies) = mpsc::channel();
         let ((starts, handed), (members, lanes)) = match admissions {
             Some(_) => {
@@ -1055,6 +1060,7 @@ impl Execs {
         };
         (
             Execs {
+                run,
                 admissions,
                 starts,
                 members,
@@ -1382,17 +1388,20 @@ impl super::Lanes {
     }
 
     /// Whether the endpoint admits `ask`: its run's, its generation, a member it serves, and
-    /// a host that runs what is asked. A log's source is its host's to know: the run keeps
-    /// every member's output (D240) and its command's, whichever streams the endpoint serves.
+    /// a host that runs what is asked. An endpoint of member streams serves their members
+    /// alone; one of none leaves the member to its host, which knows its run's members. A
+    /// log's source is its host's to know: the run keeps every member's output (D240) and its
+    /// command's, whichever streams the endpoint serves.
     fn scoped(&self, ask: &Ask) -> Result<(), Reason> {
-        let first = self.outputs.first().map(|o| o.scope()).ok_or(Reason::Scope)?;
-        if ask.run != first.run {
+        let (run, generation) = self.execs.run;
+        if ask.run != run {
             return Err(Reason::Scope);
         }
-        if ask.generation != first.generation {
+        if ask.generation != generation {
             return Err(Reason::Stale);
         }
-        let served = self.outputs.iter().any(|o| o.scope().member == ask.member);
+        let mut members = self.outputs.iter().filter(|o| o.scope().run == run).peekable();
+        let served = members.peek().is_none() || members.any(|o| o.scope().member == ask.member);
         if !served && !matches!(ask.kind, Kind::Log(_)) {
             return Err(Reason::Scope);
         }
@@ -1547,20 +1556,18 @@ impl super::Lanes {
     /// has finished ends as the output's own would (its FIN), whichever thread finished it last;
     /// any other lane on one is abandoned.
     fn drop_exec(&mut self, io: &mut crate::net::Io<'_>, exec: u32) {
-        if let Some(first) = self.outputs.first().map(|o| o.scope()) {
-            let run = exec_run(first.run, exec);
-            for output in self.outputs.iter_mut().filter(|o| o.scope().run == run) {
-                if let (Some((conn, stream)), true) = (output.subscriber(), output.finished()) {
-                    output.flush(io);
-                    output.disconnect();
-                    io.stop(conn, stream);
-                }
+        let run = exec_run(self.execs.run.0, exec);
+        for output in self.outputs.iter_mut().filter(|o| o.scope().run == run) {
+            if let (Some((conn, stream)), true) = (output.subscriber(), output.finished()) {
+                output.flush(io);
+                output.disconnect();
+                io.stop(conn, stream);
             }
-            for input in self.inputs.iter_mut().filter(|i| i.scope().run == run) {
-                if let (Some((conn, stream)), true) = (input.subscriber(), input.said_its_end()) {
-                    input.disconnect();
-                    io.stop(conn, stream);
-                }
+        }
+        for input in self.inputs.iter_mut().filter(|i| i.scope().run == run) {
+            if let (Some((conn, stream)), true) = (input.subscriber(), input.said_its_end()) {
+                input.disconnect();
+                io.stop(conn, stream);
             }
         }
         for (conn, stream) in self.let_exec_go(exec) {
@@ -1571,10 +1578,7 @@ impl super::Lanes {
     /// Exec `exec`'s streams let go, its handles told it is over: the lanes on them, to end.
     fn let_exec_go(&mut self, exec: u32) -> Vec<(crate::net::ConnKey, hyper_quic::StreamId)> {
         let mut lanes = Vec::new();
-        let Some(first) = self.outputs.first().map(|o| o.scope()) else {
-            return lanes;
-        };
-        let run = exec_run(first.run, exec);
+        let run = exec_run(self.execs.run.0, exec);
         for output in self.outputs.iter_mut().filter(|o| o.scope().run == run) {
             if let Some(lane) = output.subscriber() {
                 lanes.push(lane);
@@ -1594,10 +1598,7 @@ impl super::Lanes {
 
     /// Whether exec `exec`'s outputs have all finished, every record consumed, or were let go.
     fn outputs_done(&self, exec: u32) -> bool {
-        let Some(first) = self.outputs.first().map(|o| o.scope()) else {
-            return true;
-        };
-        let run = exec_run(first.run, exec);
+        let run = exec_run(self.execs.run.0, exec);
         self.outputs
             .iter()
             .filter(|o| o.scope().run == run)
@@ -1718,11 +1719,9 @@ impl super::Lanes {
                 }
             }
             (Reply::Started, Stage::Pending, None) => {
-                let first = self.outputs.first().map(|o| o.scope().run);
-                let streams = first.map(|run| exec_run(run, exec));
-                let stderr = streams
-                    .is_some_and(|run| self.outputs.iter().filter(|o| o.scope().run == run).count() > 1);
-                let stdin = streams.is_some_and(|run| self.inputs.iter().any(|i| i.scope().run == run));
+                let run = exec_run(self.execs.run.0, exec);
+                let stderr = self.outputs.iter().filter(|o| o.scope().run == run).count() > 1;
+                let stdin = self.inputs.iter().any(|i| i.scope().run == run);
                 let Some(lane) = self.execs.lanes.get_mut(at) else {
                     return;
                 };

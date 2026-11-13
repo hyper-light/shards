@@ -21,6 +21,7 @@ pub mod lease;
 pub mod pktinfo;
 mod poll;
 mod ring;
+pub mod signin;
 mod siphash;
 pub mod sys;
 pub mod tcp;
