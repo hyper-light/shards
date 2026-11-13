@@ -26410,9 +26410,14 @@ controller's bytes and the harness's exact, its end told, a member with no bridg
 typed), `daemon::managed::tests` (the daemon's host refusing an MCP ask before its VM process
 hears of it).
 
-**Owed.** The listener, the bridge and `LANE_ACCEPTED` (D251's agent); the daemon's and the orchestrator's
-hosts pairing each connection with its ask; kiln's harness configs naming the bridge and its
-in-process server over the two streams (kiln's step 18); every real-VM run, ROOT's: each
+**Owed.** The listener, the bridge and `LANE_ACCEPTED` (D251's agent, building them; ipc kind
+101); the daemon's and the orchestrator's hosts pairing each connection with its ask, and the
+asking (the daemon's annotation, the orchestrator's MemberSpec field), goal 58's; kiln's harness
+configs naming the bridge. kiln's in-process server over the two streams is built (kiln main
+`dace992a6`, `reach::mcp::serve_lane`: one `Execs::mcp(member)` connection's newline-delimited
+JSON-RPC read from `McpConnection::from` and answered on `to`, in the runner's own process, no
+socket, on Windows too), its connection to a launch waiting on kiln's next re-vendor of Shards
+and this pairing (kiln's step 18, goal 61). Every real-VM run, ROOT's: each
 harness that takes MCP calling kiln's server through the bridge, on KVM, HVF and WHP, with the
 microVM and the kiln runner on one machine and on two.
 
