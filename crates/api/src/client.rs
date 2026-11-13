@@ -90,12 +90,63 @@ impl ConfiguredShards {
         &self.paths
     }
 
-    fn environment(&self, command: &mut Command) {
+    /// Its client's runtime directories and nothing inherited, but on Windows the system
+    /// root the OS reports. Without it Winsock loads no provider: its catalog names them as
+    /// `%SystemRoot%\system32\…`, expanded in the process's own environment, so WSAStartup
+    /// fails with WSAEPROVIDERFAILEDINIT (10106) and `shards` opens no socket, its vsock's
+    /// included (seen on Windows 11 26200; Hex's own Windows launches pass it too).
+    fn environment(&self, command: &mut Command) -> Result<(), Refusal> {
         command
             .env_clear()
             .env("SHARDS_CACHE", self.paths.cache())
             .env("SHARDS_HOME", self.paths.home());
+        #[cfg(windows)]
+        command.env("SystemRoot", system_root()?);
+        Ok(())
     }
+}
+
+/// The Windows directory as the OS reports it (GetSystemWindowsDirectoryW), not as an
+/// inherited variable would say: asked for its length (with its NUL) by a call with no room,
+/// then for its UTF-16 in that much.
+#[cfg(windows)]
+fn system_root() -> Result<OsString, Refusal> {
+    use std::os::windows::ffi::OsStringExt as _;
+    use windows_sys::Win32::System::SystemInformation::GetSystemWindowsDirectoryW;
+    let failed = || {
+        let error = io::Error::last_os_error();
+        Refusal::ManagedIo {
+            operation: "the system root",
+            kind: error.kind(),
+            code: error.raw_os_error(),
+        }
+    };
+    // SAFETY: a null buffer of no room only asks for the length; nothing is written.
+    let needed = unsafe { GetSystemWindowsDirectoryW(core::ptr::null_mut(), 0) };
+    if needed == 0 {
+        return Err(failed());
+    }
+    let room = usize::try_from(needed).map_err(|_| Refusal::Allocation {
+        what: "the system root",
+    })?;
+    let mut wide: Vec<u16> = Vec::new();
+    wide.try_reserve_exact(room).map_err(|_| Refusal::Allocation {
+        what: "the system root",
+    })?;
+    wide.resize(room, 0);
+    // SAFETY: `wide` holds `needed` UTF-16 units; the call writes at most that many.
+    let written = unsafe { GetSystemWindowsDirectoryW(wide.as_mut_ptr(), needed) };
+    let written = usize::try_from(written).map_err(|_| Refusal::Allocation {
+        what: "the system root",
+    })?;
+    // It returns the length without its NUL, or, should it have grown since, the room it needs.
+    if written == 0 || written >= room {
+        return Err(failed());
+    }
+    let root = wide.get(..written).ok_or(Refusal::Allocation {
+        what: "the system root",
+    })?;
+    Ok(OsString::from_wide(root))
 }
 
 /// The most bytes shards' report writes for one byte of the console: it escapes each control
@@ -367,7 +418,7 @@ fn launch(
     }
     let mut command = Command::new(&binary);
     if let Some(environment) = environment {
-        environment.environment(&mut command);
+        environment.environment(&mut command)?;
     }
     let child = command
         .args(&args)
@@ -2946,16 +2997,20 @@ mod tests {
         assert!(Shards::configured(cache.clone(), "".into()).is_err());
         let mut command = Command::new(dir.join("never-started"));
         command.env("FORBIDDEN_MODEL_INPUT", "value");
-        node.environment(&mut command);
+        node.environment(&mut command).unwrap();
+        #[cfg_attr(not(windows), allow(unused_mut))]
+        let mut expected = vec![
+            (OsString::from("SHARDS_CACHE"), Some(cache.into_os_string())),
+            (OsString::from("SHARDS_HOME"), Some(home.into_os_string())),
+        ];
+        #[cfg(windows)]
+        expected.push((OsString::from("SystemRoot"), Some(system_root().unwrap())));
         assert_eq!(
             command
                 .get_envs()
                 .map(|(name, value)| (name.to_owned(), value.map(OsString::from)))
                 .collect::<Vec<_>>(),
-            [
-                (OsString::from("SHARDS_CACHE"), Some(cache.into_os_string())),
-                (OsString::from("SHARDS_HOME"), Some(home.into_os_string())),
-            ]
+            expected
         );
         let mut spec = spec();
         spec.binary = None;
@@ -2964,6 +3019,39 @@ mod tests {
             Err(Refusal::Launch(crate::LaunchError::Binary))
         ));
         assert_eq!(std::fs::read_dir(&*dir).unwrap().count(), 0);
+    }
+
+    /// What a configured provider's `shards` gets is enough to open a socket, its vsock's
+    /// first of all: a child in that environment alone binds one (WSAEPROVIDERFAILEDINIT,
+    /// 10106, where the system root was cleared with the rest).
+    #[cfg(windows)]
+    #[test]
+    fn a_configured_providers_child_opens_sockets() {
+        let dir = shards_testdir::TempDir::new("api-env-child").unwrap();
+        let node = Shards::configured(dir.join("cache"), dir.join("home")).unwrap();
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command.args([
+            "--exact",
+            "client::tests::in_a_configured_environment_a_socket_binds",
+            "--ignored",
+            "--test-threads=1",
+        ]);
+        node.environment(&mut command).unwrap();
+        let out = command.output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// [`a_configured_providers_child_opens_sockets`]'s child, run in its environment alone.
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "the child a_configured_providers_child_opens_sockets runs"]
+    fn in_a_configured_environment_a_socket_binds() {
+        std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     }
 
     /// Inputs, each only formatted into a flag: any values show the mapping.
