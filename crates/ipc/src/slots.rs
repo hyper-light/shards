@@ -16,12 +16,16 @@ use crate::MAX_PAYLOAD;
 #[cfg(unix)]
 mod fifo;
 #[cfg(unix)]
-pub use fifo::{Client, Opened, Reader, Requests, Sender, Session, Slot, Stopper, served, take, unoffer};
+pub use fifo::{
+    Client, Opened, ROOM, Reader, Requests, Sender, Session, Slot, Stopper, await_room, has_room, served,
+    take, unoffer,
+};
 #[cfg(windows)]
 mod named;
 #[cfg(windows)]
 pub use named::{
-    Client, Opened, Reader, Requests, Sender, Session, Slot, Stopper, read_frame_until, served, take, unoffer,
+    Client, Opened, ROOM, Reader, Requests, Sender, Session, Slot, Stopper, await_room, has_room,
+    read_frame_until, served, take, unoffer,
 };
 
 /// What carries a slot's messages, each way: a FIFO on Unix (`say`'s, `answer`'s); on

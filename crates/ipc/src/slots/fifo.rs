@@ -91,6 +91,50 @@ impl Read for Within<'_> {
     }
 }
 
+/// The most one write takes whole once [`has_room`] says there is room: PIPE_BUF, no more
+/// than which a pipe's or FIFO's write is atomic, never split nor waited on in part (POSIX
+/// write(2)).
+pub const ROOM: usize = libc::PIPE_BUF;
+
+/// Whether `to`, a FIFO's or a pipe's write end, has room now for a write of [`ROOM`]:
+/// poll(2)'s POLLOUT, which a pipe says only while that much is free (Linux fs/pipe.c
+/// `pipe_poll`: a buffer of a page free; XNU bsd/kern/sys_pipe.c `pipe_select`: PIPE_BUF
+/// free, and its FIFOs, local stream sockets (bsd/miscfs/fifofs), `sowriteable`: their send
+/// buffer's low-water mark free, 2,048 bytes). One whose reader has gone says so too, and
+/// the write that follows fails.
+pub fn has_room(to: &File) -> io::Result<bool> {
+    poll_out(to, 0)
+}
+
+/// Waits until `to` has room ([`has_room`]), however long its reader takes to make it: its
+/// reader's end alone ends the wait sooner, and the write that follows fails.
+pub fn await_room(to: &File) -> io::Result<()> {
+    while !poll_out(to, -1)? {}
+    Ok(())
+}
+
+/// Whether `to` is writable within `ms` milliseconds (-1: however long).
+fn poll_out(to: &File, ms: libc::c_int) -> io::Result<bool> {
+    let mut pfd = libc::pollfd {
+        fd: to.as_raw_fd(),
+        events: libc::POLLOUT,
+        revents: 0,
+    };
+    loop {
+        // SAFETY: poll(2) of one pollfd, of a descriptor `to` holds open.
+        match unsafe { libc::poll(&mut pfd, 1, ms) } {
+            -1 => {
+                let e = io::Error::last_os_error();
+                if e.kind() != io::ErrorKind::Interrupted {
+                    return Err(e);
+                }
+            }
+            0 => return Ok(false),
+            _ => return Ok(pfd.revents != 0),
+        }
+    }
+}
+
 /// What reads a slot's FIFO as [`read_some`] does, for `read_exact`, `read_to_end` and
 /// `io::copy`: what a client copies its streams with.
 #[derive(Debug)]
