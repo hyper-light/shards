@@ -512,20 +512,11 @@ impl Opened {
     }
 }
 
-/// The most one write takes at once: the line's own capacity (`pipe::LINE_BUFFER`). A named
-/// pipe tells its writer of no room before a write, so a write it cannot take whole waits in
-/// WriteFile; owed: a signal of its outbound room (D185, PM M549).
-pub const ROOM: usize = crate::pipe::LINE_BUFFER as usize;
-
-/// Whether a slot's line has room now: always, as a named pipe says nothing of its room
-/// before a write ([`ROOM`]).
-pub fn has_room(_: &Pipe) -> io::Result<bool> {
-    Ok(true)
-}
-
-/// Returns at once: a write the line has no room for waits in WriteFile ([`ROOM`]).
-pub fn await_room(_: &Pipe) -> io::Result<()> {
-    Ok(())
+/// Writes all of `buf` to a slot's line: a named pipe tells its writer of no room before a
+/// write, so a write it cannot take waits in WriteFile, and `waits` is told none (owed: a
+/// signal of a named pipe's outbound room; D185, PM M549).
+pub fn write_all_waiting(to: &Pipe, buf: &[u8], _waits: impl FnMut(super::Wait)) -> io::Result<()> {
+    (&*to).write_all(buf)
 }
 
 /// Ends a slot's wait from another thread ([`Slot::stopper`]), through the slot's own event:

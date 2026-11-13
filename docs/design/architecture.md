@@ -7609,10 +7609,12 @@ process.
   the person's ruling of 2026-11-13: the slowest answer seen bounds a stall, a gap with no
   progress, never an answer's whole length). Its command done, it cannot be told to ask
   again.
-  - *Its progress* is room it makes: its answer is written to it a `slots::ROOM` at a time
-    (PIPE_BUF, which a FIFO takes whole once poll(2) says POLLOUT), and only where its FIFO
-    has no room for the next is its client waited on, until it reads some. Each such wait
-    that ends is a take; a write the FIFO takes at once waits on no client and teaches
+  - *Its progress* is room it makes: its answer is written as its FIFO takes it, a write
+    that does not wait (`slots::write_all_waiting`), and only where the FIFO takes none of
+    what is left is its client waited on, until it reads some: in poll(2) for POLLOUT, or,
+    where no more than PIPE_BUF is left, in the write itself, which goes whole (POSIX
+    write(2)), as macOS's FIFOs say POLLOUT with less than that free (PM M549). Each such
+    wait that ends is a take; what the FIFO takes at once waits on no client and teaches
     nothing.
   - *Its bound*: a closed daemon lets go of a client whose writer has waited on it longer
     than the slowest take seen. One that reads, however slowly, ends each wait as it reads.
@@ -7664,7 +7666,7 @@ process.
 |---|---|---|---|
 | `REQUEST_TIMEOUT` (daemon.rs), a request's rest | 10 s, slot ended unanswered | `Seen::request_stall`: nothing past its first byte for the slowest rest read whole (none before any); its rest begun, its client's end; cut told RESTART | its client's own writes (`Client::ask`, one write) and end; was D222's cutoff, doubled per cut (2026-11-09 to 11-13) |
 | `REQUEST_TIMEOUT`, a handled connection's first message | 10 s | none: the daemon's own pairs | its senders write whole or end their writing |
-| `REQUEST_TIMEOUT`, a closed daemon's client taking nothing | 10 s | `Seen::answer_wait`: the slowest take seen (none before any: its end); was 2 × longest piece, ≥ 100 s (2026-11-09 to 11-13) | its own takes: waits on it for FIFO room (`slots::await_room`), PIPE_BUF (POSIX write(2)) |
+| `REQUEST_TIMEOUT`, a closed daemon's client taking nothing | 10 s | `Seen::answer_wait`: the slowest take seen (none before any: its end); was 2 × longest piece, ≥ 100 s (2026-11-09 to 11-13) | its own takes: waits on it for FIFO room (`slots::write_all_waiting`), PIPE_BUF (POSIX write(2)) |
 | `REQUEST_TIMEOUT`, after an answer's last word | 10 s | none | pipe(7): a FIFO keeps what was written as its writer goes |
 | `RETRY` (daemon.rs), the API's and contexts' accept | 250 ms | none: refused with a spare, woken as descriptors go | libev ev.3; libuv `uv__emfile_trick`; muxer 3447c5a7 |
 | `RETRY` (relay.rs, Windows), a context's pipe | 250 ms | none: `Listener::refuse` | DisconnectNamedPipe, ConnectNamedPipe (Win32 named pipes) |

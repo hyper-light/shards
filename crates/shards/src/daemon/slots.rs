@@ -40,13 +40,13 @@ const SWEEP: Duration = Duration::from_secs(60);
 ///   its client ends: one larger than a FIFO holds comes in parts, each as the daemon reads
 ///   and its client is next run, a gap no whole request's rest measures, which a window
 ///   learned from them would cut again each time it was asked (PM M545).
-/// - **A client taking its answer** goes on as it takes: the answer is written to it a
-///   [`slots::ROOM`] at a time, and only where its FIFO has no room for the next is its
-///   client waited on, until it takes some (`slots::await_room`). Each such wait that ends is
-///   a take, and the slowest is what bounds a stall: a closed daemon lets go of a client that
-///   has waited longer than the slowest take seen with nothing taken, and holds one that
-///   takes, however slowly the answer goes as a whole. A write the FIFO takes at once waits
-///   on no client and teaches nothing. Before any take, the daemon follows the client alone:
+/// - **A client taking its answer** goes on as it takes: its answer is written as its FIFO
+///   takes it, and only where the FIFO takes none of what is left is its client waited on,
+///   until it makes room (`slots::write_all_waiting`). Each such wait that ends is a take,
+///   and the slowest is what bounds a stall: a closed daemon lets go of a client that has
+///   waited longer than the slowest take seen with nothing taken, and holds one that takes,
+///   however slowly the answer goes as a whole. What the FIFO takes at once waits on no
+///   client and teaches nothing. Before any take, the daemon follows the client alone:
 ///   its end, its FIFO's. On Windows a named pipe says nothing of its room before a write,
 ///   so no take is seen there, and a closed daemon follows its clients' ends alone (PM
 ///   M549). It was twice the longest a piece took, at least TCP's R2 (100 s).
@@ -118,7 +118,8 @@ pub(super) struct Live {
     /// Its request went on to the daemon's handling, whose answer it passes back.
     passed: bool,
     /// Since when its answer's writer has waited on its client to make room, its FIFO
-    /// full (`slots::await_room`): none while it writes, or has nothing to write.
+    /// taking nothing (`slots::write_all_waiting`): none while it writes, or has nothing to
+    /// write.
     pub(super) waiting: Option<Instant>,
     /// Its answer's last word (`EXIT`, `END`, `RESTART`) is its client's: there in its FIFO
     /// whether or not the daemon is (pipe(7)), and nothing its client reads comes after it.
@@ -748,20 +749,17 @@ impl<'a, D: Disk> Living<'a, D> {
         lock(&self.daemon.live).remove(&self.n);
     }
 
-    /// Writes `kind` and `payload` to its client a [`slots::ROOM`] at a time, waiting on that
-    /// client only where its FIFO has no room for the next: until it takes some, a take
-    /// (`Seen`), each one a step on.
+    /// Writes `kind` and `payload` to its client as its FIFO takes them, waiting on that
+    /// client only where the FIFO takes none of what is left: until it makes room, a take
+    /// (`Seen`), each wait's start and end a step on.
     pub(super) fn answer(&self, to: &slots::Line, kind: u8, payload: &[u8]) -> io::Result<()> {
         let message = slots::frame(kind, payload)?;
-        let written = message.chunks(slots::ROOM).try_for_each(|part| {
-            if !slots::has_room(to)? {
-                let began = Instant::now();
-                self.step(|live| live.waiting = Some(began));
-                slots::await_room(to)?;
-                lock(&self.daemon.seen).taken(began.elapsed());
+        let written = slots::write_all_waiting(to, &message, |wait| match wait {
+            slots::Wait::Began(began) => self.step(|live| live.waiting = Some(began)),
+            slots::Wait::Ended(took) => {
+                lock(&self.daemon.seen).taken(took);
                 self.step(|live| live.waiting = None);
             }
-            (&*to).write_all(part)
         });
         self.step(|live| live.waiting = None);
         written

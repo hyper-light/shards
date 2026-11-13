@@ -27,8 +27,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use super::{
-    Asked, DIR, FREE, FREE_STREAMS, Frame, RECORD, Requested, Taken, Waited, fds, frame, frame_from, list,
-    number, read_frame, record, streams, write_frame,
+    Asked, DIR, FREE, FREE_STREAMS, Frame, RECORD, Requested, Taken, Wait, Waited, fds, frame, frame_from,
+    list, number, read_frame, record, streams, write_frame,
 };
 
 /// Reads what comes into `buf`, again where a signal cut the read short: waited for first
@@ -91,30 +91,58 @@ impl Read for Within<'_> {
     }
 }
 
-/// The most one write takes whole once [`has_room`] says there is room: PIPE_BUF, no more
-/// than which a pipe's or FIFO's write is atomic, never split nor waited on in part (POSIX
-/// write(2)).
-pub const ROOM: usize = libc::PIPE_BUF;
-
-/// Whether `to`, a FIFO's or a pipe's write end, has room now for a write of [`ROOM`]:
-/// poll(2)'s POLLOUT, which a pipe says only while that much is free (Linux fs/pipe.c
-/// `pipe_poll`: a buffer of a page free; XNU bsd/kern/sys_pipe.c `pipe_select`: PIPE_BUF
-/// free, and its FIFOs, local stream sockets (bsd/miscfs/fifofs), `sowriteable`: their send
-/// buffer's low-water mark free, 2,048 bytes). One whose reader has gone says so too, and
-/// the write that follows fails.
-pub fn has_room(to: &File) -> io::Result<bool> {
-    poll_out(to, 0)
-}
-
-/// Waits until `to` has room ([`has_room`]), however long its reader takes to make it: its
-/// reader's end alone ends the wait sooner, and the write that follows fails.
-pub fn await_room(to: &File) -> io::Result<()> {
-    while !poll_out(to, -1)? {}
+/// Writes all of `buf` to the FIFO `to`, waiting on its reader only where the FIFO takes
+/// none of what is left: each such wait told `waits` as it begins, and once its reader has
+/// made room, how long it took (PM M549). What the FIFO takes at once waits on no reader.
+/// Where less than PIPE_BUF is left, the wait is in the write itself: a write of no more than
+/// that goes whole or not at all (POSIX write(2)), and a FIFO may say it has room while it has
+/// less (macOS's, local stream sockets, writable at their low-water mark: poll(2) said POLLOUT
+/// with 504 bytes free, and a write of 512 then waited, PM M549). A wait that fails, its
+/// reader gone, is told no end.
+pub fn write_all_waiting(to: &File, buf: &[u8], mut waits: impl FnMut(Wait)) -> io::Result<()> {
+    let mut rest = buf;
+    while !rest.is_empty() {
+        if let Some(n) = write_now(to, rest)? {
+            rest = rest.get(n..).unwrap_or_default();
+            continue;
+        }
+        let began = Instant::now();
+        waits(Wait::Began(began));
+        if rest.len() <= libc::PIPE_BUF {
+            (&*to).write_all(rest)?;
+            rest = &[];
+        } else {
+            await_room(to)?;
+        }
+        waits(Wait::Ended(began.elapsed()));
+    }
     Ok(())
 }
 
-/// Whether `to` is writable within `ms` milliseconds (-1: however long).
-fn poll_out(to: &File, ms: libc::c_int) -> io::Result<bool> {
+/// Writes what of `buf` the FIFO `to` takes now, without waiting on its reader: none where it
+/// takes nothing (`EAGAIN`). Its description waits again after, so its other writes wait as
+/// before.
+fn write_now(to: &File, buf: &[u8]) -> io::Result<Option<usize>> {
+    no_wait(to)?;
+    let wrote = loop {
+        match (&*to).write(buf) {
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            other => break other,
+        }
+    };
+    let restored = wait_on(to);
+    let wrote = match wrote {
+        Ok(n) => Some(n),
+        Err(e) if e.kind() == io::ErrorKind::WouldBlock => None,
+        Err(e) => return Err(e),
+    };
+    restored.map(|()| wrote)
+}
+
+/// Waits until the FIFO `to` has room for some of what is left, however long its reader
+/// takes to make it (poll(2)'s POLLOUT); its reader's end ends the wait too, and the write
+/// that follows fails.
+fn await_room(to: &File) -> io::Result<()> {
     let mut pfd = libc::pollfd {
         fd: to.as_raw_fd(),
         events: libc::POLLOUT,
@@ -122,15 +150,15 @@ fn poll_out(to: &File, ms: libc::c_int) -> io::Result<bool> {
     };
     loop {
         // SAFETY: poll(2) of one pollfd, of a descriptor `to` holds open.
-        match unsafe { libc::poll(&mut pfd, 1, ms) } {
+        match unsafe { libc::poll(&mut pfd, 1, -1) } {
             -1 => {
                 let e = io::Error::last_os_error();
                 if e.kind() != io::ErrorKind::Interrupted {
                     return Err(e);
                 }
             }
-            0 => return Ok(false),
-            _ => return Ok(pfd.revents != 0),
+            0 => {}
+            _ => return Ok(()),
         }
     }
 }
@@ -171,6 +199,17 @@ fn open_now(path: &Path, write: bool) -> io::Result<File> {
 fn blocking(file: File) -> io::Result<File> {
     wait_on(&file)?;
     Ok(file)
+}
+
+/// Sets `file`'s reads and writes not to wait.
+fn no_wait(file: &File) -> io::Result<()> {
+    // SAFETY: fcntl(2) on a descriptor `file` holds open.
+    let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
+    // SAFETY: as above.
+    if flags < 0 || unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 /// Sets `file`'s reads and writes to wait.

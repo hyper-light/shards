@@ -17,16 +17,24 @@ use crate::MAX_PAYLOAD;
 mod fifo;
 #[cfg(unix)]
 pub use fifo::{
-    Client, Opened, ROOM, Reader, Requests, Sender, Session, Slot, Stopper, await_room, has_room, served,
-    take, unoffer,
+    Client, Opened, Reader, Requests, Sender, Session, Slot, Stopper, served, take, unoffer,
+    write_all_waiting,
 };
 #[cfg(windows)]
 mod named;
 #[cfg(windows)]
 pub use named::{
-    Client, Opened, ROOM, Reader, Requests, Sender, Session, Slot, Stopper, await_room, has_room,
-    read_frame_until, served, take, unoffer,
+    Client, Opened, Reader, Requests, Sender, Session, Slot, Stopper, read_frame_until, served, take,
+    unoffer, write_all_waiting,
 };
+
+/// A wait of [`write_all_waiting`]'s on a slot's client to make room: as it begins, and as it
+/// ends, how long it took.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wait {
+    Began(std::time::Instant),
+    Ended(std::time::Duration),
+}
 
 /// What carries a slot's messages, each way: a FIFO on Unix (`say`'s, `answer`'s); on
 /// Windows the slot's instance of its list's pipe, which carries both.
