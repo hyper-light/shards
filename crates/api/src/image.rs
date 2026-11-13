@@ -17,18 +17,72 @@
 //! spec asks for it ([`ImageSpec::nesting`], D234), with a deadline for its readiness
 //! ([`ImageSpec::ready_by`]), which the command's `READY=1` moves and
 //! [`ImageGuest::wait_ready`] tells.
+//!
+//! A run's credential grants name credentials by reference ([`ImageSpec::credentials`],
+//! D242); their values are leased just in time by the orchestrator's [`Lessor`] for the run,
+//! as the run's host asks, and every lease it gave is released as the run ends.
 
 use std::path::PathBuf;
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
+mod pool;
 mod session;
 pub mod wire;
 
 pub use wire::{
-    Bound, Channel, ControlAsk, ControlAt, CredentialGrant, Fill, GuestTimes, HostUse, Keep, MemberInfo,
-    MemberKind, MemberReach, Microvm, Narrowing, PlugRefusal, Proto, Publish, Ready, Receiving, RunEnd,
-    Secret, SocketGrant, StartedFrom, Stats, StatsScope, VcpuTime, decide,
+    Bound, Channel, ControlAsk, ControlAt, CredentialGrant, Fill, GuestTimes, HostUse, Keep, LeaseRefusal,
+    MemberInfo, MemberKind, MemberReach, Microvm, Narrowing, PlugRefusal, Proto, Publish, Ready, Receiving,
+    RunEnd, Secret, SocketGrant, StartedFrom, Stats, StatsScope, VcpuTime, decide,
 };
+
+/// A credential's lease, as a run's [`Lessor`] gives it (D242): what its release names it
+/// by, the credential's value, and when the lease ends, on this process's clock.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Leased {
+    /// The lessor's name for the lease, which [`Lessor::release`] is given: never its value.
+    pub lease: String,
+    pub value: Secret,
+    pub until: Instant,
+}
+
+/// What answers a run's credential leases (D242): the orchestrator's, for that run alone,
+/// from its broker. The run's injector asks for a credential's value just in time, by
+/// reference, through the run's host. The run is the one its lessor was given for, its asks
+/// coming on its own channel; its leases are issued to its own key where it has one. Every
+/// lease it gives is released as the run ends, by whatever end.
+pub trait Lessor: Send + Sync {
+    /// Credential `reference`'s value, leased to the run now, or why not, typed. Called on a
+    /// thread of its own, once for each ask, `reference` one of the run's grants. `key` is
+    /// the SHA-256 of the run's own key, where it binds an agent-control endpoint (D252: its
+    /// `ControlAt::vm`, told before any ask): the identity its leases are issued to (D238),
+    /// which its broker alone says is current, refusing another as `KeyReplaced`; none where
+    /// the run has no key, its lessor's run alone asking.
+    fn lease(&self, reference: &str, key: Option<[u8; 32]>) -> Result<Leased, LeaseRefusal>;
+    /// The lease [`lease`](Self::lease) named `lease`, released: the run has ended, or the
+    /// lease was given after it did or ended before it could be passed on. Called once for
+    /// each lease given.
+    fn release(&self, lease: &str);
+}
+
+/// A run's [`Lessor`], as its spec holds it: equal to another where it is the same one, and
+/// shown by name alone.
+#[derive(Clone)]
+pub struct RunLessor(pub Arc<dyn Lessor>);
+
+impl std::fmt::Debug for RunLessor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RunLessor")
+    }
+}
+
+impl PartialEq for RunLessor {
+    fn eq(&self, other: &RunLessor) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for RunLessor {}
 
 /// A member, as the image's Agentfile names it.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -127,6 +181,9 @@ pub struct ImageSpec {
     /// in toward. Empty for a run with none (default deny). An orchestrator keeps or drops
     /// the image's, never adds one.
     pub credentials: Vec<CredentialGrant>,
+    /// What answers the run's credential leases, for this run alone (D242): needed by a run
+    /// with credential grants, which is refused without one; a run with none asks nothing.
+    pub lessor: Option<RunLessor>,
     pub shares: Vec<ImageShare>,
     /// The nesting grant for the run's own command (D234): the run's consent, as
     /// `--security-opt nesting=true` gives it to `run vm`. Given only where the image's
@@ -364,6 +421,42 @@ impl Images for ImageShards {
     }
 }
 
+/// The images the `shards` binary boots, each run on a warm run host of its pool where one
+/// is ready (D253's pools, D26 through shards-api): a run host started ahead of its run, its
+/// microVM restored from its image's template and ready, waiting for the run's request, as
+/// the daemon's warm VMs wait for theirs. A pool is the runs of one microVM, alike in all but
+/// their members' stages, deadline and control ask ([`wire::Request::exemplar`]); each keeps
+/// the largest burst of its runs within one refill window while in use, at least one, and
+/// none once idle past its keep-alive (`shards_api::demand`, the daemon's own rule). Nothing
+/// is warm until a pool's first run, which starts a host of its own, as [`ImageShards`]
+/// would. Dropping it ends every warm host.
+#[derive(Debug)]
+pub struct ImagePools(pool::Pooling<session::ShardsHosts>);
+
+impl ImagePools {
+    /// D26's keep-alive, which the daemon's pools keep: as AWS keeps an idle function, 10
+    /// minutes (Shahrad et al., "Serverless in the Wild", USENIX ATC 2020, §1).
+    pub const KEEP: Duration = crate::demand::KEEP;
+
+    /// Pools that all together keep at most `most` warm run hosts, the orchestrator's bound,
+    /// each pool keeping its hosts `keep` once idle ([`KEEP`](Self::KEEP) is D26's).
+    pub fn new(most: usize, keep: Duration) -> Result<ImagePools, ImageRefusal> {
+        Ok(ImagePools(pool::Pooling::new(session::ShardsHosts, most, keep)?))
+    }
+}
+
+impl Images for ImagePools {
+    fn backend(&self) -> Result<crate::Backend, ImageRefusal> {
+        crate::backend().map_err(no_backend)
+    }
+
+    fn boot(&self, spec: &ImageSpec, patience: Duration) -> Result<Box<dyn ImageGuest>, ImageRefusal> {
+        crate::backend().map_err(no_backend)?;
+        let request = request(spec)?;
+        self.0.boot(spec, &request, patience)
+    }
+}
+
 fn no_backend(r: crate::Refusal) -> ImageRefusal {
     match r {
         crate::Refusal::NoBackend { os, arch } => ImageRefusal::NoBackend { os, arch },
@@ -519,6 +612,14 @@ fn request(spec: &ImageSpec) -> Result<wire::Request, ImageRefusal> {
             toward,
         });
     }
+    // Its grants' values come by lease alone (D242): a run with grants and nothing to lease
+    // them could never fill one.
+    if !credentials.is_empty() && spec.lessor.is_none() {
+        return Err(ImageRefusal::Spec {
+            what: "the run's lessor",
+            why: "a run with credential grants needs a lessor to lease their values".into(),
+        });
+    }
     // The run's agent-control endpoint (D252): its socket grant's directory absolute and plain,
     // as a member's working directory is, refused here, by the run host and by init; its
     // admission one lane and one byte at least (R03: the caller's numbers), and the grant a run's
@@ -602,6 +703,7 @@ mod tests {
             publish: Vec::new(),
             egress: Narrowing::default(),
             credentials: Vec::new(),
+            lessor: None,
             shares: vec![ImageShare {
                 host: std::env::current_dir().unwrap(),
                 at: "/work".into(),
@@ -614,6 +716,21 @@ mod tests {
             control: None,
             gpu_devices: Vec::new(),
         }
+    }
+
+    /// A lessor that leases nothing.
+    struct Leasing;
+
+    impl Lessor for Leasing {
+        fn lease(&self, _: &str, _: Option<[u8; 32]>) -> Result<Leased, LeaseRefusal> {
+            Err(LeaseRefusal::Denied("this test's".into()))
+        }
+
+        fn release(&self, _: &str) {}
+    }
+
+    fn lessor() -> Option<RunLessor> {
+        Some(RunLessor(Arc::new(Leasing)))
     }
 
     /// A spec becomes the run host's request, a variable `KEY=VALUE`.
@@ -656,6 +773,7 @@ mod tests {
             reference: "anthropic/claude-max".into(),
             toward: vec!["API.anthropic.com".into(), "platform.claude.com".into()],
         }];
+        spec.lessor = lessor();
         let r = request(&spec).unwrap();
         assert_eq!(r.credentials.len(), 1);
         assert_eq!(r.credentials[0].reference, "anthropic/claude-max");
@@ -693,6 +811,37 @@ mod tests {
         let mut ok = spec.clone();
         ok.credentials[0].toward = vec!["host.docker.internal".into()];
         assert!(request(&ok).is_ok(), "host.docker.internal was refused");
+    }
+
+    /// Do: ask a run with credential grants and no lessor, with one, and a run with neither
+    /// grants nor lessor, and one with a lessor and no grants. Expect: the first refused by
+    /// field, before anything starts, as its grants could never be filled (D242); the others
+    /// asked as given, a run with no grant asking nothing of its lessor.
+    #[test]
+    fn a_run_with_credential_grants_needs_a_lessor() {
+        let mut granted = spec();
+        granted.credentials = vec![CredentialGrant {
+            reference: "anthropic/claude-max".into(),
+            toward: vec!["api.anthropic.com".into()],
+        }];
+        assert!(matches!(
+            request(&granted),
+            Err(ImageRefusal::Spec {
+                what: "the run's lessor",
+                ..
+            })
+        ));
+        granted.lessor = lessor();
+        assert!(request(&granted).is_ok());
+        assert!(request(&spec()).is_ok());
+        let mut idle = spec();
+        idle.lessor = lessor();
+        assert!(request(&idle).unwrap().credentials.is_empty());
+        // A spec's lessor is the same where it is the same one, and never prints more than
+        // its name.
+        assert_eq!(granted.lessor, granted.clone().lessor);
+        assert_ne!(granted.lessor, lessor());
+        assert_eq!(format!("{:?}", granted.lessor), "Some(RunLessor)");
     }
 
     /// The nesting grant's consent and its deadline (D234) reach the run host as asked:

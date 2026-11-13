@@ -144,7 +144,6 @@ impl Native {
             // RFC8446 uint24 handshake length plus its four-byte header, as Observer.
             handshake_bytes: (1 << 24) - 1 + 4,
             datagram_bytes: managed::DATAGRAM_BYTES,
-            patience: left(input.until),
         };
         let (endpoint, producer, control) =
             Endpoint::bind(&server, owner.fingerprint(), scope, admitted).unwrap();

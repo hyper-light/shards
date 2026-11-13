@@ -1426,15 +1426,7 @@ fn take_signals(reads_terminal: bool, resizes: bool, proxies: bool) -> Result<Op
         if !resizes {
             return Ok(None);
         }
-        // SAFETY: plain sigset operations on a local set, then blocking it in this thread,
-        // which threads started later inherit.
-        let set = unsafe {
-            let mut set: libc::sigset_t = std::mem::zeroed();
-            libc::sigemptyset(&mut set);
-            libc::sigaddset(&mut set, libc::SIGWINCH);
-            libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
-            set
-        };
+        let set = shards_ipc::take_resizes().map_err(|e| format!("taking SIGWINCH: {e}"))?;
         return Ok(Some(Signals {
             set,
             ignored: Vec::new(),
