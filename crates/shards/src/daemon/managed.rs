@@ -642,7 +642,7 @@ fn bind_agent(
 /// What each exec's streams are admitted (D238): an output's record is what one of its
 /// guest's output frames carries at most (`run::CHUNK`), its window that record with its
 /// data frame's head, as a member's is; its stdin's is a member's stdin's, `input`. Their
-/// handshake, datagrams and patience are the connection's, `output`'s as the run's.
+/// handshake and datagrams are the connection's, `output`'s as the run's.
 fn exec_admissions(output: Admitted, input: Admitted) -> io::Result<control::exec::Admissions> {
     let transport = run::CHUNK
         .checked_add(shards_remote::managed::DATA_HEAD)
@@ -1332,14 +1332,12 @@ impl<D: Disk> Daemon<D> {
             transport_bytes: u64::try_from(transport).map_err(io::Error::other)?,
             handshake_bytes: HANDSHAKE_BYTES,
             datagram_bytes: shards_remote::managed::DATAGRAM_BYTES,
-            patience: shards_remote::tls::QUIET,
         };
         let input_admitted = Admitted {
             record_bytes: INPUT_ROOM,
             transport_bytes: u64::try_from(input::TAKEN_BYTES).map_err(io::Error::other)?,
             handshake_bytes: HANDSHAKE_BYTES,
             datagram_bytes: shards_remote::managed::DATAGRAM_BYTES,
-            patience: shards_remote::tls::QUIET,
         };
         // Each stream with where it is served, and its own endpoint where it has one; the run's
         // agent-control endpoint serves them all where the run asked for it. An owner's are its
@@ -2793,7 +2791,7 @@ mod tests {
             member: 0,
             channel: Channel::Stdout,
         };
-        let out = admitted(64, shards_remote::tls::QUIET);
+        let out = admitted(64);
         let (endpoint, served) =
             bind_agent(owner.fingerprint(), &[(scope, out)], &[], exec_admitted()).unwrap();
         let (other, _other_served) =
@@ -2847,9 +2845,9 @@ mod tests {
     fn exec_admitted() -> control::exec::Admissions {
         let input = Admitted {
             transport_bytes: u64::try_from(input::TAKEN_BYTES).unwrap(),
-            ..admitted(INPUT_ROOM, shards_remote::tls::QUIET)
+            ..admitted(INPUT_ROOM)
         };
-        exec_admissions(admitted(64, shards_remote::tls::QUIET), input).unwrap()
+        exec_admissions(admitted(64), input).unwrap()
     }
 
     /// What a run's exec host hands its VM process (`Daemon::launch_exec`): the member's exec,
@@ -2879,7 +2877,7 @@ mod tests {
             member: 0,
             channel: Channel::Stdout,
         };
-        let out = admitted(64, shards_remote::tls::QUIET);
+        let out = admitted(64);
         let admissions = exec_admitted();
         let (endpoint, served) = bind_agent(owner.fingerprint(), &[(scope, out)], &[], admissions).unwrap();
         let (vm, address) = (endpoint.fingerprint, endpoint.address);
@@ -3074,7 +3072,6 @@ mod tests {
             transport_bytes: input::TAKEN_BYTES as u64,
             handshake_bytes: HANDSHAKE_BYTES,
             datagram_bytes: shards_remote::managed::DATAGRAM_BYTES,
-            patience: PATIENCE,
         };
         let (endpoint, relay, control) =
             input::Endpoint::bind(&server, server.fingerprint(), scope, admitted).unwrap();
@@ -3374,13 +3371,12 @@ mod tests {
     /// Test patience for the real transport below, as the daemon's own tests wait.
     const PATIENCE: std::time::Duration = std::time::Duration::from_secs(20);
 
-    fn admitted(capacity: usize, patience: std::time::Duration) -> Admitted {
+    fn admitted(capacity: usize) -> Admitted {
         Admitted {
             record_bytes: capacity,
             transport_bytes: u64::try_from(capacity + shards_remote::managed::DATA_HEAD).unwrap(),
             handshake_bytes: HANDSHAKE_BYTES,
             datagram_bytes: shards_remote::managed::DATAGRAM_BYTES,
-            patience,
         }
     }
 
@@ -3397,13 +3393,7 @@ mod tests {
             member: 0,
             channel,
         };
-        let (endpoint, producer, control) = Endpoint::bind(
-            server,
-            owner,
-            scope,
-            admitted(capacity, shards_remote::tls::QUIET),
-        )
-        .unwrap();
+        let (endpoint, producer, control) = Endpoint::bind(server, owner, scope, admitted(capacity)).unwrap();
         (scope, endpoint, producer, control)
     }
 
@@ -3787,12 +3777,8 @@ mod tests {
             Subscriber {
                 scope: stdout.scope,
                 config: Some(
-                    shards_remote::managed::client_config(
-                        &owner,
-                        server.fingerprint(),
-                        admitted(capacity, PATIENCE),
-                    )
-                    .unwrap(),
+                    shards_remote::managed::client_config(&owner, server.fingerprint(), admitted(capacity))
+                        .unwrap(),
                 ),
                 pending: Vec::new(),
                 at: None,
@@ -3802,7 +3788,6 @@ mod tests {
                 connections: 1,
                 command_slots: 1,
                 queued_datagram_bytes: shards_remote::managed::DATAGRAM_BYTES,
-                handshake_patience: PATIENCE,
             },
         )
         .unwrap();

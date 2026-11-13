@@ -47,16 +47,15 @@ pub const UNREACHED_BYTES: usize = FRAME_HEAD + size_of::<u32>();
 pub const HANDSHAKE_MOST: usize = (1 << 24) - 1 + 4;
 
 /// The link of a connection that carries socket lanes and no member stream, which would set it
-/// otherwise: its handshake within TLS 1.3's largest message ([`HANDSHAKE_MOST`]), its datagrams
-/// D180's ([`managed::DATAGRAM_BYTES`]), and its patience D180's own bound of silence
-/// (`tls::QUIET`, RFC 1122 §4.2.3.5's R2), as the daemon's endpoints take them.
+/// otherwise: its handshake within TLS 1.3's largest message ([`HANDSHAKE_MOST`]) and its
+/// datagrams D180's ([`managed::DATAGRAM_BYTES`]), as the daemon's endpoints take them; its
+/// liveness judged at use, as D180's links are.
 pub(super) fn link() -> managed::Admitted {
     managed::Admitted {
         record_bytes: 0,
         transport_bytes: 0,
         handshake_bytes: HANDSHAKE_MOST,
         datagram_bytes: managed::DATAGRAM_BYTES,
-        patience: crate::tls::QUIET,
     }
 }
 
@@ -1161,7 +1160,6 @@ mod tests {
             transport_bytes: 64 * 1024,
             handshake_bytes: super::HANDSHAKE_MOST,
             datagram_bytes: crate::managed::DATAGRAM_BYTES,
-            patience: crate::tls::QUIET,
         };
         let (endpoint, served) = Endpoint::bind(
             &vm,
