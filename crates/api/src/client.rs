@@ -203,15 +203,14 @@ fn probe_gpu(
 
 /// How a guest taken back by [`Guests::attach`] ends where this client did not stop it: its
 /// VM process is another's child, whose exit status is its parent's alone.
-#[cfg(unix)]
 const NOT_ITS_PARENT: &str = "it was taken back, its exit status its parent's, not this client's";
 
 /// The guest `identity` names, taken back: its VM process held by its pid and start
 /// (`taken::Held`, from before its start is read), watched to its end on a thread of its own,
 /// and dialed at its socket. Booted by the client that lost it, it is ready; it has no output
 /// here (its first client read it); and its socket directory is removed as it drops, where
-/// it is one this client makes (`PrivateDir::adopt`).
-#[cfg(unix)]
+/// it is one this client makes (`PrivateDir::adopt`). On Windows its process is the `shards`
+/// that booted the VM, which a Job holds it in and ends with it (D141): ended, it ends its VM.
 fn take_back(identity: &Identity, spec: &GuestSpec) -> Result<ShardsGuest, Refusal> {
     let process =
         crate::taken::Held::find(identity.pid, identity.started).map_err(|failure| Refusal::Process {
@@ -270,25 +269,12 @@ fn take_back(identity: &Identity, spec: &GuestSpec) -> Result<ShardsGuest, Refus
     Ok(ShardsGuest {
         ports: spec.ports.clone(),
         vsock: identity.vsock.clone(),
-        pid: identity.pid,
-        taken: Some(Taken {
+        process: Process::Taken(Taken {
             identity: identity.clone(),
             process,
         }),
         shared,
         _dir: PrivateDir::adopt(&identity.vsock),
-    })
-}
-
-/// On Windows a guest's VM is in a job that ends with the process that booted it (D141), so
-/// no guest outlives its client to be taken back.
-#[cfg(windows)]
-fn take_back(identity: &Identity, _spec: &GuestSpec) -> Result<ShardsGuest, Refusal> {
-    Err(Refusal::Gone {
-        pid: identity.pid,
-        why: "on Windows a guest's VM ends with the process that booted it (D141): none outlives \
-              its client to be taken back"
-            .into(),
     })
 }
 
@@ -407,9 +393,11 @@ fn launch(
         report: Mutex::new(None),
     });
     #[cfg(unix)]
-    let pid = child.id();
+    let process = Process::Booted(child.id());
     // Shared: the watcher, which outlives this call, reaps it; on Windows the guest kills it too.
     let child = Arc::new(Mutex::new(child));
+    #[cfg(windows)]
+    let process = Process::Booted(child.clone());
     let started = start_threads(&shared, &child, output, writer);
     if let Err(e) = started {
         let mut child = lock(&child);
@@ -420,12 +408,7 @@ fn launch(
     Ok(ShardsGuest {
         ports: spec.ports.clone(),
         vsock,
-        #[cfg(unix)]
-        pid,
-        #[cfg(windows)]
-        child,
-        #[cfg(unix)]
-        taken: None,
+        process,
         shared,
         _dir: Some(dir),
     })
@@ -721,7 +704,6 @@ impl PrivateDir {
     }
 }
 
-#[cfg(unix)]
 impl PrivateDir {
     /// The directory a guest's socket `vsock` is in, where it is one this client makes (`new`'s
     /// name, in `new`'s directory): a guest taken back removes it as it drops, as the guest it
@@ -1018,22 +1000,27 @@ fn finish_drain(shared: &Shared, mut writer: io::PipeWriter) -> MutexGuard<'_, T
 struct ShardsGuest {
     ports: Vec<u32>,
     vsock: PathBuf,
-    #[cfg(unix)]
-    pid: u32,
-    /// Ended through it on Windows, which sends a process no signal; the watcher reaps it.
-    #[cfg(windows)]
-    child: Arc<Mutex<Child>>,
-    /// What it was taken back by, where it was: its VM process is not this one's child.
-    #[cfg(unix)]
-    taken: Option<Taken>,
+    process: Process,
     shared: Arc<Shared>,
     /// Its socket's directory, removed as it drops: none where a guest taken back was given
     /// a socket in a directory this client does not make.
     _dir: Option<PrivateDir>,
 }
 
+/// A guest's VM process, as this client has it.
+enum Process {
+    /// Booted here, this process's child, by its pid: its watcher reaps it.
+    #[cfg(unix)]
+    Booted(u32),
+    /// Booted here, this process's child: ended through it, as Windows sends a process no
+    /// signal; its watcher reaps it.
+    #[cfg(windows)]
+    Booted(Arc<Mutex<Child>>),
+    /// Taken back, by what it was taken back by: another's child.
+    Taken(Taken),
+}
+
 /// A guest taken back: the identity it was taken back by, and its VM process, held.
-#[cfg(unix)]
 struct Taken {
     identity: Identity,
     process: Arc<crate::taken::Held>,
@@ -1090,57 +1077,24 @@ impl ShardsGuest {
         if state.exited {
             return;
         }
-        #[cfg(unix)]
-        if let Some(taken) = &self.taken {
-            taken.process.kill();
-            return;
-        }
-        #[cfg(unix)]
-        if let Ok(pid) = libc::pid_t::try_from(self.pid) {
-            // SAFETY: kill(2) of our own child, unreaped while `exited` is false.
-            unsafe { libc::kill(pid, libc::SIGKILL) };
-        }
-        // Windows sends a process no signal: shards' daemon ends a VM's process as its
-        // Job's (shards_ipc `Child::kill`), and `run --kernel`'s VM, in a Job that ends with
-        // it (cli/mod.rs `vm`), ends as it does.
-        #[cfg(windows)]
-        {
-            let _ = lock(&self.child).kill();
+        match &self.process {
+            Process::Taken(taken) => taken.process.kill(),
+            #[cfg(unix)]
+            Process::Booted(pid) => {
+                if let Ok(pid) = libc::pid_t::try_from(*pid) {
+                    // SAFETY: kill(2) of our own child, unreaped while `exited` is false.
+                    unsafe { libc::kill(pid, libc::SIGKILL) };
+                }
+            }
+            // Windows sends a process no signal: shards' daemon ends a VM's process as its
+            // Job's (shards_ipc `Child::kill`), and `run --kernel`'s VM, in a Job that ends with
+            // it (cli/mod.rs `vm`), ends as it does.
+            #[cfg(windows)]
+            Process::Booted(child) => {
+                let _ = lock(child).kill();
+            }
         }
     }
-}
-
-/// When `child` was created: GetProcessTimes' creation time, a FILETIME (100 ns since
-/// 1601), as one number.
-#[cfg(windows)]
-fn created(child: &Child) -> io::Result<u64> {
-    use std::os::windows::io::AsRawHandle as _;
-    created_handle(child.as_raw_handle())
-}
-
-#[cfg(windows)]
-fn created_handle(handle: std::os::windows::io::RawHandle) -> io::Result<u64> {
-    use windows_sys::Win32::Foundation::FILETIME;
-    use windows_sys::Win32::System::Threading::GetProcessTimes;
-    let zero = FILETIME {
-        dwLowDateTime: 0,
-        dwHighDateTime: 0,
-    };
-    let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
-    // SAFETY: the caller holds this process handle open; FILETIMEs are ours.
-    let ok = unsafe {
-        GetProcessTimes(
-            handle,
-            &raw mut created,
-            &raw mut exited,
-            &raw mut kernel,
-            &raw mut user,
-        )
-    };
-    if ok == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok((u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime))
 }
 
 /// `what`, with what shards said last where it said anything.
@@ -1507,7 +1461,7 @@ mod borrowed_windows {
             // SAFETY: successful OpenProcess transfers its sole handle ownership here;
             // all return paths close it, without a watcher or a Guest lifetime owner.
             let held = Self(unsafe { OwnedHandle::from_raw_handle(handle) });
-            let observed = super::created_handle(held.0.as_raw_handle())
+            let observed = crate::taken::created(held.0.as_raw_handle())
                 .map_err(|source| failure(ProcessOperation::GetProcessTimes, source))?;
             if observed != expected {
                 return Err(ProcessFailure::DifferentStart { observed });
@@ -2190,20 +2144,21 @@ impl Guest for ShardsGuest {
     /// guest taken back, the identity it was taken back by. One that has ended is refused as
     /// `gone` says: its pid may name another process since.
     fn identity(&self) -> Result<Identity, Refusal> {
-        #[cfg(unix)]
-        if let Some(taken) = &self.taken {
-            return Ok(taken.identity.clone());
-        }
+        let booted = match &self.process {
+            Process::Taken(taken) => return Ok(taken.identity.clone()),
+            Process::Booted(booted) => booted,
+        };
         let mut state = lock(&self.shared.state);
         if let Some(refusal) = self.gone(&mut state) {
             return Err(refusal);
         }
         #[cfg(unix)]
-        let (pid, started) = (self.pid, crate::taken::started(self.pid));
+        let (pid, started) = (*booted, crate::taken::started(*booted));
         #[cfg(windows)]
         let (pid, started) = {
-            let child = lock(&self.child);
-            (child.id(), created(&child))
+            use std::os::windows::io::AsRawHandle as _;
+            let child = lock(booted);
+            (child.id(), crate::taken::created(child.as_raw_handle()))
         };
         drop(state);
         Ok(Identity {
@@ -3269,6 +3224,15 @@ mod tests {
         assert_eq!(guest.wait_for(Duration::MAX).unwrap(), Some(End::Stopped));
     }
 
+    /// The pid of a guest booted here.
+    #[cfg(unix)]
+    fn booted_pid(guest: &ShardsGuest) -> u32 {
+        match guest.process {
+            Process::Booted(pid) => pid,
+            Process::Taken(_) => panic!("a guest taken back"),
+        }
+    }
+
     /// Whether `pid` names no process once `shared`'s watcher says it has exited: kill -0
     /// names a zombie as a process, and a reaped pid as none.
     #[cfg(unix)]
@@ -3294,7 +3258,7 @@ mod tests {
     #[test]
     fn a_dropped_guest_leaves_no_zombie() {
         let (_dir, guest, _) = listening_after(0);
-        let (pid, shared) = (guest.pid, guest.shared.clone());
+        let (pid, shared) = (booted_pid(&guest), guest.shared.clone());
         drop(guest);
         assert!(
             reaped_once_exited(pid, &shared),
@@ -3308,7 +3272,7 @@ mod tests {
             ..spec()
         })
         .unwrap();
-        let (pid, shared) = (guest.pid, guest.shared.clone());
+        let (pid, shared) = (booted_pid(&guest), guest.shared.clone());
         assert!(
             reaped_once_exited(pid, &shared),
             "pid {pid}, exited unasked, is still a process (a zombie)"
@@ -3568,7 +3532,10 @@ mod tests {
     fn a_guest_names_itself_by_pid_start_and_socket() {
         let (_dir, guest, _) = echoing();
         let identity = guest.identity().unwrap();
-        assert_eq!((identity.pid, &identity.vsock), (guest.pid, &guest.vsock));
+        assert_eq!(
+            (identity.pid, &identity.vsock),
+            (booted_pid(&guest), &guest.vsock)
+        );
         assert_eq!(echoed(&guest), b"back");
         assert_eq!(guest.identity().unwrap(), identity);
         guest.stop().unwrap();
@@ -3770,21 +3737,107 @@ mod tests {
         assert!(!socket_dir.exists(), "{} is left", socket_dir.display());
     }
 
-    /// On Windows a guest's VM ends with the process that booted it (D141), so none outlives
-    /// its client to be taken back: attach is refused `Gone` (D215; Hex's proposal).
+    /// Set in the process `waiting` starts: it waits until it is ended.
+    #[cfg(windows)]
+    const WAITER: &str = "SHARDS_API_WAITER";
+
+    /// The process `waiting` starts, a stand-in for the `shards` that booted a guest's VM on
+    /// Windows: it waits until it is ended.
     #[cfg(windows)]
     #[test]
-    fn attach_is_refused_gone_on_windows() {
+    #[ignore = "a child of the Windows take-back tests"]
+    fn child_a_process_that_waits() {
+        if std::env::var_os(WAITER).is_some() {
+            loop {
+                std::thread::park();
+            }
+        }
+    }
+
+    /// A process that waits until it is ended, this process's child, and its identity, as a
+    /// client that lost its guest would have it: its pid, its start and a socket in a
+    /// directory `PrivateDir::new` made, which nothing removes until a guest taken back drops.
+    #[cfg(windows)]
+    fn waiting() -> (Child, Identity) {
+        let child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "client::tests::child_a_process_that_waits",
+                "--ignored",
+                "--test-threads=1",
+            ])
+            .env(WAITER, "1")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let dir = PrivateDir::new().unwrap();
+        let vsock = dir.0.join("v");
+        std::mem::forget(dir);
         let identity = Identity {
-            pid: std::process::id(),
-            started: 1,
-            vsock: "v".into(),
+            pid: child.id(),
+            started: crate::taken::started(child.id()).unwrap(),
+            vsock,
         };
-        let refused = Shards.attach(&identity, &spec());
+        (child, identity)
+    }
+
+    /// On Windows a guest's process, the `shards` that booted its VM and holds it in a Job
+    /// that ends with it (D141), outlives a client that loses it: it is taken back by its
+    /// identity as on Unix, held by a handle of its own, an identity whose start differs
+    /// refused with the observed start, stopped through that handle as `Stopped`, then
+    /// gone; and its socket directory, one its first client made, goes as it drops (D215;
+    /// Hex's proposal).
+    #[cfg(windows)]
+    #[test]
+    fn attach_takes_back_a_guest_on_windows() {
+        let (mut child, identity) = waiting();
+        let other = Identity {
+            started: identity.started.wrapping_add(1),
+            ..identity.clone()
+        };
         assert!(
-            matches!(refused, Err(Refusal::Gone { .. })),
-            "{:?}",
-            refused.err()
+            matches!(Shards.attach(&other, &spec()), Err(Refusal::Process {
+                pid, expected_started, failure: crate::ProcessFailure::DifferentStart { observed }
+            }) if pid == other.pid && expected_started == other.started && observed == identity.started),
+            "another start"
         );
+        let back = Shards.attach(&identity, &spec()).unwrap();
+        assert_eq!(back.identity().unwrap(), identity);
+        back.stop().unwrap();
+        assert_eq!(back.wait_for(Duration::MAX).unwrap(), Some(End::Stopped));
+        assert!(child.wait().is_ok_and(|status| !status.success()));
+        // This test's own handle keeps the process object, so it is found, and ended.
+        let again = Shards.attach(&identity, &spec());
+        assert!(
+            matches!(again, Err(Refusal::Process {
+                pid, expected_started, failure: crate::ProcessFailure::Exited
+            }) if pid == identity.pid && expected_started == identity.started),
+            "{:?}",
+            again.err()
+        );
+        let socket_dir = identity.vsock.parent().unwrap().to_path_buf();
+        assert!(socket_dir.exists());
+        drop(back);
+        assert!(!socket_dir.exists(), "{} is left", socket_dir.display());
+    }
+
+    /// A guest taken back on Windows is its taker's until it drops, which ends it; one that
+    /// ends by itself ends `Failed`, as its exit status is its parent's alone (D215).
+    #[cfg(windows)]
+    #[test]
+    fn a_guest_taken_back_on_windows_ends_as_it_drops_or_by_itself() {
+        let (mut child, identity) = waiting();
+        drop(Shards.attach(&identity, &spec()).unwrap());
+        assert!(child.wait().is_ok_and(|status| !status.success()));
+        let (mut child, identity) = waiting();
+        let back = Shards.attach(&identity, &spec()).unwrap();
+        child.kill().unwrap();
+        let end = back.wait_for(Duration::MAX).unwrap();
+        assert!(
+            matches!(&end, Some(End::Failed(why)) if why.contains("parent")),
+            "{end:?}"
+        );
+        let _ = child.wait();
     }
 }
