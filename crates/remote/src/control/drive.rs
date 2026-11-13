@@ -1575,7 +1575,7 @@ fn frame_of(bytes: &[u8], carries: Carries, heard: bool) -> Result<Option<(Came,
             Ok(None) => Ok(None),
             Ok(Some((Ok(()), n))) => Ok(Some((Came::Heard(Heard::Connected(0)), n))),
             Ok(Some((Err(errno), n))) => Ok(Some((Came::Heard(Heard::Fault(Fault::Unreached(errno))), n))),
-            Err(()) => Err(Broken::Protocol),
+            Err(unix::NotAnAnswer) => Err(Broken::Protocol),
         },
         Carries::Socket(_) => Err(Broken::Protocol),
         // The endpoint's report, once: nothing else is said on the control lane yet.

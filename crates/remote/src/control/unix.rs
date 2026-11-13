@@ -133,11 +133,18 @@ pub fn connected() -> [u8; CONNECTED_BYTES] {
     [Tag::Connected as u8, 0, 0, 0, 0]
 }
 
-/// What the endpoint's answer at the front of `bytes` says, and its length: connected, or the
-/// errno its host's connect failed with; none until it has come whole. Anything else is no
-/// answer of a socket lane's.
-pub fn read_answer(bytes: &[u8]) -> Result<Option<(Result<(), NonZeroU16>, usize)>, ()> {
-    let Some((tag, len)) = frame::peek(bytes).map_err(|_| ())? else {
+/// A socket lane's answer: connected, or the errno its host's connect failed with.
+pub type Answer = Result<(), NonZeroU16>;
+
+/// A frame that is no answer of a socket lane's: another tag, or a length or errno no answer
+/// has.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NotAnAnswer;
+
+/// What the endpoint's answer at the front of `bytes` says, and its length; none until it has
+/// come whole.
+pub fn read_answer(bytes: &[u8]) -> Result<Option<(Answer, usize)>, NotAnAnswer> {
+    let Some((tag, len)) = frame::peek(bytes).map_err(|_| NotAnAnswer)? else {
         return Ok(None);
     };
     match (tag, len) {
@@ -146,11 +153,14 @@ pub fn read_answer(bytes: &[u8]) -> Result<Option<(Result<(), NonZeroU16>, usize
             let Some(errno) = bytes.get(FRAME_HEAD..UNREACHED_BYTES) else {
                 return Ok(None);
             };
-            let errno = u32::from_be_bytes(errno.try_into().map_err(|_| ())?);
-            let errno = u16::try_from(errno).ok().and_then(NonZeroU16::new).ok_or(())?;
+            let errno = u32::from_be_bytes(errno.try_into().map_err(|_| NotAnAnswer)?);
+            let errno = u16::try_from(errno)
+                .ok()
+                .and_then(NonZeroU16::new)
+                .ok_or(NotAnAnswer)?;
             Ok(Some((Err(errno), UNREACHED_BYTES)))
         }
-        _ => Err(()),
+        _ => Err(NotAnAnswer),
     }
 }
 
@@ -573,10 +583,10 @@ impl super::Lanes {
                 .is_some_and(|l| matches!(l.stage, Stage::Carrying(_)));
             if carried {
                 self.socket_said(io, at);
-                if self.sockets.lanes.len() == before {
-                    if let Some((conn, stream)) = self.sockets.lanes.get(at).map(|l| (l.conn, l.stream)) {
-                        self.read_socket(io, conn, stream);
-                    }
+                if self.sockets.lanes.len() == before
+                    && let Some((conn, stream)) = self.sockets.lanes.get(at).map(|l| (l.conn, l.stream))
+                {
+                    self.read_socket(io, conn, stream);
                 }
             }
             if self.sockets.lanes.len() == before {
@@ -1200,8 +1210,11 @@ mod tests {
             Ok(Some((Err(enoent), super::UNREACHED_BYTES)))
         );
         assert_eq!(super::read_answer(&super::unreached(enoent)[..6]), Ok(None));
-        assert_eq!(super::read_answer(&[40, 0, 0, 0, 1, 0]), Err(()));
-        assert_eq!(super::read_answer(&[41, 0, 0, 0, 4, 0, 0, 0, 0]), Err(()));
+        assert_eq!(super::read_answer(&[40, 0, 0, 0, 1, 0]), Err(super::NotAnAnswer));
+        assert_eq!(
+            super::read_answer(&[41, 0, 0, 0, 4, 0, 0, 0, 0]),
+            Err(super::NotAnAnswer)
+        );
         assert!(Admission { lanes: 0, window: 1 }.check().is_err());
         assert!(Admission { lanes: 1, window: 0 }.check().is_err());
         let (streams, receive, send) = super::added(admission(2)).unwrap();

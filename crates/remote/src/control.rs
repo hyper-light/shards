@@ -1466,6 +1466,7 @@ mod tests {
                     mut inputs,
                     revoke,
                     execs: starts,
+                    sockets: _,
                 } = served;
                 let (relay, control) = inputs.pop().unwrap();
                 let input = Arc::new(control);
