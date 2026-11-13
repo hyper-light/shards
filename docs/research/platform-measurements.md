@@ -23267,12 +23267,18 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
     each slowest past the look before: it fits a builder's VM as it fits the daemon's.
   - A zombie's CPU is read before it is reaped (progress.rs), so an end teaches its kind
     only if its process is watched without reaping: `netproc::ended_within` reaps.
+  - On macOS waitid(2) says a child has ended that has not (PM M442, `Child::try_wait`'s
+    note). Run on the merged tree, a stopped stand-in was so taken for ended past its first
+    look: its kind would have learned an end that had not come, and its reap waited on it
+    for an hour (r158, its test thread sampled in `wait4`). The end is the kernel's own word
+    of it alone (`Poller::add_exit`: kqueue's NOTE_EXIT, Linux's pidfd), never waitid's.
   - A frame begun by the guest is written whole (init's `send`), so a readiness wait, then
     a whole frame's read, waits on no clock.
 - **Decision** (D34's "Its end follows its VM"; D133).
   - `ask_needed` waits for `NEEDED` past a step's frames, woken by its connection's
-    readiness; `follow_to_end` waits for the VM's exit, woken by it (`exits_by`:
-    `Poller::add_exit`, not reaped; Windows, its handle, rounded up to whole milliseconds).
+    readiness; `follow_to_end` waits for the VM's exit, woken by its kernel's word of it
+    (`exits_by`: `Poller::add_exit`, not reaped; Windows, its handle, rounded up to whole
+    milliseconds), never waitid(2)'s; one whose end cannot be watched is reaped as it lives.
     Both follow the VM with the judge, each kind its own `Record` in the process
     (`NEEDED`, `ENDED`): cold, liveness alone; once seen, a look each slowest past the look
     before, and the answer given up on, or the VM killed (`VmEnd::Stalled`, logged), at a

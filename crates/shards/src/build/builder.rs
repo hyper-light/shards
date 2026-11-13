@@ -1435,11 +1435,8 @@ enum VmEnd {
 fn follow_to_end(vm: &shards_ipc::Child, record: &Record) -> VmEnd {
     let mut follow = following(vm, record);
     loop {
-        let Some(due) = follow.as_ref().and_then(Follow::due) else {
-            let _ = vm.ended();
-            break;
-        };
-        if exits_by(vm, due) {
+        // Until its next look; without end while it follows its liveness alone.
+        if exits_by(vm, follow.as_ref().and_then(Follow::due)) {
             break;
         }
         match follow.as_mut().map(Follow::look) {
@@ -1460,10 +1457,14 @@ fn follow_to_end(vm: &shards_ipc::Child, record: &Record) -> VmEnd {
     VmEnd::Exited
 }
 
-/// Whether `vm` ends by `by`, woken by its end (`Poller::add_exit`), not reaped, so that its
-/// CPU can still be read; one whose end cannot be watched is waited for as it lives.
+/// Whether `vm` ends by `by` (none: whenever it does), by its kernel's own word of its exit
+/// (`Poller::add_exit`: kqueue's NOTE_EXIT, Linux's pidfd), not reaped, so that its CPU can
+/// still be read. Never waitid(2)'s: on macOS it says a child has ended that has not (PM
+/// M442), which took a stopped stand-in here for ended, its kind taught an end that had not
+/// come, and its reap then waited on for ever. One whose end cannot be watched is waited for
+/// and reaped as it lives, its kind taught nothing.
 #[cfg(unix)]
-fn exits_by(vm: &shards_ipc::Child, by: Instant) -> bool {
+fn exits_by(vm: &shards_ipc::Child, by: Option<Instant>) -> bool {
     let watched = shards_vmm::platform::Poller::new()
         .and_then(|poller| poller.add_exit(vm.id(), 0).map(|watch| (poller, watch)));
     match watched {
@@ -1471,27 +1472,31 @@ fn exits_by(vm: &shards_ipc::Child, by: Instant) -> bool {
             let mut ready = Vec::new();
             // A signal's interruption is an empty wait: until its end, or `by`.
             while ready.is_empty() {
-                let left = by.saturating_duration_since(Instant::now());
-                if left.is_zero() || poller.wait(&mut ready, Some(left)).is_err() {
+                let left = by.map(|by| by.saturating_duration_since(Instant::now()));
+                if left.is_some_and(|left| left.is_zero()) || poller.wait(&mut ready, left).is_err() {
                     break;
                 }
             }
+            !ready.is_empty()
         }
-        // Ended already (macOS refuses to watch it then).
-        Err(e) if e.raw_os_error() == Some(libc::ESRCH) => {}
+        // Ended already, a zombie (macOS refuses to watch it then).
+        Err(e) if e.raw_os_error() == Some(libc::ESRCH) => true,
         Err(_) => {
-            let _ = vm.ended();
+            let _ = vm.wait();
+            true
         }
     }
-    vm.has_ended()
 }
 
-/// Whether `vm` ends by `by` (Windows: its process's handle), in whole milliseconds rounded
-/// up, so that a wait never ends before it.
+/// Whether `vm` ends by `by` (none: whenever it does; Windows: its process's handle), in
+/// whole milliseconds rounded up, so that a wait never ends before it.
 #[cfg(windows)]
-fn exits_by(vm: &shards_ipc::Child, by: Instant) -> bool {
-    let left = by.saturating_duration_since(Instant::now());
-    vm.ended_within(u32::try_from(left.as_micros().div_ceil(1000)).unwrap_or(u32::MAX))
+fn exits_by(vm: &shards_ipc::Child, by: Option<Instant>) -> bool {
+    let ms = by.map_or(u32::MAX, |by| {
+        let left = by.saturating_duration_since(Instant::now());
+        u32::try_from(left.as_micros().div_ceil(1000)).unwrap_or(u32::MAX - 1)
+    });
+    vm.ended_within(ms)
 }
 
 impl Drop for Builder {
