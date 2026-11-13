@@ -1224,7 +1224,7 @@ mod hosted {
         )
         .map_err(no(Cause::Boot))?;
         let points: Vec<crate::volumes::MountPoint> = points.into_iter().map(|(p, _)| p).collect();
-        let made = points
+        let made: Vec<String> = points
             .iter()
             .filter(|p| p.kind == "volume" && store.get(&p.name).is_some_and(|v| v.anonymous))
             .map(|p| p.name.clone())

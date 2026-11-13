@@ -105,7 +105,7 @@ enum Ask<W> {
     Take {
         key: Key,
         host: HostOf,
-        exemplar: wire::Request,
+        exemplar: Box<wire::Request>,
         reply: mpsc::Sender<Option<W>>,
     },
     /// A host of `key`'s started warm, `took` from its start to its readiness; or why not.
@@ -119,6 +119,9 @@ enum Ask<W> {
     Ended { key: Key },
     /// The pools' owner is gone: every host ends.
     Stop,
+    /// How many warm hosts the pools hold ready: a test's view of them.
+    #[cfg(test)]
+    Ready { reply: mpsc::Sender<usize> },
 }
 
 /// One microVM's pool.
@@ -297,7 +300,7 @@ fn serve<H: Hosts>(mut pools: Pools<H>, asks: mpsc::Receiver<Ask<H::Warm>>) {
                 exemplar,
                 reply,
             }) => {
-                let warm = pools.take(key, host, exemplar, now);
+                let warm = pools.take(key, host, *exemplar, now);
                 // Its asker gone: the host ends as its value drops.
                 let _ = reply.send(warm);
             }
@@ -306,6 +309,10 @@ fn serve<H: Hosts>(mut pools: Pools<H>, asks: mpsc::Receiver<Ask<H::Warm>>) {
             Some(Ask::Stop) => {
                 pools.stop();
                 return;
+            }
+            #[cfg(test)]
+            Some(Ask::Ready { reply }) => {
+                let _ = reply.send(pools.pools.values().map(|p| p.ready.len()).sum());
             }
         }
         pools.expire(Instant::now());
@@ -375,7 +382,7 @@ impl<H: Hosts> Pooling<H> {
         let asked = self.asks.send(Ask::Take {
             key: key.clone(),
             host,
-            exemplar,
+            exemplar: Box::new(exemplar),
             reply,
         });
         let warm = asked.ok().and_then(|()| warm.recv().ok()).flatten();
@@ -395,6 +402,16 @@ impl<H: Hosts> Pooling<H> {
                 Err(refused)
             }
         }
+    }
+}
+
+#[cfg(test)]
+impl<H: Hosts> Pooling<H> {
+    /// How many warm hosts its pools hold ready, as their thread holds them now.
+    fn ready(&self) -> usize {
+        let (reply, ready) = mpsc::channel();
+        let _ = self.asks.send(Ask::Ready { reply });
+        ready.recv().unwrap_or(0)
     }
 }
 
@@ -789,6 +806,7 @@ mod tests {
         let pools = Pooling::new(hosted.clone(), 4, KEEP_TEST).unwrap();
         let first = pools.boot(&spec(), &request(1, Some(5)), PATIENCE).unwrap();
         hosted.until("one warm ahead of the next run", |l| l.fresh == 1 && l.warm == 1);
+        until_ready(&pools, 1);
         let next = pools.boot(&spec(), &request(1, Some(9)), PATIENCE).unwrap();
         assert_eq!(next.started_from(), wire::StartedFrom::Warm);
         hosted.until("the warm one taken, another started", |l| {
@@ -811,6 +829,7 @@ mod tests {
         let pools = Pooling::new(hosted.clone(), 4, KEEP_TEST).unwrap();
         drop(pools.boot(&spec(), &request(1, None), PATIENCE).unwrap());
         hosted.until("one warm", |l| l.warm == 1);
+        until_ready(&pools, 1);
         hosted.tell(|l| {
             l.unfit = true;
             l.failing = true;
@@ -863,6 +882,19 @@ mod tests {
         drop(run);
         hosted.until("its warm host ended past its keep-alive", |l| l.warm == 0);
         drop(pools);
+    }
+
+    /// Waits until `pools` hold `ready` warm hosts ready, as their thread holds them: a host
+    /// warm is its pool's only once its thread has taken it in, after the host's own word.
+    fn until_ready(pools: &Pooling<Hosted>, ready: usize) {
+        let deadline = Instant::now() + PATIENCE;
+        while pools.ready() != ready {
+            assert!(
+                Instant::now() < deadline,
+                "{ready} warm hosts ready within {PATIENCE:?}"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
 
     /// A keep-alive past any test's longest step: a test's input, no orchestrator's.
