@@ -22942,6 +22942,14 @@ running a Vulkan program 30 times; the seven-target lint.
 **What would falsify it.** A driver whose device UUIDs change within a boot (then rejoin per
 context); GPUs Vulkan cannot tell apart by UUID.
 
+**Review (plan step 2), GPU.** docs/research/measurements/hex-upstream-v1/review-gpu.md: each
+commit read against R01–R16. Fixed (d7c9938ec, d27cd59b0): a receipt's count bounded by its
+bytes before anything is reserved for it; restore's own valued flags in the VM-flag grammar
+(`spec::RESTORE_VALUED`), so that a value is no flag there; the held driver in `Venus`'s
+`Send` safety; `Properties`' size checked as it compiles. Owed to ROOT: the figure's
+derivation above, selection refusals typed across the VM process's boundary, and the real-GPU
+runs.
+
 ### D233. A client that contains its own VM processes launches them through its native owner (built; real-VM validation owed)
 
 **Why.** shards-api's client spawns the VM process (D215). A client that must contain every

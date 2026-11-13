@@ -121,7 +121,8 @@ fn a_spec_decodes_with_one_allocation_per_list_and_string() {
 /// D232: a GPU probe receipt reserves for no more devices than its own bytes hold lines of,
 /// each at least its Vulkan UUID's 32 hex digits and its end. One that says it has
 /// `MAX_PHYSICAL_GPUS` devices and holds none is refused before any is reserved for, where
-/// the parser reserved for every one it said (about 22 MB) and refused it a line later.
+/// the parser reserved for every one it said (22,020,096 bytes on macOS arm64, review-gpu.md)
+/// and refused it a line later.
 #[test]
 fn a_gpu_receipt_reserves_for_no_device_its_bytes_cannot_hold() {
     use shards_abi::gpu::{GpuProbe, MAX_PHYSICAL_GPUS, ResolvedGpu};
