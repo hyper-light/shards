@@ -247,13 +247,43 @@ manual runs.
    where the Unix spawn and reap paths run without grants.
 6. **Unverified, no host:** WHP arm64.
 
-## Findings outside this step's scope
+## Cured (goal 52, after the fold)
 
-- `Builder::start`: where the builder does not boot after its launch (its boot patience passes,
-  or it ends as it starts), the VM is killed, but the network process the launch returned is
-  dropped unreaped. On Unix it goes as its doorbell hangs up, and stays a zombie of the process
-  that ran the build until that process exits. This is unchanged by the fold, seen in source
-  and not reproduced.
-- The daemon's `start`: where its watcher thread cannot start, the network process goes into
-  the dropped closure unreaped. This too is unchanged by the fold, seen in source and not
-  reproduced.
+The fold found two leaks outside its own scope, seen in source. Each is now reproduced by a
+unit test, red before its cure, and both are cured in bae79bf1d.
+
+- **A builder that does not boot.** Where `Builder::start`'s VM did not dial its port (it ended
+  as it started, ran nothing of its boot for `BOOT_PATIENCE`, or the port failed), the network
+  process the launch returned was dropped unreaped, and a VM given up on was killed and not
+  waited for.
+  On Unix that left a zombie of the process that ran the build, once it went as its doorbell
+  hung up. The boot wait is `dialed` now, and `connect` ends what the launch started where the
+  builder does not dial: its VM killed and waited for, then its network process reaped by the
+  home's record (`Launched::end`, `netproc::reap`, D217). `Launched::end` is on every OS now.
+  - Test: build/builder.rs `a_builder_that_does_not_boot_leaves_its_network_process_reaped`.
+    Its stand-in VM, `sh -c 'exit 0'`, ends at once holding the doorbell a stand-in network
+    process (`cat`) reads.
+- **A VM no watcher takes.** Where `Daemon::start`'s watcher thread did not start, std dropped
+  the thread's closure unrun (`thread::Builder::spawn_scoped` drops its closure where the thread
+  is not made), and with it the network process it held, unreaped; the VM was killed and not
+  waited for. The closure holds both in an `Unwatched` now, which ends them as it drops unrun:
+  the VM killed and waited for, then the network process reaped by the daemon's record. The
+  watcher takes them out first (`Unwatched::watched`), so that nothing is ended under it.
+  - Test: daemon.rs `a_vm_no_watcher_takes_is_ended_and_its_network_process_reaped`. Its
+    stand-in VM is `cat` on a pipe the test holds open, holding the stand-in network process's
+    doorbell; the test drops the `Unwatched` unrun, as a failed spawn drops the closure.
+- Evidence, on adas-mac-studio.local (macOS arm64), at main 5bc134861 with bae79bf1d:
+
+  | Tree | Result |
+  |---|---|
+  | the two failure paths as they were (no `Launched::end` in `connect`; no `Drop` for `Unwatched`) | both tests red: "process N is left" (the builder's network process; the daemon's VM, running on) |
+  | the cures | both green |
+  | each reap removed (`connect` killing and waiting for the VM alone; `Unwatched`'s drop without its reap) | both red: the network process left, a zombie |
+  | restored | both green |
+
+  The gates on the landing tree are in the landing merge's message.
+- Owed to ROOT: the two tests on Linux (CI's unit tests run them; they are Unix-only, their
+  stand-ins Unix programs). On Windows the same code ends them, each a confined process, which
+  its value's drop would end besides. A real builder whose boot fails is not run here: a builder's
+  boot failure, on HVF, KVM and WHP, would show nothing left of its launch (`pgrep -f shards-net`
+  empty once `shards build` has said "the builder ended as it started").

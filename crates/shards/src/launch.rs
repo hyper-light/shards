@@ -800,12 +800,9 @@ mod tests {
         assert!(argv.iter().any(|a| a == "--net-release"), "{argv:?}");
         assert!(at.contains(&3) && at.contains(&8), "{at:?}");
         // SAFETY: kill(2) of signal 0 sends nothing; it asks whether `pid` is a process's.
-        let found = unsafe { libc::kill(pid, 0) } == 0;
-        let errno = std::io::Error::last_os_error().raw_os_error();
-        assert!(
-            !found && errno == Some(libc::ESRCH),
-            "the network process {pid} is left: {errno:?}"
-        );
+        let gone = unsafe { libc::kill(pid, 0) } != 0
+            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+        assert!(gone, "the network process {pid} is left");
     }
 
     /// Windows' VMs are handed by name what the daemon's, the run host's and the builder's

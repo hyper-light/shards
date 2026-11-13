@@ -552,6 +552,78 @@ fn record_said(home: &Path, said: crate::said::Learned, from_vm: io::PipeReader)
     }
 }
 
+/// The connection a builder's init dials on `listener` (non-blocking), its VM process `vm`
+/// waited for while it runs its boot: one that runs nothing of it for [`BOOT_PATIENCE`] is
+/// given up on, and said apart where the host never let it run (PM M166), as is one that
+/// ends.
+fn dialed(vm: &shards_ipc::Child, listener: &UnixListener) -> Result<UnixStream, String> {
+    let began = Instant::now();
+    // Its process's CPU time when last judged, and when it last ran its boot.
+    let cpu = || {
+        shards_vmm::platform::process_usage(vm.id())
+            .ok()
+            .map(|u| u.cpu_ns)
+    };
+    let (mut seen, mut judged, mut ran) = (cpu(), began, began);
+    let conn = loop {
+        match listener.accept() {
+            Ok((conn, _)) => break conn,
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                let now = Instant::now();
+                let slice = now.saturating_duration_since(judged);
+                if slice >= crate::daemon::READY_STALL {
+                    let cpu_now = cpu();
+                    if shards_vmm::platform::progressed(seen, cpu_now, slice) {
+                        ran = now;
+                    }
+                    (seen, judged) = (cpu_now, now);
+                }
+                if now.saturating_duration_since(ran) > BOOT_PATIENCE {
+                    // One the host has not let run yet is not the builder's failure to boot,
+                    // and says so (PM M166).
+                    #[cfg(unix)]
+                    let unstarted = shards_vmm::platform::launched(vm.id()) == Some(false);
+                    #[cfg(windows)]
+                    let unstarted = false;
+                    if unstarted {
+                        return Err(format!(
+                            "the builder was not started by the host in {BOOT_PATIENCE:?}: its \
+                             process ran nothing, as macOS admits each launch after it has \
+                             assessed the executables launched before it"
+                        ));
+                    }
+                    return Err("the builder did not start".into());
+                }
+                if vm.try_wait().is_some() {
+                    return Err("the builder ended as it started".into());
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Err(e) => return Err(format!("the builder's port: {e}")),
+        }
+    };
+    conn.set_nonblocking(false)
+        .map_err(|e| format!("the builder's connection: {e}"))?;
+    Ok(conn)
+}
+
+/// [`dialed`], for the builder `launched`; where it does not dial, what its launch started is
+/// ended: its VM process killed and waited for, then its network process, which goes as its
+/// VM does, followed to its end by `ends` (`netproc::reap`, D217).
+fn connect(
+    launched: crate::launch::Launched,
+    listener: &UnixListener,
+    ends: &crate::daemon::ends::Ends,
+) -> Result<(crate::launch::Launched, UnixStream), String> {
+    match dialed(&launched.vm, listener) {
+        Ok(conn) => Ok((launched, conn)),
+        Err(e) => {
+            launched.end(ends);
+            Err(e)
+        }
+    }
+}
+
 /// Ends a builder's VM process that does not start.
 fn kill(vm: &shards_ipc::Child) {
     #[cfg(unix)]
@@ -693,62 +765,14 @@ impl Builder {
             attach_theirs,
             said_to,
         )?;
-        let vm = launched.vm;
         record_said(boot.home, said, from_vm);
-        let began = Instant::now();
-        // Its process's CPU time when last judged, and when it last ran its boot.
-        let cpu = || {
-            shards_vmm::platform::process_usage(vm.id())
-                .ok()
-                .map(|u| u.cpu_ns)
-        };
-        let (mut seen, mut judged, mut ran) = (cpu(), began, began);
-        let conn = loop {
-            match listener.accept() {
-                Ok((conn, _)) => break conn,
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    let now = Instant::now();
-                    let slice = now.saturating_duration_since(judged);
-                    if slice >= crate::daemon::READY_STALL {
-                        let cpu_now = cpu();
-                        if shards_vmm::platform::progressed(seen, cpu_now, slice) {
-                            ran = now;
-                        }
-                        (seen, judged) = (cpu_now, now);
-                    }
-                    if now.saturating_duration_since(ran) > BOOT_PATIENCE {
-                        // One the host has not let run yet is not the builder's failure
-                        // to boot, and says so (PM M166).
-                        #[cfg(unix)]
-                        let unstarted = shards_vmm::platform::launched(vm.id()) == Some(false);
-                        #[cfg(windows)]
-                        let unstarted = false;
-                        kill(&vm);
-                        if unstarted {
-                            return Err(format!(
-                                "the builder was not started by the host in {BOOT_PATIENCE:?}: its \
-                                 process ran nothing, as macOS admits each launch after it has \
-                                 assessed the executables launched before it"
-                            ));
-                        }
-                        return Err("the builder did not start".into());
-                    }
-                    if vm.try_wait().is_some() {
-                        return Err("the builder ended as it started".into());
-                    }
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-                Err(e) => return Err(format!("the builder's port: {e}")),
-            }
-        };
-        conn.set_nonblocking(false)
-            .map_err(|e| format!("the builder's connection: {e}"))?;
+        let (launched, conn) = connect(launched, &listener, &ends)?;
         // Its init dialed its give-back connection before the build's, so it waits now, or
         // there is none (an init that gives nothing back).
         let give = take_first(give);
         // Its control is let go of: a build publishes no port.
         let mut builder = Builder {
-            vm,
+            vm: launched.vm,
             net: launched.net.map(|(process, _)| process),
             conn,
             give,
@@ -1378,6 +1402,60 @@ impl Drop for Builder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A builder that does not boot leaves nothing running: what its launch started is ended,
+    /// its network process reaped. Its VM here is a stand-in that ends at once, holding the
+    /// doorbell a stand-in network process (`cat`) reads, which goes as that VM goes, as
+    /// shards-net goes as its ring's doorbell hangs up. Reaped, neither's pid is any
+    /// process's, not even a zombie's.
+    #[cfg(unix)]
+    #[test]
+    fn a_builder_that_does_not_boot_leaves_its_network_process_reaped() {
+        let null = std::fs::File::open("/dev/null").unwrap();
+        let (doorbell, rings) = io::pipe().unwrap();
+        let net = shards_ipc::spawn(
+            Path::new("/bin/cat"),
+            &[],
+            &[(doorbell.as_fd(), 0), (null.as_fd(), 1), (null.as_fd(), 2)],
+            false,
+        )
+        .unwrap();
+        drop(doorbell);
+        let args = ["-c", "exit 0"].map(std::ffi::OsStr::new);
+        let vm = shards_ipc::spawn(
+            Path::new("/bin/sh"),
+            &args,
+            &[
+                (null.as_fd(), 0),
+                (null.as_fd(), 1),
+                (null.as_fd(), 2),
+                (rings.as_fd(), 3),
+            ],
+            false,
+        )
+        .unwrap();
+        drop(rings);
+        let pids = [vm.id(), net.id()];
+        let home = shards_testdir::TempDir::new("bboot").unwrap();
+        let listener = UnixListener::bind(home.join("v")).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let ends = crate::daemon::ends::Ends::kept_in(&home);
+        let launched = crate::launch::Launched {
+            vm,
+            net: Some((net, UnixStream::pair().unwrap().0)),
+            #[cfg(target_os = "macos")]
+            grants: None,
+        };
+        let e = connect(launched, &listener, &ends).unwrap_err();
+        assert_eq!(e, "the builder ended as it started");
+        for pid in pids {
+            let pid = libc::pid_t::try_from(pid).unwrap();
+            // SAFETY: kill(2) of signal 0 sends nothing; it asks whether `pid` is a process's.
+            let gone = unsafe { libc::kill(pid, 0) } != 0
+                && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+            assert!(gone, "process {pid} is left");
+        }
+    }
 
     /// The give-back port takes its peer's first connection, blocking, and refuses any after
     /// it, so that no step's process reaches it (build::GIVE_PORT, D188); where none was
