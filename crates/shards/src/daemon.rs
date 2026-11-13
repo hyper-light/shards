@@ -10821,6 +10821,10 @@ mod tests {
             daemon.disk.open();
             daemon.recording.end();
             daemon.followers.end();
+            // What its VMs said as the test ended, which the followers' loop may have ended
+            // before it took (a loaded host's): taken, so that each run that ended lets go of
+            // the exec connections it held for its VM (M24), whose askers wait on them.
+            daemon.take_left();
             // A run's thread waiting for its end, which no follower takes now, returns.
             drop(lock(&daemon.runs));
             daemon.resolved.notify_all();
@@ -10862,8 +10866,9 @@ mod tests {
                         if let Err(Unreceived::Stalled(stall)) = received(&joining) {
                             let _ = writeln!(
                                 io::stderr(),
-                                "a daemon thread outlived its test: {}: {test}, which {how}",
-                                stalled(&stall)
+                                "a daemon thread outlived its test: {}: {test}, which {how}; this process's threads:\n{}",
+                                stalled(&stall),
+                                threads_now()
                             );
                             std::process::abort();
                         }
@@ -10879,6 +10884,136 @@ mod tests {
         while matches!(runs.get(id), Some(RunState::Tracked(_))) && !daemon.followers.ending() {
             runs = daemon.resolved.wait(runs).unwrap_or_else(PoisonError::into_inner);
         }
+    }
+
+    /// This process's threads, a line each, for a watchdog that gives up on one: each by the
+    /// name std gave it as it started it (Linux's `comm`, cut to 15 bytes; macOS's
+    /// `pth_name`; Windows' description), with what it waits in where its kernel says
+    /// (Linux's `wchan`), and on macOS each one's stack, as `sample` takes it where this
+    /// process may be sampled.
+    #[cfg(target_os = "linux")]
+    fn threads_now() -> String {
+        let Ok(tasks) = std::fs::read_dir("/proc/self/task") else {
+            return "unread".into();
+        };
+        let mut each: Vec<String> = tasks
+            .flatten()
+            .map(|task| {
+                let path = task.path();
+                let read = |f: &str| std::fs::read_to_string(path.join(f)).unwrap_or_default();
+                format!(
+                    "{} {}: in {}",
+                    task.file_name().to_string_lossy(),
+                    read("comm").trim(),
+                    read("wchan").trim()
+                )
+            })
+            .collect();
+        each.sort();
+        each.join("\n")
+    }
+
+    /// [`threads_now`] (macOS): each thread's name and run state (proc_pidinfo), then
+    /// `sample`'s stacks.
+    #[cfg(target_os = "macos")]
+    fn threads_now() -> String {
+        // bsd/sys/proc_info.h: a process's threads' handles, a uint64_t each, which
+        // PROC_PIDTHREADINFO reads one by one.
+        const PROC_PIDLISTTHREADS: libc::c_int = 6;
+        let pid = i32::try_from(std::process::id()).unwrap();
+        // Listed into room for as many as it said it had, then for twice that where they
+        // filled it, as threads start meanwhile.
+        // SAFETY: a size query, no buffer.
+        let said = unsafe { libc::proc_pidinfo(pid, PROC_PIDLISTTHREADS, 0, std::ptr::null_mut(), 0) };
+        let mut handles = vec![0u64; usize::try_from(said).unwrap_or(0) / 8 + 1];
+        let n = loop {
+            let room = i32::try_from(handles.len() * 8).unwrap();
+            // SAFETY: `handles` has room for `room` bytes.
+            let got =
+                unsafe { libc::proc_pidinfo(pid, PROC_PIDLISTTHREADS, 0, handles.as_mut_ptr().cast(), room) };
+            if got < room {
+                break usize::try_from(got).unwrap_or(0) / 8;
+            }
+            handles.resize(handles.len() * 2, 0);
+        };
+        let mut lines = Vec::new();
+        for &handle in handles.get(..n).unwrap_or_default() {
+            // SAFETY: a plain C struct, read into whole by the kernel or not at all.
+            let mut info: libc::proc_threadinfo = unsafe { std::mem::zeroed() };
+            let size = i32::try_from(size_of::<libc::proc_threadinfo>()).unwrap();
+            // SAFETY: `info` has room for `size` bytes.
+            let read = unsafe {
+                libc::proc_pidinfo(
+                    pid,
+                    libc::PROC_PIDTHREADINFO,
+                    handle,
+                    (&raw mut info).cast(),
+                    size,
+                )
+            };
+            if read == size {
+                // SAFETY: the kernel's name, NUL-terminated within its array.
+                let name = unsafe { std::ffi::CStr::from_ptr(info.pth_name.as_ptr()) };
+                lines.push(format!(
+                    "{handle:#x} {}: run state {}",
+                    name.to_string_lossy(),
+                    info.pth_run_state
+                ));
+            }
+        }
+        let stacks = match std::process::Command::new("/usr/bin/sample")
+            .args([pid.to_string().as_str(), "1"])
+            .output()
+        {
+            Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).into_owned(),
+            Ok(out) => format!("sample: {}", String::from_utf8_lossy(&out.stderr).trim()),
+            Err(e) => format!("sample: {e}"),
+        };
+        format!("{}\n{stacks}", lines.join("\n"))
+    }
+
+    /// [`threads_now`] (Windows): each thread's description (GetThreadDescription).
+    #[cfg(windows)]
+    fn threads_now() -> String {
+        use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE, LocalFree};
+        use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
+        };
+        use windows_sys::Win32::System::Threading::{
+            GetThreadDescription, OpenThread, THREAD_QUERY_LIMITED_INFORMATION,
+        };
+        let pid = std::process::id();
+        let mut lines = Vec::new();
+        // SAFETY: a snapshot of the system's threads, read and closed here; each of this
+        // process's opened, read and closed in turn, its description freed as documented.
+        unsafe {
+            let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+            if snapshot == INVALID_HANDLE_VALUE {
+                return format!("unread: {}", io::Error::last_os_error());
+            }
+            let mut entry: THREADENTRY32 = std::mem::zeroed();
+            entry.dwSize = u32::try_from(size_of::<THREADENTRY32>()).unwrap();
+            let mut more = Thread32First(snapshot, &mut entry) != 0;
+            while more {
+                if entry.th32OwnerProcessID == pid {
+                    let thread = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, 0, entry.th32ThreadID);
+                    let mut name = String::new();
+                    if !thread.is_null() {
+                        let mut described: *mut u16 = std::ptr::null_mut();
+                        if GetThreadDescription(thread, &mut described) >= 0 && !described.is_null() {
+                            let len = (0..).take_while(|&i| *described.add(i) != 0).count();
+                            name = String::from_utf16_lossy(std::slice::from_raw_parts(described, len));
+                            LocalFree(described.cast());
+                        }
+                        CloseHandle(thread);
+                    }
+                    lines.push(format!("{} {name}", entry.th32ThreadID));
+                }
+                more = Thread32Next(snapshot, &mut entry) != 0;
+            }
+            CloseHandle(snapshot);
+        }
+        lines.join("\n")
     }
 
     struct Starting<'s> {
@@ -13365,6 +13500,47 @@ mod tests {
                     assert_eq!(procs, expected, "a VM process listed more than once");
                 }
             });
+        });
+    }
+
+    /// A run whose end its followers' loop had not taken as it ended, with its test, ends
+    /// then as the loop would have ended it: the daemon lets go of the exec connection it
+    /// handed its VM and held until taken (M24), and the thread waiting on the exec returns.
+    /// Red with a test's end that left the run followed by none: the daemon's copy held the
+    /// exec's connection open, its asker waited on, and the tests' watchdog aborted them, as
+    /// a group's word to a member whose played VM answered no more did under load
+    /// (a_joiner_and_its_provider_in_one_group_count_their_vm_process_once, CI 43496145972).
+    #[test]
+    fn a_run_its_followers_left_lets_go_of_the_execs_handed_its_vm() {
+        let t = Test::new("left-run");
+        t.run(|t| {
+            let id = t.create("left");
+            let starting = t.start(&id);
+            let (ready, vm) = t.warm_vm(None);
+            starting.warm.send(ready).unwrap();
+            assert_eq!(heard(&vm).0, kind::RUN);
+            say(&vm, kind::TAKEN, &[]);
+            say(&vm, kind::STARTED, &[]);
+            t.until("it runs", |d| {
+                lock(&d.containers)
+                    .get(&id)
+                    .is_some_and(|c| c.state == Life::Running)
+            });
+            let (daemon, exec_id) = (&t.t.daemon, id.clone());
+            t.threads.spawn(move || {
+                let spec = shards_abi::run::Spec {
+                    argv: vec![b"true".to_vec()],
+                    ..Default::default()
+                };
+                daemon.exec_waiting(&exec_id, &spec, None, 1 << 12, health::Wait::Ending)
+            });
+            // Its VM hears the exec and lets it go untaken: the daemon's copy alone holds
+            // its connection.
+            assert_eq!(heard(&vm).0, kind::EXEC_RUN);
+            // Its followers' loop ends before its VM's end comes.
+            t.daemon.followers.end();
+            t.until("its followers' loop woke to end", |d| d.followers.ended_awake());
+            drop(vm);
         });
     }
 
