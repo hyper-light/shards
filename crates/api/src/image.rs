@@ -169,7 +169,7 @@ pub enum ImageRefusal {
     Plug(PlugRefusal, String),
     /// The run's init held it within no room it was told (D241), in its words.
     Room(String),
-    /// The run's VM held its vCPUs to no rate it was told (D243), in its words.
+    /// The run's VM held its vCPUs to no rate it was told (D244), in its words.
     Rate(String),
 }
 
@@ -236,7 +236,7 @@ pub trait ImageGuest: Send + Sync {
     /// budget is the orchestrator's: it tells the room again as the budget changes or as
     /// the run's use moves, as D188's daemon does its own runs'.
     fn room(&self, room: Option<i64>, patience: Duration) -> Result<Option<u64>, ImageRefusal>;
-    /// The CPU rate its orchestrator holds the run's vCPUs to together (D191, D243), in
+    /// The CPU rate its orchestrator holds the run's vCPUs to together (D191, D244), in
     /// milli-CPU of the host's time, as a daemon holds a run of its own to its CPUs: once a
     /// period's share is spent, every vCPU is held out of its guest until the period ends,
     /// whatever its guest does, and what a period overran comes off the next ones. None lifts

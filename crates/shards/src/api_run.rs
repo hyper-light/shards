@@ -467,7 +467,7 @@ fn run_request(spec: &shards_abi::run::Spec, published: bool) -> Vec<u8> {
     payload
 }
 
-/// What its VM said it holds a run's vCPUs to (`RATED`'s answer, D243), as asked with
+/// What its VM said it holds a run's vCPUs to (`RATED`'s answer, D244), as asked with
 /// `rate`: the rate it was asked where it holds them, nothing where it lets them be. A VM
 /// holds what it is told or nothing, so any other word is a broken one, never a hold.
 fn rated_of(rate: Option<std::num::NonZeroU64>, said: &str) -> Result<Option<std::num::NonZeroU64>, String> {
@@ -1385,7 +1385,7 @@ mod hosted {
         devices: Mutex<Option<Vec<Asked>>>,
         /// Each guest time asked of the VM and not yet answered (`GUEST_TIMED`), as devices.
         guest_times: Mutex<Option<Vec<Asked>>>,
-        /// Each rate told the VM and not yet answered (`RATED`, D243), as devices.
+        /// Each rate told the VM and not yet answered (`RATED`, D244), as devices.
         rates: Mutex<Option<Vec<Asked>>>,
         /// What is plugged into the run's members, by the path it is at.
         plugged: Mutex<HashMap<String, Plugged>>,
@@ -2256,7 +2256,7 @@ mod hosted {
         }
     }
 
-    /// The CPU rate its orchestrator holds the run's vCPUs to (D243), told its VM as the
+    /// The CPU rate its orchestrator holds the run's vCPUs to (D244), told its VM as the
     /// daemon tells a run's its CPUs (`CPUS`, D191) but answered (`RATED`): what the VM
     /// holds them to, none where it lets them be, or why not.
     fn rate(
@@ -3124,7 +3124,7 @@ mod tests {
         }
     }
 
-    /// What its VM says it holds a run's vCPUs to reads as it was asked (D243): the rate it
+    /// What its VM says it holds a run's vCPUs to reads as it was asked (D244): the rate it
     /// was asked where it holds them, nothing where it lets them be; another rate, no rate
     /// or a word that is no number is a broken word from its VM, never a hold.
     #[test]

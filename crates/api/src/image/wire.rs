@@ -29,7 +29,7 @@ pub use shards_abi::run::nesting::Ready;
 /// of its guest ([`Stats::microvm`], D241); 8, the run's credential grants
 /// ([`Request::credentials`], D242), each a credential named by reference and the hosts it
 /// may be filled in toward; 10, the CPU rate its orchestrator holds the run's vCPUs to
-/// (`RATE`, answered `RATED`; D191, D243), so that a side that holds none refuses the run as
+/// (`RATE`, answered `RATED`; D191, D244), so that a side that holds none refuses the run as
 /// it is asked, before any rate is: a host of an earlier version ends a run at a frame it has
 /// no kind for. 9 is members' reach's, its number given it first.
 pub const VERSION: u8 = 10;
@@ -58,7 +58,7 @@ pub mod to_host {
     /// (D188, D241).
     pub const ROOM: u8 = 10;
     /// A [`RateAsk`](super::RateAsk): the CPU rate the orchestrator holds the run's vCPUs to
-    /// (D191, D243).
+    /// (D191, D244).
     pub const RATE: u8 = 11;
 }
 
@@ -601,7 +601,7 @@ pub struct RoomAnswer {
     pub result: Result<Option<u64>, String>,
 }
 
-/// The CPU rate the orchestrator holds the run's vCPUs to together (D191, D243), in
+/// The CPU rate the orchestrator holds the run's vCPUs to together (D191, D244), in
 /// milli-CPU of the host's time; none for no hold, the microVM's vCPUs its ceiling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RateAsk {
@@ -2341,7 +2341,7 @@ mod tests {
         v7[0] = 7;
         assert_eq!(Request::decode(&v7), Err(WireError::Version(7)));
         // One of version 8 or 9 carries every field this one reads, but its host ends the
-        // run at a rate: refused by its version, before any rate is told (D243).
+        // run at a rate: refused by its version, before any rate is told (D244).
         for version in [8, 9] {
             let mut older = request().encode().unwrap();
             older[0] = version;
@@ -2518,7 +2518,7 @@ mod tests {
         assert_eq!(long.encode(), Err(WireError::TooLong));
     }
 
-    /// A rate and its answer read back as they were said (D243): no hold, the least rate,
+    /// A rate and its answer read back as they were said (D244): no hold, the least rate,
     /// a CPU and a half, the most a u64 holds; held to none, to a rate, and why not. Cut
     /// short, padded or of a tag no version has, refused.
     #[test]
