@@ -119,6 +119,8 @@ impl ControlQueue {
 pub struct Pipe {
     fd: Option<OwnedFd>,
     state: StreamState,
+    /// A terminal's master (plan step 6, D244), whose end is said with EIO.
+    pty: bool,
 }
 
 impl Pipe {
@@ -139,9 +141,27 @@ impl Pipe {
             Self {
                 fd: Some(read),
                 state: StreamState::New,
+                pty: false,
             },
             write,
         ))
+    }
+
+    /// A member's terminal's master as its stdout (plan step 6, D244): read as a pipe is,
+    /// but where a pipe's last writer closing is an end of file, a terminal's last other
+    /// end closing is EIO (Linux drivers/tty/n_tty.c, `n_tty_read`, `TTY_OTHER_CLOSED`),
+    /// which is its end here. Nonblocking as a pipe's read end is, for every descriptor of
+    /// the master: its status flags are its open file's.
+    pub fn master(master: OwnedFd) -> io::Result<Self> {
+        // SAFETY: fcntl of the master's descriptor, which this owns.
+        if unsafe { libc::fcntl(master.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self {
+            fd: Some(master),
+            state: StreamState::New,
+            pty: true,
+        })
     }
 
     pub fn fd(&self) -> Option<RawFd> {
@@ -655,6 +675,7 @@ impl Capture {
                 self.outgoing.clear();
                 return Ok(());
             }
+            Err(e) if pipe.pty && e.raw_os_error() == Some(libc::EIO) => (Event::End, 0),
             Err(e) => {
                 let errno = e.raw_os_error().filter(|n| *n > 0).ok_or(e)?;
                 self.outgoing.clear();
@@ -820,6 +841,7 @@ mod tests {
         let mut pipe = Pipe {
             fd: Some(OwnedFd::from(File::open("/dev/null").unwrap())),
             state: StreamState::Open { offset: 7 },
+            pty: false,
         };
         assert!(matches!(
             capture.read(0, Channel::Stderr, &mut pipe),
@@ -834,6 +856,61 @@ mod tests {
         assert!(capture.ready(1, Channel::Stdout));
         assert!(!capture.ready(0, Channel::Stderr));
         assert!(matches!(pipe.state, StreamState::Aborted { offset: 7, .. }));
+    }
+
+    /// A member's terminal (plan step 6, D244): what its program writes comes from the
+    /// master as it wrote it (the terminal raw), and its last other end closing is the
+    /// channel's end, which Linux says with EIO, never an abort.
+    #[test]
+    fn a_terminals_master_ends_its_channel_as_its_last_other_end_closes() {
+        let payload = b"\x1b[2J\0\xffscreen";
+        let label = "harness tui";
+        let capacity = managed::HEADER + payload.len().max(label.len()).max(size_of::<i32>());
+        let (mut capture, mut peer) = fixture(1, capacity);
+        // SAFETY: geteuid(2) reads this process's effective uid.
+        let (master, other) =
+            crate::enter::terminal(run::Size::default(), unsafe { libc::geteuid() }).unwrap();
+        // SAFETY: tcgetattr(3) and tcsetattr(3) of our terminal's other end, raw so that its
+        // line discipline passes the bytes as they are (termios(3), cfmakeraw).
+        unsafe {
+            let mut t: libc::termios = std::mem::zeroed();
+            assert_eq!(libc::tcgetattr(other.as_raw_fd(), &raw mut t), 0);
+            libc::cfmakeraw(&raw mut t);
+            assert_eq!(libc::tcsetattr(other.as_raw_fd(), libc::TCSANOW, &raw const t), 0);
+        }
+        File::from(other).write_all(payload).unwrap();
+        let mut pipe = Pipe::master(master).unwrap();
+        let channel = Channel::Stdout;
+        grant(&mut capture, &mut peer, 0, channel, capacity);
+        assert!(capture.open(0, channel, label, &mut pipe).unwrap());
+        let bytes = receive(&mut capture, &mut peer);
+        assert_eq!(Record::decode(&bytes).unwrap().event, Event::Open(label));
+        // The kernel moves what was written to the master in its own time: read until
+        // the end, each record where the last left off.
+        let mut said = Vec::new();
+        loop {
+            // Readable, or hung up, first: a read then has bytes or the end, never EAGAIN.
+            let mut ready = libc::pollfd {
+                fd: pipe.fd().unwrap(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: poll(2) of one pollfd on this stack, the master's descriptor.
+            assert_eq!(unsafe { libc::poll(&raw mut ready, 1, 10_000) }, 1);
+            grant(&mut capture, &mut peer, 0, channel, capacity);
+            capture.read(0, channel, &mut pipe).unwrap();
+            let bytes = receive(&mut capture, &mut peer);
+            let record = Record::decode(&bytes).unwrap();
+            assert_eq!(record.offset, said.len() as u64);
+            match record.event {
+                Event::Data(d) => said.extend_from_slice(d),
+                Event::End => break,
+                other => panic!("{other:?}"),
+            }
+        }
+        assert_eq!(said, payload);
+        assert!(pipe.terminal());
+        assert!(pipe.fd().is_none());
     }
 
     #[test]
