@@ -190,7 +190,7 @@ test -p shards --bin shards -- daemon::managed daemon::health` 38 passed, 6 igno
 `send_exec`, split for the host, among them); `a_told_exec` 1 passed; the same clippy clean.
 
 Each end's word on its TLS (the control lane's report, D238; ROOT, 2026-11-13), on origin/main
-`24d64a414` with the change merged, adas-mac-studio-3.local (macOS 26.2 arm64, rustc 1.98.1),
+`24d64a414` with the change merged, and again on `ae583f055`, the tree that lands (the same counts), adas-mac-studio-3.local (macOS 26.2 arm64, rustc 1.98.1),
 `SHARDS_HELPERS=skip`: `cargo test -p shards-remote --lib control::` 35 passed, the two new among
 them (the control lane answered with the endpoint's own TLS13_AES_256_GCM_SHA384 and its group,
 an ask of more than its tag refused alone and the next answered; the controller's `Link` the same
