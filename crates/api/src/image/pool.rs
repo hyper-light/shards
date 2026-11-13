@@ -26,7 +26,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use super::wire;
-use super::{ImageGuest, ImageRefusal, ImageSpec};
+use super::{BootStop, ImageGuest, ImageRefusal, ImageSpec};
 use crate::demand::Demand;
 
 /// The run host a pool's hosts are: its program, as [`ImageSpec::binary`] names it, and its
@@ -83,20 +83,22 @@ pub(super) trait Hosts: Clone + Send + Sync + 'static {
     /// Ends a host that is starting, as its pool ends.
     fn kill(&self, kill: &Self::Kill);
     /// Hands warm host `warm` the run `request` of `spec`, waiting at most `patience` for its
-    /// start.
+    /// start, which `stop` ends ([`BootStop`]).
     fn take(
         &self,
         warm: Self::Warm,
         spec: &ImageSpec,
         request: &wire::Request,
         patience: Duration,
+        stop: &BootStop,
     ) -> Result<Box<dyn ImageGuest>, Taken>;
-    /// Starts the run `request` on a host of its own.
+    /// Starts the run `request` on a host of its own, its start ended by `stop`.
     fn fresh(
         &self,
         spec: &ImageSpec,
         request: &wire::Request,
         patience: Duration,
+        stop: &BootStop,
     ) -> Result<Box<dyn ImageGuest>, ImageRefusal>;
 }
 
@@ -370,6 +372,7 @@ impl<H: Hosts> Pooling<H> {
         spec: &ImageSpec,
         request: &wire::Request,
         patience: Duration,
+        stop: &BootStop,
     ) -> Result<Box<dyn ImageGuest>, ImageRefusal> {
         let host = HostOf::of(spec);
         let exemplar = request.exemplar();
@@ -388,10 +391,10 @@ impl<H: Hosts> Pooling<H> {
             reply,
         });
         let warm = asked.ok().and_then(|()| warm.recv().ok()).flatten();
-        let guest = match warm.map(|w| self.hosts.take(w, spec, request, patience)) {
+        let guest = match warm.map(|w| self.hosts.take(w, spec, request, patience, stop)) {
             Some(Ok(guest)) => Ok(guest),
             Some(Err(Taken::Refused(refused))) => Err(refused),
-            Some(Err(Taken::Unfit)) | None => self.hosts.fresh(spec, request, patience),
+            Some(Err(Taken::Unfit)) | None => self.hosts.fresh(spec, request, patience, stop),
         };
         match guest {
             Ok(guest) => Ok(Box::new(Pooled {
@@ -760,6 +763,7 @@ mod tests {
             _: &ImageSpec,
             _: &wire::Request,
             _: Duration,
+            _: &BootStop,
         ) -> Result<Box<dyn ImageGuest>, Taken> {
             drop(warm);
             if self.log().unfit {
@@ -774,6 +778,7 @@ mod tests {
             _: &ImageSpec,
             _: &wire::Request,
             _: Duration,
+            _: &BootStop,
         ) -> Result<Box<dyn ImageGuest>, ImageRefusal> {
             self.tell(|l| l.fresh += 1);
             Ok(Box::new(Guest(self.0.clone())))
@@ -828,15 +833,21 @@ mod tests {
     fn a_pools_first_run_starts_its_own_host_and_the_next_takes_a_warm_one() {
         let hosted = Hosted::default();
         let pools = Pooling::new(hosted.clone(), 4, KEEP_TEST).unwrap();
-        let first = pools.boot(&spec(), &request(1, Some(5)), PATIENCE).unwrap();
+        let first = pools
+            .boot(&spec(), &request(1, Some(5)), PATIENCE, &BootStop::new())
+            .unwrap();
         hosted.until("one warm ahead of the next run", |l| l.fresh == 1 && l.warm == 1);
         until_ready(&pools, 1);
-        let next = pools.boot(&spec(), &request(1, Some(9)), PATIENCE).unwrap();
+        let next = pools
+            .boot(&spec(), &request(1, Some(9)), PATIENCE, &BootStop::new())
+            .unwrap();
         assert_eq!(next.started_from(), wire::StartedFrom::Warm);
         hosted.until("the warm one taken, another started", |l| {
             l.taken == 1 && l.fresh == 1 && l.begun >= 2 && l.warm >= 1
         });
-        let other = pools.boot(&spec(), &request(2, None), PATIENCE).unwrap();
+        let other = pools
+            .boot(&spec(), &request(2, None), PATIENCE, &BootStop::new())
+            .unwrap();
         hosted.until("another microVM's run on a host of its own", |l| l.fresh == 2);
         drop((first, next, other));
         hosted.until("every run's end told", |l| l.ended_runs == 3);
@@ -851,14 +862,20 @@ mod tests {
     fn a_warm_host_that_does_not_fit_or_start_leaves_its_run_a_host_of_its_own() {
         let hosted = Hosted::default();
         let pools = Pooling::new(hosted.clone(), 4, KEEP_TEST).unwrap();
-        drop(pools.boot(&spec(), &request(1, None), PATIENCE).unwrap());
+        drop(
+            pools
+                .boot(&spec(), &request(1, None), PATIENCE, &BootStop::new())
+                .unwrap(),
+        );
         hosted.until("one warm", |l| l.warm == 1);
         until_ready(&pools, 1);
         hosted.tell(|l| {
             l.unfit = true;
             l.failing = true;
         });
-        let run = pools.boot(&spec(), &request(1, None), PATIENCE).unwrap();
+        let run = pools
+            .boot(&spec(), &request(1, None), PATIENCE, &BootStop::new())
+            .unwrap();
         // Every start after the first failed: one or two, as many as its burst.
         hosted.until(
             "the unfit one's run on a host of its own, its refill failed",
@@ -866,7 +883,11 @@ mod tests {
         );
         assert_eq!(hosted.log().warm, 0);
         drop(run);
-        drop(pools.boot(&spec(), &request(1, None), PATIENCE).unwrap());
+        drop(
+            pools
+                .boot(&spec(), &request(1, None), PATIENCE, &BootStop::new())
+                .unwrap(),
+        );
         hosted.until("a failed start's run on a host of its own", |l| l.fresh == 3);
     }
 
@@ -881,7 +902,11 @@ mod tests {
         hosted.tell(|l| l.hold = true);
         let pools = Pooling::new(hosted.clone(), 2, KEEP_TEST).unwrap();
         let runs: Vec<_> = (0..3)
-            .map(|_| pools.boot(&spec(), &request(1, None), PATIENCE).unwrap())
+            .map(|_| {
+                pools
+                    .boot(&spec(), &request(1, None), PATIENCE, &BootStop::new())
+                    .unwrap()
+            })
             .collect();
         hosted.until("the burst's hosts starting, as many as the bound", |l| {
             l.fresh == 3 && l.begun == 2
@@ -900,7 +925,9 @@ mod tests {
         let hosted = Hosted::default();
         let keep = Duration::from_millis(200);
         let pools = Pooling::new(hosted.clone(), 4, keep).unwrap();
-        let run = pools.boot(&spec(), &request(1, None), PATIENCE).unwrap();
+        let run = pools
+            .boot(&spec(), &request(1, None), PATIENCE, &BootStop::new())
+            .unwrap();
         hosted.until("one warm", |l| l.warm == 1);
         std::thread::sleep(keep * 2);
         assert_eq!(hosted.log().warm, 1, "a pool whose run goes on keeps its host");
