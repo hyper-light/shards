@@ -250,6 +250,7 @@ SPIs of the GICv2m frame the VMM keeps (D154).
 | Keyless signing, its SPIFFE provider (D126) | yes | yes | yes | yes, by the Workload API's named pipe |
 | `--platform` for one platform's microVM, other CPUs' images emulated (D179) | yes | yes | yes | yes |
 | The build cache collected as its user's shares say (D212) | yes | yes | yes | yes |
+| Guests booted through `shards` for other programs (shards-api): a spec's boot, a stream to a port, every refusal typed, and `attach` taking back a guest its client lost (D215) | yes: boot.rs's shards-api tests on real guests, on CI's runners and fedora (PM M465), a guest taken back held by its pidfd; the attach case's reap fix not yet rerun on real guests, and its waits' bounds other hosts' records until they are learned where they run (PM M541) | built and linted, its real-VM tests amd64's code, not yet run there | yes: its conformance suite on real guests (PM M463, M464, M465), a guest taken back held by kqueue; the attach case's reap fix not yet rerun there (PM M541) | booted to its port and to its power-off on real guests (jupiter, PM M465); a guest taken back by a handle of its own to the `shards` that holds its VM in a Job (parity step 14, 43670dc18, b4548fcf6), unit-tested on jupiter, its conformance case on real guests not yet run |
 
 A Linux host runs VMs on Linux 6.10 or later with Landlock enabled (its `lsm=` list), whose
 ABI v5 is the first to govern `/dev/kvm`'s ioctls: a VM process starts under no weaker
@@ -17782,9 +17783,11 @@ Agentfile). That PID 1 mounts the node's file systems, gives the node its descri
 starts the node and its relay within its host's deadline, and powers the guest off when
 either ends (f3).
 
-Run as the command of a shards run instead, the node would gain templates, warm pools,
-D188's budgets and give-back, metrics and default-deny networks, and every microVM would
-boot one way (kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, steps 38 and 39).
+Run as the command of a shards run as well, the node would gain templates, warm pools,
+D188's budgets and give-back, metrics and default-deny networks (kiln plan
+01a1cd8e862e7169a074db3d5fa33f3d, steps 38 and 39). Hex's own PID 1 stays beside that path,
+never removed, and shards-init works with it (the person, repeatedly; restated 2026-11-13;
+step 39 at the plan's version 12): a microVM boots either way.
 
 A shards workload already has most of what that PID 1 does (f12, f13, f14, f27, f28). What
 it lacks is the authority to make boxes:
@@ -18017,8 +18020,9 @@ it, and stopping the run is the caller's decision.
   fresh /proc in a user namespace under shards' masked /proc, and Docker refuses writable
   cgroups with user namespaces (f33). It stays a later layer, for where /proc can be given
   whole.
-- Hex keeping its own PID 1 (D215): two ways to boot a microVM, and Hex's without
-  templates, pools, budgets or default-deny networks (f3).
+- Hex's own PID 1 (D215) alone, with no grant: Hex's node without templates, pools,
+  budgets or default-deny networks (f3). That PID 1 is kept beside the grant, not in its
+  place (the person, restated 2026-11-13; plan step 39).
 - The image's word alone: every run of an image would escalate as its author says, where
   established nesting grants ask the operator too (f32).
 
@@ -24194,10 +24198,10 @@ member's files by path and by link, and nothing of init's held),
 
 **How it reaches every run.** A command run in a member is the run protocol's exec with
 `in-member=N`, resized by `EXEC_RESIZE`, whoever sends it: the daemon for `shards exec --for`,
-and step 11's control and terminal lanes, which carry the run protocol to init at the host's
-end of their TLS (D238). So there is no separate shards-api exec (ROOT, 2026-11-13); Hex's
-`MemberExec` is the control lane's. A member's own stdio is attached through step 5's streams
-(D240).
+and step 11's exec lanes, each exec a lane of its own whose ask carries it, a `run::Spec` byte
+for byte, to the host's end of their TLS (D238 "Exec lanes", ROOT's design (B), 2026-11-13). So
+there is no separate shards-api exec (ROOT, 2026-11-13); Hex's `MemberExec` is an exec lane's
+ask. A member's own stdio is attached through step 5's streams (D240).
 
 **A member's own terminal** is D244's.
 
@@ -24256,7 +24260,7 @@ step 11's terminal lane takes the same entry and built-in where it does.
 |---|---|
 | `member-terminal=` | this wire's own, beside D231's `member-*=` entries |
 | `builtin::RESIZE` 21 | the next after `NOTICE` 20 |
-| the channel's version 11 | ROOT's reservation (9 and 10 are other lanes') |
+| the channel's version 11 | ROOT's reservation (9 and 10 were other lanes', and are never used: ROOT, 2026-11-13; D246) |
 | `to_host::RESIZE` 11, `to_client::RESIZED` 28 | the next of each |
 | `run::HEADER` + `run::CHUNK` | one `STDIN` frame's bound |
 | 0 by 0 | the kernel's size of a new pty |
@@ -24440,7 +24444,11 @@ grants each name who, to whom, which port and which way, so Hex refused every de
   An orchestrator that holds its members apart keeps no such port (Hex keeps none).
 
 **Literals.** Version 12, the channel's next version above the one on main as it landed (11,
-D244's): a version only appends, so it is the next number up, whichever lane lands first. A
+D244's): a version only appends, so it is the next number up, whichever lane lands first.
+Versions 9 and 10, reserved for other lanes as D244 took 11, are never used (ROOT,
+2026-11-13): each side decodes its own version exactly (`Request::decode`,
+`WireError::Version`), so a request of 9 or 10 is never made, and is refused by its version
+as any other is. A
 member's entry is at least nine bytes on the wire (its kind, its name's length, its names'
 count) and a name at least four (its length): the least sizes `count` refuses a hostile count
 by, read off the encoding. No bound, wait or size of its own.
@@ -24467,6 +24475,85 @@ image_grants_real, once Hex vendors this revision.
 **What would falsify it.** A member that reaches a kept name its entry does not let it (then
 `named_reach` misses a rule init's netplan follows); a run refused where every member's reach is
 exact (then the narrowing's names and the build's `host:port` are written apart).
+
+### D247. An orchestrator's rate: D191's hold told through its run's host, in milli-CPU (built; real-VM validation owed)
+
+**Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 14: Hex caps each microVM it runs at
+its water-filled share of its fleet's CPU budget each window, in milli-CPU, at least the
+kernel's least quota (Hex `docs/design/learned-charge.md` C4, `charge::Node::rates`,
+`hex_api::MIN_CPU_MILLI`). On Linux its VM's cgroup holds it (`cpu.max`); on macOS and Windows
+it has only caps of a whole process (a native helper's control rate, a job's hard cap), which
+stop a VMM's device threads with its vCPUs. An image an orchestrator boots (D231) is held by
+D191's hold only as its RUN head says, its vCPUs' whole count, and shards-api had no call to
+move it: Hex had no rate for a Shards image VM but stopping its process.
+
+**Decided.**
+- *The call.* `ImageGuest::rate(rate, patience)`: the CPU time the run's vCPUs may use of the
+  host's together, in milli-CPU, or none for no hold. The run host tells its VM (`RATE`, its
+  number and the rate) on the VM's link, on a thread of its own as a room is; the VM sets its
+  hold and answers (`RATED`): what it holds the vCPUs to, nothing where it lets them be (no
+  rate, or every vCPU's whole CPU or more), or why not (`ImageRefusal::Rate`: the microVM not
+  started, its governor's thread not made). A VM holds what it is told or nothing, so its run
+  host takes any other word as a broken one, never a hold.
+- *The hold in milli-CPU.* D191's hold takes its rate in milli-CPU where it took whole CPUs: a
+  period's share is `rate × PERIOD / MILLI_PER_CPU`, exact to the nanosecond below (in u128),
+  no hold at none or at every vCPU's whole CPU. The daemon's own holds, the RUN head's `cpus`
+  and `CPUS`, stay whole CPUs on their link and are held at a thousand milli-CPU each, so its
+  runs are held exactly as before. The governor, its period and its reads are D191's:
+  the hold holds the whole guest, its kernel's threads and interrupts among it, as `cpu.max`
+  holds a VM's cgroup on Linux, while the VMM's device threads go on.
+- *Not the guest's cgroup.* The rate is the orchestrator's cap of what its microVM uses of the
+  host, the guest's kernel included; the workload's own limits inside it stay its run's (D191's
+  `cpuset.cpus` and `cpu.max`), so the call writes no cgroup.
+- *The channel.* Version 13, the next above the channel's at its landing (11 is D244's
+  terminals, 12 members' reach's): `RATE` 12 and `RATED` 29, after every kind before. The rate
+  is one u64, 0 for no hold, so no rate of nothing can be said (that is a pause, D191's). A host
+  of an earlier version ends a run at a frame it has no kind for, so a pair that differs
+  refuses the run at create. On the VM's link `RATE` 94 and `RATED` 95 (shards_ipc), answered
+  as `GUEST_TIME` is, matched by number with the run host's other asks, and none awaited once
+  the link closes.
+- *One ask.* The client's room and rate are one numbered ask (`session::Asked`), each held while
+  it is awaited, and no longer.
+
+**Literals.** `MILLI_PER_CPU` (1000, `vm`): the unit, a CPU's time in thousandths, as
+Kubernetes counts CPU, no finer than `1m` ("Resource Management for Pods and Containers", CPU
+resource units), and as Hex charges and caps a microVM (`hex_api::MIN_CPU_MILLI`): a unit, not
+a tuning. `PERIOD` and `SOONEST` stay D191's, cited to CFS (sched-bwc.rst l. 94-95; kernel
+sched). The kinds are the next free numbers.
+
+**Cold start** (R03). Nothing here is learned or estimated. The rate is the orchestrator's
+learned number (Hex's water-filled share each window), told as it moves; until it tells one, the
+run's vCPUs are held as its RUN head said (an image run's: by none), the microVM's vCPUs its
+ceiling, the envelope the person made the ceiling. A rate below what one read of the governor
+resolves (`SOONEST`, 1 ms of a period for each vCPU) is held on average: what a period overran
+comes off the next ones (D191).
+
+**Tested** (light): vmm `hold`'s `a_rates_share_is_its_thousandths_of_the_period` and
+`a_hold_holds_a_rate_below_its_vcpus_alone`, and its tests before, at whole CPUs in milli-CPU;
+`image::wire`'s `rates_and_their_answers_read_back_as_said` and the version before refused;
+`image::session`'s `a_rates_answer_is_kept_for_its_awaited_ask_alone` and
+`a_rate_no_host_hears_is_refused_and_leaves_no_ask` (the room's too, through the one ask);
+`api_run`'s `a_rates_answer_reads_as_it_was_asked`; `warm`'s
+`a_rate_ask_reads_its_number_and_rate_alone`: green on macOS arm64 at its landing. Their
+guards' removal was not run (implementers run no mutation runs, the person, 2026-11-13): each of
+seven taken out in turn must fail its test, the hold's none at every vCPU's whole CPU (`holds`)
+and its exact share (`share_of`), version 12 refused, an answer kept for its awaited ask alone
+and the ask let go once answered or given up (`session`), a VM's other rate than the one asked
+refused (`rated_of`), and a `RATE` of other than 16 bytes no ask (`rate_asked`). Real VMs,
+ROOT's: `api_image.rs` `the_orchestrators_rate_holds_its_run_to_it` (a one-vCPU run
+spinning, held to a quarter CPU, runs its guest within a quarter of the time passing and a
+period's share; its vCPU's whole CPU holds nothing; none lifts it), `cargo test --profile
+test-release -p shards --test api_image the_orchestrators_rate_holds_its_run_to_it`.
+
+**Owed.** The real-VM test on KVM, HVF and WHP (ROOT); the seven guard-removal mutants above,
+these light tests on Linux and Windows, and `scripts/lint` on the 7 targets (ROOT). Hex's
+adoption: its re-vendor of Shards past D241 and this, then its learner telling each Shards
+image VM its rate each window (kiln plan step 14). How far past its rate a VM runs at each rate
+and vCPU count, measured, as D191 owes for its marks.
+
+**What would falsify it.** A run held to a rate whose guest time over a window passes the rate
+by more than a period's share and its vCPUs' overrun; a daemon run, its whole CPUs held in
+milli-CPU, held otherwise than before (D191's tests).
 
 ### D248. An orchestrator's run host is started holding its three standard streams alone (built; real-VM validation owed)
 
@@ -24545,6 +24632,41 @@ api_image` on HVF and WHP; Hex's image_real on macOS and Windows once Hex vendor
 
 **What would falsify it.** A run host that holds a descriptor or handle of its orchestrator's
 it was not given (then `shards_ipc::spawn` leaks to every child shards starts, D26).
+
+### D249. An orchestrator's run whose command never started ends failed, in its VM's words (built; real-VM validation owed)
+
+**Why.** A run's `DONE` (warm.rs `finish`, `joined_finish`) carries the command's status and,
+where the command never started, why not: the words dockerd says for it, after the code dockerd
+gives such a run (`start_failed`). The daemon reads both (daemon.rs `run_ended`): the words
+for the run's client, the code its client exits with. D231's run host read the status alone
+(api_run.rs `follow`, `DONE`'s first byte), so a run whose command never started ended
+`RunEnd::Exited` with that code, as a command that ran and exited with it does, and the VM's
+words were lost. Hex's image_real found a run's exit wrong on a real KVM node (HEX-IMG-3,
+`/bin/sh -c 'exit 3'`, where `shards run --rm --network none` of the same image and command
+exits 3; the Hex lead's notes, 2026-11-13).
+
+**Decided.** `api_run::run_end(failed, done)`: the link's failure first; a `DONE` of a status
+alone is `Exited(status)`; a status followed by words is `Failed("its command never started
+(status N): WORDS")`; no `DONE` is a failure, as before. The words are the mark: warm.rs
+writes them only for a command that never ran (`not_run`), and the daemon takes them where
+its run never started. No wire change: `RunEnd::Failed` is "its VM, its host or its guest
+failed". Whether HEX-IMG-3's command started is not known here: if it did not, its run now
+fails saying why, and that cause is its own fix.
+
+**Literals.** None.
+
+**Tests** (unit, one macOS arm64 host).
+`api_run::tests::a_command_that_never_started_ends_its_run_failed_saying_why`. Red/green on
+adas-mac-studio.local (Darwin 25.2.0 arm64, rustc 1.98.1), `cargo test -p shards --bin shards
+-- api_run::`: with the run's end composed as `follow` composed it (`DONE`'s first byte alone),
+14 passed and that test failed ("a command that never started ended its run as Exited(128)");
+as built, 15 passed. Clippy for shards, all targets, `-D warnings`: clean.
+
+**Evidence owed** (ROOT, real VMs). Hex's image_real (HEX-IMG-3) on KVM once Hex vendors this,
+and `cargo test -p shards --profile test-release --test api_image` on a KVM host.
+
+**What would falsify it.** A run whose command started ending `Failed` for its `DONE`, or one
+whose command never started ending `Exited`.
 
 ## 4. Start path (≤ 5 ms budget)
 

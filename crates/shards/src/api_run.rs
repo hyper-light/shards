@@ -587,6 +587,22 @@ fn run_request(spec: &shards_abi::run::Spec, published: bool) -> Vec<u8> {
     payload
 }
 
+/// What its VM said it holds a run's vCPUs to (`RATED`'s answer, D247), as asked with
+/// `rate`: the rate it was asked where it holds them, nothing where it lets them be. A VM
+/// holds what it is told or nothing, so any other word is a broken one, never a hold.
+fn rated_of(rate: Option<std::num::NonZeroU64>, said: &str) -> Result<Option<std::num::NonZeroU64>, String> {
+    if said.is_empty() {
+        return Ok(None);
+    }
+    match (said.parse::<std::num::NonZeroU64>(), rate) {
+        (Ok(held), Some(asked)) if held == asked => Ok(Some(held)),
+        (Ok(held), _) => Err(format!(
+            "its VM held its vCPUs to {held} milli-CPU, asked {rate:?}"
+        )),
+        (Err(_), _) => Err(format!("its VM held its vCPUs to {said:?}, no rate")),
+    }
+}
+
 /// What init said it held a run within past what it uses (`builtin::ROOM`'s answer, D241),
 /// as asked with `room`: a decimal where it was told one, nothing where it was told none.
 fn held_of(room: Option<i64>, out: &[u8]) -> Result<Option<u64>, String> {
@@ -598,6 +614,27 @@ fn held_of(room: Option<i64>, out: &[u8]) -> Result<Option<u64>, String> {
             .map_err(|_| format!("its init held it within {n:?}, no number of bytes")),
         (None, Ok(n)) => Err(format!("its init held it within {n:?} with no budget")),
         (_, Err(_)) => Err("its init's answer is no text".into()),
+    }
+}
+
+/// How a run ended, from its VM's link (D249): why the link failed, else its `DONE`. That is
+/// the command's status and, where the command never started, why not, in the words the
+/// daemon reads there too (warm.rs `finish`, daemon.rs `run_ended`). Such a run failed, in
+/// its VM's words: the status alone, the code dockerd gives a run whose command never
+/// started, would read as the command's own exit.
+fn run_end(failed: Option<String>, done: Option<&[u8]>) -> wire::RunEnd {
+    if let Some(why) = failed {
+        return wire::RunEnd::Failed(why);
+    }
+    match done.and_then(<[u8]>::split_first) {
+        Some((status, said)) if !said.is_empty() => wire::RunEnd::Failed(format!(
+            "its command never started (status {status}): {}",
+            String::from_utf8_lossy(said)
+        )),
+        Some((status, _)) => wire::RunEnd::Exited(u32::from(*status)),
+        None => wire::RunEnd::Failed(
+            "the VM ended without its run's end; its last words are on this host's stderr".into(),
+        ),
     }
 }
 
@@ -1494,6 +1531,8 @@ mod hosted {
         devices: Mutex<Option<Vec<Asked>>>,
         /// Each guest time asked of the VM and not yet answered (`GUEST_TIMED`), as devices.
         guest_times: Mutex<Option<Vec<Asked>>>,
+        /// Each rate told the VM and not yet answered (`RATED`, D247), as devices.
+        rates: Mutex<Option<Vec<Asked>>>,
         /// What is plugged into the run's members, by the path it is at.
         plugged: Mutex<HashMap<String, Plugged>>,
         /// The pipe the run's share process tells what its host changes on (D235), until
@@ -1728,6 +1767,7 @@ mod hosted {
                 roots: &plan.roots,
                 devices: Mutex::new(Some(Vec::new())),
                 guest_times: Mutex::new(Some(Vec::new())),
+                rates: Mutex::new(Some(Vec::new())),
                 plugged: Mutex::new(HashMap::new()),
                 notices_due: Mutex::new(due),
                 notices: Mutex::new(Vec::new()),
@@ -1844,9 +1884,9 @@ mod hosted {
 
     /// Reads the VM's link until it closes: each member's end and the command's readiness
     /// to the orchestrator as they come (`super::relayed`), each exec's client end let go of
-    /// as the VM takes it, the run's status from its `DONE`.
+    /// as the VM takes it, the run's end from its `DONE` (`super::run_end`).
     fn follow(live: &Live<'_>, link: &Stream) -> RunEnd {
-        let mut status = None;
+        let mut done = None;
         let failed = loop {
             let m = match shards_ipc::recv(link) {
                 Ok(Some(m)) => m,
@@ -1854,7 +1894,7 @@ mod hosted {
                 Err(e) => break Some(format!("the VM's link: {e}")),
             };
             if m.kind == kind::DONE {
-                status = m.payload.first().copied();
+                done = Some(m.payload);
             } else if m.kind == kind::STARTED {
                 // Its guest told what its host changes in its shares from now on (D235).
                 if let Some(pipe) = lock(&live.notices_due).take() {
@@ -1875,6 +1915,8 @@ mod hosted {
                 answered(&live.devices, &m.payload);
             } else if m.kind == kind::GUEST_TIMED {
                 answered(&live.guest_times, &m.payload);
+            } else if m.kind == kind::RATED {
+                answered(&live.rates, &m.payload);
             } else if m.kind == kind::MANAGED_INPUT {
                 input_arrived(live, &m.payload, m.fds);
             } else if m.kind == kind::MANAGED_INPUT_ENDED {
@@ -1890,20 +1932,13 @@ mod hosted {
         // gone.
         *lock(&live.devices) = None;
         *lock(&live.guest_times) = None;
+        *lock(&live.rates) = None;
         // Its VM gone: no input goes on.
         let members: Vec<u32> = lock(&live.feeds).keys().copied().collect();
         for member in members {
             end_input(live, member);
         }
-        if let Some(why) = failed {
-            return RunEnd::Failed(why);
-        }
-        match status {
-            Some(s) => RunEnd::Exited(u32::from(s)),
-            None => RunEnd::Failed(
-                "the VM ended without its run's end; its last words are on this host's stderr".into(),
-            ),
-        }
+        super::run_end(failed, done.as_deref())
     }
 
     /// The orchestrator's asks, until its channel closes: credit, stats, stop. A channel
@@ -1972,6 +2007,19 @@ mod hosted {
                         .spawn_scoped(scope, move || held(live, ask.id, room(live, ask.room)));
                     if asked.is_err() {
                         held(live, ask.id, Err("no thread to ask it on".into()));
+                    }
+                }
+                // On a thread of its own, as a room: a VM slow to answer holds up nothing
+                // else.
+                wire::to_host::RATE => {
+                    let Ok(ask) = wire::RateAsk::decode(&payload) else {
+                        break;
+                    };
+                    let asked = std::thread::Builder::new()
+                        .name("api-run rate".into())
+                        .spawn_scoped(scope, move || rated(live, ask.id, rate(live, ask.rate)));
+                    if asked.is_err() {
+                        rated(live, ask.id, Err("no thread to ask it on".into()));
                     }
                 }
                 // On a thread of its own, as a room: a guest slow to size a member's terminal
@@ -2356,6 +2404,25 @@ mod hosted {
                 status: Some(0), out, ..
             } => super::held_of(room, &out),
             Said { err, .. } => Err(String::from_utf8_lossy(&err).trim_end().to_string()),
+        }
+    }
+
+    /// The CPU rate its orchestrator holds the run's vCPUs to (D247), told its VM as the
+    /// daemon tells a run's its CPUs (`CPUS`, D191) but answered (`RATED`): what the VM
+    /// holds them to, none where it lets them be, or why not.
+    fn rate(
+        live: &Live<'_>,
+        rate: Option<std::num::NonZeroU64>,
+    ) -> Result<Option<std::num::NonZeroU64>, String> {
+        let milli = rate.map_or(0, std::num::NonZeroU64::get);
+        let said = ask_vm(live, &live.rates, kind::RATE, &milli.to_be_bytes(), &[])?;
+        super::rated_of(rate, &said)
+    }
+
+    /// A rate's outcome, told its orchestrator (`RATED`).
+    fn rated(live: &Live<'_>, id: u32, result: Result<Option<std::num::NonZeroU64>, String>) {
+        if let Ok(payload) = (wire::RateAnswer { id, result }).encode() {
+            let _ = live.answers.send(wire::to_client::RATED, &[&payload]);
         }
     }
 
@@ -2748,6 +2815,29 @@ mod tests {
 
     fn members() -> Vec<wire::MemberInfo> {
         members_of(&["agent helper".into(), "harness codex".into()], &[1])
+    }
+
+    /// Do end a run with a `DONE` of a status alone, of a status and the words of a command
+    /// that never started (warm.rs `finish`), after a broken link, and with none. Expect: the
+    /// status as the run's exit; a failure saying the command never started, its status and
+    /// the VM's words, never that status as an exit; the link's failure; a failure.
+    #[test]
+    fn a_command_that_never_started_ends_its_run_failed_saying_why() {
+        assert_eq!(run_end(None, Some(&[3])), wire::RunEnd::Exited(3));
+        assert_eq!(run_end(None, Some(&[0])), wire::RunEnd::Exited(0));
+        let never = b"\x80exec: \"/bin/sh\": operation not permitted";
+        match run_end(None, Some(never)) {
+            wire::RunEnd::Failed(why) => assert_eq!(
+                why,
+                "its command never started (status 128): exec: \"/bin/sh\": operation not permitted"
+            ),
+            other => panic!("a command that never started ended its run as {other:?}"),
+        }
+        assert_eq!(
+            run_end(Some("the VM's link: reset".into()), Some(&[3])),
+            wire::RunEnd::Failed("the VM's link: reset".into())
+        );
+        assert!(matches!(run_end(None, None), wire::RunEnd::Failed(_)));
     }
 
     /// Labels become members by their declared index; only an active one runs.
@@ -3398,6 +3488,31 @@ mod tests {
         );
         for other in [kind::READY, kind::PROCESS, kind::DONE] {
             assert_eq!(relayed(other, &[1; 9]), None);
+        }
+    }
+
+    /// What its VM says it holds a run's vCPUs to reads as it was asked (D247): the rate it
+    /// was asked where it holds them, nothing where it lets them be; another rate, no rate
+    /// or a word that is no number is a broken word from its VM, never a hold.
+    #[test]
+    fn a_rates_answer_reads_as_it_was_asked() {
+        let rate = std::num::NonZeroU64::new;
+        assert_eq!(rated_of(rate(1500), "1500"), Ok(rate(1500)));
+        assert_eq!(
+            rated_of(rate(4000), ""),
+            Ok(None),
+            "every vCPU's whole CPU: no hold"
+        );
+        assert_eq!(rated_of(None, ""), Ok(None));
+        for (asked, said) in [
+            (rate(1500), "1000"),
+            (None, "1500"),
+            (rate(1500), "0"),
+            (rate(1500), "-1500"),
+            (rate(1500), "1500 milli"),
+            (rate(1500), " 1500"),
+        ] {
+            assert!(rated_of(asked, said).is_err(), "{asked:?} {said:?}");
         }
     }
 
