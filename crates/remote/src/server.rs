@@ -126,6 +126,9 @@ struct Stream {
     hangup: Option<Box<dyn Fn() + Send>>,
     /// The request frame came.
     asked: bool,
+    /// Its command started (`Host::start`): a refusal from here on is [`Tag::Cut`], as it may
+    /// have run, never [`Tag::Refused`], which tells a client nothing of it ran.
+    started: bool,
     /// The client finished its side: all it sent is read.
     ended: bool,
     /// The stream's last frame is queued: its exit, refusal or join.
@@ -181,13 +184,15 @@ impl Stream {
     /// Queues `tag`'s frame as the stream's last. A command still running is hung up, as its
     /// client hears no more of it, and what the client still sends goes unread: it is asked
     /// to stop (STOP_SENDING), as an HTTP/3 server that needs no more of a request's body
-    /// does (RFC 9114 §4.1.2).
+    /// does (RFC 9114 §4.1.2). A refusal of a command that started is its cut.
     fn end(&mut self, io: &mut Io<'_>, conn: ConnKey, id: StreamId, tag: Tag, payload: &[u8]) {
         if self.last {
             return;
         }
+        let refused = if self.started { Tag::Cut } else { Tag::Refused };
+        let tag = if tag == Tag::Refused { refused } else { tag };
         if frame::put(&mut self.pending, tag, payload).is_err() {
-            let _ = frame::put(&mut self.pending, Tag::Refused, b"an answer too long");
+            let _ = frame::put(&mut self.pending, refused, b"an answer too long");
         }
         self.last = true;
         if self.running()
@@ -378,6 +383,7 @@ impl<H: Host> Server<H> {
                     return Taken::Frame;
                 };
                 let started = Request::decode(&payload).and_then(|request| self.host.start(client, request));
+                stream.started = started.is_ok();
                 let relayed = match (started, &self.sender) {
                     (Ok(running), Some(sender)) => relay(running, conn, id, sender),
                     (Ok(_), None) => Err(Error::new("the daemon's listener is not running")),
