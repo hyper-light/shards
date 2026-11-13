@@ -1349,6 +1349,138 @@ mod tests {
         child.wait().unwrap();
     }
 
+    /// A sleeping process is still, whatever the processes beside it in its cgroup wait for:
+    /// their wait is no evidence of its own (D215). Two spinners pinned to one CPU wait on each
+    /// other in the cgroup this test shares with the sleeper, which ran nothing meanwhile. Red
+    /// while a shared cgroup's pressure counted as the sleeper's (main's CI at 5af644eab:
+    /// ends.rs's `/bin/sleep 60` judged going on).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_sleeper_is_still_whatever_its_cgroups_others_wait_for() {
+        let mut sleeper = std::process::Command::new("sleep").arg("60").spawn().unwrap();
+        let mut followed = Followed::of_pid(sleeper.id()).unwrap().unwrap();
+        // Asleep in its nanosleep (`S`), its start's own CPU and page-ins (`D`) behind it.
+        while !std::fs::read_to_string(format!("/proc/{}/stat", sleeper.id()))
+            .unwrap()
+            .rsplit_once(')')
+            .is_some_and(|(_, fields)| fields.trim_start().starts_with('S'))
+        {
+            std::thread::yield_now();
+        }
+        let before = followed.hold();
+        let ran = followed.look().unwrap().unwrap();
+        let shared = shared_cpu_pressure(sleeper.id());
+        let cpu = first_cpu();
+        let mut spinners = [spinner_on(cpu), spinner_on(cpu)];
+        // Waited for, where the kernel keeps it: the spinners' wait for their CPU shown in the
+        // pressure the sleeper's cgroup shares.
+        if let Some(from) = shared {
+            while shared_cpu_pressure(sleeper.id()).is_none_or(|now| now <= from) {
+                std::thread::yield_now();
+            }
+        }
+        let now = followed.hold();
+        let look = followed.look().unwrap().unwrap();
+        for spinner in &mut spinners {
+            drop(spinner.stdin.take());
+            spinner.wait().unwrap();
+        }
+        sleeper.kill().unwrap();
+        sleeper.wait().unwrap();
+        assert!(!look.ran_since(&ran), "the sleeper ran: {ran:?} {look:?}");
+        assert_eq!(
+            found(false, false, &before, &now),
+            Found::Still,
+            "{before:?} {now:?} (shared pressure from {shared:?})"
+        );
+    }
+
+    /// A process runnable on a CPU that others hold is held by its host (D215): it spins
+    /// pinned to one CPU beside two spinners pinned there too, so that the CPU always has one
+    /// waiting. Looked at until its hold shows, a wait for that fact.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_process_starved_of_its_cpu_is_held() {
+        let cpu = first_cpu();
+        let mut starved = spinner_on(cpu);
+        let mut others = [spinner_on(cpu), spinner_on(cpu)];
+        let followed = Followed::of_pid(starved.id()).unwrap().unwrap();
+        let before = followed.hold();
+        let now = loop {
+            let now = followed.hold();
+            if now.held_since(&before) {
+                break now;
+            }
+            std::thread::yield_now();
+        };
+        for child in others.iter_mut().chain([&mut starved]) {
+            drop(child.stdin.take());
+            child.wait().unwrap();
+        }
+        assert_eq!(found(false, false, &before, &now), Found::Held, "{before:?} {now:?}");
+    }
+
+    /// The first CPU this process may run on (sched_getaffinity(2)).
+    #[cfg(target_os = "linux")]
+    fn first_cpu() -> usize {
+        // SAFETY: a cpu_set_t, plain data, for sched_getaffinity to fill.
+        let mut set: libc::cpu_set_t = unsafe { std::mem::zeroed() };
+        // SAFETY: sched_getaffinity(2) of this thread into a local set of its size.
+        let got = unsafe { libc::sched_getaffinity(0, size_of::<libc::cpu_set_t>(), &raw mut set) };
+        assert_eq!(got, 0);
+        let cpus = usize::try_from(libc::CPU_SETSIZE).unwrap();
+        // SAFETY: CPU_ISSET reads a bit of a set filled above, below CPU_SETSIZE.
+        (0..cpus).find(|&cpu| unsafe { libc::CPU_ISSET(cpu, &set) }).unwrap()
+    }
+
+    /// This test binary spinning until its stdin ends, each of its threads pinned to `cpu`
+    /// alone: pinned before its exec, so that every thread it starts (the test harness's that
+    /// spins among them) keeps that affinity.
+    #[cfg(target_os = "linux")]
+    fn spinner_on(cpu: usize) -> std::process::Child {
+        use std::os::unix::process::CommandExt as _;
+        // SAFETY: a cpu_set_t, plain data; CPU_SET sets a bit below CPU_SETSIZE in it.
+        let mut set: libc::cpu_set_t = unsafe { std::mem::zeroed() };
+        // SAFETY: as above.
+        unsafe { libc::CPU_SET(cpu, &mut set) };
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", SPINNING, "--nocapture"])
+            .env(SPIN, "spin")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null());
+        // SAFETY: sched_setaffinity(2) of the child itself, a system call, which is safe
+        // between fork and exec.
+        unsafe {
+            command.pre_exec(move || {
+                if libc::sched_setaffinity(0, size_of::<libc::cpu_set_t>(), &raw const set) == 0 {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::last_os_error())
+                }
+            });
+        }
+        command.spawn().unwrap()
+    }
+
+    /// The `some` total of the CPU pressure that process `pid`'s cgroup shows, as a judge that
+    /// read any cgroup's pressure read it: its cgroup's `cpu.pressure`, or the host's where it
+    /// is the root (as in a container's own namespace); none where none is kept.
+    #[cfg(target_os = "linux")]
+    fn shared_cpu_pressure(pid: u32) -> Option<u64> {
+        let text = std::fs::read_to_string(format!("/proc/{pid}/cgroup")).ok()?;
+        let path = text.lines().find_map(|line| line.strip_prefix("0::"))?;
+        let relative = path.trim().trim_start_matches('/');
+        let file = if relative.is_empty() {
+            std::path::PathBuf::from("/proc/pressure/cpu")
+        } else {
+            std::path::Path::new("/sys/fs/cgroup").join(relative).join("cpu.pressure")
+        };
+        let text = std::fs::read_to_string(file).ok()?;
+        let some = text.lines().find_map(|line| line.strip_prefix("some "))?;
+        some.split_whitespace().find_map(|field| field.strip_prefix("total="))?.parse().ok()
+    }
+
     /// Each kind learns apart, from its first answer on: its slowest answer only rises, its
     /// least rate only falls, and a wait no time long teaches nothing (D215).
     #[test]
