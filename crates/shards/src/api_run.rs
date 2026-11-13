@@ -906,7 +906,8 @@ trait Machine {
 ///   template again would not mend: the template stays, and the run fails.
 /// - booting and saving its template where none is saved: its record written once its
 ///   microVM is ready, and the save made the template unless another run's got there first
-///   (`run::settle`), whose files it then holds.
+///   (`run::settle`), whose files it then holds. What is at the template's name and is no
+///   snapshot is removed first, as it would keep every save from becoming the template.
 /// - booting alone where it has no template.
 ///
 /// A boot that fails is the run's failure (`Cause::Boot`), its save removed.
@@ -950,7 +951,19 @@ fn started<M: Machine>(m: &mut M, way: Way) -> Result<(M::Vm, wire::StartedFrom,
                 }
             }
         }
-        Way::Save { dir, fresh } => (dir, fresh, false),
+        Way::Save { dir, fresh } => {
+            // What is at its name and is no snapshot (a removal cut short leaves its pointer
+            // gone first, `snapshot::remove`) would keep every save from becoming the template.
+            if dir.exists() && !shards_vmm::snapshot::exists(&dir) {
+                m.say(&format!(
+                    "{}: no snapshot; removed, and saving it again",
+                    dir.display()
+                ));
+                crate::run::Origin::remove(&dir);
+                let _ = std::fs::remove_dir_all(&dir);
+            }
+            (dir, fresh, false)
+        }
     };
     let save = Way::Save {
         dir: dir.clone(),
@@ -4680,6 +4693,27 @@ mod tests {
             "the first save stays the template"
         );
         assert!(!fresh.exists());
+    }
+
+    /// D253: what is at a template's name and is no snapshot, as a removal cut short leaves
+    /// it, is removed before the run's save, which then becomes the template.
+    #[test]
+    fn a_name_holding_no_snapshot_is_cleared_for_the_save() {
+        let home = shards_testdir::TempDir::new("cleared").unwrap();
+        let dir = home.path().join("templates").join("abc");
+        std::fs::create_dir_all(dir.join("g-1")).unwrap();
+        std::fs::write(dir.join("g-1").join("memory"), b"").unwrap();
+        let way = way_of(Some(&dir), |d| shards_vmm::snapshot::exists(d));
+        assert!(matches!(way, Way::Save { .. }));
+        let mut m = Stand {
+            saves: true,
+            ..Stand::default()
+        };
+        let (_, from, held) = started(&mut m, way).unwrap();
+        assert_eq!((from, held), (wire::StartedFrom::Saved, Some(dir.clone())));
+        assert!(shards_vmm::snapshot::exists(&dir));
+        assert!(!dir.join("g-1").join("memory").exists());
+        assert!(m.said.iter().any(|l| l.contains("no snapshot")), "{:?}", m.said);
     }
 
     /// A run prepared as `run::prepare` makes one, of `boot`, its root filesystem at `rootfs`,
