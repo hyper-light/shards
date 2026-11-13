@@ -7029,7 +7029,7 @@ pins E2E on WHP arm64, and on WHP x86_64 past that bound; and throughput, small-
 latency (paced and back to back), connection setup with its slot's making, a ring's ramp, CPU
 and pinned memory, on KVM x86_64 and arm64, HVF, WHP x86_64 and arm64.
 
-**Review (plan step 2):** [ring-pins-v1/review.md](../research/measurements/ring-pins-v1/review.md) (F1 fixed, b81d707a9; F2 fixed by ROOT, a6edfb8e9; F3 cured, 6557c8597, and F4, a2c887eeb: its "Cures, F3 and F4", with the real-VM runs F4 owes).
+**Review (plan step 2):** [ring-pins-v1/review.md](../research/measurements/ring-pins-v1/review.md) (F1 fixed, b81d707a9; F2 fixed by ROOT, a6edfb8e9; F3 cured, 6557c8597, and F4, a2c887eeb: its "Cures, F3 and F4", with the real-VM runs F4 owes; F5, a failed slot's room given back without moving `room_gen`, cured: its "Cures, F5").
 
 ### D183. `--cgroup-parent`: a microVM's processes under a slice of the user's service manager (slices 1, 2 and 3 built)
 
