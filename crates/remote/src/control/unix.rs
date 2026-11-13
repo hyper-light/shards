@@ -1094,6 +1094,56 @@ mod tests {
         let _ = reader.join().unwrap();
     }
 
+    /// A socket cut short mid-stream resets its lane, never ending it in order: its workload
+    /// gone while the controller's way is open, the controller reads `ConnectionReset`, never
+    /// `Ok(0)` (the Hex lead's Link test, 4 of 4 on macOS). The order is macOS's on every host:
+    /// the workload reads all the controller sent before it closes, so Linux has no byte unread
+    /// to answer ECONNRESET with, and the endpoint's reader sees the socket's end while its
+    /// writer has nothing to write, and no EPIPE to come.
+    #[test]
+    fn a_socket_cut_short_resets_its_lane_never_ending_it_in_order() {
+        let dir = shards_testdir::TempDir::new("sk").unwrap();
+        let listener = UnixListener::bind(dir.path().join("cut.sock")).unwrap();
+        let (vm, hex) = (Identity::generate().unwrap(), Identity::generate().unwrap());
+        let (at, asks, _revoke) = serving(&vm, hex.fingerprint(), admission(4));
+        let _host = host(dir.path().to_owned(), asks);
+        // Its Hangup kept, as a controller keeps it: dropped, it ends the connection.
+        let mut dialed = dial(&hex, vm.fingerprint(), at, admission(4));
+        let sockets = dialed.sockets.take().unwrap();
+
+        let sent = pattern(admission(4).window);
+        let workload = std::thread::spawn({
+            let len = sent.len();
+            move || {
+                let (mut conn, _) = listener.accept().unwrap();
+                let mut got = vec![0; len];
+                conn.read_exact(&mut got).unwrap();
+                // Closed here, its controller's way still open: a cut, not a half-close.
+                got
+            }
+        });
+        let mut lane = sockets.connect("cut.sock").unwrap();
+        lane.write_all(&sent).unwrap();
+        assert_eq!(
+            workload.join().unwrap(),
+            sent,
+            "the workload read all, then closed"
+        );
+        let mut rest = Vec::new();
+        let read = lane.read_to_end(&mut rest).map_err(|e| e.kind());
+        assert_eq!(
+            read,
+            Err(std::io::ErrorKind::ConnectionReset),
+            "a socket cut short read as its end in order"
+        );
+        assert!(rest.is_empty(), "the workload wrote nothing, read {rest:?}");
+        assert_eq!(
+            lane.write_all(b"after").map_err(|e| e.kind()),
+            Err(std::io::ErrorKind::ConnectionReset),
+            "a write after the cut"
+        );
+    }
+
     #[test]
     fn lanes_past_the_admitted_most_are_refused_until_one_ends() {
         let dir = shards_testdir::TempDir::new("sc").unwrap();
