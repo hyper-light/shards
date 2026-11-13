@@ -820,7 +820,8 @@ mod tests {
     }
 
     /// Set in the child of `a_microvm_that_runs_at_any_rate_is_waited_for`: it runs a CPU a
-    /// fifth of a millisecond each tenth of a second, until it is killed.
+    /// fifth of a millisecond each tenth of a second, until it is killed. Unix's, as its test is.
+    #[cfg(unix)]
     const TRICKLE: &str = "SHARDS_HEALTH_TRICKLE";
 
     /// A microVM process that runs at any rate is waited for while it runs, past its kind's
