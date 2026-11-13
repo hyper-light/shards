@@ -41,6 +41,10 @@ pub(super) struct Resume {
     /// each connection, as it did before the save.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) engine: Option<String>,
+    /// The token its members' MCP connections are carried by (D254), in hex, which its
+    /// guest's relay says on each, as it did before the save.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) mcp: Option<String>,
 }
 
 /// A microVM's addresses on a user network (D46).
@@ -359,10 +363,11 @@ pub(super) struct Resumable {
     pub(super) resume: Resume,
     pub(super) tokens: Vec<u8>,
     pub(super) engine: Option<[u8; shards_abi::run::TOKEN]>,
+    pub(super) mcp: Option<[u8; shards_abi::run::TOKEN]>,
 }
 
 /// The most a resume record holds: the longest this build writes, each of its fields at its
-/// longest: its tokens and its engine's in hex; a MAC as [`shards_net::Mac`] spells one; a
+/// longest: its tokens, its engine's and its MCP connections' in hex; a MAC as [`shards_net::Mac`] spells one; a
 /// network's ID, as [`crate::containers::new_id`] makes one; and the longest text of an IPv4
 /// address and of an IPv6 one (eight groups of four digits). A record a VM's save left past
 /// it is none of this build's.
@@ -377,6 +382,7 @@ fn max_resume() -> u64 {
             ipv6: std::net::Ipv6Addr::from([0xffff_u16; 8]).to_string(),
         }),
         engine: Some(hex(&vec![0xff; token])),
+        mcp: Some(hex(&vec![0xff; token])),
     };
     serde_json::to_vec(&longest).map_or(u64::MAX, |v| u64::try_from(v.len()).unwrap_or(u64::MAX))
 }
@@ -417,20 +423,22 @@ impl<D: Disk> Daemon<D> {
         let tokens = unhex(&resume.tokens)
             .filter(|t| t.len() == 2 * shards_abi::run::TOKEN)
             .ok_or_else(|| unusable(&"its tokens"))?;
-        let engine = match &resume.engine {
-            Some(hex) => Some(
-                unhex(hex)
-                    .and_then(|t| <[u8; shards_abi::run::TOKEN]>::try_from(t).ok())
-                    .ok_or_else(|| unusable(&"its engine's token"))?,
-            ),
-            None => None,
+        let token = |kept: &Option<String>, what: &str| match kept {
+            Some(hex) => unhex(hex)
+                .and_then(|t| <[u8; shards_abi::run::TOKEN]>::try_from(t).ok())
+                .map(Some)
+                .ok_or_else(|| unusable(&what)),
+            None => Ok(None),
         };
+        let engine = token(&resume.engine, "its engine's token")?;
+        let mcp = token(&resume.mcp, "its MCP connections' token")?;
         Ok(Resumable {
             dir,
             generation,
             resume,
             tokens,
             engine,
+            mcp,
         })
     }
 
@@ -719,6 +727,7 @@ impl<D: Disk> Daemon<D> {
         let resume = Resume {
             tokens: hex(&tokens),
             engine,
+            mcp: self.managed.mcp_token(&id).map(|token| hex(&token)),
             mac: mac.map(|m| shards_net::Mac(m).to_string()),
             network: self.membership(&id).map(|(network, me)| Address {
                 network: network.id,
@@ -875,10 +884,29 @@ mod tests {
                 ipv6: "fd00:dead:beef:1234:5678:9abc:def0:1".into(),
             }),
             engine: Some(hex(&[9; shards_abi::run::TOKEN])),
+            mcp: Some(hex(&[0xa5; shards_abi::run::TOKEN])),
         };
         let written = serde_json::to_vec(&resume).unwrap().len() as u64;
         assert!(written <= max_resume(), "{written} > {}", max_resume());
         assert!(max_resume() < 1024, "{}", max_resume());
+    }
+
+    /// A save keeps its run's MCP connections' token beside its engine's (D254, D176), and its
+    /// restore reads both back whole; a record without them, an older build's, reads none.
+    #[test]
+    fn a_saves_mcp_token_reads_back_beside_its_engines() {
+        let kept = Resume {
+            tokens: hex(&[7; 2 * shards_abi::run::TOKEN]),
+            mac: None,
+            network: None,
+            engine: None,
+            mcp: Some(hex(&[0xa5; shards_abi::run::TOKEN])),
+        };
+        let record = serde_json::to_vec(&kept).unwrap();
+        let read: Resume = serde_json::from_slice(&record).unwrap();
+        assert_eq!(read, kept);
+        let older: Resume = serde_json::from_slice(br#"{"tokens":"07"}"#).unwrap();
+        assert_eq!((older.engine, older.mcp), (None, None));
     }
 
     /// A daemon's start removes the ghost files a crash left in the home's private

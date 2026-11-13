@@ -179,6 +179,13 @@ pub struct MemberSpec {
     /// `shards_abi::run::MAX_PAYLOAD`, Linux's own on a command line and environment, and
     /// refused past it, never cut.
     pub args: Vec<String>,
+    /// An MCP bridge of its own (D254): `/run/shards/mcp`, a stdio server its harness's MCP
+    /// config names as a command, each connection to which reaches the run's controller as a
+    /// lane of the run's agent-control endpoint, taken there by `Execs::mcp(member)`
+    /// ([`crate::control`]); so it needs [`ImageSpec::control`]. No network grant: nothing of
+    /// it is an address in the microVM. None: the member has neither the bridge nor its
+    /// socket, and an ask for its connection is refused.
+    pub mcp: bool,
 }
 
 /// A host directory the guest sees at `at`, as `-v HOST:AT[:ro]` gives one: a member gets
@@ -773,6 +780,21 @@ fn request(spec: &ImageSpec) -> Result<wire::Request, ImageRefusal> {
             input: m.stdin,
             terminal: m.terminal,
             args: m.args.clone(),
+            mcp: m.mcp,
+        });
+    }
+    // A member's MCP bridge reaches its controller over the run's agent-control endpoint
+    // alone (D254), refused here without one, as the run host refuses it again.
+    if spec.control.is_none()
+        && let Some(m) = spec.members.iter().find(|m| m.mcp)
+    {
+        return Err(ImageRefusal::Spec {
+            what: "a member's MCP bridge",
+            why: format!(
+                "{}: its connections reach the run's controller over its agent-control endpoint, \
+                 which the spec's control asks for",
+                m.member.name
+            ),
         });
     }
     let mut shares = Vec::with_capacity(spec.shares.len());
@@ -959,6 +981,7 @@ mod tests {
                 stdin: false,
                 terminal: false,
                 args: Vec::new(),
+                mcp: false,
             }],
             publish: Vec::new(),
             egress: Narrowing::default(),
@@ -1373,6 +1396,26 @@ mod tests {
             sockets: None,
         });
         assert_eq!(request(&s).unwrap().control, s.control);
+    }
+
+    /// D254: a member's MCP bridge is carried to its run host where the spec asks the run's
+    /// agent-control endpoint, and refused before any run host starts where it asks none.
+    #[test]
+    fn a_members_mcp_bridge_needs_the_runs_control_and_is_carried_with_it() {
+        let mut s = spec();
+        s.members[0].mcp = true;
+        assert!(matches!(
+            request(&s),
+            Err(ImageRefusal::Spec {
+                what: "a member's MCP bridge",
+                ..
+            })
+        ));
+        s.control = Some(ControlAsk {
+            controller: [1u8; 32],
+            sockets: None,
+        });
+        assert!(request(&s).unwrap().members[0].mcp);
     }
 
     /// D232 through D231: a run's GPUs are D232's selection, checked before any run host starts

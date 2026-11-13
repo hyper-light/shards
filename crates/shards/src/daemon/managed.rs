@@ -2,8 +2,9 @@
 
 mod cap;
 mod drain;
-mod execs;
+pub(crate) mod execs;
 mod log_lanes;
+pub(crate) mod mcp;
 mod members;
 #[cfg(test)]
 mod terminal_order_tests;
@@ -149,6 +150,28 @@ fn named_members(
 /// ([`CONTROL_ANNOTATION`]).
 pub(super) const TERMINAL_ANNOTATION: &str = "shards.terminal";
 
+/// The run's annotation naming the members given an MCP bridge (D254), each `KIND:NAME` as
+/// [`STDIN_ANNOTATION`] names them: a stdio bridge at `/run/shards/mcp` and its socket, each
+/// connection to which is carried to the run's controller as a lane of its agent-control
+/// endpoint, which it needs ([`CONTROL_ANNOTATION`]). A run that names none has neither.
+pub(super) const MCP_ANNOTATION: &str = "shards.mcp";
+
+/// The members a run's annotations give an MCP bridge ([`MCP_ANNOTATION`]), as
+/// [`input_members`] names them: none where the run names none.
+pub(super) fn mcp_members(
+    annotations: &[String],
+    labels: &[String],
+    active: &[u32],
+) -> Result<Vec<u32>, String> {
+    named_members(
+        annotations,
+        MCP_ANNOTATION,
+        "to reach an MCP bridge",
+        labels,
+        active,
+    )
+}
+
 /// The members a run's annotations give a terminal of their own ([`TERMINAL_ANNOTATION`]), as
 /// [`input_members`] names them: none where the run names none.
 pub(super) fn terminal_members(
@@ -209,7 +232,7 @@ pub(super) enum Auth {
 }
 
 #[derive(Debug)]
-pub(super) enum Admission {
+pub(crate) enum Admission {
     UnknownHeadroom,
     Unavailable,
     Insufficient { requested: u64, available: u64 },
@@ -267,14 +290,15 @@ impl From<io::Error> for Failure {
 
 /// A run's members as its capture takes them, each list by declared index, ascending: those
 /// that run a program (`active`), those whose stdin their owner writes (`inputs`), those whose
-/// output their owner reads (`owned`; the daemon reads the rest itself), and those on a
-/// terminal of their own (`terminals`, D244).
+/// output their owner reads (`owned`; the daemon reads the rest itself), those on a terminal
+/// of their own (`terminals`, D244), and those given an MCP bridge (`mcps`, D254).
 #[derive(Clone, Copy)]
 pub(super) struct Members<'a> {
     pub active: &'a [u32],
     pub inputs: &'a [u32],
     pub owned: &'a [u32],
     pub terminals: &'a [u32],
+    pub mcps: &'a [u32],
 }
 
 /// Where its members' output is kept and shown: every member's kept in its log as the run's own
@@ -318,13 +342,15 @@ impl RunEnd {
     }
 }
 
-struct Charge {
+/// What a run holds of its budget: the daemon's, shared by its runs, or an orchestrator's run
+/// host's own (api_run.rs), each held to the host's available memory.
+pub(crate) struct Charge {
     budget: Arc<Mutex<Option<u64>>>,
     bytes: Mutex<u64>,
 }
 
 impl Charge {
-    fn reserve(budget: &Arc<Mutex<Option<u64>>>, bytes: u64) -> Result<Self, Admission> {
+    pub(crate) fn reserve(budget: &Arc<Mutex<Option<u64>>>, bytes: u64) -> Result<Self, Admission> {
         let charge = Self {
             budget: Arc::clone(budget),
             bytes: Mutex::new(0),
@@ -665,6 +691,9 @@ struct Owner {
     charge: Arc<Charge>,
     /// Each member's end as its init tells it (`MEMBER_ENDED`), for its own lanes (D238).
     ends: Arc<members::Ends>,
+    /// The connections its members make to their MCP bridges, held for its controller's asks,
+    /// and the run-wide token they are carried by, where it gave any member a bridge (D254).
+    bridges: Option<(Arc<mcp::Bridges>, [u8; run::TOKEN])>,
     /// Whether its capture has ended, and the run's end it holds until it has.
     told: Mutex<Told>,
 }
@@ -714,22 +743,25 @@ fn bind_agent(
     .map_err(Failure::Endpoint)
 }
 
-/// What each exec's streams are admitted (D238): an output's record is what one of its
-/// guest's output frames carries at most (`run::CHUNK`), its window that record with its
-/// data frame's head, as a member's is; its stdin's is a member's stdin's, `input`. Their
-/// handshake and datagrams are the connection's, `output`'s as the run's.
-fn exec_admissions(output: Admitted, input: Admitted) -> io::Result<control::exec::Admissions> {
-    let transport = run::CHUNK
+/// What each exec's and MCP connection's streams are admitted (D238, D254), the daemon's runs'
+/// and an orchestrator's (api_run.rs) alike: an output's record is what one of its guest's
+/// output frames carries at most (`run::CHUNK`), its window that record with its data frame's
+/// head, as a member's is; its stdin's is a member's stdin's ([`INPUT_ROOM`], its taken
+/// frames' window). Their handshake and datagrams are a member stream's connection's.
+pub(crate) fn exec_admissions() -> io::Result<control::exec::Admissions> {
+    let window = |n: usize| u64::try_from(n).map_err(|_| io::Error::other("an exec's window overflows"));
+    let link = |record_bytes, transport_bytes| Admitted {
+        record_bytes,
+        transport_bytes,
+        handshake_bytes: HANDSHAKE_BYTES,
+        datagram_bytes: shards_remote::managed::DATAGRAM_BYTES,
+    };
+    let output = run::CHUNK
         .checked_add(shards_remote::managed::DATA_HEAD)
-        .and_then(|n| u64::try_from(n).ok())
         .ok_or_else(|| io::Error::other("an exec's window overflows"))?;
     Ok(control::exec::Admissions {
-        output: Admitted {
-            record_bytes: run::CHUNK,
-            transport_bytes: transport,
-            ..output
-        },
-        input,
+        output: link(run::CHUNK, window(output)?),
+        input: link(INPUT_ROOM, window(input::TAKEN_BYTES)?),
     })
 }
 
@@ -766,6 +798,10 @@ impl Owner {
             agent.revoke.revoke();
         }
         self.ends.close();
+        // What its members' bridges held goes with the run (D254).
+        if let Some((bridges, _)) = &self.bridges {
+            bridges.close();
+        }
         for output in self.outputs.iter().flatten() {
             output.abort();
         }
@@ -1325,6 +1361,56 @@ impl Outputs {
         owner.ends.told(ended.member, ended.status)
     }
 
+    /// Run `id`'s MCP connections, where it gave a member a bridge (D254).
+    fn bridges_of(&self, id: &str) -> Option<Arc<mcp::Bridges>> {
+        match lock(&self.runs).get(id) {
+            Some(Entry::Serving(owner)) => owner.bridges.as_ref().map(|(held, _)| Arc::clone(held)),
+            _ => None,
+        }
+    }
+
+    /// Whether run `id` gave member `member` an MCP bridge (D254): on Windows, before a socket
+    /// is made for its connection.
+    #[cfg(windows)]
+    pub(super) fn bridged(&self, id: &str, member: u32) -> bool {
+        self.bridges_of(id).is_some_and(|held| held.bridged(member))
+    }
+
+    /// The token run `id`'s members' MCP connections are carried by (D254), which a save keeps
+    /// for its restore (D176).
+    pub(super) fn mcp_token(&self, id: &str) -> Option<[u8; run::TOKEN]> {
+        match lock(&self.runs).get(id) {
+            Some(Entry::Serving(owner)) => owner.bridges.as_ref().map(|(_, token)| *token),
+            _ => None,
+        }
+    }
+
+    /// A member's MCP connection its VM handed over (`LANE_ACCEPTED`, D254): held for its
+    /// controller's asks, its first read on a thread of its own; let go where its run gave the
+    /// member no bridge, or holds no more.
+    pub(super) fn mcp_accepted(
+        &self,
+        id: &str,
+        accepted: shards_ipc::Accepted,
+        conn: Stream,
+    ) -> Result<(), mcp::Unheld> {
+        let Some(held) = self.bridges_of(id) else {
+            shards_ipc::end(&conn);
+            return Err(mcp::Unheld::NoBridge);
+        };
+        let number = accepted.number;
+        held.hold(number, accepted.member, conn)?;
+        let watching = Arc::clone(&held);
+        let watcher = std::thread::Builder::new()
+            .name("mcp-held".into())
+            .spawn(move || watching.watch(number));
+        if let Err(e) = watcher {
+            held.release(number);
+            return Err(mcp::Unheld::Unwatched(e));
+        }
+        Ok(())
+    }
+
     /// A member's input's end, as its init told it (`MANAGED_INPUT_ENDED`): its owner told,
     /// and its connection ended here too.
     pub(super) fn input_ended(&self, id: &str, bytes: &[u8]) -> io::Result<()> {
@@ -1445,6 +1531,7 @@ impl<D: Disk> Daemon<D> {
             inputs,
             owned,
             terminals,
+            mcps,
         } = members;
         // A member's own terminal is sized over its own lane of the run's endpoint alone.
         if !terminals.is_empty() && !agent_control {
@@ -1453,12 +1540,21 @@ impl<D: Disk> Daemon<D> {
                  agent control, which --annotation {CONTROL_ANNOTATION}=true asks for"
             )));
         }
-        if terminals.windows(2).any(|w| w.first() >= w.get(1))
-            || terminals.iter().any(|m| !active.contains(m))
-        {
-            return Err(
-                io::Error::new(io::ErrorKind::InvalidData, "invalid trusted terminal member plan").into(),
-            );
+        // A member's MCP connections are lanes of the run's endpoint alone (D254).
+        if !mcps.is_empty() && !agent_control {
+            return Err(Failure::Refused(format!(
+                "--annotation {MCP_ANNOTATION}: a member's MCP bridge reaches its controller over the run's \
+                 agent control, which --annotation {CONTROL_ANNOTATION}=true asks for"
+            )));
+        }
+        for (asked, what) in [(terminals, "terminal"), (mcps, "MCP")] {
+            if asked.windows(2).any(|w| w.first() >= w.get(1)) || asked.iter().any(|m| !active.contains(m)) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("invalid trusted {what} member plan"),
+                )
+                .into());
+            }
         }
         let members = u32::try_from(labels.len()).map_err(io::Error::other)?;
         let count = labels
@@ -1592,7 +1688,7 @@ impl<D: Disk> Daemon<D> {
                 };
                 input_lanes.push((scope, input_admitted));
             }
-            let exec_admitted = exec_admissions(admitted, input_admitted)?;
+            let exec_admitted = exec_admissions()?;
             let (endpoint, served) = bind_agent(key, &lanes, &input_lanes, exec_admitted)?;
             // One driver's socket, and the waker every stream's control shares.
             let mut kernel = endpoint.kernel_buffer_bytes().map_err(Failure::Endpoint)?;
@@ -1854,9 +1950,30 @@ impl<D: Disk> Daemon<D> {
         };
         // Each exec the run's owner asks for is charged to the run's budget as it starts, as is
         // each lane to a member itself while it is open.
-        let agent_execs = agent_execs.map(|(starts, admissions)| (starts, admissions, Arc::clone(&charge)));
+        // Its members' MCP connections (D254), where it gave any a bridge: each held for its
+        // controller's asks, its first read at most the record its execs' outputs are admitted
+        // (`exec_admissions`), charged to its budget; and the run-wide token its guest's relay
+        // says on each, which only its spec carries.
+        let bridges = match mcps {
+            [] => None,
+            _ => {
+                let mut token = [0u8; run::TOKEN];
+                shards_vmm::platform::fill_random(&mut token)
+                    .map_err(|e| io::Error::other(format!("its MCP connections' token: {e}")))?;
+                let mut bridged = Vec::new();
+                bridged.try_reserve_exact(mcps.len()).map_err(io::Error::other)?;
+                bridged.extend_from_slice(mcps);
+                let held = mcp::Bridges::new(bridged, run::CHUNK, Arc::clone(&charge));
+                Some((Arc::new(held), token))
+            }
+        };
+        let agent_execs = agent_execs.map(|(starts, admissions)| {
+            let bridges = bridges.as_ref().map(|(held, _)| Arc::clone(held));
+            (starts, admissions, Arc::clone(&charge), bridges)
+        });
         let ends = Arc::new(members::Ends::new(labels.len())?);
         let agent_members = agent_members.map(|lanes| (lanes, Arc::clone(&charge), Arc::clone(&ends)));
+        let mcp_token = bridges.as_ref().map(|(_, token)| *token);
         let owner = Arc::new(Owner {
             outputs,
             inputs: input_slots,
@@ -1866,6 +1983,7 @@ impl<D: Disk> Daemon<D> {
             credits,
             charge,
             ends,
+            bridges,
             told: Mutex::new(Told::Capturing),
         });
         let labels = copy_labels(labels)?;
@@ -1946,8 +2064,9 @@ impl<D: Disk> Daemon<D> {
                 .name("managed-shown".into())
                 .spawn_scoped(threads, move || drain.show(&mut to))?;
         }
-        // Its execs (D238), hosted until the endpoint that brings them ends.
-        if let Some((starts, admissions, exec_charge)) = agent_execs {
+        // Its execs (D238) and its members' MCP connections (D254), hosted until the endpoint
+        // that brings them ends.
+        if let Some((starts, admissions, exec_charge, bridges)) = agent_execs {
             let run_id = id.to_owned();
             let mut running = Vec::new();
             running
@@ -1960,17 +2079,21 @@ impl<D: Disk> Daemon<D> {
                 .spawn_scoped(threads, move || {
                     execs::host(
                         &starts,
-                        admissions,
-                        &exec_charge,
-                        &|spec, argv, flags, stdio, theirs| {
-                            self.launch_exec(&run_id, spec, argv, flags, stdio, theirs)
-                        },
-                        &log_lanes::Logs {
-                            dir: &run_dir,
-                            active: &running,
-                            drain: logged.as_deref(),
-                            run_end: &|| self.wake_at_end(&run_id),
-                            forget: &|waiter| self.forget_waiter(&run_id, waiter),
+                        &execs::Hosting {
+                            admissions,
+                            charge: &exec_charge,
+                            launch: &|spec, argv, flags, stdio, theirs| {
+                                self.launch_exec(&run_id, spec, argv, flags, stdio, theirs)
+                            },
+                            logs: Some(&log_lanes::Logs {
+                                dir: &run_dir,
+                                active: &running,
+                                drain: logged.as_deref(),
+                                run_end: &|| self.wake_at_end(&run_id),
+                                forget: &|waiter| self.forget_waiter(&run_id, waiter),
+                            }),
+                            bridges: bridges.as_deref(),
+                            say: &|line| log(line),
                         },
                     );
                 })?;
@@ -2052,6 +2175,14 @@ impl<D: Disk> Daemon<D> {
             setup.push(run::members::ENDS.to_vec());
         }
         setup.extend(terminals.iter().map(|&member| run::members::terminal(member)));
+        // Each member given an MCP bridge, and the token its connections are carried by (D254).
+        if let Some(token) = &mcp_token {
+            setup
+                .try_reserve(mcps.len().saturating_add(1))
+                .map_err(io::Error::other)?;
+            setup.push(run::mcp::token_entry(token));
+            setup.extend(mcps.iter().map(|&member| run::mcp::entry(member)));
+        }
         let mut activation = Vec::new();
         activation
             .try_reserve_exact(
@@ -3262,11 +3393,7 @@ mod tests {
 
     /// The admissions a run's execs get, as `start_managed_capture` gives them.
     fn exec_admitted() -> control::exec::Admissions {
-        let input = Admitted {
-            transport_bytes: u64::try_from(input::TAKEN_BYTES).unwrap(),
-            ..admitted(INPUT_ROOM)
-        };
-        exec_admissions(admitted(64), input).unwrap()
+        exec_admissions().unwrap()
     }
 
     /// What a run's exec host hands its VM process (`Daemon::launch_exec`): the member's exec,
@@ -3333,7 +3460,17 @@ mod tests {
         };
         std::thread::scope(|s| {
             let (charged, launcher, logs) = (&charge, &launch, &logs);
-            let hosting = s.spawn(move || execs::host(&starts, admissions, charged, launcher, logs));
+            let hosting = s.spawn(move || {
+                let hosting = execs::Hosting {
+                    admissions,
+                    charge: charged,
+                    launch: launcher,
+                    logs: Some(logs),
+                    bridges: None,
+                    say: &|_: &str| {},
+                };
+                execs::host(&starts, &hosting);
+            });
             // Its VM process: the first exec it runs, an echo of its stdin; the second its member
             // refuses.
             let process = s.spawn(move || {
@@ -3427,8 +3564,8 @@ mod tests {
                 execs.exec(0, spec).map(|_| ()),
                 Err(Fault::Unstarted(Unstarted::Capacity))
             );
-            // An MCP connection (D254): no run of the daemon's asks for a bridge yet, so its
-            // member has none, refused before anything reaches its VM process.
+            // An MCP connection (D254) of a run that gave its member no bridge: refused before
+            // anything reaches its VM process.
             assert_eq!(
                 execs.mcp(0).map(|_| ()),
                 Err(Fault::Unstarted(Unstarted::Refused))
@@ -3547,7 +3684,17 @@ mod tests {
         let at = |seq, no, byte| LogPos { seq, no, byte };
         std::thread::scope(|s| {
             let (charged, launcher, logs) = (&charge, &launch, &logs);
-            let hosting = s.spawn(move || execs::host(&starts, admissions, charged, launcher, logs));
+            let hosting = s.spawn(move || {
+                let hosting = execs::Hosting {
+                    admissions,
+                    charge: charged,
+                    launch: launcher,
+                    logs: Some(logs),
+                    bridges: None,
+                    say: &|_: &str| {},
+                };
+                execs::host(&starts, &hosting);
+            });
             let (controller, dialed) = Controller::dial(
                 &owner,
                 vm,
@@ -3617,6 +3764,143 @@ mod tests {
             let _ = driver.join();
         });
         assert_eq!(*lock(&charge.bytes), 0, "a log lane's charge outlived it");
+    }
+
+    /// D254: a run's members' MCP connections, held as its VM hands them over and paired with
+    /// its controller's asks through its agent-control endpoint. One whose harness's side ends
+    /// before any ask is let go, never paired; an ask is paired with its member's next one, said
+    /// started, the harness's bytes reaching the controller exactly and the controller's the
+    /// harness, its controller's end half-closing the connection, and its end told once the
+    /// harness's side has ended and every byte is taken. An ask for a member its run gave no
+    /// bridge is refused `Refused`; one its budget has no room to hold is let go; and the run's
+    /// end lets go of every one held and refuses every ask after, each charge given back.
+    #[test]
+    fn a_runs_mcp_connections_are_held_and_paired_with_its_controllers_asks() {
+        use shards_remote::control::exec::Unstarted;
+        use shards_remote::control::{Controller, Fault, Got, McpConnection, Subscriptions};
+        use std::io::{Read as _, Write as _};
+        let owner = identity::Identity::generate().unwrap();
+        let scope = |member| Scope {
+            run: RunId([3; 32]),
+            generation: 1,
+            member,
+            channel: Channel::Stdout,
+        };
+        let out = admitted(64);
+        let admissions = exec_admitted();
+        let (endpoint, served) = bind_agent(
+            owner.fingerprint(),
+            &[(scope(0), out), (scope(1), out)],
+            &[],
+            admissions,
+        )
+        .unwrap();
+        let (vm, address) = (endpoint.fingerprint, endpoint.address);
+        let starts = served.execs.unwrap();
+        let serving = std::thread::spawn(move || endpoint.run());
+        let budget = Arc::new(Mutex::new(Some(0)));
+        let charge = Arc::new(Charge::reserve(&budget, 0).unwrap());
+        let charged = Arc::clone(&charge);
+        let bridges = mcp::Bridges::new(vec![0], run::CHUNK, Arc::clone(&charge));
+        let first = run::mcp::ACCEPTED_FIRST;
+        // A connection its VM hands over, held: the harness's end of it.
+        let held = |number: u64| {
+            let (harness, ours) = Stream::pair().unwrap();
+            bridges.hold(number, 0, ours).unwrap();
+            harness
+        };
+        let request = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}\n";
+        let answer = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n";
+        std::thread::scope(|s| {
+            let bridges = &bridges;
+            let hosting = s.spawn(move || {
+                let hosting = execs::Hosting {
+                    admissions,
+                    charge: &charge,
+                    launch: &|_, _, _, _, _| Err(io::Error::other("no exec here")),
+                    logs: None,
+                    bridges: Some(bridges),
+                    say: &|_: &str| {},
+                };
+                execs::host(&starts, &hosting);
+            });
+            // Its harness gone before any ask: let go.
+            drop(held(first));
+            s.spawn(move || bridges.watch(first)).join().unwrap();
+            let mut harness = held(first + 1);
+            harness.write_all(request).unwrap();
+            s.spawn(move || bridges.watch(first + 1));
+            let (controller, dialed) = Controller::dial(
+                &owner,
+                vm,
+                address,
+                Subscriptions {
+                    outputs: &[(scope(0), out, 0)],
+                    inputs: &[],
+                    execs: Some(admissions),
+                    sockets: None,
+                },
+            )
+            .unwrap();
+            let driver = s.spawn(move || controller.run());
+            let execs = dialed.execs.as_ref().unwrap();
+            let McpConnection {
+                mut from,
+                mut to,
+                mut end,
+            } = execs.mcp(0).unwrap();
+            assert_eq!(
+                from.next_record().unwrap(),
+                Got::Record {
+                    at: 0,
+                    bytes: request.to_vec()
+                }
+            );
+            assert_eq!(to.write(answer).unwrap(), answer.len());
+            let mut came = vec![0; answer.len()];
+            shards_ipc::Polled(&harness).read_exact(&mut came).unwrap();
+            assert_eq!(came, answer);
+            assert_eq!(
+                to.end().unwrap(),
+                (answer.len() as u64, run::managed::InputEnd::Closed)
+            );
+            assert_eq!(
+                shards_ipc::Polled(&harness).read(&mut [0; 1]).unwrap(),
+                0,
+                "its half-close"
+            );
+            harness.shutdown(std::net::Shutdown::Write).unwrap();
+            assert_eq!(from.next_record().unwrap(), Got::Finished);
+            assert_eq!(end.wait(), Ok(0));
+            assert_eq!(
+                execs.mcp(1).map(|_| ()),
+                Err(Fault::Unstarted(Unstarted::Refused))
+            );
+            // No room for another: let go, its harness reading its end.
+            let room = *lock(&budget);
+            *lock(&budget) = Some(u64::MAX);
+            let (harness, ours) = Stream::pair().unwrap();
+            assert!(matches!(
+                bridges.hold(first + 2, 0, ours),
+                Err(mcp::Unheld::Capacity)
+            ));
+            assert_eq!(shards_ipc::Polled(&harness).read(&mut [0; 1]).unwrap(), 0);
+            *lock(&budget) = room;
+            // The run's end: what is held let go, and an ask after refused.
+            let harness = held(first + 3);
+            bridges.close();
+            assert_eq!(shards_ipc::Polled(&harness).read(&mut [0; 1]).unwrap(), 0);
+            assert_eq!(execs.mcp(0).map(|_| ()), Err(Fault::Unstarted(Unstarted::Failed)));
+            assert!(matches!(
+                bridges.hold(first + 4, 0, Stream::pair().unwrap().1),
+                Err(mcp::Unheld::Over)
+            ));
+            served.revoke.revoke();
+            serving.join().unwrap().unwrap();
+            hosting.join().unwrap();
+            let _ = driver.join();
+        });
+        assert_eq!(*lock(&charged.bytes), 0, "a connection's charge outlived it");
     }
 
     /// What a run's member host hands its VM process (`Daemon::launch_builtin`): the built-in's
@@ -4382,6 +4666,7 @@ mod tests {
             credits,
             charge,
             ends: Arc::new(members::Ends::new(1).unwrap()),
+            bridges: None,
             told: Mutex::new(Told::Capturing),
         };
         // Many credits' worth of each channel, more than a pipe holds.
@@ -4483,6 +4768,7 @@ mod tests {
                 bytes: Mutex::new(0),
             }),
             ends: Arc::new(members::Ends::new(1).unwrap()),
+            bridges: None,
             told: Mutex::new(Told::Capturing),
         });
         (drain, owner, peer, sides)
@@ -4824,6 +5110,7 @@ mod tests {
             credits,
             charge: Arc::clone(&charge),
             ends: Arc::new(members::Ends::new(1).unwrap()),
+            bridges: None,
             told: Mutex::new(Told::Capturing),
         };
         let (subscriber, sender) = shards_remote::net::Driver::bind_bounded(

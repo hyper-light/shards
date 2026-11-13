@@ -28264,6 +28264,13 @@ be Shards' own code. Hex's acceptance (step11-b-run-host-endpoint) is held to he
 - A revoked endpoint's connections close with code 0, which a controller reads as
   `Transport(Peer)`: typed, never `Silent`. (g) asks never `Silent`, as (f) does.
 
+**Amended** (goal 58). The run host's endpoint admits execs too, as the daemon's runs do
+(`managed::exec_admissions`), so that it hosts its members' MCP connections (D254) through the
+daemon's exec host; an exec, which it runs none of yet, is refused `Failed`, and a member's own
+lane, which it hosts none of yet, is refused by its endpoint (`Closed`), until goal 58's
+member-lanes slice. Its asks name the zero run and generation 0, as its socket lanes do, its
+endpoint serving no member stream (D238).
+
 **Literals.** None new. The window and lanes are the caller's (R03). Loopback is where step 5's
 endpoints bind.
 
@@ -28455,7 +28462,7 @@ and exits. Each expects the host's gone and another pid's kept. `a_layers_name_s
 `a_stop_mid_boot_ends_the_run_host_and_every_process_of_its_run`, which now also expects no
 `layers/<host>-*` file once stopped, on HVF, KVM x86_64 and WHP.
 
-### D254. kiln's MCP rides the agent-control link: a stdio bridge in the harness's member, one lane of the link per connection, no network grant (decided; its asks built at the endpoint and the controller, the member's listener and bridge and its VM's hand-off built; the run hosts' pairing, kiln's side and every real-VM run owed)
+### D254. kiln's MCP rides the agent-control link: a stdio bridge in the harness's member, one lane of the link per connection, no network grant (decided; its asks built at the endpoint and the controller, the member's listener and bridge and its VM's hand-off built; the runs' asking and the run hosts' pairing built, the daemon's and an orchestrator's; kiln's side and every real-VM run owed)
 
 **Why.** A harness kiln drives in a microVM calls kiln's MCP server (kiln serves `/api/mcp`
 in-process). ROOT's first call was plain HTTP from the microVM to the runner's loopback
@@ -28542,6 +28549,10 @@ one form all nine take, and no other.
 | vsock port 1031 | the next after the run's (1024, 1025, 1027, 1029) and the builder's (1026, 1028, 1030) |
 | Preamble, 4 bytes | the member's declared index, a big-endian u32, as `member-*` entries count members |
 | `LANE_ACCEPTED` 102, numbers from 2^63 | the next shards_ipc kind above main's (`UNSERVED` 101); D251's split of lane numbers, a VM's own at or above 2^63 |
+| `shards.mcp=KIND:NAME,...` | the daemon's annotation, named and read as `shards.terminal` and `shards.stdin` are (D244, step 5); it needs `shards.control=true` |
+| `MemberSpec::mcp`, `MemberStage::mcp`, image channel version 25 | an orchestrator's member spec (D231, D252), a flag per member appended last; the channel's next version above step 8's sign-ins (24) |
+| A held connection's charge | its connection's kernel queues as an exec's connection is measured (`ipc_buffers`: `SO_SNDBUF` and `SO_RCVBUF` on Unix, `GetNamedPipeInfo`'s in and out on Windows), the record its first read takes (an exec output's, `run::CHUNK`) and its entry, charged to the run's budget: the daemon's managed budget, or an orchestrator's run host's own, each held to the host's available memory (`build::host_available`); one it has no room for is let go |
+| An MCP lane's charge | an exec's of one output and a stdin (D238): its lanes' windows (`exec::lane_bytes`), its output's record and its pump's buffer, its stdin's room and its host's record |
 
 **Built** (step 11). The endpoint's `Mcp` asks, on the exec lanes' machinery (`exec::Kind::Mcp`:
 one stream each way, no stderr, any steering let go by its host), and the controller's
@@ -28595,11 +28606,80 @@ its relay named it, held until its owner has it; one ended before its member, or
 ring, closed, its owner told nothing; the port's connections through its hellos), and the
 hosts' stubs (`daemon` through a stand-in VM, api-run's `mcp_accepted`).
 
-**Owed.** The daemon's and the orchestrator's hosts pairing each connection with its ask, and
-the runs' asking (goal 58: the daemon's annotation, the member spec's field, their tokens);
-a resumed run's members' connections (D176): its request brings the save's tokens in place of a
-spec, so its port refuses them until a save keeps the run's MCP token beside its engine's
-(`Resume::engine`) and its resumed request brings it; kiln's harness configs naming the bridge.
+**Built** (goal 58: the runs' asking and the run hosts' pairing).
+- *The daemon's asking.* `--annotation shards.mcp=KIND:NAME,...` names the members given a
+  bridge, each one of the image's that runs a program, once, refused by name otherwise; with no
+  `shards.control=true` it is refused (`Failure::Refused`), as `shards.terminal` is, since the
+  connections are lanes of the run's endpoint alone. The daemon makes the run-wide token as the
+  run's managed scope begins (`fill_random`) and adds `mcp=TOKEN` and a `member-mcp=INDEX` per
+  member to its setup; a run that names none gets neither.
+- *An orchestrator's asking.* `MemberSpec::mcp` (shards-api), carried as `MemberStage::mcp` in
+  the image channel's version 25, so that a side that makes no bridge refuses the run as it is
+  asked. shards-api refuses a member's bridge in a spec with no `control` before any run host
+  starts (`ImageRefusal::Spec`, "a member's MCP bridge"); api-run refuses it again
+  (`Cause::Request`), and a member the image does not run, or one asked twice, by name, as it
+  refuses a terminal (`api_run::asked_members`, shared now by stdin, terminal and bridge). Its
+  host makes the token as it plans the run.
+- *The pairing* (`daemon/managed/mcp.rs`, `Bridges`, the daemon's runs and api-run's alike).
+  Each connection its VM hands over is held, in the order it came, charged to the run's budget
+  (Literals), its first bytes read ahead on a thread of its own (`Bridges::watch`), at most a
+  record; one whose harness's side ends, or whose read fails, before a byte comes is let go if no
+  ask has taken it (so no ask is paired with a connection whose harness had gone), and said
+  ended to one that has. An `Mcp` ask (the exec host's, `execs::serve` handing it to
+  `mcp::carry`) is charged as an exec of one output and a stdin, then paired with its member's
+  oldest connection held once its first read is done, waited for until one comes, its lane is
+  let go, or the run ends; a member the run gave no bridge is refused `Refused` at once, an ask
+  over a run that has ended `Failed`, one its budget has no room for `Capacity`. Paired, it is
+  told `Started`, the first bytes go first, then the connection's bytes as they come (the exec's
+  pump, `execs::pump`, now over any reader); the controller's bytes go to the connection, each
+  record told taken once written whole, its end the connection's half-close, its abort the
+  connection's end both ways, a write the connection refuses ending the input `EPIPE` or `EIO`.
+  Its end is told (`Exited(0)`) once the harness's side has ended and every byte is taken, its
+  input ended `EPIPE` where still open, and the connection then ended both ways, which ends the
+  member's bridge; a read that fails (its VM gone) aborts its output, as an exec's lost end does.
+  Its lane let go (its steering closed) hangs it up: its connection ended both ways, or, before
+  its first read was done, left for the next ask. The run's end lets go of every connection held
+  and ends every wait (`Bridges::close`, from the daemon's `Owner::end_owned` and api-run's
+  `Agent::over`).
+- *The daemon's hand-off.* Its inbox's `LANE_ACCEPTED`: on Unix `LANE_HELD` at once (its VM's
+  copy goes, M24) and the descriptor held; on Windows, for a member its run gave a bridge, a
+  pair made and `LANE_HELD` carrying the end its VM relays the guest's connection onto, as a
+  member's input's (`MANAGED_INPUT`); one with none closed. A connection of a run that gave no
+  bridge, or that its budget has no room for, is let go, logged by its typed cause (`Unheld`).
+- *api-run's hand-off and endpoint.* Its `follow` holds each connection as the daemon does
+  (`mcp_accepted`, its watcher on a thread of the run's scope), its Windows leg as D251's lanes'.
+  Its endpoint now admits execs as the daemon's runs do (`managed::exec_admissions`, one source
+  for both: an output's record `run::CHUNK`, a stdin's a member's), so that an MCP ask reaches
+  its host, the daemon's exec host (`host_lanes`), its budget its own (`Charge`, held to the
+  host's available memory); an exec it runs none of yet is refused `Failed`, a member's own lane
+  `Closed` (D252's amendment). An endpoint of no member stream takes asks in the zero run (D238).
+- *A run moved or resumed* (D176). A save keeps the run's MCP token beside its engine's
+  (`Resume::mcp`, hex), its restore reads it back (`Resumable::mcp`), and a resumed request
+  brings, after the save's tokens, a spec of what the save kept of its tokens, `engine=` and
+  `mcp=` as a fresh run's spec carries them (`warm::resumed_tokens`), so that the VM serves its
+  members' port with the token their relay still says. A daemon's run with managed members is
+  not resumed yet ("managed output scopes cannot yet be restored or joined"), so this waits on
+  that; the engine's token, which every resumed run with one brings, now rides the same spec.
+
+Tested (adas-mac-studio-2.local, macOS arm64): `daemon::managed::tests::a_runs_mcp_connections_are_held_and_paired_with_its_controllers_asks`
+(one whose harness ended first let go, never paired; the next paired, each way's bytes exact,
+the controller's end the harness's half-close, its end told `Exited(0)` once the harness's side
+ended; a member with no bridge refused `Refused`; one its budget has no room for let go
+`Capacity`; the run's end letting go what is held and refusing the next ask `Failed`; every
+charge given back), `api_run::hosted::tests::an_orchestrators_run_carries_its_members_mcp_connections`
+(api-run's endpoint, its controller in the zero run: an MCP connection held as its VM handed it
+over and carried both ways; a member given no bridge refused `Refused`, an exec `Failed`, a
+member's own lane `Closed`, an ask after the run's end `Failed`; its budget given back whole),
+`api_run::hosted::tests::a_members_mcp_connection_is_held_where_its_run_gave_it_a_bridge`,
+`api_run::tests::a_bridge_is_a_running_members_once_and_needs_the_runs_control`,
+`daemon::tests::a_members_mcp_connection_its_run_gave_no_bridge_is_answered_and_let_go`,
+`daemon::snapshots::tests::a_saves_mcp_token_reads_back_beside_its_engines`, warm.rs's
+`a_resumed_runs_tokens_bring_its_engines_and_its_mcp_connections`, shards-api's
+`a_members_mcp_bridge_needs_the_runs_control_and_is_carried_with_it` and its wire tests at
+version 25.
+
+**Owed.** kiln's harness configs naming the bridge; a resumed daemon's run's members'
+connections, once managed scopes are restored (above).
 kiln's in-process server over the two streams is built (kiln main `dace992a6`,
 `reach::mcp::serve_lane`: one `Execs::mcp(member)` connection's newline-delimited JSON-RPC read
 from `McpConnection::from` and answered on `to`, in the runner's own process, no socket, on
@@ -28607,8 +28687,10 @@ Windows too), its connection to a launch waiting on kiln's next re-vendor of Sha
 pairing (kiln's step 18, goal 61). Every real-VM run, ROOT's: the bridge's mount of init's
 binary in a member's view (`open_tree` of an initramfs file, unproven on a real guest), a
 member's MCP connection reaching its host and its end, each harness that takes MCP calling
-kiln's server through the bridge, on KVM, HVF and WHP, with the microVM and the kiln runner on
-one machine and on two.
+kiln's server through the bridge, in a daemon's run (`--annotation shards.control=true`,
+`--annotation shards.mcp=harness:NAME`) and an orchestrator's (`MemberSpec::mcp`, its spec's
+`control`), on KVM, HVF and WHP, with the microVM and the kiln runner on one machine and on two;
+a harness that restarts its MCP server, its old connection let go before the next ask.
 
 **What would falsify it.** A harness that takes MCP and no stdio server; a byte of an MCP
 connection reaching the microVM's network; a member's connection told to the controller as
