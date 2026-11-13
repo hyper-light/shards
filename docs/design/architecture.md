@@ -18580,6 +18580,23 @@ none of the test, every
 case returning at "Hypervisor.framework is unavailable". The CI logs are in the record's
 step7/.
 
+**Its next runs: every runc case hung.** On HVF (ROOT, 308895ef4 and 27ed7cccd, macOS 26
+arm64) and on CI's KVM x86_64 (8a50a9742, run 43391975331, its Tests step timed out at 56
+minutes), each case that runs runc (`limits`, `first-step`, `exit 7`, the exec's `limits`)
+never ended: the foreground runc parked (futex_wait) beside its box's init, exited and never
+reaped (Zs, its parent runc), the detached one parked with its box running; `contain`,
+`ready`, the vsock and the deadline cases passed. The test's nested runtime handed runc the
+grant's `NOTIFY_SOCKET` (init's readiness environment, above), which runc takes for its own
+supervisor's: it proxies its container's sd_notify, bind-mounting a socket of its own into
+the box, and waits for the box's `READY=1` before its signal loop (runc v1.5.2
+notify_socket.go `run`, signals.go `forward`): `run --detach` until the box says it or ends,
+`run` until it says it, as it watches its own pid there. No box of the test says it. So the
+grant's readiness socket is the command's to answer for, as systemd's is a service's, and a
+nested runtime keeps it from the children that do not answer for it (sd_notify(3),
+`unset_environment`): the test's runtime now runs runc without it (testguest nesting.rs
+`runc`), and gives each runc a bound past which SIGQUIT has Go write where its goroutines
+wait (e613ff4d7). Hex's node, as a granted command, meets the same rule.
+
 **Evidence owed** (ROOT):
 - the real-VM E2E (`crates/shards/tests/nesting.rs`, plan step 5): its green at 231bbdf6d
   or later on KVM x86_64 (CI's next main run that reaches it, or ROOT's own), and its runs

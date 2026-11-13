@@ -169,6 +169,30 @@ clean.
 | R15 | Implementer: light tests only; real-VM E2E written for ROOT, not run. |
 | R16 | Build output under `~/g121-tmp/s5-*` (adacachy), `~/s5-*` (Mac Studio). |
 
+## First real-VM runs, and their fixes (2026-11-13)
+
+The first real-VM runs found every run asking a member's stdin refused before its start:
+- HVF (ROOT, main 27ed7cccd, macOS 26 arm64): `api_image`'s stdin case broke its pipe, "the
+  harness said Some(\"\") and ended Ok(Some(WithRun)); the run's end Ok(Some(Stopped))";
+  `member_exec`'s terminal-with-stdin case saw its terminal close before `ready`, the run
+  `Stopped`. Log `/tmp/g121-shot/e2e-hvf3-27ed7cccd.log`.
+- Linux CI (x86_64 gnu, 5b4a561e5, run 43385596626 job 131753477108): `managed_output`'s two
+  `member_stdin` runs exited 125, "shards: " with no words after it.
+
+The cause was the VM process's `workload::capture::start`: it checked that a request brings
+no input token with `managed::input_tokens`, which holds a setup to one token for each
+member `managed-input=` names, so a request asking one input (no token yet) was refused,
+"managed output member was not admitted", said on the VM's stderr alone. 72a204fb9 checks
+for a `managed-input-token=` entry instead (red with its test alone, c0d1dd752; green after).
+On the same path, shards-api made a member's input flow only once `Session::start` ran
+again after the reader took `STARTED`, which a room (`INPUT_ROOM`) the reader took first
+broke; 35f12476b makes the flows with the start, under its lock (red/green
+`a_stdins_room_right_after_the_start_is_its_members`). Both landed in 22101e85e.
+
+At main 41d35bde1 (with 22101e85e), ROOT's HVF run: the `api_image` stdin case and
+`member_exec`'s terminal-with-stdin case pass. `managed_output`'s `member_stdin` runs on
+Linux alone: owed, CI's next x86_64 run.
+
 ## Owed to ROOT
 
 - The real-VM E2E above on KVM x86_64 and arm64, HVF and WHP: `tests/managed_output.rs`'s
