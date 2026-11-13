@@ -6,7 +6,7 @@
 # carries both). docs/research/measurements/harness-bringup-v1/fetch.sh fetches and
 # verifies x86_64's.
 #   shards build image -t harness-codex:1 docs/examples/harness-codex
-#   shards run vm -d --name codex harness-codex:1 sleep 600
+#   shards run vm -d --name codex harness-codex:1 sleep infinity
 #   shards read processes codex
 FROM alpine:3.24.4@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
 

@@ -1,0 +1,30 @@
+# ring-pins-v1's review, F4 cured (goal 52's child for F3 and F4): engine_ring.rs's settle follows the
+# ring's progress. Its run is a real VM's (owed to ROOT, review.md "Cures, F3 and F4"); this is its build
+# and lint.
+#
+# Runner: adas-mac-studio-3.local (kiln runner 2768d0d5d2974f1e21d348edadff9d1b, macOS 26.2 25C56, Apple
+# M4 Max, 14 CPUs), through this child's carrier: a blobless clone of hyper-light/shards at origin/main
+# 15215d729609fa1200f3028c3af476b71351f0c5 with land.patch (the cure as landed: ring.rs's F3 and
+# engine_ring.rs's F4), CARGO_TARGET_DIR ~/g121-tmp/s2-ring-f3/target (new), CARGO_INCREMENTAL=0,
+# SHARDS_HELPERS=skip, SHARDS_INIT_BINARY and SHARDS_SERVER_BINARY empty placeholder files, nice -n 10;
+# rustc 1.98.1 (48a229cea 2026-09-01).
+#   cargo clippy --locked -p shards --test engine_ring -- -D warnings
+# 2026-11-13, kiln run r513: 108 crates checked, among them the engine_ring test target
+# (target/debug/deps/libengine_ring-c4c628f283b3e630.rmeta). Lines of cargo's own building left out;
+# aws-lc-sys's build script says what it builds with as "warning:" lines, which are not lints.
+== Darwin 25.2.0 arm64 at 15215d72 + land.patch:  M crates/init/src/ring.rs  M crates/shards/tests/engine_ring.rs
+rustc 1.98.1 (48a229cea 2026-09-01)
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=aarch64_apple_darwin
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-apple-darwin'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/s2-ring-f3/target/debug/build/aws-lc-sys-8ca7103727f91159/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/s2-ring-f3/target/debug/build/aws-lc-sys-8ca7103727f91159/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/s2-ring-f3/target/debug/build/aws-lc-sys-8ca7103727f91159/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/s2-ring-f3/target/debug/build/aws-lc-sys-8ca7103727f91159/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o"]).
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 21.95s
+clippy exit 0
