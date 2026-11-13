@@ -4,8 +4,10 @@
 //! wait that begins before its kind's first answer follows its party's liveness alone; one
 //! that begins once its kind has an answer looks at its party once each W* past its start,
 //! and is refused, [`Stall`], at a look that finds it made no progress at all since the
-//! look before. R* is the refusal's diagnosis, never its bound. What a look finds is its
-//! caller's to say ([`Found`]): shards-api's waits read their guest's VM process's CPU
+//! look before, its host not the reason: a party its host held from running (runnable on no
+//! CPU, stalled on its host's memory) is live, and a stopped or frozen one stalled (ROOT,
+//! 2026-11-13). R* is the refusal's diagnosis, never its bound. What a look finds is its
+//! caller's to say ([`Found`]): shards-api's waits read their guest's VM process
 //! (`progress::Follow`), and so do the daemon's waits on a microVM's own answers (D188).
 
 use std::sync::{Mutex, PoisonError};
@@ -135,6 +137,20 @@ impl Record {
     }
 }
 
+impl Record {
+    /// Whether a wait of this kind whose party has made no progress since `since` is stalled
+    /// by `now`, judged from outside the wait, as one that cannot look itself is (a writer
+    /// blocked in its write): none while the kind is cold, or less than W* has passed; else
+    /// the stall, `now - since` both how far into its stillness and the time judged over.
+    pub fn stalled(&self, since: Instant, now: Instant) -> Option<Stall> {
+        let Seen::Learned { slowest, least } = self.seen() else {
+            return None;
+        };
+        let over = now.saturating_duration_since(since);
+        (over >= slowest).then(|| Stall::new(over, over, least, slowest))
+    }
+}
+
 impl Default for Record {
     fn default() -> Record {
         Record::new()
@@ -147,7 +163,10 @@ pub enum Found {
     /// It made progress, or its end is under way, which judges nothing: its end is the
     /// wait's answer.
     Progressed,
-    /// It made none at all.
+    /// It made none, its host holding it from running (runnable on no CPU, or stalled on its
+    /// host's memory): live, not stalled.
+    Held,
+    /// It made none of its own: it waits on what has not come, or is stopped or frozen.
     Still,
     /// It has gone: the wait follows its liveness alone from here, its end the wait's.
     Gone,
@@ -202,7 +221,7 @@ impl<'a> Judge<'a> {
         };
         let then = std::mem::replace(&mut self.last, now);
         match found {
-            Found::Progressed => Ok(()),
+            Found::Progressed | Found::Held => Ok(()),
             Found::Gone => {
                 self.judged = false;
                 Ok(())
@@ -327,6 +346,65 @@ mod tests {
         assert_eq!(gone.found(Found::Gone), Ok(()));
         assert_eq!(gone.due(), None);
         assert_eq!(gone.found(Found::Still), Ok(()));
+    }
+
+    /// A party its host holds from running, which made no progress over a whole W*, is live:
+    /// its look refuses nothing and the next is due W* after it; one that, so held no more,
+    /// made none of its own is refused (ROOT's ruling of 2026-11-13).
+    #[test]
+    fn a_party_its_host_holds_is_live_not_stalled() {
+        let slowest = Duration::from_millis(20);
+        let record = Record::new();
+        record.teach(slowest, Duration::from_millis(1));
+        let mut judge = Judge::begin(&record);
+        let until = |judge: &Judge<'_>| {
+            let due = judge.due().unwrap();
+            while Instant::now() < due {
+                std::thread::sleep(due.saturating_duration_since(Instant::now()));
+            }
+            due
+        };
+        for _ in 0..3 {
+            let due = until(&judge);
+            assert_eq!(judge.found(Found::Held), Ok(()));
+            assert!(judge.due().unwrap() >= due + slowest);
+        }
+        until(&judge);
+        let stall = judge.found(Found::Still).unwrap_err();
+        assert!(
+            stall.over() >= slowest && stall.waited() >= slowest * 4,
+            "{stall:?}"
+        );
+    }
+
+    /// A wait judged from outside, as one blocked in a write is, is stalled once its party
+    /// has made no progress for a whole W* since: never while its kind is cold, nor before
+    /// W* has passed, nor for a `now` before its `since` (D215; ROOT, 2026-11-13).
+    #[test]
+    fn a_wait_judged_from_outside_is_stalled_a_whole_w_star_after_its_last_progress() {
+        let ms = Duration::from_millis;
+        let record = Record::new();
+        let since = Instant::now();
+        assert_eq!(
+            record.stalled(since, since + Duration::from_secs(3600)),
+            None,
+            "cold"
+        );
+        record.teach(ms(30), ms(3));
+        assert_eq!(record.stalled(since, since + ms(29)), None);
+        let stall = record.stalled(since, since + ms(31)).unwrap();
+        assert_eq!(
+            (stall.waited(), stall.over(), stall.slowest()),
+            (ms(31), ms(31), ms(30))
+        );
+        assert_eq!(
+            stall.least(),
+            Rate {
+                cpu: ms(3),
+                over: ms(30)
+            }
+        );
+        assert_eq!(record.stalled(since + ms(40), since), None, "no time has passed");
     }
 
     /// An answer teaches its kind the wall time since its wait began and the work done

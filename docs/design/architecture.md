@@ -6488,11 +6488,12 @@ their owners and controllers, goal 75's `unix::link()` among them, follow the sa
 (ROOT's call C): their admissions carry no patience, their bounded drivers no handshake
 deadline, their transports no idle timeout or keep-alive, `tls::QUIET` and its quarter gone;
 an endpoint whose one place a newcomer contends for asks each connection holding one for an
-answer (a PING), so that one whose owner vanished is found so at that use. Owed: a relay
-whose engine client leaves while
-its handshake waits on a daemon never reached is let go as that daemon answers or this one
-stops, not as its client leaves, as its client's input is read no further than its first
-chunk before the daemon's flow control lets it. A host's start runs on a worker of its own (server.rs `start_apart`,
+answer (a PING), so that one whose owner vanished is found so at that use. A relay whose
+engine client leaves while its handshake waits on a daemon never reached is let go at its
+next probe, its client's connection seen ended there (relay.rs `gone`: recv(2) with MSG_PEEK
+and MSG_DONTWAIT, which takes nothing and leaves the reader's descriptor blocking; on Windows,
+PeekNamedPipe's broken pipe), as its client's input is read no further than its first chunk
+before the daemon's flow control lets it. A host's start runs on a worker of its own (server.rs `start_apart`,
 `Event::Started`), apart from the driver, which acknowledges every client's packets
 meanwhile: what the client sends after its request, and on the control streams that steer the
 command, is read once the start has ended, its flow control holding it back. On the driver, a
@@ -8090,17 +8091,22 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   - *Literals*: none. W*, R* and every window are this daemon's own; their durations
     saturate at u64's nanoseconds (D215); a look due now is made, never a read with a zero
     timeout.
-  - *Gaps*, owed to ROOT's runs and decisions:
-    - A cold kind's wait on a microVM whose init never answers holds its thread, and a
-      metrics read its client, until that microVM ends: audit-fix-host-v1's finding 4, now
-      only before the kind's first answer (`metrics_whose_microvm_runs_nothing_are_ended`
-      teaches its record first).
-    - Linux puts a task over its cgroup's `memory.high` to sleep up to
-      `MEMCG_MAX_HIGH_DELAY_JIFFIES` (2 s) at each return to user space (mm/memcontrol.c,
-      `mem_cgroup_handle_over_high`), and a loaded host's scheduler can keep a runnable
-      process off its CPUs for longer than a short W*. A microVM all of whose threads so wait
-      for a whole W* is ended though its host only slowed it. This is not measured: the
-      budget E2E under a `memory.high` (tests/budget.rs, tests/containers.rs) holds it.
+  - *A cold kind follows liveness* (ROOT's ruling, 2026-11-13). Before its kind's first
+    answer, a wait on a microVM whose init never answers holds its thread, and a metrics
+    read its client, until that microVM ends: audit-fix-host-v1's finding 4, now only
+    before the kind's first answer (`metrics_whose_microvm_runs_nothing_are_ended` teaches
+    its record first). Its progress is shown typed meanwhile: a client's wait by the
+    listener's word of what its microVM runs (D209), and an end by its `Cut`.
+  - *A microVM its host holds is live* (ROOT's ruling, 2026-11-13; D215's judge, `Found::Held`).
+    Linux puts a task over its cgroup's `memory.high` to sleep up to
+    `MEMCG_MAX_HIGH_DELAY_JIFFIES` (2 s) at each return to user space (mm/memcontrol.c,
+    `mem_cgroup_handle_over_high`), and a loaded host's scheduler can keep a runnable
+    process off its CPUs for longer than a short W*: a microVM all of whose threads so wait
+    for a whole W* ran nothing of its own fault. A look that finds no CPU refuses now only
+    where its host was not the reason: none of its threads runnable or waiting on its host's
+    memory, nor (Linux) its cgroup's CPU or memory pressure grown; and a microVM stopped or
+    frozen is refused whatever else shows. The evidence is D215's readers'. Not measured
+    here: the budget E2E under a `memory.high` (tests/budget.rs, tests/containers.rs) holds it.
   - Tested (light), health.rs: `a_cold_wait_follows_its_microvm_while_it_lives`,
     `a_microvm_that_runs_at_any_rate_is_waited_for` (a fiftieth of a CPU, below the idle
     rate), `an_exec_is_ended_once_its_microvm_runs_nothing_for_a_whole_w_star`,
@@ -23222,8 +23228,25 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
     nanoseconds (each past u64's, 584 years, its most). Five `Duration`s in the variant
     enlarged every `Result<_, Refusal>`: a test's tuple of two of them crossed clippy's
     `result_large_err` (crates/api/tests/sim.rs, this lane's second run).
-    - A host under load slows a VM process but never stops it, so one that ran nothing for
-      as long as the slowest answer took is stopped, deadlocked or frozen.
+    - A host under load slows a VM process, and may hold it from running for a while, but
+      a VM process that ran nothing for as long as the slowest answer took, its host not
+      the reason, is stopped, deadlocked or frozen. So a look that finds no CPU since the
+      look before refuses only where the host was not the reason (`Found::Held` is no
+      refusal; ROOT's ruling, 2026-11-13): none of its threads runnable (Linux `R`, macOS
+      `TH_STATE_RUNNING`, Windows ready, running, standby or transition) or waiting on its
+      host's memory (macOS `TH_STATE_UNINTERRUPTIBLE`, which macOS keeps no pressure record
+      of; Windows' KWAIT_REASON FreePage, PageIn, PoolAllocation and their Wr forms); nor, on
+      Linux, its cgroup's CPU or memory pressure grown since the look before (cpu.pressure's
+      and memory.pressure's `some` totals, Documentation/accounting/psi.rst; a task held over
+      `memory.high` is a memory stall, mm/memcontrol.c). One stopped or frozen is refused
+      whatever else shows: Linux's leader `T` or `t` or a frozen cgroup (`cgroup.events`),
+      macOS's `SSTOP`, Windows' every thread suspended. Read where each OS keeps it, with no
+      privilege: `/proc/<pid>/task/*/stat` and the process's cgroup v2 files (the root's
+      pressure is `/proc/pressure`); libproc's `PROC_PIDTBSDINFO`, `PROC_PIDLISTTHREADS` and
+      `PROC_PIDTHREADINFO`, which need no task port (`task_threads` would, and `task_for_pid`
+      is refused for a hardened process not built to allow it); NtQuerySystemInformation's
+      SystemProcessInformation records, each thread's state and wait reason. What cannot be
+      read shows nothing, and that look is judged by its CPU alone.
     - R* is in the refusal for diagnosis only, never a bound. ROOT's first design refused a
       look below R*, which would refuse a boot merely slowed by its host's load: the very
       failure R03 ends (ROOT, 2026-11-13, at this lane's report).
@@ -23297,7 +23320,20 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
     The readers also follow a process by its pid alone (`Followed::of_pid`: its start read
     with it, and on Windows the process and what descends from it). shards-api's `Follow`
     is the two together. The daemon's waits on its microVMs' own answers are judged by it
-    (D188, `Wait::WhileRuns`), with records of their own.
+    (D188, `Wait::WhileRuns`), with records of their own. A wait judged from outside, whose
+    party cannot be looked at (a writer blocked in its write, the daemon's `slots_hold`),
+    asks `Record::stalled(since, now)`: none while its kind is cold or less than W* has
+    passed since its last progress, else the stall.
+  - Tested (light), host starvation and the outside judge: judge.rs's
+    `a_party_its_host_holds_is_live_not_stalled` and
+    `a_wait_judged_from_outside_is_stalled_a_whole_w_star_after_its_last_progress`;
+    progress.rs's `a_process_its_host_holds_is_held_and_a_stopped_one_still` (the decision,
+    each OS's evidence), `a_stopped_process_is_seen_stopped_and_refused` (a SIGSTOPped
+    child, seen stopped and refused) and `a_spinning_process_is_seen_runnable` (Unix). Red
+    at 7d5118297 with the rule by CPU alone (the hold read and ignored, `Record::stalled` a
+    stub; adas-mac-studio.local, macOS 26.2 arm64): `Still` where `Held` was due for the
+    throttled stand-in, and no stall where one was due; the readers' own tests passed then
+    too, macOS's libproc reading a child's threads with no task port.
   - *Its literals*: 10^9 nanoseconds a second, a timespec's bound (POSIX <time.h>); 100,
     FILETIME's nanoseconds (GetProcessTimes); a zero-time wait (WaitForSingleObject, 0),
     which is a look, not a wait. Nothing else: W*, R* and every time judged are this
@@ -24586,7 +24622,11 @@ sums. Through the controller over loopback:
 - the control lane answered with the endpoint's own TLS13_AES_256_GCM_SHA384 and its group, an
   ask of more than its tag refused alone and the next answered, and the controller's `Link` the
   same at both ends, its member's lanes going on beside it (`tls::tests`: a negotiation the
-  provider's for that suite alone, AES-128-GCM and ChaCha20-Poly1305 not).
+  provider's for that suite alone, AES-128-GCM and ChaCha20-Poly1305 not);
+- what it was granted as it dialed named as Shards names its lanes (`Dialed::lanes`,
+  `Granted::name`: `control`, `stdout:N`, `stderr:N`, `stdin:N`, `exec`, `socket`, `mcp:N`, N
+  the member's index), what a session's report of its link says (goal 60's `lanes`); `mcp:N`
+  comes with D254's run side, where a run asks a member's bridge.
 
 In the daemon (`daemon::managed::tests`): the annotation asked for by its last value, any value
 but `true` or `false` refused; a run's endpoint of a key its own, two runs two keys, serving
@@ -26075,7 +26115,7 @@ endpoints bind.
 - An endpoint outliving its run.
 - A grant shards-api takes and init refuses, or the other way round.
 
-### D253. An orchestrator's run restores its image's template and takes a warm VM from its pool, as the daemon's runs do (templates built; shards-api's pools owed; real-VM runs owed)
+### D253. An orchestrator's run restores its image's template and takes a warm VM from its pool, as the daemon's runs do (built: templates and pools; real-VM runs owed)
 
 **Why.** An orchestrator's run (D231) booted its microVM cold every time, where a daemon's run
 restores its image's template (D25) and takes a warm VM from its pool (D26). Hex boots its node
@@ -26154,8 +26194,48 @@ WHP; every other `api_image.rs` case, now on the daemon's shape; a daemon run an
 restore on each OS, since 4a moved the daemon's words; R14's start latency, restored against
 cold.
 
-**Owed** (the next slice): shards-api keeps warm run hosts per template, sized by
-`shards_api::demand`.
+**Decided: pools** (`shards_api::image::ImagePools`, plan step 5). The orchestrator owns each
+microVM's life (D231), so its pools live in its process, with shards-api:
+- *A warm run host* is `shards api-run` started with `WARM` (image channel version 21: `WARM`
+  14, `WARMED` 32, `Cause::Unfit` 5, `StartedFrom::Warm` 4) and a run's exemplar
+  (`wire::Request::exemplar`): the request with its members' stages, its deadline and its
+  control ask taken out, so it carries none of a run's secrets. It makes the microVM's part of
+  a run (`shape`: the image prepared, the network chosen, the volumes open, the microVM
+  composed), restores or saves its template and starts its VM, then says `WARMED`. When its run
+  comes (`CREATE`), it makes the run's own part (`plan`: the members' stages, the ports bound,
+  the nesting grant, the setup) and serves it as any run, said `Warm` (`StartedFrom::Warm`).
+- A run whose exemplar is not the host's is refused `Unfit` (`Cause::Unfit`), and its
+  orchestrator's pool gives it a host of its own. The split follows the daemon's warm path:
+  what the VM is before its run, what the run is with its `RUN`. Per-run identity, the
+  agent-control key (D252), is made after the take.
+- *A pool* is the runs of one microVM: one exemplar, one run host program and environment.
+  `boot` takes a ready warm host of its run's pool, else starts a host of its own, as
+  `ImageShards` does; either way the pool counts the run, and its end as its guest drops.
+- *Its size* is D26's, by the one rule (`shards_api::demand`, moved from the daemon). That is
+  the largest burst of its runs within one refill window, an RFC 6298 retransmission timeout
+  of its warm hosts' starts as timed from spawn to `WARMED`, at least one while in use, and
+  none once idle past the keep-alive. All pools together hold at most the orchestrator's
+  bound (`ImagePools::new(most, keep)`), its number, never ours.
+- *The keep-alive* is the orchestrator's, `ImagePools::KEEP` D26's cited one (moved to
+  `shards_api::demand::KEEP`, the daemon's `DEFAULT_KEEP` too).
+- *Cold start:* nothing is warm until a pool's first run, which starts a host of its own while
+  its pool starts one ahead. The first window is RFC 6298's initial RTO, as the daemon's
+  pools' is.
+- *A warm start that fails* is no warm host: its pool starts no more until its next run.
+- *The pools' thread* hands out warm hosts, starts more, each start awaited on a thread of its
+  own, and ends those past a pool's target or keep-alive. Dropping the pools ends every warm
+  host and kills every starting one.
+
+**Tested** (unit, a simulated run host): `a_pools_first_run_starts_its_own_host_and_the_next_takes_a_warm_one`,
+`a_warm_host_that_does_not_fit_or_start_leaves_its_run_a_host_of_its_own`,
+`a_pool_keeps_its_burst_within_the_bound_and_its_owner_ends_them_all`,
+`a_pools_warm_hosts_end_past_its_keep_alive`; the channel's warm words
+(`a_warm_hosts_exemplar_keeps_all_but_a_runs_own`); the daemon's pools by the moved rule, their
+tests unchanged.
+
+**Owed** (ROOT, real VMs): `api_image.rs`'s `an_images_next_run_takes_a_warm_host_of_its_pool`
+on HVF, KVM x86_64 and WHP; R14's start of a warm run against a restored one, the warm host's
+resident memory, and its start's time from `WARMED`.
 
 ### D254. kiln's MCP rides the agent-control link: a stdio bridge in the harness's member, one lane of the link per connection, no network grant (decided; its asks built at the endpoint and the controller; the member's listener and bridge, the run hosts' pairing, kiln's side and every real-VM run owed)
 
@@ -26464,6 +26544,92 @@ are none.
 **What would falsify it.** A member started without the arguments its spec gave, with them
 before its own options, or with one split, joined or cut; a request past the bound started
 with its arguments cut.
+
+### D257. One registry of setup keys, and an init refusing an entry of any other before it applies a spec (built; real-VM runs owed)
+
+**Why.** D28 refuses an init of another build by the identity of what the two share: shards-abi's
+sources, hashed as it is built. A spec's setup entries are shared too, but most of their keys
+were spelled as literals in the host's composers and init's readers alone (`tmpfs=`, `readonly`,
+`caps=`, `confine-eth0`, and some fifty more), outside abi, so no identity covered them. And init
+ignored an entry it had no reader for: `setup::apply` falls through to `Ok`, and `sort_setup`
+hands an unknown entry to the standby, which applies nothing of it. An init from another commit
+whose abi sources are the same would then drop a key its host's build added, saying nothing.
+This came out of a finding first reported too broadly (D256's run): the `member-*=` keys are
+abi's, so D28 already covers them; the literals were the gap (ROOT's go, 2026-11-13).
+
+**Alternatives** (R02):
+- The init's identity carried in HELLO, checked before staging: D28 already does that, on the
+  control page, before any spec, at no cost to a run. Not built twice (R12, R13).
+- A protocol number, raised as keys change: a chosen number (R03), and one a change could forget.
+- An init warning of an unknown entry and going on: the same silent drop, logged.
+- Decided: every key in one abi registry, so D28's identity moves with each, and init refusing an
+  entry of any other.
+
+**Decided and built.**
+- *The registry.* `shards_abi::run::setup::KEYS`, 74 keys, sorted. An entry's key is its bytes
+  before its first `=`, else the whole entry (`readonly`). It holds every key a host composer
+  writes, and `own-net`, which init's joiner code reads (join.rs `built_by`) and no composer
+  writes. Not `notify`, init's own entry for its standby, which its code says is never a daemon's.
+- *Init refuses.* Both frames that carry a spec read it through `host_spec`: the workload's
+  (`receive`) and an exec's (`Exec::start`), which a member's exec and a joiner's command use
+  too. An entry of an unregistered key refuses the spec before any of it is applied.
+  - `run::setup::Unregistered` names the key, never the value, which may be a credential.
+  - A run so refused ends unstarted, with init's words, as any setup it refuses does; an exec,
+    by its id.
+- *The identity follows.* The registry is abi's source, so a key added changes D28's identity,
+  and the host refuses an init built before it, before it sends any spec.
+
+**The guard against a missed key** (ROOT's (c)): host unit tests.
+- *The composers that are functions*: setup.rs's `setup`, `security_setup`, `binds`,
+  `domain_seccomp` and `plug_roots` for a run of every option they read (with the nesting grant
+  and without, privileged, on another run's namespaces); volumes' entries as `open` and `joined`
+  compose them; api-run's staging and its CA's entries. Every entry is of a registered key, and
+  the run of every option writes each of its kinds.
+- *The composers that write inline*: a census of the crate's sources.
+  - Every file writing a spec's setup must be among the census's 14. The daemon's runs,
+    joiners and execs, api-run, the warm VM and the VM process are among them, so a new one
+    fails the test until it is read. Its first run found one the inventory had missed: a
+    member's exec (`daemon/managed/execs.rs`, D243), whose one entry is abi's `exec_in`.
+  - Each key those files spell as a literal (`b"KEY=…"`, `b"KEY"`, `format!("KEY=…")`) must be
+    registered, or one of the words each file names as no entry's key (a device's throttle tags,
+    a volume's flags, a tmpfs's options).
+  - Only `volumes.rs` may choose its key as it runs, and its own tests compose that one.
+- The builder writes no setup: its steps reach the guest in the builder's own protocol.
+- abi's own test: every key constant it defines, and every entry its functions make, is
+  registered.
+
+**Literals.**
+
+| Literal | Source |
+|---|---|
+| `KEYS` | the protocol's own names, each from the composer that writes it or the reader that reads it |
+| `=` | an entry's own separator of its key and value |
+
+**Cold start** (R03). Nothing is learned or chosen.
+
+**Tested** (light, red then green):
+- abi `run::setup::tests`: the registry sorted and each a key; every entry abi makes registered;
+  an unregistered key refused by its key, its value unsaid.
+- init `host_spec_tests::a_spec_holding_an_unregistered_setup_key_is_refused_by_it`; its
+  guard-removal mutant (`host_spec` without the check, init's behavior before) fails it.
+- shards `setup::tests::every_entry_the_setup_composers_write_is_of_a_registered_key` and
+  `every_entry_the_composers_spell_is_of_a_registered_key`. With one key taken out of the
+  registry (the daemon's `mac`), the census fails naming the file and key.
+- volumes' `a_joiners_shared_directories_are_its_join_shares_volumes` and
+  `an_agentfiles_volumes_are_registered_as_it_and_the_run_say`; api-run's
+  `a_members_arguments_are_staged_after_its_own_in_order` and
+  `credential_grants_ca_goes_to_the_guest_in_pem_with_each_host_once`.
+
+**Owed** (ROOT).
+- The broad real-VM suites on HVF, then KVM and WHP: containers, api_image, nesting,
+  member_exec. A key the census and the composers' tests missed shows there as a run refused
+  "its setup: a setup entry of key …".
+- These light tests on Linux and Windows (CI), and `scripts/lint` on the 7 targets.
+
+**What would falsify it.** A spec all of whose keys are registered refused; one holding an
+entry of an unregistered key started, applied or silently ignored; a file writing a spec's
+setup that the census does not read; an init of another build that accepts a key it has no
+reader for.
 
 ## 4. Start path (≤ 5 ms budget)
 

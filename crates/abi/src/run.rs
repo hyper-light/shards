@@ -14,6 +14,7 @@ pub mod nesting;
 pub mod notice;
 pub mod plug;
 pub mod quiesce;
+pub mod setup;
 pub mod socket;
 pub mod trust;
 
@@ -425,8 +426,9 @@ pub struct Spec {
     /// Documentation/admin-guide/cgroup-v2.rst): each `FILE=VALUE`, written in order.
     pub cgroup: Vec<Vec<u8>>,
     /// What the workload's namespaces are given before it starts, in order, each
-    /// `KIND=VALUE`: `tmpfs=DEST\0OPTIONS` (moby's merged tmpfs options), `shm=BYTES`,
-    /// `ulimit=NAME=SOFT:HARD`, `sysctl=KEY=VALUE`, and `readonly` alone.
+    /// `KIND=VALUE` or `KIND` alone: `tmpfs=DEST\0OPTIONS` (moby's merged tmpfs options),
+    /// `shm=BYTES`, `ulimit=NAME=SOFT:HARD`, `sysctl=KEY=VALUE`, `readonly`, and the rest of
+    /// [`setup::KEYS`], each kind one of those, else the spec is refused (D257).
     pub setup: Vec<Vec<u8>>,
     /// The terminal types a command with a pty may be told of in TERM, best first, where its
     /// environment gives none: its client's terminal's, then what that terminal speaks, and

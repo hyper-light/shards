@@ -77,7 +77,7 @@ elif ! grep -q "leak check: .* not found" "$t/said-codex"; then
 elif ! grep -q "written back over the original in one step" "$t/said-codex" ||
     ! grep -q '"access_token": "refreshed-' "$t/home/.codex/auth.json"; then
     fail codex "the refresh was not written back"
-elif [ "$(stat -f %Lp "$t/home/.codex/auth.json" 2> /dev/null || stat -c %a "$t/home/.codex/auth.json")" != 600 ]; then
+elif [ "$(python3 -I -c 'import os, stat, sys; print("%o" % stat.S_IMODE(os.stat(sys.argv[1]).st_mode))' "$t/home/.codex/auth.json")" != 600 ]; then
     fail codex "the login's mode changed"
 elif ls -A "$t/home/.codex" | grep -q '^\.shards-writeback-'; then
     fail codex "a write-back's temporary file was left"

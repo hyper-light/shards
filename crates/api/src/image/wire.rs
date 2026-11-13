@@ -51,8 +51,9 @@ pub use shards_abi::run::nesting::Ready;
 /// just in time (`LEASE`, answered `LEASED`), and the run's release of every lease
 /// (`RELEASED`; D242), so that a side that leases nothing refuses the run as it is asked,
 /// before any lease is: a client of an earlier version ends a run at a frame it has no kind
-/// for.
-pub const VERSION: u8 = 20;
+/// for; 21, warm run hosts ([`to_host::WARM`], [`to_client::WARMED`], [`Cause::Unfit`],
+/// [`StartedFrom::Warm`]; D253's pools), so that a side that keeps none is never asked to.
+pub const VERSION: u8 = 21;
 
 /// What the orchestrator's side sends.
 pub mod to_host {
@@ -85,6 +86,10 @@ pub mod to_host {
     /// A [`LeaseAnswer`](super::LeaseAnswer): a lease its run host asked, given or refused,
     /// by its ask's id (D242).
     pub const LEASED: u8 = 13;
+    /// A [`Request`](super::Request), first and once, in place of `CREATE`: a warm run host's
+    /// exemplar ([`Request::exemplar`](super::Request::exemplar), D253's pools), its microVM
+    /// started for runs of it and waiting, `WARMED`, for one, whose `CREATE` follows.
+    pub const WARM: u8 = 14;
 }
 
 /// What the run host sends.
@@ -125,6 +130,9 @@ pub mod to_client {
     /// Every lease of the run released ([`released`](super::released)): the run has ended,
     /// and nothing of any value it was leased is held (D242). Before [`ENDED`].
     pub const RELEASED: u8 = 31;
+    /// How a warm run host's microVM started ([`StartedFrom`](super::StartedFrom), its one
+    /// byte): it is ready, and waits for its run's `CREATE` (D253's pools).
+    pub const WARMED: u8 = 32;
 }
 
 /// Why a payload could not be read or written.
@@ -565,6 +573,9 @@ pub enum StartedFrom {
     /// Booted, saving another, its image's template having failed to restore: that one
     /// removed.
     Replaced = 3,
+    /// A warm run host's, its microVM ready before its run asked (D253's pools); appended in
+    /// version 21.
+    Warm = 4,
 }
 
 /// Why the run host will not run it, typed by what failed: the client maps each to its
@@ -587,6 +598,9 @@ pub enum Cause {
     Boot = 3,
     /// What the run host does not do yet.
     Unsupported = 4,
+    /// A warm run host's microVM is another request's than the run's (D253's pools): the run
+    /// is its orchestrator's to start on a host of its own.
+    Unfit = 5,
 }
 
 /// A member's bytes.
@@ -1267,6 +1281,7 @@ fn started_from(tag: u8) -> Result<StartedFrom, WireError> {
         1 => Ok(StartedFrom::Saved),
         2 => Ok(StartedFrom::Restored),
         3 => Ok(StartedFrom::Replaced),
+        4 => Ok(StartedFrom::Warm),
         tag => Err(WireError::Tag {
             what: "how a run started",
             tag,
@@ -1849,6 +1864,38 @@ impl Started {
     }
 }
 
+impl Request {
+    /// What a warm run host is started with and holds each run it is handed to (D253's
+    /// pools): this request with its members' stages, its deadline and its control ask taken
+    /// out, what alone may differ between the runs of one microVM; none of a run's secrets
+    /// is in it. Everything else is the microVM's: its image, size, command, ports, network,
+    /// shares, nesting, credential grants and GPUs.
+    pub fn exemplar(&self) -> Request {
+        Request {
+            members: Vec::new(),
+            ready_by: None,
+            control: None,
+            ..self.clone()
+        }
+    }
+}
+
+/// [`to_client::WARMED`]'s payload: how the warm host's microVM started.
+pub fn warmed(from: StartedFrom) -> [u8; 1] {
+    [from as u8]
+}
+
+/// How a warm host's microVM started, as [`warmed`] wrote it.
+pub fn read_warmed(payload: &[u8]) -> Result<StartedFrom, WireError> {
+    match payload {
+        [tag] => started_from(*tag),
+        _ => Err(WireError::Tag {
+            what: "a warm host's start",
+            tag: payload.first().copied().unwrap_or(0),
+        }),
+    }
+}
+
 impl Refused {
     pub fn encode(&self) -> Result<Vec<u8>, WireError> {
         let mut w = Writer(Vec::new());
@@ -1865,6 +1912,7 @@ impl Refused {
             2 => Cause::Widening,
             3 => Cause::Boot,
             4 => Cause::Unsupported,
+            5 => Cause::Unfit,
             tag => {
                 return Err(WireError::Tag {
                     what: "a refusal's cause",
@@ -3595,6 +3643,7 @@ mod tests {
             StartedFrom::Saved,
             StartedFrom::Restored,
             StartedFrom::Replaced,
+            StartedFrom::Warm,
         ] {
             let said = Started {
                 members: Vec::new(),
@@ -3607,16 +3656,88 @@ mod tests {
             assert_eq!(bytes.last(), Some(&(from as u8)));
             assert_eq!(Started::decode(&bytes).unwrap(), said);
             if let Some(last) = bytes.last_mut() {
-                *last = 4;
+                *last = 5;
             }
             assert_eq!(
                 Started::decode(&bytes),
                 Err(WireError::Tag {
                     what: "how a run started",
-                    tag: 4
+                    tag: 5
                 })
             );
         }
+    }
+
+    /// D253's pools: a warm run host's exemplar is its request with its members' stages, its
+    /// deadline and its control ask taken out, all else kept, so that two runs alike in all
+    /// but those share it; its start's one byte reads back, and a refusal of a run of another
+    /// microVM's is `Unfit`.
+    #[test]
+    fn a_warm_hosts_exemplar_keeps_all_but_a_runs_own() {
+        const { assert!(VERSION >= 21, "the channel's version 21 carries warm run hosts") };
+        let full = Request {
+            image: "agents/codex:1".into(),
+            vcpus: 2,
+            memory_mib: 1024,
+            command: Some(vec!["node".into()]),
+            members: vec![MemberStage {
+                kind: MemberKind::Harness,
+                name: "codex".into(),
+                env: vec![Secret(b"KEY=secret".to_vec())],
+                files: Vec::new(),
+                workdir: None,
+                input: false,
+                terminal: false,
+                args: Vec::new(),
+            }],
+            publish: Vec::new(),
+            egress: Narrowing::default(),
+            shares: Vec::new(),
+            nesting: true,
+            ready_by: Some(7),
+            credentials: Vec::new(),
+            control: Some(ControlAsk {
+                controller: [1; 32],
+                sockets: None,
+            }),
+            gpu_devices: Vec::new(),
+        };
+        let exemplar = full.exemplar();
+        assert!(exemplar.members.is_empty() && exemplar.ready_by.is_none() && exemplar.control.is_none());
+        assert_eq!(
+            Request {
+                members: full.members.clone(),
+                ready_by: full.ready_by,
+                control: full.control.clone(),
+                ..exemplar.clone()
+            },
+            full
+        );
+        let other = Request {
+            members: Vec::new(),
+            ready_by: Some(9),
+            control: None,
+            ..full.clone()
+        };
+        assert_eq!(other.exemplar(), exemplar);
+        assert_ne!(
+            Request {
+                vcpus: 4,
+                ..full.clone()
+            }
+            .exemplar(),
+            exemplar
+        );
+        assert_eq!(Request::decode(&exemplar.encode().unwrap()).unwrap(), exemplar);
+        for from in [StartedFrom::Saved, StartedFrom::Restored, StartedFrom::Warm] {
+            assert_eq!(read_warmed(&warmed(from)), Ok(from));
+        }
+        assert!(read_warmed(&[]).is_err() && read_warmed(&[1, 2]).is_err() && read_warmed(&[9]).is_err());
+        let unfit = Refused {
+            cause: Cause::Unfit,
+            why: "another microVM's".into(),
+        };
+        assert_eq!(Refused::decode(&unfit.encode().unwrap()).unwrap(), unfit);
     }
 
     /// The run's stats carry what its microVM costs its host and what its vCPUs ran of its
