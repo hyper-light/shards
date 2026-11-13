@@ -7,8 +7,8 @@ whose it is. ROOT's final pass after step 34 checks this table again.
 - **Read at:** first pass, Shards main `e7825cb32` (checked again at `dc7d36014`), kiln main
   `d6ffa45d8`, Hex main `d84730ee`, 2026-11-12 about 15:45 PST; second pass (section 4), Shards
   main `1145bd3f2`, kiln main `e86ec22c6`, Hex main `106c7b94`, 2026-11-12 about 18:40 PST, then
-  each landing after it as section 4 lists (last: Shards `a8eee1382`, kiln `3e137784b`, Hex
-  `daa36e99`); the plan at version 11 and ROOT's goal stack throughout. Branches not on main are named as such and
+  each landing after it as section 4 lists (last: Shards `628de209b`, kiln `402b7e4c9`, Hex
+  `b22f603c`); the plan at version 11 and ROOT's goal stack throughout. Branches not on main are named as such and
   count as nothing landed.
 - **Recorded:** the repository and file, then the section. "arch" is Shards'
   `docs/design/architecture.md`.
@@ -40,7 +40,7 @@ whose it is. ROOT's final pass after step 34 checks this table again.
 | # | Decision | Recorded | Evidence | Status |
 |---|---|---|---|---|
 | A1 | Control plane kiln ↔ Hex: hyper-transport on hyper-quic, AES-256-GCM only, identity from kiln's CA by CSR, Hex's calls on lanes | Hex `hex-quic.md` Q1-Q9 | linked | Hex's (step 4, Hex ROOT) |
-| A2 | Data plane kiln ↔ each harness's VM: a stream per stdio, a terminal lane, a control lane, a log lane; the VM's own key replaces kiln's peer-process identity | arch D238 (s37) "Decided", "Building: the endpoint" | the plan; agent-control-v1 | decided; the endpoint's connection, its stdio lanes and the controller's side of them built (step 11; rows 11, 11a, 11b); its control and terminal lanes wait on step 6; with step 10 decided, the endpoint in the daemon, each run's key held there and its SHA-256 in the run's managed metadata, and the log lane are step 11's to build (D238) |
+| A2 | Data plane kiln ↔ each harness's VM: a stream per stdio, a terminal lane, a control lane, a log lane; the VM's own key replaces kiln's peer-process identity | arch D238 (s37) "Decided", "Building: the endpoint" | the plan; agent-control-v1 | decided; the endpoint's connection, its stdio lanes and the controller's side of them built (step 11; rows 11, 11a, 11b); its control and terminal lanes carry step 6's command run in a member (D243, row 6a), still to build; with step 10 decided, the endpoint in the daemon, each run's key held there and its SHA-256 in the run's managed metadata, and the log lane are step 11's to build (D238) |
 | A3 | Where encryption ends is measured before it is decided | arch D238 "Where its TLS ends: at the host"; PM M540; `docs/research/measurements/control-end` | linked: PM M540, ROOT's summaries in `control-end/results/` (harness `d9caccfe8`..`4bf2fe812`, run at `66113379c`) | measured on HVF and KVM, then decided at the host by ROOT (`1b6e1203d`), the round trip, which favours the guest, recorded beside it; WHP, KVM's memory at more rounds, a loaded run on each host, HVF's distributions and the raw records owed (ROOT, M540); D238 lists what reopens it |
 | A4 | Every link `TLS13_AES_256_GCM_SHA384` only, with a test asserting it; QUIC's Initial packets stay AES-128-GCM (RFC 9001 §5) | arch D239 (s37), D180 | linked | built (step 3) |
 | A5 | Hex's scheduler gossips capacity over hyper-swim; kiln's balancer decides at the node that asks | Hex `scheduler-architecture.md`; kiln `docs/lb.md` | linked | each built on its own side |
@@ -70,7 +70,8 @@ whose it is. ROOT's final pass after step 34 checks this table again.
 | 3 | AES-256-GCM alone, both ways, on every Shards TLS link | arch D239 (s37), D180, D60 | linked: aes256-only-v1 (`e12d5b96e`, `2a328f37e`, via `04abb68d4`) | built; macOS runs, Windows and aarch64 builds, 7-target lint and real-VM E2E owed (ROOT) |
 | 4 | Hex's wire over hyper-transport: lanes, AES-256-GCM, CSR enrollment, learned waits | Hex `hex-quic.md`; Hex `docs/design/README.md` | linked | built on Hex main, a peer's ended half read to its end though a reset follows (Hex `325b01cf`); its conformance suite over QUIC on Linux, macOS and Windows open (Hex ROOT; ROOT's goal `d8b5e77b`) |
 | 5 | A member's stdin a stream its owner holds; stdout and stderr captured whole | arch D180 "A member's stdin" (completed, s37), D231 (corrected, s37), D240 (s37) | linked: member-stdin-v1 | built for the daemon's owner and the orchestrator (`e7825cb32`); real-VM E2E on KVM x86_64, KVM arm64, HVF, WHP and R14 costs owed (ROOT) |
-| 6 | exec, attach and a resizable TTY, confined as the member is | arch D240 "Building" (s37, slice 1 pointed at) | linked: member-exec-tty-v1 | slice 1 on main (`78fc1c8f5`, `532ad27c5`, via `de4897668`): a member starts with its signals at their defaults, as an exec's child does, reproduced, fixed and its guard mutated on HVF; exec, attach and a resizable TTY building; how is step 6's implementer's, ROOT reviews; `tests/member_exec.rs` on KVM x86_64, WHP and arm64 KVM, and init's unit test on arm64 Linux, owed (ROOT) |
+| 6 | exec, attach and a resizable TTY, confined as the member is | arch D243; D240 "Building" (s37, slice 1 pointed at) | linked: member-exec-tty-v1 | slice 1 on main (`78fc1c8f5`, `532ad27c5`, via `de4897668`): a member starts with its signals at their defaults, as an exec's child does; slice 2 on main (`3fe2c9db5`, `a5a92211f`, `1bda5eb85`, via `628de209b`): a command run in a member, born into its PID namespace and cgroup, entering its namespaces and confined as the member is, `shards exec vm --for NAME`, its terminal resized by `EXEC_RESIZE` (D243), its light tests on Linux x86_64 (init) and macOS arm64 (the rest), ten guards' removals each failing its test; a member's own terminal (`MemberSpec::terminal`) building; `tests/member_exec.rs`'s four real-VM tests on KVM x86_64, KVM arm64, HVF and WHP, and init's unit tests on arm64 Linux, owed (ROOT) |
+| 6a | No exec of shards-api's own: a command run in a member is the run protocol's exec (`in-member=N`), whoever sends it, the daemon for `shards exec --for` and step 11's control and terminal lanes for kiln and Hex; Hex's `MemberExec` is the control lane's | arch D243 "How it reaches every run" | — | decided by ROOT (2026-11-13), recorded in D243 (`1bda5eb85`, via `628de209b`); the lanes that carry it are step 11's to build |
 | 6 | Exec connections admitted under contention and said when lost (ROOT's exec-hang goal, found by step 2) | arch D16 "An exec's connection" (s37) | linked: exec-admission | on main (`0d4f20288`, `2944d9ab5`); its WHP result, Linux arm64 KVM and WHP arm64 owed |
 | 6 | The signal link's explicit states | arch D16 "Signals"; PM M538 | linked: signal-link, restored-kill | on main (`3607aad11`), its sends made off the link's lock by a sender thread of their own (`782275c26`); PM M538 (`1145bd3f2`): CI's one Windows `rm -f` timeout before the fix fits the losses `3607aad11` made typed, "Not closed as the signal link's bug"; its after-fix windows-2025 runs owed, as M538 lists |
 | 7 | A member's environment: init's, the image's `Env`, its `run.env`, its run's | arch D59 "A member's environment", D240 (s37) | linked: s7-home-workdir | on main (`239749c60`); real-VM runs owed (ROOT) |
@@ -155,12 +156,13 @@ what landed between the first pass and the "Read at" revisions:
   section 5); D241, Hex steps 13 and 14's Shards slice (`9bf25f367`; rows P3, A7, 2, 14); step 35's
   first evidence in kiln (`cd224213c`; row 35); D242, step 33's contract (`485fe0c21`; rows P8, 33, 11c);
   step 36's harness on Windows (kiln `3e137784b`; row 36); step 11's controller side (`a8eee1382`;
-  rows P5, A2, 11).
+  rows P5, A2, 11); step 6's slice 2 and ROOT's decision it records (`628de209b`; rows 6, 6a, A2),
+  with Hex's index naming both (Hex `b22f603c`).
 
 Still unrecorded, each with its owner: step 33's later steps (D242 holds step 1's contract); step 13's kiln side
 (kiln's Load Balancing agent); step 16's kiln record (`p/s16-vendor-v1`); step 10's runs that
-may reopen it (ROOT: WHP, KVM's memory at more rounds, a loaded run); step 6's later slices (D240
-holds slice 1); step 11's later slices (D238 holds slices 1 and 2 and the controller's side); what kiln's other uses of a
+may reopen it (ROOT: WHP, KVM's memory at more rounds, a loaded run); a member's own terminal (step 6;
+D240 and D243 hold its slices 1 and 2); step 11's later slices (D238 holds slices 1 and 2 and the controller's side); what kiln's other uses of a
 moved microVM's key do (row 11c, step 18's); cold migration's later slices (D176 part 6, section 5).
 
 ## 5. Beside the plan
