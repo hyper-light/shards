@@ -817,6 +817,7 @@ fn over_lanes(home: &str, case: impl FnOnce(&shards_api::control::Sockets, &[u8]
             }),
         }),
         gpu_devices: Vec::new(),
+        sign_ins: Vec::new(),
     };
     let guest = ImageShards::new().boot(&spec, TIMEOUT).unwrap();
     // READY=1 comes once every socket listens: no lane below races its bind.
