@@ -90,3 +90,27 @@ The first two hold `a_vm_told_a_baseline_gives_its_vcpus_no_more` (a KVM VM, no 
 `a_baseline_masks_every_feature_an_x86_guest_finds` and
 `a_machine_short_of_a_baseline_refuses_it_by_each_register`, built on x86-64 alone; the third
 is the E2E on two homes of a KVM x86-64 machine.
+
+## Step 3: a WHP microVM's CPU checked before anything moves (D245)
+
+`identity_refused` (daemon/moves.rs): a microVM saved on another CPU refused where WHP on
+x86-64 restores a snapshot only on its own; `move step cpu` refusing a baseline there; the
+plan's `cpu_identity`, read back empty from an earlier build's plan. Held by
+`a_microvm_saved_on_another_cpu_is_refused_where_a_restore_takes_only_its_own` and the
+refusal's round trip (`a_refusal_is_typed_on_the_wire_and_says_what_it_said`).
+
+At 0551545cc (one host, adas-mac-studio.local: Apple M4 Max, macOS 26.2, rustc 1.98.1,
+2026-11-13T04:23Z): `cargo fmt --all --check` clean; `cargo test -p shards-vmm --lib --
+arch::` 48 passed; `cargo test -p shards --bin shards -- daemon::moves cli::moves
+a_move_of_another_hypervisors_microvm_is_refused_typed` 11 passed; `cargo clippy -p shards
+-p shards-vmm --all-targets -- -D warnings` clean natively and, through cargo-xwin as
+scripts/lint runs it, with `--target x86_64-pc-windows-msvc`, which compiles the WHP side
+(`hv::whp::host_cpu_id`, `vm::host_cpu_id` on WHP).
+
+Owed (Windows x86-64 with WHP; the coordinator's): the WHP partition probe behind
+`shards-vm cpu` there (`hv::whp::host_cpu_id`), and the refusal end to end between two
+Windows hosts of different CPUs, none here:
+
+    shards move vm NAME CONTEXT    # from one WHP host to another of another CPU: refused at
+                                   # `ready`, "this machine's CPU is not the one NAME was
+                                   # saved on", NAME going on where it was

@@ -8717,8 +8717,8 @@ share made ahead), and a disk's capacity was fixed when its file was opened.
   apart from the VM (`hv::VfioHost`), which the running machine owns. Off Linux
   `Handle::plug_vfio` refuses, changing nothing (`vm::plug_refused`): macOS's
   Hypervisor.framework assigns no device at all, and Windows gives a microVM a host's
-  function as it starts alone (`WHP_NO_PLUG`): WHP allows a partition device assignment
-  before its setup alone (M401), Microsoft documents Discrete Device Assignment for a VM
+  function as it starts alone (`PassthroughRefusal::NoPlug`): WHP allows a partition device
+  assignment before its setup alone (M401), Microsoft documents Discrete Device Assignment for a VM
   given its device before it starts and giving it back once stopped, and WHP's pages say
   nothing of a virtual PCI device made in a partition that runs (D154's "No Windows host
   plugs a function"). Untested where a hypervisor assigns devices, as none here does.
@@ -14080,7 +14080,8 @@ one. So both, in that order.
     host's USB device for the VM's emulated XHCI controller (the
     `com.apple.vm.device-access` entitlement: "captures USB devices and uses them in the
     guest"), no PCI function. A run that names one is refused with "macOS's
-    Hypervisor.framework assigns no device to a VM" (`vm::passthrough_refused`).
+    Hypervisor.framework assigns no device to a VM, whose every device its VMM emulates"
+    (`vm::passthrough_refused`, `PassthroughRefusal::HypervisorFramework`).
   - **Windows passes one through where its hypervisor assigns devices** (Discrete Device
     Assignment), by WHP's virtual PCI devices (Microsoft Learn, "Windows Hypervisor Platform
     API Definitions", its Virtual PCI (VPCI) Devices and each function's page, 2026-06-08),
@@ -14169,7 +14170,8 @@ one. So both, in that order.
     2026-06-08) say nothing of a device made in a partition that runs, nor does OpenVMM make
     one (ba105dd7: its `new_physical_device` has no caller). So `Handle::plug_vfio` off
     Linux refuses (`vm::plug_refused`): where the hypervisor assigns devices with
-    `WHP_NO_PLUG`, naming those limits and how to give the function as the microVM starts;
+    `PassthroughRefusal::NoPlug`, naming those limits and how to give the function as the
+    microVM starts;
     elsewhere with the host's own answer. Untested on such a host, as none here assigns one.
   - **Windows refuses where its hypervisor assigns none**, with the hypervisor's own answer,
     asked as a function is (`hv::device_assignment_refused`: WHP's VirtualPciDeviceSupport,
@@ -14196,6 +14198,39 @@ one. So both, in that order.
     `a_hosts_pci_function_is_refused_with_its_oss_own_limit` (vm/mod.rs),
     `a_hosts_pci_function_is_refused_where_its_os_passes_none` (boot.rs) and
     `a_run_given_a_hosts_pci_function_is_refused_with_its_hosts_limit` (containers.rs).
+  - **Each refusal is typed** (R04), its variant the OS's own limit
+    (`vm::PassthroughRefusal`, crates/vmm/src/vm/passthrough.rs): macOS's
+    `HypervisorFramework` (Apple's docs: "Hypervisor maps the physical memory in the guest
+    to virtual memory of the host process", the VMM to "Emulate memory-mapped hardware by
+    emulating the memory access on exit"; M403); Windows' `Hypervisor`, the hypervisor's own
+    answer; where it assigns devices, `NoGuestIommu` and `NoPlug`; a host without a backend's
+    `NoBackend`. Callers that decide match it (`Vfio::of`, `plug_refused`, the tests); those
+    that say it render it, in their own words around it (dockerd's "error gathering device
+    information", the VM process's exit, the daemon's answer to `shards plug`), and text is
+    all that crosses those processes. The hypervisor's answer (`hv::assignment::Refused`,
+    written once for both WHP backends) is `NoPlatform`, `Unasked` (its words), `NoVirtualPci`
+    or `NotAllowed`: AllowDeviceAssignment refused, in its words, with WHP's IommuSupport bit
+    and the Windows edition, which says whose limit the refusal is. Microsoft supports
+    Discrete Device Assignment on Windows Server alone: "DDA and GPU-P aren't supported on
+    desktop-class hardware or client operating systems such as Windows 10 or 11 Pro"
+    (Microsoft Learn, "Troubleshooting guidance for Hyper-V GPU assignment, partitioning,
+    and passthrough", 2026-02-12), its host "running Windows Server 2016 or later" ("Deploy
+    graphics devices by using Discrete Device Assignment", 2026-01-30); and on Windows
+    Server it needs "server class hardware that's capable of granting the operating system
+    control over configuring the PCIe fabric (Native PCI Express Control)" and Access
+    Control Services at the PCIe root complex ("Deploy devices by using Discrete Device
+    Assignment", 2025-02-19). So a client edition's refusal names the first limit and a
+    server's the second, neither the other's: jupiter's Windows 11 Pro (ProductType 1, M401)
+    the edition's, CI's Server 2022 and 2025 (ProductType 3, M402) the hardware's. The
+    edition is the kernel's word, RtlGetVersion's wProductType (winnt.h's
+    VER_NT_WORKSTATION a client; VER_NT_SERVER and VER_NT_DOMAIN_CONTROLLER a server; any
+    other said as itself), read on the refusal path alone (`platform::product_type`); not
+    VerifyVersionInfoW, which IsWindowsServer wraps, whose page says it "has been
+    deprecated for Windows 10". No number is chosen here: the edition and the HRESULT are
+    the host's own answers. Held by `hv::assignment`'s tests (each product type's edition;
+    each edition's limit and not the other's), `vm::passthrough`'s (each variant's words),
+    and `a_hosts_pci_function_is_refused_with_its_oss_own_limit`, which matches the variant
+    its host gives.
   - Step 13's last part waits on hardware: the Windows E2E passing on a Windows Server host
     that assigns devices, and x86_64 Linux's VFIO on a host with a function to spare.
 - **BARs in the guest's memory.** Each BAR vfio-pci lets a user map
@@ -22573,7 +22608,10 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
   end mark written after that exit, `Duration::MAX` as no clock. What remains timed is
   twice the slowest recorded run on the host class (`shards_api::record`, PM M463, M464,
   M515); a class without a record has no bound, and its timed tests fail naming the record
-  due.
+  due. A record of one host bounds no other's (R03): CI's runner went past twice fedora's
+  slowest boot and refusal (PM M541), and ROOT decided on 2026-11-13 that these bounds are
+  learned where they run (docs/research/s37-decision-inventory.md, row 2). An attach of a
+  guest whose first client reaps it as it is held is refused `Exited` (PM M541).
 - `stop` kills the VM's process at once: the VMM has no host-to-guest power-off
   (vm/runtime.rs), so the page cache a guest held is lost, and a clean stop is the
   client's (ask the guest to sync and power off, `wait_for` its `PowerOff`).
@@ -23697,7 +23735,7 @@ test asserts against. A client an agent runs that offers no AES-256-GCM by defau
 then be refused: OpenSSL 3.6.4 and 4.1.0 and Node.js 24.14.1 offer it first, and Go and
 rustls's aws-lc-rs offer it (D60).
 
-### D240. A member's stdio, terminal and environment, as a harness is driven (stdin, stdout and stderr built: plan step 5; environment, home and working directory built: step 7; exec, attach and a terminal building: step 6; real-VM runs owed)
+### D240. A member's stdio, terminal and environment, as a harness is driven (stdin, stdout and stderr built: plan step 5; environment, home and working directory built: step 7; exec, attach and a terminal built: step 6, D243 and D244; real-VM runs owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d runs a harness as a HARNESS member under
 shards-init (D54, D59) and drives it as kiln drives one on a host: over its stdio (Claude
@@ -23742,12 +23780,12 @@ and no exec, attach or terminal (the plan's steps 5, 6 and 7).
   made them"). The record of step 7's four items:
   [s7-home-workdir](../research/measurements/s7-home-workdir/README.md).
 
-**Building: exec, attach and a terminal** (step 6; G24). Decided by the plan: an exec into a
+**Built: exec, attach and a terminal** (step 6; G24). Decided by the plan: an exec into a
 member runs as its uid and under its confinement (its namespaces, Landlock, seccomp, no
 capabilities, `no_new_privs`); attach reaches its stdio; a TTY of its own can be resized, on
 the terminal lane (D238); nothing crosses into another member. How it is built is step 6's
-implementer's, reviewed by ROOT. A command run in a member is built (D243); until a member's
-own terminal is, shards-api refuses it `Unsupported` (`crates/api/src/image.rs`). What it
+implementer's, reviewed by ROOT. A command run in a member is built (D243), and a member's own
+terminal, shown, typed into and sized by its owner (D244). What it
 builds on is on main: the run's signal link,
 whose states are explicit (D16; [signal-link](../research/measurements/signal-link/README.md)), and the
 exec port's admission under contention (D16, "An exec's connection"). Slice 1 is on main
@@ -24097,8 +24135,78 @@ end of their TLS (D238). So there is no separate shards-api exec (ROOT, 2026-11-
 `MemberExec` is the control lane's. A member's own stdio is attached through step 5's streams
 (D240).
 
-**Building.** A member's own terminal (`MemberSpec::terminal`, refused `Unsupported` until
-then).
+**A member's own terminal** is D244's.
+
+### D244. A member's own terminal: its stdio a pty whose master init holds, shown as its stdout, typed into through its stdin, sized by its owner (built: plan step 6, an orchestrator's runs; real-VM runs owed)
+
+**Why.** Plan step 6 (G24, D240): kiln shows a harness's own screen and its sign-in, so a
+member must be able to run on a terminal of its own, its owner reading what it shows,
+typing into it and sizing it, as `docker run -it` gives a container's command. shards-api's
+`MemberSpec::terminal` asked for one and was refused `Unsupported` until this.
+
+**Alternatives** (R02):
+- Docker's: runc makes the pty in the container (libcontainer/console_linux.go) and hands its
+  master over a console socket to containerd's shim, which copies it to the attached
+  client's streams; a resize is TIOCSWINSZ on that master (moby daemon/resize.go
+  `ContainerResize`; containerd's shim `Resize`), as D243's exec's is.
+- A devpts instance of the member's own: a member's `/dev` holds no `pts` (D59), and one
+  would add a mount and its device rules to every member for a peer it can be handed.
+- Decided: init's devpts, the peer opened through the master (TIOCGPTPEER) and given to the
+  member's uid, as D243's exec terminal; the master init's.
+
+**Decided and built.**
+- *Asked at create.* `member-terminal=N` (abi `run::members::TERMINAL_KEY`), one for a member
+  at most, refused for a member that starts no program, as an input is. shards-api's
+  `MemberSpec::terminal` rides the channel's `MemberStage::terminal` (version 11) to the run
+  host, which refuses it for a member the image does not declare, one of files alone, or one
+  asked twice, and gives the guest the entry.
+- *Its stdio.* The member's command's process (PID 2 under its reaper) makes itself a session
+  leader (setsid(2)) and the terminal its controlling terminal (TIOCSCTTY), then takes the
+  terminal's other end as its stdin, stdout and stderr. Init lets go of its own copy of that
+  end, so the terminal hangs up as the member's last process lets go of it.
+- *Shown.* Init reads the master as the member's stdout channel (`capture::Pipe::master`):
+  what the terminal shows, exactly, credited as any channel. Its end is the kernel's EIO once
+  the terminal's last other end has closed (drivers/tty/n_tty.c, `n_tty_read`,
+  `TTY_OTHER_CLOSED`), never an abort. Its stderr channel ends at once: nothing writes it.
+- *Typed into.* Where its stdin is its owner's too (`MemberSpec::stdin`), init writes the
+  owner's bytes to the master (`input::Input::terminal`), as keys typed, reading the
+  connection a frame's worth at a time (`run::HEADER` + `run::CHUNK`, the most a `STDIN` frame
+  carries, where a pipe's own size bounds a pipe's). The owner's end leaves the terminal
+  open, as a typist leaving does; the terminal hanging up ends the input (POLLHUP, as a
+  pipe's reader going is POLLERR).
+- *Sized.* `ImageGuest::resize(member, rows, cols)` is the channel's `RESIZE`, answered
+  `RESIZED` by its ask's id; refused as `ImageRefusal::Spec` for a member its spec gave no
+  terminal and as `ImageRefusal::Terminal` in its init's words. The run host runs init's
+  `builtin::RESIZE` (21) with the member's index, rows and columns: TIOCSWINSZ on the master,
+  a 0 in either leaving it as it is, as an exec's terminal is (run.rs `resize`; runc's
+  setupConsole), and the kernel tells the terminal's foreground process group SIGWINCH.
+- *Its size at start.* 0 by 0, as the kernel makes a pty: no size is chosen (R03). Its owner
+  sizes it once it knows its own screen's.
+
+**Not built.** A daemon's run asks no member a terminal of its own: no caller needs one yet;
+step 11's terminal lane takes the same entry and built-in where it does.
+
+**Literals** (none chosen):
+
+| Literal | Source |
+|---|---|
+| `member-terminal=` | this wire's own, beside D231's `member-*=` entries |
+| `builtin::RESIZE` 21 | the next after `NOTICE` 20 |
+| the channel's version 11 | ROOT's reservation (9 and 10 are other lanes') |
+| `to_host::RESIZE` 11, `to_client::RESIZED` 28 | the next of each |
+| `run::HEADER` + `run::CHUNK` | one `STDIN` frame's bound |
+| 0 by 0 | the kernel's size of a new pty |
+
+**Tests.** Unit: abi `members::tests::a_member_has_one_terminal_at_most` and
+`a_resize_says_its_member_and_size`; init `capture::tests::a_terminals_master_ends_its_channel_as_its_last_other_end_closes`
+and `input::tests::a_terminals_input_is_typed_into_it_and_its_hangup_ends_it`, on real ptys;
+shards-api `wire::tests::resizes_and_their_answers_read_back_as_said` and the request's
+version tests, `session::tests::a_resizes_answer_is_kept_for_its_awaited_ask_alone`, and
+`what_the_guest_refuses_is_refused_first` (the terminal rides the request); the run host's
+`a_terminal_is_a_running_members_once`. Real VMs, ROOT's (`cargo test -p shards --profile
+test-release --test member_exec`): `a_harness_on_a_terminal_of_its_own_is_shown_and_sized_by_its_owner`
+and `a_harness_on_a_terminal_of_its_own_reads_what_its_owner_types`. Record:
+[member-exec-tty-v1](../research/measurements/member-exec-tty-v1/README.md).
 
 ### D245. A CPU baseline: the CPU every machine a home moves among gives a guest, told each microVM it starts (decided; built on Hypervisor.framework, KVM arm64 and KVM x86-64; on WHP x86-64 its CPU checked at a move, its baseline researched, not built; real-VM runs owed)
 
