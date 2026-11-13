@@ -13413,6 +13413,24 @@ mod tests {
         });
     }
 
+    /// Init's builtin asks (`STAT`, `TOP`, `STATS`, ...) are waited for while their
+    /// microVM's process runs, each builtin judged by its own record (D215's judge,
+    /// `Wait::WhileRuns`), and with no process to follow, until they end: never a fixed time.
+    /// Before, `TAKE_TIMEOUT`'s 10 s, picked (ROOT's (3), 2026-11-13).
+    #[test]
+    fn a_builtin_ask_is_waited_for_while_its_microvm_runs() {
+        let t = Test::new("answered");
+        t.run(|t| {
+            let stat = shards_abi::run::builtin::STAT;
+            let record = t.daemon.answers.builtins.get(usize::from(stat)).unwrap();
+            assert!(matches!(
+                t.daemon.answered_wait(Some(7), stat),
+                health::Wait::WhileRuns(7, judged) if std::ptr::eq(judged, record)
+            ));
+            assert!(matches!(t.daemon.answered_wait(None, stat), health::Wait::Ending));
+        });
+    }
+
     /// A network process its VM waits on to close its run's ports (`UNPUBLISHING`) is
     /// followed from then, as one whose VM has gone (D217's helper slice): ended once it has
     /// gone on with nothing for a slice, its VM running still, which ends its VM's wait; and

@@ -8385,7 +8385,10 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   now D215's judge, shared, not copied (R12):
   - *Records*: each kind of answer apart, in the daemon's memory (`health::Answers`): a
     give-back (`RECLAIM`, at its host's pressure, a budget's or a group's), a room told
-    (`ROOM`), metrics read (`METRICS`). Each keeps W*, the slowest answer seen from a
+    (`ROOM`), metrics read (`METRICS`), and each of init's builtins its quiet work asks
+    (`exec_answered`, a record per builtin: `STAT`, `TOP`, `STATS`, a member's ports, a
+    network's switch, a layer's size, an update), which were each `TAKE_TIMEOUT`'s 10 s
+    (ROOT's (3), 2026-11-13). Each keeps W*, the slowest answer seen from a
     wait's start to its exec's end, and R*, the least CPU rate a microVM still answered at
     (`shards_api::Record`). Only an exec's own end teaches: one the daemon ended teaches
     nothing.

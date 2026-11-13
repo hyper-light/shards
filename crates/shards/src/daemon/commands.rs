@@ -837,7 +837,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             ..Default::default()
         };
         let (status, out, said) = if kind == builtin::STAT {
-            match self.exec_quietly(&id, &spec, None, 1 << 16, super::TAKE_TIMEOUT) {
+            match self.exec_answered(&id, &spec, 1 << 16) {
                 Ok(q) => (q.status, q.output, Vec::new()),
                 Err(e) => return refuse(e.to_string()),
             }
@@ -1081,7 +1081,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             builtin: shards_abi::run::builtin::PROCESSES,
             ..Default::default()
         };
-        let quiet = match self.exec_quietly(id, &spec, None, top_limit(), super::TAKE_TIMEOUT) {
+        let quiet = match self.exec_answered(id, &spec, top_limit()) {
             Ok(q) if q.status == Some(0) && !q.more => q,
             Ok(_) => return Err(format!("{given}: its processes could not be read")),
             Err(e) => return Err(format!("{given}: reading its processes: {e}")),
@@ -1480,27 +1480,26 @@ impl<D: crate::containers::Disk> Daemon<D> {
             builtin: shards_abi::run::builtin::LISTENS,
             ..Default::default()
         };
-        let listening: Vec<(u16, String)> =
-            match self.exec_quietly(id, &spec, None, 1 << 16, crate::daemon::TAKE_TIMEOUT) {
-                Ok(quiet) if quiet.status == Some(0) => String::from_utf8_lossy(&quiet.output)
-                    .lines()
-                    .filter_map(|l| {
-                        let (proto, port) = l.split_once(' ')?;
-                        Some((port.parse().ok()?, proto.to_string()))
-                    })
-                    .collect(),
-                Ok(quiet) => {
-                    reply.err(&format!(
-                        "shards: what {id} listens on: {}",
-                        String::from_utf8_lossy(&quiet.output).trim()
-                    ));
-                    return 1;
-                }
-                Err(e) => {
-                    reply.err(&format!("shards: what {id} listens on: {e}"));
-                    return 1;
-                }
-            };
+        let listening: Vec<(u16, String)> = match self.exec_answered(id, &spec, 1 << 16) {
+            Ok(quiet) if quiet.status == Some(0) => String::from_utf8_lossy(&quiet.output)
+                .lines()
+                .filter_map(|l| {
+                    let (proto, port) = l.split_once(' ')?;
+                    Some((port.parse().ok()?, proto.to_string()))
+                })
+                .collect(),
+            Ok(quiet) => {
+                reply.err(&format!(
+                    "shards: what {id} listens on: {}",
+                    String::from_utf8_lossy(&quiet.output).trim()
+                ));
+                return 1;
+            }
+            Err(e) => {
+                reply.err(&format!("shards: what {id} listens on: {e}"));
+                return 1;
+            }
+        };
         // Its networks whose members are its peers.
         let peered: Vec<String> = {
             let registry = lock(&self.containers);
@@ -3488,7 +3487,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             ..Default::default()
         };
         // A sample not taken is said in the daemon's log: the row shows it unmeasured.
-        let u = match self.exec_quietly(id, &spec, None, 1 << 12, super::TAKE_TIMEOUT) {
+        let u = match self.exec_answered(id, &spec, 1 << 12) {
             Ok(q) if q.status == Some(0) => Usage::parse(&String::from_utf8_lossy(&q.output)),
             Ok(q) => {
                 super::log(format!("container {id}: its stats: status {:?}", q.status));
