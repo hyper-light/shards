@@ -1641,7 +1641,7 @@ const VM_OWN_MAPPINGS_CPUS: u64 = 32;
 /// failing with it. Linux's default, 65,530, holds a VM of one volume (two windows, the
 /// join share's the other) to 16,286 ranges a window, 31.8 GiB, on 32 CPUs; Fedora's
 /// 1,048,576 to more than its host's memory.
-fn share_window_bound_mib(limit: u64, windows: u64, cpus: u64) -> u64 {
+pub(crate) fn share_window_bound_mib(limit: u64, windows: u64, cpus: u64) -> u64 {
     let own = VM_OWN_MAPPINGS.saturating_add(2 * cpus.saturating_sub(VM_OWN_MAPPINGS_CPUS));
     let ranges = limit.saturating_sub(own) / MAPPINGS_A_RANGE.saturating_mul(windows.max(1));
     ranges.saturating_mul(2)
@@ -1649,7 +1649,7 @@ fn share_window_bound_mib(limit: u64, windows: u64, cpus: u64) -> u64 {
 
 /// Linux's `vm.max_map_count` (/proc/sys/vm/max_map_count); none on hosts with no such limit.
 #[cfg(target_os = "linux")]
-fn max_map_count() -> Option<u64> {
+pub(crate) fn max_map_count() -> Option<u64> {
     std::fs::read_to_string("/proc/sys/vm/max_map_count")
         .ok()
         .and_then(|n| n.trim().parse().ok())
@@ -1657,8 +1657,34 @@ fn max_map_count() -> Option<u64> {
 
 /// Linux's `vm.max_map_count`; none on hosts with no such limit.
 #[cfg(not(target_os = "linux"))]
-fn max_map_count() -> Option<u64> {
+pub(crate) fn max_map_count() -> Option<u64> {
     None
+}
+
+/// Each share's DAX window in MiB (D189), as every microVM a run boots is given it, the
+/// daemon's and an orchestrator's run host's alike (D253): `SHARDS_SHARE_WINDOW_MIB`, else as
+/// long as the host's memory, the most of its files the host's page cache holds at once, as a
+/// run's swap window is (D159); its guest makes what it maps of it as it maps it (PM M306), and
+/// its VM fits it to its guest's addresses. None where the host is itself a virtual machine on
+/// an AMD CPU (PM M308), which `say` is told. Refused where it is no whole 2 MiB ranges.
+pub(crate) fn share_window_mib(say: &dyn Fn(&str)) -> Result<u64, String> {
+    let host_mib = crate::build::host_memory().map_or(0, |bytes| (bytes >> 20) & !1);
+    let cpu = host_cpu();
+    let window_default = share_window_default(host_mib, &cpu);
+    if window_default == 0 && host_mib > 0 && std::env::var_os("SHARDS_SHARE_WINDOW_MIB").is_none() {
+        say(
+            "volumes have no DAX window by default: this host is a virtual machine on an AMD CPU, \
+             whose hypervisor maps each page a window gives a guest afresh, reads through one 9 to 37 \
+             times slower than FUSE's (PM M308); SHARDS_SHARE_WINDOW_MIB gives one",
+        );
+    }
+    let share_window_mib = count("SHARDS_SHARE_WINDOW_MIB", window_default)?;
+    if !share_window_mib.is_multiple_of(2) {
+        return Err(format!(
+            "SHARDS_SHARE_WINDOW_MIB: {share_window_mib} MiB: a DAX window is whole 2 MiB ranges"
+        ));
+    }
+    Ok(share_window_mib)
 }
 
 /// The daemon's settings, checked before it serves: a malformed or excessive one stops it
@@ -1707,26 +1733,7 @@ fn settings() -> Result<Settings, String> {
     } else {
         None
     };
-    // Each share's window as long as the host's memory, the most of its files the host's
-    // page cache holds at once, as a run's swap window is (D159); its guest makes what it
-    // maps of it as it maps it (PM M306), and its VM fits it to its guest's addresses. None
-    // where the host is itself a virtual machine on an AMD CPU (PM M308).
-    let host_mib = crate::build::host_memory().map_or(0, |bytes| (bytes >> 20) & !1);
-    let cpu = host_cpu();
-    let window_default = share_window_default(host_mib, &cpu);
-    if window_default == 0 && host_mib > 0 && std::env::var_os("SHARDS_SHARE_WINDOW_MIB").is_none() {
-        log(
-            "volumes have no DAX window by default: this host is a virtual machine on an AMD CPU, \
-             whose hypervisor maps each page a window gives a guest afresh, reads through one 9 to 37 \
-             times slower than FUSE's (PM M308); SHARDS_SHARE_WINDOW_MIB gives one",
-        );
-    }
-    let share_window_mib = count("SHARDS_SHARE_WINDOW_MIB", window_default)?;
-    if !share_window_mib.is_multiple_of(2) {
-        return Err(format!(
-            "SHARDS_SHARE_WINDOW_MIB: {share_window_mib} MiB: a DAX window is whole 2 MiB ranges"
-        ));
-    }
+    let share_window_mib = share_window_mib(&|line| log(line))?;
     Ok(Settings {
         pool,
         warm_max,
@@ -7710,56 +7717,26 @@ impl<D: Disk> Daemon<D> {
         } else {
             None
         };
-        // Sized as a run without a limit, with the host's memory to plug, which each run
-        // asks for as its workload needs it within its own most (D148): one template for
-        // every limit (run::template). Plugged memory comes online as the kernel's own, as
-        // a builder's does (D133).
         // The CPU baseline its home's microVMs are told (D176 part 6), read once a run.
         let cpu_baseline = moves::home_baseline(&self.home);
-        let on_network = |cfg: &mut Config| {
-            (cfg.vcpus, cfg.memory_mib) = prepared.size;
-            cfg.cpu_baseline.clone_from(&cpu_baseline);
-            cfg.hotplug_mib = crate::build::host_memory()
-                .map_or(0, |bytes| ((bytes >> 20) & !1).saturating_sub(cfg.memory_mib));
-            if cfg.hotplug_mib > 0 {
-                cfg.cmdline.push_str(" memhp_default_state=online_kernel");
-            }
-            // And memory its workload frees given back to the host, as it reports it
-            // free, as a microVM's own is (D151).
-            cfg.reporting = true;
-            // And a swap window as long as the host's memory (D159), which a run with a
-            // memory limit swaps to: as much as the most memory a run may have, the swap
-            // that limit gives by default.
-            cfg.swap_mib = crate::build::host_memory().map_or(0, |bytes| (bytes >> 20) & !1);
-            cfg.pmem.extend(server.iter().cloned());
-            // Another CPU's image (D179): the emulator image's root after them, and its init
-            // told the device and the architecture to register, before its root is mounted.
-            if let Some(e) = &prepared.emulator {
-                cfg.pmem.push(e.root.clone());
-                cfg.cmdline.push_str(&format!(
-                    " shards_emulate=/dev/pmem{}:{}",
-                    cfg.pmem.len(),
-                    e.architecture
-                ));
-            }
-            // A slot for each directory it shares (D38), which its run fills.
-            cfg.shares = (0..prepared.shares).map(|_| Arc::default()).collect();
-            // And each share's DAX window, where the daemon gives one (D189), as its join
-            // share's, every range of all of them within the host's mappings where it limits
-            // them: on Windows of the files its share process gives (D197's slice 4).
-            cfg.share_window_mib = self.share_window_mib;
-            if let Some(limit) = self.max_map_count {
-                let windows = u64::try_from(cfg.shares.len())
-                    .unwrap_or(u64::MAX)
-                    .saturating_add(1);
-                let bound = share_window_bound_mib(limit, windows, u64::from(cfg.vcpus));
-                cfg.share_window_mib = cfg.share_window_mib.min(bound);
-            }
-            if let Some(bridge) = &bridge {
-                cfg.cmdline.push(' ');
-                cfg.cmdline.push_str(&bridge.cmdline());
-            }
+        // Every microVM a run boots is made one shape beside its guest (run::Shape), the
+        // daemon's and an orchestrator's run host's alike (D253).
+        let shape = crate::run::Shape {
+            size: prepared.size,
+            cpu_baseline: &cpu_baseline,
+            host_memory: crate::build::host_memory(),
+            server: server.as_deref(),
+            emulator: prepared.emulator.as_ref(),
+            shares: prepared.shares,
+            share_window_mib: self.share_window_mib,
+            max_map_count: self.max_map_count,
+            // PCI slots in every microVM, empty until a device is plugged into its run (D214):
+            // its templates have them, and so every restore of them. SHARDS_PCI_SLOTS gives
+            // another count, 0 for none (PM M430's A/B).
+            pci_slots: pci_slots(),
+            bridge: bridge.as_ref(),
         };
+        let on_network = |cfg: &mut Config| shape.give(cfg);
         // A run given a host's VFIO groups (D154), or VFIO's own nodes to take a host's
         // functions plugged in as it runs (D214): a microVM booted for it, their functions,
         // and its slots, behind its own IOMMU, with a kernel with VFIO; of no template, as
@@ -8244,80 +8221,7 @@ impl<D: Disk> Daemon<D> {
         parent: &str,
         layer: u64,
     ) -> Result<Ready, String> {
-        let mut args: Vec<OsString> = vec![
-            "run".into(),
-            "--kernel".into(),
-            cfg.kernel.clone().into(),
-            "--cmdline".into(),
-            cfg.cmdline.clone().into(),
-            "--cpus".into(),
-            cfg.vcpus.to_string().into(),
-            "--memory".into(),
-            cfg.memory_mib.to_string().into(),
-            "--rootfs".into(),
-            rootfs.into(),
-        ];
-        if cfg.hotplug_mib > 0 {
-            let max = cfg.memory_mib.saturating_add(cfg.hotplug_mib);
-            args.extend(["--memory-max".into(), max.to_string().into()]);
-        }
-        if cfg.reporting {
-            args.push("--reporting".into());
-        }
-        if cfg.swap_mib > 0 {
-            args.extend(["--swap-window".into(), cfg.swap_mib.to_string().into()]);
-        }
-        if let Some(init) = &cfg.init {
-            args.extend(["--init".into(), init.into()]);
-        }
-        for pmem in &cfg.pmem {
-            args.extend(["--pmem".into(), pmem.into()]);
-        }
-        if let Some(fresh) = save {
-            args.extend(["--snapshot-dir".into(), fresh.into()]);
-        }
-        if cfg.gpu {
-            args.push("--gpu".into());
-        }
-        for f in &cfg.vfio {
-            let flag = if f.iommu { "--vfio-iommu" } else { "--vfio" };
-            // By its device node where it is taken by that (D154).
-            let given: OsString = f
-                .cdev
-                .as_ref()
-                .map_or_else(|| f.name.clone().into(), |c| c.clone().into_os_string());
-            args.extend([flag.into(), given]);
-        }
-        if !cfg.shares.is_empty() {
-            args.extend(["--shares".into(), cfg.shares.len().to_string().into()]);
-        }
-        if cfg.share_window_mib > 0 {
-            args.extend(["--share-window".into(), cfg.share_window_mib.to_string().into()]);
-        }
-        // PCI slots in every microVM, empty until a device is plugged into its run (D214):
-        // its templates have them, and so every restore of them. SHARDS_PCI_SLOTS gives
-        // another count, 0 for none (PM M430's A/B).
-        let slots = pci_slots();
-        if slots > 0 {
-            args.extend(["--pci-slots".into(), slots.to_string().into()]);
-            // Behind its IOMMU where it was booted to take a host's functions (D214).
-            if cfg.pci_slots_iommu {
-                args.push("--pci-slots-iommu".into());
-            }
-        }
-        // The CPU baseline its guest is told (D176 part 6).
-        if !cfg.cpu_baseline.is_empty() {
-            args.extend([
-                "--cpu-baseline".into(),
-                shards_vmm::arch::cpu::encode(&cfg.cpu_baseline).into(),
-            ]);
-        }
-        // A join disk and a join share in every microVM, empty and unserved until a
-        // joiner joins its network (D119): its templates have them, and so every restore
-        // of them.
-        args.push("--join".into());
-        args.push("--join-share".into());
-        args.extend(["--warm".into(), VM_LINK.into()]);
+        let args = crate::run::boot_args(cfg, rootfs, save, VM_LINK);
         // A guest on a network: a fresh MAC, which a template it saves keeps.
         let net = if cfg.cmdline.contains("shards_net=") {
             Some(shards_net::random_mac().map_err(|e| format!("a guest's MAC: {e}"))?)

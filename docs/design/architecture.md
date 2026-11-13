@@ -25664,6 +25664,38 @@ endpoints bind.
 - An endpoint outliving its run.
 - A grant shards-api takes and init refuses, or the other way round.
 
+### D253. An orchestrator's run restores its image's template and takes a warm VM from its pool, as the daemon's runs do (in progress: the shared shape and words built; the run host's templates and shards-api's pools owed)
+
+**Why.** An orchestrator's run (D231) boots its microVM cold every time, where a daemon's run
+restores its image's template (D25) and takes a warm VM from its pool (D26). Hex boots its node
+through it (Hex step 39), so every one of Hex's starts pays a boot.
+
+**Decided so far.**
+- *One shape.* Every microVM a run boots has one shape beside its guest, the daemon's and a run
+  host's alike, so that a template's name (`run::template`) means one machine whichever
+  process saved it:
+  - `run::Shape::give` is the daemon's composition, moved out of `warm_for`: size, CPU
+    baseline, memory to plug and its swap window, reporting, the in-VM server's and the
+    emulator's devices, shares and their DAX windows, PCI slots, bridge;
+  - `run::boot_args` is `cold`'s words;
+  - `run::restore_args` (with `run::Backings`) is `plan_refill`'s;
+  - the share window's setting is `daemon::share_window_mib`, out of `settings`.
+
+  The daemon calls each of them, its words unchanged. `a_runs_microvm_is_shaped_alike_wherever_it_boots`,
+  `a_boots_words_are_its_configs` and `a_restores_words_are_its_templates` pin them.
+- *One demand rule.* D26's rule for how many warm VMs a pool keeps (the largest burst within an
+  RFC 6298 refill window, within the keep-alive) is `shards_api::demand`, moved from the daemon,
+  never copied. The daemon's pools keep theirs by it, and an orchestrator's will too.
+
+**Owed** (the next slices; then ROOT's real-VM runs):
+- The run host takes this shape, its words from these functions rather than its own: a join
+  disk and share, a writable layer's file, swap and share windows, memory to plug, the CPU
+  baseline. It restores its image's template, or boots and saves it, through the one VM
+  launch (R12; goal 52's step 10).
+- A template that fails to restore is removed, the run boots, and its orchestrator is told so,
+  typed. Its files are held open for the run's life.
+- shards-api keeps warm run hosts per template, sized by `shards_api::demand`.
+
 ### D254. kiln's MCP rides the agent-control link: a stdio bridge in the harness's member, one lane of the link per connection, no network grant (decided; its asks built at the endpoint and the controller; the member's listener and bridge, the run hosts' pairing, kiln's side and every real-VM run owed)
 
 **Why.** A harness kiln drives in a microVM calls kiln's MCP server (kiln serves `/api/mcp`
