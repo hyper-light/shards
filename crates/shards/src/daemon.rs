@@ -66,12 +66,13 @@ mod info;
 mod inspect;
 mod inspect_doc;
 mod layers;
+pub(crate) use layers::LayerFile;
 mod load;
 mod logs;
 mod managed;
 mod metrics;
 mod moves;
-pub(crate) use moves::Refused;
+pub(crate) use moves::{Refused, home_baseline};
 mod network;
 mod networks;
 mod packed;
@@ -7794,14 +7795,10 @@ impl<D: Disk> Daemon<D> {
         // A run given a GPU boots the pinned GPU kernel in the GPU's VM process
         // (D144), and restores a template of its own, saved before its guest made anything
         // of the GPU's, which its host driver would hold (D150).
-        let gpu_guest = prepared.gpu.as_ref().map(|kernel| crate::guest::Guest {
-            kernel: kernel.clone(),
-            init: guest.init.clone(),
-            kernel_digest: crate::kernel::KERNEL_GPU
-                .map(|k| format!("sha256:{}", k.sha256))
-                .unwrap_or_default(),
-            init_digest: guest.init_digest.clone(),
-        });
+        let gpu_guest = prepared
+            .gpu
+            .as_deref()
+            .map(|kernel| crate::run::gpu_guest(guest, kernel));
         let guest = gpu_guest.as_ref().unwrap_or(guest);
         let mut cfg = Config::new(guest.kernel.clone(), Some(guest.init.clone()));
         on_network(&mut cfg);

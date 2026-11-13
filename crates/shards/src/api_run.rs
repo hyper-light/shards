@@ -20,6 +20,7 @@ use shards_api::image::wire::{self, Cause};
 use shards_ipc::kind;
 
 /// Why the run will not be, for the orchestrator.
+#[derive(Debug)]
 struct No(Cause, String);
 
 fn no(cause: Cause) -> impl Fn(String) -> No {
@@ -170,6 +171,54 @@ fn boot_of(
         crate::run::Boot::Stored(guest) => (guest.kernel.as_path(), Some(guest.init.clone())),
     };
     (gpu.unwrap_or(kernel).to_path_buf(), init)
+}
+
+/// The run's microVM, made as every run's is (D253): its config, its guest's (the GPU's where
+/// the run is given its GPU, D144) shaped as the daemon shapes its runs' (`run::Shape`) and
+/// naming the GPUs it renders on (D232); and its template where it has one, named as the
+/// daemon names one (`run::template`), with the guest it is keyed by and recorded with and
+/// its root filesystem's stamp. None for a guest its caller gave, as the daemon's runs of one
+/// have none, or on a host whose hypervisor restores no snapshot (`restores`: Windows Server
+/// 2022's sets no vCPU's APIC page back, PM M345).
+struct Microvm {
+    cfg: shards_vmm::vm::Config,
+    template: Option<Template>,
+}
+
+/// A run's template: where it is, the guest it is keyed by, and its root filesystem's stamp
+/// as the run found it (`shards_image::store::rootfs_stamp`).
+struct Template {
+    dir: std::path::PathBuf,
+    guest: crate::guest::Guest,
+    stamp: Option<String>,
+}
+
+fn microvm(
+    home: &std::path::Path,
+    prepared: &crate::run::Prepared,
+    shape: &crate::run::Shape<'_>,
+    gpu_devices: &[shards_api::PhysicalGpu],
+    restores: bool,
+) -> Microvm {
+    let gpu = prepared.gpu.as_deref();
+    let (mut cfg, guest) = match &prepared.boot {
+        crate::run::Boot::Given(cfg) => ((**cfg).clone(), None),
+        crate::run::Boot::Stored(guest) => {
+            let guest = gpu.map_or_else(|| guest.clone(), |kernel| crate::run::gpu_guest(guest, kernel));
+            let cfg = shards_vmm::vm::Config::new(guest.kernel.clone(), Some(guest.init.clone()));
+            (cfg, Some(guest))
+        }
+    };
+    shape.give(&mut cfg);
+    cfg.gpu = gpu.is_some();
+    cfg.gpu_devices = gpu_devices.to_vec();
+    let template = guest.filter(|_| restores).map(|guest| {
+        let rootfs = &prepared.rootfs;
+        let stamp = shards_image::store::rootfs_stamp(rootfs);
+        let dir = crate::run::template(home, &guest, rootfs, stamp.as_deref(), &cfg, prepared.layer);
+        Template { dir, guest, stamp }
+    });
+    Microvm { cfg, template }
 }
 
 /// What the run's command is given of the nesting grant (D234), decided as the daemon
@@ -787,6 +836,159 @@ fn run_end(failed: Option<String>, done: Option<&[u8]>, started: bool) -> wire::
             "the VM ended without its run's end; its last words are on this host's stderr".into(),
         ),
     }
+}
+
+/// How the run's microVM starts (D253), as the daemon starts a run's (daemon.rs `warm_for`):
+/// from its image's template where one is saved; else booted, saving it on the way at a name of
+/// this process's alone that becomes the template once complete; or booted alone where it has
+/// no template (a guest its caller gave, a host whose hypervisor restores no snapshot).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Way {
+    Boot,
+    Save {
+        dir: std::path::PathBuf,
+        fresh: std::path::PathBuf,
+    },
+    Restore {
+        dir: std::path::PathBuf,
+    },
+}
+
+/// The name a save of template `dir` is written at until it is complete: this process's alone,
+/// as the daemon names its own (`warm_for`), its one VM's.
+fn fresh_of(dir: &std::path::Path) -> std::path::PathBuf {
+    dir.with_extension(format!("new-{}-0", std::process::id()))
+}
+
+/// The way a run whose template is `template`, none where it has none, starts: restoring it
+/// where it `exists`, else saving it.
+fn way_of(template: Option<&std::path::Path>, exists: impl Fn(&std::path::Path) -> bool) -> Way {
+    match template {
+        None => Way::Boot,
+        Some(dir) if exists(dir) => Way::Restore {
+            dir: dir.to_path_buf(),
+        },
+        Some(dir) => Way::Save {
+            dir: dir.to_path_buf(),
+            fresh: fresh_of(dir),
+        },
+    }
+}
+
+/// What starts a run's microVM (`started`): its VM process launched the way asked, waited for
+/// until it is ready, ended where it never is; its template's record written beside it, and
+/// its files held open.
+trait Machine {
+    type Vm;
+    type Held;
+    /// Its VM process, launched the way `way` says.
+    fn launch(&mut self, way: &Way) -> Result<Self::Vm, String>;
+    /// Waits until `vm` says it is ready (`READY`): its end, or anything else it says first,
+    /// is its failure, in those words.
+    fn ready(&mut self, vm: &mut Self::Vm) -> Result<(), String>;
+    /// Ends `vm`, which was never ready: killed, and its processes reaped.
+    fn end(&mut self, vm: Self::Vm);
+    /// Writes template `dir`'s record beside it (`run::Origin`), its microVM having saved it.
+    fn record(&mut self, dir: &std::path::Path) -> Result<(), String>;
+    /// Holds template `dir`'s files open (`shards_vmm::snapshot::hold`).
+    fn hold(&mut self, dir: &std::path::Path) -> Result<Self::Held, String>;
+    /// Says `line` on this host's diagnostics.
+    fn say(&mut self, line: &str);
+}
+
+/// The run's microVM, ready; how it started, which its orchestrator is told (`Started::from`);
+/// and its template's files, held open for the run's life where it has a template (D253), as
+/// the daemon starts a run's (daemon.rs `warm_for`):
+/// - restoring its template, whose files it holds as its VM restores it (refill.rs
+///   `start_planned`). One that fails to restore, its VM ending or saying anything else before
+///   it is ready, is removed with its record, and the run boots and saves another,
+///   `Replaced`. A VM that cannot be launched at all is the host's failure, which saving the
+///   template again would not mend: the template stays, and the run fails.
+/// - booting and saving its template where none is saved: its record written once its
+///   microVM is ready, and the save made the template unless another run's got there first
+///   (`run::settle`), whose files it then holds.
+/// - booting alone where it has no template.
+///
+/// A boot that fails is the run's failure (`Cause::Boot`), its save removed.
+fn started<M: Machine>(m: &mut M, way: Way) -> Result<(M::Vm, wire::StartedFrom, Option<M::Held>), No> {
+    let boot = |e: String| No(Cause::Boot, e);
+    let (dir, fresh, replaced) = match way {
+        Way::Boot => {
+            let mut vm = m.launch(&Way::Boot).map_err(boot)?;
+            if let Err(e) = m.ready(&mut vm) {
+                m.end(vm);
+                return Err(boot(e));
+            }
+            return Ok((vm, wire::StartedFrom::Booted, None));
+        }
+        Way::Restore { dir } => {
+            let restore = Way::Restore { dir: dir.clone() };
+            let mut vm = m.launch(&restore).map_err(boot)?;
+            let held = m.hold(&dir);
+            match m.ready(&mut vm) {
+                Ok(()) => {
+                    let held = match held {
+                        Ok(held) => Some(held),
+                        Err(e) => {
+                            m.say(&format!("{}: its files are not held open: {e}", dir.display()));
+                            None
+                        }
+                    };
+                    return Ok((vm, wire::StartedFrom::Restored, held));
+                }
+                Err(e) => {
+                    m.end(vm);
+                    drop(held);
+                    m.say(&format!(
+                        "its template {} does not restore ({e}); removed, and booting instead",
+                        dir.display()
+                    ));
+                    crate::run::Origin::remove(&dir);
+                    let _ = std::fs::remove_dir_all(&dir);
+                    let fresh = fresh_of(&dir);
+                    (dir, fresh, true)
+                }
+            }
+        }
+        Way::Save { dir, fresh } => (dir, fresh, false),
+    };
+    let save = Way::Save {
+        dir: dir.clone(),
+        fresh: fresh.clone(),
+    };
+    let mut vm = match m.launch(&save) {
+        Ok(vm) => vm,
+        Err(e) => {
+            crate::run::settle(&fresh, &dir);
+            return Err(boot(e));
+        }
+    };
+    if let Err(e) = m.ready(&mut vm) {
+        m.end(vm);
+        crate::run::settle(&fresh, &dir);
+        return Err(boot(e));
+    }
+    if let Err(e) = m.record(&dir) {
+        m.say(&format!("{}: its record: {e}", dir.display()));
+    }
+    crate::run::settle(&fresh, &dir);
+    let held = if shards_vmm::snapshot::exists(&dir) {
+        match m.hold(&dir) {
+            Ok(held) => Some(held),
+            Err(e) => {
+                m.say(&format!("{}: its files are not held open: {e}", dir.display()));
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let from = if replaced {
+        wire::StartedFrom::Replaced
+    } else {
+        wire::StartedFrom::Saved
+    };
+    Ok((vm, from, held))
 }
 
 mod hosted {
@@ -4284,5 +4486,332 @@ mod tests {
             boot_of(&stored, None),
             ("/store/vmlinux".into(), Some("/store/init".into()))
         );
+    }
+
+    /// A stand-in snapshot at `dir`, as a VM's save leaves one (`snapshot::exists`): a pointer
+    /// to a generation with its state.
+    fn snapshot_at(dir: &std::path::Path) {
+        std::fs::create_dir_all(dir.join("g-1")).unwrap();
+        std::fs::write(dir.join("current"), b"g-1\n").unwrap();
+        std::fs::write(dir.join("g-1").join("state"), b"").unwrap();
+    }
+
+    /// A machine of stand-ins (no VM): each VM the way it was launched; ready, or not, as
+    /// told, launch by launch; a save's VM leaving its snapshot at its fresh name as it is
+    /// launched, where `saves`; what it ended, recorded, held and said, kept.
+    #[derive(Default)]
+    struct Stand {
+        unready: Vec<bool>,
+        unlaunchable: bool,
+        saves: bool,
+        launched: Vec<Way>,
+        ended: Vec<Way>,
+        recorded: Vec<std::path::PathBuf>,
+        held: Vec<std::path::PathBuf>,
+        said: Vec<String>,
+    }
+
+    impl Machine for Stand {
+        type Vm = Way;
+        type Held = std::path::PathBuf;
+        fn launch(&mut self, way: &Way) -> Result<Way, String> {
+            if self.unlaunchable {
+                return Err("starting shards-vm: no such file".into());
+            }
+            self.launched.push(way.clone());
+            if let (Way::Save { fresh, .. }, true) = (way, self.saves) {
+                snapshot_at(fresh);
+            }
+            Ok(way.clone())
+        }
+        fn ready(&mut self, _vm: &mut Way) -> Result<(), String> {
+            let unready = !self.unready.is_empty() && self.unready.remove(0);
+            if unready {
+                return Err("the VM ended before it was ready".into());
+            }
+            Ok(())
+        }
+        fn end(&mut self, vm: Way) {
+            self.ended.push(vm);
+        }
+        fn record(&mut self, dir: &std::path::Path) -> Result<(), String> {
+            self.recorded.push(dir.to_path_buf());
+            Ok(())
+        }
+        fn hold(&mut self, dir: &std::path::Path) -> Result<std::path::PathBuf, String> {
+            self.held.push(dir.to_path_buf());
+            Ok(dir.to_path_buf())
+        }
+        fn say(&mut self, line: &str) {
+            self.said.push(line.to_string());
+        }
+    }
+
+    /// D253: a run whose template is saved restores it, holding its files as its VM restores
+    /// it, and is told so; one whose template is not saved boots saving it at a name of its
+    /// process's alone, which becomes the template once its VM is ready, its record written,
+    /// its files held; one of no template boots alone, holding nothing.
+    #[test]
+    fn a_runs_template_restores_where_saved_else_its_boot_saves_it() {
+        let home = shards_testdir::TempDir::new("tmpl").unwrap();
+        let dir = home.path().join("templates").join("abc");
+        let exists = |d: &std::path::Path| shards_vmm::snapshot::exists(d);
+        let fresh = fresh_of(&dir);
+        assert_eq!(
+            way_of(Some(&dir), exists),
+            Way::Save {
+                dir: dir.clone(),
+                fresh: fresh.clone()
+            }
+        );
+        let mut m = Stand {
+            saves: true,
+            ..Stand::default()
+        };
+        let (vm, from, held) = started(&mut m, way_of(Some(&dir), exists)).unwrap();
+        assert_eq!(from, wire::StartedFrom::Saved);
+        assert!(matches!(vm, Way::Save { .. }));
+        assert!(shards_vmm::snapshot::exists(&dir) && !fresh.exists());
+        assert_eq!(
+            (m.recorded, m.held, held),
+            (vec![dir.clone()], vec![dir.clone()], Some(dir.clone()))
+        );
+
+        assert_eq!(way_of(Some(&dir), exists), Way::Restore { dir: dir.clone() });
+        let mut m = Stand::default();
+        let (_, from, held) = started(&mut m, way_of(Some(&dir), exists)).unwrap();
+        assert_eq!(from, wire::StartedFrom::Restored);
+        assert_eq!(m.launched, [Way::Restore { dir: dir.clone() }]);
+        assert_eq!((m.held, held), (vec![dir.clone()], Some(dir.clone())));
+        assert!(m.recorded.is_empty() && m.ended.is_empty());
+
+        assert_eq!(way_of(None, exists), Way::Boot);
+        let mut m = Stand::default();
+        let (_, from, held) = started(&mut m, Way::Boot).unwrap();
+        assert_eq!((from, held), (wire::StartedFrom::Booted, None));
+        assert_eq!(m.launched, [Way::Boot]);
+        assert!(m.held.is_empty());
+    }
+
+    /// D253: a template whose VM ends before it is ready is removed, its record with it, and
+    /// the run boots saving another, said to its orchestrator as `Replaced` and on this host's
+    /// diagnostics; a VM that cannot be launched at all is the host's failure, which leaves
+    /// the template as it is and fails the run.
+    #[test]
+    fn a_template_that_does_not_restore_is_replaced_and_the_run_told_so() {
+        let home = shards_testdir::TempDir::new("broken").unwrap();
+        let dir = home.path().join("templates").join("abc");
+        snapshot_at(&dir);
+        let record = crate::run::Origin::path(&dir).unwrap();
+        std::fs::write(&record, b"{}").unwrap();
+        let mut m = Stand {
+            unready: vec![true],
+            saves: true,
+            ..Stand::default()
+        };
+        let (_, from, held) = started(&mut m, Way::Restore { dir: dir.clone() }).unwrap();
+        assert_eq!(from, wire::StartedFrom::Replaced);
+        assert_eq!(m.ended, [Way::Restore { dir: dir.clone() }]);
+        assert_eq!(
+            m.launched,
+            [
+                Way::Restore { dir: dir.clone() },
+                Way::Save {
+                    dir: dir.clone(),
+                    fresh: fresh_of(&dir)
+                }
+            ]
+        );
+        assert!(!record.exists(), "the broken template's record");
+        assert!(shards_vmm::snapshot::exists(&dir), "the template saved again");
+        assert_eq!((m.recorded, held), (vec![dir.clone()], Some(dir.clone())));
+        assert!(
+            m.said.iter().any(|l| l.contains("does not restore")),
+            "{:?}",
+            m.said
+        );
+
+        let mut m = Stand {
+            unlaunchable: true,
+            ..Stand::default()
+        };
+        match started(&mut m, Way::Restore { dir: dir.clone() }) {
+            Err(No(Cause::Boot, why)) => assert!(why.contains("no such file"), "{why}"),
+            Err(No(cause, why)) => panic!("{cause:?}: {why}"),
+            Ok(_) => panic!("started"),
+        }
+        assert!(
+            shards_vmm::snapshot::exists(&dir),
+            "the host's failure removes no template"
+        );
+    }
+
+    /// D253: a boot whose VM is never ready fails the run, `Boot`, ended, its save removed and
+    /// no template made of it; another run's template, saved first, stays the template.
+    #[test]
+    fn a_boot_that_fails_leaves_no_save_and_another_runs_save_wins() {
+        let home = shards_testdir::TempDir::new("save").unwrap();
+        let dir = home.path().join("templates").join("abc");
+        let fresh = fresh_of(&dir);
+        let mut m = Stand {
+            unready: vec![true],
+            saves: true,
+            ..Stand::default()
+        };
+        let way = Way::Save {
+            dir: dir.clone(),
+            fresh: fresh.clone(),
+        };
+        assert!(matches!(started(&mut m, way.clone()), Err(No(Cause::Boot, _))));
+        assert_eq!(m.ended, [way.clone()]);
+        assert!(!fresh.exists() && !dir.exists());
+        assert!(m.recorded.is_empty() && m.held.is_empty());
+
+        snapshot_at(&dir);
+        std::fs::write(dir.join("g-1").join("first"), b"").unwrap();
+        let mut m = Stand {
+            saves: true,
+            ..Stand::default()
+        };
+        let (_, from, held) = started(&mut m, way).unwrap();
+        assert_eq!((from, held), (wire::StartedFrom::Saved, Some(dir.clone())));
+        assert!(
+            dir.join("g-1").join("first").exists(),
+            "the first save stays the template"
+        );
+        assert!(!fresh.exists());
+    }
+
+    /// A run prepared as `run::prepare` makes one, of `boot`, its root filesystem at `rootfs`,
+    /// given its GPU's kernel where `gpu` names one.
+    fn prepared(
+        rootfs: &std::path::Path,
+        boot: crate::run::Boot,
+        gpu: Option<std::path::PathBuf>,
+    ) -> crate::run::Prepared {
+        crate::run::Prepared {
+            cpus: crate::resources::host_cpus(),
+            boot,
+            gpu,
+            vfio: Ok(Vec::new()),
+            vfio_kernel: None,
+            cdi: Ok(None),
+            rootfs: rootfs.to_path_buf(),
+            spec: shards_abi::run::Spec::default(),
+            interactive: false,
+            lease: None,
+            stop_signal: None,
+            options: crate::spec::Options::default(),
+            health: None,
+            shell: Vec::new(),
+            labels: Default::default(),
+            parent: String::new(),
+            exposed: Vec::new(),
+            image_id: String::new(),
+            image_manifest: String::new(),
+            size: (2, 256),
+            memory_max: 256,
+            image_volumes: Vec::new(),
+            agentfile: None,
+            shares: 0,
+            emulator: None,
+            layer: crate::run::LAYER_HOLDS,
+        }
+    }
+
+    /// D253: an orchestrator's run's microVM is the daemon's for the same inputs, its words
+    /// and its template's name alike: its guest's config shaped by `run::Shape`, its template
+    /// named by `run::template`. A run given its GPU boots the GPU's guest under a template of
+    /// its own (D150), and one naming GPUs keys them too, each apart (D232); a guest its
+    /// caller gave, or a host that restores no snapshot, has no template.
+    #[test]
+    fn an_orchestrators_runs_microvm_is_the_daemons_for_the_same_inputs() {
+        use std::path::Path;
+        let home = shards_testdir::TempDir::new("same").unwrap();
+        let home = home.path();
+        let rootfs = home.join("root.erofs");
+        std::fs::write(&rootfs, b"root").unwrap();
+        let guest = crate::guest::Guest {
+            kernel: home.join("vmlinux"),
+            init: home.join("init"),
+            kernel_digest: "sha256:k".into(),
+            init_digest: "sha256:i".into(),
+        };
+        let baseline = shards_vmm::arch::cpu::Id::default();
+        let shape = crate::run::Shape {
+            size: (2, 256),
+            cpu_baseline: &baseline,
+            host_memory: Some(8 << 30),
+            server: None,
+            emulator: None,
+            shares: 1,
+            share_window_mib: 0,
+            max_map_count: None,
+            pci_slots: 4,
+            bridge: None,
+        };
+        let stamp = shards_image::store::rootfs_stamp(&rootfs);
+        let daemons = |guest: &crate::guest::Guest, gpu: bool| {
+            let mut cfg = shards_vmm::vm::Config::new(guest.kernel.clone(), Some(guest.init.clone()));
+            shape.give(&mut cfg);
+            cfg.gpu = gpu;
+            let dir = crate::run::template(
+                home,
+                guest,
+                &rootfs,
+                stamp.as_deref(),
+                &cfg,
+                crate::run::LAYER_HOLDS,
+            );
+            (cfg, dir)
+        };
+        let words = |cfg: &shards_vmm::vm::Config| crate::run::boot_args(cfg, &rootfs, None, "3");
+
+        let plain = prepared(&rootfs, crate::run::Boot::Stored(guest.clone()), None);
+        let ours = microvm(home, &plain, &shape, &[], true);
+        let (cfg, dir) = daemons(&guest, false);
+        assert_eq!(words(&ours.cfg), words(&cfg));
+        let template = ours.template.as_ref().unwrap();
+        assert_eq!(
+            (&template.dir, &template.guest, &template.stamp),
+            (&dir, &guest, &stamp)
+        );
+
+        let kernel = home.join("vmlinux-gpu");
+        let gpu = prepared(
+            &rootfs,
+            crate::run::Boot::Stored(guest.clone()),
+            Some(kernel.clone()),
+        );
+        let ours = microvm(home, &gpu, &shape, &[], true);
+        let gpu_guest = crate::run::gpu_guest(&guest, &kernel);
+        let (cfg, gpu_dir) = daemons(&gpu_guest, true);
+        assert_eq!(ours.cfg.kernel, kernel);
+        assert_eq!(words(&ours.cfg), words(&cfg));
+        assert_eq!(ours.template.as_ref().map(|t| &t.dir), Some(&gpu_dir));
+        assert_ne!(gpu_dir, dir);
+
+        let selected = [shards_api::PhysicalGpu::MetalRegistry(1)];
+        let ours = microvm(home, &gpu, &shape, &selected, true);
+        let named = ours.template.as_ref().map(|t| t.dir.clone()).unwrap();
+        assert!(named != gpu_dir && named != dir);
+        let said = words(&ours.cfg);
+        assert!(
+            said.windows(2)
+                .any(|w| w[0] == "--gpu-device" && w[1] == "metal:0000000000000001"),
+            "{said:?}"
+        );
+
+        let given = crate::run::Boot::Given(Box::new(shards_vmm::vm::Config::new(
+            guest.kernel.clone(),
+            Some(guest.init.clone()),
+        )));
+        assert!(
+            microvm(home, &prepared(&rootfs, given, None), &shape, &[], true)
+                .template
+                .is_none()
+        );
+        assert!(microvm(home, &plain, &shape, &[], false).template.is_none());
+        assert!(Path::new(&dir).starts_with(home.join("templates")));
     }
 }
