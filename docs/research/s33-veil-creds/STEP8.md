@@ -250,7 +250,9 @@ second slice, its second part".
   -p shards-api -p shards --all-targets -- -D warnings` clean on aarch64-apple-darwin, on x86_64-unknown-linux-gnu (zig
   CC, as `scripts/lint` sets it) and on x86_64-pc-windows-msvc (`cargo xwin`); `image::session` 24 passed.
 - Run r858 (head 9539320cc, the relay test given a direct assertion of its lease's drop): `api_run::` 45 passed.
-- The merged tree's rerun before landing: MERGED_RESULT
+- Run r874 (head 2fb3a0c23, the slice merged with main ed1136305, whose commits touched crates/net and D242): the same
+  tests, shards-api 64, shards-dns 5, shards-net 47 (2 ignored: step 10's A/B harness) and `api_run::` 45 passed; the
+  four crates' clippy clean on all three targets.
 
 ### R10: each guard's red (`scripts/step8-reds.py 2b`)
 
