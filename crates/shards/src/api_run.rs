@@ -6253,12 +6253,21 @@ mod tests {
             credentials(&[grant("anthropic/claude-max", &[])], &[], Some(&named), false),
             credentials(
                 &[grant("anthropic/claude-max", &["api.anthropic.com"])],
+                &[],
                 None,
                 false,
             ),
             credentials(&[untoken], &[], Some(&named), false),
             credentials(
                 &[grant("anthropic/claude-max", &["api.anthropic.com"]), shared],
+                &[],
+                Some(&named),
+                false,
+            ),
+            // An upstream root past what the network process's wire carries (D242).
+            credentials(
+                &[grant("anthropic/claude-max", &["api.anthropic.com"])],
+                &[vec![0x30; usize::from(u16::MAX) + 1]],
                 Some(&named),
                 false,
             ),

@@ -1322,8 +1322,16 @@ mod tests {
         assert!(why.contains(&most.to_string()), "{why}");
         let why = refused(vec![UpstreamRoot::Der(a.der().to_vec()); most + 1]);
         assert!(why.contains(&(most + 1).to_string()), "{why}");
+        // As many as the wire's count holds pass this field's checks (the request may pass the
+        // channel's own bound, refused as that).
         s.upstream_roots = vec![UpstreamRoot::Der(a.der().to_vec()); most];
-        assert_eq!(request(&s).unwrap().upstream_roots.len(), most);
+        assert!(!matches!(
+            request(&s),
+            Err(ImageRefusal::Spec {
+                what: "an upstream root",
+                ..
+            })
+        ));
     }
 
     /// Do: ask a run with credential grants and no lessor, with one, and a run with neither
