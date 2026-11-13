@@ -4,8 +4,8 @@
 
 mod probe;
 pub use probe::{
-    GPU_NAME_BYTES, GpuName, GpuProbe, GpuProbeError, GpuReport, ResolvedGpu, probe_bytes, report_bytes,
-    uuid_from_hex,
+    GPU_NAME_BYTES, GpuName, GpuProbe, GpuProbeError, GpuReport, ResolvedGpu, fixed_name, probe_bytes,
+    report_bytes, uuid_from_hex,
 };
 
 use alloc::vec::Vec;
