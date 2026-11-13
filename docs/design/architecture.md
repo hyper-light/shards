@@ -6435,7 +6435,7 @@ stateless reset (§10.3), which ends the connection for that peer as its close w
 connection, its handshake's or established, keeps its place: a vanished owner's is freed only
 as its successor contends for it and it has not answered, within its probe timeout, the PING
 an earlier attempt sent it (`Driver::reclaim`, below), its successor refused and dialing again meanwhile; a stranger's
-handshake in flight holds it too. Every bounded endpoint shares the driver, so an
+handshake in flight holds it too, and gives it up the same way. Every bounded endpoint shares the driver, so an
 output endpoint's observer resubscribing after its close is taken at once, and so is the
 agent-control endpoint's third connection while the older drains (D238's `CONNECTIONS`). No
 literal: the places are the caller's admission, the close period the transport's own. Red at
@@ -6569,8 +6569,8 @@ replaced by:
   its commands up (`Controls::hang_up`). A stall still unanswered as its connection ends is the
   path's lost silence (`Liveness::lost`: the silence before the send that stalled); one its
   answer ended is the peer's slowness, and records none. What bounds a driver's resources is
-  the reclaim as a newcomer contends (`Driver::reclaim`): it asks each established holder for
-  an answer (a PING) and refuses the newcomer, and at a later attempt lets go of the holder
+  the reclaim as a newcomer contends (`Driver::reclaim`): it asks each holder, its handshake in
+  flight or ended, for an answer (a PING) and refuses the newcomer, and at a later attempt lets go of the holder
   unheard longest of those that have not answered that PING within their own probe timeout
   (`Liveness::unanswering`), its handler told as QUIC's `TimedOut`; a holder that answers,
   however late, keeps its place, and newcomers dialing again put off no judgement, as an ask
@@ -6595,8 +6595,28 @@ replaced by:
   established alike, as its descriptors (`Driver::hold_connections`, `Host::handshakes`:
   `platform::descriptor_limit`, as each connection served may hold a command and its stdio,
   so no more could each be served one; red with no bound,
-  `a_listener_at_its_bound_gives_a_vanished_clients_place_to_a_newcomer`). Owed, as for
-  handshakes: the memory a connection holds, measured, as its second term. No wait is
+  `a_listener_at_its_bound_gives_a_vanished_clients_place_to_a_newcomer`). ROOT's ruling on
+  #72's handshakes (2026-11-13): a handshake in flight holding a place is judged as any holder
+  is. Only established holders were asked, so a client gone mid-handshake held its place for
+  good: a bounded endpoint's successor refused at every attempt
+  (`a_handshake_unheard_past_its_probe_timeout_gives_its_place_and_one_heard_keeps_it`, red so
+  at 494ceb1dc: one place held by a hand-driven client's Initial, which never reads its
+  server's flight), and the listener's own rule for handshakes, the oldest given up for the
+  newest past `Host::handshakes` (`Driver::hold_handshakes`), never ran, as the listener's
+  places were the same number and a newcomer past them was refused before it was looked at.
+  That rule is gone: the reclaim covers it, and it would have given up a live handshake for
+  any newer one. A handshake is judged by its own spaces' probe timeout, which counts no
+  `max_ack_delay` (RFC 9002 §6.2.1: Initial and Handshake packets are acknowledged at once,
+  RFC 9000 §13.2.1), read from its transport as its application-data probe timeout less its
+  peer's `max_ack_delay` (`Connection::probe_timeout`, `Connection::peer_max_ack_delay`; no
+  ACK_FREQUENCY frame, which raises the former, is sent before the handshake ends); before its
+  first RTT sample it is the initial RTT's (§6.2.2: 333 ms, so 999 ms), and a client that
+  acknowledges nothing gives none. No deadline of the handshake's own, and no idle timeout. A
+  handshake heard since the ask keeps its place, the test's client answering each ask over
+  three such probe timeouts while newcomers were refused. Its failure is typed as an
+  established holder's: a live client whose answer comes later than that loses its place, its
+  handler told `TimedOut`, and dials again. Owed: the memory a connection holds, measured, as
+  its second term. No wait is
   judged sooner than QUIC's own loss recovery judges its send, at its probe timeout (§6.2.1,
   the smoothed RTT, four times its variation and the peer's `max_ack_delay`;
   `Connection::probe_timeout`, hyper-quic's patch Q7): a run-out is past the window and that
@@ -6619,11 +6639,13 @@ replaced by:
   open invitations, none while it holds none, and where every place is taken, a newer stranger
   takes the place of the one that has held it longest without joining, which is let go
   (server.rs `judged`), once the machine has said whom its key is.
-- *Handshakes held at once* (none before): a daemon holds as many handshakes from keys not yet
-  known as its descriptors allow (`Host::handshakes`: the process's limit,
-  `platform::descriptor_limit`, as each connection served may hold a command and its stdio),
-  and past them the newest takes the place of the oldest still unanswered (`Driver::hold_handshakes`).
-  Owed: the memory a handshake holds, measured, as its second term.
+- *Handshakes held at once* (none before): a daemon holds as many connections, handshakes from
+  keys not yet known among them, as its descriptors allow (`Host::handshakes`: the process's
+  limit, `platform::descriptor_limit`, as each connection served may hold a command and its
+  stdio), and past them a newcomer takes the place of a holder, its handshake in flight or
+  ended, unheard past its probe timeout since an earlier newcomer asked it
+  (`Driver::hold_connections`, above; the oldest-first rule it replaced never ran). Owed: the
+  memory a handshake holds, measured, as its second term.
 - *Output's high-water mark* (was 1 MiB of frames held before a reader waited): none. A reader
   of a command's output (`server.rs`) or of a client's stdin (`client.rs`) reads again once the
   transport has taken all it read: the peer's flow control (RFC 9000 §4.1) is the only
