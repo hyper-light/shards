@@ -1208,21 +1208,31 @@ pub fn peak_commit_kib() -> u64 {
     0
 }
 
-/// This process's own memory now, in KiB, as memory per VM is counted (PM M30's
+/// This process's own memory now, in KiB ([`footprint`]); 0 where unknown.
+pub fn footprint_kib() -> u64 {
+    footprint().map_or(0, |bytes| bytes / 1024)
+}
+
+/// This process's own memory now, in bytes, as memory per VM is counted (PM M30's
 /// `phys_footprint`): macOS's physical footprint, its private and copied pages, without the
 /// file pages it shares with every process mapping them, a template's among them; Linux's
 /// anonymous resident pages (`RssAnon`, proc(5)), which a written page of a private file
-/// mapping becomes. 0 where unknown.
-pub fn footprint_kib() -> u64 {
+/// mapping becomes. As the daemon reads a VM process's (`platform::process_usage`). None
+/// where it cannot be read.
+pub fn footprint() -> Option<u64> {
     #[cfg(target_os = "linux")]
     {
         std::fs::read_to_string("/proc/self/status")
             .ok()
             .and_then(|status| {
                 let line = status.lines().find_map(|l| l.strip_prefix("RssAnon:"))?;
-                line.trim().strip_suffix("kB")?.trim().parse().ok()
+                line.trim()
+                    .strip_suffix("kB")?
+                    .trim()
+                    .parse::<u64>()
+                    .ok()?
+                    .checked_mul(1024)
             })
-            .unwrap_or(0)
     }
     #[cfg(target_vendor = "apple")]
     {
@@ -1237,13 +1247,10 @@ pub fn footprint_kib() -> u64 {
                 (&raw mut info).cast::<libc::rusage_info_t>(),
             )
         };
-        if got != 0 {
-            return 0;
-        }
-        info.ri_phys_footprint / 1024
+        (got == 0).then_some(info.ri_phys_footprint)
     }
     #[cfg(not(any(target_os = "linux", target_vendor = "apple")))]
-    0
+    None
 }
 
 /// The effective user ID of the process at the other end of `sock`, as it connected:

@@ -7514,6 +7514,21 @@ Decided by the user on 2026-10-14 ("so long as they apply appropriately to micro
     other group, and its own group's stop comes once its word has run past the slowest
     room answered (the same test: each group's largest stopped, OOM-killed). A group whose
     budget goes tells each member it told a room that it has none, its hold let go of.
+  - **A member's room as of the footprint it was read with** (built, macOS and Windows).
+    The groups' thread read what each member's VM process held, then told each its room,
+    and init held its run at what it used as the word came plus that room: a member that
+    grew between the read and the word had that growth counted twice, its group past
+    `memory.max` or not as the two came in one order or the other
+    (`a_members_room_holds_as_of_the_footprint_it_was_read_with`, red at 1dc8eeff8: a member
+    of 400 MiB beside 300 under 1000, grown to 600 before its word came, held to 900). Now
+    its room goes with the footprint its VM process held as it was read (`ROOM`'s second
+    word), and init holds it as of what that process holds now, read from its VMM
+    (`control::FOOTPRINT`: the VM process's own footprint as the daemon reads one,
+    proc_pid_rusage's on macOS, its private working set on Windows) just before its hold
+    reads what the run uses: `run::room_now`, the room less what it came to hold since, all
+    of it read values. So it grows into its room once, whichever comes first. Where its VMM
+    cannot say its footprint, init holds the room as told and says so (`ROOM_UNREAD`),
+    which the daemon logs. A one-word `ROOM`, a budget's (D188), holds as it did.
   - **Windows** (built): every process of a microVM under NAME is made in a job object of
     NAME's, nested above the VM process's own (PROC_THREAD_ATTRIBUTE_JOB_LIST, the
     group's first; Job Objects, "Nested Jobs", Windows 8 on), its warm VMs too: a VM
@@ -17263,6 +17278,7 @@ download.
 | `MAX_TRAILER` (http.rs) | 4096, uncited | 4096, cited | go1.26.1 net/http/transfer.go l. 925-935, transport.go l. 326 |
 | `MAX_REDIRECTS` (http.rs) | 10, uncited | 10, cited | go1.26.1 net/http/client.go l. 834 |
 | `SLACK` (registry.rs tests) | 1.5 s | none: the waits the client chose (`Client::paused`) | the test's own record |
+| a scripted server's read (testing.rs `route`), and a test's read of the connection it held | 10 s, 5 s | none: its client's end, or the server's drop, which shuts its connections down (2026-11-13) | the person's rule: liveness alone where nothing is learned; `a_scripted_server_waits_for_its_client_as_long_as_it_lives` |
 
 #### DNS/dial completion and cancellation are events (D222, continued)
 
@@ -27889,8 +27905,17 @@ carrier: a bundle over origin/main in a blobless clone):
     Its VM is played on the link's other end, and the link is followed as a run's is.
 - shards: `daemon::snapshots::tests::a_saves_ask_reads_as_its_vm_reads_it`.
 - The scan: `scan_test.py`, 7 tests; credentials.py's `credentials_test.py`, 15, unchanged.
-- Each guard was removed in turn and its test failed: the records are in the scan's README and
-  below.
+- R10, each guard removed by hand in turn, its focused test run, the tree restored (13 of 13
+  failed):
+  - the run host's: the VM's answer taken unasked; two saves at once; a save outside the home;
+    one where a guest reaches; one into a taken name; a failed save's directory left;
+  - the scan's: every 8th offset alone looked up (f18's stride); placeholders not public; no
+    base64 forms; no UTF-16LE form; a shape inside a longer word; no entropy floor; a run one
+    shorter.
+  - The run one shorter survived first: the scan's test took its bound from the scan itself. It
+    now holds the scan to credentials.py's run (d1d50e7f8). The failed save's directory, left,
+    first hung its test; the test's VM now bounds its reads, so the test fails rather than
+    hangs.
 
 **Owed** (ROOT).
 - `api_image`'s `a_saved_runs_memory_holds_what_its_harness_was_given_and_the_scan_finds_it` on

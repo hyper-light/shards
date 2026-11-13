@@ -4249,6 +4249,7 @@ mod tests {
     }
 
     /// What member 0's log in `run` keeps of each channel, its bytes whole.
+    #[cfg(unix)]
     fn kept_in(run: &Path) -> [Vec<u8>; 2] {
         let log = crate::daemon::logs::LogFile::open(&drain::member_dir(run, 0)).unwrap();
         let mut kept: [Vec<u8>; 2] = [Vec::new(), Vec::new()];
@@ -4266,7 +4267,9 @@ mod tests {
     /// the daemon's end of its stream ended (so its bridge's read ends, though the test's VM
     /// end is held past the scope) and its drain closed (so its viewer ends), so that the
     /// failure is told, never waited on by the scope's threads.
+    #[cfg(unix)]
     struct AbortedOnPanic<'a>(&'a Owner);
+    #[cfg(unix)]
     impl Drop for AbortedOnPanic<'_> {
         fn drop(&mut self) {
             if std::thread::panicking() {
@@ -4387,7 +4390,9 @@ mod tests {
     }
 
     /// A viewer's client that reads nothing: each write waits until it is let go.
+    #[cfg(unix)]
     struct Stalled(std::sync::mpsc::Receiver<()>, Vec<u8>);
+    #[cfg(unix)]
     impl io::Write for Stalled {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
             // Its sender's drop lets every write go, at once.

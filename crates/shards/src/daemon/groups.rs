@@ -247,8 +247,18 @@ struct Answered {
 #[cfg(any(target_os = "macos", windows))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Ask {
-    room: Option<i64>,
+    room: Option<Room>,
     give: Option<u64>,
+}
+
+/// A member's room (D183): the bytes its group's budget leaves it, read with what its VM
+/// process held then, `at`, which its init holds it as of (`run::room_now`), so that what it
+/// grew by before the word comes counts once; none where that could not be read.
+#[cfg(any(target_os = "macos", windows))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Room {
+    bytes: i64,
+    at: Option<u64>,
 }
 
 #[cfg(any(target_os = "macos", windows))]
@@ -649,7 +659,8 @@ impl<D: Disk> Daemon<D> {
         self.budget_group_cpu(name, budget.cpu);
         #[cfg(windows)]
         self.limit_group_job(name, budget.max);
-        let current = sum(&self.footprints(members));
+        let held = self.footprints(members);
+        let current = sum(&held);
         let _ = std::fs::write(dir.join("memory.current"), format!("{current}\n"));
         // Its processes, a line each, as a cgroup's `cgroup.procs` lists its own: on Windows
         // its job's, every process of its microVMs; on macOS, which has no group of
@@ -696,16 +707,15 @@ impl<D: Disk> Daemon<D> {
                 of: members.iter().map(|m| (m.pid, Given::Asked)).collect(),
             });
         }
-        for m in members {
+        // Each told its room with what its VM process held as the room was read: one read.
+        for (i, m) in members.iter().enumerate() {
             hold.told.insert(m.pid);
-            self.ask(
-                threads,
-                m,
-                Ask {
-                    room: Some(room),
-                    give,
-                },
-            );
+            let at = held
+                .iter()
+                .find(|&&(j, _)| j == i)
+                .map(|&(_, footprint)| footprint);
+            let room = Some(Room { bytes: room, at });
+            self.ask(threads, m, Ask { room, give });
         }
         if room >= 0 {
             if std::mem::take(&mut hold.short) {
@@ -926,12 +936,21 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// Tells run `id`'s guest the room its group's budget leaves it (init's `ROOM`, D188):
-    /// past what its run uses, the least room a run goes on in, as a slice's is told; or,
-    /// with none, that it has no budget, its hold let go of.
-    fn tell_group_room(&self, id: &str, pid: u32, room: Option<i64>) {
+    /// past what its run uses, the least room a run goes on in, as a slice's is told, as of
+    /// what its VM process held as the room was read where that was read (D183); or, with
+    /// none, that it has no budget, its hold let go of. A guest whose VMM could not say what
+    /// its VM process holds now held it as told, and said so.
+    fn tell_group_room(&self, id: &str, pid: u32, room: Option<Room>) {
+        let argv = match room {
+            None => Vec::new(),
+            Some(Room { bytes, at: None }) => vec![bytes.to_string().into_bytes()],
+            Some(Room { bytes, at: Some(at) }) => {
+                vec![bytes.to_string().into_bytes(), at.to_string().into_bytes()]
+            }
+        };
         let spec = shards_abi::run::Spec {
             builtin: shards_abi::run::builtin::ROOM,
-            argv: room.map(|r| r.to_string().into_bytes()).into_iter().collect(),
+            argv,
             ..Default::default()
         };
         match self.exec_waiting(
@@ -941,7 +960,14 @@ impl<D: Disk> Daemon<D> {
             1 << 12,
             super::health::Wait::WhileRuns(pid, &self.answers.room),
         ) {
-            Ok(q) if q.status == Some(0) && q.cut.is_none() => {}
+            Ok(q) if q.status == Some(0) && q.cut.is_none() => {
+                let said = String::from_utf8_lossy(&q.output);
+                if said.split_whitespace().nth(1) == Some(shards_abi::run::builtin::ROOM_UNREAD) {
+                    log(format!(
+                        "container {id}: its microVM's VMM could not say what its VM process holds: its group's room held as told, not as of what it held then"
+                    ));
+                }
+            }
             Ok(q) => log(format!(
                 "container {id}: telling its microVM its group's room: {}",
                 super::reclaim::said_of(&q)
@@ -1024,7 +1050,10 @@ mod tests {
     #[cfg(any(target_os = "macos", windows))]
     #[test]
     fn an_ask_behind_a_word_keeps_its_newest_room_and_any_give_back() {
-        let ask = |room, give| Ask { room, give };
+        let ask = |room: Option<i64>, give| Ask {
+            room: room.map(|bytes| Room { bytes, at: Some(7) }),
+            give,
+        };
         assert_eq!(ask(Some(5), None).over(None), ask(Some(5), None));
         assert_eq!(
             ask(Some(-3), None).over(Some(ask(Some(5), Some(1)))),

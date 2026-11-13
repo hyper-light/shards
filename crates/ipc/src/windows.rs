@@ -1360,10 +1360,13 @@ pub fn peak_commit_kib() -> u64 {
 /// set. Not its private bytes committed (PrivateUsage), which stay as they are whatever it
 /// gives back (PM M371); 0 where unknown.
 pub fn footprint_kib() -> u64 {
+    footprint().map_or(0, |bytes| bytes / 1024)
+}
+
+/// [`footprint_kib`]'s, in bytes; none where it cannot be read.
+pub fn footprint() -> Option<u64> {
     use windows_sys::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS_EX2};
-    let Ok(cb) = u32::try_from(size_of::<PROCESS_MEMORY_COUNTERS_EX2>()) else {
-        return 0;
-    };
+    let cb = u32::try_from(size_of::<PROCESS_MEMORY_COUNTERS_EX2>()).ok()?;
     let mut counters = PROCESS_MEMORY_COUNTERS_EX2 {
         cb,
         ..Default::default()
@@ -1372,9 +1375,9 @@ pub fn footprint_kib() -> u64 {
     if unsafe { GetProcessMemoryInfo(GetCurrentProcess(), (&raw mut counters).cast(), cb) } != 0
         && counters.PrivateWorkingSetSize != 0
     {
-        return (counters.PrivateWorkingSetSize / 1024) as u64;
+        return Some(counters.PrivateWorkingSetSize as u64);
     }
-    memory().map_or(0, |m| (m.WorkingSetSize / 1024) as u64)
+    memory().map(|m| m.WorkingSetSize as u64)
 }
 
 /// What process `pid` has done so far, for a log that says why it seems stuck: its CPU time
