@@ -23239,3 +23239,55 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   | R09, R10 | Red: the Windows test's failure at 68baef2d0 (`unwrap_err` of `Ok`); the cause measured here. |
   | R11 | Windows' writer only; Unix's FIFO writer sees its reader's end as EPIPE. |
   | R15, R16 | Implementer; one light run on jupiter, ROOT's leave; its clone and target removed after. |
+
+### M554. A stopped child hung up by its run's end: why rusage_times_are_task_info_times failed once (D215)
+
+- **Question.** shards-api's `progress::tests::rusage_times_are_task_info_times` (08336a4cb)
+  stops a shell child (SIGSTOP), waits for its stop (`waitid(WSTOPPED | WNOWAIT)`), then reads
+  its user and system times once through proc_pid_rusage(3) and once through
+  PROC_PIDTASKINFO, and holds them equal. It failed once on adas-mac-studio.local (macOS 26.2
+  arm64, load average 20), in kiln run r227, which kiln had already counted ended (no exit code)
+  as its first test binary ran, and whose test binary then died part-way through its tests. What
+  in the comparison can differ?
+- **Method.**
+  - Load alone: 200 such children stopped under a spinner on each of the host's 14 CPUs, each
+    read PROC_PIDTASKINFO, proc_pid_rusage, PROC_PIDTASKINFO (a stand-in, since replaced by the
+    one below).
+  - A run's end: a kiln run whose shell child traps HUP, INT, TERM and CONT into a log, stops
+    itself, and is stopped by `kiln stop` (Ctrl-C, then terminate).
+  - The stand-in, `progress::tests::a_stopped_child_is_hung_up_by_its_runs_end` (ignored, run by
+    hand with `--ignored --nocapture`): under a spinner per CPU, 100 children stopped as the test
+    stopped its own, each sent SIGHUP then SIGCONT, as the kernel sends an orphaned process
+    group's members (below), its end waited for (`waitid(WEXITED | WNOWAIT)`), then read once
+    each; and 100 stopped as the test stops its own now, sent the same, read where they ran
+    nothing between.
+- **Found** (adas-mac-studio.local, macOS 26.2 arm64, at main 4506d5268):
+  - Load alone never ran a stopped child on: its times grew after `waitid` in 0 of 200, and
+    one read of each never disagreed.
+  - The run's end did: the stopped child ran its HUP trap and exited. Its run's shell gone, its
+    process group was orphaned while holding a stopped member, and POSIX has the kernel then send
+    each member SIGHUP, then SIGCONT: "If the exit of the process causes a process group to
+    become orphaned, and if any member of the newly-orphaned process group is stopped, then a
+    SIGHUP signal followed by a SIGCONT signal shall be sent to each process in the
+    newly-orphaned process group" (POSIX.1-2017, `_exit`).
+  - The stand-in: one read of each disagreed in 100 of 100 children stopped as before.
+    Continued and hung up, the child had gone, and PROC_PIDTASKINFO read nothing of it.
+    Stopped as now, they disagreed in 0 of 100.
+- **Decision.** The test's child ignores HUP, INT and TERM and stops itself again whenever
+  continued (`while :; do kill -STOP $$; done`), so that only the test's SIGKILL ends it. Its
+  two readers are compared where it ran nothing between them: PROC_PIDTASKINFO's times the same
+  on either side of proc_pid_rusage's read (`times_still`). The readers themselves were never
+  at fault. A run's end makes its test binary's last results noise; this one no longer says a
+  false failure in them.
+- **Tests.** `rusage_times_are_task_info_times` (its child and reads as above);
+  `a_stopped_child_is_hung_up_by_its_runs_end` (ignored), its counts asserted: every child stopped
+  as before disagrees, none stopped as now.
+- **Rules** (policy cbd392849, role implementer):
+
+  | rule | proof, result, gap |
+  |---|---|
+  | R01 | Test code only. |
+  | R02, R03 | XNU's readers and POSIX's orphaned process groups, measured here; no figure but the stand-in's rounds. |
+  | R09, R10 | Red: one read of each, 100 of 100 hung-up children; green: 0 of 100, and the test. |
+  | R11 | macOS's test alone (`cfg(target_os = "macos")`). |
+  | R15, R16 | Implementer; light runs on one host, ROOT's ask. |
