@@ -22068,9 +22068,10 @@ what it is asked, then resolved under another registry's name and a tag of its o
 a tag pulled once: no registry asked either time. It holds on the revision it was written
 against (7152fa749): what spent Docker Hub's anonymous pulls (100 an hour for the LAN's
 IPv6 /64) were E2E tests whose fresh homes each pulled their base, which now take Docker
-Hub's images from the tests' own registry, served from what a build pulled once per
-checkout into target/artifacts/hub (tests/common `hub`), as the pinned kernel is fetched
-once into target/artifacts. A test that must read Docker Hub itself (attestation chains and
+Hub's images, and ghcr.io's, from the tests' own registry, served from what a build pulled
+once per checkout into target/artifacts/hub (tests/common `hub`), as the pinned kernel is
+fetched once into target/artifacts; a test that built in the host user's own home
+(`a_failing_step_cites_its_build_file_lines`) has a home of its own. A test that must read Docker Hub itself (attestation chains and
 signatures, tags as they move, other CPUs' images and the emulator image) skips unless
 `SHARDS_TESTS_DOCKER_HUB=1`, which CI's test step sets (tests/common
 `cannot_reach_docker_hub`).
