@@ -196,6 +196,29 @@ pub(super) fn stat_at(dir: host::Raw, name: &CStr) -> Result<Stat, Errno> {
     ntfs::stat(meta(dir, name)?.as_handle())
 }
 
+/// Whether NTFS keeps `name` in `dir` as the guest gave it (D235): a directory not made
+/// case-sensitive, as a host's own are not, finds a file by any case of its name, and an
+/// 8.3 short name finds its long one, neither the name it keeps ([`ntfs::kept_name`]).
+/// One that cannot be asked is taken as kept.
+pub(super) fn stored_as(dir: host::Raw, name: &CStr) -> bool {
+    let (Ok(h), Ok(asked)) = (meta(dir, name), nt(name)) else {
+        return true;
+    };
+    ntfs::kept_name(h.as_handle()).is_none_or(|kept| kept == asked)
+}
+
+/// The directory `dir` holds, opened again by no name relative to it, to list what changes
+/// beneath it (ReadDirectoryChangesW asks `FILE_LIST_DIRECTORY`).
+pub(super) fn reopen_for_changes(dir: host::Raw) -> Result<host::Owned, Errno> {
+    ntfs::open_at(
+        borrow(dir),
+        &[],
+        FILE_LIST_DIRECTORY,
+        FILE_OPEN,
+        FILE_DIRECTORY_FILE,
+    )
+}
+
 /// What the symlink `name` in `dir` holds: an LX symlink's target.
 pub(super) fn readlink_at(dir: host::Raw, name: &CStr) -> Result<Vec<u8>, Errno> {
     ntfs::readlink(meta(dir, name)?.as_handle())

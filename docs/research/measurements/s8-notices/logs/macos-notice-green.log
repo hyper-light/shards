@@ -1,0 +1,7 @@
+# Mac Studio (adas-mac-studio.local-2, macOS 26.4, arm64), HVF.
+# ~/g121-tmp/s8p2/run-test.sh p/s8-part2-v1 plug a_host_edit_wakes_a_watch_in_the_guest
+== 11698daa1 WIP: step 8 part 2, notices latency harness (not for main yet) 2026-11-12T23:24:51Z
+running 1 test
+test a_host_edit_wakes_a_watch_in_the_guest ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 2.18s
+== exit 0 2026-11-12T23:26:31Z

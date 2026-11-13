@@ -28,6 +28,10 @@ libc = { workspace = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 shards-syscall-filter = { path = "../syscall-filter" }
 
+# A share's host's changes, for its guest's inotify (D235): FSEvents, bound when first used.
+[target.'cfg(target_os = "macos")'.dependencies]
+shards-apple = { path = "../apple" }
+
 [target.'cfg(windows)'.dependencies]
 shards-afunix = { path = "../afunix" }
 shards-ntfs = { path = "../ntfs" }
