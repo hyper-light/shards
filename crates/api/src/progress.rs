@@ -1461,17 +1461,12 @@ mod tests {
         assert!(followed.look().unwrap().is_none(), "reaped, it has gone");
     }
 
-    /// proc_pid_rusage's user and system times are PROC_PIDTASKINFO's, the ones shards-vmm's
-    /// `platform::process_usage` reads (R12): equal, in the same Mach units, for a process
-    /// stopped between the two reads (SIGSTOP), which runs nothing meanwhile (D215).
+    /// A child of this test's running `script` in a shell: its pid once waitid(2) has seen it
+    /// stopped, which leaves it as it is (WNOWAIT).
     #[cfg(target_os = "macos")]
-    #[test]
-    fn rusage_times_are_task_info_times() {
-        let mut child = std::process::Command::new("sh")
-            .args([
-                "-c",
-                "i=0; while [ $i -lt 100000 ]; do i=$((i+1)); done; kill -STOP $$; exit 0",
-            ])
+    fn stopped(script: &str) -> (std::process::Child, libc::pid_t) {
+        let child = std::process::Command::new("sh")
+            .args(["-c", script])
             .spawn()
             .unwrap();
         let pid = libc::pid_t::try_from(child.id()).unwrap();
@@ -1487,23 +1482,143 @@ mod tests {
             )
         };
         assert_eq!(waited, 0);
+        (child, pid)
+    }
+
+    /// A child that counts in its shell, then stops itself (SIGSTOP), and again whenever it is
+    /// continued, a hang-up, an interrupt and a terminate ignored, so that only this test's
+    /// SIGKILL ends it. A run's end orphans the process group a test's children are in, and
+    /// where one of them is stopped the kernel sends each of them SIGHUP, then SIGCONT (POSIX
+    /// `_exit`'s orphaned process groups): one that stopped itself once was continued and hung
+    /// up, gone between this test's two reads (PM M554).
+    #[cfg(target_os = "macos")]
+    fn stopped_child() -> (std::process::Child, libc::pid_t) {
+        stopped(
+            "trap '' HUP INT TERM; i=0; while [ $i -lt 100000 ]; do i=$((i+1)); done; \
+             while :; do kill -STOP $$; done",
+        )
+    }
+
+    /// Process `pid`'s user and system times as proc_pid_rusage(3) says them, a zombie's too.
+    #[cfg(target_os = "macos")]
+    fn rusage_times(pid: libc::pid_t) -> (u64, u64) {
         // SAFETY: a rusage_info_v0, plain data, for proc_pid_rusage to fill.
         let mut rusage: libc::rusage_info_v0 = unsafe { std::mem::zeroed() };
-        // SAFETY: proc_pid_rusage(3) of the stopped child into a rusage_info_v0 of ours.
+        // SAFETY: proc_pid_rusage(3) of a child of this test's into a rusage_info_v0 of ours.
         let r = unsafe { libc::proc_pid_rusage(pid, libc::RUSAGE_INFO_V0, (&raw mut rusage).cast()) };
         assert_eq!(r, 0);
+        (rusage.ri_user_time, rusage.ri_system_time)
+    }
+
+    /// Process `pid`'s user and system times as PROC_PIDTASKINFO says them, the ones
+    /// shards-vmm's `platform::process_usage` reads: none where it has no task, gone.
+    #[cfg(target_os = "macos")]
+    fn task_times(pid: libc::pid_t) -> Option<(u64, u64)> {
         // SAFETY: a zeroed proc_taskinfo is a valid out-parameter, which proc_pidinfo fills.
         let mut task: libc::proc_taskinfo = unsafe { std::mem::zeroed() };
         let size = libc::c_int::try_from(size_of::<libc::proc_taskinfo>()).unwrap();
         // SAFETY: proc_pidinfo(3) writes at most `size` bytes into `task`.
         let got = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTASKINFO, 0, (&raw mut task).cast(), size) };
-        assert_eq!(got, size);
-        assert_eq!(
-            (rusage.ri_user_time, rusage.ri_system_time),
-            (task.pti_total_user, task.pti_total_system)
-        );
+        (got == size).then_some((task.pti_total_user, task.pti_total_system))
+    }
+
+    /// The two readers' times of a stopped process, read where it ran nothing between them:
+    /// PROC_PIDTASKINFO's the same on either side of proc_pid_rusage's read, as one continued
+    /// runs until it stops itself again.
+    #[cfg(target_os = "macos")]
+    fn times_still(pid: libc::pid_t) -> ((u64, u64), (u64, u64)) {
+        loop {
+            let before = task_times(pid).expect("a stopped child gone");
+            let rusage = rusage_times(pid);
+            if task_times(pid) == Some(before) {
+                return (rusage, before);
+            }
+        }
+    }
+
+    /// proc_pid_rusage's user and system times are PROC_PIDTASKINFO's, the ones shards-vmm's
+    /// `platform::process_usage` reads (R12): equal, in the same Mach units, for a process
+    /// stopped (SIGSTOP) and running nothing between the two reads (D215). Its child stopped
+    /// itself once, and was read once each: a run whose end orphaned its process group hung
+    /// it up, and it was gone before PROC_PIDTASKINFO's read (kiln r227, PM M554).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rusage_times_are_task_info_times() {
+        let (mut child, pid) = stopped_child();
+        let (rusage, task) = times_still(pid);
+        assert_eq!(rusage, task);
         // SAFETY: kill(2) of this test's own stopped child.
         unsafe { libc::kill(pid, libc::SIGKILL) };
         let _ = child.wait();
+    }
+
+    /// Why one read of each of the two readers differed (PM M554), on a host each CPU of which
+    /// a thread of this test's spins on. A run's end orphans the process group its tests'
+    /// children are in, and where one of them is stopped the kernel sends each SIGHUP, then
+    /// SIGCONT: "If the exit of the process causes a process group to become orphaned, and if
+    /// any member of the newly-orphaned process group is stopped, then a SIGHUP signal followed
+    /// by a SIGCONT signal shall be sent to each process in the newly-orphaned process group"
+    /// (POSIX.1-2017, `_exit`). Each of `ROUNDS` children stopped as the test stopped its own
+    /// before is sent the two and read once each, as the test read it: hung up, it is gone, and
+    /// PROC_PIDTASKINFO reads nothing of it, each time. Each stopped as it stops its own now,
+    /// sent the two, stops itself again, and its two readers agree, each time. A measurement,
+    /// run by hand (`--ignored --nocapture`).
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "a measurement, run by hand"]
+    fn a_stopped_child_is_hung_up_by_its_runs_end() {
+        const ROUNDS: usize = 100;
+        let hang_up = |pid: libc::pid_t| {
+            // SAFETY: kill(2) of this test's own stopped child, as the kernel signals an
+            // orphaned process group's members.
+            unsafe {
+                assert_eq!(libc::kill(pid, libc::SIGHUP), 0);
+                assert_eq!(libc::kill(pid, libc::SIGCONT), 0);
+            }
+        };
+        let spinning = std::sync::atomic::AtomicBool::new(true);
+        let cpus = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+        let (mut before, mut now) = (0usize, 0usize);
+        std::thread::scope(|s| {
+            for _ in 0..cpus {
+                s.spawn(|| {
+                    while spinning.load(std::sync::atomic::Ordering::Relaxed) {
+                        std::hint::spin_loop();
+                    }
+                });
+            }
+            for _ in 0..ROUNDS {
+                let (mut child, pid) =
+                    stopped("i=0; while [ $i -lt 100000 ]; do i=$((i+1)); done; kill -STOP $$; exit 0");
+                hang_up(pid);
+                // Its end, before its reads: what the test read in r227's run.
+                // SAFETY: a siginfo_t, plain data, for waitid(2) to fill.
+                let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+                // SAFETY: waitid(2) of this test's own child, to its end, left a zombie.
+                let waited = unsafe {
+                    libc::waitid(
+                        libc::P_PID,
+                        child.id(),
+                        &raw mut info,
+                        libc::WEXITED | libc::WNOWAIT,
+                    )
+                };
+                assert_eq!(waited, 0);
+                before += usize::from(task_times(pid) != Some(rusage_times(pid)));
+                let _ = child.wait();
+                let (mut child, pid) = stopped_child();
+                hang_up(pid);
+                let (rusage, task) = times_still(pid);
+                now += usize::from(rusage != task);
+                // SAFETY: kill(2) of this test's own child.
+                unsafe { libc::kill(pid, libc::SIGKILL) };
+                let _ = child.wait();
+            }
+            spinning.store(false, std::sync::atomic::Ordering::Relaxed);
+        });
+        eprintln!(
+            "{ROUNDS} stopped children hung up, {cpus} spinners: one read of each disagreed in {before} as the test stopped its child before, in {now} as it stops it now"
+        );
+        assert_eq!((before, now), (ROUNDS, 0));
     }
 }
