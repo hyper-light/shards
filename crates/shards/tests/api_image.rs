@@ -17,9 +17,9 @@ use std::time::{Duration, Instant};
 
 use common::{TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, served};
 use shards_api::image::{
-    Channel, ImageGuest, ImagePools, ImageRefusal, ImageShards, ImageShare, ImageSpec, Images as _, Keep,
-    MemberEnd, MemberFile, MemberKind, MemberName, MemberReach, MemberSpec, Narrowing, PlugRefusal, Proto,
-    Publish, RunEnd, SaveRefusal, Secret, StartedFrom, StatsScope,
+    BootStop, Channel, ImageGuest, ImagePools, ImageRefusal, ImageShards, ImageShare, ImageSpec, Images as _,
+    Keep, MemberEnd, MemberFile, MemberKind, MemberName, MemberReach, MemberSpec, Narrowing, PlugRefusal,
+    Proto, Publish, RunEnd, SaveRefusal, Secret, StartedFrom, StatsScope,
 };
 
 const TIMEOUT: Duration = Duration::from_secs(120);
@@ -830,6 +830,258 @@ fn stop_ends_the_run_at_once() {
         guest.wait_member(&codex(), Duration::ZERO).unwrap(),
         Some(MemberEnd::WithRun)
     );
+}
+
+/// A run's VM process held as it starts, until its run host is ended (D231's stop of a
+/// boot under way). On Unix its VM process is a wrapper (`SHARDS_VM_BINARY`) that tells its
+/// pid on a FIFO as it starts, then waits for a writer of a second that never comes, before
+/// it would become this build's. Windows has no exec, and a VM process opens nothing but
+/// what its run host opens for it (D30): there the run's init is a copy held under an
+/// oplock (`common::Oplocked`), which the run host's open of it for its VM breaks, and then
+/// waits on.
+struct Gate {
+    dir: TempDir,
+    /// What the test reads: read and written on Unix, so that a writer's open never waits.
+    #[cfg(unix)]
+    told: std::fs::File,
+    #[cfg(windows)]
+    held: Option<common::Oplocked>,
+    /// Set as the boot returns ([`Returning`]).
+    #[cfg(windows)]
+    returned: std::os::windows::io::OwnedHandle,
+}
+
+/// What the boot's thread says as it returns, which ends a wait for the gate
+/// ([`Gate::reached`]): a line on the gate's FIFO on Unix, its event set on Windows.
+struct Returning {
+    #[cfg(unix)]
+    told: std::fs::File,
+    #[cfg(windows)]
+    returned: std::os::windows::io::OwnedHandle,
+}
+
+impl Returning {
+    fn say(self) {
+        #[cfg(unix)]
+        {
+            use std::io::Write as _;
+            let _ = (&self.told).write_all(b"returned\n");
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle as _;
+            // SAFETY: an event this holds.
+            unsafe { windows_sys::Win32::System::Threading::SetEvent(self.returned.as_raw_handle()) };
+        }
+    }
+}
+
+impl Gate {
+    #[cfg(unix)]
+    fn new() -> Gate {
+        let dir = TempDir::new("api-gate");
+        for name in ["seen", "shut"] {
+            let c = std::ffi::CString::new(dir.join(name).into_os_string().into_encoded_bytes()).unwrap();
+            // SAFETY: mkfifo(3) of a NUL-terminated path.
+            assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        }
+        // Linux and macOS open a FIFO read and written at once, as its reader and a writer.
+        let told = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(dir.join("seen"))
+            .unwrap();
+        // Exec'd by the run host as its VM process, in its process group.
+        common::program(
+            &dir.join("shards-vm"),
+            &format!(
+                "#!/bin/sh\necho \"$$\" >'{seen}'\nexec 3<'{shut}'\nexec '{vm}' \"$@\"\n",
+                seen = dir.join("seen").display(),
+                shut = dir.join("shut").display(),
+                vm = common::shards_vm().display()
+            ),
+        );
+        Gate { dir, told }
+    }
+
+    #[cfg(windows)]
+    fn new() -> Gate {
+        use std::os::windows::io::FromRawHandle as _;
+        use windows_sys::Win32::System::Threading::CreateEventW;
+        let dir = TempDir::new("api-gate");
+        std::fs::copy(guest_init(), dir.join("init")).unwrap();
+        let held = common::Oplocked::new(&dir.join("init"), TIMEOUT);
+        // SAFETY: an unnamed manual-reset event, owned from here.
+        let raw = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
+        assert!(!raw.is_null(), "an event: {}", std::io::Error::last_os_error());
+        Gate {
+            dir,
+            held: Some(held),
+            // SAFETY: the event just made, which nothing else owns.
+            returned: unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(raw) },
+        }
+    }
+
+    /// `s` booted through the gate.
+    fn hold(&self, s: &mut ImageSpec) {
+        #[cfg(unix)]
+        s.env
+            .push(("SHARDS_VM_BINARY".into(), self.dir.join("shards-vm").into()));
+        #[cfg(windows)]
+        for (name, value) in &mut s.env {
+            if name.as_os_str() == "SHARDS_INIT" {
+                *value = self.dir.join("init").into();
+            }
+        }
+    }
+
+    /// What its boot's thread says as it returns.
+    fn returning(&self) -> Returning {
+        Returning {
+            #[cfg(unix)]
+            told: self.told.try_clone().unwrap(),
+            #[cfg(windows)]
+            returned: self.returned.try_clone().unwrap(),
+        }
+    }
+
+    /// Whether the run's VM process reached the gate, waited for until it has or its boot
+    /// returned first ([`Returning`]).
+    fn reached(&self) -> bool {
+        #[cfg(unix)]
+        {
+            use std::io::BufRead as _;
+            let mut line = String::new();
+            std::io::BufReader::new(&self.told).read_line(&mut line).unwrap();
+            line.trim().parse::<u32>().is_ok()
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle as _;
+            use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+            use windows_sys::Win32::System::Threading::{INFINITE, WaitForMultipleObjects};
+            let breaking = self.held.as_ref().unwrap().breaking().as_raw_handle();
+            let either = [breaking, self.returned.as_raw_handle()];
+            // SAFETY: two events this holds, alive through the wait.
+            let woke = unsafe { WaitForMultipleObjects(2, either.as_ptr(), 0, INFINITE) };
+            woke == WAIT_OBJECT_0
+        }
+    }
+
+    /// Lets go of what the run host waits on, once it has been ended: on Windows its open of
+    /// the init waits in the kernel on the oplock, which may hold its end up. On Unix a
+    /// signal ends a wait for a FIFO's writer.
+    fn let_go(&mut self) {
+        #[cfg(windows)]
+        drop(self.held.take());
+    }
+}
+
+/// Of `pids`, those still running: on Unix not yet exited (a zombie, which its parent has
+/// yet to reap, has), and any process of process group `group` likewise; on Windows not
+/// yet ended (`common::alive`).
+fn still_running(pids: &[u32], group: Option<u32>) -> Vec<u32> {
+    #[cfg(unix)]
+    {
+        let listed = std::process::Command::new("ps")
+            .args(["-A", "-o", "pid=,pgid=,stat="])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&listed.stdout)
+            .lines()
+            .filter_map(|line| {
+                let mut w = line.split_whitespace();
+                let (pid, pgid, stat): (u32, u32, &str) =
+                    (w.next()?.parse().ok()?, w.next()?.parse().ok()?, w.next()?);
+                (!stat.starts_with('Z') && (pids.contains(&pid) || Some(pgid) == group)).then_some(pid)
+            })
+            .collect()
+    }
+    #[cfg(windows)]
+    {
+        let _ = group;
+        pids.iter()
+            .copied()
+            .filter(|&pid| common::alive(pid.cast_signed()))
+            .collect()
+    }
+}
+
+/// D231: a stop of a boot under way, once its run host has started its VM process and
+/// before its run starts, ends the boot `Ended(Stopped)`, its run host and every process of
+/// its run with it. Do boot an image whose VM process is held as it starts ([`Gate`]), and
+/// stop the boot from this thread as it reaches the gate. Expect: `Ended(Stopped)`; none of
+/// the processes the run host had started by then running, nor, on Unix, any of its
+/// process group, a VM, network or share process it started after among them; and each
+/// record of a run the home keeps (a writable layer's file in `layers`, named by the pid of
+/// the run host that made it) naming no process that runs.
+#[test]
+fn a_stop_mid_boot_ends_the_run_host_and_every_process_of_its_run() {
+    if cannot_run_vms() {
+        return;
+    }
+    let home = TempDir::new("api-bstop-home");
+    build_example(&home, "api-bstop:1");
+    let mut gate = Gate::new();
+    let mut s = spec(&home, "api-bstop:1");
+    gate.hold(&mut s);
+    let stop = BootStop::new();
+    let layers = home.join("layers");
+    // The pids its records name: a build's that ended among them.
+    let records = || -> Vec<u32> {
+        std::fs::read_dir(&layers)
+            .into_iter()
+            .flatten()
+            .filter_map(|e| {
+                let name = e.ok()?.file_name();
+                name.to_str()?.split('-').next()?.parse().ok()
+            })
+            .collect()
+    };
+    let returning = gate.returning();
+    // Whatever is seen, the boot is stopped before it is held to anything: a failing test
+    // leaves no run host waiting out its patience on the gate.
+    let (reached, hosts, run, booted) = std::thread::scope(|scope| {
+        let booting = scope.spawn(|| {
+            let booted = ImageShards::new().boot_stoppable(&s, TIMEOUT, &stop).map(drop);
+            returning.say();
+            booted
+        });
+        let reached = gate.reached();
+        // Its run host, by the record it made before it started its VM process; and what
+        // runs under it now, as far down as its descendants go.
+        let hosts = still_running(&records(), None);
+        let mut run = hosts.clone();
+        let listed = common::processes();
+        let mut i = 0;
+        while let Some(&parent) = run.get(i) {
+            run.extend(
+                listed
+                    .iter()
+                    .filter(|(pid, ppid, _)| *ppid == parent && !run.contains(pid))
+                    .map(|(pid, ..)| *pid)
+                    .collect::<Vec<_>>(),
+            );
+            i += 1;
+        }
+        stop.stop();
+        gate.let_go();
+        (reached, hosts, run, booting.join().unwrap())
+    });
+    assert!(
+        reached,
+        "the boot returned before its VM process started: {booted:?}"
+    );
+    let [host] = hosts[..] else {
+        panic!("the home's layers name {hosts:?} running");
+    };
+    assert!(run.len() > 1, "its run host {host} ran no VM process: {run:?}");
+    assert_eq!(booted, Err(ImageRefusal::Ended(RunEnd::Stopped)));
+    let left = still_running(&run, Some(host));
+    assert!(left.is_empty(), "left running of its run {run:?}: {left:?}");
+    let named = records();
+    let running = still_running(&named, None);
+    assert!(running.is_empty(), "the home's layers name {running:?}, running");
 }
 
 /// Plan step 5 through the orchestrator's path: a harness whose stdin its spec asks for

@@ -110,10 +110,96 @@ clippy-linux clippy-windows`.
    another stream on the connection completes; a guest offering `h2` to a host speaking `http/1.1` alone served
    HTTP/1.1. tcp.rs' handoff unchanged.
 
-## Owed
+## Owed (slice (a))
 
-- Slice (b), above.
+- Slice (b): built, below.
 - ROOT: CI's matrix on main; a mutation that indexes Authorization (`perl -0pi -e 's/field\.indexing =
   Indexing::Never;/{}/' crates/net/src/http2.rs`, then `cargo test -p shards-net --lib http2::tests::
   a_placeholder_in_a_header_block_comes_out_filled_and_never_indexed`, which must fail), mutation runs being
-  ROOT's under brief-common; the real-VM runs of step 10 once slice (b) lands.
+  ROOT's under brief-common.
+
+# Slice (b), built: HTTP/2 in the injector's connections
+
+Kiln goal "#74 step 7 slice (b)". Role: implementer for ROOT (g121). Policy read at origin/main a70aa132b: AGENTS.md
+sha256 f66d304c…, docs/development-rules.md df2acf47…, docs/development-evidence.md 61613a24…, and
+/tmp/g121-shot/brief-common.md. Worktree `s33-h2b`, branch `p/s33-h2b-v1`, on main a70aa132b. Its design and
+decisions are D242's "Built: step 7's second slice"; this is the light-test record.
+
+## Change
+
+- `crates/net/src/inject.rs`:
+  - `Opening` holds the guest's ClientHello while the host's TLS is made offering what the guest offered of `h2` and
+    `http/1.1`; `Flow::open` then accepts the guest speaking the host's choice.
+  - `H2` is the HTTP/2 flow: `Phase` for each hop, `StreamState` (§5.1), `Upward` (parked, sent, answered), `Last`
+    and `Down`, the frame loop on each hop, requests through `http2::request`, responses masked and re-encoded, and
+    its bounds.
+  - `Ended::new` now takes the TLS `Opening` made; `guest_config` takes the protocol chosen.
+  - A ClientHello with no protocol or no suite in common is refused at once.
+- `crates/net/src/http2.rs`:
+  - The remaining frame types and error codes, and SETTINGS_MAX_CONCURRENT_STREAMS.
+  - `End`: a client's preface, with SETTINGS_ENABLE_PUSH 0.
+  - `data` (DATA's padding taken off), `rst_stream`, `goaway`, `ping_ack`, `word` and `Block::held`; `connection`
+    and `MOST_STREAM` made public.
+- Tests in inject.rs:
+  - An HTTP/2 end over http2.rs and hpack.rs (`Peer`), which holds its peer to its windows and gives credit back.
+  - A host speaking HTTP/2 alone over TLS (`h2_host`), and three tests.
+
+## Tests
+
+One host: adas-mac-studio.local (Adas-Mac-Studio-3.local), macOS arm64, cargo 1.98.1, through the carrier
+`.claude/worktrees/s33-h2b-carrier` (`run.sh` clones the repo into `~/g121-tmp/s33-h2b`, fetches the bundle, and runs
+`check.sh`; `CARGO_TARGET_DIR=~/g121-tmp/s33-h2b/target`, `SHARDS_HELPERS=skip`, `CARGO_INCREMENTAL=0`). The command
+is `cargo test -p shards-net --lib -- hpack:: http2:: inject::`.
+
+- **Red, at 6ad258c96** (the tests and http2.rs' helpers; the injector still offering HTTP/1.1 alone), kiln run r903:
+  2 failed, 27 passed, 2 ignored.
+  - `an_h2_guests_granted_stream_arrives_filled_never_indexed_and_its_echo_comes_back_masked` and
+    `an_h2_stream_for_another_host_is_answered_421_while_another_completes` failed: the guest was served HTTP/1.1, and
+    its HTTP/2 end read the response as a frame past SETTINGS_MAX_FRAME_SIZE.
+  - `a_guest_offering_h2_to_an_http_1_1_host_is_served_http_1_1` passed, as HTTP/1.1 alone already served it; it
+    guards that path.
+- **On the way** (r903 and the runs after it, each fixed before green):
+  - `a_guest_offering_no_aes_256_gcm_is_refused` timed out: a guest was accepted only after the host's handshake,
+    which that test never gives. The fix refuses a ClientHello with no suite in common at once.
+  - The 1 MiB stream came back as `502 "the host's side failed: received plaintext buffer full"`: `H2::host_bytes`
+    processed every record before taking any plaintext, past rustls's own bound. Its plaintext is now taken record
+    by record. A close_notify is acted on only after the frames before it are read, and a host that ends lets
+    responses that came whole finish.
+- **Green, at the wiring's commit**: 29 passed, 0 failed, 2 ignored (step 10 part B's measurement, `inject::ab`).
+- **Clippy**: `cargo clippy -p shards-net --all-targets -- -D warnings` on aarch64-apple-darwin,
+  x86_64-unknown-linux-gnu (`CC_x86_64_unknown_linux_gnu=scripts/zig-cc`) and x86_64-pc-windows-msvc (`cargo xwin
+  clippy`).
+
+## Guard-removal mutations (ROOT's to run; each must fail the test named)
+
+Run each on the green tree with `cargo test -p shards-net --lib -- inject::tests::<test>`, then `git checkout --
+crates/net/src`. Touch the file after restoring it.
+
+1. Credential fields never indexed. Fails `an_h2_guests_granted_stream_arrives_filled_never_indexed_and_its_echo_comes_back_masked` ("the credential was not sent never indexed"):
+   `perl -0pi -e 's/field\.indexing = Indexing::Never;/{}/' crates/net/src/http2.rs`
+2. A response's fields masked. Fails the same test ("the echo in a field was not masked"):
+   `perl -0pi -e 's/f\.value = masked\(&mut s\.mask, &f\.value, run\);/let _ = &mut s.mask;/' crates/net/src/inject.rs`
+3. DATA masked. Fails the same test ("the echo in DATA was not masked"):
+   `perl -0pi -e 's/let _ = mask\.push\(data, true, run, &mut out\);/let _ = out(data);/' crates/net/src/inject.rs`
+4. 421 on its stream alone. Fails `an_h2_stream_for_another_host_is_answered_421_while_another_completes`:
+   `perl -0pi -e 's/self\.answer\(gid, Refusal::Misdirected \{ sni, host \}\);/let _ = (sni, host); return Err(http2::connection(Code::Protocol, "mutant"));/' crates/net/src/inject.rs`
+5. ALPN from the host's choice. Fails both HTTP/2 tests:
+   `perl -0pi -e 's/None => host\.alpn_protocol\(\) == Some\(H2\),/None => false,/' crates/net/src/inject.rs`
+6. Plaintext taken per record. Fails the first HTTP/2 test with the 502 seen above:
+   `perl -0pi -e 's/if plain\(&mut self\.host, &mut self\.from_host\) \{\s*break;\s*\}//' crates/net/src/inject.rs`
+7. A ClientHello with no suite in common refused at once. Fails `a_guest_offering_no_aes_256_gcm_is_refused` after its 10 s deadline (expect an unused-variable warning):
+   `perl -0pi -e 's/if offered\.is_empty\(\) \|\| !suite \{/if offered.is_empty() {/' crates/net/src/inject.rs`
+
+## Owed
+
+- A sign-in's token host over HTTP/2: its token POST and response read whole per stream. Until then a token host is
+  offered HTTP/1.1 alone.
+- Not covered by a light test here: 503 (a refused lease), 403 (`mints`), 431, a host's GOAWAY and RST_STREAM carried,
+  and SETTINGS_MAX_CONCURRENT_STREAMS holding a stream back. Each is a code path in `H2`, typed and bounded, and none
+  is exercised yet.
+- ROOT:
+  - CI's 8-target matrix on main.
+  - The mutations above.
+  - The real-VM runs: an api run with a credential grant toward a host that speaks HTTP/2 (a harness whose client
+    offers `h2`, or `curl --http2` in the guest), on KVM, HVF and WHP, under step 10's leak scan, with the audit lines
+    of each fill.
