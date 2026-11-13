@@ -4252,6 +4252,8 @@ mod tests {
             shards_abi::run::members::args_of(&entries, 1).unwrap(),
             [&b"--resume"[..], b"s-1", b""]
         );
+        // Each of a key the run protocol registers (D257), as the guest refuses any other.
+        assert_eq!(shards_abi::run::setup::check(&entries), Ok(()));
         let mut nul = s.clone();
         nul.args.push("a\0b".into());
         assert!(matches!(
@@ -4403,6 +4405,8 @@ mod tests {
         ])
         .unwrap();
         let entries = trust(&der, &grants).unwrap();
+        // Each of a key the run protocol registers (D257), as the guest refuses any other.
+        assert_eq!(shards_abi::run::setup::check(&entries), Ok(()));
         let got = shards_abi::run::trust::of(&entries).unwrap().unwrap();
         assert_eq!(got.hosts, [b"api.anthropic.com".as_slice(), b"claude.ai"]);
         let pem = std::str::from_utf8(got.pem).unwrap();
