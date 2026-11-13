@@ -136,10 +136,46 @@ fn pass(run: &Path, members: &[u32], bound: u64) -> io::Result<Pass> {
         .flat_map(|log| &log.segments)
         .try_fold(0u64, |sum, segment| sum.checked_add(segment.bytes))
         .ok_or_else(|| io::Error::other("the run's logs' bytes overflow"))?;
-    // Red: the cap lets nothing go and closes nothing yet.
-    let dropped = Vec::new();
-    let close = None;
-    let _ = (&mut logs, bound);
+    let mut dropped = Vec::new();
+    while total > bound {
+        // Each log's oldest that is not its newest: the one whose index last changed first.
+        let oldest = logs
+            .iter_mut()
+            .filter(|log| log.segments.len() > 1)
+            .filter_map(|log| Some((log.segments.first()?.changed, log)))
+            .min_by_key(|(changed, _)| *changed)
+            .map(|(_, log)| log);
+        let Some(log) = oldest else {
+            break;
+        };
+        if log.segments.is_empty() {
+            break;
+        }
+        let segment = log.segments.remove(0);
+        total = total.saturating_sub(segment.bytes);
+        // One its own retention let go meanwhile is no loss of the cap's.
+        if !remove(&log.dir, segment.seq)? {
+            continue;
+        }
+        record(&log.dir, &segment)?;
+        dropped.try_reserve(1).map_err(io::Error::other)?;
+        dropped.push(Dropped {
+            owner: log.owner,
+            seq: segment.seq,
+            bytes: segment.bytes,
+        });
+    }
+    let close = if total > bound {
+        logs.iter()
+            .filter_map(|log| match (log.owner, log.segments.last()) {
+                (Owner::Member(member), Some(newest)) if newest.bytes > 0 => Some((newest.changed, member)),
+                _ => None,
+            })
+            .min()
+            .map(|(_, member)| member)
+    } else {
+        None
+    };
     Ok(Pass {
         dropped,
         total,

@@ -182,9 +182,7 @@ impl Drain {
             logged
                 .try_reserve_exact(members.len().saturating_add(owned.len()))
                 .map_err(io::Error::other)?;
-            // Red: an owned member's log is not kept yet.
-            logged.extend(members.iter().copied());
-            let _ = owned;
+            logged.extend(members.iter().chain(owned).copied());
             logged.sort_unstable();
             logged.dedup();
         }
@@ -376,7 +374,7 @@ impl Drain {
                         rotated
                             .try_reserve(usize::try_from(filled).map_err(io::Error::other)?)
                             .map_err(io::Error::other)?;
-                        // Red: none handed to the packer yet.
+                        rotated.extend((seq..writer.seq()).map(|seq| (record.member, seq)));
                     }
                     if let Some(cap) = cap {
                         cap.since = cap.since.saturating_add(writer.written().saturating_sub(written));

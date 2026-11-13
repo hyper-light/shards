@@ -232,9 +232,7 @@ fn opened(run: &Path, dir: &Path, asked: exec::LogAsk) -> Result<(LogFile, [Pos;
         .ok_or_else(|| failed(io::ErrorKind::NotFound.into()))?;
     let first = Pos::segment_start(oldest);
     let capped = super::cap::capped(file.dir()).map_err(failed)?.segments > 0;
-    // Red: nothing said of the cap's losses yet.
-    let start = first;
-    let _ = capped;
+    let start = if capped { Pos::START } else { first };
     let place = |channel| {
         let read = asked.channels.reads(channel);
         match asked.cursor.of(channel).map(|at| Pos::from_bytes(&at.to_bytes())) {

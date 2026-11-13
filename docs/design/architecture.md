@@ -24802,7 +24802,7 @@ Shards carried and without (kiln's `docs/research/s16-vendor/`).
 `shards` runs from; a macOS that refuses a carrier's own identity the entitlements it allows ad
 hoc (then ad hoc, as shards signs them).
 
-### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends decided at the host from HVF's and KVM's runs, plan step 10, WHP owed; its endpoint building, step 11: its connection, refusals, stdio lanes, their controller, the daemon's endpoint per run, exec lanes at the endpoint, the controller and the daemon, each end's word on its TLS, and members' own lanes (a member's state, its end, its signals and its own terminal's size, goal 58's steps 5 and 6) built; log lanes building, goal 58's step 7: the lane, its controller and the daemon's log host built)
+### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends decided at the host from HVF's and KVM's runs, plan step 10, WHP owed; its endpoint building, step 11: its connection, refusals, stdio lanes, their controller, the daemon's endpoint per run, exec lanes at the endpoint, the controller and the daemon, each end's word on its TLS, and members' own lanes (a member's state, its end, its signals and its own terminal's size, goal 58's steps 5 and 6) built; log lanes built, goal 58's step 7: the lane, its controller, the daemon's log host, and the keeper of every member's log within the run's one log cap)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d runs every kiln harness in a microVM of
 its own, booted for Hex under shards-init (D231). The person decided how such a harness is
@@ -25499,8 +25499,14 @@ to it, on a thread of its own:
   run's own log, which its VM writes, holds none. A record's start is the entry's bits below 61
   now, past what any log reaches.
 
-Until the daemon keeps an owned member's output (D240), a log lane of an owned member is refused
-`Failed`.
+*Every member's log* (slice 3). The daemon keeps every member's output, owned or not (D240, "Every
+member's log, within the run's one cap"), so a lane reads an owned member's log as it reads a
+drained one's, followed to its channels' end. A lane asked from the oldest of a log whose older
+output the run's one log cap let go begins with `Rotated { oldest }`, the oldest place kept, so
+its controller knows output before it went; one whose log lost nothing to the cap reads from its
+oldest as before. Segments the cap lets go under a reading lane are said `Rotated` as its reader
+finds them gone, each owner's log apart. Tested:
+`daemon::managed::log_lanes::tests::a_lane_from_the_oldest_says_what_the_cap_let_go`.
 
 Tested in the daemon: `daemon::logs::tests` reads a log through `Records` from any place, in
 pieces, across segments its writer cut records over, inside a record and one channel alone; a
@@ -25681,6 +25687,57 @@ and no exec, attach or terminal (the plan's steps 5, 6 and 7).
   come. Before, init aborted every member's pipes as the command ended, and the daemon ended
   the capture at the run's DONE, and agents' reports were cut mid-line (PM M543, "Lost at
   the run's end").
+- *Every member's log, within the run's one cap* (goal 58's step 7, slice 3; ROOT's ruling and the
+  person's decision, 2026-11-13). The log is the run's: every member's output is kept, owned or not.
+  - *Kept whoever reads it.* A drained member's records are kept as the daemon takes them (above);
+    an owned member's as its capture's bridge brings them, before its owner's stream is given them
+    (`managed::bridge`), each record once, as the drain keeps one: its owner waits one append's
+    time, and a write that fails costs the log, not the owner (counted lost, as the run's own log
+    counts its own). Each kept member's log has its label beside it, so `shards read logs` shows
+    owned members' kept output after the run's own, each line after its label, and a log lane reads
+    it (D238). An owned member's log holds what its capture brought: its channels end with the run.
+  - *One cap for the run* (`daemon/managed/cap.rs`). Its command's log and every member's together
+    keep at most the run's bound: its log's segment size times their count, its
+    `--log-opt max-size` and `max-file`, or else its home's history (D186: 1 GiB unless its user sets
+    it, `shards configure disk --log-history`). Each segment is weighed as the output it holds, its
+    log's bytes as written (a packed one's as its seek table says, D162), as the run's own retention
+    bounds its log: so a run's command alone is never cut short by its cap, and indexes, which are
+    not output, are not weighed. The oldest segment across the run's logs goes first, whoever's it
+    is: of each log's oldest that is not its newest, the one whose index last changed longest ago
+    (its last record's time), so every log still loses its segments oldest first and stays
+    contiguous for its readers. The disk is the authority: each hold lists and weighs the segments
+    there, and keeps nothing of them between holds.
+  - *Within one segment.* No log's newest is let go, as its writer holds it. Where every log is down
+    to its newest and they still pass the bound, the keeper closes the member's newest that is
+    oldest and holds output (its writer rotates), and the next pass lets it go; the run's command's
+    newest, which its VM writes, stays. A hold runs where the keeper's count of what its logs held at
+    its last hold and what it kept since passes the bound, and at each rotation of the command's log
+    (`daemon/files.rs`, once the VM has its next segment): the command's newest grows unseen between
+    its rotations, by a segment at most, which is the bound's one segment.
+  - *Each owner's loss.* Each segment the cap lets go is its owner's record, `log.capped` beside its
+    log: a line of the segment and its output's bytes. `logs` says, on stderr, before what is kept,
+    how much of each log's older output went to the run's one log cap; a log lane says it as
+    `Rotated { oldest }` (D238). A segment its own retention let go meanwhile is no loss of the cap's.
+  - *Compressed as the run's.* A member's segments rotated as they fill are compressed on the
+    packer's thread exactly as the run's own are, where its options say so (D162: `compress`, or
+    `cache-compress` for a driver that sends its log elsewhere); where they do not, neither are its
+    members'. Those a daemon before left as written are compressed as it starts (`pack_left`).
+  - *Cold start and failure.* A keeper's first keep holds the cap, weighing what a run started again
+    left. A hold that fails (its disk) is said in the daemon's log, and holds again once a bound's
+    worth more is kept; its logs keep their output meanwhile.
+  - *Literals.* None chosen: the bound is the person's configured cap or the run's own log options;
+    `log.capped` is a name no segment takes (`logs::segment_of`); each record's line is the segment's
+    number and its bytes.
+  - *Tested* (light, on macOS arm64), red first, each with its behaviour absent (record:
+    [agent-control-v1](../research/measurements/agent-control-v1/README.md)):
+    - `daemon::managed::drain::tests::a_members_log_is_kept_and_counted_in_its_runs_cap`
+    - `daemon::managed::drain::tests::a_members_rotated_segment_is_compressed_when_the_runs_options_say_so`
+    - `daemon::managed::cap::tests::a_drop_across_owners_records_the_loss_per_owner`
+    - `daemon::managed::cap::tests::the_newest_segment_rotation_keeps_the_bound_within_one_segment`
+    - `daemon::managed::cap::tests::each_log_loses_its_oldest_first_and_keeps_its_newest`
+    - `daemon::managed::log_lanes::tests::a_lane_from_the_oldest_says_what_the_cap_let_go`
+
+    Owed (ROOT): `tests/managed_output.rs`'s real-VM run on KVM, HVF and WHP.
 - *Its environment* (step 7, 239749c60). Init's, then the image's `Env`, then its own
   `run.env`, then what its run stages, the last given of each name winning. `PATH` keeps the
   member's own programs first; `HOME` is never the image's; `SHARDS_DOMAIN` is refused at the
