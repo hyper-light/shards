@@ -2200,6 +2200,10 @@ impl Said {
         }
     }
 
+    /// Its run answered, as its client's own output says (`run_command`'s client): nothing, as
+    /// yet.
+    pub fn answered(&mut self) {}
+
     /// Whether the daemon has said something but its [`HEARTBEAT`] within [`DAEMON_QUIET`]:
     /// a microVM's start said slowly among it (daemon.rs `ready`: liveness governs a cold
     /// start, which the daemon gives up on itself past its `READY_TIMEOUT`). Asked as often
