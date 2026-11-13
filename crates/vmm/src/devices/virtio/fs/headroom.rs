@@ -116,8 +116,10 @@ impl Headroom {
 /// the pages it takes, a batch of 64 pages on each CPU (`MEMCG_CHARGE_BATCH`, mm/memcontrol.c
 /// `refill_stock`), the read in flight, as large as a share's largest request
 /// ([`shards_abi::SHARE_MAX_PAGES`]), and the two windows of 128 KiB its file is read ahead
-/// in (`VM_READAHEAD_PAGES`, mm/readahead.c); this host's, by its own CPUs and pages.
-fn reads_room() -> u64 {
+/// in (`VM_READAHEAD_PAGES`, mm/readahead.c); this host's, by its own CPUs and pages. The
+/// daemon leaves it out of the room a budget's microVMs are told (daemon/budget.rs), as their
+/// guests would fill it otherwise.
+pub fn reads_room() -> u64 {
     #[cfg(unix)]
     // SAFETY: sysconf(3) reads values of the running kernel's.
     let (cpus, page) = unsafe {
@@ -135,7 +137,7 @@ fn reads_room() -> u64 {
 }
 
 /// [`reads_room`] of a host with `cpus` CPUs online and pages of `page` bytes.
-fn reads_room_of(cpus: u64, page: u64) -> u64 {
+pub fn reads_room_of(cpus: u64, page: u64) -> u64 {
     const CHARGE_BATCH: u64 = 64;
     const READ_AHEAD: u64 = 128 << 10;
     CHARGE_BATCH

@@ -33,7 +33,7 @@ use windows_sys::Win32::Foundation::{
     DUPLICATE_CLOSE_SOURCE, DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_BROKEN_PIPE, ERROR_IO_PENDING,
     ERROR_MORE_DATA, ERROR_NO_DATA, ERROR_OPERATION_ABORTED, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED,
     ERROR_PIPE_NOT_CONNECTED, GENERIC_READ, GENERIC_WRITE, GetLastError, HANDLE, INVALID_HANDLE_VALUE,
-    LocalFree, STATUS_PENDING, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    LocalFree, STATUS_PENDING, SetLastError, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -282,6 +282,97 @@ pub(crate) fn write_from(
     })
 }
 
+/// Writes from `buf` to `handle` with [`call`], waiting on nothing but the write: `pended`
+/// is told, as the write begins to wait, where it could not finish at once (ERROR_IO_PENDING).
+/// A named pipe's write finishes at once where its pipe holds it whole, or hands it to a read
+/// its reader has pending; one it cannot pends until its reader has taken enough of what the
+/// pipe holds for it to (npfs: a write is charged what its quota has free, and completes once
+/// all of it is, `NpAddDataQueueEntry`, `NpCompleteStalledWrites`). So its pend is its reader's
+/// to end: what a slot's answer is waited on its client for (D185's takes, `slots::named`).
+pub(crate) fn write_telling(handle: HANDLE, buf: &[u8], pended: impl FnOnce()) -> Called {
+    let len = u32::try_from(buf.len()).unwrap_or(u32::MAX);
+    let at = buf.as_ptr();
+    let mut pended = Some(pended);
+    call(handle, &[], None, |ov| {
+        // SAFETY: as `read_into`'s.
+        let started = unsafe { WriteFile(handle, at, len, std::ptr::null_mut(), ov) };
+        if started == 0 {
+            // SAFETY: no arguments.
+            let code = unsafe { GetLastError() };
+            if code == ERROR_IO_PENDING
+                && let Some(pended) = pended.take()
+            {
+                pended();
+            }
+            // What `call` reads of its start is the start's own error, whatever `pended` did.
+            // SAFETY: no arguments but the code.
+            unsafe { SetLastError(code) };
+        }
+        started
+    })
+}
+
+/// Whether the pipe whose end is `handle` is connected still: its local information's
+/// `NamedPipeState` (NtQueryInformationFile's `FilePipeLocalInformation`), which turns from
+/// `FILE_PIPE_CONNECTED_STATE` as its other end closes (npfs keeps one state for both ends:
+/// ReactOS's `NpSetClosingPipeState`). A write that pended on its reader and then finished
+/// may have finished as that reader went: Windows completes it so, its data dropped, and fails
+/// the next with ERROR_NO_DATA (Windows 11 build 26200, PM M553), so its finish is a take only
+/// where this says connected after it.
+pub(crate) fn connected_now(handle: HANDLE) -> io::Result<bool> {
+    use windows_sys::Wdk::Storage::FileSystem::{
+        FILE_PIPE_CONNECTED_STATE, FILE_PIPE_LOCAL_INFORMATION, FilePipeLocalInformation,
+        NtQueryInformationFile,
+    };
+    use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
+    let mut info = FILE_PIPE_LOCAL_INFORMATION::default();
+    // SAFETY: an IO_STATUS_BLOCK is plain data (a status or pointer, and a count), which the
+    // call fills; zero is a valid one.
+    let mut status: IO_STATUS_BLOCK = unsafe { std::mem::zeroed() };
+    let size = u32::try_from(size_of::<FILE_PIPE_LOCAL_INFORMATION>())
+        .map_err(|_| io::Error::other("a pipe's local information past a u32"))?;
+    // SAFETY: a pipe's end this process holds, and a FILE_PIPE_LOCAL_INFORMATION and an
+    // IO_STATUS_BLOCK of ours for the call to fill, of their own sizes.
+    let got = unsafe {
+        NtQueryInformationFile(
+            handle,
+            &raw mut status,
+            (&raw mut info).cast(),
+            size,
+            FilePipeLocalInformation,
+        )
+    };
+    if got < 0 {
+        // SAFETY: no pointers; an NTSTATUS as Win32 says it.
+        let e = error(unsafe { windows_sys::Win32::Foundation::RtlNtStatusToDosError(got) });
+        // A pipe its other end has left may say so by failing the query too.
+        return if ended(&e) { Ok(false) } else { Err(e) };
+    }
+    Ok(info.NamedPipeState == FILE_PIPE_CONNECTED_STATE)
+}
+
+/// What the pipe whose end is `handle` holds of that end's writes before one waits on its
+/// reader: its outbound quota, the buffer its instance was made with (GetNamedPipeInfo's out
+/// buffer size; `LINE_BUFFER` each way for a slot's line); none where it says none.
+pub(crate) fn outbound_quota(handle: HANDLE) -> io::Result<u32> {
+    let mut quota = 0u32;
+    // SAFETY: a pipe's end this process holds, and one size for the call to fill; its flags,
+    // its in buffer and its instances are not asked for.
+    if unsafe {
+        GetNamedPipeInfo(
+            handle,
+            std::ptr::null_mut(),
+            &raw mut quota,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(quota)
+}
+
 /// Waits for a client to open the instance `server`, or for `cancel`: `Ok(true)` once one
 /// has, a client gone again since among them; `Ok(false)` for the cancel.
 pub(crate) fn connected(server: HANDLE, cancels: &[&Event]) -> io::Result<bool> {
@@ -373,10 +464,14 @@ pub(crate) fn attributes() -> io::Result<SECURITY_ATTRIBUTES> {
 
 /// [`crate::create_private`] on Windows: a new file at `path` made with the DACL
 /// [`attributes`] gives, this process's user's alone, protected from what its directory
-/// would give it; shared with no other open while this one is (share mode 0).
+/// would give it. While this open holds it, another of its user's may read it, as a reader
+/// opens a file on Unix that its writer holds (a run's managed-output record, held for the
+/// run's life, is how its owner finds the run: share mode 0 refused that read,
+/// ERROR_SHARING_VIOLATION); none may write, rename or delete it (no FILE_SHARE_WRITE or
+/// FILE_SHARE_DELETE).
 pub(crate) fn create_private(path: &std::path::Path) -> io::Result<std::fs::File> {
     use std::os::windows::ffi::OsStrExt as _;
-    use windows_sys::Win32::Storage::FileSystem::{CREATE_NEW, FILE_ATTRIBUTE_NORMAL};
+    use windows_sys::Win32::Storage::FileSystem::{CREATE_NEW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ};
     let attributes = attributes()?;
     let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
     // SAFETY: a NUL-terminated path, and attributes whose descriptor lives as long as the
@@ -385,7 +480,7 @@ pub(crate) fn create_private(path: &std::path::Path) -> io::Result<std::fs::File
         CreateFileW(
             wide.as_ptr(),
             GENERIC_READ | GENERIC_WRITE,
-            0,
+            FILE_SHARE_READ,
             &raw const attributes,
             CREATE_NEW,
             FILE_ATTRIBUTE_NORMAL,

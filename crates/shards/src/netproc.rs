@@ -347,15 +347,17 @@ fn serve_dials(link: &std::os::unix::net::UnixStream, socket: &std::path::Path) 
 /// Waits for a network or share process whose VM is gone, and which its spawner holds
 /// nothing of, for as long as it goes on with its end (D217's [`Followed`], PM M546): it
 /// goes as its VM's links close, which it is woken by. Looked at once each slice of this
-/// host's passes (`End::Helper`), it is waited on for another while it runs or frees what
-/// it holds, and ended only once it has done neither for a slice. Its end, where it came of
-/// itself, is kept as this host's (`ends`). It was a second, picked (`GRACE`).
+/// host's passes (`End::Helper`, W*), it is waited on for another while it runs, frees what
+/// it holds or its host holds it, and ended only once it has done none of these for a
+/// slice; a home that has heard no such end yet waits for its end alone, its liveness. Its
+/// end, where it came of itself, is kept as this host's (`ends`). It was a second, picked
+/// (`GRACE`).
 pub fn reap(net: &NetProcess, ends: &Ends) {
     reap_by(net, ends, ends.slice(End::Helper));
 }
 
-/// [`reap`], each look `slice` apart.
-fn reap_by(net: &NetProcess, ends: &Ends, slice: std::time::Duration) {
+/// [`reap`], each look `slice` apart: none, its end alone.
+fn reap_by(net: &NetProcess, ends: &Ends, slice: Option<std::time::Duration>) {
     let began = std::time::Instant::now();
     let mut followed = Followed::of(Some(net.id()));
     loop {
@@ -376,9 +378,10 @@ fn reap_by(net: &NetProcess, ends: &Ends, slice: std::time::Duration) {
 /// Whether `net` ends within `slice`: woken by its end (`Poller::add_exit`), where one
 /// cannot be watched by a look every millisecond.
 #[cfg(unix)]
-fn ended_within(net: &NetProcess, slice: std::time::Duration) -> bool {
+fn ended_within(net: &NetProcess, slice: Option<std::time::Duration>) -> bool {
     let now = std::time::Instant::now();
-    let deadline = now.checked_add(slice).unwrap_or(now);
+    let deadline = slice.map(|slice| now.checked_add(slice).unwrap_or(now));
+    let left = || deadline.map(|at| at.saturating_duration_since(std::time::Instant::now()));
     let watched = shards_vmm::platform::Poller::new()
         .and_then(|poller| poller.add_exit(net.id(), 0).map(|watch| (poller, watch)));
     match watched {
@@ -386,8 +389,8 @@ fn ended_within(net: &NetProcess, slice: std::time::Duration) -> bool {
             let mut ready = Vec::new();
             // A signal's interruption is an empty wait: until its end, or the deadline.
             while ready.is_empty() {
-                let left = deadline.saturating_duration_since(std::time::Instant::now());
-                if left.is_zero() || poller.wait(&mut ready, Some(left)).is_err() {
+                let left = left();
+                if left.is_some_and(|left| left.is_zero()) || poller.wait(&mut ready, left).is_err() {
                     break;
                 }
             }
@@ -395,7 +398,7 @@ fn ended_within(net: &NetProcess, slice: std::time::Duration) -> bool {
         // Ended already (macOS refuses to watch it then).
         Err(e) if e.raw_os_error() == Some(libc::ESRCH) => {}
         Err(_) => {
-            while net.try_wait().is_none() && std::time::Instant::now() < deadline {
+            while net.try_wait().is_none() && !left().is_some_and(|left| left.is_zero()) {
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
         }
@@ -405,8 +408,11 @@ fn ended_within(net: &NetProcess, slice: std::time::Duration) -> bool {
 
 /// Whether `net` ends within `slice` (Windows): it goes as it sees its VM's process end.
 #[cfg(windows)]
-fn ended_within(net: &NetProcess, slice: std::time::Duration) -> bool {
-    net.ended_within(u32::try_from(slice.as_millis()).unwrap_or(u32::MAX))
+fn ended_within(net: &NetProcess, slice: Option<std::time::Duration>) -> bool {
+    // None, or past a u32's milliseconds: INFINITE (u32::MAX), its end alone.
+    net.ended_within(slice.map_or(u32::MAX, |slice| {
+        u32::try_from(slice.as_millis()).unwrap_or(u32::MAX)
+    }))
 }
 
 /// The VM's side of its network (Windows, D142): the ring and its two doorbells, handed
@@ -884,7 +890,7 @@ mod reap_tests {
                 std::thread::sleep(slice * 5);
                 std::fs::write(&stop, b"").unwrap();
             });
-            reap_by(&busy, &ends, slice);
+            reap_by(&busy, &ends, Some(slice));
             began.elapsed()
         });
         assert!(took >= slice * 5, "ended while it went on: {took:?}");
@@ -896,7 +902,7 @@ mod reap_tests {
         let ends = Ends::kept_in(&home);
         let asleep = sh("exec /bin/sleep 60", &home);
         let began = Instant::now();
-        reap_by(&asleep, &ends, slice);
+        reap_by(&asleep, &ends, Some(slice));
         let took = began.elapsed();
         assert!(took >= slice && took < slice * 4, "{took:?}");
         assert_eq!(kept(&home), None);

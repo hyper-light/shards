@@ -1,0 +1,24 @@
+# antigravity 1.5.7: its pinned linux/amd64 files' strings (antigravity.json; each file held to its pin's sha256)
+NODE_EXTRA_CA_CERTS: 1
+    bin/agy/antigravity: ...Pv4 too large for IPv6click_browser_pixelApplication SupportNODE_EXTRA_CA_CERTSno such command: %qbringLoopbackUp: %vmount / private: %vrem...
+SSL_CERT_FILE: 4
+    bin/agy/antigravity: ...delInfosStreamingTestIntegrityOnlygraceful_stop %v deadline:SSL_CERT_FILEuser settingsGemini25Flashapplication/*TEXT_TO_VIDEOSIMPLE_S...
+SSL_CERT_DIR: 4
+    bin/agy/antigravity: ...s ap traffic PRIVATE KEYECDSA-SHA256ECDSA-SHA384ECDSA-SHA512SSL_CERT_DIRkeyAgreementencipherOnlydecipherOnlyExtKeyUsage(<|im_start|>...
+CODEX_CA_CERTIFICATE: 0
+NODE_USE_SYSTEM_CA / --use-system-ca: 0
+REQUESTS_CA_BUNDLE / CURL_CA_BUNDLE: 2
+    bin/agy/antigravity: ...rollGLIBC_TUNABLESGPG_AGENT_INFOio_uring_setupio_uring_enterCURL_CA_BUNDLEGIT_SSL_CAINFOsandbox closedexebox %s: %v./dev/shm/setupmoun...
+the system bundle's path: 4
+    bin/agy/antigravity: ... NextProtos values too largetls13: label or context too long/etc/pki/tls/certs/ca-bundle.crtx509: cannot parse rfc822Name %qx509: unsupported elliptic c...
+rustls-native-certs / openssl-probe: 0
+webpki-roots (roots of its own): 0
+Bun (its runtime): 0
+Node (its runtime): 0
+Go (its runtime): 7
+    bin/agy/antigravity: ...src/vendor/golang.org/x/crypto/chacha20poly1305/fips140only_go1.26.go.third_party/go/gc/src/vendor/golang.org/x/crypto/chacha2...
+certificate or key pins: 0
+checkServerIdentity (its own name check): 0
+at_hash: 1
+    bin/agy/antigravity: ...ing_globals_listenerE._ZN4absl12_GLOBAL__N_121log_backtrace_at_hashE.0.log_sink.cc.proto.cc.globals.cc._ZN4absl12log_internal12...
+ID token verification: 0

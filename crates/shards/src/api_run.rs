@@ -2439,6 +2439,8 @@ mod hosted {
         granted: HashMap<(u32, Channel), bool>,
         /// The channel has ended.
         ended: HashMap<(u32, Channel), bool>,
+        /// A grant its VM could not take has been said (`take`): once a run.
+        ungranted: bool,
     }
 
     /// A member's stdin, which its orchestrator writes (plan step 5): its guest's input
@@ -3209,6 +3211,19 @@ mod hosted {
         }
     }
 
+    /// A member's MCP connection its VM handed over unprompted on `link` (`LANE_ACCEPTED`,
+    /// D254): no controller's ask is paired with one yet, so it is let go, its VM's copy with
+    /// it (M24), which ends its member's bridge. One its VM did not number as its own is let
+    /// go alone.
+    fn mcp_accepted(link: &Stream, payload: &[u8], fds: Vec<OwnedFd>) {
+        drop(fds);
+        if let Some(accepted) = shards_ipc::Accepted::decode(payload)
+            && let Err(e) = shards_ipc::send(link, kind::LANE_HELD, &accepted.number.to_be_bytes(), &[])
+        {
+            super::say(format_args!("letting go of a member's MCP connection: {e}"));
+        }
+    }
+
     /// Reads the VM's link until it closes: each member's end and the command's readiness
     /// to the orchestrator as they come (`super::relayed`), each exec's client end let go of
     /// as the VM takes it, the run's end from its `DONE` (`super::run_end`), and whether its
@@ -3254,6 +3269,8 @@ mod hosted {
                 input_ended(live, &m.payload);
             } else if m.kind == kind::LANE_OPEN {
                 lane_answered(live, m.payload, m.fds);
+            } else if m.kind == kind::LANE_ACCEPTED {
+                mcp_accepted(&lock(&live.link), &m.payload, m.fds);
             } else if let Some((answer, payload)) = super::relayed(m.kind, &m.payload) {
                 let _ = live.answers.send(answer, &[&payload]);
             }
@@ -3319,8 +3336,17 @@ mod hosted {
                 *room = room.saturating_add(credit.bytes);
                 live.flush(&mut flows, key)
                     .map_err(|e| AsksEnd::Failed(format!("its answers to its orchestrator: {e}")))?;
-                live.grant(&mut flows, key)
-                    .map_err(|e| AsksEnd::Failed(format!("its members' output's credit to its VM: {e}")))?;
+                // Room its VM can take no more of is its VM ending, or ended, its managed
+                // output closed before its `DONE` can be: its end is the run's, which `follow`
+                // tells, and ending its asks here would kill it before it says that end (WHP
+                // at 3a05bc3f1: a template's run of `exit 3` ended before its orchestrator's
+                // first credit came). Said once on its stderr, which shows why a run whose
+                // output stops while its VM runs on stopped; its `STOP` still ends that run.
+                if let Err(e) = live.grant(&mut flows, key)
+                    && !std::mem::replace(&mut flows.ungranted, true)
+                {
+                    super::say(format_args!("its VM takes no more of its members' output: {e}"));
+                }
             }
             Ask::Input(given) => {
                 input_given(live, given).map_err(|why| super::broke(format_args!("{why}")))?
@@ -4162,6 +4188,57 @@ mod hosted {
     mod tests {
         use super::*;
 
+        /// Do give room to a run whose VM takes no more of its managed output, its end of it
+        /// closed as at its end, as an orchestrator's first credit can come after a run that
+        /// ends at once (WHP at 3a05bc3f1: a template's run of `exit 3`). Expect: the ask
+        /// served, the asks going on, and no end of the asks' making, which would kill the VM
+        /// before its `DONE` and end the run failed in the credit's words.
+        #[test]
+        fn room_its_vm_takes_no_more_of_leaves_its_end_to_its_vm() {
+            let dir = shards_testdir::TempDir::new("api-credit").unwrap();
+            let answers = super::super::Answers(Mutex::new(Box::new(Vec::<u8>::new())));
+            let (capture, its_vms) = Stream::pair().unwrap();
+            drop(its_vms);
+            let (link, _vm_link) = Stream::pair().unwrap();
+            let live = Live {
+                answers: &answers,
+                ends: Ends::kept_in(dir.path()),
+                flows: Mutex::new(Flows::default()),
+                feeds: Mutex::new(HashMap::new()),
+                fed: std::sync::Condvar::new(),
+                capture: Some(Mutex::new(capture)),
+                link: Mutex::new(link),
+                held: Mutex::new(Some(HashMap::new())),
+                asks_end: Mutex::new(None),
+                next_exec: std::sync::atomic::AtomicU64::new(0),
+                home: dir.path(),
+                members: &[],
+                roots: &[],
+                devices: Mutex::new(Some(Vec::new())),
+                guest_times: Mutex::new(Some(Vec::new())),
+                rates: Mutex::new(Some(Vec::new())),
+                lanes: Mutex::new(Some(HashMap::new())),
+                next_lane: std::sync::atomic::AtomicU64::new(0),
+                plugged: Mutex::new(HashMap::new()),
+                notices_due: Mutex::new(None),
+                notices: Mutex::new(Vec::new()),
+                leasing: None,
+            };
+            let args = [OsStr::new("-c"), OsStr::new("exit 0")];
+            let vm = shards_ipc::spawn_in(Path::new("/bin/sh"), &args, &[], false, &[]).unwrap();
+            let credit = wire::Credit {
+                member: 0,
+                channel: Channel::Stdout,
+                bytes: 4096,
+            };
+            let taken =
+                std::thread::scope(|scope| take(&live, super::super::Ask::Credit(credit), &vm, scope));
+            assert_eq!(taken, Ok(()));
+            assert_eq!(*lock(&live.asks_end), None);
+            assert!(lock(&live.flows).ungranted);
+            let _ = vm.wait();
+        }
+
         /// A run's share process ends as its run ends, by its own going: [`Shares::end`]
         /// lets go of its door before it waits, and the process, which goes once its
         /// connection to the VM ends, has gone well before `reap`'s grace ends it (CI run
@@ -4188,6 +4265,35 @@ mod hosted {
                 said.exists(),
                 "the share process was ended at the grace's end, not by its door's"
             );
+        }
+
+        /// D254: a member's MCP connection its VM hands over unprompted is answered as taken
+        /// (M24) and let go, no controller's ask being paired with one yet: its far end reads
+        /// its end. One its VM did not number as its own is let go unanswered.
+        #[test]
+        fn a_members_mcp_connection_is_answered_and_let_go_until_its_pairing() {
+            use std::io::Read as _;
+            let (link, vm) = Stream::pair().unwrap();
+            let (conn, mut far) = Stream::pair().unwrap();
+            let first = shards_abi::run::mcp::ACCEPTED_FIRST;
+            let owners = shards_ipc::Accepted {
+                number: first - 1,
+                member: 0,
+            };
+            mcp_accepted(&link, &owners.encode(), Vec::new());
+            let accepted = shards_ipc::Accepted {
+                number: first,
+                member: 0,
+            };
+            mcp_accepted(&link, &accepted.encode(), vec![OwnedFd::from(conn)]);
+            let m = shards_ipc::recv(&vm).unwrap().unwrap();
+            assert_eq!(
+                (m.kind, m.payload),
+                (kind::LANE_HELD, first.to_be_bytes().to_vec())
+            );
+            let mut rest = Vec::new();
+            far.read_to_end(&mut rest).unwrap();
+            assert_eq!(rest, b"");
         }
     }
 }

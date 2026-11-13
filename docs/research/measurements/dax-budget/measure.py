@@ -35,7 +35,7 @@ page cache before its first read alone: each of its later reads, a run of its ow
 what the share kept of the arm's read before it, as a user's next run over a volume does.
 
 With --as-e2e, each round is the FUSE budget E2E's phases
-(a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_one) for each
+(a_microvm_held_to_a_budget_reads_through_fuse_at_the_pace_of_reads_held_to_none) for each
 arm in turn, in its order, in a home of its own given the images and guest kernel pulled
 once, and a slice made for it: a first run, which saves the image's template under the
 slice and warms its pool there; --reads reads under no budget (`infinity`); --reads under a
@@ -206,12 +206,15 @@ GUEST_LIGHT = (
     # reclaim, throttled or not (mm/vmscan.c `allow_direct_reclaim`, `PGSCAN_DIRECT_THROTTLE`):
     # the kernel's own, where MemTotal and MemFree add what the host may still plug (D149).
     # Its own names, as $c above is the run's memory.current.
-    "z=; while read -r za zb zc zd _; do case $za in Node) z=\"$z $zd\";; pages) [ \"$zb\" = free ] && "
-    "z=\"$z free $zc\";; min|managed) z=\"$z $za $zb\";; esac; done < /proc/zoneinfo; "
+    # And the free pages its CPUs' lists hold, in all (each pageset's `count`), which no
+    # report gives back (D151) and which may grow to an eighth of each zone (mm/page_alloc.c
+    # `zone_highsize`): what of its host's anonymous memory a held run frees and takes anew.
+    "z=; l=0; while read -r za zb zc zd _; do case $za in Node) z=\"$z $zd\";; pages) [ \"$zb\" = free ] && "
+    "z=\"$z free $zc\";; min|managed) z=\"$z $za $zb\";; count:) l=$((l + zb));; esac; done < /proc/zoneinfo; "
     "x=; while read -r k n; do case $k in pgscan_direct_throttle|allocstall_dma32|allocstall_normal|"
     "allocstall_movable|pgscan_direct|pgsteal_direct|pgscan_kswapd|pgsteal_kswapd) x=\"$x $k $n\";; "
     "esac; done < /proc/vmstat; "
-    "echo \"$t dd ${w:--} | current $c$e$m |$g | zones$z | vm$x\"; "
+    "echo \"$t dd ${w:--} | current $c$e$m |$g | zones$z | lists $l | vm$x\"; "
     # And, in the hold-notes arm (hold-notes.patch), what init noted since the look before:
     # each hold it set on the run's cgroup, the room it was told, what its grower asked for
     # and what came. The run's own cgroup is its container's parent, which the container
@@ -446,8 +449,12 @@ def held(f, when, arm, guest=True):
     f.flush()
 
 
+# Its kernel's memory too, which with `anon` and `file` leaves of `current` no more than what
+# its kernel charged ahead on each CPU (mm/memcontrol.c `refill_stock`; D188's host reads'
+# room) and its statistics' lag: what of a held slice's overage is the host's own.
 STAT = ("anon", "file", "file_mapped", "shmem", "pagetables", "sec_pagetables", "pgscan", "pgsteal", "pgfault",
-        "pgmajfault", "workingset_refault_file", "workingset_activate_file", "active_file", "inactive_file")
+        "pgmajfault", "workingset_refault_file", "workingset_activate_file", "active_file", "inactive_file",
+        "kernel", "kernel_stack", "percpu", "slab", "vmalloc", "sock")
 
 
 def sample(path, stop):
@@ -517,12 +524,22 @@ def ended(pid, started, timeout=60):
     raise SystemExit(f"VM process {pid} still runs {timeout} s after its run was removed")
 
 
+def reads_room():
+    """What this host's own reads need below a budget, as the daemon leaves it out of every
+    room it tells (daemon/budget.rs `Holding::reads`, fs/headroom.rs `reads_room_of`): its
+    kernel's charge ahead, 64 pages on each CPU, a share's largest request, 256 pages, and
+    two read-ahead windows of 128 KiB."""
+    page = os.sysconf("SC_PAGE_SIZE")
+    return (64 * os.sysconf("SC_NPROCESSORS_ONLN") + 256) * page + 2 * (128 << 10)
+
+
 def short_budget():
-    """A mebibyte short of what the slice's microVMs hold and the inactive pages their
-    kernel keeps beside the mapped ones: all the slice holds but its page cache no process
-    maps, and as many as the mapped under a GiB of them (daemon/budget.rs, `lru_buffer`;
-    mm/vmscan.c, `inactive_is_low`); read once the slice's statistics have caught up with
-    its counter, which a microVM just ended leaves them behind (PM M309)."""
+    """A mebibyte short of what the slice's microVMs hold, the inactive pages their kernel
+    keeps beside the mapped ones and what its host's own reads need below it: all the slice
+    holds but its page cache no process maps, as many as the mapped under a GiB of them
+    (daemon/budget.rs, `lru_buffer`; mm/vmscan.c, `inactive_is_low`), and `reads_room`, as
+    tests/budget.rs counts it; read once the slice's statistics have caught up with its
+    counter, which a microVM just ended leaves them behind (PM M309)."""
     deadline = time.time() + 60
     while True:
         with open(os.path.join(CGROUP, "memory.current")) as f:
@@ -538,7 +555,7 @@ def short_budget():
     unmapped = max(0, stat["file"] - mapped - stat["shmem"])
     gb = (mapped * 2) >> 30
     ratio = 1 if gb == 0 else max(1, int((gb * 10) ** 0.5))
-    return max(0, current - unmapped + mapped // ratio - (1 << 20))
+    return max(0, current - unmapped + mapped // ratio + reads_room() - (1 << 20))
 
 
 def held_short(arm, run_id):

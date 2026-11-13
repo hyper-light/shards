@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use bytes::BytesMut;
 use hyper_quic::{
     ClientConfig, ClientConfigHandle, Connection, ConnectionError, ConnectionHandle, DatagramEvent, Dir,
-    Endpoint, EndpointConfig, Event, ServerConfig, StreamEvent, StreamId, VarInt,
+    Endpoint, EndpointConfig, EndpointEvent, Event, ServerConfig, StreamEvent, StreamId, VarInt,
 };
 
 use crate::Error;
@@ -54,6 +54,9 @@ enum Commands<C> {
 /// reserve host/kernel memory or grant it: the caller retains that reservation.
 #[derive(Debug, Clone, Copy)]
 pub struct DriverLimits {
+    /// The connections it holds at once. One open, its handshake's or established, holds its
+    /// place until it closes; one closed (closing or draining, RFC 9000 §10.2) until a newcomer
+    /// needs the place (the driver's `free_closed`).
     pub connections: usize,
     pub command_slots: usize,
     pub queued_datagram_bytes: usize,
@@ -1184,11 +1187,16 @@ impl<H: Handler> Driver<H> {
         let mut response = Vec::new();
         match self.endpoint.handle(now, from, None, None, bytes, &mut response) {
             Some(DatagramEvent::NewConnection(incoming)) => {
+                if let Some(limits) = self.limits
+                    && !self.stopping
+                {
+                    self.free_closed(now, limits.connections)?;
+                }
                 if self.stopping || self.limits.is_some_and(|l| self.conns.len() >= l.connections) {
-                    // Its places taken, each connection holding one is asked for an answer (a
-                    // PING), so that one whose peer is gone is found so at this use of its
-                    // place, a whole window unanswered past its probe timeout, and the place is
-                    // free for a newcomer's next attempt; this one is refused.
+                    // Its places still taken, each open connection holding one is asked for an
+                    // answer (a PING), so that one whose peer is gone is found so at this use of
+                    // its place, a whole window unanswered past its probe timeout, and the place
+                    // is free for a newcomer's next attempt; this one is refused.
                     if !self.stopping {
                         for conn in self.conns.values_mut() {
                             if conn.connected && !conn.quic.is_closed() {
@@ -1255,6 +1263,47 @@ impl<H: Handler> Driver<H> {
         self.conns
             .iter()
             .find_map(|(key, c)| (c.handle == handle).then_some(*key))
+    }
+
+    /// A newcomer finds its `places` full: a place held by a closed connection is freed for it.
+    /// Closed (closing or draining, RFC 9000 §10.2), a connection carries nothing again, its
+    /// state kept three probe timeouts only to absorb its peer's last packets: the one nearest
+    /// its drain is let go at once, as §10.2 lets an endpoint end those states early "to allow
+    /// for faster resource recovery", at the cost §10.2 names, a late packet of its peer's
+    /// answered by a stateless reset (§10.3), which ends the connection for that peer as its
+    /// close would. What it has yet to send, its CONNECTION_CLOSE (a datagram at most), goes
+    /// with this turn's datagrams, so none is freed while the socket holds back an earlier one.
+    /// A connection open, its handshake's or established, keeps its place.
+    fn free_closed(&mut self, now: Instant, places: usize) -> Result<(), Error> {
+        let mut buffer = Vec::new();
+        while self.conns.len() >= places && self.out.is_empty() {
+            let Some(key) = self
+                .conns
+                .iter_mut()
+                .filter_map(|(key, c)| c.quic.is_closed().then(|| (*key, c.quic.poll_timeout())))
+                .min_by_key(|(_, drains)| *drains)
+                .map(|(key, _)| key)
+            else {
+                return Ok(());
+            };
+            buffer.clear();
+            if let Some(conn) = self.conns.get_mut(&key)
+                && let Some(transmit) = conn
+                    .quic
+                    .poll_transmit(now, 1, &mut buffer, self.endpoint.configs())
+            {
+                self.queue_datagram(
+                    transmit.destination,
+                    buffer.get(..transmit.size).unwrap_or_default(),
+                )?;
+            }
+            // Its last events, then its endpoint told it has drained.
+            self.pump(now, key);
+            if let Some(conn) = self.conns.remove(&key) {
+                self.endpoint.handle_event(conn.handle, EndpointEvent::drained());
+            }
+        }
+        Ok(())
     }
 
     /// A handshake comes: where the handshakes held fill their slots, the oldest still

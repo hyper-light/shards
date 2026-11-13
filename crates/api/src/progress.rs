@@ -208,45 +208,90 @@ impl From<Unfollowed> for Refusal {
     }
 }
 
-/// A wait that follows a VM process, judged by the record of its kind of answer ([`Judge`])
-/// on what each look at the process finds.
+/// What a VM process did since the look before, as D215's readers see it: the observation
+/// beneath [`Follow`], apart from any judge, for a wait whose slices are a record of its own
+/// (the daemon's ends, D217, whose W* its home keeps).
 #[derive(Debug)]
-pub struct Follow<'a> {
-    judge: Judge<'a>,
+pub struct Watch {
     followed: Followed,
-    /// Its VM process, for a refusal to name.
-    pid: u32,
-    started: u64,
-    /// What its VM process had run as it began.
-    from: Duration,
     /// The look before, and what its host was found doing to it then.
     last: Look,
     hold: Hold,
 }
 
+impl Watch {
+    /// `followed`, looked at now: none where its process has gone already.
+    pub fn of(mut followed: Followed) -> Result<Option<Watch>, ProcessFailure> {
+        let Some(last) = followed.look()? else {
+            return Ok(None);
+        };
+        let hold = followed.hold();
+        Ok(Some(Watch { followed, last, hold }))
+    }
+
+    /// What it did since the look before ([`Found`]): progressed where it ran or its end is
+    /// under way; held where its host held it from running; still where it did neither of
+    /// its own, or is stopped or frozen; gone where its process has.
+    pub fn look(&mut self) -> Result<Found, ProcessFailure> {
+        let Some(look) = self.followed.look()? else {
+            return Ok(Found::Gone);
+        };
+        let before = std::mem::replace(&mut self.last, look);
+        let hold = std::mem::replace(&mut self.hold, self.followed.hold());
+        // A diagnosis of what Windows shows of a VM process a look judges (W2: one inside
+        // WHP's partition calls, cut as stalled on CI's windows-2022).
+        #[cfg(windows)]
+        if std::env::var_os("SHARDS_JUDGE_TRACE").is_some() {
+            self.followed.trace(&look);
+        }
+        Ok(found(look.ran_since(&before), look.ending, &hold, &self.hold))
+    }
+
+    /// The CPU time its process's threads have had by the look before.
+    pub fn cpu(&self) -> Duration {
+        self.last.cpu
+    }
+
+    /// The CPU time its process's threads have had by now, the look before kept; none where
+    /// it has gone or could not be read.
+    fn cpu_now(&mut self) -> Option<Duration> {
+        self.followed.look().ok().flatten().map(|look| look.cpu)
+    }
+}
+
+/// A wait that follows a VM process, judged by the record of its kind of answer ([`Judge`])
+/// on what each look at the process finds ([`Watch`]).
+#[derive(Debug)]
+pub struct Follow<'a> {
+    judge: Judge<'a>,
+    watch: Watch,
+    /// Its VM process, for a refusal to name.
+    pid: u32,
+    started: u64,
+    /// What its VM process had run as it began.
+    from: Duration,
+}
+
 impl<'a> Follow<'a> {
     /// A wait beginning now that follows `followed`, learning into and judged by `record`:
     /// none where its process has gone already, whose end is the wait's.
-    pub fn begin(record: &'a Record, mut followed: Followed) -> Result<Option<Follow<'a>>, Unfollowed> {
+    pub fn begin(record: &'a Record, followed: Followed) -> Result<Option<Follow<'a>>, Unfollowed> {
         let judge = Judge::begin(record);
         let (pid, started) = (followed.pid(), followed.started());
-        let looked = followed.look().map_err(|failure| Unfollowed::Process {
+        let watched = Watch::of(followed).map_err(|failure| Unfollowed::Process {
             pid,
             expected_started: started,
             failure,
         })?;
-        let Some(look) = looked else {
+        let Some(watch) = watched else {
             return Ok(None);
         };
-        let hold = followed.hold();
         Ok(Some(Follow {
             judge,
-            followed,
+            from: watch.cpu(),
+            watch,
             pid,
             started,
-            from: look.cpu,
-            last: look,
-            hold,
         }))
     }
 
@@ -267,26 +312,18 @@ impl<'a> Follow<'a> {
             return Ok(());
         }
         let (pid, expected_started) = (self.pid, self.started);
-        let looked = self.followed.look().map_err(|failure| Unfollowed::Process {
+        let found = self.watch.look().map_err(|failure| Unfollowed::Process {
             pid,
             expected_started,
             failure,
         })?;
-        let found = match looked {
-            None => Found::Gone,
-            Some(look) => {
-                let before = std::mem::replace(&mut self.last, look);
-                let hold = std::mem::replace(&mut self.hold, self.followed.hold());
-                found(look.ran_since(&before), look.ending, &hold, &self.hold)
-            }
-        };
         self.judge.found(found).map_err(Unfollowed::Stalled)
     }
 
     /// Its party answered: its kind learns from the answer, its VM process read now.
     pub fn answered(&mut self) {
-        if let Ok(Some(look)) = self.followed.look() {
-            self.judge.answered(look.cpu.saturating_sub(self.from));
+        if let Some(cpu) = self.watch.cpu_now() {
+            self.judge.answered(cpu.saturating_sub(self.from));
         }
     }
 
@@ -299,7 +336,7 @@ impl<'a> Follow<'a> {
         }
         // On Windows the tree's handles read its processes after they have ended.
         #[cfg(windows)]
-        let cpu = self.followed.look().ok().flatten().map(|look| look.cpu).or(cpu);
+        let cpu = self.watch.cpu_now().or(cpu);
         if let Some(cpu) = cpu {
             self.judge.answered(cpu.saturating_sub(self.from));
         }
@@ -788,10 +825,11 @@ mod os {
                 return Hold::default();
             };
             let (mut runnable, mut threads, mut suspended) = (false, 0usize, 0usize);
-            each_thread(&records, |pid, state, reason| {
+            each_thread(&records, |pid, t| {
                 if !self.members.iter().any(|m| m.pid == pid && !m.exited) {
                     return;
                 }
+                let (state, reason) = (t.ThreadState, t.WaitReason);
                 threads = threads.saturating_add(1);
                 let waiting = state == WAITING;
                 runnable |=
@@ -802,6 +840,36 @@ mod os {
                 runnable,
                 stopped: threads > 0 && suspended == threads,
             }
+        }
+
+        /// Says on stderr what a look found of its processes, for a diagnosis of a wait on
+        /// Windows (SHARDS_JUDGE_TRACE set): the look's CPU and cycles (GetProcessTimes,
+        /// QueryProcessCycleTime) and each thread of its live processes as the system's records
+        /// show it now: its process and thread, state and wait reason (KWAIT_REASON), context
+        /// switches, and kernel and user time in 100 ns units. What cannot be read is said so.
+        pub(super) fn trace(&self, look: &Look) {
+            use std::io::Write as _;
+            let mut said = format!(
+                "shards judge: VM process {}: cpu {:?}, cycles {}, ending {}",
+                self.pid, look.cpu, look.cycles, look.ending
+            );
+            match records() {
+                None => said.push_str("; its threads unread"),
+                Some(records) => each_thread(&records, |pid, t| {
+                    if self.members.iter().any(|m| m.pid == pid && !m.exited) {
+                        said.push_str(&format!(
+                            "\n  pid {pid} tid {} state {} reason {} switches {} kernel {} user {}",
+                            t.ClientId.UniqueThread as usize,
+                            t.ThreadState,
+                            t.WaitReason,
+                            t.Reserved3,
+                            t.Reserved1[0],
+                            t.Reserved1[1]
+                        ));
+                    }
+                }),
+            }
+            let _ = writeln!(std::io::stderr(), "{said}");
         }
 
         /// What its processes have run, now: their handles read them, gone or not.
@@ -1055,9 +1123,10 @@ mod os {
         }
     }
 
-    /// Each thread the records in `words` hold: its process's id, its state and its wait
-    /// reason. A record that would pass the records' end ends them.
-    fn each_thread(words: &[u64], mut thread: impl FnMut(u32, u32, u32)) {
+    /// Each thread the records in `words` hold: its process's id and its thread's record
+    /// (state, wait reason, times, context switches). A record that would pass the records'
+    /// end ends them.
+    fn each_thread(words: &[u64], mut thread: impl FnMut(u32, &SYSTEM_THREAD_INFORMATION)) {
         let Some(len) = words.len().checked_mul(size_of::<u64>()) else {
             return;
         };
@@ -1093,7 +1162,7 @@ mod os {
                         .cast::<SYSTEM_THREAD_INFORMATION>()
                         .read_unaligned()
                 };
-                thread(pid, t.ThreadState, t.WaitReason);
+                thread(pid, &t);
             }
             let next = usize::try_from(info.NextEntryOffset).unwrap_or(0);
             match at.checked_add(next) {

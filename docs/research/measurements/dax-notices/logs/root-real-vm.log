@@ -1,0 +1,34 @@
+# containers.rs a_volumes_large_files_go_through_its_dax_window in ROOT's real-VM runs after D235's notices. PM M550.
+
+== e72239dd3, adacachy2 (KVM, Linux x86_64), /home/adalundhe/g121-carrier/kvm-e72239dd3-ci.log lines 286-295
+thread 'a_volumes_large_files_go_through_its_dax_window' (690141) panicked at crates/shards/tests/containers.rs:1941:5:
+assertion `left == right` failed: status Some(1) after 16.55187ms
+--- stdout
+
+--- stderr
+hold:/v/held:3145728:/v/held-go: failed to fill whole buffer
+
+  left: ""
+ right: "hold /v/held 3145728 0\n"
+
+== 237f3ebe7, adacachy2 (KVM, Linux x86_64), /home/adalundhe/g121-carrier/kvm-ws-237f3ebe7.log lines 2133-2142
+thread 'a_volumes_large_files_go_through_its_dax_window' (346014) panicked at crates/shards/tests/containers.rs:1941:5:
+assertion `left == right` failed: status Some(1) after 781.275064ms
+--- stdout
+
+--- stderr
+hold:/v/held:3145728:/v/held-go: failed to fill whole buffer
+
+  left: ""
+ right: "hold /v/held 3145728 0\n"
+
+== dc7f45bc6, ROOT's HVF run (macOS arm64), e2e-hvf9-workspace-dc7f45bc6.log lines 3034-3044
+thread 'a_volumes_large_files_go_through_its_dax_window' (98107714) panicked at crates/shards/tests/containers.rs:1941:5:
+assertion `left == right` failed: status Some(1) after 126.196334ms
+--- stdout
+
+--- stderr
+hold:/v/held:3145728:/v/held-go: failed to fill whole buffer
+
+  left: ""
+ right: "hold /v/held 3145728 0\n"
