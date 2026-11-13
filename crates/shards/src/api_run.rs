@@ -470,6 +470,30 @@ fn held_apart(
     Ok(())
 }
 
+/// The run's network and its network process's policy (D231, D250): the image's grants as the
+/// request narrows them ([`egress`]), each member held apart where asked ([`held_apart`]),
+/// and a bridge where the request keeps anything past the microVM or the image links its
+/// members past it (`Agentfile::linked_past`), whatever is kept. Their init links them to
+/// eth0 as their image grants (its `/.agentfile.json`, which no narrowing reaches), and the
+/// network process holds the microVM to what is kept, nothing where nothing is (no policy
+/// told: its `Policy::DenyAll`). Then the run refused what of it would reach the image's
+/// domains ([`crate::agentfile::Agentfile::refuse`]).
+fn network(
+    agentfile: Option<&crate::agentfile::Agentfile>,
+    request: &wire::Request,
+    run: &mut shards_ipc::Run,
+) -> Result<Option<Vec<u8>>, No> {
+    let egress = egress(agentfile.map(|a| &a.grants), &request.egress)?;
+    held_apart(agentfile, &request.egress)?;
+    if egress.is_some() || agentfile.is_some_and(crate::agentfile::Agentfile::linked_past) {
+        run.network = "bridge".into();
+    }
+    if let Some(a) = agentfile {
+        a.refuse(run).map_err(no(Cause::Request))?;
+    }
+    Ok(egress)
+}
+
 /// Refuses a published port that would widen the run: one the image's Agentfile declares
 /// `AS egress` (a destination, never a listener), and, for a run with no command of its
 /// own, one the image gives no member for ingress (D122).
@@ -617,6 +641,27 @@ fn held_of(room: Option<i64>, out: &[u8]) -> Result<Option<u64>, String> {
     }
 }
 
+/// How a run ended, from its VM's link (D249): why the link failed, else its `DONE`. That is
+/// the command's status and, where the command never started (its guest said no `STARTED`),
+/// why not, read as the daemon reads them (warm.rs `finish`, daemon.rs `run_ended`). Such a
+/// run failed, in its VM's words: the status alone, the code dockerd gives a run whose
+/// command never started, would read as the command's own exit.
+fn run_end(failed: Option<String>, done: Option<&[u8]>, started: bool) -> wire::RunEnd {
+    if let Some(why) = failed {
+        return wire::RunEnd::Failed(why);
+    }
+    match done.and_then(<[u8]>::split_first) {
+        Some((status, said)) if !started && !said.is_empty() => wire::RunEnd::Failed(format!(
+            "its command never started (status {status}): {}",
+            String::from_utf8_lossy(said)
+        )),
+        Some((status, _)) => wire::RunEnd::Exited(u32::from(*status)),
+        None => wire::RunEnd::Failed(
+            "the VM ended without its run's end; its last words are on this host's stderr".into(),
+        ),
+    }
+}
+
 mod hosted {
     use std::collections::HashMap;
     use std::ffi::{OsStr, OsString};
@@ -675,8 +720,9 @@ mod hosted {
     }
 
     /// The request as `shards run` would have asked it of a daemon: the image, its own
-    /// command or none, its published ports, its shares as `-v`, a network only where
-    /// something goes past the microVM, and the nesting grant as `--security-opt
+    /// command or none, its published ports, its shares as `-v`, a network where a port is
+    /// published (`super::network` gives one where more needs it), and the nesting grant as
+    /// `--security-opt
     /// nesting=true` asks for it (D234), with `ready_by`, its deadline as an instant
     /// (`super::deadline`).
     pub(super) fn as_run(request: &wire::Request, ready_by: Option<u64>) -> shards_ipc::Run {
@@ -771,14 +817,7 @@ mod hosted {
         let inputs = super::inputs(request, &members)?;
         let terminals = super::terminals(request, &members)?;
         super::ports_granted(&request.publish, agentfile.as_ref(), request.command.is_some())?;
-        let egress = super::egress(agentfile.as_ref().map(|a| &a.grants), &request.egress)?;
-        super::held_apart(agentfile.as_ref(), &request.egress)?;
-        if egress.is_some() {
-            run.network = "bridge".into();
-        }
-        if let Some(a) = &agentfile {
-            a.refuse(&run).map_err(no(Cause::Request))?;
-        }
+        let egress = super::network(agentfile.as_ref(), request, &mut run)?;
         let nesting = super::nesting(agentfile.as_ref(), &run, &say)?;
         let bridge = if run.network == "bridge" {
             Some(
@@ -1863,9 +1902,10 @@ mod hosted {
 
     /// Reads the VM's link until it closes: each member's end and the command's readiness
     /// to the orchestrator as they come (`super::relayed`), each exec's client end let go of
-    /// as the VM takes it, the run's status from its `DONE`.
+    /// as the VM takes it, the run's end from its `DONE` (`super::run_end`).
     fn follow(live: &Live<'_>, link: &Stream) -> RunEnd {
-        let mut status = None;
+        let mut done = None;
+        let mut started = false;
         let failed = loop {
             let m = match shards_ipc::recv(link) {
                 Ok(Some(m)) => m,
@@ -1873,8 +1913,9 @@ mod hosted {
                 Err(e) => break Some(format!("the VM's link: {e}")),
             };
             if m.kind == kind::DONE {
-                status = m.payload.first().copied();
+                done = Some(m.payload);
             } else if m.kind == kind::STARTED {
+                started = true;
                 // Its guest told what its host changes in its shares from now on (D235).
                 if let Some(pipe) = lock(&live.notices_due).take() {
                     match notice_exec(live, pipe) {
@@ -1917,15 +1958,7 @@ mod hosted {
         for member in members {
             end_input(live, member);
         }
-        if let Some(why) = failed {
-            return RunEnd::Failed(why);
-        }
-        match status {
-            Some(s) => RunEnd::Exited(u32::from(s)),
-            None => RunEnd::Failed(
-                "the VM ended without its run's end; its last words are on this host's stderr".into(),
-            ),
-        }
+        super::run_end(failed, done.as_deref(), started)
     }
 
     /// The orchestrator's asks, until its channel closes: credit, stats, stop. A channel
@@ -2802,6 +2835,83 @@ mod tests {
 
     fn members() -> Vec<wire::MemberInfo> {
         members_of(&["agent helper".into(), "harness codex".into()], &[1])
+    }
+
+    /// Do end a run whose guest said `STARTED` with a `DONE` of a status alone; one whose
+    /// guest never did with a status and the words of a command that never started (warm.rs
+    /// `finish`); one that started with such words; one after a broken link; and one with no
+    /// `DONE`. Expect: the status as the run's exit; a failure saying the command never
+    /// started, its status and the VM's words, never that status as an exit; the status, as
+    /// the daemon keeps a started command's (daemon.rs `run_ended`); the link's failure; a
+    /// failure.
+    #[test]
+    fn a_command_that_never_started_ends_its_run_failed_saying_why() {
+        assert_eq!(run_end(None, Some(&[3]), true), wire::RunEnd::Exited(3));
+        assert_eq!(run_end(None, Some(&[0]), true), wire::RunEnd::Exited(0));
+        let never = b"\x80exec: \"/bin/sh\": operation not permitted";
+        assert_eq!(run_end(None, Some(never), true), wire::RunEnd::Exited(128));
+        match run_end(None, Some(never), false) {
+            wire::RunEnd::Failed(why) => assert_eq!(
+                why,
+                "its command never started (status 128): exec: \"/bin/sh\": operation not permitted"
+            ),
+            other => panic!("a command that never started ended its run as {other:?}"),
+        }
+        assert_eq!(
+            run_end(Some("the VM's link: reset".into()), Some(&[3]), true),
+            wire::RunEnd::Failed("the VM's link: reset".into())
+        );
+        assert!(matches!(run_end(None, None, false), wire::RunEnd::Failed(_)));
+    }
+
+    /// A run that keeps nothing past the microVM of what the image grants its members has
+    /// the network their links need all the same (their init links each member granted
+    /// anything past the microVM through eth0, D59, D250), and its network process lets
+    /// nothing past (no policy told: `Policy::DenyAll`). Do: narrow an image whose harness is
+    /// granted egress and DNS to nothing, as Hex's image class asks by default (kiln plan
+    /// 01a1cd8e862e7169a074db3d5fa33f3d step 12); keep it whole; and run an image that
+    /// grants nothing. Expect: the first on a bridge with no policy, never refused "cannot
+    /// run without a network"; the second on a bridge with the image's policy; the third on
+    /// none.
+    #[test]
+    fn a_run_keeping_nothing_past_the_microvm_has_its_members_network_and_no_policy() {
+        let granted = crate::agentfile::Agentfile {
+            domains: 2,
+            uplink: true,
+            grants: shards_agentfile::agentfile::Grants {
+                egress: vec![b"443/tcp".to_vec()],
+                dns: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut nothing = request(Vec::new());
+        nothing.egress = wire::Narrowing {
+            egress: wire::Keep::Only(Vec::new()),
+            mcp: wire::Keep::Only(Vec::new()),
+            destinations: wire::Keep::Only(Vec::new()),
+            dns: false,
+            members: None,
+        };
+        let mut run = hosted::as_run(&nothing, None);
+        let policy = network(Some(&granted), &nothing, &mut run);
+        assert!(
+            matches!(&policy, Ok(None)),
+            "{}",
+            policy.err().map(|No(_, why)| why).unwrap_or_default()
+        );
+        assert_eq!(run.network, "bridge");
+        let whole = request(Vec::new());
+        let mut run = hosted::as_run(&whole, None);
+        assert!(matches!(network(Some(&granted), &whole, &mut run), Ok(Some(_))));
+        assert_eq!(run.network, "bridge");
+        let plain = crate::agentfile::Agentfile {
+            domains: 2,
+            ..Default::default()
+        };
+        let mut run = hosted::as_run(&whole, None);
+        assert!(matches!(network(Some(&plain), &whole, &mut run), Ok(None)));
+        assert_eq!(run.network, "none");
     }
 
     /// Labels become members by their declared index; only an active one runs.

@@ -107,6 +107,8 @@ a_move_of_another_hypervisors_microvm_is_refused_typed` 11 passed; `cargo clippy
 scripts/lint runs it, with `--target x86_64-pc-windows-msvc`, which compiles the WHP side
 (`hv::whp::host_cpu_id`, `vm::host_cpu_id` on WHP).
 
+Its mutant is M11 of `light-gate.sh` (added with step 6), the coordinator's to run.
+
 Owed (Windows x86-64 with WHP; the coordinator's): the WHP partition probe behind
 `shards-vm cpu` there (`hv::whp::host_cpu_id`), and the refusal end to end between two
 Windows hosts of different CPUs, none here:
@@ -130,6 +132,52 @@ a_move_whose_published_port_is_taken_here_is_refused_typed` 12 passed; `cargo cl
 shards --all-targets -- -D warnings` clean (it first refused the refusal's size inside
 `Unready`, now boxed).
 
+Its mutant is M12 of `light-gate.sh` (added with step 6), the coordinator's to run.
+
 Owed (the coordinator's): the E2E on two homes of each OS,
 
     cargo test -p shards --test moved -- a_moved_microvms_published_port_answers_there
+
+## Step 6: a moved run's key made anew where it lands; a managed run refused before anything moves (D176 part 6, D238)
+
+ROOT's decision (7a row 11c), in D176 part 6's "Its key, made anew where it lands and never
+carried": the move's side of it on step 11's per-run key (17ed8a2e5, `shards.control=true`).
+`Plan::key` names the run's key where it ran (`managed::vm_key`, the `vm` line of its managed
+metadata, agreed with goal 58's agent); the machine moved to keeps it as the run's
+`key-replaced` (a fingerprint alone, none carried from an earlier move); `move step key NAME
+[ASKED]` (`Daemon::move_key`) answers `{"key", "replaces"}` and refuses typed a lease asked
+under the replaced key (`key_refused`, `Refused::KeyReplaced { name, asked, current }`,
+whose fields goal 63's lease refusal takes); `shards move vm` prints the name, then
+`{"name", "context", "key", "replaces"}` where either is known. A run with a managed scope
+(`managed::has_scope`) is refused typed at its source's `save` and `plan` steps
+(`Refused::Managed`), before anything of it is saved, as no restore takes a managed scope
+yet; the source's refusals now go typed as `ready`'s do. Held by
+`a_lease_under_the_key_a_move_replaced_is_refused_and_the_run_names_its_own` (moves.rs),
+`a_managed_runs_move_and_a_lease_under_its_replaced_key_are_refused_typed` (daemon.rs: the
+daemon's own `save` and `key` steps) and the refusals' round trip. Its mutants: M13
+(`unmovable`) and M14 (`key_refused`), the coordinator's to run.
+
+Found in review before its run, fixed at 3834de09c: the plan's `baseline` field took the
+containers' lock as a temporary, which lives to the end of its statement (the Rust
+Reference, "Destructors", temporary scopes), and the new `key` field after it locked the
+same std `Mutex` on the same thread, which never returns (`std::sync::Mutex::lock`). `plan`
+serves the `save`, `live` and `export` steps and `move_plan` the `plan` step: every move
+would have hung there. The run's directory is now read in a statement of its own. No unit
+test reaches `plan`, which reads a real snapshot; the moves E2E below does. The run before,
+at 1c315812b, did not compile (E0308: `move_plan`'s not-running error, not an `Unready`).
+
+At 625169a6e, main 9bdd4a7ec merged (one host, adas-mac-studio.local: Apple M4 Max, macOS
+26.2, rustc 1.98.1, 2026-11-13T05:33Z): `cargo test -p shards --bin shards -- daemon::moves
+cli::moves a_move_of_another_hypervisors_microvm_is_refused_typed
+a_move_whose_published_port_is_taken_here_is_refused_typed
+a_managed_runs_move_and_a_lease_under_its_replaced_key_are_refused_typed` 14 passed; `cargo
+clippy -p shards --all-targets -- -D warnings` clean.
+
+Owed (the coordinator's): M11-M14 (`light-gate.sh`); a move end to end, which reaches
+`plan` (saved and live, two homes of each OS),
+
+    cargo test -p shards --test moved -- a_running_microvm_moves_to_another_machine_and_goes_on_there a_running_microvm_moves_live_and_goes_on_there
+
+and the key's own E2E once a restore takes a managed scope (D238): a run with
+`--annotation shards.control=true` moved, the answer's `key` the `vm` line there, its
+`replaces` the one here, a lease asked under `replaces` refused.

@@ -29,6 +29,23 @@ use super::{Daemon, Disk, Threads, lock, log};
 use crate::spec::LogRetention;
 
 const METADATA: &str = "managed-output";
+
+/// Whether the run whose directory is `dir` has a managed scope: its [`METADATA`], written as
+/// the scope begins and kept.
+pub(super) fn has_scope(dir: &Path) -> bool {
+    dir.join(METADATA).exists()
+}
+
+/// The run's own key (D238, plan step 11), as its managed metadata names it: the `vm` line
+/// of a run whose owner asked for its agent-control endpoint ([`CONTROL_ANNOTATION`]); none
+/// for any other run.
+pub(super) fn vm_key(dir: &Path) -> Option<Fingerprint> {
+    let text = std::fs::read_to_string(dir.join(METADATA)).ok()?;
+    text.lines()
+        .find_map(|l| l.strip_prefix("vm "))
+        .and_then(|hex| crate::context::unhex32(hex.trim()))
+}
+
 const GENERATION: &str = "managed-generation";
 // RFC 8446 §4: Handshake's uint24 length and four-byte type/length head.
 const HANDSHAKE_BYTES: usize = (1 << 24) - 1 + 4;
