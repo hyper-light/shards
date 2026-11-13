@@ -858,9 +858,10 @@ mod reap_tests {
             .filter(|&ms| ms > 0)
     }
 
-    /// A shell running `script`, given nothing: a network or share process's stand-in.
-    fn sh(script: &str) -> NetProcess {
-        let args = [OsStr::new("-c"), OsStr::new(script)];
+    /// A shell running `script` with `arg` as its `$0`, given nothing else: a network or
+    /// share process's stand-in.
+    fn sh(script: &str, arg: &Path) -> NetProcess {
+        let args = [OsStr::new("-c"), OsStr::new(script), arg.as_os_str()];
         shards_ipc::spawn_in(Path::new("/bin/sh"), &args, &[], false, &[]).unwrap()
     }
 
@@ -873,19 +874,19 @@ mod reap_tests {
         let slice = Duration::from_millis(200);
         let home = shards_testdir::TempDir::new("reap-busy").unwrap();
         let ends = Ends::kept_in(&home);
-        // Busy, as one finishing its work is, until it is told to stop: then it ends.
-        let busy = sh("trap 'exit 0' TERM; while :; do :; done");
-        let pid = i32::try_from(busy.id()).unwrap();
+        // Busy, as one finishing its work is, until its file comes: then it ends. A file,
+        // not a signal, so that nothing is sent to an ID its process may no longer hold.
+        let stop = home.join("stop");
+        let busy = sh("while [ ! -e \"$0\" ]; do :; done", &stop);
         let began = Instant::now();
-        std::thread::scope(|s| {
+        let took = std::thread::scope(|s| {
             s.spawn(|| {
                 std::thread::sleep(slice * 5);
-                // SAFETY: kill(2) of this test's own child, not reaped until it ends.
-                unsafe { libc::kill(pid, libc::SIGTERM) };
+                std::fs::write(&stop, b"").unwrap();
             });
             reap_by(&busy, &ends, slice);
+            began.elapsed()
         });
-        let took = began.elapsed();
         assert!(took >= slice * 5, "ended while it went on: {took:?}");
         let ms = kept(&home).expect("its own end was not kept");
         assert!(ms >= 1000, "{ms} ms kept");
@@ -893,7 +894,7 @@ mod reap_tests {
         // none of its own.
         let home = shards_testdir::TempDir::new("reap-asleep").unwrap();
         let ends = Ends::kept_in(&home);
-        let asleep = sh("exec /bin/sleep 60");
+        let asleep = sh("exec /bin/sleep 60", &home);
         let began = Instant::now();
         reap_by(&asleep, &ends, slice);
         let took = began.elapsed();
