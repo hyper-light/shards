@@ -61,6 +61,12 @@ replaced one as `KeyReplaced { asked, current }`, which this step carries end to
 - Run r320, head a9c0ae4e4, the tree clean after the reds (0 files changed): shards-net 12 passed; shards-api `image::` 38
   passed; shards `api_run::` 21 passed; shards-ipc's `every_message_kind_has_its_own_number` 1 passed; the four crates'
   clippy, `--all-targets -- -D warnings`, each re-checked (`Checking shards v0.7.0`, sources touched), clean.
+- Run r332, head 87862c2da (merged with main e1995061f, which brought step 2's second slice): shards-net 12, shards-api
+  `image::` 38, shards `api_run::` 23 (main's two added), shards-ipc 1 passed; the four crates' clippy clean.
+- Run r385, head 4985c80b2 (merged with main dcb403688, whose guest-cpu-time-v1 took the image channel's version 14, so
+  the leases take 15; and main's one unformatted line of wire.rs formatted): shards-net 12, shards-api `image::` 38,
+  shards `api_run::` 23, shards-ipc 1 passed; the four crates' clippy, `--all-targets -- -D warnings`, clean
+  (`Compiling shards v0.7.0`, its build script rerun after main's build.rs change, then checked).
 - Between r282 and r301 the runner's disk was full (116 MiB free; this lane's directory was 6.1 GB of it, other lanes'
   far more); another lane's cleanup freed 87 GiB before r301, and nothing of others' was touched here.
 
