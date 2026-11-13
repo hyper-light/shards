@@ -1,0 +1,49 @@
+# The zig shards builds its C with, pinned: sourced by scripts/install-zig, which installs it
+# by its digest, and by scripts/zig-cc and scripts/zig-ar, which run it and no other zig.
+# Digests from https://ziglang.org/download/index.json.
+#
+# Sets zig_version, zig_host and zig_sum (this host's archive), zig_home (where
+# install-zig keeps it) and zig_dir (the directory it unpacks to), and defines zig_pinned.
+zig_version=0.16.0
+case "$(uname -s)-$(uname -m)" in
+	Linux-x86_64) zig_host=x86_64-linux; zig_sum=70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00 ;;
+	Linux-aarch64) zig_host=aarch64-linux; zig_sum=ea4b09bfb22ec6f6c6ceac57ab63efb6b46e17ab08d21f69f3a48b38e1534f17 ;;
+	Darwin-x86_64) zig_host=x86_64-macos; zig_sum=0387557ed1877bc6a2e1802c8391953baddba76081876301c522f52977b52ba7 ;;
+	Darwin-arm64) zig_host=aarch64-macos; zig_sum=b23d70deaa879b5c2d486ed3316f7eaa53e84acf6fc9cc747de152450d401489 ;;
+	MINGW*-x86_64 | MSYS*-x86_64) zig_host=x86_64-windows; zig_sum=68659eb5f1e4eb1437a722f1dd889c5a322c9954607f5edcf337bc3684a75a7e ;;
+	MINGW*-aarch64 | MSYS*-aarch64 | MINGW*-arm64) zig_host=aarch64-windows; zig_sum=aee38316ee4111717900f45dd3130145c39289e105541d737eb8c5ed653c78ef ;;
+	*) zig_host= zig_sum= ;;
+esac
+# CI's job keeps it in its runner's temporary directory, which lasts the job. Elsewhere it is
+# the user's cache: no sweep of temporary files reaches it, as macOS's of /var/folders/…/T
+# took the pinned zig's binary from under a builder, which then compiled with a newer zig on
+# PATH (adas-mac-studio.local, 2026-11-13).
+if [ -n "${RUNNER_TEMP:-}" ]; then
+	zig_home=$RUNNER_TEMP
+else
+	case $zig_host in
+		*-macos) zig_home="$HOME/Library/Caches/shards/zig" ;;
+		*-windows) zig_home="$HOME/AppData/Local/shards/zig" ;;
+		*) zig_home="${XDG_CACHE_HOME:-$HOME/.cache}/shards/zig" ;;
+	esac
+fi
+zig_dir="$zig_home/zig-$zig_host-$zig_version"
+
+# The pinned zig, said on stdout: install-zig's own copy where it keeps it, else the zig on
+# PATH where it is that version; refused otherwise, saying why on stderr.
+zig_pinned() {
+	if [ -x "$zig_dir/zig" ] || [ -x "$zig_dir/zig.exe" ]; then
+		echo "$zig_dir/zig"
+		return 0
+	fi
+	if ! found=$(command -v zig); then
+		echo "shards: no zig $zig_version: run scripts/install-zig, and put the directory it prints on PATH" >&2
+		return 1
+	fi
+	have=$("$found" version 2>/dev/null) || have="no version it says"
+	if [ "$have" != "$zig_version" ]; then
+		echo "shards: $found is zig $have, not the pinned $zig_version: run scripts/install-zig, and put the directory it prints on PATH" >&2
+		return 1
+	fi
+	echo "$found"
+}
