@@ -59,6 +59,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
       - run: python3 scripts/check-development-policy
+      # Only the pinned zig compiles shards' C (scripts/zig-pin), checked with stand-ins.
+      - run: scripts/zig-pin-check
       - run: scripts/retry 5 30 rustup toolchain install "$TOOLCHAIN" --profile minimal --component rustfmt
       - run: cargo fmt --all --check
 

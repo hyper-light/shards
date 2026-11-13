@@ -138,21 +138,31 @@ fn withheld_reply_expires_before_fixture_release() {
     });
     release.send(()).unwrap();
     fixture.end();
-    assert!(matches!(
-        result,
-        Err(Refusal::Borrowed {
-            failure: BorrowFailure::Channel(HandshakeError::Expired {
-                phase: HandshakePhase::Read
-            }),
-            ..
-        })
-    ));
+    assert!(
+        matches!(
+            result,
+            Err(Refusal::Borrowed {
+                failure: BorrowFailure::Channel(HandshakeError::Expired {
+                    phase: HandshakePhase::Read
+                }),
+                ..
+            })
+        ),
+        "{:?}",
+        result.as_ref().err()
+    );
 }
 
 /// A reply dribbled a byte at a time does not renew the deadline: one byte each quarter of
 /// the patience (the reply's length less one), the whole reply past it, each byte well inside
 /// a patience a renewing read would restart. Its patience is this host's own, one its dial and
-/// CONNECT fit in (`while_runs::until_reached`).
+/// CONNECT fit in (`while_runs::until_reached`): an attempt whose patience runs out in its
+/// dial is expired there, and asked again with more. Before, Windows' dial said the end of its
+/// patience as a failure of its own (`shards_afunix`'s TimedOut, `Io { phase: Dial }`), the one
+/// step of the handshake that did, so an attempt whose dial outlasted the first patience (the
+/// least wait its streams keep, `kept_wait`: WSAPoll's millisecond or more) was taken for its
+/// end (CI's aarch64 Windows job at f5c0c8b04 failed here, its assertion saying nothing of what
+/// came; each now says).
 #[test]
 fn dribbled_reply_does_not_renew_deadline() {
     use crate::while_runs::Reached;
@@ -175,15 +185,19 @@ fn dribbled_reply_does_not_renew_deadline() {
         Reached::Done((result, fixture))
     });
     fixture.end();
-    assert!(matches!(
-        result,
-        Err(Refusal::Borrowed {
-            failure: BorrowFailure::Channel(HandshakeError::Expired {
-                phase: HandshakePhase::Read
-            }),
-            ..
-        })
-    ));
+    assert!(
+        matches!(
+            result,
+            Err(Refusal::Borrowed {
+                failure: BorrowFailure::Channel(HandshakeError::Expired {
+                    phase: HandshakePhase::Read
+                }),
+                ..
+            })
+        ),
+        "{:?}",
+        result.as_ref().err()
+    );
 }
 
 #[test]
