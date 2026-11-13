@@ -16,6 +16,8 @@ use shards_rego::parser::parse_module;
 use shards_rego::types::Type;
 use shards_rego::value::{self, Value};
 
+mod holdable;
+
 /// crates/shards' `policy::STACK`.
 const POLICY_STACK: usize = 123 << 20;
 
@@ -47,6 +49,14 @@ fn functions() -> Vec<Function> {
     ]
 }
 
+/// A query's context as the policy layer's, its memory what this fuzzer can hold.
+fn context() -> Context {
+    Context {
+        holdable: holdable::holdable(),
+        ..Context::default()
+    }
+}
+
 fn reference(root: &str, path: &[&str]) -> Term {
     let mut parts = vec![Term::var(root, None)];
     parts.extend(path.iter().map(|p| Term::string(p, None)));
@@ -73,10 +83,10 @@ fn run(src: &str, input: Option<&str>) {
         reference("input", &["http", "checksum"]),
     ];
     let mut host = Undefined;
-    let mut m = Machine::new(&program, &mut host, Context::default());
+    let mut m = Machine::new(&program, &mut host, context());
     let _ = partial_query(&mut m, &query, input.clone(), &unknowns);
     drop(m);
-    let mut m = Machine::new(&program, &mut host, Context::default());
+    let mut m = Machine::new(&program, &mut host, context());
     if let Ok(results) = eval_query(&mut m, &query, input) {
         for v in &results {
             let _ = value::to_json(v);

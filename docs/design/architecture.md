@@ -19827,6 +19827,12 @@ Measured differences, kept:
 - Rule indices with more than 8 distinct refs or keys range over Go's larger maps in
   hash order, which can't be reproduced. Lookups there may list rules in another of the
   orders OPA could take.
+- A number whose text would take more to write than the evaluation can hold is refused
+  (`number too large to write: …`, below). OPA writes it, in minutes to hours and
+  gigabytes, or ends as its memory runs out (`bits.lsh` past it: `makeslice`). Up to the
+  bound, OPA's answer, byte for byte (M537).
+- Go reads a number past its exponents (1e646456993 on) as ±Inf, which OPA writes as
+  `+Inf`; shards refuses it ("exponent overflow"), making no infinities.
 
 Hostile policies. A policy may be anyone's (a remote context's, D111), so the engine is
 held to more than OPA's answers:
@@ -19867,7 +19873,7 @@ held to more than OPA's answers:
   `number.rs`'s tests hold the leading digits and the shortest decimal to the exact
   decimals, and the bounds to the powers they bound. M524's Open (`floor`, `ceil`, `round`
   and integer formatting of such a number, whose answer is all of an integer's digits;
-  numbers past 1e536870938 refused where Go reads them) is closed below (M526).
+  numbers past 1e536870938 refused where Go reads them) is closed below (M526, M537).
 - The rewrite of local variables walked as OPA's does, and OPA's way is exponential:
   rewriteEveryStatement (ast/compile.go) rewrites a statement's body, then walks the
   whole statement again (rewriteDeclaredVarsInExpr), whose walk rewrites each
@@ -19924,31 +19930,96 @@ held to more than OPA's answers:
     failed (M524's Open). A 5^n past Go's exponents is +Inf, and z over it zero, so
     `-1e-1000000000` reads as -0. The parser says "number too big" for a literal Go reads
     as ±Inf, as OPA's does.
-  - An exact integer whose MantExp is past 10^5 (`number::MAX_EXPONENT`) is not made: its
-    decimal is all its digits, a num-bigint conversion growing faster than their count
-    (near n^1.8 here), where the text above writes leading digits and zeros. `floor`,
-    `ceil`, `round`, `rem`, `bits.*`, `numbers.range*`, `format_int` and `units.parse*`
-    fail with "number too big", the error OPA's parser gives such a literal
-    (`ast/parser.go` `parseNumber`, v1.14.1); `time.*` keep OPA's "timestamp too big".
-    The bound is OPA's own on a number in Rego source, set for this cost
-    (golang/go#11068), so no builtin makes an integer a policy could not write. At it,
-    `ceil` and `round` answer in about 80 ms. Past it OPA's cost grows with the
-    exponent's value: 41.7 s for `ceil(1e3000000)`, 10.4 s for the fuzzer's
-    `ceil(266000000e2028020)`; ASan's fuzzer passed 2 GB on such integers (M524's Open).
-    Alternatives: Go's big.Float range (MaxExp 2^31: integers of 646 million digits, hours
-    in OPA and here); Go's big.Rat limits (10^7 bits: 23 s for one conversion here); a
-    conversion lean in memory (M524's Open), which bounds memory but not the time a
-    number's size asks. The difference from OPA: OPA writes those integers, in time
-    growing with the exponent's value, or panics (`bits.lsh` past its memory,
-    `makeslice`); shards refuses them. `bits.lsh`'s chosen limit of 2^32 bits gives way
-    to the same bound.
+  - An exact integer was capped here at a MantExp of 10^5 (`number::MAX_EXPONENT`,
+    "number too big" from `floor`, `ceil`, `round`, `rem`, `bits.*`, `numbers.range*`,
+    `format_int` and `units.parse*`; ci-rego's 944f16220, merged at 5e53d5e3a). That
+    cap is superseded (M537, the next bullet): 10^5 is OPA's parser's limit on Rego
+    source literals, not on numbers from input or data, whose integers OPA does write
+    (`ceil(266000000e2028020)` in 10.4 s, the fuzzer's `abs` in 63.4 s and 447 MB). A
+    cap on outputs changed answers OPA gives, on an upstream constant with no basis in
+    shards' resources (R03). Every digit is now written as far as the evaluation can
+    hold them, and refused past that by name. `number::MAX_EXPONENT` bounds the parser's
+    literals alone, as OPA's does; `time.*` keep OPA's "timestamp too big".
   - `numbers.range` stays unbounded, as OPA's. The fuzz target asks it for at most one
     number per byte of its input.
+- An integer's every digit, and what writing a number may hold (M537; `digits.rs`).
+  `floor`, `ceil`, `round` and `format_int` of a float past its halves answer all of its
+  integer's digits, as do `rem`, `bits.*`, `numbers.range*` and `units.parse*` of such
+  numbers. Go's `Text` made the integer's decimal and both neighbours' whole: three
+  num-bigint conversions of the fuzzer's 96.9-Mbit integer, whose Burnikel-Ziegler
+  division clones its operands at each level, ASan's fuzzer past 2 GB (M524's Open).
+  - One conversion: an integer whose precision holds it whole is its own shortest
+    decimal, as no other integer lies within half an ulp of it, and no decimal of as
+    few digits but an integer.
+  - Lean: Brent and Zimmermann's FastIntegerInput (Modern Computer Arithmetic, 2010,
+    §1.7.2, algorithm 1.25) computing in base 10^19 on the 64-bit limbs. A block of
+    2^(k+1) limbs is its upper half times T[k] = 2^(64·2^k), plus its lower half.
+    Products with an operand past `SCHOOL` (163) limbs are cyclic convolutions by
+    number-theoretic transforms modulo the three largest primes c·2^32 + 1 below 2^62
+    (transforms to 2^32 points; their product, past 2^185, exceeds any coefficient of
+    such a transform), joined by Garner's algorithm; Möller and Granlund's reciprocal
+    divides by 10^19. One scratch, made once for the largest transform, serves every
+    product. Blocks of zero or one bits cost no product: the integers here are a
+    mantissa times a power of two, or a few of them joined. `SCHOOL` is the least size
+    past which the transforms measured cheaper at every size, s by s and s by 64·s, on
+    both hosts: 73 on arm64 macOS, 164 on x86_64 Linux (M537).
+  - The converter writes every size. num-bigint's `to_str_radix` measured the cheaper
+    for most dense random integers below 44,842 limbs on macOS (the converter the
+    cheaper at every size from there), and to 2^19 limbs at least on x86_64, whose `div`
+    instruction it divides by a limb with. It was not taken there: its division clones
+    its operands at each level, which this decision rules out, and where it wrote below
+    2^20 limbs, 56 of the 108 integers `tests/text_memory.rs` holds to the bound passed
+    the bound as it then stood (the larger of the two phases below), by up to 18%. For
+    the integers builtins write, sparse, the converter is the cheaper: `floor(1e10000000)`
+    0.49 s here, 5.9 s through num-bigint, on one Mac (M537).
+  - The bound. No budget bounds an evaluation: OPA's sets none, buildx's none, and
+    this record's evaluation none. So the bound is the evaluation's own memory,
+    `funcs::Context::holdable`. The policy layer sets it, as each query starts, to
+    `build::holdable()`: what the host has available, its memory where it says not
+    (Linux's MemAvailable, macOS's `kern.memorystatus_level` of its memory, Windows'
+    `ullAvailPhys`). The daemon bounds a read it cannot size beforehand by the same
+    measure. The fuzz targets set it to libFuzzer's `-rss_limit_mb` (2048 by default, as
+    CI passes it), less the process's peak RSS, which libFuzzer holds to that limit,
+    less AddressSanitizer's quarantine (`quarantine_size_mb`, 256 MiB by default), and
+    less its shadow, a byte for every 8 (`fuzz_targets/holdable.rs`).
+  - What writing takes, against it: `digits::need(bits)`, an upper bound on every byte a
+    write allocates, each vector by its capacity. While converting: the powers T[k], the
+    value's limbs three times (the parts held, a product of them, and what the
+    allocator keeps of a chain's freed results), a copy of the largest power for a block
+    of ones, and the scratch at 4.5 words a point. Then, on top of those, as an allocator
+    may keep what the conversion gave back (macOS's did: 170.1 MiB of physical footprint
+    for the fuzzer's number, against 131.5 MiB, the larger of the two phases), the text
+    and its caller's copy (`Rc<str>` from a String). `tests/text_memory.rs` counts every
+    allocation through a global allocator, at 108 integers dense, sparse and of ones
+    about each level's size: each peak within 0.65 of the bound on macOS arm64, and the
+    test, which holds each to the bound, passed on x86_64 Linux too. Whole calls, one a
+    process (`text/run.sh`), decimal writes from 10^6 digits to Go's last finite power
+    of ten, the process's parse and the harness's JSON copy of the answer counted, past
+    its start: macOS's physical footprint 0.64 to 0.96 of the bound, Linux's resident
+    0.57 to 0.67. A float's text from its leading digits (`abs` and the arithmetic) takes
+    twice its length; `format_int` in bases 2, 8 and 16 twice its length (the text, reserved
+    exactly, and its copy); `bits.*` and `numbers.range*` need and their operands' limbs,
+    refused before those are made; `number::int`, its limbs. What a caller makes of an
+    answer afterwards (a JSON copy of it) is the caller's.
+  - Past the bound, refused, typed (`number::Error::Unholdable`) and named:
+    `number too large to write: the text of a N-bit number takes M bytes to make, more
+    than the L bytes this evaluation can hold`, an eval_builtin_error of the builtin.
+    No answer is cut short, and none is made past what the evaluation can hold.
+  - Byte for byte OPA's (`scripts/rego/generate numbers`, OPA v1.14.1, Go 1.26.1): 131
+    builtin calls on numbers of up to the fuzzer's 29 million digits, among them
+    floor, ceil, round, format_int, bits, rem and units, and 73 readings, Go's
+    `Text('p', 0)`, across Go's finite exponents. 1e536870939 through 1e646456992 read as
+    Go reads them (ci-rego's `pow5` above). The fuzzer's number through `floor`: 1.7 s
+    and 170 MiB on macOS arm64 (M4 Max), 4.9 s and 111 MiB on x86_64 Linux (i9-14900HX);
+    Go's `Text` of it took 63.4 s and 447 MB (M524, an M5 Max). `floor` of Go's largest
+    finite power of ten, 646,456,993 digits: 76 s and 4.2 GiB on macOS, 205 s and 2.9 GiB
+    on Linux (M537).
 - Left: a rule whose local-variable rewrite errs is rewritten OPA's way, so an
   erroring rule of `every` statements and comprehensions alternating takes OPA's time.
-  Evaluation asks no bound of a policy, as OPA's does not (`numbers.range` over any
-  span); a build's policies run in its own process, which Ctrl-C ends, as buildx's end
-  with its build's context.
+  Evaluation asks no bound of a policy's time, as OPA's does not (`numbers.range` over
+  any span); its memory bounds what writing a number may hold (above). A build's
+  policies run in its own process, which Ctrl-C ends, as buildx's end with its build's
+  context.
 
 ### D97. OSI artifacts of several platforms: an index
 
@@ -22681,7 +22752,7 @@ says; the report pipe on a Windows host; the seven-target lint.
 **What would falsify it.** A client that needs shards to own its VM processes after all (then
 D215's spawn alone).
 
-### D235. A project plugged into a running member at its host path (built: the daemon's plugs and the orchestrator's; case handling and host edits' notices owed; real-VM validation owed)
+### D235. A project plugged into a running member at its host path (built: the daemon's plugs and the orchestrator's, names that differ in case alone on case-insensitive hosts, host edits' notices to the guest's inotify; real-VM validation owed on WHP and arm64 KVM)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 8: kiln reads a session's diffs,
 HEAD and checkpoints on the host at the session's own path, so a member (an agent or
@@ -22767,6 +22838,139 @@ second unplug `Unknown`. HVF, WHP and arm64 KVM are owed (ROOT's).
 `/tmp`) is no root's: the domain's own scratch is there. A path beneath a root through a
 symlink of the image's beneath it is refused. The directories made for a plug's mount point
 stay, empty and root's, once it is unplugged.
+
+**Names that differ in case alone, on a case-insensitive host.** A host's file system that
+folds case (macOS's APFS by default, an NTFS directory of a Windows host's own) finds a file
+by any case of its name, and a share's server asks it by the guest's name (fstatat(2),
+NtCreateFile), so the guest finds `foo` where the host keeps `Foo`, creates nothing over it
+(EEXIST) and reads and writes the one file, as the host does.
+- *Reproduced* (R09; tests/plug.rs `a_shares_names_are_its_hosts_case_and_all`, the same
+  steps on the host and through a share, each result compared): on macOS APFS (HVF, the Mac
+  Studio, `a2096f8ef`), after `rename Foo Bar` the guest's `stat foo` and `stat FOO` said ok
+  where the host said NotFound. The guest's kernel keeps a name for each case it looked the
+  file up by, each trusted for the second the server gives it (`VALID_S`; fs/fuse/dir.c
+  `fuse_dentry_revalidate`), and a rename or removal through one leaves the others. On
+  adacachy's KVM (Linux, which tells case apart) the same steps agree.
+- *Decided:* a name the host found by another case or Unicode form of it is trusted for no
+  time (its entry's validity 0), so that each use of it asks the host again; the name the
+  host keeps, for its second, as before (server.rs `name_valid`). The name kept is asked of
+  the host: macOS's getattrlist(2) `ATTR_CMN_NAME`, as Libc's realpath(3) asks each
+  component's case; Windows' FileNormalizedNameInfo, which also says an 8.3 short name's
+  long one. A Linux host is asked nothing: its names are found as given, and a directory it
+  folds the case of (`chattr +F` on ext4, f2fs or tmpfs) is not handled, its variants
+  trusted for their second. The cost, a call more for each LOOKUP on macOS and Windows, is
+  unmeasured (ROOT's, R14).
+- *Green:* the same test on HVF at `6de3842ac`; its mutation (every name trusted its
+  second again) fails as the reproduction did.
+- *A rename of a name's case alone* (`mv foo Foo`) changes nothing, and says it is done: the
+  Linux VFS takes a rename whose two names are one inode as done without asking any file
+  system (fs/namei.c `vfs_rename`, `if (source == target) return 0;`, torvalds/linux master
+  of 2026-11), and Linux's own case-insensitive file systems do the same (measured on
+  adacachy, Linux 7.2.9, a tmpfs mounted `-o casefold` and a directory `+F`: `rename("foo",
+  "Foo")` returns 0 and `ls` says `foo`; a directory's alike). Alternatives:
+  - *An inode of its own for each case of a name*, as 9p's uncached modes give each lookup
+    one (fs/9p/vfs_inode_dotl.c, `v9fs_get_new_inode_from_fid`), by which WSL2's `/mnt/c`
+    renames a name's case: the rename would reach the host, at the cost of two inodes of
+    one file in the guest whose page caches, locks and inotify watches are each their own.
+    Not taken.
+  - *Another case not found* (ENOENT): the rename's target would be new and reach the host,
+    but `stat FOO`, `open FOO` and every program that names a file by another case would
+    fail where the host finds it. Not taken.
+  - Decided: the guest's rename is Linux's own, as its case-insensitive file systems' are;
+    a name's case is changed by two renames through another name (`mv foo tmp && mv tmp
+    Foo`), as on ext4's casefold. The test holds host and guest alike to Linux's rule
+    (testguest case.rs `renamed`).
+
+**Host edits wake the guest's inotify (notices).** Linux's virtio-fs driver negotiates no
+feature and has no notification queue (fs/fuse/virtio_fs.c, its `feature_table` empty;
+virtio 1.3 §5.11's `VIRTIO_FS_F_NOTIFICATION` unused), and what a FUSE server notifies
+(`FUSE_NOTIFY_INVAL_*`) tells fsnotify nothing: a host's edit wakes no watch in the guest.
+- *Alternatives.*
+  - *Lima's `mountInotify`* (Lima 0.21 and later, experimental): its host agent watches,
+    and its guest agent sets each file's times through the mount (pkg/guestagent
+    guestagent_linux.go `HandleInotify`, `os.Chtimes`): a write of the host's files, of
+    writable mounts alone, and nothing for a file the host removed (lima-vm.io/docs/config/
+    mount, "Inotify events are not triggered when files are removed from host").
+  - *Docker Desktop's osxfs*: FSEvents mapped to inotify within its own file system ("Move
+    events trigger IN_DELETE on the source of the rename and IN_MODIFY on the destination
+    ... Some events may be delivered multiple times", docs osxfs.md): its own guest kernel's.
+  - *A notification queue in the guest's driver*: a kernel patch no stock kernel has, never
+    the base of a fix (version-agnostic, the person's rule).
+  - *The guest polling its shares*: a cost each period whatever changed (R05). Not taken.
+- *Decided.* The host is watched by its share process, each host's own way
+  (vmm `fs/notices.rs`):
+  - *Linux:* an inotify watch of each directory the guest holds, made as the guest looks it
+    up and let go of as it forgets it (server.rs `watch_dir`, `unwatch_dir`), all of the
+    process's one instance (`platform::watch_named`; PM M257): what the guest never looked
+    at is watched nothing of, and a watch is one of its user's (`max_user_watches`).
+  - *macOS:* one FSEvents stream of its shares' roots (shards-apple `fsevents`, CoreServices
+    bound when first used), file events, the changes the process itself makes for the guest
+    left out (`IgnoreSelf`), told at once (latency 0, `NoDefer`).
+  - *Windows:* ReadDirectoryChangesW of each root and all beneath it, 64 KiB a read, the
+    most it takes over a network (its documentation's).
+  - Where the whole tree is watched (macOS, Windows), a change is told only where the guest
+    holds its directory (`Server::holds_dir`). Each path waits once however often it
+    changes, at most 16384 (Linux's default `max_queued_events`, past which a guest's own
+    watcher would hear only that it lost events); past them, its nearest waiting directory
+    or its share's root stands for it, once a share.
+  - *Told on a pipe straight to the guest:* records `TAG\0PATH\0` (`shards_abi::run::
+    notice`), TAG the share's virtio-fs tag (`shards share --notices TAGS`), from the share
+    process to the stdin of the guest's `NOTICE` built-in, which the daemon and `shards
+    api-run` start as the run starts (`STARTED`) and for each plug once it is mounted. No
+    thread of theirs reads it.
+  - *The built-in* (init notice.rs) is init's root as filesystem group
+    `shards_abi::NOTICE_ID`, the first ID past every in-VM server's (`SERVER_FIRST_ID` and
+    `PID_MAX_LIMIT`). It mounts each tag a notice names, attached nowhere (fsopen(2),
+    fsmount(2)): the same file system as the guest's own mounts of the tag (virtio_fs.c
+    `virtio_fs_test_super`), whose inodes inotify watches whichever mount set them; let go
+    of after each batch, so that none outlives its device's unplug. For each path it walks
+    the directories, following no symlink, and touches the file: its modification time
+    asked set to now, its access time left (utimensat(2) `UTIME_OMIT`, `UTIME_NOW`), which
+    the kernel tells as `IN_MODIFY` to the file's watchers and its directory's
+    (include/linux/fsnotify.h `fsnotify_change`: the modification time alone is
+    `FS_MODIFY`). A file the host removed: its name looked up again (an exclusive create,
+    which revalidates whatever the kernel trusts, `LOOKUP_EXCL`), then its directory
+    touched (`IN_MODIFY|IN_ISDIR`).
+  - *The server* takes a request of the guest's root as group `NOTICE_ID` for a notice: a
+    SETATTR is answered with the node's attributes as the host has them, nothing set, a
+    read-only share's too; what only looks is answered; anything else is refused (EACCES),
+    so that a notice changes nothing on the host.
+  - *Default deny:* a notice is told through its share's own tag, and only a workload or a
+    member that has that share mounted holds its inodes and hears the touch; init's own
+    mount is attached nowhere. A read-only plug into the workload is read-only by its mount
+    alone, its file system writable as every other share's (setup.rs, domains.rs and a
+    member's plug already were), so that the notice's mount can touch it.
+- *Verified* (light tests, the change's own): unit, server.rs
+  `a_notice_changes_nothing_on_the_host`, `a_name_found_by_another_case_is_trusted_for_no_time`,
+  `a_directory_is_held_while_the_guest_knows_it`, `the_hosts_changes_where_the_guest_looks_are_noticed`
+  (Linux); notices.rs `changes_are_told_once_and_within_bounds`,
+  `the_hosts_changes_are_told_where_the_guest_looks` (each host's watcher, a change made by
+  another process); shards-abi's records; init's `notices_are_told_whole_across_reads`;
+  shards-apple's `a_change_beneath_is_told_by_its_path`; share.rs's flags. Real VMs, tests/plug.rs
+  `a_host_edit_wakes_a_watch_in_the_guest` (a bind, a read-only bind and a plugged volume:
+  the host's new file `IN_MODIFY f`, its removal `IN_MODIFY|IN_ISDIR` of the directory, the
+  host's files as it left them): adacachy's KVM and the Mac Studio's HVF. Mutation: with no
+  request taken for a notice, the removed file's revalidation, an exclusive create no longer
+  refused, made the file again on the host (`/rw: [.../rw/f]`), and the test fails.
+  docs/research/measurements/s8-notices.
+- *Known limits.*
+  - *What a watcher hears:* a host's new, written or changed file is `IN_MODIFY` of its
+    name; a removal, `IN_MODIFY` of its directory; a move, the new name's and the old
+    directory's. Never `IN_CREATE`, `IN_DELETE` or `IN_MOVED_*`, which the guest's kernel
+    tells only of its own changes.
+  - *Echoes:* on Linux and Windows the share process's own writes for the guest are watched
+    too, each told back as one `IN_MODIFY` more (macOS's `IgnoreSelf` leaves them out), as
+    Docker's osxfs delivers "some events multiple times".
+  - *Linux's instances:* one inotify instance a share process (a run that shares any
+    directory, and each plug), of the user's 128 by default, of which a desktop's programs
+    held 101 (PM M257); a share process given none tells nothing, and says so in its log.
+  - *Not told:* a join share's volumes (D119), a direct boot's shares (`run vm --kernel …
+    --share`, whose PID 1 may be no shards-init), a client's relayed directory (D228), a
+    share another server serves (`--slates-fs-fd`).
+  - A guest process of the root user and group `NOTICE_ID` has its own requests of a share
+    refused (EACCES) but SETATTR's, which change nothing.
+  - Its latency, host edit to guest watcher, is ROOT's to measure
+    (docs/research/measurements/s8-notices/run.sh, tests/plug.rs `notices_latency`).
 
 ### D236. A network's destinations: a member reaches the hosts its grants name, the host itself at one port (built; real-VM validation owed)
 

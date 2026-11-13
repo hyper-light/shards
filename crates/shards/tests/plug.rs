@@ -12,7 +12,7 @@ mod common;
 
 use std::time::Duration;
 
-use common::{TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, served};
+use common::{TempDir, Vm, cannot_run_vms, guest_init, kernel, run_shards_env, served};
 
 const TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -247,6 +247,187 @@ fn a_project_is_plugged_into_a_running_agent_at_its_host_path() {
     shards(&["plug", "volume", "--for", "a", "plugm", &spec]);
     shards(&["unplug", "volume", "plugm", &dest]);
     shards(&["rm", "-f", "plugm"]);
+}
+
+/// A host's edit wakes an inotify watch in the guest (D235): a watcher in a running
+/// microVM, of a bind, of a read-only bind and of a volume plugged in as it runs, is told
+/// of a file the host writes there (`IN_MODIFY` and its name) and of one the host removes
+/// (`IN_MODIFY` of the directory itself), though nothing in the guest changed either; and
+/// the host's files are as the host left them.
+#[test]
+fn a_host_edit_wakes_a_watch_in_the_guest() {
+    if cannot_run_vms() {
+        return;
+    }
+    /// Test patience, a loaded host's: never a runtime policy.
+    const PATIENCE: Duration = Duration::from_secs(60);
+    let (image, _) = served();
+    let home = TempDir::new("notice");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |command: &[&str], args: &[&str]| {
+        let r = run_shards_env(command, args, &env, TIMEOUT);
+        assert_eq!(
+            r.status,
+            Some(0),
+            "shards {command:?} {args:?}: {}\n{}",
+            r.stderr,
+            r.stdout
+        );
+        r.stdout
+    };
+    let files = TempDir::new("notice-files");
+    let dirs = ["rw", "ro", "plugged"].map(|d| files.join(d));
+    for dir in &dirs {
+        std::fs::create_dir(dir).unwrap();
+    }
+    let rw = format!("{}:/rw", dirs[0].display());
+    let ro = format!("{}:/ro:ro", dirs[1].display());
+    shards(
+        &["run"],
+        &["-d", "--name", "noticed", "-v", &rw, "-v", &ro, &image, "sleep"],
+    );
+    let plugged = format!("{}:/plugged", dirs[2].display());
+    shards(&["plug"], &["volume", "noticed", &plugged]);
+    let vm_env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.to_str().unwrap())).collect();
+    for (dir, at) in dirs.iter().zip(["/rw", "/ro", "/plugged"]) {
+        let mut watch = Vm::spawn_env(&["exec", "noticed", "/bin/testguest", "inotify", at], &vm_env);
+        watch.wait_for("inotify ready", PATIENCE);
+        std::fs::write(dir.join("f"), "host").unwrap();
+        watch.wait_for("inotify IN_MODIFY f", PATIENCE);
+        assert_eq!(std::fs::read_to_string(dir.join("f")).unwrap(), "host", "{at}");
+        std::fs::remove_file(dir.join("f")).unwrap();
+        watch.wait_for("inotify IN_MODIFY|IN_ISDIR ", PATIENCE);
+        watch.kill();
+        let left: Vec<_> = std::fs::read_dir(dir).unwrap().collect();
+        assert!(left.is_empty(), "{at}: {left:?}");
+    }
+    shards(&["rm"], &["-f", "noticed"]);
+}
+
+/// How long a host's edit takes to wake a watch in the guest (D235), as its host sees it:
+/// from just before the host makes a file in a bind to the guest watcher's line for it
+/// reaching this process, the watcher's own report back (the exec's output) included, each
+/// file made once the last was heard. `SHARDS_NOTICE_SAMPLES` of them (200 by default), and
+/// 10 first that are not counted. Prints n, p50, p90, p99 and max, then each sample, in
+/// milliseconds. A measurement: docs/research/measurements/s8-notices/run.sh runs it.
+#[test]
+#[ignore = "a measurement, run by docs/research/measurements/s8-notices/run.sh"]
+fn notices_latency() {
+    if cannot_run_vms() {
+        return;
+    }
+    const PATIENCE: Duration = Duration::from_secs(60);
+    let samples: usize = std::env::var("SHARDS_NOTICE_SAMPLES")
+        .ok()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(200);
+    let (image, _) = served();
+    let home = TempDir::new("notice-lat");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let files = TempDir::new("notice-lat-files");
+    let bind = format!("{}:/w", files.display());
+    let r = run_shards_env(
+        &["run"],
+        &["-d", "--name", "lat", "-v", &bind, &image, "sleep"],
+        &env,
+        TIMEOUT,
+    );
+    assert_eq!(r.status, Some(0), "{}", r.stderr);
+    let vm_env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.to_str().unwrap())).collect();
+    let mut watch = Vm::spawn_env(&["exec", "lat", "/bin/testguest", "inotify", "/w"], &vm_env);
+    watch.wait_for("inotify ready", PATIENCE);
+    let mut took = Vec::with_capacity(samples);
+    for i in 0..samples + 10 {
+        let name = format!("f{i}");
+        let start = std::time::Instant::now();
+        std::fs::write(files.join(&name), "x").unwrap();
+        watch.wait_for(&format!("inotify IN_MODIFY {name}"), PATIENCE);
+        if i >= 10 {
+            took.push(start.elapsed().as_secs_f64() * 1e3);
+        }
+    }
+    watch.kill();
+    let _ = run_shards_env(&["rm"], &["-f", "lat"], &env, TIMEOUT);
+    let mut sorted = took.clone();
+    sorted.sort_by(f64::total_cmp);
+    let at = |q: f64| sorted[((q * sorted.len() as f64).ceil() as usize).clamp(1, sorted.len()) - 1];
+    println!(
+        "notices latency ms: n {} p50 {:.3} p90 {:.3} p99 {:.3} max {:.3}",
+        sorted.len(),
+        at(0.50),
+        at(0.90),
+        at(0.99),
+        sorted[sorted.len() - 1]
+    );
+    println!(
+        "samples ms: {}",
+        took.iter()
+            .map(|t| format!("{t:.3}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+}
+
+/// Names that differ in case alone, through a share, are what its host makes of them
+/// (D235): the steps of `shards_testguest::case` taken in the guest's view of a share give
+/// what they give on the host itself, in a directory beside it, whether the host's
+/// filesystem tells case (Linux's) or not (macOS's APFS, Windows' NTFS): a name of another
+/// case found and created over as the host finds it, and none left found once the host
+/// renamed or removed it through another case. A rename of a name's case alone is held, on
+/// both, to Linux's rule (fs/namei.c `vfs_rename`: two names of one inode, done, nothing
+/// changed), which is all a guest's kernel does with one and Linux's own case-insensitive
+/// file systems do.
+#[test]
+fn a_shares_names_are_its_hosts_case_and_all() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("plugc");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let files = TempDir::new("plugc-files");
+    for dir in ["host", "shared"] {
+        std::fs::create_dir(files.join(dir)).unwrap();
+    }
+    let host: Vec<String> = shards_testguest::case::steps(&files.join("host"))
+        .into_iter()
+        .map(|l| format!("case {l}"))
+        .collect();
+    let bind = format!("{}:/case", files.join("shared").display());
+    let ran = run_shards_env(
+        &["run"],
+        &["--rm", "-u", "0", "-v", &bind, &image, "case", "/case"],
+        &env,
+        TIMEOUT,
+    );
+    assert_eq!(ran.status, Some(0), "{}\n{}", ran.stderr, ran.stdout);
+    let guest: Vec<&str> = ran.stdout.lines().filter(|l| l.starts_with("case ")).collect();
+    let differing: Vec<String> = host
+        .iter()
+        .zip(&guest)
+        .filter(|(h, g)| h.as_str() != **g)
+        .map(|(h, g)| format!("host {h:?}, guest {g:?}"))
+        .collect();
+    assert!(
+        differing.is_empty() && host.len() == guest.len(),
+        "{} steps; the guest's differ from the host's:\n{}\nhost:\n{}\nguest:\n{}",
+        host.len(),
+        differing.join("\n"),
+        host.join("\n"),
+        guest.join("\n")
+    );
 }
 
 /// The host's QEMU edu function (1234:11e8), where it has one: a test function its own

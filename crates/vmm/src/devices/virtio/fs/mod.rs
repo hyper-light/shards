@@ -13,6 +13,7 @@
 
 pub mod headroom;
 pub mod host;
+pub mod notices;
 #[cfg(windows)]
 pub mod ntfs;
 pub mod proto;

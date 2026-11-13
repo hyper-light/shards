@@ -10,18 +10,36 @@
 //! powers of five at `prec + 64` bits included, so it rounds as Go rounds, twice where
 //! Go does.
 
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::f64::consts::{LOG2_10, LOG10_2};
 
 use num_bigint::{BigInt, BigUint, Sign};
 
-/// Why a number could not be read or computed.
+/// Why a number could not be read, computed or written.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Error(pub &'static str);
+pub enum Error {
+    /// What Go's big.Float refuses, in its words, or what this port refuses where Go
+    /// would make ±Inf.
+    Go(&'static str),
+    /// Writing a number of `bits` bits would hold `need` bytes, past the `holdable` the
+    /// evaluation can (D98's number-text bound).
+    Unholdable { bits: u64, need: u64, holdable: u64 },
+    /// The allocator refused `bytes` that the bound had allowed.
+    Refused { bytes: u64 },
+}
 
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.0)
+        match self {
+            Error::Go(s) => f.write_str(s),
+            Error::Unholdable { bits, need, holdable } => write!(
+                f,
+                "number too large to write: the text of a {bits}-bit number takes {need} bytes \
+                 to make, more than the {holdable} bytes this evaluation can hold"
+            ),
+            Error::Refused { bytes } => write!(f, "number too large to write: {bytes} bytes refused"),
+        }
     }
 }
 
@@ -30,22 +48,21 @@ const MIN_EXP: i64 = i32::MIN as i64;
 const MAX_EXP: i64 = i32::MAX as i64;
 
 /// A text Go's `SetString` refuses: its exponent is past what Go reads.
-const OUT_OF_RANGE: Error = Error("exponent out of range");
+const OUT_OF_RANGE: Error = Error::Go("exponent out of range");
 
 /// A value Go rounds to ±Inf (`setExpAndRound`). OPA makes no infinities of its own,
 /// so it is an error here; OPA's parser calls such a literal too big.
-pub const OVERFLOW: Error = Error("exponent overflow");
+pub const OVERFLOW: Error = Error::Go("exponent overflow");
 
-/// OPA's bound on a number: a literal whose `MantExp` is past ±10^5 is refused (ast/parser.go
-/// `parseNumber`, v1.14.1) because writing a big.Float's text costs more than linear time in
-/// its exponent (golang/go#11068). Builtins here make no exact integer past it (D98): its
-/// decimal is every one of its digits, made in time growing faster than their count, from
-/// an exponent of a few digits. (A float's shortest text is written whatever its exponent,
-/// from the leading digits `shortest` reads, and zeros.)
+/// OPA's parser's bound on a number literal: one whose `MantExp` is past ±10^5 is refused
+/// (ast/parser.go `parseNumber`, v1.14.1), as writing a big.Float's text costs more than
+/// linear time in its exponent (golang/go#11068). It bounds a policy's literals only, as
+/// OPA's does: a number from input, data or a builtin is written whatever its exponent,
+/// as far as the evaluation can hold its text (`Context::holdable`, D98).
 pub const MAX_EXPONENT: i64 = 100_000;
 
-/// What a number past `MAX_EXPONENT` is, in OPA's parser's words.
-pub const TOO_BIG: Error = Error("number too big");
+/// What a literal past `MAX_EXPONENT` is, in OPA's parser's words.
+pub const TOO_BIG: Error = Error::Go("number too big");
 
 /// A `big.Float` that is zero or finite (OPA makes no infinities: it refuses division
 /// by zero first, and what overflows Go's exponent is an error here).
@@ -345,7 +362,7 @@ impl Float {
     pub fn quo(x: &Float, y: &Float, prec: u32) -> Result<Float, Error> {
         let neg = x.neg != y.neg;
         if y.is_zero() {
-            return Err(Error("division by zero"));
+            return Err(Error::Go("division by zero"));
         }
         if x.is_zero() {
             return Ok(Float::zero(prec, neg));
@@ -418,14 +435,17 @@ impl Float {
         i64::from(self.prec) <= e || self.min_prec() <= e
     }
 
-    /// `x.Int(nil)`: truncated toward zero, and whether that is exact; past
-    /// `MAX_EXPONENT`, refused, the integer as long as its exponent's value.
-    pub fn int(&self) -> Result<(BigInt, bool), Error> {
+    /// `x.Int(nil)`: truncated toward zero, and whether that is exact; refused where its
+    /// limbs would take more than `holdable` bytes, the integer being as long as its
+    /// exponent's value.
+    pub fn int(&self, holdable: u64) -> Result<(BigInt, bool), Error> {
         if self.is_zero() {
             return Ok((BigInt::default(), true));
         }
-        if self.go_exp() > MAX_EXPONENT {
-            return Err(TOO_BIG);
+        let bits = u64::try_from(self.go_exp()).unwrap_or(0);
+        let need = bits.div_ceil(64).saturating_mul(8);
+        if need > holdable {
+            return Err(Error::Unholdable { bits, need, holdable });
         }
         let exact = self.is_int();
         let mag = if self.exp >= 0 {
@@ -437,28 +457,105 @@ impl Float {
         Ok((BigInt::from_biguint(sign, mag), exact))
     }
 
-    /// `x.Text(format, -1)` for `'f'` and `'g'`: the shortest decimal that reads back as x.
-    pub fn text(&self, format: u8) -> String {
-        let d = self.shortest();
+    /// x's precision.
+    pub fn precision(&self) -> u32 {
+        self.prec
+    }
+
+    /// x's mantissa: x is ±mant·2^(go_exponent − mant's bits).
+    pub fn mantissa(&self) -> &BigUint {
+        &self.mant
+    }
+
+    /// x's magnitude truncated toward zero, as m·2^shift: x.Int(nil)'s, never made whole.
+    pub fn truncated(&self) -> (Cow<'_, BigUint>, u64) {
+        match u64::try_from(self.exp) {
+            Ok(shift) => (Cow::Borrowed(&self.mant), shift),
+            Err(_) => (Cow::Owned(&self.mant >> self.exp.unsigned_abs()), 0),
+        }
+    }
+
+    /// `x.Int(nil).String()`: x truncated toward zero, every digit (format_int's and
+    /// units.parse_bytes' answers, and floor's, ceil's and round's of an integer past its
+    /// halves); refused where writing it would hold more than `holdable` bytes.
+    pub fn int_text(&self, holdable: u64) -> Result<String, Error> {
+        let (mant, shift) = self.truncated();
         let mut out = String::new();
+        crate::digits::write(&mut out, self.neg && mant.bits() > 0, &mant, shift, holdable)?;
+        Ok(out)
+    }
+
+    /// `x.Text(format, -1)` for `'f'` and `'g'`: the shortest decimal that reads back as x;
+    /// refused where writing it would hold more than `holdable` bytes.
+    ///
+    /// An integer whose precision holds it whole (an ulp of at most 1) is its own shortest
+    /// decimal: its neighbours half an ulp away are within one half of it, where no other
+    /// integer is, and no decimal of as few digits but an integer. Its digits are made
+    /// once, by `digits` (Go makes it and both neighbours whole: three conversions, as
+    /// long as the answer each).
+    pub fn text(&self, format: u8, holdable: u64) -> Result<String, Error> {
+        if self.is_int() && !self.is_zero() && self.go_exp() <= i64::from(self.prec) {
+            if format == b'f' {
+                return self.int_text(holdable);
+            }
+            // Its digits, then Go's %g of them, both held with the text's copy.
+            let (mant, shift) = self.truncated();
+            let bits = mant.bits().saturating_add(shift);
+            let need = crate::digits::need(bits).saturating_add(crate::digits::most(bits));
+            if need > holdable {
+                return Err(Error::Unholdable { bits, need, holdable });
+            }
+            let mut digits = String::new();
+            crate::digits::write(&mut digits, false, &mant, shift, holdable)?;
+            let mut mant = digits.into_bytes();
+            let exp = len_i64(mant.len());
+            while mant.last() == Some(&b'0') {
+                mant.pop();
+            }
+            let sig = len_i64(mant.len());
+            return self.written(&Decimal { mant, exp, sig }, format, holdable);
+        }
+        self.written(&self.shortest(), format, holdable)
+    }
+
+    /// Go's fmtF and fmtE of d, as Text(format, -1) picks them, into a string grown once,
+    /// where it and the caller's copy of it fit in `holdable`.
+    fn written(&self, d: &Decimal, format: u8, holdable: u64) -> Result<String, Error> {
+        let len = d.len();
+        // %g of the shortest decimal takes %e for an exponent below −4 or past 5 (Go's
+        // eprec of 6 for the shortest).
+        let exponent = format != b'f' && !(-4..6).contains(&(d.exp - 1));
+        let prec = if exponent { len - 1 } else { (len - d.exp).max(0) };
+        let frac = if prec > 0 { prec.saturating_add(1) } else { 0 };
+        let whole = if exponent { 1 } else { d.exp.max(1) };
+        // The exponent's sign and digits, at most 2 + 19.
+        let tail = if exponent { 21 } else { 0 };
+        let size = whole
+            .saturating_add(frac)
+            .saturating_add(tail)
+            .saturating_add(i64::from(self.neg));
+        let size = u64::try_from(size).unwrap_or(u64::MAX);
+        let need = size.saturating_mul(2);
+        if need > holdable {
+            return Err(Error::Unholdable {
+                bits: u64::try_from(self.go_exp().max(0)).unwrap_or(0),
+                need,
+                holdable,
+            });
+        }
+        let mut out = String::new();
+        let reserve = usize::try_from(size).map_err(|_| Error::Refused { bytes: size })?;
+        out.try_reserve_exact(reserve)
+            .map_err(|_| Error::Refused { bytes: size })?;
         if self.neg {
             out.push('-');
         }
-        let len = d.len();
-        match format {
-            b'f' => fmt_f(&mut out, (len - d.exp).max(0), &d),
-            _ => {
-                let prec = len;
-                let exp = d.exp - 1;
-                if !(-4..6).contains(&exp) {
-                    fmt_e(&mut out, prec.min(len) - 1, &d);
-                } else {
-                    let p = if prec > d.exp { len } else { prec };
-                    fmt_f(&mut out, (p - d.exp).max(0), &d);
-                }
-            }
+        if exponent {
+            fmt_e(&mut out, prec, d);
+        } else {
+            fmt_f(&mut out, prec, d);
         }
-        out
+        Ok(out)
     }
 
     /// Go's `d.init(x.mant, exp)` and `roundShortest(&d, x)`: the shortest decimal that
@@ -534,7 +631,7 @@ pub fn exact_parts(s: &str) -> Result<(bool, BigUint, i64, i64), Error> {
     let (mant, base, fcount) = scan_mantissa(&mut r)?;
     let (exp, ebase) = scan_exponent(&mut r)?;
     if r.peek().is_some() {
-        return Err(Error("expected end of string"));
+        return Err(Error::Go("expected end of string"));
     }
     let mut e2: i64 = 0;
     let mut e5: i64 = 0;
@@ -632,10 +729,10 @@ fn scan_mantissa(r: &mut Reader<'_>) -> Result<(BigUint, u32, i64), Error> {
         ch = r.next();
     }
     if inval_sep || prev == b'_' {
-        return Err(Error("'_' must separate successive digits"));
+        return Err(Error::Go("'_' must separate successive digits"));
     }
     if count == 0 {
-        return Err(Error("number has no digits"));
+        return Err(Error::Go("number has no digits"));
     }
     let fcount = if dp >= 0 { dp - count } else { 0 };
     Ok((z, b, fcount))
@@ -680,11 +777,11 @@ fn scan_exponent(r: &mut Reader<'_>) -> Result<(i64, u32), Error> {
         }
     }
     if !has {
-        return Err(Error("number has no digits"));
+        return Err(Error::Go("number has no digits"));
     }
     let exp = digits.parse::<i64>().map_err(|_| OUT_OF_RANGE)?;
     if inval_sep || prev == b'_' {
-        return Err(Error("'_' must separate successive digits"));
+        return Err(Error::Go("'_' must separate successive digits"));
     }
     Ok((exp, base))
 }
@@ -1111,12 +1208,8 @@ fn fmt_e(out: &mut String, prec: i64, d: &Decimal) {
     out.push_str(&exp.to_string());
 }
 
-/// Go's `fmtF`, into a string grown once, to its length.
+/// Go's `fmtF`.
 fn fmt_f(out: &mut String, prec: i64, d: &Decimal) {
-    let frac = if prec > 0 { prec.saturating_add(1) } else { 0 };
-    if let Ok(more) = usize::try_from(d.exp.max(1).saturating_add(frac)) {
-        let _ = out.try_reserve_exact(more);
-    }
     if d.exp > 0 {
         let m = d.len().min(d.exp);
         out.extend((0..m).map(|i| char::from(d.digit(i))));
@@ -1320,7 +1413,7 @@ mod tests {
         let x = Float::parse("80000000000e00029174680").unwrap();
         let (m, e) = x.halves();
         assert!(decimal_len(&m, e) >= LEADING_FROM * digits_read(64) as f64);
-        let text = x.text(b'f');
+        let text = x.text(b'f', u64::MAX).unwrap();
         assert_eq!(text.len(), 29_174_691);
         assert!(text.starts_with('8'));
         assert!(text.bytes().skip(1).all(|b| b == b'0'));
@@ -1336,7 +1429,7 @@ mod exponent_tests {
 
     use num_bigint::BigUint;
 
-    use super::{Float, MAX_EXPONENT, OUT_OF_RANGE, OVERFLOW, TOO_BIG};
+    use super::{Float, MAX_EXPONENT, OUT_OF_RANGE, OVERFLOW};
 
     /// Go's alignment, as it was here: the lower exponent, however far.
     fn aligned_whole(x: &Float, y: &Float) -> (BigUint, BigUint, i64) {
@@ -1465,17 +1558,31 @@ mod exponent_tests {
         assert_eq!(Float::parse("1e3000000000").unwrap_err(), OUT_OF_RANGE);
     }
 
-    /// Exact integers end where OPA's parser does, MantExp 1e5 inclusive; below 1, they
-    /// are 0, however small.
+    /// Exact integers end where what the evaluation can hold does: an integer past it is
+    /// refused before its limbs are made, its size and the bound named; below 1, they are
+    /// 0, however small.
     #[test]
-    fn integers_end_at_opas_bound() {
+    fn integers_end_where_the_evaluation_can_hold_them() {
         let f = |s: &str| Float::parse(s).unwrap();
         assert_eq!(f("0x1p99999").go_exponent(), MAX_EXPONENT);
-        assert_eq!(f("0x1p99999").int().unwrap().0.bits(), 100000);
-        assert_eq!(f("-0x1p99999").int().unwrap().0.bits(), 100000);
-        assert_eq!(f("0x1p100000").int().unwrap_err(), TOO_BIG);
-        assert_eq!(f("-1e600000000").int().unwrap_err(), TOO_BIG);
-        assert_eq!(f("0x1p-100002").int().unwrap(), (Default::default(), false));
-        assert_eq!(f("0e99999").int().unwrap(), (Default::default(), true));
+        assert_eq!(f("0x1p99999").int(u64::MAX).unwrap().0.bits(), 100000);
+        assert_eq!(f("-0x1p99999").int(u64::MAX).unwrap().0.bits(), 100000);
+        assert_eq!(f("0x1p100000").int(u64::MAX).unwrap().0.bits(), 100001);
+        // 100,001 bits are 1,563 limbs, 12,504 bytes.
+        assert_eq!(f("0x1p100000").int(12_504).unwrap().0.bits(), 100001);
+        assert_eq!(
+            f("0x1p100000").int(12_503).unwrap_err(),
+            super::Error::Unholdable {
+                bits: 100001,
+                need: 12_504,
+                holdable: 12_503
+            }
+        );
+        assert!(matches!(
+            f("-1e600000000").int(1 << 27),
+            Err(super::Error::Unholdable { bits: 1993156857, .. })
+        ));
+        assert_eq!(f("0x1p-100002").int(0).unwrap(), (Default::default(), false));
+        assert_eq!(f("0e99999").int(0).unwrap(), (Default::default(), true));
     }
 }

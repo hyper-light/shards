@@ -8,6 +8,8 @@ use shards_rego::funcs::{self, Context};
 use shards_rego::number::Float;
 use shards_rego::value::{self, Value};
 
+mod holdable;
+
 /// A set where the JSON says `{"$set": [...]}`, every value within decoded too.
 fn decode(v: Value) -> Value {
     match &v {
@@ -74,6 +76,7 @@ fuzz_target!(|data: &[u8]| {
     let mut ctx = Context {
         time_ns: 1_700_000_000_000_000_000,
         seed: vec![7; 64],
+        holdable: holdable::holdable(),
         ..Default::default()
     };
     if let Ok(Some(v)) = builtin(&mut ctx, args) {
