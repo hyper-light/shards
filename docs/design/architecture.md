@@ -23358,15 +23358,16 @@ connection it authenticated is that microVM's (step 18's git signing, credential
 tokens; step 33's leases). Two rules follow:
 - *A key per run, never a template's.* A key made before a template is saved would be every run
   restored from it (D25), so the endpoint makes its key after its run's restore.
-- *A moved microVM's key.* In arm g the key would be in guest memory, which a saved and moved
-  microVM's memory carries (D176), and its pin would move with it. At the host, which step 10
-  chose, the key is the host endpoint's, and the key never travels (the plan). So a move makes
-  a new key at the destination, after the restore there, as at any run's start. Its controller
-  pins the new key, whose SHA-256 reaches it in the run's managed metadata, as at a run's start.
+- *A moved microVM's key* (decided by ROOT, 2026-11-13). In arm g the key would be in guest
+  memory, which a saved and moved microVM's memory carries (D176), and its pin would move with
+  it. At the host, which step 10 chose, the key is the host endpoint's, and the key never
+  travels (the plan). So a move makes a new key at the destination, after the restore there,
+  as at any run's start. Its controller pins the new key, whose SHA-256 reaches it in the run's
+  managed metadata, as at a run's start.
   - Step 33's leases follow the move: they are released at the source, as at any run's end
     there, and asked anew under the new fingerprint. Leases are asked just in time, so nothing
     is carried. The orchestrator must have the destination key's SHA-256 before the
-    destination's first lease ask, as for a fresh run (step 33's owner, 2026-11-13).
+    destination's first lease ask, as for a fresh run (step 33's owner agreed, 2026-11-13).
   - What kiln's other uses of the key (step 18) do at a move is step 18's.
 
 Falsified by a party that did not start the microVM having to verify it without its launcher (a
