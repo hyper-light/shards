@@ -10931,6 +10931,89 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     collected as the lease ends (nothing marks the collector waiting on it); the waiters
     test's `wait` client has no word of its own, ordered only by its start before the
     follower's. ROOT owes the real-VM runs of warm.rs, budget.rs and daemon.rs.
+- **Part 3, the rest (part B)** (#77, W6's last test constants, 2026-11-13; ROOT's ruling on
+  claims that a thing does not happen within a time: a judged wait cannot refuse them, as idle
+  CPU is progress, so each is an order or a causal claim against a later event that shows, or,
+  where none shows, a claim of speed, recorded as a measurement and not passed or failed).
+  - *Judged.* moved.rs' `until` is a `Patience::of` the home whose microVM it reads (`there`
+    for two homes; `here` for another machine, whose microVM is no party of this host's), its
+    published ports' reads `Following::of_home`, its connect to another machine bounded by
+    the host's TCP alone; `TIMEOUT` gone. slates_fs.rs' `run_watching` is a `Wait` on its
+    command and the VM process under it, each line its progress; `slates`' retry while no
+    daemon answers and its unmount's are `Patience::started` (the anchor and its daemon are
+    this test's children); `TIMEOUT` and `START` gone. managed_cleanup.rs' client waits on a
+    `Bound`: `Judged(Patience)` for the real-VM campaign and its unit test, `Until` for the
+    native fixtures alone (below); `PATIENCE` gone, and with it the test guest's own
+    `cleanup` and `watch` windows (90 and 20 s; crates/testguest cleanup.rs), whose host's
+    judged wait ends their microVM where it refuses it. Its Windows pipe's connect waits with
+    no bound, ordered after the listener's pending connect and this thread's own
+    `CreateFileW`. build_windows.rs' and build.rs' servers of one connection end at the
+    build's end, its word or its sender dropped. build.rs: the step's `ready` and the builder's
+    end after its build's kill are `Wait`s on the build and on the builder; the health, cache,
+    engine, published-port and agent-log polls are `Patience::of(home)`; the git daemon,
+    sshd and ssh-agent polls (5 and 10 s of counted tries) `Patience::started`; its published
+    ports' reads (3 s each) `Following::of_home`; its proxy's server reads each connection to
+    its client's close (30 s gone); its UDP flow's 90 s a `Patience::of(home)`.
+  - *Claims that a thing does not happen, made orders.* moved.rs' stop within its 30 s grace:
+    its exit code, 143 (SIGTERM's), where the kill past the grace says 137. slates_fs.rs'
+    host change seen within `TIMEOUT`: the first fresh open after the host's write returned
+    (each open revalidates the host file), what it saw recorded as before, not asserted.
+    managed_cleanup.rs' held-live control (a watch of 100 ms that had to fail): the observer,
+    ready while every child is held, has said nothing and not ended as the release is asked,
+    in every mode. build.rs' health check (a second's sleep, then still starting): `patient`
+    still starting once its failing streak is past five, its image's retries two. Its port
+    7200 read for 3 s: its flow ends with none of the agent's words, after 7100 answered. Its
+    proxy's `/a`, refused after 60 s without `/b`: answered only once `/b` is asked.
+  - *Made a measurement.* build.rs' hung `ADD` ended before `shards_registry::http::HEAD`:
+    its connection is closed before the build ends whether the build cancelled it or waited
+    out its head, so only its time shows it, written to the test's log (n=1, p50 = p90 = p99
+    = max), not asserted.
+  - *Left as they are, being data.* build.rs' server's CPU over 3 s past the filler's end
+    (`spun`, under a second): a rate's window. Its UDP probe's 200 ms: the flow's pace.
+    managed_cleanup.rs' native fixtures' `CLEANUP_CLIENT_PATIENCE_MS`: their caller's
+    explicit synthetic input (managed-cleanup/readiness.md), whose claim is a caller's one
+    absolute deadline, partial readiness not extending it. moved.rs' `stop -t 30`: the grace
+    the command under test is given. build.rs' `UNIX_EPOCH + 1000 s`: a timestamp. The polls'
+    own 5, 10 and 50 ms bound nothing.
+  - Red at f389c8b75 (tests/harness.rs `red_a_retry_goes_on_while_what_this_test_started_works`):
+    slates_fs.rs' retry, its `START` scaled to 100 ms, gave up on a stand-in busy for a
+    second. Green: `a_retry_goes_on_while_what_this_test_started_works`, two rounds held to
+    the stand-in's end through `Patience::started`, the second judged on what the first taught.
+  - What would falsify it: a `Patience::started` refused while what the test started ran; a
+    managed_cleanup observer that reports before its release; a build whose `/a` and `/b` are
+    fetched one after the other and passes.
+  - The gaps. A wait on a microVM another machine runs (moved.rs) follows this machine's home
+    alone. A cold read of a flow the daemon holds open with nothing on it (build.rs' 7200) and
+    a cold guest `watch` that never sees its children reaped run to their CI job's limit.
+  - *The owner's observers (second landing).* common/managed_capture.rs' `Observer` and
+    `InputWriter` wait as an `Until` says: `Judged(home)`, each read (`next`, `exact`,
+    `refused`, `ack_and_finish`, `taken`, `write_all`, `end`) and `join` a `Patience::of` the
+    run's home, its kind its caller's call site, its driver given no deadline; `At(Instant)`,
+    the coordinator's campaigns' phase deadlines as before (broker_effects', current_controls',
+    current_tenant_stdio's, tenant_exit's and tenant_stdio's, their caller's input, and
+    harness_bringup's no clock); or `Ordered`, no bound, where what it waits for is owed by an
+    event of the test's own: the fixture's own unit tests' observers, which the test cancels
+    or stops, and code mode's joins after it asks each observer to stop. managed_output.rs'
+    `WITHIN` (120 s) is gone: its fixture's waits a `Bound`, `Judged` or a campaign's `At`;
+    its commands given no bound (`Duration::MAX`, run_command judging them already). Its
+    parts: member_stdin.rs' observers and writers judged on its home; log_lanes.rs' hang-up
+    watch a `Patience::of` its home (its commands' unused bound gone); metrics.rs' commands
+    unbounded; broker_effects.rs' gate's own unit test accepts the connections it made before
+    with no timeout (poll's -1), an order. build.rs' code mode: its reads judged, its process
+    table read again under a `Patience` where it was read to its `TIMEOUT`, and its cleanup's
+    15 s an order after each observer's stop; its `TIMEOUT` gone.
+  - What a second landing would falsify: an observer's judged read refused while its run's
+    daemon or microVMs went on; a unit test's `Ordered` wait that never ends (its driver not
+    ended by the cancel or stop the test sent).
+  - Left as they are, being their caller's input: the coordinator campaigns' `CASE_MS`,
+    `CALL_MS`, `CLEANUP_MS`, `TIMEOUT_MS`, `CANCEL_WORK_MS`, `PHASE_MS`, `WORK_MS`,
+    `OUTER_MS`, `DEADLINE_MS`, `SHARDS_TENANT_STDIO_CLEANUP_MS` and
+    `SHARDS_TENANT_EXIT_DEADLINE_MS`, each an explicit phase deadline its runner sets per
+    campaign (`#[ignore]`d, ROOT's), no constant of the file's.
+  - Owed: ROOT's real-VM runs of moved.rs, slates_fs.rs, managed_cleanup.rs (its ignored
+    campaign), build_windows.rs, build.rs (code mode among them), managed_output.rs and its
+    parts (member_stdin, log_lanes, metrics), and harness_bringup.rs, whose `Observer` changed
+    beneath it.
 
 **The storm's watch, by the host's word (audit of picked constants, 2026-11-09).** The test
 guest's storm said its main thread stood still after 15 s and took its host's stream for

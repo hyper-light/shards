@@ -403,3 +403,44 @@ fn judged_read(
         || conn.read_exact(got),
     )
 }
+
+/// A retry while what a test started comes up (`Patience::started`: slates_fs.rs' `slates`,
+/// asked again while slates' anchor has no daemon yet; build.rs' waits on the git daemon,
+/// sshd and ssh-agent it started) goes on while what this test's process started works, as a
+/// command's wait does (the person's ruling of 2026-11-13, D209): its caller gives it no
+/// bound, and past its cold start it is judged each W* of its call site's kind. Red at
+/// f389c8b75 as `red_a_retry_goes_on_while_what_this_test_started_works`: slates_fs.rs'
+/// retry, its test's `START` scaled to 100 ms, gave up on a stand-in busy for a second 0.1 s
+/// in. Do: a stand-in busy for a second, asked after until it has ended, twice from one call
+/// site. Expect: each wait holds until it ends, and the first's end teaches the second's kind.
+#[test]
+fn a_retry_goes_on_while_what_this_test_started_works() {
+    let busy = Duration::from_secs(1);
+    for round in 0..2 {
+        let mut anchor = stand_in_doing(&format!("busy {}", busy.as_millis()))
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let began = Instant::now();
+        let mut patience = Patience::started();
+        while anchor.try_wait().unwrap().is_none() {
+            if !patience.holds() {
+                let _ = anchor.kill();
+                let _ = anchor.wait();
+                panic!(
+                    "an anchor busy for {busy:?} given up {:?} into its retries, round {round}",
+                    began.elapsed()
+                );
+            }
+            std::thread::sleep(patience.next_look());
+        }
+        assert!(began.elapsed() >= busy, "it ended {:?} in", began.elapsed());
+        assert!(
+            round == 0
+                || matches!(patience.seen(), shards_api::Seen::Learned { slowest, .. } if slowest >= busy),
+            "its kind learned no answer of a second's work: {:?}",
+            patience.seen()
+        );
+        patience.done();
+    }
+}

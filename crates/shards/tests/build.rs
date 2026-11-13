@@ -9,9 +9,7 @@ mod common;
 
 use std::time::Duration;
 
-use common::{TempDir, bridge, cannot_run_vms, guest_init, kernel, run_shards_env, served};
-
-const TIMEOUT: Duration = Duration::from_secs(120);
+use common::{Patience, TempDir, bridge, cannot_run_vms, guest_init, kernel, run_shards_env, served};
 
 /// A build context holding `dockerfile` as its Dockerfile.
 fn context(name: &str, dockerfile: &str) -> TempDir {
@@ -1194,16 +1192,29 @@ fn a_killed_build_takes_its_builder_with_it() {
         .spawn()
         .unwrap();
     let stderr = build.stderr.take().unwrap();
-    let (ready, said) = std::sync::mpsc::channel();
+    // Each line it says, whether its step is ready: a judged wait on the build (D209), each
+    // line its progress.
+    let (line, said) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        for line in std::io::BufReader::new(stderr).lines().map_while(Result::ok) {
-            if line.ends_with(" ready") {
-                let _ = ready.send(());
-            }
+        for l in std::io::BufReader::new(stderr).lines().map_while(Result::ok) {
+            let _ = line.send(l.ends_with(" ready"));
         }
     });
-    said.recv_timeout(TIMEOUT)
-        .expect("the step never said it was ready");
+    let kind = common::WaitKind::at(std::panic::Location::caller());
+    let mut wait = common::Wait::begin(kind, build.id(), None, "its step's word that it is ready");
+    loop {
+        let progress = match said.recv_timeout(wait.next_look()) {
+            Ok(true) => break wait.answered(),
+            Ok(false) => true,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => false,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("the step never said it was ready: the build's stderr ended")
+            }
+        };
+        if let Err(stall) = wait.look(progress) {
+            panic!("the step never said it was ready: {}", wait.refused(&stall));
+        }
+    }
     // Its builder: the processes whose command lines name its directory, its VM's
     // (`--vsock`), as each host lists them (`common::commands_with`).
     let builders = || {
@@ -1213,13 +1224,27 @@ fn a_killed_build_takes_its_builder_with_it() {
             .collect::<Vec<_>>()
     };
     assert!(!builders().is_empty(), "no builder runs");
+    let builder = common::commands_with(tmp.to_str().unwrap())
+        .first()
+        .map(|(pid, _)| *pid)
+        .expect("its builder's process");
     build.kill().unwrap();
     build.wait().unwrap();
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while !builders().is_empty() && std::time::Instant::now() < deadline {
+    // Its builder's end, waited on as it goes on (D209): its party the builder's process and
+    // what descends from it.
+    let kind = common::WaitKind::at(std::panic::Location::caller());
+    let mut wait = common::Wait::begin(kind, builder, None, "its builder's end after its build's");
+    while !builders().is_empty() {
+        if let Err(stall) = wait.look(false) {
+            panic!(
+                "the builder outlived its build: {:?}\n{}",
+                builders(),
+                wait.refused(&stall)
+            );
+        }
         std::thread::sleep(Duration::from_millis(10));
     }
-    assert_eq!(builders(), Vec::<String>::new(), "the builder outlived its build");
+    wait.answered();
     let left: Vec<std::path::PathBuf> = std::fs::read_dir(&*tmp)
         .unwrap()
         .flatten()
@@ -1546,13 +1571,13 @@ fn run_steps_reach_the_network_unless_it_is_none() {
     };
     let server = listening_anywhere();
     let port = server.local_addr().unwrap().port();
-    // Serves one connection if one comes before the build is done; a build that never
-    // connects leaves it to give up, so that the test fails rather than hangs.
+    // Serves one connection if one comes before the build is done: the build's end (its
+    // word, or its sender dropped as the test fails) ends it, no bound of its own, so that a
+    // build that never connects fails the test rather than hangs it.
     server.set_nonblocking(true).unwrap();
     let (built_tx, built_rx) = std::sync::mpsc::channel::<()>();
     let serving = std::thread::spawn(move || {
-        let deadline = std::time::Instant::now() + TIMEOUT;
-        while std::time::Instant::now() < deadline && built_rx.try_recv().is_err() {
+        while matches!(built_rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)) {
             match server.accept() {
                 Ok((mut c, _)) => {
                     c.set_nonblocking(false).unwrap();
@@ -1606,8 +1631,9 @@ fn proxied_server(
         for conn in listener.incoming() {
             let Ok(conn) = conn else { return };
             let (tls, said) = (tls.clone(), said.clone());
+            // Each connection read until its client closes it: a client the build ends closes
+            // it as it goes; no bound of the server's own.
             std::thread::spawn(move || {
-                let _ = conn.set_read_timeout(Some(Duration::from_secs(30)));
                 let stream: Box<dyn ProxiedIo> = match tls {
                     Some(c) => Box::new(rustls::StreamOwned::new(
                         rustls::ServerConnection::new(c).unwrap(),
@@ -2622,7 +2648,7 @@ fn an_images_healthcheck_probes_its_microvm() {
             })
             .unwrap_or_default()
     };
-    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let mut patience = Patience::of(&home);
     let wanted = [
         ("good", "(healthy)"),
         ("bad", "(unhealthy)"),
@@ -2638,16 +2664,13 @@ fn an_images_healthcheck_probes_its_microvm() {
         {
             break;
         }
-        assert!(std::time::Instant::now() < deadline, "{now:?}");
-        std::thread::sleep(Duration::from_millis(100));
+        assert!(patience.holds(), "{now:?}");
+        std::thread::sleep(patience.next_look());
     }
-    // Five more probes, each failing: two would have done for the image's retries.
-    std::thread::sleep(Duration::from_secs(1));
-    assert!(
-        status("patient").contains("(health: starting)"),
-        "{}",
-        status("patient")
-    );
+    patience.done();
+    // The run's retries over the image's: `patient` is still starting once its failing
+    // streak is past five (below), where the image's two would have made it unhealthy. An
+    // order, its probes counted, where a second's sleep claimed nothing came within it.
     // `inspect` shows each record as dockerd keeps it (moby daemon/health.go): its status,
     // its failing streak, and its last five probes, each with its times, exit code and
     // output, a probe past its timeout -1 and dockerd's words (D26).
@@ -2656,7 +2679,6 @@ fn an_images_healthcheck_probes_its_microvm() {
         assert_eq!(shown.status, Some(0), "{}", shown.stderr);
         serde_json::from_str(&shown.stdout).unwrap()
     };
-    let deadline = std::time::Instant::now() + Duration::from_secs(20);
     // The good one last: once each failing one has failed six times, it has been probed
     // more than five times too.
     for (name, status, code, output) in [
@@ -2672,15 +2694,17 @@ fn an_images_healthcheck_probes_its_microvm() {
         ("good", "healthy", 0, ""),
     ] {
         // More than five probes run (a failing streak counts them); five are kept.
+        let mut patience = Patience::of(&home);
         let h = loop {
             let h = health(name);
             let probed = h["Log"].as_array().is_some_and(|l| l.len() >= 5)
                 && (code == 0 || h["FailingStreak"].as_u64().is_some_and(|n| n > 5));
             if probed {
+                patience.done();
                 break h;
             }
-            assert!(std::time::Instant::now() < deadline, "{name}: {h}");
-            std::thread::sleep(Duration::from_millis(100));
+            assert!(patience.holds(), "{name}: {h}");
+            std::thread::sleep(patience.next_look());
         };
         assert_eq!(h["Status"], status, "{name}: {h}");
         let log = h["Log"].as_array().unwrap();
@@ -2753,18 +2777,19 @@ fn an_images_exposed_ports_publish_with_publish_all() {
         )
     );
     // The guest listens once it runs: connected to, it says whom it serves.
-    let deadline = std::time::Instant::now() + TIMEOUT;
+    let mut patience = Patience::of(&home);
     let greeting = loop {
         let mut got = String::new();
-        let read = std::net::TcpStream::connect(("127.0.0.1", n)).and_then(|mut c| {
+        let read = std::net::TcpStream::connect(("127.0.0.1", n)).and_then(|c| {
             c.shutdown(std::net::Shutdown::Write)?;
-            c.read_to_string(&mut got)
+            common::Following::of_home(&c, &home).read_to_string(&mut got)
         });
         if read.is_ok() && !got.is_empty() {
+            patience.done();
             break got;
         }
-        assert!(std::time::Instant::now() < deadline, "{read:?}");
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert!(patience.holds(), "{read:?}");
+        std::thread::sleep(patience.next_look());
     };
     assert_eq!(greeting, format!("from {}\n", bridge().gateway()));
     let waited = shards(&["wait", "all"]);
@@ -3605,16 +3630,13 @@ fn url_server(log: Asked, release: std::sync::mpsc::Receiver<()>) -> u16 {
                     "/final" => ("200 OK", b"final\n"),
                     "/gz" => ("200 OK\r\nContent-Encoding: GZIP", gz),
                     "/three" => ("300 Multiple Choices", b"choices\n"),
+                    // Answered only once /b is asked: an order, no bound of its own. A build
+                    // that fetched them one after the other waits here, and its own judged
+                    // wait fails it.
                     "/a" => {
                         let (asked, cv) = &*asked_b;
-                        let asked = cv
-                            .wait_timeout_while(asked.lock().unwrap(), Duration::from_secs(60), |a| !*a)
-                            .unwrap();
-                        if *asked.0 {
-                            ("200 OK", b"a\n")
-                        } else {
-                            ("500 Not Concurrent", b"")
-                        }
+                        drop(cv.wait_while(asked.lock().unwrap(), |a| !*a).unwrap());
+                        ("200 OK", b"a\n")
                     }
                     "/b" => {
                         *asked_b.0.lock().unwrap() = true;
@@ -4227,7 +4249,9 @@ fn add_fetches_urls() {
         "{missing}"
     );
     // The hang is still held when the build ends, which cancels it rather than wait
-    // for it to time out.
+    // for it to time out. Recorded, not asserted (D209): either way its connection is closed
+    // before the build ends, so a build that waited for the hang's head shows only in how
+    // long it took, a claim of speed, which a loaded host's slowness would fail.
     let started = std::time::Instant::now();
     let hung = fails(
         "build-add-url-hung",
@@ -4237,10 +4261,10 @@ fn add_fetches_urls() {
         hung.contains("failed to load cache key: invalid response status 404"),
         "{hung}"
     );
-    assert!(
-        started.elapsed() < shards_registry::http::HEAD,
-        "{:?}",
-        started.elapsed()
+    let took = started.elapsed();
+    eprintln!(
+        "build-add-url-hung: its end with the hang held, n=1: p50=p90=p99=max={took:?} (a wait for the hang's head: {:?})",
+        shards_registry::http::HEAD
     );
     let _ = release.send(());
     // Downloads count against what ADD may write, as unpacked archives do: one past it
@@ -5189,13 +5213,14 @@ fn add_fetches_git_repositories() {
             .unwrap(),
     );
     let hport = git_http_server(repos.to_path_buf(), Vec::new());
-    // The daemon listens a moment after it starts.
-    for _ in 0..100 {
-        if std::net::TcpStream::connect(("127.0.0.1", dport)).is_ok() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(50));
+    // The daemon listens a moment after it starts: waited for as what this test started
+    // goes on (D209).
+    let mut patience = Patience::started();
+    while std::net::TcpStream::connect(("127.0.0.1", dport)).is_err() {
+        assert!(patience.holds(), "git daemon never listened on {dport}");
+        std::thread::sleep(patience.next_look());
     }
+    patience.done();
 
     let (image, _) = served();
     let home = TempDir::new("build-add-git-home");
@@ -5544,12 +5569,12 @@ fn add_fetches_git_over_ssh() {
         ports.push(port);
     }
     for port in &ports {
-        for _ in 0..100 {
-            if std::net::TcpStream::connect(("127.0.0.1", *port)).is_ok() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(50));
+        let mut patience = Patience::started();
+        while std::net::TcpStream::connect(("127.0.0.1", *port)).is_err() {
+            assert!(patience.holds(), "sshd never listened on {port}");
+            std::thread::sleep(patience.next_look());
         }
+        patience.done();
     }
     // The client's known_hosts, in a home of the test's own.
     let user_home = dir.join("home");
@@ -5683,12 +5708,16 @@ fn add_fetches_git_over_ssh() {
     // Ready once it takes connections: its socket's file is there from its bind(2), before
     // its listen(2), and a connection between the two is refused, as one was on a loaded
     // host ("Error connecting to agent: Connection refused").
-    for _ in 0..500 {
-        if std::os::unix::net::UnixStream::connect(&sock).is_ok() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(20));
+    let mut patience = Patience::started();
+    while std::os::unix::net::UnixStream::connect(&sock).is_err() {
+        assert!(
+            patience.holds(),
+            "ssh-agent never took connections at {}",
+            sock.display()
+        );
+        std::thread::sleep(patience.next_look());
     }
+    patience.done();
     let added = std::process::Command::new("ssh-add")
         .arg(&client)
         .env("SSH_AUTH_SOCK", &sock)
@@ -6565,14 +6594,12 @@ fn run_caches_are_shared_among_concurrent_builds() {
                     &format!("\"fs\", \"write:/c/a-{sharing}=written-by-a\", \"sleep:30000\""),
                 )
             });
-            let deadline = std::time::Instant::now() + TIMEOUT;
+            let mut patience = Patience::of(&home);
             while records() != [true] {
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "no build took the {sharing} cache"
-                );
-                std::thread::sleep(Duration::from_millis(200));
+                assert!(patience.holds(), "no build took the {sharing} cache");
+                std::thread::sleep(patience.next_look());
             }
+            patience.done();
             let b = build(
                 "b",
                 &format!(
@@ -6720,16 +6747,17 @@ fn build_cache_usage_lists_every_record() {
     // A cache a running step holds: in use, its size 0B.
     std::thread::scope(|s| {
         let held = s.spawn(|| build("hold", "\"write:/c/g=2\", \"sleep:20000\""));
-        let deadline = std::time::Instant::now() + TIMEOUT;
+        let mut patience = Patience::of(&home);
         let in_use = loop {
             if let Some(r) = records(&["--filter", "type=exec.cachemount"])
                 .into_iter()
                 .find(|r| r["Reclaimable"] == false)
             {
+                patience.done();
                 break r;
             }
-            assert!(std::time::Instant::now() < deadline, "no step held the cache");
-            std::thread::sleep(Duration::from_millis(200));
+            assert!(patience.holds(), "no step held the cache");
+            std::thread::sleep(patience.next_look());
         };
         assert_eq!(in_use["Size"], "0B", "{in_use}");
         assert_eq!(in_use["ID"], mounts[0]["ID"]);
@@ -8185,12 +8213,12 @@ fn run_steps_reach_the_clients_ssh_agent() {
             }
         }
         let agent = Ended(common::ssh_agent(&sock));
-        for _ in 0..100 {
-            if sock.exists() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(20));
+        let mut patience = Patience::started();
+        while !sock.exists() {
+            assert!(patience.holds(), "ssh-agent made no {}", sock.display());
+            std::thread::sleep(patience.next_look());
         }
+        patience.done();
         let made = std::process::Command::new("ssh-keygen")
             .args(["-q", "-t", "ed25519", "-N", "", "-C", "shards-test-key", "-f"])
             .arg(&key)
@@ -10658,11 +10686,12 @@ fn an_engines_member_reaches_no_farther_than_the_command_beside_agents() {
         all.extend_from_slice(args);
         shards(&all)
     };
-    let deadline = std::time::Instant::now() + TIMEOUT;
+    let mut patience = Patience::of(&home);
     while in_beside(&["api", "GET", "/_ping", ""]).stdout != "api HTTP/1.1 200 OK\nOK" {
-        assert!(std::time::Instant::now() < deadline, "its engine never answered");
-        std::thread::sleep(Duration::from_millis(50));
+        assert!(patience.holds(), "its engine never answered");
+        std::thread::sleep(patience.next_look());
     }
+    patience.done();
     // The plain image, pulled through its engine: no joiner runs an Agentfile's.
     let (repo, tag) = image.rsplit_once(':').unwrap();
     let pulled = in_beside(&[
@@ -10699,28 +10728,27 @@ fn an_engines_member_reaches_no_farther_than_the_command_beside_agents() {
     assert!(made.stdout.starts_with("api HTTP/1.1 201"), "{made}");
     let started = in_beside(&["api", "POST", "/containers/far/start", ""]);
     assert!(started.stdout.starts_with("api HTTP/1.1 204"), "{started}");
-    let deadline = std::time::Instant::now() + TIMEOUT;
+    let mut patience = Patience::of(&home);
     while !in_beside(&["api", "GET", "/containers/far/logs?stdout=1", ""])
         .stdout
         .contains("ready")
     {
-        assert!(std::time::Instant::now() < deadline, "far never served");
-        std::thread::sleep(Duration::from_millis(50));
+        assert!(patience.holds(), "far never served");
+        std::thread::sleep(patience.next_look());
     }
+    patience.done();
     let _ = say.send(());
     // The agent's lines, its last once it has tried the member.
-    let deadline = std::time::Instant::now() + TIMEOUT;
+    let mut patience = Patience::of(&home);
     let logged = loop {
         let logged = shards(&["logs", "beside"]);
         let logged = format!("{}{}", logged.stdout, logged.stderr);
         if logged.contains("[agent a] confined net=") {
+            patience.done();
             break logged;
         }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the agent never said:\n{logged}"
-        );
-        std::thread::sleep(Duration::from_millis(50));
+        assert!(patience.holds(), "the agent never said:\n{logged}");
+        std::thread::sleep(patience.next_look());
     };
     for want in [
         format!("[agent a] confined reach {to}: ok"),
@@ -11085,28 +11113,33 @@ fn agents_answer_what_their_networks_let_in() {
             .unwrap_or_else(|| panic!("no {container} in {}", listed.stdout))
     };
     let (granted, other) = (host_port("7100"), host_port("7200"));
-    // What a connection to the host's published port reads, in 3 s at most.
+    // What a connection to the host's published port reads to its end, read as a stream
+    // its home's daemon carries (a judged wait, D209).
     let read = |p: u16| -> String {
-        let Ok(mut c) = std::net::TcpStream::connect(("127.0.0.1", p)) else {
+        let Ok(c) = std::net::TcpStream::connect(("127.0.0.1", p)) else {
             return String::new();
         };
-        let _ = c.set_read_timeout(Some(std::time::Duration::from_secs(3)));
         let mut got = String::new();
-        let _ = c.read_to_string(&mut got);
+        let _ = common::Following::of_home(&c, &home).read_to_string(&mut got);
         got
     };
     // Once the agent listens: until then a connection finds no one.
-    let deadline = std::time::Instant::now() + TIMEOUT;
-    let mut said = String::new();
-    while std::time::Instant::now() < deadline {
-        said = read(granted);
+    let mut patience = Patience::of(&home);
+    let said = loop {
+        let said = read(granted);
         if !said.is_empty() {
-            break;
+            patience.done();
+            break said;
         }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
+        if !patience.holds() {
+            break said;
+        }
+        std::thread::sleep(patience.next_look());
+    };
     assert_eq!(said, "hello from agent-a\n", "the published ingress port");
-    // No grant lets 7200 in: the agent listens on it, and is not reached.
+    // No grant lets 7200 in: the agent listens on it, and is not reached. An order, after
+    // 7100 answered: 7200's flow ends with none of the agent's words (its old 3 s read
+    // claimed none came within them).
     assert!(!read(other).contains("agent-a"), "port 7200 reached the agent");
     let _ = shards(&["remove", "vm", "-f", "front"]);
 }
@@ -11197,20 +11230,24 @@ fn each_agent_answers_the_port_its_expose_names() {
             .and_then(|p| p.parse().ok())
             .unwrap_or_else(|| panic!("no {container} in {}", listed.stdout))
     };
-    // What a connection to the host's published port reads, in 3 s at most; once its agent
-    // listens, as until then a connection finds no one.
+    // What a connection to the host's published port reads to its end, read as a stream its
+    // home's daemon carries; once its agent listens, as until then a connection finds no one.
+    // Both waits judged (D209).
     let read = |p: u16| -> String {
-        let deadline = std::time::Instant::now() + TIMEOUT;
+        let mut patience = Patience::of(&home);
         loop {
             let mut got = String::new();
-            if let Ok(mut c) = std::net::TcpStream::connect(("127.0.0.1", p)) {
-                let _ = c.set_read_timeout(Some(std::time::Duration::from_secs(3)));
-                let _ = c.read_to_string(&mut got);
+            if let Ok(c) = std::net::TcpStream::connect(("127.0.0.1", p)) {
+                let _ = common::Following::of_home(&c, &home).read_to_string(&mut got);
             }
-            if !got.is_empty() || std::time::Instant::now() >= deadline {
+            if !got.is_empty() {
+                patience.done();
                 return got;
             }
-            std::thread::sleep(std::time::Duration::from_millis(100));
+            if !patience.holds() {
+                return got;
+            }
+            std::thread::sleep(patience.next_look());
         }
     };
     assert_eq!(read(host_port("7100")), "hello from agent-web\n");
@@ -11309,24 +11346,28 @@ fn a_port_comes_in_to_the_member_listening_on_it() {
             .and_then(|p| p.parse().ok())
             .unwrap_or_else(|| panic!("no {container} in {}", listed.stdout))
     };
-    // What one connection reads, in 3 s at most.
+    // What one connection reads to its end, read as a stream its home's daemon carries (a
+    // judged wait, D209).
     let once = |p: u16| -> String {
         let mut got = String::new();
-        if let Ok(mut c) = std::net::TcpStream::connect(("127.0.0.1", p)) {
-            let _ = c.set_read_timeout(Some(std::time::Duration::from_secs(3)));
-            let _ = c.read_to_string(&mut got);
+        if let Ok(c) = std::net::TcpStream::connect(("127.0.0.1", p)) {
+            let _ = common::Following::of_home(&c, &home).read_to_string(&mut got);
         }
         got
     };
     // Once its agent listens: until then a connection finds no one.
     let read = |p: u16| -> String {
-        let deadline = std::time::Instant::now() + TIMEOUT;
+        let mut patience = Patience::of(&home);
         loop {
             let got = once(p);
-            if !got.is_empty() || std::time::Instant::now() >= deadline {
+            if !got.is_empty() {
+                patience.done();
                 return got;
             }
-            std::thread::sleep(std::time::Duration::from_millis(100));
+            if !patience.holds() {
+                return got;
+            }
+            std::thread::sleep(patience.next_look());
         }
     };
     // What the run and its agents said, where a port reached no one.
@@ -11422,17 +11463,20 @@ fn chooser_round_trip_costs() {
     assert_eq!(built.status, Some(0), "{}", built.stderr);
     let ran = shards(&["run", "vm", "-d", "--name", "chooser", "chooser:1", "sleep"]);
     assert_eq!(ran.status, Some(0), "{}{}", ran.stdout, ran.stderr);
-    let deadline = std::time::Instant::now() + TIMEOUT;
-    let mut said = String::new();
-    while std::time::Instant::now() < deadline {
+    let mut patience = Patience::of(&home);
+    let said = loop {
         // Agents say theirs on the run's stderr, each line `[agent NAME] `.
         let logs = shards(&["read", "logs", "chooser"]);
-        said = logs.stdout + &logs.stderr;
+        let said = logs.stdout + &logs.stderr;
         if said.matches("confined listencost").count() == 3 {
-            break;
+            patience.done();
+            break said;
         }
-        std::thread::sleep(std::time::Duration::from_secs(1));
-    }
+        if !patience.holds() {
+            break said;
+        }
+        std::thread::sleep(patience.next_look());
+    };
     let _ = shards(&["remove", "vm", "-f", "chooser"]);
     for line in said.lines().filter(|l| l.contains("listencost")) {
         println!("{line}");
@@ -11510,17 +11554,17 @@ fn a_udp_flow_goes_to_its_ports_next_holder() {
         .and_then(|at| at.rsplit(':').next())
         .and_then(|p| p.trim().parse().ok())
         .unwrap_or_else(|| panic!("no 7500/udp in {}", listed.stdout));
-    // One socket, one flow: a datagram every 200 ms, each answer kept as it changes.
+    // One socket, one flow: a datagram every 200 ms (the flow's pace, which a lost datagram
+    // or answer costs no more than), each answer kept as it changes, for as long as its
+    // home's daemon and microVM go on (D209).
     let sock = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
     sock.connect(("127.0.0.1", host_port)).unwrap();
     sock.set_read_timeout(Some(std::time::Duration::from_millis(200)))
         .unwrap();
     let mut heard: Vec<String> = Vec::new();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
+    let mut patience = Patience::of(&home);
     let mut buf = [0u8; 512];
-    while std::time::Instant::now() < deadline
-        && heard.last().map(String::as_str) != Some("hello from agent-api\n")
-    {
+    while heard.last().map(String::as_str) != Some("hello from agent-api\n") && patience.holds() {
         let _ = sock.send(b"who");
         if let Ok(n) = sock.recv(&mut buf) {
             let said = String::from_utf8_lossy(&buf[..n]).into_owned();
@@ -11528,6 +11572,9 @@ fn a_udp_flow_goes_to_its_ports_next_holder() {
                 heard.push(said);
             }
         }
+    }
+    if heard.last().map(String::as_str) == Some("hello from agent-api\n") {
+        patience.done();
     }
     let logs = shards(&["read", "logs", "udpholder"]);
     // The flows init tracks, where they went.
@@ -13179,14 +13226,12 @@ fn code_mode_runs_a_program_with_the_callers_grants() {
     }
     #[path = "common/managed_capture.rs"]
     mod capture;
-    use capture::{Ask, Event, Metadata, Observer};
+    use capture::{Ask, Event, Metadata, Observer, Until};
     use shards_abi::run::managed::{Channel, Event as CaptureEvent, Record, StreamState};
     use shards_remote::identity::Identity;
     use shards_remote::net::Command;
     use std::collections::BTreeMap;
-    use std::time::Instant;
 
-    let until = Instant::now().checked_add(TIMEOUT).unwrap();
     let records = std::env::var_os("SHARDS_CODE_MODE_CAPTURE_RECORDS").map(std::path::PathBuf::from);
     if let Some(path) = &records {
         assert!(path.is_absolute(), "absolute new evidence directory");
@@ -13200,6 +13245,8 @@ fn code_mode_runs_a_program_with_the_callers_grants() {
     let (image, _) = served();
     let (port, _repos) = common::writable_registry();
     let home = TempDir::new("code-home");
+    // Its observers' reads judged on its home's daemon and microVMs (D209).
+    let until = Until::Judged(&home);
     let owner = Identity::load_or_create(&home.join("identity")).unwrap();
     let mut observers = Vec::<Observer>::new();
     let env = [
@@ -13207,11 +13254,7 @@ fn code_mode_runs_a_program_with_the_callers_grants() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| {
-        let left = until.saturating_duration_since(Instant::now());
-        assert!(!left.is_zero(), "original code-mode deadline");
-        run_shards_env(&[], args, &env)
-    };
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let body = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let a_program = r#"const me = await shards.whoami();
 const peers = await shards.peers();
@@ -13364,7 +13407,7 @@ return { me, peers, sent, refused };"#;
         // that leave nothing to wait on: each agent names itself confined-ready after writing
         // it (testguest workload.rs), and the server ends an abandoned session's program
         // worker as it finds the client gone. So the process table is read again, each
-        // snapshot kept, until it shows both or the original deadline passes.
+        // snapshot kept, until it shows both or its wait is refused (a `Patience`, D209).
         fn table(stdout: &str) -> Vec<Vec<&str>> {
             stdout
                 .lines()
@@ -13393,6 +13436,7 @@ return { me, peers, sent, refused };"#;
                 && main_awaits(rows)
         }
         let mut snapshot = 0;
+        let mut patience = Patience::of(&home);
         let top = loop {
             let top = shards(&["top", "aw-code", "-o", "pid,caught,comm"]);
             save(
@@ -13400,9 +13444,14 @@ return { me, peers, sent, refused };"#;
                 top.to_string().as_bytes(),
             );
             assert_eq!(top.status, Some(0), "{top}");
-            if settled(&table(&top.stdout)) || Instant::now() >= until {
+            if settled(&table(&top.stdout)) {
+                patience.done();
                 break top;
             }
+            if !patience.holds() {
+                break top;
+            }
+            std::thread::sleep(patience.next_look());
             snapshot += 1;
         };
         let rows = table(&top.stdout);
@@ -13460,12 +13509,8 @@ return { me, peers, sent, refused };"#;
         assert_eq!(removed.status, Some(0), "{removed}");
         assert!(!record.exists(), "private run metadata removed");
     }));
-    // The explicit cleanup phase has 15s of its own, capped by the original case+15s.
-    let cleanup = Duration::from_secs(15);
-    let cleanup_until = Instant::now()
-        .checked_add(cleanup)
-        .unwrap()
-        .min(until.checked_add(cleanup).unwrap());
+    // The cleanup: each observer asked to stop, and its driver's end, which that request owes,
+    // joined with no bound of its own (an order).
     for observer in &observers {
         observer.sender.request_stop();
     }
@@ -13483,7 +13528,7 @@ return { me, peers, sent, refused };"#;
         Err(_) => errors.push("owner-stop helper panicked; cleanup unknown".to_string()),
     }
     for observer in &mut observers {
-        if let Err(error) = observer.join(cleanup_until) {
+        if let Err(error) = observer.join(Until::Ordered) {
             errors.push(error);
         }
     }

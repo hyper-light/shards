@@ -46,7 +46,7 @@ pub fn main() -> ! {
     let arg = |i: usize| args.get(i).map(String::as_str).unwrap_or_default();
     let code = match arg(0) {
         "report" => report(),
-        "cleanup" => crate::cleanup::main(arg(1), arg(2), arg(3), arg(4)),
+        "cleanup" => crate::cleanup::main(arg(1), arg(2), arg(3)),
         "cleanup-control" => crate::cleanup::control(args.get(1..).unwrap_or_default()),
         "managed-lifecycle" => crate::managed_lifecycle::probe(arg(1)),
         "managed-limits" => crate::managed_limits::actor(arg(1), arg(2), arg(3), arg(4), arg(5), arg(6)),
