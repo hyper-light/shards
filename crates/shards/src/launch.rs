@@ -86,7 +86,6 @@ pub struct Launched {
 impl Launched {
     /// Ends its VM process, then its network process, which goes as its VM does, followed to
     /// its end by `ends` ([`crate::netproc::reap`]).
-    #[cfg(any(target_os = "macos", windows))]
     pub(crate) fn end(self, ends: &Ends) {
         let _ = self.vm.kill(shards_ipc::signal::SIGKILL);
         let _ = self.vm.wait();

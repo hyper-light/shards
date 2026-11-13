@@ -27,7 +27,7 @@ pub mod wire;
 pub use wire::{
     Bound, Channel, ControlAsk, ControlAt, CredentialGrant, Fill, GuestTimes, HostUse, Keep, MemberInfo,
     MemberKind, MemberReach, Microvm, Narrowing, PlugRefusal, Proto, Publish, Ready, Receiving, RunEnd,
-    Secret, SocketGrant, Stats, StatsScope, VcpuTime, decide,
+    Secret, SocketGrant, StartedFrom, Stats, StatsScope, VcpuTime, decide,
 };
 
 /// A member, as the image's Agentfile names it.
@@ -289,6 +289,11 @@ pub trait ImageGuest: Send + Sync {
     /// window from the run's own and copies no number: a period shards derives later (D191)
     /// reaches it as it is.
     fn rate_period(&self) -> Duration;
+    /// How the run's microVM started (D253): restored from its image's template, booted saving
+    /// one, or booted where its template did not restore, which was then removed; booted alone
+    /// where its host had no template to restore or save. As its run host said it as the run
+    /// started.
+    fn started_from(&self) -> StartedFrom;
     /// Member `member`'s own terminal ([`MemberSpec::terminal`]) sized to `rows` by `cols`
     /// (plan step 6, D244), as a terminal's window is: its run's init sets the size, and the
     /// kernel tells the terminal's foreground process group SIGWINCH where it changed; a 0 in
