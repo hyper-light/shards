@@ -97,7 +97,7 @@ pub fn serve(input: &mut impl Read, out: &mut impl Write, tags: &[Vec<u8>]) -> i
 /// The events each inotify instance the guest makes from now on holds: its kernel's word.
 fn guest_queue() -> io::Result<u32> {
     let said = std::fs::read(QUEUE_SYSCTL)?;
-    notice::parse_queue(&said).map_err(io::Error::other)
+    notice::parse_queue(&said).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))
 }
 
 /// Tells the server of the share whose tag is `tag` that the guest's inotify instances
