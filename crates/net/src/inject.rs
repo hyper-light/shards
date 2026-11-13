@@ -34,6 +34,7 @@ use crate::Credentials;
 use crate::dns::credential::{self, Fill};
 use crate::lease::{self, Asked};
 use crate::ring::Ring;
+use crate::signin::{self, Cli};
 
 /// Each side's TLS (D242): TLS 1.3 under TLS13_AES_256_GCM_SHA384 alone, both ways (RFC 8446
 /// §4.1.3, §7.3: one suite, each direction keyed apart), as D239 holds shards' links, and every
@@ -112,29 +113,50 @@ pub struct Run<'a> {
     pub audit: Vec<Audit>,
 }
 
-/// A value filled in (D242, f26): toward which host, which credential, and when; never the
-/// value.
+/// What the injector did with a credential (D242, f26): toward which host, which credential
+/// (a sign-in's name, for a sign-in's), what, and when; never a value or a placeholder.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Audit {
     pub host: String,
     pub reference: String,
+    pub what: Did,
     pub at: SystemTime,
+}
+
+/// What an [`Audit`] records (R04).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Did {
+    /// Its value filled in toward the host.
+    Filled,
+    /// A sign-in's token response from the host taken outside, its CLI given placeholders.
+    Captured,
+    /// A sign-in's refresh, asked of the host, answered outside.
+    Refreshed,
+    /// A sign-in's revocation, asked of the host, answered here, its stored tokens untouched.
+    Revoked,
 }
 
 impl fmt::Display for Audit {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (reference, host) = (&self.reference, &self.host);
+        match self.what {
+            Did::Filled => write!(f, "shards-net: credential {reference} filled in toward {host}")?,
+            Did::Captured => write!(
+                f,
+                "shards-net: sign-in {reference}: its tokens from {host} taken outside"
+            )?,
+            Did::Refreshed => write!(
+                f,
+                "shards-net: sign-in {reference}: its refresh at {host} answered outside"
+            )?,
+            Did::Revoked => write!(
+                f,
+                "shards-net: sign-in {reference}: its revocation at {host} answered here, its tokens kept"
+            )?,
+        }
         match self.at.duration_since(SystemTime::UNIX_EPOCH) {
-            Ok(t) => write!(
-                f,
-                "shards-net: credential {reference} filled in toward {host} at {}.{:09} (Unix time)",
-                t.as_secs(),
-                t.subsec_nanos()
-            ),
-            Err(_) => write!(
-                f,
-                "shards-net: credential {reference} filled in toward {host}, the clock before the Unix epoch"
-            ),
+            Ok(t) => write!(f, " at {}.{:09} (Unix time)", t.as_secs(), t.subsec_nanos()),
+            Err(_) => f.write_str(", the clock before the Unix epoch"),
         }
     }
 }
@@ -335,11 +357,14 @@ impl Flow {
         let Some(sni) = accepted.client_hello().server_name().map(str::to_ascii_lowercase) else {
             return self.pass();
         };
-        let granted = run
-            .credentials
-            .grants
-            .iter()
-            .any(|g| g.toward.iter().any(|h| h.eq_ignore_ascii_case(&sni)));
+        // A grant's host, or a sign-in's: its token host, or a host its access token goes to,
+        // which a capture during the run may grant (D242, step 8).
+        let named = |toward: &[String]| toward.iter().any(|h| h.eq_ignore_ascii_case(&sni));
+        let granted =
+            run.credentials.grants.iter().any(|g| named(&g.toward))
+                || run.credentials.sign_ins.grants.iter().any(|s| {
+                    named(&s.toward) || signin::profile(s.cli).token.host.eq_ignore_ascii_case(&sni)
+                });
         if !granted {
             return self.pass();
         }
@@ -380,6 +405,15 @@ enum Refusal {
     Unleased { reference: String, why: lease::Refusal },
     /// The host's TLS failed, or it ended before it answered: 502.
     Upstream(String),
+    /// A sign-in's access token toward an endpoint of its host that mints a credential its
+    /// response carries in the clear (`signin::Profile::mints`): 403, never sent.
+    Mints { host: String },
+    /// A sign-in's token response that could not be read or written: 502, never passed on.
+    SignIn(signin::Refusal),
+    /// A sign-in's capture or refresh not answered outside: a refresh its broker refused is
+    /// `invalid_grant` (400, RFC 6749 §5.2), so that its CLI signs in anew; the rest 502 for a
+    /// capture, 503 for a refresh.
+    Declined { refresh: bool, why: signin::Declined },
 }
 
 impl fmt::Display for Refusal {
@@ -393,6 +427,17 @@ impl fmt::Display for Refusal {
             ),
             Refusal::Unleased { reference, why } => write!(f, "credential {reference} was not leased: {why}"),
             Refusal::Upstream(why) => write!(f, "the host's side failed: {why}"),
+            Refusal::Mints { host } => write!(
+                f,
+                "a sign-in's token is never sent to {host}'s endpoint that mints a key in the clear"
+            ),
+            Refusal::SignIn(why) => write!(f, "{why}"),
+            Refusal::Declined { refresh: true, why } => {
+                write!(f, "the sign-in's refresh was not answered: {why}")
+            }
+            Refusal::Declined { refresh: false, why } => {
+                write!(f, "the sign-in was not taken outside: {why}")
+            }
         }
     }
 }
@@ -405,13 +450,30 @@ impl Refusal {
             Refusal::TooLarge => (431, "Request Header Fields Too Large"),
             Refusal::Misdirected { .. } => (421, "Misdirected Request"),
             Refusal::Unleased { .. } => (503, "Service Unavailable"),
-            Refusal::Upstream(_) => (502, "Bad Gateway"),
+            Refusal::Upstream(_) | Refusal::SignIn(_) => (502, "Bad Gateway"),
+            Refusal::Mints { .. } => (403, "Forbidden"),
+            Refusal::Declined {
+                refresh: true,
+                why: signin::Declined::Denied(_),
+            } => (400, "Bad Request"),
+            Refusal::Declined { refresh: true, .. } => (503, "Service Unavailable"),
+            Refusal::Declined { refresh: false, .. } => (502, "Bad Gateway"),
         }
     }
 
     /// The response the guest gets, the connection closing after it.
     fn response(&self) -> Vec<u8> {
         let (status, reason) = self.status();
+        if status == 400 && matches!(self, Refusal::Declined { .. }) {
+            // RFC 6749 §5.2's error, which a CLI reads as its sign-in's end (its broker's words
+            // go to the diagnostics, never into the guest).
+            let body = r#"{"error":"invalid_grant"}"#;
+            return format!(
+                "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .into_bytes();
+        }
         let body = format!("shards: {self}\n");
         format!(
             "HTTP/1.1 {status} {reason}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -444,6 +506,8 @@ enum Request {
     Sent,
     /// Upgraded or tunnelled: the guest's bytes go to the host as they come.
     Tunnel,
+    /// A sign-in's refresh, read whole and asked outside (D242, step 8): its answer resumes it.
+    Refreshing,
     /// Refused, or the flow ending: nothing more is taken.
     Done,
 }
@@ -458,6 +522,18 @@ struct Parked {
     host: String,
     body: Framing,
     owed: Owed,
+    /// Where it is a sign-in's token host's POST to its token or revocation path: its body is
+    /// read whole before it goes, as a refresh or a revocation is answered outside.
+    whole: Option<Whole>,
+}
+
+/// What a sign-in's request read whole is asked by (D242, step 8): its CLI, method, target and
+/// Content-Type.
+struct Whole {
+    cli: Cli,
+    method: String,
+    target: String,
+    content_type: Option<Vec<u8>>,
 }
 
 /// Where the host's responses stand (R04).
@@ -468,6 +544,19 @@ enum Response {
     Body(Framing),
     /// Upgraded or tunnelled: the host's bytes go to the guest as they come.
     Tunnel,
+    /// A sign-in's token host's response, its body read whole as it comes (D242, step 8), none of
+    /// it to the guest before: its tokens taken outside, or it passed on as it came.
+    Whole {
+        head: Vec<u8>,
+        body: Zeroizing<Vec<u8>>,
+        framing: Framing,
+    },
+    /// Its tokens asked of the run host to keep, their placeholders coming in the answer.
+    Capturing {
+        head: Vec<u8>,
+        body: Zeroizing<Vec<u8>>,
+        tokens: signin::Tokens,
+    },
 }
 
 /// A message body's framing (RFC 9112 §6.3), where in it.
@@ -757,6 +846,28 @@ fn token(head: &[u8], field: &Field) -> Option<Range<usize>> {
         "x-api-key" => (!value.is_empty()).then_some(field.value.clone()),
         _ => None,
     }
+}
+
+/// A sign-in's request made to ask its response as its sender wrote it (RFC 9110 §12.5.3:
+/// `identity`), so that its tokens can be read where they lie: each Accept-Encoding line cut and
+/// one asking `identity` written before the head's end (D242, step 8).
+fn identity(head: &[u8], fields: &[Field]) -> Vec<(Range<usize>, Vec<u8>)> {
+    let end = head.len().saturating_sub(2);
+    fields
+        .iter()
+        .filter(|f| f.name == "accept-encoding")
+        .map(|f| (f.line.clone(), Vec::new()))
+        .chain([(end..end, b"Accept-Encoding: identity\r\n".to_vec())])
+        .collect()
+}
+
+/// Whether `reference` is a sign-in's access token, and `host`'s `target` an endpoint its CLI's
+/// profile names as minting a credential in the clear (`signin::Profile::mints`).
+fn mints(run: &Run<'_>, reference: &str, host: &str, target: &str) -> bool {
+    run.credentials.sign_ins.grants.iter().any(|s| {
+        s.captured.as_ref().is_some_and(|c| c.access == reference)
+            && signin::profile(s.cli).mints(host, target)
+    })
 }
 
 /// The host a request is for (RFC 9112 §3.2, §3.2.2): its target's authority where the target
@@ -1068,6 +1179,24 @@ impl Mask {
     }
 }
 
+/// What a sign-in's request read whole comes to (R04).
+enum Outside {
+    /// Its body has not come whole.
+    Waiting(Whole),
+    /// Answered here or asked outside: it goes no further.
+    Answered,
+    /// Neither: it goes on as any request.
+    Pass,
+}
+
+/// A sign-in's placeholders, as its capture gave them.
+fn placeholders_of(c: &signin::Captured) -> signin::Placeholders {
+    signin::Placeholders {
+        access: c.access_placeholder.clone(),
+        refresh: c.refresh_placeholder.clone(),
+    }
+}
+
 /// A granted host's flow: the guest's TLS ended here, the host's made from here.
 struct Ended {
     /// The name its TLS was ended under, lowered.
@@ -1086,6 +1215,14 @@ struct Ended {
     mask: Mask,
     /// Why the host's TLS failed, before anything of it reached the guest.
     failed: Option<String>,
+    /// Whose sign-in's token host this is, where it is one (D242, step 8): no value is filled
+    /// toward it, and its responses are read whole for tokens.
+    sign_in: Option<Cli>,
+    /// What its response's side refuses, answered once that side's bytes are taken.
+    refused: Option<Refusal>,
+    /// The host ended its side while a sign-in's tokens were asked outside: the guest's ends
+    /// once their answer has gone.
+    host_closed: bool,
 }
 
 impl Ended {
@@ -1136,6 +1273,9 @@ impl Ended {
             answered: false,
             mask: Mask::default(),
             failed: None,
+            sign_in: run.credentials.sign_ins.at_token_host(sni),
+            refused: None,
+            host_closed: false,
         };
         e.take_guest(rest, q)?;
         Ok(e)
@@ -1218,9 +1358,12 @@ impl Ended {
                 say(&self.sni, format_args!("the host's response is broken: {why}"));
                 return Said::Reset;
             }
+            if let Some(refusal) = self.refused.take() {
+                return self.refuse(refusal, q);
+            }
         }
         if closed {
-            return self.host_done(q);
+            return self.host_done(run, q);
         }
         self.serve(run, q)
     }
@@ -1234,7 +1377,7 @@ impl Ended {
             say(&self.sni, format_args!("the host's response is broken: {why}"));
             return Said::Reset;
         }
-        self.host_done(q)
+        self.host_done(run, q)
     }
 
     /// The host's TLS failed: the guest is told 502 where nothing of its answer has reached it
@@ -1256,7 +1399,25 @@ impl Ended {
 
     /// The host has ended its side: a response read to its end ends there, one owed and not
     /// begun is answered 502, and the guest's TLS ends.
-    fn host_done(&mut self, q: &mut Queues<'_>) -> Said {
+    fn host_done(&mut self, run: &mut Run<'_>, q: &mut Queues<'_>) -> Said {
+        // A sign-in's response read to the host's end ends there (D242, step 8); its tokens asked
+        // outside, the guest's side ends once their answer has gone.
+        if matches!(
+            self.response,
+            Response::Whole {
+                framing: Framing::Close,
+                ..
+            }
+        ) {
+            self.finish_whole(run);
+        }
+        if let Some(refusal) = self.refused.take() {
+            return self.refuse(refusal, q);
+        }
+        if matches!(self.response, Response::Capturing { .. }) {
+            self.host_closed = true;
+            return Said::Going;
+        }
         if matches!(self.response, Response::Body(Framing::Close) | Response::Tunnel) {
             let Ended { mask, guest, .. } = self;
             if mask.end_message(&mut |b| guest.writer().write_all(b)).is_err() {
@@ -1296,6 +1457,16 @@ impl Ended {
 
     /// Takes what it can of the guest's requests, and sends what each side is to have.
     fn serve(&mut self, run: &mut Run<'_>, q: &mut Queues<'_>) -> Said {
+        if matches!(self.response, Response::Capturing { .. })
+            && let Some(answer) = run.credentials.sign_ins.take(run.waiter)
+        {
+            if let Err(refusal) = self.captured(answer, run) {
+                return self.refuse(refusal, q);
+            }
+            if self.host_closed {
+                return self.host_done(run, q);
+            }
+        }
         loop {
             match self.advance(run) {
                 Ok(true) => {}
@@ -1367,11 +1538,116 @@ impl Ended {
                     .map_err(|e| Refusal::Upstream(e.to_string()))?;
                 Ok(false)
             }
+            Request::Refreshing => self.refreshed(run),
             Request::Done => {
                 self.pending.clear();
                 Ok(false)
             }
         }
+    }
+
+    /// A sign-in's request read whole (D242, step 8), once its body has come within the
+    /// connection's window: a refresh of the sign-in's placeholder asked outside, its answer
+    /// resuming the flow; a revocation of one answered here, its stored tokens untouched; anything
+    /// else passed on, its response read. An answered request's body goes no further.
+    fn outside(&mut self, parked: &Parked, whole: Whole, run: &mut Run<'_>) -> Result<Outside, Refusal> {
+        let Framing::Length(n) = parked.body else {
+            return Ok(Outside::Pass);
+        };
+        let n = usize::try_from(n).unwrap_or(usize::MAX);
+        if self.pending.len() < n {
+            return Ok(Outside::Waiting(whole));
+        }
+        let sign_ins = &mut run.credentials.sign_ins;
+        let Some(index) = sign_ins.of(whole.cli) else {
+            return Ok(Outside::Pass);
+        };
+        let placeholders = sign_ins
+            .grants
+            .get(index)
+            .and_then(|g| g.captured.as_ref())
+            .map(placeholders_of);
+        let asked = signin::ask(
+            signin::profile(whole.cli),
+            &signin::Request {
+                host: &parked.host,
+                method: &whole.method,
+                target: &whole.target,
+                content_type: whole.content_type.as_deref(),
+                body: self.pending.get(..n).unwrap_or_default(),
+            },
+            &placeholders.iter().collect::<Vec<_>>(),
+        );
+        match asked {
+            signin::Ask::Pass => return Ok(Outside::Pass),
+            signin::Ask::Refresh(_) => {
+                sign_ins
+                    .refresh(index, run.waiter)
+                    .map_err(|why| Refusal::Declined { refresh: true, why })?;
+                self.request = Request::Refreshing;
+            }
+            signin::Ask::Revoke(_) => {
+                sign_ins.revoke(index);
+                let sign_in = sign_ins
+                    .grants
+                    .get(index)
+                    .map(|g| g.sign_in.clone())
+                    .unwrap_or_default();
+                self.guest
+                    .writer()
+                    .write_all(signin::REVOKED)
+                    .map_err(|e| Refusal::Upstream(e.to_string()))?;
+                run.audit.push(Audit {
+                    host: parked.host.clone(),
+                    reference: sign_in,
+                    what: Did::Revoked,
+                    at: SystemTime::now(),
+                });
+                self.request = Request::Head;
+            }
+        }
+        self.pending.drain(..n);
+        Ok(Outside::Answered)
+    }
+
+    /// A refresh asked outside (D242, step 8), once its answer has come: the token response its
+    /// CLI is to have, its tokens the sign-in's placeholders and its ID token inert, kept from
+    /// caches; or refused.
+    fn refreshed(&mut self, run: &mut Run<'_>) -> Result<bool, Refusal> {
+        let body = match run.credentials.sign_ins.take(run.waiter) {
+            Some(signin::Answer::Refreshed(body)) => body,
+            Some(signin::Answer::Declined(why)) => return Err(Refusal::Declined { refresh: true, why }),
+            Some(signin::Answer::Captured) | None => {
+                self.request = Request::Refreshing;
+                return Ok(false);
+            }
+        };
+        let sign_ins = &run.credentials.sign_ins;
+        let grant = self
+            .sign_in
+            .and_then(|cli| sign_ins.of(cli))
+            .and_then(|i| sign_ins.grants.get(i));
+        let Some((sign_in, placeholders)) =
+            grant.and_then(|g| Some((g.sign_in.clone(), placeholders_of(g.captured.as_ref()?))))
+        else {
+            return Err(Refusal::SignIn(signin::Refusal::NoPlaceholder));
+        };
+        let tokens = signin::read(&body)
+            .map_err(Refusal::SignIn)?
+            .ok_or(Refusal::SignIn(signin::Refusal::NoToken))?;
+        let written = signin::write(&body, &tokens, &placeholders).map_err(Refusal::SignIn)?;
+        self.guest
+            .writer()
+            .write_all(&signin::refreshed(&written))
+            .map_err(|e| Refusal::Upstream(e.to_string()))?;
+        run.audit.push(Audit {
+            host: self.sni.clone(),
+            reference: sign_in,
+            what: Did::Refreshed,
+            at: SystemTime::now(),
+        });
+        self.request = Request::Head;
+        Ok(true)
     }
 
     /// A request's head, if it has come whole: its host and framing read, its hop-by-hop
@@ -1415,25 +1691,52 @@ impl Ended {
                 host,
             });
         }
-        let edits = hop_by_hop(&head, &fields);
+        let mut edits = hop_by_hop(&head, &fields);
         let mut fills = Vec::new();
-        for field in &fields {
-            if edits
-                .iter()
-                .any(|(cut, _)| cut.start <= field.line.start && field.line.end <= cut.end)
-            {
-                continue;
+        let whole = match self.sign_in {
+            // A sign-in's token host (D242, step 8): no value goes to it; its response is asked
+            // as its sender writes it, so that its tokens can be read; a POST to its token or
+            // revocation path is read whole, as a refresh or a revocation is answered outside.
+            Some(cli) => {
+                edits.extend(identity(&head, &fields));
+                edits.sort_by_key(|(r, _)| r.start);
+                let profile = signin::profile(cli);
+                let path = signin::path(&target);
+                let ours = method.eq_ignore_ascii_case("POST")
+                    && (path == profile.token.path || path == profile.revoke.path);
+                let fits = matches!(body, Framing::Length(n) if usize::try_from(n).is_ok_and(|n| n <= crate::tcp::TO_HOST));
+                (ours && fits).then(|| Whole {
+                    cli,
+                    method: method.clone(),
+                    target: target.clone(),
+                    content_type: values(&head, &fields, "content-type").next().map(<[u8]>::to_vec),
+                })
             }
-            let Some(range) = token(&head, field) else {
-                continue;
-            };
-            let Some(token) = head.get(range.clone()).and_then(|t| std::str::from_utf8(t).ok()) else {
-                continue;
-            };
-            if let Fill::With(reference) = credential::decide(grants, &self.sni, &host, Some(token)) {
-                fills.push((range, reference));
+            None => {
+                for field in &fields {
+                    if edits
+                        .iter()
+                        .any(|(cut, _)| cut.start <= field.line.start && field.line.end <= cut.end)
+                    {
+                        continue;
+                    }
+                    let Some(range) = token(&head, field) else {
+                        continue;
+                    };
+                    let Some(token) = head.get(range.clone()).and_then(|t| std::str::from_utf8(t).ok())
+                    else {
+                        continue;
+                    };
+                    if let Fill::With(reference) = credential::decide(grants, &self.sni, &host, Some(token)) {
+                        if mints(run, &reference, &host, &target) {
+                            return Err(Refusal::Mints { host });
+                        }
+                        fills.push((range, reference));
+                    }
+                }
+                None
             }
-        }
+        };
         Ok(Some(Parked {
             head,
             edits,
@@ -1441,13 +1744,25 @@ impl Ended {
             host,
             body,
             owed,
+            whole,
         }))
     }
 
     /// A parked request goes once the host's TLS is up and each value it carries is leased:
     /// its head as it came but for its hop-by-hop fields and its placeholders, each filled in
     /// and audited; refused where a lease is; parked again while one is asked.
-    fn go(&mut self, parked: Box<Parked>, run: &mut Run<'_>) -> Result<bool, Refusal> {
+    fn go(&mut self, mut parked: Box<Parked>, run: &mut Run<'_>) -> Result<bool, Refusal> {
+        if let Some(whole) = parked.whole.take() {
+            match self.outside(&parked, whole, run)? {
+                Outside::Waiting(whole) => {
+                    parked.whole = Some(whole);
+                    self.request = Request::Parked(parked);
+                    return Ok(false);
+                }
+                Outside::Answered => return Ok(true),
+                Outside::Pass => {}
+            }
+        }
         if let Some(why) = &self.failed {
             return Err(Refusal::Upstream(why.clone()));
         }
@@ -1503,6 +1818,7 @@ impl Ended {
                 run.audit.push(Audit {
                     host: parked.host.clone(),
                     reference: reference.clone(),
+                    what: Did::Filled,
                     at,
                 });
                 self.mask.filled.push((reference.clone(), 0));
@@ -1519,10 +1835,10 @@ impl Ended {
 
     /// The host's plaintext `bytes`, answered to the guest as its responses' framing reads
     /// them, the values filled into their request masked.
-    fn respond(&mut self, mut bytes: &[u8], run: &Run<'_>) -> Result<(), Broken> {
+    fn respond(&mut self, mut bytes: &[u8], run: &mut Run<'_>) -> Result<(), Broken> {
         let queued = |_: io::Error| Broken("its bytes could not be queued");
         while !bytes.is_empty() {
-            if matches!(self.request, Request::Done) {
+            if matches!(self.request, Request::Done) || self.refused.is_some() {
                 return Ok(());
             }
             match &mut self.response {
@@ -1563,8 +1879,114 @@ impl Ended {
                         .map_err(queued)?;
                     return Ok(());
                 }
+                Response::Whole { body, framing, .. } => {
+                    let (taken, ended) = walk(framing, bytes, crate::tcp::TO_GUEST, &mut |p| {
+                        if let Piece::Data(data) = p {
+                            if body.len().saturating_add(data.len()) > crate::tcp::TO_GUEST {
+                                return Err(io::Error::other("past what its connection holds"));
+                            }
+                            signin::append(body, data);
+                        }
+                        Ok(())
+                    })?;
+                    bytes = bytes.get(taken..).unwrap_or_default();
+                    if ended {
+                        self.finish_whole(run);
+                    }
+                }
+                Response::Capturing { .. } => {
+                    return Err(Broken("bytes past a sign-in's response, one request at a time"));
+                }
             }
         }
+        Ok(())
+    }
+
+    /// A sign-in's token host's response, whole (D242, step 8), read for tokens: one with none
+    /// goes to the guest as it came, framed by its length; one with tokens waits while they are
+    /// asked outside; one that cannot be read is refused, none of it passed on.
+    fn finish_whole(&mut self, run: &mut Run<'_>) {
+        let Response::Whole { head, body, .. } =
+            std::mem::replace(&mut self.response, Response::Head(Vec::new()))
+        else {
+            return;
+        };
+        let read = signin::read(&body).map_err(Refusal::SignIn);
+        let went = read.and_then(|tokens| match tokens {
+            None => self.pass_whole(&head, &body),
+            Some(tokens) => {
+                let sign_ins = &mut run.credentials.sign_ins;
+                let index = self.sign_in.and_then(|cli| sign_ins.of(cli));
+                let (Some(index), Some(taken)) = (index, signin::Taken::of(&tokens)) else {
+                    return Err(Refusal::SignIn(signin::Refusal::NoToken));
+                };
+                sign_ins
+                    .capture(index, taken, run.waiter)
+                    .map_err(|why| Refusal::Declined { refresh: false, why })?;
+                self.response = Response::Capturing { head, body, tokens };
+                Ok(())
+            }
+        });
+        if let Err(refusal) = went {
+            self.refused = Some(refusal);
+        }
+    }
+
+    /// A sign-in's response with no token in it, to the guest as it came, framed by its length.
+    fn pass_whole(&mut self, head: &[u8], body: &[u8]) -> Result<(), Refusal> {
+        let framed = signin::frame(head, body.len()).map_err(Refusal::SignIn)?;
+        let mut writer = self.guest.writer();
+        writer
+            .write_all(&framed)
+            .and_then(|()| writer.write_all(body))
+            .map_err(|e| Refusal::Upstream(e.to_string()))?;
+        self.answered = true;
+        self.exchange_ended();
+        Ok(())
+    }
+
+    /// A capture's answer (D242, step 8): the token response goes to the guest with the
+    /// sign-in's placeholders in its tokens' places and its ID token inert, framed anew; its real
+    /// tokens wiped as they drop here; or it is refused.
+    fn captured(&mut self, answer: signin::Answer, run: &mut Run<'_>) -> Result<(), Refusal> {
+        let Response::Capturing { head, body, tokens } =
+            std::mem::replace(&mut self.response, Response::Head(Vec::new()))
+        else {
+            return Ok(());
+        };
+        match answer {
+            signin::Answer::Captured => {}
+            signin::Answer::Declined(why) => return Err(Refusal::Declined { refresh: false, why }),
+            signin::Answer::Refreshed(_) => {
+                self.response = Response::Capturing { head, body, tokens };
+                return Ok(());
+            }
+        }
+        let sign_ins = &run.credentials.sign_ins;
+        let grant = self
+            .sign_in
+            .and_then(|cli| sign_ins.of(cli))
+            .and_then(|i| sign_ins.grants.get(i));
+        let Some((sign_in, placeholders)) =
+            grant.and_then(|g| Some((g.sign_in.clone(), placeholders_of(g.captured.as_ref()?))))
+        else {
+            return Err(Refusal::SignIn(signin::Refusal::NoPlaceholder));
+        };
+        let written = signin::write(&body, &tokens, &placeholders).map_err(Refusal::SignIn)?;
+        let framed = signin::frame(&head, written.len()).map_err(Refusal::SignIn)?;
+        let mut writer = self.guest.writer();
+        writer
+            .write_all(&framed)
+            .and_then(|()| writer.write_all(&written))
+            .map_err(|e| Refusal::Upstream(e.to_string()))?;
+        self.answered = true;
+        self.exchange_ended();
+        run.audit.push(Audit {
+            host: self.sni.clone(),
+            reference: sign_in,
+            what: Did::Captured,
+            at: SystemTime::now(),
+        });
         Ok(())
     }
 
@@ -1594,6 +2016,20 @@ impl Ended {
         let cut = hop_by_hop(&head, &fields);
         let edits: Vec<(Range<usize>, &[u8])> = cut.iter().map(|(r, v)| (r.clone(), v.as_slice())).collect();
         let passed = rewrite(&head, &edits);
+        // A sign-in's token host's final response with a body is read whole before any of it
+        // goes, so that its tokens are taken outside (D242, step 8).
+        if self.sign_in.is_some() && !tunnel && !interim && framing != Framing::Length(0) {
+            if let Err(why) = signin::readable(&passed) {
+                self.refused = Some(Refusal::SignIn(why));
+                return Ok(());
+            }
+            self.response = Response::Whole {
+                head: passed.to_vec(),
+                body: Zeroizing::new(Vec::new()),
+                framing,
+            };
+            return Ok(());
+        }
         let Ended { mask, guest, .. } = self;
         let mut out = |b: &[u8]| guest.writer().write_all(b);
         mask.push(&passed, true, run, &mut out)
@@ -1689,7 +2125,12 @@ mod tests {
 
     /// The echo server's TLS, any suite: a leaf for the three hosts that `root` signs.
     fn echo_config(root: &CertifiedIssuer<'static, KeyPair>) -> Arc<ServerConfig> {
-        let mut p = params(&[GRANTED, OTHER, FREE]);
+        leaf_config(root, &[GRANTED, OTHER, FREE])
+    }
+
+    /// A test server's TLS, any suite: a leaf for `names` that `root` signs.
+    fn leaf_config(root: &CertifiedIssuer<'static, KeyPair>, names: &[&str]) -> Arc<ServerConfig> {
+        let mut p = params(names);
         p.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
         p.key_usages = vec![KeyUsagePurpose::DigitalSignature];
         let key = KeyPair::generate().unwrap();
@@ -1795,6 +2236,7 @@ mod tests {
             ca: ca::Ca::new(ca::Key::generate().unwrap(), &[GRANTED, OTHER]).unwrap(),
             leases: lease::Leases::new(vec![CLAUDE.into(), ELSEWHERE.into()]),
             upstream: Upstream::new(vec![root.der().clone()]).unwrap(),
+            sign_ins: signin::SignIns::new(Vec::new()),
         }
     }
 
@@ -1870,6 +2312,8 @@ mod tests {
         held_most: usize,
         audit: Vec<Audit>,
         passed: bool,
+        /// The token its run resumes it by.
+        waiter: u64,
     }
 
     impl Bench {
@@ -1888,6 +2332,7 @@ mod tests {
                 held_most: 0,
                 audit: Vec::new(),
                 passed: false,
+                waiter: 7,
             }
         }
 
@@ -1905,7 +2350,7 @@ mod tests {
             let Some(flow) = self.flow.as_mut() else { return };
             let mut run = Run {
                 credentials,
-                waiter: 7,
+                waiter: self.waiter,
                 now: Instant::now(),
                 audit: Vec::new(),
             };
@@ -2018,7 +2463,7 @@ mod tests {
                 let moved = self.turn(credentials);
                 if lease && lease_all(credentials) > 0 {
                     for r in credentials.leases.resumed() {
-                        assert_eq!(r.waiter, 7);
+                        assert_eq!(r.waiter, self.waiter);
                     }
                     self.step(credentials, None, |f, run, q| f.resume(run, q));
                 } else if !moved {
@@ -2484,5 +2929,454 @@ mod tests {
         })
         .unwrap();
         assert_eq!(out, &VALUE[..7]);
+    }
+
+    // Step 8: a sign-in through the injector (D242), its token endpoint simulated.
+
+    const SIGN_IN: &str = "claude/acct-1";
+    const TOKEN_HOST: &str = "platform.claude.com";
+    const API_HOST: &str = "api.anthropic.com";
+    /// The provider's tokens, shaped as Anthropic's and none real: as its code's exchange issues
+    /// them, and as a refresh rotates them.
+    const ISSUED_ACCESS: &str = "sk-ant-oat01-issued-access-not-real-0123456789";
+    const ISSUED_REFRESH: &str = "sk-ant-ort01-issued-refresh-not-real-0123456789";
+    const ROTATED_ACCESS: &str = "sk-ant-oat01-rotated-access-not-real-9876543210";
+    const ROTATED_REFRESH: &str = "sk-ant-ort01-rotated-refresh-not-real-9876543210";
+    /// What the broker gives in their places.
+    const SIGNED_ACCESS: &str =
+        "kiln-placeholder-aaaa456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    const SIGNED_REFRESH: &str =
+        "kiln-placeholder-bbbb456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    fn access_reference() -> String {
+        format!("sign-ins/{SIGN_IN}/access")
+    }
+
+    /// A token response as Claude Code reads one (`formatTokens`).
+    fn token_response(access: &str, refresh: &str) -> String {
+        format!(
+            r#"{{"token_type":"Bearer","access_token":"{access}","expires_in":28800,"refresh_token":"{refresh}","scope":"user:inference user:profile"}}"#
+        )
+    }
+
+    /// A token endpoint as Claude Code's is (`TOKEN_URL`), over TLS `config` gives: each request
+    /// told the test, head and body; a code's exchange answered with the issued tokens, anything
+    /// else 400.
+    fn token_endpoint(config: Arc<ServerConfig>) -> (SocketAddr, mpsc::Receiver<Vec<u8>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            for tcp in listener.incoming() {
+                let Ok(tcp) = tcp else { return };
+                let (config, tx) = (config.clone(), tx.clone());
+                std::thread::spawn(move || {
+                    let mut tls = rustls::StreamOwned::new(ServerConnection::new(config).unwrap(), tcp);
+                    loop {
+                        let mut head = Vec::new();
+                        let mut byte = [0u8; 1];
+                        while !head.ends_with(b"\r\n\r\n") {
+                            match tls.read(&mut byte) {
+                                Ok(1) => head.push(byte[0]),
+                                _ => return,
+                            }
+                        }
+                        let text = String::from_utf8_lossy(&head).to_ascii_lowercase();
+                        let len: usize = text
+                            .lines()
+                            .find_map(|l| l.strip_prefix("content-length:"))
+                            .map_or(0, |v| v.trim().parse().unwrap());
+                        let mut body = vec![0u8; len];
+                        if tls.read_exact(&mut body).is_err() {
+                            return;
+                        }
+                        let exchange = holds(&body, br#""grant_type":"authorization_code""#);
+                        let _ = tx.send([head, body].concat());
+                        let (status, answer) = if exchange {
+                            ("200 OK", token_response(ISSUED_ACCESS, ISSUED_REFRESH))
+                        } else {
+                            ("400 Bad Request", r#"{"error":"unexpected"}"#.to_string())
+                        };
+                        let response = format!(
+                            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nCache-Control: no-store\r\nContent-Length: {}\r\n\r\n{answer}",
+                            answer.len()
+                        );
+                        if tls.write_all(response.as_bytes()).is_err() {
+                            return;
+                        }
+                        let _ = tls.flush();
+                    }
+                });
+            }
+        });
+        (addr, rx)
+    }
+
+    /// A run with Claude Code's sign-in granted, its access token toward its API host alone, its
+    /// injector's host side trusting `root`; captured before where `captured` says.
+    fn sign_in_credentials(root: &CertifiedIssuer<'static, KeyPair>, captured: bool) -> Credentials {
+        let captured = captured.then(|| signin::Captured {
+            access: access_reference(),
+            access_placeholder: SIGNED_ACCESS.into(),
+            refresh_placeholder: SIGNED_REFRESH.into(),
+        });
+        let grants: Vec<Grant> = captured.iter().map(|c| c.grant(&[API_HOST.into()])).collect();
+        Credentials {
+            leases: lease::Leases::new(grants.iter().map(|g| g.reference.clone()).collect()),
+            grants,
+            ca: ca::Ca::new(ca::Key::generate().unwrap(), &[API_HOST, TOKEN_HOST]).unwrap(),
+            upstream: Upstream::new(vec![root.der().clone()]).unwrap(),
+            sign_ins: signin::SignIns::new(vec![signin::SignInGrant {
+                sign_in: SIGN_IN.into(),
+                cli: Cli::ClaudeCode,
+                toward: vec![API_HOST.into()],
+                captured,
+            }]),
+        }
+    }
+
+    /// The run host and its orchestrator's broker, as a test lessor: each capture's tokens kept
+    /// and the broker's placeholders given; each refresh one call to the provider, which rotates
+    /// the tokens and whose answer, real tokens and all, comes back as it came; each revocation
+    /// counted, the stored tokens kept; each lease of the access token answered with the stored
+    /// one.
+    #[derive(Default)]
+    struct Broker {
+        access: Vec<u8>,
+        refresh: Vec<u8>,
+        provider_calls: usize,
+        revoked: usize,
+    }
+
+    impl Broker {
+        fn holding(access: &str, refresh: &str) -> Broker {
+            Broker {
+                access: access.as_bytes().to_vec(),
+                refresh: refresh.as_bytes().to_vec(),
+                ..Broker::default()
+            }
+        }
+
+        /// Answers what the run asks; how many asks.
+        fn serve(&mut self, credentials: &mut Credentials) -> usize {
+            let mut n = 0;
+            for ask in credentials.leases.asks() {
+                let (id, reference) = lease::decode_ask(&ask).unwrap();
+                assert_eq!(
+                    reference,
+                    access_reference(),
+                    "a lease of what no capture granted"
+                );
+                let life = NonZeroU64::new(60_000_000_000).unwrap();
+                let answer = lease::encode_answer(id, Ok((life, &self.access))).unwrap();
+                assert!(credentials.leases.answered(&answer, Instant::now()));
+                n += 1;
+            }
+            for told in credentials.sign_ins.asks() {
+                n += 1;
+                let answered = match signin::Told::decode(&told).unwrap() {
+                    signin::Told::Capture { id, sign_in, taken } => {
+                        assert_eq!(sign_in, SIGN_IN);
+                        assert_eq!(taken.expires_in, Some(28800));
+                        self.access = taken.access.to_vec();
+                        self.refresh = taken.refresh.unwrap().to_vec();
+                        signin::Answered::Captured {
+                            id,
+                            result: Ok(signin::Captured {
+                                access: access_reference(),
+                                access_placeholder: SIGNED_ACCESS.into(),
+                                refresh_placeholder: SIGNED_REFRESH.into(),
+                            }),
+                        }
+                    }
+                    signin::Told::Refresh { id, sign_in } => {
+                        assert_eq!(sign_in, SIGN_IN);
+                        assert!(!self.refresh.is_empty(), "a refresh of a sign-in never kept");
+                        self.provider_calls += 1;
+                        self.access = ROTATED_ACCESS.as_bytes().to_vec();
+                        self.refresh = ROTATED_REFRESH.as_bytes().to_vec();
+                        signin::Answered::Refreshed {
+                            id,
+                            result: Ok(Zeroizing::new(
+                                token_response(ROTATED_ACCESS, ROTATED_REFRESH).into_bytes(),
+                            )),
+                        }
+                    }
+                    signin::Told::Revoke { sign_in } => {
+                        assert_eq!(sign_in, SIGN_IN);
+                        self.revoked += 1;
+                        continue;
+                    }
+                };
+                let changed = credentials
+                    .sign_ins
+                    .answered(&answered.encode().unwrap(), &credentials.grants)
+                    .unwrap();
+                crate::follow(credentials, changed);
+            }
+            n
+        }
+    }
+
+    /// Turns `bench` until `done` says so of what its guest read, the broker answering what its
+    /// run asks and the flow looking for its answers each turn.
+    fn drive(
+        bench: &mut Bench,
+        credentials: &mut Credentials,
+        broker: &mut Broker,
+        done: impl Fn(&Bench) -> bool,
+    ) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !done(bench) {
+            assert!(
+                Instant::now() < deadline,
+                "no end: the guest read {:?}",
+                String::from_utf8_lossy(&bench.got)
+            );
+            let moved = bench.turn(credentials);
+            let asked = broker.serve(credentials);
+            // Whichever flow an answer named, this one looks: another bench's answer may have
+            // been taken by an earlier drive, and a look with none for it does nothing.
+            let _ = (credentials.leases.resumed(), credentials.sign_ins.resumed());
+            bench.step(credentials, None, |f, run, q| f.resume(run, q));
+            if !moved && asked == 0 {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+    }
+
+    fn post(target: &str, host: &str, body: &str) -> Vec<u8> {
+        format!(
+            "POST {target} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nAccept-Encoding: gzip, br\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+        .into_bytes()
+    }
+
+    fn refresh_body() -> String {
+        format!(
+            r#"{{"grant_type":"refresh_token","refresh_token":"{SIGNED_REFRESH}","client_id":"9d1c250a-e61b-44d9-88ed-5944d1962f5e","scope":"user:inference user:profile"}}"#
+        )
+    }
+
+    /// Do: sign Claude Code in through the injector: its code exchanged at its token host, which
+    /// answers real-shaped tokens; a request to its API host with the access placeholder the
+    /// guest was given; on the first connection, a refresh and then a revocation with its refresh
+    /// placeholder. Expect: the exchange reaching the host asking `identity`; its response held
+    /// until the broker keeps its tokens, then reaching the guest with the broker's placeholders
+    /// in their places, framed by its new length, no real token in it; the API request filled with
+    /// the kept token; the refresh never reaching the host, one call to the provider outside, the
+    /// guest given the same placeholders, kept from caches, and no rotated token; the held lease
+    /// of the access token let go, its value rotated; the revocation answered 200 here, the kept
+    /// tokens as they were; each audited by the sign-in's name, no token or placeholder in it.
+    #[test]
+    fn a_sign_in_is_taken_outside_and_its_refresh_and_revocation_answered_there() {
+        let root = root("shards test root");
+        let (token_addr, at_token) = token_endpoint(leaf_config(&root, &[TOKEN_HOST]));
+        let (api_addr, at_api) = echo(leaf_config(&root, &[API_HOST]), false);
+        let mut credentials = sign_in_credentials(&root, false);
+        let ca = credentials.ca.der().to_vec();
+        let mut broker = Broker::default();
+        let mut cli = Bench::new(guest(ca.clone().into(), TOKEN_HOST, None), token_addr);
+        let exchange = post(
+            "/v1/oauth/token",
+            TOKEN_HOST,
+            r#"{"grant_type":"authorization_code","code":"c0de","redirect_uri":"https://platform.claude.com/oauth/code/callback","client_id":"9d1c250a-e61b-44d9-88ed-5944d1962f5e","code_verifier":"v","state":"s"}"#,
+        );
+        cli.guest.writer().write_all(&exchange).unwrap();
+        drive(&mut cli, &mut credentials, &mut broker, |b| whole(&b.got));
+        let sent = at_token.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(holds(&sent, b"Accept-Encoding: identity\r\n") && !holds(&sent, b"gzip"));
+        assert_eq!(
+            broker.access,
+            ISSUED_ACCESS.as_bytes(),
+            "the issued token was not kept"
+        );
+        assert_eq!(broker.refresh, ISSUED_REFRESH.as_bytes());
+        let answer = String::from_utf8(cli.got.clone()).unwrap();
+        assert!(answer.starts_with("HTTP/1.1 200 OK\r\n"), "{answer}");
+        assert!(
+            answer.ends_with(&token_response(SIGNED_ACCESS, SIGNED_REFRESH)),
+            "{answer}"
+        );
+        for real in [ISSUED_ACCESS, ISSUED_REFRESH] {
+            assert!(
+                !holds(&cli.got, real.as_bytes()),
+                "a real token reached the guest"
+            );
+        }
+        // Its access token is granted toward its API host now, filled in where its placeholder
+        // stands.
+        let mut api = Bench::new(guest(ca.clone().into(), API_HOST, None), api_addr);
+        let request = format!(
+            "GET /v1/models HTTP/1.1\r\nHost: {API_HOST}\r\nAuthorization: Bearer {SIGNED_ACCESS}\r\n\r\n"
+        );
+        api.guest.writer().write_all(request.as_bytes()).unwrap();
+        drive(&mut api, &mut credentials, &mut broker, |b| whole(&b.got));
+        let filled = at_api.recv_timeout(Duration::from_secs(10)).unwrap().request;
+        assert_eq!(
+            filled,
+            swapped(
+                request.as_bytes(),
+                SIGNED_ACCESS.as_bytes(),
+                ISSUED_ACCESS.as_bytes()
+            )
+        );
+        assert!(
+            !holds(&api.got, ISSUED_ACCESS.as_bytes()),
+            "the token's echo reached the guest"
+        );
+        assert!(
+            credentials
+                .leases
+                .held(&access_reference(), Instant::now())
+                .is_some()
+        );
+        // Its refresh, answered outside.
+        cli.got.clear();
+        cli.guest
+            .writer()
+            .write_all(&post("/v1/oauth/token", TOKEN_HOST, &refresh_body()))
+            .unwrap();
+        drive(&mut cli, &mut credentials, &mut broker, |b| whole(&b.got));
+        assert_eq!(broker.provider_calls, 1);
+        let answer = String::from_utf8(cli.got.clone()).unwrap();
+        assert!(answer.contains("Cache-Control: no-store\r\n"), "{answer}");
+        assert!(
+            answer.ends_with(&token_response(SIGNED_ACCESS, SIGNED_REFRESH)),
+            "{answer}"
+        );
+        for real in [ISSUED_ACCESS, ISSUED_REFRESH, ROTATED_ACCESS, ROTATED_REFRESH] {
+            assert!(
+                !holds(&cli.got, real.as_bytes()),
+                "a real token reached the guest"
+            );
+        }
+        assert!(
+            credentials
+                .leases
+                .held(&access_reference(), Instant::now())
+                .is_none(),
+            "the rotated token's old value is held still"
+        );
+        // Its revocation, answered here.
+        cli.got.clear();
+        let revoke = format!(
+            r#"{{"token":"{SIGNED_REFRESH}","token_type_hint":"refresh_token","client_id":"9d1c250a-e61b-44d9-88ed-5944d1962f5e"}}"#
+        );
+        cli.guest
+            .writer()
+            .write_all(&post("/v1/oauth/token/revoke", TOKEN_HOST, &revoke))
+            .unwrap();
+        drive(&mut cli, &mut credentials, &mut broker, |b| whole(&b.got));
+        assert!(cli.got.starts_with(b"HTTP/1.1 200 OK\r\n"));
+        assert_eq!(broker.revoked, 1);
+        assert_eq!(
+            broker.refresh,
+            ROTATED_REFRESH.as_bytes(),
+            "the kept token was revoked"
+        );
+        assert!(
+            at_token.try_recv().is_err(),
+            "a refresh or a revocation reached the provider"
+        );
+        let did: Vec<Did> = cli.audit.iter().map(|a| a.what).collect();
+        assert_eq!(did, [Did::Captured, Did::Refreshed, Did::Revoked]);
+        for record in cli.audit.iter().chain(&api.audit) {
+            let said = record.to_string();
+            assert!(
+                said.contains(SIGN_IN) || said.contains(&access_reference()),
+                "{said}"
+            );
+            for secret in [
+                ISSUED_ACCESS,
+                ISSUED_REFRESH,
+                ROTATED_ACCESS,
+                SIGNED_ACCESS,
+                SIGNED_REFRESH,
+            ] {
+                assert!(!said.contains(secret), "{said}");
+            }
+        }
+    }
+
+    /// Do: two connections of the run's Claude Code, captured before (a later run's), ask its
+    /// refresh before either is answered. Expect: one ask of the run host and one call to the
+    /// provider outside; both answered with the sign-in's placeholders, nothing reaching the host.
+    #[test]
+    fn refreshes_of_one_sign_in_at_once_ask_once() {
+        let root = root("shards test root");
+        let (token_addr, at_token) = token_endpoint(leaf_config(&root, &[TOKEN_HOST]));
+        let mut credentials = sign_in_credentials(&root, true);
+        let ca = credentials.ca.der().to_vec();
+        let mut broker = Broker::holding(ISSUED_ACCESS, ISSUED_REFRESH);
+        let mut one = Bench::new(guest(ca.clone().into(), TOKEN_HOST, None), token_addr);
+        let mut two = Bench::new(guest(ca.into(), TOKEN_HOST, None), token_addr);
+        two.waiter = 8;
+        let waiting = |bench: &mut Bench, credentials: &mut Credentials, flows: usize| {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while credentials.sign_ins.waiting() < flows {
+                assert!(Instant::now() < deadline, "the refresh was not asked");
+                if !bench.turn(credentials) {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
+        };
+        one.guest
+            .writer()
+            .write_all(&post("/v1/oauth/token", TOKEN_HOST, &refresh_body()))
+            .unwrap();
+        waiting(&mut one, &mut credentials, 1);
+        two.guest
+            .writer()
+            .write_all(&post("/v1/oauth/token", TOKEN_HOST, &refresh_body()))
+            .unwrap();
+        waiting(&mut two, &mut credentials, 2);
+        assert_eq!(broker.serve(&mut credentials), 1, "two asks of one refresh");
+        assert_eq!(broker.provider_calls, 1);
+        for bench in [&mut one, &mut two] {
+            drive(bench, &mut credentials, &mut broker, |b| whole(&b.got));
+            assert!(
+                bench
+                    .got
+                    .ends_with(token_response(SIGNED_ACCESS, SIGNED_REFRESH).as_bytes())
+            );
+            assert!(
+                !holds(&bench.got, ROTATED_ACCESS.as_bytes())
+                    && !holds(&bench.got, ROTATED_REFRESH.as_bytes())
+            );
+        }
+        assert_eq!(broker.provider_calls, 1);
+        assert!(at_token.try_recv().is_err(), "a refresh reached the provider");
+    }
+
+    /// Do: ask the endpoint that mints a key with a captured sign-in's access placeholder.
+    /// Expect: answered 403 by the injector, nothing reaching the host, nothing leased.
+    #[test]
+    fn a_sign_ins_token_never_goes_to_the_endpoint_that_mints_a_key() {
+        let root = root("shards test root");
+        let (api_addr, at_api) = echo(leaf_config(&root, &[API_HOST]), false);
+        let mut credentials = sign_in_credentials(&root, true);
+        let mut broker = Broker::holding(ISSUED_ACCESS, ISSUED_REFRESH);
+        let mut api = Bench::new(
+            guest(credentials.ca.der().to_vec().into(), API_HOST, None),
+            api_addr,
+        );
+        let request = format!(
+            "POST /api/oauth/claude_cli/%63reate_api_key HTTP/1.1\r\nHost: {API_HOST}\r\nAuthorization: Bearer {SIGNED_ACCESS}\r\nContent-Length: 0\r\n\r\n"
+        );
+        api.guest.writer().write_all(request.as_bytes()).unwrap();
+        drive(&mut api, &mut credentials, &mut broker, |b| {
+            b.closed && whole(&b.got)
+        });
+        assert!(api.got.starts_with(b"HTTP/1.1 403 Forbidden\r\n"));
+        assert!(at_api.try_recv().is_err(), "the request reached the host");
+        assert!(
+            credentials.leases.asks().is_empty()
+                && credentials
+                    .leases
+                    .held(&access_reference(), Instant::now())
+                    .is_none()
+        );
     }
 }

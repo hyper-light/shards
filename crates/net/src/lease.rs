@@ -293,6 +293,23 @@ impl Leases {
         before.saturating_sub(self.each.len())
     }
 
+    /// A credential the run's grants name from now on: a sign-in's access token, as its capture
+    /// gave its reference (D242, step 8).
+    pub fn grant(&mut self, reference: &str) {
+        if !self.granted.iter().any(|g| g == reference) {
+            self.granted.push(reference.to_string());
+        }
+    }
+
+    /// Credential `reference`'s held lease released, its value wiped, as its value rotated
+    /// outside (a sign-in's refresh): the next flow that needs it asks anew. An ask under way
+    /// stays, its answer the broker's word on the value now.
+    pub fn forget(&mut self, reference: &str) {
+        if matches!(self.each.get(reference), Some(Lease::Held { .. })) {
+            self.each.remove(reference);
+        }
+    }
+
     /// The end of the lease that ends first, for the loop's timers.
     pub fn next_end(&self) -> Option<Instant> {
         self.each
@@ -676,5 +693,31 @@ mod tests {
         assert!(!shown.contains(value), "{shown}");
         assert!(shown.contains(CLAUDE), "{shown}");
         assert!(!shown.contains(&format!("{:?}", VALUE)), "{shown}");
+    }
+
+    #[test]
+    fn a_captured_credential_is_granted_and_a_rotated_ones_held_lease_let_go() {
+        let access = "sign-ins/c/access";
+        let mut leases = Leases::new(Vec::new());
+        let now = Instant::now();
+        assert!(matches!(
+            leases.ask(access, 1, now),
+            Asked::Refused(Refusal::Ungranted)
+        ));
+        leases.grant(access);
+        assert!(matches!(leases.ask(access, 1, now), Asked::Waiting));
+        let (id, _) = decode_ask(&leases.asks()[0]).unwrap();
+        let life = NonZeroU64::new(60_000_000_000).unwrap();
+        assert!(leases.answered(&encode_answer(id, Ok((life, b"old"))).unwrap(), now));
+        assert_eq!(leases.held(access, now), Some(&b"old"[..]));
+        leases.forget(access);
+        assert_eq!(leases.held(access, now), None, "a rotated value held still");
+        assert!(matches!(leases.ask(access, 2, now), Asked::Waiting));
+        leases.forget(access);
+        assert!(
+            matches!(leases.ask(access, 3, now), Asked::Waiting),
+            "an ask under way was let go"
+        );
+        assert_eq!(leases.asks().len(), 1, "the rotated value asked twice");
     }
 }

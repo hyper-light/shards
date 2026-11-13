@@ -362,6 +362,16 @@ pub mod kind {
     /// not, typed (shards_net::lease::encode_answer). Asked only where the run has credential
     /// grants (`NET_CREDENTIALS`), of a run host that relays it to its orchestrator.
     pub const NET_LEASE: u8 = 100;
+    /// Run host → network process: the run's sign-in grants (D242, step 8), each a sign-in's
+    /// name, its CLI, the hosts its access token goes to and what an earlier capture of it
+    /// gave, never a value (shards_net::signin::encode_grants), after its `NET_POLICY` and
+    /// before its `NET_CREDENTIALS`, once; answered with the same kind once taken.
+    pub const NET_SIGN_INS: u8 = 104;
+    /// Network process ⇄ its run host: a sign-in's capture or refresh, asked by id, and its
+    /// answer by that id; or a revocation, told (D242, step 8; shards_net::signin's codec).
+    /// The network process asks it as the injector meets a sign-in's token response or its
+    /// CLI's refresh, of a run host that relays it to its orchestrator.
+    pub const NET_SIGN_IN: u8 = 105;
     /// Daemon → a running microVM's VM process: a run joins its network (D119). Its number
     /// (a big-endian u64, which `EXEC_TAKEN` answers), with the VM's end of the joiner's
     /// own connection to the daemon, on which the joiner's run goes as a warm VM's does

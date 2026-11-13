@@ -204,6 +204,9 @@ pub struct Credentials {
     pub ca: ca::Ca,
     pub leases: lease::Leases,
     pub upstream: inject::Upstream,
+    /// The run's sign-ins (D242, step 8): each one's grant and what its capture gave, and their
+    /// asks of the run host. A captured sign-in's access token is among `grants` too.
+    pub sign_ins: signin::SignIns,
 }
 
 /// What a run with credential grants makes as its network process starts, before it confines
@@ -860,6 +863,9 @@ struct Stack<'r> {
     prepared: Option<Prepared>,
     /// The run's credential grants and its CA, once given (`NET_CREDENTIALS`, D242).
     credentials: Option<Credentials>,
+    /// The run's sign-in grants, once given (`NET_SIGN_INS`, D242 step 8), until its
+    /// `NET_CREDENTIALS` takes them.
+    sign_ins: Option<Vec<signin::SignInGrant>>,
     /// The spawner's dialer (Windows, dial.rs), and what the poller waits on it for.
     #[cfg(windows)]
     dialer: Option<Dialer>,
@@ -1012,6 +1018,8 @@ impl Control {
                     | shards_ipc::kind::NET_POLICY
                     | shards_ipc::kind::NET_CREDENTIALS
                     | shards_ipc::kind::NET_LEASE
+                    | shards_ipc::kind::NET_SIGN_INS
+                    | shards_ipc::kind::NET_SIGN_IN
             ),
             Control::Release => kind == shards_ipc::kind::UNPUBLISH,
         }
@@ -1089,6 +1097,7 @@ pub fn serve(
         ports_confined: false,
         prepared,
         credentials: None,
+        sign_ins: None,
         #[cfg(windows)]
         dialer,
         #[cfg(windows)]
@@ -1184,6 +1193,7 @@ pub fn serve(
                             && let Some(c) = stack.credentials.as_mut()
                         {
                             c.leases.end();
+                            c.sign_ins.end();
                         }
                         stack.forget(sock.raw_sock(), e.token, poll::Interest::READ);
                     }
@@ -1229,7 +1239,8 @@ fn ask_run_host(
         return false;
     };
     let asks = c.leases.asks();
-    if asks.is_empty() {
+    let told = c.sign_ins.asks();
+    if asks.is_empty() && told.is_empty() {
         return false;
     }
     let host = controls
@@ -1239,11 +1250,53 @@ fn ask_run_host(
     let sent = host.is_some_and(|(_, sock, _)| {
         asks.iter()
             .all(|ask| reply(sock, shards_ipc::kind::NET_LEASE, ask).is_ok())
+            && told
+                .iter()
+                .all(|t| tell(sock, shards_ipc::kind::NET_SIGN_IN, t).is_ok())
     });
     if !sent {
         c.leases.end();
+        c.sign_ins.end();
     }
     true
+}
+
+/// Tells the run host `payload`, which may carry a sign-in's tokens (D242, step 8), as it lies,
+/// no other copy made: on Unix in one sendmsg of its parts, on Windows in two writes.
+fn tell(sock: &UnixStream, kind: u8, payload: &[u8]) -> io::Result<()> {
+    #[cfg(unix)]
+    return shards_ipc::send(sock, kind, payload, &[]);
+    #[cfg(windows)]
+    return shards_ipc::write_message_parts(sock, kind, payload);
+}
+
+/// What a sign-in's answer changed, followed by the run's credentials (D242, step 8): a
+/// capture's access token granted toward its sign-in's hosts in place of the one it replaced,
+/// and a lease of its reference held before released; a refresh's access token's held lease
+/// released, its value rotated, so that the next flow that needs it asks anew.
+fn follow(c: &mut Credentials, changed: signin::Changed) {
+    match changed {
+        signin::Changed::Captured { index, replaced } => {
+            let Some(grant) = c.sign_ins.grants.get(index) else {
+                return;
+            };
+            let Some(captured) = &grant.captured else {
+                return;
+            };
+            if let Some(old) = replaced {
+                c.grants.retain(|g| g.placeholder != old.access_placeholder);
+            }
+            c.grants.push(captured.grant(&grant.toward));
+            c.leases.grant(&captured.access);
+            c.leases.forget(&captured.access);
+        }
+        signin::Changed::Refreshed { index } => {
+            if let Some(captured) = c.sign_ins.grants.get(index).and_then(|g| g.captured.as_ref()) {
+                c.leases.forget(&captured.access);
+            }
+        }
+        signin::Changed::Nothing => {}
+    }
 }
 
 /// Takes what control socket `sock` holds, `role` saying what it may say: published ports
@@ -1275,9 +1328,9 @@ fn control(
             handed(stack, sock, m.kind, payload, fds)
         } else {
             let answered = answer_other(stack, sock, &m);
-            // A lease's value is held by its lease alone once taken (D242): the message's
-            // copy is wiped as it goes.
-            if m.kind == shards_ipc::kind::NET_LEASE {
+            // A lease's value is held by its lease alone once taken (D242), and a refresh's
+            // answer by its flow (step 8): the message's copy is wiped as it goes.
+            if m.kind == shards_ipc::kind::NET_LEASE || m.kind == shards_ipc::kind::NET_SIGN_IN {
                 zeroize::Zeroize::zeroize(&mut m.payload);
             }
             answered
@@ -1389,12 +1442,12 @@ fn answer_other(stack: &mut Stack<'_>, sock: &UnixStream, m: &shards_ipc::Messag
             stack.cfg.named = named;
             stack.cfg.dns_all = dns_all;
             answer(sock, shards_ipc::kind::NET_POLICY)
-        } else if m.kind == shards_ipc::kind::NET_CREDENTIALS {
-            // The run's credential grants (D242), once, after its policy: each host one its
-            // egress grants name (D236), checked again here as its run host checked it
-            // (D109), as a grant toward a host the run cannot reach could never be filled;
-            // each placeholder a token, and one credential's alone.
-            let Some(grants) = decode_grants(&m.payload) else {
+        } else if m.kind == shards_ipc::kind::NET_SIGN_INS {
+            // The run's sign-in grants (D242, step 8), once, after its policy and before its
+            // credential grants, which make its CA: each host its access token goes to, and its
+            // CLI's token host, one its egress grants reach, checked again here as its run host
+            // checked them (D109); each captured placeholder a token, and one credential's alone.
+            let Some(sign_ins) = signin::decode_grants(&m.payload) else {
                 return Err(malformed());
             };
             let reached = |host: &str| match &stack.cfg.policy {
@@ -1403,9 +1456,35 @@ fn answer_other(stack: &mut Stack<'_>, sock: &UnixStream, m: &shards_ipc::Messag
                 Policy::DenyAll | Policy::Proxy { .. } => false,
             };
             if stack.credentials.is_some()
-                || grants.is_empty()
+                || stack.sign_ins.is_some()
+                || sign_ins.is_empty()
+                || !sign_ins.iter().all(|s| {
+                    reached(signin::profile(s.cli).token.host) && s.toward.iter().all(|h| reached(h))
+                })
+                || dns::credential::check_sign_ins(&[], &sign_ins).is_err()
+            {
+                return Err(malformed());
+            }
+            stack.sign_ins = Some(sign_ins);
+            answer(sock, shards_ipc::kind::NET_SIGN_INS)
+        } else if m.kind == shards_ipc::kind::NET_CREDENTIALS {
+            // The run's credential grants (D242), once, after its policy (and its sign-ins,
+            // where it has any): each host one its egress grants name (D236), checked again here
+            // as its run host checked it (D109), as a grant toward a host the run cannot reach
+            // could never be filled; each placeholder a token, and one credential's alone.
+            let Some(grants) = decode_grants(&m.payload) else {
+                return Err(malformed());
+            };
+            let sign_ins = stack.sign_ins.take().unwrap_or_default();
+            let reached = |host: &str| match &stack.cfg.policy {
+                Policy::AllowAll | Policy::Host => true,
+                Policy::Ports(ports) => reaches(ports, &stack.cfg.named, host),
+                Policy::DenyAll | Policy::Proxy { .. } => false,
+            };
+            if stack.credentials.is_some()
+                || (grants.is_empty() && sign_ins.is_empty())
                 || !grants.iter().flat_map(|g| &g.toward).all(|h| reached(h))
-                || dns::credential::check(&grants).is_err()
+                || dns::credential::check_sign_ins(&grants, &sign_ins).is_err()
             {
                 return Err(malformed());
             }
@@ -1414,22 +1493,49 @@ fn answer_other(stack: &mut Stack<'_>, sock: &UnixStream, m: &shards_ipc::Messag
             let Some(prepared) = stack.prepared.take() else {
                 return Err(malformed());
             };
+            // Its CA names each host a value may be filled toward, and each sign-in's token host,
+            // whose responses its injector reads.
             let mut hosts: Vec<&str> = grants
                 .iter()
                 .flat_map(|g| g.toward.iter().map(String::as_str))
+                .chain(sign_ins.iter().flat_map(|s| {
+                    s.toward
+                        .iter()
+                        .map(String::as_str)
+                        .chain([signin::profile(s.cli).token.host])
+                }))
                 .collect();
             hosts.sort_unstable();
             hosts.dedup();
             let ca = ca::Ca::new(prepared.key, &hosts).map_err(io::Error::other)?;
             let der = ca.der().to_vec();
+            let mut grants = grants;
+            grants.extend(
+                sign_ins
+                    .iter()
+                    .filter_map(|s| s.captured.as_ref().map(|c| c.grant(&s.toward))),
+            );
             let leases = lease::Leases::new(grants.iter().map(|g| g.reference.clone()).collect());
             stack.credentials = Some(Credentials {
                 grants,
                 ca,
                 leases,
                 upstream: prepared.upstream,
+                sign_ins: signin::SignIns::new(sign_ins),
             });
             reply(sock, shards_ipc::kind::NET_CREDENTIALS, &der)
+        } else if m.kind == shards_ipc::kind::NET_SIGN_IN {
+            // A sign-in's answer (D242, step 8), to an ask of this process's: its flows resumed,
+            // the run's credentials following what it changed. Not answered: it is the answer. One
+            // to no ask, or of a run with no sign-ins, breaks the run host's contract.
+            let Some(c) = stack.credentials.as_mut() else {
+                return Err(malformed());
+            };
+            let Some(changed) = c.sign_ins.answered(&m.payload, &c.grants) else {
+                return Err(malformed());
+            };
+            follow(c, changed);
+            Ok(())
         } else if m.kind == shards_ipc::kind::NET_LEASE {
             // A lease's answer (D242), to an ask of this process's: held, or refused, its
             // waiting flows resumed. Not answered: it is the answer. One to no ask, or of a run
@@ -2473,9 +2579,15 @@ impl<'r> Stack<'r> {
             return false;
         };
         let mut waiters: Vec<u64> = Vec::new();
-        for r in c.leases.resumed() {
-            if !waiters.contains(&r.waiter) {
-                waiters.push(r.waiter);
+        for waiter in c
+            .leases
+            .resumed()
+            .into_iter()
+            .map(|r| r.waiter)
+            .chain(c.sign_ins.resumed())
+        {
+            if !waiters.contains(&waiter) {
+                waiters.push(waiter);
             }
         }
         for &waiter in &waiters {
@@ -2986,6 +3098,7 @@ mod tests {
             ports_confined: false,
             prepared: None,
             credentials: None,
+            sign_ins: None,
             #[cfg(windows)]
             dialer: None,
             #[cfg(windows)]
@@ -3778,6 +3891,7 @@ mod tests {
             ca: ca::Ca::new(ca::Key::generate().unwrap(), &["api.anthropic.com"]).unwrap(),
             leases: lease::Leases::new(vec![CLAUDE.into(), "openai/chatgpt".into()]),
             upstream: inject::Upstream::new(Vec::new()).unwrap(),
+            sign_ins: signin::SignIns::new(Vec::new()),
         });
         let now = Instant::now();
         let leases = &mut stack.credentials.as_mut().unwrap().leases;
