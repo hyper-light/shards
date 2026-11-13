@@ -12,7 +12,7 @@ use std::io::Read;
 use std::net::SocketAddr;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, PoisonError, mpsc};
+use std::sync::{Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use hyper_quic::StreamId;
@@ -1123,10 +1123,30 @@ fn a_command_holds_no_descriptor_it_was_not_given() {
         (flags, n, std::io::Error::last_os_error())
     };
     assert!(flags >= 0);
+    // Who else may hold it, as the read found it held: this process's children then.
+    let me = std::process::id().to_string();
+    let children = (n != 0)
+        .then(|| {
+            Command::new("ps")
+                .args(["-A", "-o", "pid=,ppid=,etime=,command="])
+                .output()
+                .map(|o| {
+                    String::from_utf8_lossy(&o.stdout)
+                        .lines()
+                        .filter(|l| l.split_whitespace().nth(1) == Some(me.as_str()))
+                        .map(str::to_string)
+                        .collect::<Vec<_>>()
+                })
+        })
+        .transpose()
+        .unwrap();
     std::fs::write(go, b"").unwrap();
     let (status, _, _) = held.get();
     assert_eq!(status, Ok(0));
-    assert_eq!(n, 0, "the pipe's end held by the command: {errno}");
+    assert_eq!(
+        n, 0,
+        "the pipe's end held: {errno}; this process's children: {children:#?}"
+    );
 }
 
 /// What a raw client hears.
