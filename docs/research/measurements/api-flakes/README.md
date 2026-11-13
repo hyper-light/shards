@@ -77,3 +77,20 @@ check `SHARDS_API_SPAWN_ROUNDS` times (5,000) beside processes `SHARDS_API_SPAWN
 
 Linux (adacachy2), the whole library, 20 runs each: main db72dc4ccbf15e34… 1 failed;
 the fix 03c5ca3492b4e15b… none.
+
+## Windows: a blocking AF_UNIX read sleeping through its peer's end (PM M536)
+
+`hang.sh LABEL N LIMIT ARGS...` runs a build's test binary N times and, at LIMIT seconds,
+has cdb (WinDbg's console debugger, `winget install Microsoft.WinDbg`; `cdbX64.exe`)
+attach noninvasively and print every thread's stack into `stacks-RUN.txt` before it ends
+the run; symbolize them from the build's PDB with `cdbX64.exe -z api.exe -cf` a script of
+`.sympath <deps dir>`, `.lines -e`, `.reload /f` and `ln`/`lsa` of each `api+0x…`.
+`half-close.rs` (`half_close::a_waiting_reads_end_beside_its_peers_half_close`, in
+shards-afunix's tests, ignored) is the read-beside-an-end measurement,
+`SHARDS_AFUNIX_ROUNDS` rounds a way (2,000).
+
+On jupiter, beside ROOT's WHP gate (CPU load 29% to 100%), at main 99d88fccf with
+patches `hc-red` (the measurement), `hc-green` (the fix), `hc-mutant` (the fix less its
+WSAPoll before a read with no timeout): shards-api's library c2d0c8c577d98bd8…,
+c55ed033cd182014…, 4bda611df6bb80c0…; the flaky test alone with a 20 s limit, red 7 of
+300 hung, green 0 of 1,000, mutant 26 of 300; the fix's whole library, 0 of 20.
