@@ -25925,7 +25925,7 @@ endpoints bind.
 - An endpoint outliving its run.
 - A grant shards-api takes and init refuses, or the other way round.
 
-### D253. An orchestrator's run restores its image's template and takes a warm VM from its pool, as the daemon's runs do (templates built; shards-api's pools owed; real-VM runs owed)
+### D253. An orchestrator's run restores its image's template and takes a warm VM from its pool, as the daemon's runs do (built: templates and pools; real-VM runs owed)
 
 **Why.** An orchestrator's run (D231) booted its microVM cold every time, where a daemon's run
 restores its image's template (D25) and takes a warm VM from its pool (D26). Hex boots its node
@@ -26004,8 +26004,47 @@ WHP; every other `api_image.rs` case, now on the daemon's shape; a daemon run an
 restore on each OS, since 4a moved the daemon's words; R14's start latency, restored against
 cold.
 
-**Owed** (the next slice): shards-api keeps warm run hosts per template, sized by
-`shards_api::demand`.
+**Decided: pools** (`shards_api::image::ImagePools`, plan step 5). The orchestrator owns each
+microVM's life (D231), so its pools live in its process, with shards-api:
+- *A warm run host* is `shards api-run` started with `WARM` and a run's exemplar
+  (`wire::Request::exemplar`): the request with its members' stages, its deadline and its
+  control ask taken out, so it carries none of a run's secrets. It makes the microVM's part of
+  a run (`shape`: the image prepared, the network chosen, the volumes open, the microVM
+  composed), restores or saves its template and starts its VM, then says `WARMED`. When its run
+  comes (`CREATE`), it makes the run's own part (`plan`: the members' stages, the ports bound,
+  the nesting grant, the setup) and serves it as any run, said `Warm` (`StartedFrom::Warm`).
+- A run whose exemplar is not the host's is refused `Unfit` (`Cause::Unfit`), and its
+  orchestrator's pool gives it a host of its own. The split follows the daemon's warm path:
+  what the VM is before its run, what the run is with its `RUN`. Per-run identity, the
+  agent-control key (D252), is made after the take.
+- *A pool* is the runs of one microVM: one exemplar, one run host program and environment.
+  `boot` takes a ready warm host of its run's pool, else starts a host of its own, as
+  `ImageShards` does; either way the pool counts the run, and its end as its guest drops.
+- *Its size* is D26's, by the one rule (`shards_api::demand`, moved from the daemon). That is
+  the largest burst of its runs within one refill window, an RFC 6298 retransmission timeout
+  of its warm hosts' starts as timed from spawn to `WARMED`, at least one while in use, and
+  none once idle past the keep-alive. All pools together hold at most the orchestrator's
+  bound (`ImagePools::new(most, keep)`), its number, never ours.
+- *The keep-alive* is the orchestrator's, `ImagePools::KEEP` D26's cited one (moved to
+  `shards_api::demand::KEEP`, the daemon's `DEFAULT_KEEP` too).
+- *Cold start:* nothing is warm until a pool's first run, which starts a host of its own while
+  its pool starts one ahead. The first window is RFC 6298's initial RTO, as the daemon's
+  pools' is.
+- *A warm start that fails* is no warm host: its pool starts no more until its next run.
+- *The pools' thread* hands out warm hosts, starts more, each start awaited on a thread of its
+  own, and ends those past a pool's target or keep-alive. Dropping the pools ends every warm
+  host and kills every starting one.
+
+**Tested** (unit, a simulated run host): `a_pools_first_run_starts_its_own_host_and_the_next_takes_a_warm_one`,
+`a_warm_host_that_does_not_fit_or_start_leaves_its_run_a_host_of_its_own`,
+`a_pool_keeps_its_burst_within_the_bound_and_its_owner_ends_them_all`,
+`a_pools_warm_hosts_end_past_its_keep_alive`; the channel's warm words
+(`a_warm_hosts_exemplar_keeps_all_but_a_runs_own`); the daemon's pools by the moved rule, their
+tests unchanged.
+
+**Owed** (ROOT, real VMs): `api_image.rs`'s `an_images_next_run_takes_a_warm_host_of_its_pool`
+on HVF, KVM x86_64 and WHP; R14's start of a warm run against a restored one, the warm host's
+resident memory, and its start's time from `WARMED`.
 
 ### D254. kiln's MCP rides the agent-control link: a stdio bridge in the harness's member, one lane of the link per connection, no network grant (decided; its asks built at the endpoint and the controller; the member's listener and bridge, the run hosts' pairing, kiln's side and every real-VM run owed)
 
