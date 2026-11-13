@@ -798,8 +798,9 @@ mod tests {
 
     /// D253's pools, cold: a pool's first run gets a host of its own, nothing being warm, and
     /// its pool starts one ahead of the next; the next run of the same microVM, its deadline
-    /// its own, takes that warm host, and its pool starts another; a run of another microVM's
-    /// starts a pool of its own, its first run a host of its own.
+    /// its own, takes that warm host, and its pool starts more (as many as its burst, which
+    /// its warm hosts' start times as this host runs them make one or two runs); a run of
+    /// another microVM's starts a pool of its own, its first run a host of its own.
     #[test]
     fn a_pools_first_run_starts_its_own_host_and_the_next_takes_a_warm_one() {
         let hosted = Hosted::default();
@@ -810,7 +811,7 @@ mod tests {
         let next = pools.boot(&spec(), &request(1, Some(9)), PATIENCE).unwrap();
         assert_eq!(next.started_from(), wire::StartedFrom::Warm);
         hosted.until("the warm one taken, another started", |l| {
-            l.taken == 1 && l.fresh == 1 && l.begun == 2 && l.warm == 1
+            l.taken == 1 && l.fresh == 1 && l.begun >= 2 && l.warm >= 1
         });
         let other = pools.boot(&spec(), &request(2, None), PATIENCE).unwrap();
         hosted.until("another microVM's run on a host of its own", |l| l.fresh == 2);
@@ -835,9 +836,10 @@ mod tests {
             l.failing = true;
         });
         let run = pools.boot(&spec(), &request(1, None), PATIENCE).unwrap();
+        // Every start after the first failed: one or two, as many as its burst.
         hosted.until(
             "the unfit one's run on a host of its own, its refill failed",
-            |l| l.fresh == 2 && l.taken == 0 && l.failed == 1,
+            |l| l.fresh == 2 && l.taken == 0 && l.failed >= 1 && l.failed + 1 == l.begun,
         );
         assert_eq!(hosted.log().warm, 0);
         drop(run);
