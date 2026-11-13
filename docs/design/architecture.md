@@ -25027,7 +25027,7 @@ memory its guest holds before its guest drops its page cache (D188's measure, PM
 image run); an orchestrator that needs D188's pressure give-back through its run host to keep
 its runs within its budget.
 
-### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; the injector and the real-VM runs owed)
+### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; each grant's placeholder carried, step 3's first slice; the injector and the real-VM runs owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 33: every kiln harness runs in a
 Shards microVM, and a harness needs its model-provider credential without the credential
@@ -25394,8 +25394,59 @@ Owed: none beyond CI on main.
 - *Owed.* Hex answering a run's lease asks from the broker, and telling it of a move (step 6);
   Shards' run host asking them (step 4). ROOT's real runs (step 10).
 
+**Built: step 3's first slice, each grant's placeholder** (kiln plan
+01a1d2b88be57304b972761e2a5c6781 step 3; research f27, f32, f33, f60; record
+docs/research/s33-veil-creds/STEP3.md). The injector fills a value in only where its placeholder
+stands (above, "Who"), so it must know which placeholder stands for which credential.
+- *Carried with its grant.* `CredentialGrant { reference, toward, placeholder }`: minted by the
+  orchestrator where it gives the credential to a member (kiln's broker mints `kiln-placeholder-`
+  and 256 random bits in hex, step 5), carried with the run's grants as this entry's Literals
+  foresaw. Considered and refused: a placeholder the network process mints for the run host to
+  stage (an orchestrator stages a member's environment and files in its spec, before the run);
+  one derived from the reference (any member could make it, and holding one is the
+  capability); none, a value filled into every request to a granted host (E2B's hole, f32, f33).
+- *Checked where each side takes it* (`shards_dns::credential::check`, its refusal typed,
+  `Refused::NotAToken` and `Refused::Shared`): a bearer token, RFC 6750 §2.1's `b64token`,
+  which an `x-api-key` field's value holds too, and one credential's alone, as the injector
+  could not tell which credential a shared one stands for (one credential granted twice may
+  give both one). shards-api refuses the spec, the run host the request (`Cause::Request`), and
+  the network process the grants, its control broken (D109). A grant's `Debug` shows its
+  placeholder's length alone.
+- *The decision's home: shards-dns* (`shards_dns::credential`: the grant, `Fill`, `decide`,
+  with their tests). shards-api and shards-net both depend on shards-dns already, Hex vendors it
+  already (its six-crate API workspace: abi, afunix, api, dns, ipc, testdir), and it holds the
+  host vocabulary the grants use (`host_name`, `HOST`), so neither the network process nor Hex
+  takes a crate it lacked. shards-api re-exports them (`wire::{CredentialGrant, Fill, decide}`
+  stay its API), and `shards_net::Grant` is the same grant. Refused: shards-net depending on
+  shards-api, whose dependencies (shards-remote's QUIC among them) would enter the network
+  process; a crate of its own, one more for Hex to vendor for one function.
+- *The decision takes the request's token.* `decide(grants, sni, host, token)`: `Misdirected`
+  where the host is not the SNI, whatever the request carries; `With(reference)` where the
+  token in one of its credential fields is a grant's placeholder and that grant's hosts name the
+  host; else `Pass`, the request going out as it is. Two grants toward one host each fill their
+  own placeholder alone, where the contract's `decide` took the first grant naming the host. A
+  placeholder compares in constant time, as what stands there is the guest's to choose.
+- *Wires.* The image channel's version 22 appends each grant's placeholder after version 18's
+  member arguments, so a reader of an earlier version refuses the request by its version.
+  `NET_CREDENTIALS` appends each grant's placeholder after its hosts, its length in two bytes as
+  a reference's (kiln's are 81 bytes); the run host and its network process are one build's
+  (D36), so that message has no version of its own.
+- *Literals.* 22 is a sequence number; the two-byte length as cited; no learned value.
+- *Tests (macOS arm64, adas-mac-studio.local; STEP3.md).* `shards_dns::credential`: a grant's
+  own placeholder fills toward its grant's hosts alone, a placeholder toward another grant's host
+  or none goes out bare, a host that is not the SNI misdirected whatever it carries; the
+  `b64token` check; the shared check, typed; no placeholder in `Debug`. `image`: the request
+  carries each placeholder, refuses one that is no token and one shared by two credentials.
+  `image::wire`: the placeholders round-trip in version 22 and a request cut in one is refused.
+  `api_run`: the grants reach the network process with their placeholders, an unchecked spec's
+  bad ones refused. `shards_net`: the grants' codec round-trips them and refuses one past two
+  bytes; the network process takes a run's grants with their placeholders checked again. Each
+  of 9 guards removed in turn fails its test (`scripts/step3-reds.py`).
+- *Owed.* Hex fills each grant's placeholder as it stages the credential into its member (step
+  6), with its vendored shards-api at version 22.
+
 **Owed (later slices of step 33, this plan's steps 3 and 6–10).** The injector that
-terminates TLS and fills HTTP/1.1 then HTTP/2 headers (steps 3, 7); Hex wiring the grants
+terminates TLS and fills HTTP/1.1 then HTTP/2 headers (steps 3's second slice, and 7); Hex wiring the grants
 and answering a run's leases from kiln's broker (step 6); the Claude Code and Codex
 sign-in/refresh profiles (step 8); the survey of each harness's trust and token checks and
 the tmpfs-fallback list (step 9); and ROOT's real-VM runs on KVM, HVF and WHP with a
