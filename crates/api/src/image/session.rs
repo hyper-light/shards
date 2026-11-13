@@ -197,9 +197,17 @@ struct Shared {
     lessor: Mutex<Option<RunLessor>>,
     /// The references the run's grants name: no other is leased.
     granted: Mutex<Vec<String>>,
+    /// Where the host's diagnostics are written whole, once its caller has named a file
+    /// ([`ImageGuest::keep_diagnostics`]).
+    said_to: Mutex<Option<std::fs::File>>,
 }
 
 impl Shared {
+    /// The host's diagnostics written whole to `to` from now on: nothing, as yet.
+    fn keep_diagnostics(&self, _to: std::fs::File) -> io::Result<()> {
+        Ok(())
+    }
+
     fn send(&self, kind: u8, payload: &[u8]) -> io::Result<()> {
         let frame = wire::frame(kind, payload).map_err(io::Error::other)?;
         match lock(&self.to_host).as_mut() {
@@ -524,6 +532,7 @@ impl Begun {
             to_host: Mutex::new(Some(to_host)),
             lessor: Mutex::new(None),
             granted: Mutex::new(Vec::new()),
+            said_to: Mutex::new(None),
         });
         // Shared: the session and its exit watcher, which outlives this call.
         let host = Arc::new(process);
@@ -1541,6 +1550,13 @@ impl ImageGuest for Session {
     fn wait_for(&self, timeout: Duration) -> Result<Option<RunEnd>, ImageRefusal> {
         Ok(self.shared.wait(timeout, State::end_seen))
     }
+
+    fn keep_diagnostics(&self, to: std::fs::File) -> Result<(), ImageRefusal> {
+        self.shared.keep_diagnostics(to).map_err(|e| ImageRefusal::Os {
+            what: "the run host's diagnostics",
+            kind: e.kind(),
+        })
+    }
 }
 
 /// Its run ends with it: one still running is stopped; one ended has its host's stdin
@@ -1571,7 +1587,41 @@ mod tests {
             to_host: Mutex::new(None),
             lessor: Mutex::new(None),
             granted: Mutex::new(Vec::new()),
+            said_to: Mutex::new(None),
         }
+    }
+
+    /// Do have a run host write more diagnostics than are kept to quote, its caller naming a
+    /// file for them partway, then end them. Expect: the file holding what was kept until it
+    /// was named and everything after, whole and once; what is kept to quote still their last
+    /// alone (Hex: the cause of a grants-none run had gone from the tail).
+    #[test]
+    fn a_hosts_diagnostics_are_written_whole_to_the_file_its_caller_names() {
+        let shared = shared();
+        let (said, mut host) = io::pipe().unwrap();
+        let dir = shards_testdir::TempDir::new("api-said").unwrap();
+        let path = dir.join("diagnostics");
+        let before = b"shards api-run: before its file\n".to_vec();
+        let after: Vec<u8> = (0..said_kept() * 2).map(|i| b'a' + (i % 26) as u8).collect();
+        std::thread::scope(|s| {
+            let keeping = s.spawn(|| keep_said(&shared, said));
+            host.write_all(&before).unwrap();
+            // What the host wrote is kept before its file is named.
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while lock(&shared.state).said.len() < before.len() {
+                assert!(Instant::now() < deadline, "its first words were never kept");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            shared
+                .keep_diagnostics(std::fs::File::create(&path).unwrap())
+                .unwrap();
+            host.write_all(&after).unwrap();
+            drop(host);
+            keeping.join().unwrap();
+        });
+        assert_eq!(std::fs::read(&path).unwrap(), [&before[..], &after[..]].concat());
+        let kept: Vec<u8> = lock(&shared.state).said.iter().copied().collect();
+        assert_eq!(kept, after[after.len() - said_kept()..]);
     }
 
     /// Do see a run's host gone without its run's end, as `wait_for` sees it, then stop the
@@ -1629,6 +1679,7 @@ mod tests {
             to_host: Mutex::new(None),
             lessor: Mutex::new(None),
             granted: Mutex::new(Vec::new()),
+            said_to: Mutex::new(None),
         };
         let info = |index, name: &str| MemberInfo {
             index,
@@ -1693,6 +1744,7 @@ mod tests {
             to_host: Mutex::new(Some(to_host)),
             lessor: Mutex::new(None),
             granted: Mutex::new(Vec::new()),
+            said_to: Mutex::new(None),
         });
         lock(&s.state).inputs.insert(1, InputFlow::default());
         let (reader, mut writer) = io::pipe().unwrap();
@@ -2232,6 +2284,7 @@ mod tests {
             to_host: Mutex::new(Some(to_host)),
             lessor: Mutex::new(lessor.map(|l| RunLessor(l))),
             granted: Mutex::new(granted.iter().map(|g| (*g).to_string()).collect()),
+            said_to: Mutex::new(None),
         });
         let reader = {
             let shared = Arc::clone(&shared);

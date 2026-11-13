@@ -397,6 +397,12 @@ pub trait ImageGuest: Send + Sync {
     /// Its end, once it has come, waiting at most `timeout` (`Duration::MAX`: until it
     /// comes).
     fn wait_for(&self, timeout: Duration) -> Result<Option<RunEnd>, ImageRefusal>;
+    /// The run host's diagnostics, its VM's among them, written whole to `to` from now on, as
+    /// the host writes them, in place of any file named before, after the last of them kept
+    /// until now: what a refusal or a failed end quotes ([`ImageRefusal::Boot`],
+    /// [`RunEnd::Failed`]) is only their last. A file that stalls holds them up; a part it
+    /// refuses is lost to it alone.
+    fn keep_diagnostics(&self, to: std::fs::File) -> Result<(), ImageRefusal>;
 }
 
 /// The images the `shards` binary boots.
