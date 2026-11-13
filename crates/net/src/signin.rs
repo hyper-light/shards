@@ -1523,9 +1523,9 @@ pub enum Changed {
 
 /// The run's sign-ins as its network process holds them (D242, step 8; R04): each grant, with
 /// what its capture gave; each ask of the run host by its id until its answer; each answer kept
-/// for its flow until that flow takes it. An ask never holds up the loop that makes it: it goes
-/// out on the loop's next pass ([`asks`](Self::asks)) and its answer comes as an event naming the
-/// flows to resume ([`resumed`](Self::resumed)), as a run's leases do.
+/// for its flow until that flow takes it or goes. An ask never holds up the loop that makes it:
+/// it goes out on the loop's next pass ([`asks`](Self::asks)) and its answer comes as an event
+/// naming the flows to resume ([`resumed`](Self::resumed)), as a run's leases do.
 pub struct SignIns {
     pub grants: Vec<SignInGrant>,
     asking: HashMap<u32, Asking>,
@@ -1759,12 +1759,29 @@ impl SignIns {
     /// and none kept for it after. Its ask stays under way, as other askers or the sign-in's
     /// grants may still take its answer.
     pub fn forget(&mut self, asker: Asker) {
-        self.answers.remove(&asker);
+        self.let_go(|a| *a == asker);
+    }
+
+    /// Flow `flow` gone (its connection closed, reset or failed): every answer kept for any of
+    /// its streams dropped, a token response wiped as it drops, and none kept for them after,
+    /// so that no answer outlives the flow it was for. Its asks stay under way, as for
+    /// [`forget`](Self::forget).
+    pub fn gone(&mut self, flow: Waiter) {
+        self.let_go(|a| a.flow == flow);
+    }
+
+    /// The askers `gone` names let go of: their answers dropped, and each ask under way waiting
+    /// on none of them.
+    fn let_go(&mut self, gone: impl Fn(&Asker) -> bool) {
+        self.answers.retain(|a, _| !gone(a));
         for asking in self.asking.values_mut() {
             match asking {
-                Asking::Capture { asker: a, .. } if *a == Some(asker) => *a = None,
-                Asking::Refresh { waiting, .. } => waiting.retain(|a| *a != asker),
-                Asking::Capture { .. } => {}
+                Asking::Capture { asker, .. } => {
+                    if asker.as_ref().is_some_and(&gone) {
+                        *asker = None;
+                    }
+                }
+                Asking::Refresh { waiting, .. } => waiting.retain(|a| !gone(a)),
             }
         }
     }
@@ -2473,6 +2490,53 @@ mod tests {
             })
         );
         assert!(s.take(on(9)).is_none() && s.resumed().is_empty());
+        assert_eq!(s.grants[0].captured, Some(captured));
+    }
+
+    /// A flow gone takes every answer of its streams with it, one already come and one still to
+    /// come (D242, #74 step 8); another flow's stays. Do: flow 7 asks a refresh on stream 1 and
+    /// flow 8 on its HTTP/1.1 stream; the refresh is answered; flow 7 asks a capture on stream 5
+    /// and goes; the capture is answered. Expect: no answer for either of flow 7's streams, flow
+    /// 8's its own; the capture the sign-in's all the same, and no flow resumed by it.
+    #[test]
+    fn a_flow_gone_takes_its_answers_with_it() {
+        let mut s = SignIns::new(vec![sign_in(false)]);
+        let on = |flow, stream| Asker { flow, stream };
+        s.refresh(0, on(7, 1)).unwrap();
+        s.refresh(0, 8).unwrap();
+        let Some(Told::Refresh { id, .. }) = Told::decode(&s.asks()[0]) else {
+            panic!("no refresh asked")
+        };
+        let body = Zeroizing::new(token_body(ACCESS, REFRESH).into_bytes());
+        let answer = Answered::Refreshed {
+            id,
+            result: Ok(body.clone()),
+        };
+        assert!(s.answered(&answer.encode().unwrap(), &[]).is_some());
+        assert_eq!(s.resumed(), [7, 8]);
+        s.capture(0, taken(), on(7, 5)).unwrap();
+        let Some(Told::Capture { id, .. }) = Told::decode(&s.asks()[0]) else {
+            panic!("no capture asked")
+        };
+        s.gone(7);
+        assert_eq!(s.waiting(), 0, "a flow gone waits on a capture");
+        let captured = sign_in(true).captured.unwrap();
+        let answer = Answered::Captured {
+            id,
+            result: Ok(captured.clone()),
+        };
+        assert!(matches!(
+            s.answered(&answer.encode().unwrap(), &[]),
+            Some(Changed::Captured { index: 0, .. })
+        ));
+        assert!(s.resumed().is_empty(), "a flow gone resumed");
+        for stream in [1, 5] {
+            assert!(
+                s.take(on(7, stream)).is_none(),
+                "an answer kept for stream {stream}"
+            );
+        }
+        assert!(matches!(s.take(8), Some(Answer::Refreshed(b)) if b == body));
         assert_eq!(s.grants[0].captured, Some(captured));
     }
 

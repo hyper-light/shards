@@ -2732,7 +2732,7 @@ impl<'r> Stack<'r> {
             if let Some(had) = self.tcp.slot(slot).map(|s| s.interest) {
                 self.forget(c.fd(), self.tcp.token(slot), had);
             }
-            self.tcp.release(slot);
+            self.release(slot);
             return;
         }
         let named = self.tcp.token(slot);
@@ -2750,7 +2750,7 @@ impl<'r> Stack<'r> {
             self.forget(fd, named, had);
             let mut o = self.out();
             c.reset(&mut o);
-            self.tcp.release(slot);
+            self.release(slot);
             return;
         }
         let Some(s) = self.tcp.slot(slot) else { return };
@@ -2766,6 +2766,15 @@ impl<'r> Stack<'r> {
             self.blocked.push_back(named);
         }
         s.conn = Some(c);
+    }
+
+    /// Empties `slot`, its connection gone, and with it what the run's sign-ins keep for its
+    /// flow (D242, #74 step 8): an answer, which may be a token response, outlives no flow.
+    fn release(&mut self, slot: u32) {
+        if let Some(c) = self.credentials.as_mut() {
+            c.sign_ins.gone(self.tcp.token(slot));
+        }
+        self.tcp.release(slot);
     }
 
     /// Connections a full ring held back, sent again in the order they were held, until
