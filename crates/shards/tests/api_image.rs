@@ -17,9 +17,10 @@ use std::time::{Duration, Instant};
 
 use common::{TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, served};
 use shards_api::image::{
-    BootStop, Channel, ImageGuest, ImagePools, ImageRefusal, ImageShards, ImageShare, ImageSpec, Images as _,
-    Keep, MemberEnd, MemberFile, MemberKind, MemberName, MemberReach, MemberSpec, Narrowing, PlugRefusal,
-    Proto, Publish, RunEnd, SaveRefusal, Secret, StartedFrom, StatsScope,
+    BootStop, Captured, Channel, Cli, CredentialGrant, ImageGuest, ImagePools, ImageRefusal, ImageShards,
+    ImageShare, ImageSpec, Images as _, Keep, LeaseRefusal, Leased, Lessor, MemberEnd, MemberFile,
+    MemberKind, MemberName, MemberReach, MemberSpec, Narrowing, PlugRefusal, Proto, Publish, RunEnd,
+    RunLessor, SaveRefusal, Secret, SignInGrant, SignInRefusal, SignInTokens, StartedFrom, StatsScope,
 };
 
 const TIMEOUT: Duration = Duration::from_secs(120);
@@ -198,23 +199,7 @@ fn staged_credentials_reach_the_harness_and_its_output_and_end_come_back() {
     assert_eq!(read_all(&*guest, Channel::Stderr), token);
     assert_ended(&*guest, MemberEnd::Exited(3));
     // Nothing of the secret lies in the host's home: it went on the channel alone.
-    let mut found = Vec::new();
-    let mut dirs = vec![home.to_path_buf()];
-    while let Some(dir) = dirs.pop() {
-        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
-            let path = entry.path();
-            match entry.file_type() {
-                Ok(t) if t.is_dir() => dirs.push(path),
-                Ok(t) if t.is_file() => {
-                    let bytes = std::fs::read(&path).unwrap_or_default();
-                    if bytes.windows(10).any(|w| w == b"t0p-secret") {
-                        found.push(path);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
+    let found = holding(&home, b"t0p-secret");
     assert!(found.is_empty(), "the secret is in {found:?}");
     guest.stop().unwrap();
     assert_eq!(guest.wait_for(TIMEOUT).unwrap(), Some(RunEnd::Stopped));
@@ -1343,4 +1328,822 @@ fn a_saved_runs_memory_holds_what_its_harness_was_given_and_the_scan_finds_it() 
     assert!(matches!(code, Some(0 | 4)), "{said}");
     assert!(said.contains(" 0 secret runs found"), "{said}");
     guest.stop().unwrap();
+}
+
+// Plan step 33's steps 7 and 8 on a real microVM (D242): a credential filled in at the run's
+// egress toward a host speaking HTTP/2, a lease its orchestrator refuses, and a sign-in's tokens
+// taken outside over HTTP/2. The host is this test's own, on this host's loopback, which a run
+// reaches as `host.docker.internal`.
+
+/// A credential's placeholder, as an orchestrator mints one (a b64token, `credential::
+/// placeholder`), and its value, which the microVM never holds.
+const PLACEHOLDER: &str =
+    "shards-test-placeholder.5f0c2d7e9a14b3c86e21f0a9d4c7b2e15a3f8c06d9e2b7a41c5f3e8d0b6a9c27";
+const VALUE: &str = "sk-test-the-real-value-filled-at-egress-7c1e";
+const REFERENCE: &str = "test/api-key";
+/// A sign-in's tokens as its provider (the test's host) gives them, then as its refresh does,
+/// and the reference and placeholders its capture gives.
+const REAL_ACCESS: &str = "test-access-token-from-the-provider-0001";
+const REAL_REFRESH: &str = "test-refresh-token-from-the-provider-0001";
+const REAL_ACCESS_2: &str = "test-access-token-refreshed-outside-0002";
+const REAL_REFRESH_2: &str = "test-refresh-token-refreshed-outside-0002";
+const ACCESS_REFERENCE: &str = "test/codex/access";
+const ACCESS_PLACEHOLDER: &str =
+    "shards-test-access.0d9e2b7a41c5f3e8d0b6a9c275f0c2d7e9a14b3c86e21f0a9d4c7b2e15a3f8c6";
+const REFRESH_PLACEHOLDER: &str =
+    "shards-test-refresh.a41c5f3e8d0b6a9c275f0c2d7e9a14b3c86e21f0a9d4c7b2e15a3f8c60d9e2b7";
+
+/// What `value` comes back to the guest as where it echoes (inject.rs' `Mask`): its
+/// placeholder's bytes, as many as the value has.
+fn masked(value: &str, placeholder: &str) -> String {
+    placeholder
+        .bytes()
+        .cycle()
+        .take(value.len())
+        .map(char::from)
+        .collect()
+}
+
+/// The files under `root` holding `needle`.
+fn holding(root: &std::path::Path, needle: &[u8]) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    let mut dirs = vec![root.to_path_buf()];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            let path = entry.path();
+            match entry.file_type() {
+                Ok(t) if t.is_dir() => dirs.push(path),
+                Ok(t) if t.is_file() => {
+                    let bytes = std::fs::read(&path).unwrap_or_default();
+                    if bytes.windows(needle.len()).any(|w| w == needle) {
+                        found.push(path);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    found
+}
+
+/// Whether a run's network process trusts this test's roots as its host's. On Linux its
+/// verifier reads the system's bundle as it starts (rustls-platform-verifier through
+/// rustls-native-certs), which `SSL_CERT_FILE` in the run host's environment names; on macOS
+/// (trustd) and Windows (CryptoAPI) the OS verifies (shards-verify) and nothing a test sets
+/// adds a root, so these runs are owed there until a run's injector can be given a test's.
+fn injector_trusts_test_roots() -> bool {
+    if cfg!(target_os = "linux") {
+        return true;
+    }
+    let _ = writeln!(
+        std::io::stderr(),
+        "SKIP: a run's injector here trusts only the OS's roots, and no test root can be added to them"
+    );
+    false
+}
+
+/// A request the test's host was asked: over HTTP/2 or not, each field as it arrived (with
+/// its HPACK indexing, over HTTP/2), and its body.
+#[derive(Debug)]
+struct Asked {
+    h2: bool,
+    method: String,
+    path: String,
+    fields: Vec<(String, Vec<u8>, Option<shards_net::hpack::Indexing>)>,
+    body: Vec<u8>,
+}
+
+impl Asked {
+    fn field(&self, name: &str) -> Option<(&[u8], Option<shards_net::hpack::Indexing>)> {
+        self.fields
+            .iter()
+            .find(|(n, ..)| n == name)
+            .map(|(_, v, i)| (v.as_slice(), *i))
+    }
+}
+
+/// The test's TLS host: its port on this host's loopback, its CA's certificate written for
+/// the run's host, and each request it answered, sent as it came, before its answer.
+struct TlsHost {
+    port: u16,
+    roots: std::path::PathBuf,
+    asked: std::sync::mpsc::Receiver<Asked>,
+}
+
+type ServerTls = rustls::StreamOwned<rustls::ServerConnection, std::net::TcpStream>;
+
+/// The test's TLS host, under a CA of its own, for `names`, offering `h2` and `http/1.1`: `/echo`
+/// answers the request's credential field in `x-echo` and its body; `/oauth/token` answers a
+/// code's exchange with [`REAL_ACCESS`] and [`REAL_REFRESH`], as Codex's provider would, and
+/// anything else there 400.
+fn tls_host(home: &TempDir, names: &[&str]) -> TlsHost {
+    let mut ca = rcgen::CertificateParams::new(Vec::new()).unwrap();
+    ca.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    ca.distinguished_name = rcgen::DistinguishedName::new();
+    ca.distinguished_name
+        .push(rcgen::DnType::CommonName, "shards credentials test CA");
+    ca.key_usages = vec![
+        rcgen::KeyUsagePurpose::KeyCertSign,
+        rcgen::KeyUsagePurpose::DigitalSignature,
+    ];
+    let ca = rcgen::CertifiedIssuer::self_signed(ca, rcgen::KeyPair::generate().unwrap()).unwrap();
+    let mut leaf =
+        rcgen::CertificateParams::new(names.iter().map(|n| (*n).to_string()).collect::<Vec<_>>()).unwrap();
+    leaf.distinguished_name = rcgen::DistinguishedName::new();
+    leaf.distinguished_name.push(rcgen::DnType::CommonName, names[0]);
+    leaf.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
+    let key = rcgen::KeyPair::generate().unwrap();
+    let cert = leaf.signed_by(&key, &ca).unwrap();
+    let roots = home.join("test-roots.pem");
+    std::fs::write(&roots, ca.pem()).unwrap();
+    let mut config = rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(
+        rustls::crypto::aws_lc_rs::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![cert.der().clone()],
+        rustls::pki_types::PrivateKeyDer::Pkcs8(rustls::pki_types::PrivatePkcs8KeyDer::from(
+            key.serialize_der(),
+        )),
+    )
+    .unwrap();
+    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    let config = std::sync::Arc::new(config);
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, asked) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for sock in listener.incoming().flatten() {
+            let (config, tx) = (config.clone(), tx.clone());
+            std::thread::spawn(move || {
+                let conn = rustls::ServerConnection::new(config).unwrap();
+                let mut tls = rustls::StreamOwned::new(conn, sock);
+                let _ = serve(&mut tls, &tx);
+            });
+        }
+    });
+    TlsHost { port, roots, asked }
+}
+
+fn serve(tls: &mut ServerTls, tx: &std::sync::mpsc::Sender<Asked>) -> std::io::Result<()> {
+    while tls.conn.is_handshaking() {
+        tls.conn.complete_io(&mut tls.sock)?;
+    }
+    if tls.conn.alpn_protocol() == Some(b"h2") {
+        serve_h2(tls, tx)
+    } else {
+        serve_http1(tls, tx)
+    }
+}
+
+/// An answer of the test's host: its status, fields and body.
+type Answer = (u16, Vec<(&'static str, Vec<u8>)>, Vec<u8>);
+
+/// The test host's answer to `asked`.
+fn answer(asked: &Asked) -> Answer {
+    match asked.path.as_str() {
+        "/echo" => {
+            let credential = asked
+                .field("authorization")
+                .or_else(|| asked.field("x-api-key"))
+                .map(|(v, _)| v.to_vec())
+                .unwrap_or_default();
+            (200, vec![("x-echo", credential.clone())], credential)
+        }
+        "/oauth/token" if asked.method == "POST" && asked.body.starts_with(b"grant_type=authorization_code") => (
+            200,
+            vec![("content-type", b"application/json".to_vec())],
+            format!(
+                r#"{{"access_token":"{REAL_ACCESS}","refresh_token":"{REAL_REFRESH}","expires_in":3600,"token_type":"Bearer"}}"#
+            )
+            .into_bytes(),
+        ),
+        "/oauth/token" => (
+            400,
+            vec![("content-type", b"application/json".to_vec())],
+            br#"{"error":"invalid_grant"}"#.to_vec(),
+        ),
+        _ => (404, Vec::new(), Vec::new()),
+    }
+}
+
+fn serve_http1(tls: &mut ServerTls, tx: &std::sync::mpsc::Sender<Asked>) -> std::io::Result<()> {
+    loop {
+        let mut head = Vec::new();
+        let mut byte = [0u8; 1];
+        while !head.ends_with(b"\r\n\r\n") {
+            if tls.read(&mut byte)? == 0 {
+                return Ok(());
+            }
+            head.push(byte[0]);
+        }
+        let text = String::from_utf8_lossy(&head).into_owned();
+        let mut lines = text.split("\r\n");
+        let mut first = lines.next().unwrap_or_default().split(' ');
+        let (method, path) = (
+            first.next().unwrap_or_default().to_string(),
+            first.next().unwrap_or_default().to_string(),
+        );
+        let fields: Vec<_> = lines
+            .filter_map(|l| l.split_once(':'))
+            .map(|(n, v)| (n.trim().to_ascii_lowercase(), v.trim().as_bytes().to_vec(), None))
+            .collect();
+        let length = fields
+            .iter()
+            .find(|(n, ..)| n == "content-length")
+            .and_then(|(_, v, _)| std::str::from_utf8(v).ok()?.parse().ok())
+            .unwrap_or(0);
+        let mut body = vec![0u8; length];
+        tls.read_exact(&mut body)?;
+        let asked = Asked {
+            h2: false,
+            method,
+            path,
+            fields,
+            body,
+        };
+        let (status, fields, body) = answer(&asked);
+        let _ = tx.send(asked);
+        let mut out = format!("HTTP/1.1 {status} Test\r\nContent-Length: {}\r\n", body.len()).into_bytes();
+        for (name, value) in fields {
+            out.extend_from_slice(format!("{name}: ").as_bytes());
+            out.extend_from_slice(&value);
+            out.extend_from_slice(b"\r\n");
+        }
+        out.extend_from_slice(b"\r\n");
+        out.extend_from_slice(&body);
+        tls.write_all(&out)?;
+        tls.flush()?;
+    }
+}
+
+/// HTTP/2's frame types and flags the test's host reads or writes (RFC 9113 §6).
+mod h2 {
+    pub const DATA: u8 = 0x0;
+    pub const HEADERS: u8 = 0x1;
+    pub const SETTINGS: u8 = 0x4;
+    pub const PING: u8 = 0x6;
+    pub const GOAWAY: u8 = 0x7;
+    pub const WINDOW_UPDATE: u8 = 0x8;
+    pub const CONTINUATION: u8 = 0x9;
+    pub const END_STREAM: u8 = 0x1;
+    pub const ACK: u8 = 0x1;
+    pub const END_HEADERS: u8 = 0x4;
+    pub const PADDED: u8 = 0x8;
+    pub const PRIORITY: u8 = 0x20;
+    pub const PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+    /// SETTINGS_HEADER_TABLE_SIZE as the protocol starts it (§6.5.2).
+    pub const TABLE: usize = 4096;
+
+    pub fn frame(out: &mut Vec<u8>, kind: u8, flags: u8, stream: u32, payload: &[u8]) {
+        out.extend_from_slice(&u32::try_from(payload.len()).unwrap().to_be_bytes()[1..]);
+        out.push(kind);
+        out.push(flags);
+        out.extend_from_slice(&stream.to_be_bytes());
+        out.extend_from_slice(payload);
+    }
+
+    /// A frame's payload without its padding, and a HEADERS frame's priority (§6.1, §6.2).
+    pub fn unpad(payload: &[u8], flags: u8, headers: bool) -> &[u8] {
+        let (mut p, mut pad) = (payload, 0);
+        if flags & PADDED != 0 {
+            pad = usize::from(p[0]);
+            p = &p[1..];
+        }
+        if headers && flags & PRIORITY != 0 {
+            p = &p[5..];
+        }
+        &p[..p.len() - pad]
+    }
+}
+
+fn serve_h2(tls: &mut ServerTls, tx: &std::sync::mpsc::Sender<Asked>) -> std::io::Result<()> {
+    use shards_net::hpack::{Decoded, Decoder, Encoder, Field, Indexing};
+    let mut preface = [0u8; 24];
+    tls.read_exact(&mut preface)?;
+    if preface != h2::PREFACE {
+        return Err(std::io::Error::other("no client's preface"));
+    }
+    let mut out = Vec::new();
+    h2::frame(&mut out, h2::SETTINGS, 0, 0, &[]);
+    tls.write_all(&out)?;
+    let (mut decoder, mut encoder) = (Decoder::new(h2::TABLE), Encoder::new(h2::TABLE, h2::TABLE));
+    /// An open stream's header block so far, its fields once whole, and its body.
+    type Open = (Vec<u8>, Vec<Field>, Vec<u8>);
+    let mut streams: std::collections::HashMap<u32, Open> = Default::default();
+    loop {
+        let mut head = [0u8; 9];
+        match tls.read_exact(&mut head) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(()),
+            Err(e) => return Err(e),
+        }
+        let len = usize::from(head[0]) << 16 | usize::from(head[1]) << 8 | usize::from(head[2]);
+        let (kind, flags) = (head[3], head[4]);
+        let id = u32::from_be_bytes([head[5], head[6], head[7], head[8]]) & 0x7fff_ffff;
+        let mut payload = vec![0u8; len];
+        tls.read_exact(&mut payload)?;
+        let mut out = Vec::new();
+        let mut ended = false;
+        match kind {
+            h2::SETTINGS if flags & h2::ACK == 0 => h2::frame(&mut out, h2::SETTINGS, h2::ACK, 0, &[]),
+            h2::PING if flags & h2::ACK == 0 => h2::frame(&mut out, h2::PING, h2::ACK, 0, &payload),
+            h2::GOAWAY => return Ok(()),
+            h2::HEADERS | h2::CONTINUATION => {
+                let s = streams.entry(id).or_default();
+                s.0.extend_from_slice(h2::unpad(&payload, flags, kind == h2::HEADERS));
+                if flags & h2::END_HEADERS != 0 {
+                    let Ok(Decoded::Fields(fields)) = decoder.decode(&s.0, usize::MAX) else {
+                        return Err(std::io::Error::other(
+                            "a header block the test's host cannot decode",
+                        ));
+                    };
+                    s.1.extend(fields);
+                    s.0.clear();
+                }
+                ended = flags & h2::END_STREAM != 0;
+            }
+            h2::DATA => {
+                streams
+                    .entry(id)
+                    .or_default()
+                    .2
+                    .extend_from_slice(h2::unpad(&payload, flags, false));
+                if !payload.is_empty() {
+                    let credit = u32::try_from(payload.len()).unwrap().to_be_bytes();
+                    h2::frame(&mut out, h2::WINDOW_UPDATE, 0, 0, &credit);
+                    h2::frame(&mut out, h2::WINDOW_UPDATE, 0, id, &credit);
+                }
+                ended = flags & h2::END_STREAM != 0;
+            }
+            _ => {}
+        }
+        if ended {
+            let (_, fields, body) = streams.remove(&id).unwrap_or_default();
+            let pseudo = |name: &[u8]| {
+                fields
+                    .iter()
+                    .find(|f| f.name == name)
+                    .map(|f| String::from_utf8_lossy(&f.value).into_owned())
+                    .unwrap_or_default()
+            };
+            let asked = Asked {
+                h2: true,
+                method: pseudo(b":method"),
+                path: pseudo(b":path"),
+                fields: fields
+                    .iter()
+                    .filter(|f| !f.name.starts_with(b":"))
+                    .map(|f| {
+                        (
+                            String::from_utf8_lossy(&f.name).into_owned(),
+                            f.value.to_vec(),
+                            Some(f.indexing),
+                        )
+                    })
+                    .collect(),
+                body,
+            };
+            let (status, fields, body) = answer(&asked);
+            let _ = tx.send(asked);
+            let mut answer = vec![Field::new(
+                b":status",
+                status.to_string().as_bytes(),
+                Indexing::Without,
+            )];
+            answer.extend(
+                fields
+                    .iter()
+                    .map(|(n, v)| Field::new(n.as_bytes(), v, Indexing::Without)),
+            );
+            answer.push(Field::new(
+                b"content-length",
+                body.len().to_string().as_bytes(),
+                Indexing::Without,
+            ));
+            let mut block = Vec::new();
+            encoder.encode(&answer, &mut block);
+            let flags = h2::END_HEADERS | if body.is_empty() { h2::END_STREAM } else { 0 };
+            h2::frame(&mut out, h2::HEADERS, flags, id, &block);
+            if !body.is_empty() {
+                h2::frame(&mut out, h2::DATA, h2::END_STREAM, id, &body);
+            }
+        }
+        if !out.is_empty() {
+            tls.write_all(&out)?;
+            tls.flush()?;
+        }
+    }
+}
+
+/// The orchestrator's lessor as these tests play it: [`VALUE`] leased for [`REFERENCE`] after
+/// refusing the first `refuse` asks, and a sign-in's tokens kept as its capture and refresh
+/// give them; each ask, release, capture and refresh recorded.
+#[derive(Default)]
+struct TestLessor {
+    refuse: usize,
+    asks: std::sync::Mutex<Vec<String>>,
+    released: std::sync::Mutex<Vec<String>>,
+    /// The sign-in's access token as the lessor holds it now.
+    access: std::sync::Mutex<String>,
+    captured: std::sync::Mutex<Vec<SignInTokens>>,
+    refreshed: std::sync::Mutex<usize>,
+}
+
+impl TestLessor {
+    fn refusing(refuse: usize) -> std::sync::Arc<TestLessor> {
+        std::sync::Arc::new(TestLessor {
+            refuse,
+            ..TestLessor::default()
+        })
+    }
+
+    fn given(&self) -> usize {
+        self.asks.lock().unwrap().len().saturating_sub(self.refuse)
+    }
+}
+
+impl Lessor for TestLessor {
+    fn lease(&self, reference: &str, _key: Option<[u8; 32]>) -> Result<Leased, LeaseRefusal> {
+        let mut asks = self.asks.lock().unwrap();
+        asks.push(reference.into());
+        let n = asks.len();
+        if n <= self.refuse {
+            return Err(LeaseRefusal::Denied("the test's broker refuses this ask".into()));
+        }
+        let value = match reference {
+            ACCESS_REFERENCE => self.access.lock().unwrap().clone(),
+            _ => VALUE.to_string(),
+        };
+        Ok(Leased {
+            lease: format!("lease-{n}"),
+            value: Secret::from(value.as_str()),
+            until: Instant::now() + TIMEOUT,
+        })
+    }
+
+    fn release(&self, lease: &str) {
+        self.released.lock().unwrap().push(lease.into());
+    }
+
+    fn capture(
+        &self,
+        _sign_in: &str,
+        tokens: SignInTokens,
+        _key: Option<[u8; 32]>,
+    ) -> Result<Captured, SignInRefusal> {
+        *self.access.lock().unwrap() = String::from_utf8(tokens.access.0.clone()).unwrap();
+        self.captured.lock().unwrap().push(tokens);
+        Ok(Captured {
+            access: ACCESS_REFERENCE.into(),
+            access_placeholder: ACCESS_PLACEHOLDER.into(),
+            refresh_placeholder: Some(REFRESH_PLACEHOLDER.into()),
+        })
+    }
+
+    fn refresh(&self, _sign_in: &str, _key: Option<[u8; 32]>) -> Result<Secret, SignInRefusal> {
+        *self.refreshed.lock().unwrap() += 1;
+        *self.access.lock().unwrap() = REAL_ACCESS_2.into();
+        Ok(Secret::from(
+            format!(
+                r#"{{"access_token":"{REAL_ACCESS_2}","refresh_token":"{REAL_REFRESH_2}","expires_in":3600,"token_type":"Bearer"}}"#
+            )
+            .as_str(),
+        ))
+    }
+}
+
+/// An image whose `codex` (the test guest's `tls-ask`) asks the test's host at `port`, as
+/// `host.docker.internal`, for server name `sni`: its harness reaches that destination alone,
+/// and `auth.openai.com:443` where `sign_in`, so that Codex's token host is one its egress
+/// reaches (D236); the guest's flows to it still go to the test's host, as it dials them.
+fn build_asking(home: &TempDir, tag: &str, port: u16, sni: &str, sign_in: bool) {
+    let host = format!("host.docker.internal:{port}");
+    let (token, ports) = if sign_in {
+        (" --egress=auth.openai.com:443", format!("{port} 443"))
+    } else {
+        ("", port.to_string())
+    };
+    build(
+        home,
+        tag,
+        &["tls-ask", &host, sni],
+        &format!(
+            "NETWORK --egress={host}{token} provider FOR codex\n\
+             EXPOSE --harnesses=codex {ports} AS egress FOR provider\nCONNECT codex WITH codex ON provider\n"
+        ),
+    );
+}
+
+/// The spec of a run of `image` whose harness asks `steps`, holding [`PLACEHOLDER`] in
+/// `API_KEY`, its host trusting the test's roots, its leases `lessor`'s.
+fn asking_spec(
+    home: &TempDir,
+    image: &str,
+    host: &TlsHost,
+    lessor: &std::sync::Arc<TestLessor>,
+    steps: &[&str],
+) -> ImageSpec {
+    let mut s = spec(home, image);
+    s.env
+        .push(("SSL_CERT_FILE".into(), host.roots.as_os_str().into()));
+    s.lessor = Some(RunLessor(lessor.clone()));
+    s.members = vec![MemberSpec {
+        member: codex(),
+        env: vec![("API_KEY".into(), Secret::from(PLACEHOLDER))],
+        files: Vec::new(),
+        workdir: None,
+        stdin: false,
+        terminal: false,
+        args: steps.iter().map(|s| (*s).to_string()).collect(),
+        mcp: false,
+    }];
+    s
+}
+
+/// [`PLACEHOLDER`] granted toward the host itself, by [`REFERENCE`].
+fn granted() -> Vec<CredentialGrant> {
+    vec![CredentialGrant {
+        reference: REFERENCE.into(),
+        toward: vec!["host.docker.internal".into()],
+        placeholder: PLACEHOLDER.into(),
+    }]
+}
+
+/// The harness's answers, one line for each of its requests, read to its end.
+fn answers(guest: &dyn ImageGuest) -> Vec<String> {
+    let out = String::from_utf8(read_all(guest, Channel::Stdout)).unwrap();
+    out.lines().map(str::to_string).collect()
+}
+
+/// The run stopped, and every lease its lessor gave released by its end (D242).
+fn stop_releasing(guest: &dyn ImageGuest, lessor: &TestLessor) {
+    guest.stop().unwrap();
+    assert_eq!(guest.wait_for(TIMEOUT).unwrap(), Some(RunEnd::Stopped));
+    assert_eq!(
+        lessor.released.lock().unwrap().len(),
+        lessor.given(),
+        "a lease the run was given was not released at its end"
+    );
+}
+
+/// Plan step 33 step 7 on a real microVM. Do: grant [`PLACEHOLDER`] toward the host itself and
+/// have the harness send it, over HTTP/2, as a bearer token on one stream and as `x-api-key`
+/// with a body on the next, to the test's host speaking `h2` alone of what it offers. Expect:
+/// the host sees both over HTTP/2 with [`VALUE`] where the placeholder stood, each field never
+/// indexed (RFC 7541 §7.1.3); the harness's echoes, in a field and in DATA, come back masked;
+/// the value nowhere in what the harness saw nor in the run's home; each lease released at the
+/// run's end.
+#[test]
+fn an_h2_request_to_a_granted_host_is_filled_never_indexed_and_its_echo_comes_back_masked() {
+    if cannot_run_vms() || !injector_trusts_test_roots() {
+        return;
+    }
+    let home = TempDir::new("api-cred-h2");
+    let host = tls_host(&home, &["host.docker.internal"]);
+    build_asking(&home, "api-cred-h2:1", host.port, "host.docker.internal", false);
+    let lessor = TestLessor::refusing(0);
+    let mut s = asking_spec(
+        &home,
+        "api-cred-h2:1",
+        &host,
+        &lessor,
+        &[
+            "--",
+            "h2",
+            "GET",
+            "/echo",
+            "-H",
+            "authorization:Bearer {env:API_KEY}",
+            "--",
+            "h2",
+            "POST",
+            "/echo",
+            "-H",
+            "x-api-key:{env:API_KEY}",
+            "-d",
+            "hello",
+        ],
+    );
+    s.credentials = granted();
+    let guest = boot(&home, &s);
+    let said = answers(&*guest);
+    assert_ended(&*guest, MemberEnd::Exited(0));
+    let bearer = format!("Bearer {}", masked(VALUE, PLACEHOLDER));
+    let key = masked(VALUE, PLACEHOLDER);
+    assert_eq!(
+        said,
+        [
+            format!("answer 200 echo={bearer} body={bearer}"),
+            format!("answer 200 echo={key} body={key}"),
+        ]
+    );
+    let asked: Vec<Asked> = host.asked.try_iter().collect();
+    assert_eq!(asked.len(), 2, "{asked:?}");
+    let never = Some(shards_net::hpack::Indexing::Never);
+    assert!(asked.iter().all(|a| a.h2), "{asked:?}");
+    assert_eq!(
+        asked[0].field("authorization"),
+        Some((format!("Bearer {VALUE}").as_bytes(), never)),
+        "the bearer token was not filled, or was sent indexable"
+    );
+    assert_eq!(
+        asked[1].field("x-api-key"),
+        Some((VALUE.as_bytes(), never)),
+        "x-api-key was not filled, or was sent indexable"
+    );
+    assert_eq!(asked[1].body, b"hello");
+    assert!(lessor.asks.lock().unwrap().iter().all(|r| r == REFERENCE));
+    assert!(lessor.given() >= 1);
+    stop_releasing(&*guest, &lessor);
+    assert_eq!(holding(&home, VALUE.as_bytes()), Vec::<std::path::PathBuf>::new());
+}
+
+/// Plan step 33 step 7's refused lease on a real microVM. Do: the orchestrator's lessor
+/// refuses the first two asks of [`REFERENCE`]; the harness sends its placeholder once over
+/// HTTP/1.1, once on an HTTP/2 stream, then on a later stream. Expect: one 503 for each of the
+/// first two, nothing of either reaching the host; the third asked anew (three asks in all),
+/// filled and echoed masked, the host seeing it alone, over HTTP/2, never indexed.
+#[test]
+fn a_refused_lease_is_answered_503_over_http_1_1_and_h2_and_a_later_request_asks_again() {
+    if cannot_run_vms() || !injector_trusts_test_roots() {
+        return;
+    }
+    let home = TempDir::new("api-cred-503");
+    let host = tls_host(&home, &["host.docker.internal"]);
+    build_asking(&home, "api-cred-503:1", host.port, "host.docker.internal", false);
+    let lessor = TestLessor::refusing(2);
+    let mut s = asking_spec(
+        &home,
+        "api-cred-503:1",
+        &host,
+        &lessor,
+        &[
+            "--",
+            "http/1.1",
+            "GET",
+            "/echo",
+            "-H",
+            "authorization:Bearer {env:API_KEY}",
+            "--",
+            "h2",
+            "GET",
+            "/echo",
+            "-H",
+            "authorization:Bearer {env:API_KEY}",
+            "--",
+            "h2",
+            "GET",
+            "/echo",
+            "-H",
+            "authorization:Bearer {env:API_KEY}",
+        ],
+    );
+    s.credentials = granted();
+    let guest = boot(&home, &s);
+    let said = answers(&*guest);
+    assert_ended(&*guest, MemberEnd::Exited(0));
+    assert_eq!(said.len(), 3, "{said:?}");
+    assert!(said[0].starts_with("answer 503 "), "HTTP/1.1: {said:?}");
+    assert!(said[1].starts_with("answer 503 "), "HTTP/2: {said:?}");
+    let bearer = format!("Bearer {}", masked(VALUE, PLACEHOLDER));
+    assert_eq!(said[2], format!("answer 200 echo={bearer} body={bearer}"));
+    assert_eq!(
+        *lessor.asks.lock().unwrap(),
+        [REFERENCE; 3],
+        "each request after a refusal asks anew, once"
+    );
+    let asked: Vec<Asked> = host.asked.try_iter().collect();
+    assert_eq!(asked.len(), 1, "a refused request reached the host: {asked:?}");
+    assert!(asked[0].h2);
+    assert_eq!(
+        asked[0].field("authorization"),
+        Some((
+            format!("Bearer {VALUE}").as_bytes(),
+            Some(shards_net::hpack::Indexing::Never)
+        ))
+    );
+    stop_releasing(&*guest, &lessor);
+    assert_eq!(holding(&home, VALUE.as_bytes()), Vec::<std::path::PathBuf>::new());
+}
+
+/// Plan step 33 step 8 over HTTP/2 on a real microVM, Codex's sign-in played by the test's
+/// host as `auth.openai.com` (no vendor is asked: the guest dials the test's host). Do: the
+/// harness exchanges a code at the token endpoint over HTTP/2, then refreshes with the refresh
+/// token it was given, then sends the access token it was given to the host itself. Expect: the
+/// exchange reaches the host, its tokens are captured by the lessor and the harness holds the
+/// capture's placeholders alone; the refresh never reaches the host, answered by the lessor
+/// with placeholders again; the access token's use filled with the refreshed token, never
+/// indexed, its echo masked; no token in what the harness saw nor in the run's home.
+#[test]
+fn an_h2_sign_in_gives_the_harness_placeholders_and_its_refresh_is_answered_outside() {
+    if cannot_run_vms() || !injector_trusts_test_roots() {
+        return;
+    }
+    let home = TempDir::new("api-signin-h2");
+    let host = tls_host(&home, &["host.docker.internal", "auth.openai.com"]);
+    build_asking(&home, "api-signin-h2:1", host.port, "auth.openai.com", true);
+    let lessor = TestLessor::refusing(0);
+    let mut s = asking_spec(
+        &home,
+        "api-signin-h2:1",
+        &host,
+        &lessor,
+        &[
+            "--",
+            "h2",
+            "POST",
+            "/oauth/token",
+            "-H",
+            "content-type:application/x-www-form-urlencoded",
+            "-d",
+            "grant_type=authorization_code&code=test-code&code_verifier=test-verifier&client_id=app_test",
+            "--",
+            "h2",
+            "POST",
+            "/oauth/token",
+            "-H",
+            "content-type:application/json",
+            "-d",
+            r#"{"grant_type":"refresh_token","refresh_token":"{refresh_token}","client_id":"app_test"}"#,
+            "--",
+            "h2",
+            "GET",
+            "/echo",
+            "-s",
+            "host.docker.internal",
+            "-H",
+            "authorization:Bearer {access_token}",
+        ],
+    );
+    s.sign_ins = vec![SignInGrant {
+        sign_in: "test-codex".into(),
+        cli: Cli::Codex,
+        toward: vec!["host.docker.internal".into()],
+        captured: None,
+    }];
+    let guest = boot(&home, &s);
+    let said = answers(&*guest);
+    assert_ended(&*guest, MemberEnd::Exited(0));
+    assert_eq!(said.len(), 3, "{said:?}");
+    for (i, line) in said.iter().take(2).enumerate() {
+        assert!(line.starts_with("answer 200 "), "step {i}: {line}");
+        assert!(
+            line.contains(ACCESS_PLACEHOLDER),
+            "step {i} gave no access placeholder: {line}"
+        );
+        assert!(
+            line.contains(REFRESH_PLACEHOLDER),
+            "step {i} gave no refresh placeholder: {line}"
+        );
+    }
+    let bearer = format!("Bearer {}", masked(REAL_ACCESS_2, ACCESS_PLACEHOLDER));
+    assert_eq!(said[2], format!("answer 200 echo={bearer} body={bearer}"));
+    for token in [REAL_ACCESS, REAL_REFRESH, REAL_ACCESS_2, REAL_REFRESH_2] {
+        assert!(
+            said.iter().all(|l| !l.contains(token)),
+            "the harness saw a token: {said:?}"
+        );
+    }
+    let captured = lessor.captured.lock().unwrap();
+    assert_eq!(captured.len(), 1);
+    assert_eq!(captured[0].access, Secret::from(REAL_ACCESS));
+    assert_eq!(captured[0].refresh, Some(Secret::from(REAL_REFRESH)));
+    drop(captured);
+    assert_eq!(
+        *lessor.refreshed.lock().unwrap(),
+        1,
+        "the refresh was not answered outside"
+    );
+    let asked: Vec<Asked> = host.asked.try_iter().collect();
+    let paths: Vec<(&str, &str, bool)> = asked
+        .iter()
+        .map(|a| (a.method.as_str(), a.path.as_str(), a.h2))
+        .collect();
+    assert_eq!(
+        paths,
+        [("POST", "/oauth/token", true), ("GET", "/echo", true)],
+        "the refresh reached the host, or the exchange did not"
+    );
+    assert_eq!(
+        asked[0].field("accept-encoding").map(|(v, _)| v),
+        Some(&b"identity"[..])
+    );
+    assert_eq!(
+        asked[1].field("authorization"),
+        Some((
+            format!("Bearer {REAL_ACCESS_2}").as_bytes(),
+            Some(shards_net::hpack::Indexing::Never)
+        ))
+    );
+    stop_releasing(&*guest, &lessor);
+    for token in [REAL_ACCESS, REAL_REFRESH, REAL_ACCESS_2, REAL_REFRESH_2] {
+        assert_eq!(
+            holding(&home, token.as_bytes()),
+            Vec::<std::path::PathBuf>::new(),
+            "{token}"
+        );
+    }
 }

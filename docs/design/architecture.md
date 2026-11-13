@@ -24170,7 +24170,8 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
       devices) longer than a listening guest takes to answer: a W* learned from connects to
       running guests (a client that attaches first) would judge a boot by theirs.
   - *The judge.* Past W* from its start, a wait looks at its VM process once each W*. A look
-    that finds it ran no CPU at all since the look before refuses the wait,
+    that finds it ran no CPU at all over a whole W* since a look last found it progressed or
+    held, the judge's own lateness not counted (below), refuses the wait,
     `Refusal::Stalled(Stall)`: how far into the wait, the time looked over, R* and W*, kept in
     nanoseconds (each past u64's, 584 years, its most). Five `Duration`s in the variant
     enlarged every `Result<_, Refusal>`: a test's tuple of two of them crossed clippy's
@@ -24221,6 +24222,41 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
       is refused for a hardened process not built to allow it); NtQuerySystemInformation's
       SystemProcessInformation records, each thread's state and wait reason. What cannot be
       read shows nothing, and that look is judged by its CPU alone.
+    - The judge's own lateness is its host's hold (ROOT's ruling, 2026-11-13, #77). Each look
+      knows when it was meant (W* past the one before was meant, `Judge::meant`: its looks
+      keep D215's schedule, each W* past the wait's start, however late each ran) and when it
+      ran. The time it ran late, from when it was meant (or from the look before, where that
+      ran later still, so no time counts twice) to when it ran, is time its host held its
+      thread: the host held everyone, and that time counts toward no party's window. A
+      party's window runs from the look that last found it progressed or held; a look that
+      finds it still refuses only where that window, less the judge's lateness within it,
+      is a whole W* (`Stall::over` is that free time). A judge held past several looks makes
+      one, its next due at the next W* past the start. Main's judge scheduled each look W*
+      past when the one before ran, which added each look's lateness to the next window:
+      ROOT's HVF run at d513d0a0b (macOS arm64, 18 cores, load 30/31/27) refused a live start,
+      containers.rs `a_runs_log_is_sent_to_gelf_as_its_options_say`, "it ran nothing for
+      101.091209ms, past the slowest start seen (98.915708ms), 202.999ms after it began": its
+      first look ran 101.908 ms in (2.99 ms late) and found progress, its second 202.999 ms
+      in, of whose 101.09 ms 5.17 ms were past the second's meant time (197.83 ms), leaving
+      95.92 ms free, less than W*. Red at 30cf4f42b,
+      `a_look_its_host_held_late_counts_its_lateness_as_held`, the run's own times on an
+      injected look clock (`Judge::found_at`);
+      its twin `a_judge_on_time_refuses_a_stopped_party_at_its_first_look` holds before and
+      after. Cold start: a judged wait's first window runs from its start, so a judge on time
+      or late refuses a party still from its start at its first look, over exactly W* free.
+      No number is chosen: lateness is any nanosecond past a meant time, read on the clock
+      the looks run by; a host that holds the judge a whole W* at every look holds its waits
+      to liveness alone, as a host hold counts as held.
+    - macOS's scheduler counts each thread's time runnable, running or waiting for a CPU
+      (proc_pid_rusage(2) RUSAGE_INFO_V4 `ri_runnable_time`, sys/resource.h, Mach
+      absolute-time units; public, and like the rest no task port). Grown over a time the
+      process ran no CPU, it is a wait for one, as Linux's `run_delay` is (`Queued::Waited`
+      on both, #77): a thread its host held runnable between two looks, but not at either
+      look's sample, reads as held. Measured on adas-macbook-pro-2 (macOS 26, 18 cores, load
+      10 to 38), one second each: `yes`, 1125.1 ms CPU and 1147.9 ms runnable over 1149.2 ms
+      wall; `sleep 5`, 0 and 0; a shell starting `sleep 0.01` in a loop, 5.8 ms CPU and
+      6.2 ms runnable. A thread that is runnable as a look samples it already read as held
+      (`TH_STATE_RUNNING` is running or waiting for a CPU, mach/thread_info.h).
     - R* is in the refusal for diagnosis only, never a bound. ROOT's first design refused a
       look below R*, which would refuse a boot merely slowed by its host's load: the very
       failure R03 ends (ROOT, 2026-11-13, at this lane's report).
@@ -24299,11 +24335,14 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
     asks `Record::stalled(since, now)`: none while its kind is cold or less than W* has
     passed since its last progress, else the stall.
   - Tested (light), host starvation and the outside judge: judge.rs's
-    `a_party_its_host_holds_is_live_not_stalled` and
+    `a_party_its_host_holds_is_live_not_stalled`,
+    `a_look_its_host_held_late_counts_its_lateness_as_held`,
+    `a_judge_held_past_several_looks_looks_once_and_keeps_its_schedule` and
     `a_wait_judged_from_outside_is_stalled_a_whole_w_star_after_its_last_progress`;
     progress.rs's `a_process_its_host_holds_is_held_and_a_stopped_one_still` (the decision,
     each OS's evidence), `a_stopped_process_is_seen_stopped_and_refused` (a SIGSTOPped
-    child, seen stopped and refused) and `a_spinning_process_is_seen_runnable` (Unix). Red
+    child, seen stopped and refused), `a_spinning_process_is_seen_runnable` (Unix) and
+    `a_processs_runnable_time_is_read` (macOS). Red
     at 7d5118297 with the rule by CPU alone (the hold read and ignored, `Record::stalled` a
     stub; adas-mac-studio.local, macOS 26.2 arm64): `Still` where `Held` was due for the
     throttled stand-in, and no stall where one was due; the readers' own tests passed then
