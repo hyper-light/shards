@@ -2793,6 +2793,19 @@ rather than a container on the build host's kernel.
   mounted on a tmpfs of their own, in no layer. `--ulimit` takes `as` too, which go-units
   refuses for the way Docker starts a container; every RUN takes the limits, as
   Dockerfile2LLB's AddUlimit gives them, the run alone.
+- **Its end follows its VM** (`Builder`'s drop, 2026-11-13, PM M552). As a build lets its
+  builder go, its guest is asked what its build needed (`NEEDS`, D133) and told to power
+  off (its connection's end), and each wait follows the builder's VM process as D215's
+  judge follows a guest's, shared (R12; `shards_api::Follow`, its process read by pid): the
+  answer, and then the VM's exit, woken by it; once its kind has been seen in this process
+  (the slowest answer, and the slowest end from the connection's end to the exit, with
+  the least CPU rate either came at: the judge's `Record`s), a look at the VM each slowest
+  past the look before, the answer given up on, or the VM killed, at a look that finds it
+  ran nothing at all since; before, its liveness alone. Its own end teaches its kind, read
+  before it is reaped; a kill teaches nothing. A `shards build` boots one builder, so its
+  waits follow its VM's liveness alone, the cold start; a daemon that serves builds (the
+  Engine API) learns from its first. A guest its host left mid-step ends as that step does.
+  Before, both waits had 5 s in all, picked, and the exit was looked for each millisecond.
 - **Not yet as BuildKit:** a step's network is its own loopback until the guest has a
   network (D31); BuildKit's seccomp profile; caches kept past one build; ssh from the
   client. Each is an item of AGENTFILE_ARCH.md §11. A builder may have what its host has
@@ -16336,7 +16349,8 @@ given the rest as its build needs it, up to what it may have.
     it once. Each builder's guest says, as its build ends (`kind::NEEDS`, `NEEDED`), the
     least memory whose hold keeps its build's peak (`memory.peak` of its cgroup, with the
     reserve its kernel keeps beside it, `plug::needed`), and the build's process adds it to
-    the home's `builder-memory` under its lock, the most kept;
+    the home's `builder-memory` under its lock, the most kept; its answer waited for as the
+    builder's VM goes on (D34's "Its end follows its VM", PM M552), where it was 5 s;
   - and **all the host's memory**, as a run with no limit may have (D148), once a build
     of the home was ended short of memory (its cgroup's `memory.events` `oom_kill`): its
     builder had all it could be given and the build needed more;

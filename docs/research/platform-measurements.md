@@ -23245,3 +23245,66 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   | R09, R10 | Red with each guard removed, green after: above. |
   | R11 | Linux-only code (init); x86_64 glibc run, musl and aarch64 owed to CI. |
   | R15, R16 | Implementer; the carrier's checkout and target on adacachy2 are removed after landing. |
+
+### M552. A builder's Drop follows its VM's liveness and progress, D215's judge shared (D34, D133)
+
+- **Question.** As a build let its builder go, it asked its guest what the build needed
+  (`NEEDS`, D133), closed its connection so that the guest powers off, and gave the answer
+  and the VM's exit 5 s in all, picked, looking for the exit each millisecond, then killed
+  it. ROOT (2026-11-13): follow the builder VM's own liveness and progress instead, its
+  exit, or no progress over a whole slowest-teardown window, reusing D215's judge where its
+  process source fits.
+- **Found** (from the code).
+  - shards-api's `Follow` reads a process's CPU by its pid on each OS (`Followed::of_pid`:
+    Linux's CPU clock, macOS's proc_pid_rusage, Windows' process tree), the judge's
+    `Record` keeps the slowest answer and the least rate, and its `Judge` schedules a look
+    each slowest past the look before: it fits a builder's VM as it fits the daemon's.
+  - A zombie's CPU is read before it is reaped (progress.rs), so an end teaches its kind
+    only if its process is watched without reaping: `netproc::ended_within` reaps.
+  - A frame begun by the guest is written whole (init's `send`), so a readiness wait, then
+    a whole frame's read, waits on no clock.
+- **Decision** (D34's "Its end follows its VM"; D133).
+  - `ask_needed` waits for `NEEDED` past a step's frames, woken by its connection's
+    readiness; `follow_to_end` waits for the VM's exit, woken by it (`exits_by`:
+    `Poller::add_exit`, not reaped; Windows, its handle, rounded up to whole milliseconds).
+    Both follow the VM with the judge, each kind its own `Record` in the process
+    (`NEEDED`, `ENDED`): cold, liveness alone; once seen, a look each slowest past the look
+    before, and the answer given up on, or the VM killed (`VmEnd::Stalled`, logged), at a
+    look that finds it ran nothing at all since. An unreadable VM is never taken for no
+    progress. Its own end teaches its kind; a kill does not.
+  - A `shards build` boots one builder, so its waits are cold, its VM's liveness alone; a
+    daemon serving builds (the Engine API) learns from its first.
+- **Tests** (crates/shards build/builder.rs, Unix): `a_builders_vm_is_followed_to_its_end_while_it_goes_on`
+  (cold, a stand-in VM taking 6 s waited for and its end learned; 0.2 s learned, a busy one
+  waited on past five looks, an asleep one killed at its first look) and
+  `a_builders_needs_are_waited_for_while_its_vm_goes_on` (cold, an answer after 6 s past a
+  step's frame; 0.2 s learned, a silent guest over an asleep VM given up on at its first
+  look).
+- **Checked** (one host, adas-mac-studio-3.local, macOS 26.2 arm64, Apple M4 Max,
+  `CARGO_INCREMENTAL=0`, a carrier's checkout at 8ec9cca76 over main baba912ee, its
+  helpers and guests not built, `SHARDS_HELPERS=skip` and stand-in guest binaries, which no
+  unit test of the builder's boots; kiln runs r115, r122):
+  - `cargo test -p shards --bin shards -- build::builder::tests::`: 6 passed (r115).
+  - Red with the old rule back in turn (`/tmp/r03-carrier/red-bld.sh`, r122): 5 s in all for
+    the VM's end failed the end test (the 6 s VM killed); 5 s for the answer failed the needs
+    test (`Ok(None)` for `Ok(Some((1048576, 0)))`); never looking failed the end test (the
+    asleep VM waited on for its own 60 s).
+  - `cargo clippy -p shards --all-targets -- -D warnings`: clean for aarch64-apple-darwin
+    (r122); for x86_64-pc-windows-msvc through cargo-xwin on adas-mac-studio.local, one
+    error: the Unix tests' helper `learned` dead on Windows (r143), gated since; the merged
+    tree's run is below.
+  - `cargo fmt --check`: clean.
+- **Owed.** CI's: Linux (the CPU clock's look) and Windows (`exits_by` on its handle, the
+  process tree's look), where the tests, Unix's, do not run. ROOT's: tests/build.rs on
+  every backend, the builder's real end.
+- **Rules** (policy df2acf47, role implementer):
+
+  | rule | proof, result, gap |
+  |---|---|
+  | R01 | No unwrap or panic added to production code; an unreadable VM falls back to its liveness. |
+  | R02, R03 | D215's judge's rule and records, shared; the 5 s and the millisecond poll go; cold, liveness alone. |
+  | R04 | `VmEnd` (`Exited`, `Stalled`), `Unfollowed` matched; a stall's facts logged. |
+  | R05 | Woken by the connection's readiness and the VM's exit (`Poller::add_exit`), looked at once each slowest. |
+  | R09, R10 | Red with the old rule back, green after: above. |
+  | R11, R12 | The judge and its process source shared; Unix's and Windows' `exits_by` each the smallest adapter; macOS arm64 run, Linux and Windows owed to CI. |
+  | R15, R16 | Implementer; the carrier's checkouts and targets on adas-mac-studio-3.local and adas-mac-studio.local are removed after landing. |
