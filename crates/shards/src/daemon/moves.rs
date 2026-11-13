@@ -115,6 +115,15 @@ pub(crate) struct Plan {
     /// before anything moves. Empty elsewhere, and from a daemon of an earlier build.
     #[serde(default)]
     pub cpu_identity: shards_vmm::arch::cpu::Id,
+    /// The ports its run publishes on its machine's addresses, as its run asked for them
+    /// (`run -p`), which its restore binds again as a start does, and the network whose host
+    /// address a binding that names none takes: for the machine moved to to check before
+    /// anything moves. None where it bound no host port, and from a daemon of an earlier
+    /// build.
+    #[serde(default)]
+    pub published: Vec<Published>,
+    #[serde(default)]
+    pub network: String,
 }
 
 /// What a run keeps the CPU baseline its guest was told in, in its container's directory
@@ -304,6 +313,17 @@ fn cpu_lacks<'a>(ran_on: &'a [String], here: &[String]) -> Vec<&'a str> {
         .collect()
 }
 
+/// A port a run publishes on its machine's addresses, as `run -p` asked for it (its
+/// request's `shards_ipc::Publish`): the guest's port and protocol, and the host's address
+/// and port or range, empty where not given.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Published {
+    pub port: u16,
+    pub proto: String,
+    pub host_ip: String,
+    pub host_port: String,
+}
+
 /// A file a snapshot restores against, by its name relative to the home, its length and
 /// its bytes' SHA-256.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -368,6 +388,16 @@ pub(crate) enum Refused {
     VolumeTaken { name: String, volume: String },
     /// A host path it binds is not on this machine.
     BindAbsent { name: String, path: String },
+    /// A port it publishes cannot be bound on this machine, as its restore would bind it:
+    /// the binding as its run asked for it, and why.
+    PortTaken {
+        name: String,
+        port: u16,
+        proto: String,
+        host_ip: String,
+        host_port: String,
+        why: String,
+    },
 }
 
 /// A field of the CPU a guest was told that this machine's hypervisor shows less of.
@@ -555,6 +585,24 @@ impl std::fmt::Display for Refused {
                 f,
                 "{path}, which {name} binds, is not on this machine: a move takes a bind's host path shared at the same place"
             ),
+            Refused::PortTaken {
+                name,
+                port,
+                proto,
+                host_ip,
+                host_port,
+                why,
+            } => {
+                let at = if host_ip.is_empty() {
+                    format!("port {host_port}")
+                } else {
+                    format!("{host_ip}:{host_port}")
+                };
+                write!(
+                    f,
+                    "{name} publishes its port {port}/{proto} at {at}, which this machine cannot bind: {why}"
+                )
+            }
         }
     }
 }
@@ -1261,6 +1309,7 @@ impl<D: Disk> Daemon<D> {
             "moved-{}",
             shards_cmdline::format::rfc3339_at(now, 0).replace(':', "-")
         );
+        let (published, network) = self.published_of(&c);
         let plan = Plan {
             id: c.id.clone(),
             name: c.name.clone(),
@@ -1278,6 +1327,8 @@ impl<D: Disk> Daemon<D> {
             guest: self.boots_stored_guest(&c.id),
             baseline: read_baseline(&lock(&self.containers).dir(&c.id).join(RUN_BASELINE)),
             cpu_identity: self.exact_cpu(),
+            published,
+            network,
         };
         serde_json::to_string(&plan).map_err(|e| e.to_string())
     }
@@ -1490,6 +1541,7 @@ impl<D: Disk> Daemon<D> {
         }
         volumes.sort();
         volumes.dedup();
+        let (published, network) = self.published_of(&c);
         Ok(Plan {
             id: c.id.clone(),
             name: c.name.clone(),
@@ -1507,6 +1559,8 @@ impl<D: Disk> Daemon<D> {
             guest: self.boots_stored_guest(id),
             baseline: read_baseline(&lock(&self.containers).dir(id).join(RUN_BASELINE)),
             cpu_identity: self.exact_cpu(),
+            published,
+            network,
         })
     }
 
@@ -1555,6 +1609,66 @@ impl<D: Disk> Daemon<D> {
             shards_vmm::arch::cpu::decode(out.trim())
         })()?;
         Ok(HOST.get_or_init(|| asked).clone())
+    }
+
+    /// The ports container `c`'s run publishes on this machine's addresses, as its request
+    /// asked for them, and its network: none where its run bound no host port (no `-p`, or a
+    /// network whose members' ports are not the host's).
+    fn published_of(&self, c: &Container) -> (Vec<Published>, String) {
+        if !c.ports.iter().any(|p| p.public != 0) {
+            return (Vec::new(), String::new());
+        }
+        let dir = lock(&self.containers).dir(&c.id);
+        let Some(run) = std::fs::read(dir.join(super::REQUEST))
+            .ok()
+            .and_then(|b| shards_ipc::Run::decode(&b))
+        else {
+            return (Vec::new(), String::new());
+        };
+        let published = run
+            .publish
+            .iter()
+            .map(|p| Published {
+                port: p.port,
+                proto: p.proto.clone(),
+                host_ip: p.host_ip.clone(),
+                host_port: p.host_port.clone(),
+            })
+            .collect();
+        (published, run.network)
+    }
+
+    /// The first port `plan`'s microVM publishes that this machine cannot bind as a start
+    /// binds it (`publish::bind`: the address its binding names, else its network's, else
+    /// every one; a port of its range; this daemon's own runs' addresses as `in_use` says),
+    /// refused by what it is. The sockets go at once: its restore binds them again, and stays
+    /// what fails the move should another program take one meanwhile.
+    fn ports_refused(&self, plan: &Plan) -> Option<Refused> {
+        let default = self.user_network(&plan.network).and_then(|n| n.host_binding());
+        plan.published.iter().find_map(|p| {
+            let binding = shards_ipc::Publish {
+                port: p.port,
+                proto: p.proto.clone(),
+                host_ip: p.host_ip.clone(),
+                host_port: p.host_port.clone(),
+            };
+            super::publish::bind(
+                std::slice::from_ref(&binding),
+                &[],
+                default,
+                super::publish::v6_listenable(),
+                |at, proto| self.in_use(at, proto),
+            )
+            .err()
+            .map(|why| Refused::PortTaken {
+                name: plan.name.clone(),
+                port: p.port,
+                proto: p.proto.clone(),
+                host_ip: p.host_ip.clone(),
+                host_port: p.host_port.clone(),
+                why,
+            })
+        })
     }
 
     /// Whether container `id`'s run boots the guest its home stores: its request names no
@@ -1627,6 +1741,11 @@ impl<D: Disk> Daemon<D> {
                 path: bind.clone(),
             }
             .into());
+        }
+        // Its published ports, which its restore binds again as a start does: one this
+        // machine cannot bind failed the move only after the whole stream.
+        if let Some(refused) = self.ports_refused(&plan) {
+            return Err(refused.into());
         }
         // Its image, by the digest its name resolved to: here, or pulled by it.
         let image = self.moved_image(&plan, asker, reply);
@@ -2146,6 +2265,8 @@ mod tests {
             guest: false,
             baseline: Vec::new(),
             cpu_identity: Vec::new(),
+            published: Vec::new(),
+            network: String::new(),
         }
     }
 
@@ -2284,6 +2405,18 @@ mod tests {
                 Refused::CpuVendor { name: "web".into() },
                 "web's CPU baseline is another vendor's CPU than this machine's: no CPUID makes \
                  one vendor's CPU another's",
+            ),
+            (
+                Refused::PortTaken {
+                    name: "web".into(),
+                    port: 80,
+                    proto: "tcp".into(),
+                    host_ip: "127.0.0.1".into(),
+                    host_port: "8080".into(),
+                    why: "Bind for 127.0.0.1:8080 failed: port is already allocated".into(),
+                },
+                "web publishes its port 80/tcp at 127.0.0.1:8080, which this machine cannot \
+                 bind: Bind for 127.0.0.1:8080 failed: port is already allocated",
             ),
             (
                 Refused::CpuIdentity { name: "web".into() },

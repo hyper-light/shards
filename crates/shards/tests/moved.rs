@@ -542,6 +542,63 @@ fn a_volume_shared_here_moves_with_one_and_the_other_goes_on_here() {
     assert_eq!(shards_in(&there, &["rm", "-f", "first"]).status, Some(0));
 }
 
+/// A microVM's published port goes with it (D176 part 6): its guest serving on port 7000,
+/// published on a host port its home picks (`-p 7000`), answers on the other home at the port
+/// that home bound for it as its restore started it, as it answered here. Two homes of one
+/// machine share its host ports, so each picks its own here; a fixed one is the two-host
+/// test's.
+#[test]
+fn a_moved_microvms_published_port_answers_there() {
+    use std::io::{Read as _, Write as _};
+    let Some((here, there, _listening, image)) = machines("ports") else {
+        return;
+    };
+    let run = shards_in(
+        &here,
+        &[
+            "run", "-d", "--pull", "never", "--name", "web", "-p", "7000", &image, "serve", "7000", "2",
+        ],
+    );
+    assert_eq!(run.status, Some(0), "{run}");
+    let log_here = || logs(&here, "web");
+    until("serving", &mut || log_here().contains("ready"), &log_here);
+    let ask = |home: &Path| {
+        let listed = shards_in(home, &["port", "web", "7000"]);
+        let port: u16 = listed
+            .stdout
+            .lines()
+            .find_map(|l| l.strip_prefix("0.0.0.0:"))
+            .and_then(|p| p.trim().parse().ok())
+            .unwrap_or_else(|| panic!("{listed}"));
+        let mut c = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        c.set_read_timeout(Some(TIMEOUT)).unwrap();
+        c.write_all(b"hello").unwrap();
+        c.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut got = String::new();
+        c.read_to_string(&mut got).unwrap();
+        got
+    };
+    let answered = ask(&here);
+    assert!(
+        answered.starts_with("from ") && answered.ends_with("\nhello"),
+        "{answered}"
+    );
+    let moved = shards_in(&here, &["move", "vm", "web", "lab"]);
+    assert_eq!(
+        (moved.status, moved.stdout.as_str()),
+        (Some(0), "web\n"),
+        "{moved}\nhere:\n{}\nthere:\n{}",
+        daemon_log(&here),
+        daemon_log(&there)
+    );
+    let answered = ask(&there);
+    assert!(
+        answered.starts_with("from ") && answered.ends_with("\nhello"),
+        "{answered}"
+    );
+    assert_eq!(shards_in(&there, &["rm", "-f", "web"]).status, Some(0));
+}
+
 /// `shards move vm --live NAME lab` with what it reports of its rounds and its downtime
 /// (`SHARDS_MOVE_TIMES`): the run, and the downtime in µs where it said one.
 fn move_live(here: &Path, name: &str) -> (Run, Option<u64>) {

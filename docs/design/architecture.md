@@ -12023,6 +12023,17 @@ other's but what the move sends, and what the other takes by content:
   (`a_cpu_lacking_what_its_guest_may_have_used_is_named`, moves.rs).
 - **Its connections**, dialed again by its init there as a restore here redials them
   (part 3), and its address on its network asked for again.
+- **Its published ports**, bound again there as its restore starts it, as a start binds
+  them (`publish::bind`: the host address its binding names, else its network's, else every
+  one). The plan carries them as its run asked for them (`Plan::published`, `-p`'s own words,
+  with its network), and the machine moved to binds each before anything moves, letting it
+  go at once: a port another program holds there, or a run of its own, refuses the move
+  (`Refused::PortTaken`), which goes on here, where it was refused only at the restore, after
+  the whole stream. A binding with no host port, or a range, takes any free port of it there,
+  as a start does. Its restore's bind stays what holds them, and fails the move should
+  another program take one between. Two homes of one machine share its host ports, so their
+  test publishes on a port each home picks (`a_moved_microvms_published_port_answers_there`);
+  a fixed one is the two-host test's.
 - **Refused before anything moves, by what refuses it** (R04). The machine moved to answers
   `ready` with a `Refused` (daemon/moves.rs) as JSON on stdout, beside its words on
   stderr, which a mover of an earlier build prints as before; this build's mover reads it
@@ -12035,7 +12046,8 @@ other's but what the move sends, and what the other takes by content:
   CPU than the one it was saved on, where this machine's hypervisor restores a snapshot only
   on that one (WHP on x86-64, `Plan::cpu_identity`, D245); the
   features its guest may have used that this CPU lacks, by name; its ID, its name or a
-  volume of its name here already; a bind's host path absent. A plan of an earlier build
+  volume of its name here already; a bind's host path absent; a port it publishes that this
+  machine cannot bind. A plan of an earlier build
   names no hypervisor, and is taken as before. Held by
   `a_microvm_of_another_hypervisor_is_refused_before_anything_moves` and
   `a_refusal_is_typed_on_the_wire_and_says_what_it_said` (moves.rs),
