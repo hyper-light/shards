@@ -1872,6 +1872,7 @@ mod tests {
                 waiter: 1,
                 now: Instant::now(),
                 audit: Vec::new(),
+                refused: Vec::new(),
             }
         }
         let mut credentials = credentials("api.example.test");

@@ -100,6 +100,21 @@ pub struct Resumed {
     pub outcome: Result<(), Refusal>,
 }
 
+/// The refusals among `resumed` of the asks flow `waiter` waited on, by reference: what its
+/// resume carries to it, so that a refusal answers the asks it was for and is not asked again
+/// (an answered ask's lease is gone from [`Leases`], held or not).
+pub fn refused(resumed: &[Resumed], waiter: Waiter) -> Vec<(String, Refusal)> {
+    let mut refused: Vec<(String, Refusal)> = Vec::new();
+    for r in resumed.iter().filter(|r| r.waiter == waiter) {
+        if let Err(why) = &r.outcome
+            && !refused.iter().any(|(reference, _)| *reference == r.reference)
+        {
+            refused.push((r.reference.clone(), why.clone()));
+        }
+    }
+    refused
+}
+
 /// One credential's lease, where it stands (R04).
 enum Lease {
     /// Asked of the run host by `id`; the flows waiting on its answer.
@@ -554,6 +569,33 @@ mod tests {
             assert_eq!(l.held(CLAUDE, now), None);
             assert!(matches!(l.ask(CLAUDE, 8, now), Asked::Waiting), "{refusal:?}");
         }
+    }
+
+    /// Do: two flows wait on a lease that is refused, one of them twice (two HTTP/2 streams),
+    /// and on another that is held. Expect: each flow's resume carries the refusal once, the
+    /// held one carries none, and a flow that waited on nothing refused carries none.
+    #[test]
+    fn a_resume_carries_each_flows_refusals_to_it() {
+        let now = Instant::now();
+        let mut l = Leases::new(vec![CLAUDE.into(), "other".into()]);
+        for waiter in [7, 7, 8] {
+            assert!(matches!(l.ask(CLAUDE, waiter, now), Asked::Waiting));
+        }
+        assert!(matches!(l.ask("other", 9, now), Asked::Waiting));
+        let asks = l.asks();
+        let why = Refusal::Denied("its policy keeps it".into());
+        let id = the_ask(&asks, CLAUDE);
+        assert!(l.answered(&encode_answer(id, Err(&why)).unwrap(), now));
+        let life = NonZeroU64::new(60_000_000_000).unwrap();
+        let id = the_ask(&asks, "other");
+        assert!(l.answered(&encode_answer(id, Ok((life, b"v"))).unwrap(), now));
+        let resumed = l.resumed();
+        assert_eq!(resumed.len(), 4);
+        for waiter in [7, 8] {
+            assert_eq!(refused(&resumed, waiter), [(CLAUDE.to_string(), why.clone())]);
+        }
+        assert_eq!(refused(&resumed, 9), []);
+        assert_eq!(refused(&resumed, 10), []);
     }
 
     /// Do: end the run with one lease held and one asked, then answer the asked one and ask

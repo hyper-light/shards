@@ -111,13 +111,45 @@ fn guest_config(cert: Vec<u8>, key: Vec<u8>, alpn: &[u8]) -> Result<Arc<ServerCo
 }
 
 /// What a flow reaches of its run as it is served (D242): the run's credentials, the token its
-/// leases resume it by, the time it is served at, and what it filled in, for the audit.
+/// leases resume it by, the time it is served at, what it filled in, for the audit, and, as a
+/// resume serves it, the refusals of the asks it waited on ([`lease::refused`]).
 #[derive(Debug)]
 pub struct Run<'a> {
     pub credentials: &'a mut Credentials,
     pub waiter: lease::Waiter,
     pub now: Instant,
     pub audit: Vec<Audit>,
+    pub refused: Vec<(String, lease::Refusal)>,
+}
+
+impl<'a> Run<'a> {
+    /// The run flow `waiter` is resumed with at `now` (lib.rs' `resume_flows`): the refusals
+    /// among `resumed` of the asks it waited on carried to it.
+    pub fn resumed(
+        credentials: &'a mut Credentials,
+        waiter: lease::Waiter,
+        resumed: &[lease::Resumed],
+        now: Instant,
+    ) -> Run<'a> {
+        Run {
+            credentials,
+            waiter,
+            now,
+            audit: Vec::new(),
+            refused: lease::refused(resumed, waiter),
+        }
+    }
+
+    /// Credential `reference`'s lease for this flow: refused where the ask it waited on was,
+    /// that refusal answering it, else as the run's leases stand. A refusal answers the asks
+    /// made before it alone: it is gone with the resume that carried it, so a later request
+    /// asks anew.
+    fn ask(&mut self, reference: &str) -> Asked<'_> {
+        if let Some((_, why)) = self.refused.iter().find(|(r, _)| r == reference) {
+            return Asked::Refused(why.clone());
+        }
+        self.credentials.leases.ask(reference, self.waiter, self.now)
+    }
 }
 
 /// What the injector did with a credential (D242, f26): toward which host, which credential
@@ -2016,7 +2048,7 @@ impl Ended {
                 continue;
             }
             asked.push(reference);
-            match run.credentials.leases.ask(reference, run.waiter, run.now) {
+            match run.ask(reference) {
                 Asked::Held(_) => {}
                 Asked::Waiting => waiting = true,
                 Asked::Refused(why) => {
@@ -3487,7 +3519,7 @@ impl H2 {
         }
         let mut waiting = false;
         for reference in references {
-            match run.credentials.leases.ask(&reference, run.waiter, run.now) {
+            match run.ask(&reference) {
                 Asked::Held(_) => {}
                 Asked::Waiting => waiting = true,
                 Asked::Refused(why) => return self.answer(gid, Refusal::Unleased { reference, why }),
@@ -4262,15 +4294,6 @@ mod tests {
             }
         }
 
-        /// The flow resumed as lib.rs' `resume_flows` resumes it: its leases answered since the
-        /// last, each its own.
-        fn resume(&mut self, credentials: &mut Credentials) {
-            for r in credentials.leases.resumed() {
-                assert_eq!(r.waiter, self.waiter);
-            }
-            self.step(credentials, None, |f, run, q| f.resume(run, q));
-        }
-
         /// The flow's step with the run, its say taken as tcp.rs takes it.
         fn step(
             &mut self,
@@ -4278,13 +4301,29 @@ mod tests {
             host: Option<&[u8]>,
             f: impl FnOnce(&mut Flow, &mut Run<'_>, &mut Queues<'_>) -> Said,
         ) {
+            let run = Run::resumed(credentials, self.waiter, &[], Instant::now());
+            self.step_in(run, host, f);
+        }
+
+        /// The flow resumed as lib.rs' `resume_flows` resumes it: its leases answered since the
+        /// last, each its own, through the same `Run::resumed`.
+        fn resume(&mut self, credentials: &mut Credentials) {
+            let resumed = credentials.leases.resumed();
+            for r in &resumed {
+                assert_eq!(r.waiter, self.waiter);
+            }
+            let run = Run::resumed(credentials, self.waiter, &resumed, Instant::now());
+            self.step_in(run, None, |f, run, q| f.resume(run, q));
+        }
+
+        /// [`step`](Self::step) with `run`.
+        fn step_in(
+            &mut self,
+            mut run: Run<'_>,
+            host: Option<&[u8]>,
+            f: impl FnOnce(&mut Flow, &mut Run<'_>, &mut Queues<'_>) -> Said,
+        ) {
             let Some(flow) = self.flow.as_mut() else { return };
-            let mut run = Run {
-                credentials,
-                waiter: self.waiter,
-                now: Instant::now(),
-                audit: Vec::new(),
-            };
             let said = f(
                 flow,
                 &mut run,
@@ -4901,6 +4940,7 @@ mod tests {
             waiter: 7,
             now: Instant::now(),
             audit: Vec::new(),
+            refused: Vec::new(),
         };
         let mut mask = Mask::default();
         mask.filled.push((CLAUDE.into(), 0));
