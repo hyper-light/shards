@@ -2273,7 +2273,10 @@ fn a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket() {
     let listening = |socket: &std::path::Path, child: &mut std::process::Child| {
         let start = Instant::now();
         while !socket.exists() {
-            assert!(child.try_wait().unwrap().is_none(), "its VM ended before it listened");
+            assert!(
+                child.try_wait().unwrap().is_none(),
+                "its VM ended before it listened"
+            );
             assert!(start.elapsed() < TIMEOUT, "no socket in {TIMEOUT:?}");
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -2322,7 +2325,10 @@ fn a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket() {
         used <= most,
         "{used} ns of CPU in {wall} ns, held to a quarter CPU (unheld: {free} ns in {free_wall} ns)"
     );
-    assert!(used >= wall / 20, "{used} ns of CPU in {wall} ns: held, and never let go");
+    assert!(
+        used >= wall / 20,
+        "{used} ns of CPU in {wall} ns: held, and never let go"
+    );
     for (whole_or_none, said) in [(1000, "its one vCPU's whole CPU"), (0, "none")] {
         let line = asked(&socket, whole_or_none).unwrap();
         assert_eq!(
@@ -2339,7 +2345,11 @@ fn a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket() {
     let plain_socket = dir.join("u");
     let mut plain = boot(&plain_socket, false);
     listening(&plain_socket, &mut plain);
-    assert_eq!(asked(&plain_socket, 250), None, "a guest not booted --host-managed");
+    assert_eq!(
+        asked(&plain_socket, 250),
+        None,
+        "a guest not booted --host-managed"
+    );
     let _ = plain.kill();
     let _ = plain.wait();
 }
