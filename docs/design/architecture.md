@@ -17782,9 +17782,11 @@ Agentfile). That PID 1 mounts the node's file systems, gives the node its descri
 starts the node and its relay within its host's deadline, and powers the guest off when
 either ends (f3).
 
-Run as the command of a shards run instead, the node would gain templates, warm pools,
-D188's budgets and give-back, metrics and default-deny networks, and every microVM would
-boot one way (kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, steps 38 and 39).
+Run as the command of a shards run as well, the node would gain templates, warm pools,
+D188's budgets and give-back, metrics and default-deny networks (kiln plan
+01a1cd8e862e7169a074db3d5fa33f3d, steps 38 and 39). Hex's own PID 1 stays beside that path,
+never removed, and shards-init works with it (the person, repeatedly; restated 2026-11-13;
+step 39 at the plan's version 12): a microVM boots either way.
 
 A shards workload already has most of what that PID 1 does (f12, f13, f14, f27, f28). What
 it lacks is the authority to make boxes:
@@ -18017,8 +18019,9 @@ it, and stopping the run is the caller's decision.
   fresh /proc in a user namespace under shards' masked /proc, and Docker refuses writable
   cgroups with user namespaces (f33). It stays a later layer, for where /proc can be given
   whole.
-- Hex keeping its own PID 1 (D215): two ways to boot a microVM, and Hex's without
-  templates, pools, budgets or default-deny networks (f3).
+- Hex's own PID 1 (D215) alone, with no grant: Hex's node without templates, pools,
+  budgets or default-deny networks (f3). That PID 1 is kept beside the grant, not in its
+  place (the person, restated 2026-11-13; plan step 39).
 - The image's word alone: every run of an image would escalate as its author says, where
   established nesting grants ask the operator too (f32).
 
@@ -24184,10 +24187,10 @@ member's files by path and by link, and nothing of init's held),
 
 **How it reaches every run.** A command run in a member is the run protocol's exec with
 `in-member=N`, resized by `EXEC_RESIZE`, whoever sends it: the daemon for `shards exec --for`,
-and step 11's control and terminal lanes, which carry the run protocol to init at the host's
-end of their TLS (D238). So there is no separate shards-api exec (ROOT, 2026-11-13); Hex's
-`MemberExec` is the control lane's. A member's own stdio is attached through step 5's streams
-(D240).
+and step 11's exec lanes, each exec a lane of its own whose ask carries it, a `run::Spec` byte
+for byte, to the host's end of their TLS (D238 "Exec lanes", ROOT's design (B), 2026-11-13). So
+there is no separate shards-api exec (ROOT, 2026-11-13); Hex's `MemberExec` is an exec lane's
+ask. A member's own stdio is attached through step 5's streams (D240).
 
 **A member's own terminal** is D244's.
 
@@ -24246,7 +24249,7 @@ step 11's terminal lane takes the same entry and built-in where it does.
 |---|---|
 | `member-terminal=` | this wire's own, beside D231's `member-*=` entries |
 | `builtin::RESIZE` 21 | the next after `NOTICE` 20 |
-| the channel's version 11 | ROOT's reservation (9 and 10 are other lanes') |
+| the channel's version 11 | ROOT's reservation (9 and 10 were other lanes', and are never used: ROOT, 2026-11-13; D246) |
 | `to_host::RESIZE` 11, `to_client::RESIZED` 28 | the next of each |
 | `run::HEADER` + `run::CHUNK` | one `STDIN` frame's bound |
 | 0 by 0 | the kernel's size of a new pty |
@@ -24430,7 +24433,11 @@ grants each name who, to whom, which port and which way, so Hex refused every de
   An orchestrator that holds its members apart keeps no such port (Hex keeps none).
 
 **Literals.** Version 12, the channel's next version above the one on main as it landed (11,
-D244's): a version only appends, so it is the next number up, whichever lane lands first. A
+D244's): a version only appends, so it is the next number up, whichever lane lands first.
+Versions 9 and 10, reserved for other lanes as D244 took 11, are never used (ROOT,
+2026-11-13): each side decodes its own version exactly (`Request::decode`,
+`WireError::Version`), so a request of 9 or 10 is never made, and is refused by its version
+as any other is. A
 member's entry is at least nine bytes on the wire (its kind, its name's length, its names'
 count) and a name at least four (its length): the least sizes `count` refuses a hostile count
 by, read off the encoding. No bound, wait or size of its own.
