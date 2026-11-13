@@ -2684,16 +2684,28 @@ mod tests {
                 "{me} {other}, this process started at {start}"
             );
         }
-        // Another process's start is its own.
+        // Another process is known by its own ID, its pid with its start. Its start alone may
+        // be this process's: Linux counts starts in clock ticks (proc(5)), and a child made
+        // in its parent's first tick starts in that tick. Once the child has gone, its ID
+        // names a process that doesn't live.
         let mut child = std::process::Command::new(std::env::current_exe().unwrap())
             .arg("--list")
             .stdout(std::process::Stdio::null())
             .spawn()
             .unwrap();
-        let child_start = started(child.id());
+        let pid = child.id();
+        let child_start = started(pid);
         let _ = child.wait();
         if let Ok(child_start) = child_start {
-            assert_ne!(child_start, start);
+            // Linux's ticks and macOS's Mach time count from boot and never go back;
+            // Windows' creation time is the wall clock's, which may.
+            #[cfg(unix)]
+            assert!(
+                child_start >= start,
+                "{pid} started at {child_start}, before this process at {start}"
+            );
+            std::fs::write(home.join(PID), format!("{pid} {child_start}\n")).unwrap();
+            assert!(!daemon_lives(&home), "{pid} {child_start} has gone");
         }
     }
 

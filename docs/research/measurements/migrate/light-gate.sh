@@ -118,4 +118,7 @@ mutate $moves_rs "    (replaced == Some(asked)).then(|| Refused::KeyReplaced {" 
 	"    (replaced == Some(asked) && false).then(|| Refused::KeyReplaced {" \
 	"${shards[@]}" a_lease_under_the_key_a_move_replaced_is_refused_and_the_run_names_its_own \
 	a_managed_runs_move_and_a_lease_under_its_replaced_key_are_refused_typed
+# M15: a test of another machine the harness's `e2e` does not run (step 5).
+mutate docs/research/measurements/migrate/two-hosts.sh "a_moved_microvms_published_port_answers_on_another_host" "" \
+	cargo test -p shards --test moved the_harness_runs_every_test_of_another_machine
 echo GATE_DONE >> "$log"

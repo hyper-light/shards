@@ -724,7 +724,10 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
     let mut layer = None;
     let mut layer_cloned = None;
     let mut working_set_to = None;
-    while let Some(arg) = args.next() {
+    // Each word with the value `spec::next_vm_word` gives it, a value only for a flag
+    // `spec::RUN_VALUED` or `spec::RESTORE_VALUED` lists, as the command line is read ahead
+    // of this (cli/mod.rs `vm_options`).
+    while let Some((arg, mut given)) = crate::spec::next_vm_word(&mut args, true) {
         // The snapshot directory is a path, in whatever bytes; every option is text.
         let Some(flag) = arg.to_str().map(str::to_owned) else {
             if dir.is_some() {
@@ -733,7 +736,7 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
             dir = Some(PathBuf::from(arg));
             continue;
         };
-        let mut value = |name: &str| args.next().ok_or_else(|| format!("{name} needs a value"));
+        let mut value = |name: &str| given.take().ok_or_else(|| format!("{name} needs a value"));
         if common.option(&flag, &mut value)? {
             continue;
         }
@@ -3522,6 +3525,22 @@ mod tests {
                 .unwrap_or_else(|| panic!("{flag}: taken without a value"));
             assert!(e.contains("needs a value"), "{flag}: {e}");
         }
+    }
+
+    /// What `restore` alone reads a value after, as `spec::RESTORE_VALUED` tells what reads
+    /// its command line ahead of it (cli/mod.rs `vm_options`): each needs its value, which
+    /// it takes whatever it reads as (D232).
+    #[test]
+    fn a_restores_own_valued_flags_take_their_values() {
+        for flag in crate::spec::RESTORE_VALUED {
+            let e = parse_restore(args(&[b"/t", flag.as_bytes()]))
+                .err()
+                .unwrap_or_else(|| panic!("{flag}: taken without a value"));
+            assert!(e.contains("needs a value"), "{flag}: {e}");
+        }
+        let restore = parse_restore(args(&[b"/t", b"--layer", b"/l", b"--layer-cloned", b"--hold"])).unwrap();
+        assert_eq!(restore.cfg.layer_cloned.as_deref(), Some("--hold"));
+        assert!(!restore.cfg.hold);
     }
 
     fn args(list: &[&[u8]]) -> impl Iterator<Item = OsString> {
