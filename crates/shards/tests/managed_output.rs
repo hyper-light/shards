@@ -178,7 +178,16 @@ impl Fixture {
         assert_eq!(built.status, Some(0), "{built}");
         let run = |args: &[&str]| self.command(args, until.saturating_duration_since(Instant::now()));
         let stdin = self.stdin.map(|members| format!("shards.stdin={members}"));
-        let mut args = vec!["run", "vm", "-d", "--name", "owner-output"];
+        // Its owner reads both members' output (D240): the daemon drains none of it.
+        let mut args = vec![
+            "run",
+            "vm",
+            "-d",
+            "--name",
+            "owner-output",
+            "--annotation",
+            "shards.output=agent:helper,harness:driver",
+        ];
         for binding in publication.iter().flatten() {
             args.extend(["-p", binding.as_str()]);
         }

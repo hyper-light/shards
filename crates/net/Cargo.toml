@@ -15,6 +15,9 @@ shards-abi = { path = "../abi" }
 shards-dns = { path = "../dns" }
 shards-netring = { path = "../netring" }
 shards-ipc = { path = "../ipc" }
+# The run's CA (D242): rcgen over AWS-LC, as shards-server makes its own (crates/server).
+rcgen = { version = "0.14.10", default-features = false, features = ["aws_lc_rs"] }
+time = { version = "0.3.55", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
@@ -31,4 +34,5 @@ windows-sys = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
+rustls = { version = "0.23.45", default-features = false, features = ["std", "aws_lc_rs"] }
 shards-testdir = { path = "../testdir" }
