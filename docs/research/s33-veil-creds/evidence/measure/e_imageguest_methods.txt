@@ -1,0 +1,13 @@
+# ImageGuest's methods at 99d88fccf6107d1929c1115eb220a732b182fd37 (crates/api/src/image.rs lines 195-247)
+    fn members(&self) -> &[MemberInfo];
+    fn published(&self) -> &[Bound];
+    fn take_output(&self, member: &MemberName, channel: Channel)
+    fn take_input(&self, member: &MemberName) -> Result<std::io::PipeWriter, ImageRefusal>;
+    fn wait_member(&self, member: &MemberName, timeout: Duration) -> Result<Option<MemberEnd>, ImageRefusal>;
+    fn stats(&self, scope: StatsScope, patience: Duration) -> Result<Stats, ImageRefusal>;
+    fn wait_ready(&self, seen: Option<Ready>, timeout: Duration) -> Result<Option<Ready>, ImageRefusal>;
+    fn plug(
+    fn unplug(&self, at: &str, patience: Duration) -> Result<(), ImageRefusal>;
+    fn stop(&self) -> Result<(), ImageRefusal>;
+    fn wait_for(&self, timeout: Duration) -> Result<Option<RunEnd>, ImageRefusal>;
+methods named save: 0

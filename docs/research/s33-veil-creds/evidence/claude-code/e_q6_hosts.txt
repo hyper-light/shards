@@ -1,0 +1,89 @@
+# Q6 host searches on BIN=$B = linux-x64 claude 2.1.311 (sha256 86dc1fcc69498159eaf15f446613e847010f9036bfbbdffd4c49350be8489ada), searched only, never executed.
+# B=/var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/tmp.cvKZio0ayi/claude
+# GG=/opt/homebrew/bin/ggrep
+## command: LC_ALL=C $GG -a -o -b -E 'https://[A-Za-z0-9.-]*(anthropic\.com|claude\.ai|claude\.com)[A-Za-z0-9./_?=&%-]*oauth[A-Za-z0-9./_?=&%-]*' "$B" | awk -F: '{print $2":"$3}' | sort | uniq -c | sort -rn
+   3 https://api.anthropic.com/api/oauth/cri
+   2 https://platform.claude.com/v1/oauth/token
+   2 https://platform.claude.com/oauth/code/success?app=claude-code
+   2 https://platform.claude.com/oauth/code/callback
+   2 https://platform.claude.com/oauth/authorize
+   2 https://platform.claude.com/buy_credits?returnUrl=/oauth/code/success%3Fapp%3Dclaude-code
+   2 https://claude.com/cai/oauth/authorize
+   2 https://claude.ai/oauth/claude-code-client-metadata
+   2 https://api.anthropic.com/api/oauth/claude_cli/create_api_key
+   1 https://api.anthropic.com/api/oauth/claude_cli/rolesY
+   1 https://api.anthropic.com/api/oauth/claude_cli/roles
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'let u=on\(\),c=new URL\(u\.TOKEN_URL\),t=\[`\$\{u\.BASE_API_URL\}/api/hello`,`\$\{c\.origin\}/v1/oauth/hello`\]' "$B"
+279025319:let u=on(),c=new URL(u.TOKEN_URL),t=[`${u.BASE_API_URL}/api/hello`,`${c.origin}/v1/oauth/hello`]
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'var T="https://http-intake\.logs\.us5\.datadoghq\.com/api/v2/logs"' "$B"
+243190120:var T="https://http-intake.logs.us5.datadoghq.com/api/v2/logs"
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'var p="https://browser-intake-us5-datadoghq\.com/api/v2/logs"' "$B"
+247747639:var p="https://browser-intake-us5-datadoghq.com/api/v2/logs"
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'function Oar\(e\)\{return Di\}var Di="https://api\.anthropic\.com/"' "$B"
+242433309:function Oar(e){return Di}var Di="https://api.anthropic.com/"
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'let w=new Is\(\{apiHost:y,clientKey:h,attributes:s,remoteEval:!0,.{0,200}apiHostRequestHeaders:\{"User-Agent":Bs\(\),\.\.\.S&&n\.headers\}' "$B" | LC_ALL=C tr -c '[:print:]\n' '.'
+242443407:let w=new Is({apiHost:y,clientKey:h,attributes:s,remoteEval:!0,cacheKeyAttributes:["id","organizationUUID","slackTagConnected","atisPin","ccrDerivedSurface","sdkCachePartition"],apiHostRequestHeaders:{"User-Agent":Bs(),...S&&n.headers}
+## end
+## command: LC_ALL=C $GG -a -o -b -i -E '[A-Za-z0-9.-]*(statsig|ingest\.sentry|sentry\.io)[A-Za-z0-9.-]*' "$B" | awk -F: '$1>=115363840 {print $2}' | sort | uniq -c | sort -rn
+   6 statsig
+   2 sentry.io
+   2 o1158394.ingest.us.sentry.io
+   2 .sentry.io
+   2 .ingest.us.sentry.io
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'VT\.SENTRY_WILDCARD_HOST="\*\.sentry\.io";VT\.SPELLCHECK_DICTIONARY_HOST="redirector\.gvt1\.com";VT\.SPELLCHECK_DICTIONARY_WILDCARD="\*\.gvt1\.com";VT\.SENTRY_INGEST_HOST="o1158394\.ingest\.us\.sentry\.io"' "$B"
+268314080:VT.SENTRY_WILDCARD_HOST="*.sentry.io";VT.SPELLCHECK_DICTIONARY_HOST="redirector.gvt1.com";VT.SPELLCHECK_DICTIONARY_WILDCARD="*.gvt1.com";VT.SENTRY_INGEST_HOST="o1158394.ingest.us.sentry.io"
+## end
+## command: LC_ALL=C $GG -a -o -b -E '@sentry/[a-z-]+|Sentry\.init|SENTRY_DSN|https://[0-9a-f]{32}@' "$B" | awk -F: '$1>=115363840' | wc -l
+       0
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'https://(downloads\.claude\.ai|storage\.googleapis\.com|registry\.npmjs\.org|raw\.githubusercontent\.com|mcp-proxy\.anthropic\.com|bridge\.claudeusercontent\.com|code\.claude\.com|formulae\.brew\.sh)[A-Za-z0-9./_-]{0,50}' "$B" | awk -F: '$1>=238000000 {print $2":"$3}' | cut -d/ -f1-4 | sort | uniq -c | sort -rn | head -30
+3016 https://code.claude.com/docs
+   4 https://raw.githubusercontent.com/ajv-validator
+   4 https://downloads.claude.ai/claude-code-releases
+   3 https://downloads.claude.ai/model-catalog
+   2 https://formulae.brew.sh/api
+   1 https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c09
+   1 https://registry.npmjs.org/
+   1 https://raw.githubusercontent.com/anthropics
+   1 https://mcp-proxy.anthropic.com
+   1 https://downloads.claude.ai/
+   1 https://downloads.claude.ai
+   1 https://code.claude.com/docs.
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'BASE_API_URL\}/[A-Za-z0-9_/.?=-]+' "$B" | awk -F: '$1>=238000000 {print $2}' | sort | uniq -c | sort -rn
+  11 BASE_API_URL}/v1/code/sessions/
+   3 BASE_API_URL}/api/oauth/organizations/
+   2 BASE_API_URL}/v1/mcp_servers?limit=1000
+   2 BASE_API_URL}/api/hello
+   1 BASE_API_URL}/v1/session_ingress/session/
+   1 BASE_API_URL}/v1/environment_providers/cloud/create
+   1 BASE_API_URL}/v1/environment_providers
+   1 BASE_API_URL}/v1/code/sessions?limit=100
+   1 BASE_API_URL}/v1/code/sessions
+   1 BASE_API_URL}/v1/code/runners/self-hosted/pools
+   1 BASE_API_URL}/api/oauth/validate
+   1 BASE_API_URL}/api/oauth/profile
+   1 BASE_API_URL}/api/claude_code_penguin_mode
+   1 BASE_API_URL}/api/claude_code/settings
+   1 BASE_API_URL}/api/claude_code/organizations/metrics_enabled
+   1 BASE_API_URL}/api/claude_code/metrics
+   1 BASE_API_URL}/api/claude_cli_profile
+## end
+## command: LC_ALL=C $GG -a -o -b -E '"/api/event_logging/v2/batch"|"/api/ws/speech_to_text/voice_stream"' "$B" | awk -F: '$1>=238000000 {print $2}' | sort | uniq -c
+   2 "/api/event_logging/v2/batch"
+   1 "/api/ws/speech_to_text/voice_stream"
+## end
+## command: LC_ALL=C $GG -a -o -b -E '(DISABLE_TELEMETRY|CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC|DISABLE_ERROR_REPORTING|DISABLE_AUTOUPDATER|DISABLE_GROWTHBOOK|DO_NOT_TRACK|CLAUDE_CODE_DISABLE_FEATURE_FLAGS):\(\)=>[A-Za-z_$]+' "$B" | awk -F: '$1>=238000000 {print $2":"$3}' | sort -u
+CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:()=>Kr
+DISABLE_AUTOUPDATER:()=>vC
+DISABLE_ERROR_REPORTING:()=>XC
+DISABLE_GROWTHBOOK:()=>ZC
+DISABLE_TELEMETRY:()=>nD
+DO_NOT_TRACK:()=>eO
+## end

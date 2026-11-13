@@ -6285,13 +6285,9 @@ unsafe fn child(c: &Child<'_>) -> ! {
     unsafe {
         let fail = |which: u8| report(c.err, which, 0);
         // Signals as a new process has them: none blocked, none ignored. Rust ignores
-        // SIGPIPE in init, and execve keeps ignored signals ignored.
-        let mut none: libc::sigset_t = std::mem::zeroed();
-        libc::sigemptyset(&mut none);
-        libc::sigprocmask(libc::SIG_SETMASK, &none, std::ptr::null_mut());
-        for sig in 1..libc::SIGRTMAX() {
-            libc::signal(sig, libc::SIG_DFL);
-        }
+        // SIGPIPE in init, and execve keeps ignored signals ignored. The mask, an empty set,
+        // is never refused (sigprocmask(2): only EFAULT and EINVAL).
+        let _ = defaults::signals();
         libc::setsid();
         let stdio = match c.tty {
             // The session's controlling terminal, as runc makes it (TIOCSCTTY after

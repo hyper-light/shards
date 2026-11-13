@@ -1,0 +1,13 @@
+LC_ALL=C $GG -a -o -b -E 'experimental-http[23]-fetch|BUN_FEATURE_FLAG_EXPERIMENTAL_HTTP[23]_CLIENT' "$B" | awk -F: '{print $1":"$2, ($1<115363840?"native":"app")}'
+LC_ALL=C $GG -a -o -b -E 'Offer h2 in fetch\(\) TLS ALPN\. Same as BUN_FEATURE_FLAG_EXPERIMENTAL_HTTP2_CLIENT=1' "$B"
+LC_ALL=C $GG -a -o -b -E 'Honor Alt-Svc: h3 in fetch\(\) and upgrade to HTTP/3\. Same as BUN_FEATURE_FLAG_EXPERIMENTAL_HTTP3_CLIENT=1' "$B"
+LC_ALL=C $GG -a -o -b -E 'protocol:"(http1\.1|http2|http3|h2|h3)"|allowH2|ALPNProtocols:\["h2"' "$B" | awk -F: '{print ($1<115363840?"native":"app"), $2}' | sort | uniq -c
+LC_ALL=C $GG -a -o -b -E 'text/event-stream' "$B" | awk -F: '{print ($1<115363840?"native":"app")}' | sort | uniq -c
+LC_ALL=C $GG -a -o -b -E 'wss://[A-Za-z0-9.-]+' "$B" | awk -F: '$1>=238000000 {print $2":"$3}' | sort | uniq -c
+LC_ALL=C $GG -a -o -b -E 'let n=typeof Bun>"u"\?void 0:Bun\.FetchSession;' "$B"
+LC_ALL=C $GG -a -o -b -E 'if\(n\.options\.stream\)return Y_\(e\)\.debug\("response",r\.status,r\.url,r\.headers,r\.body\),_t\.fromSSEResponse\(r,n\.controller,e\)' "$B"
+LC_ALL=C $GG -a -o -b -E 'return this\._client\.post\("/v1/messages\?beta=true",\{body:S,timeout:v\?\?600000' "$B"
+LC_ALL=C $GG -a -o -b -E 'a\.ALPNProtocols=\["h2"\],i\["grpc\.ssl_target_name_override"\]' "$B"
+LC_ALL=C $GG -a -o -b -E '"/api/ws/speech_to_text/voice_stream"' "$B"
+LC_ALL=C $GG -a -o -b -E 'function H\(e\)\{if\(i\.ANTHROPIC_UNIX_SOCKET\)return"unix_socket";.{0,330}' "$B" | LC_ALL=C tr -c '[:print:]\n' '.'
+LC_ALL=C $GG -a -o -b -E 'var L="tengu_gentle_hammock",D="tengu_golden_popcorn",j=4096,M=1024' "$B"

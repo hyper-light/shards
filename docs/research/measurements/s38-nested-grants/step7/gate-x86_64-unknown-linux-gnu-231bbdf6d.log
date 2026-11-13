@@ -1,0 +1,20 @@
+$ git archive 231bbdf6dfb2ce45ad93df48bfe0971245453669 | kiln run -q --on adacachy2 --no-sync --stdin -- bash s38-docs-gate.sh x86_64-unknown-linux-gnu
+host Linux 7.3.3-1-cachyos x86_64, rustc 1.98.1 (48a229cea 2026-09-01), zig 0.16.0, target x86_64-unknown-linux-gnu, at 2026-11-13T02:40:59Z
+nesting_no_run_exit=0
+  Executable tests/nesting.rs (/home/adalundhe/g121-tmp/s38-docs-x86_64-unknown-linux-gnu/target/x86_64-unknown-linux-gnu/debug/deps/nesting-efae54f8399757d7)
+clippy_nesting_exit=0
+    Checking aws-lc-sys v0.45.0 (/home/adalundhe/g121-tmp/s38-docs-x86_64-unknown-linux-gnu/src/vendor/aws-lc-sys)
+    Checking const-oid v0.10.2
+   Compiling shards-abi v0.1.0 (/home/adalundhe/g121-tmp/s38-docs-x86_64-unknown-linux-gnu/src/crates/abi)
+    Checking serde_core v1.0.229
+    Checking zlib-rs v0.6.8
+    Checking rustls-pki-types v1.15.1
+    Checking zmij v1.0.23
+    Checking aho-corasick v1.1.5
+    Checking shards-build v0.1.0 (/home/adalundhe/g121-tmp/s38-docs-x86_64-unknown-linux-gnu/src/crates/build)
+    Checking shards-sigstore v0.1.0 (/home/adalundhe/g121-tmp/s38-docs-x86_64-unknown-linux-gnu/src/crates/sigstore)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 48.50s
+fmt_exit=0
+finished at 2026-11-13T02:43:43Z
+removed /home/adalundhe/g121-tmp/s38-docs-x86_64-unknown-linux-gnu
+kiln_exit=0

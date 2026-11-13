@@ -1,0 +1,31 @@
+{
+  "draft": "draft-ietf-tls-esni-25",
+  "doc_id": "RFC9849",
+  "title": "TLS Encrypted Client Hello",
+  "authors": [
+    "E. Rescorla",
+    "K. Oku",
+    "N. Sullivan",
+    "C. A. Wood"
+  ],
+  "format": [
+    "XML",
+    "TEXT",
+    "HTML",
+    "PDF"
+  ],
+  "page_count": "44",
+  "pub_status": "PROPOSED STANDARD",
+  "status": "PROPOSED STANDARD",
+  "source": "Transport Layer Security",
+  "abstract": "This document describes a mechanism in Transport Layer Security (TLS) for encrypting a message under a server public key.",
+  "pub_date": "March 2026",
+  "keywords": [],
+  "obsoletes": [],
+  "obsoleted_by": [],
+  "updates": [],
+  "updated_by": [],
+  "see_also": [],
+  "doi": "10.17487/RFC9849",
+  "errata_url": null
+}

@@ -1,0 +1,32 @@
+{
+  "draft": "draft-ietf-lamps-x509-alg-none-10",
+  "doc_id": "RFC9925",
+  "title": "Unsigned X.509 Certificates",
+  "authors": [
+    "D. Benjamin"
+  ],
+  "format": [
+    "XML",
+    "TEXT",
+    "HTML",
+    "PDF"
+  ],
+  "page_count": "10",
+  "pub_status": "PROPOSED STANDARD",
+  "status": "PROPOSED STANDARD",
+  "source": "Limited Additional Mechanisms for PKIX and SMIME",
+  "abstract": "This document defines a placeholder X.509 signature algorithm that may be used in contexts where the consumer of the certificate is not expected to verify the signature.  As part of this, it updates RFC 5280.",
+  "pub_date": "February 2026",
+  "keywords": [
+    "self-signed certificate"
+  ],
+  "obsoletes": [],
+  "obsoleted_by": [],
+  "updates": [
+    "RFC5280"
+  ],
+  "updated_by": [],
+  "see_also": [],
+  "doi": "10.17487/RFC9925",
+  "errata_url": null
+}
