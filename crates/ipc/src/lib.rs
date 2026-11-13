@@ -54,6 +54,12 @@ pub fn exiting(home: &Path) -> bool {
     named_lives(&home.join(STOPPING))
 }
 
+/// A file a daemon that has closed makes anew and holds locked (flock(2), LockFileEx) until
+/// it has let go of its home's lock: `stop daemon` waits for it by a shared lock, which none
+/// but a closed daemon holds against it, so that no next daemon's lock is waited for. Apart
+/// from [`STOPPING`], whose readers Windows' mandatory locks would refuse.
+pub const STOPPING_LOCK: &str = "daemon.stopping.lock";
+
 /// What the daemon that holds a home's lock writes in it as it takes it, before it offers
 /// any slot: its process, as [`this_process`] names it.
 pub const PID: &str = "daemon.pid";
