@@ -432,7 +432,8 @@ fn cgroup_text(arguments: std::fmt::Arguments<'_>) -> Result<String, CgroupError
 }
 
 /// The workload's complete cgroup settings, `FILE=VALUE`, in runc's fs2
-/// Manager.Set order: pids, memory, io, cpu, cpuset; of a host of `cpus` CPUs.
+/// Manager.Set order: pids, memory, io, cpu, cpuset; of a microVM of `cpus` CPUs, the
+/// host's every one for a daemon's run (D191), its spec's for an orchestrator's (D231).
 pub fn cgroup(r: &Resources, cpus: usize) -> Result<Vec<Vec<u8>>, CgroupError> {
     let mut out = Vec::new();
     let mut setting = |arguments: std::fmt::Arguments<'_>| {
