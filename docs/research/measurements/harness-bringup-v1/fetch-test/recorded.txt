@@ -1,0 +1,9 @@
+gpg (GnuPG) 2.5.20
+goodsig: v1's record of Anthropic's manifest, ../fetch/verify.status
+goodsig-throwaway: gpg exit 0
+badsig: gpg exit 1
+errsig: gpg exit 2
+other-key: gpg exit 0
+expsig: gpg exit 1
+expkeysig: gpg exit 0
+revkeysig: gpg exit 0

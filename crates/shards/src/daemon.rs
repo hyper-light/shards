@@ -43,7 +43,6 @@ mod builder_prune;
 mod commit;
 #[cfg(target_os = "linux")]
 mod cuts;
-mod demand;
 mod devices;
 pub(crate) mod ends;
 mod engine;
@@ -161,10 +160,6 @@ pub(super) const REQUEST: &str = "request";
 const LAYER_NEW: &str = "layer.new";
 /// A running microVM's swap (D159), in its directory until its VM holds it.
 const SWAP: &str = "swap";
-
-/// A VM process's link to its daemon, as `--warm` and `--resume` name it: its descriptor 3
-/// on Unix; on Windows the handle given it as `daemon` (`start`).
-const VM_LINK: &str = if cfg!(windows) { "daemon" } else { "3" };
 
 /// What a run's VM is handed of its shares (D38): its connection to their share process,
 /// which hands it each share's stream; on Windows each share's stream itself, whose other
@@ -755,7 +750,7 @@ struct Pool {
     waiting: usize,
     /// Its runs' arrivals and its refills' times, which say how many VMs it keeps; its
     /// last claim orders eviction, least recent first.
-    demand: demand::Demand,
+    demand: shards_api::demand::Demand,
 }
 
 /// Collections due, for the collector's thread ([`Daemon::collect_all`]).
@@ -981,7 +976,7 @@ struct Inbox {
     records: Option<Records>,
     working_set: WorkingSet,
     /// The pool its warm VM came from, which counts it among its runs going until it ends
-    /// (demand.rs).
+    /// (`shards_api::demand`).
     pool: Option<PoolKey>,
     /// The run's directory, and the log segment the VM writes there, which
     /// the daemon made.
@@ -1184,7 +1179,7 @@ struct Daemon<D: Disk = Real> {
     /// shards-vm, beside this binary: each VM runs in a process of its own.
     vm: PathBuf,
     identity: Identity,
-    /// The most warm VMs a template's pool keeps ([`demand`]).
+    /// The most warm VMs a template's pool keeps ([`shards_api::demand`]).
     target: usize,
     /// Warm VMs kept ahead of runs, all pools together ([`DEFAULT_WARM_MAX`]).
     warm_max: usize,
@@ -1391,6 +1386,9 @@ struct Daemon<D: Disk = Real> {
     groups: groups::Groups,
     /// When each running microVM's health check is next due (health.rs).
     checks: health::Checks,
+    /// What its microVMs' answers to its own execs have taught it, each kind apart, which its
+    /// waits on them while they run are judged by ([`health::Wait::WhileRuns`]).
+    answers: health::Answers,
     /// Runs waiting for a VM booted for them, by number: told as the daemon stops.
     booting: Mutex<HashMap<u64, mpsc::Sender<Result<Ready, String>>>>,
     next_cold: AtomicU64,
@@ -1643,7 +1641,7 @@ const VM_OWN_MAPPINGS_CPUS: u64 = 32;
 /// failing with it. Linux's default, 65,530, holds a VM of one volume (two windows, the
 /// join share's the other) to 16,286 ranges a window, 31.8 GiB, on 32 CPUs; Fedora's
 /// 1,048,576 to more than its host's memory.
-fn share_window_bound_mib(limit: u64, windows: u64, cpus: u64) -> u64 {
+pub(crate) fn share_window_bound_mib(limit: u64, windows: u64, cpus: u64) -> u64 {
     let own = VM_OWN_MAPPINGS.saturating_add(2 * cpus.saturating_sub(VM_OWN_MAPPINGS_CPUS));
     let ranges = limit.saturating_sub(own) / MAPPINGS_A_RANGE.saturating_mul(windows.max(1));
     ranges.saturating_mul(2)
@@ -1651,7 +1649,7 @@ fn share_window_bound_mib(limit: u64, windows: u64, cpus: u64) -> u64 {
 
 /// Linux's `vm.max_map_count` (/proc/sys/vm/max_map_count); none on hosts with no such limit.
 #[cfg(target_os = "linux")]
-fn max_map_count() -> Option<u64> {
+pub(crate) fn max_map_count() -> Option<u64> {
     std::fs::read_to_string("/proc/sys/vm/max_map_count")
         .ok()
         .and_then(|n| n.trim().parse().ok())
@@ -1659,8 +1657,34 @@ fn max_map_count() -> Option<u64> {
 
 /// Linux's `vm.max_map_count`; none on hosts with no such limit.
 #[cfg(not(target_os = "linux"))]
-fn max_map_count() -> Option<u64> {
+pub(crate) fn max_map_count() -> Option<u64> {
     None
+}
+
+/// Each share's DAX window in MiB (D189), as every microVM a run boots is given it, the
+/// daemon's and an orchestrator's run host's alike (D253): `SHARDS_SHARE_WINDOW_MIB`, else as
+/// long as the host's memory, the most of its files the host's page cache holds at once, as a
+/// run's swap window is (D159); its guest makes what it maps of it as it maps it (PM M306), and
+/// its VM fits it to its guest's addresses. None where the host is itself a virtual machine on
+/// an AMD CPU (PM M308), which `say` is told. Refused where it is no whole 2 MiB ranges.
+pub(crate) fn share_window_mib(say: &dyn Fn(&str)) -> Result<u64, String> {
+    let host_mib = crate::build::host_memory().map_or(0, |bytes| (bytes >> 20) & !1);
+    let cpu = host_cpu();
+    let window_default = share_window_default(host_mib, &cpu);
+    if window_default == 0 && host_mib > 0 && std::env::var_os("SHARDS_SHARE_WINDOW_MIB").is_none() {
+        say(
+            "volumes have no DAX window by default: this host is a virtual machine on an AMD CPU, \
+             whose hypervisor maps each page a window gives a guest afresh, reads through one 9 to 37 \
+             times slower than FUSE's (PM M308); SHARDS_SHARE_WINDOW_MIB gives one",
+        );
+    }
+    let share_window_mib = count("SHARDS_SHARE_WINDOW_MIB", window_default)?;
+    if !share_window_mib.is_multiple_of(2) {
+        return Err(format!(
+            "SHARDS_SHARE_WINDOW_MIB: {share_window_mib} MiB: a DAX window is whole 2 MiB ranges"
+        ));
+    }
+    Ok(share_window_mib)
 }
 
 /// The daemon's settings, checked before it serves: a malformed or excessive one stops it
@@ -1709,26 +1733,7 @@ fn settings() -> Result<Settings, String> {
     } else {
         None
     };
-    // Each share's window as long as the host's memory, the most of its files the host's
-    // page cache holds at once, as a run's swap window is (D159); its guest makes what it
-    // maps of it as it maps it (PM M306), and its VM fits it to its guest's addresses. None
-    // where the host is itself a virtual machine on an AMD CPU (PM M308).
-    let host_mib = crate::build::host_memory().map_or(0, |bytes| (bytes >> 20) & !1);
-    let cpu = host_cpu();
-    let window_default = share_window_default(host_mib, &cpu);
-    if window_default == 0 && host_mib > 0 && std::env::var_os("SHARDS_SHARE_WINDOW_MIB").is_none() {
-        log(
-            "volumes have no DAX window by default: this host is a virtual machine on an AMD CPU, \
-             whose hypervisor maps each page a window gives a guest afresh, reads through one 9 to 37 \
-             times slower than FUSE's (PM M308); SHARDS_SHARE_WINDOW_MIB gives one",
-        );
-    }
-    let share_window_mib = count("SHARDS_SHARE_WINDOW_MIB", window_default)?;
-    if !share_window_mib.is_multiple_of(2) {
-        return Err(format!(
-            "SHARDS_SHARE_WINDOW_MIB: {share_window_mib} MiB: a DAX window is whole 2 MiB ranges"
-        ));
-    }
+    let share_window_mib = share_window_mib(&|line| log(line))?;
     Ok(Settings {
         pool,
         warm_max,
@@ -2169,6 +2174,7 @@ impl<D: Disk> Daemon<D> {
             #[cfg(any(target_os = "macos", windows))]
             groups: groups::Groups::default(),
             checks: health::Checks::default(),
+            answers: health::Answers::default(),
             booting: Mutex::default(),
             next_cold: AtomicU64::new(0),
             boots: Boots::new(shards_vmm::vm::booting_vcpus_at_most(
@@ -5657,7 +5663,7 @@ impl<D: Disk> Daemon<D> {
             link_local: _,
             engine,
         } = keep;
-        // A pool's run keeps its pool in use until it ends (demand.rs).
+        // A pool's run keeps its pool in use until it ends (`shards_api::demand`).
         if let Some(key) = &ready.pool
             && let Some(pool) = lock(&self.state).pools.get_mut(key)
         {
@@ -6579,7 +6585,8 @@ impl<D: Disk> Daemon<D> {
     /// Run `id` ended: `done` is its DONE, or `None` for a VM that ended without one.
     fn run_ended(&self, id: &str, inbox: &mut Inbox, done: Option<&[u8]>) {
         self.managed.end(id);
-        // Its pool has one run fewer going, and is idle from the last to end (demand.rs).
+        // Its pool has one run fewer going, and is idle from the last to end
+        // (`shards_api::demand`).
         if let Some(key) = inbox.pool.take()
             && let Some(pool) = lock(&self.state).pools.get_mut(&key)
         {
@@ -7714,56 +7721,26 @@ impl<D: Disk> Daemon<D> {
         } else {
             None
         };
-        // Sized as a run without a limit, with the host's memory to plug, which each run
-        // asks for as its workload needs it within its own most (D148): one template for
-        // every limit (run::template). Plugged memory comes online as the kernel's own, as
-        // a builder's does (D133).
         // The CPU baseline its home's microVMs are told (D176 part 6), read once a run.
         let cpu_baseline = moves::home_baseline(&self.home);
-        let on_network = |cfg: &mut Config| {
-            (cfg.vcpus, cfg.memory_mib) = prepared.size;
-            cfg.cpu_baseline.clone_from(&cpu_baseline);
-            cfg.hotplug_mib = crate::build::host_memory()
-                .map_or(0, |bytes| ((bytes >> 20) & !1).saturating_sub(cfg.memory_mib));
-            if cfg.hotplug_mib > 0 {
-                cfg.cmdline.push_str(" memhp_default_state=online_kernel");
-            }
-            // And memory its workload frees given back to the host, as it reports it
-            // free, as a microVM's own is (D151).
-            cfg.reporting = true;
-            // And a swap window as long as the host's memory (D159), which a run with a
-            // memory limit swaps to: as much as the most memory a run may have, the swap
-            // that limit gives by default.
-            cfg.swap_mib = crate::build::host_memory().map_or(0, |bytes| (bytes >> 20) & !1);
-            cfg.pmem.extend(server.iter().cloned());
-            // Another CPU's image (D179): the emulator image's root after them, and its init
-            // told the device and the architecture to register, before its root is mounted.
-            if let Some(e) = &prepared.emulator {
-                cfg.pmem.push(e.root.clone());
-                cfg.cmdline.push_str(&format!(
-                    " shards_emulate=/dev/pmem{}:{}",
-                    cfg.pmem.len(),
-                    e.architecture
-                ));
-            }
-            // A slot for each directory it shares (D38), which its run fills.
-            cfg.shares = (0..prepared.shares).map(|_| Arc::default()).collect();
-            // And each share's DAX window, where the daemon gives one (D189), as its join
-            // share's, every range of all of them within the host's mappings where it limits
-            // them: on Windows of the files its share process gives (D197's slice 4).
-            cfg.share_window_mib = self.share_window_mib;
-            if let Some(limit) = self.max_map_count {
-                let windows = u64::try_from(cfg.shares.len())
-                    .unwrap_or(u64::MAX)
-                    .saturating_add(1);
-                let bound = share_window_bound_mib(limit, windows, u64::from(cfg.vcpus));
-                cfg.share_window_mib = cfg.share_window_mib.min(bound);
-            }
-            if let Some(bridge) = &bridge {
-                cfg.cmdline.push(' ');
-                cfg.cmdline.push_str(&bridge.cmdline());
-            }
+        // Every microVM a run boots is made one shape beside its guest (run::Shape), the
+        // daemon's and an orchestrator's run host's alike (D253).
+        let shape = crate::run::Shape {
+            size: prepared.size,
+            cpu_baseline: &cpu_baseline,
+            host_memory: crate::build::host_memory(),
+            server: server.as_deref(),
+            emulator: prepared.emulator.as_ref(),
+            shares: prepared.shares,
+            share_window_mib: self.share_window_mib,
+            max_map_count: self.max_map_count,
+            // PCI slots in every microVM, empty until a device is plugged into its run (D214):
+            // its templates have them, and so every restore of them. SHARDS_PCI_SLOTS gives
+            // another count, 0 for none (PM M430's A/B).
+            pci_slots: pci_slots(),
+            bridge: bridge.as_ref(),
         };
+        let on_network = |cfg: &mut Config| shape.give(cfg);
         // A run given a host's VFIO groups (D154), or VFIO's own nodes to take a host's
         // functions plugged in as it runs (D214): a microVM booted for it, their functions,
         // and its slots, behind its own IOMMU, with a kernel with VFIO; of no template, as
@@ -8248,80 +8225,7 @@ impl<D: Disk> Daemon<D> {
         parent: &str,
         layer: u64,
     ) -> Result<Ready, String> {
-        let mut args: Vec<OsString> = vec![
-            "run".into(),
-            "--kernel".into(),
-            cfg.kernel.clone().into(),
-            "--cmdline".into(),
-            cfg.cmdline.clone().into(),
-            "--cpus".into(),
-            cfg.vcpus.to_string().into(),
-            "--memory".into(),
-            cfg.memory_mib.to_string().into(),
-            "--rootfs".into(),
-            rootfs.into(),
-        ];
-        if cfg.hotplug_mib > 0 {
-            let max = cfg.memory_mib.saturating_add(cfg.hotplug_mib);
-            args.extend(["--memory-max".into(), max.to_string().into()]);
-        }
-        if cfg.reporting {
-            args.push("--reporting".into());
-        }
-        if cfg.swap_mib > 0 {
-            args.extend(["--swap-window".into(), cfg.swap_mib.to_string().into()]);
-        }
-        if let Some(init) = &cfg.init {
-            args.extend(["--init".into(), init.into()]);
-        }
-        for pmem in &cfg.pmem {
-            args.extend(["--pmem".into(), pmem.into()]);
-        }
-        if let Some(fresh) = save {
-            args.extend(["--snapshot-dir".into(), fresh.into()]);
-        }
-        if cfg.gpu {
-            args.push("--gpu".into());
-        }
-        for f in &cfg.vfio {
-            let flag = if f.iommu { "--vfio-iommu" } else { "--vfio" };
-            // By its device node where it is taken by that (D154).
-            let given: OsString = f
-                .cdev
-                .as_ref()
-                .map_or_else(|| f.name.clone().into(), |c| c.clone().into_os_string());
-            args.extend([flag.into(), given]);
-        }
-        if !cfg.shares.is_empty() {
-            args.extend(["--shares".into(), cfg.shares.len().to_string().into()]);
-        }
-        if cfg.share_window_mib > 0 {
-            args.extend(["--share-window".into(), cfg.share_window_mib.to_string().into()]);
-        }
-        // PCI slots in every microVM, empty until a device is plugged into its run (D214):
-        // its templates have them, and so every restore of them. SHARDS_PCI_SLOTS gives
-        // another count, 0 for none (PM M430's A/B).
-        let slots = pci_slots();
-        if slots > 0 {
-            args.extend(["--pci-slots".into(), slots.to_string().into()]);
-            // Behind its IOMMU where it was booted to take a host's functions (D214).
-            if cfg.pci_slots_iommu {
-                args.push("--pci-slots-iommu".into());
-            }
-        }
-        // The CPU baseline its guest is told (D176 part 6).
-        if !cfg.cpu_baseline.is_empty() {
-            args.extend([
-                "--cpu-baseline".into(),
-                shards_vmm::arch::cpu::encode(&cfg.cpu_baseline).into(),
-            ]);
-        }
-        // A join disk and a join share in every microVM, empty and unserved until a
-        // joiner joins its network (D119): its templates have them, and so every restore
-        // of them.
-        args.push("--join".into());
-        args.push("--join-share".into());
-        args.extend(["--warm".into(), VM_LINK.into()]);
+        let args = crate::run::boot_args(cfg, rootfs, save, crate::launch::LINK);
         // A guest on a network: a fresh MAC, which a template it saves keeps.
         let net = if cfg.cmdline.contains("shards_net=") {
             Some(shards_net::random_mac().map_err(|e| format!("a guest's MAC: {e}"))?)
@@ -8406,11 +8310,11 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// Starts shards-vm with `args` as a warm VM whose daemon socket is its descriptor 3,
-    /// on a network of its own if `net` names its MAC, with `layer` as its writable layer's
-    /// file where it has one (D190), unlinked once it is ready or has failed to start; and
-    /// watches it.
-    #[cfg(unix)]
+    /// Starts shards-vm with `args` as a warm VM whose link to the daemon is
+    /// [`crate::launch::LINK`], on a network of its own if `net` names its MAC, with `layer`
+    /// as its writable layer's file where it has one (D190), unlinked once it is ready or has
+    /// failed to start; and watches it. It and its network process are launched as every VM
+    /// of shards' is (launch.rs), under `parent` (D183).
     fn start<'s, 'e>(
         &'s self,
         threads: &'s Threads<'s, 'e>,
@@ -8422,68 +8326,31 @@ impl<D: Disk> Daemon<D> {
     ) -> Result<(), String> {
         // Under its parent (D183): it and its network process made by the parent's
         // spawner, in its scope from their first instruction.
+        #[cfg(unix)]
         let group = self.group_of(parent)?;
+        // On Windows, under a group shards keeps (D183, slice 3): made in its job, their own
+        // nested under it, as a warm VM of the parent's pool is made (PM M359).
+        #[cfg(windows)]
+        let job = if parent.is_empty() {
+            None
+        } else {
+            Some(self.group_job(parent)?)
+        };
         // A run's microVM is on Docker's default bridge, and reaches nothing through it
         // until a grant opens it (AGENTFILE_ARCH.md §3, default deny); its published
         // ports' connections come in all the same.
-        let network = match &net {
-            Some(mac) => {
-                let bridge = self.bridge.as_ref().ok_or(shards_net::bridge::NO_SUBNET)?;
-                Some(crate::netproc::start(
-                    shards_net::Policy::DenyAll,
-                    mac,
-                    bridge,
-                    group,
-                    false,
-                )?)
-            }
+        let network = match net {
+            Some(mac) => Some(crate::launch::Network {
+                policy: shards_net::Policy::DenyAll,
+                mac,
+                bridge: self.bridge.as_ref().ok_or(shards_net::bridge::NO_SUBNET)?,
+                credentials: false,
+            }),
             None => None,
         };
-        let (ours, theirs) = UnixStream::pair().map_err(|e| format!("a VM's socket: {e}"))?;
-        let null = File::open("/dev/null").map_err(|e| format!("/dev/null: {e}"))?;
-        let err = io::stderr();
-        // On macOS the VM is in App Sandbox from its launch and asks the daemon, on a socket
-        // of its own, for the files its arguments name (grant).
-        let grants = if cfg!(target_os = "macos") {
-            Some(UnixStream::pair().map_err(|e| format!("a VM's grants socket: {e}"))?)
-        } else {
-            None
-        };
-        let fds: Vec<_> = [
-            (null.as_fd(), 0),
-            (err.as_fd(), 1),
-            (err.as_fd(), 2),
-            (theirs.as_fd(), 3),
-        ]
-        .into_iter()
-        .chain(grants.as_ref().map(|(_, granted)| (granted.as_fd(), 4)))
-        .chain(network.iter().flat_map(|(_, side)| {
-            let [r, s, w] = crate::netproc::VM_FDS;
-            [
-                (side.region.as_fd(), r),
-                (side.sleeps.as_fd(), s),
-                (side.rings.as_fd(), w),
-                (side.release.as_fd(), crate::netproc::VM_RELEASE_FD),
-            ]
-        }))
-        .collect();
-        let release_fd = crate::netproc::VM_RELEASE_FD.to_string();
-        let net_arg = net.map(|mac| OsString::from(crate::netproc::VmSide::arg(&mac)));
-        let given = grants
-            .iter()
-            .flat_map(|_| [OsStr::new("--grants"), OsStr::new("4")])
-            .chain(net_arg.iter().flat_map(|a| [OsStr::new("--net"), a.as_os_str()]))
-            .chain(
-                net_arg
-                    .iter()
-                    .flat_map(|_| [OsStr::new("--net-release"), OsStr::new(&release_fd)]),
-            );
         let args: Vec<&OsStr> = args
             .iter()
-            .take(1)
             .map(OsString::as_os_str)
-            .chain(given)
-            .chain(args.iter().skip(1).map(OsString::as_os_str))
             .chain(
                 layer
                     .iter()
@@ -8496,44 +8363,31 @@ impl<D: Disk> Daemon<D> {
                     .flat_map(|g| [OsStr::new("--layer-cloned"), OsStr::new(g)]),
             )
             .collect();
-        let mut env = crate::netproc::child_env();
-        // A GPU's VM process is the GPU's build (D144), which says MoltenVK's errors alone.
-        let gpu = args.iter().any(|a| *a == "--gpu");
-        let binary = if gpu {
-            crate::helpers::vm_gpu()?
-        } else {
-            self.vm.clone()
-        };
-        if gpu {
-            env.push(("MVK_CONFIG_LOG_LEVEL", "1".into()));
-        }
-        let child = match shards_ipc::spawn_in_group(
+        let (launched, ours) = crate::launch::run(crate::launch::Plan {
+            args: &args,
+            vm: &self.vm,
+            network,
+            ends: &self.ends,
+            #[cfg(unix)]
             group,
-            &binary,
-            &args,
-            &fds,
-            false,
-            &crate::netproc::env_pairs(&env),
-        ) {
-            Ok(child) => child,
-            Err(e) => {
-                if let Some((net, side)) = network {
-                    drop(side);
-                    crate::netproc::reap(&net, &self.ends);
-                }
-                return Err(format!("starting {}: {e}", binary.display()));
-            }
-        };
-        drop(fds);
+            #[cfg(windows)]
+            group: job.as_ref(),
+            // What it asks to reach is answered by its watch on macOS, which judges its
+            // start by it (PM M166); on Windows by the launch.
+            #[cfg(target_os = "macos")]
+            grants: crate::launch::Grants::Kept,
+        })?;
+        #[cfg(target_os = "macos")]
+        let grants = launched.grants;
+        #[cfg(not(target_os = "macos"))]
+        let grants = None;
         // The VM holds its side of its network now; its network process goes with it.
         // The control socket stays the daemon's.
-        let mac = net;
-        let (net_process, net_control) = match network {
-            Some((net, side)) => (Some(net), Some((side.control, mac))),
+        let (net_process, net_control) = match launched.net {
+            Some((process, control)) => (Some(process), Some((control, net))),
             None => (None, None),
         };
-        let grants = grants.map(|(grants, _)| grants);
-        let vm = Arc::new(child);
+        let vm = Arc::new(launched.vm);
         // Among those the daemon ends as it exits from now on: before its watcher can find
         // it ready, which takes it out.
         let pooled = matches!(dest, For::Pool(_));
@@ -8549,199 +8403,6 @@ impl<D: Disk> Daemon<D> {
                     watched,
                     ours,
                     grants,
-                    net_control,
-                    dest,
-                    net_process,
-                    layer,
-                );
-            });
-        if let Err(e) = watching {
-            if pooled {
-                lock(&self.state).starting.remove(&vm.id());
-            }
-            let _ = vm.kill(shards_ipc::signal::SIGKILL);
-            return Err(format!("watching VM {}: {e}", vm.id()));
-        }
-        Ok(())
-    }
-
-    /// [`start`](Self::start) on Windows (D141, D142, D195): the VM process confined in an
-    /// AppContainer of its own, made suspended, given by name its link to the daemon
-    /// (`daemon`, the other end of a pair of this process's) and its network's ring and
-    /// doorbells; its network process started next, given the VM's process to watch; then
-    /// the VM runs, and the daemon answers what it asks for (its files, its vsock path) on a
-    /// thread of its own, which ends as the VM does. Its writable layer goes by its path,
-    /// which it asks for.
-    #[cfg(windows)]
-    fn start<'s, 'e>(
-        &'s self,
-        threads: &'s Threads<'s, 'e>,
-        args: &[OsString],
-        net: Option<[u8; 6]>,
-        dest: For,
-        parent: &str,
-        layer: Option<layers::LayerFile>,
-    ) -> Result<(), String> {
-        use std::os::windows::io::{AsHandle as _, OwnedHandle};
-        // Under a parent, a group shards keeps (D183, slice 3): the VM process made in its
-        // job, its own nested under it, as a warm VM of the parent's pool is made (PM M359).
-        let group = if parent.is_empty() {
-            None
-        } else {
-            Some(self.group_job(parent)?)
-        };
-        let network = match &net {
-            Some(mac) => {
-                let bridge = self.bridge.as_ref().ok_or(shards_net::bridge::NO_SUBNET)?;
-                Some(crate::netproc::prepare(
-                    shards_net::Policy::DenyAll,
-                    mac,
-                    bridge,
-                    false,
-                )?)
-            }
-            None => None,
-        };
-        let (ours, theirs) = UnixStream::pair().map_err(|e| format!("a VM's link: {e}"))?;
-        // Its end, the VM's alone once given it: the daemon's copy goes, so that the VM's
-        // end is the end the daemon reads.
-        let link = theirs.share().map_err(|e| format!("a VM's link: {e}"))?;
-        drop(theirs);
-        let container = crate::helpers::containers().and_then(|records| {
-            shards_ipc::AppContainer::new("vm", &records).map_err(|e| format!("a VM's AppContainer: {e}"))
-        })?;
-        // A pipe each way: the VM's requests, and the answers.
-        let pipes = std::io::pipe().and_then(|asks| Ok((asks, std::io::pipe()?)));
-        let ((asks_from, asks_to), (answers_from, answers_to)) =
-            pipes.map_err(|e| format!("a VM's grants: {e}"))?;
-        let (asks_to, answers_from) = (OwnedHandle::from(asks_to), OwnedHandle::from(answers_from));
-        // The null device, for the clients' stdio it lets go of: its AppContainer opens no
-        // file by name, NUL among them on Windows Server (PM M351).
-        let null = File::open(crate::os::NULL).map_err(|e| format!("{}: {e}", crate::os::NULL))?;
-        let mut given = vec![
-            shards_ipc::Given {
-                name: "ask",
-                handle: asks_to.as_handle(),
-            },
-            shards_ipc::Given {
-                name: "answer",
-                handle: answers_from.as_handle(),
-            },
-            shards_ipc::Given {
-                name: VM_LINK,
-                handle: link.as_handle(),
-            },
-            shards_ipc::Given {
-                name: "null",
-                handle: null.as_handle(),
-            },
-        ];
-        let mut sockets = Vec::new();
-        if let Some((_, side)) = &network {
-            given.extend(side.given());
-            sockets.extend([side.shared(), side.release()]);
-        }
-        let net_arg = net.map(|mac| OsString::from(crate::netproc::VmSide::arg(&mac)));
-        let args: Vec<&OsStr> = args
-            .iter()
-            .map(OsString::as_os_str)
-            .chain(net_arg.iter().flat_map(|a| [OsStr::new("--net"), a.as_os_str()]))
-            .chain(
-                layer
-                    .iter()
-                    .flat_map(|l| [OsStr::new("--layer"), l.path().as_os_str()]),
-            )
-            .chain(
-                layer
-                    .iter()
-                    .filter_map(|l| l.cloned_of())
-                    .flat_map(|g| [OsStr::new("--layer-cloned"), OsStr::new(g)]),
-            )
-            .collect();
-        let err = io::stderr();
-        let env = crate::netproc::child_env();
-        // A GPU's VM process is the GPU's build, which runs its host's GPU driver (D144,
-        // D202).
-        let gpu = args.iter().any(|a| *a == "--gpu");
-        let binary = if gpu {
-            crate::helpers::vm_gpu()?
-        } else {
-            self.vm.clone()
-        };
-        let suspended = shards_ipc::spawn_suspended(&shards_ipc::Spawn {
-            program: &binary,
-            args: &args,
-            grants_at: 1,
-            given: &given,
-            stdin: None,
-            stdout: err.as_handle(),
-            stderr: err.as_handle(),
-            sockets: &sockets,
-            env: &crate::netproc::env_pairs(&env),
-            container: Some(&container),
-            holds: shards_ipc::Holds::Hypervisor,
-            group: group.as_ref(),
-            graphics: gpu,
-        })
-        .map_err(|e| format!("starting {}: {e}", binary.display()))?;
-        // Shared with it already, and its handles duplicated into it.
-        drop((given, sockets));
-        // Its network process, given the VM's process to watch, before the VM runs: ended
-        // with the suspended VM, a Job's, where it cannot start. Its control is the
-        // daemon's, where the run's published ports go; the VM holds its release.
-        let (net_process, net_control) = match network {
-            Some((ready, side)) => {
-                let started = crate::netproc::start(ready, &suspended, group.as_ref())?;
-                let control = crate::netproc::Control {
-                    socket: side.control,
-                    pid: started.id(),
-                };
-                (Some(started), Some((control, net)))
-            }
-            None => (None, None),
-        };
-        let giver = suspended.giver().map_err(|e| format!("answering a VM: {e}"))?;
-        let gives = suspended
-            .giver()
-            .map_err(|e| format!("a VM's link: {e}"))?
-            .into_handle();
-        let mut child = suspended
-            .resume()
-            .map_err(|e| format!("starting {}: {e}", binary.display()))?;
-        // Its AppContainer's profile goes once it has, as its follower lets it go.
-        child.hold(container);
-        // What the daemon sends on its link goes to the VM: handles duplicated into it.
-        ours.gives_to(gives);
-        drop((asks_to, answers_from, link, null));
-        let grants = crate::grant::Link {
-            from: File::from(OwnedHandle::from(asks_from)),
-            to: File::from(OwnedHandle::from(answers_to)),
-        };
-        let vm = Arc::new(child);
-        // Its grants answered while it runs.
-        let answering =
-            std::thread::Builder::new()
-                .name("vm grants".into())
-                .spawn_scoped(threads, move || {
-                    let _ = crate::grant_answer::serve(&grants, &giver);
-                });
-        if let Err(e) = answering {
-            let _ = vm.kill(shards_ipc::signal::SIGKILL);
-            return Err(format!("answering VM {}: {e}", vm.id()));
-        }
-        let pooled = matches!(dest, For::Pool(_));
-        if pooled {
-            lock(&self.state).starting.insert(vm.id(), vm.clone());
-        }
-        let watched = vm.clone();
-        let watching = std::thread::Builder::new()
-            .name("warm vm".into())
-            .spawn_scoped(threads, move || {
-                self.watch(
-                    threads,
-                    watched,
-                    ours,
-                    None,
                     net_control,
                     dest,
                     net_process,
@@ -13591,7 +13252,7 @@ mod tests {
     /// The warm VMs a refill plans count as starting at once, before any is started, so
     /// that a claim or refill planning meanwhile starts none of them again; outside the
     /// pools' lock, those that cannot start count no more. A pool never claimed from keeps
-    /// one (demand.rs).
+    /// one (`shards_api::demand`).
     #[test]
     fn a_refills_vms_count_as_starting_once_planned() {
         let mut t = Test::new("planned");
@@ -14947,14 +14608,20 @@ mod tests {
         });
     }
 
-    /// The exec of `read metrics` its microVM never answers is ended once the VM process has
-    /// run nothing for as long as the daemon judges it by: told SIGKILL, its end waited for,
-    /// and the read refused as stalled (finding 4 of audit-fix-host-v1: it was waited for
-    /// with no end, holding its client and a daemon thread).
+    /// The exec of `read metrics` its microVM never answers is ended, once the daemon has seen
+    /// a metrics read answered, where the VM process ran nothing for a whole W* past the
+    /// slowest it has seen: told SIGKILL, its end waited for, and the read refused, saying so
+    /// (finding 4 of audit-fix-host-v1: it was waited for with no end, holding its client and
+    /// a daemon thread; D215's judge, which follows a cold kind's microVM while it lives).
     #[test]
     fn metrics_whose_microvm_runs_nothing_are_ended() {
         let t = Test::new("metrics-stalled");
         t.run(|t| {
+            // A metrics read answered before, in 50 ms, its microVM running 50 us of it.
+            t.daemon
+                .answers
+                .metrics
+                .teach(Duration::from_millis(50), Duration::from_micros(50));
             let (_, starting, vm) = running(t, "stalled");
             let out = t.home.join("metrics.json");
             let asked = metrics(t, "stalled", &out);
@@ -14973,16 +14640,15 @@ mod tests {
                 matches!(&told, Ok(Some((kind::SIGNAL, n))) if n.as_slice() == 9u32.to_be_bytes()),
                 "an exec its microVM never answered was waited for with no end: {told:?}"
             );
-            assert_eq!(
-                (status, err),
-                (
-                    1,
-                    format!(
-                        "shards: read metrics: stalled: its microVM ran nothing for {} s, so its \
-                         metrics were not read\n",
-                        TAKE_TIMEOUT.as_secs()
-                    )
-                )
+            assert_eq!(status, 1, "{err}");
+            assert!(
+                err.starts_with("shards: read metrics: stalled: its microVM ran no CPU in ")
+                    && err.contains(" past the slowest answer seen (50ms), ")
+                    && err.ends_with(
+                        " into the wait (the least a microVM ran and still answered: 50µs in \
+                         50ms), so its metrics were not read\n"
+                    ),
+                "{err}"
             );
             say(&vm, kind::DONE, &[0]);
             drop(vm);

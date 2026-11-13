@@ -1,0 +1,134 @@
+# ring-pins-v1's review, F3 cured (goal 52's child for F3 and F4): a stream's room read and its
+# reservation in one critical section of the pool's lock. Red, the sizes' leak rates, green with the
+# relay's lints, and the guard-removal mutation.
+#
+# Runner: adacachy2 (kiln runner 00aad8daff2fa3c9daa65d53c425d450, Linux 7.3.3-1-cachyos x86_64, 32 CPUs),
+# through this child's carrier: a blobless clone of hyper-light/shards at origin/main
+# 15215d729609fa1200f3028c3af476b71351f0c5 (F2 landed, a6edfb8e9), a patch applied, CARGO_TARGET_DIR
+# ~/g121-tmp/s2-ring-f3/target, CARGO_INCREMENTAL=0, nice -n 10; rustc 1.98.1 (48a229cea 2026-09-01).
+# Patches (the carrier's names, then this directory's): red.patch = cure-f3-red.patch (the test alone,
+# and the test pool's room read as its kernel reads it); diag.patch = cure-f3-rates.patch (red's, and a
+# diagnostic test that counts the rounds that pin past the room, not committed as a test);
+# land.patch = the cure as landed (ring.rs, with engine_ring.rs's F4); mut.patch = the cure with the
+# section split back in two (on the landed tree, cure-f3-split.patch: `reserve` handed a room read
+# under a hold of the lock of its own).
+#   cargo test --locked -p shards-init ring::
+#   cargo test --locked -p shards-init f3_diag -- --nocapture
+#   cargo clippy --locked -p shards-init --all-targets [--target T] -- -D warnings
+#   cargo test --locked -p shards-init streams_started_at_once
+# 2026-11-13, kiln runs r497 (red), r509 (rates), r527 (green, lints, mutation). Lines of cargo's own
+# building left out.
+######## RED (r497)
+== Linux 7.3.3-1-cachyos x86_64 at 15215d72 + red.patch:  M crates/init/src/ring.rs
+rustc 1.98.1 (48a229cea 2026-09-01)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 11.14s
+     Running unittests src/main.rs (/home/adalundhe/g121-tmp/s2-ring-f3/target/debug/deps/shards_init-0839c1075913f5ee)
+running 22 tests
+shards-init: engine ring refused: InUse
+test ring::tests::a_host_byte_no_device_says_is_no_word_of_the_slot ... ok
+test ring::tests::a_stream_learns_the_rings_it_needs ... ok
+test ring::tests::a_fresh_slot_is_reset_before_its_offer ... ok
+test ring::tests::a_told_room_owes_what_it_is_short_of_the_working_room ... ok
+test ring::tests::init_says_nothing_to_a_relay_that_made_no_slot ... ok
+test ring::tests::the_devices_detach_is_read_and_nothing_past_it ... ok
+test ring::tests::a_word_wakes_the_idle_streams ... ok
+test ring::tests::a_slots_pins_count_to_the_instances_maker_and_go_with_its_entry ... ok
+test ring::tests::the_room_asks_idle_streams_alone_and_a_give_back_asks_them_all ... ok
+test ring::tests::the_relay_joins_a_leaf_of_the_runs_cgroup ... ok
+shards-init: engine ring: no word of its device; its 12288 bytes stay pinned
+test ring::tests::a_refused_slot_is_freed_and_the_connection_goes_on_plain ... ok
+test ring::tests::the_table_holds_as_many_slots_as_the_descriptors_let_streams_hold ... ok
+test ring::tests::a_slot_with_no_word_of_its_device_stays_pinned ... ok
+test ring::tests::the_supply_leaves_pins_what_the_run_does_not_need ... ok
+test ring::tests::a_stream_past_the_room_goes_over_plain_vsock ... ok
+test ring::tests::a_stream_starts_where_the_last_one_ended ... ok
+test ring::tests::bytes_cross_whole_and_every_slot_is_freed_after_its_detach ... ok
+test ring::tests::the_relay_frees_a_slot_only_after_the_devices_detach ... ok
+test ring::tests::a_swap_past_belief_frees_its_new_slot_only_after_the_devices_detach ... ok
+test ring::tests::with_no_budget_pins_are_bounded_by_the_available_memory ... ok
+test ring::tests::concurrent_streams_each_have_a_slot_and_free_it ... ok
+test ring::tests::streams_started_at_once_pin_no_more_than_their_room ... FAILED
+failures:
+---- ring::tests::streams_started_at_once_pin_no_more_than_their_room stdout ----
+thread 'ring::tests::streams_started_at_once_pin_no_more_than_their_room' (3879344) panicked at crates/init/src/ring.rs:2692:17:
+In Supply { cap: Some(1074851839), held: 1073741824, available: 0, working: 1048576 }, round 1: 73728 bytes pinned at once, past the room's 61439
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+failures:
+    ring::tests::streams_started_at_once_pin_no_more_than_their_room
+test result: FAILED. 21 passed; 1 failed; 0 ignored; 0 measured; 227 filtered out; finished in 2.16s
+error: test failed, to rerun pass `-p shards-init --bin shards-init`
+######## RATES (r509): rounds of 16 on main's two critical sections, each size and supply
+== Linux 7.3.3-1-cachyos x86_64 at 15215d72 + diag.patch:  M crates/init/src/ring.rs
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 11.67s
+     Running unittests src/main.rs (/home/adalundhe/g121-tmp/s2-ring-f3/target/debug/deps/shards_init-0839c1075913f5ee)
+running 1 test
+DIAG streams 64 fits 4 In: leaked 8 of 16 rounds, most 7 slots at once, 6.671096024s
+DIAG streams 64 fits 4 NotYet: leaked 6 of 16 rounds, most 6 slots at once, 7.32949662s
+DIAG streams 64 fits 32 In: leaked 9 of 16 rounds, most 37 slots at once, 15.212205138s
+DIAG streams 64 fits 32 NotYet: leaked 8 of 16 rounds, most 33 slots at once, 11.34806858s
+DIAG streams 128 fits 4 In: leaked 10 of 16 rounds, most 7 slots at once, 8.446315449s
+DIAG streams 128 fits 4 NotYet: leaked 7 of 16 rounds, most 7 slots at once, 5.36282263s
+test ring::tests::f3_diag_leak_rates has been running for over 60 seconds
+DIAG streams 128 fits 64 In: leaked 15 of 16 rounds, most 69 slots at once, 13.344648898s
+DIAG streams 128 fits 64 NotYet: leaked 5 of 16 rounds, most 68 slots at once, 7.633279277s
+DIAG streams 32 fits 16 In: leaked 5 of 16 rounds, most 19 slots at once, 5.470861754s
+DIAG streams 32 fits 16 NotYet: leaked 4 of 16 rounds, most 23 slots at once, 6.535254648s
+test ring::tests::f3_diag_leak_rates ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 249 filtered out; finished in 87.37s
+######## GREEN (r527), and the relay's lints on the cure
+== Linux 7.3.3-1-cachyos x86_64 at 15215d72 + land.patch:  M crates/init/src/ring.rs  M crates/shards/tests/engine_ring.rs
+rustc 1.98.1 (48a229cea 2026-09-01)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.55s
+     Running unittests src/main.rs (/home/adalundhe/g121-tmp/s2-ring-f3/target/debug/deps/shards_init-0839c1075913f5ee)
+running 22 tests
+shards-init: engine ring refused: InUse
+shards-init: engine ring: no word of its device; its 12288 bytes stay pinned
+test ring::tests::a_host_byte_no_device_says_is_no_word_of_the_slot ... ok
+test ring::tests::a_fresh_slot_is_reset_before_its_offer ... ok
+test ring::tests::a_stream_learns_the_rings_it_needs ... ok
+test ring::tests::a_told_room_owes_what_it_is_short_of_the_working_room ... ok
+test ring::tests::a_word_wakes_the_idle_streams ... ok
+test ring::tests::init_says_nothing_to_a_relay_that_made_no_slot ... ok
+test ring::tests::the_devices_detach_is_read_and_nothing_past_it ... ok
+test ring::tests::a_slot_with_no_word_of_its_device_stays_pinned ... ok
+test ring::tests::a_slots_pins_count_to_the_instances_maker_and_go_with_its_entry ... ok
+test ring::tests::the_relay_joins_a_leaf_of_the_runs_cgroup ... ok
+test ring::tests::a_refused_slot_is_freed_and_the_connection_goes_on_plain ... ok
+test ring::tests::the_table_holds_as_many_slots_as_the_descriptors_let_streams_hold ... ok
+test ring::tests::a_stream_past_the_room_goes_over_plain_vsock ... ok
+test ring::tests::the_room_asks_idle_streams_alone_and_a_give_back_asks_them_all ... ok
+test ring::tests::the_supply_leaves_pins_what_the_run_does_not_need ... ok
+test ring::tests::the_relay_frees_a_slot_only_after_the_devices_detach ... ok
+test ring::tests::concurrent_streams_each_have_a_slot_and_free_it ... ok
+test ring::tests::a_stream_starts_where_the_last_one_ended ... ok
+test ring::tests::bytes_cross_whole_and_every_slot_is_freed_after_its_detach ... ok
+test ring::tests::a_swap_past_belief_frees_its_new_slot_only_after_the_devices_detach ... ok
+test ring::tests::with_no_budget_pins_are_bounded_by_the_available_memory ... ok
+test ring::tests::streams_started_at_once_pin_no_more_than_their_room ... ok
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 227 filtered out; finished in 7.38s
+test exit 0
+== clippy
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.82s
+clippy exit 0
+== clippy --target x86_64-unknown-linux-musl
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.86s
+clippy exit 0
+== clippy --target aarch64-unknown-linux-musl
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.41s
+clippy exit 0
+######## MUTATION (r527): the section split back in two
+== Linux 7.3.3-1-cachyos x86_64 at 15215d72 + mut.patch:  M crates/init/src/ring.rs
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.31s
+     Running unittests src/main.rs (/home/adalundhe/g121-tmp/s2-ring-f3/target/debug/deps/shards_init-0839c1075913f5ee)
+running 1 test
+test ring::tests::streams_started_at_once_pin_no_more_than_their_room ... FAILED
+failures:
+---- ring::tests::streams_started_at_once_pin_no_more_than_their_room stdout ----
+thread 'ring::tests::streams_started_at_once_pin_no_more_than_their_room' (302900) panicked at crates/init/src/ring.rs:2691:17:
+In Supply { cap: Some(1074851839), held: 1073741824, available: 0, working: 1048576 }, round 0: 98304 bytes pinned at once, past the room's 61439
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+failures:
+    ring::tests::streams_started_at_once_pin_no_more_than_their_room
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 248 filtered out; finished in 0.03s
+error: test failed, to rerun pass `-p shards-init --bin shards-init`
+test exit 101

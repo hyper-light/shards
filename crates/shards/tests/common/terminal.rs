@@ -29,6 +29,9 @@ pub struct Terminal {
     before: libc::termios,
     /// What its home's daemon has said, for a wait past its deadline ([`super::Said`]).
     said: super::Said,
+    /// Its home, whose microVMs' processes a wait past its deadline shows
+    /// ([`super::guests_processes`]).
+    home: std::path::PathBuf,
 }
 
 impl Terminal {
@@ -105,6 +108,7 @@ impl Terminal {
             seen: String::new(),
             before,
             said: super::Said::of(home),
+            home: home.to_path_buf(),
         }
     }
 
@@ -125,8 +129,9 @@ impl Terminal {
                 _ => {
                     assert!(
                         Instant::now() < deadline || self.said.lately(),
-                        "{text:?} did not come; the terminal showed {:?}",
-                        self.seen
+                        "{text:?} did not come; the terminal showed {:?}{}",
+                        self.seen,
+                        super::guests_processes(&self.home)
                     );
                     std::thread::sleep(Duration::from_millis(5));
                 }
