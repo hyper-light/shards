@@ -14002,7 +14002,8 @@ mod tests {
 
     /// Run `id` started on `vm`, on a daemon thread, as a visit's is: handed its VM, then
     /// waited for until its VM holds (`await_holding`), then followed. The thread returns
-    /// what the wait for its hold found.
+    /// what the wait for its hold found. Unix's, as its test's busy stand-in is.
+    #[cfg(unix)]
     fn holding<'s>(
         t: &In<'s, '_, Real>,
         id: &str,
