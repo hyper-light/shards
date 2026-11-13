@@ -406,10 +406,10 @@ fn assemble(
     // baseline would take no microVM to another CPU there: none is told.
     #[cfg(hv = "whp")]
     if !baseline.is_empty() {
-        return Err(
-            "a CPU baseline is not told on the Windows Hypervisor Platform, which restores a snapshot only on the CPU it was taken on: `shards configure cpu --none`"
-                .into(),
-        );
+        return Err(format!(
+            "{}: `shards configure cpu --none`",
+            super::NO_BASELINE_ON_WHP
+        ));
     }
     #[cfg(hv = "whp")]
     let (vm, assigned, given) = assigning(config, pci.vfio)?;

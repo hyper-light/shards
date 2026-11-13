@@ -17,8 +17,8 @@ use std::time::Duration;
 use common::{TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, served};
 use shards_api::image::{
     Channel, ImageGuest, ImageRefusal, ImageShards, ImageShare, ImageSpec, Images as _, Keep, MemberEnd,
-    MemberFile, MemberKind, MemberName, MemberSpec, Narrowing, PlugRefusal, Proto, Publish, RunEnd, Secret,
-    StatsScope,
+    MemberFile, MemberKind, MemberName, MemberReach, MemberSpec, Narrowing, PlugRefusal, Proto, Publish,
+    RunEnd, Secret, StatsScope,
 };
 
 const TIMEOUT: Duration = Duration::from_secs(120);
@@ -183,9 +183,10 @@ fn staged_credentials_reach_the_harness_and_its_output_and_end_come_back() {
 }
 
 /// What would widen the image's grants, or names a member it does not declare or one of
-/// files alone, is refused by type before anything boots: the nesting grant (D234) asked of
-/// an image declaring no NESTING among them, in the daemon's words; and a deadline without
-/// the grant, the request's.
+/// files alone, is refused by type before anything boots: members held apart (D246) that
+/// would reach other than asked among them, the nesting grant (D234) asked of an image
+/// declaring no NESTING, in the daemon's words; and a deadline without the grant, the
+/// request's.
 #[test]
 fn what_the_image_does_not_grant_is_refused_before_boot() {
     if cannot_run_vms() {
@@ -224,6 +225,43 @@ fn what_the_image_does_not_grant_is_refused_before_boot() {
         ..Narrowing::default()
     };
     assert!(matches!(refused(s), ImageRefusal::Widening(_)));
+    // Members held apart (D246), of an image whose harness alone reaches a destination:
+    // that destination kept with the harness let reach nothing, or with the agent of files
+    // alone let reach it too, would let a member reach other than asked; and a member the
+    // image declares not.
+    build(
+        &home,
+        "api-refused:2",
+        &["exit", "0"],
+        "NETWORK --egress=api.example:443 provider FOR codex\n\
+         EXPOSE --harnesses=codex 443 AS egress FOR provider\nCONNECT codex WITH codex ON provider\n",
+    );
+    let apart = |members: Vec<MemberReach>| Narrowing {
+        egress: Keep::Only(Vec::new()),
+        mcp: Keep::Only(Vec::new()),
+        destinations: Keep::Only(vec!["api.example:443".into()]),
+        dns: false,
+        members: Some(members),
+    };
+    let reach = |kind, name: &str, destinations: &[&str]| MemberReach {
+        kind,
+        name: name.into(),
+        destinations: destinations.iter().map(|d| (*d).to_string()).collect(),
+    };
+    for members in [
+        Vec::new(),
+        vec![
+            reach(MemberKind::Harness, "codex", &["api.example:443"]),
+            reach(MemberKind::Agent, "helper", &["api.example:443"]),
+        ],
+    ] {
+        let mut s = spec(&home, "api-refused:2");
+        s.egress = apart(members);
+        assert!(matches!(refused(s), ImageRefusal::Widening(_)));
+    }
+    let mut s = spec(&home, "api-refused:2");
+    s.egress = apart(vec![reach(MemberKind::Harness, "nobody", &[])]);
+    assert!(matches!(refused(s), ImageRefusal::Image(_)));
     let mut s = spec(&home, "api-refused:1");
     s.publish = vec![Publish {
         guest_port: 9000,

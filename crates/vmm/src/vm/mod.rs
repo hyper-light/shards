@@ -196,24 +196,24 @@ pub use runtime::{
 #[cfg(all(hv, target_arch = "aarch64"))]
 pub use aarch64::host_cpu_id;
 
-/// This host's CPU as KVM shows a guest, as a CPU baseline names it (D176 part 6): its
-/// vendor and feature leaves.
-#[cfg(all(hv = "kvm", target_arch = "x86_64"))]
+/// This host's CPU as its hypervisor shows a guest (D176 part 6, D245): on KVM its vendor
+/// and feature leaves, as a CPU baseline names them; on WHP, which restores a snapshot only
+/// on the CPU it was taken on (hv::whp's state.rs), the leaves that say which CPU that is
+/// (`cpuid::IDENTITY`), which a move to another checks before anything moves.
+#[cfg(all(hv, target_arch = "x86_64"))]
 pub fn host_cpu_id() -> Result<crate::arch::cpu::Id, String> {
     crate::hv::host_cpu_id().map_err(|e| e.to_string())
 }
 
-/// This host's CPU as its hypervisor shows a guest (D176 part 6): none where no baseline
-/// is told, on WHP x86-64, which restores a snapshot only on the CPU it was taken on
-/// (hv::whp's state.rs), and in a build that drives no VMs.
-#[cfg(not(any(all(hv, target_arch = "aarch64"), all(hv = "kvm", target_arch = "x86_64"))))]
+/// This host's CPU as its hypervisor shows a guest: none in a build that drives no VMs.
+#[cfg(not(all(hv, any(target_arch = "aarch64", target_arch = "x86_64"))))]
 pub fn host_cpu_id() -> Result<crate::arch::cpu::Id, String> {
-    Err(if cfg!(hv = "whp") {
-        "a CPU baseline is not told on the Windows Hypervisor Platform, which restores a snapshot only on the CPU it was taken on".into()
-    } else {
-        "this build drives no VMs: it has no CPU to show a guest".into()
-    })
+    Err("this build drives no VMs: it has no CPU to show a guest".into())
 }
+
+/// Why no CPU baseline is told on the Windows Hypervisor Platform (D245): its restore takes
+/// a snapshot only on the CPU it was taken on.
+pub const NO_BASELINE_ON_WHP: &str = "a CPU baseline is not told on the Windows Hypervisor Platform, which restores a snapshot only on the CPU it was taken on";
 
 #[cfg(not(hv))]
 mod unsupported;
