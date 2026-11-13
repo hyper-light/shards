@@ -248,10 +248,9 @@ fn a_pulls_platform_defaults_to_the_default_platforms() {
 }
 
 /// A registry off loopback that speaks plain HTTP is pulled from once Docker's daemon
-/// configuration names it insecure (D194), as dockerd pulls from one: the rootless
-/// engine's daemon.json, under `XDG_CONFIG_HOME` (the native one's on Windows, under
-/// `PROGRAMDATA`). Not named, it is asked in HTTPS alone, and its plain answer is the
-/// pull's failure.
+/// configuration names it insecure (D194), as dockerd pulls from one: the daemon.json
+/// `SHARDS_DAEMON_JSON` names, the test's own, as `dockerd --config-file` names one. Not
+/// named, it is asked in HTTPS alone, and its plain answer is the pull's failure.
 #[test]
 fn a_registry_daemon_json_names_insecure_is_pulled_from_in_plain_http() {
     let Some(ip) = common::routable_v4() else {
@@ -262,11 +261,11 @@ fn a_registry_daemon_json_names_insecure_is_pulled_from_in_plain_http() {
     let (port, _) = common::registry_at(ip.into(), manifest, blobs);
     let image = format!("{ip}:{port}/test/image:v1");
     let home = TempDir::new("insecure");
-    let config = home.join("config");
+    let file = home.join("daemon.json");
+    std::fs::write(&file, "{}").unwrap();
     let env = [
         ("SHARDS_HOME", home.as_os_str()),
-        ("XDG_CONFIG_HOME", config.as_os_str()),
-        ("PROGRAMDATA", config.as_os_str()),
+        ("SHARDS_DAEMON_JSON", file.as_os_str()),
     ];
     let unnamed = run_shards_env(&["pull"], &["-q", image.as_str()], &env, TIMEOUT);
     assert_ne!(unnamed.status, Some(0), "{unnamed}");
@@ -276,12 +275,6 @@ fn a_registry_daemon_json_names_insecure_is_pulled_from_in_plain_http() {
             .contains("server gave HTTP response to HTTPS client"),
         "{unnamed}"
     );
-    let file = if cfg!(windows) {
-        config.join("docker").join("config").join("daemon.json")
-    } else {
-        config.join("docker").join("daemon.json")
-    };
-    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
     std::fs::write(&file, format!(r#"{{"insecure-registries": ["{ip}:{port}"]}}"#)).unwrap();
     let pulled = run_shards_env(&["pull"], &["-q", image.as_str()], &env, TIMEOUT);
     assert_eq!(pulled.status, Some(0), "{pulled}");
@@ -298,20 +291,15 @@ fn a_registry_daemon_json_names_insecure_is_pulled_from_in_plain_http() {
 /// Docker Hub's mirrors (D194): a pull of a Docker Hub repository asks the mirror Docker's
 /// daemon configuration names first, as dockerd does, and an image the mirror holds is
 /// the one pulled: the test image, at a Docker Hub name it is not at, served by a
-/// registry on loopback. Its digest is the test image's, which Docker Hub has not.
+/// registry on loopback, named in the daemon.json `SHARDS_DAEMON_JSON` names. Its digest is
+/// the test image's, which Docker Hub has not.
 #[test]
 fn a_mirror_daemon_json_names_serves_docker_hubs_pull() {
     let (manifest, blobs) = test_image();
     let digest = sha256_digest(&manifest);
     let (port, served) = common::registry(manifest, blobs);
     let home = TempDir::new("mirror");
-    let config = home.join("config");
-    let file = if cfg!(windows) {
-        config.join("docker").join("config").join("daemon.json")
-    } else {
-        config.join("docker").join("daemon.json")
-    };
-    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    let file = home.join("daemon.json");
     std::fs::write(
         &file,
         format!(r#"{{"registry-mirrors": ["http://127.0.0.1:{port}"]}}"#),
@@ -319,8 +307,7 @@ fn a_mirror_daemon_json_names_serves_docker_hubs_pull() {
     .unwrap();
     let env = [
         ("SHARDS_HOME", home.as_os_str()),
-        ("XDG_CONFIG_HOME", config.as_os_str()),
-        ("PROGRAMDATA", config.as_os_str()),
+        ("SHARDS_DAEMON_JSON", file.as_os_str()),
     ];
     let pulled = run_shards_env(&["pull"], &["-q", "test/image:v1"], &env, TIMEOUT);
     assert_eq!(pulled.status, Some(0), "{pulled}");

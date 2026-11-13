@@ -1959,14 +1959,16 @@ impl Run {
 }
 
 /// What a registry is reached by (shards_registry's credentials, certs and proxy): the
-/// Docker CLI's config, credential helpers on `PATH`, the homes of `certs.d`, and the
-/// proxies Go's net/http takes from the environment; and the local engine a made microVM
+/// Docker CLI's config, the daemon.json shards is given in place of Docker's daemons' (D194),
+/// credential helpers on `PATH`, the homes of `certs.d` and of Docker's daemon.json files,
+/// and the proxies Go's net/http takes from the environment; and the local engine a made microVM
 /// is published to, as docker/cli v29.8.1 finds it (`DOCKER_HOST`, `DOCKER_CONTEXT`), or none
 /// (`SHARDS_LOCAL_STORE=none`).
-pub const REGISTRY_ENV: [&str; 18] = [
+pub const REGISTRY_ENV: [&str; 19] = [
     "SHARDS_AUTH_CONFIG",
     "DOCKER_AUTH_CONFIG",
     "DOCKER_CONFIG",
+    "SHARDS_DAEMON_JSON",
     "HOME",
     "USERPROFILE",
     "PATH",

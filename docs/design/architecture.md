@@ -11052,6 +11052,18 @@ prints.
   file and why, as dockerd would not start with it. Checked as dockerd checks them (moby
   docker-v29.8.1 `daemon/pkg/registry/config.go`, `loadInsecureRegistries`,
   `ValidateMirror`).
+- **Or one file named** (2026-11-13, CI cluster 14): where `SHARDS_DAEMON_JSON` names a
+  daemon.json, that file alone is read, as `dockerd --config-file` names the one dockerd
+  reads, and as there one named and missing is an error naming it (moby docker-v29.8.1
+  `daemon/command/daemon.go:679-684`): what shards is told of registries apart from the
+  Docker on its machine. A client sends it to the daemon with the rest of what registries
+  are reached by (`REGISTRY_ENV`). The tests name their own, `{}` (tests/common
+  `as_tests_run`), as they give their own `DOCKER_CONFIG`: before, every test read the
+  host's files, so a host's mirror, insecure network or a file dockerd would refuse changed
+  what a test did; a stand-in host file under `XDG_CONFIG_HOME` naming a mirror dockerd
+  refuses failed a build from the tests' own registry (red at 0a3dde0db), and reaches no
+  test now (`images`' `a_hosts_daemon_json_reaches_no_test`; `registries`'
+  `the_daemon_json_named_is_read_alone`). D194's own E2E tests name their file through it.
 - **Which registries are insecure**: one named by its `host[:port]` as a reference names it
   (dockerd's `IndexConfigs` keys), or one with an address in a network named in CIDR
   notation, its name looked up within a dial's time where any network is named
