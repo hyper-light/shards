@@ -25,9 +25,9 @@ mod session;
 pub mod wire;
 
 pub use wire::{
-    Bound, Channel, CredentialGrant, Fill, GuestTimes, HostUse, Keep, MemberInfo, MemberKind, MemberReach,
-    Microvm, Narrowing, PlugRefusal, Proto, Publish, Ready, Receiving, RunEnd, Secret, Stats, StatsScope,
-    VcpuTime, decide,
+    Bound, Channel, ControlAsk, ControlAt, CredentialGrant, Fill, GuestTimes, HostUse, Keep, MemberInfo,
+    MemberKind, MemberReach, Microvm, Narrowing, PlugRefusal, Proto, Publish, Ready, Receiving, RunEnd,
+    Secret, SocketGrant, Stats, StatsScope, VcpuTime, decide,
 };
 
 /// A member, as the image's Agentfile names it.
@@ -136,6 +136,16 @@ pub struct ImageSpec {
     /// as `shards run` takes them). Never a member's: those are [`MemberSpec::env`], which
     /// travel on the channel alone.
     pub env: Vec<(std::ffi::OsString, std::ffi::OsString)>,
+    /// The run's agent-control endpoint (D238, D252), bound by its host for this run alone,
+    /// its key the run's own, made after its restore and held by the endpoint alone; it takes
+    /// [`ControlAsk::controller`]'s key alone, and serves lanes to the run's own command's
+    /// sockets where [`ControlAsk::sockets`] grants them (D251). None: no endpoint.
+    pub control: Option<ControlAsk>,
+    /// The host GPUs the run's VM renders on, each by its exact identity (D232, as
+    /// [`crate::GuestSpec::gpu_devices`] names them), bound by its VM process; under the
+    /// nesting grant its command reads them in `/run/shards/gpus` (D234's `gpus=`). None: no
+    /// GPU.
+    pub gpu_devices: Vec<crate::PhysicalGpu>,
 }
 
 /// How a member ended.
@@ -218,6 +228,10 @@ pub trait ImageGuest: Send + Sync {
     fn members(&self) -> &[MemberInfo];
     /// Each port published, as bound, and the members it reaches ([`Bound::to`]).
     fn published(&self) -> &[Bound];
+    /// Where the run's agent-control endpoint is bound, and its microVM's key, which its
+    /// controller pins (D252), where [`ImageSpec::control`] asked for one: as the run started,
+    /// unchanged until it ends.
+    fn control(&self) -> Option<&ControlAt>;
     /// A member's channel, as a pipe's read end, its bytes exactly as the member wrote
     /// them, ending at the channel's end; once each. What no one reads backs up into that
     /// channel alone. Refused for a member that does not run.
@@ -258,6 +272,13 @@ pub trait ImageGuest: Send + Sync {
         rate: Option<std::num::NonZeroU64>,
         patience: Duration,
     ) -> Result<Option<std::num::NonZeroU64>, ImageRefusal>;
+    /// The period the run's VM's governor holds a [`rate`](Self::rate) over (D191, D247):
+    /// each period the run's vCPUs together use at most the rate's share of it, held out of
+    /// their guest once it is spent until the period ends. As its run host said it as the run
+    /// started, the period its own build's hold uses, so that an orchestrator derives its
+    /// window from the run's own and copies no number: a period shards derives later (D191)
+    /// reaches it as it is.
+    fn rate_period(&self) -> Duration;
     /// Member `member`'s own terminal ([`MemberSpec::terminal`]) sized to `rows` by `cols`
     /// (plan step 6, D244), as a terminal's window is: its run's init sets the size, and the
     /// kernel tells the terminal's foreground process group SIGWINCH where it changed; a 0 in
@@ -474,6 +495,40 @@ fn request(spec: &ImageSpec) -> Result<wire::Request, ImageRefusal> {
             toward,
         });
     }
+    // The run's agent-control endpoint (D252): its socket grant's directory absolute and plain,
+    // as a member's working directory is, refused here, by the run host and by init; its
+    // admission one lane and one byte at least (R03: the caller's numbers), and the grant a run's
+    // own command's, so none in a run of its image's members alone.
+    if let Some(grant) = spec.control.as_ref().and_then(|c| c.sockets.as_ref()) {
+        let refuse = |why: String| ImageRefusal::Spec {
+            what: "the socket grant",
+            why,
+        };
+        if !shards_abi::run::socket::dir_ok(grant.dir.as_bytes()) {
+            return Err(refuse(format!(
+                "{:?}: {}",
+                grant.dir,
+                shards_abi::run::socket::Error::Dir
+            )));
+        }
+        if grant.lanes == 0 || grant.window == 0 {
+            return Err(refuse(format!(
+                "{} lanes of {} bytes: a grant admits a lane and a byte at least",
+                grant.lanes, grant.window
+            )));
+        }
+        if spec.command.is_none() {
+            return Err(refuse(
+                "a run without a command of its own has no sockets to grant".into(),
+            ));
+        }
+    }
+    // The run's GPUs (D232): each a host GPU's exact identity, none twice, within the bound the
+    // renderer's selection holds, as the VM process checks them again.
+    shards_abi::gpu::check_selection(&spec.gpu_devices).map_err(|e| ImageRefusal::Spec {
+        what: "the GPU selection",
+        why: e.to_string(),
+    })?;
     let request = wire::Request {
         image: spec.image.clone(),
         vcpus: spec.vcpus,
@@ -486,6 +541,8 @@ fn request(spec: &ImageSpec) -> Result<wire::Request, ImageRefusal> {
         nesting: spec.nesting,
         ready_by,
         credentials,
+        control: spec.control.clone(),
+        gpu_devices: spec.gpu_devices.clone(),
     };
     // Past the channel's bound it would never be read; the guest's bound is the same one.
     request.encode().map_err(|e| ImageRefusal::Spec {
@@ -529,6 +586,8 @@ mod tests {
             ready_by: None,
             binary: None,
             env: Vec::new(),
+            control: None,
+            gpu_devices: Vec::new(),
         }
     }
 
@@ -693,5 +752,62 @@ mod tests {
             request(&s),
             Err(ImageRefusal::Spec { what: "the spec", .. })
         ));
+    }
+
+    /// Step 11 (b), D252 (Hex's acceptance): a socket grant that names no plain absolute
+    /// directory, admits no lane or no byte, or is asked of a run without a command of its own,
+    /// is refused by shards-api before any run host starts, as a member's working directory is;
+    /// a grant within its bounds is carried whole.
+    #[test]
+    fn a_socket_grant_out_of_its_bounds_is_refused_before_a_run_host_starts() {
+        let grant = |dir: &str, lanes, window| ControlAsk {
+            controller: [1u8; 32],
+            sockets: Some(SocketGrant {
+                dir: dir.into(),
+                lanes,
+                window,
+            }),
+        };
+        for (dir, lanes, window) in [
+            ("run/hex/channel", 8, 65_536),
+            ("", 8, 65_536),
+            ("/run/hex/../etc", 8, 65_536),
+            ("/run//hex", 8, 65_536),
+            ("/run/hex/./channel", 8, 65_536),
+            ("/run/hex/channel", 0, 65_536),
+            ("/run/hex/channel", 8, 0),
+        ] {
+            let mut s = spec();
+            s.nesting = true;
+            s.command = Some(vec!["/init".into()]);
+            s.control = Some(grant(dir, lanes, window));
+            assert!(
+                matches!(request(&s), Err(ImageRefusal::Spec { .. })),
+                "{dir:?} lanes {lanes} window {window}"
+            );
+        }
+        let mut s = spec();
+        s.command = Some(vec!["/init".into()]);
+        s.control = Some(grant("/run/hex/channel", 8, 65_536));
+        assert_eq!(request(&s).unwrap().control, s.control);
+        s.command = None;
+        assert!(matches!(request(&s), Err(ImageRefusal::Spec { .. })));
+        s.control = Some(ControlAsk {
+            controller: [1u8; 32],
+            sockets: None,
+        });
+        assert_eq!(request(&s).unwrap().control, s.control);
+    }
+
+    /// D232 through D231: a run's GPUs are D232's selection, checked before any run host starts
+    /// (one GPU twice refused), and carried whole.
+    #[test]
+    fn a_runs_gpus_are_checked_before_a_run_host_starts() {
+        let gpu = crate::PhysicalGpu::MetalRegistry(0x1_0000_02a1);
+        let mut s = spec();
+        s.gpu_devices = vec![gpu];
+        assert_eq!(request(&s).unwrap().gpu_devices, vec![gpu]);
+        s.gpu_devices = vec![gpu, gpu];
+        assert!(matches!(request(&s), Err(ImageRefusal::Spec { .. })));
     }
 }

@@ -397,12 +397,17 @@ pub(super) struct Session {
     host: Arc<shards_ipc::Child>,
     members: Vec<MemberInfo>,
     published: Vec<wire::Bound>,
+    /// Where its agent-control endpoint is bound (D252), where it asked for one.
+    control: Option<wire::ControlAt>,
     outputs: Mutex<HashMap<(u32, Channel), io::PipeReader>>,
     /// Its command has the nesting grant (D234): its spec asked for it, and its host, which
     /// refuses a grant it cannot give, started it.
     nesting: bool,
     /// Each member whose spec asked for a terminal of its own (D244), by its index.
     terminals: Vec<u32>,
+    /// The period its VM's governor holds a rate over, as its host said it as the run
+    /// started (D247).
+    rate_period: Duration,
 }
 
 impl Session {
@@ -519,6 +524,14 @@ impl Session {
                 }
             }
         }
+        // Its endpoint told exactly where one was asked for (D252): a host that binds none for
+        // a run that asked, or one for a run that did not, broke the channel's contract.
+        if request.control.is_some() != started.control.is_some() {
+            end_it(&shared);
+            return Err(ImageRefusal::Host(
+                "the run host's start told an agent-control endpoint other than the run asked".into(),
+            ));
+        }
         // Each member whose terminal its spec asked for (D244), by its index likewise.
         let terminals = request
             .members
@@ -537,9 +550,11 @@ impl Session {
             host,
             members: started.members,
             published: started.published,
+            control: started.control,
             outputs: Mutex::new(HashMap::new()),
             nesting: request.nesting,
             terminals,
+            rate_period: started.rate_period,
         };
         session.pump_outputs()?;
         Ok(session)
@@ -908,6 +923,10 @@ impl ImageGuest for Session {
         &self.published
     }
 
+    fn control(&self) -> Option<&wire::ControlAt> {
+        self.control.as_ref()
+    }
+
     fn take_output(&self, member: &MemberName, channel: Channel) -> Result<io::PipeReader, ImageRefusal> {
         let index = self.index(member)?.index;
         lock(&self.outputs)
@@ -1006,6 +1025,10 @@ impl ImageGuest for Session {
 
     fn rate(&self, rate: Option<NonZeroU64>, patience: Duration) -> Result<Option<NonZeroU64>, ImageRefusal> {
         self.shared.rate(rate, patience)
+    }
+
+    fn rate_period(&self) -> Duration {
+        self.rate_period
     }
 
     fn resize(

@@ -40,11 +40,13 @@ use crate::tls;
 
 mod drive;
 pub mod exec;
+pub mod unix;
 pub use crate::tls::Negotiated;
 pub use drive::{
     Controller, Dialed, Exec, ExecControl, Execs, Fault, Got, Hangup, Input, Link, Linked, McpConnection,
-    Output, Subscriptions,
+    Output, Socket, SocketReader, SocketWriter, Sockets, Subscriptions,
 };
+pub use unix::Admission as SocketAdmission;
 
 /// The application protocol of a control connection (RFC 7301), apart from a context's
 /// (`shards/1`) and the managed output's: a peer offering another is refused at its handshake.
@@ -304,6 +306,9 @@ pub struct Streams<'a> {
     /// What each exec's streams are admitted, where its host runs execs in the members
     /// ([`exec`]); none, and an ask is refused.
     pub execs: Option<exec::Admissions>,
+    /// What the run admits of lanes to its own command's sockets ([`unix`], D251); none, and
+    /// a socket lane is refused.
+    pub sockets: Option<unix::Admission>,
 }
 
 /// The endpoint's handles to what it serves, in the order [`Streams`] named them: each output's
@@ -317,6 +322,9 @@ pub struct Served {
     /// Each exec a controller asks for, for the host to start ([`exec::Start`]), where
     /// [`Streams::execs`] admitted them.
     pub execs: Option<std::sync::mpsc::Receiver<exec::Start>>,
+    /// Each socket lane a controller asks for, for the host to connect ([`unix::Connect`]),
+    /// where [`Streams::sockets`] admitted them.
+    pub sockets: Option<std::sync::mpsc::Receiver<unix::Connect>>,
 }
 
 /// Ends the endpoint's driver, its connections and every lane: the microVM's control is over.
@@ -394,6 +402,22 @@ impl Endpoint {
                 .checked_add(u64::try_from(exec::TOLD_BYTES + REFUSED_BYTES).map_err(|_| window())?)
                 .ok_or_else(window)?;
         }
+        if let Some(admission) = streams.sockets {
+            // Each socket lane, and one more to refuse past the run's most, with what each
+            // reads and sends (unix.rs `added`); and each lane's window through one stream's.
+            let window = || managed::Error::Admission(AdmissionError::Window);
+            let (lanes, receive, send) = unix::added(admission.check()?).ok_or_else(window)?;
+            windows.streams = windows.streams.checked_add(lanes).ok_or_else(window)?;
+            windows.connection = usize::try_from(receive)
+                .ok()
+                .and_then(|r| windows.connection.checked_add(r))
+                .ok_or_else(window)?;
+            windows.send = windows.send.checked_add(send).ok_or_else(window)?;
+            windows.stream = usize::try_from(admission.window)
+                .ok()
+                .map(|w| windows.stream.max(w).max(unix::ASK_MOST))
+                .ok_or_else(window)?;
+        }
         let mut config = endpoint(vm, controller, managed::transport_of(&link, windows)?)?;
         config
             .max_incoming(1)
@@ -405,7 +429,8 @@ impl Endpoint {
             send: windows.send,
         };
         let (execs, handed) = exec::Execs::new(streams.execs, base);
-        let lanes = Lanes::new(controller, streams, windows.streams, execs)?;
+        let (sockets, connects) = unix::Carried::new(streams.sockets);
+        let lanes = Lanes::new(controller, streams, windows.streams, execs, sockets)?;
         let (mut driver, sender) = Driver::bind_bounded(
             at,
             Some(config),
@@ -422,6 +447,7 @@ impl Endpoint {
         let address = driver.local()?;
         let lanes = driver.handler_mut();
         lanes.execs.wake = Some(sender.try_clone()?);
+        lanes.sockets.wake = Some(sender.try_clone()?);
         let mut outputs = Vec::new();
         outputs
             .try_reserve_exact(lanes.outputs.len())
@@ -447,6 +473,7 @@ impl Endpoint {
                 inputs,
                 revoke: Revoke { sender },
                 execs: handed,
+                sockets: connects,
             },
         ))
     }
@@ -517,8 +544,9 @@ fn admitted(streams: Streams<'_>) -> Result<(Admitted, Windows), managed::Error>
             },
         });
     }
-    let link = link.ok_or(managed::Error::Admission(AdmissionError::Capacity))?;
-    Ok((link, windows))
+    // An endpoint of no member stream takes the cited link (unix.rs `link`): its control lane,
+    // and its socket lanes where it admits them, have no link of their own to set it.
+    Ok((link.unwrap_or_else(unix::link), windows))
 }
 
 /// A lane's first frame, as it comes.
@@ -559,6 +587,7 @@ struct Lanes {
     answering: Vec<Answering>,
     conns: Vec<ConnKey>,
     execs: exec::Execs,
+    sockets: unix::Carried,
 }
 
 /// Abandons `stream` both ways: what this side would send is let go (RESET_STREAM) and its
@@ -577,6 +606,7 @@ impl Lanes {
         streams: Streams<'_>,
         open: u32,
         execs: exec::Execs,
+        sockets: unix::Carried,
     ) -> Result<Lanes, managed::Error> {
         let allocation = managed::Error::Admission(AdmissionError::Allocation);
         let held = usize::try_from(open)
@@ -616,6 +646,7 @@ impl Lanes {
             answering: Vec::new(),
             conns: Vec::new(),
             execs,
+            sockets,
         };
         let reserve = |held: usize| {
             managed::Error::Admission(if held == 0 {
@@ -665,6 +696,7 @@ impl Lanes {
         self.answering.retain(|r| r.conn != conn);
         self.conns.retain(|c| *c != conn);
         self.forget_execs(conn);
+        self.forget_sockets(conn);
     }
 
     /// The controller sent what a lane's protocol refuses: its connection is closed with why,
@@ -769,6 +801,17 @@ impl Lanes {
             } else {
                 self.refuse_lane(io, conn, stream, Reason::Protocol);
             }
+            return;
+        }
+        // A socket lane's ask: read on as long as it is (unix.rs).
+        if let Ok(Some((Tag::UnixConnect, len))) = frame::peek(head) {
+            let mut came = [0; LANE_MOST];
+            let came = came.get_mut(..head.len()).map(|c| {
+                c.copy_from_slice(head);
+                &*c
+            });
+            self.opening.swap_remove(at);
+            self.begin_socket(io, conn, stream, came.unwrap_or_default(), len, ended);
             return;
         }
         // An exec's ask, or an MCP connection's (D254): read on as long as it is (exec.rs).
@@ -883,6 +926,7 @@ impl Lanes {
         // After the streams' own: an exec's finished outputs have ended their lanes before it
         // is let go.
         self.exec_turn(io);
+        self.socket_turn(io);
     }
 
     /// The lane `(conn, stream)` serving `which` is over: its stream waits for its next
@@ -983,7 +1027,7 @@ impl Handler for Lanes {
             self.open(io, at);
             return;
         }
-        if self.read_exec(io, conn, stream) {
+        if self.read_socket(io, conn, stream) || self.read_exec(io, conn, stream) {
             self.turn(io);
             return;
         }
@@ -1022,7 +1066,7 @@ impl Handler for Lanes {
     }
 
     fn stopped(&mut self, io: &mut Io<'_>, conn: ConnKey, stream: StreamId) {
-        if self.stop_exec(io, conn, stream) {
+        if self.stop_socket(io, conn, stream) || self.stop_exec(io, conn, stream) {
             return;
         }
         // Its controller reads no more of the lane, whose side here the driver has reset: the
@@ -1408,6 +1452,7 @@ mod tests {
                         outputs: &[(output(Channel::Stdout), out), (output(Channel::Stderr), out)],
                         inputs: &[(stdin(), admitted(RECORD, input::TAKEN_BYTES))],
                         execs,
+                        sockets: None,
                     },
                 )
                 .unwrap();
@@ -1421,6 +1466,7 @@ mod tests {
                     mut inputs,
                     revoke,
                     execs: starts,
+                    sockets: _,
                 } = served;
                 let (relay, control) = inputs.pop().unwrap();
                 let input = Arc::new(control);
@@ -2023,6 +2069,7 @@ mod tests {
                 outputs: &[(output(Channel::Stdout), out), (output(Channel::Stderr), out)],
                 inputs: &[(stdin(), slow)],
                 execs: None,
+                sockets: None,
             })
             .unwrap();
             let input_receive = input::receive_bytes(50).unwrap();
@@ -2037,14 +2084,42 @@ mod tests {
             );
             assert_eq!(link.patience, PATIENCE);
             assert_eq!(link.handshake_bytes, out.handshake_bytes);
-            assert!(matches!(
-                super::super::admitted(Streams {
-                    outputs: &[],
-                    inputs: &[],
-                    execs: None,
-                }),
-                Err(managed::Error::Admission(AdmissionError::Capacity))
-            ));
+            // An endpoint of no stream still has its control lane (D252): the cited link, and
+            // no stream's window; it binds, serving its control lane alone.
+            let (bare, nothing) = super::super::admitted(Streams {
+                outputs: &[],
+                inputs: &[],
+                execs: None,
+                sockets: None,
+            })
+            .unwrap();
+            assert_eq!(
+                (bare.handshake_bytes, bare.patience),
+                (unix::HANDSHAKE_MOST, tls::QUIET)
+            );
+            assert_eq!(
+                nothing,
+                Windows {
+                    stream: 0,
+                    connection: 0,
+                    send: 0,
+                    streams: 0
+                }
+            );
+            assert!(
+                Endpoint::bind(
+                    &Identity::generate().unwrap(),
+                    [0; 32],
+                    loopback(),
+                    Streams {
+                        outputs: &[],
+                        inputs: &[],
+                        execs: None,
+                        sockets: None,
+                    },
+                )
+                .is_ok()
+            );
             let none = Admitted {
                 record_bytes: 0,
                 ..out
@@ -2054,6 +2129,7 @@ mod tests {
                     outputs: &[(output(Channel::Stdout), none)],
                     inputs: &[],
                     execs: None,
+                    sockets: None,
                 }),
                 Err(managed::Error::Admission(AdmissionError::Capacity))
             ));
@@ -2065,6 +2141,7 @@ mod tests {
                     outputs: &[(output(Channel::Stdout), out), (output(Channel::Stdout), out)],
                     inputs: &[],
                     execs: None,
+                    sockets: None,
                 },
             );
             assert!(matches!(
@@ -2326,6 +2403,7 @@ mod tests {
                     outputs: &outputs,
                     inputs: &inputs,
                     execs: Some(admissions),
+                    sockets: None,
                 },
             );
             let execs = dialed.execs.as_ref().unwrap();
@@ -2449,6 +2527,7 @@ mod tests {
                     outputs: &outputs,
                     inputs: &inputs,
                     execs: Some(admissions),
+                    sockets: None,
                 },
             );
             let execs = dialed.execs.as_ref().unwrap();
@@ -2544,6 +2623,7 @@ mod tests {
                     outputs: &outputs,
                     inputs: &inputs,
                     execs: None,
+                    sockets: None,
                 },
             );
             let out = b"\x00\xff\xfe not UTF-8 \x80, and no newline";
@@ -2655,6 +2735,7 @@ mod tests {
                     outputs: &outputs,
                     inputs: &inputs,
                     execs: None,
+                    sockets: None,
                 },
             );
             let link = dialed.link.wait().unwrap();
@@ -2693,6 +2774,7 @@ mod tests {
                     outputs: &outputs,
                     inputs: &inputs,
                     execs: None,
+                    sockets: None,
                 },
             );
             serving.submit(STDOUT, b"first");
@@ -2769,6 +2851,7 @@ mod tests {
                     outputs: &outputs,
                     inputs: &inputs,
                     execs: None,
+                    sockets: None,
                 },
             );
             assert_eq!(
@@ -2809,6 +2892,7 @@ mod tests {
                 outputs: &outputs,
                 inputs: &inputs,
                 execs: None,
+                sockets: None,
             };
             let (mut dialed, driver) = drive(&stranger, vm.fingerprint(), serving.address, subscriptions);
             let refused = dialed.outputs[0].next_record();
@@ -2846,6 +2930,7 @@ mod tests {
                     outputs: &outputs,
                     inputs: &inputs,
                     execs: None,
+                    sockets: None,
                 },
             );
             serving.submit(STDOUT, b"once");
@@ -2872,6 +2957,7 @@ mod tests {
                     outputs: &outputs,
                     inputs: &inputs,
                     execs: None,
+                    sockets: None,
                 },
             );
             assert_eq!(
@@ -2917,6 +3003,7 @@ mod tests {
                     outputs: &outputs,
                     inputs: &inputs,
                     execs: None,
+                    sockets: None,
                 },
             );
             serving.submit(STDOUT, b"before");
@@ -2950,6 +3037,7 @@ mod tests {
                 ],
                 inputs: &[(stdin(), slow, 0)],
                 execs: None,
+                sockets: None,
             })
             .unwrap();
             let ack = 5 + 8;
@@ -2970,14 +3058,19 @@ mod tests {
                 }
             );
             assert_eq!(link.patience, PATIENCE);
-            assert!(matches!(
-                super::super::drive::windows(Subscriptions {
-                    outputs: &[],
-                    inputs: &[],
-                    execs: None,
-                }),
-                Err(managed::Error::Admission(AdmissionError::Capacity))
-            ));
+            // A controller of no stream still opens its control lane (D252), on the cited link.
+            let (bare, control) = super::super::drive::windows(Subscriptions {
+                outputs: &[],
+                inputs: &[],
+                execs: None,
+                sockets: None,
+            })
+            .unwrap();
+            assert_eq!(
+                (bare.handshake_bytes, bare.patience),
+                (unix::HANDSHAKE_MOST, tls::QUIET)
+            );
+            assert!(control.connection > 0 && control.send > 0, "{control:?}");
         }
     }
 }
