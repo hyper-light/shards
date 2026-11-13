@@ -2564,6 +2564,7 @@ mod tests {
                 Subscriptions {
                     outputs: &subscriptions,
                     inputs: &[],
+                    execs: None,
                 },
             )
             .unwrap();
