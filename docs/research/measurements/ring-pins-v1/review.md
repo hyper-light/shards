@@ -359,6 +359,7 @@ and is untouched here.
 |---|---|---|
 | [r20](logs/r20-cure-f3-at-once.txt) | adacachy2, Linux 7.3.3 x86_64 | F3: red, the sizes' leak rates, green (ring:: 22 of 22), clippy for x86_64-gnu and both musl guests, mutation |
 | [r21](logs/r21-cure-f4-settle-lint.txt) | adas-mac-studio-3, macOS 26.2 arm64 | F4: `cargo clippy -p shards --test engine_ring -- -D warnings` |
+| [r22](logs/r22-cure-merged-gates.txt) | both, on the merged tree (origin/main 5b91d43de and this lane, merge abdc66854) | r20's green and lints, and r21's lint, again: all pass; fmt clean |
 
 ### Owed to ROOT (cures)
 
