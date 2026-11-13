@@ -1318,18 +1318,28 @@ fn shell(args: &OsStr) {
     client.wait().unwrap();
 }
 
-/// Starts `home`'s daemon with `shards ps`, which needs no VM, under a limit of `limit`
-/// open descriptors if one is given, which the daemon inherits; its pid.
-fn start_daemon(home: &Path, limit: Option<u32>) -> i32 {
+/// Starts `home`'s daemon with `shards ps`, which needs no VM; its pid.
+fn start_daemon(home: &Path) -> i32 {
     let mut cmd = common::command();
     cmd.arg("ps");
-    #[cfg(unix)]
-    if let Some(n) = limit {
-        descriptor_limit(&mut cmd, u64::from(n), true);
-    }
-    // Windows gives a process no limit of open handles to lower.
-    #[cfg(windows)]
-    assert!(limit.is_none(), "no limit of open handles to set on Windows");
+    let out = cmd
+        .env("SHARDS_HOME", home)
+        .env("SHARDS_LOCAL_STORE", "none")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    daemon_pid(home).expect("a daemon pid")
+}
+
+/// Starts `home`'s daemon with `shards daemon --detached`, under a limit of `limit` open
+/// descriptors, which the daemon inherits: started, it has served no request, so it has
+/// learned no request's rest (`slots::Seen`, PM M545); its pid.
+#[cfg(unix)]
+fn start_idle_daemon(home: &Path, limit: u32) -> i32 {
+    let mut cmd = common::command();
+    cmd.args(["daemon", "--detached"]);
+    descriptor_limit(&mut cmd, u64::from(limit), true);
     let out = cmd
         .env("SHARDS_HOME", home)
         .env("SHARDS_LOCAL_STORE", "none")
@@ -1618,7 +1628,7 @@ fn a_daemon_raises_its_descriptor_limit() {
 #[test]
 fn a_client_that_says_nothing_holds_up_no_stop() {
     let home = TempDir::new("daemon-silent");
-    let daemon = start_daemon(&home, None);
+    let daemon = start_daemon(&home);
     let silent = silent_slot(&home, Duration::from_secs(10)).expect("no slot was offered");
     let t0 = Instant::now();
     let env = [("SHARDS_HOME", home.as_os_str())];
@@ -1745,7 +1755,7 @@ fn clients_past_the_cap_wait_their_turn() {
 #[test]
 fn a_home_removed_once_is_gone_with_its_daemon() {
     let home = TempDir::new("daemon-home-once");
-    let daemon = start_daemon(&home, None);
+    let daemon = start_daemon(&home);
     let path = home.to_path_buf();
     let requests = path.join("requests");
     // Gone once, whatever the daemon makes in it as it goes: a removal of a directory
@@ -1796,7 +1806,7 @@ fn a_home_removed_once_is_gone_with_its_daemon() {
 #[test]
 fn lists_removed_by_hand_are_made_again_for_the_next_client() {
     let home = TempDir::new("daemon-hand");
-    let daemon = start_daemon(&home, None);
+    let daemon = start_daemon(&home);
     for list in ["free", "free-streams"] {
         std::fs::remove_file(home.join("requests").join(list)).unwrap();
     }
@@ -1832,7 +1842,7 @@ fn lists_removed_by_hand_are_made_again_for_the_next_client() {
 #[test]
 fn a_stopping_daemon_waits_for_no_client_that_reads_nothing() {
     let home = TempDir::new("daemon-unread");
-    let daemon = start_daemon(&home, None);
+    let daemon = start_daemon(&home);
     let env = [
         ("SHARDS_HOME", home.as_os_str()),
         ("SHARDS_LOCAL_STORE", "none".as_ref()),
@@ -2053,7 +2063,7 @@ fn threads_run(pid: i32) -> std::collections::BTreeMap<String, (String, u64)> {
 #[test]
 fn an_idle_daemon_wakes_for_nothing() {
     let home = TempDir::new("daemon-idle");
-    let daemon = start_daemon(&home, None);
+    let daemon = start_daemon(&home);
     let switches = || threads_run(daemon);
     // What it does as it starts may take a while on a busy host: the first quiet window
     // within 30 s is what is asked for.
@@ -2141,13 +2151,16 @@ fn waiters_shut_out_no_client() {
 /// its clients waiting on their list, and serves again once clients leave (audit A07). Its
 /// limit here is above what it holds idle, its four slots offered, which take 40
 /// descriptors of their FIFOs' ends and stop pipes (shards_ipc::slots): each client that
-/// begins its request then holds two more of it, its slot replaced. No VM needed.
+/// begins its request then holds two more of it, its slot replaced. Started with no request
+/// served ([`start_idle_daemon`]), the daemon has learned no request's rest, and waits on a
+/// client that sends nothing past its first byte for as long as that client lives (PM
+/// M545): the clients here hold their slots until each round lets them go. No VM needed.
 #[cfg(unix)]
 #[test]
 fn a_daemon_out_of_descriptors_waits_for_room() {
     more_descriptors();
     let home = TempDir::new("daemon-starved");
-    let daemon = start_daemon(&home, Some(128));
+    let daemon = start_idle_daemon(&home, 128);
     let log = home.join("daemon.log");
     let said = || std::fs::read_to_string(&log).unwrap_or_default();
     // The daemon's own words as it runs out and as it has room again: EMFILE's text is
@@ -2189,14 +2202,12 @@ fn a_daemon_out_of_descriptors_waits_for_room() {
         }
     };
     'rounds: for round in 1.. {
-        // Each round's clients its own: a client says nothing past its first byte, and the
-        // daemon lets one go once its request has taken longer than it waits for one (its
-        // learned cutoff, doubled for each cut in a row: D222, `Seen`), so that an earlier
-        // round's, kept, gave it room in each later round on a busy host (a gate's five
-        // rounds in a row). Let go, they give a daemon that was out room at once, which it
-        // says before the round fills it again. On macOS the doubled wait passed what one
-        // select(2) takes after 27 cuts, and every slot then failed at once, so the daemon
-        // never ran out (PM M542).
+        // Each round's clients its own: a client says nothing past its first byte, and one
+        // kept from an earlier round would give the daemon room as it went, in each later
+        // round on a busy host (a gate's five rounds in a row). Let go, they give a daemon
+        // that was out room at once, which it says before the round fills it again. On
+        // macOS a wait past what one select(2) takes failed every slot at once, so that the
+        // daemon never ran out (PM M542).
         if !silent.is_empty() {
             let before = said().len();
             let was_out = out(&said());
@@ -2876,7 +2887,7 @@ fn pools_keep_what_their_runs_need_while_they_come() {
 #[test]
 fn a_collection_another_process_leaves_due_is_taken() {
     let home = TempDir::new("daemon-due");
-    let daemon = start_daemon(&home, None);
+    let daemon = start_daemon(&home);
     // Once its client's going has woken it, and it sleeps again.
     std::thread::sleep(Duration::from_millis(300));
     let due = home.join("images").join("collect-due");
@@ -2894,7 +2905,7 @@ fn a_collection_another_process_leaves_due_is_taken() {
 fn a_collection_waits_for_the_stores_lease() {
     let (image, _) = served();
     let home = TempDir::new("daemon-lease");
-    start_daemon(&home, None);
+    start_daemon(&home);
     // A process of its own, whose collection the daemon takes.
     let env = [("SHARDS_HOME", home.as_os_str())];
     let pulled = run_shards_env(&["pull"], &[image.as_str()], &env, TIMEOUT);
