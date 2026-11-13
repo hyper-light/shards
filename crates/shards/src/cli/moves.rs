@@ -238,6 +238,27 @@ fn said(step: &str, (_, _, err): &There) -> String {
     }
 }
 
+/// Gives the image `id`, loaded on the other machine by its digest (with no name), the name
+/// `named` it has here, where nothing there has that name, each step asked through `there`. A
+/// name that cannot be given, or a step unanswered, fails the move: a run of its image there by
+/// its name here would find none (ROOT's KVM run at 084891178: moved.rs's image moved there
+/// unnamed, both steps' answers let go, which failed unsaid).
+fn name_there(
+    there: &mut dyn FnMut(&[&str]) -> Result<There, String>,
+    id: &str,
+    named: &str,
+) -> Result<(), String> {
+    let has = there(&["image", "inspect", "-f", "{{.Id}}", named])?;
+    if has.0 == 0 {
+        return Ok(());
+    }
+    let tagged = there(&["tag", id, named])?;
+    match tagged.0 {
+        0 => Ok(()),
+        _ => Err(said("its tag", &tagged)),
+    }
+}
+
 /// Why the other machine's `ready` step does not take a move: its refusal, typed
 /// (daemon/moves.rs `Refused`), or, from a daemon of an earlier build or a step that failed,
 /// its words.
@@ -540,13 +561,11 @@ fn moved(home: &Path, name: &str, to: &str, live: bool, ask: &Ask<'_>) -> Result
         if let Err(e) = loaded {
             return Err(resume_here(format!("its image: {e}")));
         }
-        // Saved by its digest, it is loaded with no name: given the one it has here, where
-        // nothing there has it.
-        if let Some(named) = &plan.image
-            && !named.is_empty()
-            && there(step(&["image", "inspect", "-f", "{{.Id}}", named]), None).is_ok_and(|r| r.0 != 0)
+        // Saved by its digest, it is loaded with no name: given the one it has here.
+        if let Some(named) = plan.image.as_deref().filter(|n| !n.is_empty())
+            && let Err(e) = name_there(&mut |argv| there(step(argv), None), &plan.image_id, named)
         {
-            let _ = there(step(&["tag", &plan.image_id, named]), None);
+            return Err(resume_here(format!("its image's name, {named}: {e}")));
         }
         times.step("image loaded there");
         needs = match ready("its check") {
@@ -736,6 +755,56 @@ mod tests {
 
     fn unanswered() -> Asked {
         Err("there: the connection to 192.0.2.1:3000 ended: timed out".into())
+    }
+
+    /// A moved image is named there as it is here, where nothing there has the name; a name
+    /// there already is left as it is; a tag refused, or a step unanswered, fails the move,
+    /// typed, rather than leaving the image unnamed. Red with each step's answer let go.
+    #[test]
+    fn a_moved_images_name_is_given_there_or_the_move_fails() {
+        let no = || Ok((1, Vec::new(), b"shards: No such image: here:v1\n".to_vec()));
+        let yes = || Ok((0, b"sha256:abc\n".to_vec(), Vec::new()));
+        let gone = || Err("lab: no answer from the shards daemon".to_string());
+        let run = |answers: Vec<Result<There, String>>| {
+            let mut answers = answers.into_iter();
+            let mut asked = Vec::new();
+            let named = name_there(
+                &mut |argv| {
+                    asked.push(argv.join(" "));
+                    answers.next().unwrap_or_else(gone)
+                },
+                "sha256:abc",
+                "here:v1",
+            );
+            (named, asked)
+        };
+        let inspect = "image inspect -f {{.Id}} here:v1".to_string();
+        let tag = "tag sha256:abc here:v1".to_string();
+        assert_eq!(
+            run(vec![no(), yes()]),
+            (Ok(()), vec![inspect.clone(), tag.clone()])
+        );
+        assert_eq!(
+            run(vec![yes()]),
+            (Ok(()), vec![inspect.clone()]),
+            "named there already"
+        );
+        let refused = Ok((1, Vec::new(), b"shards: tag refused\n".to_vec()));
+        assert_eq!(
+            run(vec![no(), refused]),
+            (Err("tag refused".into()), vec![inspect.clone(), tag.clone()])
+        );
+        assert_eq!(
+            run(vec![no(), gone()]),
+            (
+                Err("lab: no answer from the shards daemon".into()),
+                vec![inspect.clone(), tag]
+            )
+        );
+        assert_eq!(
+            run(vec![gone()]),
+            (Err("lab: no answer from the shards daemon".into()), vec![inspect])
+        );
     }
 
     /// What a move learns of the other machine: its slowest answer the longest silence any of
