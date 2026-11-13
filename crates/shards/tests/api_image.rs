@@ -21,6 +21,7 @@ use shards_api::image::{
     ImageShare, ImageSpec, Images as _, Keep, LeaseRefusal, Leased, Lessor, MemberEnd, MemberFile,
     MemberKind, MemberName, MemberReach, MemberSpec, Narrowing, PlugRefusal, Proto, Publish, RunEnd,
     RunLessor, SaveRefusal, Secret, SignInGrant, SignInRefusal, SignInTokens, StartedFrom, StatsScope,
+    UpstreamRoot,
 };
 
 const TIMEOUT: Duration = Duration::from_secs(120);
@@ -91,6 +92,7 @@ fn spec(home: &TempDir, image: &str) -> ImageSpec {
         control: None,
         gpu_devices: Vec::new(),
         sign_ins: Vec::new(),
+        upstream_roots: Vec::new(),
     }
 }
 
@@ -1386,22 +1388,6 @@ fn holding(root: &std::path::Path, needle: &[u8]) -> Vec<std::path::PathBuf> {
     found
 }
 
-/// Whether a run's network process trusts this test's roots as its host's. On Linux its
-/// verifier reads the system's bundle as it starts (rustls-platform-verifier through
-/// rustls-native-certs), which `SSL_CERT_FILE` in the run host's environment names; on macOS
-/// (trustd) and Windows (CryptoAPI) the OS verifies (shards-verify) and nothing a test sets
-/// adds a root, so these runs are owed there until a run's injector can be given a test's.
-fn injector_trusts_test_roots() -> bool {
-    if cfg!(target_os = "linux") {
-        return true;
-    }
-    let _ = writeln!(
-        std::io::stderr(),
-        "SKIP: a run's injector here trusts only the OS's roots, and no test root can be added to them"
-    );
-    false
-}
-
 /// A request the test's host was asked: over HTTP/2 or not, each field as it arrived (with
 /// its HPACK indexing, over HTTP/2), and its body.
 #[derive(Debug)]
@@ -1422,11 +1408,12 @@ impl Asked {
     }
 }
 
-/// The test's TLS host: its port on this host's loopback, its CA's certificate written for
-/// the run's host, and each request it answered, sent as it came, before its answer.
+/// The test's TLS host: its port on this host's loopback, its CA's certificate in PEM, which a
+/// run names as its upstream root (D242), and each request it answered, sent as it came, before
+/// its answer.
 struct TlsHost {
     port: u16,
-    roots: std::path::PathBuf,
+    root: String,
     asked: std::sync::mpsc::Receiver<Asked>,
 }
 
@@ -1436,8 +1423,16 @@ type ServerTls = rustls::StreamOwned<rustls::ServerConnection, std::net::TcpStre
 /// answers the request's credential field in `x-echo` and its body; `/oauth/token` answers a
 /// code's exchange with [`REAL_ACCESS`] and [`REAL_REFRESH`], as Codex's provider would, and
 /// anything else there 400.
-fn tls_host(home: &TempDir, names: &[&str]) -> TlsHost {
+fn tls_host(names: &[&str]) -> TlsHost {
+    // A day's validity, within what every platform's verifier takes of a server's certificate
+    // (shards-verify's and the injector's tests give theirs the same).
+    let now = time::OffsetDateTime::now_utc();
+    let day = |p: &mut rcgen::CertificateParams| {
+        p.not_before = now - time::Duration::hours(1);
+        p.not_after = now + time::Duration::days(1);
+    };
     let mut ca = rcgen::CertificateParams::new(Vec::new()).unwrap();
+    day(&mut ca);
     ca.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
     ca.distinguished_name = rcgen::DistinguishedName::new();
     ca.distinguished_name
@@ -1452,10 +1447,10 @@ fn tls_host(home: &TempDir, names: &[&str]) -> TlsHost {
     leaf.distinguished_name = rcgen::DistinguishedName::new();
     leaf.distinguished_name.push(rcgen::DnType::CommonName, names[0]);
     leaf.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
+    day(&mut leaf);
     let key = rcgen::KeyPair::generate().unwrap();
     let cert = leaf.signed_by(&key, &ca).unwrap();
-    let roots = home.join("test-roots.pem");
-    std::fs::write(&roots, ca.pem()).unwrap();
+    let root = ca.pem();
     let mut config = rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(
         rustls::crypto::aws_lc_rs::default_provider(),
     ))
@@ -1484,7 +1479,7 @@ fn tls_host(home: &TempDir, names: &[&str]) -> TlsHost {
             });
         }
     });
-    TlsHost { port, roots, asked }
+    TlsHost { port, root, asked }
 }
 
 fn serve(tls: &mut ServerTls, tx: &std::sync::mpsc::Sender<Asked>) -> std::io::Result<()> {
@@ -1838,7 +1833,7 @@ fn build_asking(home: &TempDir, tag: &str, port: u16, sni: &str, sign_in: bool) 
 }
 
 /// The spec of a run of `image` whose harness asks `steps`, holding [`PLACEHOLDER`] in
-/// `API_KEY`, its host trusting the test's roots, its leases `lessor`'s.
+/// `API_KEY`, the test's root its upstream root (D242), its leases `lessor`'s.
 fn asking_spec(
     home: &TempDir,
     image: &str,
@@ -1847,8 +1842,7 @@ fn asking_spec(
     steps: &[&str],
 ) -> ImageSpec {
     let mut s = spec(home, image);
-    s.env
-        .push(("SSL_CERT_FILE".into(), host.roots.as_os_str().into()));
+    s.upstream_roots = vec![UpstreamRoot::Pem(host.root.clone())];
     s.lessor = Some(RunLessor(lessor.clone()));
     s.members = vec![MemberSpec {
         member: codex(),
@@ -1898,11 +1892,11 @@ fn stop_releasing(guest: &dyn ImageGuest, lessor: &TestLessor) {
 /// run's end.
 #[test]
 fn an_h2_request_to_a_granted_host_is_filled_never_indexed_and_its_echo_comes_back_masked() {
-    if cannot_run_vms() || !injector_trusts_test_roots() {
+    if cannot_run_vms() {
         return;
     }
     let home = TempDir::new("api-cred-h2");
-    let host = tls_host(&home, &["host.docker.internal"]);
+    let host = tls_host(&["host.docker.internal"]);
     build_asking(&home, "api-cred-h2:1", host.port, "host.docker.internal", false);
     let lessor = TestLessor::refusing(0);
     let mut s = asking_spec(
@@ -1968,11 +1962,11 @@ fn an_h2_request_to_a_granted_host_is_filled_never_indexed_and_its_echo_comes_ba
 /// filled and echoed masked, the host seeing it alone, over HTTP/2, never indexed.
 #[test]
 fn a_refused_lease_is_answered_503_over_http_1_1_and_h2_and_a_later_request_asks_again() {
-    if cannot_run_vms() || !injector_trusts_test_roots() {
+    if cannot_run_vms() {
         return;
     }
     let home = TempDir::new("api-cred-503");
-    let host = tls_host(&home, &["host.docker.internal"]);
+    let host = tls_host(&["host.docker.internal"]);
     build_asking(&home, "api-cred-503:1", host.port, "host.docker.internal", false);
     let lessor = TestLessor::refusing(2);
     let mut s = asking_spec(
@@ -2039,11 +2033,11 @@ fn a_refused_lease_is_answered_503_over_http_1_1_and_h2_and_a_later_request_asks
 /// indexed, its echo masked; no token in what the harness saw nor in the run's home.
 #[test]
 fn an_h2_sign_in_gives_the_harness_placeholders_and_its_refresh_is_answered_outside() {
-    if cannot_run_vms() || !injector_trusts_test_roots() {
+    if cannot_run_vms() {
         return;
     }
     let home = TempDir::new("api-signin-h2");
-    let host = tls_host(&home, &["host.docker.internal", "auth.openai.com"]);
+    let host = tls_host(&["host.docker.internal", "auth.openai.com"]);
     build_asking(&home, "api-signin-h2:1", host.port, "auth.openai.com", true);
     let lessor = TestLessor::refusing(0);
     let mut s = asking_spec(

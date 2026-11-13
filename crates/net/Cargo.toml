@@ -43,5 +43,7 @@ windows-sys = { workspace = true, features = [
 
 [dev-dependencies]
 shards-testdir = { path = "../testdir" }
+# A test's root written as PEM, where a test names it in SSL_CERT_FILE (D242).
+rcgen = { version = "0.14.10", default-features = false, features = ["aws_lc_rs", "pem"] }
 # The gzip-coded arm of the injector's measurement (#74 step 10 part B), as the image crate codes layers.
 flate2 = { version = "1", default-features = false, features = ["zlib-rs", "runtime_detection"] }

@@ -1231,6 +1231,9 @@ name = "shards-api"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "rcgen",
+ "rustls-pki-types",
+ "rustls-webpki",
  "sha2",
  "shards-abi",
  "shards-afunix",
@@ -1567,6 +1570,7 @@ dependencies = [
  "shards-abi",
  "shards-devcgroup",
  "shards-seccomp",
+ "zeroize",
 ]
 
 [[package]]
@@ -1593,8 +1597,10 @@ version = "0.1.0"
 name = "shards-verify"
 version = "0.1.0"
 dependencies = [
+ "openssl-probe",
  "rcgen",
  "rustls",
+ "rustls-native-certs",
  "rustls-platform-verifier",
  "shards-apple",
  "time",

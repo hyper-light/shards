@@ -1831,7 +1831,11 @@ mod tests {
             }],
             ca: crate::ca::Ca::new(crate::ca::Key::generate().unwrap(), &[host]).unwrap(),
             leases: crate::lease::Leases::new(vec!["anthropic/claude-max".into()]),
-            upstream: crate::inject::Upstream::new(vec![root.der().clone()]).unwrap(),
+            upstream: crate::inject::Upstream::new(
+                &shards_verify::Platform::read(),
+                vec![root.der().clone()],
+            )
+            .unwrap(),
             sign_ins: crate::signin::SignIns::new(Vec::new()),
         }
     }
