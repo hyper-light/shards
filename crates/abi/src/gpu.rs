@@ -4,8 +4,8 @@
 
 mod probe;
 pub use probe::{
-    GPU_NAME_BYTES, GpuName, GpuProbe, GpuProbeError, GpuReport, ResolvedGpu, probe_bytes, report_bytes,
-    uuid_from_hex,
+    GPU_NAME_BYTES, GpuName, GpuProbe, GpuProbeError, GpuRefusal, GpuReport, ResolvedGpu, fixed_name,
+    probe_bytes, report_bytes, uuid_from_hex,
 };
 
 use alloc::vec::Vec;
@@ -157,6 +157,42 @@ impl fmt::Display for PhysicalGpuError {
 }
 
 impl core::error::Error for PhysicalGpuError {}
+
+/// Why a selection's identities join no exact live Vulkan device of their host's (D232): the
+/// VM process's join (shards-vmm's `gpu_selection`), which its client reads typed in its
+/// refusal ([`GpuRefusal::Join`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JoinError {
+    Selection(PhysicalGpuError),
+    Count,
+    Allocation,
+    Missing,
+    Ambiguous,
+    Aliased,
+    InvalidUuid,
+    InvalidNative,
+    Memory,
+}
+
+impl fmt::Display for JoinError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Selection(error) => error.fmt(f),
+            Self::Count => f.write_str("Vulkan device count exceeds the physical device-index space"),
+            Self::Allocation => f.write_str("native GPU join storage is unavailable"),
+            Self::Missing => f.write_str("a selected native GPU has no exact live Vulkan identity"),
+            Self::Ambiguous => f.write_str("native GPU or Vulkan UUID correspondence is ambiguous"),
+            Self::Aliased => f.write_str("multiple native selectors resolve to the same physical GPU"),
+            Self::InvalidUuid => f.write_str("selected Vulkan GPU has no nonzero device UUID"),
+            Self::InvalidNative => {
+                f.write_str("native Vulkan GPU properties exceed their identity representation")
+            }
+            Self::Memory => f.write_str("selected device-local Vulkan heap sizes overflow"),
+        }
+    }
+}
+
+impl core::error::Error for JoinError {}
 
 #[cfg(test)]
 #[allow(

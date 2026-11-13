@@ -500,6 +500,8 @@ fn a_deadline_given_through_shards_api_is_met_or_said_passed() {
         env: host_env(&home),
         nesting: true,
         ready_by: Some(ready_by),
+        control: None,
+        gpu_devices: Vec::new(),
     };
     let guest = ImageShards::new().boot(&spec(TIMEOUT), TIMEOUT).unwrap();
     assert_eq!(guest.wait_ready(None, TIMEOUT).unwrap(), Some(Ready::OnTime));
@@ -643,4 +645,225 @@ fn a_granted_workload_still_reaches_no_host_port_over_vsock() {
             shown(&ran)
         );
     }
+}
+
+/// Case (f), D251 and D252 for a nested runtime (Hex's step 39 acceptance): a nested workload's
+/// own sockets, reached by its orchestrator's controller.
+/// - **The run.** The image's command listens as Hex's relay does: four sockets in
+///   `/run/hex/channel`, then READY=1. shards-api's image boot asks for the run's endpoint, of
+///   the orchestrator's key, with the socket grant.
+/// - **The lanes.** The controller dials the endpoint where the run's `control()` says and opens
+///   a lane to each socket at once; on each it reads back, after its half-close, the socket's
+///   name and its own bytes reversed, exactly.
+/// - **The refusals.** A lane to a name nothing listens on is Unreached(ENOENT); a name out of
+///   the directory is refused Protocol.
+/// - **The end.** The run's stop ends the controller's connection, typed, never Silent.
+///
+/// Guards: the grant's directory, the endpoint's key and pin, each half-close, and the relay's
+/// exact bytes.
+#[test]
+fn a_nested_workloads_sockets_are_lanes_of_its_orchestrators_controller() {
+    use std::io::{Read as _, Write as _};
+    use std::num::NonZeroU16;
+
+    use shards_api::control::{Controller, Ended, Fault, Identity, Reason, SocketAdmission, Subscriptions};
+    use shards_api::image::{ControlAsk, ImageShards, ImageSpec, Images as _, Narrowing, Ready, SocketGrant};
+    if cannot_run_vms() {
+        eprintln!("SKIP: this host cannot run VMs");
+        return;
+    }
+    let home = Home::new("nesting-f-sockets");
+    home.nesting_image();
+    let hex = Identity::generate().unwrap();
+    // The run's admission, as the orchestrator gives it (R03: its numbers).
+    let (lanes, window) = (8u32, 64 * 1024u32);
+    let names = ["control.sock", "stdio.sock", "files.sock", "stamps.sock"];
+    let mut command: Vec<String> = ["/bin/testguest", "nesting", "listen", "/run/hex/channel"]
+        .map(String::from)
+        .to_vec();
+    command.extend(names.map(String::from));
+    let spec = ImageSpec {
+        image: "nesting:1".into(),
+        vcpus: 1,
+        memory_mib: 512,
+        command: Some(command),
+        members: Vec::new(),
+        publish: Vec::new(),
+        egress: Narrowing::default(),
+        credentials: Vec::new(),
+        shares: Vec::new(),
+        binary: Some(common::shards().to_path_buf()),
+        env: host_env(&home),
+        nesting: true,
+        ready_by: None,
+        control: Some(ControlAsk {
+            controller: hex.fingerprint(),
+            sockets: Some(SocketGrant {
+                dir: "/run/hex/channel".into(),
+                lanes,
+                window,
+            }),
+        }),
+        gpu_devices: Vec::new(),
+    };
+    let guest = ImageShards::new().boot(&spec, TIMEOUT).unwrap();
+    // READY=1 comes once every socket listens: no lane below races its bind.
+    assert_eq!(guest.wait_ready(None, TIMEOUT).unwrap(), Some(Ready::OnTime));
+    let at = *guest.control().expect("the run's agent-control endpoint");
+    assert!(at.address.ip().is_loopback(), "{:?}", at.address);
+    let (controller, dialed) = Controller::dial(
+        &hex,
+        at.vm,
+        at.address,
+        Subscriptions {
+            outputs: &[],
+            inputs: &[],
+            execs: None,
+            sockets: Some(SocketAdmission { lanes, window }),
+        },
+    )
+    .unwrap();
+    let driver = std::thread::spawn(move || controller.run());
+    let sockets = dialed.sockets.expect("socket lanes subscribed");
+    // Four lanes open at once, as Hex holds a control connection while an exec's three open.
+    let open: Vec<_> = names
+        .iter()
+        .map(|name| (*name, sockets.connect(name).unwrap()))
+        .collect();
+    for (i, (name, mut lane)) in open.into_iter().enumerate() {
+        let sent: Vec<u8> = (0..=255u8)
+            .cycle()
+            .skip(i)
+            .take(3 * window as usize + 1)
+            .collect();
+        lane.write_all(&sent).unwrap();
+        lane.shutdown_write().unwrap();
+        let mut back = Vec::new();
+        lane.read_to_end(&mut back).unwrap();
+        let mut expected = format!("{name}\n").into_bytes();
+        expected.extend(sent.iter().rev());
+        assert_eq!(back.len(), expected.len(), "{name}");
+        assert!(back == expected, "{name}: bytes differ");
+    }
+    // The guest's errno: Linux's ENOENT (include/uapi/asm-generic/errno-base.h), whatever the
+    // host's.
+    assert_eq!(
+        sockets.connect("absent.sock").map(|_| ()),
+        Err(Fault::Unreached(NonZeroU16::new(2).unwrap()))
+    );
+    assert_eq!(
+        sockets.connect("../node.sock").map(|_| ()),
+        Err(Fault::Refused(Reason::Protocol))
+    );
+    guest.stop().unwrap();
+    // The run's end ends its endpoint, and the controller's connection with it, typed: never
+    // Silent, which would be its idle timeout's guess rather than the run's end told.
+    let after = sockets.connect("control.sock").map(|_| ());
+    assert!(
+        matches!(after, Err(Fault::Lost(ended)) if ended != Ended::Silent),
+        "{after:?}"
+    );
+    let _ = driver.join().unwrap();
+}
+
+/// Case (g), D252 (Hex's step 39 acceptance): an orchestrator's run is bound an agent-control
+/// endpoint of its own, its key the run's own and its controller the orchestrator's key alone.
+/// - **The orchestrator dials it**, on loopback, its link TLS13_AES_256_GCM_SHA384 at both
+///   ends (D239).
+/// - **A stranger is refused**, NotEnrolled at its handshake.
+/// - **Each run has its own key**: a second run's endpoint has another fingerprint.
+/// - **It ends with its run**: the run's stop ends its connections, typed, never Silent.
+/// - **No ask, no endpoint.**
+///
+/// Its runs grant a socket directory: an endpoint serving nothing at all is refused, as
+/// shards-remote's own endpoints are (D252's note).
+#[test]
+fn an_orchestrators_run_binds_its_own_agent_control_endpoint() {
+    use shards_api::control::{Controller, Ended, Fault, Identity, SocketAdmission, Subscriptions};
+    use shards_api::image::{ControlAsk, ImageShards, ImageSpec, Images as _, Narrowing, SocketGrant};
+    if cannot_run_vms() {
+        eprintln!("SKIP: this host cannot run VMs");
+        return;
+    }
+    let home = Home::new("nesting-g-control");
+    home.nesting_image();
+    let (hex, stranger) = (Identity::generate().unwrap(), Identity::generate().unwrap());
+    let admission = SocketAdmission {
+        lanes: 1,
+        window: 4096,
+    };
+    let held = |control: Option<ControlAsk>| {
+        let spec = ImageSpec {
+            image: "nesting:1".into(),
+            vcpus: 1,
+            memory_mib: 512,
+            command: Some(["/bin/testguest", "nesting", "hold"].map(String::from).to_vec()),
+            members: Vec::new(),
+            publish: Vec::new(),
+            egress: Narrowing::default(),
+            credentials: Vec::new(),
+            shares: Vec::new(),
+            binary: Some(common::shards().to_path_buf()),
+            env: host_env(&home),
+            nesting: true,
+            ready_by: None,
+            control,
+            gpu_devices: Vec::new(),
+        };
+        ImageShards::new().boot(&spec, TIMEOUT).unwrap()
+    };
+    let ask = || {
+        Some(ControlAsk {
+            controller: hex.fingerprint(),
+            sockets: Some(SocketGrant {
+                dir: "/run/hex/channel".into(),
+                lanes: admission.lanes,
+                window: admission.window,
+            }),
+        })
+    };
+    let subscriptions = || Subscriptions {
+        outputs: &[],
+        inputs: &[],
+        execs: None,
+        sockets: Some(admission),
+    };
+
+    let first = held(ask());
+    let at = *first.control().expect("the run's endpoint");
+    assert!(at.address.ip().is_loopback(), "{:?}", at.address);
+    let (controller, mut dialed) = Controller::dial(&hex, at.vm, at.address, subscriptions()).unwrap();
+    let driver = std::thread::spawn(move || controller.run());
+    let link = dialed.link.wait().unwrap();
+    for end in [link.controller, link.endpoint] {
+        assert_eq!(end.suite_name(), Some("TLS13_AES_256_GCM_SHA384"), "{end:?}");
+    }
+
+    let (refused, mut gone) = Controller::dial(&stranger, at.vm, at.address, subscriptions()).unwrap();
+    let refused = std::thread::spawn(move || refused.run());
+    assert!(
+        matches!(gone.link.wait(), Err(Fault::Lost(Ended::NotEnrolled(_)))),
+        "a stranger was let in"
+    );
+    let _ = refused.join().unwrap();
+
+    let second = held(ask());
+    let other = *second.control().expect("the second run's endpoint");
+    assert_ne!(other.vm, at.vm, "two runs share one key");
+    drop(second);
+
+    first.stop().unwrap();
+    let sockets = dialed.sockets.take().expect("socket lanes subscribed");
+    let after = sockets.connect("control.sock").map(|_| ());
+    assert!(
+        matches!(after, Err(Fault::Lost(ended)) if ended != Ended::Silent),
+        "{after:?}"
+    );
+    let _ = driver.join().unwrap();
+
+    let bare = held(None);
+    assert!(
+        bare.control().is_none(),
+        "a run asked for no endpoint was bound one"
+    );
 }

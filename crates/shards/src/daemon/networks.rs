@@ -436,16 +436,19 @@ impl<D: Disk> Daemon<D> {
         (Ipv6Addr::from(subnet | 2), Ipv6Addr::from(subnet | 1))
     }
 
-    /// The home's engine ID, made once: what dockerd derives its IPv6 ULA pool from.
-    fn engine_id(&self) -> String {
+    /// The home's engine ID, made once: what dockerd derives its IPv6 ULA pool from. Callers
+    /// that make a home's first at once each take the one it keeps (`keep_first`).
+    pub(super) fn engine_id(&self) -> String {
         let path = self.home.join("networks").join("engine-id");
         if let Ok(id) = std::fs::read_to_string(&path) {
             return id.trim().to_string();
         }
         let id = new_id().unwrap_or_default();
         let _ = crate::networks::make_dir(&self.home.join("networks"));
-        let _ = super::keep_whole(&path, id.as_bytes());
-        id
+        match super::keep_first(&path, id.as_bytes()) {
+            Ok(false) => std::fs::read_to_string(&path).map_or(id, |kept| kept.trim().to_string()),
+            Ok(true) | Err(_) => id,
+        }
     }
 
     /// The networks: dockerd's predefined ones, made here the first time they are
@@ -512,18 +515,19 @@ impl<D: Disk> Daemon<D> {
         all
     }
 
-    /// MicroVM `given`'s kept request, and its ID, for connect and disconnect; dockerd's
-    /// words where there is none.
-    fn request_of(&self, given: &str) -> Result<(String, shards_ipc::Run), String> {
+    /// MicroVM `given`'s kept request, its ID and its turn to change it (D37), held until
+    /// what changed is kept, for connect and disconnect; dockerd's words where there is none.
+    fn request_of(&self, given: &str) -> Result<(super::RequestTurn<'_>, String, shards_ipc::Run), String> {
         let id = self
             .resolve(given)
             .map_err(|e| e.strip_prefix("shards: ").unwrap_or(&e).to_string())?;
+        let turn = self.request_turn(&id);
         let dir = lock(&self.containers).dir(&id);
         let run = std::fs::read(dir.join(super::REQUEST))
             .ok()
             .and_then(|b| shards_ipc::Run::decode(&b))
             .ok_or_else(|| format!("container {id}: its request is not kept"))?;
-        Ok((id, run))
+        Ok((turn, id, run))
     }
 
     fn keep_request(&self, id: &str, run: &shards_ipc::Run) -> Result<(), String> {
@@ -544,7 +548,7 @@ impl<D: Disk> Daemon<D> {
             reply.err(&format!("shards: {e}"));
             1
         };
-        let (id, mut run) = match self.request_of(given) {
+        let (_turn, id, mut run) = match self.request_of(given) {
             Ok(r) => r,
             Err(e) => return daemon(&e),
         };
@@ -670,7 +674,7 @@ impl<D: Disk> Daemon<D> {
             }
             Found::None => None,
         };
-        let (id, mut run) = match self.request_of(given) {
+        let (_turn, id, mut run) = match self.request_of(given) {
             Ok(r) => r,
             Err(_) if parsed.bool("force") => {
                 return match found {

@@ -6,9 +6,18 @@ use std::fmt;
 pub(crate) mod report;
 
 pub use shards_abi::gpu::{
-    GPU_NAME_BYTES, GpuName, GpuProbe, GpuProbeError, GpuReport, MAX_PHYSICAL_GPUS, PhysicalGpu,
-    PhysicalGpuError, ResolvedGpu, check_selection, probe_bytes, report_bytes,
+    GPU_NAME_BYTES, GpuName, GpuProbe, GpuProbeError, GpuRefusal, GpuReport, JoinError, MAX_PHYSICAL_GPUS,
+    PhysicalGpu, PhysicalGpuError, ResolvedGpu, check_selection, probe_bytes, report_bytes,
 };
+
+/// The refusal a probe's VM process printed in place of its receipt and failed of (D232),
+/// where what it said, `said`, is that record alone.
+pub(crate) fn refused(said: &[u8]) -> Option<GpuProbeError> {
+    match GpuProbe::parse(std::str::from_utf8(said).ok()?) {
+        Err(why @ GpuProbeError::Refused(_)) => Some(why),
+        _ => None,
+    }
+}
 
 /// Canonical ASCII grammar has a fixed maximum encoded length for each
 /// native integer width; reserve both buffers before formatting/copying.
@@ -140,6 +149,36 @@ mod tests {
         ] {
             assert_eq!(argument(id).unwrap(), expected);
         }
+    }
+
+    /// D232: what a refused probe said is its refusal where it is that record alone; a
+    /// receipt, another failure's words, or a record torn or trailed by more, none.
+    #[test]
+    fn a_probes_refusal_is_its_record_alone() {
+        let refusal = GpuRefusal::Join(JoinError::Missing);
+        let record = refusal.encode().unwrap();
+        assert_eq!(refused(record.as_bytes()), Some(GpuProbeError::Refused(refusal)));
+        let probe = GpuProbe {
+            devices: vec![ResolvedGpu {
+                physical: PhysicalGpu::MetalRegistry(7),
+                uuid: [7; 16],
+                pci: None,
+                luid: Some(7u64.to_be_bytes()),
+                name: None,
+                device_local_bytes: None,
+            }],
+            host_visible_bytes: 4096,
+        };
+        for said in [
+            probe.encode().unwrap(),
+            "shards: a selected native GPU has no exact live Vulkan identity\n".into(),
+            format!("{record}shards: and more\n"),
+            record.replace("missing\n", "missing"),
+            String::new(),
+        ] {
+            assert_eq!(refused(said.as_bytes()), None, "{said:?}");
+        }
+        assert_eq!(refused(&[0xff, b'\n']), None);
     }
 
     /// D232: a transferred/duplicated writer can have a different raw value;

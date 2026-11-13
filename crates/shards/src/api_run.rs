@@ -120,6 +120,44 @@ fn deadline(budget: Option<u64>, now: SystemTime) -> Result<Option<u64>, No> {
     })
 }
 
+/// The run's socket grant (D251), held as shards-api holds it, as init holds it again: its
+/// directory absolute and plain, a lane and a byte at least (its caller's numbers, R03), and a
+/// run's own command's, which a run of its image's members alone has none of.
+fn socket_grant(grant: &wire::SocketGrant, command: bool) -> Result<(), No> {
+    let refuse = |why: String| Err(No(Cause::Request, format!("its socket grant: {why}")));
+    if !shards_abi::run::socket::dir_ok(grant.dir.as_bytes()) {
+        return refuse(format!(
+            "{:?}: {}",
+            grant.dir,
+            shards_abi::run::socket::Error::Dir
+        ));
+    }
+    if grant.lanes == 0 || grant.window == 0 {
+        return refuse(format!(
+            "{} lanes of {} bytes: a grant admits a lane and a byte at least",
+            grant.lanes, grant.window
+        ));
+    }
+    if !command {
+        return refuse("a run without a command of its own has no sockets to grant".into());
+    }
+    Ok(())
+}
+
+/// The VM process's arguments for the run's GPUs (D232), as shards-api's direct boot gives
+/// them: `--gpu`, then each identity's `--gpu-device`; none for none.
+fn gpu_args(gpus: &[shards_api::PhysicalGpu]) -> Vec<std::ffi::OsString> {
+    if gpus.is_empty() {
+        return Vec::new();
+    }
+    let mut args = vec![std::ffi::OsString::from("--gpu")];
+    for gpu in gpus {
+        args.push("--gpu-device".into());
+        args.push(gpu.to_string().into());
+    }
+    args
+}
+
 /// What the run's command is given of the nesting grant (D234), decided as the daemon
 /// decides it for a run of its own (`agentfile::nesting`), refused typed, in its words: the
 /// grant asked of an image whose Agentfile declares no `NESTING` a widening of its grants;
@@ -426,6 +464,39 @@ fn credentials(grants: &[wire::CredentialGrant], egress: Option<&[u8]>) -> Resul
             "the run's credential grants: a reference past 65535 bytes, or a host past 255".into(),
         )
     })
+}
+
+/// The characters of a PEM line: "Generators MUST wrap the base64-encoded lines so that each
+/// line consists of exactly 64 characters except for the final line" (RFC 7468 §2).
+const PEM_LINE: usize = 64;
+
+/// The setup entries giving the run's members its CA (D242, `shards_abi::run::trust`), once
+/// its network process has answered `grants` (as `NET_CREDENTIALS` carries them) with the
+/// CA's certificate `der`: the certificate in PEM (RFC 7468), and each host the grants name,
+/// once. init lays it in the trust of each member whose link reaches one of those hosts.
+fn trust(der: &[u8], grants: &[u8]) -> Result<Vec<Vec<u8>>, String> {
+    use base64::Engine as _;
+    use shards_abi::run::trust as entries;
+    let grants = shards_net::decode_grants(grants).ok_or("the run's credential grants are malformed")?;
+    let base64 = base64::engine::general_purpose::STANDARD.encode(der);
+    let mut pem = b"-----BEGIN CERTIFICATE-----\n".to_vec();
+    for line in base64.as_bytes().chunks(PEM_LINE) {
+        pem.extend_from_slice(line);
+        pem.push(b'\n');
+    }
+    pem.extend_from_slice(b"-----END CERTIFICATE-----\n");
+    let mut hosts: Vec<&str> = Vec::new();
+    for host in grants.iter().flat_map(|g| &g.toward) {
+        if !hosts.contains(&host.as_str()) {
+            hosts.push(host);
+        }
+    }
+    let said = |e: entries::Error| format!("the run's CA: {e}");
+    let mut out = vec![entries::ca(&pem).map_err(said)?];
+    for host in hosts {
+        out.push(entries::host(host.as_bytes()).map_err(said)?);
+    }
+    Ok(out)
 }
 
 /// Each member held to its reach of the names kept, where the request holds its members
@@ -751,6 +822,10 @@ mod hosted {
         inputs: Vec<u32>,
         /// Its domains' plug roots (D235), by name (`Users`), as its setup names them.
         roots: Vec<Vec<u8>>,
+        /// Its agent-control endpoint's ask (D252), where its orchestrator made one.
+        control: Option<wire::ControlAsk>,
+        /// The host GPUs its VM renders on (D232); none, no GPU.
+        gpu_devices: Vec<shards_api::PhysicalGpu>,
     }
 
     pub(super) fn run(
@@ -864,7 +939,12 @@ mod hosted {
         super::ports_granted(&request.publish, agentfile.as_ref(), request.command.is_some())?;
         let egress = super::network(agentfile.as_ref(), request, &mut run)?;
         let credentials = super::credentials(&request.credentials, egress.as_deref())?;
-        let nesting = super::nesting(agentfile.as_ref(), &run, &say)?;
+        let mut nesting = super::nesting(agentfile.as_ref(), &run, &say)?;
+        // The run's GPUs, its command's to read under the grant (D234's `gpus=`), as its VM
+        // process binds them (D232).
+        if let crate::agentfile::Nesting::Granted(grant) = &mut nesting {
+            grant.gpus = request.gpu_devices.clone();
+        }
         let bridge = if run.network == "bridge" {
             Some(
                 shards_net::bridge::elected_here(&mut |note| say(&note))
@@ -976,8 +1056,22 @@ mod hosted {
         setup.extend(staged);
         setup.extend(terminals.iter().map(|&m| protocol::members::terminal(m)));
         setup.push(protocol::members::ENDS.to_vec());
+        // The run's own command's socket directory its controller may reach (D251), held to
+        // what shards-api holds it to, as init holds it again.
+        if let Some(grant) = request.control.as_ref().and_then(|c| c.sockets.as_ref()) {
+            super::socket_grant(grant, request.command.is_some())?;
+            setup.push(
+                protocol::socket::grant(grant.dir.as_bytes())
+                    .map_err(|e| No(Cause::Request, e.to_string()))?,
+            );
+        }
         prepared.spec.setup = setup;
-        prepared.spec.cgroup = crate::resources::cgroup(&run.resources, prepared.cpus)
+        // Of its microVM's CPUs, which its spec sizes (`size.0`): not the host's, which a
+        // run asking fewer vCPUs than the host has would name past its guest's, and a guest
+        // whose workload has the cpuset controller (the nesting grant, D234) refuses.
+        let vcpus = usize::try_from(prepared.size.0)
+            .map_err(|_| No(Cause::Request, "its vCPUs pass what this host counts".into()))?;
+        prepared.spec.cgroup = crate::resources::cgroup(&run.resources, vcpus)
             .map_err(|e| No(Cause::Request, e.message(format_args!("its limits"))))?;
         if bridge.is_some() {
             prepared.spec.resolv = Some(crate::build::step::resolv_with(
@@ -1008,6 +1102,8 @@ mod hosted {
             capture,
             inputs,
             roots,
+            control: request.control.clone(),
+            gpu_devices: request.gpu_devices.clone(),
         })
     }
 
@@ -1101,7 +1197,18 @@ mod hosted {
         if !plan.dirs.is_empty() {
             args.extend(["--shares".into(), plan.dirs.len().to_string().into()]);
         }
+        args.extend(super::gpu_args(&plan.gpu_devices));
         args
+    }
+
+    /// The VM process to start: the GPU's (D144) where the run names its GPUs (D232), with
+    /// MoltenVK saying its errors alone, as the daemon starts a GPU's; else the plain one.
+    fn vm_binary(plan: &Plan, env: &mut Vec<(&'static str, OsString)>) -> Result<PathBuf, String> {
+        if plan.gpu_devices.is_empty() {
+            return crate::helpers::vm();
+        }
+        env.push(("MVK_CONFIG_LOG_LEVEL", "1".into()));
+        crate::helpers::vm_gpu()
     }
 
     /// The home's private directory, made if it is not there: where a share process keeps
@@ -1187,8 +1294,8 @@ mod hosted {
             ]);
         }
         let argv: Vec<&OsStr> = args.iter().map(OsString::as_os_str).collect();
-        let env = crate::netproc::child_env();
-        let binary = crate::helpers::vm().map_err(boot)?;
+        let mut env = crate::netproc::child_env();
+        let binary = vm_binary(plan, &mut env).map_err(boot)?;
         let spawned = shards_ipc::spawn_in(&binary, &argv, &fds, false, &crate::netproc::env_pairs(&env));
         drop(fds);
         let vm = match spawned {
@@ -1313,8 +1420,8 @@ mod hosted {
         }
         let argv: Vec<&OsStr> = args.iter().map(OsString::as_os_str).collect();
         let err = io::stderr();
-        let env = crate::netproc::child_env();
-        let binary = crate::helpers::vm().map_err(boot)?;
+        let mut env = crate::netproc::child_env();
+        let binary = vm_binary(plan, &mut env).map_err(boot)?;
         let suspended = shards_ipc::spawn_suspended(&shards_ipc::Spawn {
             program: &binary,
             args: &argv,
@@ -1622,6 +1729,10 @@ mod hosted {
         guest_times: Mutex<Option<Vec<Asked>>>,
         /// Each rate told the VM and not yet answered (`RATED`, D247), as devices.
         rates: Mutex<Option<Vec<Asked>>>,
+        /// Each socket lane asked of the VM and not yet answered (`LANE_OPEN`, D251), by its
+        /// number; none once the VM's link has closed, as nothing will answer one then.
+        lanes: Mutex<Option<LaneWaits>>,
+        next_lane: std::sync::atomic::AtomicU64,
         /// What is plugged into the run's members, by the path it is at.
         plugged: Mutex<HashMap<String, Plugged>>,
         /// The pipe the run's share process tells what its host changes on (D235), until
@@ -1636,6 +1747,13 @@ mod hosted {
 
     /// A device step asked of the VM: its number, and who waits for its answer.
     type Asked = (u64, std::sync::mpsc::Sender<Result<String, String>>);
+
+    /// The VM's answer to a socket lane (`LANE_OPEN`, D251): its payload, and the connection
+    /// beside it on Unix.
+    type LaneAnswer = (Vec<u8>, Vec<OwnedFd>);
+
+    /// The socket lanes asked of the VM and not yet answered, by number.
+    type LaneWaits = HashMap<u64, std::sync::mpsc::SyncSender<LaneAnswer>>;
 
     /// A host directory plugged into a member (D235): its place on the microVM's PCI bus
     /// (`devfn`), its guest's address of it, the member's index, and its share process.
@@ -1724,10 +1842,12 @@ mod hosted {
     /// Hands the VM its run, as the daemon hands a warm VM one (daemon.rs `hand_over`): once
     /// it is `READY`, `RUN` with the run's head, spec and descriptors, on Windows its
     /// shares' streams after it (D197), then `TAKEN`; then `STOP_ORDER`, SIGKILL with no
-    /// grace, so that a VM whose link closes, this process gone, ends its run.
+    /// grace, so that a VM whose link closes, this process gone, ends its run. `trust` joins
+    /// its setup: the run's CA for its members' trust (D242), known only now.
     fn hand_over(
         link: &Stream,
         plan: &Plan,
+        trust: &[Vec<u8>],
         client: &Stream,
         shares: Option<&Shares>,
         capture: Option<&Stream>,
@@ -1740,7 +1860,14 @@ mod hosted {
         }
         let null = std::fs::File::open(crate::os::NULL).map_err(|e| format!("{}: {e}", crate::os::NULL))?;
         let err = io::stderr();
-        let payload = super::run_request(&plan.prepared.spec, !plan.listeners.is_empty());
+        let payload = if trust.is_empty() {
+            super::run_request(&plan.prepared.spec, !plan.listeners.is_empty())
+        } else {
+            let mut spec = plan.prepared.spec.clone();
+            spec.setup.extend_from_slice(trust);
+            crate::spec::fits(&spec)?;
+            super::run_request(&spec, !plan.listeners.is_empty())
+        };
         // A stream's end as a message hands it on: borrowed on Unix, a handle of its own on
         // Windows (`shards_ipc::handed`).
         let client = shards_ipc::handed(client).map_err(|e| format!("the run's client: {e}"))?;
@@ -1802,6 +1929,8 @@ mod hosted {
         // Its share process's notices (D235), given its guest as its run starts.
         let due = launched.shares.as_mut().and_then(|s| s.notices.take());
         let served = (|| -> Result<(), No> {
+            // The run's CA for its members' trust (D242), once its network process made it.
+            let mut trust = Vec::new();
             if let Some((_, control)) = &launched.net {
                 let ca = tell_net(
                     control,
@@ -1810,12 +1939,13 @@ mod hosted {
                     plan.credentials.as_deref(),
                 )
                 .map_err(boot)?;
-                if let Some(der) = &ca {
+                if let (Some(der), Some(grants)) = (&ca, plan.credentials.as_deref()) {
                     let digest = <sha2::Sha256 as sha2::Digest>::digest(der);
                     let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
                     super::say(format_args!(
                         "its credential grants taken; its CA's SHA-256 {hex}"
                     ));
+                    trust = super::trust(der, grants).map_err(boot)?;
                 }
             }
             let (client, client_theirs) =
@@ -1827,6 +1957,7 @@ mod hosted {
             hand_over(
                 &launched.link,
                 &plan,
+                &trust,
                 &client_theirs,
                 launched.shares.as_ref(),
                 capture.as_ref().map(|(_, theirs)| theirs),
@@ -1844,9 +1975,24 @@ mod hosted {
                 .map(|a| a.receivers.as_slice())
                 .unwrap_or_default();
             let published = super::published(&bound, receivers, &plan.members)?;
+            // Its agent-control endpoint (D252), its key made now, past its VM's start, held by
+            // the endpoint alone: no template, and no other run, has it.
+            let control = plan
+                .control
+                .as_ref()
+                .map(bind_control)
+                .transpose()
+                .map_err(boot)?;
             let started = wire::Started {
                 members: plan.members.clone(),
                 published,
+                control: control.as_ref().map(|(endpoint, _)| wire::ControlAt {
+                    address: endpoint.address,
+                    vm: endpoint.fingerprint,
+                }),
+                // The period its VM's governor holds a rate over: this build's hold's, which
+                // the VM process it carries holds by (D36, D247).
+                rate_period: shards_vmm::vm::hold_period(),
             }
             .encode()
             .map_err(|e| boot(e.to_string()))?;
@@ -1870,6 +2016,8 @@ mod hosted {
                 devices: Mutex::new(Some(Vec::new())),
                 guest_times: Mutex::new(Some(Vec::new())),
                 rates: Mutex::new(Some(Vec::new())),
+                lanes: Mutex::new(Some(HashMap::new())),
+                next_lane: std::sync::atomic::AtomicU64::new(0),
                 plugged: Mutex::new(HashMap::new()),
                 notices_due: Mutex::new(due),
                 notices: Mutex::new(Vec::new()),
@@ -1879,7 +2027,7 @@ mod hosted {
             answers
                 .send(wire::to_client::STARTED, &[&started])
                 .map_err(|e| boot(format!("its orchestrator: {e}")))?;
-            serve(&live, input, &launched, client);
+            serve(&live, input, &launched, client, control);
             // What was plugged in goes with the VM: each share process ends as its streams
             // close (`Shares::end`).
             for (_, p) in std::mem::take(&mut *lock(&live.plugged)) {
@@ -1928,8 +2076,46 @@ mod hosted {
     /// the VM's link on threads of their own, the owner's asks on this one. The VM's end
     /// says the run's (`ENDED`), which has the owner close its channel; `STOP`, or the
     /// channel closed first, kills the VM, whose end then says `Stopped`.
-    fn serve(live: &Live<'_>, input: io::Stdin, launched: &Launched, client: Stream) {
+    fn serve(
+        live: &Live<'_>,
+        input: io::Stdin,
+        launched: &Launched,
+        client: Stream,
+        control: Option<(shards_remote::control::Endpoint, shards_remote::control::Served)>,
+    ) {
         std::thread::scope(|scope| {
+            // Its agent-control endpoint's driver, and its socket lanes, each opened through the
+            // VM (D251, D252); revoked as the run's asks end, which ends both.
+            let revoke = control.map(|(endpoint, served)| {
+                let driver = std::thread::Builder::new()
+                    .name("api-run control".into())
+                    .spawn_scoped(scope, move || {
+                        if let Err(e) = endpoint.run() {
+                            super::say(format_args!("its agent-control endpoint ended: {e}"));
+                        }
+                    });
+                if let Err(e) = driver {
+                    super::say(format_args!("its agent-control endpoint has no thread: {e}"));
+                }
+                if let Some(connects) = served.sockets {
+                    let lanes = std::thread::Builder::new()
+                        .name("api-run lanes".into())
+                        .spawn_scoped(scope, move || {
+                            for connect in connects {
+                                let opening = std::thread::Builder::new()
+                                    .name("api-run lane".into())
+                                    .spawn_scoped(scope, move || open_lane(live, connect));
+                                if let Err(e) = opening {
+                                    super::say(format_args!("a socket lane has no thread: {e}"));
+                                }
+                            }
+                        });
+                    if let Err(e) = lanes {
+                        super::say(format_args!("its socket lanes have no thread: {e}"));
+                    }
+                }
+                served.revoke
+            });
             let members: Vec<u32> = lock(&live.feeds).keys().copied().collect();
             for member in members {
                 let started = std::thread::Builder::new()
@@ -1980,8 +2166,137 @@ mod hosted {
                 }
             }
             asks(live, input, &launched.vm, scope);
+            // The run is over: its endpoint, and every lane on it, with it.
+            drop(revoke);
+            lock(&live.lanes).take();
         });
         drop(client);
+    }
+
+    /// The run's agent-control endpoint (D252), bound on loopback, as step 5's endpoints bind:
+    /// its microVM's own key, made now, and the controller's key the one it takes; serving the
+    /// run's socket lanes where its ask grants them (D251).
+    pub(super) fn bind_control(
+        ask: &wire::ControlAsk,
+    ) -> Result<(shards_remote::control::Endpoint, shards_remote::control::Served), String> {
+        let vm =
+            shards_remote::identity::Identity::generate().map_err(|e| format!("its microVM's key: {e}"))?;
+        let sockets = ask
+            .sockets
+            .as_ref()
+            .map(|grant| shards_remote::control::SocketAdmission {
+                lanes: grant.lanes,
+                window: grant.window,
+            });
+        shards_remote::control::Endpoint::bind(
+            &vm,
+            ask.controller,
+            std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 0)),
+            shards_remote::control::Streams {
+                outputs: &[],
+                inputs: &[],
+                execs: None,
+                sockets,
+            },
+        )
+        .map_err(|e| format!("its agent-control endpoint: {e}"))
+    }
+
+    /// Opens a socket lane (D251) through the run's VM (`LANE_OPEN`): its connection, as the VM
+    /// hands it, given the lane's endpoint; or the errno its guest refused it with. A lane whose
+    /// VM is gone is refused ESRCH, as its command is.
+    fn open_lane(live: &Live<'_>, connect: shards_remote::control::unix::Connect) {
+        use protocol::socket::errno::{EIO, ESRCH};
+        use shards_remote::control::unix::Reply;
+        // Linux's errnos fit a u16 (MAX_ERRNO, 4095); EIO for one that would not.
+        let refuse = |errno: u32| {
+            let as_said = |e: u32| u16::try_from(e).ok().and_then(std::num::NonZeroU16::new);
+            Reply::Unreached(
+                as_said(errno)
+                    .or(as_said(EIO))
+                    .unwrap_or(std::num::NonZeroU16::MIN),
+            )
+        };
+        let ended = ESRCH;
+        // Numbers below 2^63, a VM's own lanes' at or above (shards_ipc LANE_HELD).
+        let number = live.next_lane.fetch_add(1, std::sync::atomic::Ordering::Relaxed) & (u64::MAX >> 1);
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        let registered = lock(&live.lanes)
+            .as_mut()
+            .is_some_and(|lanes| lanes.insert(number, tx).is_none());
+        if !registered {
+            let _ = connect.reply(refuse(ended));
+            return;
+        }
+        let ask = [&number.to_be_bytes()[..], connect.name().as_bytes()].concat();
+        if let Err(e) = shards_ipc::send(&lock(&live.link), kind::LANE_OPEN, &ask, &[]) {
+            super::say(format_args!("asking its VM for a socket lane: {e}"));
+            if let Some(lanes) = lock(&live.lanes).as_mut() {
+                lanes.remove(&number);
+            }
+            let _ = connect.reply(refuse(ended));
+            return;
+        }
+        let Ok((payload, fds)) = rx.recv() else {
+            let _ = connect.reply(refuse(ended));
+            return;
+        };
+        let errno = payload
+            .get(8..12)
+            .and_then(|e| <[u8; 4]>::try_from(e).ok())
+            .map_or(EIO, u32::from_be_bytes);
+        if errno != 0 {
+            let _ = connect.reply(refuse(errno));
+            return;
+        }
+        let held = number.to_be_bytes();
+        #[cfg(unix)]
+        let lane = {
+            let lane = fds.into_iter().next().map(Stream::from);
+            // Its VM's copy goes, the lane being here (M24).
+            let _ = shards_ipc::send(&lock(&live.link), kind::LANE_HELD, &held, &[]);
+            lane.ok_or_else(|| "a lane connected without its descriptor".to_string())
+        };
+        #[cfg(windows)]
+        let lane = {
+            drop(fds);
+            (|| {
+                let (ours, theirs) = handed_pair().map_err(|e| e.to_string())?;
+                let shared = theirs.share().map_err(|e| e.to_string())?;
+                shards_ipc::send(&lock(&live.link), kind::LANE_HELD, &held, &[shared.as_fd()])
+                    .map_err(|e| format!("giving its VM the lane's socket: {e}"))?;
+                Ok(ours)
+            })()
+        };
+        match lane {
+            Ok(lane) => {
+                if let Err(shards_remote::control::unix::Gone) = connect.reply(Reply::Connected(lane)) {
+                    super::say(format_args!("a socket lane connected after its endpoint ended"));
+                }
+            }
+            Err(why) => {
+                super::say(format_args!("a socket lane: {why}"));
+                let _ = connect.reply(refuse(EIO));
+            }
+        }
+    }
+
+    /// The VM's answer to socket lane `payload` names (`LANE_OPEN`, D251), to the lane that
+    /// waits for it; one no lane waits for is let go, its connection with it.
+    fn lane_answered(live: &Live<'_>, payload: Vec<u8>, fds: Vec<OwnedFd>) {
+        let Some(number) = payload.first_chunk::<8>().map(|n| u64::from_be_bytes(*n)) else {
+            return;
+        };
+        let waiting = lock(&live.lanes).as_mut().and_then(|lanes| lanes.remove(&number));
+        match waiting {
+            Some(tx) => {
+                let _ = tx.try_send((payload, fds));
+            }
+            // Nothing waits: its VM's copy goes (M24), and the connection with this one.
+            None => {
+                let _ = shards_ipc::send(&lock(&live.link), kind::LANE_HELD, &number.to_be_bytes(), &[]);
+            }
+        }
     }
 
     /// Reads the VM's link until it closes: each member's end and the command's readiness
@@ -2025,6 +2340,8 @@ mod hosted {
                 input_arrived(live, &m.payload, m.fds);
             } else if m.kind == kind::MANAGED_INPUT_ENDED {
                 input_ended(live, &m.payload);
+            } else if m.kind == kind::LANE_OPEN {
+                lane_answered(live, m.payload, m.fds);
             } else if let Some((answer, payload)) = super::relayed(m.kind, &m.payload) {
                 let _ = live.answers.send(answer, &[&payload]);
             }
@@ -2037,6 +2354,8 @@ mod hosted {
         *lock(&live.devices) = None;
         *lock(&live.guest_times) = None;
         *lock(&live.rates) = None;
+        // Socket lanes no answer will come for: their asks hear the VM has gone.
+        lock(&live.lanes).take();
         // Its VM gone: no input goes on.
         let members: Vec<u32> = lock(&live.feeds).keys().copied().collect();
         for member in members {
@@ -3060,6 +3379,8 @@ mod tests {
             nesting: false,
             ready_by: None,
             credentials: Vec::new(),
+            control: None,
+            gpu_devices: Vec::new(),
         }
     }
 
@@ -3280,6 +3601,43 @@ mod tests {
         // A TCP port granted reaches every host on it.
         let any443 = shards_net::encode_policy(&shards_net::Ports::parse("443/tcp").unwrap(), &[], false);
         assert!(credentials(&[grant("openai/chatgpt", &["chatgpt.com"])], Some(&any443)).is_ok());
+    }
+
+    /// The run's CA goes to its guest for its members' trust (D242): its certificate in PEM,
+    /// its base64 in lines of 64 characters but the last (RFC 7468 §2), read back to the DER
+    /// by rustls' own PEM reader; and each host the grants name, once. Malformed grants
+    /// give nothing.
+    #[test]
+    fn credential_grants_ca_goes_to_the_guest_in_pem_with_each_host_once() {
+        let der: Vec<u8> = (0..=255u8).cycle().take(700).collect();
+        let grants = shards_net::encode_grants(&[
+            shards_net::Grant {
+                reference: "anthropic/claude-max".into(),
+                toward: vec!["api.anthropic.com".into(), "claude.ai".into()],
+            },
+            shards_net::Grant {
+                reference: "anthropic/console".into(),
+                toward: vec!["api.anthropic.com".into()],
+            },
+        ])
+        .unwrap();
+        let entries = trust(&der, &grants).unwrap();
+        let got = shards_abi::run::trust::of(&entries).unwrap().unwrap();
+        assert_eq!(got.hosts, [b"api.anthropic.com".as_slice(), b"claude.ai"]);
+        let pem = std::str::from_utf8(got.pem).unwrap();
+        let lines: Vec<&str> = pem.lines().collect();
+        assert_eq!(lines.first(), Some(&"-----BEGIN CERTIFICATE-----"));
+        assert_eq!(lines.last(), Some(&"-----END CERTIFICATE-----"));
+        let body = &lines[1..lines.len() - 1];
+        assert!(
+            body[..body.len() - 1].iter().all(|l| l.len() == PEM_LINE),
+            "{body:?}"
+        );
+        assert!((1..=PEM_LINE).contains(&body[body.len() - 1].len()));
+        use rustls::pki_types::pem::PemObject as _;
+        let back = rustls::pki_types::CertificateDer::from_pem_slice(got.pem).unwrap();
+        assert_eq!(back.as_ref(), der.as_slice());
+        assert!(trust(&der, b"\x00").is_err());
     }
 
     /// Each member held to its reach of the names kept (D246). Do: keep a destination that
@@ -3767,5 +4125,76 @@ mod tests {
         ] {
             assert!(held_of(room, said).is_err(), "{room:?} {said:?}");
         }
+    }
+
+    /// D251: the run's socket grant is held as shards-api holds it, as init holds it again:
+    /// its directory absolute and plain, a lane and a byte at least, a run's own command's.
+    #[test]
+    fn a_socket_grant_is_held_as_shards_api_holds_it() {
+        let grant = |dir: &str, lanes, window| wire::SocketGrant {
+            dir: dir.into(),
+            lanes,
+            window,
+        };
+        assert!(socket_grant(&grant("/run/hex/channel", 8, 65_536), true).is_ok());
+        for (g, command) in [
+            (grant("run/hex", 8, 1), true),
+            (grant("/a/../b", 8, 1), true),
+            (grant("/a", 0, 1), true),
+            (grant("/a", 1, 0), true),
+            (grant("/a", 1, 1), false),
+        ] {
+            assert!(
+                matches!(socket_grant(&g, command), Err(No(Cause::Request, _))),
+                "{g:?} {command}"
+            );
+        }
+    }
+
+    /// D252: a run's endpoint is bound on loopback under a key of its own, made as it is bound,
+    /// which no two runs share; it hands its host the socket lanes its grant admits.
+    #[test]
+    fn a_runs_endpoint_is_bound_on_loopback_under_a_key_of_its_own() {
+        let ask = wire::ControlAsk {
+            controller: [7; 32],
+            sockets: Some(wire::SocketGrant {
+                dir: "/run/hex/channel".into(),
+                lanes: 2,
+                window: 4096,
+            }),
+        };
+        let (first, served) = hosted::bind_control(&ask).unwrap();
+        assert!(first.address.ip().is_loopback(), "{:?}", first.address);
+        assert!(served.sockets.is_some());
+        let (second, _) = hosted::bind_control(&ask).unwrap();
+        assert_ne!(first.fingerprint, second.fingerprint, "two runs share one key");
+    }
+
+    /// D232 through D231: a run naming GPUs gives its VM process `--gpu` and each identity's
+    /// `--gpu-device` in D232's grammar, as shards-api's direct boot does; one naming none, none.
+    #[test]
+    fn a_runs_gpus_reach_its_vm_process_as_the_direct_boot_gives_them() {
+        use shards_api::PhysicalGpu;
+        assert!(gpu_args(&[]).is_empty());
+        let args = gpu_args(&[
+            PhysicalGpu::Pci {
+                domain: 0,
+                bus: 1,
+                device: 0,
+                function: 0,
+            },
+            PhysicalGpu::MetalRegistry(0x1_0000_02a1),
+        ]);
+        assert_eq!(
+            args,
+            [
+                "--gpu",
+                "--gpu-device",
+                "pci:00000000:01:00.0",
+                "--gpu-device",
+                "metal:00000001000002a1"
+            ]
+            .map(std::ffi::OsString::from)
+        );
     }
 }

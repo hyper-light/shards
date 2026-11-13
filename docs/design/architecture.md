@@ -2918,8 +2918,16 @@ gone with the VM. So a microVM that stays (not `--rm`) keeps it on the host:
   the daemon's count of its writes, then renamed over it, its own file removed on any
   error. One name for every writer (`request.new`, the first fix) broke under two writers at
   once (660 to 840 of 2,000 renames found no file); a count needs no random source, as one
-  daemon holds a home (`take_lock`). Not synced, as for every microVM's record (D27). The
-  record, with its red, green and mutations:
+  daemon holds a home (`take_lock`). Not synced, as for every microVM's record (D27). A
+  home's first `engine-id`, which clients may each make at once on threads of their own, is
+  linked as the record rather than renamed over it (`keep_first`: `hard_link` fails where
+  another kept one first, link(2)'s EEXIST, CreateHardLinkW's ERROR_ALREADY_EXISTS). So
+  each caller takes the one kept, where by rename 200 of 200 rounds of 14 callers took an ID
+  the home did not keep. A request's change is one client's at a time (`Daemon::request_turn`,
+  held from its read to its keep, an `update`'s exec into the VM included, as moby holds a
+  container's lock across an update and a connect). Two clients at once had lost a change:
+  200 rounds of `update` beside `network connect` kept 154 to 186 of 200 networks
+  (request-sites-v1/review.md). The record, with its red, green and mutations:
   [request-sites-v1](../research/measurements/request-sites-v1/README.md), after
   [audit-fix-request-v1](../research/measurements/audit-fix-request-v1/README.md).
 - **A start refused before it starts** leaves the microVM as it was: nothing of a
@@ -3981,7 +3989,7 @@ the first.
 
 | Literal | Was | Now | Source |
 |---|---|---|---|
-| `PERIOD` (vm/hold.rs) | 100 ms | 100 ms, cited | kernel/sched/sched.h l. 445-447 (`default_bw_period_us`), Linux 1590cf03 |
+| `PERIOD` (`HOLD_PERIOD`, vm/mod.rs) | 100 ms | 100 ms, an upstream default; its derivation decided and owed ("Its period", below) | kernel/sched/sched.h l. 445-447 (`default_bw_period_us`), Linux 1590cf03 |
 | `BUSY` (vm/hold.rs) | 10 ms | none: `(allowed - used) / vcpus`; a group's, the lesser of that and `room_lasts` | the vCPUs' own count; the group's charged rate (`GroupCpu::charge`) |
 | `SOONEST` (vm/hold.rs) | 1 ms | 1 ms, cited | kernel/sched/core.c l. 10054 (`min_bw_quota_period_us`); kernel/sched/fair.c l. 7179 (`min_cfs_rq_runtime`); Documentation/scheduler/sched-bwc.rst l. 94-95, 179-186 |
 | the machine's busy mark (vm/hold.rs `govern`) | `used * 2 >= share` | `busy_next(before, used, share)`: `used + (used - before) >= share` | the machine's own last two periods |
@@ -3994,6 +4002,36 @@ need a host whose CPUs the test threads get: run through
 E2E on each hypervisor, a group of machines held on a loaded host, and how far past their
 share machines that go from steady to busy run under each mark (the old and the derived),
 measured.
+
+**Its period** (2026-11-13, R03: decided by ROOT, built once measured). `PERIOD` is CFS's
+default period (kernel/sched/sched.h l. 444-447, `default_bw_period_us`), an upstream
+default, which R03 holds insufficient alone.
+- sched-bwc.rst gives the period as a tradeoff its operator makes (l. 210-234: a longer
+  period for burst capacity, a shorter for a consistent latency). On Windows, where
+  GetThreadTimes charges whole 15.625 ms ticks (PM M294), a hold whose share of a 100 ms
+  period is under its vCPUs' count of ticks is never resolved within a period: 4 vCPUs held
+  under 625 milli-CPU are held on average alone.
+- *Decided.* A hold's period is the shortest one in which the governor resolves its share:
+  P = vcpus × g / share. The share is in CPUs (the rate over `MILLI_PER_CPU`). g is the
+  greater of the governor's measured soonest wake and the measured resolution of the vCPU
+  threads' clock (`platform::ThreadClock`). Cold start: g is the soonest wake until each is
+  measured.
+  - No clamp: CFS's 1 ms and 1 s bounds (core.c l. 10053-10054) are its operator's range,
+    not this governor's limits. P ≥ g already holds wherever the share is at most the vCPUs.
+  - An orchestrator derives its window from whatever the run reports (D247's
+    `rate_period`), so it follows the change when it comes.
+- *Owed to ROOT before it is built* (R14): the cost of a kick on each backend (HVF, KVM
+  x86-64 and arm64, WHP x86-64 and arm64). A period kicks every vCPU once at most, so shorter
+  periods kick more: 4 vCPUs at 2000 milli-CPU would hold over about 2g, where today they
+  hold over 100 ms.
+  - Measure on each backend a machine of 1, 4 and the host's vCPUs, every vCPU spinning in
+    its guest. Hold it at rates whose derived periods run from g to 100 ms, and at today's
+    100 ms beside each, interleaved.
+  - Read, n times a point: the kicks a second; the VM process's CPU time past its vCPUs'
+    guest time (the governor's and the kicks' own cost); each vCPU's exits; the guest's
+    progress (its spin count); and the guest time past the rate over a window. Report
+    p50/p90/p99/max, with host, OS and revision.
+  - Until then the period stays 100 ms, and no code of the derivation is written.
 
 ### D38's and D197's virtio-fs frames: FUSE's own structures
 
@@ -5322,7 +5360,9 @@ terminal that went away), and checks a client's enrollment again for each comman
 it fail. The client's side (`client.rs`, `context.rs`) refuses here what a context does not
 carry yet, the client's terminal and files, read by shards' own parser of each command (a
 flag past another's value included); and where no daemon answers, it says so once its
-handshake has not ended within the idle bound, 10 s, which its driver holds it to. A
+handshake has not ended within its bound, which its driver holds it to: RFC 1122's R1 at
+the handshake's first probe timeout, 15 s for a daemon never measured ("Its values
+derived", below). A
 connection that has done its handshake lives while its peer is heard, its transport's idle
 timeout 100 s since the last packet (D176 part 6, "Over a slow link": 10 s of silence ended
 2 of the first 20 moves over Wi-Fi). Tested: `crates/remote` (raw keys pinned and refused, the
@@ -5388,8 +5428,8 @@ Reading the daemon's side for the same fault found four more, each fixed:
   keep-alives keeping it, and open as many as it liked. A machine now takes as many such
   connections at once as it holds open invitations, as each invitation enrolls one client,
   and none while it holds none: the rest are refused as their handshake ends. And it lets
-  each go that has not joined within the idle bound, as long as a client waits for its
-  daemon. Its client says such a refusal in the words its stream would have said (the
+  each go that has not joined in as long as its connection waits for a peer that answers
+  nothing, from the probe timeout its handshake measured ("Its values derived", below). Its client says such a refusal in the words its stream would have said (the
   join's refusal for a join, `this machine has not enrolled you` for a command), so that
   what a stranger learns is whether an invitation is free, nothing of which or whose.
   focal has no such peers: its invitations issue a credential its TLS checks (../focal
@@ -6331,6 +6371,56 @@ stdin: exact JSON lines and bytes past a pipe's capacity, a stranger refused, a 
 owner, its end; and a member that ends, its input `EPIPE`).
 [Record](../research/measurements/member-stdin-v1/README.md).
 
+**Its values derived** (2026-11-13; R03: no value chosen). D180's transport and relays held
+values chosen by hand; each is now a protocol's bound, a cited system's, or follows from the
+connection itself:
+- *A handshake's bound* (was `IDLE`, 10 s). Each side waits for the other's handshake until RFC
+  1122 §4.2.3.5's R1, "at least 3 retransmissions, at the current RTO", each timeout twice the
+  last (RFC 6298 §5.5; RFC 9002 §6.2.1's backoff), 15 timeouts as Linux counts R1
+  (`tcp_retries1` 3, net/ipv4/tcp_timer.c `tcp_model_timeout`): there TCP "SHOULD inform the
+  application of the delivery problem", which "can close the connection (i.e., give up on the
+  open attempt) sooner" than R2. Its timeout is the handshake's first probe timeout (RFC 9002
+  §5.3, §6.2.1: three times the RTT it starts from), no shorter than RFC 6298 §2.4's 1 s, so
+  that a stalled host's late answer is not taken for none ([AP99]). The RTT is the peer's as
+  last measured or, for a peer never measured, RFC 9002 §6.2.2's 333 ms, a cold start typed
+  (`tls::Rtt::{Unmeasured, Measured}`): 15 s for a daemon never measured, or measured under a
+  third of a second (`Rtt::handshake_bound`, `tls::unanswered`). QUIC's loss recovery starts the
+  handshake from the same RTT (`initial_rtt`). A daemon, which knows no client's RTT before its
+  handshake, waits as for one never measured.
+- *A stranger's time to join* (was `IDLE` from its handshake): as long as its own connection
+  waits for a peer that answers nothing, from the probe timeout its handshake measured
+  (`Io::unanswered`); a join is one request and its answer.
+- *The keep-alive* (was a quarter of `IDLE`, 2.5 s): a quarter of `QUIET`, 25 s, three within
+  the idle bound (RFC 9000 §10.1) and under the 30 s RFC 9000 §10.1.2 finds "necessary to
+  prevent the majority of middleboxes from losing state for UDP flows" (Hätönen et al., IMC
+  2010). A peer of an earlier build, held to 10 s, keeps the connection alive by its own
+  keep-alive, at a quarter of its own bound: the lesser bound holds both ends (§10.1).
+- *Output's high-water mark* (was 1 MiB of frames held before a reader waited): none. A reader
+  of a command's output (`server.rs`) or of a client's stdin (`client.rs`) reads again once the
+  transport has taken all it read: the peer's flow control (RFC 9000 §4.1) is the only
+  read-ahead, and the pipe the command writes holds its next bytes meanwhile.
+- *Input's queue* (was 4 chunks): one (`server::QUEUED_CHUNKS`), the writer's next chunk while
+  it writes the last; none would lose a wake, as the writer tells the driver it took a chunk
+  before it takes the next, and the driver's offer meanwhile finds no taker. The peer's flow
+  control holds the rest.
+- *A read's size* (64 KiB, `server::READ_MOST`): what a pipe holds to be read at once, Linux's
+  default 16 pages (`PIPE_DEF_BUFFERS`; pipe(7): 65536 bytes on 4 KiB pages) and macOS's
+  `BIG_PIPE_SIZE`, as synced.rs's frames and the exec host's pipes cite them; a source that
+  holds more gives the rest to the next read.
+- *The driver's wait* (was `IDLE` with nothing due, and at least 100 µs): until its next timer,
+  no shorter than a nanosecond, the least a socket's timeout takes; with none due, until a
+  datagram or a wake comes, which every command and stop sends (`net::Sender`).
+
+Left as hyper-quic sets them, and owed: quinn-proto's stream and connection receive windows,
+its send window, and the 100 streams a daemon's client may open at once (one command and its
+control stream, or one join, is all a connection opens; holding it there needs the raw test
+client in `tests/loopback.rs` to wait for stream credit). Tested: `tls::tests` (the bound for a
+peer never measured, one measured fast and one far, the keep-alive's place), `net::tests` (a
+handshake held to its bound alone), `tests/loopback.rs` (a stranger let go at its connection's
+bound, no daemon answering told at the handshake's, an enrolled client's command running past
+a stranger's bound, and the relays' backpressure as before: 8 MiB crossing whole, a command
+that reads no stdin holding up no other).
+
 ### D181. `--use-api-socket`: a run's command reaches its own microVM's engine (slices 1 to 3 built)
 
 The [current guest stream pump closing record](../research/measurements/managed-engine-relay-root/README.md)
@@ -6929,7 +7019,7 @@ throughput both ways, small requests no slower, on every host.
 | Room for pins | With a budget: init's hold (`plug::cap`) less what the run holds (`memory.current`, the slots among it) and its working room (`plug::working_room`, D188, PM M309/M321, of the CPUs online as read); with none: `MemAvailable` (free pages less the zones' high watermarks and reserves, with reclaimable cache) less the working room. Read as each slot is made. |
 | Idle slots owed a told room | The working room less the room told, where positive. |
 | Fixed-buffer table | Twice the relay's `RLIMIT_NOFILE` over 3 (a stream's client, vsock and wake descriptors; two slots while it swaps), within io_uring's 16,384 (`IORING_MAX_REG_BUFFERS`). |
-| Doorbell 0x01, end 0x02, detach 0x03, swap 0x04; offer header 16 bytes, extents 16 bytes, reply 8 bytes; version 2 | Protocol constants. |
+| Doorbell 0x01, end 0x02, detach 0x03, swap 0x04; offer header 16 bytes, extents 16 bytes, reply 8 bytes; version 2; the owner's cue to its own device after an offer, `CUE` 0x00 (host-side) | Protocol constants. |
 | Offer extents at most (4 KiB + 2 S) / 4 KiB | A slot's pages, none merged. |
 
 The pins E2E of section 16 (idle microVMs pin nothing, pins go as streams end, a give-back
@@ -6943,6 +7033,8 @@ supported target lints clean (r15, r16). Owed to ROOT: correctness and hostile-o
 pins E2E on WHP arm64, and on WHP x86_64 past that bound; and throughput, small-request
 latency (paced and back to back), connection setup with its slot's making, a ring's ramp, CPU
 and pinned memory, on KVM x86_64 and arm64, HVF, WHP x86_64 and arm64.
+
+**Review (plan step 2):** [ring-pins-v1/review.md](../research/measurements/ring-pins-v1/review.md) (F1 fixed, b81d707a9; F2-F4 owed to ROOT with their reds and commands).
 
 ### D183. `--cgroup-parent`: a microVM's processes under a slice of the user's service manager (slices 1, 2 and 3 built)
 
@@ -12231,12 +12323,58 @@ peer", each going on here as it should. What changed for them:
   (`no_daemon_answering_is_told_at_the_handshakes_bound`, tests/loopback.rs), as is a
   stranger that has not joined (server.rs). The keep-alives stay at a quarter of 10 s, as
   §10.1.2 has a peer that awaits an answer send PINGs, more often than the 30 s it finds
-  most middleboxes keep a UDP flow's state for. A connection takes the lesser of the two
-  sides' bounds, so both machines need this build. No other deadline is on the stream's
+  most middleboxes keep a UDP flow's state for (since derived, D180's "Its values
+  derived": the handshake held to R1 at its first probe timeout, the keep-alives at a quarter
+  of `QUIET`). A connection takes the lesser of the two sides' bounds, so both machines need
+  this build. No other deadline is on the stream's
   path: the CLI's pipes and the daemons' reads and writes block as the link lets them
-  (cli/moves.rs, daemon/moves.rs, daemon/remote.rs `copy_step`); `running_there`'s
-  minute of asking whether a restore with no answer runs there (twelve asks, 5 s apart) is
-  after the stream, and leaves the microVM held here, saved, saying so, never in two places.
+  (cli/moves.rs, daemon/moves.rs, daemon/remote.rs `copy_step`); asking whether a restore
+  with no answer runs there (below) is after the stream, and leaves the microVM held here,
+  saved, saying so, never in two places.
+- **Whether it runs there, its restore unanswered** (cli/moves.rs `running_there`; R03,
+  2026-11-13). A restore there whose answer never came may have run, so the move asks the
+  other machine whether the microVM runs (`inspect`) until it says: running, the move goes
+  on; not, and gone there once removed, it goes on here; else not known, held here, saved,
+  saying how to settle it. It asked twelve times, 5 s apart, figures of no derivation. How
+  long and how often it asks are now that machine's own, as this move heard it, with no
+  figure of shards':
+  - *How long*: while that machine shows it is there. An ask that heard it, though
+    unanswered (a connection it closed, its daemon stopping), is followed by another, however
+    many; one that heard nothing too, until that machine has gone unheard (`Seen::heard`,
+    the latest of its connections') longer than the longest it went unheard in this move and
+    was heard again (`Seen::longest_silence`, the most of any connection the move made there:
+    `ready`, the image's `load`, the import, the restore, these asks): its slowest answer.
+    Not known then. A connection ends at `QUIET` unheard, so that answer is less, and the
+    asking is never more patient than the link. The first ask goes out whatever that
+    machine's silence, the wait after the restore's run-out following liveness alone, each
+    ask held to the link's own bounds (its handshake's, then `QUIET`). The cold start, a move
+    that heard nothing of that machine (none reaches this step, `ready` and the import having
+    answered), ends at its first ask that hears nothing.
+  - *A refusal* (`Answer::Refused`, typed on the wire): not known at once. That machine heard
+    the ask and declined it (a client it no longer enrolls, a command it could not start);
+    asking again asks it to decline again, nothing learned of when it would not, and a
+    machine heard at each ask would be asked for ever.
+  - *How often*: each ask begins a round trip after the last began, at least: the link's, as
+    the connection that last heard that machine estimated it (RFC 9002 §5), the least time an
+    answer takes. An ask that heard nothing took its handshake's bound already, and one heard
+    a round trip, so only one that failed here, before the link, waits.
+  - *Its values' edges*: never heard, the silence is unbounded; the comparisons saturate
+    (`Instant::elapsed`, `saturating_sub`), with no arithmetic to overflow. They are that
+    machine's own showing, through connections authenticated both ways (D180): it can make a
+    move ask longer, only while it is heard and never past `QUIET` of silence, and never make
+    it take for an answer what it did not answer; not known keeps the copy held here. How long
+    the asking runs on the links measured above is not measured: none of their moves left a
+    restore unanswered.
+
+  Held by cli/moves.rs's `a_move_learns_the_other_machines_slowest_answer_from_every_connection`,
+  `the_other_machines_first_answer_says`, `a_machine_unanswered_is_asked_again_until_it_answers`,
+  `a_machine_silent_past_its_slowest_answer_is_not_known` and
+  `the_wait_takes_its_figures_from_the_link_alone` (asks a round trip apart; no number in its
+  source but an answer's exit status), and net.rs's `Liveness::last_heard` in
+  `a_connection_lives_while_it_is_heard_and_its_handshake_alone_is_held_to_its_bound`. Every
+  move between two machines takes in each connection's `Seen` so
+  (`a_microvm_moves_to_another_host_saved_and_live`, tests/moved.rs); no test leaves a restore
+  unanswered, a fault case owed.
 - **What a move sends**, cold: the move's stream (`Writer`), its plan, then its directory
   but its other snapshots and its kept layer, its snapshot's state, memory, layer and swap
   among it; its volumes; and the files its snapshot restores against that the other machine
@@ -18167,10 +18305,20 @@ it, and stopping the run is the caller's decision.
   below).
 
 Not built:
-- `gpus=`. No run carries a D232 selection that its VM process binds: the daemon's run
-  has `--gpus` alone, and shards-api's image spec has no `gpu_devices`. So no run sends
-  the entry, and none has `/run/shards/gpus`, until a run's own GPU selection is built.
-  This still holds on main at 1145bd3f2.
+- `gpus=` for a daemon's run. The daemon's run has `--gpus` alone, and no D232 selection
+  of its own, so it sends no entry and has no `/run/shards/gpus`.
+
+Built since (goal 75, Hex's step 39): `gpus=` for an orchestrator's run. shards-api's
+`ImageSpec::gpu_devices` names the run's GPUs by D232's identities, checked with
+`check_selection` before a run host starts. It rides the image channel's version 16
+(`Request::gpu_devices`, each in `--gpu-device`'s text, parsed and checked again as read). The
+run host starts the GPU's VM process (D144) with `--gpu` and each `--gpu-device`, as shards-api's
+direct boot does, with MoltenVK saying its errors alone, as the daemon starts a GPU's. Under the
+grant it sends `gpus=` with the same identities, which init checks and writes to
+`/run/shards/gpus` (0444, one a line; init's side was built at step 4). Without the grant, the VM
+renders on them and the run has no file. Tested (unit): the channel's round trip and refusals,
+shards-api's check, and the VM process's arguments. Owed (ROOT): tests/nesting.rs's GPU case
+through shards-api on a host with a GPU.
 - How late a `ready` was, on its event: the daemon's log says it, and the run host's
   `Ready::Late`. No event attribute is named for it.
 
@@ -22769,14 +22917,15 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
   (r115). Not run: these checks on Linux or Windows, boot.rs's real-VM tests (ROOT's),
   scripts/lint, and any guard-removal mutation.
 
-  What remains timed is the suite's and the crate's unit tests', twice the slowest
-  recorded run on the host class (`shards_api::record`:
-  `conformance::PATIENCE`, an unserved port's `OVERSHOOT`; PM M463, M464, M515). It goes
-  with the API's waits, which ROOT decided follow the guest's VM process: a wait goes on
-  while that process advances (its CPU time each quiet period, as the daemon's
-  `Wait::WhileRuns`), refuses a stall typed, and takes the slowest answer seen on the host
-  as the point past which a stall fails (owed, plan step 2's review). An attach of a guest
-  whose first client reaps it as it is held is refused `Exited` (PM M541).
+  The last bounds of that kind, the suite's and the crate's unit tests', twice the slowest
+  run recorded on the host class (`shards_api::record`: `conformance::PATIENCE`,
+  `UNSERVED_PATIENCE`, an unserved port's `OVERSHOOT`; PM M463, M464, M515), went with the
+  waits that follow the guest's VM process (below), which the suite now waits with. The one
+  patience it still gives, an unserved port's, is this host's own: what one refused single
+  attempt there took (`connect_once_before`), the refusal coming at it, never before. How
+  late past it the refusal may come has no bound: a bound on it would be a multiple of some
+  time of this host's, a number of ours. An attach of a guest whose first client reaps it as
+  it is held is refused `Exited` (PM M541).
 - On Windows a guest's process is the `shards` that booted its VM, which holds the VM in a
   Job that ends with it (D141); it outlives a client that crashes or loses its guest, so
   `attach` takes it back as on Unix (parity step 14): held by a handle of its own with query,
@@ -22784,6 +22933,105 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
   handle's GetProcessTimes creation time, its end waited on and made through it
   (TerminateProcess), which ends its Job and so its VM. Where Windows refused this before, the
   refusal was no limit of its API.
+- Waits that follow the guest's VM process (`Guest::connect_while_runs`,
+  `Guest::wait_while_runs`; ROOT's decision of 2026-11-13; `crates/api/src/progress.rs`): a
+  wait for a guest's answer goes on while its VM process runs, and is refused, typed, when it
+  stalls. They are opt-in: `connect`, `connect_before`, `connect_once_before` and `wait_for`
+  keep their meaning, so Hex's calls do too.
+  - *Learned per kind, in the client's process.* `Awaited::Boot` (an `OK` from a guest none
+    of whose connects was answered yet: its boot to its first listener), `Awaited::Connect`
+    (an `OK` from a guest that has answered one) and `Awaited::End` (its end) are kept
+    apart, in memory (`progress::RECORDS`), never in source:
+    - W*, the slowest answer seen, from a wait's start to its answer;
+    - R*, the least CPU rate at which a VM process still answered: its CPU over that wait's
+      wall time, kept as the (cpu, wall) pair and compared by cross-multiplication in u128
+      of nanoseconds saturated at u64's most (584 years), so no product overflows.
+    - Only the guest's own answers teach: an `OK`, and an end that was not this client's
+      stop. A refusal teaches nothing, and neither does a wait no nanosecond long, which has
+      no rate.
+    - Boot is kept apart from Connect because a boot works through gaps (its timers, its
+      devices) longer than a listening guest takes to answer: a W* learned from connects to
+      running guests (a client that attaches first) would judge a boot by theirs.
+  - *The judge.* Past W* from its start, a wait looks at its VM process once each W*. A look
+    that finds it ran no CPU at all since the look before refuses the wait,
+    `Refusal::Stalled(Stall)`: how far into the wait, the time looked over, R* and W*, kept in
+    nanoseconds (each past u64's, 584 years, its most). Five `Duration`s in the variant
+    enlarged every `Result<_, Refusal>`: a test's tuple of two of them crossed clippy's
+    `result_large_err` (crates/api/tests/sim.rs, this lane's second run).
+    - A host under load slows a VM process but never stops it, so one that ran nothing for
+      as long as the slowest answer took is stopped, deadlocked or frozen.
+    - R* is in the refusal for diagnosis only, never a bound. ROOT's first design refused a
+      look below R*, which would refuse a boot merely slowed by its host's load: the very
+      failure R03 ends (ROOT, 2026-11-13, at this lane's report).
+    - A look at a process whose exit is under way (a zombie; on Windows, a process of its
+      tree that exited since) judges nothing. Its end is the wait's answer, and wins over a
+      refusal it races.
+    - A stalled guest is not stopped: it stays its caller's.
+  - *Cold start.* Before its kind's first answer (`Shards::seen(kind)` is `Seen::Cold`), a
+    wait follows liveness alone, the VM process's end. So does a wait that began cold and
+    finds the record learned meanwhile.
+    - The gap: a guest whose VM runs but never answers its first call is ended only by its
+      caller. `Guest::stop` from a thread of its own ends a connect as `Ended(Stopped)` and a
+      wait as `End::Stopped`.
+    - `Shards::seen` tells a caller when its first call needs a cancel of its own.
+  - *Its contract, and its gap.* It is for a wait in which the VM works toward its answer (a
+    boot to its listener, a workload to its end).
+    - A guest that idles before it answers (on a timer, an input) runs nothing and is
+      refused. Such a guest is asked with `connect` and `wait_for`.
+    - A guest that spins without answering keeps its VM process running and is never judged
+      stalled: the limit the daemon's `Wait::WhileRuns` has too.
+  - *Its readers* link no VMM (this entry's falsifier is a client that has to).
+    - Linux: the process's CPU clock (clock_getcpuclockid(3), clock_gettime(2)). It gives
+      its threads' run time in nanoseconds as the scheduler keeps it
+      (kernel/time/posix-cpu-timers.c, `cpu_clock_sample_group`). It is read between two
+      reads of the process's start and state (`/proc/<pid>/stat` fields 22 and 3), so a pid
+      another process got in between shows.
+      - ROOT first named `/proc/<pid>/stat`'s utime and stime (fields 14 and 15). Those
+        count clock ticks (USER_HZ, 100 a second), in which an answer within two ticks
+        shows no CPU at all.
+    - macOS: proc_pid_rusage (RUSAGE_INFO_V0): its threads' user and system times in Mach
+      absolute-time units, converted by mach_timebase_info(3).
+      - The same call gives its start (a pid given to another process shows) and its exit
+        time.
+      - It reads a zombie too, so the watcher reads a VM process's last CPU before it reaps
+        it.
+      - XNU fills those times from `recount_task_times`, as it fills PROC_PIDTASKINFO's,
+        which shards-vmm's `platform::process_usage` reads (`rusage_times_are_task_info_times`
+        holds the two equal).
+      - The reader duplicates shards-vmm's (R12) because the client links no VMM.
+    - Unix, both: the child shards-api starts execs into the VM process, so its pid is the
+      VM's; a guest taken back is read by its identity's pid and start.
+    - Windows: the child is `shards`, and the VM process is its child in shards' own Job
+      (D141), so the reader holds that `shards` and every descendant.
+      - Descendants come from a Toolhelp32 snapshot (CreateToolhelp32Snapshot with
+        TH32CS_SNAPPROCESS; Process32FirstW/NextW's `th32ParentProcessID`).
+      - A process is kept only where it started no earlier than its listed parent
+        (GetProcessTimes' creation time). This is PM M528's rule: a pid is reused once its
+        process has gone.
+      - Each is held by a handle of its own (OpenProcess with
+        PROCESS_QUERY_LIMITED_INFORMATION and SYNCHRONIZE), which keeps its times readable
+        after it exits. One gone since the snapshot (ERROR_INVALID_PARAMETER) or not this
+        user's (ERROR_ACCESS_DENIED) is no process of the tree.
+      - GetProcessTimes' kernel and user times (FILETIME, 100 ns units, summed over its
+        threads) feed the record.
+      - QueryProcessCycleTime's count of the cycles its threads used tells whether they ran:
+        GetProcessTimes documents no resolution for its times.
+      - Not a nested Job, which ROOT approved first: a Job counts only processes created
+        after the child joins it; std starts no child suspended, so none can join before it
+        runs (`ChildExt::main_thread_handle`, which resuming one would need, is unstable);
+        and a guest taken back is in no Job of ours.
+    - A read that fails while the process lives is a typed refusal, never a silent "no
+      progress". It is `Refusal::Process` with its operation (`CpuClock`, `ProcPidRusage`,
+      `MachTimebase`, `Snapshot`, `ListProcesses`, `OpenProcess`, `GetProcessTimes`,
+      `CycleTime`, `WaitForExit` or `DuplicateHandle`) and code. A process that has gone
+      since is its end, which is the wait's.
+  - *Other implementors*: the trait's defaults follow liveness alone, as a cold record does
+    (`connect(port, Duration::MAX)`, `wait_for(Duration::MAX)`). So do the simulator, which
+    has no VM process, and `ManagedGuest`, whose native owner holds its process.
+  - *Its literals*: 10^9 nanoseconds a second, a timespec's bound (POSIX <time.h>); 100,
+    FILETIME's nanoseconds (GetProcessTimes); a zero-time wait (WaitForSingleObject, 0),
+    which is a look, not a wait. Nothing else: W*, R* and every time judged are this
+    process's own.
 - `stop` kills the VM's process at once: the VMM has no host-to-guest power-off
   (vm/runtime.rs), so the page cache a guest held is lost, and a clean stop is the
   client's (ask the guest to sync and power off, `wait_for` its `PowerOff`).
@@ -22842,14 +23090,54 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
   bytes, and the connection goes on after; a clone is the same connection; its
   `buffer_sizes` are the OS's; and a write to a peer that has gone fails `EPIPE`, never
   raising SIGPIPE.
+- *A wait that follows its VM process* returns at the guest's answer or end, as the
+  no-clock form does. It refuses `Stalled` where its VM process ran nothing for a whole W* of
+  its kind, once that kind has an answer, and never judges before. It learns its kind from
+  the guest's own answers alone, and refuses typed a read that fails while the process lives.
 - *The simulator* meets every case of the same conformance suite.
 
-**Evidence.** PM M515 (an unserved port's refusal past its patience), M463 (the waits
-the bounds hold), M464 (what a refused dial costs, the pacing's `c`); the conformance
-suite and E2E on HVF.
+**Evidence.** PM M515 (an unserved port's refusal past its patience), M463 (what the waits
+cost), M464 (what a refused dial costs, the pacing's `c`); the conformance suite and E2E on
+HVF; and the waits' own unit tests (`progress::tests`, client.rs's stand-in tests), with
+their runs below.
 
-**What would falsify it.** A conforming client that needs to link the VMM; a host class
-whose runs are slower than its record (a new record, not a raised bound).
+**Part B's runs** (goal 52's child, 2026-11-13). They ran on adalundhe-macbook-pro (macOS on
+arm64, rustc 1.98.1), through kiln run, on a clone of each tree with `SHARDS_HELPERS=skip`
+and placeholder init and server binaries:
+- `cargo test -p shards-api`;
+- `cargo clippy -p shards-api -p shards --all-targets -- -D warnings`.
+
+Results:
+- At 831854804 with the predecessor's reused tests (r243), the new tests passed: progress's
+  five, and the four stand-in tests (a VM process that runs nothing refused `Stalled`; one
+  that spins waited for to its answer and end; a cold record never judging; answers teaching
+  their kind). The reused tests were red:
+  - `single_attempt_to_a_silent_listener_is_refused_by_its_deadline` and
+    `a_write_to_a_peer_that_stops_reading_ends_at_its_timeout` failed;
+  - `borrowed_tests::withheld_reply_expires_before_fixture_release` and
+    `dribbled_reply_does_not_renew_deadline` hung, stopped after 24 minutes.
+  The cause: `kept_wait` is microseconds where the streams keep a timeout to its
+  nanosecond, too short for a dial and its CONNECT, and `while_runs::answer` looked at a
+  blocked thread that often.
+- After those fixes (r349): the lib's tests 113 passed and 5 ignored, tests/allocations.rs 1
+  passed, tests/real.rs 1 ignored, tests/sim.rs 17 passed and 1 ignored. Clippy failed
+  `result_large_err` at tests/sim.rs, which `Stall` fixed.
+- On the merged tree, 2593305f0 (origin/main 94be8818b and this lane; r375): the lib's 116
+  passed and 5 ignored, the rest the same; clippy clean.
+- Guard-removal mutations, each test run once:
+  - M1, the stall verdict removed: `a_vm_process_that_runs_nothing_is_refused_stalled_once_its_kind_has_an_answer`
+    failed, its boot's connect waiting to the stand-in's end, `Some(Ended(PowerOff))`.
+  - M2, an expired finite retry let through to the unbounded handshake:
+    `finite_owned_retry_expiry_cannot_start_an_unbounded_handshake` failed, counting a late
+    dial (1, not 0).
+
+Not run: these on Linux and Windows (Linux's CPU clock reader, Windows' process tree, the
+Windows report test; CI's matrix); boot.rs's real-VM tests on HVF, KVM x86_64, KVM arm64 (L1)
+and WHP (ROOT's); scripts/lint.
+
+**What would falsify it.** A conforming client that needs to link the VMM. A VM process that
+ran no CPU for a whole W* of its kind and would still have answered: a working guest
+refused.
 
 ### D231. An image booted for an orchestrator: a run of its own, hosted by one `shards` process (decided; building)
 
@@ -23000,10 +23288,34 @@ reboots, driver updates or hot plug; a device's own identity does.
   name and host-visible memory (`shards_abi::gpu::probe`, versioned; `Guests::probe_gpu`
   reads it); a managed launch's VM process writes the same report, framed with its launch's
   scope, to its client's private pipe before the guest runs (`--gpu-report`, D233).
+- *Refusals* (goal 52's review, R04). A selection the renderer serves none of is refused
+  typed, never as text alone (`shards_abi::gpu::GpuRefusal`):
+  - the join's reason (`JoinError`, moved from shards-vmm's `gpu_selection` to shards-abi and
+    re-exported where it was): missing, ambiguous, aliased, the rest of the join's reasons;
+  - no memory the host can map;
+  - the renderer's refusal of the exact filter, with its code.
+  Its record, the line `shards-gpu-refusal 1` and the reason's, is a probe's answer on stdout
+  (the probe then fails, exit 1), and a managed boot's report in place of its receipt, in the
+  same scoped `shards-vmm-gpu 1` frame, written before the boot fails of it. shards-api reads
+  either as `GpuProbeError::Refused`, which is certain: a receipt it cannot read (`Syntax`)
+  leaves the selection unknown. A report pipe closed unwritten is `Unreported`; it read as
+  `Syntax`, a malformed receipt.
+- *Refusals, old and new.*
+  - An older client reads a newer VM process's refusal frame as malformed, as it read the
+    unwritten pipe, and a refused probe as the guest's failed end, as before: the exit stays 1,
+    and a probe's end carries none of its output.
+  - A newer client reads an older VM process's unwritten pipe as `Unreported`, and its failed
+    probe as the guest's end, as before.
+  - `GpuProbeError` gains `Refused` and `Unreported`, which exhaustive matches must add.
 - *Snapshots.* Format 29 keeps the selection, rejoined as a snapshot restores; 28 reads.
 - *The driver held.* The renderer keeps the host's Vulkan loader and an instance for its life
   (`HeldDriver`): unheld, each context loaded the driver anew, and NVIDIA's static-TLS
   library could not load at a VM's 19th (Hex's measurement).
+
+- *Through an orchestrator's run* (D231; goal 75): `ImageSpec::gpu_devices`, checked by
+  `check_selection` before a run host starts and again as the image channel reads it (version
+  16). The run host starts the GPU's VM process with `--gpu` and each `--gpu-device`, and under
+  the nesting grant the command reads them in `/run/shards/gpus` (D234's `gpus=`).
 
 **Literals.** `MAX_PHYSICAL_GPUS`, 65,536: the renderer's patches' bound, `1 + UINT16_MAX`,
 from Hex's scheduler's u16 device index, to which they hold a context's selection
@@ -23023,7 +23335,9 @@ checks). Moving to them changes the C patches, which only a renderer build and a
 check: owed to ROOT, with `MAX_PHYSICAL_GPUS` following in the same change.
 `GPU_NAME_BYTES`, 256: Vulkan's `VK_MAX_PHYSICAL_DEVICE_NAME_SIZE`. The probe's byte bounds
 are its encoding's longest lines for the count, the count as wide as `MAX_PHYSICAL_GPUS`
-(`probe.rs`, derived from it). Snapshot format 29.
+(`probe.rs`, derived from it); a refusal's record and frame are bounded by the receipt and the
+report of one GPU (`probe_bytes(1)`, `report_bytes(1)`), the fewest any selection's reader
+admits. Snapshot format 29.
 
 **Windows on arm64 (plan step 2's step 3; Hex's one vendored change, upstreamed).** `gpu_target`
 takes `aarch64-pc-windows-msvc`, and scripts/gpu-libs builds the renderer, libepoxy and the
@@ -23071,9 +23385,17 @@ context); GPUs Vulkan cannot tell apart by UUID.
 commit read against R01–R16. Fixed (d7c9938ec, d27cd59b0): a receipt's count bounded by its
 bytes before anything is reserved for it; restore's own valued flags in the VM-flag grammar
 (`spec::RESTORE_VALUED`), so that a value is no flag there; the held driver in `Venus`'s
-`Send` safety; `Properties`' size checked as it compiles. Owed to ROOT: the figure's
-derivation above, selection refusals typed across the VM process's boundary, and the real-GPU
-runs.
+`Send` safety; `Properties`' size checked as it compiles. The review's owed defects, fixed by
+goal 52 (each test red on the code as it was, green after, red again with its guard removed):
+- a managed boot's report writer, taken again, says `ReportTaken`, not `Scope` (cb8b92f1b);
+- `--gpu-device`'s selection checked whole once its flags are read, where it was copied and
+  sorted after every flag, with the same refusals (cfc504f25);
+- said.rs reads a restore's words with restore's grammar, as d27cd59b0 made the VM-flag readers
+  do (5a377965a);
+- Windows' `imports_host_memory` takes its driver's count fallibly and each extension name
+  within its array (`fixed_name`, 2aabfeb7d);
+- refusals typed across the VM process's boundary (*Refusals* above).
+Owed to ROOT: the figure's derivation above, and the real-GPU runs.
 
 ### D233. A client that contains its own VM processes launches them through its native owner (built; real-VM validation owed)
 
@@ -24275,7 +24597,7 @@ memory its guest holds before its guest drops its page cache (D188's measure, PM
 image run); an orchestrator that needs D188's pressure give-back through its run host to keep
 its runs within its budget.
 
-### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process built, step 2's first slice; the granted members' trust, the leases, the injector, the broker and the real-VM runs owed)
+### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; the leases, the injector, the broker and the real-VM runs owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 33: every kiln harness runs in a
 Shards microVM, and a harness needs its model-provider credential without the credential
@@ -24400,10 +24722,67 @@ check refuses a grant toward no host as well.
 - *Owed (ROOT).* A run with a credential grant on KVM x86_64, under the seccomp filter: its
   network process makes its CA and serves, not ended by SIGSYS, and the run host logs the
   CA's SHA-256. The cost of the key at the network process's start, measured (unmeasured
-  here). The CA reaching the granted members' trust is the next slice.
+  here). The CA reaching the granted members' trust is the second slice, below.
 
-**Owed (later slices of step 33, this plan's steps 2–10).** The per-VM CA in the network
-process and the granted members' trust (step 2); the injector that terminates TLS and fills
+**Built: step 2's second slice, the granted members' trust.** Once the network process
+answers the run's grants with its CA's certificate, the run host adds two kinds of setup
+entry to the run it hands its VM (`shards_abi::run::trust`): `run-ca=`, the certificate in
+PEM (RFC 7468), once, and `run-ca-host=`, each host the grants name, once. The spec is
+checked again (`spec::fits`), as it grew after it was built. init checks both again (D109):
+the certificate a PEM certificate (`proxyca::first_certificate`), each host a host's lowered
+name as shards-api checks it (`shards_dns::host_name`, never loopback's); a certificate
+without hosts, hosts without one, or a second certificate is refused, typed
+(`run::trust::Error`, init's `trust::Refused`).
+- *Who.* A member is granted where its link reaches a host the grants name past the
+  microVM, by name or on any TCP port: `shards_net::reaches`, which holds the whole run to
+  its members' grants, held here member by member from init's own plan of each member's
+  link (its `named` and `egress`, after D246's holding apart). A member that reaches none is
+  given nothing: its bundle, environment and mounts stay its image's. A run with no grant
+  sends no entry, and init lays nothing.
+- *What.* The image's own trust bundle, the first of BuildKit's `linuxSystemCertFiles`
+  (`proxyca::BUNDLES`) that is a regular file, found and read in the image as a build step's
+  is (build.rs `find_bundle` and `read_bundle`, now shared: symlinks resolved in the image, at
+  most `proxyca::MOST`, a FIFO refused), with the CA appended between marker lines that name
+  it (`# shards run CA (D242) begin` and `end`), so that a member reading its bundle sees
+  whose CA it holds (the change explicit, never silent: G18). The kiln harness images' is
+  Debian trixie's `/etc/ssl/certs/ca-certificates.crt`. Made once for the run, it is laid
+  for each granted member read-only over the bundle, as its `/etc/hosts` and
+  `/etc/resolv.conf` are (written in its scratch, bound over, remounted read-only, unlinked);
+  the image's file is never written. Then `NODE_EXTRA_CA_CERTS` (Node's and Bun's added
+  certificates, which Claude Code reads), `SSL_CERT_FILE` (OpenSSL's file, which
+  rustls-native-certs reads too) and `CODEX_CA_CERTIFICATE` (Codex's own) name the bundle.
+- *Refused, never replaced.* A granted member whose environment (its image's, its config's or
+  its stager's) names another file in one of those variables: a file of roots of its own,
+  which this never replaces (one naming the bundle itself stays). A granted member whose
+  image has no `/tmp`, where its bundle is written to be laid. An image with no bundle at
+  all. Each refuses the run before its member starts, in words naming it.
+- *Literals.* 64, the characters of a PEM line (RFC 7468 §2: "exactly 64 characters except for
+  the final line"); 6, TCP's protocol number (RFC 9293; IANA's protocol numbers), as a link's
+  egress names TCP. The marker lines are names. No learned value enters this slice.
+- *Tests (macOS arm64, and arm64 Linux in Docker on the same Mac; STEP2.md).*
+  `shards_abi::run::trust`: the entries read back as written, a host named twice kept once,
+  none without a grant; a second certificate, one without hosts or hosts without one, and an
+  empty or NUL-holding one refused. init's `trust`: a run without grants has no CA; a
+  certificate holding none and hosts that are no host's lowered name (`Chatgpt.com`,
+  `localhost`, `a.localhost`, `10.0.0.1`, `a..b`, `-a.com`) refused; a member granted by a
+  granted host's name, in any case and on any port, or by any TCP port, never by another name,
+  by UDP alone or with no link; the composed bundle every byte of the image's, then the CA
+  between its markers; the variables naming the bundle, one already naming it kept, one naming
+  another file refused and never replaced; on Linux, the bundle found through an absolute
+  symlink in the image, never the host's, the image's file left as it was, and an image with
+  none refused. build.rs's CA-injection tests pass unchanged over the shared `find_bundle`.
+  `api_run`: the CA goes to the guest in PEM of 64-character lines, which rustls' own PEM
+  reader reads back to the DER, each host once. Each guard removed in turn fails its test:
+  any name granting a member, a member's own roots replaced, the bundle without the image's
+  roots, a second certificate taken, PEM lines of 65.
+- *Owed (ROOT).* A run with a credential grant on KVM, HVF and WHP: its granted member reads
+  the run's CA at the end of its `/etc/ssl/certs/ca-certificates.crt`, read-only, and the
+  three variables name it; an ungranted member of the same run reads its image's bundle,
+  unchanged, and none of the three. The cost of `NODE_EXTRA_CA_CERTS` naming a whole bundle to
+  Claude Code (its added roots read at start, and the request-body compression it turns off,
+  plan step 33's finding f70), measured against a run without the CA.
+
+**Owed (later slices of step 33, this plan's steps 2–10).** The injector that terminates TLS and fills
 HTTP/1.1 then HTTP/2 headers (steps 3, 7); the grants through the run host and the just-in-
 time fetch and release (step 4); kiln's broker over kiln-seams' `Secrets` with per-run
 leases, single-flight refresh and sign-in capture outside the VM (step 5); Hex wiring the
@@ -24869,6 +25248,20 @@ move it: Hex had no rate for a Shards image VM but stopping its process.
   the link closes.
 - *One ask.* The client's room and rate are one numbered ask (`session::Asked`), each held while
   it is awaited, and no longer.
+- *Its period* (2026-11-13, channel version 17, the Hex lead's ask for plan step 14).
+  `ImageGuest::rate_period()` is the period the run's VM's governor holds a rate over. Hex's
+  learner derives its window from it (Hex `learned-charge.md` C1) and copies no 100 ms of its
+  own.
+  - The run host tells it as the run starts, in `STARTED` (`Started::rate_period`,
+    nanoseconds after every field before, the control endpoint's (15) among them; none is
+    refused as no period). It reads it from its own build's hold
+    (`shards_vmm::vm::hold_period`), which the VM process it carries holds by (D36).
+  - It is no shards-api constant: a client of one version beside a host of another hears the
+    host's. So the period D191 derives once measured (D191's hold, "Its period") reaches an
+    orchestrator as it is, per run, with no client change. A period that came to move with
+    each rate would ride `RATED` as well.
+  - A request of version 16 (the GPUs a run names, D232, the version before) is refused by
+    its version, so no orchestrator waits on a period its host never tells.
 
 **Literals.** `MILLI_PER_CPU` (1000, `vm`): the unit, a CPU's time in thousandths, as
 Kubernetes counts CPU, no finer than `1m` ("Resource Management for Pods and Containers", CPU
@@ -24899,6 +25292,13 @@ ROOT's: `api_image.rs` `the_orchestrators_rate_holds_its_run_to_it` (a one-vCPU 
 spinning, held to a quarter CPU, runs its guest within a quarter of the time passing and a
 period's share; its vCPU's whole CPU holds nothing; none lifts it), `cargo test --profile
 test-release -p shards --test api_image the_orchestrators_rate_holds_its_run_to_it`.
+
+Its period (light, version 17): `image::wire`'s `a_runs_rate_period_reads_back_as_its_host_said_it`
+(a nanosecond to a u64's most, its eight bytes last; none and past a u64 refused), `STARTED`'s
+round trip and version 16 refused. Owed (ROOT): its two guard-removal mutants (a period of
+none read back, version 16 taken), and the real-VM test above, which now reads the run's
+period, checks it is its build's hold's, and holds the run to two periods past a quarter
+where it took 100 ms as known.
 
 **Owed.** The real-VM test on KVM, HVF and WHP (ROOT); the seven guard-removal mutants above,
 these light tests on Linux and Windows, and `scripts/lint` on the 7 targets (ROOT). Hex's
@@ -25083,6 +25483,298 @@ WHP; Hex's image_real with a box of no grants once Hex vendors this.
 
 **What would falsify it.** A member of such a run reaching anything past the microVM (then a
 network process told no policy is not at `DenyAll`), or one killed for its link.
+
+### D251. A lane to a socket of a run's own command: the agent-control endpoint's socket lane, carried over vsock by shards-init's relay (built: the endpoint, its controller, the VM process's leg and init's; the run host's endpoint is D252's; real-VM runs owed)
+
+**Why.** Hex's node runs under shards-init as the run's own command, its PID 1 kept (kiln plan
+01a1cd8e862e7169a074db3d5fa33f3d, step 39; Hex's `docs/design/node-under-shards-init.md` §5).
+Its host reaches the node through four AF_UNIX stream sockets its relay listens on in
+`/run/hex/channel`. The workload cannot reach vsock itself: the Docker default filter
+shards-init gives a run's command refuses `socket(AF_VSOCK)` (D238). D238 decided that a lane
+reaches its microVM over vsock and that shards-init's relay carries it on. This entry is that
+lane: OpenSSH's `direct-streamlocal@openssh.com` (PROTOCOL §2.4) in the endpoint's own terms.
+Hex's acceptance (its INTERFACE.md and red tests, step11-a-socket-lane) is held to here.
+
+**Decided.**
+- *Its grant (default deny).* The run names one directory of its own command's sockets
+  (`sockets=<dir>`, `shards_abi::run::socket`): absolute and plain, as a member's working
+  directory is. A lane names one file in it: nonempty, no `.`, `..`, `/` or NUL, within
+  `NAME_MAX`. A run that names none opens no lane, and only the run's own command's root is
+  reached, never a member's. Init reads the grant as the run starts and refuses it in a run
+  without a command of its own (`ATTEND`).
+- *The endpoint* (`shards_remote::control::unix`). The lane's first frame is `UnixConnect`
+  (tag 5): the run, its generation and the name. A name that is no file name is refused
+  `Protocol` before the endpoint's host is asked. An endpoint that admits no socket lane, or
+  another run, is refused `Scope`, and another generation `Stale`. A lane past the run's
+  admitted `lanes` is refused `Capacity` (a new `Reason`, 6), never queued; the lanes its
+  controller already reset are let go first. The endpoint hands its host the ask
+  (`unix::Connect`). The host answers with the connected socket (`Connected`, tag 40, then the
+  socket's bytes raw both ways) or with its connect's errno (`Unreached`, tag 41, then the
+  lane's end).
+- *Its bytes.* Each way holds at most the admitted `window` in flight: the endpoint reads no
+  more of the controller than the socket's writer has room for, and the socket's reader reads
+  no more than the controller has taken. A stalled reader holds up its own lane alone (RFC 9000
+  §2.2, §4.1). Each way's end is that way's half-close: a FIN, the socket's
+  `shutdown(SHUT_WR)`. An abort either way is the other's: RESET_STREAM or STOP_SENDING; the
+  socket ended with `shards_ipc::end`, as M236 asks of a Mac. A write that fails resets the
+  lane, never ending it in order. The socket's writer and reader run on threads of their own,
+  woken into the endpoint's driver as exec's host is; the endpoint's end ends every socket.
+- *The controller* (`control::drive`). `Subscriptions::sockets` and `Dialed::sockets`;
+  `Sockets::connect(name)` answers a `Socket` or a typed `Fault`, `Fault::Unreached(errno)`
+  among them. `Socket` is `Read` and `Write`, with `shutdown_write`, `abort` and `split` (a
+  reader and a writer for two threads). `Ok(0)` comes only at the socket's own FIN; a reset
+  reads as `ConnectionReset`, its `Fault` its source.
+- *Its scope.* An endpoint that serves its run's member streams knows its run and
+  generation, which an ask names. One that serves sockets alone knows only the keys its
+  connection pinned, and an ask there names the zero run and generation 0, as a controller of
+  sockets alone sends it.
+- *The VM process's leg.* Its owner asks with `LANE_OPEN` (shards_ipc 98: the lane's number
+  below 2^63, the name). The VM process asks its guest on the signal connection (run kind
+  `SOCKET`, 52: a fresh token, the lane's id and the name). The guest's connection to the exec
+  port, whose HELLO names that token, is the lane: it is matched in the exec port's registry as
+  an exec's is (`Target::Socket`), then the lane's status is read (an errno; 0 connected). On
+  Unix the connection is handed to the owner beside the answer, held until `LANE_HELD` (99)
+  says the owner has it (M24). On Windows, where a VM hands its owner no handle, it is relayed
+  onto the socket the owner's `LANE_HELD` gives, as `MANAGED_INPUT` is. What init refuses
+  before connecting anything comes back as `SOCKET_REFUSED` (53: id, errno), as `EXEC_FAILED`
+  does.
+- *shards-init's leg* (`crates/init/src/lanes.rs`). Each ask runs on a thread of its own, so a
+  connect waiting on a full backlog holds that lane alone. The thread resolves the path inside
+  the command's root (`/proc/PID/root` opened `O_PATH`, then openat2 `RESOLVE_IN_ROOT |
+  RESOLVE_NO_MAGICLINKS`, `crate::inroot`), so no link the command planted leads elsewhere. It
+  connects through the descriptor (`/proc/self/fd/N`), so the path is not resolved again and
+  `sun_path` bounds nothing. Then it dials the exec port, says its HELLO and status, and pumps
+  with relay.rs's pump, each way ended independently. Init's own refusals are errnos: EACCES
+  (no grant), EINVAL (no file name), ENAMETOOLONG (past `sun_path`, where nothing could be
+  bound), ESRCH (the command not running).
+- *The lanes of D254.* kiln's MCP lane (goal 58) reuses this relay in the other direction: a
+  listener init makes in the asking member's view, each accepted connection carried out the
+  same way, its number at or above 2^63 (`LANE_ACCEPTED`, 100, reserved).
+
+**Alternatives, and why not.**
+- *Host-initiated vsock* (`CONNECT <port>`, Firecracker's form, D238's wording): it needs a
+  host socket file per VM for the muxer to take clients on. Warm and orchestrated VMs have
+  none, and shards' interfaces are files the home holds (the filesystem rule). The guest's dial
+  to the exec port, token-gated, carries the same bytes through the same muxer, with the
+  registry, hand-off and Windows relay execs already use.
+- *An exec lane per connection* (D238's design (B)): a guest process for each of Hex's
+  connections, three per call in flight (Hex's §5).
+- *A published port into the workload*: the network path D238 declined for control.
+
+**Literals.** None chosen. `NAME_MAX` (255) and `PATH_MAX` (include/uapi/linux/limits.h);
+`sun_path`'s 108 bytes (unix(7)); TLS 1.3's largest handshake message, a uint24 and its
+four-byte head (RFC 8446 §4), with D180's datagrams and `tls::QUIET` (RFC 1122's R2) for a link
+of socket lanes alone, as the daemon's endpoints take them. The asks' bounds are the frame's
+own: its head, the run (32), the generation (8) and the name. Linux's errnos are
+asm-generic's, which every guest architecture shares. The window, the lanes and so every
+buffer are the caller's admission (R03).
+
+**Built and tested** (unit, focused).
+- shards-init on adacachy2 (Linux 7.3 x86_64, rustc 1.98.1): `lanes::tests`, 3 tests, among
+  them a root whose own path is past `sun_path`, a link out of the root, `..` past it, a file
+  that is no socket (ECONNREFUSED, af_unix.c `unix_find_bsd`), a socket nothing listens on, and
+  a root gone (ESRCH). Plus `run::` 17 and clippy for gnu and musl: clean.
+- adalundhe-macbook-pro (macOS arm64): shards-abi `run::socket` 5; shards-ipc's lib 57
+  (`every_message_kind_has_its_own_number` among them); the VM process's
+  `a_lane_is_the_connection_its_token_names_once_its_status_says_connected` and
+  `a_lanes_answer_says_its_status_by_its_number`, among workload and warm's 35; and
+  `daemon::managed` 37.
+- shards-remote `control::unix::tests`, Hex's six red tests: bytes exact both ways with each
+  half-close; ENOENT and ECONNREFUSED typed; bad names refused before the host is asked; a
+  reset each way; lanes past the admitted most refused `Capacity` until one ends; a stranger
+  `NotEnrolled`. Plus an endpoint of no socket lanes refusing one `Scope`, and the frames' own
+  tests.
+
+**Evidence owed** (ROOT, real VMs).
+- Hex's case (f), `nesting::a_nested_workloads_sockets_are_lanes_of_its_orchestrators_controller`
+  (with the run host's endpoint, D252), on HVF, KVM x86_64 and WHP.
+- The lane's throughput and round trip against D238's arm h numbers (control-end's harness).
+- Mutation of the grant's and the name's checks.
+
+**What would falsify it.**
+- A workload reaching a socket outside its root.
+- A lane's bytes reordered or lost.
+- A half-close turned into a full close.
+- A lane held past its window.
+
+### D252. An orchestrator's run binds its own agent-control endpoint, and shards-api carries Shards' controller (built; real-VM runs owed)
+
+**Why.** D238 built the endpoint for a daemon's run that asks for it (`shards.control=true`,
+`bind_agent`), but D231's run host (`shards api-run`) bound none. Hex's node runs on such a run
+(Hex's `node-under-shards-init.md` §5): its host reaches the node only through the run's
+endpoint, over the socket lane (D251). Hex vendors shards-api, and D238 has a controller's side
+be Shards' own code. Hex's acceptance (step11-b-run-host-endpoint) is held to here.
+
+**Decided.**
+- *The ask.* `ImageSpec::control: Option<ControlAsk>` holds the controller's key's SHA-256 (D180's
+  raw public key, RFC 7250), the one key the endpoint takes. It also holds an optional
+  `SocketGrant` (D251): the directory, the lanes and the window, the caller's numbers (R03).
+  shards-api refuses a grant whose directory is not absolute and plain, one of 0 lanes or 0
+  bytes, or one in a run without a command of its own, as a `Spec`, before a run host starts.
+  The run host refuses it again, and so does init. The image channel carries the ask in its
+  version 15 (`Request::control`), so a host of an earlier version refuses the run as it is
+  asked, and guesses no endpoint.
+- *The endpoint.* The run host binds it once its VM has started. The microVM's key is made
+  then and held by the endpoint alone: never in guest memory, never a template's (D238), and
+  two runs never share one. It binds on loopback, as step 5's endpoints do, and serves the
+  run's socket lanes. Each lane goes to its VM as `LANE_OPEN` and is answered in the run host's
+  follow of its link. The connection is taken (`LANE_HELD`) and handed to the endpoint
+  (`Reply::Connected`), or the guest's errno is (`Reply::Unreached`). The endpoint is revoked as
+  the run's asks end, and every lane with it. A lane its VM can no longer answer is refused
+  ESRCH, as its command is.
+- *What the orchestrator reads.* `ImageGuest::control()` gives a `ControlAt`: where the endpoint
+  is bound and the microVM key's SHA-256, which the controller pins. It is told in `Started`,
+  version 15. shards-api holds the run host to it: an endpoint told where none was asked, or
+  none where one was, breaks the channel's contract (`Host`).
+- *The controller in shards-api* (`shards_api::control`). It re-exports Shards' own:
+  `Controller`, `Dialed`, `Ended`, `Fault`, `Hangup`, `Link`, `Linked`, `Socket`,
+  `SocketAdmission`, `SocketReader`, `SocketWriter`, `Sockets`, `Subscriptions`, `Identity`,
+  `Fingerprint` and `Reason`. shards-api now depends on shards-remote.
+
+**Differences from Hex's interface, said.**
+- `Fault::Lost(Ended)` is the connection's end where Hex proposed `Fault::Ended`. A socket's reset
+  reads as `ConnectionReset`, with `Fault::Revoked` its source (Hex's `Fault::Reset`).
+- The suite and the end are read through `Dialed::link` (`Linked::wait`'s `Link`: each end's
+  `Negotiated`) and through a lane's `Fault::Lost`, where Hex proposed `Dialed::suite()` and
+  `ended()`.
+- Inside the microVM, the lane's connection is the guest's dial to the exec port, by the lane's
+  own token (D251), where Hex proposed a host-initiated `CONNECT 1031`.
+- An endpoint serving nothing is refused (`Capacity`), as shards-remote's endpoints are (D238), so
+  Hex's case (g) grants a socket directory. Binding an endpoint of the control lane alone is goal
+  58's to decide.
+- A revoked endpoint's connections close with code 0, which a controller reads as
+  `Transport(Peer)`: typed, never `Silent`. (g) asks never `Silent`, as (f) does.
+
+**Literals.** None new. The window and lanes are the caller's (R03). Loopback is where step 5's
+endpoints bind.
+
+**Built and tested** (unit, focused).
+- shards-api, `image::wire`: the control ask crosses the channel whole at version 15, absent
+  where not asked; `Started` tells where an endpoint is, IPv4 and IPv6, or none.
+- shards-api, `image::tests`: a grant outside its bounds is refused before a run host starts,
+  as Hex's red test asks; a grant within them is carried whole; a grant without a command is
+  refused.
+- shards (api_run): the run host holds the grant as shards-api does; its endpoint binds on
+  loopback under a key of its own per run.
+
+**Evidence owed** (ROOT, real VMs).
+- Hex's cases (f) `nesting::a_nested_workloads_sockets_are_lanes_of_its_orchestrators_controller`
+  and (g) `nesting::an_orchestrators_run_binds_its_own_agent_control_endpoint`, on HVF, KVM x86_64
+  and WHP.
+- The run host's resident and CPU cost with its endpoint, against the daemon's per run (R14).
+
+**What would falsify it.**
+- A run's key reached by another run's controller.
+- An endpoint outliving its run.
+- A grant shards-api takes and init refuses, or the other way round.
+
+### D254. kiln's MCP rides the agent-control link: a stdio bridge in the harness's member, one lane of the link per connection, no network grant (decided; its asks built at the endpoint and the controller; the member's listener and bridge, the run hosts' pairing, kiln's side and every real-VM run owed)
+
+**Why.** A harness kiln drives in a microVM calls kiln's MCP server (kiln serves `/api/mcp`
+in-process). ROOT's first call was plain HTTP from the microVM to the runner's loopback
+`/api/mcp` through a granted egress, as host-local as the request slots; the person did not
+take it, and ROOT decided (2026-11-13) that MCP rides the agent-control link (D238) as a lane of
+its own:
+- no network grant at all for MCP, so default deny (D59) holds for kiln too;
+- it works where the microVM runs on another machine than the kiln runner, over the link's
+  TLS 1.3 AES-256-GCM (D239), and on Windows;
+- one authenticated channel, the link the microVM's own key already pins, not a second one.
+
+**What a harness dials** (the evidence; R02). MCP's transports are two, and "Clients **SHOULD**
+support stdio whenever possible" (MCP specification 2025-06-18, Basic, Transports: stdio, the
+client launching the server as its subprocess and speaking newline-delimited JSON-RPC on its
+stdin and stdout; Streamable HTTP, one endpoint path). The Agent Client Protocol makes stdio
+the floor: "All Agents **MUST** support connecting to MCP servers via stdio", HTTP and SSE only
+where `agentCapabilities.mcpCapabilities.http` or `.sse` says so (agentclientprotocol.com,
+Session Setup). The ten harnesses kiln runs (kiln main `562268830`, from its step 18's agent):
+- Claude Code: `--mcp-config`, stdio servers (`type: "stdio"`, `command`, `args`, `env`) and
+  HTTP ones (`type: "http"`, `url`, `headers`) (code.claude.com/docs/en/mcp; kiln
+  `crates/kiln/src/reach/mcp.rs` `claude_config`);
+- Codex: `mcp_servers.<name>`, stdio as `command`/`args`/`env`, Streamable HTTP as `url` and
+  `bearer_token_env_var`, no token inline (codex-rs `config/src/mcp_types.rs`; kiln
+  `codex_config`);
+- the ACP agents, Gemini CLI, opencode, Goose, Amp (amp-acp), Cursor and Devin: `mcpServers` in
+  `session/new`, stdio always, HTTP where the agent says so, Cursor alone among them in kiln's
+  fixtures (kiln `harness/acp.rs`, `acp_config`);
+- Antigravity (agy 1.5.7): servers only from its own `~/.gemini/config/mcp_config.json`, a
+  stdio server starting as agy starts (kiln `docs/research/s35-every-harness/agy-mcp/`, main
+  `4622aa502`);
+- Pi: no MCP server at all.
+
+Every one that takes MCP takes a stdio server; only some take HTTP. So the microVM offers the
+one form all nine take, and no other.
+
+**Decided.**
+1. *In the member: a bridge, a socket, and nothing on the network.* A member whose run asks for
+   it gets a stdio bridge at `/run/shards/mcp` (shards-init's own binary, read-only in the
+   member's view, a bridge by its name, so no other guest binary) and a socket at
+   `/run/shards/mcp.sock` beside it (as `/run/shards/notify`, D234), seen by that member's
+   processes alone. A harness's MCP config names the bridge as a stdio server's command; the
+   bridge copies its stdin to the socket and the socket to its stdout, each direction ending as
+   its source ends. Init binds the socket from the member's setup entry (`mcp=TOKEN`, the
+   run-wide token as `engine=` carries it, D181) and carries each connection made to it to the
+   host by its relay (D251's mechanism, the listen direction beside its connect one), a
+   preamble naming the member; the VM process hands each to its run host unprompted
+   (`LANE_ACCEPTED`). Nothing of it is an address: the member's network grants and its
+   default deny are untouched.
+2. *On the link: one lane per connection, an exec's in all but its start.* The controller asks
+   with a lane whose first frame is `Mcp`, the run, its generation and the member, as an exec's
+   ask names them. The endpoint numbers it and hands its host the ask with two streams, step
+   5's, under a run of its own (as an exec's are, `exec_run`): the harness's bytes as an output,
+   the controller's as an input. The host pairs the ask with the member's next connection and
+   says it started; the lane tells its end once the harness's side has ended and every byte of
+   it is taken. A member with no listener refuses it, typed (`Unstarted::Refused`). Its
+   admissions, windows, told frames and charge to the run's budget are an exec's (D238), so no
+   value is new here.
+3. *At the controller:* `Execs::mcp(member)` waits for the member's next connection and gives
+   its two streams' handles; kiln serves MCP over them in its own process, the session the one
+   it drives in that member, which the lane names: no token in the microVM.
+4. *Asked for, never implied.* A run gets a member's listener only where it asks: the daemon's
+   runs by an annotation, an orchestrator's by its member spec (D252's endpoint). A run that
+   asks for none has no socket and no bridge, and its controller's `Mcp` asks are refused.
+
+**Rejected.**
+- *HTTP to the runner's loopback through a granted egress* (ROOT's first call): a network grant
+  for every harness, one machine only, and on Windows a host address the guest must reach.
+- *A Streamable HTTP listener in the member*: only Claude Code, Codex and the ACP agents that
+  say so take it; a TCP port in the member's network namespace, with the specification's own
+  obligations ("Servers **MUST** validate the `Origin` header … to prevent DNS rebinding
+  attacks").
+- *A second TLS channel from the microVM to kiln*: a second authenticated channel, and a
+  credential or a key of kiln's inside the microVM (D242: none).
+
+**Literals.**
+
+| Literal | Source |
+|---|---|
+| Frame tag `Mcp` 7 | this protocol's own, after `Control` 6 (D238); 5 is D251's socket lane's |
+| An `Mcp` ask's payload, 44 bytes | an exec ask's scope: the run (32), its generation (8), the member (4) |
+| `/run/shards/mcp`, `/run/shards/mcp.sock` | shards' own guest paths, beside D234's `/run/shards/notify` |
+| `mcp=TOKEN` | the run-wide token, as `engine=` carries it (D181) |
+
+**Built** (step 11). The endpoint's `Mcp` asks, on the exec lanes' machinery (`exec::Kind::Mcp`:
+one stream each way, no stderr, any steering let go by its host), and the controller's
+`Execs::mcp`, which gives `McpConnection { from, to, end }`. The daemon's host refuses each
+(`Unstarted::Refused`) until its runs can ask for a bridge. An ask the endpoint's first read
+took whole was never read on: an MCP ask, 49 bytes, is shorter than a lane's first read
+(`LANE_MOST`, 58), and its lane waited for a read of no room, which is blocked
+(`Io::read_within`), so the controller's first MCP ask hung (seen on adas-mac-studio-3: the
+test binary waiting 13 minutes at 0.45 s of CPU); such an ask is now decoded as it comes.
+Tested: `control::exec::tests` (both kinds' asks read back; an MCP ask carrying more than its
+scope refused), `control::tests::lanes` (an MCP connection through a stand-in host, the
+controller's bytes and the harness's exact, its end told, a member with no bridge refused,
+typed), `daemon::managed::tests` (the daemon's host refusing an MCP ask before its VM process
+hears of it).
+
+**Owed.** The listener, the bridge and `LANE_ACCEPTED` (D251's agent); the daemon's and the orchestrator's
+hosts pairing each connection with its ask; kiln's harness configs naming the bridge and its
+in-process server over the two streams (kiln's step 18); every real-VM run, ROOT's: each
+harness that takes MCP calling kiln's server through the bridge, on KVM, HVF and WHP, with the
+microVM and the kiln runner on one machine and on two.
+
+**What would falsify it.** A harness that takes MCP and no stdio server; a byte of an MCP
+connection reaching the microVM's network; a member's connection told to the controller as
+another member's.
 
 ## 4. Start path (≤ 5 ms budget)
 

@@ -19,9 +19,11 @@ use crate::devices::virtio::gpu;
 #[cfg(hv)]
 use crate::devices::virtio::{head, mem, pmem, vsock};
 
-/// The managed caller's private writer, borrowed only while its renderer is made.
+/// The managed caller's private writer, borrowed only while its renderer is made, and given
+/// what its selection came to: the renderer's receipt, or the refusal it typed (D232).
 /// It introduces no owner, thread, saved report or guest-visible descriptor.
-pub type GpuReportTo<'a> = dyn FnMut(shards_abi::gpu::GpuProbe) -> Result<(), String> + 'a;
+pub type GpuReportTo<'a> =
+    dyn FnMut(Result<shards_abi::gpu::GpuProbe, shards_abi::gpu::GpuRefusal>) -> Result<(), String> + 'a;
 
 /// A machine's GPU as it is assembled (D144, D232): the window its guest saw (0 for a new
 /// machine, as long as its renderer says), and the writer its selection's report goes to as the
@@ -80,6 +82,23 @@ impl std::error::Error for StartError {
 impl From<String> for StartError {
     fn from(message: String) -> Self {
         Self::Legacy(message)
+    }
+}
+
+impl From<&str> for StartError {
+    fn from(message: &str) -> Self {
+        Self::Legacy(message.into())
+    }
+}
+
+impl StartError {
+    /// The refusal of its GPU selection, where it is one: what the VM process tells its
+    /// client typed (D232), a managed boot's report or a probe's answer.
+    pub fn gpu_refusal(&self) -> Option<shards_abi::gpu::GpuRefusal> {
+        match self {
+            Self::GpuProbe(shards_abi::gpu::GpuProbeError::Refused(refusal)) => Some(*refusal),
+            _ => None,
+        }
     }
 }
 
@@ -183,6 +202,18 @@ pub use guest_time::{GuestTimes, VcpuTime};
 /// CPU resource units), and as Hex charges and caps a microVM (`hex_api::MIN_CPU_MILLI`). A
 /// unit, not a tuning: a daemon's whole CPUs are this many of it (D191, D247).
 pub const MILLI_PER_CPU: u64 = 1000;
+/// The period a machine's hold holds its vCPUs to their rate over (D191, D247): CFS
+/// bandwidth control's default, `cpu.max`'s 100000 µs (kernel/sched/sched.h l. 445-447,
+/// `default_bw_period_us`, Linux 1590cf03), which Docker's `--cpus` is a quota of. Its
+/// derivation from what the governor resolves is decided, waiting on a measurement (D191).
+const HOLD_PERIOD: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// The period this build's hold holds a machine's vCPUs to their rate over: what a run's
+/// host tells its orchestrator (D247), which derives its own window from it rather than
+/// copying a number.
+pub fn hold_period() -> std::time::Duration {
+    HOLD_PERIOD
+}
 #[cfg(any(hv, test))]
 mod hold;
 pub mod live;
@@ -970,14 +1001,15 @@ type Devices = (
     Vec<crate::devices::virtio::block::DiskSize>,
 );
 
-/// Query the carried GPU process's actual selection path without booting a VM.
+/// Query the carried GPU process's actual selection path without booting a VM: its
+/// receipt, or the refusal of the selection it typed ([`StartError::gpu_refusal`]).
 #[cfg(feature = "gpu")]
-pub fn probe_gpu(selected: &[gpu_selection::PhysicalGpu]) -> Result<shards_abi::gpu::GpuProbe, String> {
+pub fn probe_gpu(selected: &[gpu_selection::PhysicalGpu]) -> Result<shards_abi::gpu::GpuProbe, StartError> {
     gpu::virgl::Venus::probe_gpu(selected)
 }
 
 #[cfg(not(feature = "gpu"))]
-pub fn probe_gpu(_selected: &[gpu_selection::PhysicalGpu]) -> Result<shards_abi::gpu::GpuProbe, String> {
+pub fn probe_gpu(_selected: &[gpu_selection::PhysicalGpu]) -> Result<shards_abi::gpu::GpuProbe, StartError> {
     Err("GPU probing requires the carried GPU renderer process".into())
 }
 
@@ -989,12 +1021,32 @@ fn gpu_renderer(
     selected: &[gpu_selection::PhysicalGpu],
     report: Option<&mut GpuReportTo<'_>>,
 ) -> Result<(Box<dyn gpu::Renderer>, u64), String> {
-    let mut venus = gpu::virgl::Venus::new_selected(selected)?;
-    if let Some(report) = report {
-        report(venus.selection_report(selected).map_err(|why| why.to_string())?)?;
-    }
+    let venus = match report {
+        None => gpu::virgl::Venus::new_selected(selected).map_err(|why| why.to_string())?,
+        Some(report) => reported_renderer(selected, report)?,
+    };
     let len = venus.host_visible();
     Ok((Box::new(venus), len))
+}
+
+/// A managed boot's renderer (D232): `report` given its selection's receipt, or the refusal
+/// its renderer typed, before the boot fails of it.
+#[cfg(all(hv, feature = "gpu"))]
+fn reported_renderer(
+    selected: &[gpu_selection::PhysicalGpu],
+    report: &mut GpuReportTo<'_>,
+) -> Result<gpu::virgl::Venus, String> {
+    let made = gpu::virgl::Venus::new_selected(selected)
+        .and_then(|mut venus| Ok((venus.selection_report(selected)?, venus)));
+    match made {
+        Ok((probe, venus)) => report(Ok(probe)).map(|()| venus),
+        Err(why) => {
+            if let Some(refusal) = why.gpu_refusal() {
+                report(Err(refusal)).map_err(|written| format!("{why}; its report: {written}"))?;
+            }
+            Err(why.to_string())
+        }
+    }
 }
 
 #[cfg(all(hv, not(feature = "gpu")))]

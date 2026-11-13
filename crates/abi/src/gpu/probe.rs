@@ -1,6 +1,6 @@
 //! Bounded receipt from the carried GPU process after its exact context filter ACK.
 
-use super::{MAX_PHYSICAL_GPUS, PhysicalGpu, PhysicalGpuError, check_selection};
+use super::{JoinError, MAX_PHYSICAL_GPUS, PhysicalGpu, PhysicalGpuError, check_selection};
 use alloc::{string::String, vec::Vec};
 use core::fmt::{self, Write};
 
@@ -35,6 +35,14 @@ const fn decimal_digits(mut n: u128) -> usize {
 /// Vulkan's VK_MAX_PHYSICAL_DEVICE_NAME_SIZE includes the UTF-8 string's NUL.
 pub const GPU_NAME_BYTES: usize = 256;
 
+/// A name a Vulkan driver wrote into one of its structures' fixed `char` arrays (a device's
+/// `deviceName`, an extension's `extensionName`): its bytes before the array's first NUL,
+/// taken within the array; none where the array holds no NUL, past which C's string
+/// functions read (resources/gpu/native-identity.c checks each with `memchr` first).
+pub fn fixed_name(array: &[u8]) -> Option<&core::ffi::CStr> {
+    core::ffi::CStr::from_bytes_until_nul(array).ok()
+}
+
 /// The renderer driver's reported name, never a selector or a catalog/model guess.
 /// Fixed storage keeps ownership transfer fallible only where text is requested.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,23 +64,17 @@ impl GpuName {
     }
 
     pub fn from_buffer(bytes: &[u8; GPU_NAME_BYTES]) -> Result<Self, GpuProbeError> {
-        let end = bytes
-            .iter()
-            .position(|byte| *byte == 0)
-            .ok_or(GpuProbeError::Properties)?;
-        Self::new(
-            core::str::from_utf8(bytes.get(..end).ok_or(GpuProbeError::Properties)?)
-                .map_err(|_| GpuProbeError::Properties)?,
-        )
+        Self::new(Self::text(bytes)?)
     }
 
     pub fn as_str(&self) -> Result<&str, GpuProbeError> {
-        let end = self
-            .bytes
-            .iter()
-            .position(|byte| *byte == 0)
-            .ok_or(GpuProbeError::Properties)?;
-        core::str::from_utf8(self.bytes.get(..end).ok_or(GpuProbeError::Properties)?)
+        Self::text(&self.bytes)
+    }
+
+    fn text(bytes: &[u8; GPU_NAME_BYTES]) -> Result<&str, GpuProbeError> {
+        fixed_name(bytes)
+            .ok_or(GpuProbeError::Properties)?
+            .to_str()
             .map_err(|_| GpuProbeError::Properties)
     }
 
@@ -121,7 +123,147 @@ pub enum GpuProbeError {
     Properties,
     Scope,
     ReportTaken,
+    /// The VM process refused its selection, as it said in place of a receipt: certain,
+    /// where a receipt its client could not read leaves its selection unknown.
+    Refused(GpuRefusal),
+    /// The VM process's report writer closed with nothing written: it ended before its
+    /// renderer said anything of its selection (its own end says why).
+    Unreported,
 }
+
+/// Why a VM process's renderer serves none of its selection (D232), which it says in place of
+/// a receipt: as a probe's answer, or as a managed boot's report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GpuRefusal {
+    /// The selection's identities, joined to the host's live Vulkan devices.
+    Join(JoinError),
+    /// The selected GPUs have no memory the host can map, which Venus needs.
+    NoHostMemory,
+    /// The renderer refused the selection's exact filter, with the renderer's code.
+    Acknowledgment(u32),
+}
+
+/// A refusal's record: this line, then its reason's.
+const REFUSAL_HEADER: &str = "shards-gpu-refusal 1";
+
+impl GpuRefusal {
+    /// Its record, which a probe prints in place of its receipt, no longer than the receipt of
+    /// the fewest GPUs a selection names.
+    pub fn encode(&self) -> Result<String, GpuProbeError> {
+        rendered(probe_bytes(1)?, |out| self.render(out))
+    }
+
+    fn render(&self, out: &mut dyn Write) -> fmt::Result {
+        writeln!(out, "{REFUSAL_HEADER}")?;
+        match self {
+            Self::Join(join) => {
+                write!(out, "join {}", join_token(*join))?;
+                if let JoinError::Selection(why) = join {
+                    write!(out, " {}", selection_token(*why))?;
+                }
+            }
+            Self::NoHostMemory => out.write_str("no-host-memory")?,
+            Self::Acknowledgment(code) => write!(out, "acknowledgment {code}")?,
+        }
+        out.write_char('\n')
+    }
+
+    /// The refusal a record's lines after its header say: one reason, and nothing after it.
+    fn parse<'a>(mut lines: impl Iterator<Item = &'a str>) -> Result<Self, GpuProbeError> {
+        let reason = lines.next().ok_or(GpuProbeError::Syntax)?;
+        if lines.next().is_some() {
+            return Err(GpuProbeError::Syntax);
+        }
+        if reason == "no-host-memory" {
+            return Ok(Self::NoHostMemory);
+        }
+        if let Some(code) = reason.strip_prefix("acknowledgment ") {
+            return Ok(Self::Acknowledgment(canonical_u32(code)?));
+        }
+        let join = reason.strip_prefix("join ").ok_or(GpuProbeError::Syntax)?;
+        Ok(Self::Join(match join.split_once(' ') {
+            Some(("selection", why)) => JoinError::Selection(selection_from(why)?),
+            Some(_) => return Err(GpuProbeError::Syntax),
+            None => join_from(join)?,
+        }))
+    }
+}
+
+fn join_token(join: JoinError) -> &'static str {
+    match join {
+        JoinError::Selection(_) => "selection",
+        JoinError::Count => "count",
+        JoinError::Allocation => "allocation",
+        JoinError::Missing => "missing",
+        JoinError::Ambiguous => "ambiguous",
+        JoinError::Aliased => "aliased",
+        JoinError::InvalidUuid => "invalid-uuid",
+        JoinError::InvalidNative => "invalid-native",
+        JoinError::Memory => "memory",
+    }
+}
+
+/// A join's reason by its token; `selection`, whose reason follows it, is none alone.
+fn join_from(token: &str) -> Result<JoinError, GpuProbeError> {
+    Ok(match token {
+        "count" => JoinError::Count,
+        "allocation" => JoinError::Allocation,
+        "missing" => JoinError::Missing,
+        "ambiguous" => JoinError::Ambiguous,
+        "aliased" => JoinError::Aliased,
+        "invalid-uuid" => JoinError::InvalidUuid,
+        "invalid-native" => JoinError::InvalidNative,
+        "memory" => JoinError::Memory,
+        _ => return Err(GpuProbeError::Syntax),
+    })
+}
+
+fn selection_token(why: PhysicalGpuError) -> &'static str {
+    match why {
+        PhysicalGpuError::Syntax => "syntax",
+        PhysicalGpuError::PciAddress => "pci-address",
+        PhysicalGpuError::MetalRegistry => "metal-registry",
+        PhysicalGpuError::Count => "count",
+        PhysicalGpuError::Duplicate => "duplicate",
+        PhysicalGpuError::Allocation => "allocation",
+    }
+}
+
+fn selection_from(token: &str) -> Result<PhysicalGpuError, GpuProbeError> {
+    Ok(match token {
+        "syntax" => PhysicalGpuError::Syntax,
+        "pci-address" => PhysicalGpuError::PciAddress,
+        "metal-registry" => PhysicalGpuError::MetalRegistry,
+        "count" => PhysicalGpuError::Count,
+        "duplicate" => PhysicalGpuError::Duplicate,
+        "allocation" => PhysicalGpuError::Allocation,
+        _ => return Err(GpuProbeError::Syntax),
+    })
+}
+
+/// A `u32` as a record writes it: decimal digits alone, no leading zero but zero's own.
+fn canonical_u32(text: &str) -> Result<u32, GpuProbeError> {
+    let digits = !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit());
+    if !digits || (text.len() > 1 && text.starts_with('0')) {
+        return Err(GpuProbeError::Syntax);
+    }
+    text.parse().map_err(|_| GpuProbeError::Syntax)
+}
+
+impl fmt::Display for GpuRefusal {
+    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Join(why) => why.fmt(out),
+            Self::NoHostMemory => {
+                out.write_str("the selected GPU has no memory the host can map, which Venus needs")
+            }
+            Self::Acknowledgment(code) => {
+                write!(out, "the renderer refused the exact GPU filter ACK ({code})")
+            }
+        }
+    }
+}
+impl core::error::Error for GpuRefusal {}
 
 /// The envelope for a VMM-private pipe report, bound to the native scope prepared
 /// before effects. The consumer must also verify the private native writer; this
@@ -142,6 +284,41 @@ pub fn report_bytes(count: usize) -> Result<usize, GpuProbeError> {
         .ok_or(GpuProbeError::Count)
 }
 
+/// The text `render` writes, measured first, no more than `bound` bytes, so that its storage
+/// is reserved once, fallibly, for exactly that.
+fn rendered(bound: usize, render: impl Fn(&mut dyn Write) -> fmt::Result) -> Result<String, GpuProbeError> {
+    struct Count {
+        bytes: usize,
+        bound: usize,
+    }
+    impl Write for Count {
+        fn write_str(&mut self, text: &str) -> fmt::Result {
+            self.bytes = self
+                .bytes
+                .checked_add(text.len())
+                .filter(|bytes| *bytes <= self.bound)
+                .ok_or(fmt::Error)?;
+            Ok(())
+        }
+    }
+    let mut count = Count { bytes: 0, bound };
+    render(&mut count).map_err(|_| GpuProbeError::Count)?;
+    let mut text = String::new();
+    text.try_reserve_exact(count.bytes)
+        .map_err(|_| GpuProbeError::Allocation)?;
+    render(&mut text).map_err(|_| GpuProbeError::Count)?;
+    Ok(text)
+}
+
+/// A report's first line: the envelope, bound to its launch's scope.
+fn render_scope(scope: [u8; 16], out: &mut dyn Write) -> fmt::Result {
+    out.write_str(REPORT_PREFIX)?;
+    for byte in scope {
+        write!(out, "{byte:02x}")?;
+    }
+    out.write_char('\n')
+}
+
 impl GpuReport {
     pub fn check(&self, scope: [u8; 16], selected: &[PhysicalGpu]) -> Result<(), GpuProbeError> {
         if scope == [0; 16] || self.scope != scope {
@@ -150,44 +327,35 @@ impl GpuReport {
         self.probe.check(selected)
     }
 
-    fn render(&self, out: &mut impl Write) -> fmt::Result {
-        out.write_str(REPORT_PREFIX)?;
-        for byte in self.scope {
-            write!(out, "{byte:02x}")?;
-        }
-        out.write_char('\n')?;
-        self.probe.render(out)
-    }
-
     pub fn encode(&self) -> Result<String, GpuProbeError> {
         self.check(self.scope, &self.probe.selectors()?)?;
-        struct Count {
-            bytes: usize,
-            bound: usize,
-        }
-        impl Write for Count {
-            fn write_str(&mut self, text: &str) -> fmt::Result {
-                self.bytes = self
-                    .bytes
-                    .checked_add(text.len())
-                    .filter(|bytes| *bytes <= self.bound)
-                    .ok_or(fmt::Error)?;
-                Ok(())
-            }
-        }
-        let mut count = Count {
-            bytes: 0,
-            bound: report_bytes(self.probe.devices.len())?,
-        };
-        self.render(&mut count).map_err(|_| GpuProbeError::Count)?;
-        let mut text = String::new();
-        text.try_reserve_exact(count.bytes)
-            .map_err(|_| GpuProbeError::Allocation)?;
-        self.render(&mut text).map_err(|_| GpuProbeError::Count)?;
-        Ok(text)
+        rendered(report_bytes(self.probe.devices.len())?, |out| {
+            render_scope(self.scope, out)?;
+            self.probe.render(out)
+        })
     }
 
+    /// A refusal's frame (D232), scoped as a receipt's is: what a VM process writes to its
+    /// client's private pipe in place of its receipt where its renderer serves none of its
+    /// selection, no longer than the report of the fewest GPUs a selection names.
+    pub fn refusal(scope: [u8; 16], refusal: GpuRefusal) -> Result<String, GpuProbeError> {
+        if scope == [0; 16] {
+            return Err(GpuProbeError::Scope);
+        }
+        rendered(report_bytes(1)?, |out| {
+            render_scope(scope, out)?;
+            refusal.render(out)
+        })
+    }
+
+    /// The report a VM process wrote, its scope `scope`'s and its GPUs those `selected`
+    /// names; or, where it wrote its refusal instead, that refusal
+    /// ([`GpuProbeError::Refused`]); or where its writer closed with nothing written,
+    /// [`GpuProbeError::Unreported`].
     pub fn parse(text: &str, scope: [u8; 16], selected: &[PhysicalGpu]) -> Result<Self, GpuProbeError> {
+        if text.is_empty() {
+            return Err(GpuProbeError::Unreported);
+        }
         if text.len() > report_bytes(selected.len())? {
             return Err(GpuProbeError::Count);
         }
@@ -322,7 +490,7 @@ impl GpuProbe {
         })
     }
 
-    fn render(&self, out: &mut impl Write) -> fmt::Result {
+    fn render(&self, out: &mut dyn Write) -> fmt::Result {
         writeln!(out, "{HEADER}")?;
         writeln!(out, "host-visible {}", self.host_visible_bytes)?;
         writeln!(out, "devices {}", self.devices.len())?;
@@ -366,32 +534,11 @@ impl GpuProbe {
 
     pub fn encode(&self) -> Result<String, GpuProbeError> {
         self.selectors()?;
-        struct Count {
-            bytes: usize,
-            bound: usize,
-        }
-        impl Write for Count {
-            fn write_str(&mut self, text: &str) -> fmt::Result {
-                self.bytes = self
-                    .bytes
-                    .checked_add(text.len())
-                    .filter(|n| *n <= self.bound)
-                    .ok_or(fmt::Error)?;
-                Ok(())
-            }
-        }
-        let mut count = Count {
-            bytes: 0,
-            bound: probe_bytes(self.devices.len())?,
-        };
-        self.render(&mut count).map_err(|_| GpuProbeError::Count)?;
-        let mut text = String::new();
-        text.try_reserve_exact(count.bytes)
-            .map_err(|_| GpuProbeError::Allocation)?;
-        self.render(&mut text).map_err(|_| GpuProbeError::Count)?;
-        Ok(text)
+        rendered(probe_bytes(self.devices.len())?, |out| self.render(out))
     }
 
+    /// The receipt a probe printed; or, where it printed its refusal instead, that refusal
+    /// ([`GpuProbeError::Refused`]).
     pub fn parse(text: &str) -> Result<Self, GpuProbeError> {
         Self::parse_count(text, None)
     }
@@ -404,6 +551,9 @@ impl GpuProbe {
         let facts = match lines.next() {
             Some(HEADER) => true,
             Some(IDENTITY_HEADER) => false,
+            Some(REFUSAL_HEADER) => {
+                return Err(GpuRefusal::parse(lines).map_or_else(|why| why, GpuProbeError::Refused));
+            }
             _ => return Err(GpuProbeError::Syntax),
         };
         fn field<'a>(line: Option<&'a str>, prefix: &str) -> Result<&'a str, GpuProbeError> {
@@ -503,6 +653,8 @@ impl fmt::Display for GpuProbeError {
             Self::Properties => out.write_str("renderer GPU properties are malformed or unavailable"),
             Self::Scope => out.write_str("VMM GPU report differs from its prepared native scope"),
             Self::ReportTaken => out.write_str("VMM GPU report has already been transferred"),
+            Self::Refused(why) => why.fmt(out),
+            Self::Unreported => out.write_str("VMM GPU report writer closed with no report written"),
         }
     }
 }
@@ -694,6 +846,141 @@ mod tests {
             let text = probe.encode().unwrap();
             let narrower = MAX_PHYSICAL_GPUS.to_string().len() - count.to_string().len();
             assert_eq!(text.len() + narrower, probe_bytes(usize::from(count)).unwrap());
+        }
+    }
+
+    /// D202, D232: a driver's name is taken within its fixed array, as native-identity.c's
+    /// `memchr` takes one before comparing it: up to its first NUL, the array's last byte
+    /// included, and none where its driver left it unterminated, never the bytes past it.
+    #[test]
+    fn a_name_is_taken_within_its_fixed_array() {
+        let wanted = b"VK_EXT_external_memory_host";
+        let mut array = [0u8; GPU_NAME_BYTES];
+        array[..wanted.len()].copy_from_slice(wanted);
+        assert_eq!(
+            fixed_name(&array).map(core::ffi::CStr::to_bytes),
+            Some(&wanted[..])
+        );
+        let mut full = [b'x'; GPU_NAME_BYTES];
+        full[GPU_NAME_BYTES - 1] = 0;
+        assert_eq!(
+            fixed_name(&full).map(|name| name.to_bytes().len()),
+            Some(GPU_NAME_BYTES - 1)
+        );
+        // Unterminated, a NUL right past it in the same memory, where a read past it ends.
+        let mut memory = [0u8; 2 * GPU_NAME_BYTES];
+        memory[..GPU_NAME_BYTES].fill(b'x');
+        assert_eq!(fixed_name(&memory[..GPU_NAME_BYTES]), None);
+    }
+
+    /// Every refusal a record says: each join reason, each selection reason among them.
+    fn refusals() -> Vec<GpuRefusal> {
+        let mut all = vec![
+            GpuRefusal::NoHostMemory,
+            GpuRefusal::Acknowledgment(0),
+            GpuRefusal::Acknowledgment(u32::MAX),
+        ];
+        all.extend(
+            [
+                JoinError::Count,
+                JoinError::Allocation,
+                JoinError::Missing,
+                JoinError::Ambiguous,
+                JoinError::Aliased,
+                JoinError::InvalidUuid,
+                JoinError::InvalidNative,
+                JoinError::Memory,
+            ]
+            .map(GpuRefusal::Join),
+        );
+        all.extend(
+            [
+                PhysicalGpuError::Syntax,
+                PhysicalGpuError::PciAddress,
+                PhysicalGpuError::MetalRegistry,
+                PhysicalGpuError::Count,
+                PhysicalGpuError::Duplicate,
+                PhysicalGpuError::Allocation,
+            ]
+            .map(|why| GpuRefusal::Join(JoinError::Selection(why))),
+        );
+        all
+    }
+
+    /// D232: a VM process's refusal reaches its client as itself, as a probe's record or a
+    /// report's frame, each reason its own, and a report's scope binds it as it binds a
+    /// receipt; a report whose writer closed unwritten is no report, not a malformed one.
+    #[test]
+    fn a_refusal_reaches_its_client_typed() {
+        assert_eq!(
+            GpuRefusal::Join(JoinError::Missing).encode().unwrap(),
+            "shards-gpu-refusal 1\njoin missing\n"
+        );
+        let selected = [PhysicalGpu::MetalRegistry(7)];
+        for refusal in refusals() {
+            let record = refusal.encode().unwrap();
+            assert_eq!(GpuProbe::parse(&record), Err(GpuProbeError::Refused(refusal)));
+            let frame = GpuReport::refusal([3; 16], refusal).unwrap();
+            assert_eq!(frame, format!("shards-vmm-gpu 1 {}\n{record}", "03".repeat(16)));
+            assert!(frame.len() <= report_bytes(1).unwrap());
+            assert_eq!(
+                GpuReport::parse(&frame, [3; 16], &selected),
+                Err(GpuProbeError::Refused(refusal))
+            );
+            assert_eq!(
+                GpuReport::parse(&frame, [4; 16], &selected),
+                Err(GpuProbeError::Scope)
+            );
+        }
+        assert_eq!(
+            GpuReport::refusal([0; 16], GpuRefusal::NoHostMemory),
+            Err(GpuProbeError::Scope)
+        );
+        assert_eq!(
+            GpuReport::parse("", [3; 16], &selected),
+            Err(GpuProbeError::Unreported)
+        );
+    }
+
+    /// D232: a refusal torn, appended to or worded otherwise than its record is no refusal:
+    /// malformed, as a receipt so changed is.
+    #[test]
+    fn a_torn_or_hostile_refusal_is_malformed() {
+        let record = GpuRefusal::Join(JoinError::Selection(PhysicalGpuError::Duplicate))
+            .encode()
+            .unwrap();
+        for end in 0..record.len() {
+            assert_eq!(
+                GpuProbe::parse(record.get(..end).unwrap()),
+                Err(GpuProbeError::Syntax),
+                "{end}"
+            );
+        }
+        for reason in [
+            "join",
+            "join selection",
+            "join missing extra",
+            "join  missing",
+            "join selection unknown",
+            "join selection count extra",
+            "Join missing",
+            "unknown",
+            "no-host-memory ",
+            "acknowledgment",
+            "acknowledgment 007",
+            "acknowledgment +7",
+            "acknowledgment -1",
+            "acknowledgment 4294967296",
+        ] {
+            let text = format!("shards-gpu-refusal 1\n{reason}\n");
+            assert_eq!(GpuProbe::parse(&text), Err(GpuProbeError::Syntax), "{reason}");
+        }
+        for text in [
+            format!("{record}{record}"),
+            format!("{record}\n"),
+            record.replace("refusal 1", "refusal 2"),
+        ] {
+            assert_eq!(GpuProbe::parse(&text), Err(GpuProbeError::Syntax), "{text:?}");
         }
     }
 
