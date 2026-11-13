@@ -18632,8 +18632,15 @@ notify_socket.go `run`, signals.go `forward`): `run --detach` until the box says
 grant's readiness socket is the command's to answer for, as systemd's is a service's, and a
 nested runtime keeps it from the children that do not answer for it (sd_notify(3),
 `unset_environment`): the test's runtime now runs runc without it (testguest nesting.rs
-`runc`), and gives each runc a bound past which SIGQUIT has Go write where its goroutines
-wait (e613ff4d7). Hex's node, as a granted command, meets the same rule.
+`runc`), and gives each runc a bound past which the runtime says where runc waits, as the
+kernel shows it (each of its threads' wait channel and system call, each descriptor it holds,
+a socket by its name: its notify socket, where it waits for a `READY=1`), then kills it.
+SIGQUIT, its first ask (e613ff4d7), asked nothing: runc takes every signal it can catch for
+its own before it starts its box (signals.go `signal.Notify(s)`, from utils_linux.go
+`runner.run`), and relays them to the box once it runs, so the runtime waited on runc past
+the host test's bound (HVF at fafe35efc). With both, nesting.rs passed whole on KVM x86_64
+(ROOT, adacachy2, e72239dd3) and on HVF (ROOT, macOS 26 arm64, 2b89e8504): 11 of 11, one
+ignored. Hex's node, as a granted command, meets the same rule.
 
 **Evidence owed** (ROOT):
 - the real-VM E2E (`crates/shards/tests/nesting.rs`, plan step 5): its green at 231bbdf6d
@@ -24946,7 +24953,7 @@ memory its guest holds before its guest drops its page cache (D188's measure, PM
 image run); an orchestrator that needs D188's pressure give-back through its run host to keep
 its runs within its budget.
 
-### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; the injector, the broker and the real-VM runs owed)
+### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; the injector and the real-VM runs owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 33: every kiln harness runs in a
 Shards microVM, and a harness needs its model-provider credential without the credential
@@ -25239,12 +25246,57 @@ docs/research/s33-veil-creds/STEP4.md.
   `ImageSpec::lessor` (step 6). The daemon's runs have no grants, so their lease relay and a
   move's release there are owed with them.
 
-**Owed (later slices of step 33, this plan's steps 3 and 5–10).** The injector that
-terminates TLS and fills HTTP/1.1 then HTTP/2 headers (steps 3, 7); kiln's broker over
-kiln-seams' `Secrets` with per-run leases, single-flight refresh and sign-in capture outside
-the VM (step 5); Hex wiring the grants (step 6); the Claude Code and Codex sign-in/refresh
-profiles (step 8); the survey of each harness's trust and token checks and the
-tmpfs-fallback list (step 9); and ROOT's real-VM runs on KVM, HVF and WHP with a
+**Built: step 5, kiln's broker (kiln main 752ca8bbc, its ledger 13991fea1; CP-T8.3).** In kiln, through kiln-seams'
+`Secrets` alone, so that `SimSecrets`, kiln's own store and Veil's (CP-T8.1) serve it alike.
+- *Kiln's store behind the seam* (`crates/kiln/src/secrets/seam.rs`, `KilnSecrets`): versions,
+  stages, deletes and leases as Secrets Manager's, each value sealed with AES-256-GCM under the
+  secrets service's data keys (wrapped by the server's master key), bound to its secret's name
+  and its version's id, so that no ciphertext opens as another row. It passes the seam's suite,
+  every clause, as the simulator does. A store of its own beside the service's app secrets,
+  which agents never read.
+- *A run's leases* (`crates/kiln/src/secrets/broker.rs`, `Broker`): a value is leased to the
+  run's identity (its microVM key's SHA-256, D238) until its provider says it ends, else until its
+  run ends (`until_ms` none): no other bound. The seam's `LEASE_MAX` (a day) is kiln-seams' own
+  bound for its stores, which no provider gave, so it ends no run's lease: the broker takes a
+  store's lease only to read the value and to revoke it. A value past its end is refused
+  `Ended`. `release` keeps the run's end, then revokes every lease held for it, and nothing more is
+  leased under its key (`RunEnded`).
+- *A ledger kept in kiln's store* (migration `20261113-1400_cp_t8_broker_ledger`): each run's end
+  and the key a move replaced it with, each lease held for a run until its revocation went
+  through, each value's end. An end or a move is kept before its leases are revoked, and a lease is
+  kept before its value is read, the run looked at again in the same call; `Broker::open` revokes
+  every lease of a run that ended or moved that a restart left live. So no restart leaves a run's
+  lease live past its end, nor leases under its key after.
+- *A move* (D176 part 6, ROOT's wiring of goal 70's key side): `moved(replaced, current)` revokes
+  every lease bound to the replaced key; an ask under it is refused
+  `KeyReplaced { asked, current }`, the fields of Shards' `Refused::KeyReplaced`; the new key is
+  leased anew; a move between an ask and its lease leases nothing to the replaced key.
+- *Sign-ins outside the microVM.* `capture` keeps a token response's access and refresh tokens
+  under `sign-ins/<sign_in>/access` and `/refresh`, and gives back placeholders: a visible marker
+  and 256 random bits (more than the 128 this entry asks; 256 is the AES-256-GCM suite's level,
+  D239). `refresh` answers one refresh of a sign-in at a time; one asked while another is under
+  way takes that one's tokens, never a second call to its provider, whose rotation would retire
+  them (RFC 6749 §6); a provider that keeps its refresh token keeps it here too.
+- *Literals.* None of its own: a lease's life is its value's own or its run's, data-derived; the
+  seam's bounds on names and values are Secrets Manager's, reused; 256 bits as cited.
+- *Tests (Linux x86_64, adacachy2, rust 1.99.1, kiln's CI toolchain; STEP5.md).* kiln-seams
+  and its doc_truth; kiln's `secrets::`: the seam's suite over kiln's store; values sealed at
+  rest, a ciphertext moved to another name refused; a run's leases end with it, a value with no
+  end of its own its run's until then, and an ask after its end refused; restarted mid-run, the
+  run's end revokes the lease from before and refuses its key, a run that ended with its leases
+  live has them revoked as the broker opens, and a move outlives the restart; a move revokes the
+  old key's leases and refuses it typed; a capture keeps the tokens and gives marked random
+  placeholders; two refreshes at once make one call to the provider. Every broker test runs over
+  `SimSecrets` and `KilnSecrets` alike, each guard removed in turn failing its test. clippy
+  `-D warnings` clean.
+- *Owed.* Hex answering a run's lease asks from the broker, and telling it of a move (step 6);
+  Shards' run host asking them (step 4). ROOT's real runs (step 10).
+
+**Owed (later slices of step 33, this plan's steps 3 and 6–10).** The injector that
+terminates TLS and fills HTTP/1.1 then HTTP/2 headers (steps 3, 7); Hex wiring the grants
+and answering a run's leases from kiln's broker (step 6); the Claude Code and Codex
+sign-in/refresh profiles (step 8); the survey of each harness's trust and token checks and
+the tmpfs-fallback list (step 9); and ROOT's real-VM runs on KVM, HVF and WHP with a
 whole-guest-memory leak scan and the injector's measured cost (step 10).
 
 **Literals.** None of its own: this slice adds no numeric bound. A credential's `reference`
