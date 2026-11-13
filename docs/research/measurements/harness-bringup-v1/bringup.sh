@@ -39,22 +39,14 @@ printf '{}\n' > "$work/docker-config/config.json"
 export SHARDS_HOME="$work/home" DOCKER_CONFIG="$work/docker-config" SHARDS_LOCAL_STORE=none
 unset DOCKER_AUTH_CONFIG SHARDS_DEFAULT_PLATFORM DOCKER_DEFAULT_PLATFORM
 
-# Each step's time, in milliseconds where date gives nanoseconds (GNU's %N), else in whole
-# seconds (BSD's date, macOS's, prints %N's N as it is).
 step() {
     local log=$1
     shift
-    local start end status=0 unit=ms
+    local start end status=0
     start=$(date +%s%N)
-    case $start in *N) unit=s start=$(date +%s) ;; esac
     "$@" > "$work/$log" 2>&1 || status=$?
-    if [ "$unit" = ms ]; then
-        end=$(date +%s%N)
-        printf '%s: exit %s in %s ms\n' "$log" "$status" $(((end - start) / 1000000))
-    else
-        end=$(date +%s)
-        printf '%s: exit %s in %s s\n' "$log" "$status" $((end - start))
-    fi
+    end=$(date +%s%N)
+    printf '%s: exit %s in %s ms\n' "$log" "$status" $(((end - start) / 1000000))
     return $status
 }
 
