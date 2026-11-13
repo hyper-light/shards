@@ -4243,7 +4243,7 @@ impl<D: Disk> Daemon<D> {
                     _ => Err(e),
                 })
             } else {
-                keep_whole(&at, shards_vmm::arch::aarch64::cpu::encode(&baseline).as_bytes())
+                keep_whole(&at, shards_vmm::arch::cpu::encode(&baseline).as_bytes())
             };
             if let Err(e) = kept {
                 log(format!("{}: {e}", at.display()));
@@ -8257,7 +8257,7 @@ impl<D: Disk> Daemon<D> {
         if !cfg.cpu_baseline.is_empty() {
             args.extend([
                 "--cpu-baseline".into(),
-                shards_vmm::arch::aarch64::cpu::encode(&cfg.cpu_baseline).into(),
+                shards_vmm::arch::cpu::encode(&cfg.cpu_baseline).into(),
             ]);
         }
         // A join disk and a join share in every microVM, empty and unserved until a

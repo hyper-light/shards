@@ -1067,7 +1067,7 @@ fn cpu_baseline(cfg: &Config) -> String {
     } else {
         format!(
             "cpu baseline {}\n",
-            shards_vmm::arch::aarch64::cpu::encode(&cfg.cpu_baseline)
+            shards_vmm::arch::cpu::encode(&cfg.cpu_baseline)
         )
     }
 }

@@ -196,11 +196,23 @@ pub use runtime::{
 #[cfg(all(hv, target_arch = "aarch64"))]
 pub use aarch64::host_cpu_id;
 
-/// This host's CPU as its hypervisor shows a guest, as AArch64 ID registers (D176 part 6):
-/// none on another architecture's host, whose CPU baseline is not built.
-#[cfg(not(all(hv, target_arch = "aarch64")))]
-pub fn host_cpu_id() -> Result<Vec<(u16, u64)>, String> {
-    Err("a CPU baseline is of arm64 hosts' ID registers, and this host is none".into())
+/// This host's CPU as KVM shows a guest, as a CPU baseline names it (D176 part 6): its
+/// vendor and feature leaves.
+#[cfg(all(hv = "kvm", target_arch = "x86_64"))]
+pub fn host_cpu_id() -> Result<crate::arch::cpu::Id, String> {
+    crate::hv::host_cpu_id().map_err(|e| e.to_string())
+}
+
+/// This host's CPU as its hypervisor shows a guest (D176 part 6): none where no baseline
+/// is told, on WHP x86-64, which restores a snapshot only on the CPU it was taken on
+/// (hv::whp's state.rs), and in a build that drives no VMs.
+#[cfg(not(any(all(hv, target_arch = "aarch64"), all(hv = "kvm", target_arch = "x86_64"))))]
+pub fn host_cpu_id() -> Result<crate::arch::cpu::Id, String> {
+    Err(if cfg!(hv = "whp") {
+        "a CPU baseline is not told on the Windows Hypervisor Platform, which restores a snapshot only on the CPU it was taken on".into()
+    } else {
+        "this build drives no VMs: it has no CPU to show a guest".into()
+    })
 }
 
 #[cfg(not(hv))]
@@ -1294,10 +1306,11 @@ pub struct Config {
     /// every function plugged in. Its snapshot is refused, as its IOMMU's state is no
     /// snapshot's.
     pub pci_slots_iommu: bool,
-    /// The CPU baseline its guest is told (D176 part 6), as AArch64 ID registers by
-    /// encoding, each field the most it may find: every vCPU is told the lower of this
-    /// host's and the baseline's. Empty for none: the host's own.
-    pub cpu_baseline: Vec<(u16, u64)>,
+    /// The CPU baseline its guest is told (D176 part 6), as `arch::cpu` names it (AArch64
+    /// ID registers, each field the most it may find; x86-64's feature leaves, each bit
+    /// one it may have): every vCPU is told the lower of this host's and the baseline's.
+    /// Empty for none: the host's own.
+    pub cpu_baseline: crate::arch::cpu::Id,
 }
 
 /// A device plugged into a running machine (D214): its place on bus 0 (`devfn`, device <<

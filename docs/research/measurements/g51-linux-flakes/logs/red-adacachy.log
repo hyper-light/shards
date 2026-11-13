@@ -1,0 +1,29 @@
+== red at 2026-11-13T03:27:43Z, tree 8fb711a95 (fix not applied), Linux 7.2.9-2-cachyos, cargo 1.98.1 (797e8a9bc 2026-08-05)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.22s
+     Running unittests src/lib.rs (/home/adalundhe/g121-tmp/g51-s7/target/debug/deps/shards_api-9e7d13efbf3b4fbf)
+running 1 test
+test taken::tests::a_process_reaped_after_it_was_held_has_exited ... FAILED
+failures:
+---- taken::tests::a_process_reaped_after_it_was_held_has_exited stdout ----
+thread 'taken::tests::a_process_reaped_after_it_was_held_has_exited' (1673108) panicked at crates/api/src/taken.rs:375:9:
+assertion `left == right` failed
+  left: Some(Os { operation: OpenStat, code: 2 })
+ right: Some(Exited)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+failures:
+    taken::tests::a_process_reaped_after_it_was_held_has_exited
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 108 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p shards-api --lib`
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.39s
+     Running tests/sim.rs (/home/adalundhe/g121-tmp/g51-s7/target/debug/deps/sim-173f2d60bcf59480)
+running 1 test
+test the_simulator_conforms_with_no_clock ... FAILED
+failures:
+---- the_simulator_conforms_with_no_clock stdout ----
+thread 'the_simulator_conforms_with_no_clock' (1685779) panicked at crates/api/tests/sim.rs:115:6:
+called `Result::unwrap()` on an `Err` value: Failure { case: "a single attempt is refused at once where the guest does not listen", why: "the patience is past a deadline" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+failures:
+    the_simulator_conforms_with_no_clock
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.21s
+error: test failed, to rerun pass `-p shards-api --test sim`
