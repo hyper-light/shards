@@ -13,18 +13,21 @@ thread_local! {
     static COUNTING: Cell<bool> = const { Cell::new(false) };
     static ALLOCS: Cell<usize> = const { Cell::new(0) };
     static REALLOCS: Cell<usize> = const { Cell::new(0) };
+    /// The most bytes one allocation or reallocation asked for.
+    static LARGEST: Cell<usize> = const { Cell::new(0) };
 }
 
-fn bump(counter: &'static std::thread::LocalKey<Cell<usize>>) {
+fn bump(counter: &'static std::thread::LocalKey<Cell<usize>>, bytes: usize) {
     if COUNTING.with(Cell::get) {
         counter.with(|c| c.set(c.get() + 1));
+        LARGEST.with(|c| c.set(c.get().max(bytes)));
     }
 }
 
 // SAFETY: every call goes to the system allocator unchanged.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        bump(&ALLOCS);
+        bump(&ALLOCS, layout.size());
         // SAFETY: the caller's contract, passed on.
         unsafe { System.alloc(layout) }
     }
@@ -35,7 +38,7 @@ unsafe impl GlobalAlloc for Counting {
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        bump(&REALLOCS);
+        bump(&REALLOCS, new_size);
         // SAFETY: the caller's contract, passed on.
         unsafe { System.realloc(ptr, layout, new_size) }
     }
@@ -48,6 +51,7 @@ static COUNTING_ALLOCATOR: Counting = Counting;
 fn counted<T>(f: impl FnOnce() -> T) -> (T, usize, usize) {
     ALLOCS.with(|c| c.set(0));
     REALLOCS.with(|c| c.set(0));
+    LARGEST.with(|c| c.set(0));
     COUNTING.with(|c| c.set(true));
     let out = f();
     COUNTING.with(|c| c.set(false));
@@ -112,4 +116,23 @@ fn a_spec_decodes_with_one_allocation_per_list_and_string() {
     assert_eq!(decoded.as_ref(), Some(&spec));
     // Two lists, their 67 strings, and cwd, user and hostname.
     assert_eq!((allocs, reallocs), (2 + 3 + 64 + 3, 0));
+}
+
+/// D232: a GPU probe receipt reserves for no more devices than its own bytes hold lines of,
+/// each at least its Vulkan UUID's 32 hex digits and its end. One that says it has
+/// `MAX_PHYSICAL_GPUS` devices and holds none is refused before any is reserved for, where
+/// the parser reserved for every one it said (22,020,096 bytes on macOS arm64, review-gpu.md)
+/// and refused it a line later.
+#[test]
+fn a_gpu_receipt_reserves_for_no_device_its_bytes_cannot_hold() {
+    use shards_abi::gpu::{GpuProbe, MAX_PHYSICAL_GPUS, ResolvedGpu};
+    let text = format!("shards-gpu-selection 3\nhost-visible 4096\ndevices {MAX_PHYSICAL_GPUS}\nend\n");
+    let (parsed, _, _) = counted(|| GpuProbe::parse(&text));
+    assert!(parsed.is_err());
+    let largest = LARGEST.with(Cell::get);
+    let holds = text.len() / (2 * 16 + 1);
+    assert!(
+        largest <= holds * size_of::<ResolvedGpu>(),
+        "{largest} bytes asked for, where the receipt's bytes hold {holds} devices' lines"
+    );
 }

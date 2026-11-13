@@ -14,9 +14,10 @@
 #            goes on. AGENT=1 on macOS runs the daemon as a launchd user agent instead,
 #            which `stop` removes; kiln's runner ends one a session starts within seconds
 #            (3 s on the M3 Ultra, 2026-11-08), so under kiln listen again instead)
-#   invite.  On the machine moved to, listening: another invitation, printed base64 on the
-#            last line. One enrolls one client: each run of `e2e` joins with a home of its own,
-#            so each needs one.
+#   invite.  On the machine moved to, listening: COUNT (1) invitations more, each printed
+#            base64 on a line of its own, the last COUNT lines. One enrolls one client, and
+#            each test of another machine joins with a home of its own, so each needs one;
+#            each lapses in an hour.
 #   move.    On the machine moved from: SHARDS=... INVITE=<listen's line> N=20 \
 #            MODE="cold live" two-hosts.sh move   (a home of its own in $HOME_HERE, joined
 #            as context `lab` once; for each mode, N microVMs of $IMAGE, each counting,
@@ -46,17 +47,20 @@
 #            line says the priority its daemon runs at, which its microVMs' threads start
 #            from: 31 a terminal's program's, 20 under the utility clamp, 4 in the
 #            background band.
-#   e2e.     On the machine moved from, in a checkout: INVITE=<invite's line> two-hosts.sh e2e
-#            (tests/moved.rs, its two-host test moving to the listening machine saved and
-#            live, SHARDS_MOVE_INVITE its invitation; FILTER picks other tests of moved.rs,
-#            "" every one of them, the two-home ones too)
+#   e2e.     On the machine moved from, in a checkout: INVITES="<invite's lines>" two-hosts.sh
+#            e2e: tests/moved.rs's tests of another machine (PEER_TESTS, or those FILTER
+#            names), each run alone, moving to the listening machine with the next invitation
+#            (SHARDS_MOVE_INVITE its file; INVITE, one, for one test); every one run, any
+#            failure exiting 1 at the end. BASELINE=1 tells their microVMs the CPU the two
+#            machines share, as `move`'s (SHARDS_MOVE_BASELINE). SHARDS_MOVE_PORT, a TCP port
+#            the listening machine takes from this one, is the host port its published-port
+#            test publishes on; without it, one each machine picks.
 #   stop.    On the machine moved to: its daemon stopped, its home removed, its daemon's
 #            log kept at $KEEP_LOG first where that is given.
 #   local.   One machine, two homes: listen on loopback, move every mode; then the E2E tests,
 #            all of moved.rs between two homes of its own (FILTER, "" unless given: all), and
-#            each of its tests of another machine (`a_microvm_moves_to_another_host_saved_and_live`,
-#            `a_volumes_guest_owners_move_with_it`) moving to the listening home, each with
-#            an invitation of its own; stop.
+#            each of its tests of another machine (PEER_TESTS) moving to the listening home,
+#            each with an invitation of its own; stop.
 #   restart. One machine, two homes, as `local` listens: a series of 4 cold moves, the
 #            listening daemon and its hold ended (SIGTERM, as a runner's restart ends them)
 #            as the second microVM starts here, and `listen` run again on its home 10 s
@@ -81,13 +85,14 @@
 #      a command leaves running): SHARDS=$PWD/target/release/shards HOLD=10800 \
 #      two-hosts.sh listen. Its last line is the invitation for `move`; its
 #      `listening at` line is THERE.
-#   3. A, twice, one for each of B's tests of another machine:
-#      SHARDS=$PWD/target/release/shards two-hosts.sh invite   (its last line)
+#   3. A, one for each of B's tests of another machine (the 6 of PEER_TESTS), each lapsing
+#      in an hour: SHARDS=$PWD/target/release/shards COUNT=6 two-hosts.sh invite   (its
+#      last 6 lines)
 #   4. B: SHARDS=$PWD/target/release/shards INVITE=<2's last line> THERE=<2's listening
 #      line> N=30 two-hosts.sh move; then OUT=$HOME/.cache/shards-move-here/results.txt
 #      two-hosts.sh summary, its tables.
-#   5. B: INVITE=<3's first> two-hosts.sh e2e; then INVITE=<3's second>
-#      FILTER=a_volumes_guest_owners_move_with_it two-hosts.sh e2e
+#   5. B: INVITES="<3's lines>" two-hosts.sh e2e   (README.md's run sheet says, for each
+#      pair of machines, what to give it and what passing looks like)
 #   6. A: SHARDS=$PWD/target/release/shards KEEP_LOG=<a file> two-hosts.sh stop, which ends
 #      2's hold.
 #
@@ -108,6 +113,14 @@ WAIT_PEER=${WAIT_PEER:-3600}
 RETRIES=${RETRIES:-3}
 OUT=${OUT:-$HOME_HERE/results.txt}
 export DOCKER_CONFIG=${DOCKER_CONFIG:-$(mktemp -d)}
+# tests/moved.rs's tests of another machine, which `e2e` runs each alone, with an invitation
+# of its own (tests/moved.rs `the_harness_runs_every_test_of_another_machine` holds this list
+# to them, and the run sheet to naming each).
+PEER_TESTS="a_microvm_moves_to_another_host_saved_and_live a_volumes_guest_owners_move_with_it
+	a_microvm_moved_to_another_host_keeps_its_cpu_image_files_and_connections
+	a_volume_shared_here_moves_to_another_host_with_one_and_the_other_goes_on_here
+	a_moved_microvms_published_port_answers_on_another_host
+	a_move_another_host_cannot_take_is_refused_before_anything_moves"
 
 there() { SHARDS_HOME=$HOME_THERE "$SHARDS" "$@"; }
 now() { python3 -c 'import time; print(time.time_ns())'; }
@@ -365,11 +378,13 @@ listen)
 	;;
 invite)
 	: "${SHARDS:?the shards binary to run}"
-	# Unique, as two asked within a second are.
-	name="e2e$(date +%s)$RANDOM"
-	there invite client --name "$name" --output "$HOME_THERE/$name.invite"
-	base64 < "$HOME_THERE/$name.invite" | tr -d '\n'
-	echo
+	for _ in $(seq "${COUNT:-1}"); do
+		# Unique, as two asked within a second are.
+		name="e2e$(date +%s)$RANDOM"
+		there invite client --name "$name" --output "$HOME_THERE/$name.invite" >&2
+		base64 < "$HOME_THERE/$name.invite" | tr -d '\n'
+		echo
+	done
 	;;
 stop)
 	: "${SHARDS:?the shards binary to run}"
@@ -413,12 +428,25 @@ move)
 	[ "$failed" = 0 ] || { echo "$failed moves failed" >&2; exit 1; }
 	;;
 e2e)
-	: "${INVITE:?an invitation the listening machine printed (two-hosts.sh invite)}"
-	invite=$(mktemp)
-	echo "$INVITE" | base64 -d > "$invite"
+	# shellcheck disable=SC2206 # lists: base64 lines, and tests' names
+	invites=(${INVITES:-${INVITE:?invitations the listening machine printed (two-hosts.sh invite), one for each test}})
+	# shellcheck disable=SC2206
+	tests=(${FILTER:-$PEER_TESTS})
+	if [ "${#invites[@]}" -lt "${#tests[@]}" ]; then
+		echo "${#tests[@]} tests of another machine, ${#invites[@]} invitations: each test needs one of its own (COUNT=${#tests[@]} two-hosts.sh invite, there)" >&2
+		exit 2
+	fi
+	if [ -n "${BASELINE:-}" ]; then export SHARDS_MOVE_BASELINE=1; fi
 	cd "$root"
-	SHARDS_MOVE_INVITE=$invite cargo test -p shards --profile test-release --test moved -- --nocapture \
-		${FILTER-a_microvm_moves_to_another_host_saved_and_live}
+	status=0
+	for i in "${!tests[@]}"; do
+		invite=$(mktemp)
+		echo "${invites[$i]}" | base64 -d > "$invite"
+		SHARDS_MOVE_INVITE=$invite cargo test -p shards --profile test-release --test moved -- \
+			--nocapture --exact "${tests[$i]}" || status=1
+		rm -f "$invite"
+	done
+	exit "$status"
 	;;
 local)
 	: "${SHARDS:?the shards binary to run}"
@@ -431,8 +459,8 @@ local)
 	# Between two homes of its own, no other machine named: an invitation enrolls one client,
 	# and each test of another machine joins with a home of its own.
 	(cd "$root" && cargo test -p shards --profile test-release --test moved -- --nocapture ${FILTER-}) || status=$?
-	for t in a_microvm_moves_to_another_host_saved_and_live a_volumes_guest_owners_move_with_it; do
-		INVITE=$("$self" invite | tail -1) FILTER=$t "$self" e2e || status=$?
+	for t in $PEER_TESTS; do
+		INVITES=$("$self" invite | tail -1) FILTER=$t "$self" e2e || status=$?
 	done
 	exit "$status"
 	;;
