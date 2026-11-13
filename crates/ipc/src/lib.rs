@@ -638,6 +638,9 @@ pub struct Exec {
     /// its `exec_create`, as dockerd has it (moby daemon/exec.go); empty for `shards
     /// exec`'s, which the daemon makes as it starts it.
     pub id: String,
+    /// `--for`: the agent or harness of its image's to run it in, confined as that member
+    /// is (D243); empty for the microVM's command's namespaces.
+    pub member: String,
 }
 
 impl Exec {
@@ -663,6 +666,7 @@ impl Exec {
         w.push(u8::from(self.privileged));
         put_list(&mut w, &self.terms);
         put_str(&mut w, &self.id);
+        put_str(&mut w, &self.member);
         w
     }
 
@@ -688,6 +692,7 @@ impl Exec {
             privileged: r.flag()?,
             terms: r.list()?,
             id: r.str()?,
+            member: r.str()?,
         };
         r.0.is_empty().then_some(exec)
     }
@@ -2719,6 +2724,7 @@ mod tests {
             privileged: true,
             terms: vec!["xterm-kitty".into()],
             id: "1f".repeat(32),
+            member: "codex".into(),
             daemon: Identity {
                 dev: 1,
                 ino: 2,

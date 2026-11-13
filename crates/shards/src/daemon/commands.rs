@@ -72,6 +72,43 @@ pub(super) enum Step<'a> {
 /// What a step answers once its microVM has ended, or would not.
 pub(super) type Then<'a> = Box<dyn FnOnce(bool) -> Result<bool, String> + 'a>;
 
+/// Why `exec --for NAME` runs nothing (D243), each with the name given: a member's command
+/// is confined as its member is, so it takes no privilege and no user of its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum MemberExec {
+    NoMember(super::devices::NoMember),
+    Privileged(String),
+    User(String),
+}
+
+impl std::fmt::Display for MemberExec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MemberExec::NoMember(e) => write!(f, "{e}"),
+            MemberExec::Privileged(n) => write!(
+                f,
+                "--for {n}: a command run in it is confined as it is, so not --privileged"
+            ),
+            MemberExec::User(n) => write!(
+                f,
+                "--for {n}: a command run in it runs as it does, so takes no --user"
+            ),
+        }
+    }
+}
+
+/// What `exec --for` asks that its member has not (D243): privileges, or a user, of its
+/// own. Its init refuses both again.
+fn held_as_its_member(exec: &shards_ipc::Exec) -> Result<(), MemberExec> {
+    if exec.privileged {
+        return Err(MemberExec::Privileged(exec.member.clone()));
+    }
+    if !exec.user.is_empty() {
+        return Err(MemberExec::User(exec.member.clone()));
+    }
+    Ok(())
+}
+
 /// The client's end: what a command prints goes there.
 pub(super) struct Reply<'a>(pub &'a UnixStream);
 
@@ -282,6 +319,13 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 return refuse(&format!("shards: {} is not running", exec.container));
             }
         };
+        // In one of its image's agents or harnesses (D243): as that member runs, so with no
+        // user or privilege of its own, and nothing of the run's own command's; its init
+        // refuses both again.
+        let member = match self.exec_member(&id, &exec) {
+            Ok(member) => member,
+            Err(e) => return refuse(&format!("shards: {e}")),
+        };
         // Beside its image's agents and harnesses, an exec is held to what its run was
         // (D115): not privileged, and none of their IDs; its init refuses both again.
         if let Some(a) = base.agentfile.as_ref().filter(|a| a.domains > 0) {
@@ -295,16 +339,18 @@ impl<D: crate::containers::Disk> Daemon<D> {
             }
         }
         let base = &base.options;
+        let in_member = member.is_some();
         let options = crate::spec::Options {
             argv: exec.cmd,
-            env: base.env.clone(),
+            env: if in_member { Vec::new() } else { base.env.clone() },
             exec_env: exec.env,
-            workdir: if exec.workdir.is_empty() {
+            // A member's command works where its member does unless it names a place.
+            workdir: if exec.workdir.is_empty() && !in_member {
                 base.workdir.clone()
             } else {
                 exec.workdir
             },
-            user: if exec.user.is_empty() {
+            user: if exec.user.is_empty() && !in_member {
                 base.user.clone()
             } else {
                 exec.user
@@ -313,6 +359,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             interactive: exec.interactive,
             tty: exec.tty.map(|(rows, cols)| shards_abi::run::Size { rows, cols }),
             terms: exec.terms,
+            member: in_member,
         };
         let mut spec = match crate::spec::spec(&options, |_| None) {
             Ok(spec) => spec,
@@ -323,6 +370,9 @@ impl<D: crate::containers::Disk> Daemon<D> {
         if exec.privileged {
             let all = (1u64 << shards_abi::run::CAP_NAMES.len()) - 1;
             spec.setup = vec![format!("caps={all}").into_bytes()];
+        }
+        if let Some(n) = member {
+            spec.setup = vec![shards_abi::run::members::exec_in(n)];
         }
         let mut flags = 0;
         if exec.interactive {
@@ -378,6 +428,19 @@ impl<D: crate::containers::Disk> Daemon<D> {
             drop(held);
             refuse(&format!("shards: the microVM: {e}"));
         }
+    }
+
+    /// The member `exec --for` runs its command in (D243), where it names one: an agent or
+    /// harness of the microVM's image that runs a command of its own, and the exec asking
+    /// nothing that member has not.
+    fn exec_member(&self, id: &str, exec: &shards_ipc::Exec) -> Result<Option<u32>, MemberExec> {
+        if exec.member.is_empty() {
+            return Ok(None);
+        }
+        held_as_its_member(exec)?;
+        self.running_member(id, &exec.member)
+            .map(Some)
+            .map_err(MemberExec::NoMember)
     }
 
     /// `shards attach`: the client attached to a running microVM's command, as dockerd's
@@ -3002,6 +3065,29 @@ mod tests {
             ),
         ] {
             assert_eq!(ps_args_allowed(bad), Err(said.to_string()), "{bad}");
+        }
+    }
+
+    /// `exec --for` takes no privilege and no user of its own: its member's are its (D243).
+    #[test]
+    fn a_member_exec_takes_nothing_its_member_has_not() {
+        let exec = |privileged: bool, user: &str| shards_ipc::Exec {
+            member: "codex".into(),
+            privileged,
+            user: user.into(),
+            ..shards_ipc::Exec::default()
+        };
+        assert_eq!(super::held_as_its_member(&exec(false, "")), Ok(()));
+        for (privileged, user, refused) in [
+            (true, "", super::MemberExec::Privileged("codex".into())),
+            (false, "0", super::MemberExec::User("codex".into())),
+            (true, "0", super::MemberExec::Privileged("codex".into())),
+        ] {
+            assert_eq!(
+                super::held_as_its_member(&exec(privileged, user)),
+                Err(refused),
+                "{privileged} {user:?}"
+            );
         }
     }
 
