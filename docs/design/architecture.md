@@ -22854,12 +22854,25 @@ reboots, driver updates or hot plug; a device's own identity does.
   (`HeldDriver`): unheld, each context loaded the driver anew, and NVIDIA's static-TLS
   library could not load at a VM's 19th (Hex's measurement).
 
-**Literals.** `MAX_PHYSICAL_GPUS`, 65,536, a u16's every index: the render server transport's
-own bound on a context's identities (`VIRGL_DEVICE_UUID_MAX_COUNT`, `1 + UINT16_MAX`), which
-bounds that message's payload; it came from Hex's scheduler's u16 device index, and is owed a
-derivation of shards' own (R03). `GPU_NAME_BYTES`, 256: Vulkan's
-`VK_MAX_PHYSICAL_DEVICE_NAME_SIZE`. The probe's byte bounds are its encoding's longest lines
-for the count (`probe.rs`). Snapshot format 29.
+**Literals.** `MAX_PHYSICAL_GPUS`, 65,536: the renderer's patches' bound, `1 + UINT16_MAX`,
+from Hex's scheduler's u16 device index, to which they hold a context's selection
+(`VIRGL_DEVICE_UUID_MAX_COUNT`, physical-transport-*.patch) and, for a selected context, the
+host's Vulkan devices and device groups (`VKR_PHYSICAL_DEVICE_FILTER_MAX_COUNT`,
+physical-*.patch). Shards takes no selection its renderer refuses, so its own checks hold the
+same figure (`check_selection`, `probe_bytes`, the join's and `host_visible`'s host counts,
+format 29's reader, `--gpu-device`). Below it a count is bounded by what carries it: a
+receipt's by the device lines its own bytes hold, each at least its UUID's 32 hex digits and
+its end, before anything is reserved for them (`probe.rs`); a snapshot's by its remaining
+bytes (`codec::Reader::seq`); and, once the VM process enumerates the host's GPUs, by those,
+each named once (`selection::resolve`). The figure is still owed its derivation (R03): the
+protocol's own bounds are Vulkan's `uint32_t` counts, for which every patch already
+allocates overflow-checked, and the transport's `uint32_t byte_count` over its 33-byte
+stride (`UINT32_MAX / 33`, 130,150,524, which `virgl_device_selection_payload_size` already
+checks). Moving to them changes the C patches, which only a renderer build and a real GPU can
+check: owed to ROOT, with `MAX_PHYSICAL_GPUS` following in the same change.
+`GPU_NAME_BYTES`, 256: Vulkan's `VK_MAX_PHYSICAL_DEVICE_NAME_SIZE`. The probe's byte bounds
+are its encoding's longest lines for the count, the count as wide as `MAX_PHYSICAL_GPUS`
+(`probe.rs`, derived from it). Snapshot format 29.
 
 **Held.** A GPU VM process for Windows on arm64 (`gpu_target`, gpu-libs' arm64 build): never
 built or run for that target; ROOT's GPU lane holds it.
