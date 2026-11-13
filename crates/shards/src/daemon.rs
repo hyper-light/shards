@@ -147,10 +147,9 @@ pub(crate) fn pci_slots() -> u8 {
 /// shares, so the default holds about 55 MiB (PM M49).
 const DEFAULT_WARM_MAX: usize = 16;
 const DEFAULT_IDLE: Duration = Duration::from_secs(900);
-/// How long a pool keeps warm VMs after its last claim unless `SHARDS_POOL_KEEP` says: as
-/// AWS keeps an idle function, 10 minutes (Shahrad et al., "Serverless in the Wild",
-/// USENIX ATC 2020, §1).
-const DEFAULT_KEEP: Duration = Duration::from_secs(600);
+/// How long a pool keeps warm VMs after its last claim unless `SHARDS_POOL_KEEP` says: D26's
+/// keep-alive, an orchestrator's pools' too (`shards_api::demand::KEEP`).
+const DEFAULT_KEEP: Duration = shards_api::demand::KEEP;
 /// Warm VMs a run may try: one can end while it waits, or before it has taken the run.
 const HANDOFF_TRIES: usize = 3;
 /// A stopped microVM's writable layer, in its directory (D37): kept whole, and being
@@ -7856,8 +7855,10 @@ impl<D: Disk> Daemon<D> {
             &prepared.parent,
             prepared.layer,
         );
-        if ready.is_ok()
-            && let Err(e) = crate::run::Origin::of(
+        // Its template only where its VM was ready, its record written beside it; a VM that
+        // saved its snapshot and then failed makes none (run::settle_boot).
+        let record = || {
+            crate::run::Origin::of(
                 guest,
                 &prepared.rootfs,
                 stamp.as_deref(),
@@ -7866,10 +7867,10 @@ impl<D: Disk> Daemon<D> {
                 prepared.emulator.as_ref().map(|e| e.root.as_path()),
             )
             .write(&dir)
-        {
+        };
+        if let Err(e) = crate::run::settle_boot(ready.is_ok(), &fresh, &dir, record) {
             log(format!("{}: its origin: {e}", dir.display()));
         }
-        crate::run::settle(&fresh, &dir);
         if let Ok(r) = &mut ready
             && shards_vmm::snapshot::exists(&dir)
         {
@@ -8392,9 +8393,17 @@ impl<D: Disk> Daemon<D> {
             lock(&self.state).starting.insert(vm.id(), vm.clone());
         }
         let watched = vm.clone();
+        // Ended by `unwatched` where its watcher's thread does not start: its closure is
+        // dropped unrun then (std's `thread::Builder::spawn_scoped`).
+        let unwatched = Unwatched {
+            vm: Some(vm.clone()),
+            net: net_process,
+            ends: &self.ends,
+        };
         let watching = std::thread::Builder::new()
             .name("warm vm".into())
             .spawn_scoped(threads, move || {
+                let net_process = unwatched.watched();
                 self.watch(
                     threads,
                     watched,
@@ -8410,7 +8419,6 @@ impl<D: Disk> Daemon<D> {
             if pooled {
                 lock(&self.state).starting.remove(&vm.id());
             }
-            let _ = vm.kill(shards_ipc::signal::SIGKILL);
             return Err(format!("watching VM {}: {e}", vm.id()));
         }
         Ok(())
@@ -8964,6 +8972,36 @@ fn new_log(dir: &Path) -> io::Result<Log> {
         index: made(index)?,
         seq: 0,
     })
+}
+
+/// A launched VM process a watcher is to follow (`Daemon::start`), and its network process:
+/// ended where no watcher takes them, as a watcher's thread that does not start drops them
+/// unrun. Its VM is killed and waited for, then its network process, which goes as its VM
+/// does, is followed to its end by the home's record (`netproc::reap`, D217).
+struct Unwatched<'s> {
+    vm: Option<Arc<shards_ipc::Child>>,
+    net: Option<crate::netproc::NetProcess>,
+    ends: &'s ends::Ends,
+}
+
+impl Unwatched<'_> {
+    /// Its network process, for the watcher that takes them: neither is ended as this goes.
+    fn watched(mut self) -> Option<crate::netproc::NetProcess> {
+        self.vm = None;
+        self.net.take()
+    }
+}
+
+impl Drop for Unwatched<'_> {
+    fn drop(&mut self) {
+        if let Some(vm) = self.vm.take() {
+            let _ = vm.kill(shards_ipc::signal::SIGKILL);
+            let _ = vm.wait();
+        }
+        if let Some(net) = self.net.take() {
+            crate::netproc::reap(&net, self.ends);
+        }
+    }
 }
 
 /// How long a VM process may take to send its first request for access before its stacks
@@ -10931,13 +10969,16 @@ mod tests {
     /// A closed daemon's slots hold it while each client takes what it is given: one read
     /// late is still whole, as a stepping-aside daemon's RESTART must reach its client
     /// (cut off by its exit before its slot passed it on, x86_64 CI); and a client that
-    /// takes nothing holds it no longer than a request's time from the start of the piece
-    /// it leaves untaken, so that a stopped client keeps no daemon from exiting (PM M261).
+    /// takes nothing holds it no longer than the slowest take seen, from when its answer's
+    /// writer began waiting on it, so that a stopped client keeps no daemon from exiting (PM
+    /// M261, M549). Unix's: a named pipe says nothing of its room before a write, so on
+    /// Windows a closed daemon follows its clients' ends alone.
+    #[cfg(unix)]
     #[test]
     fn a_closed_daemon_waits_for_its_clients_to_take_their_answers() {
         use shards_ipc::slots as s;
         let t = Test::new("la");
-        lock(&t.daemon.seen).least = Duration::from_millis(500);
+        lock(&t.daemon.seen).taken(Duration::from_millis(500));
         t.run(|t| {
             t.t.daemon
                 .serve_slots(t.threads, s::Requests::open(&t.home).unwrap());
@@ -10967,7 +11008,7 @@ mod tests {
             let never = ask();
             t.until("its answers were not being written", |d| {
                 d.busy.load(Ordering::SeqCst) == 0
-                    && lock(&d.live).values().filter(|l| l.writing.is_some()).count() == 2
+                    && lock(&d.live).values().filter(|l| l.waiting.is_some()).count() == 2
             });
             t.daemon.close();
             assert!(t.daemon.slots_hold().0, "closed, held by no answer being written");
@@ -10995,13 +11036,13 @@ mod tests {
             drop(late);
             let since = lock(&t.daemon.live)
                 .values()
-                .find_map(|l| l.writing)
+                .find_map(|l| l.waiting)
                 .expect("its write");
             t.until("a client that takes nothing held its closed daemon", |d| {
                 !d.slots_hold().0
             });
             assert!(
-                since.elapsed() >= lock(&t.daemon.seen).answer_wait(),
+                since.elapsed() >= lock(&t.daemon.seen).answer_wait().unwrap(),
                 "{:?}",
                 since.elapsed()
             );
@@ -11020,22 +11061,24 @@ mod tests {
     /// nothing. Let go of a request's time after the close, the daemon exited as the run's
     /// end came, before its slot passed on the EXIT the run's VM wrote, and the run's client
     /// said its microVM stopped before its command ended (125: budget E2E 40162744975's a,
-    /// `a_daemon_ending_its_runs_is_waited_for`, PM M331). Its client's piece left untaken
-    /// lets go of it as before.
+    /// `a_daemon_ending_its_runs_is_waited_for`, PM M331). Its client leaving its answer
+    /// untaken lets go of it once the slowest take seen has passed, no more: before, twice
+    /// the longest piece, at least TCP's R2, 100 s (PM M549). Unix's, as the test above.
+    #[cfg(unix)]
     #[test]
     fn a_closed_daemon_waits_for_what_a_slot_it_passed_on_has_yet_to_hear() {
         let t = Test::new("sp");
-        lock(&t.daemon.seen).least = Duration::from_millis(200);
+        lock(&t.daemon.seen).taken(Duration::from_millis(200));
         t.run(|t| {
             let living = slots::Living::new(&t.daemon, 0);
             living.passed();
             t.daemon.close();
-            std::thread::sleep(lock(&t.daemon.seen).answer_wait() * 3);
+            std::thread::sleep(lock(&t.daemon.seen).answer_wait().unwrap() * 3);
             assert!(
                 t.daemon.slots_hold().0,
                 "a slot whose request went on let go of with its answer still to come"
             );
-            // An answer its client leaves untaken lets go of it a request's time in.
+            // An answer its client leaves untaken lets go of it the slowest take in.
             let (client, ours) = shards_ipc::slots::joined().unwrap();
             let answer = vec![b'x'; 1 << 20];
             std::thread::scope(|s| {
@@ -11051,16 +11094,44 @@ mod tests {
         });
     }
 
+    /// Before any take has been seen, a closed daemon follows a client that takes nothing of
+    /// its answer by its end alone (PM M549): held, with no time it lets go at, until the
+    /// client ends, and its writer's write fails then. Unix's, as the tests above.
+    #[cfg(unix)]
+    #[test]
+    fn a_closed_daemon_with_no_take_seen_holds_a_client_until_it_ends() {
+        let t = Test::new("cold");
+        t.run(|t| {
+            let living = slots::Living::new(&t.daemon, 0);
+            living.passed();
+            t.daemon.close();
+            let (client, ours) = shards_ipc::slots::joined().unwrap();
+            let answer = vec![b'x'; 1 << 20];
+            std::thread::scope(|s| {
+                let writer = s.spawn(|| living.answer(&ours, kind::ERR, &answer));
+                t.until("its writer did not wait on its client", |d| {
+                    lock(&d.live).values().any(|l| l.waiting.is_some())
+                });
+                assert_eq!(lock(&t.daemon.seen).answer_wait(), None);
+                assert_eq!(t.daemon.slots_hold(), (true, None), "let go of with no take seen");
+                drop(client);
+                assert!(writer.join().unwrap().is_err());
+            });
+            drop(living);
+            assert!(lock(&t.daemon.live).is_empty());
+        });
+    }
+
     /// A closed daemon's slot holds it while its client takes a long answer slowly, though
-    /// all of it takes that client far past a request's time: each piece it takes is a step
-    /// on. Timed from the whole answer's write, its client was let go of a request's time
-    /// in, still reading, and the daemon would have exited mid-answer.
+    /// all of it takes that client far past the slowest take: each room it makes is a take.
+    /// Timed from the whole answer's write, its client would be let go of, still reading,
+    /// and the daemon would exit mid-answer.
     #[test]
     fn a_closed_daemon_waits_for_a_client_taking_its_answer_slowly() {
         let t = Test::new("sl");
-        // The wait each piece has, many times what one takes this client: a host at a load
-        // of 31 slowed its reads fourfold, and a piece of 64 KiB missed 500 ms.
-        lock(&t.daemon.seen).least = Duration::from_secs(3);
+        // The slowest take seen, many times what one takes this client: a host at a load of
+        // 31 slowed its reads fourfold.
+        lock(&t.daemon.seen).taken(Duration::from_secs(3));
         t.run(|t| {
             let living = slots::Living::new(&t.daemon, 0);
             t.daemon.close();
@@ -11092,7 +11163,7 @@ mod tests {
                 written.unwrap();
                 assert_eq!(taken, answer.len() + 5);
                 assert!(
-                    t0.elapsed() > lock(&t.daemon.seen).answer_wait(),
+                    t0.elapsed() > lock(&t.daemon.seen).answer_wait().unwrap(),
                     "{:?}",
                     t0.elapsed()
                 );
@@ -11636,7 +11707,7 @@ mod tests {
     /// While none of a request's rest has come, it is waited for as long as the slowest
     /// rest seen whole (D185, PM M545): none before any, the client's end alone then; a
     /// slower rest raises it, a faster one leaves it. A client that takes nothing of its
-    /// answer is waited for twice the longest one took a piece in, RFC 1122's R2 at least.
+    /// answer is waited for as long as the slowest take seen, none before any (PM M549).
     #[test]
     fn a_requests_wait_is_learned_from_its_clients() {
         let mut seen = slots::Seen::default();
@@ -11646,7 +11717,10 @@ mod tests {
         seen.whole(Duration::from_secs(3));
         seen.whole(Duration::from_micros(40));
         assert_eq!(seen.request_stall(), Some(Duration::from_secs(3)));
-        assert_eq!(seen.answer_wait(), Duration::from_secs(100));
+        assert_eq!(seen.answer_wait(), None);
+        seen.taken(Duration::from_millis(240));
+        seen.taken(Duration::from_millis(60));
+        assert_eq!(seen.answer_wait(), Some(Duration::from_millis(240)));
     }
 
     /// A client no descriptor is left for is refused with the listener's spare: accepted with
@@ -12833,6 +12907,52 @@ mod tests {
             });
             joined(starting.run).unwrap();
         });
+    }
+
+    /// A launched VM no watcher takes is ended, and its network process reaped, as a
+    /// watcher's thread that does not start drops what it was given (`start`). The VM here is
+    /// a stand-in, `cat` on a pipe the test holds open, holding the doorbell a stand-in
+    /// network process (`cat`) reads, which goes as that VM goes, as shards-net goes as its
+    /// ring's doorbell hangs up. Reaped, neither's pid is any process's, not even a zombie's.
+    #[cfg(unix)]
+    #[test]
+    fn a_vm_no_watcher_takes_is_ended_and_its_network_process_reaped() {
+        let null = File::open(crate::os::NULL).unwrap();
+        let (doorbell, rings) = io::pipe().unwrap();
+        let net = shards_ipc::spawn(
+            Path::new("/bin/cat"),
+            &[],
+            &[(doorbell.as_fd(), 0), (null.as_fd(), 1), (null.as_fd(), 2)],
+            false,
+        )
+        .unwrap();
+        drop(doorbell);
+        let (held, open) = io::pipe().unwrap();
+        let vm = shards_ipc::spawn(
+            Path::new("/bin/cat"),
+            &[],
+            &[
+                (held.as_fd(), 0),
+                (null.as_fd(), 1),
+                (null.as_fd(), 2),
+                (rings.as_fd(), 3),
+            ],
+            false,
+        )
+        .unwrap();
+        drop((held, rings));
+        let pids = [vm.id(), net.id()];
+        let home = shards_testdir::TempDir::new("unwatched").unwrap();
+        let record = ends::Ends::kept_in(&home);
+        drop(Unwatched {
+            vm: Some(Arc::new(vm)),
+            net: Some(net),
+            ends: &record,
+        });
+        for pid in pids {
+            assert!(reaped(pid), "process {pid} is left");
+        }
+        drop(open);
     }
 
     /// A VM's network process is given a slice of this host's once the VM has ended,

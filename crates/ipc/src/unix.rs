@@ -241,6 +241,23 @@ fn numbered() -> impl Iterator<Item = (libc::c_int, u32)> {
 /// The handler that keeps a blocked signal pending for sigwait(3) on XNU; it never runs.
 extern "C" fn kept_for_sigwait(_: libc::c_int) {}
 
+/// Gives `sig` [`kept_for_sigwait`], so that XNU keeps it pending for sigwait(3) where its
+/// default is to ignore it (SIGWINCH, SIGIO; M31). Whether this process was started
+/// ignoring it.
+fn keep_for_sigwait(sig: libc::c_int) -> io::Result<bool> {
+    // SAFETY: sigaction(2) reads and writes of a disposition, on valid structures.
+    unsafe {
+        let mut kept: libc::sigaction = std::mem::zeroed();
+        kept.sa_sigaction = kept_for_sigwait as extern "C" fn(libc::c_int) as libc::sighandler_t;
+        kept.sa_flags = libc::SA_RESTART;
+        let mut was: libc::sigaction = std::mem::zeroed();
+        if libc::sigaction(sig, &kept, &mut was) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(was.sa_sigaction == libc::SIG_IGN)
+    }
+}
+
 /// Readies this process to take the signals it forwards (`forwarded(reads_terminal)`)
 /// with sigwait(3). It blocks them in the calling thread, whose later threads inherit the
 /// mask, then makes any that this process was started ignoring default again, as Go's
@@ -267,14 +284,7 @@ pub fn take_forwarded(reads_terminal: bool) -> io::Result<(libc::sigset_t, Vec<l
         let mut ignored = Vec::new();
         for (sig, _) in forwarded(reads_terminal) {
             if sig == libc::SIGWINCH || sig == libc::SIGIO {
-                let mut kept: libc::sigaction = std::mem::zeroed();
-                kept.sa_sigaction = kept_for_sigwait as extern "C" fn(libc::c_int) as libc::sighandler_t;
-                kept.sa_flags = libc::SA_RESTART;
-                let mut was: libc::sigaction = std::mem::zeroed();
-                if libc::sigaction(sig, &kept, &mut was) != 0 {
-                    return Err(io::Error::last_os_error());
-                }
-                if was.sa_sigaction == libc::SIG_IGN {
+                if keep_for_sigwait(sig)? {
                     ignored.push(sig);
                 }
                 continue;
@@ -294,6 +304,26 @@ pub fn take_forwarded(reads_terminal: bool) -> io::Result<(libc::sigset_t, Vec<l
         }
         Ok((set, ignored))
     }
+}
+
+/// Readies this process to take SIGWINCH with sigwait(3), as a client that forwards no
+/// other signal follows its terminal's size (an exec's): blocked in the calling thread,
+/// whose later threads inherit the mask, and kept pending on XNU as [`take_forwarded`]
+/// keeps it, where its default would drop it as it is sent. Returns the set to wait on.
+pub fn take_resizes() -> io::Result<libc::sigset_t> {
+    // SAFETY: sigset operations on a local set, and pthread_sigmask on this thread.
+    let set = unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        libc::sigaddset(&mut set, libc::SIGWINCH);
+        let blocked = libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
+        if blocked != 0 {
+            return Err(io::Error::from_raw_os_error(blocked));
+        }
+        set
+    };
+    keep_for_sigwait(libc::SIGWINCH)?;
+    Ok(set)
 }
 
 impl Identity {
@@ -685,6 +715,79 @@ pub fn await_fifo(fd: BorrowedFd<'_>) -> io::Result<()> {
     {
         let _ = fd;
         Ok(())
+    }
+}
+
+/// Waits until the FIFO or pipe `fd`, a write end, has room for some of what is to be written,
+/// or its reader has gone, which the write that follows says. On macOS in select(2): there
+/// poll(2) for POLLOUT slept through a full FIFO's reader's end, 3 s of 3, where select saw it
+/// in 0.13 s (PM M549), as a read can sleep through its writer's end (PM M253). Elsewhere in
+/// poll(2), which says POLLERR as a pipe's last reader goes (Linux fs/pipe.c, `pipe_poll`).
+pub fn await_fifo_room(fd: BorrowedFd<'_>) -> io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: as `await_fifo`'s.
+        unsafe extern "C" {
+            #[link_name = "select$DARWIN_EXTSN"]
+            fn select_any(
+                nfds: libc::c_int,
+                read: *mut u32,
+                write: *mut u32,
+                error: *mut u32,
+                timeout: *mut libc::timeval,
+            ) -> libc::c_int;
+        }
+        let raw = fd.as_raw_fd();
+        let at = usize::try_from(raw).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+        let bound = raw
+            .checked_add(1)
+            .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+        // An fd_set's bits, 32 to a word, as FD_SET sets them.
+        let mut set = vec![0u32; at / 32 + 1];
+        loop {
+            if let Some(word) = set.get_mut(at / 32) {
+                *word = 1 << (at % 32);
+            }
+            // SAFETY: a set of `bound` descriptors' bits, as long as that, and no timeout:
+            // select(2) waits until `fd` is writable, or a signal cuts it short.
+            let n = unsafe {
+                select_any(
+                    bound,
+                    std::ptr::null_mut(),
+                    set.as_mut_ptr(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                )
+            };
+            if n > 0 {
+                return Ok(());
+            }
+            let e = io::Error::last_os_error();
+            if n < 0 && e.kind() != io::ErrorKind::Interrupted {
+                return Err(e);
+            }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let mut pfd = libc::pollfd {
+            fd: fd.as_raw_fd(),
+            events: libc::POLLOUT,
+            revents: 0,
+        };
+        loop {
+            // SAFETY: poll(2) of one pollfd, of a descriptor `fd` borrows, with no timeout.
+            match unsafe { libc::poll(&mut pfd, 1, -1) } {
+                n if n > 0 => return Ok(()),
+                0 => {}
+                _ => {
+                    let e = io::Error::last_os_error();
+                    if e.kind() != io::ErrorKind::Interrupted {
+                        return Err(e);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1651,6 +1754,31 @@ pub(crate) mod tests {
     }
 
     use super::*;
+
+    /// SIGWINCH, taken for sigwait(3) by a client that forwards no other signal (an exec's
+    /// under `-it`), stays pending as its terminal sends it, and sigwait takes it: XNU drops
+    /// it at its default, blocked or not (M31), and no exec's terminal followed its client's
+    /// on the Mac (ROOT's HVF run at 41d35bde1: tty.rs `an_execs_terminal_follows_its_clients`
+    /// and member_exec's resize case, each exec's command still in sigsuspend).
+    #[test]
+    fn a_resize_taken_alone_stays_pending_for_sigwait() {
+        let set = take_resizes().unwrap();
+        // Sent to this thread alone, which blocks it.
+        // SAFETY: pthread_kill of this thread; sigpending and sigwait into locals.
+        unsafe {
+            assert_eq!(libc::pthread_kill(libc::pthread_self(), libc::SIGWINCH), 0);
+            let mut pending: libc::sigset_t = std::mem::zeroed();
+            assert_eq!(libc::sigpending(&mut pending), 0);
+            assert_eq!(
+                libc::sigismember(&pending, libc::SIGWINCH),
+                1,
+                "SIGWINCH was dropped as it was sent"
+            );
+            let mut sig = 0;
+            assert_eq!(libc::sigwait(&set, &mut sig), 0);
+            assert_eq!(sig, libc::SIGWINCH);
+        }
+    }
 
     /// A wait longer than one select(2) may take on macOS is waited, not refused: a ready
     /// pipe is told ready under a timeout of 2^34 s, past XNU's most, as under any other

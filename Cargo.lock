@@ -1241,6 +1241,7 @@ dependencies = [
  "triomphe",
  "unsize",
  "windows-sys 0.61.2",
+ "zeroize",
 ]
 
 [[package]]
@@ -1418,6 +1419,7 @@ dependencies = [
  "shards-testdir",
  "time",
  "windows-sys 0.61.2",
+ "zeroize",
 ]
 
 [[package]]

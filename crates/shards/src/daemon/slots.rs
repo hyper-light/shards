@@ -6,7 +6,7 @@
 //! other's.
 
 use std::collections::HashMap;
-use std::io::{self, Write};
+use std::io;
 #[cfg(unix)]
 use std::os::fd::AsRawFd as _;
 use std::sync::atomic::Ordering;
@@ -28,18 +28,6 @@ use crate::containers::Disk;
 /// its request not read: an idle daemon's maker sleeps until something happens.
 const SWEEP: Duration = Duration::from_secs(60);
 
-/// The most of an answer a slot writes to its client at once: what a Linux FIFO holds (PM
-/// M261), so that each piece's write ends once its client has taken some of what it was
-/// given, and a client taking a long answer slowly is seen to go on, as one that takes
-/// nothing is not ([`Daemon::slots_hold`]).
-const PIECE: usize = 64 << 10;
-
-/// The least a closed daemon waits on a client that takes nothing of its answer: TCP's R2,
-/// the least it retransmits to a peer that acknowledges nothing before it gives up on the
-/// connection ("R2 SHOULD correspond to at least 100 seconds", RFC 1122 §4.2.3.5), as D222
-/// rides out a registry's trouble at least as long.
-const R2: Duration = Duration::from_secs(100);
-
 /// What the daemon has seen of its clients, which its waits on them follow (D185's
 /// admission), never a figure picked:
 /// - **The rest of a request** comes with its first byte: a client writes its request in one
@@ -52,28 +40,22 @@ const R2: Duration = Duration::from_secs(100);
 ///   its client ends: one larger than a FIFO holds comes in parts, each as the daemon reads
 ///   and its client is next run, a gap no whole request's rest measures, which a window
 ///   learned from them would cut again each time it was asked (PM M545).
-/// - **A client that takes nothing of its answer** holds a closed daemon twice the longest
-///   a client of it has taken a piece in (a doubling search past what is known, Baeza-Yates,
-///   Culberson and Rawlins 1993), at least [`R2`]: the daemon cannot tell it to ask again,
-///   its command done.
-#[derive(Debug)]
+/// - **A client taking its answer** goes on as it takes: its answer is written as its FIFO
+///   takes it, and only where the FIFO takes none of what is left is its client waited on,
+///   until it makes room (`slots::write_all_waiting`). Each such wait that ends is a take,
+///   and the slowest is what bounds a stall: a closed daemon lets go of a client that has
+///   waited longer than the slowest take seen with nothing taken, and holds one that takes,
+///   however slowly the answer goes as a whole. What the FIFO takes at once waits on no
+///   client and teaches nothing. Before any take, the daemon follows the client alone:
+///   its end, its FIFO's. On Windows a named pipe says nothing of its room before a write,
+///   so no take is seen there, and a closed daemon follows its clients' ends alone (PM
+///   M549). It was twice the longest a piece took, at least TCP's R2 (100 s).
+#[derive(Debug, Default)]
 pub(crate) struct Seen {
     /// The slowest a request's rest was read whole in, from its first byte; none before any.
     slowest_rest: Option<Duration>,
-    /// The longest a client took a piece of its answer in.
-    longest_take: Duration,
-    /// The least a closed daemon waits on a client that takes nothing ([`R2`]; less in tests).
-    pub(super) least: Duration,
-}
-
-impl Default for Seen {
-    fn default() -> Seen {
-        Seen {
-            slowest_rest: None,
-            longest_take: Duration::ZERO,
-            least: R2,
-        }
-    }
+    /// The slowest a client took to make room for its answer's next part; none before any.
+    slowest_take: Option<Duration>,
 }
 
 impl Seen {
@@ -88,14 +70,15 @@ impl Seen {
         self.slowest_rest = Some(self.slowest_rest.map_or(took, |slowest| slowest.max(took)));
     }
 
-    /// A client took a piece of its answer in `took`.
-    fn taken(&mut self, took: Duration) {
-        self.longest_take = self.longest_take.max(took);
+    /// A client made room for its answer's next part `took` after it was waited on.
+    pub(super) fn taken(&mut self, took: Duration) {
+        self.slowest_take = Some(self.slowest_take.map_or(took, |slowest| slowest.max(took)));
     }
 
-    /// How long a closed daemon waits on a client that takes nothing of its answer.
-    pub(super) fn answer_wait(&self) -> Duration {
-        self.longest_take.saturating_mul(2).max(self.least)
+    /// How long a closed daemon waits on a client that takes nothing of its answer: the
+    /// slowest take seen; none before any, the client's end alone then.
+    pub(super) fn answer_wait(&self) -> Option<Duration> {
+        self.slowest_take
     }
 }
 
@@ -134,9 +117,10 @@ pub(super) struct Live {
     session: bool,
     /// Its request went on to the daemon's handling, whose answer it passes back.
     passed: bool,
-    /// When the piece of an answer being written to its client began ([`PIECE`]): what it
-    /// waits on its client from.
-    pub(super) writing: Option<Instant>,
+    /// Since when its answer's writer has waited on its client to make room, its FIFO
+    /// taking nothing (`slots::write_all_waiting`): none while it writes, or has nothing to
+    /// write.
+    pub(super) waiting: Option<Instant>,
     /// Its answer's last word (`EXIT`, `END`, `RESTART`) is its client's: there in its FIFO
     /// whether or not the daemon is (pipe(7)), and nothing its client reads comes after it.
     answered: bool,
@@ -168,16 +152,16 @@ impl<D: Disk> Daemon<D> {
     /// Whether a slot holds the daemon from being quiet, and so from exiting; and, once it
     /// has closed, when the first that does lets go of it. While it serves, a slot its
     /// client opened holds it. Once it has closed, each holds it until its serving ends, its
-    /// answer's last word is its client's, or its client has had the time a client that
-    /// takes nothing is waited for (`Seen::answer_wait`) and not gone on: not taken the
-    /// piece of its answer being written to it, since that piece's write began, or, its
-    /// request not yet gone on, not gone on at all since its last step or the close, the
-    /// later. A client reading its answer takes each piece as it comes, however slowly it
-    /// reads; one stopped, or held by a pager that waits, takes nothing, and keeps no daemon
-    /// from exiting nor the next from starting past that wait. One whose request went on,
-    /// with nothing of its answer to take yet, takes nothing it could: it holds the daemon
-    /// while the daemon has yet to answer, as an attached run its stop ends after its
-    /// timeout says nothing meanwhile (PM M331).
+    /// answer's last word is its client's, or its client has taken nothing for longer than
+    /// the slowest take seen (`Seen::answer_wait`): its answer's writer waiting on it that
+    /// long, or, its request not yet gone on, it not gone on at all since its last step or
+    /// the close, the later. Before any take, it holds the daemon until it ends. A client
+    /// reading its answer makes room as it reads, however slowly; one stopped, or held by a
+    /// pager that waits, takes nothing, and keeps no daemon from exiting nor the next from
+    /// starting past that wait. One whose request went on, with nothing of its answer to
+    /// take yet, takes nothing it could: it holds the daemon while the daemon has yet to
+    /// answer, as an attached run its stop ends after its timeout says nothing meanwhile (PM
+    /// M331).
     pub(super) fn slots_hold(&self) -> (bool, Option<Instant>) {
         let closed_at = *lock(&self.closed_at);
         let wait = lock(&self.seen).answer_wait();
@@ -189,7 +173,7 @@ impl<D: Disk> Daemon<D> {
                 held |= live.session;
                 continue;
             };
-            let since = match (live.writing, live.passed, live.answered) {
+            let since = match (live.waiting, live.passed, live.answered) {
                 (Some(since), _, _) => since,
                 (None, true, _) => {
                     held = true;
@@ -197,6 +181,11 @@ impl<D: Disk> Daemon<D> {
                 }
                 (None, false, true) => continue,
                 (None, false, false) => live.went_on.max(closed_at),
+            };
+            // No take seen yet: its client's end alone lets it go.
+            let Some(wait) = wait else {
+                held = true;
+                continue;
             };
             match since.checked_add(wait) {
                 Some(at) if at <= now => {}
@@ -214,7 +203,7 @@ impl<D: Disk> Daemon<D> {
     pub(super) fn leave_slots(&self) {
         let closed_at = *lock(&self.closed_at);
         for (n, live) in lock(&self.live).iter() {
-            let (since, what) = match live.writing {
+            let (since, what) = match live.waiting {
                 Some(since) => (since, "took no more of its answer"),
                 None => (
                     closed_at.map_or(live.went_on, |at| live.went_on.max(at)),
@@ -726,7 +715,7 @@ impl<'a, D: Disk> Living<'a, D> {
         let live = Live {
             session: false,
             passed: false,
-            writing: None,
+            waiting: None,
             answered: false,
             went_on: Instant::now(),
         };
@@ -760,18 +749,19 @@ impl<'a, D: Disk> Living<'a, D> {
         lock(&self.daemon.live).remove(&self.n);
     }
 
-    /// Writes `kind` and `payload` to its client, waiting on that client meanwhile: a
-    /// [`PIECE`] at a time, each a step on as its client takes it.
+    /// Writes `kind` and `payload` to its client as its FIFO takes them, waiting on that
+    /// client only where the FIFO takes none of what is left: until it makes room, a take
+    /// (`Seen`), each wait's start and end a step on.
     pub(super) fn answer(&self, to: &slots::Line, kind: u8, payload: &[u8]) -> io::Result<()> {
         let message = slots::frame(kind, payload)?;
-        let written = message.chunks(PIECE).try_for_each(|piece| {
-            let began = Instant::now();
-            self.step(|live| live.writing = Some(began));
-            (&*to).write_all(piece)?;
-            lock(&self.daemon.seen).taken(began.elapsed());
-            Ok(())
+        let written = slots::write_all_waiting(to, &message, |wait| match wait {
+            slots::Wait::Began(began) => self.step(|live| live.waiting = Some(began)),
+            slots::Wait::Ended(took) => {
+                lock(&self.daemon.seen).taken(took);
+                self.step(|live| live.waiting = None);
+            }
         });
-        self.step(|live| live.writing = None);
+        self.step(|live| live.waiting = None);
         written
     }
 

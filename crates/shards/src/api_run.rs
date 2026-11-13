@@ -12,13 +12,16 @@
 //! each is made in a job whose last handle is this process's, which ends them as it ends,
 //! however it ends. And the run goes with its owner: its stdin closing kills the VM.
 
+use std::collections::HashMap;
 use std::io::{self, Write as _};
+use std::num::NonZeroU64;
 use std::process::ExitCode;
-use std::sync::{Mutex, PoisonError};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use shards_api::image::wire::{self, Cause};
 use shards_ipc::kind;
+use shards_net::lease::Refusal;
 
 /// Why the run will not be, for the orchestrator.
 #[derive(Debug)]
@@ -30,7 +33,7 @@ fn no(cause: Cause) -> impl Fn(String) -> No {
 
 /// The answers' channel, this process's stdout: one frame at a time, whichever thread
 /// sends it.
-struct Answers(Mutex<io::Stdout>);
+struct Answers(Mutex<Box<dyn io::Write + Send>>);
 
 impl Answers {
     /// Frames `parts` as one payload of `kind`, written in one turn.
@@ -58,7 +61,7 @@ fn say(what: std::fmt::Arguments<'_>) {
 /// `shards api-run`: not for people to run. The run's end is said as its VM ends, before
 /// its owner closes the channel; a run that never started is refused instead.
 pub fn command() -> ExitCode {
-    let answers = Answers(Mutex::new(io::stdout()));
+    let answers = Answers(Mutex::new(Box::new(io::stdout())));
     match host(&answers) {
         Ok(()) => ExitCode::SUCCESS,
         Err(No(cause, why)) => {
@@ -77,6 +80,11 @@ fn host(answers: &Answers) -> Result<(), No> {
     let request = match wire::read_frame(&mut input) {
         Ok(Some((wire::to_host::CREATE, payload))) => {
             wire::Request::decode(&payload).map_err(|e| No(Cause::Request, e.to_string()))?
+        }
+        // A warm host's exemplar (D253's pools): its run comes once its microVM is ready.
+        Ok(Some((wire::to_host::WARM, payload))) => {
+            let exemplar = wire::Request::decode(&payload).map_err(|e| No(Cause::Request, e.to_string()))?;
+            return hosted::warm(answers, &exemplar, input);
         }
         Ok(Some((kind, _))) => {
             return Err(No(
@@ -826,6 +834,323 @@ fn run_end(failed: Option<String>, done: Option<&[u8]>, started: bool) -> wire::
     }
 }
 
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Where a live lease of the run's stands (D242, R04): asked of the orchestrator; or held
+/// until `until` on this process's clock, none where its end is past what that clock can
+/// name, which the run's end releases. Refused and released are its ends, where it leaves
+/// the ledger.
+enum State {
+    Asked,
+    Held { until: Option<Instant> },
+}
+
+impl State {
+    fn lapsed(&self, now: Instant) -> bool {
+        matches!(self, State::Held { until: Some(until) } if *until <= now)
+    }
+}
+
+/// A live lease: its credential, the network process's id for its ask, and where it stands.
+struct Entry {
+    reference: String,
+    asked_as: u32,
+    state: State,
+}
+
+/// What an orchestrator's answer to a lease comes to.
+#[derive(Debug, PartialEq, Eq)]
+enum Answered {
+    /// The network process's ask `asked_as`, of `reference`, to be told it.
+    Told { asked_as: u32, reference: String },
+    /// One after the run released its leases: told nobody.
+    Late,
+}
+
+/// The run's leases, as its host keeps them (D242): each one its network process asked, by
+/// the id the run's channel names it by. Asked of the orchestrator by reference, then held
+/// until its end, or refused; every one released as the run ends. A run asks only what its
+/// grants name, and one lease of a credential at a time, as its network process asks one,
+/// so at most one for each grant is here: what grows past that is refused, never kept.
+struct Ledger {
+    granted: Vec<String>,
+    live: HashMap<u32, Entry>,
+    next: u32,
+    released: bool,
+}
+
+impl Ledger {
+    fn new(granted: Vec<String>) -> Ledger {
+        Ledger {
+            granted,
+            live: HashMap::new(),
+            next: 0,
+            released: false,
+        }
+    }
+
+    /// The network process's ask `asked_as` of credential `reference`, at `now`: a lease to
+    /// ask of the orchestrator by the id returned (its lease that ended released first); or
+    /// refused here, typed, nothing asked.
+    fn ask(&mut self, asked_as: u32, reference: &str, now: Instant) -> Result<u32, Refusal> {
+        if self.released {
+            return Err(Refusal::Ended);
+        }
+        if !self.granted.iter().any(|g| g == reference) {
+            return Err(Refusal::Ungranted);
+        }
+        self.live
+            .retain(|_, e| !(e.reference == reference && e.state.lapsed(now)));
+        if self.live.values().any(|e| e.reference == reference) {
+            return Err(Refusal::Live);
+        }
+        // An id no live lease has: at most one more try than there are of them.
+        let id = loop {
+            let id = self.next;
+            self.next = self.next.wrapping_add(1);
+            if !self.live.contains_key(&id) {
+                break id;
+            }
+        };
+        self.live.insert(
+            id,
+            Entry {
+                reference: reference.to_string(),
+                asked_as,
+                state: State::Asked,
+            },
+        );
+        Ok(id)
+    }
+
+    /// The orchestrator's answer to lease `id` at `now`: held for `lives` where given, else
+    /// refused. One to no ask the run awaits breaks the channel's contract; one after the run
+    /// released its leases is late, and goes nowhere.
+    fn answer(&mut self, id: u32, lives: Option<NonZeroU64>, now: Instant) -> Result<Answered, String> {
+        if self.released {
+            return Ok(Answered::Late);
+        }
+        let Some(entry) = self.live.get_mut(&id).filter(|e| matches!(e.state, State::Asked)) else {
+            return Err(format!("an answer of lease {id}, which no ask of the run awaits"));
+        };
+        let told = Answered::Told {
+            asked_as: entry.asked_as,
+            reference: entry.reference.clone(),
+        };
+        match lives {
+            Some(lives) => {
+                entry.state = State::Held {
+                    until: now.checked_add(Duration::from_nanos(lives.get())),
+                };
+            }
+            None => {
+                self.live.remove(&id);
+            }
+        }
+        Ok(told)
+    }
+
+    /// Every live lease released, once: how many were held and how many asked; none where
+    /// the run released them already. Every ask after is refused, the run ended.
+    fn release(&mut self) -> Option<(usize, usize)> {
+        if self.released {
+            return None;
+        }
+        self.released = true;
+        let held = self
+            .live
+            .values()
+            .filter(|e| matches!(e.state, State::Held { .. }))
+            .count();
+        let asked = self.live.len().saturating_sub(held);
+        self.live.clear();
+        Some((held, asked))
+    }
+}
+
+/// What the run host says of its leases on its diagnostics (D242): each ask, answer and the
+/// run's release, by its credential's reference and its lease's id, and never a value.
+enum Audit<'a> {
+    Asked {
+        reference: &'a str,
+        id: u32,
+    },
+    Held {
+        reference: &'a str,
+        id: u32,
+        lives: Duration,
+    },
+    Refused {
+        reference: &'a str,
+        id: Option<u32>,
+        refusal: &'a Refusal,
+    },
+    Released {
+        held: usize,
+        asked: usize,
+    },
+}
+
+impl std::fmt::Display for Audit<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Audit::Asked { reference, id } => write!(f, "credential {reference}: lease {id} asked"),
+            Audit::Held { reference, id, lives } => {
+                write!(f, "credential {reference}: lease {id} held for {lives:?}")
+            }
+            Audit::Refused {
+                reference,
+                id: Some(id),
+                refusal,
+            } => write!(f, "credential {reference}: lease {id} refused: {refusal}"),
+            Audit::Refused {
+                reference,
+                id: None,
+                refusal,
+            } => write!(f, "credential {reference}: an ask refused here: {refusal}"),
+            Audit::Released { held, asked } => {
+                write!(f, "its leases released as it ends: {held} held, {asked} asked")
+            }
+        }
+    }
+}
+
+/// A run's leases, as its host relays them (D242): its ledger, and its network process's
+/// control, on which that process's asks come and their answers go, one whole message at a
+/// time.
+struct Leasing<'a> {
+    ledger: Mutex<Ledger>,
+    net: &'a crate::netproc::Control,
+    sending: Mutex<()>,
+}
+
+impl Leasing<'_> {
+    /// Tells the network process its ask `asked_as`'s answer: the value and its lease's
+    /// life, or why not. The message's copy of a value is wiped once sent.
+    fn tell(&self, asked_as: u32, answer: Result<(NonZeroU64, &[u8]), &Refusal>) -> io::Result<()> {
+        let payload = shards_net::lease::encode_answer(asked_as, answer)
+            .ok_or_else(|| io::Error::other("a lease's answer past what its lengths count"))?;
+        let _one = lock(&self.sending);
+        crate::netproc::send(self.net, kind::NET_LEASE, &payload, &[])
+    }
+}
+
+/// The network process's refusal for the orchestrator's `refusal`, each cause kept.
+fn net_refusal(refusal: &wire::LeaseRefusal) -> Refusal {
+    match refusal {
+        wire::LeaseRefusal::Denied(why) => Refusal::Denied(why.clone()),
+        wire::LeaseRefusal::KeyReplaced { asked, current } => Refusal::KeyReplaced {
+            asked: asked.clone(),
+            current: current.clone(),
+        },
+        wire::LeaseRefusal::Unavailable(why) => Refusal::Unavailable(why.clone()),
+        wire::LeaseRefusal::Ended => Refusal::Ended,
+        wire::LeaseRefusal::Lapsed => Refusal::Lapsed,
+    }
+}
+
+/// Relays the network process's asks to the orchestrator until its control closes (D242):
+/// each one the ledger takes asked as `LEASE`, by reference and never a value; the rest
+/// refused here, typed. A message that is no ask breaks that process's contract, and no
+/// more of its asks are relayed.
+fn relay(leasing: &Leasing<'_>, answers: &Answers) {
+    loop {
+        let m = match crate::netproc::recv(leasing.net) {
+            Ok(Some(m)) => m,
+            Ok(None) | Err(_) => return,
+        };
+        let ask = (m.kind == kind::NET_LEASE)
+            .then(|| shards_net::lease::decode_ask(&m.payload))
+            .flatten();
+        let Some((asked_as, reference)) = ask else {
+            say(format_args!(
+                "its network process said message kind {} where it asks leases alone: no more of its asks are relayed",
+                m.kind
+            ));
+            return;
+        };
+        let asked = lock(&leasing.ledger).ask(asked_as, reference, Instant::now());
+        match asked {
+            Ok(id) => {
+                say(format_args!("{}", Audit::Asked { reference, id }));
+                let ask = wire::LeaseAsk {
+                    id,
+                    reference: reference.to_string(),
+                };
+                // The orchestrator gone, its run ends, which releases this lease with the
+                // rest.
+                if let Ok(payload) = ask.encode() {
+                    let _ = answers.send(wire::to_client::LEASE, &[&payload]);
+                }
+            }
+            Err(refusal) => {
+                say(format_args!(
+                    "{}",
+                    Audit::Refused {
+                        reference,
+                        id: None,
+                        refusal: &refusal,
+                    }
+                ));
+                if leasing.tell(asked_as, Err(&refusal)).is_err() {
+                    return;
+                }
+            }
+        }
+    }
+}
+
+/// The orchestrator's answer to a lease (`LEASED`, D242), relayed to the network process
+/// that asked it: its value for its lease's life, or its refusal, typed. The decoded copy of
+/// a value is wiped as it drops (`Secret`). One to no ask the run awaits breaks the channel's
+/// contract.
+fn leased(leasing: &Leasing<'_>, payload: &[u8]) -> Result<(), String> {
+    let answer = wire::LeaseAnswer::decode(payload).map_err(|e| e.to_string())?;
+    let lives = answer.result.as_ref().ok().map(|lease| lease.lives);
+    let told = lock(&leasing.ledger).answer(answer.id, lives, Instant::now())?;
+    let Answered::Told { asked_as, reference } = told else {
+        return Ok(());
+    };
+    // A network process gone is told nothing: its values went with it.
+    let _ = match &answer.result {
+        Ok(lease) => {
+            let audit = Audit::Held {
+                reference: &reference,
+                id: answer.id,
+                lives: Duration::from_nanos(lease.lives.get()),
+            };
+            say(format_args!("{audit}"));
+            leasing.tell(asked_as, Ok((lease.lives, &lease.value.0)))
+        }
+        Err(refusal) => {
+            let refusal = net_refusal(refusal);
+            let audit = Audit::Refused {
+                reference: &reference,
+                id: Some(answer.id),
+                refusal: &refusal,
+            };
+            say(format_args!("{audit}"));
+            leasing.tell(asked_as, Err(&refusal))
+        }
+    };
+    Ok(())
+}
+
+/// Says the run's end (`ENDED`), whatever ended it; where it has leases, every one released
+/// first and the orchestrator told (`RELEASED`), which releases each its broker gave (D242).
+/// The network process holds no value past this: it wipes its own as it ends with the VM.
+fn end_run(answers: &Answers, leasing: Option<&Leasing<'_>>, end: &wire::RunEnd) {
+    if let Some((held, asked)) = leasing.and_then(|l| lock(&l.ledger).release()) {
+        say(format_args!("{}", Audit::Released { held, asked }));
+        let _ = answers.send(wire::to_client::RELEASED, &[]);
+    }
+    if let Ok(payload) = end.encode() {
+        let _ = answers.send(wire::to_client::ENDED, &[&payload]);
+    }
+}
+
 /// How the run's microVM starts (D253), as the daemon starts a run's (daemon.rs `warm_for`):
 /// from its image's template where one is saved; else booted, saving it on the way at a name of
 /// this process's alone that becomes the template once complete; or booted alone where it has
@@ -964,23 +1289,23 @@ fn started<M: Machine>(m: &mut M, way: Way) -> Result<StartedVm<M>, No> {
         dir: dir.clone(),
         fresh: fresh.clone(),
     };
-    // A VM never ready makes no template, whatever it wrote: its save is removed.
+    // A VM never ready makes no template, whatever it wrote: its save is removed
+    // (`run::settle_boot`).
     let mut vm = match m.launch(&save) {
         Ok(vm) => vm,
         Err(e) => {
-            let _ = std::fs::remove_dir_all(&fresh);
+            let _ = crate::run::settle_boot(false, &fresh, &dir, || Ok(()));
             return Err(boot(e));
         }
     };
     if let Err(e) = m.ready(&mut vm) {
         m.end(vm);
-        let _ = std::fs::remove_dir_all(&fresh);
+        let _ = crate::run::settle_boot(false, &fresh, &dir, || Ok(()));
         return Err(boot(e));
     }
-    if let Err(e) = m.record(&dir) {
+    if let Err(e) = crate::run::settle_boot(true, &fresh, &dir, || m.record(&dir)) {
         m.say(&format!("{}: its record: {e}", dir.display()));
     }
-    crate::run::settle(&fresh, &dir);
     let held = if shards_vmm::snapshot::exists(&dir) {
         match m.hold(&dir) {
             Ok(held) => Some(held),
@@ -1031,6 +1356,8 @@ mod hosted {
         /// Its credential grants as its network process takes them (`NET_CREDENTIALS`), where
         /// it has any.
         credentials: Option<Vec<u8>>,
+        /// The references its grants name, the leases its network process may ask (D242).
+        granted: Vec<String>,
         dirs: Vec<(OwnedFd, bool, OsString)>,
         /// The anonymous volumes its `VOLUME`s made, removed as it ends (`--rm`'s).
         made: Vec<String>,
@@ -1056,7 +1383,9 @@ mod hosted {
         input: io::Stdin,
     ) -> Result<(), No> {
         let home = shards_ipc::home().map_err(no(Cause::Boot))?;
-        let plan = plan(request, ready_by, &home)?;
+        let shaped = shape(request, &home)?;
+        let made = shaped.made.clone();
+        let plan = plan(request, ready_by, shaped).inspect_err(|_| end(&home, None, &made))?;
         launch_and_serve(answers, input, &home, plan)
     }
 
@@ -1134,8 +1463,29 @@ mod hosted {
         }
     }
 
-    fn plan(request: &wire::Request, ready_by: Option<u64>, home: &Path) -> Result<Plan, No> {
-        let mut run = as_run(request, ready_by);
+    /// What a run's microVM is made of, made before it starts (D253): its image prepared, its
+    /// network chosen and its volumes open, its microVM composed. All of it a warm run host
+    /// makes of its exemplar before its run asks (D253's pools), from what alone the runs of
+    /// one microVM share (`wire::Request::exemplar`): never a member's stages, the run's
+    /// deadline or its control ask.
+    struct Shaped {
+        run: shards_ipc::Run,
+        prepared: crate::run::Prepared,
+        agentfile: Option<crate::agentfile::Agentfile>,
+        labels: Vec<String>,
+        active: Vec<u32>,
+        egress: Option<Vec<u8>>,
+        credentials: Option<Vec<u8>>,
+        bridge: Option<shards_net::bridge::Bridge>,
+        points: Vec<crate::volumes::MountPoint>,
+        opened: crate::volumes::Opened,
+        made: Vec<String>,
+        server: Option<PathBuf>,
+        microvm: super::Microvm,
+    }
+
+    fn shape(request: &wire::Request, home: &Path) -> Result<Shaped, No> {
+        let mut run = as_run(request, None);
         let say = |line: &str| {
             let _ = writeln!(io::stderr(), "{line}");
         };
@@ -1169,19 +1519,9 @@ mod hosted {
                 ),
             ));
         }
-        let members = super::members_of(&labels, &active);
-        let staged = super::staged(request, &members)?;
-        let inputs = super::inputs(request, &members)?;
-        let terminals = super::terminals(request, &members)?;
         super::ports_granted(&request.publish, agentfile.as_ref(), request.command.is_some())?;
         let egress = super::network(agentfile.as_ref(), request, &mut run)?;
         let credentials = super::credentials(&request.credentials, egress.as_deref())?;
-        let mut nesting = super::nesting(agentfile.as_ref(), &run, &say)?;
-        // The run's GPUs, its command's to read under the grant (D234's `gpus=`), as its VM
-        // process binds them (D232).
-        if let crate::agentfile::Nesting::Granted(grant) = &mut nesting {
-            grant.gpus = request.gpu_devices.clone();
-        }
         let bridge = if run.network == "bridge" {
             Some(
                 shards_net::bridge::elected_here(&mut |note| say(&note))
@@ -1190,15 +1530,6 @@ mod hosted {
         } else {
             None
         };
-        // Its published ports, bound now, as dockerd's allocator binds them (D31).
-        let (bindings, alone) = publish::wanted(&run, &prepared.exposed);
-        if let Some(e) = publish::unsupported(&bindings) {
-            return Err(No(Cause::Request, e));
-        }
-        let bound = publish::bind(&bindings, &alone, None, publish::v6_listenable(), |_, _| {
-            publish::InUse::Host
-        })
-        .map_err(no(Cause::Boot))?;
         // Its volumes: each share at its path as `-v` puts it, given where the image's
         // `VOLUME` there is for a member (D109), each other `VOLUME` a volume of the store.
         let store = crate::volumes::Store::new(home);
@@ -1215,13 +1546,114 @@ mod hosted {
         )
         .map_err(no(Cause::Boot))?;
         let points: Vec<crate::volumes::MountPoint> = points.into_iter().map(|(p, _)| p).collect();
-        let made = points
+        let made: Vec<String> = points
             .iter()
             .filter(|p| p.kind == "volume" && store.get(&p.name).is_some_and(|v| v.anonymous))
             .map(|p| p.name.clone())
             .collect();
-        let opened = crate::volumes::open_for(&points, true, &store, &crate::volumes::Access::default())
-            .map_err(no(Cause::Boot))?;
+        // What it made goes where what follows fails, as `--rm`'s volumes go.
+        let rest = || -> Result<_, No> {
+            let opened = crate::volumes::open_for(&points, true, &store, &crate::volumes::Access::default())
+                .map_err(no(Cause::Boot))?;
+            // The in-VM server's device after its root filesystem, where its image is an
+            // Agentfile's (D60).
+            let server = match &agentfile {
+                Some(_) => Some(crate::guest::server_device(home).map_err(no(Cause::Boot))?),
+                None => None,
+            };
+            // Its microVM, made as every run's is, the daemon's alike, so that its template is
+            // the one a daemon's run of the same shape saves and restores (D253): its size, the
+            // home's CPU baseline (D176 part 6), the host's memory to plug, the in-VM server's
+            // and the emulator's devices, a slot and a DAX window for each share (D38, D189), PCI
+            // slots (D214) and its bridge.
+            let cpu_baseline = crate::daemon::home_baseline(home);
+            let share_window_mib =
+                crate::daemon::share_window_mib(&|line| say(line)).map_err(no(Cause::Boot))?;
+            let shares = u32::try_from(opened.dirs.len())
+                .map_err(|_| No(Cause::Request, "more shares than a microVM counts".into()))?;
+            let shape = crate::run::Shape {
+                size: prepared.size,
+                cpu_baseline: &cpu_baseline,
+                host_memory: crate::build::host_memory(),
+                server: server.as_deref(),
+                emulator: prepared.emulator.as_ref(),
+                shares,
+                share_window_mib,
+                max_map_count: crate::daemon::max_map_count(),
+                pci_slots: crate::daemon::pci_slots(),
+                bridge: bridge.as_ref(),
+            };
+            let microvm = super::microvm(
+                home,
+                &prepared,
+                &shape,
+                &request.gpu_devices,
+                shards_vmm::vm::restores_here(),
+            );
+            if microvm.cfg.init.is_none() {
+                return Err(No(Cause::Boot, "no init to boot".into()));
+            }
+            Ok((opened, server, microvm))
+        };
+        let (opened, server, microvm) = rest().inspect_err(|_| end(home, None, &made))?;
+        Ok(Shaped {
+            run,
+            prepared,
+            agentfile,
+            labels,
+            active,
+            egress,
+            credentials,
+            bridge,
+            points,
+            opened,
+            made,
+            server,
+            microvm,
+        })
+    }
+
+    /// The run `request`, its deadline `ready_by`, of its microVM `shaped`: its members'
+    /// stages, its published ports bound, its nesting grant decided, its setup and spec.
+    fn plan(request: &wire::Request, ready_by: Option<u64>, shaped: Shaped) -> Result<Plan, No> {
+        let Shaped {
+            mut run,
+            mut prepared,
+            agentfile,
+            labels,
+            active,
+            egress,
+            credentials,
+            bridge,
+            points,
+            opened,
+            made,
+            server,
+            microvm,
+        } = shaped;
+        run.ready_by = ready_by;
+        let say = |line: &str| {
+            let _ = writeln!(io::stderr(), "{line}");
+        };
+        let members = super::members_of(&labels, &active);
+        let staged = super::staged(request, &members)?;
+        let inputs = super::inputs(request, &members)?;
+        let terminals = super::terminals(request, &members)?;
+        let mut nesting = super::nesting(agentfile.as_ref(), &run, &say)?;
+        // The run's GPUs, its command's to read under the grant (D234's `gpus=`), as its VM
+        // process binds them (D232).
+        if let crate::agentfile::Nesting::Granted(grant) = &mut nesting {
+            grant.gpus = request.gpu_devices.clone();
+        }
+        // Its published ports, bound now, as dockerd's allocator binds them (D31).
+        let (bindings, alone) = publish::wanted(&run, &prepared.exposed);
+        if let Some(e) = publish::unsupported(&bindings) {
+            return Err(No(Cause::Request, e));
+        }
+        let bound = publish::bind(&bindings, &alone, None, publish::v6_listenable(), |_, _| {
+            publish::InUse::Host
+        })
+        .map_err(no(Cause::Boot))?;
         // Its setup, as the daemon composes a run's (daemon.rs `start`): its mounts, its
         // capabilities beside its domains, its security, its domains' filter, its managed
         // output, what it stages, its members' ends asked for, and its own command or
@@ -1232,43 +1664,6 @@ mod hosted {
         if let Some(a) = agentfile.as_ref().filter(|a| a.domains > 0 && a.uplink) {
             setup.retain(|e| !e.starts_with(b"caps="));
             setup.push(format!("caps={}", a.caps(&run)).into_bytes());
-        }
-        // The in-VM server's device after its root filesystem, where its image is an
-        // Agentfile's (D60).
-        let server = match &agentfile {
-            Some(_) => Some(crate::guest::server_device(home).map_err(no(Cause::Boot))?),
-            None => None,
-        };
-        // Its microVM, made as every run's is, the daemon's alike, so that its template is
-        // the one a daemon's run of the same shape saves and restores (D253): its size, the
-        // home's CPU baseline (D176 part 6), the host's memory to plug, the in-VM server's
-        // and the emulator's devices, a slot and a DAX window for each share (D38, D189), PCI
-        // slots (D214) and its bridge.
-        let cpu_baseline = crate::daemon::home_baseline(home);
-        let share_window_mib = crate::daemon::share_window_mib(&|line| say(line)).map_err(no(Cause::Boot))?;
-        let shares = u32::try_from(opened.dirs.len())
-            .map_err(|_| No(Cause::Request, "more shares than a microVM counts".into()))?;
-        let shape = crate::run::Shape {
-            size: prepared.size,
-            cpu_baseline: &cpu_baseline,
-            host_memory: crate::build::host_memory(),
-            server: server.as_deref(),
-            emulator: prepared.emulator.as_ref(),
-            shares,
-            share_window_mib,
-            max_map_count: crate::daemon::max_map_count(),
-            pci_slots: crate::daemon::pci_slots(),
-            bridge: bridge.as_ref(),
-        };
-        let microvm = super::microvm(
-            home,
-            &prepared,
-            &shape,
-            &request.gpu_devices,
-            shards_vmm::vm::restores_here(),
-        );
-        if microvm.cfg.init.is_none() {
-            return Err(No(Cause::Boot, "no init to boot".into()));
         }
         let version = crate::guest::version_of(&microvm.cfg.kernel).map_err(no(Cause::Boot))?;
         crate::setup::security_setup(&mut setup, &run, version, None, &[], nesting.grant())
@@ -1355,6 +1750,7 @@ mod hosted {
             listeners: bound.listeners,
             egress,
             credentials,
+            granted: request.credentials.iter().map(|g| g.reference.clone()).collect(),
             dirs: opened.dirs,
             made,
             bridge,
@@ -1440,12 +1836,50 @@ mod hosted {
         shards_vmm::platform::open_dir(&at).map_err(|e| format!("{}: {e}", at.display()))
     }
 
+    /// What a run's VM is launched from (`launch`): its microVM and what of the run its
+    /// processes are handed, a run's plan's or its microVM's shape's alike (D253's pools).
+    struct Launch<'a> {
+        prepared: &'a crate::run::Prepared,
+        dirs: &'a [(OwnedFd, bool, OsString)],
+        bridge: Option<&'a shards_net::bridge::Bridge>,
+        /// Whether its network process makes its run's credential grants (D242).
+        credentials: bool,
+        server: Option<&'a Path>,
+        microvm: &'a super::Microvm,
+    }
+
+    impl Plan {
+        fn launch(&self) -> Launch<'_> {
+            Launch {
+                prepared: &self.prepared,
+                dirs: &self.dirs,
+                bridge: self.bridge.as_ref(),
+                credentials: self.credentials.is_some(),
+                server: self.server.as_deref(),
+                microvm: &self.microvm,
+            }
+        }
+    }
+
+    impl Shaped {
+        fn launch(&self) -> Launch<'_> {
+            Launch {
+                prepared: &self.prepared,
+                dirs: &self.opened.dirs,
+                bridge: self.bridge.as_ref(),
+                credentials: self.credentials.is_some(),
+                server: self.server.as_deref(),
+                microvm: &self.microvm,
+            }
+        }
+    }
+
     /// The run's processes, started as the daemon starts a run's VM (launch.rs): its share
     /// process, ended where its VM does not start; then its network process, denying all
     /// until its policy comes, and its VM, the way its template says (D253, `super::started`):
     /// restoring it, or booting and saving it, one that does not restore replaced. On Windows
     /// each is made in a job of this process's that ends them as it ends (D141, D197).
-    fn launch(home: &Path, plan: &Plan) -> Result<Launched, No> {
+    fn launch(home: &Path, plan: &Launch<'_>) -> Result<Launched, No> {
         let boot = |e: String| No(Cause::Boot, e);
         // Made before any process of the run's, and held until each is reaped.
         #[cfg(windows)]
@@ -1455,12 +1889,12 @@ mod hosted {
         let tags = run_tags(plan.dirs.len());
         #[cfg(unix)]
         let shares = (!plan.dirs.is_empty())
-            .then(|| start_shares(home, &plan.dirs, Some(&tags)))
+            .then(|| start_shares(home, plan.dirs, Some(&tags)))
             .transpose()
             .map_err(boot)?;
         #[cfg(windows)]
         let shares = (!plan.dirs.is_empty())
-            .then(|| start_shares(home, &plan.dirs, &job, Some(&tags)))
+            .then(|| start_shares(home, plan.dirs, &job, Some(&tags)))
             .transpose()
             .map_err(boot)?;
         let started = crate::helpers::vm().map_err(boot).and_then(|vm| {
@@ -1501,7 +1935,7 @@ mod hosted {
     /// writable layer's file (D190); its template's record and files (D253).
     struct Host<'a> {
         home: &'a Path,
-        plan: &'a Plan,
+        plan: &'a Launch<'a>,
         vm: &'a Path,
         ends: &'a Ends,
         #[cfg(windows)]
@@ -1527,12 +1961,12 @@ mod hosted {
                     .is_ok_and(|net| net.is_some()),
                 _ => true,
             };
-            let network = match (&plan.bridge, wired) {
+            let network = match (plan.bridge, wired) {
                 (Some(bridge), true) => Some(crate::launch::Network {
                     policy: shards_net::Policy::DenyAll,
                     mac: shards_net::random_mac().map_err(|e| format!("a guest's MAC: {e}"))?,
                     bridge,
-                    credentials: plan.credentials.is_some(),
+                    credentials: plan.credentials,
                 }),
                 _ => None,
             };
@@ -1553,7 +1987,7 @@ mod hosted {
                 super::Way::Restore { dir } => {
                     // Its backing files as the VM saving its template recorded them: resolved.
                     let rootfs = crate::daemon::resolved(rootfs);
-                    let server = plan.server.as_deref().map(crate::daemon::resolved);
+                    let server = plan.server.map(crate::daemon::resolved);
                     let emulator = plan
                         .prepared
                         .emulator
@@ -1895,6 +2329,8 @@ mod hosted {
         /// of those built-ins' ends are told on, held while the run is.
         notices_due: Mutex<Option<OwnedFd>>,
         notices: Mutex<Vec<Stream>>,
+        /// Its credential leases, where it has grants (D242).
+        leasing: Option<super::Leasing<'a>>,
         /// On Windows the run's job, which each plug's share process is made in too.
         #[cfg(windows)]
         job: &'a shards_ipc::GroupJob,
@@ -2065,12 +2501,140 @@ mod hosted {
     }
 
     fn launch_and_serve(answers: &Answers, input: io::Stdin, home: &Path, plan: Plan) -> Result<(), No> {
-        let boot = |e: String| No(Cause::Boot, e);
         super::say(format_args!(
             "prepared {}, {} vCPUs, {} MiB; starting its VM",
             plan.prepared.image_id, plan.prepared.size.0, plan.prepared.size.1
         ));
-        let mut launched = launch(home, &plan)?;
+        let launched = launch(home, &plan.launch())?;
+        serve_launched(answers, input, home, plan, launched)
+    }
+
+    /// A warm run host (D253's pools): its microVM made of `exemplar` and started, and once
+    /// ready said (`WARMED`); then its run, as it comes (`CREATE`), served as any run of this
+    /// process is, its start said `Warm`. A run of another microVM's than its exemplar's is
+    /// refused `Unfit`, for its orchestrator to start a host of its own for it; its channel
+    /// closed first ends it, its pool having let it go.
+    pub(super) fn warm(answers: &Answers, exemplar: &wire::Request, mut input: io::Stdin) -> Result<(), No> {
+        let home = shards_ipc::home().map_err(no(Cause::Boot))?;
+        let shaped = shape(exemplar, &home)?;
+        let launched = match launch(&home, &shaped.launch()) {
+            Ok(launched) => launched,
+            Err(e) => {
+                end(&home, None, &shaped.made);
+                return Err(e);
+            }
+        };
+        super::say(format_args!(
+            "warm, its VM process {} ready ({:?})",
+            launched.vm.id(),
+            launched.from
+        ));
+        // Its run: its request, the same microVM's, and its deadline from now; none where its
+        // pool let it go.
+        let taken = (|| -> Result<Option<(wire::Request, Option<u64>)>, No> {
+            answers
+                .send(wire::to_client::WARMED, &[&wire::warmed(launched.from)])
+                .map_err(|e| No(Cause::Boot, format!("its orchestrator: {e}")))?;
+            let request = match wire::read_frame(&mut input) {
+                Ok(Some((wire::to_host::CREATE, payload))) => {
+                    wire::Request::decode(&payload).map_err(|e| No(Cause::Request, e.to_string()))?
+                }
+                Ok(Some((kind, _))) => {
+                    return Err(No(
+                        Cause::Request,
+                        format!("message kind {kind} before the run's request"),
+                    ));
+                }
+                Ok(None) => return Ok(None),
+                Err(e) => return Err(No(Cause::Request, format!("the request: {e}"))),
+            };
+            if request.exemplar() != *exemplar {
+                return Err(No(
+                    Cause::Unfit,
+                    "its run asks for another microVM than the one it made ready".into(),
+                ));
+            }
+            let ready_by = super::deadline(request.ready_by, std::time::SystemTime::now())?;
+            Ok(Some((request, ready_by)))
+        })();
+        let made = shaped.made.clone();
+        let (request, ready_by) = match taken {
+            Ok(Some(taken)) => taken,
+            Ok(None) => {
+                end(&home, Some(launched), &made);
+                return Ok(());
+            }
+            Err(e) => {
+                end(&home, Some(launched), &made);
+                return Err(e);
+            }
+        };
+        let plan = match plan(&request, ready_by, shaped) {
+            Ok(plan) => plan,
+            Err(e) => {
+                end(&home, Some(launched), &made);
+                return Err(e);
+            }
+        };
+        let mut launched = launched;
+        launched.from = wire::StartedFrom::Warm;
+        serve_launched(answers, input, &home, plan, launched)
+    }
+
+    /// Ends what of a run was made: its processes, `launched` (its VM killed, then each reaped
+    /// once nothing of this process's holds it up, the share process as its connections to
+    /// the VM close, `Shares::end`; on Windows its job let go of last, which ends whatever of
+    /// them is left); and its anonymous volumes `made`, removed as `--rm`'s are.
+    fn end(home: &Path, launched: Option<Launched>, made: &[String]) {
+        if let Some(Launched {
+            vm,
+            link,
+            net,
+            shares,
+            from: _,
+            held,
+            #[cfg(windows)]
+            job,
+        }) = launched
+        {
+            let _ = vm.kill(shards_ipc::signal::SIGKILL);
+            let _ = vm.wait();
+            drop(link);
+            // Its template's files, held open while its VM ran (D253).
+            drop(held);
+            let record = Ends::kept_in(home);
+            if let Some((child, control)) = net {
+                drop(control);
+                crate::netproc::reap(&child, &record);
+            }
+            if let Some(shares) = shares {
+                shares.end(&record);
+            }
+            #[cfg(windows)]
+            drop(job);
+        }
+        if !made.is_empty() {
+            let store = crate::volumes::Store::new(home);
+            let _held = crate::volumes::lock();
+            for name in made {
+                if let Err(e) = store.remove(name) {
+                    let _ = writeln!(io::stderr(), "shards api-run: its volume {name}: {e}");
+                }
+            }
+        }
+    }
+
+    /// Serves the run `plan` on its VM, `launched`, ready: its network told, its run handed
+    /// over, its start said, and its run served until it ends; then its processes and volumes
+    /// ended.
+    fn serve_launched(
+        answers: &Answers,
+        input: io::Stdin,
+        home: &Path,
+        plan: Plan,
+        mut launched: Launched,
+    ) -> Result<(), No> {
+        let boot = |e: String| No(Cause::Boot, e);
         super::say(format_args!(
             "its VM process {} is ready ({:?})",
             launched.vm.id(),
@@ -2151,6 +2715,16 @@ mod hosted {
                 .link
                 .try_clone()
                 .map_err(|e| boot(format!("the VM's link: {e}")))?;
+            // Its credentials' leases (D242), where it has grants and so a network process.
+            let leasing = launched
+                .net
+                .as_ref()
+                .filter(|_| plan.credentials.is_some())
+                .map(|(_, control)| super::Leasing {
+                    ledger: Mutex::new(super::Ledger::new(plan.granted.clone())),
+                    net: control,
+                    sending: Mutex::new(()),
+                });
             let live = Live {
                 answers,
                 ends: Ends::kept_in(home),
@@ -2173,6 +2747,7 @@ mod hosted {
                 plugged: Mutex::new(HashMap::new()),
                 notices_due: Mutex::new(due),
                 notices: Mutex::new(Vec::new()),
+                leasing,
                 #[cfg(windows)]
                 job: &launched.job,
             };
@@ -2192,40 +2767,7 @@ mod hosted {
         // connections to the VM close (`Shares::end`); on Windows its job let go of last,
         // which ends whatever of them is left; its anonymous volumes removed, as `--rm`'s
         // are.
-        let Launched {
-            vm,
-            link,
-            net,
-            shares,
-            from: _,
-            held,
-            #[cfg(windows)]
-            job,
-        } = launched;
-        let _ = vm.kill(shards_ipc::signal::SIGKILL);
-        let _ = vm.wait();
-        drop(link);
-        // Its template's files, held open while its VM ran (D253).
-        drop(held);
-        let record = Ends::kept_in(home);
-        if let Some((child, control)) = net {
-            drop(control);
-            crate::netproc::reap(&child, &record);
-        }
-        if let Some(shares) = shares {
-            shares.end(&record);
-        }
-        #[cfg(windows)]
-        drop(job);
-        if !plan.made.is_empty() {
-            let store = crate::volumes::Store::new(home);
-            let _held = crate::volumes::lock();
-            for name in &plan.made {
-                if let Err(e) = store.remove(name) {
-                    let _ = writeln!(io::stderr(), "shards api-run: its volume {name}: {e}");
-                }
-            }
-        }
+        end(home, Some(launched), &plan.made);
         served
     }
 
@@ -2293,6 +2835,16 @@ mod hosted {
                     let _ = writeln!(io::stderr(), "shards api-run: its members' output: {e}");
                 }
             }
+            // Its network process's asks for leases (D242), relayed until that process ends
+            // with the VM. With none relayed, a flow that needs a value waits out the run.
+            if let Some(leasing) = &live.leasing {
+                let started = std::thread::Builder::new()
+                    .name("api-run leases".into())
+                    .spawn_scoped(scope, move || super::relay(leasing, live.answers));
+                if let Err(e) = started {
+                    let _ = writeln!(io::stderr(), "shards api-run: its credentials' leases: {e}");
+                }
+            }
             let following = std::thread::Builder::new()
                 .name("api-run link".into())
                 .spawn_scoped(scope, || {
@@ -2309,18 +2861,19 @@ mod hosted {
                     } else {
                         end
                     };
-                    if let Ok(payload) = end.encode() {
-                        let _ = live.answers.send(wire::to_client::ENDED, &[&payload]);
-                    }
+                    // Every end of the run's comes here, its leases released before it is said:
+                    // its own command's, `STOP`, its owner's channel closed, its VM gone.
+                    super::end_run(live.answers, live.leasing.as_ref(), &end);
+                    net_gone(live, launched);
                 });
             if following.is_err() {
                 // Nothing would say its end: the run is ended now, and said so.
                 live.stopping.store(true, std::sync::atomic::Ordering::SeqCst);
                 let _ = launched.vm.kill(shards_ipc::signal::SIGKILL);
                 lock(&live.held).take();
-                if let Ok(payload) = RunEnd::Failed("the run host could not follow its VM".into()).encode() {
-                    let _ = live.answers.send(wire::to_client::ENDED, &[&payload]);
-                }
+                let end = RunEnd::Failed("the run host could not follow its VM".into());
+                super::end_run(live.answers, live.leasing.as_ref(), &end);
+                net_gone(live, launched);
             }
             asks(live, input, &launched.vm, scope);
             // The run is over: its endpoint, and every lane on it, with it.
@@ -2328,6 +2881,18 @@ mod hosted {
             lock(&live.lanes).take();
         });
         drop(client);
+    }
+
+    /// Its VM gone and its end said, a run's network process that relays its leases (D242)
+    /// reaped as the run's end reaps it (`netproc::reap`: followed while it goes on with its
+    /// end, then ended): so that its control closes, and the relay of its asks with it,
+    /// whatever that process does.
+    fn net_gone(live: &Live<'_>, launched: &Launched) {
+        if live.leasing.is_some()
+            && let Some((child, _)) = &launched.net
+        {
+            crate::netproc::reap(child, &live.ends);
+        }
     }
 
     /// The run's agent-control endpoint (D252), bound on loopback, as step 5's endpoints bind:
@@ -2557,6 +3122,19 @@ mod hosted {
                         break;
                     };
                     if input_end(live, end).is_err() {
+                        break;
+                    }
+                }
+                // A lease the orchestrator answered (D242), relayed to the network process
+                // that asked it; the frame's copy of a value wiped as it goes. One of a run
+                // with no grants, or to no ask, breaks the channel.
+                wire::to_host::LEASED => {
+                    let payload = zeroize::Zeroizing::new(payload);
+                    let Some(leasing) = &live.leasing else {
+                        break;
+                    };
+                    if let Err(e) = super::leased(leasing, &payload) {
+                        super::say(format_args!("its orchestrator broke its channel: {e}"));
                         break;
                     }
                 }
@@ -3674,6 +4252,8 @@ mod tests {
             shards_abi::run::members::args_of(&entries, 1).unwrap(),
             [&b"--resume"[..], b"s-1", b""]
         );
+        // Each of a key the run protocol registers (D257), as the guest refuses any other.
+        assert_eq!(shards_abi::run::setup::check(&entries), Ok(()));
         let mut nul = s.clone();
         nul.args.push("a\0b".into());
         assert!(matches!(
@@ -3825,6 +4405,8 @@ mod tests {
         ])
         .unwrap();
         let entries = trust(&der, &grants).unwrap();
+        // Each of a key the run protocol registers (D257), as the guest refuses any other.
+        assert_eq!(shards_abi::run::setup::check(&entries), Ok(()));
         let got = shards_abi::run::trust::of(&entries).unwrap().unwrap();
         assert_eq!(got.hosts, [b"api.anthropic.com".as_slice(), b"claude.ai"]);
         let pem = std::str::from_utf8(got.pem).unwrap();
@@ -4328,6 +4910,210 @@ mod tests {
         ] {
             assert!(held_of(room, said).is_err(), "{room:?} {said:?}");
         }
+    }
+
+    const CLAUDE: &str = "anthropic/claude-max";
+    const CHATGPT: &str = "openai/chatgpt";
+    const VALUE: &str = "sk-ant-lease-test-value";
+
+    /// The run's ledger of leases (D242, R04). Do: ask a credential no grant names; ask a
+    /// granted one, then again while it is asked and while it is held; ask it once its lease
+    /// has ended, refuse that, and answer it again; answer a lease never asked; hold one and
+    /// ask another; release the run's leases, twice; then ask, and answer the other. Expect:
+    /// the ungranted refused, nothing asked; one lease of a credential at a time; the ended
+    /// lease released by the next ask, asked anew; the refused one gone, its second answer
+    /// and the stray one refused; the release counting the held and the asked, once; and after
+    /// it, asks refused as the run ended, the answer late.
+    #[test]
+    fn a_runs_ledger_holds_one_lease_of_a_credential_and_releases_them_all() {
+        let mut ledger = Ledger::new(vec![CLAUDE.into(), CHATGPT.into()]);
+        let now = Instant::now();
+        let life = NonZeroU64::new(60_000_000_000).unwrap();
+        let told = |asked_as| Answered::Told {
+            asked_as,
+            reference: CLAUDE.into(),
+        };
+        assert_eq!(ledger.ask(1, "github/token", now), Err(Refusal::Ungranted));
+        let first = ledger.ask(1, CLAUDE, now).unwrap();
+        assert_eq!(
+            ledger.ask(2, CLAUDE, now),
+            Err(Refusal::Live),
+            "asked while asked"
+        );
+        assert_eq!(ledger.answer(first, Some(life), now), Ok(told(1)));
+        assert_eq!(ledger.ask(3, CLAUDE, now), Err(Refusal::Live), "asked while held");
+        let ended = now + Duration::from_secs(60);
+        let second = ledger.ask(4, CLAUDE, ended).unwrap();
+        assert_ne!(second, first, "a new lease, a new id");
+        assert_eq!(ledger.answer(second, None, ended), Ok(told(4)));
+        assert!(
+            ledger.answer(second, Some(life), ended).is_err(),
+            "a refused lease answered"
+        );
+        assert!(
+            ledger.answer(u32::MAX, Some(life), ended).is_err(),
+            "no ask answered"
+        );
+        let held = ledger.ask(5, CLAUDE, ended).unwrap();
+        assert_eq!(ledger.answer(held, Some(life), ended), Ok(told(5)));
+        let asked = ledger.ask(6, CHATGPT, ended).unwrap();
+        assert_eq!(ledger.release(), Some((1, 1)));
+        assert_eq!(ledger.release(), None, "released twice");
+        assert_eq!(ledger.ask(7, CHATGPT, ended), Err(Refusal::Ended));
+        assert_eq!(ledger.answer(asked, Some(life), ended), Ok(Answered::Late));
+    }
+
+    /// A run with a grant, its lease relayed just in time between its network process (its
+    /// lease client, shards_net::lease) and a simulated orchestrator, over a socket and pipes as
+    /// the run host has them (D242). Do, for a run ending as its command exits, as it is
+    /// stopped or its owner's channel closes, and as its VM fails: ask the credential on its
+    /// first use; answer it as the orchestrator, as the run host's asks take `LEASED`; end the
+    /// run; ask again; end the network process. Expect: no value before the first use; the
+    /// orchestrator asked by reference; the value held by the network process; the run's
+    /// release told before its end, every time; the later ask refused as ended, nothing asked
+    /// of the orchestrator; the relay ended with the network process's control.
+    #[cfg(unix)]
+    #[test]
+    fn a_granted_runs_lease_is_relayed_on_first_use_and_released_as_it_ends() {
+        use std::io::Read as _;
+        use std::os::unix::net::UnixStream;
+        let soon = || Instant::now() + Duration::from_secs(120);
+        for end in [
+            wire::RunEnd::Exited(0),
+            wire::RunEnd::Stopped,
+            wire::RunEnd::Failed("its VM ended".into()),
+        ] {
+            let (net, run_host) = UnixStream::pair().unwrap();
+            let (mut orchestrator, out) = std::io::pipe().unwrap();
+            let answers = Answers(Mutex::new(Box::new(out)));
+            let leasing = Leasing {
+                ledger: Mutex::new(Ledger::new(vec![CLAUDE.into()])),
+                net: &run_host,
+                sending: Mutex::new(()),
+            };
+            std::thread::scope(|s| {
+                let relaying = s.spawn(|| relay(&leasing, &answers));
+                let mut leases = shards_net::lease::Leases::new(vec![CLAUDE.into()]);
+                assert_eq!(
+                    leases.held(CLAUDE, Instant::now()),
+                    None,
+                    "a value before its use"
+                );
+                assert!(matches!(
+                    leases.ask(CLAUDE, 1, Instant::now()),
+                    shards_net::lease::Asked::Waiting
+                ));
+                for ask in leases.asks() {
+                    shards_ipc::send(&net, kind::NET_LEASE, &ask, &[]).unwrap();
+                }
+                let (which, payload) = wire::read_frame(&mut orchestrator).unwrap().unwrap();
+                assert_eq!(which, wire::to_client::LEASE);
+                let ask = wire::LeaseAsk::decode(&payload).unwrap();
+                assert_eq!(ask.reference, CLAUDE);
+                let answer = wire::LeaseAnswer {
+                    id: ask.id,
+                    result: Ok(wire::Lease {
+                        value: wire::Secret::from(VALUE),
+                        lives: NonZeroU64::new(3_600_000_000_000).unwrap(),
+                    }),
+                };
+                leased(&leasing, &answer.encode().unwrap()).unwrap();
+                let m = shards_ipc::recv_by(&net, soon()).unwrap().unwrap();
+                assert_eq!(m.kind, kind::NET_LEASE);
+                assert!(leases.answered(&m.payload, Instant::now()));
+                assert_eq!(leases.held(CLAUDE, Instant::now()), Some(VALUE.as_bytes()));
+                end_run(&answers, Some(&leasing), &end);
+                let (which, payload) = wire::read_frame(&mut orchestrator).unwrap().unwrap();
+                assert_eq!(
+                    (which, wire::released(&payload)),
+                    (wire::to_client::RELEASED, Ok(())),
+                    "{end:?}: its leases not released before its end"
+                );
+                let (which, payload) = wire::read_frame(&mut orchestrator).unwrap().unwrap();
+                assert_eq!(which, wire::to_client::ENDED);
+                assert_eq!(wire::RunEnd::decode(&payload).unwrap(), end);
+                let late = shards_net::lease::encode_ask(9, CLAUDE);
+                shards_ipc::send(&net, kind::NET_LEASE, &late, &[]).unwrap();
+                let m = shards_ipc::recv_by(&net, soon()).unwrap().unwrap();
+                assert_eq!(
+                    shards_net::lease::decode_answer(&m.payload),
+                    Some((9, Err(Refusal::Ended)))
+                );
+                drop(net);
+                relaying.join().unwrap();
+            });
+            drop(answers);
+            let mut rest = Vec::new();
+            orchestrator.read_to_end(&mut rest).unwrap();
+            assert!(rest.is_empty(), "{end:?}: told the orchestrator more: {rest:?}");
+        }
+    }
+
+    /// An answer to no ask of the run's breaks the orchestrator's channel; one of a run that
+    /// has released its leases goes nowhere (D242).
+    #[cfg(unix)]
+    #[test]
+    fn an_answer_to_no_ask_breaks_the_channel() {
+        let (_net, run_host) = std::os::unix::net::UnixStream::pair().unwrap();
+        let leasing = Leasing {
+            ledger: Mutex::new(Ledger::new(vec![CLAUDE.into()])),
+            net: &run_host,
+            sending: Mutex::new(()),
+        };
+        let answer = wire::LeaseAnswer {
+            id: 7,
+            result: Err(wire::LeaseRefusal::Ended),
+        }
+        .encode()
+        .unwrap();
+        assert!(leased(&leasing, &answer).is_err());
+        assert!(leased(&leasing, &[0, 0]).is_err());
+        assert!(lock(&leasing.ledger).release().is_some());
+        assert!(leased(&leasing, &answer).is_ok());
+    }
+
+    /// What the run host says of its leases names each by its credential's reference and its
+    /// lease's id, and never a value: none is given it (D242).
+    #[test]
+    fn the_audit_names_leases_never_their_values() {
+        let denied = Refusal::Denied("no such secret".into());
+        let lines = [
+            Audit::Asked {
+                reference: CLAUDE,
+                id: 3,
+            }
+            .to_string(),
+            Audit::Held {
+                reference: CLAUDE,
+                id: 3,
+                lives: Duration::from_secs(3600),
+            }
+            .to_string(),
+            Audit::Refused {
+                reference: CLAUDE,
+                id: Some(4),
+                refusal: &denied,
+            }
+            .to_string(),
+            Audit::Refused {
+                reference: "github/token",
+                id: None,
+                refusal: &Refusal::Ungranted,
+            }
+            .to_string(),
+            Audit::Released { held: 1, asked: 2 }.to_string(),
+        ];
+        assert_eq!(
+            lines,
+            [
+                "credential anthropic/claude-max: lease 3 asked",
+                "credential anthropic/claude-max: lease 3 held for 3600s",
+                "credential anthropic/claude-max: lease 4 refused: its broker leases the run none of it: no such secret",
+                "credential github/token: an ask refused here: no grant of the run names it",
+                "its leases released as it ends: 1 held, 2 asked",
+            ]
+        );
+        assert!(lines.iter().all(|l| !l.contains(VALUE)));
     }
 
     /// D251: the run's socket grant is held as shards-api holds it, as init holds it again:
