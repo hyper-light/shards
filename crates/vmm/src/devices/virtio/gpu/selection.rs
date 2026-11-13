@@ -18,6 +18,11 @@ pub struct Properties {
     pub name: [u8; shards_abi::gpu::GPU_NAME_BYTES],
 }
 
+// resources/gpu/native-identity.c's `struct shards_gpu_properties`, whose 308 bytes its own
+// _Static_assert holds and the bridge writes through its pointer: checked on every target
+// this builds for, not only where its tests run.
+const _: () = assert!(std::mem::size_of::<Properties>() == 308);
+
 impl Default for Properties {
     fn default() -> Self {
         Self {
@@ -243,7 +248,6 @@ mod tests {
 
     #[test]
     fn native_report_keeps_renderer_name_with_the_same_complete_uuid_join() {
-        assert_eq!(std::mem::size_of::<Properties>(), 308);
         let mut props = properties(7);
         let name = b"actual renderer GPU\0";
         props.name[..name.len()].copy_from_slice(name);

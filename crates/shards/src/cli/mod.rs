@@ -1005,28 +1005,31 @@ fn utf8(args: &[OsString]) -> Result<Vec<String>, String> {
         .collect()
 }
 
-/// Whether the VM options of `run` or `restore` (those before `--`) carry `flag`, read with
-/// `run`'s own value-aware grammar (`spec::next_word`) and without cloning argument storage. Values and a
+/// Whether the VM options of `run` or `restore` carry `flag` ([`vm_options`]). Values and a
 /// workload after `--` cannot become host containment or GPU-dispatch flags.
 pub(crate) fn has_vm_flag(args: &[std::ffi::OsString], flag: &str) -> bool {
+    vm_options(args).any(|(word, _)| word == flag)
+}
+
+/// The VM options of `run` or `restore` (`args`, the command first), those before the
+/// workload's `--`, each with the value its own command reads after it
+/// (`spec::next_vm_word`), without cloning argument storage: restore's snapshot directory,
+/// the word after `restore`, is none of them.
+fn vm_options(args: &[OsString]) -> impl Iterator<Item = (&OsString, Option<&OsString>)> {
     let mut words = args.iter();
-    match words.next().and_then(|word| word.to_str()) {
-        Some("run") => {}
+    let restore = match words.next().and_then(|word| word.to_str()) {
+        Some("run") => Some(false),
         Some("restore") => {
-            // Restore's first positional word is the snapshot directory.
             let _ = words.next();
+            Some(true)
         }
-        _ => return false,
-    }
-    while let Some((word, _)) = crate::spec::next_word(&mut words) {
-        if word == "--" {
-            break;
-        }
-        if word == flag {
-            return true;
-        }
-    }
-    false
+        _ => None,
+    };
+    std::iter::from_fn(move || {
+        let (word, value) = crate::spec::next_vm_word(&mut words, restore?)?;
+        (word != "--").then_some((word, value))
+    })
+    .fuse()
 }
 
 /// The VM process's binary for `args`, which `shards` carries and writes out (helpers.rs):
@@ -1192,11 +1195,7 @@ impl CarriedVmIo {
         use shards_abi::gpu::GpuProbeError as Error;
         use std::os::fd::FromRawFd as _;
         let (mut report, mut lifeline) = (None, None);
-        let mut words = args.iter();
-        while let Some((word, value)) = crate::spec::next_word(&mut words) {
-            if word == "--" {
-                break;
-            }
+        for (word, value) in vm_options(args) {
             let slot = if word == "--gpu-report" {
                 &mut report
             } else if word == "--host-lifeline" {
@@ -1333,6 +1332,19 @@ mod carried_io_tests {
             ];
             assert!(CarriedVmIo::read(&words).is_err());
         }
+    }
+
+    /// D232: a restore's own valued flag gives its value as `parse_restore` reads it: a
+    /// backing file named `--gpu-report` names no descriptor to adopt, where read with
+    /// run's grammar the word after it was taken for the report writer's.
+    #[test]
+    fn a_restores_own_values_carry_no_pipe() {
+        let words: Vec<_> = ["restore", "snapshot", "--backing", "--gpu-report", "999"]
+            .iter()
+            .map(OsString::from)
+            .collect();
+        let carried = CarriedVmIo::read(&words).unwrap();
+        assert!(carried.report.is_none() && carried.lifeline.is_none());
     }
 }
 
@@ -2237,6 +2249,36 @@ mod vm_flags {
             &args(&["run", "--gpu-device", "pci:0:01:00.0", "--host-managed"]),
             "--host-managed"
         ));
+    }
+
+    /// D232: a restore's own valued flags (vm_run.rs `parse_restore`'s `--backing PATH`,
+    /// `--layer-cloned GENERATION`, `--resume FD`, `--working-set FD`) give their values as it
+    /// reads them, so a value that reads as a VM flag, a backing file named `--gpu`, is none:
+    /// read with run's grammar it was, and chose the binary, the helpers' containment and the
+    /// descriptors carried across the VM's exec.
+    #[test]
+    fn a_restores_own_values_are_no_vm_flags() {
+        let args = |words: &[&str]| {
+            words
+                .iter()
+                .map(|word| std::ffi::OsString::from(*word))
+                .collect::<Vec<_>>()
+        };
+        for valued in ["--backing", "--layer-cloned", "--resume", "--working-set"] {
+            for flag in [
+                "--host-managed",
+                "--gpu",
+                "--gpu-probe",
+                "--gpu-device",
+                "--gpu-report",
+                "--host-lifeline",
+            ] {
+                let restore = ["restore", "snapshot", valued, flag];
+                assert!(!has_vm_flag(&args(&restore), flag), "{restore:?}");
+                let restore = ["restore", "snapshot", valued, "value", flag];
+                assert!(has_vm_flag(&args(&restore), flag), "{restore:?}");
+            }
+        }
     }
 }
 
