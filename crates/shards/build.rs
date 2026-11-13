@@ -16,7 +16,7 @@
 //!   that carries `shards` and writes its helpers out beside it, signed as that program
 //!   signs them (kiln, D237), and such a `shards` starts the ones beside it.
 //! - The GPU's VM process (`shards-vm-gpu`, D144, D201, D202): the VM process built with
-//!   its renderer, on Apple silicon, on Linux (glibc's and musl's) and on x86_64 Windows where
+//!   its renderer, on Apple silicon, on Linux (glibc's and musl's) and on amd64/arm64 Windows where
 //!   `SHARDS_GPU_LIBS` names the renderer's libraries (scripts/gpu-libs), into
 //!   `target/helpers-gpu`, signed as the VM process is on macOS; or `SHARDS_HELPERS_DIR`'s.
 //!   Without it, `shards` carries none and refuses a GPU.
@@ -467,7 +467,7 @@ fn compile_helpers(out: &mut impl io::Write) -> Result<PathBuf, String> {
 /// Whether `target` carries a GPU's VM process where its renderer's libraries are given
 /// (D144, D201, D202): Apple silicon's, Linux's, glibc's and musl's, whose GPU's VM process
 /// links its C library dynamically, as it opens the host's Vulkan driver, a library of the
-/// host's C library (on Linux the other helpers are static, PM M281), and x86_64
+/// host's C library (on Linux the other helpers are static, PM M281), and amd64/arm64
 /// Windows's, whose VMs WHP runs.
 fn gpu_target(target: &str) -> bool {
     matches!(
@@ -478,6 +478,7 @@ fn gpu_target(target: &str) -> bool {
             | "x86_64-unknown-linux-musl"
             | "aarch64-unknown-linux-musl"
             | "x86_64-pc-windows-msvc"
+            | "aarch64-pc-windows-msvc"
     )
 }
 

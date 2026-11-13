@@ -22653,8 +22653,29 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
   bounds are gone: they give the suite no clock and wait on facts (a stand-in's end told
   through a FIFO, a holder of shards' output still running as the refusal comes), and
   boot.rs's deadline for a direct boot is this host's own boot of the test guest to its
-  answer, measured just before. What remains timed is the suite's and the crate's unit
-  tests', twice the slowest recorded run on the host class (`shards_api::record`:
+  answer, measured just before. Part A's own checks (e93bb4d45, landed by merge 831854804;
+  goal 52's agent, 2026-11-13) ran on adas-mac-studio.local (macOS 26.2 on arm64, rustc
+  1.98.1), on a clone of each tree, with `SHARDS_HELPERS=skip` and placeholder init and
+  server binaries:
+  - `cargo test -p shards-api`;
+  - `cargo clippy -p shards-api -p shards --all-targets -- -D warnings`.
+
+  Results:
+  - At e93bb4d45's tree (kiln run r101): the lib's tests 102 passed and 5 ignored,
+    tests/allocations.rs 1 passed, tests/real.rs 1 ignored, tests/sim.rs 17 passed and 2
+    ignored; clippy clean.
+  - At 831854804's tree (r115): the lib's 105 passed and 5 ignored, the rest the same;
+    clippy clean.
+  - The first draft (r85) failed sim's `client::gpu_probe_protocol_requires_exact_completed_receipt`
+    (sim.rs:313) and clippy (three `unwrap_used` in boot.rs). Both were fixed before
+    e93bb4d45.
+
+  The logs are that runner's ~/g121-tmp/s2-logs/a-*.log (r85), a2-*.log (r101) and a3-*.log
+  (r115). Not run: these checks on Linux or Windows, boot.rs's real-VM tests (ROOT's),
+  scripts/lint, and any guard-removal mutation.
+
+  What remains timed is the suite's and the crate's unit tests', twice the slowest
+  recorded run on the host class (`shards_api::record`:
   `conformance::PATIENCE`, an unserved port's `OVERSHOOT`; PM M463, M464, M515). It goes
   with the API's waits, which ROOT decided follow the guest's VM process: a wait goes on
   while that process advances (its CPU time each quiet period, as the daemon's
@@ -22879,8 +22900,31 @@ check: owed to ROOT, with `MAX_PHYSICAL_GPUS` following in the same change.
 are its encoding's longest lines for the count, the count as wide as `MAX_PHYSICAL_GPUS`
 (`probe.rs`, derived from it). Snapshot format 29.
 
-**Held.** A GPU VM process for Windows on arm64 (`gpu_target`, gpu-libs' arm64 build): never
-built or run for that target; ROOT's GPU lane holds it.
+**Windows on arm64 (plan step 2's step 3; Hex's one vendored change, upstreamed).** `gpu_target`
+takes `aarch64-pc-windows-msvc`, and scripts/gpu-libs builds the renderer, libepoxy and the
+identity bridge for it:
+- the host is named from `SHARDS_GPU_TARGET`, else the developer prompt's target
+  (`VSCMD_ARG_TGT_ARCH`), else Windows' own (`PROCESSOR_ARCHITEW6432`, `PROCESSOR_ARCHITECTURE`),
+  and any other name is refused;
+- every Windows build, x86_64's included, is a meson cross build for the machine named (clang-cl
+  `--target`, `host_machine`), never for the one its tools default to (Hex's reason: x64 tools
+  under emulation on an ARM host);
+- the bridge, which meson names `lib*.a` on Windows too, is copied as `shards_gpu_selection.lib`
+  and built for `/MD`, as on x86_64 (1cd728678, 1f86d092a).
+Its two pins are PyPI's published digests (pypi.org/pypi/NAME/VERSION/json, read 2026-11-12;
+the wheels re-checked against them 2026-11-13), not numbers of ours (R03): ninja 1.13.2's
+win_arm64 wheel, sha256 `1db9852e…85fb1`, and pkgconf 3.0.7.post0's, `3716a2a2…05f05`. Both files
+are byte for byte Hex's vendored shards-gpu (Shards e82b9403 plus Hex's 0001 patch, at Hex main
+65ef204f), so Hex can drop the patch at its next vendor. Never built: no arm64 Windows host runs
+it here, and Hex never compiled it either (Hex 97f9bbbb checked it by `vendor.py check` and
+`bash -n`; Hex's scripts/shards-gpu/build.sh builds on Linux alone). x86_64's cross build is
+checked against meson 1.11.2's source and the pinned sources' meson files (no program of the
+host's is run), not built; CI's renderer step, whose cache key hashes gpu-libs, rebuilds it on
+main. Owed to ROOT: the native arm64 build and its GPU VM process's link; x86_64 Windows' build
+and its `gpu::` tests on jupiter; scripts/lint for both Windows targets; and a clippy of
+`shards-vmm --features gpu` for `aarch64-pc-windows-msvc`, which no lint or CI job runs. A GPU
+VM on WHP arm64 is unverified, as no host has the hardware (R11).
+docs/research/measurements/hex-upstream-v1/windows-arm64-gpu.md.
 
 **Evidence.** Hex's research on the filter and transport (Hex's
 docs/hex-venus-physical-filter) and the managed-virtio-gpu lane's check of these patches'
@@ -24077,7 +24121,7 @@ memory its guest holds before its guest drops its page cache (D188's measure, PM
 image run); an orchestrator that needs D188's pressure give-back through its run host to keep
 its runs within its budget.
 
-### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the injector, the CA, the broker and the real-VM runs owed)
+### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process built, step 2's first slice; the granted members' trust, the leases, the injector, the broker and the real-VM runs owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 33: every kiln harness runs in a
 Shards microVM, and a harness needs its model-provider credential without the credential
