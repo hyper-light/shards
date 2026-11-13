@@ -18291,10 +18291,20 @@ it, and stopping the run is the caller's decision.
   below).
 
 Not built:
-- `gpus=`. No run carries a D232 selection that its VM process binds: the daemon's run
-  has `--gpus` alone, and shards-api's image spec has no `gpu_devices`. So no run sends
-  the entry, and none has `/run/shards/gpus`, until a run's own GPU selection is built.
-  This still holds on main at 1145bd3f2.
+- `gpus=` for a daemon's run. The daemon's run has `--gpus` alone, and no D232 selection
+  of its own, so it sends no entry and has no `/run/shards/gpus`.
+
+Built since (goal 75, Hex's step 39): `gpus=` for an orchestrator's run. shards-api's
+`ImageSpec::gpu_devices` names the run's GPUs by D232's identities, checked with
+`check_selection` before a run host starts. It rides the image channel's version 16
+(`Request::gpu_devices`, each in `--gpu-device`'s text, parsed and checked again as read). The
+run host starts the GPU's VM process (D144) with `--gpu` and each `--gpu-device`, as shards-api's
+direct boot does, with MoltenVK saying its errors alone, as the daemon starts a GPU's. Under the
+grant it sends `gpus=` with the same identities, which init checks and writes to
+`/run/shards/gpus` (0444, one a line; init's side was built at step 4). Without the grant, the VM
+renders on them and the run has no file. Tested (unit): the channel's round trip and refusals,
+shards-api's check, and the VM process's arguments. Owed (ROOT): tests/nesting.rs's GPU case
+through shards-api on a host with a GPU.
 - How late a `ready` was, on its event: the daemon's log says it, and the run host's
   `Ready::Late`. No event attribute is named for it.
 
@@ -23288,6 +23298,11 @@ reboots, driver updates or hot plug; a device's own identity does.
   (`HeldDriver`): unheld, each context loaded the driver anew, and NVIDIA's static-TLS
   library could not load at a VM's 19th (Hex's measurement).
 
+- *Through an orchestrator's run* (D231; goal 75): `ImageSpec::gpu_devices`, checked by
+  `check_selection` before a run host starts and again as the image channel reads it (version
+  16). The run host starts the GPU's VM process with `--gpu` and each `--gpu-device`, and under
+  the nesting grant the command reads them in `/run/shards/gpus` (D234's `gpus=`).
+
 **Literals.** `MAX_PHYSICAL_GPUS`, 65,536: the renderer's patches' bound, `1 + UINT16_MAX`,
 from Hex's scheduler's u16 device index, to which they hold a context's selection
 (`VIRGL_DEVICE_UUID_MAX_COUNT`, physical-transport-*.patch) and, for a selected context, the
@@ -25219,7 +25234,7 @@ move it: Hex had no rate for a Shards image VM but stopping its process.
   the link closes.
 - *One ask.* The client's room and rate are one numbered ask (`session::Asked`), each held while
   it is awaited, and no longer.
-- *Its period* (2026-11-13, channel version 16, the Hex lead's ask for plan step 14).
+- *Its period* (2026-11-13, channel version 17, the Hex lead's ask for plan step 14).
   `ImageGuest::rate_period()` is the period the run's VM's governor holds a rate over. Hex's
   learner derives its window from it (Hex `learned-charge.md` C1) and copies no 100 ms of its
   own.
@@ -25231,8 +25246,8 @@ move it: Hex had no rate for a Shards image VM but stopping its process.
     host's. So the period D191 derives once measured (D191's hold, "Its period") reaches an
     orchestrator as it is, per run, with no client change. A period that came to move with
     each rate would ride `RATED` as well.
-  - A request of version 15 (D252's control endpoint, the version before) is refused by its
-    version, so no orchestrator waits on a period its host never tells.
+  - A request of version 16 (the GPUs a run names, D232, the version before) is refused by
+    its version, so no orchestrator waits on a period its host never tells.
 
 **Literals.** `MILLI_PER_CPU` (1000, `vm`): the unit, a CPU's time in thousandths, as
 Kubernetes counts CPU, no finer than `1m` ("Resource Management for Pods and Containers", CPU
@@ -25264,10 +25279,10 @@ spinning, held to a quarter CPU, runs its guest within a quarter of the time pas
 period's share; its vCPU's whole CPU holds nothing; none lifts it), `cargo test --profile
 test-release -p shards --test api_image the_orchestrators_rate_holds_its_run_to_it`.
 
-Its period (light, version 16): `image::wire`'s `a_runs_rate_period_reads_back_as_its_host_said_it`
+Its period (light, version 17): `image::wire`'s `a_runs_rate_period_reads_back_as_its_host_said_it`
 (a nanosecond to a u64's most, its eight bytes last; none and past a u64 refused), `STARTED`'s
-round trip and version 15 refused. Owed (ROOT): its two guard-removal mutants (a period of
-none read back, version 15 taken), and the real-VM test above, which now reads the run's
+round trip and version 16 refused. Owed (ROOT): its two guard-removal mutants (a period of
+none read back, version 16 taken), and the real-VM test above, which now reads the run's
 period, checks it is its build's hold's, and holds the run to two periods past a quarter
 where it took 100 ms as known.
 
