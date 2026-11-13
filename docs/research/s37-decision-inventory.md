@@ -4,8 +4,8 @@ Plan step 37 ("Docs and decision records"): every decision the plan's 39 steps m
 where it is written down, whether its evidence is linked there, and what is still open and
 whose it is. ROOT's final pass after step 34 checks this table again.
 
-- **Read at:** Shards main `e7825cb32`, kiln main `d6ffa45d8`, Hex main `d84730ee`; the plan at
-  version 11 and ROOT's goal stack, 2026-11-12, about 15:45 PST. Branches not on main are named
+- **Read at:** Shards main `e7825cb32` (checked again at `dc7d36014`), kiln main `d6ffa45d8`,
+  Hex main `d84730ee`; the plan at version 11 and ROOT's goal stack, 2026-11-12, about 15:45 PST. Branches not on main are named
   as such and count as nothing landed.
 - **Recorded:** the repository and file, then the section. "arch" is Shards'
   `docs/design/architecture.md`.
@@ -69,7 +69,7 @@ whose it is. ROOT's final pass after step 34 checks this table again.
 | 5 | A member's stdin a stream its owner holds; stdout and stderr captured whole | arch D180 "A member's stdin" (completed, s37), D231 (corrected, s37), D240 (s37) | linked: member-stdin-v1 | built for the daemon's owner and the orchestrator (`e7825cb32`); real-VM E2E on KVM x86_64, KVM arm64, HVF, WHP and R14 costs owed (ROOT) |
 | 6 | exec, attach and a resizable TTY, confined as the member is | arch D240 "Building" (s37) | — | building (`p/s6-exec-tty-v1`, nothing committed); how is step 6's implementer's, ROOT reviews |
 | 6 | Exec connections admitted under contention and said when lost (ROOT's exec-hang goal, found by step 2) | arch D16 "An exec's connection" (s37) | linked: exec-admission | on main (`0d4f20288`, `2944d9ab5`); its WHP result, Linux arm64 KVM and WHP arm64 owed |
-| 6 | The signal link's explicit states | arch D16 "Signals" | linked: signal-link | on main (`3607aad11`); `p/to-guest-v1` (a sender thread off the link's lock) not on main |
+| 6 | The signal link's explicit states | arch D16 "Signals" | linked: signal-link | on main (`3607aad11`), its sends made off the link's lock by a sender thread of their own (`782275c26`) |
 | 7 | A member's environment: init's, the image's `Env`, its `run.env`, its run's | arch D59 "A member's environment", D240 (s37) | linked: s7-home-workdir | on main (`239749c60`); real-VM runs owed (ROOT) |
 | 7 | A writable, private HOME: its scratch or a volume; staged files under it; no volume at or under `/tmp` | arch D231 "Staging", D109 "A domain's `/tmp` is its own", D240 (s37) | linked: s7-home-workdir, s7-scratch-volume | on main (`ac9bb8589`, `81d2a6a2a`); real-VM runs owed |
 | 7 | The working directory the run names (the project path) | arch D231, D240 (s37) | linked | on main (`d6ac7e48f`); a boot-time project path owed (D235's and the orchestrator's to choose) |
