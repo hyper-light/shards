@@ -38,10 +38,11 @@
 //!
 //! The period is D191's for one thread held to half a CPU (`granule::period`): 1 × g over a
 //! half, 2g, g what this process has learned of its governors' step, its thread clock's
-//! (GetThreadTimes' 15.625 ms, PM M294) where that is the coarser. Cold, before the governor
-//! has measured its clock, g is `granule::LEAST_WAIT` and the period 2 ms: a thread's credit
-//! is then as small, which may put it back to normal until the clock's step is known (two of
-//! its steps of the governor's own CPU time, measured as it starts).
+//! (GetThreadTimes' 15.625 ms, PM M294) where that is the coarser. Cold, the governor measures
+//! both as it starts, before its first look (`granule::measure`: one shortest wait, and two of
+//! its clock's steps of its own CPU time); a thread raised before that is credited at a g of
+//! `granule::LEAST_WAIT`, a 2 ms period, so small a credit that it may go back to normal until
+//! the first look: less authority, never more.
 //!
 //! A thread's half bounds what it takes alone, not what raised threads take together: three
 //! that share one CPU each run a third of it, each under its half, and keep it from the
@@ -82,8 +83,13 @@ use windows_sys::Win32::System::WindowsProgramming::THREAD_PRIORITY_ERROR_RETURN
 use super::granule;
 use crate::sync::{lock, wait};
 
-/// The share a raised thread is credited: half a CPU, what a fair scheduler gives one thread
-/// beside one busy thread of its weight.
+/// The share a raised thread is credited: half a CPU, the most a fair scheduler gives a thread
+/// that contends for its CPU at all. Its raise matters only where another thread is ready on
+/// that CPU; beside k ≥ 1 ready threads of its priority, Windows gives each a time slice in
+/// turn (Microsoft, Scheduling Priorities), as Linux's fair scheduler gives threads of one
+/// weight w each w / (w + k·w) (kernel/sched/core.c `sched_prio_to_weight`, one weight for
+/// every nice-0 thread): 1 / (k + 1) ≤ 1/2, at k = 1 the most. A bound, not a pick: no
+/// contended thread is owed more.
 const HALF: std::num::NonZeroU64 = match std::num::NonZeroU64::new(crate::vm::MILLI_PER_CPU / 2) {
     Some(half) => half,
     None => std::num::NonZeroU64::MIN,
@@ -293,9 +299,9 @@ fn start_governor() -> Result<(), String> {
 /// it watches none, a wait for one. Each period derived as its look begins, from g as the
 /// process knows it then; each wait's lateness taught to it (`granule::LATE`).
 fn govern() {
-    // Its thread clock's step, g's where it is the coarser, measured before it is raised:
-    // two of its steps of its own CPU time at most.
-    if let Err(e) = granule::measure_clock() {
+    // Its wake and its thread clock's step, g's, measured before it is raised: one shortest
+    // wait, and two of its clock's steps of its own CPU time at most.
+    if let Err(e) = granule::measure() {
         crate::debug!("the priority governor knows no clock step: {}", e.0);
     }
     // It looks on time however busy the threads it raises keep the CPUs: above them, as the

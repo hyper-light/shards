@@ -85,12 +85,12 @@ impl Hold {
 
     /// The vCPUs may use `milli` milli-CPU of the host's time together, from now; 0, or as
     /// much as every vCPU's whole CPU, lets them be. Returns what it holds them to and over
-    /// what period, derived from g as this process knows it now: its thread clock's step
-    /// measured the first time, on the calling thread, which spins two of its steps at most
-    /// (`granule::measure_clock`). Refused, the hold as it was, where the period outgrows a
+    /// what period, derived from g as this process knows it now: its wake and its thread
+    /// clock's step measured the first time, on the calling thread, one shortest wait and a
+    /// spin of two clock steps at most (`granule::measure`). Refused, the hold as it was, where the period outgrows a
     /// u64 of ns.
     pub(super) fn set(&self, milli: u64) -> Result<Rated, granule::Outgrown> {
-        let clock = granule::measure_clock();
+        let clock = granule::measure();
         let g = granule::g();
         let rated = self.set_at(milli, g)?;
         crate::debug!(
