@@ -4135,12 +4135,15 @@ mod tests {
             let (r, w) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
             let Some(member) = a_confined_member(&c, || {
                 // SAFETY: dup3(2) of the starter's end to where the starter holds it, the
-                // starter forked as a member's first process forks it, then waitpid(2),
-                // getpid(2) and write(2) of a byte of this stack's.
+                // starter forked as a member's first process forks it, both ends of it closed
+                // here as its program's exec closes them (close-on-exec), so that a starter
+                // not born closes the channel, then waitpid(2), getpid(2) and write(2) of a
+                // byte of this stack's.
                 unsafe {
                     libc::dup3(theirs.as_raw_fd(), crate::starter::STARTER_FD, libc::O_CLOEXEC);
                     crate::starter::fork();
                     libc::close(crate::starter::STARTER_FD);
+                    libc::close(theirs.as_raw_fd());
                     let waited = libc::waitpid(-1, std::ptr::null_mut(), libc::WNOHANG);
                     let none = waited == -1 && *libc::__errno_location() == libc::ECHILD;
                     let byte = [match (libc::getpid() == 1, none) {
