@@ -2368,6 +2368,8 @@ pub const MAX_FDS: usize = run_fds::CLIENT
     + run_fds::SHARES
     + run_fds::CAPTURE;
 
+mod host_memory;
+pub use host_memory::{holdable, holdable_known, host_available, host_memory};
 pub mod slots;
 #[cfg(unix)]
 mod spawner;

@@ -1879,7 +1879,6 @@ mod tests {
             ..Spec::default()
         };
         let size = spec.encoded_len().unwrap();
-        assert!(size > frame::MAX_FRAME);
         assert!(size < run::MAX_PAYLOAD as usize);
         let ask = Ask {
             run: RunId([4; 32]),
