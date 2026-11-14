@@ -12338,6 +12338,23 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     host in the same binary counts as progress, as `Own`'s VM processes do. context.rs'
     reads follow the laptop's daemon, not the machine it relays to. A cold `said_by` on a
     hung daemon holds the failure it adds to until its CI job's limit, as any cold wait does.
+    A start-up wait on host system services, such as secinitd or the bookmark agent, is not
+    tied to the run; unconfirmed, no account kept (the runsignal lane's 2 of 20 pre-ready
+    `Heard::running` refusals, under its mutant; the grants broker is the VM's child, already
+    of its party).
+  - *A machine's party reads each thread beside its waiter, and a runnable one that ran
+    nothing is its host's hold* (2026-11-14, judgecli). `a_machines_host_work_is_its_progress`
+    was refused on HVF in 2 of 3 whole-binary runs under 14 busy loops started before it
+    (vsockfix's 30 of 30 on KVM never ran HVF under load). `Beside` read macOS's process CPU
+    past its waiter's (proc_pid_rusage), which did not show a thread spinning beside the
+    waiter within sub-millisecond windows (judgecli's slice 2, "made no progress for
+    485.125µs, past ... (434.75µs) ... this process's threads beside its waiter ran 2.25ms
+    ago"), and on neither OS told a spinning thread its busy host kept from a CPU from a
+    still one. macOS now reads each other thread's own times (task_threads,
+    thread_info(THREAD_BASIC_INFO), as `ServerThread` reads one), as Linux reads each
+    thread's CPU clock; and a look whose other threads ran nothing while one of them was
+    runnable (Linux state `R`, macOS `TH_STATE_RUNNING`) is `Ran::Held`, the host's hold.
+    No number changed (R03).
   - Owed: the waits in the rest of the E2E files, the next part: containers.rs, daemon.rs,
     build.rs' own `TIMEOUT`, managed_output.rs and its parts, managed_cleanup.rs, moved.rs,
     warm.rs, budget.rs, slates_fs.rs and build_windows.rs. Some of them assert that a thing
