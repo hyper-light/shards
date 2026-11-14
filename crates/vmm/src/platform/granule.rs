@@ -93,7 +93,8 @@ pub fn step() -> Step {
 pub fn measure_clock() -> Result<Duration, Unclocked> {
     CLOCK
         .get_or_init(|| {
-            let clock = super::ThreadClock::current().map_err(|e| Unclocked(format!("its thread's clock: {e}")))?;
+            let clock =
+                super::ThreadClock::current().map_err(|e| Unclocked(format!("its thread's clock: {e}")))?;
             clock_step(|| clock.read()).map_err(|e| Unclocked(format!("reading its thread's clock: {e}")))
         })
         .clone()

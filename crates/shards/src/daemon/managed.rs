@@ -4511,9 +4511,11 @@ mod tests {
             budget: Arc::clone(&budget),
             bytes: Mutex::new(0),
         });
-        // A quantum climbing past what one endpoint record holds: the capture's own, before
-        // its bound.
-        let quantum = shards_registry::Quantum::new(capacity, run::MAX_PAYLOAD as usize).unwrap();
+        // A quantum climbing past what one endpoint record holds (`RECORD_MOST`, a record's
+        // payload and its head): one made without the endpoint's bound, which the endpoint
+        // refuses to grow to.
+        let most = shards_remote::managed::RECORD_MOST;
+        let quantum = shards_registry::Quantum::new(capacity, most.saturating_mul(2)).unwrap();
         let output = output(
             scope,
             &endpoint,
@@ -4526,6 +4528,7 @@ mod tests {
             &charge,
         );
         let desired = climbed(&mut lock(&output.learning).quantum);
+        assert!(desired > most, "its quantum climbed to {desired}, within one record ({most})");
         assert!(
             matches!(
                 producer.admit(desired),

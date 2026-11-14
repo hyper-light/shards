@@ -77,7 +77,9 @@ struct Lifetime {
 
 impl Lifetime {
     fn new(now: Instant) -> Lifetime {
-        Lifetime { until: Self::past(now) }
+        Lifetime {
+            until: Self::past(now),
+        }
     }
 
     /// A datagram at `now`, going out or coming in: each refreshes the mapping.
@@ -87,7 +89,8 @@ impl Lifetime {
 
     /// Its end, refreshed at `now`: `now` itself where the clock has no instant that far on.
     fn past(now: Instant) -> Instant {
-        now.checked_add(shards_abi::bounds::UDP_MAPPING_IDLE).unwrap_or(now)
+        now.checked_add(shards_abi::bounds::UDP_MAPPING_IDLE)
+            .unwrap_or(now)
     }
 }
 
@@ -3239,7 +3242,11 @@ mod tests {
             let index = stack
                 .publish(&[0x1f, 0x90, wire::PROTO_TCP], vec![Handed::from(listener)])
                 .unwrap_or_else(|| panic!("round {round}: not taken"));
-            assert_eq!((index, stack.published.len()), (0, 1), "round {round}: a slot more");
+            assert_eq!(
+                (index, stack.published.len()),
+                (0, 1),
+                "round {round}: a slot more"
+            );
             stack.hosted.insert(round, index);
             let waiting = std::net::TcpStream::connect(at).unwrap();
             let listening = stack.published.token(index);
@@ -3269,7 +3276,11 @@ mod tests {
             let value = stack.published.get(index).map(|(l, _)| l.raw_sock()).unwrap();
             stack.unpublish(round);
             // What its listener left in the poller names no listener now, nor the next's.
-            assert_eq!(stack.published.of(listening), None, "round {round}: its token kept");
+            assert_eq!(
+                stack.published.of(listening),
+                None,
+                "round {round}: its token kept"
+            );
             // Nothing kept of its value, whatever the next socket given it is.
             #[cfg(windows)]
             assert!(!stack.poller.keeps(value), "round {round}: its registration kept");
