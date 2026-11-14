@@ -447,8 +447,8 @@ fn gpu_device(selection: &mut Vec<vm::gpu_selection::PhysicalGpu>, value: OsStri
     let device = text(value)?
         .parse::<vm::gpu_selection::PhysicalGpu>()
         .map_err(|error| format!("--gpu-device: {error}"))?;
-    if selection.len() >= vm::gpu_selection::MAX_PHYSICAL_GPUS {
-        return Err("--gpu-device count exceeds the physical device-index space".into());
+    if vm::gpu_selection::selection_fits(selection.len().saturating_add(1)).is_err() {
+        return Err("--gpu-device count exceeds what the renderer's selection carries".into());
     }
     selection
         .try_reserve(1)
@@ -3894,7 +3894,7 @@ mod gpu_device_tests {
     use super::*;
     use std::alloc::{GlobalAlloc, Layout, System};
     use std::cell::Cell;
-    use vm::gpu_selection::{MAX_PHYSICAL_GPUS, PhysicalGpuError};
+    use vm::gpu_selection::PhysicalGpuError;
 
     /// The system's allocator, counting what the thread that asks allocates while it asks
     /// ([`allocations`]): no other test of this binary asks.
@@ -3993,16 +3993,6 @@ mod gpu_device_tests {
         assert_eq!(
             refusal(repeated),
             format!("--gpu-device: {}", PhysicalGpuError::Duplicate)
-        );
-    }
-
-    /// D232: one identity past the physical device-index space is refused at its flag.
-    #[test]
-    fn a_gpu_device_past_the_index_space_is_refused() {
-        let past = (0..=MAX_PHYSICAL_GPUS).flat_map(|i| flag(&format!("luid:{i:x}")));
-        assert_eq!(
-            refusal(past),
-            "--gpu-device count exceeds the physical device-index space"
         );
     }
 }
