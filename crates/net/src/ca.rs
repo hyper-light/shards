@@ -186,4 +186,13 @@ mod tests {
     fn no_host_no_ca() {
         assert!(Ca::new(Key::generate().unwrap(), &[]).is_err());
     }
+
+    #[test]
+    fn creds_07_ungranted_descendants_and_addresses_are_not_signed() {
+        let ca = Ca::new(Key::generate().unwrap(), &["api.example.test"]).unwrap();
+        for name in ["child.api.example.test", "elsewhere.test", "127.0.0.1", "::1"] {
+            assert!(ca.leaf(name).is_err(), "an ungranted name was signed: {name}");
+        }
+        assert!(ca.leaf("API.EXAMPLE.TEST").is_ok());
+    }
 }

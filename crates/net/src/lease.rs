@@ -480,6 +480,35 @@ mod tests {
         id
     }
 
+    #[test]
+    fn creds_05_a_delayed_answer_cannot_restart_the_lessors_lease() {
+        let mut l = leases();
+        let asked = Instant::now();
+        assert!(matches!(l.ask(CLAUDE, 1, asked), Asked::Waiting));
+        let id = the_ask(&l.asks(), CLAUDE);
+        let life = Duration::from_secs(1);
+        let answer = encode_answer(id, Ok((lives(life), VALUE))).unwrap();
+        let delivered = asked + life + life;
+        assert!(l.answered(&answer, delivered));
+        assert!(l.held(CLAUDE, delivered).is_none(), "a delayed answer extended the lease");
+    }
+
+    #[test]
+    fn creds_06_a_pending_lease_resumes_each_flow_once() {
+        for outcome in [Ok((NonZeroU64::MAX, VALUE)), Err(Refusal::Denied("fixture".into()))] {
+            let mut l = leases();
+            let now = Instant::now();
+            for waiter in [1, 1, 2, 1, 2, 2] {
+                assert!(matches!(l.ask(CLAUDE, waiter, now), Asked::Waiting));
+            }
+            let id = the_ask(&l.asks(), CLAUDE);
+            let answer = encode_answer(id, outcome.as_ref().map(|(life, value)| (*life, *value))).unwrap();
+            assert!(l.answered(&answer, now));
+            let resumed = l.resumed();
+            assert_eq!(resumed.iter().map(|r| r.waiter).collect::<Vec<_>>(), [1, 2]);
+        }
+    }
+
     /// Do: ask a granted credential for two flows, answer it, then ask it again before and
     /// after its end. Expect: no value before its first use and nothing asked before it; one
     /// ask for both flows (one lease at a time); both resumed once it is answered, its value
