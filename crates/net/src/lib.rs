@@ -3237,6 +3237,7 @@ mod tests {
             Config::on_bridge(Policy::Host, [2, 0, 0, 0, 0, 1], &bridge),
             region.producer(1, pr),
         );
+        let mut before = None;
         for round in 0u32..8 {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let at = listener.local_addr().unwrap();
@@ -3248,6 +3249,10 @@ mod tests {
             let waiting = std::net::TcpStream::connect(at).unwrap();
             let listening = stack.published.token(index);
             assert_eq!(stack.published.of(listening), Some(index));
+            // The last round's listener's token, of this slot, names this one not.
+            if let Some(was) = before.replace(listening) {
+                assert_eq!(stack.published.of(was), None, "round {round}: an old token taken");
+            }
             let deadline = Instant::now() + Duration::from_secs(5);
             let mut events = Vec::new();
             while !events.iter().any(|e: &poll::Event| e.token == listening) {
