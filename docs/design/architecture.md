@@ -34787,6 +34787,39 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
   - arm64's base config has RANDOMIZE_BASE unset.
   - So `printk_rb_static` is at its link address on both.
 
+**Found after S2 (boot.rs on KVM and HVF), and fixed.**
+- **Lost boot log.** With `console=hvc0` the console lost every line before virtio_console
+  probed. `init_port_console` registered hvc0 through `hvc_alloc` (CON_PRINTBUFFER, the
+  backlog flushed at once by register_console's own message) before the port was on the list
+  `put_chars` finds it on. Every write returned -EPIPE and `hvc_console_print` discarded it.
+  - It is an upstream bug since 38edf58d73c2 (2010).
+  - Fixed by kernel patch 0015, which puts the port on the list first; its header carries the
+    upstream commit text. Pinned in kernel-6.18.48-7f8c931141dd with PVPANIC.
+  - Red at 4da2f78f4 on the old kernel: boots_the_hosts_maximum_vcpu_count,
+    boots_to_root_mount_without_a_root_device and brings_up_every_vcpu.
+- **Output served in the exit.** With the backlog replayed, the transmit worker's wake-up per
+  16-byte printk chunk (hvc_console.c `N_OUTBUF`) let only 250 bytes out before a no-root
+  panic 49 ms in. The panic's flush then deadlocked on the port lock held by the CPU stopped
+  mid-send. The transmit queue is now served in the notifying vCPU's exit, as the 16550's
+  register writes were; Linux spins with interrupts off until each buffer is used, so the
+  guest waits for the device either way.
+  - A unit test holds that a buffer is used before notify returns.
+- **What a blocked host output holds.**
+  - A write to a stdout that blocks (a terminal paused, a full pipe nobody reads) stalls the
+    vCPU in its exit, holding this device's transport lock (`virtio::mmio`'s state, held
+    across `notify`). Exactly as the 16550's write held its own lock in the PIO exit.
+  - Another vCPU's access to the console device, and a pause or snapshot of it, wait for that
+    write. Other devices and vCPUs do not.
+  - Daemon, builder and managed runs write to a sink (`Console::Discard`), which never blocks.
+    Only `run --kernel` with its console on a terminal can.
+  - Not built yet: a host-side writer with a bounded buffer would let pause land while stdout
+    blocks.
+- **Kernels shards does not build** (`shards configure guest`, D28) keep upstream's lost
+  backlog until the fix reaches them. A version-agnostic layer is designed, not built: at the
+  first transmit after a fresh activation, the VMM would emit the ring's records older than the
+  first one sent, read through `printk.rs`. Its limits: VMCOREINFO has no record levels, so
+  `quiet` cannot be honoured; the boundary is matched by timestamp; it is skipped on restores.
+
 **Alternatives rejected.**
 - A write-only debug port (x86's 0xe9 debugcon): mainline x86 early_printk has no 0xe9
   target, so it needs a kernel patch. arm64 has no port I/O and no write-only earlycon
