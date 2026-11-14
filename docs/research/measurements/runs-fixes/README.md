@@ -121,3 +121,9 @@ non-fast-forward rejection, 0e90f5866d010aac5c2e9d98e7c35f2c3b176a78 merged main
 contention rule. Neither rejected push changed main. Main's RunEnded protocol
 change was retained while resolving the runs-04 stash's two test-frame conflicts;
 the focused API gate is rerun after that resolution.
+
+Runs-04 merged/resolved gate: 0e90f5866d010aac5c2e9d98e7c35f2c3b176a78 plus
+its API patch passed the dead-spare regression (1), pool module (5), session
+module (32, including main's new RunEnded/channel cases), and API all-target
+clippy (2.01s), kiln r18. Thus both conflicting test-frame edits retain main's
+new protocol and pass the focused tests. Fixing commit: bc0f69b5c.

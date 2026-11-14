@@ -88,6 +88,8 @@ The replacement `A` exists and the old lock still has a link in `B`. The old dae
 
 **Confidence:** high; no live host kill performed. **Fix direction:** evict ready hosts on terminal state and retain typed definitely-untaken versus possibly-started failure semantics across CREATE. Retry only the definitely-untaken case; do not retry an uncertain run and risk duplicate execution. **Test:** hold a warmed host in the pool, kill and reap it before the next boot, then require the next request to run exactly once on a healthy replacement. Also kill during handoff and assert typed uncertainty rather than an unsafe replay.
 
+**Status (2026-11-13):** fixed in bc0f69b5c3e4d3471236b2d2b13cbd1bcdc4246d (red `a_dead_warm_host_is_definitely_untaken`, kiln r13; green r14/r18). Replacement is limited to definitely pre-CREATE dead spares; uncertain handoffs remain non-replayed failures. Prepared on this branch; main landing and the real-VM fault scenario remain pending.
+
 ### runs-05 — P1 / high — Long-lived API runs and warm hosts block all image-store collection
 
 **At head:** `crates/shards/src/api_run.rs:3507`, `:3526`, `:3618`, `:3750`; lease creation `crates/shards/src/run.rs:940`; exclusive collection `crates/image/src/store.rs:2296–2297`.
