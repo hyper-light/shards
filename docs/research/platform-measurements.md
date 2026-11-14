@@ -25152,5 +25152,8 @@ against 2e00a1043 (whose starts read no bytes) on one template, HVF, KVM and WHP
   its hypervisor's count (`common::guest_time_step`: KVM 1e9 / `_SC_CLK_TCK` read live, HVF one
   mach tick, WHP 100 ns). The unheld window and its "own" are gone. The governor's CPU stays
   shards' own cost, not charged to the rate (D191).
+- **Checked.** At 44658872e on KVM (adacachy2), boot.rs's test passed 8/8 and api_image's 4/4,
+  half with 16 busy loops and half with none. On HVF (Adas-Mac-Studio-3, macOS arm64, unloaded)
+  they passed 3/3 and 2/2.
 - **Owed.** The same per-thread breakdown on HVF (no per-thread reader there in this harness)
-  and on WHP. ROOT's next batch runs both tests on HVF.
+  and on WHP.
