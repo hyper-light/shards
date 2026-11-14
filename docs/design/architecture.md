@@ -2575,8 +2575,12 @@ stack inside the VMM, is superseded by it.
   seccomp on arm64 as on amd64 before serving frames; the shared compiler checks
   the native AUDIT_ARCH and libc supplies native syscall identities. epoll_wait
   is x86_64's legacy entry; both use epoll_pwait. No compat ABI is admitted.
-  Focused amd64 checks pass; native arm64 execution and carried-helper smoke
-  remain owed to ROOT, not inferred from amd64's result. [Evidence](../research/measurements/network-fixes-v1/README.md#network-02-native-seccomp-on-both-linux-architectures).
+  Focused amd64 checks pass. Native arm64 GNU unit tests at 53e89b2b8 observe
+  an additional installed filter at the startup boundary and termination on a
+  forbidden syscall; both network crates pass clippy. The compiler is shared
+  with the VM process, including platform-01/02/04 at a729003e9; the initial
+  allowlist uses `compile`, while the VM's later restrictions use `seccomp::layer`.
+  Musl and carried-helper VM smoke remain owed to ROOT/CI. [Evidence](../research/measurements/network-fixes-v1/README.md#network-02-native-seccomp-on-both-linux-architectures).
 - **Receive-sequence validation (network-01, 2026-11-13).** Before an established
   segment's ACK or FIN changes a connection, its original sequence must overlap the
   advertised receive window (RFC 9293 §3.10.7.4, table 6); ACK is required, and a FIN
