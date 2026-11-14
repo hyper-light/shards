@@ -314,7 +314,7 @@ ARM `cargo check -p shards-net -p shards-dns --tests`, r22/r23, exit0
 ([first](check03-e0c78817.log), [landing](check03-landing.log)). No conflict
 occurred. No force push. This slice's owned target cleanup is recorded next.
 
-## network-05–07: guest-kernel and API reproductions
+## network-05-07: guest-kernel and API reproductions
 
 **Owed to ROOT, not fixed/refuted/live-confirmed.** The report's proposed reds
 require actual guest eth0/route programming or distinct member namespaces with
