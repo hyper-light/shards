@@ -90,6 +90,9 @@ clippy pass. Live emulated guest/copy agreement remains owed to ROOT.
 The runs-01 follow-up caught and corrected this lane's native nondevice-owner
 regression: uid 0 instead of 1000 before, correct after, with 50 server tests
 and VMM all-target clippy passing. Its exact red/green logs are retained.
+Runs-07's concurrent end-record red lost its helper maximum; after stable-lock
+reread/merge and atomic unique staging, the regression and all 5 end tests pass,
+with shards all-target clippy. Two-process/VM crash publication remains owed.
 
 ### M2. Object lifecycle (`lifecycle`, n=200, µs)
 

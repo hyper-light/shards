@@ -8715,6 +8715,18 @@ policy collected at the next build, which grew nothing. Measured: PM M426's harn
 
 ### D217. A kill waits as long as its microVM goes on ending, by what its host has shown; a freeze, to its end (built)
 
+**Concurrent record writers** (runs-07). A daemon and each API host hold the
+stable `ends.lock` exclusively across reread, maximum merge and publication. The
+existing store `Locked` wrapper unlocks before closing (M244); locking the replaced
+record's inode would not serialize the next reader. Publication uses the existing
+platform `write_in`: a uniquely owned temporary file, synced and renamed whole.
+A failed write retains this process's learned maximum, and its next observation
+can persist that retained maximum even when it is faster. The focused race test
+holds the stable lock while another writer learns a helper end, publishes its own
+teardown snapshot and releases the lock: both maxima must survive. Existing cold
+liveness behavior and the record's millisecond format are unchanged; no new wait,
+cache, runtime number or platform adapter. See the [runs fix evidence](../research/measurements/runs-fixes/README.md).
+
 **Found.** The audit of what was taken from Docker (docs/audit/2026-10-16_docker-framing.md):
 a microVM whose command outlived its SIGKILL had its VM killed 10 s later and its end given
 up 2 s after that (moby daemon/kill.go), a signal that could not be sent waited out 2 s
