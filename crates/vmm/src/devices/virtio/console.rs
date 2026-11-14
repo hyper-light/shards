@@ -8,7 +8,7 @@ use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
-use super::queue::{Chain, Queue, QueueError, Round, serve_round};
+use super::queue::{Chain, Queue, QueueError, serve_round};
 use super::{Activation, DeviceInterrupt, QueueState, VirtioDevice, feature};
 use crate::devices::said::{Kept, Said};
 use crate::memory::GuestMemory;
@@ -39,28 +39,6 @@ const TRANSMITQ: usize = 1;
 /// A queue as it is served, with what serving it needs.
 type Served = (Queue, Arc<GuestMemory>, Arc<DeviceInterrupt>);
 
-/// Where its output goes.
-pub enum Output {
-    /// A sink that never blocks (a console nobody reads, `vm::Console::Discard`): written in
-    /// the notifying vCPU's exit.
-    Inline(Box<dyn Write + Send>),
-    /// A terminal or a pipe, whose reader may stop reading: written by a thread of its own,
-    /// so that a write that blocks holds nothing the guest's other exits, or a pause or a
-    /// snapshot of the device, need. The host holds at most the one buffer it is writing;
-    /// the guest's next waits in its ring of one (`TRANSMIT_SIZE`), the guest spinning on
-    /// it, as it spun on a UART that a blocked stdout held.
-    Writer(Box<dyn Write + Send>),
-}
-
-impl std::fmt::Debug for Output {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Output::Inline(_) => "Output::Inline",
-            Output::Writer(_) => "Output::Writer",
-        })
-    }
-}
-
 /// The receive side, which host input drives.
 #[derive(Default)]
 struct Receive {
@@ -73,6 +51,12 @@ struct Receive {
 pub struct Port {
     /// What it keeps of its output to quote (D12).
     kept: Mutex<Kept>,
+    /// The one buffer taken from the guest that its writer has not delivered.
+    slot: Mutex<Slot>,
+    /// Signalled as the slot is filled, or the device goes.
+    filled: Condvar,
+    /// Signalled as the writer has delivered what the slot held.
+    drained: Condvar,
     receive: Mutex<Receive>,
     /// Signalled as the guest posts receive buffers, or the receive queue comes or goes.
     posted: Condvar,
@@ -88,7 +72,15 @@ impl std::fmt::Debug for Port {
 
 impl Port {
     /// The whole lines of the last bytes its guest wrote to the console, as many as it keeps.
+    ///
+    /// What the guest sent before is delivered first: its writer is waited for while it
+    /// holds a buffer, so a reset's last lines (a panic's) are among them.
     pub fn said(&self) -> Said {
+        let mut s = lock(&self.slot);
+        while (s.bytes.is_some() || s.writing) && !s.ended {
+            s = wait(&self.drained, s);
+        }
+        drop(s);
         lock(&self.kept).said()
     }
 
@@ -192,88 +184,62 @@ fn read_chain(chain: &Chain, memory: &GuestMemory) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
-/// The writer's one buffer (`Output::Writer`).
+/// The writer's one buffer.
 #[derive(Default)]
 struct Slot {
-    /// Taken from the guest and not yet written.
+    /// Taken from the guest and not yet delivered.
     bytes: Option<Vec<u8>>,
-    /// The writer is writing what it took.
+    /// The writer is delivering what it took.
     writing: bool,
-    /// The device is gone: the writer ends once it has written what it holds.
+    /// The device is gone: the writer ends once it has delivered what it holds.
     ended: bool,
 }
 
-enum Sink {
-    Inline(Mutex<Box<dyn Write + Send>>),
-    Writer { slot: Mutex<Slot>, filled: Condvar },
-}
-
-/// The transmit side, shared by the device's exits and its writer.
+/// The transmit side, shared by the device's exits and its writer. Every console's output
+/// takes one path: the notifying vCPU's exit only takes the guest's buffer into the slot,
+/// uses it and returns; the writer, a thread of the device's own, delivers it to the output
+/// and to what is kept to quote (D12), and then takes the guest's next. Linux's console
+/// spins with interrupts off until the device has used each buffer (virtio_console.c
+/// `__send_to_port`, l. 611-636): used in the exit, it runs on at once. The host holds at
+/// most the one buffer being delivered; the guest's next waits in its ring of one
+/// (`TRANSMIT_SIZE`), the guest spinning on it, so an output that blocks (a terminal paused,
+/// a pipe nobody reads) holds the guest back as a UART did, and holds no lock its other
+/// exits, or a pause or a snapshot of the device, need (D261).
 struct Tx {
     port: Arc<Port>,
     /// The transmit queue while it is served, with what serving it needs: none before
     /// activation, while paused, after a reset, or once its ring was found malformed.
     queue: Mutex<Option<Served>>,
-    sink: Sink,
 }
 
 impl Tx {
-    /// Takes what the guest has sent: every buffer, written at once, where the output never
-    /// blocks; else one buffer, for the writer, where its slot is free. Linux's console spins
-    /// with interrupts off until the device has used each buffer (virtio_console.c
-    /// `__send_to_port`, l. 611-636): served in the notifying exit, it is used before the
-    /// guest runs on, where a device thread added its wake-up to every buffer, and a boot log
-    /// replayed 16 bytes at a time (hvc_console.c `N_OUTBUF`) did not reach the host before
-    /// a panic 49 ms in (D261). A malformed ring needs reset (virtio 1.3 §2.1.2).
+    /// Takes the guest's next buffer into the slot, where it is free; the writer comes back
+    /// for the guest's next as it is done. A malformed ring needs reset (virtio 1.3 §2.1.2).
     fn serve(&self) {
         let mut held = lock(&self.queue);
         let Some((queue, memory, interrupt)) = held.as_mut() else {
             return;
         };
-        let never = AtomicBool::new(false);
-        let result = match &self.sink {
-            Sink::Inline(to) => {
-                let mut answer = |chain: &Chain| {
-                    if let Some(bytes) = read_chain(chain, memory) {
-                        // Console output is best effort: a closed stdout must not stop the guest.
-                        let mut to = lock(to);
-                        let _ = to.write_all(&bytes).and_then(|()| to.flush());
-                        lock(&self.port.kept).push(&bytes);
-                    }
-                    0
-                };
-                loop {
-                    match serve_round(queue, memory, interrupt, &never, &mut answer) {
-                        Ok(Round::More) => {}
-                        other => break other.map(|_| ()),
-                    }
-                }
-            }
-            Sink::Writer { slot, filled } => {
-                let busy = {
-                    let s = lock(slot);
-                    s.bytes.is_some() || s.writing
-                };
-                if busy {
-                    // The writer serves the next buffer as it is done with this one.
-                    return;
-                }
-                let mut taken = None;
-                let mut answer = |chain: &Chain| {
-                    taken = read_chain(chain, memory);
-                    0
-                };
-                // A ring of one: a round takes at most the one buffer the slot holds.
-                let round = serve_round(queue, memory, interrupt, &never, &mut answer).map(|_| ());
-                if let Some(bytes) = taken {
-                    lock(&self.port.kept).push(&bytes);
-                    lock(slot).bytes = Some(bytes);
-                    filled.notify_all();
-                }
-                round
-            }
+        let busy = {
+            let s = lock(&self.port.slot);
+            s.bytes.is_some() || s.writing
         };
-        if let Err(e) = result {
+        if busy {
+            return;
+        }
+        let never = AtomicBool::new(false);
+        let mut taken = None;
+        let mut answer = |chain: &Chain| {
+            taken = read_chain(chain, memory);
+            0
+        };
+        // A ring of one: a round takes at most the one buffer the slot holds.
+        let round = serve_round(queue, memory, interrupt, &never, &mut answer);
+        if let Some(bytes) = taken {
+            lock(&self.port.slot).bytes = Some(bytes);
+            self.port.filled.notify_all();
+        }
+        if let Err(e) = round {
             if interrupt.fail() {
                 warn!("virtio-console: {e}; device needs reset");
             } else {
@@ -283,15 +249,13 @@ impl Tx {
         }
     }
 
-    /// The writer: each buffer taken, written with no lock held but its slot's, then the
-    /// guest's next taken.
+    /// The writer: each buffer taken delivered, with no lock held but the slot's and what is
+    /// kept's, then the guest's next taken.
     fn write_out(&self, mut to: Box<dyn Write + Send>) {
-        let Sink::Writer { slot, filled } = &self.sink else {
-            return;
-        };
+        let port = &self.port;
         loop {
             let bytes = {
-                let mut s = lock(slot);
+                let mut s = lock(&port.slot);
                 loop {
                     if let Some(bytes) = s.bytes.take() {
                         s.writing = true;
@@ -300,11 +264,14 @@ impl Tx {
                     if s.ended {
                         return;
                     }
-                    s = wait(filled, s);
+                    s = wait(&port.filled, s);
                 }
             };
+            // Console output is best effort: a closed stdout must not stop the guest.
             let _ = to.write_all(&bytes).and_then(|()| to.flush());
-            lock(slot).writing = false;
+            lock(&port.kept).push(&bytes);
+            lock(&port.slot).writing = false;
+            port.drained.notify_all();
             self.serve();
         }
     }
@@ -330,37 +297,27 @@ impl std::fmt::Debug for Console {
 impl Console {
     /// A console writing to `out`, that keeps its last `keep` bytes ([`Port::said`]); its
     /// port, for its VM's handle. A writer thread the system refuses is an error.
-    pub fn new(out: Output, keep: usize) -> Result<(Console, Arc<Port>), String> {
+    pub fn new(out: Box<dyn Write + Send>, keep: usize) -> Result<(Console, Arc<Port>), String> {
         let port = Arc::new(Port {
             kept: Mutex::new(Kept::new(keep)),
+            slot: Mutex::new(Slot::default()),
+            filled: Condvar::new(),
+            drained: Condvar::new(),
             receive: Mutex::new(Receive::default()),
             posted: Condvar::new(),
             panicked: AtomicBool::new(false),
         });
-        let (sink, writer) = match out {
-            Output::Inline(to) => (Sink::Inline(Mutex::new(to)), None),
-            Output::Writer(to) => (
-                Sink::Writer {
-                    slot: Mutex::new(Slot::default()),
-                    filled: Condvar::new(),
-                },
-                Some(to),
-            ),
-        };
         let tx = Arc::new(Tx {
             port: port.clone(),
             queue: Mutex::new(None),
-            sink,
         });
-        if let Some(to) = writer {
-            let writing = tx.clone();
-            // Not joined as the device drops: a write blocked on its stdout would hold the
-            // machine's teardown. It ends once what it holds is written.
-            std::thread::Builder::new()
-                .name("console-out".into())
-                .spawn(move || writing.write_out(to))
-                .map_err(|e| format!("the console's writer: {e}"))?;
-        }
+        let writing = tx.clone();
+        // Not joined as the device drops: a write blocked on its output would hold the
+        // machine's teardown. It ends once what it holds is delivered.
+        std::thread::Builder::new()
+            .name("console-out".into())
+            .spawn(move || writing.write_out(out))
+            .map_err(|e| format!("the console's writer: {e}"))?;
         let console = Console {
             port: port.clone(),
             tx,
@@ -492,10 +449,9 @@ impl Drop for Console {
     fn drop(&mut self) {
         self.take_input();
         *lock(&self.tx.queue) = None;
-        if let Sink::Writer { slot, filled } = &self.tx.sink {
-            lock(slot).ended = true;
-            filled.notify_all();
-        }
+        lock(&self.port.slot).ended = true;
+        self.port.filled.notify_all();
+        self.port.drained.notify_all();
     }
 }
 
@@ -528,11 +484,13 @@ mod tests {
         fn set_level(&self, _: bool) {}
     }
 
+    /// An output that keeps what it is given, and which threads gave it.
     #[derive(Clone, Default)]
-    struct Sink(Arc<Mutex<Vec<u8>>>);
+    struct Sink(Arc<Mutex<Vec<u8>>>, Arc<Mutex<Vec<std::thread::ThreadId>>>);
     impl Write for Sink {
         fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
             self.0.lock().unwrap().extend_from_slice(b);
+            self.1.lock().unwrap().push(std::thread::current().id());
             Ok(b.len())
         }
         fn flush(&mut self) -> std::io::Result<()> {
@@ -572,11 +530,11 @@ mod tests {
 
     fn active(keep: usize) -> (Console, Arc<Port>, Arc<GuestMemory>, Sink) {
         let sink = Sink::default();
-        let (console, port, mem) = active_to(Output::Inline(Box::new(sink.clone())), keep);
+        let (console, port, mem) = active_to(Box::new(sink.clone()), keep);
         (console, port, mem, sink)
     }
 
-    fn active_to(out: Output, keep: usize) -> (Console, Arc<Port>, Arc<GuestMemory>) {
+    fn active_to(out: Box<dyn Write + Send>, keep: usize) -> (Console, Arc<Port>, Arc<GuestMemory>) {
         let mem = Arc::new(GuestMemory::anonymous(&[(BASE, 1 << 20)]).unwrap());
         let (mut console, port) = Console::new(out, keep).unwrap();
         let queues = (0..2)
@@ -603,19 +561,24 @@ mod tests {
         (console, port, mem)
     }
 
-    /// A buffer the guest sends is written out whole, within its notification's exit, and
-    /// kept to quote in whole lines (D12); the device used it before the exit returns, so
-    /// the guest's spin ends at once.
+    /// A buffer the guest sends is used before its notification's exit returns, so the
+    /// guest's spin ends at once, with nothing written in the exit: the writer delivers it
+    /// whole, to the output and to what is kept to quote in whole lines (D12), which waits
+    /// for it.
     #[test]
-    fn a_buffer_sent_is_written_out_and_kept() {
+    fn a_buffer_sent_is_used_in_its_exit_and_delivered_by_the_writer() {
         let (console, port, mem, sink) = active(1000);
         let text = b"[    0.000000] Linux version 6.18.48\nKernel panic - not syncing\n";
         publish(&mem, 1, text, text.len() as u32, false);
         console.notify(1);
-        // Used before the notifying exit returns: the guest spins until it is.
         assert_eq!(used_of(&mem, 1).0, 1, "used within the notify");
-        assert_eq!(*sink.0.lock().unwrap(), text);
         assert_eq!(port.said().lines, text);
+        assert_eq!(*sink.0.lock().unwrap(), text);
+        let me = std::thread::current().id();
+        assert!(
+            sink.1.lock().unwrap().iter().all(|t| *t != me),
+            "written in the exit"
+        );
     }
 
     /// Host input waits for a buffer the guest posted, losing nothing: more than a buffer
@@ -693,7 +656,7 @@ mod tests {
             open: open.clone(),
             got: got.clone(),
         };
-        let (mut console, _port, mem) = active_to(Output::Writer(Box::new(held)), 0);
+        let (mut console, _port, mem) = active_to(Box::new(held), 0);
         let within = |what: &str, f: &mut (dyn FnMut() + Send)| {
             std::thread::scope(|s| {
                 let (done, finished) = std::sync::mpsc::channel();
@@ -732,7 +695,7 @@ mod tests {
     /// zeros that ignores writes.
     #[test]
     fn the_device_is_one_port_of_two_queues() {
-        let (mut c, _) = Console::new(Output::Inline(Box::new(std::io::sink())), 0).unwrap();
+        let (mut c, _) = Console::new(Box::new(std::io::sink()), 0).unwrap();
         assert_eq!((c.device_id(), c.features()), (3, feature::VERSION_1));
         assert_eq!(c.queue_max_sizes(), [1, 1]);
         c.write_config(0, &[9; 12]);
