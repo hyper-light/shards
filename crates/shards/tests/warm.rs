@@ -457,6 +457,7 @@ impl Warm {
         let mut said = Vec::new();
         let mut done = false;
         let mut records = Vec::new();
+        let mut final_uses = Vec::new();
         // Its peer has exited, its end of the link closed with it: what it sent is read to
         // that end, with nothing to wait on.
         while let Some(m) = shards_ipc::recv(&self.daemon).unwrap() {
@@ -482,9 +483,22 @@ impl Warm {
                 );
                 continue;
             }
+            // What its machine used in all once down (D260's final use), told once by a VM
+            // that took its run: as its own thread tells it, beside the workload's DONE.
+            if m.kind == kind::FINAL_USE {
+                final_uses.push(m.payload);
+                continue;
+            }
             done |= m.kind == kind::DONE;
             said.push((m.kind, m.payload));
         }
+        let [used] = final_uses.as_slice() else {
+            panic!("{} final uses told", final_uses.len());
+        };
+        let used = shards_abi::rate::read_used(used).unwrap();
+        let (times, host) = (used.guest.unwrap(), used.host.unwrap());
+        assert!(!times.vcpus.is_empty(), "{times:?}");
+        assert!(host.cpu_ns > 0, "{host:?}");
         let records = records.concat();
         assert!(
             !started || records.lines().any(|l| l.split('\t').nth(3) == Some("exec")),
@@ -793,6 +807,44 @@ fn warm_needs_a_socket_of_its_own() {
             String::from_utf8_lossy(&out.stderr)
         );
     }
+}
+
+/// A warm VM that takes no run tells its daemon nothing more: it ends, which tells the daemon
+/// the run never started and may go to another VM (daemon.rs `taken`). No final use (D260)
+/// stands where TAKEN would be, which the daemon could not tell from a run taken.
+#[test]
+fn a_warm_vm_that_takes_no_run_tells_no_final_use() {
+    if cannot_run_vms() || cannot_pool() {
+        return;
+    }
+    let dir = TempDir::new("warm-untaken");
+    let template = template(&dir);
+    let mut warm = Warm::spawn(&template);
+    warm.ready();
+    // A request that brings none of its client's descriptors, which the VM refuses before it
+    // takes it (warm.rs `receive`).
+    let mut payload = Vec::new();
+    shards_ipc::RunHead {
+        log_size: 20 << 20,
+        log_files: 5,
+        ..Default::default()
+    }
+    .encode_into(&mut payload);
+    payload.extend(
+        Spec {
+            argv: vec![b"/bin/testguest".to_vec(), b"exit".to_vec(), b"0".to_vec()],
+            ..Spec::default()
+        }
+        .encode(),
+    );
+    shards_ipc::send(&warm.daemon, kind::RUN, &payload, &[]).unwrap();
+    let said = told(&warm.daemon, warm.child.id(), "its end without TAKEN").unwrap();
+    assert!(
+        said.is_none(),
+        "it said kind {:?} before its end",
+        said.map(|m| m.kind)
+    );
+    let _ = warm.child.wait();
 }
 
 /// A warm VM lets go of its client's stdio before it sends the exit status, so a pipeline
