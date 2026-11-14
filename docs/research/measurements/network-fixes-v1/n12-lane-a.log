@@ -1,0 +1,36 @@
+# network-12, lane A's rows (UDP lifetimes; chooser.rs buffers and unprivileged port), kiln r1899 on adacachy2
+# (Linux 7.3.3-1-cachyos x86_64, rustc 1.98.1), nice -n 10, cold CARGO_TARGET_DIR ~/g121-tmp/neta-linux/target,
+# carrier /tmp/g121-shot/carrier-neta (run.sh MODE=script SCRIPT=n12.sh). Source: main 4028b2c50 + bundle of
+# p/fix-network-a-12-v1: red 7bd8ce6cb, UDP fix 930f7404f, chooser 2de7d5533.
+# net:  cargo test -p shards-net --profile test-release --lib -- udp_ a_udp_mapping
+# init: cargo test -p shards-init --profile test-release --bins -- chooser:: hostbind:: members::
+=== red 7bd8ce6cb (net)
+test tests::udp_flows_live_as_conntrack_keeps_them ... ok
+test tests::a_udp_mapping_outlives_two_minutes_of_quiet_but_none_past ... FAILED
+test tests::udp_flows_take_free_gateway_ports_in_turn ... ok
+thread 'tests::a_udp_mapping_outlives_two_minutes_of_quiet_but_none_past' (2604604) panicked at crates/net/src/lib.rs:4564:9:
+  ("a mapping to port 5000 ended inside two minutes of quiet")
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 191 filtered out
+=== green net 2de7d5533
+test tests::a_udp_mapping_is_refreshed_by_each_datagram_either_way ... ok
+test tests::a_udp_mapping_outlives_two_minutes_of_quiet_but_none_past ... ok
+test tests::udp_flows_take_free_gateway_ports_in_turn ... ok
+test result: ok. 3 passed; 0 failed
+=== green init 2de7d5533
+test result: ok. 22 passed; 0 failed (chooser:: 10 incl. the_unprivileged_start_is_the_namespaces_own_or_an_error
+  and every_listener_of_a_long_dump_is_found; hostbind:: 7; members:: 5)
+=== clippy -p shards-net -p shards-init -p shards-abi --all-targets -- -D warnings: exit 0
+=== m1: UDP_MAPPING_IDLE 30 s
+test tests::a_udp_mapping_is_refreshed_by_each_datagram_either_way ... FAILED (lib.rs:4527)
+test tests::a_udp_mapping_outlives_two_minutes_of_quiet_but_none_past ... FAILED (lib.rs:4555)
+m1 exit 101
+=== m2: dump datagrams cut to 1 KiB (let len = len.min(1024) in chooser::whole)
+test chooser::tests::every_listener_of_a_long_dump_is_found ... FAILED (chooser.rs:1061)
+m2 exit 101
+=== m3: an unreadable ip_unprivileged_port_start taken as 1024
+test chooser::tests::the_unprivileged_start_is_the_namespaces_own_or_an_error ... FAILED (chooser.rs:1040)
+m3 exit 101
+# worktree clean after each mutation; exit 0.
+# Note: every_listener_of_a_long_dump_is_found is a guard, not a red: the old fixed 16 KiB buffer read the
+# dump whole too, the kernel sizing its dump datagrams to what a reader has taken (net/netlink/af_netlink.c,
+# max_recvmsg_len); the buffer now follows each datagram's own length instead of relying on that.

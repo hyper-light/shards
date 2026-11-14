@@ -4445,9 +4445,16 @@ read holds one whole message. The rest keep their values until their learned des
 land, each with its cold start, typed failure and the measurement ROOT owes, in
 [the row-by-row record](../research/measurements/network-fixes-v1/README.md#network-12-the-network-controls-derivations-row-by-row):
 the TCP queues and retransmission (RFC 6298, RFC 1122 R2), window updates (RFC 9293),
-the per-turn budget (deficit round robin), UDP lifetimes (RFC 4787 REQ-5, which the
-30 s unreplied lifetime breaks past port 1023), the backlog, the poller's batch, the
-ring's size, the resolvers' wait and the daemon's bind tries.
+the per-turn budget (deficit round robin), the backlog, the poller's batch, the
+ring's size, the resolvers' wait and the daemon's bind tries. UDP lifetimes (2026-11-14):
+a UDP flow of the network process lives RFC 4787 §4.3 REQ-5's two minutes past its last
+datagram, either way, answered or not (`shards_abi::bounds::UDP_MAPPING_IDLE`), where it
+lived conntrack's 30 s until answered and streaming, which broke REQ-5 for every port past
+1023 (red `a_udp_mapping_outlives_two_minutes_of_quiet_but_none_past`). Each datagram going
+out refreshes it (REQ-6, which MUST) and each coming in (REQ-6a, which MAY: its host socket
+is connected to its one granted peer). REQ-5a's shorter timers for well-known ports and
+REQ-5c's RECOMMENDED five minutes are not taken, with why and the measurement ROOT owes in
+the row-by-row record.
 
 `shards network` makes networks of microVMs as `docker network` makes them of
 containers, with Docker's inputs and words: create, ls, inspect, rm, prune, connect and
@@ -7470,10 +7477,11 @@ no part of the microVM's own network design (D59, D61), it is replaced.
   peers reach, with what would declare it (`EXPOSE`, `expose:`, `--expose`), so the gap
   is seen at once rather than as a connection that hangs.
 - **Its own values.** A joiner's link takes the hardware address its kernel gives it,
-  as an agent's does. The proxy keeps a UDP client's mapping as long as the microVM's own
-  connection tracking keeps a UDP flow (`nf_conntrack_udp_timeout`, and
-  `nf_conntrack_udp_timeout_stream` once answered, read from the running guest), so that
-  a published UDP port lasts as the microVM's translated flows do.
+  as an agent's does. The proxy keeps a UDP client's mapping a UDP mapping's two
+  minutes past its last datagram, either way (RFC 4787 REQ-5 and REQ-6,
+  `shards_abi::bounds::UDP_MAPPING_IDLE`), as the network process keeps one (D46). It
+  kept the guest's conntrack timeouts (30 s until answered, then 120 s), which break
+  REQ-5 past port 1023 (network-12, 2026-11-14).
 - **`--network host` is the command's own namespace**, as the client asks: the engine's
   host's network, the command's reach and no more. `none` is a namespace of its own with
   its loopback alone; `container:X` the namespace of X, one of its own joiners.
@@ -7520,9 +7528,10 @@ ports` lists, built; (3e) connect and disconnect of a running member, built.
   `/etc/resolv.conf` the switch's resolver. Init says the membership to the host before
   the joiner starts (`MEMBER`: its network, address and prefix, gateway and the kernel's
   hardware address), which the daemon keeps for inspect while it runs; its end lets the
-  membership go. The proxy relays what is published, its UDP mappings kept as the guest's
-  connection tracking keeps a UDP flow (read in a run of the pinned kernel, arm64,
-  2026-10-17: 30 s, and 120 s once answered), and says a
+  membership go. The proxy relays what is published, its UDP mappings kept RFC 4787 REQ-5's
+  two minutes past their last datagram (above; before 2026-11-14 the guest's conntrack
+  timeouts, read in a run of the pinned kernel, arm64, 2026-10-17: 30 s, and 120 s once
+  answered), and says a
   port it cannot bind in shards' words. `--add-host NAME:host-gateway` is refused: a
   member reaches nothing of the command's.
 - **Found and closed: TCP DNS sessions held their accept's names (network-09,
@@ -19560,6 +19569,11 @@ host's. A microVM has a kernel and a network namespace of its own; shards makes 
 network the host's at the layers a program can tell, TCP and UDP, as Docker Desktop's
 host networking does for its VM's containers (PM M177).
 
+**Relayed UDP flows (network-12, 2026-11-14).** The host network's relay (hostbind.rs)
+kept a relayed UDP flow as Linux conntrack keeps one, 30 s until answered and streaming,
+then 120 s; it now keeps each RFC 4787 REQ-5's two minutes past its last datagram, either
+way (REQ-6), as the network process does (D46, `shards_abi::bounds::UDP_MAPPING_IDLE`).
+
 - **Asked, and said each time.** `--network host` alone gives it; every start of such a
   run says on stderr what it gives (`shards_abi::run::NETWORK_HOST`): its servers' ports
   are the host's, reachable from every network the host is on, and it reaches the host's
@@ -19981,6 +19995,16 @@ receiver for an incoming port" above:
   --test build a_udp_flow_goes_to_its_ports_next_holder -- --exact --nocapture`
   extended to hand the port back to the first holder and to the second again with one
   client socket, each datagram answered by the holder of the moment.
+- **What the chooser reads, at the sizes it comes in (network-12, 2026-11-14).** Its
+  sock_diag dumps were read into 16 KiB and its socket-end notices into 8 KiB, chosen,
+  and a namespace not yet read, or whose `ip_unprivileged_port_start` could not be read,
+  was taken to start at 1024. Each dump datagram is now read whole at its own length,
+  peeked first (recv(2)'s MSG_PEEK | MSG_TRUNC, netlink's since Linux 2.6.22); each
+  notice, never read, is taken with no buffer (MSG_TRUNC); and the unprivileged start is
+  the namespace's own, a namespace whose value cannot be read or is no port refusing its
+  member to the chooser with the error said, a bind before the namespace is read being
+  the member's own kernel's (`every_listener_of_a_long_dump_is_found`,
+  `the_unprivileged_start_is_the_namespaces_own_or_an_error`).
 - **A choice costs a commit, not a grace period (PM M513).** M498 found a contested
   bind(2) and listen(2) each at 16 ms (p50) where an uncontested filtered one took 19 and
   14 µs: the chooser programmed each choice on a netfilter socket of its own and closed
