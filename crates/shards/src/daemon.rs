@@ -13436,6 +13436,82 @@ mod tests {
         });
     }
 
+    /// A refusal is its own exec's alone (D183, waits-01): a member whose room was refused,
+    /// its kill acknowledged, and whose give-back then follows its VM's liveness (the
+    /// give-back's kind cold) is still asked by the round opened next, not counted as one
+    /// that gave nothing. Here `a` (600 MiB, under a high of 500 and a max of 1000) has its
+    /// room refused in round 1 and its give-back held; `b` (500 MiB) joins, opening round 2,
+    /// and gives nothing; `a` then gives 1 MiB back in round 2. Red with the room's refusal
+    /// left standing through the give-back: round 2 counted `a` as nothing given, its group
+    /// past its max, and OOM-killed `a` before its round-2 word came.
+    #[cfg(any(target_os = "macos", windows))]
+    #[test]
+    fn a_refused_room_is_not_the_next_rounds_verdict() {
+        let t = Test::new("group-stale");
+        t.run(|t| {
+            t.daemon
+                .answers
+                .room
+                .teach(Duration::from_millis(20), Duration::ZERO);
+            let mib = |n: u64| n << 20;
+            let dir = groups::made(&t.daemon.home, "g").unwrap();
+            std::fs::write(dir.join("memory.high"), format!("{}\n", mib(500))).unwrap();
+            std::fs::write(dir.join("memory.max"), format!("{}\n", mib(1000))).unwrap();
+            t.t.daemon.start_groups(t.threads);
+            let builtin = |m: &shards_ipc::Message| {
+                assert_eq!(m.kind, kind::EXEC_RUN, "asked {} where an exec was due", m.kind);
+                m.payload
+                    .get(9..)
+                    .and_then(shards_abi::run::Spec::decode)
+                    .unwrap()
+                    .builtin
+            };
+            let (a, _a_run, a_vm, _) = running_under(t, "first", "g", mib(600));
+            // Round 1: its room never answered, refused by its own judge, the kill answered.
+            let room = heard_whole(&a_vm);
+            assert_eq!(builtin(&room), shards_abi::run::builtin::ROOM);
+            let conn = stream_of(&room.fds[0]);
+            let killed = shards_ipc::recv(&conn).unwrap().unwrap();
+            assert_eq!((killed.kind, killed.payload), signal(9));
+            shards_ipc::send(&conn, kind::EXIT, &[137], &[]).unwrap();
+            drop((conn, room));
+            // Its give-back of round 1, held: its kind cold, it follows liveness alone.
+            let give = heard_whole(&a_vm);
+            assert_eq!(builtin(&give), shards_abi::run::builtin::RECLAIM);
+            let (b, _b_run, b_vm, _) = running_under(t, "second", "g", mib(500));
+            let _ends = Ends {
+                held: None,
+                vms: vec![(&a_vm, 0), (&b_vm, 0)],
+            };
+            // Round 2: b gives nothing.
+            for (said, what) in [
+                (&b"0"[..], shards_abi::run::builtin::ROOM),
+                (b"0 0\n", shards_abi::run::builtin::RECLAIM),
+            ] {
+                let m = heard_whole(&b_vm);
+                assert_eq!(builtin(&m), what);
+                answer_exec(&m, said, 0);
+            }
+            t.until("b's give-back taken", |d| !d.watching.giving(&b));
+            // a's give-back of round 1 answered, then its words of round 2: 1 MiB given back.
+            answer_exec(&give, b"0 0\n", 0);
+            drop(give);
+            for (said, what) in [
+                (&b"0"[..], shards_abi::run::builtin::ROOM),
+                (b"1048576 0\n", shards_abi::run::builtin::RECLAIM),
+            ] {
+                let m = heard_whole(&a_vm);
+                assert_eq!(builtin(&m), what, "a was not asked its round-2 word");
+                answer_exec(&m, said, 0);
+            }
+            t.until("a's give-back taken", |d| !d.watching.giving(&a));
+            assert!(
+                !lock(&t.daemon.containers).get(&a).is_some_and(|c| c.oom_killed),
+                "a, asked in round 2 and giving back, was OOM-killed"
+            );
+        });
+    }
+
     /// A group's member is held as of the footprint its room was read with (D183): told the
     /// footprint its VM process held as the daemon read its room, its guest holds it at what
     /// it used then and that room (`room_now`), whenever the word comes. So it grows into its
