@@ -36,16 +36,75 @@ fn token(n: usize) -> Result<String, String> {
     Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
-/// Why a client may not run `args` here: a context's own commands, the daemon's, and what the
-/// shards binary runs only as a part of itself (`cli::INTERNAL`), are the machine's owner's.
-fn owners(args: &[String]) -> Option<String> {
-    let said = shards_cmdline::grammar::rewrite(args).unwrap_or_else(|| args.to_vec());
+/// Why a client's command is refused before it runs (D180): judged of the words this
+/// machine's shards would run, never of how the client began them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Refused {
+    /// It chose a context (`--context`, `-c`): a client's command runs on this machine, as
+    /// its owner's shards serves it, and reaches no other machine its owner's contexts name.
+    Context,
+    /// A command this machine's owner's alone runs: its word.
+    Owners(String),
+    /// A build step's words that are no build.
+    NotABuild,
+    /// Words that would have this machine's files read or written for the client (D228).
+    Files(String),
+}
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Refused::Context => f.write_str(
+                "--context: a client's command runs on this machine, and chooses no context of its owner's",
+            ),
+            Refused::Owners(word) => write!(f, "{word}: this machine's owner's to run, not a client's"),
+            Refused::NotABuild => f.write_str("a build step's words are a build's alone"),
+            Refused::Files(why) => f.write_str(why),
+        }
+    }
+}
+
+impl From<Refused> for Error {
+    fn from(refused: Refused) -> Error {
+        Error::new(refused.to_string())
+    }
+}
+
+/// Whether a client's command `said`, the words [`crate::cli::command_words`] gives, is
+/// the machine's owner's: a context's own commands, the daemon's, and what the shards
+/// binary runs only as a part of itself (`cli::INTERNAL`).
+fn owners(said: &[String]) -> Option<Refused> {
     let first = said.first().map(String::as_str).unwrap_or_default();
     (crate::cli::INTERNAL.contains(&first)
         // `guest` and `disk` are `configure guest` and `configure disk`: the machine's own
         // guest and the share of its disk shards keeps (D28, D186), its owner's to set.
         || matches!(first, "context" | "client" | "invitation" | "daemon" | "guest" | "disk"))
-    .then(|| format!("{first}: this machine's owner's to run, not a client's"))
+    .then(|| Refused::Owners(first.to_string()))
+}
+
+/// Whether a client may run `args` here, as they came: none chooses a context, and none runs
+/// the owner's commands, as the words this machine's shards would run them as say.
+fn judge(args: &[String]) -> Result<(), Refused> {
+    match crate::context::choice(args) {
+        Ok((None, 0)) => {}
+        _ => return Err(Refused::Context),
+    }
+    owners(&crate::cli::command_words(args)).map_or(Ok(()), Err)
+}
+
+/// Whether a build step's `words`, the command it runs, are a build's (`synced::SYNC_STEP`):
+/// of an image (`build`, `image build`, `builder build`, `buildx build`) or of an agent's,
+/// a harness's or an MCP server's artifact, as a client's shards sends them, and nothing
+/// else.
+fn build_words(words: &[String]) -> Result<(), Refused> {
+    judge(words)?;
+    let said = crate::cli::command_words(words);
+    let refs: Vec<&str> = said.iter().map(String::as_str).collect();
+    let artifact = matches!(refs.as_slice(), ["agent" | "harness" | "mcp", "build", ..]);
+    match shards_cmdline::commands::build(&refs).is_some() || artifact {
+        true => Ok(()),
+        false => Err(Refused::NotABuild),
+    }
 }
 
 impl Host for Machine {
@@ -106,9 +165,7 @@ impl Host for Machine {
             .into_iter()
             .map(|a| String::from_utf8(a).map_err(|_| Error::new("an argument that is not UTF-8")))
             .collect::<Result<Vec<String>, Error>>()?;
-        if let Some(why) = owners(&args) {
-            return Err(Error::new(why));
-        }
+        judge(&args)?;
         if args.first().map(String::as_str) == Some(super::COPY_STEP) {
             let shown: Vec<&str> = args.iter().skip(1).map(String::as_str).collect();
             super::log(format!("client {client}: copy step {}", shown.join(" ")));
@@ -156,9 +213,10 @@ impl Host for Machine {
         }
         // Words its shards never sends, which would have this machine's files read or
         // written for the client (D228).
-        if let Some(why) = crate::client_grants::refuse_words(&args, crate::context::CIDFILE) {
+        let said = crate::cli::command_words(&args);
+        if let Some(why) = crate::client_grants::refuse_words(&said, crate::context::CIDFILE) {
             super::log(format!("client {client}: refused {}: {why}", args.join(" ")));
-            return Err(Error::new(why));
+            return Err(Refused::Files(why).into());
         }
         // A run's or create's `--cidfile` of the client's (`context::CIDFILE`), the client's
         // file, which the run records: the command writes the ID to a pipe instead
@@ -656,6 +714,11 @@ impl Machine {
         let key = args.get(2).cloned().unwrap_or_default();
         if step == "agent" {
             return self.agent_step(client, args.get(3).map(String::as_str).unwrap_or_default());
+        }
+        // The command a build step runs, the client's words: a build's, judged before any of
+        // its files come.
+        if step == "build" {
+            build_words(args.get(3..).unwrap_or_default())?;
         }
         let copy = crate::synced::copy_of(&self.home, client, &key).map_err(Error::new)?;
         let copies = self.home.join("synced").join(client);
@@ -1790,8 +1853,8 @@ mod tests {
     #[test]
     fn a_client_may_not_run_its_hosts_own_commands() {
         let args = |s: &str| s.split(' ').map(str::to_string).collect::<Vec<_>>();
-        assert!(owners(&args("ps -a")).is_none());
-        assert!(owners(&args("run --rm alpine echo hi")).is_none());
+        assert!(judge(&args("ps -a")).is_ok());
+        assert!(judge(&args("run --rm alpine echo hi")).is_ok());
         for owner in [
             "context ls",
             "list contexts",
@@ -1810,11 +1873,60 @@ mod tests {
             "share --join",
             "frontend osi",
         ] {
-            assert!(owners(&args(owner)).is_some(), "{owner}");
+            assert!(judge(&args(owner)).is_err(), "{owner}");
         }
         // Every part of the binary its own (`cli::INTERNAL`).
         for word in crate::cli::INTERNAL {
-            assert!(owners(&args(word)).is_some(), "{word}");
+            assert!(judge(&args(word)).is_err(), "{word}");
+        }
+    }
+
+    /// remote-01: an owner's command reaches no client however it is said: behind a context's
+    /// choice, which this machine's own shards would take off and then run the rest (`context::
+    /// chosen`), or `help`, or in shards' grammar; and a build step runs a build and nothing
+    /// else.
+    #[test]
+    fn a_client_may_not_run_an_owners_command_behind_a_prefix() {
+        let args = |s: &str| s.split(' ').map(str::to_string).collect::<Vec<_>>();
+        for said in [
+            "--context default client grant alice --dir /",
+            "--context=default client grant alice --dir /",
+            "-c default client grant alice --dir /",
+            "-c default -c default grant client alice --dir /",
+            "--context gpu ps",
+        ] {
+            assert_eq!(judge(&args(said)), Err(Refused::Context), "{said}");
+        }
+        for (said, word) in [
+            ("client grant alice --dir /", "client"),
+            ("grant client alice --dir /", "client"),
+            ("help client grant alice --dir /", "client"),
+            ("help grant client alice --dir /", "client"),
+            ("remove client bob", "client"),
+            ("stop daemon", "daemon"),
+        ] {
+            assert_eq!(judge(&args(said)), Err(Refused::Owners(word.into())), "{said}");
+        }
+        assert_eq!(judge(&args("ps -a")), Ok(()));
+        assert_eq!(judge(&args("help ps")), Ok(()));
+        // A build step's words: a build's, of an image or an artifact, alone.
+        for said in [
+            "build --file=x \0context",
+            "buildx build \0context",
+            "image build \0context",
+            "agent build \0context",
+            "harness build \0context",
+            "mcp build \0context",
+        ] {
+            assert_eq!(build_words(&args(said)), Ok(()), "{said}");
+        }
+        for said in [
+            "client grant alice --dir /",
+            "--context default build \0context",
+            "run alpine",
+            "agent push r/a:1",
+        ] {
+            assert!(build_words(&args(said)).is_err(), "{said}");
         }
     }
 

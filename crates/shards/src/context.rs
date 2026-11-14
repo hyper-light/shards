@@ -905,32 +905,37 @@ pub(crate) fn chosen(home: &Path, args: &mut Vec<OsString>) -> Result<Chosen, St
     chosen_in(home, args, &|name| std::env::var(name).ok())
 }
 
+/// The context `args`' own options choose, the last of them counting, and how many words
+/// at their front they are: what [`chosen`] takes off before the command. A client's
+/// command the daemon judges by the words that follow them (daemon/remote.rs, `judge`).
+pub(crate) fn choice<A: AsRef<std::ffi::OsStr>>(args: &[A]) -> Result<(Option<String>, usize), String> {
+    let mut given = None;
+    let mut taken = 0;
+    loop {
+        let word = |i: usize| args.get(i).and_then(|a| a.as_ref().to_str());
+        match word(taken) {
+            Some("--context" | "-c") => {
+                let name = word(taken.saturating_add(1)).ok_or("flag needs an argument: --context")?;
+                given = Some(name.to_string());
+                taken = taken.saturating_add(2);
+            }
+            Some(flag) if flag.starts_with("--context=") => {
+                given = Some(flag.trim_start_matches("--context=").to_string());
+                taken = taken.saturating_add(1);
+            }
+            _ => return Ok((given, taken)),
+        }
+    }
+}
+
 /// [`chosen`], `env` this process's environment.
 fn chosen_in(
     home: &Path,
     args: &mut Vec<OsString>,
     env: &dyn Fn(&str) -> Option<String>,
 ) -> Result<Chosen, String> {
-    let mut given = None;
-    loop {
-        let first = args.first().and_then(|a| a.to_str()).map(str::to_string);
-        match first.as_deref() {
-            Some("--context" | "-c") => {
-                let name = args
-                    .get(1)
-                    .and_then(|a| a.to_str())
-                    .ok_or("flag needs an argument: --context")?
-                    .to_string();
-                args.drain(..2);
-                given = Some(name);
-            }
-            Some(flag) if flag.starts_with("--context=") => {
-                given = Some(flag.trim_start_matches("--context=").to_string());
-                args.remove(0);
-            }
-            _ => break,
-        }
-    }
+    let (given, taken) = choice(args)?;
+    args.drain(..taken.min(args.len()));
     let env = |name: &str| env(name).filter(|v| !v.is_empty());
     let name = match given {
         Some(name) => name,
