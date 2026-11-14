@@ -964,8 +964,12 @@ mod asked {
     enum Seen {
         /// Gone, or exiting: settled.
         Ended,
-        /// It blocks the signal, or the process ignores it: it cannot answer.
-        Deaf,
+        /// The process ignores the signal: no thread can answer.
+        Ignored,
+        /// It blocks the signal, having run for this much CPU time (its `stat`'s utime and
+        /// stime): for a moment, as pthread_create blocks every signal around its clone,
+        /// or for good.
+        Blocks(u64),
         /// It takes the signal: asked, and waited for.
         Hears,
     }
@@ -1070,15 +1074,24 @@ mod asked {
             return Ok(Seen::Ended);
         };
         // Its fields after the name, whose parentheses close last (proc_pid_stat(5)):
-        // the state, then the parent, group, session, terminal, its group, and the flags.
-        let flags = stat
+        // the state, then the parent, group, session, terminal, its group, and the flags
+        // (the 9th), and its user and system CPU time (the 14th and 15th).
+        let fields: Vec<u64> = stat
             .rsplit_once(')')
-            .and_then(|(_, rest)| rest.split_whitespace().nth(6))
-            .and_then(|f| f.parse::<u64>().ok())
-            .ok_or_else(|| unread("flags"))?;
+            .map(|(_, rest)| {
+                rest.split_whitespace()
+                    .skip(1)
+                    .map(|f| f.parse().unwrap_or(0))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let (Some(flags), Some(utime), Some(stime)) = (fields.get(5), fields.get(10), fields.get(11)) else {
+            return Err(unread("flags and times"));
+        };
         if flags & EXITING != 0 {
             return Ok(Seen::Ended);
         }
+        let ran = utime.saturating_add(*stime);
         let Some(status) = read("status")? else {
             return Ok(Seen::Ended);
         };
@@ -1093,22 +1106,42 @@ mod asked {
             .ok()
             .and_then(|b| 1u64.checked_shl(b))
             .unwrap_or(0);
-        let deaf = (mask("SigBlk:")? | mask("SigIgn:")?) & bit != 0;
-        Ok(if deaf { Seen::Deaf } else { Seen::Hears })
+        Ok(if mask("SigIgn:")? & bit != 0 {
+            Seen::Ignored
+        } else if mask("SigBlk:")? & bit != 0 {
+            Seen::Blocks(ran)
+        } else {
+            Seen::Hears
+        })
     }
 
     /// Waits, with no timeout, until `answers` has an answer or `thread`, a thread's pidfd,
     /// says it ended.
     pub(super) fn wait(answers: &OwnedFd, thread: &OwnedFd) -> Result<Woken, Unasked> {
         loop {
+            if let Some(woken) = woken(answers, thread, true)? {
+                return Ok(woken);
+            }
+        }
+    }
+
+    /// Whether `answers` has an answer or `thread` ended: waited for where `wait`, else
+    /// looked at now.
+    fn woken(answers: &OwnedFd, thread: &OwnedFd, wait: bool) -> Result<Option<Woken>, Unasked> {
+        let now = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        let timeout = if wait { std::ptr::null() } else { &raw const now };
+        loop {
             let mut polled = [answers.as_raw_fd(), thread.as_raw_fd()].map(|fd| libc::pollfd {
                 fd,
                 events: libc::POLLIN,
                 revents: 0,
             });
-            // SAFETY: ppoll(2) on two pollfds of descriptors held open, with no timeout and
-            // no mask.
-            let n = unsafe { libc::ppoll(polled.as_mut_ptr(), 2, std::ptr::null(), std::ptr::null()) };
+            // SAFETY: ppoll(2) on two pollfds of descriptors held open, waiting with no
+            // timeout or not at all, and no mask.
+            let n = unsafe { libc::ppoll(polled.as_mut_ptr(), 2, timeout, std::ptr::null()) };
             if n < 0 {
                 let e = std::io::Error::last_os_error();
                 if e.kind() == std::io::ErrorKind::Interrupted {
@@ -1127,11 +1160,12 @@ mod asked {
                         std::mem::size_of::<u64>(),
                     )
                 };
-                return Ok(Woken::Answered);
+                return Ok(Some(Woken::Answered));
             }
             if ended.revents != 0 {
-                return Ok(Woken::Ended);
+                return Ok(Some(Woken::Ended));
             }
+            return Ok(None);
         }
     }
 
@@ -1151,18 +1185,46 @@ mod asked {
         Ok(Some(unsafe { OwnedFd::from_raw_fd(fd as i32) }))
     }
 
+    /// Waits for thread `tid`, asked as it blocked the signal having run `ran`, to answer
+    /// or end; none where it is deaf. A block may be pthread_create's (glibc's and musl's
+    /// block every signal around their clone, the new thread's until it starts, and their
+    /// caller's until it returns) or for good, and only evidence tells them apart, never a
+    /// time: a thread that has run since it was seen blocking it, and blocks it still, is
+    /// deaf. Running is its CPU time grown (utime and stime, in clock ticks): its first
+    /// scheduling (schedstat's timeslices) counts the very start a new thread makes in the
+    /// window, before it unblocks. Until it has run, or unblocked, this process yields to
+    /// the scheduler (sched_yield(2)), which runs it where it can run, and looks again; the
+    /// signal is pending for it all the while, and an unblocked thread takes it, answers,
+    /// and is waited for as any other.
+    fn blocked(tid: i32, ran: u64, answers: &OwnedFd, thread: &OwnedFd) -> Result<Option<Woken>, Unasked> {
+        loop {
+            if let Some(woken) = woken(answers, thread, false)? {
+                return Ok(Some(woken));
+            }
+            match seen(tid)? {
+                Seen::Ended => return Ok(Some(Woken::Ended)),
+                Seen::Ignored => return Ok(None),
+                Seen::Hears => return wait(answers, thread).map(Some),
+                Seen::Blocks(now) if now > ran => return Ok(None),
+                Seen::Blocks(_) => {
+                    // SAFETY: sched_yield(2) has no preconditions.
+                    unsafe { libc::sched_yield() };
+                }
+            }
+        }
+    }
+
     /// Asks thread `tid` of process `pid` to restrict itself, answering on `answers`.
     fn ask(pid: i32, tid: i32, answers: &OwnedFd) -> Result<Asked, Unasked> {
-        match seen(tid)? {
+        let deaf = Unasked::Deaf {
+            tid,
+            signal: signal(),
+        };
+        let first = match seen(tid)? {
             Seen::Ended => return Ok(Asked::Ended),
-            Seen::Deaf => {
-                return Err(Unasked::Deaf {
-                    tid,
-                    signal: signal(),
-                });
-            }
-            Seen::Hears => {}
-        }
+            Seen::Ignored => return Err(deaf),
+            first => first,
+        };
         let Some(thread) = pidfd(tid)? else {
             return Ok(Asked::Ended);
         };
@@ -1177,8 +1239,14 @@ mod asked {
                 _ => Err(system("asking a thread")(e)),
             };
         }
-        let woken = wait(answers, &thread)?;
+        let woken = match first {
+            Seen::Blocks(ran) => blocked(tid, ran, answers, &thread)?,
+            _ => Some(wait(answers, &thread)?),
+        };
         ASKED.store(0, Ordering::SeqCst);
+        let Some(woken) = woken else {
+            return Err(deaf);
+        };
         match (woken, ANSWER.load(Ordering::SeqCst)) {
             (_, RESTRICTED) => Ok(Asked::Restricted),
             (Woken::Ended, UNANSWERED) => Ok(Asked::Ended),
@@ -1593,7 +1661,6 @@ mod tests {
         Nothing,
         /// Every one but SIGSYS and SIGSEGV, as Mesa's threads (src/util/u_thread.c).
         AsMesa,
-        Everything,
     }
 
     /// A thread started before its process is confined, which on each word it is sent
@@ -1716,30 +1783,141 @@ mod tests {
         end(0)
     }
 
-    /// In a child process: a thread that blocks every signal and sleeps so, started before
+    /// SIGSYS's bit in a signal mask as `/proc/self/task/TID/status` writes it.
+    fn sigsys_in(status: &str, field: &str) -> bool {
+        status
+            .lines()
+            .find_map(|l| l.strip_prefix(field))
+            .and_then(|m| u64::from_str_radix(m.trim(), 16).ok())
+            .is_some_and(|m| m & (1 << (libc::SIGSYS - 1)) != 0)
+    }
+
+    /// In a child process: a thread that blocks every signal and runs on so, started before
     /// it is confined by asking each thread: the layer fails, closed, naming the thread,
-    /// where one made at once (TSYNC) reaches it.
+    /// once it has run with the signal still blocked; one made at once (TSYNC) reaches it.
     fn deaf_child(dir: &str, reach: &str) -> ! {
         use std::io::Write as _;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static STOP: AtomicBool = AtomicBool::new(false);
         let dir = std::path::PathBuf::from(dir);
         let paths = Paths {
             read: vec![dir.join("granted")],
             ..Paths::default()
         };
-        let (ask, told) = sibling(dir.clone(), Blocks::Everything);
-        // Its signals blocked.
-        told.recv().unwrap();
+        let (ready, blocked) = std::sync::mpsc::channel();
+        let other = dir.join("other");
+        let deaf = std::thread::spawn(move || {
+            // SAFETY: sigset operations on a local set; pthread_sigmask on this thread.
+            unsafe {
+                let mut all: libc::sigset_t = std::mem::zeroed();
+                libc::sigfillset(&mut all);
+                libc::pthread_sigmask(libc::SIG_BLOCK, &all, std::ptr::null_mut());
+            }
+            ready.send(()).unwrap();
+            while !STOP.load(Ordering::Relaxed) {
+                std::hint::spin_loop();
+            }
+            std::fs::read(other).is_ok()
+        });
+        blocked.recv().unwrap();
         // SAFETY: prctl(2) with integer arguments.
         unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
-        let applied = match reach {
-            "asked" => ruleset(&paths).and_then(|(ruleset, _)| every_thread(&ruleset, Reach::Asked)),
-            _ => ruleset(&paths).and_then(|(ruleset, _)| every_thread(&ruleset, Reach::AtOnce)),
+        let reach = if reach == "asked" {
+            Reach::Asked
+        } else {
+            Reach::AtOnce
         };
-        ask.send("read other").unwrap();
-        let read = told.recv().unwrap();
+        let applied = ruleset(&paths).and_then(|(ruleset, _)| every_thread(&ruleset, reach));
+        STOP.store(true, Ordering::Relaxed);
+        let read = deaf.join().unwrap();
         let _ = std::io::stdout()
             .write_all(format!("applied: {applied:?}\ndeaf read other: {read}\n").as_bytes());
         end(0)
+    }
+
+    /// In a child process: a thread held inside pthread_create's window across the pass's
+    /// first look at it: every signal blocked, asleep on an eventfd a helper writes once the
+    /// pass has sent it its signal (SIGSYS pending in its status, after the look), then
+    /// every signal unblocked, as pthread_create unblocks them. Asked each, the layer
+    /// reaches it. Prints the layer's outcome, and whether the thread then reads a file
+    /// outside its paths.
+    fn window_child(dir: &str) -> ! {
+        use std::io::Write as _;
+        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+        let dir = std::path::PathBuf::from(dir);
+        let paths = Paths {
+            read: vec![dir.join("granted")],
+            ..Paths::default()
+        };
+        // SAFETY: eventfd(2), close-on-exec; a fresh descriptor owned once.
+        let release = unsafe { OwnedFd::from_raw_fd(libc::eventfd(0, libc::EFD_CLOEXEC)) };
+        let (said, tid) = std::sync::mpsc::channel();
+        let (ask, asked) = std::sync::mpsc::channel::<()>();
+        let (tell, told) = std::sync::mpsc::channel();
+        let held = release.try_clone().unwrap();
+        let other = dir.join("other");
+        std::thread::spawn(move || {
+            // SAFETY: sigset operations on local sets; pthread_sigmask on this thread;
+            // gettid(2); read(2) of an eventfd's count into a u64 of ours.
+            unsafe {
+                let mut all: libc::sigset_t = std::mem::zeroed();
+                libc::sigfillset(&mut all);
+                let mut was: libc::sigset_t = std::mem::zeroed();
+                libc::pthread_sigmask(libc::SIG_BLOCK, &all, &mut was);
+                said.send(libc::syscall(libc::SYS_gettid) as i32).unwrap();
+                let mut count = 0u64;
+                libc::read(held.as_raw_fd(), (&raw mut count).cast(), 8);
+                libc::pthread_sigmask(libc::SIG_SETMASK, &was, std::ptr::null_mut());
+            }
+            for () in asked {
+                tell.send(std::fs::read(&other).is_ok()).unwrap();
+            }
+        });
+        let tid: i32 = tid.recv().unwrap();
+        std::thread::spawn(move || {
+            loop {
+                let status = std::fs::read_to_string(format!("/proc/self/task/{tid}/status")).unwrap();
+                if sigsys_in(&status, "SigPnd:") {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            let one = 1u64;
+            // SAFETY: write(2) of eight bytes of ours to the eventfd.
+            unsafe { libc::write(release.as_raw_fd(), (&raw const one).cast(), 8) };
+        });
+        // SAFETY: prctl(2) with integer arguments.
+        unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
+        let applied = ruleset(&paths).and_then(|(ruleset, _)| every_thread(&ruleset, Reach::Asked));
+        ask.send(()).unwrap();
+        let read = told.recv().unwrap();
+        let _ = std::io::stdout()
+            .write_all(format!("applied: {applied:?}\nwindow read other: {read}\n").as_bytes());
+        end(0)
+    }
+
+    /// A thread inside pthread_create's window as the pass first looks at it, every signal
+    /// blocked, is waited for, not failed: it answers once it unblocks (ROOT's watch item,
+    /// platform-01).
+    #[test]
+    fn a_thread_inside_pthread_creates_window_is_asked_once_it_unblocks() {
+        if let Ok(dir) = std::env::var("WINDOW_CHILD") {
+            window_child(&dir);
+        }
+        let dir_guard = shards_testdir::TempDir::new("window").unwrap();
+        let dir = dir_guard.join("window");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("granted"), b"g").unwrap();
+        std::fs::write(dir.join("other"), b"o").unwrap();
+        let (code, said, err) = child_of(
+            "confine::tests::a_thread_inside_pthread_creates_window_is_asked_once_it_unblocks",
+            &[("WINDOW_CHILD", dir.to_str().unwrap())],
+        );
+        assert_eq!(code, Some(0), "{said}\n{err}");
+        assert!(
+            said.contains("applied: Ok(())\nwindow read other: false"),
+            "{said}\n{err}"
+        );
     }
 
     /// Every thread of a confined process is confined, the ones it had before its layer
