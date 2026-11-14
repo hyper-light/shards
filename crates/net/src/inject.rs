@@ -642,6 +642,9 @@ enum Refusal {
     Mints { host: String },
     /// A sign-in's token response that could not be read or written: 502, never passed on.
     SignIn(signin::Refusal),
+    /// A response to a request with values filled in whose bytes are not those its guest decodes,
+    /// so that its mask could not hold to them (creds-04): 502, none of it passed on.
+    Unmaskable(Unmaskable),
     /// A sign-in's capture or refresh not answered outside: a refresh its broker refused is
     /// `invalid_grant` (400, RFC 6749 §5.2), so that its CLI signs in anew; the rest 502 for a
     /// capture, 503 for a refresh.
@@ -664,6 +667,10 @@ impl fmt::Display for Refusal {
                 "a sign-in's token is never sent to {host}'s endpoint that mints a key in the clear"
             ),
             Refusal::SignIn(why) => write!(f, "{why}"),
+            Refusal::Unmaskable(why) => write!(
+                f,
+                "the host's response to a request carrying a credential is {why}, so its echoes could not be masked"
+            ),
             Refusal::Declined { refresh: true, why } => {
                 write!(f, "the sign-in's refresh was not answered: {why}")
             }
@@ -682,7 +689,7 @@ impl Refusal {
             Refusal::TooLarge => (431, "Request Header Fields Too Large"),
             Refusal::Misdirected { .. } => (421, "Misdirected Request"),
             Refusal::Unleased { .. } => (503, "Service Unavailable"),
-            Refusal::Upstream(_) | Refusal::SignIn(_) => (502, "Bad Gateway"),
+            Refusal::Upstream(_) | Refusal::SignIn(_) | Refusal::Unmaskable(_) => (502, "Bad Gateway"),
             Refusal::Mints { .. } => (403, "Forbidden"),
             Refusal::Declined {
                 refresh: true,
@@ -713,6 +720,41 @@ impl Refusal {
         )
         .into_bytes()
     }
+}
+
+/// Why a response to a request with values filled in cannot be masked (creds-04, R04): the
+/// mask reads the bytes as they come, and these are not the ones its guest decodes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Unmaskable {
+    /// A content coding but `identity` (RFC 9110 §8.4) or a transfer coding but `chunked`
+    /// (RFC 9112 §7): gzip, br, deflate, zstd or any other, which a value's echo passes coded.
+    Coded,
+    /// A WebSocket extension taken (RFC 6455 §9.1), permessage-deflate's compression among them
+    /// (RFC 7692).
+    Extended,
+}
+
+impl fmt::Display for Unmaskable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Unmaskable::Coded => "coded",
+            Unmaskable::Extended => "a WebSocket with an extension",
+        })
+    }
+}
+
+/// Whether a response's `fields` (names and values) let its mask read its bytes as its guest
+/// decodes them (creds-04): no content or transfer coding but `identity` and `chunked`, and no
+/// WebSocket extension.
+fn maskable<'f>(fields: &[(&'f [u8], &'f [u8])]) -> Result<(), Unmaskable> {
+    signin::readable_fields(fields.iter().copied()).map_err(|_| Unmaskable::Coded)?;
+    if fields
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case(b"sec-websocket-extensions"))
+    {
+        return Err(Unmaskable::Extended);
+    }
+    Ok(())
 }
 
 /// What the host owes for the request it was last given, until its final response ends.
@@ -827,10 +869,12 @@ enum Chunk {
 }
 
 /// A body's bytes, as its framing reads them: data, a chunk's size line whole (its extensions
-/// too, RFC 9112 §7.1.1) and the size it says, or the rest of the framing between.
+/// too, RFC 9112 §7.1.1) and the size it says, a chunked body's trailer section whole (§7.1.2:
+/// fields, no part of its content), or the rest of the framing between.
 enum Piece<'b> {
     Data(&'b [u8]),
     Size { line: &'b [u8], size: u64 },
+    Trailers(&'b [u8]),
     Frame(&'b [u8]),
 }
 
@@ -930,8 +974,7 @@ fn walk(
                             return Err(Broken("a trailer line ends in a bare LF or CR"));
                         }
                         if section.as_slice() == b"\r\n" || section.ends_with(b"\r\n\r\n") {
-                            // The trailers are fields too, which an echo may lie in.
-                            out(Piece::Data(section)).map_err(fail)?;
+                            out(Piece::Trailers(section)).map_err(fail)?;
                             *framing = Framing::Length(0);
                             return Ok((at, true));
                         }
@@ -1108,6 +1151,22 @@ fn identity(head: &[u8], fields: &[Field]) -> Vec<(Range<usize>, Vec<u8>)> {
         .map(|f| (f.line.clone(), Vec::new()))
         .chain([(end..end, b"Accept-Encoding: identity\r\n".to_vec())])
         .collect()
+}
+
+/// A request with values filled in made to ask its response as its sender writes it, so that the
+/// mask reads the bytes its guest decodes (creds-04): `identity` asked (`identity`, RFC 9110
+/// §12.5.3) and no WebSocket extension offered (RFC 6455 §9.1: a server takes none not offered),
+/// as clients offer permessage-deflate by default. A host that codes its response anyway, or a
+/// transfer coding a guest's `TE` asked, is refused (`maskable`).
+fn uncoded(head: &[u8], fields: &[Field]) -> Vec<(Range<usize>, Vec<u8>)> {
+    let mut edits = identity(head, fields);
+    edits.extend(
+        fields
+            .iter()
+            .filter(|f| f.name == "sec-websocket-extensions")
+            .map(|f| (f.line.clone(), Vec::new())),
+    );
+    edits
 }
 
 /// Whether `reference` is a sign-in's access token, and `host`'s `target` an endpoint its CLI's
@@ -1365,6 +1424,11 @@ impl Mask {
             table: failure(value),
             matched: 0,
         });
+    }
+
+    /// Whether a value filled in is masked in the response under way.
+    fn masks(&self) -> bool {
+        !self.filled.is_empty()
     }
 
     /// The values masked no more: the response they were filled in for has ended.
@@ -1864,7 +1928,9 @@ impl Ended {
                     pending,
                     crate::tcp::TO_HOST,
                     &mut |piece| match piece {
-                        Piece::Data(b) | Piece::Size { line: b, .. } | Piece::Frame(b) => host.writer().write_all(b),
+                        Piece::Data(b) | Piece::Size { line: b, .. } | Piece::Trailers(b) | Piece::Frame(b) => {
+                            host.writer().write_all(b)
+                        }
                     },
                 )
                 .map_err(|Broken(why)| Refusal::Malformed(why))?;
@@ -1917,15 +1983,12 @@ impl Ended {
     /// the guest no window to send it (`tcp::full`) cannot be read whole: it goes on as any
     /// request, as one whose Content-Length is past `TO_HOST` does.
     fn outside(&mut self, parked: &Parked, mut held: Holding, run: &mut Run<'_>) -> Result<Outside, Refusal> {
-        let chunked = matches!(held.framing, Framing::Chunked(_));
         let Holding {
             framing, read, body, ..
         } = &mut held;
         let rest = self.pending.get(*read..).unwrap_or_default();
-        let mut trailers = body.len();
         let (taken, ended) = walk(framing, rest, crate::tcp::TO_HOST, &mut |piece| {
             if let Piece::Data(data) = piece {
-                trailers = body.len();
                 body.extend_from_slice(data);
             }
             Ok(())
@@ -1940,11 +2003,6 @@ impl Ended {
             } else {
                 Outside::Waiting(held)
             });
-        }
-        if chunked {
-            // `walk` gives a chunked body's trailer section last, as data (an echo may lie in
-            // it): it is fields, not content (§7.1.2).
-            body.truncate(trailers);
         }
         let Some((index, asked)) = ask_whole(&held.whole, &parked.host, &held.body, run) else {
             return Ok(Outside::Pass);
@@ -2091,6 +2149,9 @@ impl Ended {
                         fills.push((range, reference));
                     }
                 }
+                if !fills.is_empty() {
+                    edits.extend(uncoded(&head, &fields));
+                }
                 None
             }
         };
@@ -2217,7 +2278,8 @@ impl Ended {
                     // their bytes would reach the guest, and they are no data to mask.
                     let mut holds = false;
                     let mut piece = |p: Piece<'_>| match p {
-                        Piece::Data(b) => mask.push(b, true, &mut |b| guest.writer().write_all(b)),
+                        // A trailer section is fields, which an echo may lie in, as a head's.
+                        Piece::Data(b) | Piece::Trailers(b) => mask.push(b, true, &mut |b| guest.writer().write_all(b)),
                         Piece::Size { size, .. } => mask
                             .size(size, &mut |b| guest.writer().write_all(b))
                             .inspect_err(|e| holds |= e.get_ref().is_some_and(|e| e.is::<Holds>())),
@@ -2243,6 +2305,9 @@ impl Ended {
                     return Ok(());
                 }
                 Response::Whole { body, framing, .. } => {
+                    // Its data alone is its body: it goes on framed by its length, which carries no
+                    // trailer section, so a chunked one's trailers are dropped (RFC 9110 §6.5.1 lets
+                    // a recipient that removes the chunked coding discard them).
                     let (taken, ended) = walk(framing, bytes, crate::tcp::TO_GUEST, &mut |p| {
                         if let Piece::Data(data) = p {
                             if body.len().saturating_add(data.len()) > crate::tcp::TO_GUEST {
@@ -2358,6 +2423,16 @@ impl Ended {
         } else {
             response_framing(status, owed, &head, &fields)?
         };
+        if self.mask.masks() && !interim {
+            let read: Vec<(&[u8], &[u8])> = fields
+                .iter()
+                .map(|f| (f.name.as_bytes(), head.get(f.value.clone()).unwrap_or_default()))
+                .collect();
+            if let Err(why) = maskable(&read) {
+                self.refused = Some(Refusal::Unmaskable(why));
+                return Ok(());
+            }
+        }
         let cut = hop_by_hop(&head, &fields);
         let edits: Vec<(Range<usize>, &[u8])> = cut.iter().map(|(r, v)| (r.clone(), v.as_slice())).collect();
         let passed = rewrite(&head, &edits);
@@ -2609,6 +2684,17 @@ fn masked(mask: &mut Mask, value: &[u8]) -> Zeroizing<Vec<u8>> {
         Ok(())
     });
     out
+}
+
+/// A request's fields made to ask its response as its sender writes it (RFC 9110 §12.5.3): each
+/// Accept-Encoding cut and one asking `identity` added.
+fn ask_identity(fields: &mut Vec<hpack::Field>) {
+    fields.retain(|f| f.name != b"accept-encoding");
+    fields.push(hpack::Field::new(
+        b"accept-encoding",
+        b"identity",
+        hpack::Indexing::Incremental,
+    ));
 }
 
 /// An answer the injector makes as HTTP/1.1's bytes (a refusal's, `signin::refreshed`'s,
@@ -3349,12 +3435,7 @@ impl H2 {
             // their tokens can be read, and a POST to its token or revocation path is read whole,
             // as a refresh or a revocation is answered outside.
             go.fills.clear();
-            go.fields.retain(|f| f.name != b"accept-encoding");
-            go.fields.push(hpack::Field::new(
-                b"accept-encoding",
-                b"identity",
-                hpack::Indexing::Incremental,
-            ));
+            ask_identity(&mut go.fields);
             if let Some((whole, length)) = token_post(cli, &go.fields) {
                 if let Some(s) = self.streams.get_mut(&gid) {
                     s.up = Upward::Reading {
@@ -3365,6 +3446,10 @@ impl H2 {
                 }
                 return Ok(());
             }
+        }
+        if !go.fills.is_empty() {
+            // Asked as its sender writes it, as the HTTP/1.1 path asks it (creds-04).
+            ask_identity(&mut go.fields);
         }
         let path = go
             .fields
@@ -3921,6 +4006,13 @@ impl H2 {
         if !informational {
             s.down = Down::Body;
         }
+        if !informational && s.mask.masks() {
+            let read: Vec<(&[u8], &[u8])> = fields.iter().map(|f| (&f.name[..], &f.value[..])).collect();
+            if let Err(why) = maskable(&read) {
+                self.answer(gid, Refusal::Unmaskable(why));
+                return Ok(());
+            }
+        }
         // A sign-in's token host's final response with a body is read whole before any of it goes,
         // so that its tokens are taken outside (D242, step 8); one coded otherwise than as its
         // sender wrote it is refused on its stream, as its tokens could not be found.
@@ -4327,7 +4419,7 @@ pub(crate) mod tests {
                 };
                 let mut piece = Vec::new();
                 let (n, ended) = walk(&mut framing, &self.inbox, usize::MAX, &mut |p| {
-                    let (Piece::Data(b) | Piece::Size { line: b, .. } | Piece::Frame(b)) = p;
+                    let (Piece::Data(b) | Piece::Size { line: b, .. } | Piece::Trailers(b) | Piece::Frame(b)) = p;
                     piece.extend_from_slice(b);
                     Ok(())
                 })
@@ -4732,6 +4824,14 @@ pub(crate) mod tests {
         [&request[..at], to, &request[at + from.len()..]].concat()
     }
 
+    /// `request`, which asks no coding, as the injector sends it with its placeholder `from`
+    /// filled in as `to`: asking `identity` alone (creds-04).
+    fn filled(request: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
+        let swapped = swapped(request, from, to);
+        let end = swapped.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 2;
+        [&swapped[..end], b"Accept-Encoding: identity\r\n", &swapped[end..]].concat()
+    }
+
     /// The mask an echo of the value is given: its placeholder's bytes, cycled to its length.
     fn echo_mask() -> Vec<u8> {
         PLACEHOLDER.bytes().cycle().take(VALUE.len()).collect()
@@ -4787,7 +4887,7 @@ pub(crate) mod tests {
         bench.step(&mut credentials, None, |f, run, q| f.resume(run, q));
         bench.until(&mut credentials, &mut lease_all, |b| whole(&b.got));
         let one = &bench.h1().had[0];
-        assert_eq!(one.request, swapped(&first, PLACEHOLDER.as_bytes(), VALUE));
+        assert_eq!(one.request, filled(&first, PLACEHOLDER.as_bytes(), VALUE));
         assert_eq!(one.suite, Some(CipherSuite::TLS13_AES_256_GCM_SHA384));
         assert!(!holds(&bench.got, VALUE), "the value reached the guest");
         assert!(
@@ -4807,7 +4907,7 @@ pub(crate) mod tests {
         bench.guest.writer().write_all(&second).unwrap();
         bench.until(&mut credentials, &mut lease_all, |b| whole(&b.got));
         let two = &bench.h1().had[1];
-        assert_eq!(two.request, swapped(&second, PLACEHOLDER.as_bytes(), VALUE));
+        assert_eq!(two.request, filled(&second, PLACEHOLDER.as_bytes(), VALUE));
         assert!(!holds(&bench.got, VALUE), "the value reached the guest");
         assert!(
             credentials.leases.asks().is_empty(),
@@ -4915,7 +5015,7 @@ pub(crate) mod tests {
         later.guest.writer().write_all(&request).unwrap();
         later.until(&mut credentials, &mut lease_all, |b| whole(&b.got));
         let got = &later.h1().had[0];
-        assert_eq!(got.request, swapped(&request, PLACEHOLDER.as_bytes(), VALUE));
+        assert_eq!(got.request, filled(&request, PLACEHOLDER.as_bytes(), VALUE));
         assert_eq!(later.audit.len(), 1);
     }
 
@@ -4976,7 +5076,7 @@ pub(crate) mod tests {
         bench.until(&mut credentials, &mut lease_all, |b| whole(&b.got));
         assert_eq!(bench.held_most, 0, "the injector held the body");
         let had = &bench.h1().had[0];
-        let sent = swapped(&head, PLACEHOLDER.as_bytes(), VALUE);
+        let sent = filled(&head, PLACEHOLDER.as_bytes(), VALUE);
         assert!(
             had.request.len() == sent.len() + body.len(),
             "the host had {} bytes",
@@ -4987,7 +5087,7 @@ pub(crate) mod tests {
             "the request changed on its way"
         );
         let echoed = &bench.got[bench.got.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4..];
-        let masked = swapped(&head, PLACEHOLDER.as_bytes(), &echo_mask());
+        let masked = filled(&head, PLACEHOLDER.as_bytes(), &echo_mask());
         assert!(
             echoed[..masked.len()] == masked[..],
             "the echoed head is not the masked one"
@@ -5118,6 +5218,7 @@ pub(crate) mod tests {
         let body = b"5\r\nhello\r\n6;x=y\r\n world\r\n0\r\nTrailer: t\r\n\r\nNEXT";
         let mut framing = Framing::Chunked(Chunk::Size(Vec::new()));
         let mut data = Vec::new();
+        let mut trailers = Vec::new();
         let mut all = Vec::new();
         // A byte at a time, as segments may bring it.
         let mut took = 0;
@@ -5127,6 +5228,10 @@ pub(crate) mod tests {
                     Piece::Data(d) => {
                         data.extend_from_slice(d);
                         all.extend_from_slice(d);
+                    }
+                    Piece::Trailers(t) => {
+                        trailers.extend_from_slice(t);
+                        all.extend_from_slice(t);
                     }
                     Piece::Size { line: f, .. } | Piece::Frame(f) => all.extend_from_slice(f),
                 }
@@ -5140,7 +5245,8 @@ pub(crate) mod tests {
         }
         assert_eq!(&body[..took], &all[..]);
         assert_eq!(took, body.len() - 4, "the next message was taken as this one's");
-        assert_eq!(data, b"hello worldTrailer: t\r\n\r\n");
+        assert_eq!(data, b"hello world");
+        assert_eq!(trailers, b"Trailer: t\r\n\r\n");
         let mut broken = Framing::Chunked(Chunk::Size(Vec::new()));
         assert!(walk(&mut broken, b"5\r\nhelloXY", 1 << 10, &mut |_| Ok(())).is_err());
     }
@@ -5449,7 +5555,7 @@ pub(crate) mod tests {
         api.until(&mut credentials, &mut |c| broker.serve(c), |b| whole(&b.got));
         assert_eq!(
             api.h1().had[0].request,
-            swapped(
+            filled(
                 request.as_bytes(),
                 SIGNED_ACCESS.as_bytes(),
                 ISSUED_ACCESS.as_bytes()
@@ -6217,7 +6323,7 @@ pub(crate) mod tests {
         assert_eq!(bench.guest.alpn_protocol(), Some(&b"http/1.1"[..]));
         assert_eq!(
             bench.h1().had[0].request,
-            swapped(&request, PLACEHOLDER.as_bytes(), VALUE)
+            filled(&request, PLACEHOLDER.as_bytes(), VALUE)
         );
     }
 
