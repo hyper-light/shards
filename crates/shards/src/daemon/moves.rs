@@ -2827,6 +2827,28 @@ mod tests {
         assert!(read_entries(&mut cut, &mut |e| placer.take(e)).is_err());
     }
 
+    #[test]
+    fn a_volumes_hardlinks_keep_shared_contents_after_move() {
+        let from = shards_testdir::TempDir::new("mv-hfrom").unwrap();
+        std::fs::write(from.join("a"), b"before").unwrap();
+        std::fs::hard_link(from.join("a"), from.join("b")).unwrap();
+        let p = plan();
+        let mut bytes = Vec::new();
+        let mut writer = Writer::new(&mut bytes, &p).unwrap();
+        writer.tree(&from, "volumes/data/_data", &|_| false).unwrap();
+        writer.finish().unwrap();
+        let to = shards_testdir::TempDir::new("mv-hto").unwrap();
+        let allows = |_: &str| true;
+        let mut placer = Placer::new(&to, &allows);
+        let mut input = bytes.as_slice();
+        read_plan(&mut input).unwrap();
+        read_entries(&mut input, &mut |entry| placer.take(entry)).unwrap();
+        placer.finish().unwrap();
+        let root = to.join("volumes/data/_data");
+        std::fs::write(root.join("a"), b"after").unwrap();
+        assert_eq!(std::fs::read(root.join("b")).unwrap(), b"after");
+    }
+
     /// A volume's files move as its guest saw them (D176 part 6), whatever this host keeps
     /// them as (D38, D197): each one's kind, mode, recorded owner and group (none where none
     /// was, so that its share's default owner's stays), a device's number, a symlink's

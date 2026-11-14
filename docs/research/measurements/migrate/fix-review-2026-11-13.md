@@ -173,3 +173,24 @@ Command: `cargo test -p shards a_volumes_hardlinks_keep_shared_contents_after_mo
 This is a real file/archive unit failure, not a VM test. The test will be committed into
 that slice once the P0 extractor seam lands; no production extractor change is included
 in this CPU landing. ROOT accepted migrate04/07/09/10 as owed with the designs above.
+
+## CPU landing and held hardlink slice
+
+`git ls-remote origin refs/heads/main` confirmed CPU06/08 landed at
+`24402e230fd1930fed6afdca2c870660ba16c51e`. This tip excludes the unlanded P0
+`21c66fd3e`; no P0 code was published by this lane. It merges remote main
+`b6c76d45c` after check `dcbfa8b19`.
+
+An exact-SHA readback found the carrier runner still at the prior checked tree,
+so a single post-landing check explicitly fetched/checks-out `24402e230`, asserted
+HEAD equality and ran `cargo check -p shards-vmm -p shards --tests`. It passed on
+adacachy2 Linux x86_64 (resumed Kiln r2). The complete command output remains in
+`~/g121-tmp/fix-migrate-v1/landed-24402-check.log` on that runner. Earlier r2 IDs in
+this document belong to the original turn and are distinguished by source SHA.
+Only the lane's target directory was removed afterward; source and evidence remain.
+
+The migrate05 regression from original r11 is now a committed source test, not an
+untracked patch. It remains intentionally red: importer alias loss is unfixed.
+No production Placer/Writer change is included. ROOT's corrected instruction holds
+that implementation until the P0 owner's extractor fix is actually on remote main.
+This local held slice must not land by itself; its test becomes green with05's fix.
