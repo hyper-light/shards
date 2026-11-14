@@ -2190,6 +2190,7 @@ mod hosted {
     use shards_abi::run::{self as protocol, managed};
     use shards_api::image::wire::{self, Cause, Channel, RunEnd};
     use shards_ipc::Stream;
+    use shards_ipc::device::Refusal;
     use shards_ipc::fd::{AsFd as _, BorrowedFd, OwnedFd};
     use shards_ipc::kind;
 
@@ -3291,7 +3292,7 @@ mod hosted {
         roots: &'a [Vec<u8>],
         /// Each device step asked of the VM and not yet answered (`DEVICED`), by its number;
         /// none once the VM's link has closed, as nothing will answer one then.
-        devices: Mutex<Option<Vec<Asked>>>,
+        devices: Mutex<Option<Vec<Asked<Refusal>>>>,
         /// Each guest time asked of the VM and not yet answered (`GUEST_TIMED`), as devices.
         guest_times: Mutex<Option<Vec<Asked>>>,
         /// Each rate told the VM and not yet answered (`RATED`, D247), as devices.
@@ -3403,8 +3404,57 @@ mod hosted {
         }
     }
 
-    /// A device step asked of the VM: its number, and who waits for its answer.
-    type Asked = (u64, std::sync::mpsc::Sender<Result<String, String>>);
+    /// An ask of the VM: its number, and who waits for its answer, or why not: its text, or
+    /// a device step's refusal by cause (devices-10).
+    type Asked<E = String> = (u64, std::sync::mpsc::Sender<Result<String, E>>);
+
+    /// What an ask of the VM is refused with, as its answer says it.
+    trait VmRefusal: Sized {
+        /// Its answer after its number.
+        fn read(said: &[u8]) -> Result<String, Self>;
+        /// Its VM's link closed before it answered.
+        fn stopped() -> Self;
+        /// It could not be sent.
+        fn unsent(e: &std::io::Error) -> Self;
+        /// Its VM's refusal, as its asker is told it.
+        fn said(self) -> Self;
+    }
+
+    /// `GUEST_TIMED` and `RATED`: 0 and what it said, or anything else and why not.
+    impl VmRefusal for String {
+        fn read(said: &[u8]) -> Result<String, String> {
+            let text = String::from_utf8_lossy(said.get(1..).unwrap_or_default()).into_owned();
+            match said.first() {
+                Some(0) => Ok(text),
+                _ => Err(text),
+            }
+        }
+        fn stopped() -> String {
+            "its microVM stopped".into()
+        }
+        fn unsent(e: &std::io::Error) -> String {
+            format!("asking its microVM: {e}")
+        }
+        fn said(self) -> String {
+            format!("its microVM: {self}")
+        }
+    }
+
+    /// `DEVICED`, by cause (shards_ipc::device).
+    impl VmRefusal for Refusal {
+        fn read(said: &[u8]) -> Result<String, Refusal> {
+            shards_ipc::device::decode(said)
+        }
+        fn stopped() -> Refusal {
+            Refusal::ConnectionEnded
+        }
+        fn unsent(e: &std::io::Error) -> Refusal {
+            Refusal::Host(format!("asking its microVM: {e}"))
+        }
+        fn said(self) -> Refusal {
+            self
+        }
+    }
 
     /// The VM's answer to a socket lane (`LANE_OPEN`, D251): its payload, and the connection
     /// beside it on Unix.
@@ -5280,34 +5330,35 @@ mod hosted {
         let step = [&[shards_ipc::device::SHARE][..], tag.as_bytes()].concat();
         // On Unix its connection, which the share process sends and holds until it is
         // taken (M24); on Windows its stream itself, a duplex pipe made here (D197).
+        let host = |e: String| (R::Host, e);
         #[cfg(unix)]
         let answer = match shards_ipc::recv(&share.door) {
             Ok(Some(ends)) if ends.kind == kind::SHARE_ENDS => match ends.fds.first() {
                 Some(conn) => {
-                    let answer = ask_device(live, &step, &[conn.as_fd()]);
+                    let answer = ask_device(live, &step, &[conn.as_fd()]).map_err(device_refused);
                     let _ = shards_ipc::send(&share.door, kind::TAKEN, &[], &[]);
                     answer
                 }
-                None => Err("its share process sent no connection".into()),
+                None => Err(host("its share process sent no connection".into())),
             },
-            Ok(_) => Err("its share process sent no connection".into()),
-            Err(e) => Err(format!("its share process: {e}")),
+            Ok(_) => Err(host("its share process sent no connection".into())),
+            Err(e) => Err(host(format!("its share process: {e}"))),
         };
         #[cfg(windows)]
         let answer = match share.ends.first() {
-            Some(end) => ask_device(live, &step, &[end.as_fd()]),
-            None => Err("no stream was made for its share".into()),
+            Some(end) => ask_device(live, &step, &[end.as_fd()]).map_err(device_refused),
+            None => Err(host("no stream was made for its share".into())),
         };
         let placed = answer.and_then(|a| {
             a.split_once(' ')
                 .and_then(|(d, addr)| Some((d.parse::<u8>().ok()?, addr.to_string())))
-                .ok_or_else(|| format!("its microVM answered {a:?}"))
+                .ok_or_else(|| (R::Device, format!("its microVM answered {a:?}")))
         });
         let (devfn, address) = match placed {
             Ok(placed) => placed,
             Err(e) => {
                 share.end(&live.ends);
-                return Err((R::Device, e));
+                return Err(e);
             }
         };
         let flag = if ask.read_only { "ro" } else { "rw" };
@@ -5366,7 +5417,7 @@ mod hosted {
             return (Err((if busy { R::Busy } else { R::Device }, e)), None);
         }
         if let Err(e) = ask_device(live, &[shards_ipc::device::UNPLUG, devfn], &[]) {
-            return (Err((R::Device, e)), None);
+            return (Err(device_refused(e)), None);
         }
         (Ok(()), lock(&live.plugged).remove(&ask.at).map(|p| p.share))
     }
@@ -5387,9 +5438,19 @@ mod hosted {
         }
     }
 
+    /// A device step's refusal as a plug's (D235): the host's failure its own, the rest
+    /// the microVM's, which could not take it.
+    fn device_refused(refusal: Refusal) -> (wire::PlugRefusal, String) {
+        let cause = match refusal {
+            Refusal::Host(_) => wire::PlugRefusal::Host,
+            _ => wire::PlugRefusal::Device,
+        };
+        (cause, format!("its microVM: {refusal}"))
+    }
+
     /// Asks the VM device step `step` (`DEVICE`), with `fds`, and waits for its answer
     /// (`DEVICED`), as the daemon asks one (daemon/devices.rs `ask_device`).
-    fn ask_device(live: &Live<'_>, step: &[u8], fds: &[BorrowedFd<'_>]) -> Result<String, String> {
+    fn ask_device(live: &Live<'_>, step: &[u8], fds: &[BorrowedFd<'_>]) -> Result<String, Refusal> {
         ask_vm(live, &live.devices, kind::DEVICE, step, fds)
     }
 
@@ -5415,35 +5476,35 @@ mod hosted {
 
     /// Asks the VM `which` with `step` after its number, and `fds`, and waits for its answer
     /// by that number (`answered`), which comes as long as its link is open.
-    fn ask_vm(
+    fn ask_vm<E: VmRefusal>(
         live: &Live<'_>,
-        asks: &Mutex<Option<Vec<Asked>>>,
+        asks: &Mutex<Option<Vec<Asked<E>>>>,
         which: u8,
         step: &[u8],
         fds: &[BorrowedFd<'_>],
-    ) -> Result<String, String> {
+    ) -> Result<String, E> {
         let number = live.next_exec.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let (told, answer) = std::sync::mpsc::channel();
         match lock(asks).as_mut() {
             Some(asked) => asked.push((number, told)),
-            None => return Err("its microVM stopped".into()),
+            None => return Err(E::stopped()),
         }
         let ask = [&number.to_be_bytes()[..], step].concat();
         if let Err(e) = shards_ipc::send(&lock(&live.link), which, &ask, fds) {
             if let Some(asked) = lock(asks).as_mut() {
                 asked.retain(|(n, _)| *n != number);
             }
-            return Err(format!("asking its microVM: {e}"));
+            return Err(E::unsent(&e));
         }
         answer
             .recv()
-            .unwrap_or_else(|_| Err("its microVM stopped".into()))
-            .map_err(|e| format!("its microVM: {e}"))
+            .unwrap_or_else(|_| Err(E::stopped()))
+            .map_err(E::said)
     }
 
     /// The VM's answer to the ask its payload numbers (`DEVICED`, `GUEST_TIMED`): its number,
     /// then 0 and what it said, or anything else and why not; to its asker in `asks`.
-    fn answered(asks: &Mutex<Option<Vec<Asked>>>, payload: &[u8]) {
+    fn answered<E: VmRefusal>(asks: &Mutex<Option<Vec<Asked<E>>>>, payload: &[u8]) {
         let Some((number, said)) = payload.split_first_chunk::<8>() else {
             return;
         };
@@ -5454,11 +5515,7 @@ mod hosted {
         };
         if let Some(i) = asked.iter().position(|(n, _)| *n == number) {
             let (_, told) = asked.swap_remove(i);
-            let text = String::from_utf8_lossy(said.get(1..).unwrap_or_default()).into_owned();
-            let _ = told.send(match said.first() {
-                Some(0) => Ok(text),
-                _ => Err(text),
-            });
+            let _ = told.send(E::read(said));
         }
     }
 

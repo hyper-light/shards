@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, mpsc};
 
 use shards_cmdline::flags::Parsed;
+use shards_ipc::device::Refusal;
 use shards_ipc::{device, kind};
 
 use super::commands::Reply;
@@ -160,6 +161,29 @@ impl Drop for Held<'_> {
     fn drop(&mut self) {
         lock(&self.steps.under_way).ids.remove(&self.id);
         self.steps.ended.notify_all();
+    }
+}
+
+/// Why a device step asked of a run's VM was not done (devices-10): the run's, before its
+/// VM was asked, or its VM's refusal, by cause ([`Refusal`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum Asked {
+    Run(String),
+    Vm(Refusal),
+}
+
+impl std::fmt::Display for Asked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Asked::Run(why) => f.write_str(why),
+            Asked::Vm(refusal) => write!(f, "its microVM: {refusal}"),
+        }
+    }
+}
+
+impl From<Asked> for String {
+    fn from(asked: Asked) -> String {
+        asked.to_string()
     }
 }
 
@@ -548,33 +572,35 @@ impl<D: Disk> Daemon<D> {
         id: &str,
         step: &[u8],
         fds: &[shards_ipc::fd::BorrowedFd<'_>],
-    ) -> Result<String, String> {
+    ) -> Result<String, Asked> {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let (inbox, socket) = match lock(&self.runs).get(id) {
             Some(RunState::Tracked(t)) if t.joined.is_none() => (t.inbox.clone(), t.socket.clone()),
             Some(RunState::Tracked(_)) => {
-                return Err("it runs in another's microVM: plug into that one".into());
+                return Err(Asked::Run(
+                    "it runs in another's microVM: plug into that one".into(),
+                ));
             }
-            _ => return Err("it is not running".into()),
+            _ => return Err(Asked::Run("it is not running".into())),
         };
         let number = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let (told, answer) = mpsc::channel();
         {
             let mut inbox = lock(&inbox);
             if inbox.ended {
-                return Err("it is not running".into());
+                return Err(Asked::Run("it is not running".into()));
             }
             inbox.devices.push((number, told));
         }
         let ask = [&number.to_be_bytes()[..], step].concat();
         if let Err(e) = socket.send(kind::DEVICE, &ask, fds) {
             lock(&inbox).devices.retain(|(n, _)| *n != number);
-            return Err(format!("asking its microVM: {e}"));
+            return Err(Asked::Run(format!("asking its microVM: {e}")));
         }
         answer
             .recv()
-            .unwrap_or_else(|_| Err("its microVM stopped".into()))
-            .map_err(|e| format!("its microVM: {e}"))
+            .unwrap_or(Err(Refusal::ConnectionEnded))
+            .map_err(Asked::Vm)
     }
 
     /// Runs init's DEVICE built-in with `args` in running microVM `id`'s guest: its
@@ -761,11 +787,11 @@ impl<D: Disk> Daemon<D> {
             Err(e) => {
                 // Taken off again, its guest having found it or not.
                 let _ = self.guest_device(id, &[&["unmount", &address, &path][..], &into].concat());
-                if self.ask_device(id, &[device::UNPLUG, devfn], &[]).is_err()
-                    && let Some((_, claim)) = claimed
-                {
+                match (self.ask_device(id, &[device::UNPLUG, devfn], &[]), claimed) {
+                    // Off its bus: its claim goes as it drops.
+                    (Ok(_) | Err(Asked::Vm(Refusal::NoDevice { .. })), _) | (_, None) => {}
                     // Its VM may have it still: claimed until its run ends.
-                    claim.keep();
+                    (Err(_), Some((_, claim))) => claim.keep(),
                 }
                 return Err(e);
             }

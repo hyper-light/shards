@@ -10568,6 +10568,31 @@ Owed to ROOT: two running microVMs, `shards plug disk A FILE:/d`, then `shards p
 FILE:/d` (and through a hard link) refused, `FILE:/d:ro` into B refused, then after
 `shards unplug disk A /d`, `:ro` into A and B both plugged.
 
+
+**Amended 2026-11-14 (devices-10): a device step's refusal keeps its cause on the wire.**
+The VMM's plug, unplug and growth refused with text, and `DEVICED` carried a failure byte
+and that text, so nothing past the VM process could tell a full bus from a driver still
+bound or a host's VFIO failure but by its words (R04). They refuse by cause now,
+`shards_ipc::device::Refusal`, each with what it names: no bus (`NoBus`), every slot taken
+(`NoSlots { slots }`), nothing at a place (`NoDevice { devfn }`), a driver still driving it
+(`StillDriven { devfn, reason }`), a file shorter than its guest was told (`Shrink { has,
+asked }`) or not whole sectors (`Unaligned { bytes, sector }`), no microVM running
+(`Inactive`), a malformed step (`InvalidRequest`), what the device cannot do
+(`Unsupported`), the host's failure (`Host`), and, read on the asker's side, a VM that ended
+before it answered (`ConnectionEnded`) or an answer that could not be read (`InvalidReply`).
+Each says what its asker may do next (`Retry`): after a release (no slot, still driven),
+after correcting the ask, after reconciling (the step may have been done), or unknown (the
+host's). `DEVICED` after its number: `0` and the answer's text, or `1`, a cause byte, its
+numbers big-endian and its text; anything else, cut short, past a field's range or with
+text where its cause has none, reads as `InvalidReply`, never a success. The VM process and
+its daemon are one build (D36), so no older encoding is read. Callers match causes: a disk
+plug that fails after its VM took it keeps the file's claim unless the VM says it is off
+its bus (`NoDevice`); an Engine plug (D235) tells a host's failure (`Host`) from the
+microVM's; the CLI's and tests' words are made only to show one (the same words as before).
+An allocation failure of the answer ends the VM's link, which its asker reads as
+`ConnectionEnded`. Not typed by this: init's DEVICE built-in's answers, which come back as
+an exec's status and its words (a run's host already tells `DEVICE_BUSY` from the rest).
+Red/green: docs/research/measurements/device-fixes/README.md.
 ### D228. A client's paths are its own; the machine's are its owner's to grant (built)
 
 **The need.** Through a context (D180) a laptop runs microVMs on a GPU or x86_64 machine.

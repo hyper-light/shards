@@ -14,6 +14,7 @@ use std::io::Write as _;
 use std::time::{Duration, Instant};
 
 use common::{cannot_run_vms, kernel, test_guest};
+use shards_ipc::device::Refusal;
 use shards_testdir::TempDir;
 use shards_vmm::vm::{self, Config, Console, ExitReason, Handle};
 
@@ -155,7 +156,10 @@ fn devices_are_plugged_into_a_running_microvm_and_its_disks_grow() {
         readies.push(words[2].parse().unwrap());
         // Driven by its guest: not to be taken from under it.
         let refused = handle.unplug(plugged.devfn).unwrap_err();
-        assert!(refused.contains("still drives it"), "{refused}");
+        assert!(
+            matches!(&refused, Refusal::StillDriven { devfn, .. } if *devfn == plugged.devfn),
+            "{refused}"
+        );
         if round == 0 {
             let file = std::fs::OpenOptions::new().write(true).open(&disk).unwrap();
             file.set_len(8 * MIB).unwrap();
@@ -165,7 +169,13 @@ fn devices_are_plugged_into_a_running_microvm_and_its_disks_grow() {
             let shrunk = std::fs::OpenOptions::new().write(true).open(&disk).unwrap();
             shrunk.set_len(4 * MIB).unwrap();
             let e = plugged.size.as_ref().unwrap().grow().unwrap_err();
-            assert!(e.contains("only grows"), "{e}");
+            assert_eq!(
+                e,
+                Refusal::Shrink {
+                    has: 8 * MIB,
+                    asked: 4 * MIB
+                }
+            );
             shrunk.set_len(8 * MIB).unwrap();
         }
         let said = ask(&handle, format!("remove {}", plugged.address));
@@ -187,7 +197,7 @@ fn devices_are_plugged_into_a_running_microvm_and_its_disks_grow() {
             .unwrap();
     }
     let unplugged = handle.unplug(0x10).unwrap_err();
-    assert!(unplugged.contains("no function is plugged"), "{unplugged}");
+    assert_eq!(unplugged, Refusal::NoDevice { devfn: 0x10 });
 
     // A shared directory, served by a server of this process's: over a socket pair on
     // Unix, and on Windows over a duplex pipe, as its daemon makes a share's (D197).
