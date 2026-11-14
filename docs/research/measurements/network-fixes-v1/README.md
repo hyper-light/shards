@@ -76,3 +76,43 @@ capture proving no premature upstream EOF, and normal close/retransmission on
 KVM/HVF/WHP. Existing relevant baseline: `cargo test -p shards --test boot net`;
 add the adversarial FIN packet fixture at this socket/VM boundary before claiming
 full trust-domain isolation coverage. No such VM campaign was run here.
+
+Landing: `53d5cea99f51798678662143162b04144f67c44a` ff-pushed main after merging
+main `3b3a9e7fe`; r9 rechecked that exact source with 20 TCP tests and clippy
+passing ([output](landing01.log)). The previous pushes were refused when other
+lanes advanced main; no force/rewrite occurred. r10 removed this slice's owned
+remote target, exit 0. ROOT notification was rejected by Kiln inbox backpressure
+(`pending:4, authority:3`), so acceptance is not claimed.
+
+## network-04: conntrack zone retirement
+
+**Owed to ROOT; not fixed or live-confirmed.** Its decisive red is a kernel NAT
+binding being reused, not merely observing u16 arithmetic. The fix brief reserves
+real-VM/kernel campaigns to ROOT. The chooser still wraps its zone to 1, and
+`program_chosen` sets that zone before conntrack. D122 records why existing tuples
+preserve old NAT bindings. No elapsed-time assumption establishes retirement.
+
+Exact starting command on a disposable guest:
+`cargo test -p shards --test build a_udp_flow_goes_to_its_ports_next_holder -- --exact --nocapture`.
+First extend that test: retain a zone-1 tuple to A, move the allocator to
+`u16::MAX` under a test-only fixture, hand the port to B, resend the same tuple
+while its old kernel entry is alive, and witness actual A/B receipt. The existing
+one-handoff test alone cannot reproduce wrap. A full unforced cycle is ROOT's
+bounded campaign, not this implementer's unit scope.
+
+Proposed fail-closed design: a fresh network namespace starts with unused zones;
+allocate each once in that namespace, then return typed
+`ConntrackZonesExhausted` at the u16 kernel identity bound. The owner must close
+admission for the affected port and receive that terminal refusal. Chooser exit
+alone is insufficient: nft rules/conntrack outlive its socket. The existing
+control has no such terminal notification, so a local checked-add patch is not a
+complete fix. No timer, copied 120-second quarantine or counter reset is valid.
+
+Alternative: authoritative kernel deletion/DESTROY observation before reuse,
+through ctnetlink, with stale packets fenced before retirement. D122's pinned
+guest lacks ctnetlink, requiring a kernel/config change plus request/ack and
+event-loss handling. Kernel sources to verify before that broader decision:
+`net/netfilter/nf_conntrack_netlink.c`, `nf_conntrack_core.c`, `nf_nat_core.c` and
+`include/uapi/linux/netfilter/nfnetlink_conntrack.h`. ROOT owes those R02/R04/R05
+ownership/kernel proofs and R09/R10 real reproduction. No blind fix or passing
+campaign is claimed.
