@@ -4414,10 +4414,19 @@ default, which R03 holds insufficient alone.
     (`granule::g`, `step().g(LEAST_WAIT)`); the governor holds that limit's periods over it
     (`State::period`) until the next limit. g learned later (a wait's lateness) moves the next
     limit's period, never one already answered, so a period said is the one held.
-  - *Cold start*: the first limit measures the thread clock's step on the setting thread
-    (two of its steps at most: µs where clocks count ns, 31.25 ms on Windows, PM M294); no
-    wait has been counted, so g is `LEAST_WAIT` (1 ms) or the clock's step where coarser. A
-    clock that cannot be read is typed `Unclocked` and g its wake's (the debug line says so).
+  - *Cold start*: the first limit measures, on the setting thread, before any period is
+    derived (`granule::measure`, ROOT's review 2026-11-14): the host's wake, one timed wait of
+    the least a wait can ask (a nanosecond), its lateness counted in `LATE` as the host's own
+    wake granularity (a timer tick where the host waits in ticks, µs on high-resolution
+    timers); and the thread clock's step (two of its steps at most: µs where clocks count ns,
+    31.25 ms on Windows, PM M294). The first g is so `LEAST_WAIT` plus the measured wake, or
+    the clock's step where coarser: never `LEAST_WAIT` alone. A clock that cannot be read is
+    typed `Unclocked` and g its wake's (the debug line says so).
+  - *`LEAST_WAIT` (1 ms), its source*: CFS bandwidth control's own precision, cited above for
+    `SOONEST` (core.c `min_bw_quota_period_us`, fair.c `min_cfs_rq_runtime`): the least the
+    governor waits between reads, as D191 holds vCPUs as CFS holds a cgroup and no closer. It
+    is not any host's timer resolution, and no longer stands as one: g adds the host's
+    measured wake above it. Held by `granule::tests::a_cold_wake_is_measured_before_any_wait`.
     A g learned low only shortens the period: the share is then held on average across
     periods, as the debt carries, never over more than it gives.
   - *Let be* (no rate, or every vCPU's whole CPU): the period is g, the formula at a share of
@@ -13675,7 +13684,12 @@ changes, n=20 a side, before and after, through `cpu-elastic/phases.py`.
 
 **The priority governor's period and credit (platform-11, 2026-11-14).** `PERIOD` (100 ms,
 the hold's old period) is gone: each look's period is D191's for one thread held to half a
-CPU, `granule::period(1, 500 milli-CPU, g)` = 2g, derived as each look begins from g as the
+CPU (`HALF`, 500 milli-CPU: the most a fair scheduler gives a thread that contends for its CPU
+at all, as a raise matters only where another thread is ready there: beside k ≥ 1 ready
+threads of its priority Windows gives each a slice in turn, Scheduling Priorities, as Linux's
+fair scheduler gives threads of one weight w / (w + k·w), kernel/sched/core.c
+`sched_prio_to_weight`, so 1 / (k + 1) ≤ 1/2, at k = 1 the most: a bound, not a pick),
+`granule::period(1, 500 milli-CPU, g)` = 2g, derived as each look begins from g as the
 process knows it (`granule::g`; one function with the hold's, migrate-09), the governor's
 sleeps teaching g their lateness (`granule::LATE`). On a host whose GetThreadTimes counts
 15.625 ms ticks (PM M294), 31.25 ms.
@@ -13687,10 +13701,11 @@ sleeps teaching g their lateness (`granule::LATE`). On a host whose GetThreadTim
   2026-11-14 Status named). A raised thread so takes half a CPU over a long stretch and two
   periods more at most (4g, 62.5 ms at ticks), where it took a period and a half of 100 ms
   (150 ms).
-- *Cold start*: the governor measures its thread clock's step as it starts, before it is
-  raised (`granule::measure_clock`: two of its steps of its own CPU time, 31.25 ms at ticks);
-  until then g is `LEAST_WAIT` and the period 2 ms, a thread's credit as small: a raised thread
-  may go back to normal for the moment before the clock is known, less authority, never more.
+- *Cold start*: the governor measures its wake and its thread clock's step as it starts,
+  before it is raised and before its first look (`granule::measure`: one shortest wait, and
+  two of its clock's steps of its own CPU time, 31.25 ms at ticks); a thread raised before
+  then is credited at a g of `LEAST_WAIT`, a 2 ms period, as small a credit: it may go back to
+  normal until the first look, less authority, never more.
 - *Failure, typed*: a period that outgrows a u64 of ns (`granule::Outgrown`) raises no thread
   (`raise_current` errs, the thread at its priority) and, at a look, puts every watched thread
   back to normal and lets go of them; a clock that cannot be read leaves g its wake's

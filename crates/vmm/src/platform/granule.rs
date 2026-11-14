@@ -13,8 +13,12 @@
 //!   `thread_info`). Measured once a process, the first time a governor needs it: it spins two
 //!   of its steps at most.
 //!
-//! Cold, neither is known, and g is the least wait a governor asks for, [`LEAST_WAIT`]. A
-//! clock that cannot be read leaves its step unknown, typed ([`Unclocked`]), and g its wake's.
+//! Cold, neither is known: so before a governor holds anything, both are measured
+//! ([`measure`]): its wake by one timed wait of the least a wait can ask, a nanosecond, whose
+//! lateness is the host's own wake granularity (a timer tick where the host waits in ticks,
+//! microseconds where it waits on high-resolution timers), and its clock as below. Until a
+//! governor first asks, g is the least wait it asks for, [`LEAST_WAIT`]. A clock that cannot
+//! be read leaves its step unknown, typed ([`Unclocked`]), and g its wake's.
 //!
 //! [`period`] is D191's derivation from g, shared by every governor that holds threads to a
 //! share of a CPU: the hold's (vm/hold.rs), a share its rate's, and Windows' priority
@@ -26,8 +30,9 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-/// The least a governor waits between reads, and g cold: CFS bandwidth control's own
-/// precision, 1 ms. CFS takes no quota or period below it (kernel/sched/core.c l. 10054,
+/// The least a governor waits between reads: CFS bandwidth control's own precision, 1 ms,
+/// as D191 holds vCPUs to a rate as CFS holds a cgroup's threads to its quota, no closer. Not
+/// a host's timer resolution: g adds the host's measured wake lateness above it ([`measure`]). CFS takes no quota or period below it (kernel/sched/core.c l. 10054,
 /// `min_bw_quota_period_us`), and leaves each CPU that much of its runtime past the quota
 /// (kernel/sched/fair.c l. 7179, `min_cfs_rq_runtime`; Documentation/scheduler/sched-bwc.rst
 /// l. 94-95, 179-186; Linux 1590cf03).
@@ -138,6 +143,25 @@ pub fn period(vcpus: u64, milli: NonZeroU64, g: Duration) -> Result<Duration, Ou
     u64::try_from(ns).map(Duration::from_nanos).map_err(|_| outgrown)
 }
 
+static WOKE: OnceLock<()> = OnceLock::new();
+
+/// What a governor needs known before it holds anything, measured once a process on the
+/// calling thread: its wake ([`measure_wake`]) and its clock's step ([`measure_clock`]).
+pub fn measure() -> Result<Duration, Unclocked> {
+    WOKE.get_or_init(|| measure_wake(&LATE));
+    measure_clock()
+}
+
+/// One timed wait of the least a wait can ask, a nanosecond, counted in `late`: how late the
+/// host ends the shortest wait it is asked for, its own wake granularity, as no wait it ends
+/// is ended sooner.
+pub fn measure_wake(late: &Late) {
+    let asked = Duration::from_nanos(1);
+    let began = Instant::now();
+    std::thread::sleep(asked);
+    late.waited(asked, began);
+}
+
 /// The step the calling thread's CPU clock counts in, measured the first time any thread of
 /// the process asks, on that thread ([`clock_step`]); what it was after.
 pub fn measure_clock() -> Result<Duration, Unclocked> {
@@ -238,6 +262,20 @@ mod tests {
             })
         );
         assert!(period(1, milli(1), huge).is_err());
+    }
+
+    /// The cold wake is measured, not assumed: one shortest wait, its lateness the host's own
+    /// granularity, counted before any governor has waited; g then rests on it.
+    #[test]
+    fn a_cold_wake_is_measured_before_any_wait() {
+        let late = Late::new();
+        assert_eq!(late.least(), None);
+        let began = Instant::now();
+        measure_wake(&late);
+        let woke = late.least().unwrap();
+        assert!(woke <= began.elapsed(), "{woke:?}");
+        measure().unwrap();
+        assert!(super::step().late.is_some(), "measure leaves g its wake");
     }
 
     /// A clock's step is its second move: the first may be part of one, as a read can begin
