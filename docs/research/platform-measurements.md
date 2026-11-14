@@ -24140,3 +24140,19 @@ the stage and commit still answered; both mutants (no `SEALED`; no broker refusa
 Unit-level functional evidence, no real VM: `confine` refuses any process outside an
 AppContainer, and the WHP real-VM tests are owed.
 [Commands, logs, mutants and owed runs](measurements/windows-p0/README.md).
+
+### M568. A WHP DAX range mapped to be written after one to be read was made zeros as its file grew (memory-01, D189, D197)
+
+Windows 10.0.26200 x86_64 (the Windows 11 guest on adacachy), 2026-11-14: at 4697f1e7b a
+3 MiB file mapped to be read through a handle to read alone, then elsewhere to be written
+through one to write, grew; the window, keeping the first handle, made no PAGE_READWRITE
+section of it (CreateFileMappingW asks GENERIC_READ and GENERIC_WRITE) and placed writable
+zeros over the written range: it read 0 where the file holds 0x5a. A range no section to write
+can be made for was made zeros as it was followed after a cut, its vCPU let run. At 7f0cb8ce9
+the node keeps the handle given to write, the section is made before anything is freed, and a
+mapping that cannot be followed is left as it was or let go of, refused (`fs::Unfollowed`),
+the reply that would tell the guest its size refused: `window::tests` 12 of 12, both mutants
+(the first handle kept; let go of where it should be left) failing them. Unit-level functional
+evidence on real NTFS views, no real VM; a view refused after its section was made is
+unit-unreachable, and the WHP DAX tests are owed.
+[Commands, logs, mutants and owed runs](measurements/windows-p0/README.md).

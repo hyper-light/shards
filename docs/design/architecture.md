@@ -9438,6 +9438,11 @@ stores.
   44.4, 1 MiB close together 74 against 855. Held by
   `a_file_mapped_in_many_ranges_is_looked_at_once` (mutation-checked: 8 looks for 8
   ranges).
+- **A file its window cannot follow is a reply refused** (memory-01, PM M568; D197's slice
+  4 on Windows). Where `reconcile` cannot make a file's ranges what it is (its size unread,
+  its grown pages not mapped), it refuses, typed (`fs::Unfollowed`), and the reply that
+  would tell the guest the file's size is refused it (EIO): its guest never hears a size
+  whose bytes its window does not hold, and the file is followed again at its next request.
 - **Each window's page structures in its head, not its guest's memory** (PM M300). Linux
   describes a window's pages as it probes the device, with page structures (64 bytes for
   each 4 KiB page) it took from guest RAM: a 64th of the window (M269), from a guest that,
@@ -11654,6 +11659,33 @@ took, decided (PM M412):
   guest reads the file's bytes, and zeros past its end, as on Unix.
 - **Followed as the Unix window follows a file**: before the guest hears a size,
   `reconcile` makes each range what the file is then, a grown file's new bytes the guest's.
+- **Never zeros in place of a file's bytes** (memory-01, PM M568). A section to write is made
+  only of a handle "created with the GENERIC_READ and GENERIC_WRITE access rights", one to
+  read of one with GENERIC_READ (Microsoft's CreateFileMappingW, PAGE_READWRITE and
+  PAGE_READONLY), and a share's server opens a mapping to be read alone to read
+  (`SHARED_NEEDS_WRITE`). The window kept a node's first handle: a file mapped to be read
+  and then, elsewhere in the window, to be written grew, no section to write could be made
+  of the handle kept, and `reconcile`, having freed the written range's views, placed
+  writable zeros over its file's bytes, the guest's stores reaching no file. So:
+  - a node keeps the handle given for a mapping to be written over one given to read
+    alone, as the Unix window's node keeps a descriptor opened to write (window.rs
+    `Table::insert`);
+  - a mapping's new section is made before anything of it is let go of, and where none can
+    be made, or its file's size cannot be read, it is left as it was;
+  - where a view cannot be placed once its old ones are freed ("BaseAddress and ViewSize
+    must exactly match those of the placeholder", Microsoft's MapViewOfFile3, so a view
+    replaces only a freed placeholder), its ranges stay placeholders (`Held::LetGo`), as a
+    range let go of for a cut is, a vCPU that reaches one waiting until it is made again or
+    unmapped;
+  - each is refused, typed (`fs::Unfollowed`: its size, its section, a view), and the reply
+    that would tell the guest the file's size is refused it (EIO): the guest never hears a
+    size whose bytes its window does not hold. The request itself was the server's, done:
+    a refused LOOKUP's or CREATE's node and handle stay the server's until the guest's
+    unmount, as for any reply its guest did not take.
+  Held by `a_range_mapped_to_be_written_after_one_to_be_read_stays_its_files` and
+  `a_range_no_view_of_its_file_can_be_made_for_is_refused_never_zeros` (red before,
+  mutation-checked); a view refused after its section was made is unit-unreachable, and
+  unverified.
 - **No cut under a mapping.** NTFS refuses to cut a file short while any section of it is
   held, a view or a handle (ERROR_USER_MAPPED_FILE, M412). So the window keeps views alone,
   each section's handle closed once its views are placed. A guest's own cut (a SETATTR of
