@@ -19277,6 +19277,20 @@ finding open; no new scheduling or host-fairness result is claimed.
 - **Consequence.** D176 parts 6 and 7 record these as the two-machine numbers. Still to
   measure: the M3 Ultra and an M4 Max with a baseline, both ways, and the Studios' Wi-Fi.
 
+### Migration review regression, 2026-11-13 (migrate-06, D245)
+
+Unit evidence only, not a performance measurement: on adacachy2 Linux x86_64, a baseline
+excluding TSC-deadline still exposed ECX24 before the fix (Kiln r2, one failing test).
+After a09a09f0c, 10 CPUID module tests and shards-vmm clippy passed (r3). The mixed-host
+VM move remains unrun. [Exact commands, revisions and limits](measurements/migrate/fix-review-2026-11-13.md).
+
+### Migration review CPU-name regression, 2026-11-13 (migrate-08, D245)
+
+Linux x86_64 pure CPU tests: `aes` failed register mapping at ae37abb52 (r7), then
+3 Arm CPU tests and10 x86 CPUID tests passed at f004611b5; shards/shards-vmm all-target
+clippy passed (r8). These are code-path checks, not an Arm VM or performance result.
+[Commands and residual conservative refusals](measurements/migrate/fix-review-2026-11-13.md).
+
 ### M499. What a Hypervisor.framework guest is shown of its host's CPU, and a listener that outlives its runner (D176 part 6)
 
 - **Question.** A move between Macs is checked by the features macOS names
@@ -24114,6 +24128,7 @@ copy test passed (1 pass, 2 failures). At f7d83f73a all 7 MCP tests and shards-i
 all-target clippy passed. Normal socket half-close still delivers later stdin.
 This is functional evidence, not a performance measurement or real-VM result.
 [Commands, output excerpts, policy and owed coverage](measurements/inithex-fixes/README.md).
+
 
 ### M565. Absolute-FQDN remote MCP grants compared to real DNS wire questions (D236)
 
