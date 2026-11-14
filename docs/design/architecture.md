@@ -27798,8 +27798,8 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
       answer is read (`reclaim::said_of`: a DEVICE step, a resource update, a network's
       switch), where plug said "its guest: " with nothing after. Red/green: health.rs'
       `a_wait_is_never_refused_within_what_its_reading_resolves` (a 10 µs W*, an idle
-      process, an answer half a resolution in: refused on main, whose resolution was the
-      unit, taken now; refused only over a whole resolution) and judge.rs'
+      process: refused only once a whole tick, read apart from shards-api, has shown it
+      still; red with the unit as the resolution, refused microseconds in) and judge.rs'
       `a_w_star_below_what_its_looks_resolve_is_judged_over_what_they_do` (the moved.rs run's
       own times). Whether the five HVF tests and plug.rs pass on real VMs is ROOT's run's.
     - *Only an answer waited for teaches* (#77; docs/bugs/2026-11-13/waits.md waits-03). A

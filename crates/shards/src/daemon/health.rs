@@ -1129,15 +1129,26 @@ mod tests {
     /// b26 (ROOT's HVF batch at 1f71dea19, moved.rs:645, containers.rs:2257): a kind whose W*
     /// was microseconds refused a live VM process 16.6 µs past its first look, a window in
     /// which its reading (macOS: a clock tick's steps) shows nothing of a run. A wait is
-    /// judged over no window shorter than its VM process's reading shows
-    /// (`Watch::resolution`): an answer within one is taken, whatever W* says, and a process
-    /// that runs nothing is refused only over a whole one. Red with the reading's unit alone
-    /// (42 ns on macOS, 1 ns on Linux) as its resolution.
+    /// judged over no window shorter than its VM process's reading shows, its kernel's tick
+    /// (`Watch::resolution`), whatever W* says: a process that runs nothing is refused only
+    /// once a whole tick has shown it still. Red with the reading's unit alone (42 ns on
+    /// macOS, 1 ns on Linux) as its resolution: refused microseconds in.
     #[cfg(unix)]
     #[test]
     fn a_wait_is_never_refused_within_what_its_reading_resolves() {
         let idle = sleeper();
         let tick = tick();
+        let slowest = Duration::from_micros(10);
+        let record = learned(slowest);
+        let ended = waited(Wait::WhileRuns(idle.0.id(), &record), killed);
+        let Some(Cut::Stalled(stall)) = &ended.cut else {
+            panic!("{:?}", ended.cut);
+        };
+        assert!(
+            stall.over() >= tick,
+            "{stall:?} within its kernel's tick {tick:?}"
+        );
+        assert_eq!(stall.slowest(), slowest);
         let resolution = shards_api::Followed::of_pid(idle.0.id())
             .unwrap()
             .and_then(|followed| shards_api::Watch::of(followed).unwrap())
@@ -1147,17 +1158,6 @@ mod tests {
             resolution >= tick,
             "{resolution:?} below its kernel's tick {tick:?}"
         );
-        let slowest = Duration::from_micros(10);
-        let record = learned(slowest);
-        let ended = waited(Wait::WhileRuns(idle.0.id(), &record), answers(7, tick / 2));
-        assert_eq!((ended.status, ended.cut), (Some(7), None));
-        let record = learned(slowest);
-        let ended = waited(Wait::WhileRuns(idle.0.id(), &record), killed);
-        let Some(Cut::Stalled(stall)) = &ended.cut else {
-            panic!("{:?}", ended.cut);
-        };
-        assert!(stall.over() >= tick, "{stall:?} of {tick:?}");
-        assert_eq!(stall.slowest(), slowest);
     }
 
     /// The kernel's tick, read here apart from shards-api: macOS's `kern.clockrate` `tick`.
