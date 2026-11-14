@@ -1450,19 +1450,34 @@ pub fn backing_named(dir: &Path) -> Result<Vec<(PathBuf, bool)>, String> {
 /// Reads the generation `dir` points at, pinned.
 pub fn read(dir: &Path) -> Result<Pinned, String> {
     let at = |e: &dyn std::fmt::Display| format!("{}: {e}", dir.display());
+    pointed_open(
+        || {
+            current(dir).map_err(|e| match e.kind() {
+                io::ErrorKind::NotFound => at(&"no snapshot here"),
+                _ => at(&format!("{CURRENT}: {e}")),
+            })
+        },
+        |name| open(dir, name),
+    )
+    .map_err(|gone| at(&gone))
+}
+
+/// Opens the generation `current` names with `open`, looking at `current` again where a newer
+/// write removed it between the look and the open.
+fn pointed_open<T>(
+    mut current: impl FnMut() -> Result<String, String>,
+    mut open: impl FnMut(&str) -> Result<T, Open>,
+) -> Result<T, String> {
     let mut gone = String::new();
     for _ in 0..READ_ATTEMPTS {
-        let name = current(dir).map_err(|e| match e.kind() {
-            io::ErrorKind::NotFound => at(&"no snapshot here"),
-            _ => at(&format!("{CURRENT}: {e}")),
-        })?;
-        match open(dir, &name) {
+        let name = current()?;
+        match open(&name) {
             Ok(pinned) => return Ok(pinned),
             Err(Open::Gone(e)) => gone = e,
             Err(Open::Bad(e)) => return Err(e),
         }
     }
-    Err(at(&format!("its generations kept being replaced: {gone}")))
+    Err(format!("its generations kept being replaced: {gone}"))
 }
 
 fn open(dir: &Path, name: &str) -> Result<Pinned, Open> {
@@ -2098,6 +2113,41 @@ mod tests {
             let mut first = [0u8; 1];
             platform::read_exact_at(&p.memory, &mut first, 0).unwrap();
             (p.snapshot.arch[0], first[0])
+        }
+
+        /// migrate-10: a reader looks again as long as each generation it found gone was
+        /// replaced by a newer one, however many in a row, and reads the one that stays; a
+        /// pointer still naming a generation that is gone is refused as that, not looked at
+        /// again on a count.
+        #[test]
+        fn a_reader_follows_every_replacement_and_refuses_a_pointer_to_a_gone_generation() {
+            let replaced = 10;
+            let mut looked = 0u32;
+            let read = pointed_open(
+                || {
+                    looked += 1;
+                    Ok(format!("g-{looked:x}"))
+                },
+                |name| {
+                    if name == format!("g-{:x}", replaced + 1) {
+                        Ok(name.to_string())
+                    } else {
+                        Err(Open::Gone(format!("{name}: gone")))
+                    }
+                },
+            );
+            assert_eq!(read, Ok(format!("g-{:x}", replaced + 1)));
+            let mut looks = 0u32;
+            let stale = pointed_open(
+                || {
+                    looks += 1;
+                    Ok("g-a".to_string())
+                },
+                |name: &str| Err::<String, _>(Open::Gone(format!("{name}: gone"))),
+            );
+            assert_eq!(looks, 2, "a pointer that did not move was looked at again");
+            let why = stale.unwrap_err();
+            assert!(why.contains("g-a, which is gone"), "{why}");
         }
 
         fn generations(dir: &Path) -> Vec<String> {
