@@ -8888,12 +8888,57 @@ real-VM kill and stop tests on HVF, KVM and WHP (ROOT's).
 
 ### D188. A host short of memory gets back what its microVMs hold cold of their files (built)
 
-**R03 review memory-06..10 (2026-11-13):** the pressure windows/thresholds,
-fallback cadence, DAX crossover and cached headroom coefficient remain owed to
-ROOT. Their proposed runtime observations, cold starts, typed unavailable states
-and validation commands are in
-`docs/research/measurements/memory-fixes-v1/owed-designs.md`; existing values below
-are not evidence that these policy choices satisfy R03.
+**R03 review memory-06..08, 10 (2026-11-14, implemented; PM M574):** no fixed time
+or level is left in how the host hears its pressure and paces what follows it:
+- *What a pressure is* (memory-07): a PSI trigger's window's stall is pressure once
+  it is as long as the act it brings took last, the daemon's (or a build's) latest
+  give-back from its ask to its answer (`platform::pressure::stall_of`): rent or buy,
+  act once waiting has lost what acting costs, at most twice the best choice in
+  hindsight (Karlin, Manasse, Rudolph and Sleator, "Competitive snoopy caching",
+  Algorithmica 3, 1988). Cold start: no act yet, the kernel's least threshold, 1 µs
+  (`psi_trigger_create`: more than none, at most the window); the first stall is
+  heard and its act teaches the next. Its triggers are armed again as it changes;
+  one that cannot be stays as it was. Replaced lmkd's 140 ms in 2 s (an upstream
+  default, which R03 refuses).
+- *The window* (memory-06): 2 s on Linux is the kernel's bound, the least an
+  unprivileged writer may arm (`psi_trigger_create`: a multiple of 2 s, checked in
+  the averaging work with no real-time thread of its own; Linux 6.4, d82caa273565;
+  read in 7.2-rc4's kernel/sched/psi.c), shards running as its user; it is kept in
+  the Linux adapter alone (`WINDOW_US`). `shards_abi::PRESSURE_WINDOW_US` and
+  `platform::PRESSURE_WINDOW` are gone: nothing else paces itself by it.
+- *A kernel that arms no trigger* (memory-08): the same trigger kept by the daemon,
+  `some total` (the kernel's stall so far, brought up to date as it is read,
+  `psi_show`) read at once as the watch starts and then each window, a window's
+  growth past the learned stall a word. It was avg10 read each 10 s, at 7%. A file
+  that cannot be read ends the watch with its error, never zero pressure.
+- *macOS and Windows* (memory-06): a raised pressure is said again on D215's pace
+  (`shards_abi::pace`, `sqrt(2 c w)`), `c` the last act's cost and `w` how long it
+  has been raised; before any act, the watcher's own look's cost. It was 2 s.
+- *What follows a word* (memory-06): a microVM held short of its budget is told its
+  room again `sqrt(2 c w)` after its last word, `c` what telling it took, `w` how
+  long it had been short (`budget::Held::told_again`); a group's pass, `c` the last
+  pass's time and `w` how long its groups had gone unchanged (members, budget read,
+  short or not: `groups::Paced`); a build's look for late answers and its budget's
+  room, `c` its last look and `w` how long it had one out or was held
+  (`give::watch_words`). A build's patience for its builders' answers is the slowest
+  they have given (W*, `give::Unsaid::patience`), none waited for and none judged
+  before the first; it was a pressure window. The log's pacing (`pressure::Saying`)
+  follows its source's repeat (`Pressure::repeat`), a told pipe's each line a
+  pressure of its own.
+- *A guest's recent growth* (memory-06, PM M466): memory is cold only if it stayed
+  plugged through a whole period of the run's peak, from one give-back to the next,
+  unused; a give-back that finds more plugged than as its period began keeps all
+  (init `came_within`, `begin_period`). It was a mark within 2 s.
+- *A share's budget room* (memory-10): looked at on D215's pace (below).
+- Owed to ROOT (R09/R14, real hosts): the budget E2E
+  `cargo test -p shards --test budget` on a Linux host with cgroup v2 delegation;
+  `cargo test -p shards moves_live --test moved`; `update_under_pressure_stress`
+  (tests/containers.rs, ignored) for PM M466's rounds under the period rule; the
+  PSI threshold's word count and give-backs on a loaded Linux host against lmkd's
+  140 ms; macOS's and Windows' repeat counts under a raised pressure
+  (`SHARDS_PRESSURE` cannot raise the system's: Windows'
+  `each_low_memory_signal_is_a_word_and_one_that_lasts_is_said_again` and a
+  memory-pressure tool's run on a Mac). The DAX crossover (memory-09) stays owed below.
 
 **Review memory-04 (2026-11-13):** the builder's giver retains the latest ROOM
 word while a prior GIVE_BACK or ROOM reply is outstanding, including the explicit
@@ -8912,21 +8957,21 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
 
 **Decided.**
 - **The daemon watches the host's memory pressure** (`platform::MemoryPressure`). On
-  Linux, PSI triggers (Documentation/accounting/psi.rst): some task stalled on memory 140
-  ms in 2 s, Android's lmkd's lowest level (70 ms in 1 s, lmkd.cpp `psi_thresholds`) over
-  the shortest window an unprivileged process may watch (Linux 6.4, d82caa273565); on
+  Linux, PSI triggers (Documentation/accounting/psi.rst): some task stalled on memory as
+  long as its last give-back took, over the shortest window an unprivileged process may
+  watch (Linux 6.4, d82caa273565; memory-07 above, which replaced lmkd's 140 ms); on
   the host's memory, on the daemon's own cgroup, where its microVMs are made, and on each
   scope it makes microVMs in under a user's slice (D183), which may hold them to a budget:
   a cgroup's stall counts in the host's figure against every CPU busy elsewhere, so a
   budget is reached before the host says so. A kernel that arms none of its user's has
-  the host's ten-second average read every ten seconds. On macOS, libdispatch's memory
-  pressure source, said again every 2 s while the pressure stays raised, as a trigger is
-  while its stall goes on. On Windows, the system's low memory notification
+  the same trigger kept from its `some total`, read each window (memory-08). On macOS,
+  libdispatch's memory pressure source, said again on D215's pace while the pressure
+  stays raised (memory-06). On Windows, the system's low memory notification
   (CreateMemoryResourceNotification, `LowMemoryResourceNotification`), signalled while
   its available memory is low (by default 32 MB of each 4 GB, 64 MB at most: its
-  documentation), said again every 2 s while it stays so, as macOS's is. On macOS and
+  documentation), said again on the same pace while it stays so. On macOS and
   Windows a group shards keeps holds microVMs to a budget (D183's slice 3), whose files
-  the daemon reads each pressure window. Where `SHARDS_PRESSURE` names a FIFO (on Windows,
+  the daemon reads on its passes' pace (memory-06). Where `SHARDS_PRESSURE` names a FIFO (on Windows,
   a named pipe), each line written to it is the host's word in place of its kernel's, as
   `SHARDS_BUILD_PRESSURE` tells a build: a test's, as no unprivileged process may raise
   macOS's or Windows' pressure.
@@ -9181,8 +9226,20 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   cgroups, each `memory.high` and `memory.max` short of `max` from its own up, less room
   past it than its own reads need: what its host's kernel charges ahead on each CPU, the
   read in flight and two read-ahead windows, as init's least room has them
-  (`fs::headroom`, 2.25 MiB on 4 CPUs, looked at again a hundred looks' time after the
-  last). Within that room it keeps its copy, for the run's next reader. Held so short, a
+  (`fs::headroom`, 2.25 MiB on 4 CPUs). It looks at the budgets again on D215's pace
+  (`shards_abi::pace`, `sqrt(2 c w)`; memory-10, R03): `c` its last look's own cost on this
+  host, `w` how long its verdicts had been right as that look was made, a look's room on
+  the same side of a read's need as what it had left of the look before. A look that
+  finds a verdict wrong (a budget set or lowered, room taken or freed by another process,
+  its guest among them) restarts `w`, so looks come close together while the room moves
+  across what reads need and spread out while it stays clear: a 10 µs look right for 10 s
+  is next due 14.1 ms on, right for an hour 0.27 s on. It was a look's hundredfold time
+  (`LOOKS_APART`), a chosen share of the share's time. Cold start: no look yet, it looks
+  at once; a file that cannot be read is no bound, as before. Owed to ROOT (R14): the
+  share's look count and CPU over PM M318's held reads, against the hundredfold rule's,
+  `cargo test -p shards --test budget a_microvm_held_to_a_budget_reads_through_fuse_at_the_pace_of_reads_held_to_none`
+  on a Linux host with cgroup v2 delegation. Within that room it keeps its copy, for the
+  run's next reader. Held so short, a
   lone microVM's reads took 0.81 times their time with none at p50 with the copy dropped,
   1.9 with the tree's, and 1.01 with it kept until its budgets had no room left, its slice
   then within half a mebibyte of its budget; under a budget with room, a run's later reads
@@ -18018,6 +18075,40 @@ cause of that build's stall left no evidence, so what the next one leaves is fix
       - `memory_that_comes_slowly_is_waited_for`, which now also checks the 4 s it teaches;
       - `memory_that_stops_coming_is_asked_for_again` and
         `memory_that_never_comes_is_given_up`, both on a learned 2 s.
+  - **No count of tries, no millisecond (R03 review memory-12, memory-13; 2026-11-14,
+    PM M574).** The grower gave up after exactly one ask again, a boolean, and paced its
+    looks at a chosen 1 ms. Now (init plug.rs `come`, `pace`):
+    - *Its looks* at MemTotal follow D215's pace (`shards_abi::pace`, shared): `sqrt(2 c
+      w)` of a look's own cost and the wait since the ask or the block before, the first
+      at once; a pause held past its pace counts as one pace of the grower's own time. 10
+      µs looks 4 s into a wait pause 8.9 ms. `oom_said`'s reread is paced the same way.
+    - *Past W* with none come* it asks again, each such window, with no count: the driver
+      answers `-ETXTBSY`, `-EBUSY` and `-ENOMEM` with its retry timer and is still trying
+      (drivers/virtio/virtio_mem.c `virtio_mem_run_wq`, read in 7.2-rc4), so a delayed
+      driver stays pending. At the first such window the build's hold is lifted, so it runs
+      on what it has while it waits past any block its guest has seen (D137's never held
+      at a hold nothing raises); a block that comes holds it again as it grows.
+    - *It ends typed* (R04, `Came`): `All`; `Broken`, the kernel's own "marking device
+      broken", which the driver says as it stops for good (its `default:` case), looked
+      for at each window and, before W* is known, at each look; `Refused`, an ask its
+      control page refused; `Superseded`, its device's request lowered below the ask by
+      another (its host, a give-back); `Unread`, MemTotal unreadable. Each but
+      `Superseded` lifts the hold and says what came.
+    - *A builder's reply reader* (memory-12): past its deadline it looks at what has
+      come at once (`platform::wait_readable` with a timeout of none, poll(2) and WSAPoll
+      alike), never a 1 ms read timeout of its own; before it, it waits for what comes by
+      then.
+    - Tested in crates/init (Linux): `memory_that_comes_after_a_third_ask_is_waited_for`,
+      `a_driver_that_stopped_for_good_is_given_up` (and before W* is known),
+      `a_refused_ask_and_a_lowered_request_end_the_wait`,
+      `the_growers_looks_follow_their_cost_against_the_wait`, and the cases above on the
+      fake's paced clock; in shards, `a_giver_past_its_deadline_looks_at_once`.
+      Mutation-checked: a give-up at the second window (the third-ask case fails), a 1 ms
+      pace, a 1 ms read floor (200 looks past a deadline took over 100 ms).
+    - Owed to ROOT: `cargo test -p shards --test build a_builders_memory_is_plugged_as_fast_as_its_jobs_take_it`
+      and `a_build_held_short_of_memory_has_its_builder_give_back`, real builders on HVF
+      and KVM, and a delayed-driver fault (the VMM's device answering BUSY for three
+      windows) for the third-window case live.
 - **A killed build left its builder running.** A builder's VM ended as its build dropped
   it, or as its guest powered off on its connection closing: a killed `shards build image` drops
   nothing, and a guest held at its memory hears nothing. The VM now ends as its `--attach`

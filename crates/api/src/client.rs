@@ -1242,19 +1242,15 @@ fn said(what: &str, said: &str) -> String {
     }
 }
 
-/// The wait before dialing again, `p = sqrt(2 c w)`: pacing that balances one dial's cost `c`
-/// against the waiting so far `w`, both measured as this connect runs.
+/// The wait before dialing again, `p = sqrt(2 c w)` (`shards_abi::pace`, shared with the
+/// VMM's and the guest's looks): pacing that balances one dial's cost `c` against the
+/// waiting so far `w`, both measured as this connect runs.
 ///
 /// - `c` is the last refused dial's own work, its connect and its ask, measured each dial;
 ///   not its wait for the guest's answer, which costs this thread nothing (a muxer holding a
 ///   request for a guest whose vsock is not up yet waits seconds). On HVF (M464) 5.5 µs at
 ///   p50 to a socket not bound yet.
 /// - `w` is how long this connect has waited so far, and stands for the wait still to come.
-/// - Pausing `p` between dials, a wait of `w` takes `w / p` dials, `c w / p` of dialing; and a
-///   guest that starts to listen at a uniform moment within a pause is reached `p / 2` late on
-///   average. Both are seconds, of this thread and of its caller.
-/// - Their sum `f(p) = c w / p + p / 2` is least where `f'(p) = -c w / p² + 1 / 2 = 0`, that
-///   is `p² = 2 c w`: `p = sqrt(2 c w)`.
 ///
 /// So a few dials go out early and fewer as the wait grows: at 150 ms waited, 1.3 ms with a
 /// 5.5 µs dial and 3.6 ms with a 44 µs one, which dialing holds 0.4% and 1.2% of. A dial to a
@@ -1263,15 +1259,7 @@ fn said(what: &str, said: &str) -> String {
 /// Any wait that looks for its answer, each look a cost of its own, is paced the same way
 /// (`c` its look's cost): shards' engine ring E2E looks at a guest's pinned pages so
 /// (crates/shards/tests/engine_ring.rs, D230).
-pub fn pause(dialed: Duration, waited: Duration, left: Duration) -> Duration {
-    let product = dialed
-        .as_nanos()
-        .checked_mul(waited.as_nanos())
-        .and_then(|p| p.checked_mul(2))
-        .unwrap_or(u128::MAX);
-    let nanos = u64::try_from(product.isqrt()).unwrap_or(u64::MAX);
-    Duration::from_nanos(nanos).min(left)
-}
+pub use shards_abi::pace::pause;
 
 /// Why a handshake failed: worth asking again, or not.
 enum Attempt {

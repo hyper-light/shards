@@ -24544,3 +24544,46 @@ the reply that would tell the guest its size refused: `window::tests` 12 of 12, 
 evidence on real NTFS views, no real VM; a view refused after its section was made is
 unit-unreachable, and the WHP DAX tests are owed.
 [Commands, logs, mutants and owed runs](measurements/windows-p0/README.md).
+
+### M574. Memory control's times learned where it runs: a host's pressure, its repeats and what follows a word (D188, D137; memory-06, 07, 08, 10, 12, 13)
+
+- **Question.** The review of 2026-11-13 (docs/bugs/2026-11-13/memory.md) found fixed
+  times and levels in how shards hears its host's memory pressure and paces what follows:
+  lmkd's 140 ms in 2 s and avg10's 7% read each 10 s (07, 08), a 2 s window and repeat
+  reused as caller policy (06), a hundredfold look coefficient (10), 1 ms pauses and read
+  floors (12), one ask again before giving up (13). What replaces each, learned on the
+  host it runs on, with its cold start and its failure typed?
+- **Method.** Derivation and unit tests, no live runs (R15: real hosts are ROOT's).
+  - A stall's level: rent or buy (Karlin, Manasse, Rudolph and Sleator, Algorithmica 3,
+    1988), the stall a window that equals what the act it brings took last.
+  - Pacing looks at something nothing announces: D215's `sqrt(2 c w)`, moved from
+    shards-api into `shards_abi::pace` and shared (R12) by the share's budget look, the
+    budget re-tell, a group's pass, a build's late look, the grower's looks and macOS's and
+    Windows' repeat.
+  - The PSI bounds read in Linux 7.2-rc4's kernel/sched/psi.c (`psi_trigger_create`: a
+    window of a multiple of 2 s unprivileged, a threshold in (0, window]; `psi_show`
+    collecting per-CPU times at each read), virtio_mem's error handling in
+    drivers/virtio/virtio_mem.c `virtio_mem_run_wq` (retry timer for -ETXTBSY, -EBUSY and
+    -ENOMEM; "marking device broken" for the rest).
+  - Focused tests and clippy on adas-mac-studio.local (macOS 26, arm64) and adacachy2
+    (CachyOS, x86_64, Linux-only code), each guard mutated back to its old literal or rule
+    (`docs/research/measurements/memory-r03-v1`).
+- **Results.** Green: shards-init `plug::tests` 31/31 and shards-vmm `platform::pressure`
+  4/4 on Linux; shards-abi `pace` 1/1, shards-api `a_pause` 1/1, shards-vmm headroom and
+  pressure 8/8 and the shards binary's give, builder, budget, groups, reclaim and pressure
+  tests 33/33 on macOS; clippy `-D warnings` clean for shards-abi, -api, -vmm, -init and
+  shards on the hosts that compile them. Mutated: each of the 12 guards' tests failed
+  (3 of init's, 3 of vmm's on Linux; 3 of vmm's, 5 of shards' on macOS), as `slice1.log`
+  shows. Worked values the tests pin: a 10 µs share look right for 10 s is next due
+  14.1 ms on (a hundredfold: 1 ms); a 50 ms act a second into a raised pressure says it
+  again 316 ms on; a tell of 20 ms after 10 s short is next 632 ms on; a 5 ms group pass
+  unchanged for 10 s is next 316 ms on; a 10 µs grower look 4 s into a wait pauses 8.9 ms.
+- **Unknowns, owed to ROOT.** How often a loaded Linux host's trigger fires and what its
+  give-backs take, against lmkd's 140 ms (`cargo test -p shards --test budget` on a host
+  with cgroup v2 delegation); M466's `update_under_pressure_stress` rounds under the
+  peak-period rule; `cargo test -p shards moves_live --test moved`; macOS's and Windows'
+  repeat counts under a raised system pressure; the share's look count and CPU over M318's
+  held reads against the hundredfold rule's (R14); builders' growth on HVF and KVM
+  (`cargo test -p shards --test build a_builders_memory_is_plugged_as_fast_as_its_jobs_take_it`,
+  `a_build_held_short_of_memory_has_its_builder_give_back`); a driver delayed three
+  windows live. Not run on Windows (jupiter offline): the Windows repeat test.

@@ -35,6 +35,10 @@ pub(super) struct Watching {
     given: Condvar,
     /// What they gave back since it was last said.
     unsaid: Mutex<Unsaid>,
+    /// What the last give-back that answered took, from its ask to its answer: the cost of
+    /// acting on the host's word, which its watch learns what a pressure is, and how often
+    /// one that goes on is said again, from (`Pressure::acted`, D188). None before the first.
+    acted: Mutex<Option<Duration>>,
 }
 
 /// What microVMs gave back since it was last said: since when, how much of files and of
@@ -119,6 +123,9 @@ impl<D: Disk> Daemon<D> {
             if !self.await_a_microvm() {
                 return;
             }
+            if let Some(took) = *lock(&self.watching.acted) {
+                pressure.acted(took);
+            }
             if let Err(e) = pressure.wait() {
                 log(format!(
                     "watching the host's memory pressure: {e}; nothing more is given back at it"
@@ -128,7 +135,9 @@ impl<D: Disk> Daemon<D> {
             if self.closed.load(Ordering::SeqCst) {
                 return;
             }
-            lock(&self.watching.unsaid).saying.heard(Instant::now());
+            lock(&self.watching.unsaid)
+                .saying
+                .heard(Instant::now(), pressure.repeat());
             self.give_back_cold(threads);
         }
     }
@@ -183,9 +192,11 @@ impl<D: Disk> Daemon<D> {
                     .name("give-back".into())
                     .spawn_scoped(threads, move || {
                         let before = super::budget::resident_file(pid);
+                        let asked = Instant::now();
                         let gave = self.give_back_of(&id, pid);
                         self.given_back(&vm);
                         if let Some(gave) = gave {
+                            *lock(&self.watching.acted) = Some(asked.elapsed());
                             self.budgets.gave_back(pid, before, gave.freed);
                             self.budgets.gave_at_pressure(pid, gave);
                             self.gave(gave);

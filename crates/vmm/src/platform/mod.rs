@@ -108,7 +108,7 @@ mod macos_thread;
 mod windows_thread;
 
 mod pressure;
-pub use pressure::{MemoryPressure, PRESSURE_WINDOW, PressureWatches};
+pub use pressure::{MemoryPressure, PressureWatches};
 
 mod granted;
 #[cfg(windows)]
