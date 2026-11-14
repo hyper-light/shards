@@ -18,7 +18,7 @@ use shards_vmm::vm::{self, AfterSnapshot, Config, Console, Disk, ExitReason, Sna
 /// The test guest in `mode`, its console discarded.
 fn config(mode: &str) -> Config {
     let mut cfg = Config::new(kernel().to_path_buf(), Some(test_guest().to_path_buf()));
-    cfg.cmdline = format!("console=ttyS0 quiet panic=-1 shards_test={mode}");
+    cfg.cmdline = format!("console=hvc0 quiet panic=-1 shards_test={mode}");
     cfg.console = Console::Discard;
     cfg
 }

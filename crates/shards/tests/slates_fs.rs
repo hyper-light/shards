@@ -295,7 +295,7 @@ fn a_microvm_mounts_reads_and_writes_a_volume_the_slates_daemon_serves() {
             flag,
             end,
             "--cmdline",
-            "console=ttyS0 quiet panic=-1 shards_test=slates_fs",
+            "console=hvc0 quiet panic=-1 shards_test=slates_fs",
         ]);
     let asked = vec![
         "slates shards".to_string(),
@@ -356,7 +356,7 @@ fn without_a_dax_window_the_guest_finds_no_dax_and_its_map_check_fails() {
             flag,
             end,
             "--cmdline",
-            "console=ttyS0 quiet panic=-1 shards_test=slates_fs_dax",
+            "console=hvc0 quiet panic=-1 shards_test=slates_fs_dax",
         ]);
     let asked = vec![
         "slates shards".to_string(),
@@ -422,7 +422,7 @@ fn a_microvm_maps_a_slates_file_with_dax_and_each_side_sees_the_others_writes() 
             "--share-window",
             SHARE_WINDOW_MIB,
             "--cmdline",
-            "console=ttyS0 quiet panic=-1 shards_test=slates_fs_dax",
+            "console=hvc0 quiet panic=-1 shards_test=slates_fs_dax",
         ]);
     let asked = vec![
         "slates shards".to_string(),

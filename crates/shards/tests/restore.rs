@@ -43,8 +43,7 @@ impl Scratch {
     #[track_caller]
     fn boot_and_snapshot(&self) -> Run {
         let disk = format!("{}:ro", self.0.join("ro.img").display());
-        let cmdline =
-            format!("console=ttyS0 quiet panic=-1 shards_test=snapshot shards_vda_bytes={RO_BYTES}");
+        let cmdline = format!("console=hvc0 quiet panic=-1 shards_test=snapshot shards_vda_bytes={RO_BYTES}");
         run_shards(
             &["run"],
             &[

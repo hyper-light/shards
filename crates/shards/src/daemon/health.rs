@@ -928,16 +928,23 @@ mod tests {
     }
 
     /// Waits for `wait` in an exec whose VM side `theirs` is answered by `answer`, on a
-    /// thread of its own.
+    /// thread of its own that begins only as the wait is about to: an answer timed from its
+    /// thread's start, begun first, came early of the wait on a busy host.
     fn waited(wait: Wait<'_>, answer: impl FnOnce(shards_ipc::Stream) + Send) -> Ended {
         let (ours, theirs) = shards_ipc::Stream::pair().unwrap();
+        let (go, gone) = std::sync::mpsc::channel();
         std::thread::scope(|s| {
-            s.spawn(|| answer(theirs));
+            s.spawn(move || {
+                if gone.recv().is_ok() {
+                    answer(theirs);
+                }
+            });
+            go.send(()).unwrap();
             await_exit(&ours, wait)
         })
     }
 
-    /// The exec's answer, `status`, said `after` its wait began.
+    /// The exec's answer, `status`, said `after` its wait was about to begin.
     fn answers(status: u8, after: Duration) -> impl FnOnce(shards_ipc::Stream) + Send {
         move |theirs| {
             std::thread::sleep(after);
@@ -1054,15 +1061,24 @@ mod tests {
         );
         let slowest = Duration::from_secs(1);
         let record = learned(slowest);
+        let began = Instant::now();
         let ended = waited(
             Wait::WhileRuns(trickler.0.id(), &record),
             answers(7, slowest * 7 / 2),
         );
+        let wall = began.elapsed();
         assert_eq!((ended.status, ended.cut), (Some(7), None));
         let shards_api::Seen::Learned { slowest: now, .. } = record.seen() else {
             panic!("its record was lost");
         };
-        assert!(now >= slowest * 7 / 2, "its answer, slower, raised W*: {now:?}");
+        // What the wait learned is its own answer's time, from its begin, which follows its
+        // first reads of the trickler (`following`): past the slowest before, within the
+        // wait's whole; never the answer's 3.5 s exactly, which a busy host's delay between
+        // the go and that begin takes from.
+        assert!(
+            now > slowest && now <= wall,
+            "its answer, slower, raised W*: {now:?} of {wall:?}"
+        );
     }
 
     /// Past its kind's slowest answer, an exec whose microVM's process runs is waited for, and
