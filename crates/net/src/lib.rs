@@ -3206,6 +3206,37 @@ mod tests {
         }
     }
 
+    /// network-11: an answer the resolver gave of another name, or of another class, grants
+    /// a destination named for one name nothing at its address; the name's own record
+    /// does (D192, D236).
+    #[test]
+    fn a_named_grant_learns_only_its_names_own_records() {
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let mut cfg = Config::on_bridge(Policy::Ports(Ports::default()), [2, 0, 0, 0, 0, 1], &bridge);
+        cfg.named = vec![("allowed.example".to_string(), 443)];
+        let mut q = vec![0x12, 0x34, 0x81, 0x80, 0, 1, 0, 1, 0, 0, 0, 0];
+        q.extend_from_slice(b"\x07allowed\x07example\x00\x00\x01\x00\x01");
+        let forbidden = IpAddr::from([203, 0, 113, 9]);
+        for (what, owner, class) in [
+            ("another owner", &b"\x09forbidden\x07example\x00"[..], 1u16),
+            ("another class", &[0xc0, 0x0c][..], 3),
+        ] {
+            let mut reply = q.clone();
+            reply.extend_from_slice(owner);
+            reply.extend_from_slice(&[0, 1]);
+            reply.extend_from_slice(&class.to_be_bytes());
+            reply.extend_from_slice(&[0, 0, 0, 60, 0, 4, 203, 0, 113, 9]);
+            if let Some(answer) = dns::a_records(&reply) {
+                cfg.learn(answer, Instant::now()).unwrap();
+            }
+            assert!(!cfg.allows(forbidden, Proto::Tcp, 443), "{what}");
+        }
+        let mut own = q.clone();
+        own.extend_from_slice(&[0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 203, 0, 113, 9]);
+        cfg.learn(dns::a_records(&own).unwrap(), Instant::now()).unwrap();
+        assert!(cfg.allows(forbidden, Proto::Tcp, 443), "its own record");
+    }
+
     /// The guest's MAC as its run gives it (`NET_MAC`, D46): the one this side's frames
     /// go to from then on, and the one frames are heard from; its template's is no longer
     /// heard.
