@@ -1085,12 +1085,18 @@ mod tests {
         let mut t = Translation::new(vec![8], MSI);
         assert_eq!(status(&mut t, &attach(1, 8, 0)), S_OK);
         assert_eq!(
-            status(&mut t, &map(1, 0, u64::MAX, 0, MAP_F_READ | MAP_F_WRITE | MAP_F_MMIO)),
+            status(
+                &mut t,
+                &map(1, 0, u64::MAX, 0, MAP_F_READ | MAP_F_WRITE | MAP_F_MMIO)
+            ),
             S_OK
         );
         assert_eq!(t.translate(8, 0, 4, true), Some(vec![(0, 4)]));
         assert_eq!(t.msi_target(8, 0), Some(0));
-        assert_eq!(t.translate(8, u64::MAX - 4, 4, true), Some(vec![(u64::MAX - 4, 4)]));
+        assert_eq!(
+            t.translate(8, u64::MAX - 4, 4, true),
+            Some(vec![(u64::MAX - 4, 4)])
+        );
     }
 
     /// An endpoint attached to no domain bypasses translation until the driver turns it

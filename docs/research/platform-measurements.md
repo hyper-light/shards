@@ -17758,6 +17758,9 @@ revision before comparing a changed API/implementation.
 
 ### M430. Devices plugged into a running microVM: what each step costs, and what a bus of slots costs a boot (D214)
 
+- **Correctness follow-up, 2026-11-13 (devices-02, D154).** A full-span IOMMU mapping overflow was reproduced by a focused unit test (red 1 failed; green 11 IOMMU tests passed, VMM clippy clean) on adas-mac-studio-3.local, macOS arm64. See `measurements/device-fixes/README.md` for revisions and Kiln runs. These unit results do not revalidate M430's timings or hardware MSI behavior.
+
+
 - **Question.** What does a disk plugged into a running microVM cost, from the host's call to
   its guest's first read of it, and its unplug, from the guest's remove to the host's? And
   what does a PCI bus of empty slots, which a machine must have to be plugged into, cost its
@@ -23756,6 +23759,14 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   waits for none); R04 `Upward` and `Downward`, `Said::HungUp` and `Said::Shut` typed; R09,
   R10 red on main's code on both hosts, green after; R11 Unix and Windows written, macOS and
   Linux run; R15, R16 implementer, its runner targets removed after landing.
+
+- **Control-02 follow-up (2026-11-13).** A full AF_UNIX listen backlog retained init's
+  blocking-connect worker after its controller reset the lane. The focused regression was
+  red at bcc79fccd (Timeout, released by accept for cleanup), green at 3c28b68a7
+  (EAGAIN, worker joined) on adacachy2 Linux 7.3.3 x86_64; all six lane tests and
+  shards-init clippy clean. D251 now refuses full backlogs without a retry or deadline;
+  [commands and R01–R16 account](measurements/control-fixes-v1/README.md). Real-VM
+  aborted-lane resource counts remain ROOT's.
 
 ### M560. CI's musl test job: its build and its tests as steps of their own, each limit derived (M420, M547)
 
