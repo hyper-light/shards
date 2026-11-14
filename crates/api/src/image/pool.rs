@@ -565,8 +565,8 @@ impl<W: Send> ImageGuest for Pooled<W> {
         self.guest.wait_for(timeout)
     }
 
-    fn keep_diagnostics(&self, to: std::fs::File) -> Result<(), ImageRefusal> {
-        self.guest.keep_diagnostics(to)
+    fn keep_diagnostics(&self, to: std::fs::File, bound: u64) -> Result<(), ImageRefusal> {
+        self.guest.keep_diagnostics(to, bound)
     }
 
     fn take_gpu_report(&self, patience: Duration) -> Result<crate::physical::GpuReport, ImageRefusal> {
@@ -754,7 +754,7 @@ mod tests {
         fn wait_for(&self, _: Duration) -> Result<Option<wire::RunEnded>, ImageRefusal> {
             Ok(None)
         }
-        fn keep_diagnostics(&self, _: std::fs::File) -> Result<(), ImageRefusal> {
+        fn keep_diagnostics(&self, _: std::fs::File, _: u64) -> Result<(), ImageRefusal> {
             none()
         }
         fn take_gpu_report(&self, _: Duration) -> Result<crate::physical::GpuReport, ImageRefusal> {

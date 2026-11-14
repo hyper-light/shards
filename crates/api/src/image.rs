@@ -355,6 +355,9 @@ pub enum ImageRefusal {
     /// (`Scope`, `Empty`), its frame unwritten (`Unreported`) or unread (`Syntax`, `Count`),
     /// or the selection its renderer refused (`Refused`), which a boot refused by it returns.
     GpuProbe(crate::GpuProbeError),
+    /// A bound for the run host's diagnostics ([`ImageGuest::keep_diagnostics`]) short of
+    /// `tail`, the bytes of them kept to quote, which a cut leaves the file holding.
+    DiagnosticsBound { bound: u64, tail: u64 },
 }
 
 impl std::fmt::Display for ImageRefusal {
@@ -374,6 +377,10 @@ impl std::fmt::Display for ImageRefusal {
             Self::Terminal(why) => write!(f, "a member's terminal: {why}"),
             Self::Save(cause, why) => write!(f, "the save: {cause:?}: {why}"),
             Self::GpuProbe(why) => write!(f, "the run's GPU report: {why}"),
+            Self::DiagnosticsBound { bound, tail } => write!(
+                f,
+                "the run host's diagnostics: a bound of {bound} bytes, short of the {tail} kept to quote"
+            ),
         }
     }
 }
@@ -633,12 +640,19 @@ pub trait ImageGuest: Send + Sync {
     /// [`stop`](Self::stop)ped before its machine was down carries [`Unused::Killed`], so a
     /// caller that charges a run whose command has ended awaits its end before it stops it.
     fn wait_for(&self, timeout: Duration) -> Result<Option<RunEnded>, ImageRefusal>;
-    /// The run host's diagnostics, its VM's among them, written whole to `to` from now on, as
-    /// the host writes them, in place of any file named before, after the last of them kept
-    /// until now: what a refusal or a failed end quotes ([`ImageRefusal::Boot`],
-    /// [`RunEnd::Failed`]) is only their last. A file that stalls holds them up; a part it
-    /// refuses is lost to it alone.
-    fn keep_diagnostics(&self, to: std::fs::File) -> Result<(), ImageRefusal>;
+    /// The run host's diagnostics, its VM's among them, written to `to` from now on, as the
+    /// host writes them, in place of any file named before, after the last of them kept until
+    /// now: what a refusal or a failed end quotes ([`ImageRefusal::Boot`], [`RunEnd::Failed`])
+    /// is only their last. A file that stalls holds them up; a part it refuses is lost to it
+    /// alone.
+    ///
+    /// The file is held within `bound` bytes, what it held as it was named counted (Hex audit
+    /// B-9): a part that would take it past `bound` cuts it back to that last, the tail kept to
+    /// quote, exactly its latest bytes, the part's end among them, and the host's next parts
+    /// are written after it. `u64::MAX` never cuts. Refused [`ImageRefusal::DiagnosticsBound`]
+    /// for a bound short of that tail, and [`ImageRefusal::Os`] for a file that cannot be cut
+    /// (on Windows, one opened to append alone) or written.
+    fn keep_diagnostics(&self, to: std::fs::File, bound: u64) -> Result<(), ImageRefusal>;
     /// The run's GPU report (D232, D233), its VM process's own, written before its guest ran
     /// and relayed by its host: each selected device's physical identity, Vulkan UUID and, on
     /// Windows, its current boot's LUID, read against [`ImageSpec::gpu_report`]'s scope and

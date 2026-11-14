@@ -277,20 +277,90 @@ struct Shared {
     /// each with what its last capture gave: its access token's reference is leased as a
     /// grant's is.
     sign_ins: Mutex<Vec<wire::SignInGrant>>,
-    /// Where the host's diagnostics are written whole, once its caller has named a file
+    /// Where the host's diagnostics are written, once its caller has named a file
     /// ([`ImageGuest::keep_diagnostics`]).
-    said_to: Mutex<Option<std::fs::File>>,
+    said_to: Mutex<Option<Diagnostics>>,
+}
+
+/// The file the host's diagnostics are written to, held within its caller's bound
+/// ([`ImageGuest::keep_diagnostics`], Hex audit B-9): `size` counts what it held as it was named
+/// and every byte written to it since, so it is never short of the file's length.
+#[derive(Debug)]
+struct Diagnostics {
+    file: std::fs::File,
+    bound: u64,
+    size: u64,
+}
+
+impl Diagnostics {
+    /// `part`, its two pieces in turn, written after what the file holds, or, where that would pass its bound, the file
+    /// cut back to `tail`, the last of the diagnostics kept to quote (`part` the end of it), and
+    /// written from there on. A part that fails is lost to the file alone; its size is then
+    /// unknown, counted as its bound, so the next part cuts it back.
+    fn write(&mut self, part: [&[u8]; 2], tail: &VecDeque<u8>) -> io::Result<()> {
+        let [front, back] = part;
+        let after = front
+            .len()
+            .checked_add(back.len())
+            .and_then(|n| u64::try_from(n).ok())
+            .and_then(|n| self.size.checked_add(n))
+            .filter(|after| *after <= self.bound);
+        let written = match after {
+            Some(after) => self
+                .file
+                .write_all(front)
+                .and_then(|()| self.file.write_all(back))
+                .map(|()| after),
+            None => self.cut(tail),
+        };
+        self.size = *written.as_ref().unwrap_or(&self.bound);
+        written.map(drop)
+    }
+
+    /// The file holding `tail` alone: emptied, then `tail` written at its start, whether it was
+    /// opened to append or to write in place.
+    fn cut(&mut self, tail: &VecDeque<u8>) -> io::Result<u64> {
+        use std::io::Seek as _;
+        self.file.set_len(0)?;
+        self.file.seek(io::SeekFrom::Start(0))?;
+        let (front, back) = tail.as_slices();
+        self.file.write_all(front)?;
+        self.file.write_all(back)?;
+        u64::try_from(tail.len()).map_err(io::Error::other)
+    }
 }
 
 impl Shared {
-    /// The host's diagnostics written whole to `to` from now on, after what is kept of them
-    /// until now, under the lock their keeper writes each part under ([`keep_said`]): so that
-    /// each part is in what is kept now or written after, and once.
-    fn keep_diagnostics(&self, mut to: std::fs::File) -> io::Result<()> {
+    /// The host's diagnostics written to `to` from now on, held within `bound` bytes, after what
+    /// is kept of them until now, under the lock their keeper writes each part under
+    /// ([`keep_said`]): so that each part is in what is kept now or written after, and once.
+    /// Refused `DiagnosticsBound` for a bound short of the tail kept to quote, which a cut
+    /// leaves; `Os` where `to` cannot be cut (one opened to append alone, on Windows, which
+    /// takes no truncation) or written.
+    fn keep_diagnostics(&self, to: std::fs::File, bound: u64) -> Result<(), ImageRefusal> {
+        let tail = u64::try_from(said_kept()).unwrap_or(u64::MAX);
+        if bound < tail {
+            return Err(ImageRefusal::DiagnosticsBound { bound, tail });
+        }
+        let os = |e: io::Error| ImageRefusal::Os {
+            what: "the run host's diagnostics",
+            kind: e.kind(),
+        };
         let mut said_to = lock(&self.said_to);
-        let kept: Vec<u8> = lock(&self.state).said.iter().copied().collect();
-        to.write_all(&kept)?;
-        *said_to = Some(to);
+        // A truncation to its own length: a file that cannot be cut is refused now, not at
+        // its first cut.
+        let size = to.metadata().map_err(os)?.len();
+        to.set_len(size).map_err(os)?;
+        let mut kept = Diagnostics {
+            file: to,
+            bound,
+            size,
+        };
+        let state = lock(&self.state);
+        let (front, back) = state.said.as_slices();
+        kept.write([front, back], &state.said).map_err(os)?;
+        drop(state);
+        *said_to = Some(kept);
         Ok(())
     }
 
@@ -1810,15 +1880,13 @@ fn keep_said(shared: &Shared, mut said: io::PipeReader) {
         }
         let part = buf.get(..n).unwrap_or_default();
         let mut said_to = lock(&shared.said_to);
-        {
-            let mut state = lock(&shared.state);
-            state.said.extend(part);
-            let over = state.said.len().saturating_sub(keep);
-            state.said.drain(..over);
-        }
+        let mut state = lock(&shared.state);
+        state.said.extend(part);
+        let over = state.said.len().saturating_sub(keep);
+        state.said.drain(..over);
         // A part its file refuses is lost to it alone: the tail keeps it.
         if let Some(to) = said_to.as_mut() {
-            let _ = to.write_all(part);
+            let _ = to.write([part, &[]], &state.said);
         }
     }
     lock(&shared.state).said_all = true;
@@ -2169,11 +2237,8 @@ impl ImageGuest for Session {
         Ok(self.shared.wait(timeout, State::end_seen))
     }
 
-    fn keep_diagnostics(&self, to: std::fs::File) -> Result<(), ImageRefusal> {
-        self.shared.keep_diagnostics(to).map_err(|e| ImageRefusal::Os {
-            what: "the run host's diagnostics",
-            kind: e.kind(),
-        })
+    fn keep_diagnostics(&self, to: std::fs::File, bound: u64) -> Result<(), ImageRefusal> {
+        self.shared.keep_diagnostics(to, bound)
     }
 
     /// Its VM process's report, relayed before its start (`started` refuses a start without
@@ -2377,7 +2442,7 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(1));
             }
             shared
-                .keep_diagnostics(std::fs::File::create(&path).unwrap())
+                .keep_diagnostics(std::fs::File::create(&path).unwrap(), u64::MAX)
                 .unwrap();
             host.write_all(&after).unwrap();
             drop(host);
@@ -2386,6 +2451,94 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), [&before[..], &after[..]].concat());
         let kept: Vec<u8> = lock(&shared.state).said.iter().copied().collect();
         assert_eq!(kept, after[after.len() - said_kept()..]);
+    }
+
+    /// Do write a run host's diagnostics past their file's bound, what the file held as it was
+    /// named counted, a file opened to write in place and one opened to append. Expect: each
+    /// part written after the last while the file is within its bound; the part that would
+    /// pass it cutting the file back to the tail, exactly its latest bytes; the next parts
+    /// written after that tail, the file growing again.
+    #[test]
+    fn a_bounded_diagnostics_file_is_cut_back_to_the_tail_and_grows_again() {
+        let dir = shards_testdir::TempDir::new("api-bound").unwrap();
+        for append in [false, true] {
+            let path = dir.join(if append { "appended" } else { "in-place" });
+            std::fs::write(&path, b"ab").unwrap();
+            let file = std::fs::OpenOptions::new()
+                .write(!append)
+                .append(append)
+                .open(&path)
+                .unwrap();
+            let mut kept = Diagnostics {
+                size: file.metadata().unwrap().len(),
+                file,
+                bound: 10,
+            };
+            if !append {
+                use std::io::Seek as _;
+                kept.file.seek(io::SeekFrom::End(0)).unwrap();
+            }
+            let mut tail = VecDeque::new();
+            let mut said = |kept: &mut Diagnostics, part: &[u8]| {
+                // A tail of six, as `keep_said` keeps `said_kept()`.
+                tail.extend(part);
+                let over = tail.len().saturating_sub(6);
+                tail.drain(..over);
+                kept.write([part, &[]], &tail).unwrap();
+                std::fs::read(&path).unwrap()
+            };
+            assert_eq!(said(&mut kept, b"cdef"), b"abcdef", "within its bound");
+            assert_eq!(said(&mut kept, b"ghij"), b"abcdefghij", "at its bound");
+            assert_eq!(said(&mut kept, b"k"), b"fghijk", "cut back to the tail");
+            assert_eq!(kept.size, 6);
+            assert_eq!(said(&mut kept, b"lm"), b"fghijklm", "grown again after it");
+            assert_eq!(
+                said(&mut kept, b"nopqrstuvwxyz"),
+                b"uvwxyz",
+                "a part past the tail"
+            );
+        }
+    }
+
+    /// Do name a file for a run host's diagnostics with a bound short of the tail kept to
+    /// quote, then one at it, and have the host write past it. Expect: the first refused,
+    /// typed, with the tail's size; the second kept, the file never past its bound, holding
+    /// exactly the latest bytes the host wrote, at least the tail's.
+    #[test]
+    fn a_diagnostics_bound_short_of_the_tail_is_refused_and_one_at_it_holds() {
+        let shared = shared();
+        let dir = shards_testdir::TempDir::new("api-bound").unwrap();
+        let path = dir.join("diagnostics");
+        let tail = u64::try_from(said_kept()).unwrap();
+        assert_eq!(
+            shared.keep_diagnostics(std::fs::File::create(&path).unwrap(), tail - 1),
+            Err(ImageRefusal::DiagnosticsBound {
+                bound: tail - 1,
+                tail
+            })
+        );
+        assert!(lock(&shared.said_to).is_none(), "nothing named");
+        let (said, mut host) = io::pipe().unwrap();
+        let written: Vec<u8> = (0..said_kept() * 3).map(|i| b'a' + (i % 251) as u8).collect();
+        shared
+            .keep_diagnostics(std::fs::File::create(&path).unwrap(), tail)
+            .unwrap();
+        std::thread::scope(|s| {
+            let keeping = s.spawn(|| keep_said(&shared, said));
+            for part in written.chunks(1000) {
+                host.write_all(part).unwrap();
+                let now = std::fs::metadata(&path).unwrap().len();
+                assert!(now <= tail, "{now} bytes, past its bound of {tail}");
+            }
+            drop(host);
+            keeping.join().unwrap();
+        });
+        let file = std::fs::read(&path).unwrap();
+        assert_eq!(
+            file,
+            written[written.len() - said_kept()..],
+            "the latest bytes alone"
+        );
     }
 
     /// Do pump the outputs of a run whose end came before them, its host's channel closed by

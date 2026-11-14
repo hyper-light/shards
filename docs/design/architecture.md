@@ -32490,6 +32490,39 @@ seen on real runs:
   part written first or after. A part the file refuses is lost to it alone. The tail is kept to
   quote as before. api_image's harness-end tests keep theirs in the test's home, which a failing
   test shows as its home goes.
+  - *Bounded* (Hex audit B-9, Hex lead's ask, 2026-11-14: "keep_diagnostics(to, bound): once
+    the file would pass the bound, cut it back to the tail you already keep for quoting and go
+    on"; Hex passes each box's admitted disk). The file grew without bound: the keeper wrote
+    every part of the host's stderr to it. Now `keep_diagnostics(to: File, bound: u64)`; the
+    one-argument form is gone, Hex its only caller outside this repository (here: pool.rs's
+    delegate, session.rs's test, api_image's `boot`).
+    - The file's size counts what it held as it was named (its length) and every byte written
+      since, never short of its length. A part that keeps it within `bound` is written after;
+      one that would pass it cuts the file (`set_len(0)`, then a seek to its start, so a file
+      opened to append and one opened in place both start over) back to the session's tail,
+      exactly its latest bytes (the part's end among them), and the next parts are written
+      after that tail. A part that fails is lost to the file alone, and its size counts as the
+      bound, so the next part cuts it back to a known state.
+    - The tail is the one kept to quote (`said_kept()`): shards' longest report of a VM's end,
+      its console's default kept bytes escaped (`client::tail` over
+      `shards_abi::bounds::console_said`, D12's records), not chosen here. It is cut as the tail
+      is kept, by bytes: the tail logic keeps no line or UTF-8 boundary (its quote reads it
+      lossily, `quoted`), so a cut matches it, byte for byte.
+    - Refused, typed: `ImageRefusal::DiagnosticsBound { bound, tail }` for a bound short of the
+      tail, which a cut would leave the file past; `ImageRefusal::Os` for a file that cannot be
+      cut, found as it is named by a truncation to its own length: on Windows a file opened to
+      append alone, whose handle Rust's std opens without `FILE_WRITE_DATA`
+      (library/std/src/sys/fs/windows.rs, `FILE_GENERIC_WRITE & !FILE_WRITE_DATA`), which
+      setting a file's end needs. api_image's `boot` now keeps one file per boot, made to write
+      in place, which a failing test still shows as its home goes.
+    - Literals: none. The bound is the caller's, the tail D12's; nothing learned, no cold start.
+    - Tests (light): session.rs `a_bounded_diagnostics_file_is_cut_back_to_the_tail_and_grows_again`
+      (a file opened in place and one to append, each holding two bytes as named: within the
+      bound, at it, cut back to the tail at the part past it, grown again after, a part longer
+      than the tail) and `a_diagnostics_bound_short_of_the_tail_is_refused_and_one_at_it_holds`
+      (a bound one short of the tail refused typed, naming nothing; one at it, through the
+      keeper's thread, the file never past it, ending as exactly the host's latest bytes).
+      Results: DIAG_RESULTS.
 
 **Literals.** The kind's number, 101: the next free above main's at landing (NET_LEASE 100).
 No other.

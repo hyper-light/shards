@@ -125,23 +125,23 @@ fn codex() -> MemberName {
     MemberName::harness("codex")
 }
 
-/// Where the diagnostics of the run hosts a test boots in `home` are kept whole
-/// (`ImageGuest::keep_diagnostics`), each appended after the last: a `.stderr` of the home's,
-/// which a failing test shows as its home goes (`common::TempDir`).
+/// Where the diagnostics of a run host a test boots in `home` are kept whole
+/// (`ImageGuest::keep_diagnostics`): a `.stderr` of the home's for each, numbered in boot order,
+/// which a failing test shows as its home goes (`common::TempDir`). One file each, made to
+/// write in place: a file opened to append alone takes no cut on Windows, which a bounded keep
+/// asks of it, and so is refused.
 fn diagnostics(home: &TempDir) -> std::path::PathBuf {
-    home.join("run-hosts.stderr")
+    static BOOTED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = BOOTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    home.join(format!("run-host-{n}.stderr"))
 }
 
 /// `s` booted, its run host's diagnostics kept whole in [`diagnostics`] from its start.
 #[track_caller]
 fn boot(home: &TempDir, s: &ImageSpec) -> Box<dyn ImageGuest> {
     let guest = booted(&ImageShards::new(), s).unwrap();
-    let kept = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(diagnostics(home))
-        .unwrap();
-    guest.keep_diagnostics(kept).unwrap();
+    let kept = std::fs::File::create(diagnostics(home)).unwrap();
+    guest.keep_diagnostics(kept, u64::MAX).unwrap();
     guest
 }
 
