@@ -1290,7 +1290,11 @@ mod tests {
         write(&w, 2 * MIB + 4096, 0xa5);
         drop(w);
         let now = std::fs::read(&path).unwrap();
-        assert_eq!(now[(2 * MIB + 4096) as usize], 0xa5, "the guest's store is the file's");
+        assert_eq!(
+            now[(2 * MIB + 4096) as usize],
+            0xa5,
+            "the guest's store is the file's"
+        );
     }
 
     /// Whether a vCPU's fault at window offset `at` waits: one that does is let run again
@@ -1330,7 +1334,11 @@ mod tests {
             node: 9,
             writable: true,
         });
-        assert_eq!(w.reconcile(&[9]), refused, "a section to write of a handle to read");
+        assert_eq!(
+            w.reconcile(&[9]),
+            refused,
+            "a section to write of a handle to read"
+        );
         assert!(!waits(&w, 4096), "left as it was");
         w.evict(9);
         assert_eq!(w.reconcile(&[9]), refused, "made again of no view");
