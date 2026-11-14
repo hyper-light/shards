@@ -344,6 +344,8 @@ fn owner_of(fd: BorrowedHandle<'_>) -> Result<Option<Vec<u8>>, Errno> {
 }
 
 pub(super) fn fget_xattr(fd: host::Raw, name: &CStr) -> Result<Option<Vec<u8>>, Errno> {
+    #[cfg(test)]
+    super::owner_fault(name, false)?;
     if name.to_bytes() == OWNER_XATTR.as_bytes() {
         return owner_of(borrow(fd));
     }
@@ -356,6 +358,8 @@ pub(super) fn fget_xattr(fd: host::Raw, name: &CStr) -> Result<Option<Vec<u8>>, 
 }
 
 pub(super) fn fset_xattr(fd: host::Raw, name: &CStr, value: &[u8], flags: u32) -> Result<(), Errno> {
+    #[cfg(test)]
+    super::owner_fault(name, true)?;
     if name.to_bytes() == OWNER_XATTR.as_bytes() {
         return set_owner(fd, &Owner::parse(value).ok_or(EINVAL)?);
     }

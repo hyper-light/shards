@@ -904,6 +904,11 @@ impl super::pool::Hosts for ShardsHosts {
         stop: &super::BootStop,
     ) -> Result<Box<dyn ImageGuest>, super::pool::Taken> {
         use super::pool::Taken;
+        // No CREATE has been attempted: this terminal spare cannot have this run.
+        // Check both the watcher and the unreaped process so either ordering is safe.
+        if lock(&warm.shared.state).exited || warm.host.has_ended() {
+            return Err(Taken::Untaken);
+        }
         if let Err(e) = warm.create(spec.lessor.clone(), request) {
             warm.end();
             return Err(Taken::Refused(e));
@@ -3507,6 +3512,27 @@ mod tests {
         tail -f /dev/null >\"$VM_SEEN\" 3>&- &\n\
         echo \"$!\" >&3\n\
         wait\n";
+
+    /// A host can die after WARMED while idle; it never received CREATE for this run.
+    #[cfg(unix)]
+    #[test]
+    fn a_dead_warm_host_is_definitely_untaken() {
+        use super::super::pool::{Hosts, Taken};
+        let dir = shards_testdir::TempDir::new("deadwarm").unwrap();
+        let frame = wire::frame(wire::to_client::WARMED, &wire::warmed(wire::StartedFrom::Booted)).unwrap();
+        let octal: String = frame.iter().map(|b| format!("\\{b:03o}")).collect();
+        let host = stand_in(dir.path(), &format!("#!/bin/sh\nprintf '{octal}'\nexit 0\n"));
+        let spec = stand_in_spec(&host, Vec::new());
+        let request = super::super::request(&spec).unwrap();
+        let warm = Begun::begin(Some(&host), &[]).unwrap();
+        assert_eq!(warm.warmed().unwrap(), wire::StartedFrom::Booted);
+        assert!(warm.shared.wait(BOOT_BOUND, |s| s.gone().then_some(())).is_some());
+        let taken = ShardsHosts.take(warm, &spec, &request, BOOT_BOUND, &super::super::BootStop::new());
+        assert!(
+            matches!(taken, Err(Taken::Untaken)),
+            "dead spare was not safely retryable"
+        );
+    }
 
     /// A home whose `layers` holds a file of a run host other than any these tests start
     /// (this process's own pid's): the one a sweep of a host's layers leaves.
