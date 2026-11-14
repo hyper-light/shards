@@ -279,13 +279,26 @@ static EMPTIED: shards_api::Record = shards_api::Record::new();
 /// whole W* shows none of them ran any CPU, its host not the reason. Whether it emptied
 /// (none where `events` is gone, the cgroup with it); its emptying teaches `record`. It was a
 /// window of `IDLE_VM_CPU`'s 10 s, judged by an idle microVM's CPU (ROOT's (3), 2026-11-13).
+#[cfg(unix)]
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn emptied(events: &Path, procs: &Path, record: &shards_api::Record) -> std::io::Result<bool> {
+    let parent = events.parent().ok_or(std::io::ErrorKind::InvalidInput)?;
+    let opened = match std::fs::File::open(events) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e),
+    };
+    // kernfs_notify_workfn emits FS_MODIFY for cgroup.events (Linux v6.18,
+    // fs/kernfs/file.c); FileWatch shares this process's inotify instance. Arm before
+    // the first state read, and clear before each read, so no intervening change is lost.
+    let mut changed = shards_vmm::platform::FileWatch::new(&shards_vmm::platform::open_dir(parent)?)?;
+    changed.file(&opened)?;
     let mut judge = shards_api::Judge::begin(record);
     // Each process as it was first seen: its pid, its watch, and what it had run then.
     let mut watched: Vec<(u32, shards_api::Watch, std::time::Duration)> = Vec::new();
     let mut ran = std::time::Duration::ZERO;
     loop {
+        changed.clear();
         let text = match std::fs::read_to_string(events) {
             Ok(t) => t,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
@@ -336,7 +349,10 @@ fn emptied(events: &Path, procs: &Path, record: &shards_api::Record) -> std::io:
                 ))
             })?;
         }
-        super::slept(std::time::Duration::from_millis(10));
+        let timeout = judge
+            .due()
+            .map(|due| due.saturating_duration_since(std::time::Instant::now()));
+        super::timed(timeout, || shards_ipc::await_any_within(&[changed.fd()], timeout))?;
     }
 }
 
@@ -479,6 +495,50 @@ mod delegated {
 mod tests {
     use super::*;
 
+    /// An unchanged cold leaf schedules no periodic reads while it waits for its first
+    /// emptying. inotify observes actual accesses, independently of the wait implementation.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_cold_leaf_waits_for_changes_without_periodic_reads() {
+        use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
+        use std::os::unix::ffi::OsStrExt as _;
+        use std::time::Duration;
+
+        let leaf = shards_testdir::TempDir::new("leaf-notify").unwrap();
+        let events = leaf.join("cgroup.events");
+        let procs = leaf.join("cgroup.procs");
+        std::fs::write(&events, "populated 1\n").unwrap();
+        std::fs::write(&procs, format!("{}\n", std::process::id())).unwrap();
+        // SAFETY: a fresh inotify descriptor with no inherited authority.
+        let raw = unsafe { libc::inotify_init1(libc::IN_CLOEXEC) };
+        assert!(raw >= 0);
+        // SAFETY: the fresh descriptor is owned here alone.
+        let observed = unsafe { OwnedFd::from_raw_fd(raw) };
+        let name = std::ffi::CString::new(events.as_os_str().as_bytes()).unwrap();
+        // SAFETY: a live descriptor and a NUL-terminated path held through the call.
+        assert!(unsafe { libc::inotify_add_watch(raw, name.as_ptr(), libc::IN_ACCESS) } >= 0);
+        let record = shards_api::Record::new();
+        std::thread::scope(|scope| {
+            let waiting = scope.spawn(|| emptied(&events, &procs, &record));
+            let mut first = [0u8; size_of::<libc::inotify_event>()];
+            // SAFETY: a valid buffer on a blocking descriptor; the leaf's first read wakes it.
+            assert!(unsafe { libc::read(raw, first.as_mut_ptr().cast(), first.len()) } > 0);
+            let mut next = libc::pollfd {
+                fd: observed.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // Test observation window only: the production wait must have no timer before
+            // its record's first sample.
+            let over = Duration::from_millis(250);
+            // SAFETY: one pollfd whose descriptor remains owned through the call.
+            let repeated = unsafe { libc::poll(&raw mut next, 1, over.as_millis() as i32) };
+            std::fs::write(&events, "populated 0\n").unwrap();
+            assert!(waiting.join().unwrap().unwrap());
+            assert_eq!(repeated, 0, "the unchanged leaf was read again before a change");
+        });
+    }
+
     /// A leaf's emptying past the daemon's end is waited for while its processes go on with
     /// their end, and teaches the record (D215's judge): a stand-in leaf whose process runs a
     /// CPU, emptied 1.5 s on, is waited for and learned; past a learned W*, one whose process
@@ -519,8 +579,22 @@ mod tests {
         let slowest = Duration::from_millis(200);
         let record = shards_api::Record::new();
         record.teach(slowest, Duration::from_millis(1));
-        let mut asleep = child("exec /bin/sleep 60");
-        std::thread::sleep(slowest);
+        // Stopped, waited for to its stop: an asleep one is woken by a cgroup freezer's
+        // cycles, a kiln run's about six a second (PM M562), which no stopped one is
+        // (kernel/cgroup/freezer.c wakes interruptible and uninterruptible sleepers alone).
+        let mut asleep = child("kill -STOP $$");
+        // SAFETY: a siginfo_t, plain data, for waitid(2) to fill.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        // SAFETY: waitid(2) of this test's own child, to its stop; WNOWAIT leaves it so.
+        let waited = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                asleep.id(),
+                &raw mut info,
+                libc::WSTOPPED | libc::WNOWAIT,
+            )
+        };
+        assert_eq!(waited, 0);
         std::fs::write(&events, "populated 1\nfrozen 0\n").unwrap();
         std::fs::write(&procs, format!("{}\n", asleep.id())).unwrap();
         let began = Instant::now();

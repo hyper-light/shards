@@ -1107,6 +1107,12 @@ fn use_answer(
     )
 }
 
+/// What this machine used in all (D260's final use), as a use's answer says it: its vCPUs'
+/// whole guest time, read by `guest` once they have stopped, then this process's own use.
+fn final_use(guest: impl FnOnce() -> Result<shards_vmm::vm::GuestTimes, String>) -> String {
+    use_answer(guest, || shards_vmm::platform::process_usage(std::process::id()))
+}
+
 /// What a rate's ask holds: what `hold` held the vCPUs to, none where it lets them be, and
 /// the hold's `period` in nanoseconds; or why not. A period no u64 counts in nanoseconds
 /// holds nothing, as no client could hear it.
@@ -1130,6 +1136,15 @@ fn rate_answer(
 /// less theirs.
 pub fn guest_times() -> Result<shards_vmm::vm::GuestTimes, String> {
     Ok(RUNNING.get().ok_or("the microVM has not started")?.guest_times())
+}
+
+/// What each of this VM's vCPUs ran of its guest in all, by index, those gone among them
+/// (`Handle::whole_guest_times`): its whole once its machine is down.
+pub fn whole_guest_times() -> Result<shards_vmm::vm::GuestTimes, String> {
+    Ok(RUNNING
+        .get()
+        .ok_or("the microVM has not started")?
+        .whole_guest_times())
 }
 
 /// This VM paused where it is, every vCPU held out of its guest (`frozen`), or let go on
@@ -1980,6 +1995,15 @@ fn serve_workload(
         static TIMING: workload::Timing = workload::Timing::new();
         let to_guest = &TO_GUEST;
         let warm = matches!(command, Command::Warm(..));
+        // A warm VM's owner hears what its machine used in all once it is down (D260's final
+        // use), on a handle of the link of its own: the run's goes with its workload.
+        let final_link = match &command {
+            Command::Warm(link, _) => link
+                .try_clone()
+                .inspect_err(|e| report(format_args!("its final use's link: {e}")))
+                .ok(),
+            Command::Given { .. } => None,
+        };
         if let Command::Given { interactive, .. } = &command {
             // SAFETY: isatty(3) on this process's stdin.
             let reads_terminal = *interactive && std::io::IsTerminal::is_terminal(&std::io::stdin());
@@ -2327,7 +2351,14 @@ fn serve_workload(
             handle.stop();
             return failed(format!("workload thread: {e}"));
         }
-        let reason = running.wait_then(crate::warm::tell_kept);
+        // Once every vCPU has stopped, past its guest's last instruction, and before this
+        // process lets go of its memory: what it used in all, read then, is its whole.
+        let reason = running.wait_then(|| {
+            crate::warm::tell_kept();
+            if let Some(link) = &final_link {
+                crate::warm::final_use(link, &final_use(whole_guest_times));
+            }
+        });
         // Its joiners (D119), which the guest ended with its workload, tell the daemon how
         // each ended before this process goes, as the relay has had 5 s to (below).
         crate::warm::await_joiners(std::time::Duration::from_secs(5));
@@ -2774,9 +2805,10 @@ fn sealing(paths: &crate::confine::Paths, snapshot: Option<&Path>) {
 
 /// Gives up the directory of the snapshot this VM saved, committed by now, before its
 /// spawner hears it is ready, and so before anything of a run's workload runs in its
-/// guest. On Linux, a Landlock layer without it, checked: making a file there must be
-/// refused. Nothing of the snapshot is open by then (vmm snapshot::Staged::commit closes
-/// its files), and Landlock takes back nothing open. On macOS nothing can be given up:
+/// guest. On Linux, a Landlock layer without it, on every thread (its vCPUs' and devices'
+/// among them, `confine::landlock`), checked: making a file there must be refused.
+/// Nothing of the snapshot is open by then (vmm snapshot::Staged::commit closes its
+/// files), and Landlock takes back nothing open. On macOS nothing can be given up:
 /// App Sandbox's grants last the process's life (PM M102); [`moved`] holds instead. A VM
 /// that saved no snapshot has nothing to give up.
 fn seal() -> Result<(), String> {
@@ -3147,6 +3179,22 @@ fn ask(wanted: &[crate::grant::Wanted]) -> Result<(), String> {
 /// anything but `shards`, starts no VM.
 #[cfg(windows)]
 fn ask(wanted: &[crate::grant::Wanted]) -> Result<(), String> {
+    asked(wanted, crate::grant_ask::obtain)
+}
+
+/// [`ask`] for the last grants this VM asks for, its grants sealed after them, before its
+/// guest starts (`grant_ask::obtain_sealed`).
+#[cfg(windows)]
+fn ask_sealed(wanted: &[crate::grant::Wanted]) -> Result<(), String> {
+    asked(wanted, crate::grant_ask::obtain_sealed)
+}
+
+/// `wanted` asked of this VM's spawner by `obtain`, in an AppContainer alone.
+#[cfg(windows)]
+fn asked(
+    wanted: &[crate::grant::Wanted],
+    obtain: fn(&crate::grant::Link, &[crate::grant::Wanted]) -> Result<(), String>,
+) -> Result<(), String> {
     if !shards_ipc::in_app_container() {
         return Err(
             "shards-vm is not in an AppContainer, which confines every VM on Windows: start it with \
@@ -3158,7 +3206,7 @@ fn ask(wanted: &[crate::grant::Wanted]) -> Result<(), String> {
     let link = grants.as_ref().ok_or(
         "nothing was granted to this VM: start it with `shards run vm --kernel`, which grants it its files",
     )?;
-    crate::grant_ask::obtain(link, wanted)
+    obtain(link, wanted)
 }
 
 /// `paths` as the VM asks for them: files it reads read-only, files it writes read-write,
@@ -3184,7 +3232,14 @@ fn granted(paths: &crate::confine::Paths) -> Result<(), String> {
         .chain(paths.write_under.iter().map(|p| (Access::MakeDir, p.clone())))
         .chain(paths.vsock.iter().map(|p| (Access::Listen, p.clone())))
         .collect();
-    ask(&wanted)
+    // The last it asks for: on macOS its link closes after unless it dials (`confine`); on
+    // Windows it stays, for its dials, its files' ranges and its snapshots (D196), and its
+    // grants are sealed.
+    #[cfg(target_os = "macos")]
+    let last = ask;
+    #[cfg(windows)]
+    let last = ask_sealed;
+    last(&wanted)
 }
 
 /// Has the spawner dial, beside `vsock`, every host port the guest connects to: App
@@ -3314,16 +3369,17 @@ fn confine(paths: &crate::confine::Paths) -> Result<(), String> {
             Ok(())
         }
     });
+    // Its sockets narrowed to what its paths let it dial, then Landlock, on every thread.
     #[cfg(target_os = "linux")]
-    return crate::confine::landlock(paths);
+    return crate::confine::sockets(paths).and_then(|()| crate::confine::landlock(paths));
     // As on macOS; and once its partition is set up, before anything of its guest's is
-    // read, this process forbids itself dynamic code (D141, PM M202). Its snapshots its
-    // spawner stages, over the link (D196), which stays open for them.
+    // read, this process forbids itself dynamic code (D141, PM M202). Its grants are sealed
+    // as they are granted (`ask_sealed`), and the link stays for what its spawner does for
+    // it after: its dials, its files' ranges and its snapshots (D196).
     #[cfg(windows)]
     {
         shards_vmm::hv::forbid_dynamic_code_once_set_up();
         granted(paths)?;
-        let stages = !paths.write_under.is_empty();
         // Its spawner stages its snapshots and reads its files' ranges for it, as long as
         // the link stays: it may make no FSCTL (D141), and a restore copies a template's
         // writable layer by its ranges (D196), as any save of it copies its layer and swap
@@ -3333,17 +3389,7 @@ fn confine(paths: &crate::confine::Paths) -> Result<(), String> {
         shards_vmm::platform::set_stager(Box::new(SpawnerStages))?;
         match &paths.vsock {
             Some(vsock) => dial_through_spawner(vsock),
-            None if stages => Ok(()),
-            // Nothing more asked of the spawner but ranges, which it answers on the link it
-            // keeps: no grant after (`SEALED`).
-            None => {
-                let grants = GRANTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                match grants.as_ref() {
-                    Some(link) => shards_ipc::write_message(&link.to, shards_ipc::kind::SEALED, &[])
-                        .map_err(|e| format!("sealing its grants: {e}")),
-                    None => Ok(()),
-                }
-            }
+            None => Ok(()),
         }
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
@@ -3476,20 +3522,6 @@ mod rate_tests {
         let (ours, mut used) = shards_vmm::platform::UnixStream::pair().unwrap();
         asks.send((ours, shards_abi::rate::Asked::Use)).unwrap();
         drop(asks);
-        // CPU spent until this process's own use shows some: Linux counts it in clock ticks
-        // (proc(5), `utime`), and a test process younger than one reads none (CI run
-        // 43530570785, aarch64 gnu: `host 0 …`).
-        let mut x = 0u64;
-        while shards_vmm::platform::process_usage(std::process::id())
-            .unwrap()
-            .cpu_ns
-            == 0
-        {
-            for i in 0..1_000_000u64 {
-                x = std::hint::black_box(x.wrapping_add(i.wrapping_mul(i)));
-            }
-        }
-        std::hint::black_box(x);
         serve_rates(&asked);
         let mut line = String::new();
         theirs.read_to_string(&mut line).unwrap();
@@ -3548,6 +3580,41 @@ mod rate_tests {
             read.host.unwrap_err().starts_with("its VM process: "),
             "{refused}"
         );
+    }
+
+    /// A VM's final use (D260) is its vCPUs' whole guest time, read first, then this
+    /// process's own use, read after it: never less CPU than a reading before the final one.
+    #[test]
+    fn a_final_use_reads_its_whole_guest_then_its_process() {
+        let times = shards_vmm::vm::GuestTimes {
+            vcpus: vec![
+                shards_vmm::vm::VcpuTime {
+                    index: 0,
+                    guest_ns: 7,
+                    unread: None,
+                },
+                shards_vmm::vm::VcpuTime {
+                    index: 3,
+                    guest_ns: 11,
+                    unread: Some(shards_abi::guest_time::Unread::Gone),
+                },
+            ],
+            departed_ns: 0,
+        };
+        let before = shards_vmm::platform::process_usage(std::process::id()).unwrap();
+        let read = std::cell::Cell::new(false);
+        let answer = super::final_use(|| {
+            read.set(true);
+            Ok(times.clone())
+        });
+        assert!(read.get());
+        let used = shards_abi::rate::read_used(answer.as_bytes()).unwrap();
+        assert_eq!(used.guest, Ok(times));
+        assert!(used.host.unwrap().cpu_ns >= before.cpu_ns, "{answer}");
+        let unstarted = super::final_use(|| Err("the microVM has not started".into()));
+        let used = shards_abi::rate::read_used(unstarted.as_bytes()).unwrap();
+        assert_eq!(used.guest, Err("the microVM has not started"));
+        assert!(used.host.is_ok(), "{unstarted}");
     }
 }
 

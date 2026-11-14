@@ -1,0 +1,11 @@
+Source 79019fa55; kiln r8; adacachy2 Linux x86_64.
+Earlier output: cargo test -p shards-agentfile mcp_ -j 4: 3 passed.
+Earlier output: cargo test -p shards-init netplan::tests -j 4: 8 passed.
+Remaining output:
+    Checking cfg-if v1.0.5
+    Checking twox-hash v2.1.4
+    Checking itoa v1.0.18
+    Checking cpufeatures v0.3.1
+    Checking zlib-rs v0.6.8
+    Checking ruzstd v0.9.1
+

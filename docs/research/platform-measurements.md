@@ -63,6 +63,25 @@ In-kernel GIC:
 | SPIs | INTID 32–1019 (988) |
 | EL1 virtual timer | PPI INTID 27 |
 
+### Runs review fixes: focused validation (2026-11-13)
+
+The [runs fix record](measurements/runs-fixes/README.md) retains source-specific
+red/green unit tests on adas-mac-studio.local (macOS arm64). These are functional
+checks, not real-VM validation or performance measurements. The runs-01 fault
+case returned success instead of EIO before correction; the corrected case and
+49 share-server tests pass, and shards-vmm all-target clippy passes on that host.
+Other host/guest checks remain owed to ROOT as the record names them.
+The same record retains runs-02's actual overwritten-marker unit red and green
+rename/cleanup + stopping-lock checks and shards all-target clippy on that Mac;
+its real-daemon/VM counterpart remains unrun.
+Runs-04's exited-after-WARMED stand-in failed as not safely retryable before the
+change; afterward the regression, 5 pool tests and 30 session tests pass, with
+shards-api all-target clippy. Actual VM death during handoff remains ROOT's check.
+Runs-03's blocked CREATE red timed out; after stop registration moved ahead of
+CREATE, the same regression and 33 session tests pass, with API all-target clippy.
+The main landing of runs-01/02/04 is 3956d259b; merged gate revisions and remaining
+live checks are recorded there.
+
 ### M2. Object lifecycle (`lifecycle`, n=200, µs)
 
 | Operation | p50 | p99 |
@@ -7653,6 +7672,19 @@ revision before comparing a changed API/implementation.
   network cost it nothing measurable. Open: the daemon's share on a quiet host; the peers'
   processes asked at once.
 
+**network-01 correctness follow-up (2026-11-13).** M210's finite connection-cost
+measurements do not validate segment acceptance. On `adas-mac-studio.local` (Darwin
+arm64, Rust 1.98.1), a socket-seam red at a6ca2403e accepts an empty FIN numbered zero
+without ACK. At 50716d946, RFC 9293 table 6 and ACK processing refuse it; 20 focused
+TCP tests and shards-net all-targets clippy pass. This is correctness evidence, not
+new performance or platform-parity data. [Commands, output, rules and owed real-VM checks](measurements/network-fixes-v1/README.md).
+
+**network-02 confinement follow-up (2026-11-13).** At 33d5f8af7, adacachy2
+(Linux amd64) ran three focused network confinement tests and clippy for
+shards-net/shards-net-process, all passing. Native arm64 execution is owed;
+removing the arm64 startup omission is not an arm64 measured result. No VM or
+performance campaign ran. [Exact scope/output](measurements/network-fixes-v1/README.md#network-02-native-seccomp-on-both-linux-architectures).
+
 ### M211. The limits a build's `RUN` step starts with
 
 - **Question.** A container's process starts with Docker's limits (`defaults::limits`,
@@ -9248,6 +9280,13 @@ revision before comparing a changed API/implementation.
     not, and it was not isolated here.
 
 ### M248. A process placed in a slice of the user's service manager: what it costs, and where its memory is charged (D183)
+
+**2026-11-13 cleanup correction (platform-12):** this placement measurement does not
+derive the former 10 ms cleanup polling interval. Cleanup now waits on the existing
+shared file-change notification and the learned judge deadline. The cold-leaf regression
+failed before the change and passed after it; all six parents unit tests and shards
+clippy passed on Linux x86_64. [Commands, source revisions, logs and real-cgroup work owed](measurements/platform-fixes/platform12.md).
+No new performance or placement-cost claim is made by those unit results.
 
 - **Question.** `--cgroup-parent` puts a microVM's processes under a slice the user's own
   systemd manages, so that the slice's limits and accounting cover them. What does asking
@@ -13375,6 +13414,11 @@ revision before comparing a changed API/implementation.
   CPUs.
 
 ### M317. A busy microVM's threads under XNU's real-time fail-safe, and its device workers on a busy host (D4)
+
+**2026-11-13, platform-11:** this measured policy comparison does not establish fixed
+computation/constraint literals as host-independent bounds. [Online-value/cold-start
+design and evidence still owed](measurements/platform-fixes/held.md) keep that R03
+finding open; no new scheduling or host-fairness result is claimed.
 
 - **Question.** A microVM's vCPU threads run at Mach's time-constraint policy (D4, M8, M10),
   and D4 left open what XNU does to them when a guest keeps them busy. A gate's block
@@ -17758,6 +17802,12 @@ revision before comparing a changed API/implementation.
 
 ### M430. Devices plugged into a running microVM: what each step costs, and what a bus of slots costs a boot (D214)
 
+- **Correctness follow-up, devices-03 (2026-11-13, D154).** Response-span validation red: 1 failed; green: 13 IOMMU tests and VMM clippy passed on macOS arm64. Allocation-pressure/RSS and hardware runs remain owed to ROOT. Revisions, commands and scope: `measurements/device-fixes/README.md`. No performance result is inferred.
+
+
+- **Correctness follow-up, 2026-11-13 (devices-02, D154).** A full-span IOMMU mapping overflow was reproduced by a focused unit test (red 1 failed; green 11 IOMMU tests passed, VMM clippy clean) on adas-mac-studio-3.local, macOS arm64. See `measurements/device-fixes/README.md` for revisions and Kiln runs. These unit results do not revalidate M430's timings or hardware MSI behavior.
+
+
 - **Question.** What does a disk plugged into a running microVM cost, from the host's call to
   its guest's first read of it, and its unplug, from the guest's remove to the host's? And
   what does a PCI bus of empty slots, which a machine must have to be plugged into, cost its
@@ -19223,6 +19273,20 @@ revision before comparing a changed API/implementation.
   used.
 - **Consequence.** D176 parts 6 and 7 record these as the two-machine numbers. Still to
   measure: the M3 Ultra and an M4 Max with a baseline, both ways, and the Studios' Wi-Fi.
+
+### Migration review regression, 2026-11-13 (migrate-06, D245)
+
+Unit evidence only, not a performance measurement: on adacachy2 Linux x86_64, a baseline
+excluding TSC-deadline still exposed ECX24 before the fix (Kiln r2, one failing test).
+After a09a09f0c, 10 CPUID module tests and shards-vmm clippy passed (r3). The mixed-host
+VM move remains unrun. [Exact commands, revisions and limits](measurements/migrate/fix-review-2026-11-13.md).
+
+### Migration review CPU-name regression, 2026-11-13 (migrate-08, D245)
+
+Linux x86_64 pure CPU tests: `aes` failed register mapping at ae37abb52 (r7), then
+3 Arm CPU tests and10 x86 CPUID tests passed at f004611b5; shards/shards-vmm all-target
+clippy passed (r8). These are code-path checks, not an Arm VM or performance result.
+[Commands and residual conservative refusals](measurements/migrate/fix-review-2026-11-13.md).
 
 ### M499. What a Hypervisor.framework guest is shown of its host's CPU, and a listener that outlives its runner (D176 part 6)
 
@@ -23757,6 +23821,25 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   R10 red on main's code on both hosts, green after; R11 Unix and Windows written, macOS and
   Linux run; R15, R16 implementer, its runner targets removed after landing.
 
+- **Control-02 follow-up (2026-11-13).** A full AF_UNIX listen backlog retained init's
+  blocking-connect worker after its controller reset the lane. The focused regression was
+  red at bcc79fccd (Timeout, released by accept for cleanup), green at 3c28b68a7
+  (EAGAIN, worker joined) on adacachy2 Linux 7.3.3 x86_64; all six lane tests and
+  shards-init clippy clean. D251 now refuses full backlogs without a retry or deadline;
+  [commands and R01–R16 account](measurements/control-fixes-v1/README.md). Real-VM
+  aborted-lane resource counts remain ROOT's.
+
+- **Control-01 follow-up (2026-11-13).** An orchestrator's session ended a member channel's
+  pipe at its first credit refused by the run's end, records already taken left queued, and
+  at the run's end itself, while its host may still send output after it. Red at d7b62bd7d
+  (the owner read the first of two records, and nothing of one said after the end), green at
+  cf2764c6e, each guard's mutation red, on adas-mac-studio-3.local macOS 26.2 arm64; D240
+  says the pump's ends; [commands and R01–R16 account](measurements/control-01-v1/README.md).
+  Real-VM managed_output and api_image lanes remain ROOT's.
+  Follow-up: the run host now ends cut, `Aborted(104)`, each channel its VM's capture left
+  without an end, what it held past the owner's room first (red 53faf0804, green 347d16312,
+  two mutations red, same host).
+
 ### M560. CI's musl test job: its build and its tests as steps of their own, each limit derived (M420, M547)
 
 - **Question.** In CI run 43513425954 (main 70eba153d) the x86_64-unknown-linux-musl test job
@@ -23873,3 +23956,353 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   plant one data range per 64 MiB file. R11 the Linux behaviour (ext4 on CI) and Windows'
   whole read are unrun here. R15: no VM or CI run started; the api_image E2E rerun is
   ROOT's. R16: the fetched logs (1.9 GB) are removed after landing.
+
+### M562. A sleeper in a kiln run wakes about six times a second: its cgroup's freezer, not its start (D215)
+
+- **Question.** shards-api's `a_sleeper_is_still_whatever_its_cgroups_others_wait_for` failed
+  on adacachy2 inside a kiln run (the Hex lead: 34/40 at 37ddeb080, 17/20 at 097ec0047), its
+  `sleep 60` running CPU between two looks after /proc showed it `S`, and passed in a systemd
+  unit of its own; a judge-held agent saw a fresh `/bin/sleep` take slices for 1.2 s. What
+  does a sleeping process run after its first `S`, and is any stand-in idle by construction?
+- **Method.** `docs/research/measurements/sleeper-premise/probe.py`
+  (`probe.py sleep|pipe SECONDS LOAD RUNS`): a child, `sleep 60` or `cat` blocked reading a
+  pipe nobody writes, its `/proc/<pid>/{stat,wchan,syscall,schedstat}` read in a tight loop,
+  each change after its first `S` printed; beside LOAD Python spinners in its cgroup, or
+  none. Then, over 3 s each, `schedstat` of a `sleep` in the kiln run's cgroup beside one
+  started by `systemd-run --user --scope` (a scope of its own under `app.slice`), and of an
+  asleep `sleep`, a SIGSTOPped one and a pipe-blocked `cat` side by side. On adacachy2
+  (Linux 7.3.3-1-cachyos, x86_64, GNU coreutils 9.12), through kiln run at nice 10, in
+  `…/kiln-agent-01a1b969.service/kiln/kiln-agents-1270/run-<id>`.
+- **Found.**
+  - About every 166 ms the sleeper's wchan reads `do_freezer_trap`, then it runs, then sleeps
+    again in its syscall: `clock_nanosleep` (230) before the first, `restart_syscall` (219)
+    after, which a cgroup v2 freeze's trap leaves it in. Each cycle is one or two slices and a
+    few µs of its own CPU, for as long as it lives, not only after its start.
+  - Over 2 s beside 40 spinners: `sleep` ran 118.1, 91.5 and 97.9 µs more after its first `S`,
+    slices 2 to 26 or 27; the pipe-blocked `cat` 105.5, 92.4 and 87.1 µs, slices 2 or 3 to
+    26 or 27, its wchan `pipe_wait_readable` and `do_freezer_trap` by turns. With no load:
+    `sleep` 46.4 µs, slices 2 to 16.
+  - Over 3 s: the `sleep` in the kiln run's cgroup took 18 slices and 46.6 µs, the one in its
+    own scope none and 0 ns. Side by side in the kiln cgroup: asleep 18 slices, 54.2 µs; a
+    pipe's reader 19, 96.1 µs; stopped (`T`) 0 slices, 0 ns.
+  - `cgroup.events` of the run's cgroup and its two parents never read `frozen 1` in 3 s of
+    polling: each freeze is undone before every task has trapped.
+- **Cause.** The cgroup v2 freezer cycling an ancestor of kiln's run cgroups (kiln's headroom
+  pacer freezes runs there, ROOT's brief of 2026-11-13; the writer itself was not observed).
+  A freeze sets `JOBCTL_TRAP_FREEZE` and `signal_wake_up`s each task, and a thaw
+  `wake_up_process`es it (kernel/cgroup/freezer.c `cgroup_freeze_task`): interruptible and
+  uninterruptible sleepers alike, so no stand-in waiting on a timer, a pipe or pause(2) runs
+  nothing in a window longer than the cycle. A stopped task (`__TASK_STOPPED`) matches
+  neither wake. Not `sleep`'s start: the wakes keep its period for the process's life.
+- **Decision.** The tests, not the judge, which counts the CPU a process really ran (ROOT,
+  2026-11-13). A test whose window is its own judges a window in which a look at its end
+  shows the sleeper ran nothing, and looks again over another where it ran (shards-api
+  `progress::tests::a_sleeper_is_still_whatever_its_cgroups_others_wait_for`, its spinners
+  waiting on each other throughout so that a window is the shared pressure's growth alone;
+  shards `daemon::ends::tests::an_end_goes_on_at_any_rate_and_not_asleep_or_stopped`, a
+  second `Watch` bracketing the window, its stop waited for by waitid(2), not 100 ms). A test
+  whose window is production's W* gives it a stand-in that stops itself, `kill -STOP $$`,
+  waited for to its stop (`daemon::parents::tests::a_leaf_is_waited_for_while_its_processes_go_on_with_their_end`,
+  `netproc::reap_tests::a_helper_is_waited_on_while_it_goes_on_with_its_end`,
+  `netproc::ask_tests::an_ask_of_a_network_process_that_runs_nothing_is_refused_past_w_star`).
+  Their fixed sleeps (a second, 200 ms, 100 ms) for a start's CPU are gone.
+- **Checked** on adacachy2 in a kiln run's cgroup beside 8 nice-19 spinners, test-release, a
+  cold target of its own: red at d24ef4cfd, green after:
+
+  | test | d24ef4cfd | after |
+  |---|---|---|
+  | progress `a_sleeper_is_still…` | 19/40 (progress.rs:1568, "the sleeper ran": 213.6 to 222.1 µs); 26/60 | 60/60 |
+  | ends `an_end_goes_on_at_any_rate…` | 0/20 (ends.rs:317, asleep judged going on) | 20/20 |
+  | netproc reap | 0/3 (took past 4 slices) | 10/10 |
+  | netproc ask | 0/3 (no refusal in 100 s) | 10/10 |
+  | parents leaf | 0/2 (no refusal in 100 s) | 5/5 |
+
+  The progress rows of 60 ran interleaved, base and after by turns: after's wall per run
+  p50 376 ms, p90 1.18 s, p99 and max 2.57 s (base's 125 ms, 296 ms, 1.58 s), its retries.
+  Two shapes before it failed there: spinners running throughout made a window the shared
+  cgroup's pressure growth, which took 0.4 to 15 s, so each held freezer cycles and a clean
+  one came after 16 to 23 tries (to 85 s); spinners started and ended inside each window
+  passed 39/40, one finding no clean window in 100 s; and a baseline look taken after the
+  window's first hold read a start that ran between them as held (1/60). The
+  `progress::` filter 11/11 and the shards filters `daemon::ends:: daemon::parents::
+  netproc::reap_tests netproc::ask_tests` 12/12; clippy `-D warnings` of shards-api and shards
+  on x86_64-unknown-linux-gnu (adacachy2) and aarch64-apple-darwin (adas-mac-studio.local,
+  macOS 26.2): clean. No changed line compiles for Windows (each test is `cfg(unix)` or Linux's).
+- **Found beside.** Under such cycling with a period below a kind's W*, a VM process that
+  runs nothing of its own still runs a few µs each cycle, so D215's judge reads it as having
+  progressed and never refuses it stalled while its cgroup is cycled; `Hold::stopped` sees a
+  frozen cgroup only at a look's instant. ROOT's to rule on.
+- **Owed.** daemon.rs's tests that judge `sleeper()` as running nothing past a W* of 200 ms
+  (`a_starting_vm_is_waited_for_while_it_goes_on_with_its_start`, the give-back at
+  "Its VM process, a sleep, ran nothing", the "still" hold, `a_network_process_is_ended_once_it_goes_on_no_more_and_the_ports_freed`,
+  `metrics_whose_microvm_runs_nothing_are_ended`) rest on the same premise; there the daemon
+  ends the stand-in itself, each end's signal to be read before it is stopped. Unrun here.
+- **Rules** (policy df2acf47, role implementer): R01 test code only; R03 no literal added,
+  every window an event's (pressure grown, a trickler's run, a stop); R09 reproduced live in a
+  kiln cgroup before any change; R10 red at d24ef4cfd and green after, on adacachy2; R11
+  Linux and macOS compiled and linted, Linux run; R15, R16 implementer, its runner trees
+  removed after.
+
+### M563. "The guest stopped before the command ended" on CI's x86_64 runners: the run host cut its own run's connection
+
+- **Question.** From 740fa3726 (2026-11-13), api_image's `staged_credentials_…`,
+  `a_run_keeping_nothing_…` and `a_members_arguments_…`, and managed_output's log lanes and
+  member stdin cases, failed on CI's x86_64 runners (and ROOT's KVM run at c120c8a95, at
+  `--test-threads=1`) with the run Failed("its VM could not serve its run: the guest stopped
+  before the command ended: failed to fill whole buffer"), the harness's end `WithRun`. Who
+  ended the run's connection?
+- **Method.** The failed x86_64 gnu and musl test jobs of CI runs created since 2026-11-12
+  15:00Z (424 runs, 146 failed jobs), fetched with `gh` as
+  `docs/research/measurements/ci-musl-limits/control_cut.py` says, and that script's tally
+  (`control_cut.txt`).
+- **Found.**
+  - 6 jobs hold the run's "guest stopped" end, every one from 740fa3726 on. In all 5 that print
+    the run host's or daemon's log, its VM process said, just before it, "the guest's signal
+    connection is lost: invalid data" (e.g. job 132194139799, VM uptime 994 ms; ROOT's KVM run,
+    158 ms). The member-args case keeps no run-host log: unconfirmed.
+  - The only InvalidData without an OS code on that connection is the VM process's
+    `Control::serve` (crates/shards/src/workload/capture.rs) refusing a frame of a run whose
+    members are managed; `supervise` then ended its copy of the run's connection
+    (workload.rs: `boundary`, a clone of `conn`), and the relay read that end at a frame
+    boundary (workload.rs `relay_frames`): the guest had not stopped.
+  - The frame: init ends a relay that a failure broke (`break 'relay` with `fatal`) by writing
+    `SIGNALS_END` on the signal connection (crates/init/src/run.rs `say_signals_end`, after the
+    loop), and only then `SYSTEM_ERR` and `EXIT` on the run's connection (run.rs l. 340-350). Its
+    managed control's `MANAGED_CONTROL_END` is queued and sent only on the loop's own way out,
+    so after a fatal break serve reads `SIGNALS_END` first and refused it as "managed abort
+    frame". Reproduced without a VM: the unit test below with serve's `SIGNALS_END` arm removed
+    fails with `Custom { kind: InvalidData, error: "managed abort frame" }`.
+  - Ruled out: D251's cut rule (e7c275363, 18:56Z on 11-13), which landed after the first
+    failing run, 740fa3726 at 15:50Z; framing on the run's connection, whose header read met a
+    clean end at a frame boundary (`failed to fill whole buffer`, never `the guest stopped
+    mid-frame`); a race between the end frame and init's close, as init had sent no end before
+    the host's cut. The older `WithRun` failures (11-12, 83f0549ad to a84cd6abb) printed no run
+    host log; whether they are this is unknown.
+- **Decided.** `Control::serve` takes `SIGNALS_END` as its scope's end with its relay's
+  (`Served::RelayEnded`): the signal connection's watch ends as a relay's end does
+  (workload.rs `ended`), nothing is cut, and the guest's own words and end come on the run's
+  connection. A control refused or ended unannounced still cuts the run, and why is kept
+  (`ENDED_RUN`, "its managed control ended: …", beside a broken output relay's), so the run
+  fails in those words, never as the guest's stop.
+- **Open.** Which failure breaks init's relay as those members end is not found: with this
+  change the run says it (init's `SYSTEM_ERR`), for ROOT's KVM loop to read.
+- **Rules** (policy df2acf47, role implementer): R01 no new panic path; R03 no constant;
+  R04 the scope's end is a typed `Served`, and its refusal a kept reason; R09 the symptom
+  is CI's and ROOT's logs, and the unit test reproduces its exact error; R10
+  `a_relays_end_within_the_control_scope_ends_it_and_leaves_the_run_open` red under
+  guard removal (InvalidData "managed abort frame"), green with it, and the unannounced-EOF
+  test red without the kept reason; workload:: 40 of 40 on adas-mac-studio.local (macOS arm64);
+  clippy -D warnings for shards-vm-process on macOS, x86_64-unknown-linux-gnu,
+  aarch64-unknown-linux-musl (zig) and x86_64-pc-windows-msvc (xwin). R11, R15: no VM run here;
+  the api_image and managed_output KVM loop is ROOT's. R16: the fetched logs (116 MB) removed.
+
+### Review memory-02: a live-copy value outlives unplug (2026-11-13)
+
+Two focused unit cases at 04ae8a9cd, macOS arm64, really plugged and unplugged
+anonymous memory, then consumed the live-copy bytes: SIGBUS in each (kiln r4/r5).
+At 29196c6b3 both pass; memory::tests:: 25/25 and vmm clippy pass (r7).
+This is correctness evidence, not a VM/performance measurement. Full commands,
+ownership change and ROOT's remaining gates: `measurements/memory-fixes-v1/README.md`.
+
+
+### Remote-05. Private request arguments in the daemon log (2026-11-13)
+
+This is correctness evidence, not a performance measurement. An enrolled fixture's
+refused request put its synthetic private argument in captured daemon stderr at
+`144818a4a` (1 regression failed); omitting raw argument/relay-token values at
+`68b43042c` passed all 5 remote module unit tests and shards all-target clippy on
+macOS arm64, Rust 1.98.1. Existing client/operation diagnostics remain. No new
+constant, cache, wait or platform branch. Exact commands, source revisions, logs,
+policy receipt and outstanding live-context checks are in
+[the evidence record](measurements/remote-fixes-v1/README.md). Guest execution and
+cross-machine/Windows checks are owed to ROOT; no performance claim is made.
+
+### M564. MCP bridge termination with the harness stdin writer retained (D254)
+
+Linux x86_64, adacachy2, 2026-11-13: real-pipe unit regressions at e74696f22
+failed peer-end and stdout-error completion while stdin remained open; the old
+copy test passed (1 pass, 2 failures). At f7d83f73a all 7 MCP tests and shards-init
+all-target clippy passed. Normal socket half-close still delivers later stdin.
+This is functional evidence, not a performance measurement or real-VM result.
+[Commands, output excerpts, policy and owed coverage](measurements/inithex-fixes/README.md).
+
+
+### M565. Absolute-FQDN remote MCP grants compared to real DNS wire questions (D236)
+
+Linux x86_64, adacachy2, 2026-11-13: at 8e8e1c439 both Agentfile endpoint and
+init netplan tests fail `mcp.example.` versus `mcp.example` (kiln r7). At 79019fa55,
+3 focused Agentfile MCP tests, 8 init netplan tests, and both crates' all-target
+clippy pass (r8). These are functional unit results, not a real DNS-provider or
+real-VM result. RFC1034 §3.1 supplies the terminal-root-dot normalization rule;
+no chosen runtime value, wait or cache is added.
+[Commands, red output, green excerpts and owed variant](measurements/inithex-fixes/README.md).
+
+### Review memory-03/05: live-copy mapping ownership and terminal map-back loss
+
+On macOS arm64, the real Shared read completed while its release mutex was held
+at bebc160ab (r13, failed assertion); e5e2ef793 serializes it with release and
+keeps teardown behind the active reader. At 5185919b8 the live-copy continuation
+resumed after a Lost scan outcome (r14, failed assertion); fb58160ac stops instead.
+The latter is a unit continuation, not injected APFS/hypervisor failure. Commands,
+source revisions, light results and ROOT's remaining gates are in
+[the memory fix evidence](measurements/memory-fixes-v1/README.md).
+
+### M566. What the run host's managed control scope refused was said as "invalid data", and init's relay end could land within a frame
+
+- **Question.** ROOT's KVM runs of api_image at c120c8a95 (adacachy2) failed three ways, each
+  after the VM process said, some 150 to 200 ms in, `the guest's signal connection is lost:
+  invalid data: its workload takes no more signals, ...`: staged_credentials and the h2
+  sign-in ended "the guest stopped before the command ended: failed to fill whole buffer",
+  and `an_orchestrators_members_are_signaled_...` saw `Lost(Transport(Peer))` at
+  api_image.rs:1377. What did the host's signal reader read that it could not parse, and does
+  M563's 02a03edf2 cover it?
+- **Found, from source.**
+  - "invalid data" is `Lost::Failed { kind: InvalidData, os: None }`. The watch after the
+    control scope says its own refusal as `Lost::Protocol` ("the guest sent on it what it never
+    sends"), so every one of these came from `capture::Control::serve`'s refusals, whose
+    messages `Lost::of` dropped; `Control::supervise` then ended the run's connection, which
+    is all three symptoms (the orchestrator test's lane lost as its run host's run ended).
+  - Init writes nothing on the signal connection but its `ControlQueue` and, last,
+    `SIGNALS_END` (crates/init/src/run.rs `say_signals_end`). Its frames and serve's parse
+    agree (shards-abi `run::header`, `managed::Abort`, `managed::InputEnded`); no image
+    channel version (24 to 27) touches this connection.
+  - Two byte sequences reach serve's refusal from a correct guest. (1) A whole `SIGNALS_END`
+    before `MANAGED_CONTROL_END`, written where a failure breaks init's relay: refused as
+    "managed abort frame" before 02a03edf2, taken as the relay's end since. c120c8a95 lacks
+    02a03edf2 (`git merge-base --is-ancestor` false). (2) `SIGNALS_END` written right after a
+    part of a control frame: init's relay end was one non-blocking write after whatever part
+    of its control had gone, and a vsock stream takes what its peer's credit has room for
+    (Linux 6.18 net/vmw_vsock/virtio_transport_common.c, `virtio_transport_get_credit`).
+    The init unit test below, with the fix removed, wrote `[45, 0, 0, 50, 0, 0, 0, 0, 0, 0, 0]`
+    for an abort of which three bytes had gone: the host reads `[45,0,0,50,0,0,0,0]` as no
+    header. 02a03edf2 does not cover (2), nor an end that went in part or not at all (read as
+    "the guest closed it before its end").
+  - Which of (1) and (2) ROOT's runs met is not told by their logs, which kept the kind alone.
+    (1) needs a failure that breaks init's relay; (2) needs that and a partial write. Either
+    way init's own words for that failure (`SYSTEM_ERR`) never reached the host: the cut came
+    first. Not found here.
+- **Decided.** serve returns `Unserved`, `Failed(io::Error)` or `Refused(Refusal)`, a
+  `Refusal` naming what came: `Frame { kind, len }`, `Header(bytes)`, `Payload { kind, why }`,
+  `Tenant(member)`, `Input(member)`. The loss keeps it (`Lost::Refused`), and the warning and
+  the run's end say it ("its managed control refused a frame of kind 1, 3 bytes long"). Init's
+  `say_signals_end` writes its control's rest whole first (`ControlQueue::finish`), then its
+  end whole, waiting for room (poll, no timeout: an event wait, the host reading the connection
+  to its end or closing it).
+- **Rules** (policy df2acf47, role implementer): R01 no new panic path; R03 no constant; R04
+  the refusal is typed through to the loss and the run's end; R05 the end's waits are
+  readiness waits; R09/R10 the symptom is ROOT's logs, and two unit tests reproduce the bytes:
+  `what_the_control_scope_refuses_is_named_in_the_loss_it_says` (shards-vm-process, feeds
+  take_signals a frame of a kind the scope never takes, init's misframed end, and an abort of a
+  member not admitted) red with the old `Lost::Failed` mapping (`left: Lost(Failed { kind:
+  InvalidData, os: None })`), and
+  `the_relays_end_follows_its_control_whole_where_part_of_a_frame_went` (shards-init) red
+  without `finish` (the bytes above). workload:: 41 of 41 on adas-mac-studio.local (macOS
+  arm64); init's signals_end_tests and capture::tests, 12 of 12, on adacachy2 (Linux x86_64);
+  clippy -D warnings for shards-vm-process (macOS) and shards-init
+  (aarch64-unknown-linux-musl); cargo fmt --check clean. R11, R15: no VM run here: api_image's
+  three cases on KVM are ROOT's, at a main holding 02a03edf2 and this.
+
+### M567. A confined VM process changed another process's limits: prlimit64 of any pid (D30)
+
+Linux x86_64, adacachy2 (7.3.3-1-cachyos, Landlock ABI 11), 2026-11-13, policy df2acf47,
+role implementer. Review platform-04 (docs/bugs/2026-11-13/platform.md) said the VM
+process's filter allowed prlimit64(2) whatever its pid. Reproduced by
+`confine::tests::a_confined_vm_sets_only_its_own_limits` (shards-vm-process): a confined
+child, under `confine()`'s filter, sets the `RLIMIT_NOFILE` of a disposable process of
+its user's (the test binary waiting on its stdin, never a daemon) to 0 and 0. With the
+rule as it was (`Rule::any(SYS_prlimit64)`, the mutant restoring it), the call returned
+0 and the target's `/proc/PID/limits` went from `Max open files 1048576 1048576` to `0
+0`: red. With the rule allowing pid 0 and the process's own alone, the child reads and
+sets its own limits (both 0), the other's call traps (exit 159, `seccomp refused
+syscall 302`), and the target's limits are unchanged: green. `cargo test -p
+shards-vm-process confine::` 7 of 7 and `cargo clippy -p shards-vm-process
+--all-targets -- -D warnings` clean on that host. No constant. Owed to ROOT: a confined
+VM on KVM (every VM test runs under the filter), x86_64 and arm64 through L1.
+
+### M568. A Landlock layer left the VM process's other threads unconfined, its seal too (D30)
+
+Linux x86_64, adacachy2 (7.3.3-1-cachyos, Landlock ABI 11), 2026-11-13, policy df2acf47,
+role implementer. Review platform-01: landlock_restrict_self(2) with no flags restricts
+the calling thread alone, and the VM process confined itself, and later sealed its
+template, with other threads running. Reproduced by
+`confine::tests::every_thread_of_a_confined_process_is_confined` (shards-vm-process): a
+child with three threads started before its first layer and one between it and its seal
+has each try to read a file outside its paths, then write in the snapshot directory
+before and after the seal. Layered as before (the caller alone, the mutant), the
+threads read it (`siblings read other: ok,ok,ok`) and wrote the sealed directory
+(`sealed siblings write snap: ok,ok,ok,ok`): red. Both ways the layer now reaches every
+thread, TSYNC (v8) and each thread asked (every ABI from v5, run here by forcing it),
+make those `refused` while each may still write its kept directory: green. Mutants:
+TSYNC's flag dropped, red for TSYNC alone; the asking pass dropped, red for it alone.
+`a_thread_that_cannot_be_asked_fails_the_layer`: a thread asleep with every signal
+blocked (as Mesa's) fails an asked layer (`blocks signal` SIGRTMIN + 1 `as it waits`), and TSYNC
+confines it (`deaf read other: false`); with its refusal mutated into "ended", the layer
+said Ok and the thread read the file: red. `cargo test -p shards-vm-process confine::`
+9 of 9 and its clippy clean on that host. The ABI before v8 is unverified on a real
+kernel of that ABI (no host here has one): the asking pass ran on ABI 11. Owed to ROOT:
+VM runs on KVM, a template's seal among them (daemon.rs pool tests), x86_64 and arm64
+through L1, and one on a kernel of ABI 5 to 7.
+
+### M569. A confined VM process dialed its user's sockets, its daemon's Engine API among them (D30)
+
+Linux x86_64, adacachy2 (7.3.3-1-cachyos, Landlock ABI 11), 2026-11-13, policy df2acf47,
+role implementer. Review platform-02: the filter allowed AF_UNIX sockets and connect(2)
+whatever they named, and Landlock's rules before v9 do not govern a connect. Reproduced
+by `confine::tests::a_confined_vm_dials_only_beside_its_vsock_path` (shards-vm-process):
+a child binds two listeners of its user's first, `engine.sock` outside its paths and
+`socks/v_5` beside the vsock path it is given, is confined, dials both, then makes a
+datagram socket. With neither the sockets layer's connect refusal nor Landlock's
+`RESOLVE_UNIX` (the mutant), a VM given no vsock path dialed both (`dial outside: ok`):
+red. Now: no vsock path, both refused with EACCES by the seccomp layer alone and by
+Landlock's v9 rules alone; given one, Landlock lets it dial beside it alone (`dial
+outside: refused 13`, `dial beside: ok`); with the seccomp layer alone it dials both,
+what a kernel before v9 leaves (D30's owed spawner dialing); the datagram socket traps
+(exit 159, `seccomp refused syscall 41`), and without the layer is made. Mutants, each
+red for its own case: the connect refusal dropped; `RESOLVE_UNIX` dropped; the socket
+type rule dropped. `seccomp::layer` (`a_layer_answers_its_rules_and_allows_the_rest`,
+the instruction model over every number and value) and the crate's tests 9 of 9;
+`cargo test -p shards-vm-process confine::` 10 of 10; clippy for both crates clean on
+that host. The layer's cost per syscall is ROOT's to measure (R14): the kernel's cache
+skips every filter for a syscall each allows whatever its arguments
+(`seccomp_cache_check_allow`), and one the first filter checks, ioctl's KVM_RUN among
+them, runs both. Owed to ROOT: VM runs on KVM (a daemon's
+warm VMs, `shards build`'s builder with its vsock ports, the GPU's VM process), x86_64
+and arm64 through L1.
+
+### M570. A Windows VM that stages its snapshots and has no vsock path was granted files after its guest started (platform-03, D30, D141, D196)
+
+Windows 10.0.26200 x86_64 (the Windows 11 guest on adacachy), 2026-11-14: at e889915c4 a VM
+that asked, as `confine` did, for a file to read and a snapshot directory, and no `SEALED`,
+staged and committed a generation, then was granted a sentinel file outside its grants to
+write, and wrote it (`overwritten` where `untouched`). At 1e8c83104 its last ask seals
+(`grant_ask::obtain_sealed`): `grant_answer::windows_tests` 7 of 7, the late GRANT refused and
+the stage and commit still answered; both mutants (no `SEALED`; no broker refusal) fail it.
+Unit-level functional evidence, no real VM: `confine` refuses any process outside an
+AppContainer, and the WHP real-VM tests are owed.
+[Commands, logs, mutants and owed runs](measurements/windows-p0/README.md).
+
+### M571. Pending credential leases own their time budget and live waiters (D242, creds-05/06)
+
+2026-11-13, adas-mac-studio.local, Darwin arm64; implementer light checks only.
+Red 6eb3ad718: `cargo test -p shards-net creds_ -- --nocapture` reproduces duplicate
+waiters `[1, 1, 2, 1, 2, 2]` where two distinct flows should resume once each.
+Fix 1b21eb21a deduplicates pending flow tokens and removes pending/resumed tokens
+on flow release. The outstanding broker ask remains identifiable for a late answer.
+Merged 16ebc78cf: `cargo test -p shards-net lease::`, 12 passed; shards-net all-target
+clippy and development-policy check passed. Exact commands, setup failures, retained
+output and unrun work: [record](measurements/creds-fixes-v1/README.md).
+No performance, allocation, exhaustion or real-VM result is claimed; ROOT owns those.
+
+creds-05: a52f4518c anchors returned remaining life at the first ask, conservatively
+spending broker work and all relay time, including cold starts. Spent or unrepresentable
+budgets resume as typed Lapsed without retaining a value; retries cannot reset the clock.
+Red at 6eb3ad718; merged 950c1a0fe, 14 lease tests and shards-net all-target clippy pass
+on the same Mac. The linked record includes the causality proof, alternatives and the
+early-refusal/renewal-boundary limitation. No wire timestamp or chosen grace is added.
+
+creds-07: exact grant membership is checked by the CA signer before key generation,
+as typed LeafError::Ungranted; subtree constraints alone do not authorize exact hosts.
+Red 6eb3ad718 signed child.api.example.test under api.example.test. At 09ffbfd32,
+all 4 CA tests and shards-net all-target clippy pass on macOS arm64; unrelated-name
+verifier coverage remains independent. No performance result; linked credential
+record above has commands, evidence, and real-VM coverage owed.

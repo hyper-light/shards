@@ -102,6 +102,9 @@ pub enum Lost {
     Closed,
     /// The guest sent on it what it never sends.
     Protocol,
+    /// The guest sent within its run's managed control scope what that scope never takes:
+    /// what came, named (`capture::Refusal`).
+    Refused(capture::Refusal),
     /// The host could not take it as a restored guest dialed it again (D176).
     Untaken,
     /// A send on it, a read of it, or a copy of it to read failed: the error's kind, and
@@ -123,6 +126,7 @@ impl std::fmt::Display for Lost {
         match *self {
             Self::Closed => f.write_str("the guest closed it before its end"),
             Self::Protocol => f.write_str("the guest sent on it what it never sends"),
+            Self::Refused(refusal) => write!(f, "its managed control refused {refusal}"),
             Self::Untaken => f.write_str("its restored guest's dial could not be taken"),
             Self::Failed { os: Some(code), .. } => write!(f, "{}", io::Error::from_raw_os_error(code)),
             Self::Failed { kind, os: None } => write!(f, "{}", io::Error::from(kind)),
@@ -821,13 +825,10 @@ pub fn serve(
         host_net,
     };
     let status = relay(&mut reader, timing, log.as_mut(), started, records);
-    // A relay of its members' output that broke ended the run's connection here, which its
-    // relay failed for: why, in place of that end (capture.rs `relay_ending`).
-    let status = status.map_err(|e| {
-        capture::ended_run().map_or(e, |why| {
-            format!("its members' output could not be relayed: {why}")
-        })
-    });
+    // A relay of its members' output that broke, or its managed control refused or ended
+    // unannounced, ended the run's connection here, which its relay failed for: why, in
+    // place of that end (capture.rs `ENDED_RUN`).
+    let status = status.map_err(|e| capture::ended_run().unwrap_or(e));
     // A save waiting for the guest to go quiet waits no more: its command has ended.
     quiescing().end();
     QUIET.notify_all();
@@ -2479,7 +2480,8 @@ fn dialed(to: &ToGuest, conn: UnixStream) -> Option<(UnixStream, UnixStream)> {
 
 /// Takes the guest's signal connection as it comes, `conn`: its sender starts on a thread of
 /// its own ([`send_frames`]), what waited going first, a managed run's control boundary is
-/// held on it (`capture::Control`), and its end is watched from then on ([`watch`]).
+/// held on it (`capture::Control`), and its end is watched from then on ([`watch`]); a relay
+/// that ends within that boundary has said its end there ([`ended`]).
 fn take_signals(to: &'static ToGuest, conn: UnixStream, managed: Option<(capture::Control, UnixStream)>) {
     let sender = dialed(to, conn).map(|(sending, watched)| {
         let started = std::thread::Builder::new()
@@ -2495,11 +2497,13 @@ fn take_signals(to: &'static ToGuest, conn: UnixStream, managed: Option<(capture
         }
         None => return end_managed(managed),
     };
-    if let Some((control, boundary)) = managed
-        && let Err(e) = control.supervise(&watched, &boundary)
-    {
-        shards_vmm::debug!("managed control boundary ended: {e}");
-        return lose(to, Lost::of(&e));
+    if let Some((control, boundary)) = managed {
+        match control.supervise(&watched, &boundary) {
+            Ok(capture::Served::ControlEnded) => {}
+            Ok(capture::Served::RelayEnded) => return ended(to),
+            Err(capture::Unserved::Refused(refusal)) => return lose(to, Lost::Refused(refusal)),
+            Err(capture::Unserved::Failed(e)) => return lose(to, Lost::of(&e)),
+        }
     }
     watch(to, &watched);
 }

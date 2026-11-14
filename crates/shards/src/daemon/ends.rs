@@ -303,22 +303,40 @@ mod tests {
             true,
         );
         let asleep = child(std::path::Path::new("/bin/sleep"), &["60"], false);
-        // Each past its start's own CPU: looked at from a second after it began.
-        std::thread::sleep(Duration::from_secs(1));
-        let (mut trickling, mut sleeping) = (
-            Followed::of(Some(trickler.0.id())),
-            Followed::of(Some(asleep.0.id())),
-        );
+        let mut trickling = Followed::of(Some(trickler.0.id()));
         std::thread::sleep(Duration::from_millis(300));
         assert!(
             trickling.goes_on().is_some(),
             "a fiftieth of a CPU is its end going on"
         );
-        assert!(sleeping.goes_on().is_none(), "asleep, it goes on with nothing");
-        let id = libc::pid_t::try_from(asleep.0.id()).unwrap();
+        // Asleep over a window, until the trickler has gone on once more, in which a second
+        // watch of it finds it ran nothing; looked at again over another where it ran: its
+        // start's own CPU, or a cgroup freezer's cycles, which wake a sleeper (a kiln run's,
+        // about six a second, PM M562), so no window is a sleeper's by its clock.
+        let pid = asleep.0.id();
+        let mut sleeping = loop {
+            let followed = shards_api::Followed::of_pid(pid).unwrap().unwrap();
+            let mut witness = shards_api::Watch::of(followed).unwrap().unwrap();
+            let from = witness.cpu();
+            let mut sleeping = Followed::of(Some(pid));
+            while trickling.goes_on().is_none() {
+                std::thread::yield_now();
+            }
+            let went = sleeping.goes_on();
+            witness.look().unwrap();
+            if witness.cpu() == from {
+                assert!(went.is_none(), "asleep, it goes on with nothing");
+                break sleeping;
+            }
+        };
+        let id = libc::pid_t::try_from(pid).unwrap();
         // SAFETY: kill(2) of this test's own child.
         assert_eq!(unsafe { libc::kill(id, libc::SIGSTOP) }, 0);
-        std::thread::sleep(Duration::from_millis(100));
+        // SAFETY: a siginfo_t, plain data, for waitid(2) to fill.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        // SAFETY: waitid(2) of this test's own child, to its stop; WNOWAIT leaves it so.
+        let waited = unsafe { libc::waitid(libc::P_PID, pid, &raw mut info, libc::WSTOPPED | libc::WNOWAIT) };
+        assert_eq!(waited, 0);
         assert!(sleeping.goes_on().is_none(), "stopped, it goes on with nothing");
     }
 

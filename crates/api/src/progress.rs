@@ -44,7 +44,7 @@ use std::time::{Duration, Instant};
 
 #[cfg(unix)]
 use crate::Identity;
-use crate::judge::{Found, Judge, Record, Seen, Stall};
+use crate::judge::{Found, Judge, Record, Seen, Span, Stall};
 use crate::{End, ProcessFailure, Refusal};
 
 /// What a wait that follows its guest's VM process waits for. This process learns each
@@ -261,16 +261,32 @@ pub struct Watch {
     /// The look before, and what its host was found doing to it then.
     last: Look,
     hold: Hold,
+    /// The least time a change of its CPU counter stands for ([`Span::resolution`]).
+    resolution: Duration,
 }
 
 impl Watch {
     /// `followed`, looked at now: none where its process has gone already.
     pub fn of(mut followed: Followed) -> Result<Option<Watch>, ProcessFailure> {
+        let Some(resolution) = followed.resolution()? else {
+            return Ok(None);
+        };
         let Some(last) = followed.look()? else {
             return Ok(None);
         };
         let hold = followed.hold();
-        Ok(Some(Watch { followed, last, hold }))
+        Ok(Some(Watch {
+            followed,
+            last,
+            hold,
+            resolution,
+        }))
+    }
+
+    /// The least time a change of its CPU counter stands for, as its OS says it
+    /// ([`Span::resolution`]): a stillness shorter than it is no evidence of none.
+    pub fn resolution(&self) -> Duration {
+        self.resolution
     }
 
     /// What it did since the look before ([`Found`]): progressed where its end is under way;
@@ -297,6 +313,18 @@ impl Watch {
     /// The CPU time its process's threads have had by the look before.
     pub fn cpu(&self) -> Duration {
         self.last.cpu
+    }
+
+    /// Whether the look before found it ended: on Unix its process exited and not yet
+    /// reaped (a zombie, whose every look says its end under way), on Windows every process
+    /// of its tree exited (their handles read them still). A waiter with no reap of its own
+    /// to come (a test's wait on a state, #77 waits-09) takes one found so twice for gone,
+    /// rather than for an end under way for ever.
+    pub fn ended(&self) -> bool {
+        #[cfg(unix)]
+        return self.last.ending;
+        #[cfg(windows)]
+        return self.followed.ended();
     }
 
     /// Whether the look before found it stopped or frozen (a stop signal's, a debugger's, a
@@ -331,8 +359,9 @@ impl<'a> Follow<'a> {
     /// A wait beginning now that follows `followed`, learning into and judged by `record`:
     /// none where its process has gone already, whose end is the wait's.
     pub fn begin(record: &'a Record, followed: Followed) -> Result<Option<Follow<'a>>, Unfollowed> {
-        let judge = Judge::begin(record);
+        let mut judge = Judge::begin(record);
         let (pid, started) = (followed.pid(), followed.started());
+        let began = Instant::now();
         let watched = Watch::of(followed).map_err(|failure| Unfollowed::Process {
             pid,
             expected_started: started,
@@ -341,6 +370,16 @@ impl<'a> Follow<'a> {
         let Some(watch) = watched else {
             return Ok(None);
         };
+        // Its evidence begins as its first look has read its process: a based look judges
+        // nothing, so refuses nothing.
+        let span = Span {
+            began,
+            ended: Instant::now(),
+            resolution: watch.resolution(),
+        };
+        judge
+            .found_over(Found::Based, span)
+            .map_err(Unfollowed::Stalled)?;
         Ok(Some(Follow {
             judge,
             from: watch.cpu(),
@@ -363,7 +402,8 @@ impl<'a> Follow<'a> {
         let Some(due) = self.judge.due() else {
             return Ok(());
         };
-        if Instant::now() < due {
+        let began = Instant::now();
+        if began < due {
             return Ok(());
         }
         let (pid, expected_started) = (self.pid, self.started);
@@ -372,7 +412,12 @@ impl<'a> Follow<'a> {
             expected_started,
             failure,
         })?;
-        self.judge.found(found).map_err(Unfollowed::Stalled)
+        let span = Span {
+            began,
+            ended: Instant::now(),
+            resolution: self.watch.resolution(),
+        };
+        self.judge.found_over(found, span).map_err(Unfollowed::Stalled)
     }
 
     /// Its party answered: its kind learns from the answer, its VM process read now.
@@ -438,6 +483,11 @@ impl Followed {
     /// What its host is doing to it, now ([`Hold`]).
     fn hold(&self) -> Hold {
         os::hold(self.pid)
+    }
+
+    /// The least time a change of its CPU counter stands for; none where it has gone.
+    fn resolution(&self) -> Result<Option<Duration>, ProcessFailure> {
+        os::resolution(self.pid)
     }
 }
 
@@ -595,6 +645,25 @@ mod os {
     /// has gone: its clock unknown (ESRCH), or, the clock's ID being its pid, unread as it went
     /// (EINVAL, posix-cpu-timers.c `pid_for_clock`).
     pub(super) fn cpu(pid: u32) -> Result<Option<Duration>, ProcessFailure> {
+        read_clock(pid, libc::clock_gettime)
+    }
+
+    /// The resolution of process `pid`'s CPU clock (clock_getres(2)), the least time a
+    /// change of it stands for: one nanosecond for the scheduler's clock that
+    /// clock_getcpuclockid(3) names (kernel/time/posix-cpu-timers.c,
+    /// `posix_cpu_clock_getres`), a clock tick for one that counts ticks. None where it has
+    /// gone.
+    pub(super) fn resolution(pid: u32) -> Result<Option<Duration>, ProcessFailure> {
+        read_clock(pid, libc::clock_getres)
+    }
+
+    /// `read` (clock_gettime(2) or clock_getres(2)) of process `pid`'s CPU clock; none where
+    /// it has gone: its clock unknown (ESRCH), or, the clock's ID being its pid, unread as it
+    /// went (EINVAL, posix-cpu-timers.c `pid_for_clock`).
+    fn read_clock(
+        pid: u32,
+        read: unsafe extern "C" fn(libc::clockid_t, *mut libc::timespec) -> libc::c_int,
+    ) -> Result<Option<Duration>, ProcessFailure> {
         let id = libc::pid_t::try_from(pid).map_err(|_| ProcessFailure::PidOutOfRange {
             operation: ProcessOperation::CpuClock,
         })?;
@@ -611,10 +680,10 @@ mod os {
                 });
             }
         }
-        // SAFETY: a timespec, plain data, for clock_gettime to fill.
+        // SAFETY: a timespec, plain data, for the call to fill.
         let mut at: libc::timespec = unsafe { std::mem::zeroed() };
-        // SAFETY: clock_gettime(2) of that clock into a local timespec.
-        if unsafe { libc::clock_gettime(clock, &raw mut at) } != 0 {
+        // SAFETY: clock_gettime(2) or clock_getres(2) of that clock into a local timespec.
+        if unsafe { read(clock, &raw mut at) } != 0 {
             let e = std::io::Error::last_os_error();
             if e.raw_os_error() == Some(libc::EINVAL) {
                 return Ok(None);
@@ -779,6 +848,22 @@ mod os {
     /// (mach_timebase_info(3): 125/3 on Apple silicon, whose counter runs at 24 MHz), as
     /// shards-vmm's `platform::mach_ns`; past u64's nanoseconds, its most.
     fn mach(ticks: u128) -> Result<Duration, ProcessFailure> {
+        let (numer, denom) = timebase()?;
+        let ns = ticks.saturating_mul(numer) / denom;
+        Ok(Duration::from_nanos(u64::try_from(ns).unwrap_or(u64::MAX)))
+    }
+
+    /// The least time a change of a process's CPU times stands for: one Mach absolute-time
+    /// unit, rounded up to whole nanoseconds (42 ns on Apple silicon's 125/3), the units in
+    /// which proc_pid_rusage(2) keeps them. Every process's alike.
+    pub(super) fn resolution(_pid: u32) -> Result<Option<Duration>, ProcessFailure> {
+        let (numer, denom) = timebase()?;
+        let ns = numer.div_ceil(denom);
+        Ok(Some(Duration::from_nanos(u64::try_from(ns).unwrap_or(u64::MAX))))
+    }
+
+    /// mach_timebase_info(3)'s numerator and denominator, the denominator never zero.
+    fn timebase() -> Result<(u128, u128), ProcessFailure> {
         // <mach/mach_time.h>'s, bound here as shards-vmm binds it: libc's binding is
         // deprecated in favour of a crate, the call itself is not.
         #[repr(C)]
@@ -798,8 +883,7 @@ mod os {
                 code,
             });
         }
-        let ns = ticks.saturating_mul(u128::from(base.numer)) / u128::from(base.denom);
-        Ok(Duration::from_nanos(u64::try_from(ns).unwrap_or(u64::MAX)))
+        Ok((u128::from(base.numer), u128::from(base.denom)))
     }
 }
 
@@ -896,6 +980,18 @@ mod os {
 
         pub(super) fn pid(&self) -> u32 {
             self.pid
+        }
+
+        /// Whether every process of its tree has been seen to exit.
+        pub(super) fn ended(&self) -> bool {
+            self.members.iter().all(|m| m.exited)
+        }
+
+        /// The least time a change of what tells whether its tree ran stands for: none,
+        /// as QueryProcessCycleTime counts every cycle its threads use, so that any run
+        /// shows ([`Look::ran_since`]).
+        pub(super) fn resolution(&self) -> Result<Option<Duration>, ProcessFailure> {
+            Ok(Some(Duration::ZERO))
         }
 
         pub(super) fn started(&self) -> u64 {
@@ -1532,40 +1628,43 @@ mod tests {
     /// other in the cgroup this test shares with the sleeper, which ran nothing meanwhile. Red
     /// while a shared cgroup's pressure counted as the sleeper's (main's CI at 5af644eab:
     /// ends.rs's `/bin/sleep 60` judged going on).
+    ///
+    /// Judged over a window in which the sleeper was asleep at either end and ran nothing
+    /// between, as its looks show, and looked at again over another: a sleeper is woken by a
+    /// cgroup freezer's cycles, which a kiln run's cgroup goes through about six times a
+    /// second, each a few µs of its CPU (PM M562), so no window is a sleeper's by its clock.
+    /// Each window is the spinners' start and the shared pressure's growth; they end past it.
     #[cfg(target_os = "linux")]
     #[test]
     fn a_sleeper_is_still_whatever_its_cgroups_others_wait_for() {
         let mut sleeper = std::process::Command::new("sleep").arg("60").spawn().unwrap();
         let mut followed = Followed::of_pid(sleeper.id()).unwrap().unwrap();
-        // Asleep in its nanosleep (`S`), its start's own CPU and page-ins (`D`) behind it.
-        while !std::fs::read_to_string(format!("/proc/{}/stat", sleeper.id()))
-            .unwrap()
-            .rsplit_once(')')
-            .is_some_and(|(_, fields)| fields.trim_start().starts_with('S'))
-        {
-            std::thread::yield_now();
-        }
-        let before = followed.hold();
-        let ran = followed.look().unwrap().unwrap();
-        let shared = shared_cpu_pressure(sleeper.id());
         let cpu = first_cpu();
-        let mut spinners = [spinner_on(cpu), spinner_on(cpu)];
-        // Waited for, where the kernel keeps it: the spinners' wait for their CPU shown in the
-        // pressure the sleeper's cgroup shares.
-        if let Some(from) = shared {
-            while shared_cpu_pressure(sleeper.id()).is_none_or(|now| now <= from) {
-                std::thread::yield_now();
+        let (before, now, shared) = loop {
+            let ran = followed.look().unwrap().unwrap();
+            let before = followed.hold();
+            let shared = shared_cpu_pressure(sleeper.id());
+            let mut spinners = [spinner_on(cpu), spinner_on(cpu)];
+            // Waited for, where the kernel keeps it: the spinners' wait for their CPU shown in
+            // the pressure the sleeper's cgroup shares.
+            if let Some(from) = shared {
+                while shared_cpu_pressure(sleeper.id()).is_none_or(|now| now <= from) {
+                    std::thread::yield_now();
+                }
             }
-        }
-        let now = followed.hold();
-        let look = followed.look().unwrap().unwrap();
-        for spinner in &mut spinners {
-            drop(spinner.stdin.take());
-            spinner.wait().unwrap();
-        }
+            let now = followed.hold();
+            let asleep =
+                !followed.look().unwrap().unwrap().ran_since(&ran) && !before.runnable && !now.runnable;
+            for spinner in &mut spinners {
+                drop(spinner.stdin.take());
+                spinner.wait().unwrap();
+            }
+            if asleep {
+                break (before, now, shared);
+            }
+        };
         sleeper.kill().unwrap();
         sleeper.wait().unwrap();
-        assert!(!look.ran_since(&ran), "the sleeper ran: {ran:?} {look:?}");
         assert_eq!(
             found(false, false, &before, &now),
             Found::Still,
