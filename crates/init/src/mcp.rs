@@ -211,6 +211,55 @@ fn copy_both(mut input: impl Read + Send, mut output: impl Write, socket: &UnixS
 mod tests {
     use super::*;
 
+    fn pipe() -> (std::fs::File, std::fs::File) {
+        use std::os::fd::FromRawFd;
+        let mut fds = [-1; 2];
+        // SAFETY: pipe2 initializes both descriptors on success; each becomes owned once.
+        assert_eq!(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) }, 0);
+        // SAFETY: the fresh descriptors returned by pipe2, owned by these files alone.
+        unsafe { (std::fs::File::from_raw_fd(fds[0]), std::fs::File::from_raw_fd(fds[1])) }
+    }
+
+    #[test]
+    fn bridge_peer_end_releases_open_stdin() {
+        let (input, writer) = pipe();
+        let (mut reader, output) = pipe();
+        let (socket, peer) = UnixStream::pair().unwrap();
+        let (done, finished) = std::sync::mpsc::channel();
+        let bridge = std::thread::spawn(move || {
+            done.send(copy_both(input, output, &socket)).unwrap();
+        });
+        drop(peer);
+        let ended = finished.recv_timeout(std::time::Duration::from_secs(1));
+        // Always unblock the old implementation before asserting, including on red.
+        drop(writer);
+        bridge.join().unwrap();
+        assert!(ended.is_ok(), "the bridge waited for still-open harness stdin");
+        assert!(ended.unwrap().is_ok());
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes).unwrap();
+        assert!(bytes.is_empty());
+    }
+
+    #[test]
+    fn bridge_output_failure_releases_open_stdin() {
+        let (input, writer) = pipe();
+        let (reader, output) = pipe();
+        let (socket, mut peer) = UnixStream::pair().unwrap();
+        let (done, finished) = std::sync::mpsc::channel();
+        let bridge = std::thread::spawn(move || {
+            done.send(copy_both(input, output, &socket)).unwrap();
+        });
+        drop(reader);
+        peer.write_all(b"response\n").unwrap();
+        peer.shutdown(std::net::Shutdown::Write).unwrap();
+        let ended = finished.recv_timeout(std::time::Duration::from_secs(1));
+        drop(writer);
+        bridge.join().unwrap();
+        assert!(ended.is_ok(), "stdout failure waited for still-open harness stdin");
+        assert_eq!(ended.unwrap().unwrap_err().kind(), io::ErrorKind::BrokenPipe);
+    }
+
     /// D254: a run's ask is its members' bridges and its token, together: members named with
     /// no token are refused, a token alone gives no member one, a member named twice refuses
     /// the whole.
