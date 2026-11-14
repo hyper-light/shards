@@ -9648,6 +9648,12 @@ value already in flight, whose acknowledgment remains consumable. Desired room
 and request/reply state have one owner; budget removal cannot disappear behind
 a late answer. Red and light-check evidence: `docs/research/measurements/memory-fixes-v1/README.md`.
 
+**Review memory-15 (2026-11-14):** a builder booted cold, with all it may have and nothing
+to plug (D133), answers `GIVE_BACK` and `ROOM` as one with memory to plug: its build has
+its cgroup from its start (`plug::hold_build`), which it had only where it plugged, so it
+gave nothing back; it gives back its files' cold pages, and unplugs nothing, having none
+plugged (D133's "Every builder's build has its cgroup").
+
 
 **Found.** The user's plan, item 4: memory that tracks the working set, reclaimed at the
 host's pressure, not on a timer. A run's guest keeps what its workload reads in its page
@@ -18901,7 +18907,9 @@ A run's microVM was sized at boot: without `-m`, 256 MiB less what its kernel ke
 where a Docker container without `-m` may hold its host's memory (`memory.max` "max",
 `MemTotal` its host's: shards-dind, docker 29.3.1); with `-m`, booted with all of it, its
 page structures paid at boot (21 MiB and 4 ms per GiB, PM M82). D133's virtio-mem gives a
-builder memory as its build needs it; runs now have it too.
+builder memory as its build needs it; runs now have it too. A builder after a build of its
+home ran out, a new home's first build too, its builder booted cold (memory-15), may have
+all its host's memory, as a run without a limit may (D133's `build::builder_most`).
 
 - **A run without a limit** boots as before, with a region to plug of the host's memory
   less that, and is given memory as its processes reach what it has, up to the host's
@@ -20029,6 +20037,64 @@ KVM arm64 (L1) and WHP, at 4 and 32 vCPUs, n ≥ 20 each with p50/p90/p99/max, f
 cold start and the learned boot; and `cargo test -p shards --test build
 a_builders_memory_is_plugged_as_its_build_needs_it` across cold homes.
 
+**The builder-memory tests' shape since memory-15 (2026-11-14).** A home's first builder
+boots with its ceiling and plugs nothing, so a test of plugging that builds once in a new
+home tests the cold start instead (`a_builders_memory_is_plugged_as_its_build_needs_it`
+failed on HVF at b70a73d42 at its limits assertion: init raises a step's limits to a guest's
+booted with all it may have only where it has memory to plug, `Plug::raise_limits`; a cold
+builder's are its kernel's own). Each test of plugging (tests/build.rs `a_builders_steps_see_the_memory_it_may_have`,
+`a_builders_memory_is_plugged_as_its_build_needs_it`,
+`a_builders_memory_is_plugged_as_fast_as_its_jobs_take_it`, and build_windows.rs' twins)
+first builds once in its home, which learns its guest's boot (`common::learned_boot` reads
+the `boot` line), and holds that boot under what the measured step touches, so that the
+step's memory must be plugged; the step's kernel says what it may still plug
+(`vm.pluggable_kbytes`, D149), more than none before and less after. The give-back tests'
+first build, which fills their cache, warms their homes as it is. The cold start has a test
+of its own, `a_builders_memory_in_a_new_home_is_all_it_may_have`: a new home's builder's VM
+process is given its ceiling as both `--memory` and `--memory-max`, its kernel has nothing to
+plug, it gives back its files' cold pages at its build's word (D188), its VM process's
+footprint falling with them, and the home then holds a learned boot under the ceiling, its
+next builder having memory to plug. No test-only knob: the record a first build writes is
+the warm state, as a user's home reaches it.
+
+**Every builder's build has its cgroup (2026-11-14, memory-15's first defect).** On HVF a
+new home's builder gave nothing back (`a_builders_memory_in_a_new_home_is_all_it_may_have`
+red at af629d8ed): its host's `GIVE_BACK` reclaims the build cgroup's cold files
+(`run::reclaim_cold(BUILD)`) and `ROOM` holds it within its room (`plug::hold_within`), but
+`/sys/fs/cgroup/build` was made by `Plug::hold` alone, which a builder with nothing to plug
+never ran: its steps ran under the root's cgroup, and its answerer found no cgroup to give
+from. Now init makes `build`, `build/init` (init) and `build/steps` as every builder starts
+(`plug::hold_build`, `make_build`), its `memory.peak` opened there, and a step's cgroup is
+always under `build` (`build::step_cgroup`, its `plugging` argument gone); what is a
+plugging builder's alone is the hold, `memory.high` and the grower (`Plug::hold`, its grower
+forked in the root cgroup before init moves into `build/init`). Every builder shares its
+budget's page (`plug::make_cap`), as a run's init does, so that a cold builder is held within
+its room as a warm one is (D188). No second path: no builder's steps run outside `build`.
+
+**A cold builder's needs are recorded (2026-11-14, memory-15's second defect).** A builder
+with nothing to plug answered `NEEDS` with no need and no process ended, so a new home's
+first build recorded `needed 0` (`a_builders_ceiling_comes_from_its_host_and_its_homes_builds`
+red at af629d8ed), and one that ran out at its ceiling was never recorded short. With the
+build's cgroup always there, every builder answers from it (`plug::needed`: `memory.peak`,
+what its kernel holds beside it, and `memory.events`' `oom_kill`, which counts any OOM
+killer's ends, the global one's in a builder that holds its build at no `memory.high`,
+`plug::killed`); `Builder::plugging` is gone. A new home's first build that runs out is
+recorded `short yes`, and its next builder may have all its host's memory, as D148's runs
+(`a_new_homes_build_that_runs_out_is_recorded_short`).
+
+**A step's limits are the kernel's own for all of its memory (2026-11-14, memory-15's third
+defect).** `Plug::raise_limits` scaled each limit from `MemTotal` at boot to `MemTotal` at
+boot plus `HOTPLUG_SIZE`, which also scaled what the kernel sized from memory it never
+counts in `MemTotal` and the page structures the plugged memory costs. On HVF a step of a
+builder booted at its learned boot under 2560 MiB saw `kernel.threads-max` 21801 where a
+guest booted with all 2560 MiB has 19535 (+11.6%, `a_builders_memory_is_plugged_as_its_build_needs_it`
+red at af629d8ed); before memory-15, at 0faaf2628^, it saw 20929 (+7.1%), within that
+test's tenth then: the defect predates memory-15, which widened it by booting smaller. Now
+each limit is its boot's value and what the added memory, less a 64-byte `struct page` for
+each page, adds by the kernel's formula (`plug::Limits::raised`, above); the test still
+holds each limit at or above the guest booted with all of it and within a tenth past it,
+its window not widened.
+
 **R03 review memory-11..15 (2026-11-13):** reserve slack, pause/read floors,
 retry count, growth/retention ratios and boot floor remain owed to ROOT with
 designs in `docs/research/measurements/memory-fixes-v1/owed-designs.md`.
@@ -20133,13 +20199,17 @@ given the rest as its build needs it, up to what it may have.
 - **What the kernel sized by the memory it booted with** is raised to what it sizes by all
   of it, so that a step sees what it saw in a builder booted with all its memory: the
   layers' tmpfs (`size=` and `nr_inodes=` of all of it, where `size=100%` would be of 512
-  MiB); `kernel.threads-max`, the user namespaces' maxima, epoll's watches, `tcp_mem` and
-  `udp_mem`, each in proportion to the memory; `fs.file-max` by the memory added, a file
-  for each 10 KiB, as the kernel's own sizing has it (a proportion came out short on
-  x86_64); TCP's buffers within their caps; TCP's orphans and TIME-WAIT buckets by its
-  table's sizing; inotify's watches, which the kernel holds at 8192 below about 1 GiB, in
-  their proportion to epoll's; and init's RLIMIT_SIGPENDING, half the threads, which
-  every step inherits. Its processes are Docker's build steps', unlimited, as are its open
+  MiB); `kernel.threads-max`, the user namespaces' maxima (half the threads), epoll's
+  watches, `tcp_mem`, `udp_mem`, TCP's largest buffers within their caps and
+  `fs.file-max`, each its boot's value and what the memory added, less its page structures
+  (a 64-byte `struct page` a page), adds by the kernel's own formula, rounded up
+  (`plug::Limits::raised`: a thread for each 8 kernel stacks, `THREAD_SIZE` 16 KiB on
+  x86_64 and arm64; an epoll item for each 25 × 184 bytes; a 16th and an 8th of the pages
+  for TCP's and UDP's pages; a 128th of the bytes for the buffers; a file for each 10 KiB),
+  never in proportion (memory-15's third defect, below); TCP's orphans and TIME-WAIT
+  buckets by its table's sizing; inotify's watches, which the kernel holds at 8192 below
+  about 1 GiB, in their proportion to epoll's; and init's RLIMIT_SIGPENDING, half the
+  threads, which every step inherits. Its processes are Docker's build steps', unlimited, as are its open
   files (1048576) and locked memory, whatever the memory (2026-10-12, PM M211: a step had
   kept the builder's kernel's own, 1024 of 4096 files).
 - **No snapshot.** Memory plugged is not saved, so a snapshot of a VM with memory to plug
@@ -20590,7 +20660,7 @@ were excluded by the review.
 
 | Literal (file) | Now | Design | Owed: proof |
 |---|---|---|---|
-| `TAKE_TIMEOUT` 10 s (daemon.rs: run-socket writes, link and door handoffs, the connect/take exchange) | picked | Each is a write to, or an answer from, a VM whose party is its VM process. Each waits as D215's judge waits (`health::Wait::WhileRuns`), on a record of its own kind (`Answers::take`, `::link`, `::door`): cold while its process lives, then the slowest seen, extended by progress and host holds. | a judged-write helper beside `exec_waiting`; red: a played VM whose reader is held runnable past 10 s, alive, keeps its handoff; ROOT: `cargo test -p shards --profile test-release --test daemon` on a loaded host |
+| `TAKE_TIMEOUT` 10 s (daemon.rs: run-socket writes, link and door handoffs, the connect/take exchange) | the run's handoff judged on Unix (runs-11 slice (a), below); Windows' twin (b) and the other sites (c) still picked | Each is a write to, or an answer from, a VM whose party is its VM process. Each waits as D215's judge waits (`health::Wait::WhileRuns`), on a record of its own kind (`Answers::take`, `::link`, `::door`): cold while its process lives, then the slowest seen, extended by progress and host holds. | a judged-write helper beside `exec_waiting`; red: a played VM whose reader is held runnable past 10 s, alive, keeps its handoff; ROOT: `cargo test -p shards --profile test-release --test daemon` on a loaded host |
 | `TAKEOVER` 20 s (daemon.rs `take_lock`) | gone (runs-11, D185): waited for while the lock is held, judged once named by the home's slowest start | The lock's holder is the process `daemon.pid` names, written before any slot is offered. Wait while it lives (`Named::lives`, zombies now excluded, waits-08), judged by its record of a start, lock to first slot (`Answers::serve`). A holder that has written no `daemon.pid` yet is followed through its lock file's holder alone, cold. | red: a holder that lives and is slow to offer is waited for past 20 s, and one that died is not |
 | 10 ms poll (daemon.rs `take_lock`) | picked | Events, not looks: a blocking `File::lock` on a helper thread; a `platform::FileWatch` of the home (`requests/` lists, `daemon.stopping`); and the holder's exit (kqueue `EVFILT_PROC`/`NOTE_EXIT`, a pidfd, its process handle). | a unit test counting looks: one per event |
 | `HANDOFF_TRIES` 3 (daemon.rs `start_run`) | picked | Try each warm VM its pool held ready when the run began, then one booted for it. A VM booted for the run that also fails is a failure of the run, not of a VM: it ends typed, naming the last cause. The bound is the pool's own count. | `claim` to say whether a VM was ready or booted; red: four played warm VMs, three ending before `TAKEN`, the fourth takes the run |
@@ -20607,6 +20677,43 @@ were excluded by the review.
 | `CONNECT` 30 s, `HANDSHAKE` 10 s (registry http.rs, clients that learn no waits) | Go's, containerd's | Every client learns: those that keep no record still pace by RFC 6298 in memory (§2.1's 1 s first, §5.5's doubling), as a learning client's cold path does. | list each non-learning client's caller; red: a fresh client's second connect paced by its first |
 | `HEAD` 30 s (a non-lookup request), `STALL` 30 s (request writes) | Go's, containerd's | A non-lookup request's answer is followed by its connection's liveness and its path's record for that method (`slowest_answer_us` by safe/unsafe). A request's write is a send-side silence, learned like the body's read silences, readiness-checked (waits-05's `Sock`). | red: a POST answered at 31 s is kept |
 
+
+#### A run's handoff, judged (runs-11 `TAKE_TIMEOUT`, slice (a), 2026-11-14)
+
+A run's handoff to a warm VM (`hand_over`: its `RUN`, its share ends, then its `TAKEN`) waited
+for room to write and for the answer at most `TAKE_TIMEOUT`, 10 s, picked: a healthy VM slower
+than that, on a loaded host, lost its run to another VM, surely untaken, though it would have
+taken it. On Unix it now waits as D215's judge waits on a VM process (`health::Judged`, the
+record `Answers::take`, the run's send to its `TAKEN`): before the kind's first answer, and once
+the VM's process has gone, on the socket's readiness alone, its end ending the wait; then a look
+at the VM's process each W*, and the wait ended, typed (`health::Stalled`, its `Cut`), where it
+ran nothing since the look before or could not be read. A send ended so is surely untaken (the
+VM never had all of it), a wait for `TAKEN` ended so may have been taken, as before.
+
+The waits are shards_ipc's judged send and receive (`send_judged`, `recv_judged`): a message
+written as room comes and read whole as it comes (`Incoming`), each wait in poll(2) until the
+judge's next due, never a socket's send or receive timeout, whose expiry mid-message loses how
+much went (POSIX send(2): a partial count, or EAGAIN once nothing more fits). Writes go by
+sendmsg(2) and send(2) with `MSG_DONTWAIT`, which leaves the socket's mode and timeouts to its
+other users. On macOS `MSG_DONTWAIT` does not keep a send from waiting: a 9,000-byte send with it
+to an empty socketpair (8 KiB buffers) waited on, one of 4,000 bytes went at once, and a peer's
+shutdown(2) both ways gave the writer no room to wait on, its close a POLLHUP
+(`docs/research/measurements/runs-fixes/msg-dontwait.c`, macOS 26 arm64). There a judged send
+waits for poll(2)'s POLLOUT, which XNU gives once the socket's room is at least its send
+low-water mark (`sowriteable`, SO_SNDLOWAT, 2,048 bytes by default), and writes no more than
+that mark at a time, less a first write's control data: a write within it waits for nothing.
+Elsewhere `MSG_DONTWAIT` writes what fits and returns (Linux, `unix_stream_sendmsg`).
+
+Red: `a_vm_slow_to_read_its_run_while_it_runs_keeps_its_handoff` (a VM, this process busy,
+reading at 10.5 s, its kind learned at 100 ms) by mutation cutting the send at `TAKE_TIMEOUT`;
+`a_vm_that_reads_nothing_and_runs_nothing_fails_its_handoff` (a sleep as its process) by
+mutation never refusing; shards_ipc's `a_judged_send_goes_on_where_it_was_as_its_peer_reads` and
+`a_judged_receive_waits_while_its_judge_says_go_on`. Owed: Windows' twin (slice (b): pipe.rs's
+send and receive, judged), and the other `TAKE_TIMEOUT` sites, each with its kind's record
+(slice (c): the run socket's writes, join links and doors, exec answers, reclaim's note); to
+ROOT, each phase's latency on a loaded host per platform (`cargo test -p shards --profile
+test-release --test daemon` through `docs/research/measurements/macos-sched/launchd-run.sh` on
+HVF, and on KVM and WHP), n, p50, p90, p99 and max.
 
 ### The `crates/shards` figures of the picked-constants audit (2026-11-09): each from its source
 
@@ -27851,10 +27958,36 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
     opened at once beside a write end held by the party the test follows (`watched`), so a
     read ends with that party; a VM's end is checked by its ID and start (`Named::lives`),
     as macOS showed a pipe a process held ending microseconds after its `NOTE_EXIT`.
-  - *Owed* (ROOT): on Windows the readers still read to their pipes' end (no select(2) of
-    an anonymous pipe; `end_group` already follows the job, and std's pipes there are not
-    inheritable, but shards' spawns mark a child's ends inheritable while they create it,
-    which `INHERITING` guards against shards' own std spawns and not an embedder's); the real-VM stop tests (`api_image`) on HVF, KVM and WHP; profiling of the
+  - *Windows: the same word, never a pipe's end* (2026-11-14, winreaders lane; PM M583).
+    The readers there read to their pipes' end: std's anonymous pipes on Windows are
+    synchronous (CreatePipe), and a read of one waits for bytes or its writers' end alone.
+    shards' own spawns give a child exactly its handles (PROC_THREAD_ATTRIBUTE_HANDLE_LIST in
+    `create_plain` and `create`), but UpdateProcThreadAttribute's documentation
+    requires each listed handle be inheritable and CreateProcessW's bInheritHandles TRUE, so a
+    spawn holds a copy of each inheritable while it creates the child; `INHERITING` keeps
+    shards' own std spawns (`spawn_std`) out of that window, and an embedder's
+    `std::process::Command` (bInheritHandles TRUE, no list: every inheritable handle of the
+    process) is not held out. The handle list closes inheritance for shards' children and
+    cannot for another's: no shards-side flag changes what an embedder's CreateProcessW
+    takes. So the reader, not inheritance, is the fix, as on Unix:
+    - the host's answers and diagnostics are `shards_ipc::output_pair`s: a named pipe's
+      overlapped read end, this process's and not inheritable, and its synchronous write end
+      (the child's stdout/stderr; its inheritable copy is the spawn's, for its list alone);
+    - the watcher's word (`Gone`) is a manual-reset event, set once `end_group` has followed
+      the host's Job to its end; it stays set for every reader and read after it;
+    - each reader (`UntilGone`, `Draining::Reading`) reads with the event beside the read
+      (`Pipe::read_unless`: an overlapped read the event cancels with nothing moved, or that
+      finished first and keeps its bytes); once told it peeks what the pipe holds
+      (PeekNamedPipe, `Pipe::held`), reads exactly those (`Draining::Left(n)`) and ends at
+      0, never waiting for the pipe's end. The EOF read as the ending is gone (no fallback).
+    No literal: the pipe's quota is the system's (`Window::System`, as CreatePipe's is), and
+    every wait is on the event or the Job's end. Red/green: shards-api's
+    `a_told_reader_drains_what_its_pipe_holds_and_ends_though_a_writer_holds_it` and
+    `a_stop_returns_though_a_process_outside_its_hosts_job_holds_its_pipes` (a stand-in host
+    duplicates its stdout and stderr into a process outside its Job, the state an embedder's
+    inheriting spawn leaves) hang with the old reader put back and pass with this one
+    (Windows 11 x86_64; PM M583).
+  - *Owed* (ROOT): the real-VM stop tests (`api_image`) on HVF, KVM and WHP; profiling of the
     exit watcher's `/proc` walk per run end on a host of many processes (R14).
 - *A stop for a boot under way* (2026-11-13, kiln plan 01a1cd8e862e7169a074db3d5fa33f3d,
   step 17, for Hex's delete of a microVM still booting): `Images::boot_stoppable(spec,
