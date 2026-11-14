@@ -12689,6 +12689,10 @@ Established TCP flows keep their opening authorization until their normal close;
 expiry/replacement affects new flows. Clock overflow/allocation failure refuses new
 learned authority through the existing policy denial, with io::Error from admission.
 Answer owner/class/CNAME validation remains network-11, a separate pending finding.
+Native macOS test correction68968478b waits on UDP readiness before invoking the
+receive handler, as the real dispatcher does; send completion alone was no delivery
+witness. It changes no production authority rule. Native red and merged gates are
+in the same evidence record.
 [Unit reproduction and remaining VM checks](../research/measurements/network-fixes-v1/README.md#network-03-dns-authority-lifetime).
 
 **Next.** IPv6 destinations (the network process learns A records alone); a destination
