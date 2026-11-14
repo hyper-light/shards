@@ -188,22 +188,40 @@ pub fn bridge() -> i32 {
 /// Copies `input` to `socket` and `socket` to `output`, each on its own, each way ending as its
 /// source ends: `input`'s end said to the socket as its half-close, the socket's end ending
 /// `output`'s copy. Done once both have ended; the first failure of either.
-fn copy_both(mut input: impl Read + Send, mut output: impl Write, socket: &UnixStream) -> io::Result<()> {
-    let mut up_socket = socket.try_clone()?;
-    std::thread::scope(|s| {
-        let up = std::thread::Builder::new()
-            .name("bridge up".into())
-            .spawn_scoped(s, move || -> io::Result<()> {
-                io::copy(&mut input, &mut up_socket)?;
-                up_socket.shutdown(std::net::Shutdown::Write)
-            })?;
-        let mut down_socket = socket;
-        let down = io::copy(&mut down_socket, &mut output).and_then(|_| output.flush());
-        let up = up
-            .join()
-            .unwrap_or_else(|_| Err(io::Error::other("its input's copy ended unwound")));
-        down.and(up)
-    })
+fn copy_both(input: impl AsFd, output: impl AsFd, socket: &UnixStream) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    // These stdio ends belong to this bridge. Never block in read/write: readiness of the
+    // other direction must still be served, and its first failure must end the bridge.
+    for fd in [input.as_fd(), output.as_fd()] {
+        // SAFETY: fcntl(2) reads/sets flags of a descriptor held by this bridge.
+        let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
+        if flags < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: retain all flags, setting only O_NONBLOCK on this owned stdio end.
+        if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    let error = |fault| match fault {
+        native_relay::Fault::Native { kind, errno, .. }
+        | native_relay::Fault::Reservation { kind, errno } => match errno {
+            Some(errno) => io::Error::from_raw_os_error(errno),
+            None => io::Error::from(kind),
+        },
+        native_relay::Fault::Allocation => io::ErrorKind::OutOfMemory.into(),
+        fault => io::Error::other(format!("MCP bridge: {fault:?}")),
+    };
+    let slots = native_relay::Slots::vsock_packet().map_err(error)?;
+    native_relay::pump_stdio(
+        input.as_fd(),
+        output.as_fd(),
+        socket.as_fd(),
+        slots,
+        &mut native_relay::Report::new(),
+    )
+    .map(drop)
+    .map_err(error)
 }
 
 #[cfg(test)]
@@ -295,8 +313,13 @@ mod tests {
             theirs.write_all(b"answered\n").unwrap();
             got
         });
+        let (input, mut writer) = io::pipe().unwrap();
+        writer.write_all(b"asked\n").unwrap();
+        drop(writer);
+        let (mut reader, output) = io::pipe().unwrap();
+        copy_both(input, output, &ours).unwrap();
         let mut output = Vec::new();
-        copy_both(&b"asked\n"[..], &mut output, &ours).unwrap();
+        reader.read_to_end(&mut output).unwrap();
         assert_eq!(server.join().unwrap(), b"asked\n");
         assert_eq!(output, b"answered\n");
     }
@@ -314,7 +337,8 @@ mod tests {
         let (ours, mut theirs) = UnixStream::pair().unwrap();
         let (tx, rx) = mpsc::channel();
         let bridge = std::thread::spawn(move || {
-            tx.send(copy_both(input, output, &ours).map_err(|e| e.kind())).unwrap();
+            tx.send(copy_both(input, output, &ours).map_err(|e| e.kind()))
+                .unwrap();
         });
         theirs.write_all(b"response").unwrap();
         let result = rx.recv_timeout(Duration::from_secs(1));

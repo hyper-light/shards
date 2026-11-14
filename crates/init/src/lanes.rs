@@ -115,7 +115,11 @@ fn connect(root: &Path, path: &[u8]) -> Result<UnixStream, u32> {
     // nonblocking. Refuse it rather than wait on a workload that may never accept.
     // SAFETY: socket(2) with constant domain/type, returning a fresh owned descriptor.
     let fd = unsafe {
-        libc::socket(libc::AF_UNIX, libc::SOCK_STREAM | libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK, 0)
+        libc::socket(
+            libc::AF_UNIX,
+            libc::SOCK_STREAM | libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK,
+            0,
+        )
     };
     if fd < 0 {
         return Err(errno_of(&io::Error::last_os_error()));
@@ -129,7 +133,8 @@ fn connect(root: &Path, path: &[u8]) -> Result<UnixStream, u32> {
             (&raw const addr).cast(),
             std::mem::size_of_val(&addr) as libc::socklen_t,
         )
-    } != 0 {
+    } != 0
+    {
         return Err(errno_of(&io::Error::last_os_error()));
     }
     conn.set_nonblocking(false).map_err(|e| errno_of(&e))?;
@@ -320,7 +325,11 @@ mod tests {
             let _ = rx.recv_timeout(Duration::from_secs(1)).unwrap();
         }
         worker.join().unwrap();
-        assert_eq!(result, Ok(Err(libc::EAGAIN as u32)), "a full backlog retained the lane worker");
+        assert_eq!(
+            result,
+            Ok(Err(libc::EAGAIN as u32)),
+            "a full backlog retained the lane worker"
+        );
     }
 
     /// The relay between a workload's socket and a stand-in for its vsock connection, as
