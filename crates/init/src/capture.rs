@@ -95,6 +95,31 @@ impl ControlQueue {
     pub fn pending(&self) -> bool {
         self.cursor < self.bytes.len()
     }
+    /// Writes what is left of it whole on `fd`, waiting for room as the connection fills: as
+    /// the relay ends, so that what follows on the connection, the relay's end
+    /// (run.rs `say_signals_end`), starts at a frame's boundary, never within a frame part of
+    /// which went.
+    pub fn finish(&mut self, fd: RawFd) -> io::Result<()> {
+        let rest = self
+            .bytes
+            .get(self.cursor..)
+            .ok_or_else(|| io::Error::other(managed::Error::Offset))?;
+        crate::run::write_whole(fd, rest)?;
+        self.bytes.clear();
+        self.cursor = 0;
+        if matches!(self.state, ControlState::Ending) {
+            self.state = ControlState::Ended;
+        }
+        Ok(())
+    }
+
+    /// As if the connection had taken `n` more of its bytes: a write that took part of a
+    /// frame, which tests cannot make a socket do at will.
+    #[cfg(test)]
+    pub fn sent(&mut self, n: usize) {
+        self.cursor = self.cursor.saturating_add(n).min(self.bytes.len());
+    }
+
     pub fn write(&mut self, fd: RawFd) -> Result<(), Failure> {
         let bytes = self
             .bytes
