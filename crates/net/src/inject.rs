@@ -807,9 +807,17 @@ struct Parked {
 struct Holding {
     whole: Whole,
     framing: Framing,
+    expectation: Expectation,
     /// How much of `pending` its framing has read.
     read: usize,
     body: Vec<u8>,
+}
+
+/// The gateway owns a held request's Continue response (RFC 9110 §10.1.1).
+enum Expectation {
+    Unrequested,
+    Waiting,
+    Sent,
 }
 
 /// What a sign-in's request read whole is asked by (D242, step 8): its CLI, method, target and
@@ -1346,7 +1354,13 @@ pub(crate) fn step(v: &[u8], table: &[usize], mut m: usize, b: u8) -> usize {
 
 /// The values just filled into a request toward `host`, each with its credential's reference:
 /// audited once each (f26), and given to `mask` as they went, for its response (creds-03).
-fn filled_in(mask: &mut Mask, sent: &[(&str, &[u8])], host: &str, grants: &[crate::Grant], audit: &mut Vec<Audit>) {
+fn filled_in(
+    mask: &mut Mask,
+    sent: &[(&str, &[u8])],
+    host: &str,
+    grants: &[crate::Grant],
+    audit: &mut Vec<Audit>,
+) {
     mask.clear();
     let at = SystemTime::now();
     for (i, &(reference, value)) in sent.iter().enumerate() {
@@ -1437,7 +1451,12 @@ impl Mask {
     }
 
     /// `bytes` of a response, data an echo may lie in or its framing, on their way to `out`.
-    fn push(&mut self, bytes: &[u8], data: bool, out: &mut dyn FnMut(&[u8]) -> io::Result<()>) -> io::Result<()> {
+    fn push(
+        &mut self,
+        bytes: &[u8],
+        data: bool,
+        out: &mut dyn FnMut(&[u8]) -> io::Result<()>,
+    ) -> io::Result<()> {
         if self.filled.is_empty() && self.queue.is_empty() {
             return out(bytes);
         }
@@ -1932,9 +1951,10 @@ impl Ended {
                     pending,
                     crate::tcp::TO_HOST,
                     &mut |piece| match piece {
-                        Piece::Data(b) | Piece::Size { line: b, .. } | Piece::Trailers(b) | Piece::Frame(b) => {
-                            host.writer().write_all(b)
-                        }
+                        Piece::Data(b)
+                        | Piece::Size { line: b, .. }
+                        | Piece::Trailers(b)
+                        | Piece::Frame(b) => host.writer().write_all(b),
                     },
                 )
                 .map_err(|Broken(why)| Refusal::Malformed(why))?;
@@ -2119,16 +2139,34 @@ impl Ended {
                     Framing::Chunked(_) => true,
                     Framing::Close => false,
                 };
-                (ours && fits).then(|| Holding {
-                    whole: Whole {
-                        cli,
-                        method: method.clone(),
-                        target: target.clone(),
-                        content_type: values(&head, &fields, "content-type").next().map(<[u8]>::to_vec),
-                    },
-                    framing: body.clone(),
-                    read: 0,
-                    body: Vec::new(),
+                (ours && fits).then(|| {
+                    let expectation = if values(&head, &fields, "expect")
+                        .any(|v| v.eq_ignore_ascii_case(b"100-continue"))
+                    {
+                        // This hop answers it. A body later passed upstream must not ask
+                        // that hop to send another Continue after we already admitted it.
+                        edits.extend(
+                            fields
+                                .iter()
+                                .filter(|f| f.name == "expect")
+                                .map(|f| (f.line.clone(), Vec::new())),
+                        );
+                        Expectation::Waiting
+                    } else {
+                        Expectation::Unrequested
+                    };
+                    Holding {
+                        whole: Whole {
+                            cli,
+                            method: method.clone(),
+                            target: target.clone(),
+                            content_type: values(&head, &fields, "content-type").next().map(<[u8]>::to_vec),
+                        },
+                        framing: body.clone(),
+                        expectation,
+                        read: 0,
+                        body: Vec::new(),
+                    }
                 })
             }
             None => {
@@ -2174,7 +2212,14 @@ impl Ended {
     /// its head as it came but for its hop-by-hop fields and its placeholders, each filled in
     /// and audited; refused where a lease is; parked again while one is asked.
     fn go(&mut self, mut parked: Box<Parked>, run: &mut Run<'_>) -> Result<bool, Refusal> {
-        if let Some(whole) = parked.whole.take() {
+        if let Some(mut whole) = parked.whole.take() {
+            if matches!(whole.expectation, Expectation::Waiting) {
+                self.guest
+                    .writer()
+                    .write_all(b"HTTP/1.1 100 Continue\r\n\r\n")
+                    .map_err(|e| Refusal::Upstream(e.to_string()))?;
+                whole.expectation = Expectation::Sent;
+            }
             match self.outside(&parked, whole, run)? {
                 Outside::Waiting(whole) => {
                     parked.whole = Some(whole);
@@ -2283,7 +2328,9 @@ impl Ended {
                     let mut holds = false;
                     let mut piece = |p: Piece<'_>| match p {
                         // A trailer section is fields, which an echo may lie in, as a head's.
-                        Piece::Data(b) | Piece::Trailers(b) => mask.push(b, true, &mut |b| guest.writer().write_all(b)),
+                        Piece::Data(b) | Piece::Trailers(b) => {
+                            mask.push(b, true, &mut |b| guest.writer().write_all(b))
+                        }
                         Piece::Size { size, .. } => mask
                             .size(size, &mut |b| guest.writer().write_all(b))
                             .inspect_err(|e| holds |= e.get_ref().is_some_and(|e| e.is::<Holds>())),
@@ -4429,12 +4476,16 @@ pub(crate) mod tests {
                     }
                 };
                 let mut piece = Vec::new();
-                let (n, ended) = walk(&mut framing, &self.inbox, usize::MAX, &mut |p| {
-                    let (Piece::Data(b) | Piece::Size { line: b, .. } | Piece::Trailers(b) | Piece::Frame(b)) = p;
-                    piece.extend_from_slice(b);
-                    Ok(())
-                })
-                .unwrap();
+                let (n, ended) =
+                    walk(&mut framing, &self.inbox, usize::MAX, &mut |p| {
+                        let (Piece::Data(b)
+                        | Piece::Size { line: b, .. }
+                        | Piece::Trailers(b)
+                        | Piece::Frame(b)) = p;
+                        piece.extend_from_slice(b);
+                        Ok(())
+                    })
+                    .unwrap();
                 self.inbox.drain(..n);
                 if self.answers == H1Answers::Echo {
                     self.tls.writer().write_all(&piece).unwrap();
@@ -7360,7 +7411,7 @@ pub(crate) mod tests {
         assert!(!bench.closed);
     }
 
+    mod expectations;
     /// creds-01..04 (docs/bugs/2026-11-13/creds.md): a value never reaching the guest past the mask.
     mod leaks;
-    mod expectations;
 }
