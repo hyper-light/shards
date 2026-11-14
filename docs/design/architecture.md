@@ -27578,6 +27578,20 @@ docs/research/s33-veil-creds/STEP3.md).
   and in the body, and its HTTP/2 stream whose value rotates while its response waits, red before
   (the value reached the guest), green after; the mask given no value (`filled_in` not filling it)
   fails both.
+- *A chunk's size line goes as its size alone (creds-02, amended 2026-11-13).* The mask passes a
+  chunked body's framing over, so that an echo split across chunks is found; but the framing's
+  bytes still reached the guest, and a chunk's extensions (`chunk-ext`, RFC 9112 §7.1.1: tokens or
+  quoted strings) are any bytes a host chooses, so a host's echo of the value in one went to the
+  guest whole. Each response chunk's size line now goes as `chunk-size CRLF` alone, in its fewest
+  hex digits (`Mask::size`); the request side's lines go as they came. RFC 9112 §7 lets a recipient
+  along the chain decode a transfer coding and apply its own, and §7.1.1 has a recipient ignore an
+  extension it does not know: no shards guest relies on one. A size whose digits hold a value
+  filled in (a value of at most 16 hex digits) breaks the message, as a same-length mask of it would
+  change its framing. Masking the framing as data was refused: it would end a match at each chunk's
+  line, losing the cross-chunk match. Trailers stay fields the mask reads as data. Tests:
+  `inject::tests::leaks`' chunked echo with the value in a token and in a quoted-string extension,
+  red before (the value reached the guest), green after, and the size line read whole a byte at a
+  time; the line forwarded as it came, and the size check removed, each fail them.
 - *Audit (f26).* `shards-net: credential <reference> filled in toward <host> at <s>.<ns> (Unix
   time)`, on the network process's stderr (its run host's diagnostics); never the value or the
   placeholder.
