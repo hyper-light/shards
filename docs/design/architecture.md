@@ -12298,6 +12298,22 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     harness.rs' `a_judged_calls_own_work_is_its_progress` (an idle started stand-in; from
     one call site, its record removed, a call that answers at once, one busy 200 ms on its
     thread, one asleep there 1 s).
+  - *A guest idle for its test's own pacing is not judged* (2026-11-14, ROOT's batches 23
+    and 24 at 6e067b01b and 9146808cc, HVF, lane runsignal). run.rs'
+    `signals_reach_the_command` failed at its last case, SIGTERM and then SIGINT 500 ms
+    later: `status None`, nothing on stdout or stderr. Its watchdog (`signaled_ignoring`)
+    judged the VM process's CPU throughout, as one kind for all four cases, and adas-mac-
+    studio.local's record of it (`run.rs-512-25`, `35498625 16829834 35198125`) came from
+    the three cases that send one signal. In the last case the guest waits idle on the
+    test's next signal, a look found no CPU over a whole W*, and the refusal killed the run,
+    silently. A refused case teaches nothing, so that host stayed red, while a host whose
+    last case once answered (adas-mac-studio-3, W* 900 ms) never refuses. That record seeded
+    at 9146808cc failed 1 run in 10, and 3 in 20 at e800f6a3c with the old judgement put
+    back ("made no progress for 62.2ms, past ... (35.498625ms), 250.06ms into its wait").
+    Now the watchdog judges its guest while it works for itself, as two kinds: until its
+    command says `ready`, and from the last signal to its end. Between them the test paces
+    the guest, and nothing is judged. A refusal is now said in the failure. No number
+    changed (R03).
   - What would falsify it: a `judged` call refused while what this test started ran. Or a
     `client_output` refused while its client or its home's daemon worked. Or a host's hold
     (ETXTBSY, a killed daemon's descriptors, a scanner's handle) cut.
