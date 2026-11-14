@@ -33,16 +33,18 @@ use windows_sys::Wdk::Storage::FileSystem::{
     NtCreateFile, NtSetInformationFile,
 };
 use windows_sys::Win32::Foundation::{
-    ERROR_FILE_NOT_FOUND, ERROR_INVALID_PARAMETER, ERROR_NO_MORE_FILES, ERROR_NOT_SUPPORTED, NTSTATUS,
-    OBJ_CASE_INSENSITIVE, RtlNtStatusToDosError, STATUS_DELETE_PENDING, STATUS_FILE_DELETED,
-    STATUS_OBJECT_NAME_COLLISION, UNICODE_STRING,
+    ERROR_FILE_NOT_FOUND, ERROR_INVALID_FUNCTION, ERROR_INVALID_PARAMETER, ERROR_NO_MORE_FILES,
+    ERROR_NOT_SUPPORTED, NTSTATUS, OBJ_CASE_INSENSITIVE, RtlNtStatusToDosError, STATUS_DELETE_PENDING,
+    STATUS_FILE_DELETED, STATUS_OBJECT_NAME_COLLISION, UNICODE_STRING,
 };
+use windows_sys::Win32::Globalization::{CSTR_EQUAL, CompareStringOrdinal};
 use windows_sys::Win32::Storage::FileSystem::{
     DELETE, FILE_APPEND_DATA, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
-    FILE_ATTRIBUTE_TAG_INFO, FILE_DISPOSITION_FLAG_DELETE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS,
-    FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX, FILE_FLAG_BACKUP_SEMANTICS, FILE_FULL_DIR_INFO,
-    FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_LIST_DIRECTORY, FILE_SHARE_DELETE, FILE_SHARE_READ,
-    FILE_SHARE_WRITE, FILE_WRITE_DATA, FileAttributeTagInfo, FileDispositionInfo, FileDispositionInfoEx,
+    FILE_ATTRIBUTE_TAG_INFO, FILE_CASE_SENSITIVE_INFO, FILE_DISPOSITION_FLAG_DELETE,
+    FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX,
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_FULL_DIR_INFO, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
+    FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    FILE_WRITE_DATA, FileAttributeTagInfo, FileCaseSensitiveInfo, FileDispositionInfo, FileDispositionInfoEx,
     FileFullDirectoryInfo, FlushFileBuffers, GetFileInformationByHandleEx, SYNCHRONIZE,
     SetFileInformationByHandle,
 };
@@ -50,6 +52,7 @@ use windows_sys::Win32::System::IO::{DeviceIoControl, IO_STATUS_BLOCK};
 use windows_sys::Win32::System::Ioctl::{
     FILE_SET_SPARSE_BUFFER, FILE_ZERO_DATA_INFORMATION, FSCTL_SET_SPARSE, FSCTL_SET_ZERO_DATA,
 };
+use windows_sys::Win32::System::SystemServices::FILE_CS_FLAG_CASE_SENSITIVE_DIR;
 
 /// Every sharing a handle allows, as std's opens and unix.rs's: another may read, write,
 /// rename or delete what this holds open.
@@ -321,12 +324,15 @@ const VERSION: &str = ".~";
 /// name taken lists again (STATUS_OBJECT_NAME_COLLISION). Versions count up from those
 /// listed, never from a clock, which may step back. A version Windows will not yet let go of
 /// stays for the next write, or the directory's owner ([`remove_in`]), to remove. It lands
-/// even if the directory was renamed since it was opened.
+/// even if the directory was renamed since it was opened. A name's versions are the entries
+/// the directory takes for `name.~N`, whatever their case where it tells no names apart by
+/// case ([`Naming`]).
 pub fn write_in(dir: &File, name: &str, bytes: &[u8]) -> io::Result<()> {
     use std::io::Write as _;
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNT: AtomicU64 = AtomicU64::new(0);
     plain_name(name)?;
+    let naming = naming(dir)?;
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
@@ -345,7 +351,7 @@ pub fn write_in(dir: &File, name: &str, bytes: &[u8]) -> io::Result<()> {
     let landed = file
         .write_all(bytes)
         .and_then(|()| super::sync_durable(&file))
-        .and_then(|()| land(&file, dir, name))
+        .and_then(|()| land(&file, dir, name, naming))
         // The rename is the file's own metadata: flushed with it.
         .and_then(|version| super::sync_durable(&file).map(|()| version));
     let version = match landed {
@@ -363,10 +369,10 @@ pub fn write_in(dir: &File, name: &str, bytes: &[u8]) -> io::Result<()> {
     sync_entries(dir)?;
     // What it supersedes, where Windows lets it go: what it keeps, a later write removes.
     if let Ok(names) = names_in(dir) {
-        let before = versions(&names, name)
+        let before = versions(&names, name, naming)
             .filter(|(n, _)| *n < version)
             .map(|(_, entry)| entry);
-        for entry in before.chain(names.iter().filter(|entry| entry.as_os_str() == OsStr::new(name))) {
+        for entry in before.chain(names.iter().filter(|entry| naming.same(entry, name))) {
             if let Some(entry) = entry.to_str() {
                 let _ = unlink_in(dir, entry);
             }
@@ -376,14 +382,14 @@ pub fn write_in(dir: &File, name: &str, bytes: &[u8]) -> io::Result<()> {
 }
 
 /// Renames `file` to `name`'s next version in the directory `dir` holds open, `name.~N`, N
-/// one past the highest listed there, by a rename that replaces nothing; listed again where
-/// another writer landed that version first. The version it landed.
-fn land(file: &File, dir: &File, name: &str) -> io::Result<u64> {
+/// one past the highest listed there and any a rename found taken ([`next_version`]), by a
+/// rename that replaces nothing; listed again where another writer landed that version
+/// first. The version it landed.
+fn land(file: &File, dir: &File, name: &str, naming: Naming) -> io::Result<u64> {
+    let mut taken = None;
     loop {
-        let next = versions(&names_in(dir)?, name)
-            .map(|(n, _)| n)
-            .max()
-            .map_or(Some(1), |n| n.checked_add(1))
+        let listed = versions(&names_in(dir)?, name, naming).map(|(n, _)| n).max();
+        let next = next_version(listed, taken)
             .ok_or_else(|| io::Error::other(format!("{name}: no version past the last")))?;
         let status = rename_to(file, dir, &format!("{name}{VERSION}{next}"))?;
         if status >= 0 {
@@ -392,15 +398,103 @@ fn land(file: &File, dir: &File, name: &str) -> io::Result<u64> {
         if status != STATUS_OBJECT_NAME_COLLISION {
             return Err(nt_error(status));
         }
+        taken = Some(next);
     }
 }
 
-/// The versions of `name` among `names`, a directory's listing ([`write_in`]): each
-/// `name.~N`'s N, with its entry.
-fn versions<'a>(names: &'a [OsString], name: &'a str) -> impl Iterator<Item = (u64, &'a OsString)> + 'a {
+/// The version a write lands as: one past the highest `listed` and the highest a rename found
+/// `taken`, which the listing may not show (an entry the file system takes for the name that
+/// [`Naming`] does not): so each collision moves the next past it, and a write ends once it
+/// meets a name nothing holds, where it chose the same taken name for ever (platform-09).
+fn next_version(listed: Option<u64>, taken: Option<u64>) -> Option<u64> {
+    listed.max(taken).map_or(Some(1), |n| n.checked_add(1))
+}
+
+/// How a directory tells two names apart: by case where it is case-sensitive
+/// (FILE_CASE_SENSITIVE_INFO's FILE_CS_FLAG_CASE_SENSITIVE_DIR, which Windows 10 1803 and
+/// later keep for a directory of NTFS), else not, as NTFS, ReFS and FAT tell them apart by
+/// default (Microsoft, "Case sensitivity") and as every open here asks (OBJ_CASE_INSENSITIVE,
+/// which a case-sensitive directory overrides).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Naming {
+    ByCase,
+    IgnoringCase,
+}
+
+impl Naming {
+    /// The rest of `entry` past `name`, if it begins with `name` as this directory compares
+    /// names: ignoring case, as Windows compares file names (CompareStringOrdinal, ordinal by
+    /// the operating system's uppercase table, a UTF-16 unit for a unit, which Microsoft Learn
+    /// gives for file names).
+    fn rest<'a>(self, entry: &'a OsStr, name: &str) -> Option<String> {
+        let entry: Vec<u16> = entry.encode_wide().collect();
+        let name: Vec<u16> = OsStr::new(name).encode_wide().collect();
+        let head = entry.get(..name.len())?;
+        let same = match self {
+            Naming::ByCase => head == name.as_slice(),
+            Naming::IgnoringCase => {
+                let count = i32::try_from(name.len()).ok()?;
+                // SAFETY: two strings of `count` UTF-16 units each, alive for the call.
+                unsafe { CompareStringOrdinal(head.as_ptr(), count, name.as_ptr(), count, 1) == CSTR_EQUAL }
+            }
+        };
+        let rest = entry.get(name.len()..)?;
+        same.then(|| String::from_utf16(rest).ok()).flatten()
+    }
+
+    /// Whether `entry` is `name`, as this directory compares names.
+    fn same(self, entry: &OsStr, name: &str) -> bool {
+        self.rest(entry, name).is_some_and(|rest| rest.is_empty())
+    }
+}
+
+/// How the directory `dir` holds open tells names apart ([`Naming`]): asked of a handle of its
+/// own that may read its attributes. A file system or Windows that keeps no case sensitivity
+/// for a directory (FAT; Windows before 10 1803) refuses the question, and tells no names
+/// apart by case.
+fn naming(dir: &File) -> io::Result<Naming> {
+    let attributes = reopen_dir(
+        dir,
+        FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        FILE_SYNCHRONOUS_IO_NONALERT,
+    )?;
+    let mut info = FILE_CASE_SENSITIVE_INFO::default();
+    let size = u32::try_from(size_of::<FILE_CASE_SENSITIVE_INFO>()).map_err(io::Error::other)?;
+    // SAFETY: a handle `attributes` holds open, and a FILE_CASE_SENSITIVE_INFO of `size` bytes.
+    if unsafe {
+        GetFileInformationByHandleEx(
+            attributes.as_raw_handle(),
+            FileCaseSensitiveInfo,
+            (&raw mut info).cast(),
+            size,
+        )
+    } != 0
+    {
+        return Ok(if info.Flags & FILE_CS_FLAG_CASE_SENSITIVE_DIR != 0 {
+            Naming::ByCase
+        } else {
+            Naming::IgnoringCase
+        });
+    }
+    let e = io::Error::last_os_error();
+    match e.raw_os_error().and_then(|c| u32::try_from(c).ok()) {
+        Some(ERROR_INVALID_PARAMETER | ERROR_NOT_SUPPORTED | ERROR_INVALID_FUNCTION) => {
+            Ok(Naming::IgnoringCase)
+        }
+        _ => Err(e),
+    }
+}
+
+/// The versions of `name` among `names`, a directory's listing ([`write_in`]), as the
+/// directory compares names (`naming`): each `name.~N`'s N, with its entry.
+fn versions<'a>(
+    names: &'a [OsString],
+    name: &'a str,
+    naming: Naming,
+) -> impl Iterator<Item = (u64, &'a OsString)> + 'a {
     names.iter().filter_map(move |entry| {
-        let n = entry.to_str()?.strip_prefix(name)?.strip_prefix(VERSION)?;
-        version_number(n).map(|n| (n, entry))
+        let rest = naming.rest(entry, name)?;
+        version_number(rest.strip_prefix(VERSION)?).map(|n| (n, entry))
     })
 }
 
@@ -426,8 +520,9 @@ pub fn version_of(entry: &str) -> &str {
 /// ([`write_in`]): the highest `name.~N` listed there, else `name` itself.
 pub fn newest_in(dir: &File, name: &str) -> io::Result<String> {
     plain_name(name)?;
+    let naming = naming(dir)?;
     let names = names_in(dir)?;
-    Ok(versions(&names, name)
+    Ok(versions(&names, name, naming)
         .max_by_key(|(n, _)| *n)
         .and_then(|(_, entry)| entry.to_str())
         .map_or_else(|| name.to_string(), str::to_string))
@@ -477,11 +572,12 @@ fn newest_opened(dir: &File, name: &str, open: impl Fn(&str) -> io::Result<File>
 /// it has asked for them all.
 pub fn remove_in(dir: &File, name: &str) -> io::Result<()> {
     plain_name(name)?;
+    let naming = naming(dir)?;
     let names = names_in(dir)?;
     let mut refused = None;
-    let all = versions(&names, name)
+    let all = versions(&names, name, naming)
         .map(|(_, entry)| entry)
-        .chain(names.iter().filter(|entry| entry.as_os_str() == OsStr::new(name)));
+        .chain(names.iter().filter(|entry| naming.same(entry, name)));
     for entry in all {
         let Some(entry) = entry.to_str() else { continue };
         match unlink_in(dir, entry) {
@@ -978,6 +1074,33 @@ mod tests {
         remove_in(&dir, "STATE").unwrap();
         remove_in(&dir, "current").unwrap();
         assert_eq!(names_in(&dir).unwrap(), Vec::<OsString>::new());
+    }
+
+    /// Do: write `state` and then `STATE` in a directory of NTFS, and read `state`. Expect the
+    /// second write to land as the name's next version, `STATE.~2`, the first gone with it,
+    /// and the read to find it (platform-09).
+    #[test]
+    fn a_write_through_another_case_lands_as_the_next_version() {
+        let base = shards_testdir::TempDir::new("recased").unwrap();
+        let d = base.join("d");
+        std::fs::create_dir(&d).unwrap();
+        let dir = super::super::open_dir(&d).unwrap();
+        write_in(&dir, "state", b"one").unwrap();
+        write_in(&dir, "STATE", b"two").unwrap();
+        assert_eq!(read(open_newest_in(&dir, "state").unwrap()), "two");
+        assert_eq!(names_in(&dir).unwrap(), ["STATE.~2"]);
+    }
+
+    /// A rename that finds its version taken moves the next past it, whatever the listing
+    /// showed, and none is past the last a version may have.
+    #[test]
+    fn a_taken_version_moves_the_next_past_it() {
+        assert_eq!(next_version(None, None), Some(1));
+        assert_eq!(next_version(Some(3), None), Some(4));
+        assert_eq!(next_version(None, Some(1)), Some(2));
+        assert_eq!(next_version(Some(3), Some(5)), Some(6));
+        assert_eq!(next_version(Some(5), Some(3)), Some(6));
+        assert_eq!(next_version(Some(u64::MAX), None), None);
     }
 
     /// A version another holds open sharing no delete, which no rename could replace (PM
