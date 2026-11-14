@@ -31162,6 +31162,17 @@ ruleset, the run's seccomp filter.
     :2568), so the first cut sent a closed descriptor as a refusal's, its sendmsg failed
     EBADF, and the exec waited for ever where `Processes` was due (confine-11, reproduced at
     `with_starter`'s mutant: init's end polled with nothing queued, `pids.events` `max 1`).
+    init's other `CLONE_PIDFD` forks take the number only from a child born (audit,
+    2026-11-14): `start`'s clone3 of a member's first process writes it into its
+    `managed::Launch`, a bare `RawFd` that no `Drop` closes, made an `OwnedFd` only by
+    `Launch::parent`, called past `pid < 0`'s return; the test fixture `managed::tests::Child`
+    asserts `pid > 0` before it owns one; and shards-server's sandbox helper
+    (`crates/server/src/sandbox.rs`) answers a refused worker `-1` and owns its number only
+    past `pid < 0`. Nothing in crates/shards, vmm or ipc forks with `CLONE_PIDFD`.
+    `domains::tests::a_first_process_refused_at_pids_max_closes_nothing_at_its_pidfd_number`
+    holds the first: start's clone3 into a cgroup of `pids.max` 0 is refused EAGAIN with the
+    number written, another descriptor takes it, and it outlives the `Launch` (Linux 7.3.3
+    x86_64; red, `open: false`, with the slot a type that closes itself).
   - *Costs* (confine-11, 2026-11-14, [docs/bugs/2026-11-13/confine.md](../bugs/2026-11-13/confine.md)).
     One process of the member's for the member's life, a fork of init's address space as the
     member's first process was, its pages shared copy-on-write until either writes.
@@ -31280,7 +31291,8 @@ SHARDS_TEST_CGROUP in a delegated scope
 `a_command_past_what_its_member_declared_is_refused` (`with_starter` mutated to the declared
 count: the first `not born: NotBorn { errno: 11 }`, the second `not asked: Gone`, its member
 of one process left no starter; before the starter's pidfd fix the first waited for ever),
-and `a_member_whose_starter_went_is_held_to_what_it_declared`. Real VMs, ROOT's
+`a_member_whose_starter_went_is_held_to_what_it_declared` and
+`a_first_process_refused_at_pids_max_closes_nothing_at_its_pidfd_number`. Real VMs, ROOT's
 (`cargo test -p shards --profile test-release --test member_exec`):
 `a_command_run_in_a_member_is_confined_as_the_member_is` (uid, PID namespace, name, caps and
 `no_new_privs`, signals, Landlock on files and TCP, seccomp, cgroup and network, another
