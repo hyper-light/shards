@@ -17805,6 +17805,9 @@ finding open; no new scheduling or host-fairness result is claimed.
 
 ### M430. Devices plugged into a running microVM: what each step costs, and what a bus of slots costs a boot (D214)
 
+Correctness follow-up devices-05 (2026-11-14): capacity-publication red observed `(2, 0)`; 8 block tests and VMM clippy passed after the shared-lock fix on macOS arm64. See `measurements/device-fixes/README.md`; no M430 performance claim is refreshed.
+
+
 - **Correctness follow-up, devices-03 (2026-11-13, D154).** Response-span validation red: 1 failed; green: 13 IOMMU tests and VMM clippy passed on macOS arm64. Allocation-pressure/RSS and hardware runs remain owed to ROOT. Revisions, commands and scope: `measurements/device-fixes/README.md`. No performance result is inferred.
 
 
