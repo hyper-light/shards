@@ -625,6 +625,11 @@ fn mount_root(device: &str) -> Result<(), Failure> {
             crate::setup::write_sysctl(key, value).map_err(setup_failed)?;
         }
     }
+    // Init's namespace's conntrack, which the agents' egress, their published ports and
+    // the host's loopback are translated by, keeps a UDP flow as the host's network
+    // process does; a kernel without conntrack has none to keep. Before a run's
+    // `--sysctl`, which dockerd's merge puts over its own.
+    crate::setup::keep_udp_flows().map_err(setup_failed)?;
     // Last: init writes /proc/sys above, and no more after but through what it kept.
     masked()
 }

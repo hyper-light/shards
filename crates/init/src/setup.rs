@@ -141,11 +141,87 @@ fn errno_words(e: &io::Error) -> String {
 /// Sets sysctl `key` to `value`; a failure in the words scripts read of a start's
 /// (internal/sys WriteSysctls).
 pub fn write_sysctl(key: &str, value: &str) -> Result<(), String> {
-    let path = key.replace('.', "/");
-    let shown = format!("/proc/sys/{path}");
+    let shown = format!("/proc/sys/{}", key.replace('.', "/"));
     let dir = PROC_SYS
         .get()
         .ok_or_else(|| format!("open sysctl {key} file: open {shown}: no such file or directory"))?;
+    write_sysctl_at(dir, key, value)
+}
+
+/// The sysctls by which a network namespace's conntrack keeps a UDP flow past its last
+/// packet: unanswered (or answered within its first 2 s), and answered after
+/// (nf_conntrack_proto_udp.c, udp_packet). Each in seconds (proc_dointvec_jiffies), each
+/// namespace's own, every new one starting at the kernel's 30 s and 120 s
+/// (nf_conntrack_udp_init_net), never its creator's.
+const UDP_TIMEOUTS: [&str; 2] = [
+    "net.netfilter.nf_conntrack_udp_timeout",
+    "net.netfilter.nf_conntrack_udp_timeout_stream",
+];
+
+/// What [`keep_udp_flows`] found of the namespace's conntrack.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UdpFlows {
+    /// Each UDP flow it tracks lives `shards_abi::bounds::UDP_MAPPING_IDLE` past its last
+    /// packet, answered or not.
+    Kept,
+    /// A kernel without conntrack's sysctls (no CONFIG_NF_CONNTRACK, or no
+    /// CONFIG_SYSCTL): it tracks no flow to keep.
+    Untracked,
+}
+
+/// Has the calling thread's network namespace's conntrack keep a UDP flow as the network
+/// process, init's relay and the members' proxy keep one (D46, D124, D181): RFC 4787
+/// §4.3 REQ-5's two minutes past its last datagram, either way, answered or not, so that
+/// the microVM's own NAT and stateful filters (init's namespace's, each gate's) end a flow
+/// when the host's does, never at the kernel's 30 s. Written beneath init's own
+/// `/proc/sys`, which looks `net` up in the caller's namespace (net/sysctl_net.c).
+pub fn keep_udp_flows() -> Result<UdpFlows, String> {
+    let dir = PROC_SYS
+        .get()
+        .ok_or_else(|| "keeping UDP flows: no /proc/sys kept".to_string())?;
+    keep_udp_flows_at(dir)
+}
+
+fn keep_udp_flows_at(dir: &OwnedFd) -> Result<UdpFlows, String> {
+    let secs = shards_abi::bounds::UDP_MAPPING_IDLE.as_secs().to_string();
+    let mut present = [false; UDP_TIMEOUTS.len()];
+    for (key, there) in UDP_TIMEOUTS.iter().zip(&mut present) {
+        let c = CString::new(key.replace('.', "/")).map_err(|_| format!("{key}: a NUL in its name"))?;
+        // SAFETY: faccessat(2) of a NUL-terminated path below our own descriptor.
+        if unsafe { libc::faccessat(dir.as_raw_fd(), c.as_ptr(), libc::F_OK, 0) } == 0 {
+            *there = true;
+        } else {
+            let e = io::Error::last_os_error();
+            if e.raw_os_error() != Some(libc::ENOENT) {
+                return Err(format!(
+                    "/proc/sys/{}: {}",
+                    key.replace('.', "/"),
+                    errno_words(&e)
+                ));
+            }
+        }
+    }
+    match present {
+        [false, false] => Ok(UdpFlows::Untracked),
+        [true, true] => {
+            for key in UDP_TIMEOUTS {
+                write_sysctl_at(dir, key, &secs)?;
+            }
+            Ok(UdpFlows::Kept)
+        }
+        // One table registers both (nf_conntrack_standalone.c): a kernel with one alone
+        // is none shards knows, and its flows' lifetimes are not guessed.
+        [first, _] => {
+            let [a, b] = UDP_TIMEOUTS;
+            let (has, lacks) = if first { (a, b) } else { (b, a) };
+            Err(format!("this kernel's conntrack has {has} without {lacks}"))
+        }
+    }
+}
+
+fn write_sysctl_at(dir: &OwnedFd, key: &str, value: &str) -> Result<(), String> {
+    let path = key.replace('.', "/");
+    let shown = format!("/proc/sys/{path}");
     let c = CString::new(path).map_err(|_| format!("open sysctl {key} file: a NUL in its name"))?;
     // SAFETY: openat(2) of a NUL-terminated path below our own descriptor.
     let fd = unsafe {
@@ -1391,6 +1467,41 @@ pub fn failed(entry: &[u8], errno: i32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The guest kernel's conntrack kept an unanswered UDP flow 30 s, where the network
+    /// process, init's relay and the members' proxy keep each REQ-5's two minutes. Do: a
+    /// `/proc/sys` of conntrack's two files at the kernel's 30 and 120. Expect: both
+    /// `UDP_MAPPING_IDLE`'s seconds; a `/proc/sys` without them untracked and left so; one
+    /// with one alone refused.
+    #[test]
+    fn a_namespaces_conntrack_keeps_udp_flows_as_the_host_does() {
+        let tmp = shards_testdir::TempDir::new("udp-ct").unwrap();
+        let root = tmp.path().join("sys");
+        let open = |at: &std::path::Path| -> OwnedFd {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_DIRECTORY | libc::O_CLOEXEC)
+                .open(at)
+                .unwrap()
+                .into()
+        };
+        let netfilter = root.join("net/netfilter");
+        std::fs::create_dir_all(&netfilter).unwrap();
+        assert_eq!(keep_udp_flows_at(&open(&root)).unwrap(), UdpFlows::Untracked);
+        assert_eq!(std::fs::read_dir(&netfilter).unwrap().count(), 0, "nothing made");
+        let (once, stream) = (
+            netfilter.join("nf_conntrack_udp_timeout"),
+            netfilter.join("nf_conntrack_udp_timeout_stream"),
+        );
+        std::fs::write(&once, "30\n").unwrap();
+        assert!(keep_udp_flows_at(&open(&root)).unwrap_err().contains("without"));
+        std::fs::write(&stream, "120\n").unwrap();
+        assert_eq!(keep_udp_flows_at(&open(&root)).unwrap(), UdpFlows::Kept);
+        let secs = shards_abi::bounds::UDP_MAPPING_IDLE.as_secs().to_string();
+        assert_eq!(std::fs::read_to_string(&once).unwrap(), secs);
+        assert_eq!(std::fs::read_to_string(&stream).unwrap(), secs);
+    }
 
     #[test]
     fn managed_capture_metadata_is_not_a_workload_mount() {
