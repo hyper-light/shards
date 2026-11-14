@@ -458,6 +458,8 @@ unsafe impl Sync for Shared {}
 impl Shared {
     /// Copies `len` bytes at `off` of it into `buf`, from its mapping (D176 part 7).
     fn read(&self, off: u64, buf: &mut [u8]) -> std::io::Result<()> {
+        // The same owner excludes release and APFS mapping withdrawal for the whole copy.
+        let _file = lock(&self.file);
         let end = off
             .checked_add(buf.len() as u64)
             .filter(|&end| end <= self.len as u64);
