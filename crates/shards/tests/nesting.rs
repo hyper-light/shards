@@ -309,8 +309,11 @@ fn a_granted_workload_is_held_to_its_subtree() {
 /// descriptor and detaches it from that root: none detaches, as init attaches the workload's
 /// above that root, in a cgroup no process of the workload's can name; and a node of the
 /// microVM's own disk, which its device rules never give it, is refused it before and
-/// after (EPERM). Guard: the command's cgroup namespace rooted beneath the workload's
-/// cgroup (`setup::delegate`).
+/// after (EPERM). The node is made in the run's /dev, a mount without nodev (`ceiling
+/// mount: dev`), where nothing before the device program refuses an open (the run's
+/// `--tmpfs /run` is nodev, which refuses it EACCES first) and nothing after it says EPERM:
+/// the program alone refuses it, and a detached one lets it open. Guard: the command's
+/// cgroup namespace rooted beneath the workload's cgroup (`setup::delegate`).
 #[test]
 fn a_granted_workload_cannot_detach_its_device_program() {
     if cannot_run_vms() {
@@ -324,10 +327,18 @@ fn a_granted_workload_cannot_detach_its_device_program() {
     said(
         &ran,
         &[
+            "ceiling mount: dev",
             "ceiling before: errno 1",
             "ceiling query attached: 0",
             "ceiling after: errno 1",
         ],
+    );
+    assert!(
+        ran.stdout
+            .lines()
+            .any(|l| l.starts_with("ceiling disk ") && l.ends_with(": mknod done")),
+        "{}",
+        shown(&ran)
     );
     let detached = ran
         .stdout

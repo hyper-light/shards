@@ -18,6 +18,7 @@
 
 use std::fs::File;
 use std::io;
+use std::num::NonZeroU32;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -26,6 +27,15 @@ use crate::platform;
 /// The bytes its file holds and each process maps: a page of every host's (4, 16 and 64
 /// KiB), as a mapping is made of pages.
 pub const LEN: usize = 1 << 16;
+
+/// A group's CPU budget as the daemon wrote it, as its `cpu.max` says it: `quota` µs of CPU
+/// time each `period` µs. No quota (`max`) holds nothing, its period still the group's own,
+/// as `cpu.max` reads `max 100000`, which its governor looks again each of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Budget {
+    pub quota: Option<NonZeroU32>,
+    pub period: NonZeroU32,
+}
 
 /// A group's CPU budget, mapped ([`GroupCpu::map`]).
 #[derive(Debug)]
@@ -61,17 +71,21 @@ impl GroupCpu {
         unsafe { &*self.map.as_ptr().cast::<AtomicU64>().add(i) }
     }
 
-    /// The daemon's: `quota` µs of CPU time each `period` µs from now, or none.
-    pub fn set_budget(&self, budget: Option<(u32, u32)>) {
-        let word = budget.map_or(0, |(quota, period)| (u64::from(quota) << 32) | u64::from(period));
+    /// The daemon's: `budget` from now.
+    pub fn set_budget(&self, budget: Budget) {
+        let quota = budget.quota.map_or(0, NonZeroU32::get);
+        let word = (u64::from(quota) << 32) | u64::from(budget.period.get());
         self.word(0).store(word, Ordering::Release);
     }
 
-    /// The budget the daemon wrote: `quota` µs of CPU time each `period` µs, or none.
-    pub fn budget(&self) -> Option<(u32, u32)> {
+    /// The budget the daemon wrote: none where it has written none, a word of no period.
+    pub fn budget(&self) -> Option<Budget> {
         let word = self.word(0).load(Ordering::Acquire);
         let (quota, period) = ((word >> 32) as u32, word as u32);
-        (quota > 0 && period > 0).then_some((quota, period))
+        Some(Budget {
+            quota: NonZeroU32::new(quota),
+            period: NonZeroU32::new(period)?,
+        })
     }
 
     /// Charges `used` ns of CPU time at `now` (ns of [`platform::monotonic_ns`]) to a
@@ -121,7 +135,7 @@ mod tests {
     }
 
     /// The budget written is the budget read, through two mappings of one file, as the
-    /// daemon's and a VM process's are; none is none.
+    /// daemon's and a VM process's are; no quota keeps its period; one never written is none.
     #[test]
     fn a_budget_written_is_read_through_another_mapping() {
         let dir = shards_testdir::TempDir::new("group-cpu").unwrap();
@@ -130,11 +144,17 @@ mod tests {
             GroupCpu::map(file.try_clone().unwrap()).unwrap(),
             GroupCpu::map(file).unwrap(),
         );
-        assert_eq!(member.budget(), None);
-        daemon.set_budget(Some((50_000, 100_000)));
-        assert_eq!(member.budget(), Some((50_000, 100_000)));
-        daemon.set_budget(None);
-        assert_eq!(member.budget(), None);
+        assert_eq!(member.budget(), None, "never written");
+        let period = NonZeroU32::new(100_000).unwrap();
+        let held = Budget {
+            quota: NonZeroU32::new(50_000),
+            period,
+        };
+        daemon.set_budget(held);
+        assert_eq!(member.budget(), Some(held));
+        let max = Budget { quota: None, period };
+        daemon.set_budget(max);
+        assert_eq!(member.budget(), Some(max), "no quota keeps its period");
     }
 
     /// A file shorter than the budget's page is refused, not mapped past its end.
