@@ -292,17 +292,23 @@ impl<D: Disk> Daemon<D> {
 }
 
 /// Says that an exec of the daemon's own in container `id` took past the slowest answer of its
-/// kind seen before it, `before` (its record's, read as the exec began: D215's W*; runs-11
-/// `TAKE_TIMEOUT`), each at debug. A kind with no answer before (cold) has no slowest to pass:
-/// nothing is said.
+/// kind seen before it ([`past_slowest`]), each at debug.
 pub(super) fn said_if_long(id: &str, what: &str, took: Duration, before: &Seen) {
     shards_vmm::debug!("container {id}: {what}: answered after {took:?}");
-    if let Seen::Learned { slowest, .. } = before
-        && took > *slowest
-    {
+    if let Some(slowest) = past_slowest(took, before) {
         log(format!(
             "container {id}: {what}: answered after {took:?}, past the slowest before ({slowest:?}), its microVM running"
         ));
+    }
+}
+
+/// The slowest answer of its kind seen before one that `took` this long, where it took longer:
+/// `before`, its record's as the exec began (D215's W*; runs-11 `TAKE_TIMEOUT`, which this was).
+/// A kind with no answer before (cold) has no slowest to pass.
+fn past_slowest(took: Duration, before: &Seen) -> Option<Duration> {
+    match before {
+        Seen::Learned { slowest, .. } if took > *slowest => Some(*slowest),
+        _ => None,
     }
 }
 
@@ -394,6 +400,21 @@ impl Watching {
 mod tests {
     use super::super::health::Cut;
     use super::*;
+
+    /// An answer is said long past its kind's slowest before it, and only then; a cold kind's
+    /// never (runs-11 `TAKE_TIMEOUT`): red before, said past `TAKE_TIMEOUT`'s 10 s alone, picked,
+    /// so an answer of 150 ms past a slowest of 100 ms went unsaid.
+    #[test]
+    fn an_answer_is_long_past_its_kinds_slowest_before_it() {
+        let record = shards_api::Record::new();
+        assert_eq!(past_slowest(Duration::from_secs(60), &record.seen()), None);
+        let slowest = Duration::from_millis(100);
+        record.teach(slowest, slowest / 1000);
+        let before = record.seen();
+        assert_eq!(past_slowest(Duration::from_millis(50), &before), None);
+        assert_eq!(past_slowest(slowest, &before), None);
+        assert_eq!(past_slowest(Duration::from_millis(150), &before), Some(slowest));
+    }
 
     fn quiet(output: &str, status: Option<i64>, cut: Option<Cut>) -> Quiet {
         Quiet {
