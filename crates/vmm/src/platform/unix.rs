@@ -3105,10 +3105,8 @@ mod usage_tests {
                 tv_nsec: 0,
             };
             // SAFETY: this process's CPU-time clock, and a timespec to write.
-            assert_eq!(
-                unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, &raw mut t) },
-                0
-            );
+            let r = unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, &raw mut t) };
+            assert_eq!(r, 0);
             u64::try_from(t.tv_sec).unwrap() * 1_000_000_000 + u64::try_from(t.tv_nsec).unwrap()
         };
         let before = clock();
