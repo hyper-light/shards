@@ -3064,11 +3064,13 @@ fn exec_child(p: &Prepared, c: &Confinement) -> ! {
     let fail = |out, what| -> ! { fail(out, setup, crate::managed::Step::Setup, what) };
     // SAFETY: the actor's remaining confinement uses prepared buffers and system calls.
     unsafe {
-        if libc::chdir(c.workdir.as_ptr()) != 0 {
-            fail(out, c"entering its working directory");
-        }
         if let Err(step) = rules(c, RULESET_FD).and_then(|()| confine(c, RULESET_FD)) {
             fail(out, step.what());
+        }
+        // As the member (confine-02): it starts in no directory it could not enter itself,
+        // as a command run in it does (crate::enter).
+        if libc::chdir(c.workdir.as_ptr()) != 0 {
+            fail(out, c"entering its working directory");
         }
         libc::execve(
             p.argv.first().copied().unwrap_or(std::ptr::null()),
@@ -4054,5 +4056,96 @@ mod tests {
         });
         let Some(said) = said else { return };
         assert_eq!(said, "member refused (13); command refused (13)");
+    }
+
+    /// confine-02 (docs/bugs/2026-11-13/confine.md): a member starts in its working
+    /// directory only where it could enter it itself. Its artifact's `work` leads to
+    /// `private/work`, which is open, beneath `private`, root's alone (0700); a member that
+    /// read its `token` there would have read through a directory it may not search. A
+    /// working directory it may enter, `open/work`, it starts in. Run as root of IDs past
+    /// its own (`unshare --map-auto --map-root-user`), where uid 1000 is another's; else a
+    /// SKIP.
+    #[test]
+    fn a_member_starts_in_no_working_directory_it_could_not_enter() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = shards_testdir::TempDir::new("wd").unwrap();
+        let mode =
+            |p: &std::path::Path, m| std::fs::set_permissions(p, std::fs::Permissions::from_mode(m)).unwrap();
+        mode(dir.path(), 0o755);
+        for (at, token) in [("private/work", "sentinel"), ("open/work", "allowed")] {
+            std::fs::create_dir_all(dir.path().join(at)).unwrap();
+            std::fs::write(dir.path().join(at).join("token"), token).unwrap();
+        }
+        mode(&dir.path().join("private"), 0o700);
+        std::fs::create_dir(dir.path().join("artifact")).unwrap();
+        std::os::unix::fs::symlink(dir.path().join("private/work"), dir.path().join("artifact/work"))
+            .unwrap();
+        let said = as_root_of_own_mounts(|| {
+            if std::os::unix::fs::chown(dir.path().join("open"), Some(1000), Some(1000)).is_err() {
+                return "SKIP: no uid 1000 in this namespace".into();
+            }
+            let starts_in = |workdir: &std::path::Path| {
+                let c = member_confinement(1000, Vec::new(), workdir.to_str().unwrap());
+                let argv = [c"/bin/cat".as_ptr(), c"token".as_ptr(), std::ptr::null()];
+                let p = Prepared {
+                    hide: Vec::new(),
+                    hostname: CString::default(),
+                    argv: argv.to_vec(),
+                    envp: vec![std::ptr::null()],
+                    hosts: None,
+                    resolv: None,
+                    trust: None,
+                    go: None,
+                    chooser: None,
+                    stdin: None,
+                    terminal: false,
+                    root: -1,
+                    sockets: Vec::new(),
+                    volumes: Vec::new(),
+                    scratch: None,
+                    shm: CString::default(),
+                };
+                in_child(|| {
+                    use std::io::Read as _;
+                    let mut fds = [0 as RawFd; 2];
+                    // SAFETY: pipe2(2) into a two-element array.
+                    assert_eq!(unsafe { libc::pipe2(fds.as_mut_ptr(), 0) }, 0);
+                    // SAFETY: fork(2) of a process of one thread; the child gives the pipe
+                    // its stdout and stderr, /dev/null its launch status, and runs the
+                    // member's first process's last steps, which exec or exit.
+                    let pid = unsafe { libc::fork() };
+                    if pid == 0 {
+                        // SAFETY: dup2(2) and open(2) of this child's own descriptors.
+                        unsafe {
+                            let ruleset = libc::fcntl(c.ruleset.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 10);
+                            let null = libc::open(c"/dev/null".as_ptr(), libc::O_WRONLY);
+                            libc::dup2(fds[1], 1);
+                            libc::dup2(fds[1], 2);
+                            libc::dup2(null, 3);
+                            libc::dup3(ruleset, RULESET_FD, libc::O_CLOEXEC);
+                        }
+                        exec_child(&p, &c);
+                    }
+                    // SAFETY: the write end is this process's, closed once.
+                    unsafe { libc::close(fds[1]) };
+                    let mut out = String::new();
+                    // SAFETY: the read end is this process's alone.
+                    let _ = unsafe { std::fs::File::from_raw_fd(fds[0]) }.read_to_string(&mut out);
+                    // SAFETY: waits for this process's own child.
+                    unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0) };
+                    out
+                })
+            };
+            let open = starts_in(&dir.path().join("open/work"));
+            if open.contains("taking its own IDs") {
+                return format!("SKIP: {open}");
+            }
+            format!("{open} | {}", starts_in(&dir.path().join("artifact/work")))
+        });
+        let Some(said) = said else { return };
+        assert_eq!(
+            said,
+            "allowed | shards-init: entering its working directory: errno 13\n"
+        );
     }
 }
