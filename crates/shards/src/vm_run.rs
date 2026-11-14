@@ -17,6 +17,7 @@ use shards_vmm::vm::{
 
 use crate::spec::Options;
 use crate::terminal::RawTerminal;
+use shards_ipc::device::Refusal;
 
 const RUN_USAGE: &str = "usage: shards run vm --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--memory-max MIB] [--disk PATH[:ro]]... [--share DIR[:ro]]... [--pmem PATH]... [--layer PATH] [--vsock PATH] [--nested] [--gpu | --gpu-probe] [--gpu-device ID]...] [--host-managed] [--reporting] [--pci-test | --pci-tests SS.F,...] [--pci-slots N [--pci-slots-iommu]] [--vfio NAME|NODE]... [--vfio-iommu NAME|NODE]... [--no-console [--console-said N]] [--snapshot-dir DIR [--snapshot-then stop|resume]]
        shards run vm --kernel PATH --init SHARDS-INIT --rootfs IMAGE [OPTIONS] [WORKLOAD OPTIONS] -- COMMAND [ARG...]
@@ -941,10 +942,13 @@ static PLUGGED_DISKS: std::sync::Mutex<Vec<(u8, shards_vmm::devices::virtio::blo
 
 /// What its daemon asks of this VM's devices (`DEVICE`, D214): `payload` the step and what
 /// it takes, `fds` its file or its share's connection. The answer's text, or why not.
-pub fn device(payload: &[u8], fds: Vec<shards_ipc::fd::OwnedFd>) -> Result<String, String> {
+pub fn device(payload: &[u8], fds: Vec<shards_ipc::fd::OwnedFd>) -> Result<String, Refusal> {
     use shards_ipc::device;
-    let handle = RUNNING.get().ok_or("the microVM has not started")?;
-    let (&step, rest) = payload.split_first().ok_or("a device step of nothing")?;
+    let asked = |why: &str| Refusal::InvalidRequest(why.into());
+    let handle = RUNNING.get().ok_or(Refusal::Inactive)?;
+    let (&step, rest) = payload
+        .split_first()
+        .ok_or_else(|| asked("a device step of nothing"))?;
     let placed = |p: &vm::Plugged| format!("{} {}", p.devfn, p.address);
     let disks = || {
         PLUGGED_DISKS
@@ -953,9 +957,9 @@ pub fn device(payload: &[u8], fds: Vec<shards_ipc::fd::OwnedFd>) -> Result<Strin
     };
     match step {
         device::DISK => {
-            let (&flags, serial) = rest.split_first().ok_or("a disk of no flags")?;
-            let file = fds.into_iter().next().ok_or("a disk of no file")?;
-            let serial = std::str::from_utf8(serial).map_err(|_| "a serial that is not UTF-8")?;
+            let (&flags, serial) = rest.split_first().ok_or_else(|| asked("a disk of no flags"))?;
+            let file = fds.into_iter().next().ok_or_else(|| asked("a disk of no file"))?;
+            let serial = std::str::from_utf8(serial).map_err(|_| asked("a serial that is not UTF-8"))?;
             let plugged =
                 handle.plug_disk(std::fs::File::from(file), flags & device::READ_ONLY != 0, serial)?;
             if let Some(size) = &plugged.size {
@@ -964,38 +968,41 @@ pub fn device(payload: &[u8], fds: Vec<shards_ipc::fd::OwnedFd>) -> Result<Strin
             Ok(placed(&plugged))
         }
         device::SHARE => {
-            let tag = std::str::from_utf8(rest).map_err(|_| "a tag that is not UTF-8")?;
-            let conn = fds.into_iter().next().ok_or("a share of no server")?;
+            let tag = std::str::from_utf8(rest).map_err(|_| asked("a tag that is not UTF-8"))?;
+            let conn = fds
+                .into_iter()
+                .next()
+                .ok_or_else(|| asked("a share of no server"))?;
             // On Windows its stream itself, a duplex pipe whose other end its share
             // process holds (D197), as a run's shares are given.
             #[cfg(unix)]
             let stream = std::os::unix::net::UnixStream::from(conn);
             #[cfg(windows)]
             let stream = shards_vmm::platform::PipeStream::from_handle(conn)
-                .map_err(|e| format!("its share's stream: {e}"))?;
+                .map_err(|e| Refusal::Host(format!("its share's stream: {e}")))?;
             let slot: shards_vmm::devices::virtio::fs::Share = std::sync::Arc::default();
-            slot.attach(stream)?;
+            slot.attach(stream).map_err(Refusal::Host)?;
             Ok(placed(&handle.plug_share(tag, slot)?))
         }
         device::UNPLUG => {
-            let &devfn = rest.first().ok_or("an unplug of no place")?;
+            let &devfn = rest.first().ok_or_else(|| asked("an unplug of no place"))?;
             handle.unplug(devfn)?;
             disks().retain(|(d, _)| *d != devfn);
             Ok(String::new())
         }
         device::FUNCTION => function(handle, rest, fds).map(|p| placed(&p)),
         device::GROW => {
-            let &devfn = rest.first().ok_or("a growth of no place")?;
+            let &devfn = rest.first().ok_or_else(|| asked("a growth of no place"))?;
             let size = disks()
                 .iter()
                 .find(|(d, _)| *d == devfn)
                 .map(|(_, s)| s.clone())
-                .ok_or("no disk is plugged there")?;
+                .ok_or(Refusal::NoDevice { devfn })?;
             Ok(size.grow()?.to_string())
         }
-        other => Err(format!(
+        other => Err(asked(&format!(
             "device step {other}, which this VM process does not take"
-        )),
+        ))),
     }
 }
 
@@ -1009,13 +1016,18 @@ fn function(
     handle: &vm::Handle,
     step: &[u8],
     fds: Vec<shards_ipc::fd::OwnedFd>,
-) -> Result<vm::Plugged, String> {
-    let (&flags, names) = step.split_first().ok_or("a function of no flags")?;
-    let names = std::str::from_utf8(names).map_err(|_| "a function's name that is not UTF-8")?;
-    let (name, node) = names.split_once('\0').ok_or("a function of no group")?;
+) -> Result<vm::Plugged, Refusal> {
+    let asked = |why: &str| Refusal::InvalidRequest(why.into());
+    let (&flags, names) = step
+        .split_first()
+        .ok_or_else(|| asked("a function of no flags"))?;
+    let names = std::str::from_utf8(names).map_err(|_| asked("a function's name that is not UTF-8"))?;
+    let (name, node) = names
+        .split_once('\0')
+        .ok_or_else(|| asked("a function of no group"))?;
     let mut fds = fds.into_iter();
     let (Some(first), Some(second), None) = (fds.next(), fds.next(), fds.next()) else {
-        return Err("a function without its two files".into());
+        return Err(asked("a function without its two files"));
     };
     let by_node = flags & shards_ipc::device::BY_NODE != 0;
     let f = vm::Vfio {
@@ -1036,8 +1048,8 @@ fn function(
     _handle: &vm::Handle,
     _step: &[u8],
     _fds: Vec<shards_ipc::fd::OwnedFd>,
-) -> Result<vm::Plugged, String> {
-    Err(vm::passthrough_refused().to_string())
+) -> Result<vm::Plugged, Refusal> {
+    Err(Refusal::Unsupported(vm::passthrough_refused().to_string()))
 }
 
 /// Holds this VM's vCPUs together to `milli` milli-CPU of the host's time, its run's CPU
@@ -2902,10 +2914,8 @@ fn written(paths: &mut crate::confine::Paths, snapshot: Option<&Path>, vsock: Op
     if let Some(dir) = snapshot {
         let _ = std::fs::create_dir_all(dir);
     }
-    #[cfg(any(target_os = "macos", windows))]
-    {
-        paths.vsock = vsock.map(Path::to_path_buf);
-    }
+    paths.vsock = vsock.map(Path::to_path_buf);
+    // Where its socket, which its spawner binds for it, is removed as its device goes.
     #[cfg(not(any(target_os = "macos", windows)))]
     paths
         .sockets_under
@@ -2913,8 +2923,8 @@ fn written(paths: &mut crate::confine::Paths, snapshot: Option<&Path>, vsock: Op
 }
 
 /// The socket this VM asks its spawner for access on (`--grants FD`): one a process, as
-/// its VM is.
-#[cfg(target_os = "macos")]
+/// its VM is. On Linux, for its vsock path and its dials beside it alone.
+#[cfg(unix)]
 static GRANTS: std::sync::OnceLock<std::os::unix::net::UnixStream> = std::sync::OnceLock::new();
 
 /// The pipes this VM asks its spawner for access on (`--grants HANDLE`): taken, and so
@@ -3077,14 +3087,11 @@ fn served_shares(cfg: &mut Config, served: &[i32], warm: bool) -> Result<(), Str
         return Ok(());
     }
     served_beside_daemon(cfg, warm, "--slates-fs-fd")?;
-    // The socket `--grants` took, where the VM process asks a broker for access (macOS).
-    #[cfg(target_os = "macos")]
+    // The socket `--grants` took, where the VM process asks a broker for access.
     let grants = {
         use std::os::fd::AsRawFd as _;
         GRANTS.get().map(|link| link.as_raw_fd())
     };
-    #[cfg(not(target_os = "macos"))]
-    let grants: Option<i32> = None;
     for (i, &fd) in served.iter().enumerate() {
         if served.iter().take(i).any(|&other| other == fd) || grants == Some(fd) {
             return Err(format!("--slates-fs-fd {fd}: given twice"));
@@ -3137,8 +3144,8 @@ fn served_shares(cfg: &mut Config, served: &[String], warm: bool) -> Result<(), 
     Ok(())
 }
 
-/// Takes the socket at descriptor `fd` to ask the spawner for access on (macOS).
-#[cfg(target_os = "macos")]
+/// Takes the socket at descriptor `fd` to ask the spawner for access on.
+#[cfg(unix)]
 fn grants(fd: &str) -> Result<(), String> {
     let fd = fd
         .parse::<i32>()
@@ -3182,11 +3189,6 @@ fn grants(pipe: &str) -> Result<(), String> {
     }
     *grants = Some(link);
     Ok(())
-}
-
-#[cfg(not(any(target_os = "macos", windows)))]
-fn grants(_: &str) -> Result<(), String> {
-    Err("--grants: macOS and Windows alone grant a VM its files".into())
 }
 
 /// On macOS, where the VM process is in App Sandbox from its launch, asks its spawner for
@@ -3276,8 +3278,9 @@ fn granted(paths: &crate::confine::Paths) -> Result<(), String> {
 }
 
 /// Has the spawner dial, beside `vsock`, every host port the guest connects to: App
-/// Sandbox lets this process dial nothing outside its container (PM M67).
-#[cfg(target_os = "macos")]
+/// Sandbox lets this process dial nothing outside its container (PM M67), and on Linux
+/// its filter refuses it every connect (D30).
+#[cfg(unix)]
 fn dial_through_spawner(vsock: &Path) -> Result<(), String> {
     use std::os::unix::ffi::OsStrExt as _;
     static DIALING: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -3402,9 +3405,28 @@ fn confine(paths: &crate::confine::Paths) -> Result<(), String> {
             Ok(())
         }
     });
-    // Its sockets narrowed to what its paths let it dial, then Landlock, on every thread.
+    // Its sockets narrowed, every connect refused, then Landlock, on every thread; and
+    // its vsock path bound, and its dials beside it made, by its spawner (D30), whose link
+    // closes where it has none to make.
     #[cfg(target_os = "linux")]
-    return crate::confine::sockets(paths).and_then(|()| crate::confine::landlock(paths));
+    return crate::confine::sockets()
+        .and_then(|()| crate::confine::landlock(paths))
+        .and_then(|()| match &paths.vsock {
+            Some(vsock) => {
+                let link = GRANTS.get().ok_or(
+                    "a VM given a vsock path has its spawner bind it and dial beside it: start it with \
+                     `shards run vm --kernel` or `shards restore vm`, which answer it (--grants)",
+                )?;
+                crate::grant_ask::listen_at(link, vsock)?;
+                dial_through_spawner(vsock)
+            }
+            None => {
+                if let Some(link) = GRANTS.get() {
+                    shards_ipc::end(link);
+                }
+                Ok(())
+            }
+        });
     // As on macOS; and once its partition is set up, before anything of its guest's is
     // read, this process forbids itself dynamic code (D141, PM M202). Its grants are sealed
     // as they are granted (`ask_sealed`), and the link stays for what its spawner does for

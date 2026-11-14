@@ -22,6 +22,7 @@ use crate::memory::GuestMemory;
 use crate::snapshot::{self, MachineConfig, Snapshot, codec::Writer};
 use crate::sync::{lock, wait};
 use crate::{debug, info, platform, warn};
+use shards_ipc::device::Refusal;
 
 /// Ok when this host can run VMs; otherwise, why not.
 pub fn check_host() -> Result<(), String> {
@@ -83,11 +84,8 @@ pub struct Handle {
 impl Handle {
     /// Plugs `device` into its PCI bus's first free slot (D214), on virtio's PCI
     /// transport: an error where it has no slots, or none free.
-    fn plug(&self, device: Box<dyn crate::devices::virtio::VirtioDevice>) -> Result<u8, String> {
-        let plugs = self
-            .control
-            .plugs()
-            .ok_or("this microVM has no PCI slots to plug a device into")?;
+    fn plug(&self, device: Box<dyn crate::devices::virtio::VirtioDevice>) -> Result<u8, Refusal> {
+        let plugs = self.control.plugs().ok_or(Refusal::NoBus)?;
         let memory = self.memory.clone();
         plugs.hotplug.plug(|slot| {
             let f = crate::devices::virtio::pci::VirtioPci::new(device, memory, slot.emulated_msi())?;
@@ -103,9 +101,11 @@ impl Handle {
         file: std::fs::File,
         read_only: bool,
         serial: &str,
-    ) -> Result<super::Plugged, String> {
+    ) -> Result<super::Plugged, Refusal> {
         let io = self.control.plugs().and_then(|p| p.io);
-        let disk = crate::devices::virtio::block::Block::of_file(file, read_only, serial)?.with_limit(io);
+        let disk = crate::devices::virtio::block::Block::of_file(file, read_only, serial)
+            .map_err(Refusal::Host)?
+            .with_limit(io);
         let size = disk.size();
         let devfn = self.plug(Box::new(disk))?;
         Ok(super::Plugged {
@@ -123,9 +123,11 @@ impl Handle {
         &self,
         tag: &str,
         slot: crate::devices::virtio::fs::Share,
-    ) -> Result<super::Plugged, String> {
+    ) -> Result<super::Plugged, Refusal> {
         let io = self.control.plugs().and_then(|p| p.io);
-        let share = crate::devices::virtio::fs::Fs::new(tag, slot)?.with_limit(io);
+        let share = crate::devices::virtio::fs::Fs::new(tag, slot)
+            .map_err(Refusal::Host)?
+            .with_limit(io);
         let devfn = self.plug(Box::new(share))?;
         Ok(super::Plugged {
             devfn,
@@ -142,7 +144,7 @@ impl Handle {
     /// or address space mapping what its endpoint's domain maps. Opened by its group's or
     /// its device's node: its guest finds it as its init rescans its PCI bus.
     #[cfg(target_os = "linux")]
-    pub fn plug_vfio(&self, f: &super::Vfio) -> Result<super::Plugged, String> {
+    pub fn plug_vfio(&self, f: &super::Vfio) -> Result<super::Plugged, Refusal> {
         self.plug_vfio_with(f, None)
     }
 
@@ -150,8 +152,12 @@ impl Handle {
     /// its host's limit ([`super::plug_refused`]), Windows' that it gives a microVM one as it
     /// starts alone, changing nothing.
     #[cfg(not(target_os = "linux"))]
-    pub fn plug_vfio(&self, f: &super::Vfio) -> Result<super::Plugged, String> {
-        Err(format!("{}: {}", f.name, super::plug_refused()))
+    pub fn plug_vfio(&self, f: &super::Vfio) -> Result<super::Plugged, Refusal> {
+        Err(Refusal::Unsupported(format!(
+            "{}: {}",
+            f.name,
+            super::plug_refused()
+        )))
     }
 
     /// [`plug_vfio`](Self::plug_vfio), of a function opened by another process, as a
@@ -162,7 +168,7 @@ impl Handle {
         &self,
         f: &super::Vfio,
         files: super::VfioFiles,
-    ) -> Result<super::Plugged, String> {
+    ) -> Result<super::Plugged, Refusal> {
         self.plug_vfio_with(f, Some(files))
     }
 
@@ -171,34 +177,33 @@ impl Handle {
         &self,
         f: &super::Vfio,
         files: Option<super::VfioFiles>,
-    ) -> Result<super::Plugged, String> {
+    ) -> Result<super::Plugged, Refusal> {
         use crate::devices::pci::{self, vfio as v};
-        let plugs = self
-            .control
-            .plugs()
-            .ok_or("this microVM has no PCI slots to plug a device into")?;
+        let plugs = self.control.plugs().ok_or(Refusal::NoBus)?;
         let named = |e: String| format!("{}: {e}", f.name);
         if f.iommu && f.noiommu {
-            return Err(named("a group without an IOMMU cannot follow the guest's".into()));
+            return Err(Refusal::InvalidRequest(named(
+                "a group without an IOMMU cannot follow the guest's".into(),
+            )));
         }
         let behind = plugs.hotplug.slots_behind_iommu();
         match (f.iommu, behind) {
             (true, false) => {
-                return Err(named(
+                return Err(Refusal::Unsupported(named(
                     "behind its microVM's IOMMU, where its slots are not: a microVM takes a host's function behind its IOMMU as it runs where it was booted for one (D214)".into(),
-                ));
+                )));
             }
             (false, true) => {
-                return Err(named(
+                return Err(Refusal::Unsupported(named(
                     "outside its microVM's IOMMU, where its slots sit behind it: a function plugged in there is behind it too".into(),
-                ));
+                )));
             }
             _ => {}
         }
         if !f.iommu
             && let Some(why) = &plugs.unpinnable
         {
-            return Err(named(why.clone()));
+            return Err(Refusal::Unsupported(named(why.clone())));
         }
         // Each step timed (PM M430): `Plugged::steps`, and the VM's log at debug.
         let mut clock = v::Clock::new();
@@ -308,12 +313,8 @@ impl Handle {
 
     /// Takes the device plugged at `devfn` off its PCI bus (D214), once its guest has let
     /// it go: an error, changing nothing, where its guest's driver still drives it.
-    pub fn unplug(&self, devfn: u8) -> Result<(), String> {
-        self.control
-            .plugs()
-            .ok_or("this microVM has no PCI slots")?
-            .hotplug
-            .unplug(devfn)
+    pub fn unplug(&self, devfn: u8) -> Result<(), Refusal> {
+        self.control.plugs().ok_or(Refusal::NoBus)?.hotplug.unplug(devfn)
     }
 
     /// What grows its file disk `index` of those it was made with (D214), as its host

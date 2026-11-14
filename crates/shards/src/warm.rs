@@ -850,10 +850,14 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
             // at once: what its daemon tells its guest of comes after.
             kind::DEVICE if matches!(from, From::Daemon(_)) => {
                 if let Some((number, step)) = message.payload.split_first_chunk::<8>() {
-                    let answer = match crate::vm_run::device(step, message.fds) {
-                        Ok(text) => [&number[..], &[0], text.as_bytes()].concat(),
-                        Err(e) => [&number[..], &[1], e.as_bytes()].concat(),
+                    let outcome = crate::vm_run::device(step, message.fds);
+                    // An answer it has no memory for ends its link: its asker reads that
+                    // as a step that may have been done (`Refusal::ConnectionEnded`).
+                    let Ok(body) = shards_ipc::device::encode(&outcome) else {
+                        shards_ipc::end(conn);
+                        break;
                     };
+                    let answer = [&number[..], &body].concat();
                     if let Err(e) = to_daemon(conn, kind::DEVICED, &answer, &[]) {
                         let _ = writeln!(io::stderr(), "shards: answering a device step: {e}");
                     }

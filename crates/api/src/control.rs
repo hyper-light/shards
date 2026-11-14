@@ -6,24 +6,28 @@
 //!
 //! - **Its link.** TLS 1.3 under `TLS13_AES_256_GCM_SHA384` alone, both ways (D239): a
 //!   connection's [`Linked::wait`] says what each end negotiated.
-//! - **Its socket lanes** (D251). [`Sockets::connect`] opens a lane to one of the run's own
-//!   command's sockets by its name in the run's socket directory; a [`Socket`] is that socket's
-//!   bytes both ways, each way's end its half-close.
-//! - **Its members' own lanes** (D238). [`Execs::member`] gives a member's [`Member`]: its
-//!   [`MemberSteering`] signals its command, each signal answered (or refused, typed
-//!   [`Unsteered`]), and its [`MemberEnd`] gives how it ended, typed ([`exec::End`]: its exit's
-//!   status, or the signal that killed it). [`exec_admissions`] is what
-//!   [`Subscriptions::execs`] names.
+//! - **Its waits** (D238). Each ask below goes at once and gives a pending handle whose `wait`
+//!   takes its caller's patience (`Duration::MAX`: until the answer): `Ok(None)` while it is
+//!   unanswered, the ask still pending for a later wait, never sent again.
+//! - **Its socket lanes** (D251). [`Sockets::connect`] asks for a lane to one of the run's own
+//!   command's sockets by its name in the run's socket directory ([`PendingSocket`]); a
+//!   [`Socket`] is that socket's bytes both ways, each way's end its half-close.
+//! - **Its members' own lanes** (D238). [`Execs::member`] gives a member's [`Member`]
+//!   ([`PendingMember`]): its [`MemberSteering`] signals its command, each signal answered (or
+//!   refused, typed [`Unsteered`]), and its [`MemberEnd`] gives how it ended, typed
+//!   ([`exec::End`]: its exit's status, or the signal that killed it). [`exec_admissions`] is
+//!   what [`Subscriptions::execs`] names.
 //! - **Its members' MCP connections** (D254). [`Execs::mcp`] gives the next connection a
-//!   member's harness makes to its MCP bridge, a [`McpConnection`]: the harness's bytes, as
-//!   records ([`Output`], [`Got`]); the controller's to it ([`Input`]); and its end
-//!   ([`ExecControl`]).
+//!   member's harness makes to its MCP bridge ([`PendingMcp`]), a [`McpConnection`]: the
+//!   harness's bytes, as records ([`Output`], [`Got`]); the controller's to it ([`Input`]); and
+//!   its end ([`ExecControl`]).
 
 pub use shards_remote::control::exec::{Admissions, Unstarted, Unsteered};
 pub use shards_remote::control::{
     Controller, Dialed, Ended, ExecControl, Execs, Fault, Got, Hangup, Input, Link, Linked, McpConnection,
-    Member, MemberControl, MemberEnd, MemberSteering, Output, Socket, SocketAdmission, SocketReader,
-    SocketWriter, Sockets, Subscriptions, exec,
+    Member, MemberControl, MemberEnd, MemberSteering, Output, PendingExec, PendingLog, PendingMcp,
+    PendingMember, PendingSocket, Socket, SocketAdmission, SocketReader, SocketWriter, Sockets,
+    Subscriptions, exec,
 };
 pub use shards_remote::identity::{Fingerprint, Identity};
 pub use shards_remote::managed::Reason;

@@ -196,6 +196,60 @@ impl Store {
     }
 }
 
+/// The home's engine ID, made once: what dockerd derives its IPv6 ULA pool from. Callers
+/// that make a home's first at once each take the one it keeps (`keep_first`).
+pub fn engine_id(home: &Path) -> String {
+    let path = home.join("networks").join("engine-id");
+    if let Ok(id) = std::fs::read_to_string(&path) {
+        return id.trim().to_string();
+    }
+    let id = crate::containers::new_id().unwrap_or_default();
+    let _ = make_dir(&home.join("networks"));
+    match crate::daemon::keep_first(&path, id.as_bytes()) {
+        Ok(false) => std::fs::read_to_string(&path).map_or(id, |kept| kept.trim().to_string()),
+        Ok(true) | Err(_) => id,
+    }
+}
+
+/// The ULA pool dockerd derives from its host's ID, the home's engine ID: fd00::/8 with the
+/// ID's hash's 40 bits, a /48.
+pub fn ula_base(home: &Path) -> u128 {
+    use sha2::Digest as _;
+    let hash = sha2::Sha256::digest(engine_id(home).as_bytes());
+    let gid = u64::from_be_bytes(hash.get(..8).and_then(|b| b.try_into().ok()).unwrap_or([0; 8]))
+        & ((1u64 << 40) - 1);
+    (0xfd00u128 << 112) | (u128::from(gid) << 80)
+}
+
+/// A run on the host's network's IPv6 address and its gateway's (D124): in the home's
+/// pool's last /64, which no user network is given, `::2` and `::1`, each run's link to its
+/// network process its own. What it sends past its loopback is the host's by them. Also
+/// eth0's IPv6 for an image's agents' flows past the microVM on a network without IPv6
+/// (D99), a daemon's run's and an orchestrator's alike.
+pub fn host_ipv6(home: &Path) -> (Ipv6Addr, Ipv6Addr) {
+    let subnet = ula_base(home) | (0xffff << 64);
+    (Ipv6Addr::from(subnet | 2), Ipv6Addr::from(subnet | 1))
+}
+
+/// Init's entry giving eth0 `(guest6, gateway6)` for its agents' flows past the microVM
+/// alone (`uplink6=`, D99).
+pub fn uplink6_entry((guest6, gateway6): (Ipv6Addr, Ipv6Addr)) -> Vec<u8> {
+    format!("uplink6={guest6}/64,{gateway6}").into_bytes()
+}
+
+/// What a run on the default `bridge` tells its network process of its addresses
+/// (`NET_ADDRESS`): the bridge's guest address, prefix and gateway, then eth0's IPv6
+/// `(guest6, gateway6)` and its /64.
+pub fn bridge_address(bridge: &shards_net::bridge::Bridge, (guest6, gateway6): (Ipv6Addr, Ipv6Addr)) -> Vec<u8> {
+    let mut address = bridge.guest().octets().to_vec();
+    address.push(bridge.subnet().1);
+    address.extend_from_slice(&bridge.gateway().octets());
+    address.extend_from_slice(&guest6.octets());
+    address.push(64);
+    address.extend_from_slice(&gateway6.octets());
+    address
+}
+
 /// `dir`, made if it is not there, in a home that must be: a home that has been removed
 /// is never made again by what writes in it (a daemon going on writing as it ends).
 pub fn make_dir(dir: &std::path::Path) -> std::io::Result<()> {
