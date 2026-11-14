@@ -1464,6 +1464,43 @@ fn write_run(file: &File, r: &Region, run: Range<usize>, offset: u64) -> io::Res
 #[cfg(test)]
 #[allow(clippy::indexing_slicing, clippy::unwrap_used)]
 mod tests {
+    #[test]
+    fn live_copy_keeps_bytes_after_their_block_is_unplugged() {
+        let block = DATA_BLOCK as u64;
+        let memory = GuestMemory::with_hotplug(&[], block, block as usize, block).unwrap();
+        {
+            let access = memory.access().unwrap();
+            access.plug(block, block, |_, _, _| Ok(())).unwrap();
+            access.write_obj(block, 0x5au8).unwrap();
+        }
+        let mut seen = false;
+        memory.each_used(&mut |plugged, at, bytes| {
+            assert!(plugged);
+            assert_eq!(at, block);
+            memory.access().unwrap().unplug(block, block, |_, _| Ok(())).unwrap();
+            assert_eq!(bytes.first(), Some(&0x5a));
+            seen = true;
+            Ok(())
+        }).unwrap();
+        assert!(seen);
+    }
+
+    #[test]
+    fn live_copy_page_keeps_bytes_after_their_block_is_unplugged() {
+        let block = DATA_BLOCK as u64;
+        let memory = GuestMemory::with_hotplug(&[], block, block as usize, block).unwrap();
+        {
+            let access = memory.access().unwrap();
+            access.plug(block, block, |_, _, _| Ok(())).unwrap();
+            access.write_obj(block, 0x5au8).unwrap();
+        }
+        let (plugged, at, bytes) = memory.page_at(block).unwrap();
+        assert!(plugged);
+        assert_eq!(at, block);
+        memory.access().unwrap().unplug(block, block, |_, _| Ok(())).unwrap();
+        assert_eq!(bytes.first(), Some(&0x5a));
+    }
+
     use super::*;
     use crate::platform::page_size;
 
