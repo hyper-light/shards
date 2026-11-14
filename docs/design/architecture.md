@@ -29794,7 +29794,8 @@ ruleset, the run's seccomp filter.
   TIOCSWINSZ on it, which the kernel tells the foreground group as SIGWINCH (tty_ioctl(4)).
 
 **Decided and built.**
-- *Joined as crun joins, from init.* Init holds a pidfd of a process of the member's command
+- *Joined as crun joins, from init* (as built first; since confine-10 a command is born of its
+  member's starter instead, below, and init joins it to nothing). Init holds a pidfd of a process of the member's command
   (hotplug.rs `member_process`, the command first, each held before it is checked to be the
   member's still, so a PID taken meanwhile is never entered), enters its PID namespace for its
   next child (setns(2) of the pidfd with `CLONE_NEWPID`, Linux 5.8), and makes that child with
@@ -29833,12 +29834,64 @@ ruleset, the run's seccomp filter.
   its program holds none of it; init's own descriptor of it is close-on-exec, as every
   Landlock ruleset's is. The ruleset made at start fails the member's start, typed as init's
   start's errors are; the step `Confining::Ruleset` is gone.
-- *Its own Landlock domain.* landlock(7) gives a ruleset to the process that enters it and its
-  children, and has no way to join a domain: the command's domain is a sibling of its
-  member's, its ruleset the member's own. So the scopes hold between them: it signals, and reaches
-  abstract Unix sockets of, its own processes alone, and the member's processes its not.
-  Sharing the member's own domain would need a process of the member's to start each
-  command, inside its seccomp filter and its pids.max, and is not built.
+- *Born of its member's starter, in the member's own Landlock domain* (confine-10,
+  2026-11-14, [docs/bugs/2026-11-13/confine.md](../bugs/2026-11-13/confine.md); was: a
+  domain of its own). landlock(7) gives a domain to the process that enters a ruleset and to
+  its children, and has no way to join one: a command that entered the member's ruleset
+  itself, joined and confined from init as above, was a domain beside the member's, and the
+  member's scopes (`LANDLOCK_SCOPE_SIGNAL`, `LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET`, Linux 6.12)
+  held them apart: `docker exec C kill 1`, `pkill`, a supervisor's CLI and an abstract
+  socket's client reached none of the member's processes (reproduced: domains.rs
+  `a_command_run_in_a_member_signals_its_members_processes` at 457d75daa, `kill(2)` EPERM).
+  - *The starter* (init's `starter.rs`). The member's first process, once confined and in
+    its working directory, forks it just before its program runs, so it is everything that
+    process is: its IDs, no capability, `no_new_privs`, its Landlock domain, its seccomp
+    filter, its namespaces and its cgroup. Its parent is the member's namespace init
+    (`CLONE_PARENT`), so the member's program never has it as a child (a program that waits
+    for every child would wait on it), and it ends with the member, as every process of the
+    member's PID namespace does once the reaper exits. It holds one descriptor, its end of a
+    seqpacket channel to init (`starter::STARTER_FD`, next above the ruleset's), which the
+    member's program never has (close-on-exec); its stdio, the launch status and the ruleset
+    it closes. It is not dumpable (`PR_SET_DUMPABLE` 0), so no process of the member's, which
+    has no capability, traces it, reads its memory or takes its descriptors (ptrace(2)
+    `PTRACE_MODE_ATTACH`, pidfd_getfd(2)). It forks each command (`CLONE_PIDFD`), which lays
+    its stdio, makes its session (its terminal's, `TIOCSCTTY`), enters its working directory
+    and finds its program there (`run::exec_found`, the member's own search, confine-04), its
+    failure said on its error channel as every exec's is. Its commands die with it
+    (`PR_SET_PDEATHSIG` SIGKILL, kept across execve under `no_new_privs`).
+  - *Its asks.* A start is one message: the exec's id, whether it has a terminal, and five
+    descriptors, the command's spec (a memfd init writes: its working directory, candidates,
+    arguments and environment, offsets the starter makes pointers of in a private mapping;
+    sized by what it holds, no buffer of a chosen size), its stdio and its error channel. It
+    answers born (the command's PID in its namespace and its pidfd) or not (its fork's errno:
+    `EAGAIN` at `pids.max` is `Refusal::Processes`). It leaves the command's zombie unreaped
+    until init has read its end from `/proc/PID/stat` (proc(5), field 52, `wait4(2)`'s form;
+    init is root, so it is shown) and asked it to reap it, so that no PID is taken again
+    before init has the end it is matched by.
+  - *Init waits on none of it* but in its poll loop (run.rs `MemberExec`: asked, born,
+    running, done): a process of the member's may stop the starter, or the command before
+    it execs, as it may any of its own, which a synchronous wait in init would have let it
+    hold init up by. The exec's start (`STARTED` or its refusal) is said once its error
+    channel closes or reports; its end once its pidfd is readable.
+  - *Typed refusals.* A starter that could not be forked (its fork refused as the member
+    started) or that a process of the member's ended is `Refusal::NoStarter` (wire code 7,
+    `docker exec`'s 126); its commands running then end with it, their end SIGKILL, as the
+    reaper reaps them. A command it could not fork is `Processes` at `pids.max`, `Ended` in a
+    namespace whose first process has gone (ENOMEM), else `Joining(errno)`.
+  - *Costs.* One process of the member's, counted in its `pids.max`, for the member's life;
+    `shards top` shows it (its name `starter`). It is a fork of init's address space as the
+    member's first process was, its pages shared copy-on-write until either writes.
+  - *Alternatives.* Starting from init and entering the member's ruleset: a sibling domain
+    (above). The member's namespace init as starter: init's sealed reaper is outside the
+    member's Landlock domain and seccomp filter, so what it forks is too. The member's first
+    process as the starter's parent: its program would have the starter as a child. Relaying
+    each command's end from the starter: a table of children in a process that may not
+    allocate; the zombie's `/proc/PID/stat` gives it, kept until init asks.
+  - *Owed to ROOT* (real VMs): `cargo test -p shards --profile test-release --test
+    member_exec -- --nocapture`, with an exec that runs `kill -0 1` and `kill -TERM 1` in its
+    member and connects to an abstract socket the member's program listens on, and an exec
+    asked after the member killed its starter (`Refusal::NoStarter`); E2E tests that count a
+    member's processes see its starter.
 - *Refused environment values* (confine-07): validation returns only the typed
   cause (empty name, NUL, reserved name), never the rejected entry. Both Debug and
   Display are value-free, and the existing member refusal wire renders only that

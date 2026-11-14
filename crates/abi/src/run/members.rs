@@ -587,6 +587,10 @@ pub enum Refusal {
     /// A step of its confinement failed: which (init's `domains::Confining`, by its
     /// number), and the errno.
     Confining(u8, i32),
+    /// Its starter, the process of its own that starts what is run in it (init's
+    /// `starter`, D243), has gone: a process of the member's ended it, or it could not be
+    /// forked as the member started.
+    NoStarter,
 }
 
 impl Refusal {
@@ -596,6 +600,7 @@ impl Refusal {
     const WIDENING: u8 = 4;
     const JOINING: u8 = 5;
     const CONFINING: u8 = 6;
+    const NO_STARTER: u8 = 7;
 
     /// Its code and what it carries, then `words`.
     pub fn encode(self, words: &[u8]) -> Vec<u8> {
@@ -613,6 +618,7 @@ impl Refusal {
                 out.extend_from_slice(&[Self::CONFINING, step]);
                 out.extend_from_slice(&errno.to_be_bytes());
             }
+            Refusal::NoStarter => out.push(Self::NO_STARTER),
         }
         out.extend_from_slice(words);
         out
@@ -633,6 +639,7 @@ impl Refusal {
                 let (&step, rest) = rest.split_first()?;
                 (Refusal::Confining(step, errno(rest)?), rest.get(4..)?)
             }
+            Self::NO_STARTER => (Refusal::NoStarter, rest),
             _ => return None,
         })
     }
@@ -642,7 +649,7 @@ impl Refusal {
     pub fn not_started(self) -> bool {
         matches!(
             self,
-            Refusal::Processes | Refusal::Joining(_) | Refusal::Confining(..)
+            Refusal::Processes | Refusal::Joining(_) | Refusal::Confining(..) | Refusal::NoStarter
         )
     }
 }
@@ -1069,6 +1076,7 @@ mod tests {
             Refusal::Joining(i32::MIN),
             Refusal::Confining(13, 22),
             Refusal::Confining(0, -1),
+            Refusal::NoStarter,
         ] {
             for words in [&b""[..], b"agent main: it has ended", b"\0\xff"] {
                 let said = r.encode(words);
@@ -1081,9 +1089,10 @@ mod tests {
             }
         }
         assert_eq!(Refusal::decode(&[0]), None);
-        assert_eq!(Refusal::decode(&[7, b'x']), None);
+        assert_eq!(Refusal::decode(&[8, b'x']), None);
         assert!(!Refusal::Unknown.not_started() && !Refusal::Widening.not_started());
         assert!(Refusal::Processes.not_started() && Refusal::Confining(1, 1).not_started());
+        assert!(Refusal::NoStarter.not_started());
     }
 
     /// A member's end says how it ended, typed: `exit 143` stays an exit, a death by TERM is
