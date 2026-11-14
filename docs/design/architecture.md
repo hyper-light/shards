@@ -10531,9 +10531,8 @@ stores.
   before. A snapshot keeps the heads as it keeps a writable layer's (D190): each alike 2
   MiB block once, beside its memory (`window-heads`, format 25), mapped back after a
   template's save and privately by each restore. A microVM saved in format 24, as shards
-  0.6.0 saves, is rewritten once in the current format as it is first restored where it
-  has no windows, and refused where it has (D176, *A user's snapshot of an older
-  format*). A window took a 64th of its length of its
+  0.6.0 saves, is refused as it is resumed, its init another build's (D176, *A saved
+  microVM resumes only in a shards whose init its guest speaks*). A window took a 64th of its length of its
   guest's free memory, 64.1 MiB for 4 GiB on Fedora, and 72.0 on the Mac with its linear
   map's page tables; with its head, none on Fedora (-0.2 to 0.1 MiB at every length, n 12)
   and those page tables alone on the Mac (8.3 MiB). Fedora's 4 GiB boot reached PID 1 20 ms
@@ -16274,48 +16273,55 @@ chip and OS (Hypervisor.framework) are a pair to run it on; a pair of KVM x86_64
 whose CPU has every feature of the first's, as /proc/cpuinfo names them, or a tailnet for
 CI's runners.
 
-**A user's snapshot of an older format is rewritten once** (legacy4, 2026-11-14). A
-microVM saved by shards 0.6.0 (format 24) or 0.7.0 (28), or by a build between (25 to 27;
-0.3.0 to 0.5.0 wrote 10), is a user's data that outlives the binary that wrote it: a saved
-run's `snapshots/NAME` (`save vm`, and a stopped one's move), or a directory `shards
-restore DIR` is given (`run --kernel --snapshot-dir`). Its state was read in its own
-format at every restore (`VERSION_WITHOUT_WINDOWS`, 24 to 29, `decode`'s branches each
-time). Now a restore reads the current format alone (`snapshot::decode`, "snapshot format
-N; this shards reads 29, and rewrites a snapshot of it in its own as it first restores
-it"), and the older formats' reader (`decode_body`'s branches) is `snapshot::migrate`'s
-alone: called before anything reads such a snapshot, by the daemon as it resumes one
-(`resumable`) and as it plans its move (`plan`, whose `format` says the current one), and
-by `shards restore DIR` before its VM process starts (not for `--warm` or `--resume`,
-the daemon's). It reads the state whole, writes it in the current format with the same
-generation, backing files and their identities (as taken at the save: a restore still
-checks each file against them), `.state.migrated` beside it, synced, renamed over `state`
-and the generation synced, with the snapshot's writers' lock held, so that a reader finds
-the old state or the new and two first restores rewrite it once; a second finds it
-current (`Migrated::Current`) and writes nothing. The daemon logs a rewrite, the CLI says
-it on stderr. What it fills in is what the old reader gave each restore: 27's runs of
-data none (a restore maps the RAM from the memory file whole), 28's PCI slots none, 29's
-GPU selection none; the memory, swap, layer and window heads files are not touched, as
-their layout did not change. Refused typed and left as it was (`MigrateRefused`): a format
-it has no reader of (`Format`: 10, whose machines and devices were laid out otherwise
-and which no build since 0.6.0 reads, or past the current one); format 24 to 27 of a
-machine with DAX windows (`WindowsLaidOutOtherwise`: before each window had its head
-beside it its guest's page structures were in its memory, D189, which the old reader
-refused too); a body that is not its format's (`Malformed`); and a write that fails
-(`Unwritten`, the old state kept). A console receiver past its mode's depth in the
-devices' state (D12; builds before 66652aafb kept up to 4096 bytes) is not a format's and
-is refused at the restore, after the rewrite, as before. A template is not a user's: it is
-keyed by the format (D25, `run::template`'s key), so this build never looks one of an
-older format up, and one that does not restore is removed and made again; `migrate` is
-never called for one. The encoder writes the current format alone (`encode_as`'s
-`version` is gone); the tests' `encode_older` lays the older formats out as their builds
-did. Red/green: `a_restore_refuses_a_state_of_an_older_format` (each of 24 to 28 read by
-every restore before), `an_older_formats_snapshot_is_migrated_once_then_restores` (each
-of 24 to 28 on disk: refused, rewritten once, restored as saved, a second migration
-writing nothing; no migration existed before), and
-`a_snapshot_no_migration_rewrites_is_refused_typed_and_left` (10, 23, 30, 27 with
-windows, a cut body, no snapshot; 28 with windows rewritten). Owed to ROOT: a real
-0.7.0-format snapshot restored on a VM host, once and again (the command is in legacy4's
-report).
+**A saved microVM resumes only in a shards whose init its guest speaks** (olderinit,
+2026-11-14; replaces legacy4's one-time rewrite of an older format, the same day). A user's
+snapshot (`save vm`, a stopped one's move, or a directory `shards restore DIR` is given)
+holds its guest's memory as it was saved, and with it the shards-init that was running
+then, which speaks the contract of the shards that saved it (`shards_abi::IDENTITY`, a
+hash of crates/abi's sources, D28). shards-init and the daemon ship as one binary (D36),
+and an older init's messages are none this build parses (the no-legacy rule): the
+person's decision, "refuse it clearly". A save records who saved it, after its state's
+head (format 30): the shards version (`snapshot::SAVED_BY`, crates/shards/Cargo.toml's,
+which vmm's build.rs passes as `SHARDS_VERSION`, as the VM process that saves is a
+package of its own) and the contract its init announced on the control page
+(`Snapshot::init`, from `Control::guest_abi` as the cut is taken; 0 where none). Every
+resume asks `snapshot::resumable(dir)` before anything restores the snapshot or its guest
+runs: the daemon's `resumable` (`restore vm`, `start --checkpoint`), a move's `plan` (the
+saved and live moves' first step on the machine moved from), and `shards restore DIR`
+before its VM process starts (not for `--warm` or `--resume`, the daemon's). It reads the
+state's head and saver alone and writes nothing. A move to a machine of another build is
+refused there before anything moves: a move's plan, saved or live, carries the shards that
+made it and its init's contract (`Plan::saved_by`, `Plan::init`, this build's: its guest
+runs under this daemon, or its snapshot was found resumable), and the `ready` step on the
+machine moved to refuses one of another contract, or a plan that names none, an earlier
+daemon's, first (`moves::Refused::OlderInit`, as JSON to the mover beside its words).
+The Engine API's `POST /containers/{id}/start?checkpoint=` reaches the same `resumable`
+and answers its refusal as moby answers a failed start (500, the words as its message). Refused typed (`ResumeRefused`):
+`OlderInit { saved_by, init_abi, ours }`, a saver whose init announced another contract or
+none ("this microVM was saved by shards 0.7.0, whose shards-init (contract …) cannot
+continue in this shards (contract …): start it again from its image; its volumes are
+kept, its memory's state is not"); `Unrecorded { format }`, a state of a format before 30,
+whose saver is unrecorded and whose init's contract is in its device state, which is laid
+out without lengths (`MmioBus::save`) and so cannot be read before a machine is built of
+it (its message names shards 0.6.0 for 24 and 0.7.0 for 28, as their tags' sources write
+them); `Newer { format }`; and `Unreadable`. The order: the check comes first, and replaces
+legacy4's rewrite, as every state the rewrite took (24 to 29) is one whose init this build
+cannot confirm before it runs, and every released one's (0.6.0's, 0.7.0's) is another's
+(crates/abi changed 124 times after v0.7.0): a rewritten snapshot would only be refused
+later, at its init's first message (vm_run's check after the guest dials again), so
+`snapshot::migrate`, `Migrated`, `MigrateRefused`, `.state.migrated` and the older formats'
+reader (`decode_body`'s branches, the tests' `encode_older`) are deleted. A restore reads
+format 30 alone. Its volumes and image are not the snapshot's: `rm vm` and a fresh `run`
+keep them. The CLI user sees the refusal on stderr and exit status 1, as `docker start`'s
+failed start (the daemon's `refuse`, and `failed` for `shards restore DIR`). Red/green:
+`a_resume_refuses_a_saved_init_of_another_contract_naming_its_saver` (this build's init
+resumes; another's and none refused naming `SAVED_BY`; 28 refused naming 0.7.0; past 30
+refused; a cut saver unreadable), `resumable_refuses_another_init_and_leaves_the_snapshot`
+(on disk: resumed, refused typed, the state left byte for byte, no snapshot unreadable) and
+`a_guest_whose_init_is_another_builds_is_refused_before_anything_moves` (a plan of another
+contract and one of an earlier daemon refused naming their saver, typed on the wire);
+red before this, where no state recorded a saver. Owed to ROOT: v0.7.0's release binary's
+`save vm m`, then this build's `restore vm m` printing the refusal and exiting 1.
 
 ### D175. Sockets read in poll(2) on macOS, and streams ended one way at a time
 
@@ -20663,7 +20669,7 @@ were excluded by the review.
 
 | Literal (file) | Now | Design | Owed: proof |
 |---|---|---|---|
-| `TAKE_TIMEOUT` 10 s (daemon.rs: run-socket writes, link and door handoffs, the connect/take exchange) | picked | Each is a write to, or an answer from, a VM whose party is its VM process. Each waits as D215's judge waits (`health::Wait::WhileRuns`), on a record of its own kind (`Answers::take`, `::link`, `::door`): cold while its process lives, then the slowest seen, extended by progress and host holds. | a judged-write helper beside `exec_waiting`; red: a played VM whose reader is held runnable past 10 s, alive, keeps its handoff; ROOT: `cargo test -p shards --profile test-release --test daemon` on a loaded host |
+| `TAKE_TIMEOUT` 10 s (daemon.rs: run-socket writes, link and door handoffs, the connect/take exchange) | judged on Unix: the run's handoff (runs-11 slice (a), below) and a joiner's link and volumes to its join share (slice (c1)); still picked: Windows' twins (b), the run socket's writes, commands' answer wait and reclaim's note (c2) | Each is a write to, or an answer from, a VM whose party is its VM process. Each waits as D215's judge waits (`health::Wait::WhileRuns`), on a record of its own kind (`Answers::take`, `::link`, `::door`): cold while its process lives, then the slowest seen, extended by progress and host holds. | a judged-write helper beside `exec_waiting`; red: a played VM whose reader is held runnable past 10 s, alive, keeps its handoff; ROOT: `cargo test -p shards --profile test-release --test daemon` on a loaded host |
 | `TAKEOVER` 20 s (daemon.rs `take_lock`) | gone (runs-11, D185): waited for while the lock is held, judged once named by the home's slowest start | The lock's holder is the process `daemon.pid` names, written before any slot is offered. Wait while it lives (`Named::lives`, zombies now excluded, waits-08), judged by its record of a start, lock to first slot (`Answers::serve`). A holder that has written no `daemon.pid` yet is followed through its lock file's holder alone, cold. | red: a holder that lives and is slow to offer is waited for past 20 s, and one that died is not |
 | 10 ms poll (daemon.rs `take_lock`) | picked | Events, not looks: a blocking `File::lock` on a helper thread; a `platform::FileWatch` of the home (`requests/` lists, `daemon.stopping`); and the holder's exit (kqueue `EVFILT_PROC`/`NOTE_EXIT`, a pidfd, its process handle). | a unit test counting looks: one per event |
 | `HANDOFF_TRIES` 3 (daemon.rs `start_run`) | picked | Try each warm VM its pool held ready when the run began, then one booted for it. A VM booted for the run that also fails is a failure of the run, not of a VM: it ends typed, naming the last cause. The bound is the pool's own count. | `claim` to say whether a VM was ready or booted; red: four played warm VMs, three ending before `TAKEN`, the fourth takes the run |
@@ -20680,6 +20686,57 @@ were excluded by the review.
 | `CONNECT` 30 s, `HANDSHAKE` 10 s (registry http.rs, clients that learn no waits) | Go's, containerd's | Every client learns: those that keep no record still pace by RFC 6298 in memory (§2.1's 1 s first, §5.5's doubling), as a learning client's cold path does. | list each non-learning client's caller; red: a fresh client's second connect paced by its first |
 | `HEAD` 30 s (a non-lookup request), `STALL` 30 s (request writes) | Go's, containerd's | A non-lookup request's answer is followed by its connection's liveness and its path's record for that method (`slowest_answer_us` by safe/unsafe). A request's write is a send-side silence, learned like the body's read silences, readiness-checked (waits-05's `Sock`). | red: a POST answered at 31 s is kept |
 
+
+#### A run's handoff, judged (runs-11 `TAKE_TIMEOUT`, slice (a), 2026-11-14)
+
+A run's handoff to a warm VM (`hand_over`: its `RUN`, its share ends, then its `TAKEN`) waited
+for room to write and for the answer at most `TAKE_TIMEOUT`, 10 s, picked: a healthy VM slower
+than that, on a loaded host, lost its run to another VM, surely untaken, though it would have
+taken it. On Unix it now waits as D215's judge waits on a VM process (`health::Judged`, the
+record `Answers::take`, the run's send to its `TAKEN`): before the kind's first answer, and once
+the VM's process has gone, on the socket's readiness alone, its end ending the wait; then a look
+at the VM's process each W*, and the wait ended, typed (`health::Stalled`, its `Cut`), where it
+ran nothing since the look before or could not be read. A send ended so is surely untaken (the
+VM never had all of it), a wait for `TAKEN` ended so may have been taken, as before.
+
+The waits are shards_ipc's judged send and receive (`send_judged`, `recv_judged`): a message
+written as room comes and read whole as it comes (`Incoming`), each wait in poll(2) until the
+judge's next due, never a socket's send or receive timeout, whose expiry mid-message loses how
+much went (POSIX send(2): a partial count, or EAGAIN once nothing more fits). Writes go by
+sendmsg(2) and send(2) with `MSG_DONTWAIT`, which leaves the socket's mode and timeouts to its
+other users. On macOS `MSG_DONTWAIT` does not keep a send from waiting: a 9,000-byte send with it
+to an empty socketpair (8 KiB buffers) waited on, one of 4,000 bytes went at once, and a peer's
+shutdown(2) both ways gave the writer no room to wait on, its close a POLLHUP
+(`docs/research/measurements/runs-fixes/msg-dontwait.c`, macOS 26 arm64). There a judged send
+waits for poll(2)'s POLLOUT, which XNU gives once the socket's room is at least its send
+low-water mark (`sowriteable`, SO_SNDLOWAT, 2,048 bytes by default), and writes no more than
+that mark at a time, less a first write's control data: a write within it waits for nothing.
+Elsewhere `MSG_DONTWAIT` writes what fits and returns (Linux, `unix_stream_sendmsg`).
+
+Red: `a_vm_slow_to_read_its_run_while_it_runs_keeps_its_handoff` (a VM, this process busy,
+reading at 10.5 s, its kind learned at 100 ms) by mutation cutting the send at `TAKE_TIMEOUT`;
+`a_vm_that_reads_nothing_and_runs_nothing_fails_its_handoff` (a sleep as its process) by
+mutation never refusing; shards_ipc's `a_judged_send_goes_on_where_it_was_as_its_peer_reads` and
+`a_judged_receive_waits_while_its_judge_says_go_on`. Owed: Windows' twin (slice (b): pipe.rs's
+send and receive, judged), and the other `TAKE_TIMEOUT` sites, each with its kind's record
+(slice (c): the run socket's writes, join links and doors, exec answers, reclaim's note); to
+ROOT, each phase's latency on a loaded host per platform (`cargo test -p shards --profile
+test-release --test daemon` through `docs/research/measurements/macos-sched/launchd-run.sh` on
+HVF, and on KVM and WHP), n, p50, p90, p99 and max.
+
+Slice (c1), 2026-11-14: a joiner's volumes on Unix (`give_join_volumes`, D119). The daemon's
+send of a joiner's link on its provider's join share's door (`JOIN_LINK`), and each volume on
+that link to the share's `TAKEN` (`give_join_volume`), waited at most `TAKE_TIMEOUT` (socket
+timeouts on the link and the door). Their party is the share's process, whose ID the door now
+keeps (`JoinDoor`): each is judged as the handoff is, by D215 on that process, by its own
+kind's record (`Answers::door`, the link's send; `Answers::link`, a volume sent to its
+`TAKEN`), cold on readiness and the process's end alone, `Stalled` typed; a door whose send
+ended so is let go of, and the next joiner's starts another share, as before. Their timeouts
+are deleted. Red: `a_join_share_slow_to_take_a_volume_while_it_runs_keeps_it` (the share
+answering at 10.5 s, its process busy) by mutation restoring the 10 s read timeout;
+`a_join_share_that_runs_nothing_fails_the_volume` (a sleep as its process) by mutation
+never refusing. Owed to ROOT: a joiner's start with volumes on a loaded host
+(`cargo test -p shards --profile test-release --test daemon`, its join tests) on HVF and KVM.
 
 ### The `crates/shards` figures of the picked-constants audit (2026-11-09): each from its source
 

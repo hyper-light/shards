@@ -3045,6 +3045,7 @@ mod tests {
             data: None,
             arch: Vec::new(),
             devices: Vec::new(),
+            init: None,
         };
         let hosts = |v: bool, n: bool| Hosts {
             vsock: v.then_some(&vsock),

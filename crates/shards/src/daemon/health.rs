@@ -146,6 +146,14 @@ pub(super) struct Answers {
     pub metrics: Record,
     /// A starting VM's READY (`daemon::ready`).
     pub ready: Record,
+    /// A warm VM's taking of a run: the run's handoff sent, to its TAKEN (`daemon::hand_over`).
+    pub take: Record,
+    /// A microVM's join share's taking of a joiner's link: its door's `JOIN_LINK` sent
+    /// (`daemon::give_join_volumes`, Unix).
+    pub door: Record,
+    /// A join share's taking of a joiner's volume: its `JOIN_VOLUME` sent, to its `TAKEN`
+    /// (`daemon::give_join_volume`, Unix).
+    pub link: Record,
     /// A visit's VM holding its files, its STARTED after its RUN (`visit::await_holding`).
     pub held: Record,
     /// Each request for access a starting VM makes, from the answer before or its spawn
@@ -165,6 +173,9 @@ impl Default for Answers {
             room: Record::new(),
             metrics: Record::new(),
             ready: Record::new(),
+            take: Record::new(),
+            door: Record::new(),
+            link: Record::new(),
             held: Record::new(),
             #[cfg(target_os = "macos")]
             grants: Record::new(),
@@ -815,6 +826,84 @@ fn await_exit(ours: &shards_ipc::Stream, wait: Wait<'_>) -> Ended {
     };
     Ended { status, cut }
 }
+
+/// A wait on a socket whose party is process `pid`, judged as D215 judges a wait on a VM
+/// process ([`Wait::WhileRuns`]), by the record of its kind of answer (runs-11 `TAKE_TIMEOUT`):
+/// shards_ipc's judge ([`Judged::judge`]) for its judged sends and receives. Before its kind's
+/// first answer, and once its party has gone (its socket's end then ends the wait), the
+/// socket's readiness alone; then its party looked at once each W* and the wait ended, typed
+/// ([`Stalled`]), where it ran nothing since the look before or could not be read.
+#[cfg(unix)]
+pub(super) struct Judged<'r> {
+    pid: u32,
+    record: &'r Record,
+    follow: Option<Follow<'r>>,
+    begun: bool,
+}
+
+#[cfg(unix)]
+impl<'r> Judged<'r> {
+    pub(super) fn of(pid: u32, record: &'r Record) -> Judged<'r> {
+        Judged {
+            pid,
+            record,
+            follow: None,
+            begun: false,
+        }
+    }
+
+    /// When its wait next asks, or why it ends: asked as each wait begins, and at each time it
+    /// named that passed with the socket not ready.
+    pub(super) fn judge(&mut self) -> std::io::Result<Option<Instant>> {
+        if !std::mem::replace(&mut self.begun, true) {
+            self.follow = following(self.pid, self.record).map_err(Stalled::error)?;
+            return Ok(self.follow.as_ref().and_then(Follow::due));
+        }
+        let Some(follow) = self.follow.as_mut() else {
+            return Ok(None);
+        };
+        follow.look().map_err(|why| Stalled::error(Cut::from(why)))?;
+        Ok(follow.due())
+    }
+
+    /// Its party answered: its kind learns from the answer.
+    pub(super) fn answered(&mut self) {
+        if let Some(follow) = self.follow.as_mut() {
+            follow.answered();
+        }
+    }
+}
+
+/// A judged wait's end ([`Judged`]): its party stalled, or could not be read, as [`Cut`] says.
+#[cfg(unix)]
+#[derive(Debug)]
+pub(super) struct Stalled(pub(super) Cut);
+
+#[cfg(unix)]
+impl Stalled {
+    fn error(cut: Cut) -> std::io::Error {
+        std::io::Error::new(std::io::ErrorKind::TimedOut, Stalled(cut))
+    }
+}
+
+#[cfg(unix)]
+impl std::fmt::Display for Stalled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.0 {
+            Cut::Stalled(stall) => write!(
+                f,
+                "its process ran no CPU in {:?} past the slowest answer seen ({:?}), {:?} into the wait",
+                stall.over(),
+                stall.slowest(),
+                stall.waited()
+            ),
+            other => write!(f, "{other}"),
+        }
+    }
+}
+
+#[cfg(unix)]
+impl std::error::Error for Stalled {}
 
 /// A wait on VM process `vm` judged by `record`, begun now: none where the process has gone
 /// already, whose end is the exec's; why not, where it cannot be read.
