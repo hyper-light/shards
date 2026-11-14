@@ -388,6 +388,7 @@ fn assemble(
     config: &MachineConfig,
     console: Console,
     said: usize,
+    backfill: bool,
     hosts: super::Hosts<'_>,
     gpu: Option<super::MachineGpu<'_, '_>>,
     pci: super::Pci<'_>,
@@ -511,7 +512,7 @@ fn assemble(
     let gpu = gpu
         .map(|(renderer, region)| super::gpu_device(&vm, renderer, region, ram))
         .transpose()?;
-    let (console_device, console) = ConsoleDevice::new(super::console_out(console)?, said);
+    let (console_device, console) = ConsoleDevice::new(super::console_out(console)?, said, backfill)?;
     let (devices, disk_sizes) = super::virtio_devices(
         config,
         &regions,
@@ -743,6 +744,7 @@ pub fn build_reported(
             &config,
             cfg.console,
             cfg.said,
+            super::console_backfill(cfg),
             hosts,
             (cfg.gpu || !cfg.gpu_devices.is_empty()).then_some(super::MachineGpu { saw: 0, report }),
             super::Pci {
@@ -834,6 +836,8 @@ pub fn restore(
         &snap.config,
         console,
         said,
+        // A restored guest's console registered before its snapshot: nothing missed.
+        false,
         hosts,
         snap.config.gpu.map(|saw| super::MachineGpu { saw, report }),
         super::Pci {

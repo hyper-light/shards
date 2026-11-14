@@ -463,6 +463,7 @@ fn assemble(
     config: &MachineConfig,
     console: Console,
     said: usize,
+    backfill: bool,
     hosts: super::Hosts<'_>,
     gpu: Option<super::MachineGpu<'_, '_>>,
     pci: super::Pci<'_>,
@@ -641,7 +642,7 @@ fn assemble(
     let swap_device = swap
         .clone()
         .map(|w| Box::new(pmem::Pmem::swap(w)) as Box<dyn crate::devices::virtio::VirtioDevice>);
-    let (console_device, console) = ConsoleDevice::new(super::console_out(console)?, said);
+    let (console_device, console) = ConsoleDevice::new(super::console_out(console)?, said, backfill)?;
     let last = std::iter::once(Box::new(console_device) as Box<dyn crate::devices::virtio::VirtioDevice>)
         .chain(gpu)
         .chain(hotplug)
@@ -865,6 +866,7 @@ pub fn build_reported(cfg: &Config, report: Option<&mut super::GpuReportTo<'_>>)
             &config,
             cfg.console,
             cfg.said,
+            super::console_backfill(cfg),
             hosts,
             (cfg.gpu || !cfg.gpu_devices.is_empty()).then_some(super::MachineGpu { saw: 0, report }),
             super::Pci {
@@ -1107,6 +1109,8 @@ pub fn restore(
         &snap.config,
         console,
         said,
+        // A restored guest's console registered before its snapshot: nothing missed.
+        false,
         hosts,
         snap.config.gpu.map(|saw| super::MachineGpu { saw, report }),
         super::Pci {
