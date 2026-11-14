@@ -3,7 +3,8 @@
 //! threads reach the driver with a [`Command`] on its channel and a datagram from its waker to
 //! a wake socket of the driver's own, beside the one it serves on, which it waits on with that
 //! one (poll(2); WSAPoll): what every target's sockets give, Windows' consoles and pipes among
-//! the descriptors no poll of a socket reaches.
+//! the descriptors no poll of a socket reaches. The waker and the wake are connected to each
+//! other, so that the wake takes datagrams from the waker alone.
 
 use std::collections::{HashMap, VecDeque};
 use std::net::{SocketAddr, UdpSocket};
@@ -100,8 +101,8 @@ pub struct Sender<C> {
     commands: Commands<C>,
     stopping: Arc<AtomicBool>,
     view: View,
+    /// Connected to its driver's wake ([`Driver::wake`]), the one place it sends to.
     waker: UdpSocket,
-    to: SocketAddr,
 }
 
 enum Commands<C> {
@@ -125,7 +126,7 @@ pub struct DriverLimits {
 impl<C> std::fmt::Debug for Sender<C> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Sender")
-            .field("to", &self.to)
+            .field("waker", &self.waker.local_addr().ok())
             .finish_non_exhaustive()
     }
 }
@@ -151,7 +152,7 @@ impl<C> Sender<C> {
                 .map_err(|e| mpsc::TrySendError::Disconnected(e.0))?,
             Commands::Bounded(to) => to.try_send(command)?,
         }
-        let _ = self.waker.send_to(&[0], self.to);
+        let _ = self.waker.send(&[0]);
         Ok(())
     }
 
@@ -171,7 +172,7 @@ impl<C> Sender<C> {
     /// Idempotent owner revocation does not wait behind queued data.
     pub fn request_stop(&self) {
         self.stopping.store(true, Ordering::Release);
-        let _ = self.waker.send_to(&[0], self.to);
+        let _ = self.waker.send(&[0]);
     }
 }
 
@@ -254,7 +255,6 @@ impl<C> Sender<C> {
                 .waker
                 .try_clone()
                 .map_err(|e| Error::new(format!("the driver's waker: {e}")))?,
-            to: self.to,
         })
     }
 }
@@ -1172,7 +1172,6 @@ fn place(conns: &mut HashMap<ConnKey, Conn>, next: &mut ConnKey, conn: Conn) -> 
 #[allow(missing_debug_implementations)]
 pub struct Driver<H: Handler> {
     socket: UdpSocket,
-    waker: SocketAddr,
     endpoint: Endpoint,
     conns: HashMap<ConnKey, Conn>,
     next: ConnKey,
@@ -1200,7 +1199,10 @@ pub struct Driver<H: Handler> {
     refusal: bool,
     /// Where its [`Sender`]s wake it, a socket of its own beside the one it serves on: a socket
     /// aimed at its peer takes datagrams from that peer alone (connect(2): Linux udp(7), XNU
-    /// `udp_input`, Winsock's connect), so a wake sent there would never come.
+    /// `udp_input`, Winsock's connect), so a wake sent there would never come. It is connected
+    /// to its senders' waker, and the waker to it, by the same rule: the wake takes datagrams
+    /// from the waker alone, none another local process sends it, and the waker sends nowhere
+    /// else (`send`: XNU's `udp_output` refuses `sendto` an address on a connected socket).
     wake: UdpSocket,
     /// The connections it holds at once, its owner's resources' bound: a bounded driver's
     /// admitted connections, or what [`Driver::hold_connections`] says. Past it a newcomer is
@@ -1300,6 +1302,12 @@ impl<H: Handler> Driver<H> {
         let to = wake
             .local_addr()
             .map_err(|e| Error::new(format!("the driver's wake: {e}")))?;
+        waker
+            .connect(to)
+            .map_err(|e| Error::new(format!("the driver's waker: {e}")))?;
+        wake.connect(waker_at)
+            .map_err(|e| Error::new(format!("the driver's wake: {e}")))?;
+        drop_strays(&wake).map_err(|e| Error::new(format!("the driver's wake: {e}")))?;
         let endpoint = Endpoint::new(EndpointConfig::default(), server, true, None)
             .map_err(|_| Error::new("no random bytes for QUIC"))?;
         let (commands_tx, commands) = match limits {
@@ -1317,7 +1325,6 @@ impl<H: Handler> Driver<H> {
         Ok((
             Driver {
                 socket,
-                waker: waker_at,
                 endpoint,
                 conns: HashMap::new(),
                 next: 0,
@@ -1344,7 +1351,6 @@ impl<H: Handler> Driver<H> {
                 stopping: stop_requested,
                 view,
                 waker,
-                to,
             },
         ))
     }
@@ -1516,9 +1522,6 @@ impl<H: Handler> Driver<H> {
     fn take_in(&mut self, datagram: &mut [u8]) -> Result<(), Error> {
         match self.socket.recv_from(datagram) {
             Ok((n, from)) => {
-                if from == self.waker {
-                    return Ok(());
-                }
                 let now = Instant::now();
                 let bytes = BytesMut::from(datagram.get(..n).unwrap_or_default());
                 let mut fed = self.receive(now, from, bytes)?;
@@ -1553,10 +1556,8 @@ impl<H: Handler> Driver<H> {
                     let Ok((n, from)) = self.socket.recv_from(datagram) else {
                         break;
                     };
-                    if from != self.waker {
-                        let bytes = BytesMut::from(datagram.get(..n).unwrap_or_default());
-                        fed = self.receive(Instant::now(), from, bytes)?;
-                    }
+                    let bytes = BytesMut::from(datagram.get(..n).unwrap_or_default());
+                    fed = self.receive(Instant::now(), from, bytes)?;
                 }
                 Ok(())
             }
@@ -2349,6 +2350,24 @@ fn whole_ms(wait: Duration) -> Duration {
     Duration::from_millis(u64::try_from(wait.as_nanos().div_ceil(1_000_000)).unwrap_or(u64::MAX))
 }
 
+/// Drops what another socket sent `wake` before it was connected, still queued (connect(2)
+/// purges no queue): no sender has woken it yet. Each datagram goes whole, cut to the buffer
+/// (Unix), or cut with WSAEMSGSIZE (Windows' recv, which drops the rest); the queue ends at
+/// WouldBlock, `wake` being non-blocking.
+fn drop_strays(wake: &UdpSocket) -> std::io::Result<()> {
+    let mut stray = [0; 1];
+    loop {
+        match wake.recv(&mut stray) {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            #[cfg(windows)]
+            Err(e) if e.raw_os_error() == Some(windows_sys::Win32::Networking::WinSock::WSAEMSGSIZE) => {}
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 /// Whether `socket` and `wake` have something to read (a datagram, or `socket`'s error: its
 /// peer's ICMP refusal), waiting up to `wait` for either, none: until one does. poll(2) waits
 /// whole milliseconds, so a wait under one is one, and a timer is looked at no sooner than it
@@ -2523,6 +2542,61 @@ mod tests {
         // actual result, rather than letting a failed Stop hide that error.
         let _ = sender.send(Command::Stop);
         worker.join().unwrap().unwrap();
+    }
+
+    /// The driver's wake takes datagrams from its own waker alone: one another local socket
+    /// sends it is dropped by the kernel (the two connected to each other), so no other process
+    /// can wake, or spam, a run's driver, and neither socket is open to every peer. The wake
+    /// through a clone of its sender, sent after the stranger's, is the first and only one read.
+    #[test]
+    fn the_wake_takes_datagrams_from_its_own_waker_alone() {
+        struct Idle;
+        impl Handler for Idle {
+            type Command = ();
+            fn connected(&mut self, _: &mut Io<'_>, _: ConnKey, _: &[u8]) -> Result<(), Close> {
+                Ok(())
+            }
+            fn opened(&mut self, _: &mut Io<'_>, _: ConnKey, _: StreamId) {}
+            fn readable(&mut self, _: &mut Io<'_>, _: ConnKey, _: StreamId) {}
+            fn writable(&mut self, _: &mut Io<'_>, _: ConnKey, _: StreamId) {}
+            fn stopped(&mut self, _: &mut Io<'_>, _: ConnKey, _: StreamId) {}
+            fn lost(&mut self, _: &mut Io<'_>, _: ConnKey, _: &str, _: Option<u64>) {}
+            fn command(&mut self, _: &mut Io<'_>, _: ()) {}
+            fn done(&self) -> bool {
+                false
+            }
+        }
+        for at in ["127.0.0.1:0", "[::1]:0"] {
+            let Ok(stranger) = UdpSocket::bind(at) else {
+                // A host without IPv6 loopback has no [::1] driver to test either.
+                continue;
+            };
+            let (driver, sender) =
+                Driver::bind(at.parse().unwrap(), None, Idle, crate::tls::Known::Never).unwrap();
+            let wake = driver.wake.local_addr().unwrap();
+            // On loopback a datagram is queued at its receiver before sendto returns (or
+            // dropped): the stranger's would be read before the waker's.
+            assert_eq!(stranger.send_to(&[7], wake).unwrap(), 1);
+            sender.try_clone().unwrap().request_stop();
+            driver.wake.set_nonblocking(false).unwrap();
+            driver
+                .wake
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            let mut got = [0; 2];
+            let (n, from) = driver.wake.recv_from(&mut got).unwrap();
+            assert_eq!(
+                (from, &got[..n]),
+                (sender.waker_addr().unwrap(), &[0][..]),
+                "{at}: the wake read another socket's datagram"
+            );
+            driver.wake.set_nonblocking(true).unwrap();
+            let rest = driver.wake.recv_from(&mut got);
+            assert!(
+                matches!(&rest, Err(e) if e.kind() == std::io::ErrorKind::WouldBlock),
+                "{at}: more than the waker's wake came: {rest:?}"
+            );
+        }
     }
 
     fn ms(n: u64) -> Duration {
