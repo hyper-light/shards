@@ -121,8 +121,8 @@ fn op(code: u16, jt: u8, jf: u8, k: u32) -> libc::sock_filter {
 
 /// Compiles `rules`: what they allow is allowed, and anything else traps. Rules for one
 /// syscall add up: one allowing it whatever its argument allows it so, and the others allow
-/// every value they list, of one argument. A syscall's rules that fail it must all fail it
-/// with one error.
+/// every value they list, each of its own argument. A syscall's rules that fail it must all
+/// fail it with one error.
 pub fn compile(rules: &[Rule]) -> Result<Filter, String> {
     compile_over(rules, libc::SECCOMP_RET_TRAP)
 }
@@ -159,17 +159,20 @@ fn compile_over(rules: &[Rule], none: u32) -> Result<Filter, String> {
         Some((_, Verdict::Return(action))) => Target::Ret(*action),
         None => Target::Ret(none),
     };
-    // A syscall's check: its argument loaded over the number in A, which nothing after it
-    // needs, its bits under each mask compared with the values of that mask in turn, then
-    // the argument found among its values by a search of their own, each value allowed.
+    // A syscall's check: an argument loaded over the number in A, which nothing after it
+    // needs, its bits under each mask (or all of them, for another argument's values)
+    // compared with that group's values in turn, then its argument found among its values
+    // by a search of their own, each value allowed.
     let check = |i: usize| -> Result<Vec<libc::sock_filter>, String> {
         let Some((_, Verdict::Check(index, values, masked))) = syscalls.get(i) else {
             return Err("a check of no syscall's argument".to_string());
         };
         let mut block = Vec::new();
-        for (mask, keys) in masked {
-            block.push(op(LD_W_ABS, 0, 0, arg_low(*index)));
-            block.push(op(AND_K, 0, 0, *mask));
+        for (at, mask, keys) in masked {
+            block.push(op(LD_W_ABS, 0, 0, arg_low(*at)));
+            if *mask != u32::MAX {
+                block.push(op(AND_K, 0, 0, *mask));
+            }
             // Each one found jumps over the rest to the allowing return after them; the
             // last one not found, past it.
             let n = keys.len();
@@ -201,11 +204,12 @@ fn compile_over(rules: &[Rule], none: u32) -> Result<Filter, String> {
 }
 
 /// What a syscall's search ends in: a return, or a check of its argument `.0` against the
-/// values `.1`, sorted, and its bits under each mask of `.2` against that mask's values,
-/// which allows them and traps anything else.
+/// values `.1`, sorted, and before it each group of `.2`, an argument's bits under a mask
+/// (all of them, for an argument but `.0`) against that group's values, which allows any of
+/// them and traps anything else.
 enum Verdict {
     Return(u32),
-    Check(u32, Vec<u32>, Vec<(u32, Vec<u32>)>),
+    Check(u32, Vec<u32>, Vec<(u32, u32, Vec<u32>)>),
 }
 
 /// The arguments `struct seccomp_data` holds.
@@ -231,32 +235,36 @@ fn verdict(syscall: libc::c_long, rules: &[&Rule]) -> Result<Verdict, String> {
     if rules.iter().any(|r| r.arg.is_none()) {
         return Ok(Verdict::Return(libc::SECCOMP_RET_ALLOW));
     }
-    let mut checked = rules.iter().filter_map(|r| r.arg.as_ref().map(|a| (a, r.mask)));
-    let Some(((index, _), _)) = checked.clone().next() else {
+    let checked = rules.iter().filter_map(|r| r.arg.as_ref().map(|a| (a, r.mask)));
+    // The argument searched: the first a rule lists whole values of, else the first listed.
+    let Some(index) = checked
+        .clone()
+        .find(|(_, mask)| *mask == u32::MAX)
+        .or_else(|| checked.clone().next())
+        .map(|((index, _), _)| *index)
+    else {
         return Ok(Verdict::Return(libc::SECCOMP_RET_TRAP));
     };
+    // Rules add up: a value of any of them allows, whichever argument it is of.
     let mut values = Vec::new();
-    let mut masked: Vec<(u32, Vec<u32>)> = Vec::new();
-    for ((other, more), mask) in checked.by_ref() {
-        if other != index {
-            return Err(format!("syscall {syscall}: rules on two arguments"));
-        }
-        if mask == u32::MAX {
+    let mut masked: Vec<(u32, u32, Vec<u32>)> = Vec::new();
+    for ((at, more), mask) in checked {
+        if *at == index && mask == u32::MAX {
             values.extend_from_slice(more);
-        } else if let Some((_, keys)) = masked.iter_mut().find(|(m, _)| *m == mask) {
+        } else if let Some((_, _, keys)) = masked.iter_mut().find(|(a, m, _)| a == at && *m == mask) {
             keys.extend_from_slice(more);
         } else {
-            masked.push((mask, more.clone()));
+            masked.push((*at, mask, more.clone()));
         }
     }
     values.sort_unstable();
     values.dedup();
-    masked.sort_unstable_by_key(|(m, _)| *m);
-    for (_, keys) in &mut masked {
+    masked.sort_unstable_by_key(|(a, m, _)| (*a, *m));
+    for (_, _, keys) in &mut masked {
         keys.sort_unstable();
         keys.dedup();
     }
-    Ok(Verdict::Check(*index, values, masked))
+    Ok(Verdict::Check(index, values, masked))
 }
 
 /// Entries a search compares one by one, at most. A halving costs one comparison and
@@ -1214,11 +1222,16 @@ mod tests {
         }
         // Failed alike by two: failed so.
         answers_as_its_rules_say(&[Rule::fails(1, 38), Rule::fails(1, 38)]);
+        // Rules on two arguments add up: a value of either allows (shards-vm's pidfd_open,
+        // its own pid or a thread's pidfd).
+        answers_as_its_rules_say(&[
+            Rule::with(libc::SYS_ioctl, 1, &[1, 7, 9, 11, 13, 15]),
+            Rule::with(libc::SYS_ioctl, 2, &[1, 0x80]),
+            Rule::masked(libc::SYS_ioctl, 2, 0xff00, &[0x4600]),
+            Rule::with(libc::SYS_ioctl, 0, &[3]),
+        ]);
+        answers_as_its_rules_say(&[Rule::with(434, 0, &[4242]), Rule::with(434, 1, &[0x80])]);
         for wrong in [
-            vec![
-                Rule::with(libc::SYS_ioctl, 1, &[1]),
-                Rule::with(libc::SYS_ioctl, 2, &[1]),
-            ],
             vec![Rule::fails(1, 38), Rule::any(1)],
             vec![Rule::with(1, 0, &[1]), Rule::fails(1, 38)],
             vec![Rule::fails(1, 38), Rule::fails(1, 1)],

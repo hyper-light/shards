@@ -294,6 +294,42 @@ fn a_granted_workload_is_held_to_its_subtree() {
     );
 }
 
+/// Case (g): the workload cannot take its device program off (inithex-01). Root, with
+/// CAP_SYS_ADMIN and the default seccomp profile's bpf(2), it queries the BPF_CGROUP_DEVICE
+/// programs of its cgroup namespace's root and those that bound it, takes each one's
+/// descriptor and detaches it from that root: none detaches, as init attaches the workload's
+/// above that root, in a cgroup no process of the workload's can name; and a node of the
+/// microVM's own disk, which its device rules never give it, is refused it before and
+/// after (EPERM). Guard: the command's cgroup namespace rooted beneath the workload's
+/// cgroup (`setup::delegate`).
+#[test]
+fn a_granted_workload_cannot_detach_its_device_program() {
+    if cannot_run_vms() {
+        eprintln!("SKIP: this host cannot run VMs");
+        return;
+    }
+    let home = Home::new("nesting-g");
+    home.nesting_image();
+    let ran = home.granted(&["nesting", "ceiling"]);
+    assert_eq!(ran.status, Some(0), "{}", shown(&ran));
+    said(
+        &ran,
+        &[
+            "ceiling before: errno 1",
+            "ceiling query attached: 0",
+            "ceiling after: errno 1",
+        ],
+    );
+    let detached = ran
+        .stdout
+        .lines()
+        .find_map(|l| l.strip_prefix("ceiling detached: "))
+        .unwrap_or_else(|| panic!("no detach said in\n{}", shown(&ran)));
+    let (done, of) = detached.split_once(" of ").unwrap();
+    assert_eq!(done, "0", "{}", shown(&ran));
+    assert_ne!(of, "0", "no program bounds the workload\n{}", shown(&ran));
+}
+
 /// Case (c): no box without both words, and none beside a domain. Given the grant, a nested
 /// runtime's first steps are done (the probe works). Without the run's consent, an image
 /// declaring the grant runs without it, and says so; its first cgroup step fails EROFS, its
