@@ -1,0 +1,17 @@
+# daemon::health::tests::a_microvm_that_runs_at_any_rate_is_waited_for: the flake, its red and green
+# macOS arm64, adas-mac-studio-3.local; fix 03e12f642 over main 3b7662dad (kiln r486, and the 200 ms run after it)
+## The flake (runs11-take-a-green.log, merge 51e3685ff, load 17.85 on 14 cores)
+its answer, slower, raised W*: 3.4997515s
+## Red: the old order (answer's thread spawned, its 3.5 s sleep begun, then the wait), the waiter descheduled 200 ms before await_exit (sim-old 37ce010ab)
+test daemon::health::tests::a_microvm_that_runs_at_any_rate_is_waited_for ... FAILED
+its answer, slower, raised W*: 3.283890875s
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 968 filtered out; finished in 3.62s
+## (At 5 ms the old order passed: macOS's 3.5 s sleep overshot by more than 5 ms then; 3.283890875 s at 200 ms puts that overshoot near 16 ms. The flake is a gap that outran the overshoot.)
+## Green: the new order (the answer begins at the waiter's go, sent as the wait is about to begin), the same 200 ms deschedule before the go (sim-new d8f51631b)
+test daemon::health::tests::a_microvm_that_runs_at_any_rate_is_waited_for ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 968 filtered out; finished in 3.94s
+## Green, 03e12f642: cargo test -p shards --bin shards -- daemon::health::
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 956 filtered out; finished in 3.59s
+## Green, 03e12f642, x20 with 14 busy loops on 14 cores (load 17.63 at the end): cargo test -p shards --bin shards -- --exact daemon::health::tests::a_microvm_that_runs_at_any_rate_is_waited_for
+20 of 20 ok. 1 passed; 0 failed
+## cargo clippy -p shards --all-targets -- -D warnings: clean

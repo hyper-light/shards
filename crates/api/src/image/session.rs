@@ -2629,10 +2629,12 @@ mod tests {
     }
 
     /// Do write a run host's diagnostics past their file's bound, what the file held as it was
-    /// named counted, a file opened to write in place and one opened to append. Expect: each
-    /// part written after the last while the file is within its bound; the part that would
-    /// pass it cutting the file back to the tail, exactly its latest bytes; the next parts
-    /// written after that tail, the file growing again.
+    /// named counted, a file opened to write in place and one opened to append, each named as
+    /// a caller names it. Expect: each part written after the last while the file is within
+    /// its bound; the part that would pass it cutting the file back to the tail, exactly its
+    /// latest bytes; the next parts written after that tail, the file growing again. On
+    /// Windows the file opened to append refused `Os` as named and left as it was: std opens
+    /// it without `FILE_WRITE_DATA`, which a cut needs (D258).
     #[test]
     fn a_bounded_diagnostics_file_is_cut_back_to_the_tail_and_grows_again() {
         let dir = shards_testdir::TempDir::new("api-bound").unwrap();
@@ -2644,6 +2646,19 @@ mod tests {
                 .append(append)
                 .open(&path)
                 .unwrap();
+            let named = shared().keep_diagnostics(file.try_clone().unwrap(), u64::MAX);
+            if append && cfg!(windows) {
+                assert_eq!(
+                    named,
+                    Err(ImageRefusal::Os {
+                        what: "the run host's diagnostics",
+                        kind: io::ErrorKind::PermissionDenied
+                    })
+                );
+                assert_eq!(std::fs::read(&path).unwrap(), b"ab", "left as it was");
+                continue;
+            }
+            assert_eq!(named, Ok(()));
             let mut kept = Diagnostics {
                 size: file.metadata().unwrap().len(),
                 file,
@@ -4395,13 +4410,13 @@ mod tests {
     /// The stand-in run host of a boot that never starts: it makes a writable layer's file in
     /// its home's `layers`, named as the real host names one (layers.rs `fresh`), holds
     /// `$HOST_SEEN` open as long as it runs, starts a stand-in VM that never looks at its host
-    /// (as a VM mid-boot does not), tells the VM's pid, and never answers.
+    /// (as a VM mid-boot does not), tells its own pid and the VM's, and never answers.
     #[cfg(unix)]
     const NEVER_STARTS: &str = "#!/bin/sh\n\
         : >\"$SHARDS_HOME/layers/$$-0\"\n\
         exec 3>\"$HOST_SEEN\"\n\
         tail -f /dev/null 3>&- &\n\
-        echo \"$!\" >&3\n\
+        echo \"$$ $!\" >&3\n\
         wait\n";
 
     /// A valid CREATE can fill the pipe before STARTED waits begin. Its stop must own
@@ -4535,8 +4550,10 @@ mod tests {
     /// returns `Ended(Stopped)`, the run host gone and the VM it started gone with it, no
     /// orphan left, and no file of the host's left in its home's `layers`, another host's
     /// kept. The boot waits on its host alone: only the stop ends it. A boot that ends
-    /// before its host tells the VM's pid ends the test's wait with it, refused with the
-    /// boot's outcome.
+    /// before its host tells its own and its VM's pids ends the test's wait with it, refused
+    /// with the boot's outcome. Each is judged gone by its ID and start, never by its pipe's
+    /// end: a write end of `h` that another test's spawn copied as it forked is held until
+    /// that child's exec, after both have gone (PM M583, M586).
     #[cfg(unix)]
     #[test]
     fn a_stop_mid_boot_ends_the_boot_its_host_and_all_its_host_started() {
@@ -4564,16 +4581,20 @@ mod tests {
             });
             // Told once the host holds `h` and has started its VM: both running.
             let said = line(&host_end);
-            let Ok(vm) = said.trim().parse::<libc::pid_t>() else {
-                panic!("its host told no VM ({said:?}), the boot {:?}", booting.join());
+            let pids: Vec<libc::pid_t> = said.split_whitespace().filter_map(|p| p.parse().ok()).collect();
+            let [host, vm] = pids[..] else {
+                panic!(
+                    "its host told no host and VM ({said:?}), the boot {:?}",
+                    booting.join()
+                );
             };
             leftover.0 = Some(vm);
-            let vm = named(vm);
+            let (host, vm) = (named(host), named(vm));
             let stopped_at = Instant::now();
             stop.stop();
             let booted = booting.join().unwrap();
             let took = stopped_at.elapsed();
-            let host_gone = writers_gone(&host_end);
+            let host_gone = !host.lives();
             let vm_gone = !vm.lives();
             if vm_gone {
                 leftover.0 = None;
