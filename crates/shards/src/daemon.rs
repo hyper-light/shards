@@ -1272,6 +1272,39 @@ struct Stop {
     next: Option<Instant>,
     /// Its command's teardown once it is sent SIGKILL.
     killed: Option<ends::Followed>,
+    /// Its grace, kept while it runs.
+    grace: Option<Grace>,
+}
+
+/// A run's stop grace, kept in its directory (`shards_ipc::GRACE`) from its stop signal
+/// until its SIGKILL or its end, which drop it: so that a wait on the daemon can tell the
+/// grace from a stall, as nothing need run in it (D209).
+struct Grace(PathBuf);
+
+impl Grace {
+    /// The grace of the run whose directory is `dir`, `grace` from now; none where it
+    /// cannot be kept, which the log says.
+    fn begin(dir: &Path, grace: Duration) -> Option<Grace> {
+        let file = dir.join(shards_ipc::GRACE);
+        let kept = std::time::SystemTime::now()
+            .checked_add(grace)
+            .and_then(shards_ipc::grace_text)
+            .ok_or_else(|| io::Error::other("its end past the system clock's reach"))
+            .and_then(|text| keep_whole(&file, text.as_bytes()));
+        match kept {
+            Ok(()) => Some(Grace(file)),
+            Err(e) => {
+                log(format!("{}: {e}", file.display()));
+                None
+            }
+        }
+    }
+}
+
+impl Drop for Grace {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
 }
 
 /// Why a template's pool gave no warm VM.
@@ -7346,13 +7379,17 @@ impl<D: Disk> Daemon<D> {
             for (id, socket, vm) in new {
                 let (signal, grace) = self.own_stop(&id);
                 let now = Instant::now();
-                let kill = match signal {
-                    Some(signal) => {
+                let (kill, grace) = match (signal, grace) {
+                    (Some(signal), grace) => {
                         let _ = socket.send(kind::SIGNAL, &signal.to_be_bytes(), &[]);
-                        grace.and_then(|grace| now.checked_add(grace))
+                        let dir = lock(&self.containers).dir(&id);
+                        (
+                            grace.and_then(|grace| now.checked_add(grace)),
+                            grace.and_then(|grace| Grace::begin(&dir, grace)),
+                        )
                     }
                     // A signal Linux has no number for cannot be sent: SIGKILL at once.
-                    None => Some(now),
+                    (None, _) => (Some(now), None),
                 };
                 stops.insert(
                     id,
@@ -7361,6 +7398,7 @@ impl<D: Disk> Daemon<D> {
                         vm,
                         next: kill,
                         killed: None,
+                        grace,
                     },
                 );
             }
@@ -7393,6 +7431,7 @@ impl<D: Disk> Daemon<D> {
                         // by, nor to say its end on: its VM goes at once. One sent is given
                         // this home's slice (none heard yet: its end alone, its liveness's).
                         let teardown = ends::Followed::of(stop.vm.as_ref().map(|vm| vm.id()));
+                        stop.grace = None;
                         let sent = stop.socket.send(kind::SIGNAL, &9u32.to_be_bytes(), &[]).is_ok();
                         let wait = if sent {
                             self.ends.slice(ends::End::Teardown)
