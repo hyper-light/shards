@@ -73,3 +73,36 @@ comparison was invalid. The test still requires the successful answer without a
 cut and a genuine nonzero learned interval. No production judge change.
 Later clean merges use ROOT's amended check-only contention gate; conflicts
 require focused reruns.
+
+## Claude takeover, 2026-11-14 (waits-01 remainder, 04, 08, 11)
+
+The four commits above were cherry-picked (signed) onto main `97f404be8`; PM M565 is
+renumbered M575, as M565 and M574 were taken. Their SHAs on main: red `e4056b11f` (was
+`bb799b90d`), fix `8d1356a32` (was `8168e33f5`), records `fd5889769`, test fix `aebd91dc4`. Reviewing them found a remainder of waits-01:
+`WordState::Refused` stood from a room's refusal through the give-back after it and into the
+next round. Carrier: a git bundle over main, cloned on adas-mac-studio-3.local (macOS arm64),
+`CARGO_INCREMENTAL=0 SHARDS_HELPERS=skip`.
+
+Red, at `21f8bee02` (every test added, no fix):
+```
+cargo test -p shards-ipc --lib slots::fifo::tests::a_readers_end_is_no_take      # [Began, Ended(57.125µs)]
+cargo test -p shards-ipc --lib tests::an_unreaped_daemon_does_not_live           # "exited and unreaped, lives"
+cargo test -p shards --bin shards daemon::tests::a_refused_room_is_not_the_next_rounds_verdict  # killed: kind 4 where 24
+cargo test -p shards --test harness concurrent_keeps_never_shrink_a_kept_record  # Some(true) where Some(false)
+```
+Green at the fixed tip and its merge with main: those four, shards-ipc's lib (66 passed),
+`daemon::groups` (7), `daemon::health` (13), `daemon::reclaim` (1), the daemon tests
+`a_member_that_never_answers_holds_up_no_other_member_or_group`,
+`a_members_room_holds_as_of_the_footprint_it_was_read_with` and
+`a_microvm_that_does_not_give_back_keeps_no_other_waiting`, harness
+`an_answer_already_there_teaches_nothing`, and clippy `-p shards-ipc -p shards --all-targets
+-- -D warnings`. `harness.rs::a_wait_is_refused_though_its_own_polls_keep_its_daemon_busy`
+fails at the base as well (its daemon cannot start with no helpers carried).
+
+Owed to ROOT, unrun here (real VMs, other hosts):
+- `cargo test -p shards --profile test-release --test containers a_microvm_under_a_group_is_held_to_its_budget`
+  on macOS and Windows, a member under host hold returning a give-back past its prior W*.
+- Linux: `cargo test -p shards-ipc --lib tests::an_unreaped_daemon_does_not_live` (the
+  `/proc` state read; CI runs it).
+- A Linux daemon started under a supervisor that defers reaping, exited before it served:
+  `shards run` must end "the daemon ended before it served".

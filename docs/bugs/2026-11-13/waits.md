@@ -33,7 +33,7 @@ Priority mapping used: P0 critical, P1 high, P2 medium, P5 low; no P3/P4 finding
 
 **Unrun regression:** Prime W*; keep a group's member visibly working beyond W*, then return a positive give-back. Assert no OOM record or signal before that answer. Repeat with host hold and with `give_after` blocked behind another reclaim. Restoring wall-only `overdue` should fail these cases.
 
-**Status (2026-11-13):** fixed in 8168e33f567bd9d6d9d37a3f56e290a36f6f8238 (red `daemon::groups::tests::a_pending_member_word_is_not_a_failed_give_back`, Kiln r5; green groups and clippy r6, macOS arm64). [Evidence](../../research/measurements/waits-fixes-v1/README.md). Real-VM validation remains owed to ROOT.
+**Status (2026-11-14):** fixed in 8d1356a32 (Codex lane, cherry-picked from 8168e33f5: the word's own exec judge publishes its typed refusal, `Wait::GroupWord`, and the wall-clock `overdue` is gone; red `daemon::groups::tests::a_pending_member_word_is_not_a_failed_give_back`) and e3a62e054 (a refusal stands for its own exec alone; red `daemon::tests::a_refused_room_is_not_the_next_rounds_verdict`: a member whose give-back was under way OOM-killed by the next round). Green on macOS arm64; PM M575, M576, D183. [Evidence](../../research/measurements/waits-fixes-v1/README.md). Owed to ROOT: `cargo test -p shards --profile test-release --test containers a_microvm_under_a_group_is_held_to_its_budget` on macOS and Windows.
 
 ### waits-02 — P2 / medium — The first test-party observation can refuse a process before any CPU interval was observed
 
@@ -86,6 +86,8 @@ Priority mapping used: P0 critical, P1 high, P2 medium, P5 low; no P3/P4 finding
 **Fix direction:** Keep the take pending across readiness and emit Ended only after a write actually transfers bytes; failed writes teach nothing.
 
 **Unrun regression:** Fill FIFO; in the Began callback close its only reader. Require BrokenPipe, no Ended callback, and Seen still cold. Positive twin drains bytes and learns a take.
+
+**Status (2026-11-14):** fixed in 0ff36021e (red `slots::fifo::tests::a_readers_end_is_no_take`: its reader closed as a wait past PIPE_BUF began, it told `[Began, Ended(57.125µs)]`; now `[Began]` and BrokenPipe: a wait ends only with a write after it that moved bytes). Green on macOS arm64; PM M576, D185.
 
 ### waits-05 — P2 / medium — Buffered registry bytes still teach fake network silences
 
@@ -157,6 +159,8 @@ Priority mapping used: P0 critical, P1 high, P2 medium, P5 low; no P3/P4 finding
 
 **Unrun regression:** Keep an exited child unreaped after it writes PID/start. Require Named::lives, daemon_lives and exiting to be false. Add startup-ready-then-exit/no-slots fixture and require a terminal daemon-ended result.
 
+**Status (2026-11-14):** fixed in 4566aac05 (red `shards_ipc tests::an_unreaped_daemon_does_not_live`: a zombie child named by its ID and start lived; Unix `alive` now reads its exit, Linux `/proc/PID/stat` state Z/X, macOS `ri_proc_exit_abstime`). Green on macOS arm64; the Linux read runs on CI. PM M576, D185. Owed to ROOT: a daemon left unreaped by a supervisor on Linux, `shards run` ending "the daemon ended before it served".
+
 ### waits-09 — P2 / medium — Test parties adopt a reused daemon PID and count zombie observations as ongoing progress
 
 **Location:** `crates/shards/tests/common/mod.rs:3140`, `:3231`; `crates/api/src/progress.rs:209`.
@@ -210,6 +214,8 @@ Priority mapping used: P0 critical, P1 high, P2 medium, P5 low; no P3/P4 finding
 **Fix direction:** Serialize the complete read/merge/replace transaction across processes, with distinct per-operation temporary paths; preserve both W* and R* under concurrent writers.
 
 **Unrun regression:** Two processes with barriers after loading old data; let the long sample rename, then the short sample rename. Require reloaded W* to remain the long sample. Mutation without transaction exclusion should deterministically lose it.
+
+**Status (2026-11-14):** fixed in afba3c537 (red `harness.rs::concurrent_keeps_never_shrink_a_kept_record` at 21f8bee02: a keep landed inside another's, `Some(true)`; the read, merge and rename are one transaction under the record's lock, each by a temporary name of its own). Green on macOS arm64; PM M576, D209's tests' waits.
 
 ### waits-12 — P2 / medium — Chosen production timeouts, retries, windows and polls remain
 

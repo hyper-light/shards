@@ -7957,7 +7957,12 @@ Decided by the user on 2026-10-14 ("so long as they apply appropriately to micro
     timer that OOM-killed a progressing or host-held member, or one still waiting behind
     host-pressure reclaim (review waits-01). Before the kind's first answer, liveness
     alone still governs; another member teaching the record does not bound a wait begun
-    cold. The parallel-group fixture therefore starts its stuck word learned. An answer
+    cold. The parallel-group fixture therefore starts its stuck word learned. A refusal
+    stands for the exec its judge refused alone: each exec of a word (its room told, then
+    its give-back) begins `Waiting`, so a refused room is no verdict on the give-back that
+    follows it, which its own judge judges, nor on a round opened while that give-back runs
+    (red `daemon::tests::a_refused_room_is_not_the_next_rounds_verdict`: round 2 counted a
+    member whose give-back was under way as one that gave nothing and OOM-killed it). An answer
     or refusal wakes the existing groups condvar. No new bound, reader or cache.
     Past `memory.max` with nothing given back its largest is stopped. A group whose
     budget goes tells each member it told a room that it has none, its hold let go of.
@@ -8498,7 +8503,11 @@ process.
     goes whole (POSIX write(2)), as macOS's FIFOs say POLLOUT with less than that free (PM
     M549). Each such
     wait that ends is a take; what the FIFO takes at once waits on no client and teaches
-    nothing.
+    nothing. A wait for room ends only with a write after it that moved bytes: its
+    reader's end wakes `await_fifo_room` too (POLLERR/POLLHUP; select(2)'s writability),
+    and the write after it fails EPIPE, so that wait is told no end and teaches no take
+    (review waits-04, PM M576; red `slots::fifo::tests::a_readers_end_is_no_take`), as
+    the Windows twin's write finished as its reader went is none (PM M553).
   - *Its bound*: a closed daemon lets go of a client whose writer has waited on it longer
     than the slowest take seen. One that reads, however slowly, ends each wait as it reads.
   - *Its cold start*: before any take, a client holds a closed daemon until it ends (its
@@ -8581,7 +8590,16 @@ process.
   wait for ever on an unrelated process given a dead daemon's ID. A file of an older build
   (`PID` alone) is still read, by its ID alone. crates/api's reader is its crate's own
   (`pub(crate)`, Unix only, and shards_ipc does not depend on it), so shards_ipc reads
-  starts itself, the same way, and Windows' besides.
+  starts itself, the same way, and Windows' besides. A process that has exited lives no
+  more though its parent has not reaped it (review waits-08, PM M576): a zombie answers
+  kill(2) and keeps its start, so a client's wait for a slot from a daemon that a
+  supervisor left unreaped waited for ever. Unix's `alive` also reads its exit: Linux's
+  `/proc/<pid>/stat` state `Z` or `X` (proc(5)), macOS's `proc_pid_rusage`
+  `ri_proc_exit_abstime`, set as XNU's `proc_exit` runs (as crates/api's judge reads a
+  process ending); one whose state cannot be read is not known to have exited. Windows'
+  twin already asks its handle (`WaitForSingleObject`, no wait). Red
+  `tests::an_unreaped_daemon_does_not_live` (its child left a zombie by waitid's
+  `WNOWAIT`).
 
 | Literal | Was | Now | Source |
 |---|---|---|---|
@@ -10944,7 +10962,13 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     back by the next run on the host (ROOT: a record learned on the host is data, not a
     seed; every runner of one CI image shares its key, so a cached target keeps CI warm).
     Each answer is taught in, merged with what another process kept, and written whole and
-    renamed into place; a keep that fails is the next answer's to make.
+    renamed into place, by a name of its own (its process's and its keep's), the read, merge
+    and rename one transaction under the record's lock (`.<record>.lock`, std's
+    `File::lock`: flock(2), LockFileEx), let go of before its file closes (M244): without
+    it two processes' keeps each read the record before the other renamed, and the last
+    to rename, the faster answer's, shrank W* (review waits-11, PM M576; red
+    `harness.rs::concurrent_keeps_never_shrink_a_kept_record`). A keep that fails is the
+    next answer's to make.
   - *Its key is its whole command line, what a run mints of its own made generic* (#77,
     ROOT's ruling (a) of 2026-11-13). Words alone left build.rs' two call sites one kind
     each: `build --push CTX`, refused, and `build --push -t localhost:PORT/team/built:1 CTX`
