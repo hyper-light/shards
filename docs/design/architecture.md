@@ -2198,15 +2198,67 @@ audit's "Security and test coverage").
   - `tkill(2)`, obsolete beside `tgkill(2)` [man: tkill(2)] and musl's `pthread_kill`, is
     refused: a vCPU's kick is `tgkill` to its own thread, and `tgkill` is allowed only
     within the process. `prctl` names threads and sets no_new_privs, nothing else.
+  - `prlimit64(2)` is allowed for pid 0 and the process's own pid alone (the C libraries'
+    getrlimit makes pid 0, as pthread_create sizes a stack): another process's limits,
+    its spawner's among them, are its user's to change, a hard limit irreversibly [man:
+    getrlimit(2); kernel/sys.c, `check_prlimit_permission`], and Landlock has no hook on
+    them (review platform-04, [PM M567]).
+  - A layer over the filter as the process confines itself (`confine.rs`, `sockets`;
+    `seccomp::layer`, which allows the syscalls it does not name, for the filter under it
+    to decide), on every thread (TSYNC, Linux 3.17), every kernel's: a socket is a stream
+    or a sequenced-packet one, as every socket a VM process makes is, since a datagram
+    socket can send to any socket file it names [net/unix/af_unix.c,
+    `unix_dgram_sendmsg`]; and a VM given no vsock path, as every VM a daemon runs is
+    (`--warm` takes none), fails every connect(2) with EACCES, as Landlock refuses one: its
+    user's sockets, its daemon's Engine API among them, cannot be dialed (review
+    platform-02, [PM M569]). The filter allows seccomp(2)'s `SET_MODE_FILTER` for the
+    layer: unprivileged, under no_new_privs, a filter only takes syscalls away.
 - **Linux: Landlock, failing closed** (`confine.rs`, `landlock`), applied just before the
   VM starts (rootless-security.md R3; [Documentation/userspace-api/landlock.rst]).
   - Every filesystem right Landlock's ABI v5 knows is handled, TCP bind and connect are
-    refused, and on ABI v6 signals and abstract Unix sockets outside the process are too.
+    refused, and on ABI v6 signals and abstract Unix sockets outside the process are too,
+    and on v9 connections to socket files (`RESOLVE_UNIX`) but beneath the directory of a
+    vsock path it was given, where the vsock muxer dials a guest's host ports
+    (`<path>_<port>`) [PM M569].
+  - Before v9 a VM given a vsock path (`shards build`'s builder, `run vm --kernel
+    --vsock`) can still dial any socket file its user can: no primitive of older kernels
+    scopes a connect by its path within the process. The closed way for those is its
+    spawner dialing for it, as on macOS and Windows (`platform::set_dialer`); owed.
     Allowed: its kernel, initrd, init, pmem and disks, a restore's snapshot and the files it
     records, the snapshot directory it saves, sockets made
     only beside a vsock path it was given (`--vsock`), `/dev/null`, its own `/proc` entry, and `/dev/kvm` and the
     huge page settings where the host has them. No directory may take a file from another
     (`REFER`). Rules hold inodes: a template keeps its rule when the daemon renames it.
+  - Every layer reaches every thread (review platform-01, [PM M568]). A layer restricts
+    the thread that makes it and the threads it starts after
+    [man: landlock_restrict_self(2)], and a VM process has threads by its first layer (its
+    exec port's, its rates', its stdin's) and every vCPU and device thread by its seal:
+    a thread compromised among them reaches through a sibling what the layer took away.
+    Where the ABI has `LANDLOCK_RESTRICT_SELF_TSYNC` (v8), one call gives every thread the
+    caller's new domain atomically. On every ABI from v5, the primitive every kernel it
+    runs on has, each thread is asked in turn: a real-time signal (`SIGRTMIN + 1`, past
+    the vCPUs' kick), whose handler makes the restriction in the thread it interrupts and
+    answers through a futex, as glibc's setxid broadcast makes setuid(2) every thread's,
+    until a listing of `/proc/self/task` names no thread not settled. A thread is settled
+    by its answer, or by being gone or exiting (`PF_EXITING`: it runs no more user code,
+    and drops a signal sent to it alone). A thread started after its creator answered is
+    restricted already; one started before is named by the next listing. The handler
+    restarts what it interrupts where the kernel restarts it (`SA_RESTART`), and the VM
+    process's waits go on past EINTR, as past the vCPUs' kicks; a vCPU's KVM_RUN ends as a
+    kick's does, and runs again.
+    - No constant: an answer wakes its wait, which looks at the thread as it ends, first
+      after as long as the caller's own restriction took (the cold start), then as long
+      as the last answer took, twice as long each time one is still awaited (saturating),
+      at least the monotonic clock's resolution. A short wait only looks sooner.
+    - A thread asleep with the signal blocked (`S`, its `SigBlk`) at two looks in turn,
+      the second after a wait as long as all before it, waits with it blocked: Mesa's
+      threads block every signal for their lives (u_thread_create). It cannot be asked,
+      and the layer fails, closed: a seal's failure hands its run to another VM
+      (daemon.rs, `hand_over`). glibc's pthread_create blocks every signal for a moment,
+      which one look may meet.
+    - Unverified limits: a thread id reused within one pass would need the kernel's ids
+      to wrap as it runs; a thread that blocks the signal and runs without sleeping is
+      waited for.
   - Its own `/proc` entry stays looked up for its life, a descriptor of it held from the
     first layer on (PM M305): procfs makes a new inode for `/proc/PID` each time its dentry
     is made afresh (fs/proc/base.c, `proc_pid_lookup`), a live process's unused dentry goes
@@ -2221,8 +2273,8 @@ audit's "Security and test coverage").
     maintainer asks that the version be read from the kernel, never from its release
     (firecracker-microvm/firecracker#5771).
   - Still to do, per R3: a user and mount namespace with `pivot_root` into an empty
-    tmpfs, `CLONE_INTO_CGROUP`, rlimits; UDP (ABI v10) and pathname Unix socket (ABI v9)
-    rules where the kernel has them; and the jail's cost on the start path (R4 Q1).
+    tmpfs, `CLONE_INTO_CGROUP`, rlimits; UDP (ABI v10) rules where the kernel has them;
+    and the jail's cost on the start path (R4 Q1).
 - **macOS: App Sandbox, replacing the Seatbelt profile** (docs/research/
   macos-confinement.md, [PM M67]). The profile was applied with `sandbox_init`, which the
   SDK marks deprecated and no longer supported [sandbox.h:7,45]; shards uses no deprecated
@@ -2490,6 +2542,12 @@ stack inside the VMM, is superseded by it.
     each new connection's queue 2.9%; as built, none measurable. A host connect the
     process itself could not make (descriptors, ports, buffers) is said, beside the reset
     the guest hears.
+- **Native Linux filter (network-02, 2026-11-13).** The network helper requests
+  seccomp on arm64 as on amd64 before serving frames; the shared compiler checks
+  the native AUDIT_ARCH and libc supplies native syscall identities. epoll_wait
+  is x86_64's legacy entry; both use epoll_pwait. No compat ABI is admitted.
+  Focused amd64 checks pass; native arm64 execution and carried-helper smoke
+  remain owed to ROOT, not inferred from amd64's result. [Evidence](../research/measurements/network-fixes-v1/README.md#network-02-native-seccomp-on-both-linux-architectures).
 - **Receive-sequence validation (network-01, 2026-11-13).** Before an established
   segment's ACK or FIN changes a connection, its original sequence must overlap the
   advertised receive window (RFC 9293 §3.10.7.4, table 6); ACK is required, and a FIN
@@ -6842,6 +6900,75 @@ window; a slow start, a slow join and a slow verdict on one key holding up no ot
 stranger refused once its verdict is let go, red with each on the driver; and the relays'
 backpressure as before: 8 MiB crossing whole, a command that reads no stdin holding up no
 other).
+
+#### A client's authority, judged of what runs and of whom its key is now (remote-01 to 03, 2026-11-13)
+
+The adversarial review of D180 (docs/bugs/2026-11-13/remote.md) found three ways a client
+reached more than its enrollment grants. Each was reproduced red at 9efde7252 before its fix
+(the tests named below, run on macOS arm64, and the Windows one on the Windows 11 guest).
+
+- **An owner's command is judged as it runs, not as its first word reads (remote-01).** The
+  daemon judged `Request.args`' first word; the child shards took a context's choice off the
+  front (`--context NAME`, `-c NAME`, `--context=NAME`) and ran the rest, so
+  `--context default client grant alice --dir /` granted a client this machine's root
+  (`red_remote01_an_owners_command_behind_a_prefix`: chosen `Here`, child's first word
+  `client`, the daemon's `owners` none). Now `daemon/remote.rs` `judge` refuses any context's
+  choice outright (`Refused::Context`: a client's command runs on this machine and reaches no
+  other context of its owner's), and judges the words `cli::command_words` gives, which are
+  `dispatch`'s own: `help CMD…` as `CMD… --help`, and shards' grammar said as its command, to
+  a fixpoint, a turn back to words already given ending it (no count of turns is chosen). The
+  file-reaching words (`client_grants::refuse_words`) are judged of the same words. A build
+  step's command (`\0sync build KEY WORDS…`), which no `owners` judged, must be a build's
+  (`commands::build`, or an agent's, harness's or MCP server's `build`), else
+  `Refused::NotABuild`, before any of its files come. And independently of the daemon, the
+  child refuses a `context`, `client` or `invitation` command wherever it runs for a client
+  (`cli::owners_alone`, of `SHARDS_CLIENT`, which the listener sets last): what reaches the
+  administration handlers is judged there too. The refusals are typed (`Refused`), the wire
+  carrying their text as `Tag::Refused` as before.
+- **A build file's name is one file's as the machine's paths read it (remote-02).** The name's
+  check refused `/`, `\`, NUL, `.` and `..`, but on Windows `C:context` is a path of drive C's
+  current directory, which `PathBuf::join` takes in place of the copy's directory: the
+  daemon's home's `context` or `identity` was overwritten
+  (`red_remote02_a_drive_relative_name_escapes_the_copy`, the Windows guest: the file written
+  in the test's current directory). `synced::name_alone` now refuses, on Windows, a colon (a
+  drive's prefix, or an alternate data stream), the characters no Win32 name holds
+  (`< > " | ? *` and controls 1-31, which also cover `\\?\` and `\\.\`), a trailing dot or
+  space, and a device's name with any extension (`CON PRN AUX NUL COM0-9 LPT0-9`, superscript
+  1-3 too, and CreateFileW's `CONIN$ CONOUT$`): Microsoft's "Naming Files, Paths, and
+  Namespaces" and CreateFileW's documentation, the only sources of the set; no number is
+  chosen. Linux and macOS take each such name as the name it is there. Refusals are typed
+  (`NotAName`), before any file is opened. The build's other words that name paths (`--file`,
+  `--output dest=`, `--iidfile`, a tree's) are not yet held to the copy: owed, below.
+- **A client is its key as its connection proved it, judged for each operation (remote-03).**
+  The listener judged a connection's key once and kept the client's name: a removed client's
+  held connection, or the old key of a name enrolled again under another key, ran new
+  commands, and an Engine API connection kept open served calls after the removal
+  (`red_remote03_an_old_keys_connection_runs_a_new_command`: `echo again` ran). Now each
+  command's start judges again, apart from the driver, whether the machine enrolls the key
+  its connection proved under the name it was judged (`server::start_apart`); one it does not
+  is refused (`REVOKED_WORDS`) and its connection closed with code `REVOKED` (3, an
+  application error code of RFC 9000 §20.2's space beside `UNENROLLED`'s 2: an identifier,
+  not a tunable), its commands hung up as a lost connection's are, and its client says why.
+  The daemon watches the home's `clients` directory (`platform::FileWatch`, one instance
+  for the daemon's life) and tells the listener each change (`Stopper::revalidate`), and once
+  as the watch begins, for a removal before it: every connection whose key the machine no
+  longer enrolls so is closed at once. An Engine API connection a client opened through its
+  context carries the key it proved (`context::Proved`), and each call on it is judged by
+  whether the home's record still holds that key, refused 403 (RFC 9110 §15.5.4) and the
+  connection ended where it does not. A command or a call under way as its client is removed
+  is hung up as the connection closes; none is judged anew mid-flight. The record is read for
+  each judgment, no cache kept: it is the one account of whom the home enrolls. Where the
+  watch cannot be made (a host's inotify instances spent, PM M257), the daemon says so in its
+  log, and a removed client's held connection is refused at its next command instead.
+  Tested: `tests/loopback.rs` `a_removed_clients_held_connection_runs_nothing_more` (refused,
+  closed `REVOKED`, its `cat` hung up, the name's new key served) and
+  `a_removed_clients_connection_closes_as_the_daemon_is_told` (closed at once, a client still
+  enrolled served on), `context::tests::a_proved_client_is_enrolled_while_its_record_holds_its_key`.
+- **Owed (ROOT's).** The real-daemon E2E of each: tests/context.rs's removal with an Engine API
+  keep-alive connection held across it and a native connection held across a removal and a
+  re-enrollment of its name; a client's raw `--context` and `\0sync build` requests; a Windows
+  listener receiving `C:context`. The per-call record read's cost (R14). A build step's
+  path-naming words held to the copy (above).
 
 ### D181. `--use-api-socket`: a run's command reaches its own microVM's engine (slices 1 to 3 built)
 
@@ -27593,8 +27720,7 @@ docs/research/s33-veil-creds/STEP3.md).
   recomputed and nothing of a body is held to recompute it (RFC 9112 §6.3; reframing as chunked
   would rewrite every response). Bytes from where a value may still begin wait until it completes
   or fails, the rest going at once; a message's end lets everything go. Not masked, and recorded
-  as the residuals: a value inside a compressed body (Content-Encoding) or a compressed WebSocket
-  message; a part of a value (OpenAI's 401 echoes a masked prefix and suffix, f16); a response's
+  as the residuals: a part of a value (OpenAI's 401 echoes a masked prefix and suffix, f16); a response's
   plaintext in rustls's own buffer, which rustls does not wipe. A tunnel's pause after a value's
   proper prefix holds that prefix until its next bytes or its end.
 - *The mask's values are its own (creds-03, amended 2026-11-13).* A value echoed after its lease
@@ -27628,6 +27754,39 @@ docs/research/s33-veil-creds/STEP3.md).
   `inject::tests::leaks`' chunked echo with the value in a token and in a quoted-string extension,
   red before (the value reached the guest), green after, and the size line read whole a byte at a
   time; the line forwarded as it came, and the size check removed, each fail them.
+- *A trailer section is its own piece (amended 2026-11-13).* `walk` gave a chunked body's trailer
+  section as data, so a sign-in's token response read whole (`Response::Whole`) took it into its
+  JSON: one with a trailer field was refused 502, and one with none reached the guest with a CRLF
+  added to its body. It is now `Piece::Trailers`: masked as fields where a response goes as it came,
+  dropped from a token response, which goes framed by its length and carries none (RFC 9110
+  §6.5.1 lets a recipient that removes the chunked coding discard them; so an echo of a token there
+  never reaches the guest), forwarded as it came on a request, and no part of a refresh or a
+  revocation read whole (§7.1.2), where the request path cut it by its offset before. Tests:
+  `inject::tests::leaks::a_chunked_token_responses_trailers_are_no_part_of_its_body` (a trailer
+  field, and none), red before (502), green after; trailers given as data again fails it,
+  `chunked_bodies_are_read_strictly` and `a_chunked_refresh_and_revocation_are_answered_outside`.
+- *Coded responses are refused (creds-04, amended 2026-11-13).* The mask reads a response's bytes
+  as they come, so an echo inside a body coded gzip, br, deflate, zstd or any other content coding
+  (RFC 9110 §8.4), or a transfer coding (RFC 9112 §7), or a WebSocket message compressed by
+  permessage-deflate (RFC 7692), passed unmasked and decoded to the value in the guest: once a
+  recorded residual, a leak. Decoding, masking and coding again was refused: a decoder of every
+  coding in the network process (zstd and br beside gzip), its output bounded only by a ratio no
+  spec gives, and a coded body whose length changes. So a request with a value filled in asks its
+  response as its sender writes it: its Accept-Encoding lines cut and `Accept-Encoding: identity`
+  added (`uncoded`; HTTP/2's `ask_identity`), as no field means any coding is acceptable (§12.5.3),
+  and its WebSocket extension offer cut (RFC 6455 §9.1: a server takes none not offered). A final
+  or 101 response to it whose content coding is not `identity`, whose transfer coding is not
+  `chunked` (one a guest's TE asked included), or that takes a WebSocket extension, is refused
+  before any of it goes: `Refusal::Unmaskable(Unmaskable::Coded | Extended)`, 502 on HTTP/1.1
+  (the connection closing) and on its HTTP/2 stream alone (`maskable`), as §12.5.3 lets a server
+  code a response anyway. A request with no value filled in asks and gets what it likes. The cost
+  is that an injected exchange's body travels uncoded between the network process and its host.
+  Tests: `inject::tests::leaks`' gzip echo over HTTP/1.1 as a content coding and as a transfer
+  coding and over HTTP/2, red before (the coded echo reached the guest and decoded to the value),
+  green after, and a filled WebSocket upgrade whose host takes permessage-deflate anyway; each of
+  the two response checks and the two request rewrites removed fails them. Still residual: a
+  tunnel's own framing (a value split across WebSocket frames, or a protocol other than WebSocket
+  after a 101), which the mask reads as bytes.
 - *Audit (f26).* `shards-net: credential <reference> filled in toward <host> at <s>.<ns> (Unix
   time)`, on the network process's stderr (its run host's diagnostics); never the value or the
   placeholder.
@@ -27803,6 +27962,21 @@ pin, read on Linux and never run), as data and pure functions the injector drive
   CLI's refresh (JSON and form) and revocation found, and a refresh of another or a near placeholder passed; the
   minting endpoint read widely; no token or placeholder in `Debug`; a 100 000-deep array read. clippy `-D warnings`
   clean. Each of 14 guards removed in turn fails its test (`scripts/step8-reds.py`).
+- *A token in a token response's head or trailers is refused (creds-01, amended 2026-11-13).* A capture wrote the
+  placeholders into the body's token places alone and passed the head (HTTP/1.1's, through `signin::frame`) and an
+  HTTP/2 stream's fields and trailers (through `give`) as they came, so a host repeating a token there (a field, a
+  `Set-Cookie`, the reason phrase) put the real token in the guest beside the placeholders. Now, once the body names
+  its tokens, every place of the response that goes to the guest as it came is read for each token, access, refresh
+  and ID, as it came and with its percent-encoding and quoted-pairs decoded (`signin::unechoed`): an HTTP/1.1 head
+  whole, each HTTP/2 field's name and value, its trailers'. One found is refused 502 (`signin::Refusal::Echoed`)
+  before the tokens are asked outside, as `read` refuses a token echoed in another of the body's strings: the guest
+  gets none of the response and nothing is captured. A chunked HTTP/1.1 response's trailer section is no part of what
+  goes (`Piece::Trailers`, dropped). Masking the head with the placeholders instead was refused: it would hand the
+  guest a response the body's own rule refuses. Tests (macOS arm64): `inject::tests::leaks`' token response
+  repeating its tokens in a field, a cookie and the reason phrase over HTTP/1.1, and in a field and in the trailers
+  over HTTP/2, red before (a real token reached the guest), green after, and each escaped form found; the check
+  removed, and HTTP/2's trailers left out of it, each fail them. Still unread: an informational (1xx) response,
+  which goes before the body names its tokens.
 
 **Built: step 8's second slice, its first part: the injector takes a sign-in's tokens outside and answers its
 refresh and revocation there** (crates/net: `signin.rs`, `inject.rs`, `lib.rs`, `lease.rs`; shards-dns' sign-in grant;
