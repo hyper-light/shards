@@ -11865,6 +11865,19 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     `until_unserved` (the kernel closing a killed daemon's descriptors) had 10 s.
     `Oplocked::new` (Defender's handle on a fresh copy) had its caller's `TIMEOUT`. Each now
     tries until the host is done, paced by `shards_api::pause`.
+    - *2026-11-14: `spawn`'s retry is gone, its cause removed.* A test's program written by
+      a descriptor of the test process itself is held open for write by every child another
+      test thread forks before that child execs, and an exec of it meanwhile is ETXTBSY
+      (execve(2)): Hex's Linux gate (adacachy2, parallel tests) failed shards-api's
+      `a_run_host_that_ends_before_its_run_starts_leaves_no_layer` with `Text file busy`, its
+      stand-in host written by `std::fs::write`. Every program a test runs is now written by a
+      process of its own, through one helper, `shards_testdir::program` (sh's `cat` and
+      `chmod`), or copied by `shards_testdir::program_copy` (cp): shards-api's stand-ins
+      (session.rs, client.rs, tests/sim.rs), the E2E copies of `shards` (`common::place`,
+      daemon.rs' rebuilt binary, containers.rs' `Gated`), init's and the daemon's test
+      scripts, and the registry's credential helpers, whose own copies of that writer
+      (`common::program`, `program_copy`, credentials.rs' `program`, auth.rs' `helper`'s) and
+      install(1) are gone. No exec meets ETXTBSY, so nothing waits one out.
   - *The call sites.* The terminals' exit waits and Windows' modes are a `Wait` on the
     shell's party (terminal.rs, terminal_windows.rs). vsock.rs' 60 s `TIMEOUT` and its 20 s
     read are `Following` reads, its greeting a `within`. confined.rs' record wait and its

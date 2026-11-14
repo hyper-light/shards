@@ -8130,7 +8130,7 @@ impl Gated {
         for (from, to) in [(shards(), "shards")] {
             // A link where there can be one: macOS assesses a copy as a new binary.
             if std::fs::hard_link(from, dir.join(to)).is_err() {
-                std::fs::copy(from, dir.join(to)).unwrap();
+                shards_testdir::program_copy(from, &dir.join(to)).unwrap();
             }
         }
         let vm = dir.join("shards-vm");
@@ -8142,7 +8142,7 @@ impl Gated {
             vm = shards_vm().display()
         );
         // Exec'd by the daemon's spawner.
-        common::program(&vm, &script);
+        shards_testdir::program(&vm, &script).unwrap();
         Gated { dir }
     }
 
@@ -8192,18 +8192,16 @@ impl Gated {
     /// `shards ARGS` from this directory in `home`, whose runs boot the test kernel and
     /// init, left going.
     fn start(&self, home: &Path, args: &[&str]) -> Going {
-        // Its copy of shards was written a moment ago.
-        let mut child = common::spawn(
-            common::as_tests_run(&mut self.command())
+        let mut child = common::as_tests_run(&mut self.command())
                 .args(args)
                 .env("SHARDS_HOME", home)
                 .env("SHARDS_KERNEL", kernel())
                 .env("SHARDS_INIT", self.init())
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
-                .stderr(Stdio::piped()),
-        )
-        .unwrap();
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
         let collect = |mut from: Box<dyn std::io::Read + Send>| {
             std::thread::spawn(move || {
                 let mut text = String::new();

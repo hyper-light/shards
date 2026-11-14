@@ -4012,13 +4012,14 @@ mod tests {
         }
     }
 
-    /// `script` written to `dir` as an executable stand-in for `shards api-run`.
+    /// `script` written to `dir` as an executable stand-in for `shards api-run`, by a process
+    /// of its own (`shards_testdir::program`): one this process wrote itself failed its exec
+    /// ETXTBSY where another test's child held it (Hex's Linux gate, `Text file busy` from
+    /// `a_run_host_that_ends_before_its_run_starts_leaves_no_layer`).
     #[cfg(unix)]
     fn stand_in(dir: &Path, script: &str) -> PathBuf {
-        use std::os::unix::fs::PermissionsExt as _;
         let path = dir.join("host");
-        std::fs::write(&path, script).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        shards_testdir::program(&path, script).unwrap();
         path
     }
 

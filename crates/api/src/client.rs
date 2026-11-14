@@ -4422,20 +4422,11 @@ mod tests {
         assert_ne!(dir.0, again.0);
     }
 
-    /// A stand-in script at `bin`, `body` its text: written beside it and installed by
-    /// install(1), so no descriptor of this process ever writes the file it executes (one a
-    /// test beside it forked while open would fail its exec ETXTBSY, execve(2)).
+    /// A stand-in script at `bin`, `body` its text, written by a process of its own
+    /// (`shards_testdir::program`): no exec of it fails ETXTBSY.
     #[cfg(unix)]
     fn installed(bin: &Path, body: &str) {
-        let source = bin.with_extension("sh");
-        std::fs::write(&source, body).unwrap();
-        let done = Command::new("install")
-            .args(["-m", "755"])
-            .arg(&source)
-            .arg(bin)
-            .status()
-            .unwrap();
-        assert!(done.success());
+        shards_testdir::program(bin, body).unwrap();
     }
 
     /// A guest's socket and its muxer's side of one connection, answering `answer` to the

@@ -15480,17 +15480,10 @@ mod tests {
         let mut t = Test::new("refiller");
         t.daemon.target = 2;
         t.daemon.warm_max = 8;
-        // A VM that never says it is ready, written by a process of its own: a file this one
-        // held open to write, a child another test's thread forked meanwhile would hold
-        // until it execs, and the daemon's exec of it would fail with ETXTBSY until then.
+        // A VM that never says it is ready, written by a process of its own
+        // (`shards_testdir::program`): no exec of it fails ETXTBSY.
         let vm = t.home.join("vm");
-        let written = std::process::Command::new("/bin/sh")
-            .arg("-c")
-            .arg(r#"printf '#!/bin/sh\nexec /bin/sleep 600\n' > "$0" && chmod 700 "$0""#)
-            .arg(&vm)
-            .status()
-            .unwrap();
-        assert!(written.success(), "{written}");
+        shards_testdir::program(&vm, "#!/bin/sh\nexec /bin/sleep 600\n").unwrap();
         t.daemon.vm = vm;
         t.run(|t| {
             let dir = t.home.join("template");

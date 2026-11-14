@@ -1053,20 +1053,19 @@ fn a_rebuilt_binary_replaces_the_daemon() {
     let before = daemon_pid(&home).expect("a daemon pid");
     let bin = TempDir::new("daemon-rebuilt-bin");
     let other = bin.join(format!("shards{}", std::env::consts::EXE_SUFFIX));
-    // A copy this process wrote is open for writing in each child another test's thread
-    // forks meanwhile, until that child execs, and running it fails with ETXTBSY until then
-    // (x86_64 CI, 2026-10-11): `common::spawn` waits that out.
-    std::fs::copy(shards(), &other).unwrap();
-    let mut run = common::spawn(
-        Command::new(&other)
+    // Copied by a process of its own: a copy this process wrote is open for writing in each
+    // child another test's thread forks meanwhile, until that child execs, and running it
+    // fails with ETXTBSY until then (x86_64 CI, 2026-10-11).
+    shards_testdir::program_copy(shards(), &other).unwrap();
+    let mut run = Command::new(&other)
             .args(["run", "-i", "--pull", "never", &image, "cat"])
             .env("SHARDS_HOME", &*home)
             .env("SHARDS_LOCAL_STORE", "none")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped()),
-    )
-    .unwrap();
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
     let said = "given before the old daemon stepped aside\n";
     run.stdin.take().unwrap().write_all(said.as_bytes()).unwrap();
     // Its output read as it comes, and the client ended past the deadline: a stdin lost

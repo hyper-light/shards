@@ -1049,7 +1049,7 @@ impl Gate {
             .open(dir.join("seen"))
             .unwrap();
         // Exec'd by the run host as its VM process, in its process group.
-        common::program(
+        shards_testdir::program(
             &dir.join("shards-vm"),
             &format!(
                 "#!/bin/sh\necho \"$$\" >'{seen}'\nexec 3<'{shut}'\nexec '{vm}' \"$@\"\n",
@@ -1057,7 +1057,8 @@ impl Gate {
                 shut = dir.join("shut").display(),
                 vm = common::shards_vm().display()
             ),
-        );
+        )
+        .unwrap();
         Gate { dir, told }
     }
 

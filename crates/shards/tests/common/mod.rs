@@ -83,53 +83,6 @@ pub fn recv_from(socket: &std::net::UdpSocket, buf: &mut [u8]) -> io::Result<(us
     }
 }
 
-/// `command` spawned, though its program was written a moment ago: a child another
-/// thread forked meanwhile holds the file open to write until it execs, and exec says
-/// ETXTBSY until then (Linux; the fork window of every multithreaded process). That window
-/// is its host's to end, as the other thread's child execs: asked again until it has, each
-/// try paced as D215 paces a wait's looks (`shards_api::pause`).
-pub fn spawn(command: &mut std::process::Command) -> io::Result<std::process::Child> {
-    let began = Instant::now();
-    loop {
-        let tried = Instant::now();
-        match command.spawn() {
-            Err(e) if e.kind() == io::ErrorKind::ExecutableFileBusy => {
-                std::thread::sleep(shards_api::pause(tried.elapsed(), began.elapsed(), Duration::MAX));
-            }
-            got => return got,
-        }
-    }
-}
-
-/// The program `text` at `path`, written by a process of its own: a file this one held open
-/// to write, a child another test's thread forked meanwhile would hold until it execs, and
-/// an exec of it, by this process or any other, would fail with ETXTBSY until then (Linux).
-#[cfg(unix)]
-pub fn program(path: &Path, text: &str) {
-    let mut writer = Command::new("/bin/sh")
-        .arg("-c")
-        .arg(r#"cat > "$0" && chmod 755 "$0""#)
-        .arg(path)
-        .stdin(Stdio::piped())
-        .spawn()
-        .unwrap();
-    writer.stdin.take().unwrap().write_all(text.as_bytes()).unwrap();
-    assert!(writer.wait().unwrap().success(), "{} not written", path.display());
-}
-
-/// The program at `from`, copied to `to` as [`program`] writes one: by a process of its own
-/// on Unix, so that no child another test's thread forks holds it open to write.
-pub fn program_copy(from: &Path, to: &Path) {
-    #[cfg(unix)]
-    assert!(
-        Command::new("cp").arg(from).arg(to).status().unwrap().success(),
-        "{} not copied",
-        from.display()
-    );
-    #[cfg(windows)]
-    std::fs::copy(from, to).unwrap();
-}
-
 /// A home whose guest is the test kernel and init, recorded before its daemon starts.
 #[track_caller]
 pub fn home_with(name: &str) -> TempDir {
@@ -1641,7 +1594,9 @@ fn binaries() -> &'static Path {
 }
 
 /// Copies `built` into `root`, as `name`: `shards`, which carries the rest, the VM process
-/// signed inside it as a release signs it (build.rs).
+/// signed inside it as a release signs it (build.rs). Each copy written by a process of its
+/// own (`shards_testdir::program_copy`), as every program a test runs is: none of this one's
+/// descriptors ever writes it, so no exec of it fails ETXTBSY.
 fn place(root: &Path, name: &str, built: &[(&str, &Path)]) {
     let dir = root.join(name);
     let temp = root.join(format!("{name}.{}.tmp", std::process::id()));
@@ -1649,7 +1604,7 @@ fn place(root: &Path, name: &str, built: &[(&str, &Path)]) {
     std::fs::create_dir_all(&temp).unwrap();
     for &(bin, path) in built {
         let copy = temp.join(format!("{bin}{}", std::env::consts::EXE_SUFFIX));
-        std::fs::copy(path, &copy).unwrap();
+        shards_testdir::program_copy(path, &copy).unwrap();
     }
     // Another process may have placed the same build meanwhile: either copy serves.
     if std::fs::rename(&temp, &dir).is_err() {
