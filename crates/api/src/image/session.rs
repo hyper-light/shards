@@ -2741,8 +2741,20 @@ mod tests {
         lock(&s.to_host).take();
     }
 
+    /// Run in a test process of its own ([`alone`]): the held writer refuses bytes once no
+    /// process holds the input's reader, and a child another test's thread starts meanwhile
+    /// would hold it. On macOS std makes a socketpair and only then marks its ends
+    /// close-on-exec (no SOCK_CLOEXEC there), and its spawn closes nothing it was not told to
+    /// (no POSIX_SPAWN_CLOEXEC_DEFAULT), so a std child started in that moment holds the
+    /// reader for its life; on Linux a child std forks holds it until its exec. Beside the
+    /// crate's other tests on adas-mac-studio-3 (7 spinners beside) the write was taken in 2
+    /// of 50 runs, and lsof, looking just after, found the reader held nowhere: its holder,
+    /// a short-lived child, had gone.
     #[test]
     fn an_ended_members_idle_input_releases_its_feeder() {
+        if alone("image::session::tests::an_ended_members_idle_input_releases_its_feeder") {
+            return;
+        }
         struct Entered<R> {
             reader: R,
             entered: std::sync::mpsc::Sender<()>,
@@ -2795,9 +2807,29 @@ mod tests {
         );
     }
 
-    /// The variable under which the leak check runs, in a test process of its own.
-    #[cfg(any(target_os = "macos", windows))]
+    /// The variable under which a test runs in a test process of its own ([`alone`]).
     const ALONE: &str = "SHARDS_API_SPAWN_ALONE";
+
+    /// Whether test `name` ran in a test process of its own, this one its parent, which
+    /// started it and found it passed: false in that process, which runs it. No other test's
+    /// thread starts a child there that holds a descriptor it makes.
+    fn alone(name: &str) -> bool {
+        if std::env::var_os(ALONE).is_some() {
+            return false;
+        }
+        let ran = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", name, "--test-threads=1"])
+            .env(ALONE, "1")
+            .output()
+            .unwrap();
+        assert!(
+            ran.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&ran.stdout),
+            String::from_utf8_lossy(&ran.stderr)
+        );
+        true
+    }
 
     /// A program that reads its stdin to its end, saying each line with its argument in it, by
     /// its path: findstr on Windows, grep on macOS.
@@ -2881,34 +2913,19 @@ mod tests {
     #[cfg(any(target_os = "macos", windows))]
     #[test]
     fn a_run_host_holds_no_end_it_was_not_given() {
-        if std::env::var_os(ALONE).is_some() {
-            let (read, write) = io::pipe().unwrap();
-            inheritable(&write);
-            let host = start_host(&reader(), &[OsStr::new("api-run")], &[]).unwrap();
-            drop(write);
-            let gone = writers_gone(&read);
-            drop(host.to_host);
-            host.process.wait().unwrap();
-            assert!(
-                gone,
-                "the run host holds the write end of a pipe it was never given"
-            );
+        if alone("image::session::tests::a_run_host_holds_no_end_it_was_not_given") {
             return;
         }
-        let alone = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "image::session::tests::a_run_host_holds_no_end_it_was_not_given",
-                "--test-threads=1",
-            ])
-            .env(ALONE, "1")
-            .output()
-            .unwrap();
+        let (read, write) = io::pipe().unwrap();
+        inheritable(&write);
+        let host = start_host(&reader(), &[OsStr::new("api-run")], &[]).unwrap();
+        drop(write);
+        let gone = writers_gone(&read);
+        drop(host.to_host);
+        host.process.wait().unwrap();
         assert!(
-            alone.status.success(),
-            "{}{}",
-            String::from_utf8_lossy(&alone.stdout),
-            String::from_utf8_lossy(&alone.stderr)
+            gone,
+            "the run host holds the write end of a pipe it was never given"
         );
     }
 

@@ -221,7 +221,10 @@ fn devices_are_plugged_into_a_running_microvm_and_its_disks_grow() {
         let (ours, theirs) = std::os::unix::net::UnixStream::pair().unwrap();
         #[cfg(windows)]
         let (ours, theirs) = {
-            let (server_end, vm_end) = shards_ipc::byte_pair().unwrap();
+            let (server_end, vm_end) = shards_ipc::byte_pair(
+                shards_ipc::Window::frame(shards_vmm::devices::virtio::fs::STREAM_FRAME).unwrap(),
+            )
+            .unwrap();
             (
                 shards_vmm::platform::PipeStream::from_handle(vm_end).unwrap(),
                 shards_vmm::platform::PipeStream::from_handle(server_end).unwrap(),

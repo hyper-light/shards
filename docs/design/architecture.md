@@ -48,7 +48,7 @@ performance and resource usage.
 | D1 | On macOS, drive Hypervisor.framework natively. No nested KVM (EL2 stays off by default). | Nested exits cost 27–37× more even with NV2 [VIO §2.2]; native HVF exit ≈ 0.7–0.8 µs [PM M4] |
 | D2 | Starts are served by **snapshot restore into a pre-spawned, pre-initialized VMM process**, never by spawning or cold-booting on the request path. | `posix_spawn` → `main` 3.7 ms p50; framework load +1.5 ms; first `hv_vm_create` 0.55 ms [PM M11, M11b]; one VM per process [GT §1.1]; on a shared host, a per-request process's launch, restore and teardown carry the tail, and thread QoS does not shorten it [PM M22] |
 | D3 | Use the in-kernel GIC (`hv_gic`). Snapshot it as HVF's own serialization of the device (`hv_gic_state`), not as its registers (revised 2026-09-29, D14). Open: its 1.2 ms restore, paid ahead of requests by warm VMs. | WFI blocks in-kernel with zero userspace exits [PM M7]; registers lose interrupts on their way to a vCPU, and every restore of a guest with a disk request in flight stalled [PM M45]; the blob restores in 1.2 ms against 20 µs for registers [PM M14] |
-| D4 | vCPU and device worker threads run with Mach time-constraint policy while they wait between runs (the QoS user-interactive they ask first goes as the policy is set). A governor looks at each once a scheduler tick (125 ms); one that has run a tick since it was last seen waiting is looked at every millisecond for a tick more, and goes to timeshare, as any program's thread, only if no look finds it waiting; it is real-time again once seen waiting. XNU's fail-safe depresses a thread at that policy that runs a second without blocking to priority 0 until its host is quiet. | Timer lateness 258 µs → 8.7 µs at 1 ms; idle IRQ p99 315 → 11 µs [PM M8, M10]; a run's 4 busy loops 0.97–3.25 CPUs → 3.99–4.00; 3 runs of 18 loops, host waits of up to 6.4 s → 14 ms; block reads verified with every CPU busy 144k → 241k at p50; a start unchanged [PM M317]; beside full gates, in an agent's clamped session or as a user's program, 152,606 block reads verified in 3 s at least, 90 of 90 runs [PM M327] |
+| D4 | vCPU and device worker threads run with Mach time-constraint policy while they wait between runs, its pair each thread's own (its learned batch, its constraint twice it; platform-11, D191's macOS paragraph) (the QoS user-interactive they ask first goes as the policy is set). A governor looks at each once a scheduler tick (125 ms); one that has run a tick since it was last seen waiting is looked at as finely as its host wakes (the cold pair's constraint) for a tick more, and goes to timeshare, as any program's thread, only if no look finds it waiting; it is real-time again once seen waiting. XNU's fail-safe depresses a thread at that policy that runs a second without blocking to priority 0 until its host is quiet. | Timer lateness 258 µs → 8.7 µs at 1 ms; idle IRQ p99 315 → 11 µs [PM M8, M10]; a run's 4 busy loops 0.97–3.25 CPUs → 3.99–4.00; 3 runs of 18 loops, host waits of up to 6.4 s → 14 ms; block reads verified with every CPU busy 144k → 241k at p50; a start unchanged [PM M317]; beside full gates, in an agent's clamped session or as a user's program, 152,606 block reads verified in 3 s at least, 90 of 90 runs [PM M327] |
 | D5 | Create vCPUs strictly sequentially in index order, both at boot and on restore. | Redistributor frames and processor numbers follow creation order [PM M13] |
 | D6 | Guest RAM uses the 16 KiB IPA granule (default); the guest's own page size stays 4 KiB. | First-touch cost per byte is 4× lower than with a 4 KiB granule [PM M5] |
 | D7 | Snapshot memory is file-backed `MAP_PRIVATE`, mapped lazily. On HVF the working set can be prefetched from helper vCPUs, not from host reads; on KVM the VMM maps it ahead (`KVM_PRE_FAULT_MEMORY`) [PM M33]. Map it in the warm process before the request: in-process faults on file-backed memory have no tail beyond 111 µs in 6.3 M, but fresh processes mapping a just-unmapped file stalled ~1 s in ~1% of boots [PM M15, M16]. | Cheapest first-touch backing, 1.07 µs per 16 KiB page; host pre-read doesn't help; 4 vCPUs fault 2.2× faster [PM M5, M6] |
@@ -8950,7 +8950,7 @@ process.
     once, and one it cannot pends until the client has taken enough (npfs above; Wine's
     `reselect_write_queue` completes a pending write once the reader's unread bytes fit its
     buffer). So an answer is written in parts no larger than its line's outbound quota
-    (GetNamedPipeInfo's out buffer size, `LINE_BUFFER`), each waiting on the client for no
+    (GetNamedPipeInfo's out buffer size, the system's, `Window::System`, platform-11), each waiting on the client for no
     more than a quota's worth of its reading: a part that finishes at once teaches nothing,
     and one that pends is a take, from its pend (`ERROR_IO_PENDING`, `pipe::write_telling`)
     to its completion (ROOT, 2026-11-13), where the pipe is connected still as it finishes
@@ -13247,6 +13247,27 @@ retain those obligations; no Windows check or quota replacement is claimed compl
   thread at most and leaves one only where the daemon named its lists anew. No literal.
 - **11** stays open (held.md).
 
+**2026-11-14, every random byte from ProcessPrng, not BCryptGenRandom** (Hex's ask; its
+`hex_exe_imports_only_what_nanoserver_carries` failed on bcrypt.dll, which Windows Nano
+Server does not carry). Pipe and slot names (`random_hex`), the VMM's `fill_random` and the
+network process's `entropy` all take `shards_ipc::fill_random`, which calls ProcessPrng,
+bcryptprimitives.dll's per-process generator (windows-sys 0.61.2's
+`Win32_Security_Cryptography`, now shards-ipc's feature alone). It is the source Rust's std
+fills its own randomness from (rust-lang/rust 1.98.1, library/std/src/sys/random/windows.rs,
+bound raw-dylib in sys/pal/windows/c.rs) and AWS-LC seeds from on desktop Windows
+(crypto/rand_extra/windows.c); Microsoft documents it as always returning TRUE
+(https://learn.microsoft.com/en-us/windows/win32/seccng/processprng). The names stay the
+system CSPRNG's, never time or a hasher's seed, so no squatter can guess one and make it
+first. A FALSE is `RandomFailed`, typed, and no name is made. Every BCryptGenRandom call is
+gone, no fallback kept. No literal.
+Shown on Windows 11 x86_64 (the adacachy guest, MSVC 14.44, Rust 1.98.1, 2026-11-14): at
+main 8d1c89a05 the shards-ipc and shards-vmm unit-test binaries import
+`bcrypt.dll!BCryptGenRandom` (`dumpbin /imports`); at b1c7235ec neither imports bcrypt.dll, only
+`bcryptprimitives.dll!ProcessPrng`; `random_names_are_distinct_hex_of_their_length` (4,096
+16-byte names, all distinct lowercase hex) and the VMM's `random_bytes_differ_between_calls`
+pass, and clippy -D warnings of shards-ipc, -net and -vmm is clean. `shards.exe`'s own
+imports are not yet checked (ROOT's).
+
 **Why.** Every feature on every host (the user, 2026-10-27; docs/audit/2026-10-27_platform-parity.md
 row 1): on Windows `shards` had no daemon, so no `run IMAGE` and none of the commands of its
 microVMs, images, volumes and networks. D185's slots are FIFOs in the home, their
@@ -13898,11 +13919,88 @@ sleeps teaching g their lateness (`granule::LATE`). On a host whose GetThreadTim
   `raised_threads_sharing_a_cpu_take_no_more_than_half_of_it` at the derived period, then PM
   M495's start latency (`cpu-elastic/phases.py` against `winnone.patch`, n 100 a side) at 2g
   beside 100 ms.
-- Still owed with platform-11's design (`docs/research/measurements/platform-fixes/held.md`):
-  the Windows pipes' `BUFFER` and `LINE_BUFFER` quotas, whose derivation needs each caller's
-  wire window (a message of `MAX_PAYLOAD` is 6 MiB, past either, so neither is a frame bound),
-  and macOS's 0.5 / 1 ms time-constraint pair (a guest timer's deadline or a measured batch
-  cost). No number replaced another.
+
+**macOS's time-constraint pair: each thread's own (platform-11, 2026-11-14).** M10's fixed
+pair (`COMPUTATION_NS` 0.5 ms, `CONSTRAINT_NS` 1 ms, and the suspect look at the latter) is
+gone, with no fallback (`platform::macos_thread`).
+- *Computation: the thread's batch, learned.* The governor already reads each watched
+  thread's CPU and run state at every look; the CPU a thread ran between two looks that each
+  found it waiting, while it was real-time, bounds every run between its waits in that span
+  from above. Its batch is the most such span seen (`learned`), so that no run of it is
+  preempted by another real-time thread for its computation's sake; a thread's pair is set
+  again when its batch moves it. A vCPU's own waits are in-kernel (HVF's WFI, M8): no user-space
+  point sees each, and timing each `hv_vcpu_run` would read a clock at every exit, so the
+  governor's looks are where the batch is measured. Held to XNU's bounds, 50 µs to 50 ms
+  (osfmk/kern/sched_rt.c `sched_realtime_timebase_init`: `min_rt_quantum`, "smallest rt
+  computation (50 us)"; `max_rt_quantum`, "maximum rt computation (50 ms)").
+- *Constraint: D191's period for one thread at half a CPU of its computation*
+  (`granule::period(1, HALF_CPU, computation)`, twice it; `HALF_CPU` the fair-share bound, as
+  Windows' governor's). A guest timer's deadline would be the better constraint where known,
+  but no thread's is: HVF arms the guest's virtual timer in the kernel, and one vCPU thread
+  serves every timer its guest sets.
+- *The suspect's look*: as finely as the host wakes, the cold pair's constraint (twice the
+  measured wake, held to XNU's least), where M10's 1 ms was: a look must land in one of a
+  suspect's waits where it waits at all. Its own constraint, twice a batch of up to 50 ms,
+  looked too seldom: `a_thread_that_waits_between_its_runs_stays_real_time` (4 ms run, 1 ms
+  waited) went to timeshare at it on adas-mac-studio.local, and stays real-time at the cold
+  one.
+- *Cold start*: before a batch is seen, the computation is the host's measured wake
+  (`granule::measure`, the lateness of one shortest wait, once a process), held to XNU's
+  least: a thread asks for no more than its host's own wake grain until it is seen to need
+  more. The governor's own pair is the cold one.
+- *Typed failure* (`Unconstrained`): no wake measured, a constraint past D191's
+  (`Outgrown`), or a pair the timebase cannot say in a u32 of its ticks leaves the thread at
+  its policy, why said; a thread not made real-time is not watched, as before.
+- *The demotion rule is M317's, unchanged*: a look each scheduler tick, a suspect after a
+  tick run past its last wait, timeshare after a tick of looks finding it running, the
+  fail-safe at a second's run (`3 * TICK < FAIL_SAFE`).
+- Held: vmm `macos_thread::tests::a_threads_pair_is_its_batchs` (red with the pair held at
+  0.5 / 1 ms whatever its batch) and `a_batch_is_the_most_run_between_two_waits`, beside
+  M317's three governor tests. Owed to ROOT: M8's and M10's timer-lateness and idle-IRQ runs
+  and M317's busy-loop and block-read runs at the learned pair beside 0.5 / 1 ms, through
+  `docs/research/measurements/macos-sched/launchd-run.sh` (a user's QoS, not the agent's
+  clamp), n and p50/p90/p99/max as M10 reports them.
+
+**The Windows pipes' quotas: each its caller's window (platform-11, 2026-11-14).** `BUFFER`
+(1 MiB, M340's throughput) and `LINE_BUFFER` (64 KiB, a Linux FIFO's) are gone, with no
+fallback: each pipe is made with its caller's window (`shards_ipc::Window`), its quota each
+way (CreateNamedPipeW's `nOutBufferSize` and `nInBufferSize`).
+- *A caller whose protocol writes frames of a bound asks for its longest*, so that a writer
+  writes one whole without waiting on its reader mid-frame (CreateNamedPipeW, Remarks: a
+  write past the quota "will block until the data is read from the pipe"):
+  - a [`Stream`] pair's, a message: its 6-byte header, `MAX_PAYLOAD` (a run's request, its
+    head and spec, `RunHead::LEN` + `run::MAX_PAYLOAD`) and a u64 for each of `MAX_FDS`
+    handles (`pipe::MESSAGE_FRAME`);
+  - a share's stream (D197, `shards_ipc::byte_pair`, through `os::share_pipe`, the daemon's,
+    an image run's, a CLI's and a remote client's shares): its length word and `fs::MAX_FRAME`
+    (`fs::STREAM_FRAME`), a control frame of the VM process's own (a share's tables) longer
+    and rarer, waiting on its reader past it;
+  - an input pair (`input_pair`), its caller's room, as before (`run::CHUNK`).
+- *A caller whose flow has no frame of its own asks for the system's* (`Window::System`): a
+  slot's line and its list (D185: on Unix a pipe, holding the kernel's default; an answer
+  past it waits on its client, as M261 decided), a slot's streams (a client's stdin, stdout,
+  stderr), a pair of bytes written in messages (`plain_pair`, a member's streams) and a
+  Docker client's pipe (`Listener`, HTTP). CreateNamedPipeW documents no default for a size
+  of zero, so its quota is the one CreatePipe's `nSize` of zero is given ("the system uses
+  the default buffer size"; anonymous pipes "are implemented using a named pipe"), read once
+  a process from an anonymous pipe made so (`pipe::system_quota`, GetNamedPipeInfo).
+- *Cold start*: none to learn; a frame is a protocol bound, and the system's quota is read
+  the first time a pipe of it is made (one CreatePipe and its two handles closed).
+- *Failure, typed*: a frame of no bytes or past a DWORD is refused (`WindowRefusal`, as
+  `io::ErrorKind::InvalidInput`); a system quota that cannot be read refuses the pipe
+  (`io::Error`, each time asked). The quota is advisory ("the system default, the system
+  minimum or maximum, or the specified size rounded up", CreateNamedPipeW): a reserve below
+  a frame is not refused, as a write past it waits on its reader rather than fails, so the
+  frame still arrives whole, only waited on; refusing would refuse every pipe on a host whose
+  maximum is lower.
+- Held: ipc `window::tests::a_pipes_quota_is_its_callers_window` (all hosts; red with a
+  frame asked for as a constant) and, on Windows, `pipe::tests::a_pipes_quota_is_its_callers_window_as_made`
+  (a Stream pair's quota holds its longest message, a 16-byte frame's does not, the system's
+  is CreatePipe's). Linted for x86_64-pc-windows-msvc; their Windows run is owed to ROOT:
+  `cargo test -p shards-ipc --lib pipe` and `cargo test -p shards-ipc --lib slots` on
+  windows-2025 (CI) and jupiter, then daemon.rs' `a_request_past_a_sockets_buffer_is_served`
+  and `a_stopping_daemon_waits_for_no_client_that_reads_nothing` (a 123 KiB answer past the
+  system's quota), and PM M340's throughput run (`docs/research/measurements/windows-pipe`, `cargo run --release` there on jupiter) at each new quota beside 1 MiB and 64 KiB.
 
 The user's plan, item 3 (2026-10-18): a run's `--cpus` as elastic as its memory (D148),
 every microVM given the host's CPUs, init bringing the run's online and `update --cpus`
@@ -31107,10 +31205,48 @@ ruleset, the run's seccomp filter.
     started) or that a process of the member's ended is `Refusal::NoStarter` (wire code 7,
     `docker exec`'s 126); its commands running then end with it, their end SIGKILL, as the
     reaper reaps them. A command it could not fork is `Processes` at `pids.max`, `Ended` in a
-    namespace whose first process has gone (ENOMEM), else `Joining(errno)`.
-  - *Costs.* One process of the member's, counted in its `pids.max`, for the member's life;
-    `shards top` shows it (its name `starter`). It is a fork of init's address space as the
+    namespace whose first process has gone (ENOMEM), else `Joining(errno)`. The starter
+    sends a pidfd only with a command born: the kernel writes a `CLONE_PIDFD` number before
+    it charges the fork to `pids.max` and lets it go as it refuses it (kernel/fork.c
+    `copy_process`, Linux 7.2-rc4 :2335 `put_user(pidfd, ...)`, :2394 `cgroup_can_fork`,
+    :2568), so the first cut sent a closed descriptor as a refusal's, its sendmsg failed
+    EBADF, and the exec waited for ever where `Processes` was due (confine-11, reproduced at
+    `with_starter`'s mutant: init's end polled with nothing queued, `pids.events` `max 1`).
+  - *Costs* (confine-11, 2026-11-14, [docs/bugs/2026-11-13/confine.md](../bugs/2026-11-13/confine.md)).
+    One process of the member's for the member's life, a fork of init's address space as the
     member's first process was, its pages shared copy-on-write until either writes.
+    - *Its own processes number what it declared.* The starter is one task of the member's
+      cgroup, which the pids controller counts as every task (cgroup-v2.rst, "PID"), and it
+      cannot be elsewhere: what it forks is born in its cgroup, and a process of no
+      capability cannot put a child into another (clone3 `CLONE_INTO_CGROUP` asks write
+      access to the target's `cgroup.procs`), so a starter outside the member's cgroup would
+      start commands outside its `pids.max`, `memory.max` and freezing. So `start` commits
+      the member's `pids.max` as what it declares and its starter's one task
+      (`STARTER_TASKS`, `with_starter`; an overflow refuses the member's start), as a
+      container's processes number its `--pids-limit` under runc, whose exec helper is gone
+      once its command runs. Counted against what it declared, a member of `processes: 1`
+      had no starter (its fork EAGAIN) and every command run in it was refused `NoStarter`,
+      and one of two had a command refused at its first. Once its starter has gone
+      (`Started::starter_gone`, as init reads its channel's end) its `pids.max` is what it
+      declared again, so that a member that ended its starter and reaped it (`__WALL`) is
+      given no process more; one that leaves its starter's zombie unreaped holds one less,
+      its own doing. A write that fails is said on init's console and leaves the one task.
+    - *`top` leaves it out*, with init's standby forks, by the file it runs: every process
+      of init's own program, known by the device and inode of its `/proc/PID/exe`
+      (procs.rs `image`), never by a name. It was left out by the path that link reads,
+      which is a program's path in its own mounts (d_path(9) from a root its mounts do not
+      reach), so a member whose image had its program where init's is, as an image's
+      `/init` is, was left out of `top` as init's own fork (red
+      `a_members_program_at_inits_path_is_listed` at 6f3cd4428, `listed: []`). The
+      starter's name, `starter`, which any member's program could take, decides nothing. A
+      process of the member's can run no copy of init's file: it is outside the member's
+      root, and the processes that run it there, the starter and a command born of it before
+      it execs, are not dumpable, so their `/proc/PID/exe` is refused it.
+    - *The member's own `/proc` shows it*: it is a process of the member's PID namespace, as
+      it must be to bear commands there, so a command that counts that namespace's
+      processes counts it (member_exec's `confined pid=4 procs=4`), where runc's `runc init`
+      shows only while an exec starts. A member may signal it, and ends what it runs then
+      (above).
   - *Alternatives.* Starting from init and entering the member's ruleset: a sibling domain
     (above). The member's namespace init as starter: init's sealed reaper is outside the
     member's Landlock domain and seccomp filter, so what it forks is too. The member's first
@@ -31121,7 +31257,10 @@ ruleset, the run's seccomp filter.
     member_exec -- --nocapture`, with an exec that runs `kill -0 1` and `kill -TERM 1` in its
     member and connects to an abstract socket the member's program listens on, and an exec
     asked after the member killed its starter (`Refusal::NoStarter`); E2E tests that count a
-    member's processes see its starter.
+    member's processes see its starter. confine-11's: `shards top vm` of a run whose member
+    runs lists the member's program and not its starter, and `shards exec vm --for MEMBER`
+    of a member that declares `processes: 2` runs one command and refuses a second held open
+    beside it (`Refusal::Processes`, status 126).
 - *Refused environment values* (confine-07): validation returns only the typed
   cause (empty name, NUL, reserved name), never the rejected entry. Both Debug and
   Display are value-free, and the existing member refusal wire renders only that
@@ -31182,7 +31321,16 @@ request with its member (ipc); `exec --help`'s Shards options (cmdline). On a Li
 with Landlock, as root of IDs past the test's own (`unshare --map-auto --map-root-user`):
 `domains::tests::a_command_run_in_a_member_gains_no_landlock_right_its_member_lacks`
 (confine-01's member and its command, through `rules` and `confine`, on Linux 7.3.3
-x86_64: red before, `member refused (13); command written`). Real VMs, ROOT's
+x86_64: red before, `member refused (13); command written`). confine-11's, Linux 7.3.3
+x86_64 (adacachy2): `a_members_top_lists_its_own_processes_alone` (the starter alive, left
+out; green before, as main's path compare matched it too),
+`a_members_program_at_inits_path_is_listed` (red at 6f3cd4428: `listed: []`), and with
+SHARDS_TEST_CGROUP in a delegated scope
+`a_member_runs_as_many_processes_as_it_declares_its_starter_apart` and
+`a_command_past_what_its_member_declared_is_refused` (`with_starter` mutated to the declared
+count: the first `not born: NotBorn { errno: 11 }`, the second `not asked: Gone`, its member
+of one process left no starter; before the starter's pidfd fix the first waited for ever),
+and `a_member_whose_starter_went_is_held_to_what_it_declared`. Real VMs, ROOT's
 (`cargo test -p shards --profile test-release --test member_exec`):
 `a_command_run_in_a_member_is_confined_as_the_member_is` (uid, PID namespace, name, caps and
 `no_new_privs`, signals, Landlock on files and TCP, seccomp, cgroup and network, another
