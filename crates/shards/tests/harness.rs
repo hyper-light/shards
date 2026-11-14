@@ -560,7 +560,7 @@ fn a_give_back_is_followed_while_its_memory_falls() {
             "its kind learned no whole give-back: {:?}",
             falling.seen()
         );
-        stand_in.stdin.as_mut().unwrap().write_all(b"go").unwrap();
+        stand_in.stdin.as_mut().unwrap().write_all(b"g").unwrap();
         let ended = falling.settled();
         let _ = stand_in.kill();
         let _ = stand_in.wait();
