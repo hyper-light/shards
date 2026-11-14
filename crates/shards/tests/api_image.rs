@@ -478,7 +478,25 @@ fn a_project_is_plugged_into_the_running_harness() {
         ),
         "a member of files alone"
     );
-    ask(&*guest, |g| g.plug(&codex(), &proj, &dest, false, Duration::MAX)).unwrap();
+    let barrier = std::sync::Barrier::new(2);
+    let results = std::thread::scope(|scope| {
+        let attempt = || {
+            barrier.wait();
+            ask(&*guest, |g| g.plug(&codex(), &proj, &dest, false, Duration::MAX))
+        };
+        let a = scope.spawn(&attempt);
+        let b = scope.spawn(&attempt);
+        [a.join().unwrap(), b.join().unwrap()]
+    });
+    assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1, "{results:?}");
+    assert_eq!(
+        results
+            .iter()
+            .filter(|r| matches!(r, Err(ImageRefusal::Plug(PlugRefusal::Taken, _))))
+            .count(),
+        1,
+        "{results:?}"
+    );
     let seen_at = proj.join("seen");
     let mut patience = Patience::started();
     let seen = loop {

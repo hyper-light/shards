@@ -3217,6 +3217,9 @@ mod hosted {
         next_lane: std::sync::atomic::AtomicU64,
         /// What is plugged into the run's members, by the path it is at.
         plugged: Mutex<HashMap<String, Plugged>>,
+        /// A plug/unplug's ownership turn, held through device and guest completion;
+        /// replies never need this lock. The mounted registry stays readable meanwhile.
+        plug_turn: Mutex<()>,
         /// The pipe the run's share process tells what its host changes on (D235), until
         /// its guest's NOTICE built-in is given it as the run starts; and the streams each
         /// of those built-ins' ends are told on, held while the run is.
@@ -3735,6 +3738,7 @@ mod hosted {
                 lanes: Mutex::new(Some(HashMap::new())),
                 next_lane: std::sync::atomic::AtomicU64::new(0),
                 plugged: Mutex::new(HashMap::new()),
+                plug_turn: Mutex::new(()),
                 notices_due: Mutex::new(due),
                 notices: Mutex::new(Vec::new()),
                 leasing,
@@ -5095,6 +5099,7 @@ mod hosted {
             }
             Err(_) => return Err((R::Request, format!("{}: not a plain absolute path", ask.at))),
         }
+        let _turn = lock(&live.plug_turn);
         if lock(&live.plugged).contains_key(&ask.at) {
             return Err((R::Taken, format!("{} has something plugged in already", ask.at)));
         }
@@ -5193,6 +5198,7 @@ mod hosted {
         ask: &wire::UnplugAsk,
     ) -> (Result<(), (wire::PlugRefusal, String)>, Option<Shares>) {
         use wire::PlugRefusal as R;
+        let _turn = lock(&live.plug_turn);
         let Some((devfn, address, member)) = lock(&live.plugged)
             .get(&ask.at)
             .map(|p| (p.devfn, p.address.clone(), p.member))
@@ -5336,6 +5342,7 @@ mod hosted {
                 lanes: Mutex::new(Some(HashMap::new())),
                 next_lane: std::sync::atomic::AtomicU64::new(0),
                 plugged: Mutex::new(HashMap::new()),
+                plug_turn: Mutex::new(()),
                 notices_due: Mutex::new(None),
                 notices: Mutex::new(Vec::new()),
                 leasing: None,

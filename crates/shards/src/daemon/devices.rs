@@ -387,6 +387,8 @@ impl<D: Disk> Daemon<D> {
             return 1;
         };
         let done = self.running_own(given).and_then(|id| {
+            // One owner from admission through guest mount/device completion (D235).
+            let _turn = self.request_turn(&id);
             match what {
                 What::Function => {
                     if let Some((client, grants)) = whom {
@@ -637,6 +639,8 @@ impl<D: Disk> Daemon<D> {
             return 1;
         };
         let done = self.running_own(given).and_then(|id| {
+            // One owner from admission through guest mount/device completion (D235).
+            let _turn = self.request_turn(&id);
             if what == What::Function {
                 return self.unplug_function(&id, path);
             }
@@ -681,6 +685,8 @@ impl<D: Disk> Daemon<D> {
             return 1;
         };
         let done = self.running_own(given).and_then(|id| {
+            // One owner from admission through guest mount/device completion (D235).
+            let _turn = self.request_turn(&id);
             let bytes = bytes_of(size)?;
             let plugged = lock(&self.plugged)
                 .get(&id)

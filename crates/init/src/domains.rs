@@ -2174,7 +2174,7 @@ pub fn start(
                 .collect(),
             hostname: CString::new(d.cgroup.as_str())
                 .map_err(|_| format!("{}: a NUL in its name", d.label))?,
-            argv: command_line(&argv0, d, &given_args)
+            argv: command_line(argv0, d, &given_args)
                 .into_iter()
                 .map(CStr::as_ptr)
                 .chain([std::ptr::null()])
