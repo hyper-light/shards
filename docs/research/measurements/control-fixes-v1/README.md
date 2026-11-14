@@ -166,8 +166,8 @@ and peer-close detection are retained, not reimplemented. The Windows requested
 pipe room is run::CHUNK (the admitted ABI input record), rejects zero, and is a
 quota hint, not a new bound on Unix socket memory. Source contracts: Rust std's
 `library/std/src/sys/pal/windows/handle.rs` synchronous write and `pipe.rs`, and
-Microsoft [CreateNamedPipeW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createnamedpipew)
-(buffer quota), [synchronous/overlapped I/O](https://learn.microsoft.com/en-us/windows/win32/ipc/synchronous-and-overlapped-input-and-output).
+Microsoft [CreateNamedPipeW](https://learn.microsoft.com/en-us/windows/win32/api/namedpipeapi/nf-namedpipeapi-createnamedpipew)
+(buffer quota, official contract read 2026-11-13), [synchronous/overlapped I/O](https://learn.microsoft.com/en-us/windows/win32/ipc/synchronous-and-overlapped-input-and-output).
 Windows execution and all real-VM propagation are unverified here.
 
 At ea6614b8b, r8 passed all 32 session tests and API/IPC clippy. At final source
@@ -268,3 +268,22 @@ Policy script and seven-target matrix are unrun here: the binding task restricts
 implementer commands to focused cargo checks; ROOT/CI own the policy and integration
 gates. No outside-area defect was added to this task. ROOT's inbox rejected status
 messages with backpressure (pending 4, authority 3); delivery has not been claimed.
+
+## Fresh-main combination and corrected cleanup witness
+
+Signed merge 93aeb4a8ee05418cbf3efcbbca1d0b5c1a70eaf4 brought main f7a3edfbc
+without conflicts; policy hashes unchanged. R11 at 7bfa4f376 passed all 5 cap
+tests, then 33/34 session tests: the feeder completion message arrived but the
+retained writer's immediate write succeeded. The chain stopped; remote tests and
+clippy did not run in that invocation. [Failure log](logs/r11-merge-failed.log).
+No production cause was inferred from that single observation.
+
+The guard at 4ce3d80a432db5b2ce02d4ff718b8ba84989e43b now joins the completed
+feeder before asserting descriptor release; on red it drops the writer first,
+then joins before failing. The channel completion message alone was not the
+thread-exit witness the test required. At that source, R12 on the same Mac passed
+all 34 session tests, 10 exec tests, 2 frame tests, and clippy for shards, API,
+IPC and remote. [Complete green log](logs/r12-merged-green.log). Five cap tests
+were already green on the identical cap source in R11. This is the focused green
+combination over main f7a3edfbc; subsequent doc/comment changes are not executable
+changes. R10 never ran a command (carrier folder unavailable); not a test result.

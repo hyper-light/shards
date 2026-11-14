@@ -2386,8 +2386,8 @@ mod windows;
 #[cfg(windows)]
 pub use windows::*;
 
-/// A caller's ordinary pipe writer paired with a cancellable reader. Ending a clone of
-/// the reader wakes an idle read and refuses later writes, without another relay thread.
+/// A caller's ordinary pipe writer paired with a cancellable reader. Ending a clone
+/// wakes an idle read; once all reader copies close, later writes fail. No relay thread.
 #[cfg(unix)]
 pub fn input_pair(room: u32) -> std::io::Result<(Stream, std::io::PipeWriter)> {
     use std::os::fd::OwnedFd;
