@@ -7653,6 +7653,13 @@ revision before comparing a changed API/implementation.
   network cost it nothing measurable. Open: the daemon's share on a quiet host; the peers'
   processes asked at once.
 
+**network-01 correctness follow-up (2026-11-13).** M210's finite connection-cost
+measurements do not validate segment acceptance. On `adas-mac-studio.local` (Darwin
+arm64, Rust 1.98.1), a socket-seam red at a6ca2403e accepts an empty FIN numbered zero
+without ACK. At 50716d946, RFC 9293 table 6 and ACK processing refuse it; 20 focused
+TCP tests and shards-net all-targets clippy pass. This is correctness evidence, not
+new performance or platform-parity data. [Commands, output, rules and owed real-VM checks](measurements/network-fixes-v1/README.md).
+
 ### M211. The limits a build's `RUN` step starts with
 
 - **Question.** A container's process starts with Docker's limits (`defaults::limits`,
