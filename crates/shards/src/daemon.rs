@@ -17525,6 +17525,13 @@ mod tests {
                 "files": [],
                 "volumes": [],
                 "binds": [],
+                "cpu": [],
+                "guest": false,
+                "baseline": [],
+                "cpu_identity": [],
+                "published": [],
+                "network": "",
+                "key": null,
             });
             let (status, out, err) = t.ask(&[shards_ipc::MOVE_STEP, "ready", &plan.to_string()]);
             assert_eq!(status, 1, "{out}{err}");
@@ -17564,6 +17571,12 @@ mod tests {
                     "files": [],
                     "volumes": [],
                     "binds": [],
+                    "cpu": [],
+                    "guest": false,
+                    "baseline": [],
+                    "cpu_identity": [],
+                    "network": "",
+                    "key": null,
                     "published": [{
                         "port": 80,
                         "proto": "tcp",
@@ -17689,6 +17702,13 @@ mod tests {
                     "files": [],
                     "volumes": volumes,
                     "binds": [],
+                    "cpu": [],
+                    "guest": false,
+                    "baseline": [],
+                    "cpu_identity": [],
+                    "published": [],
+                    "network": "",
+                    "key": null,
                 }))
                 .unwrap()
             };
