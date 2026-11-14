@@ -23,7 +23,8 @@ went red in kiln r4: injected owner-write EIO was acknowledged 0, expected -5.
 49 tests and `cargo clippy -j 4 -p shards-vmm --all-targets -- -D warnings`
 passed. [Green log](runs-01-green.log). An intermediate module check (r6)
 exposed symlink ELOOP and pinned-unlinked ENOENT regressions; the correction
-keeps native special nodes root-owned and reads pinned metadata through its fd.
+reads pinned metadata through its fd. The native nondevice ownership mapping was
+subsequently corrected by the follow-up below.
 The final module gate includes these preexisting regressions and passes them.
 No guard-removal mutation or live VM was run.
 
@@ -235,3 +236,28 @@ Runs-05 merged compile gates after its api_run unit/clippy gate: 160a2836 (r25,
 14.88s), 46f2f014 (r26, 13.25s), aff40059 (r28, 13.66s), each
 `cargo check -j 4 -p shards --tests`. Pushes rejected while main advanced were
 not forced. Prepared runs-06 while the runs-05 landing retry remained pending.
+
+## runs-01 follow-up: native nondevice owners
+
+A source check found my ENODATA classification had also made native symlinks
+(and Linux FIFOs/sockets) root-owned, though only device nodes have that rule.
+The added `unrecorded_nondevice_nodes_keep_the_runs_user` test reproduces the
+regression on af9477321467f1487cb9a15c8e17f99cc7d1960f plus its test: r34
+returns uid 0 for the unrecorded symlink instead of the run's 1000. It is a
+regression introduced by this lane, not an additional original finding.
+
+The correction classifies only known native kinds as unable to carry owner
+metadata. Devices stay root's; unrecorded nondevices keep init's owner mapping.
+ENODATA from an ordinary file is still an error, not proof of absent metadata.
+Neither lookup nor classification follows a symlink or opens a device driver.
+Guest-created native kinds lacking owner-xattr support retain their existing
+exception; cross-run owner persistence for them is not claimed by the ordinary
+file/directory xattr fix. There is no new production constant, cache or wait.
+
+`cargo test -j 4 -p shards-vmm --lib unrecorded_nondevice_nodes_keep_the_runs_user`
+passes in r35; `cargo test -j 4 -p shards-vmm --lib
+devices::virtio::fs::server::tests` passes 50 (including the EIO/malformed-owner
+regression and root-owned /dev/null), and `cargo clippy -j 4 -p shards-vmm
+--all-targets -- -D warnings` passes (3.04s). Same macOS arm64 runner/target;
+no VM. Logs: runs01-followup-red.log and runs01-followup-green.log. R01-R16
+and live guest/other-platform limits above remain explicit.

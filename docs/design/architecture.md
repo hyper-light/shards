@@ -3288,6 +3288,13 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
       the guest makes records its maker, root's too, so it stays its maker's whoever a
       later run's user is: a root run's directory refuses a later run of user 1000 (it does
       not turn into theirs). Before that, a root-made file stays unrecorded, as before.
+    - *Native nodes without owner attributes.* Device nodes retain their root owner
+      (the guest opens its own device number); unrecorded symlinks, and Linux FIFOs and
+      sockets, use init's host-file owner mapping. Classification uses their no-follow
+      stat type, never a failed ordinary-file read. These native kinds' existing lack
+      of guest owner-xattr persistence is an exception, not permission to swallow an
+      ordinary file/directory's metadata error. The runs-01 follow-up regression covers
+      host symlink/FIFO mapping and retains the root-owned-device check.
     - *Owner I/O fails closed* (runs-01, 2026-11-13). An ordinary file or directory whose
       maker cannot be persisted is removed and its creation refused with the host errno.
       Failed reads and malformed records refuse lookup; only a missing record uses the

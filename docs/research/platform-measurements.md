@@ -87,6 +87,9 @@ is explicitly owed; unit results are not that proof.
 Runs-06's real two-platform store fixture returned arm64 User for amd64 before
 correction; its regression, 2 inspect tests, 11 command tests and shards all-target
 clippy pass. Live emulated guest/copy agreement remains owed to ROOT.
+The runs-01 follow-up caught and corrected this lane's native nondevice-owner
+regression: uid 0 instead of 1000 before, correct after, with 50 server tests
+and VMM all-target clippy passing. Its exact red/green logs are retained.
 
 ### M2. Object lifecycle (`lifecycle`, n=200, µs)
 
