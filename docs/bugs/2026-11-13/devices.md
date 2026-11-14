@@ -107,6 +107,8 @@ Priority mapping for the user's requested notification: **P0 critical; P1 high; 
 
 **Catching test:** barriers around capacity publication and generation update, with the guest's generation/low/high/generation sequence arranged as above; assert it retries or reads a coherent capacity. Separately race cloned `DiskSize` growers and assert capacity never decreases.
 
+**Status (2026-11-14):** fixed in a8628ac21 (red `capacity_and_generation_are_published_together`: observed `(2, 0)`; green 8 block tests and VMM clippy, macOS arm64). Capacity and generation now change under one mutex that all capacity/config-generation reads take. No odd-generation retry convention is assumed.
+
 ### devices-06 — P2 / medium — VFIO hot-unplug retains MSI routes
 
 **Location:** `crates/vmm/src/devices/pci/vfio.rs:2114`.

@@ -85,6 +85,13 @@ pub fn build(args: impl Iterator<Item = OsString>) -> ExitCode {
             Err(a) => return failed(&format!("{a:?} is not UTF-8")),
         }
     }
+    // A client's build names no path of this machine's but its own copies' (remote-09).
+    let words: Vec<String> = std::iter::once("build".to_string())
+        .chain(argv.iter().cloned())
+        .collect();
+    if let Some(why) = crate::synced::refused_for_client(&words) {
+        return failed(&why);
+    }
     let parsed = match flags::parse(&BUILD, PATH, &argv, &buildflags::validate) {
         Outcome::Run(parsed) => parsed,
         Outcome::Help { notices } => {
