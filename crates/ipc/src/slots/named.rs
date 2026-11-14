@@ -27,8 +27,8 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{
-    ERROR_BAD_PIPE, ERROR_FILE_NOT_FOUND, ERROR_PIPE_BUSY, ERROR_SEM_TIMEOUT, GetLastError, HANDLE,
-    INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
+    ERROR_BAD_PIPE, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, ERROR_PIPE_BUSY, ERROR_SEM_TIMEOUT,
+    GetLastError, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE, FindCloseChangeNotification,
@@ -705,8 +705,18 @@ impl Drop for Change {
 /// daemon that made its lists again (`Requests::renew`) offers on another name, which a
 /// wait on the old one, held by the clients it serves still, would not see. Where the list
 /// changed first, the thread is left to its wait, which ends as an instance of the old name
-/// frees or its last closes, or with this process.
+/// frees or its last closes, or with this process: a call starts one thread at most, after
+/// its watch is made, and leaves one only where the daemon named its lists anew.
 fn wait_free(at: &Path, name: &str, wide: &[u16]) -> io::Result<Freed> {
+    let dir = at.parent().ok_or(io::ErrorKind::InvalidInput)?;
+    // The watch first: one refused starts no thread, and one that finds no directory, no
+    // list there, has the list read again, which says so (platform-08).
+    let Some(mut change) = watch(dir)? else {
+        return Ok(Freed::Listed);
+    };
+    if listed_name(at)?.as_deref() != Some(name) {
+        return Ok(Freed::Listed);
+    }
     let done = Event::new()?;
     let theirs = done.try_clone()?;
     let (said, heard) = std::sync::mpsc::channel();
@@ -720,19 +730,10 @@ fn wait_free(at: &Path, name: &str, wide: &[u16]) -> io::Result<Freed> {
             let _ = said.send(if free { 0 } else { unsafe { GetLastError() } });
             theirs.set();
         })?;
-    let dir = at.parent().ok_or(io::ErrorKind::InvalidInput)?;
     loop {
-        let change = watch(dir)?;
-        if change.is_none() || listed_name(at)?.as_deref() != Some(name) {
-            return Ok(Freed::Listed);
-        }
-        let handles: Vec<HANDLE> = [Some(done.raw()), change.as_ref().map(|c| c.0)]
-            .into_iter()
-            .flatten()
-            .collect();
-        let count = u32::try_from(handles.len()).map_err(io::Error::other)?;
+        let handles = [done.raw(), change.0];
         // SAFETY: handles that live through the wait.
-        let woke = unsafe { WaitForMultipleObjects(count, handles.as_ptr(), 0, INFINITE) };
+        let woke = unsafe { WaitForMultipleObjects(2, handles.as_ptr(), 0, INFINITE) };
         if woke == WAIT_OBJECT_0 {
             return match heard.recv().map_err(io::Error::other)? {
                 0 => Ok(Freed::Instance),
@@ -743,14 +744,23 @@ fn wait_free(at: &Path, name: &str, wide: &[u16]) -> io::Result<Freed> {
         if woke != WAIT_OBJECT_0 + 1 {
             return Err(io::Error::last_os_error());
         }
-        // The directory changed: the list is read again, under a notification made anew.
+        // The directory changed: the list read again, under a notification made anew.
+        change = match watch(dir)? {
+            Some(change) => change,
+            None => return Ok(Freed::Listed),
+        };
+        if listed_name(at)?.as_deref() != Some(name) {
+            return Ok(Freed::Listed);
+        }
     }
 }
 
-/// A change notification on the names and writes of directory `dir`: `None` where there is no
-/// directory, and so no list in it, which a read says.
+/// A change notification on the names and writes of directory `dir`, by its own name, which
+/// need be no Unicode (an unpaired surrogate NTFS keeps as given): `None` where there is no
+/// directory, and so no list in it, which a read says; any other failure refused.
 fn watch(dir: &Path) -> io::Result<Option<Change>> {
-    let dir = pipe::wide(&dir.to_string_lossy());
+    use std::os::windows::ffi::OsStrExt as _;
+    let dir: Vec<u16> = dir.as_os_str().encode_wide().chain([0]).collect();
     // SAFETY: a NUL-terminated path; the notification is closed as its Change drops.
     let raw = unsafe {
         FindFirstChangeNotificationW(
@@ -759,7 +769,14 @@ fn watch(dir: &Path) -> io::Result<Option<Change>> {
             FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE,
         )
     };
-    Ok((raw != INVALID_HANDLE_VALUE).then_some(Change(raw)))
+    if raw != INVALID_HANDLE_VALUE {
+        return Ok(Some(Change(raw)));
+    }
+    let e = io::Error::last_os_error();
+    match code(&e) {
+        Some(ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND) => Ok(None),
+        _ => Err(e),
+    }
 }
 
 /// The slot `line` opened, on the list `list`: its number, which the daemon says first, then
@@ -944,6 +961,37 @@ mod tests {
         std::fs::write(&file, b"").unwrap();
         assert!(watch(&file).is_err(), "a file's watch said no list there");
         assert!(watch(&home.join("gone")).unwrap().is_none());
+    }
+
+    /// Do: in a home whose name is no Unicode, offer a slot and remove it, have a client take
+    /// one, then offer another. Expect the client to wait, and take the slot offered next: its
+    /// wait watches the list's directory by its own name (platform-08).
+    #[test]
+    fn a_client_of_a_home_named_in_no_unicode_waits_for_its_slot() {
+        use std::os::windows::ffi::OsStringExt as _;
+        let base = home("slot-odd");
+        let home = base.join(std::ffi::OsString::from_wide(&[u16::from(b'h'), 0xDC00]));
+        std::fs::create_dir(&home).unwrap();
+        let mut requests = Requests::open(&home).unwrap();
+        let gone = requests.make(false).unwrap();
+        requests.offer(gone.number(), false).unwrap();
+        requests.remove(gone.number());
+        gone.stopper().unwrap().stop().unwrap();
+        assert!(matches!(gone.wait().unwrap(), Waited::Stopped));
+        std::thread::scope(|s| {
+            let client = s.spawn(|| take(&home, 0).unwrap());
+            std::thread::sleep(Duration::from_millis(50));
+            assert!(!client.is_finished(), "a client took a removed slot");
+            let next = requests.make(false).unwrap();
+            requests.offer(next.number(), false).unwrap();
+            let served = waiting(s, next);
+            let Taken::Slot(client) = client.join().unwrap() else {
+                panic!("no slot");
+            };
+            assert_eq!(client.n, 1);
+            drop(client);
+            assert!(matches!(served.join().unwrap().unwrap(), Waited::Gone));
+        });
     }
 
     /// A list's waiting slots are those made on it that no client has taken, counted
