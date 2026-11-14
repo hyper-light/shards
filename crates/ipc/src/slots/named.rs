@@ -721,18 +721,8 @@ fn wait_free(at: &Path, name: &str, wide: &[u16]) -> io::Result<Freed> {
             theirs.set();
         })?;
     let dir = at.parent().ok_or(io::ErrorKind::InvalidInput)?;
-    let dir = pipe::wide(&dir.to_string_lossy());
     loop {
-        // SAFETY: a NUL-terminated path; the notification is closed as `change` drops.
-        let raw = unsafe {
-            FindFirstChangeNotificationW(
-                dir.as_ptr(),
-                0,
-                FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE,
-            )
-        };
-        // No directory: no list there, which a read says.
-        let change = (raw != INVALID_HANDLE_VALUE).then_some(Change(raw));
+        let change = watch(dir)?;
         if change.is_none() || listed_name(at)?.as_deref() != Some(name) {
             return Ok(Freed::Listed);
         }
@@ -755,6 +745,21 @@ fn wait_free(at: &Path, name: &str, wide: &[u16]) -> io::Result<Freed> {
         }
         // The directory changed: the list is read again, under a notification made anew.
     }
+}
+
+/// A change notification on the names and writes of directory `dir`: `None` where there is no
+/// directory, and so no list in it, which a read says.
+fn watch(dir: &Path) -> io::Result<Option<Change>> {
+    let dir = pipe::wide(&dir.to_string_lossy());
+    // SAFETY: a NUL-terminated path; the notification is closed as its Change drops.
+    let raw = unsafe {
+        FindFirstChangeNotificationW(
+            dir.as_ptr(),
+            0,
+            FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE,
+        )
+    };
+    Ok((raw != INVALID_HANDLE_VALUE).then_some(Change(raw)))
 }
 
 /// The slot `line` opened, on the list `list`: its number, which the daemon says first, then
@@ -917,6 +922,28 @@ mod tests {
                 let _ = stopper.stop();
             }
         }
+    }
+
+    /// Do: watch a directory whose name is no Unicode (an unpaired surrogate, which NTFS
+    /// keeps as it is given), a file, and a directory that is not there. Expect the first
+    /// watched, the second refused with its error, and the third none to watch: a watch that
+    /// failed for its directory's name, or for any error but its absence, is no list changed,
+    /// which had a waiting client start another waiting thread each time it looked
+    /// (platform-08).
+    #[test]
+    fn a_lists_directory_is_watched_by_its_own_name_and_a_failed_watch_is_refused() {
+        use std::os::windows::ffi::OsStringExt as _;
+        let home = home("slot-watch");
+        let odd = home.join(std::ffi::OsString::from_wide(&[u16::from(b'r'), 0xD800]));
+        std::fs::create_dir(&odd).unwrap();
+        assert!(
+            watch(&odd).unwrap().is_some(),
+            "a directory not watched by its name"
+        );
+        let file = home.join("file");
+        std::fs::write(&file, b"").unwrap();
+        assert!(watch(&file).is_err(), "a file's watch said no list there");
+        assert!(watch(&home.join("gone")).unwrap().is_none());
     }
 
     /// A list's waiting slots are those made on it that no client has taken, counted
