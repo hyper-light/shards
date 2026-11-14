@@ -310,7 +310,7 @@ fn dispatch(args: Vec<OsString>) -> ExitCode {
         ["restore", target, ..] if names_a_microvm(target) => {
             request::restore("shards restore vm", args.get(1..).unwrap_or_default())
         }
-        ["restore", ..] => match migrated(&args) {
+        ["restore", ..] => match resumable(&args) {
             Ok(()) => vm(&args),
             Err(e) => failed(&e),
         },
@@ -2236,12 +2236,12 @@ fn served_pipe(flag: &str, value: usize) -> Result<std::os::windows::io::Borrowe
     Ok(unsafe { std::os::windows::io::BorrowedHandle::borrow_raw(raw) })
 }
 
-/// `shards restore DIR`'s snapshot, a user's, in this build's format before its VM process
-/// reads it: one of an older format rewritten in it once, and said (D176). None for a
-/// restore its daemon starts (`--warm`, `--resume`): a template's, keyed by the format
-/// (D25), or a saved run's, which the daemon has seen to.
-fn migrated(args: &[OsString]) -> Result<(), String> {
-    use shards_vmm::snapshot::{self, Migrated};
+/// Whether `shards restore DIR`'s snapshot, a user's, resumes in this build, asked before
+/// its VM process reads it: refused where its guest's init is another build's (D176). None
+/// for a restore its daemon starts (`--warm`, `--resume`): a template's, keyed by the
+/// format (D25), or a saved run's, which the daemon has asked.
+fn resumable(args: &[OsString]) -> Result<(), String> {
+    use shards_vmm::snapshot;
     let by_daemon = args
         .iter()
         .take_while(|a| *a != "--")
@@ -2252,18 +2252,7 @@ fn migrated(args: &[OsString]) -> Result<(), String> {
     if by_daemon || !snapshot::exists(dir) {
         return Ok(());
     }
-    match snapshot::migrate(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
-        Migrated::Current => {}
-        Migrated::Rewritten { from } => {
-            let _ = writeln!(
-                std::io::stderr(),
-                "shards: {}: its snapshot of format {from} rewritten in format {}, once",
-                dir.display(),
-                snapshot::FORMAT
-            );
-        }
-    }
-    Ok(())
+    snapshot::resumable(dir).map_err(|e| format!("{}: {e}", dir.display()))
 }
 
 fn failed(message: &str) -> ExitCode {

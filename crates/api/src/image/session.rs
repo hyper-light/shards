@@ -607,9 +607,19 @@ impl Shared {
 struct Host {
     process: shards_ipc::Child,
     to_host: io::PipeWriter,
-    from_host: io::PipeReader,
-    said: io::PipeReader,
+    from_host: Output,
+    said: Output,
 }
+
+/// The read end of a run host's answers' or diagnostics' pipe, as its reader waits on it
+/// beside its watcher's word (`UntilGone`): on Unix, a pipe polled beside another; on
+/// Windows, a named pipe's overlapped end, whose read an event cancels (std's anonymous
+/// pipes there are synchronous: a read of one waits for bytes or its writers' end alone).
+#[cfg(unix)]
+type Output = io::PipeReader;
+
+#[cfg(windows)]
+type Output = shards_ipc::Pipe;
 
 /// Starts `program` with `args`, its environment this process's with `env` over it, holding
 /// its stdin, stdout and stderr, pipes to this process, and nothing else this process holds
@@ -634,8 +644,12 @@ fn start_host(program: &Path, args: &[&OsStr], env: &[(OsString, OsString)]) -> 
     let boot = |e: io::Error| ImageRefusal::Boot(format!("{}: {e}", program.display()));
     let found = on_path(program).map_err(boot)?;
     let (child_in, to_host) = io::pipe().map_err(os("the run host's pipes"))?;
-    let (from_host, child_out) = io::pipe().map_err(os("the run host's pipes"))?;
-    let (said, child_err) = io::pipe().map_err(os("the run host's pipes"))?;
+    #[cfg(unix)]
+    let output = io::pipe;
+    #[cfg(windows)]
+    let output = shards_ipc::output_pair;
+    let (from_host, child_out) = output().map_err(os("the run host's pipes"))?;
+    let (said, child_err) = output().map_err(os("the run host's pipes"))?;
     #[cfg(unix)]
     let ends = {
         use std::os::fd::AsFd as _;
@@ -772,18 +786,14 @@ impl Begun {
         let layers = host_layers(env);
         let threads = (|| {
             #[cfg(unix)]
-            let (gone, from_host, said) = {
-                let (gone_read, gone) = io::pipe().map_err(os("the run host's watcher"))?;
-                let until = |pipe| {
-                    let gone = gone_read.try_clone()?;
-                    Ok::<_, io::Error>(UntilGone { pipe, gone })
-                };
-                let from_host = until(from_host).map_err(os("the run host's watcher"))?;
-                let said = until(said).map_err(os("the run host's watcher"))?;
-                (Gone(gone), from_host, said)
-            };
+            let (told, gone) = io::pipe().map_err(os("the run host's watcher"))?;
             #[cfg(windows)]
-            let gone = Gone;
+            let (told, gone) = {
+                let gone = shards_ipc::Event::new().map_err(os("the run host's watcher"))?;
+                (gone.try_clone().map_err(os("the run host's watcher"))?, gone)
+            };
+            let until = |pipe| UntilGone::new(pipe, &told).map_err(os("the run host's watcher"));
+            let (from_host, said, gone) = (until(from_host)?, until(said)?, Gone(gone));
             let (watcher, watched) = (begun.shared.clone(), begun.host.clone());
             std::thread::Builder::new()
                 .name("shards-api-image-exit".into())
@@ -1932,7 +1942,7 @@ fn keep_said(shared: &Shared, mut said: impl io::Read) {
 /// (`shards_ipc::Child::end_group`, D231): the VM, network and share processes it started,
 /// which a host that ends as it should has reaped already, and one it leaves is ended with
 /// it. Then reaps it under the state's lock as `exited` is set, and tells its pipes' readers
-/// (`gone`, Unix) that no process the run started is left to write to them.
+/// (`gone`) that no process the run started is left to write to them.
 fn watch(shared: &Shared, host: &shards_ipc::Child, layers: Option<&Path>, gone: Gone) {
     let awaited = host.ended();
     let followed = awaited
@@ -1958,15 +1968,15 @@ fn watch(shared: &Shared, host: &shards_ipc::Child, layers: Option<&Path>, gone:
 }
 
 /// The word a run host's watcher gives its pipes' readers once the host and every process of
-/// its group have ended (Unix): a byte written to a pipe they wait on beside their own, never
-/// read, so that it stays readable, and never its end, which a process holding its write end
-/// would hold back as it would theirs. On Windows its pipes' ends close as the processes of
-/// the host's job exit, before `end_group` returns, and their readers read to their end.
+/// its group have ended: never a pipe's end, which a process holding its write end would hold
+/// back as it would theirs. On Unix a byte written to a pipe they wait on beside their own,
+/// never read, so that it stays readable; on Windows an event set, manual-reset, which stays
+/// so. Either holds for every reader and every read after it.
 #[cfg(unix)]
 struct Gone(io::PipeWriter);
 
 #[cfg(windows)]
-struct Gone;
+struct Gone(shards_ipc::Event);
 
 impl Gone {
     #[cfg(unix)]
@@ -1975,19 +1985,33 @@ impl Gone {
     }
 
     #[cfg(windows)]
-    fn tell(self) {}
+    fn tell(self) {
+        self.0.set();
+    }
 }
 
 /// One of the run host's pipes as its readers read it (D231): to its end, or, once the host
-/// and every process of its group have ended (`gone` readable, its watcher's word), to what
-/// it holds then. No process the run started can write to it after that, and a write end
-/// another process holds, which macOS lets a spawn anywhere in this process inherit as it
-/// makes a pipe (std's `pipe` there is pipe(2), then `FD_CLOEXEC`: Darwin has no pipe2),
-/// holds nothing back.
+/// and every process of its group have ended (`gone`, its watcher's word), to what it holds
+/// then, never waiting for its end. No process the run started can write to it after that,
+/// and a write end another process holds holds nothing back: one that a spawn anywhere in
+/// this process inherited as the pipe was made (macOS: std's `pipe` there is pipe(2), then
+/// `FD_CLOEXEC`, Darwin has no pipe2) or as a spawn of shards' held a copy of it inheritable
+/// for its child's handle list (Windows: CreateProcessW with bInheritHandles TRUE and no
+/// list, as std's and an embedder's are, takes every inheritable handle of the process).
 #[cfg(unix)]
 struct UntilGone {
     pipe: io::PipeReader,
     gone: io::PipeReader,
+}
+
+#[cfg(unix)]
+impl UntilGone {
+    fn new(pipe: Output, told: &io::PipeReader) -> io::Result<UntilGone> {
+        Ok(UntilGone {
+            pipe,
+            gone: told.try_clone()?,
+        })
+    }
 }
 
 #[cfg(unix)]
@@ -2002,6 +2026,63 @@ impl io::Read for UntilGone {
                 _ => {}
             }
         }
+    }
+}
+
+/// [`UntilGone`] on Windows: reading, each read one the watcher's event cancels; once it is
+/// set, draining the bytes the pipe held as the reader first saw it set (PeekNamedPipe), and
+/// no more, then ended: a writer outside the run, which no stop ends, cannot keep it reading.
+#[cfg(windows)]
+struct UntilGone {
+    pipe: shards_ipc::Pipe,
+    gone: shards_ipc::Event,
+    state: Draining,
+}
+
+/// Where a Windows [`UntilGone`] is.
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Draining {
+    /// Its watcher has not told it yet: it reads as bytes come.
+    Reading,
+    /// Told: this many bytes of what the pipe held then are left to read; at 0 it has ended.
+    Left(usize),
+}
+
+#[cfg(windows)]
+impl UntilGone {
+    fn new(pipe: Output, told: &shards_ipc::Event) -> io::Result<UntilGone> {
+        Ok(UntilGone {
+            pipe,
+            gone: told.try_clone()?,
+            state: Draining::Reading,
+        })
+    }
+}
+
+#[cfg(windows)]
+impl io::Read for UntilGone {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let left = match self.state {
+            Draining::Left(left) => left,
+            Draining::Reading => {
+                if !self.gone.is_set()
+                    && let Some(read) = self.pipe.read_unless(buf, &self.gone)?
+                {
+                    return Ok(read);
+                }
+                self.pipe.held()?
+            }
+        };
+        // A read of no bytes would wait for the next to come (await_any's readiness reads).
+        let Some(part) = buf.get_mut(..left.min(buf.len())).filter(|part| !part.is_empty()) else {
+            self.state = Draining::Left(0);
+            return Ok(0);
+        };
+        // Bytes the pipe holds, read at once: it has no other reader.
+        let read = (&self.pipe).read(part)?;
+        self.state = Draining::Left(if read == 0 { 0 } else { left.saturating_sub(read) });
+        Ok(read)
     }
 }
 
@@ -2548,10 +2629,12 @@ mod tests {
     }
 
     /// Do write a run host's diagnostics past their file's bound, what the file held as it was
-    /// named counted, a file opened to write in place and one opened to append. Expect: each
-    /// part written after the last while the file is within its bound; the part that would
-    /// pass it cutting the file back to the tail, exactly its latest bytes; the next parts
-    /// written after that tail, the file growing again.
+    /// named counted, a file opened to write in place and one opened to append, each named as
+    /// a caller names it. Expect: each part written after the last while the file is within
+    /// its bound; the part that would pass it cutting the file back to the tail, exactly its
+    /// latest bytes; the next parts written after that tail, the file growing again. On
+    /// Windows the file opened to append refused `Os` as named and left as it was: std opens
+    /// it without `FILE_WRITE_DATA`, which a cut needs (D258).
     #[test]
     fn a_bounded_diagnostics_file_is_cut_back_to_the_tail_and_grows_again() {
         let dir = shards_testdir::TempDir::new("api-bound").unwrap();
@@ -2563,6 +2646,19 @@ mod tests {
                 .append(append)
                 .open(&path)
                 .unwrap();
+            let named = shared().keep_diagnostics(file.try_clone().unwrap(), u64::MAX);
+            if append && cfg!(windows) {
+                assert_eq!(
+                    named,
+                    Err(ImageRefusal::Os {
+                        what: "the run host's diagnostics",
+                        kind: io::ErrorKind::PermissionDenied
+                    })
+                );
+                assert_eq!(std::fs::read(&path).unwrap(), b"ab", "left as it was");
+                continue;
+            }
+            assert_eq!(named, Ok(()));
             let mut kept = Diagnostics {
                 size: file.metadata().unwrap().len(),
                 file,
@@ -4314,13 +4410,13 @@ mod tests {
     /// The stand-in run host of a boot that never starts: it makes a writable layer's file in
     /// its home's `layers`, named as the real host names one (layers.rs `fresh`), holds
     /// `$HOST_SEEN` open as long as it runs, starts a stand-in VM that never looks at its host
-    /// (as a VM mid-boot does not), tells the VM's pid, and never answers.
+    /// (as a VM mid-boot does not), tells its own pid and the VM's, and never answers.
     #[cfg(unix)]
     const NEVER_STARTS: &str = "#!/bin/sh\n\
         : >\"$SHARDS_HOME/layers/$$-0\"\n\
         exec 3>\"$HOST_SEEN\"\n\
         tail -f /dev/null 3>&- &\n\
-        echo \"$!\" >&3\n\
+        echo \"$$ $!\" >&3\n\
         wait\n";
 
     /// A valid CREATE can fill the pipe before STARTED waits begin. Its stop must own
@@ -4454,8 +4550,10 @@ mod tests {
     /// returns `Ended(Stopped)`, the run host gone and the VM it started gone with it, no
     /// orphan left, and no file of the host's left in its home's `layers`, another host's
     /// kept. The boot waits on its host alone: only the stop ends it. A boot that ends
-    /// before its host tells the VM's pid ends the test's wait with it, refused with the
-    /// boot's outcome.
+    /// before its host tells its own and its VM's pids ends the test's wait with it, refused
+    /// with the boot's outcome. Each is judged gone by its ID and start, never by its pipe's
+    /// end: a write end of `h` that another test's spawn copied as it forked is held until
+    /// that child's exec, after both have gone (PM M583, M586).
     #[cfg(unix)]
     #[test]
     fn a_stop_mid_boot_ends_the_boot_its_host_and_all_its_host_started() {
@@ -4483,16 +4581,20 @@ mod tests {
             });
             // Told once the host holds `h` and has started its VM: both running.
             let said = line(&host_end);
-            let Ok(vm) = said.trim().parse::<libc::pid_t>() else {
-                panic!("its host told no VM ({said:?}), the boot {:?}", booting.join());
+            let pids: Vec<libc::pid_t> = said.split_whitespace().filter_map(|p| p.parse().ok()).collect();
+            let [host, vm] = pids[..] else {
+                panic!(
+                    "its host told no host and VM ({said:?}), the boot {:?}",
+                    booting.join()
+                );
             };
             leftover.0 = Some(vm);
-            let vm = named(vm);
+            let (host, vm) = (named(host), named(vm));
             let stopped_at = Instant::now();
             stop.stop();
             let booted = booting.join().unwrap();
             let took = stopped_at.elapsed();
-            let host_gone = writers_gone(&host_end);
+            let host_gone = !host.lives();
             let vm_gone = !vm.lives();
             if vm_gone {
                 leftover.0 = None;
@@ -4768,6 +4870,7 @@ mod tests {
     extern "C" fn stand_in() {
         match std::env::var_os(STAND_IN).as_deref().and_then(OsStr::to_str) {
             Some("host") => stand_in_host(),
+            Some("ending") => ending_stand_in(),
             Some("vm") => stand_by(),
             _ => {}
         }
@@ -4966,5 +5069,150 @@ mod tests {
         assert!(stop.is_stopped());
         let others = others.file_name().unwrap().to_string_lossy().into_owned();
         assert_eq!(layer_files(&home), [others], "its run host's layer outlived it");
+    }
+
+    /// The pid of the process outside its job that an `ending` stand-in run host gives its
+    /// answers' and diagnostics' write ends.
+    #[cfg(windows)]
+    const STAND_IN_OUTSIDE: &str = "SHARDS_API_STAND_IN_OUTSIDE";
+
+    /// What an `ending` stand-in run host says on its diagnostics before its run starts.
+    #[cfg(windows)]
+    const LAST_WORDS: &str = "the stand-in's last words";
+
+    /// The stand-in run host of a run that starts and ends as asked (`ending`), as
+    /// `ending_host` is on Unix: it gives copies of its answers' and diagnostics' write ends to
+    /// the process `STAND_IN_OUTSIDE` names, outside its job (DuplicateHandle, the state of a
+    /// process that a spawn elsewhere in its orchestrator let inherit them: a handle of that
+    /// pipe in a process no stop ends), says `LAST_WORDS` on its diagnostics, starts the run,
+    /// says its end once asked to stop, and exits as its stdin closes.
+    #[cfg(windows)]
+    fn ending_stand_in() -> ! {
+        use std::os::windows::io::AsRawHandle as _;
+        use windows_sys::Win32::Foundation::{DUPLICATE_SAME_ACCESS, DuplicateHandle};
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcess, PROCESS_DUP_HANDLE};
+        let outside: u32 = std::env::var(STAND_IN_OUTSIDE).unwrap().parse().unwrap();
+        // SAFETY: a process handle of the right asked; kept open until this process exits.
+        let process = unsafe { OpenProcess(PROCESS_DUP_HANDLE, 0, outside) };
+        assert!(!process.is_null(), "{}", io::Error::last_os_error());
+        for held in [io::stdout().as_raw_handle(), io::stderr().as_raw_handle()] {
+            let mut copy = std::ptr::null_mut();
+            // SAFETY: a handle of this process's, copied into `process`, the copy's value
+            // written to `copy`, which only that process may use.
+            let copied = unsafe {
+                DuplicateHandle(
+                    GetCurrentProcess(),
+                    held,
+                    process,
+                    &raw mut copy,
+                    0,
+                    0,
+                    DUPLICATE_SAME_ACCESS,
+                )
+            };
+            assert_ne!(copied, 0, "{}", io::Error::last_os_error());
+        }
+        eprint!("{LAST_WORDS}");
+        let started = wire::Started {
+            members: Vec::new(),
+            published: Vec::new(),
+            control: None,
+            from: wire::StartedFrom::Booted,
+        }
+        .encode()
+        .unwrap();
+        let ended = untold(RunEnd::Exited(0)).encode().unwrap();
+        let mut answers = io::stdout().lock();
+        let mut asks = io::stdin().lock();
+        answers
+            .write_all(&wire::frame(wire::to_client::STARTED, &started).unwrap())
+            .unwrap();
+        answers.flush().unwrap();
+        // Its request, then its stop.
+        wire::read_frame(&mut asks).unwrap().unwrap();
+        wire::read_frame(&mut asks).unwrap().unwrap();
+        answers
+            .write_all(&wire::frame(wire::to_client::ENDED, &ended).unwrap())
+            .unwrap();
+        answers.flush().unwrap();
+        let _ = io::copy(&mut asks, &mut io::sink());
+        std::process::exit(0)
+    }
+
+    /// The Windows twin of `a_stop_returns_though_a_process_outside_its_hosts_group_holds_its_pipes`:
+    /// do run through a stand-in host that gives its answers' and diagnostics' write ends to a
+    /// process outside its job, says its last words, starts the run, and says its end once
+    /// asked to stop; stop the run. Expect: the stop returns `Ok` once its host and its job
+    /// have ended, that process still running and holding both ends, its diagnostics drained
+    /// to its last words, and the run's end its host's word. Red where the readers waited on
+    /// their pipes' ends (base 0004b5a1a: as long as that process runs).
+    #[cfg(windows)]
+    #[test]
+    fn a_stop_returns_though_a_process_outside_its_hosts_job_holds_its_pipes() {
+        let me = std::env::current_exe().unwrap();
+        let mut outside = std::process::Command::new(&me);
+        outside
+            .env(STAND_IN, "vm")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        let mut outside = shards_ipc::spawn_std(&mut outside).unwrap();
+        let mut held = Held::open(outside.id());
+        let spec = stand_in_spec(
+            &me,
+            vec![
+                (STAND_IN.into(), "ending".into()),
+                (STAND_IN_OUTSIDE.into(), outside.id().to_string().into()),
+            ],
+        );
+        let request = super::super::request(&spec).unwrap();
+        let session = Session::start(&spec, &request, Duration::MAX, &super::super::BootStop::new()).unwrap();
+        assert_eq!(session.stop(), Ok(()));
+        assert!(!held.ended(), "the outside process ended with the run's job");
+        let state = lock(&session.shared.state);
+        assert!(state.said_all);
+        let said: Vec<u8> = state.said.iter().copied().collect();
+        assert_eq!(String::from_utf8_lossy(&said), LAST_WORDS);
+        drop(state);
+        assert_eq!(
+            session.wait_for(Duration::ZERO),
+            Ok(Some(untold(RunEnd::Exited(0))))
+        );
+        outside.kill().unwrap();
+        outside.wait().unwrap();
+    }
+
+    /// A Windows reader of a run host's pipe (`UntilGone`) whose writer, another process's,
+    /// never closes it: do write, and read; then write, tell the reader, and read to the end;
+    /// then wait on a read with nothing written, and tell it. Expect: the first read the
+    /// bytes as they come; then the bytes the pipe held as it was told, drained, and its end,
+    /// the writer still held; then the waiting read ended by the word. Red where a reader
+    /// read to its pipe's end (base 0004b5a1a's readers): the read to the end never returns.
+    #[cfg(windows)]
+    #[test]
+    fn a_told_reader_drains_what_its_pipe_holds_and_ends_though_a_writer_holds_it() {
+        let (pipe, mut writer) = shards_ipc::output_pair().unwrap();
+        let told = shards_ipc::Event::new().unwrap();
+        let mut reader = UntilGone::new(pipe, &told).unwrap();
+        writer.write_all(b"first").unwrap();
+        let mut buf = [0u8; 64];
+        let n = reader.read(&mut buf).unwrap();
+        assert_eq!(&buf[..n], b"first");
+        writer.write_all(b"last words").unwrap();
+        told.set();
+        let mut rest = Vec::new();
+        reader.read_to_end(&mut rest).unwrap();
+        assert_eq!(rest, b"last words");
+        assert_eq!(reader.state, Draining::Left(0));
+
+        let (pipe, _writer) = shards_ipc::output_pair().unwrap();
+        let told = shards_ipc::Event::new().unwrap();
+        let mut reader = UntilGone::new(pipe, &told).unwrap();
+        std::thread::scope(|s| {
+            let waiting = s.spawn(move || reader.read(&mut [0u8; 8]));
+            told.set();
+            assert_eq!(waiting.join().unwrap().unwrap(), 0);
+        });
+        drop(writer);
     }
 }

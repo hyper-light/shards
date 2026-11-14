@@ -24891,6 +24891,27 @@ against 2e00a1043 (whose starts read no bytes) on one template, HVF, KVM and WHP
   (`Child::end_group`), and drain the pipes without waiting for their ends; `status_of`
   takes only an exit as an end, and `Child::wait` never waits holding what a kill takes. A
   test checks a process's end by its ID and start, not by a pipe it held.
+- **Windows (2026-11-14, winreaders lane).** The readers there still read to their pipes'
+  end (std's anonymous pipes are synchronous), and a handle-list spawn of shards' holds a
+  copy of each child handle inheritable while it creates the child (UpdateProcThreadAttribute:
+  PROC_THREAD_ATTRIBUTE_HANDLE_LIST's handles must be inheritable; CreateProcessW takes
+  every inheritable handle where bInheritHandles is TRUE and no list is given, as std's
+  and an embedder's spawns do). Method: Windows 11 (10.0.26200) x86_64 container on
+  adacachy, rustc 1.99.1, x86_64-pc-windows-msvc, shards-api's lib tests, a stand-in host
+  that duplicates its stdout and stderr into a process outside its Job (DuplicateHandle,
+  the state an embedder's inheriting spawn leaves).
+  - Red, the old reader put back (`UntilGone` reading to its pipe's end, as base 0004b5a1a's
+    did; a mutation over 3a0e5829d, whose reader is the landed one's): both new tests
+    still waiting at 120 s, killed (`a_told_reader_drains_what_its_pipe_holds_and_ends_though_a_writer_holds_it`,
+    `a_stop_returns_though_a_process_outside_its_hosts_job_holds_its_pipes`).
+  - Green at 283604dfd: both pass, the stop returning `Ok` with the outside process still
+    running and the diagnostics drained to the host's last words; shards-api's
+    `image::session::tests::` 36 of 37, shards-ipc's `pipe::` 25 of 25, clippy `-D warnings`
+    clean. The one failure, `a_bounded_diagnostics_file_is_cut_back_to_the_tail_and_grows_again`
+    (Access is denied reading the file it writes), fails at base 0004b5a1a too: not this change's.
+  - Decision: D231's Windows readers end on the watcher's event and drain what the pipe holds
+    (PeekNamedPipe), as Unix's do; the handle list stays for shards' own spawns, and no
+    inheritance setting of shards' reaches an embedder's spawn.
 
 ### M584. A zombie's CPU clock grows after its exit is told (D215; shards-api's `an_exited_process_is_read_until_it_is_reaped`)
 
@@ -24970,3 +24991,31 @@ against 2e00a1043 (whose starts read no bytes) on one template, HVF, KVM and WHP
     300, at b27eeffe5, before M583's fix of the stop).
 - **Decision.** No production change: both causes were the test helper's. D233 records
   the look's rule.
+
+### M586. A stopped run host judged by its FIFO's writers: a copy another test's fork holds (D231; shards-api's `a_stop_mid_boot_ends_the_boot_its_host_and_all_its_host_started`)
+
+- **Question.** The test failed 2 of 100 runs of shards-api's library at 64 test threads
+  (adacachy2) at session.rs:4508, read as the boot's `assert_eq!` on `Ended(Stopped)`. What
+  did the boot return, and why?
+- **Method.** adacachy2: Linux 7.3.3-1-cachyos, x86_64, 32 CPUs; rustc 1.98.1; at
+  f385b8dac, 2026-11-14. The library's tests, `nice -n 10 $bin --test-threads=64` from
+  `crates/api`, in loops of 40 and 150; the test alone, 2,000 times, 32 at once (xargs -P
+  32). At a failure, every process's `/proc/<pid>/fd` scanned for the FIFO `h`. With the fix,
+  a probe kept the old check beside the new one: where the host was gone by its ID and start
+  but `h` still had a writer, it timed how long until it had none.
+- **Results.**
+  - The boot returned `Ended(Stopped)` every time: line 4508 at f385b8dac is
+    `assert!(host_gone, "the run host outlived its boot's stop")`, the message of all 10
+    failures (3 of 40 runs, 7 of 150). `host_gone` was `writers_gone(&host_end)`: every write
+    end of `h` closed, every process's.
+  - Alone: 0 of 2,000. Beside the library's other tests only: a write end of `h` in a process
+    other than the host, gone by the scan, which found only the test's own read end
+    (`02104000`) each time. The test's own write end (`host_held`, held while its boot runs)
+    and the host's are close-on-exec, so a copy lives only in a child another test's spawn
+    forked as it was held, until that child's exec. Which spawn was not attributed.
+  - Fixed (the host tells `$$` beside its VM's pid; each judged gone by `shards_ipc::Named`,
+    its ID and start): 0 of 150 runs. In 3 of them the old check would have failed with the
+    host already gone by its ID and start: `h` kept a writer 1.49 ms (median) to 25.9 ms
+    after.
+- **Decision.** No production change: D231's stop ended the boot, its host and its VM. The
+  test judges the host by its ID and start, as it does the VM, M583's rule.
