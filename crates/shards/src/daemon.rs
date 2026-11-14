@@ -1819,6 +1819,17 @@ fn elect_bridge() -> Option<shards_net::bridge::Bridge> {
     bridge
 }
 
+/// Enters the daemon's home once; no daemon thread changes its working directory.
+fn entered_home(home: &Path) -> Result<PathBuf, String> {
+    std::env::set_current_dir(home).map_err(|e| format!("{}: {e}", home.display()))?;
+    // A pathname can be renamed and replaced while this process still owns its CWD.
+    // Keep every daemon-owned path relative to that directory, including slot cleanup.
+    #[cfg(unix)]
+    return Ok(PathBuf::from("."));
+    #[cfg(windows)]
+    Ok(home.to_path_buf())
+}
+
 fn serve(ready: Option<File>, listen: Option<std::net::SocketAddr>) -> Result<(), String> {
     let mut settings = settings()?;
     // A daemon its clients reach does not end for having had nothing to do (D180).
@@ -1830,7 +1841,7 @@ fn serve(ready: Option<File>, listen: Option<std::net::SocketAddr>) -> Result<()
     shards_vmm::platform::create_private_dir(&home).map_err(|e| format!("{}: {e}", home.display()))?;
     // The home's names are relative to it (its slots, an older build's socket): the home is
     // the daemon's own, so this holds no client's directory busy.
-    std::env::set_current_dir(&home).map_err(|e| format!("{}: {e}", home.display()))?;
+    let home = entered_home(&home)?;
     let Some(home_lock) = take_lock(&home)? else {
         // Another daemon serves this home.
         return Ok(());
@@ -2877,7 +2888,13 @@ impl<D: Disk> Daemon<D> {
             if let Some(parent) = self.home.parent() {
                 let _ = std::env::set_current_dir(parent);
             }
-            let _ = std::fs::remove_dir_all(&self.home);
+            #[cfg(unix)]
+            let removed = std::env::current_dir().and_then(std::fs::remove_dir_all);
+            #[cfg(windows)]
+            let removed = std::fs::remove_dir_all(&self.home);
+            if let Err(e) = removed {
+                log(format!("removing the daemon's unlinked home: {e}"));
+            }
         }
         // Let go of before its file closes (M244): flock(2)'s LOCK_UN, UnlockFile.
         let _ = self.home_lock.unlock();
@@ -11625,6 +11642,57 @@ mod tests {
             say(&vm, kind::DONE, &[0]);
             joined(starting.run).unwrap();
         });
+    }
+
+    /// A renamed home's daemon must never remove a replacement home's request offers.
+    #[cfg(unix)]
+    #[test]
+    fn renamed_home_cleanup_keeps_replacement_files() {
+        const CHILD: &str = "SHARDS_RENAMED_HOME_TEST";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "daemon::tests::renamed_home_cleanup_keeps_replacement_files",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+        let mut t = Test::new("home-anchor");
+        let original = t.home.to_path_buf();
+        let moved = original.with_extension("moved");
+        let owned = entered_home(&original).unwrap();
+        t.daemon.home = owned.clone();
+        let _old_requests = shards_ipc::slots::Requests::open(&owned).unwrap();
+        std::fs::rename(&original, &moved).unwrap();
+        std::fs::create_dir(&original).unwrap();
+        let _new_requests = shards_ipc::slots::Requests::open(&original).unwrap();
+        std::fs::write(original.join(shards_ipc::PID), "replacement").unwrap();
+        std::fs::write(original.join(shards_ipc::STOPPING), "replacement").unwrap();
+        t.daemon.close();
+        assert_eq!(
+            std::fs::read(original.join(shards_ipc::STOPPING)).unwrap(),
+            b"replacement"
+        );
+        assert!(
+            shards_ipc::slots::served(&original),
+            "old close removed new offers"
+        );
+        t.daemon.finish();
+        assert_eq!(
+            std::fs::read(original.join(shards_ipc::PID)).unwrap(),
+            b"replacement"
+        );
+        // A partially removed home is still cleaned, using its actual location.
+        std::fs::remove_file(moved.join("daemon.lock")).unwrap();
+        t.daemon.home_gone.store(true, Ordering::SeqCst);
+        t.daemon.finish();
+        assert!(!moved.exists(), "the old home's remainder was not removed");
+        std::env::set_current_dir(original.parent().unwrap()).unwrap();
     }
 
     /// A daemon that closes, idle or at a stop's word, names itself stopping and holds
