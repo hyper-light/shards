@@ -1995,7 +1995,11 @@ pub fn client_output(cmd: &mut Command, home: Option<&Path>) -> std::process::Ou
         if status.is_none()
             && let Some(st) = child.try_wait().unwrap()
         {
-            wait.answered();
+            if st.success() {
+                wait.answered();
+            } else {
+                wait.unserved();
+            }
             status = Some(st);
         }
         let output = more(&out, &mut out_got) | more(&err, &mut err_got);
@@ -2759,8 +2763,12 @@ fn run_ending(
         if status.is_none()
             && let Some(st) = child.try_wait().unwrap()
         {
-            // Its client's own end: its kind's answer.
-            wait.answered();
+            // Its client's own end: its kind's answer, taught where it served.
+            if st.success() {
+                wait.answered();
+            } else {
+                wait.unserved();
+            }
             status = Some(st);
         }
         let output = came(&out, &mut out_got) | came(&err, &mut err_got);
@@ -3002,7 +3010,8 @@ pub fn guest_text(text: &str) -> String {
 /// party ran at meanwhile, a refusal's diagnosis and never its bound. None on a host until
 /// its first answer there; then kept under `target/judge-records`, by the host and the call
 /// site, so that a later run on the host begins from what it learned (ROOT, 2026-11-13: a
-/// record learned on the host is data, not a seed), and taught again by each answer. The
+/// record learned on the host is data, not a seed), and taught again by each answer: a
+/// command's by each served one alone ([`Wait::unserved`], [`SERVED`]). The
 /// person's ruling of 2026-11-13 holds each of them: "No record seeds. The cold start, and
 /// every wait after a run-out, follows the party's liveness and progress. After that the
 /// bound is the slowest answer seen. No ×2."
@@ -3099,15 +3108,25 @@ impl WaitKind {
 
     /// Teaches its record what this host kept of it: R*'s own answer, then W*'s with work no
     /// rate is below, so that each comes back as it was kept. Nothing where nothing whole is
-    /// kept.
+    /// kept, and, for a command's kind, nothing that does not say it is of served answers
+    /// alone ([`SERVED`]).
     fn learn_kept(&self) {
         let kept = std::fs::read_to_string(&self.file).unwrap_or_default();
-        let ns: Vec<u64> = kept.split_whitespace().filter_map(|n| n.parse().ok()).collect();
-        if let [slowest, cpu, over] = ns[..] {
+        let mut words = kept.split_whitespace();
+        if self.command() && words.next() != Some(SERVED) {
+            return;
+        }
+        let ns: Option<Vec<u64>> = words.map(|n| n.parse().ok()).collect();
+        if let Some(&[slowest, cpu, over]) = ns.as_deref() {
             self.record
                 .teach(Duration::from_nanos(over), Duration::from_nanos(cpu));
             self.record.teach(Duration::from_nanos(slowest), Duration::MAX);
         }
+    }
+
+    /// Whether it is a command's kind, taught by its served answers alone ([`Wait::unserved`]).
+    fn command(&self) -> bool {
+        !self.line.is_empty()
     }
 
     /// A kind of its own whose record is kept at `file`: two of them stand for two
@@ -3188,13 +3207,25 @@ impl WaitKind {
             KEEPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         let temporary = dir.join(temporary);
+        let tag = if self.command() {
+            format!("{SERVED} ")
+        } else {
+            String::new()
+        };
         std::fs::write(
             &temporary,
-            format!("{} {} {}\n", ns(slowest), ns(least.cpu), ns(least.over)),
+            format!("{tag}{} {} {}\n", ns(slowest), ns(least.cpu), ns(least.over)),
         )?;
         std::fs::rename(&temporary, &self.file)
     }
 }
+
+/// The first word of a command's kept record ([`WaitKind::keep`]): its W* and R* are of
+/// served answers alone ([`Wait::unserved`]). A record kept without it, before a refusal
+/// taught nothing, may hold a refusal's answer (adacachy2's `shards run` record of
+/// containers.rs' `a_logs_history_is_what_its_user_set`, W* 5.4 ms), and is read as none:
+/// its kind cold until its next served answer rewrites it.
+const SERVED: &str = "served";
 
 /// What a [`Patience`] awaits, and keys its kind by ([`WaitKind::awaiting`]).
 pub const STATE: &str = "a state its party comes to";
@@ -4118,7 +4149,24 @@ impl Wait {
     /// missing first ([`Stage::Awaited`]). What it reads after is judged anew
     /// ([`Stage::Answered`]).
     pub fn answered(&mut self) {
-        if self.stage == Stage::Awaited {
+        self.ended(true);
+    }
+
+    /// Its command's client ended unserved, by a status other than 0 or a signal: its
+    /// answer, which teaches its kind nothing. A command's words and line are its kind, and
+    /// only a served answer says it did their work: one refused stops short of it, at a
+    /// check before or along it, in what may be a fraction of the work's time (ROOT's batch
+    /// 22, KVM, f385b8dac: containers.rs' `shards run --rm --pull never IMAGE exit 0`,
+    /// refused in 5.4 ms for a settings file that did not read, taught its line W* 5.4 ms,
+    /// which refused the same line's real run, a microVM's boot, 300 ms in). What it reads
+    /// after is judged anew, as after any answer.
+    pub fn unserved(&mut self) {
+        self.ended(false);
+    }
+
+    /// Its answer came, taught to its kind where `teaches` and it was found missing first.
+    fn ended(&mut self, teaches: bool) {
+        if teaches && self.stage == Stage::Awaited {
             self.judge.answered(self.work);
             self.kind.keep();
         }

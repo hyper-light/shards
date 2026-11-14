@@ -60,7 +60,7 @@ fn a_daemons_whole_lines_are_its_words() {
 
 /// The stand-in a test's wait follows here: this test binary run again for this test alone,
 /// doing what `SHARDS_STAND_IN` says: `exit`, at once; `busy MS`, its CPU busy for MS
-/// milliseconds, then its end; `answer PORT MS`, connected to loopback's PORT, busy for MS
+/// milliseconds, then its end; `refuse`, its end at once, status 1; `answer PORT MS`, connected to loopback's PORT, busy for MS
 /// milliseconds, then its answer written there and its end; `fetch PORT`, a request
 /// written to loopback's PORT, its answer read to the connection's end; `idle`, nothing at all until
 /// its stdin closes; `pulse N MS`, N rounds of a moment's CPU then MS milliseconds of none,
@@ -88,6 +88,8 @@ fn stand_in() {
         .and_then(|(port, ms)| Some((port.parse::<u16>().ok()?, ms.parse().ok()?)));
     if let Some(ms) = asked.strip_prefix("busy ").and_then(|ms| ms.parse().ok()) {
         busy(ms);
+    } else if asked == "refuse" {
+        std::process::exit(1);
     } else if let Some((port, ms)) = answer {
         let mut to = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
         busy(ms);
@@ -353,6 +355,46 @@ fn one_call_sites_commands_are_judged_apart() {
         let run = common::run_command(stand_in_doing(what), &asked);
         assert_eq!(run.status, Some(0), "{run}");
     }
+}
+
+/// A command's refusal teaches its kind nothing: only a served answer (status 0) says its
+/// words' work was done (ROOT's batch 22, KVM, f385b8dac: containers.rs'
+/// `a_logs_history_is_what_its_user_set` ran `shards run --rm --pull never IMAGE exit 0` from
+/// one closure twice, refused in 5.4 ms for a settings file that did not read, then served,
+/// a microVM's boot, which the refusal's W* of 5.4 ms refused 300 ms in). Do: from one call
+/// site, its kind's kept record removed, run one command line twice: the stand-in refusing
+/// at once, then working a moment three times between 200 ms of nothing, as a client waits
+/// on its daemon. Expect: the refusal leaves its kind cold; the served run waited on to its
+/// end, status 0, its answer learned and kept as served.
+#[test]
+fn a_commands_refusal_teaches_its_kind_nothing() {
+    #[track_caller]
+    fn judged(cmd: std::process::Command, forget: bool) -> (common::Run, shards_api::Seen, String) {
+        let site = std::panic::Location::caller();
+        let (words, line) = (common::command_words(&cmd), common::keyed_line(&cmd));
+        let kept = common::WaitKind::kept_at(site, &words, &line);
+        if forget {
+            let _ = std::fs::remove_file(&kept);
+        }
+        let run = common::run_command(cmd, &["stand-in".to_string()]);
+        let seen = common::WaitKind::of(site, &words, &line).record().seen();
+        (run, seen, std::fs::read_to_string(&kept).unwrap_or_default())
+    }
+    let run = |doing: &str, forget: bool| {
+        let mut cmd = stand_in_doing("pulse 3 200");
+        cmd.env("SHARDS_STAND_IN", doing);
+        judged(cmd, forget)
+    };
+    let (refused, after_refusal, _) = run("refuse", true);
+    let (served, seen, kept) = run("pulse 3 200", false);
+    assert_eq!(refused.status, Some(1), "{refused}");
+    assert_eq!(after_refusal, shards_api::Seen::Cold, "a refusal taught its kind");
+    assert_eq!(served.status, Some(0), "{served}");
+    let shards_api::Seen::Learned { slowest, .. } = seen else {
+        panic!("a served answer taught its kind nothing");
+    };
+    assert!(slowest >= Duration::from_millis(600), "W* {slowest:?}");
+    assert!(kept.starts_with("served "), "kept as {kept:?}");
 }
 
 /// A command is waited on while it works: its caller gives its wait no bound, as a wait

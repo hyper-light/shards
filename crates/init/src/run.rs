@@ -6001,6 +6001,12 @@ impl Workload {
                             && let Err(e) = capture.progress()
                             && !e.transient()
                         {
+                            // Its every channel's end sent whole, its host ends it: the
+                            // capture's own end, which can come before the loop lets it go.
+                            if capture.ended_once_done(&e) {
+                                self.capture = None;
+                                continue;
+                            }
                             // Once the command has ended its status stands: the members'
                             // output, drained to its end (D240), ends where its host went.
                             if status.is_some() {

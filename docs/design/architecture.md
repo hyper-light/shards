@@ -11881,6 +11881,33 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     `one_call_sites_commands_are_judged_apart` (a stand-in that exits, then one that works a
     moment three times between 200 ms of nothing, from one call site: red at f9bdaeda5,
     refused in its first quiet window) and `a_commands_words_are_its_subcommands`.
+  - *Only a served answer teaches a command's kind* (2026-11-14, ROOT's batch 22 at
+    f385b8dac, lane judgecli). Words and line keep apart a call site's commands that say
+    different things, but one line can be refused or served by its home's state alone:
+    containers.rs' `a_logs_history_is_what_its_user_set` runs `shards run --rm --pull never
+    IMAGE exit 0` twice from its `shards` closure (call site 8499:34), first refused in
+    5.4 ms for a settings file its user broke by hand (`disk:2:`), then, the file reset,
+    served by a microVM's boot. On KVM (adacachy2, linux-x86_64-32) the refusal taught the
+    cold line's record `5435520 0 5435520` (kept at 12:03:03.143, every record of that call
+    site this run's own), and the served run, `Created` in its home 300 ms in, was refused
+    at a look that found a 6.06 ms gap ("its last progress process 2352022 ran 13.8 ms ago;
+    its record W* 5.43552ms, R* 0ns"), a host shared with another lane's harness units. A
+    refusal stops at a check before or along its words' work, so its time says nothing of
+    that work's gaps; a status of 0 is the one outcome that says the work was done, and a
+    nonzero status from served work (a run whose command exited so) teaches nothing either:
+    its kind stays cold, judged by its party's liveness, which is safe. So `run_command`'s
+    and `client_output`'s waits call `Wait::unserved` at a client's end of any other status
+    or a signal, which ends the wait unjudged from there and keeps nothing. A command's
+    kept record begins with the word `served`; one without it, kept before this rule, may
+    hold a refusal's answer and is read as none, its kind cold until its next served answer
+    rewrites it (`common::SERVED`): no number changed (R03). Its R* of 0 ns is no reader's:
+    a command's party CPU is summed at its wait's looks, the first of which finds the
+    client anew (`Found::Based`, no delta), and a client that ends and is reaped before the
+    next look is never read again; R* stays a refusal's diagnosis alone. Held by harness.rs'
+    `a_commands_refusal_teaches_its_kind_nothing` (one line from one call site, its record
+    removed: a stand-in refusing at once, status 1, then working three times between 200 ms
+    of nothing). Waits on no command (`judged`, a guest's, `Patience`) have no status and
+    still learn from each answer.
   - *A party's I/O is not read: its CPU already shows every byte it moves* (#77, measured).
     Asked whether a party blocked on a peer outside it (Docker Hub, a test's registry
     thread) moves data a look misses, `docs/research/measurements/judge-io/io_vs_cpu.py`
