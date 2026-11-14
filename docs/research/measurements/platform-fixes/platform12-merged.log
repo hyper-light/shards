@@ -1,0 +1,92 @@
+Source: b60a0b4c80d946559e69802e618225d4e72a1e20 (merged main b1415acecf28ba8781a6f2d240afbda4ae96b762)
+Runner: adacachy2 Linux x86_64; kiln r6; exit 0
+Commands and environment: as platform12-green.log
+
+From /home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/platform-carrier-ad21962483/platform.bundle
+ * branch              p/fix-platform-v1 -> FETCH_HEAD
+Previous HEAD position was ab5399ed fix(platform): wait for delegated cgroup changes without a polling timer
+HEAD is now at b60a0b4c Merge current main before landing platform12 cgroup notifications
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=x86_64_unknown_linux_gnu
+warning: aws-lc-sys@0.45.0: Only dynamic crypto library found in system install; using dynamic linking.
+warning: aws-lc-sys@0.45.0: Only dynamic crypto library found in system install; using dynamic linking.
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/g121-tmp/platform-fix/target/debug/build/aws-lc-sys-8cc8309f9cc47fa4/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/g121-tmp/platform-fix/target/debug/build/aws-lc-sys-8cc8309f9cc47fa4/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/g121-tmp/platform-fix/target/debug/build/aws-lc-sys-8cc8309f9cc47fa4/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/g121-tmp/platform-fix/target/debug/build/aws-lc-sys-8cc8309f9cc47fa4/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+warning: aws-lc-sys@0.45.0: /tmp/ccoU83Zs.s: Assembler messages:
+warning: aws-lc-sys@0.45.0: /home/adalundhe/g121-tmp/platform-fix/repo/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_32_avx2_asm.S:481: Warning: ignoring incorrect section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /home/adalundhe/g121-tmp/platform-fix/repo/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_32_avx2_asm.S:481: Warning: ignoring changed section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /tmp/cc2QbeBw.s: Assembler messages:
+warning: aws-lc-sys@0.45.0: /home/adalundhe/g121-tmp/platform-fix/repo/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_88_avx2_asm.S:480: Warning: ignoring incorrect section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /home/adalundhe/g121-tmp/platform-fix/repo/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_88_avx2_asm.S:480: Warning: ignoring changed section type for .note.GNU-stack
+   Compiling shards v0.7.0 (/home/adalundhe/g121-tmp/platform-fix/repo/crates/shards)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 23.15s
+     Running unittests src/main.rs (/home/adalundhe/g121-tmp/platform-fix/target/debug/deps/shards-71f583195378951d)
+
+running 1 test
+test daemon::parents::tests::a_cold_leaf_waits_for_changes_without_periodic_reads ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 888 filtered out; finished in 0.27s
+
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=x86_64_unknown_linux_gnu
+warning: aws-lc-sys@0.45.0: Only dynamic crypto library found in system install; using dynamic linking.
+warning: aws-lc-sys@0.45.0: Only dynamic crypto library found in system install; using dynamic linking.
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/g121-tmp/platform-fix/target/debug/build/aws-lc-sys-8cc8309f9cc47fa4/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/g121-tmp/platform-fix/target/debug/build/aws-lc-sys-8cc8309f9cc47fa4/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/g121-tmp/platform-fix/target/debug/build/aws-lc-sys-8cc8309f9cc47fa4/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/g121-tmp/platform-fix/target/debug/build/aws-lc-sys-8cc8309f9cc47fa4/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+warning: aws-lc-sys@0.45.0: /tmp/ccoU83Zs.s: Assembler messages:
+warning: aws-lc-sys@0.45.0: /home/adalundhe/g121-tmp/platform-fix/repo/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_32_avx2_asm.S:481: Warning: ignoring incorrect section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /home/adalundhe/g121-tmp/platform-fix/repo/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_32_avx2_asm.S:481: Warning: ignoring changed section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /tmp/cc2QbeBw.s: Assembler messages:
+warning: aws-lc-sys@0.45.0: /home/adalundhe/g121-tmp/platform-fix/repo/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_88_avx2_asm.S:480: Warning: ignoring incorrect section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /home/adalundhe/g121-tmp/platform-fix/repo/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_88_avx2_asm.S:480: Warning: ignoring changed section type for .note.GNU-stack
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s
+     Running unittests src/main.rs (/home/adalundhe/g121-tmp/platform-fix/target/debug/deps/shards-71f583195378951d)
+
+running 6 tests
+test daemon::parents::tests::a_delegated_cgroup_is_found_within_what_its_user_may_move_between ... ok
+test daemon::parents::tests::a_parent_is_refused_before_anything_starts_where_it_cannot_be_served ... ok
+test daemon::parents::tests::a_slice_is_named_as_systemd_names_one ... ok
+test daemon::parents::tests::leaves_of_daemons_gone_are_swept_and_others_kept ... ok
+test daemon::parents::tests::a_cold_leaf_waits_for_changes_without_periodic_reads ... ok
+test daemon::parents::tests::a_leaf_is_waited_for_while_its_processes_go_on_with_their_end ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 883 filtered out; finished in 1.72s
+
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=x86_64_unknown_linux_gnu
+warning: aws-lc-sys@0.45.0: Only dynamic crypto library found in system install; using dynamic linking.
+warning: aws-lc-sys@0.45.0: Only dynamic crypto library found in system install; using dynamic linking.
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/g121-tmp/platform-fix/target/debug/build/aws-lc-sys-4c527a91f14c25ab/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/g121-tmp/platform-fix/target/debug/build/aws-lc-sys-4c527a91f14c25ab/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/g121-tmp/platform-fix/target/debug/build/aws-lc-sys-4c527a91f14c25ab/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/g121-tmp/platform-fix/target/debug/build/aws-lc-sys-4c527a91f14c25ab/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+warning: aws-lc-sys@0.45.0: /tmp/ccuGcYKU.s: Assembler messages:
+warning: aws-lc-sys@0.45.0: /home/adalundhe/g121-tmp/platform-fix/repo/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_32_avx2_asm.S:481: Warning: ignoring incorrect section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /home/adalundhe/g121-tmp/platform-fix/repo/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_32_avx2_asm.S:481: Warning: ignoring changed section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /tmp/ccCMiBG5.s: Assembler messages:
+warning: aws-lc-sys@0.45.0: /home/adalundhe/g121-tmp/platform-fix/repo/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_88_avx2_asm.S:480: Warning: ignoring incorrect section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /home/adalundhe/g121-tmp/platform-fix/repo/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_88_avx2_asm.S:480: Warning: ignoring changed section type for .note.GNU-stack
+    Checking shards v0.7.0 (/home/adalundhe/g121-tmp/platform-fix/repo/crates/shards)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 16.60s

@@ -46,7 +46,14 @@ Unchanged process-watch/judge error handling is not claimed repaired by this fin
 On source `ab5399eda`, adacachy2 (Linux x86_64), kiln r5 exited 0: the exact regression
 passed (one test, 0.25 s), the parents module passed (six tests, 1.70 s), and
 `cargo clippy -p shards --all-targets -- -D warnings` passed (36.68 s).
-[Retained green output](platform12-green.log). The merged-tree rerun is recorded at landing.
+[Retained green output](platform12-green.log).
+Merged source `b60a0b4c80d946559e69802e618225d4e72a1e20` includes fresh main
+`b1415acecf28ba8781a6f2d240afbda4ae96b762`. Kiln r6 on the same runner passed the
+exact regression (one test), parents module (six tests), and all-target shards clippy.
+[Retained merged output](platform12-merged.log). Subsequent evidence-only commits
+do not change the tested Rust source. No mutation campaign was run; the red commit is
+the retained guard-free baseline. The policy script is a separate mechanical check,
+not evidence for the unrun real-cgroup/performance/matrix gates below.
 Only test fixtures run; no real delegated cgroup or VM is created by this lane.
 
 ROOT owes the real delegated-cgroup integration command on Linux:
