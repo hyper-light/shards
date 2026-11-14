@@ -90,6 +90,9 @@ clippy pass. Live emulated guest/copy agreement remains owed to ROOT.
 The runs-01 follow-up caught and corrected this lane's native nondevice-owner
 regression: uid 0 instead of 1000 before, correct after, with 50 server tests
 and VMM all-target clippy passing. Its exact red/green logs are retained.
+Runs-07's concurrent end-record red lost its helper maximum; after stable-lock
+reread/merge and atomic unique staging, the regression and all 5 end tests pass,
+with shards all-target clippy. Two-process/VM crash publication remains owed.
 
 ### M2. Object lifecycle (`lifecycle`, n=200, µs)
 
@@ -19318,6 +19321,15 @@ Linux x86_64 pure CPU tests: `aes` failed register mapping at ae37abb52 (r7), th
 clippy passed (r8). These are code-path checks, not an Arm VM or performance result.
 [Commands and residual conservative refusals](measurements/migrate/fix-review-2026-11-13.md).
 
+### Migration review hardlink and pre-copy regressions, 2026-11-13 (migrate-05/03, D176)
+
+Unit evidence only: on adacachy2 Linux x86_64, writing imported alias `a` left `b`
+unchanged at `73af9fb62` (one failing test against the landed Beneath extractor).
+After `fd33ec11a`, merge `7720df839` passed 15 migration module tests, 4 guest-file
+helper tests and 5 integrated pre-copy tests from the memory reviewer's migrate03
+fix. This proves the scoped file/ownership paths, not live VM migration, host-pair
+portability or a performance ratio. [Commands, logs and owed VM checks](measurements/migrate/fix-review-2026-11-13.md).
+
 ### M499. What a Hypervisor.framework guest is shown of its host's CPU, and a listener that outlives its runner (D176 part 6)
 
 - **Question.** A move between Macs is checked by the features macOS names
@@ -24139,6 +24151,16 @@ This is correctness evidence, not a VM/performance measurement. Full commands,
 ownership change and ROOT's remaining gates: `measurements/memory-fixes-v1/README.md`.
 
 
+### Remote-04. A network build timestamp panics before set_modified (2026-11-13)
+
+Functional evidence on macOS arm64, Rust 1.98.1: the real synced receiver at
+`c3ad61ab1` panicked on i64::MAX seconds/u32::MAX nanoseconds (`SystemTime` overflow,
+1 failure). Typed fraction/host-range validation before file creation at
+`063a5d339` passed all 9 synced tests and shards all-target clippy. The writer now
+accepts a checked SystemTime. No chosen maximum or platform stub was added.
+[Commands, source revisions, policy, logs and owed Windows/release-listener checks](measurements/remote-fixes-v1/README.md#remote-04-build-file-timestamp-validation).
+No performance or live-VM result is claimed.
+
 ### Remote-05. Private request arguments in the daemon log (2026-11-13)
 
 This is correctness evidence, not a performance measurement. An enrolled fixture's
@@ -24170,6 +24192,7 @@ clippy pass (r8). These are functional unit results, not a real DNS-provider or
 real-VM result. RFC1034 §3.1 supplies the terminal-root-dot normalization rule;
 no chosen runtime value, wait or cache is added.
 [Commands, red output, green excerpts and owed variant](measurements/inithex-fixes/README.md).
+
 
 ### Review memory-03/05: live-copy mapping ownership and terminal map-back loss
 
@@ -24399,6 +24422,14 @@ removes the 64-kind comparison cutoff; the input's block count bounds the search
 The sparse-file/index regression checks actual retained identity and length.
 [Commands, results and unmeasured quadratic comparison cost](measurements/memory-fixes-v1/README.md).
 
+### Review memory-17: the give-back request's exact encoded bound (D133)
+
+adacachy2, Linux 7.3.3-1-cachyos x86_64, native GNU target, rustc 1.98.1:
+red c61cc6b1d (resumed r20) accepted both signed i64 extremes but waited for a
+payload whose ROOM header was longer than either producer can encode.
+5826a9bcf derives the limit from i64::MIN's minus sign and decimal digits.
+[Commands, red/green and unrun host/guest combinations](measurements/memory-fixes-v1/README.md).
+
 ### M572. A registry's trouble past the longest its path passed runs out, told once, and the pull follows liveness; buffered reads, named waits and late routes (D222, waits-05, -06, -07)
 
 - **Question.** M558 made a trouble past the longest its path had passed the request's
@@ -24465,3 +24496,19 @@ The sparse-file/index regression checks actual retained identity and length.
   `Notice`, `ErrorKind::Gone`; R09, R10 red on main, green after, four mutations killed;
   R11 Unix and Windows written, macOS run; R15, R16 implementer, its runner target removed
   after landing.
+
+### M573. A WHP DAX range mapped to be written after one to be read was made zeros as its file grew (memory-01, D189, D197)
+
+Windows 10.0.26200 x86_64 (the Windows 11 guest on adacachy), 2026-11-14: at 4697f1e7b a
+3 MiB file mapped to be read through a handle to read alone, then elsewhere to be written
+through one to write, grew; the window, keeping the first handle, made no PAGE_READWRITE
+section of it (CreateFileMappingW asks GENERIC_READ and GENERIC_WRITE) and placed writable
+zeros over the written range: it read 0 where the file holds 0x5a. A range no section to write
+can be made for was made zeros as it was followed after a cut, its vCPU let run. At 7f0cb8ce9
+the node keeps the handle given to write, the section is made before anything is freed, and a
+mapping that cannot be followed is left as it was or let go of, refused (`fs::Unfollowed`),
+the reply that would tell the guest its size refused: `window::tests` 12 of 12, both mutants
+(the first handle kept; let go of where it should be left) failing them. Unit-level functional
+evidence on real NTFS views, no real VM; a view refused after its section was made is
+unit-unreachable, and the WHP DAX tests are owed.
+[Commands, logs, mutants and owed runs](measurements/windows-p0/README.md).

@@ -1,0 +1,13 @@
+diff --git a/crates/vmm/src/devices/virtio/fs/window_whp.rs b/crates/vmm/src/devices/virtio/fs/window_whp.rs
+index d085582c3..9c24bdc4d 100644
+--- a/crates/vmm/src/devices/virtio/fs/window_whp.rs
++++ b/crates/vmm/src/devices/virtio/fs/window_whp.rs
+@@ -874,7 +874,7 @@ impl Window {
+                                 std::io::Error::last_os_error()
+                             );
+                             refused.get_or_insert(super::Unfollowed::Section { node, writable });
+-                            continue;
++                            None
+                         }
+                     },
+                 };

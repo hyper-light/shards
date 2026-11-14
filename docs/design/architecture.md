@@ -6957,6 +6957,17 @@ stranger refused once its verdict is let go, red with each on the driver; and th
 backpressure as before: 8 MiB crossing whole, a command that reads no stdin holding up no
 other).
 
+**Build-file times (remote-04, 2026-11-13).** The separately framed Dockerfile's
+seconds and fractional nanoseconds are untrusted. `synced::receive` validates the
+fraction (no whole second, utimensat(2)'s `tv_nsec`) and uses `SystemTime::checked_add`
+for the receiving host's representable range before creating the file. It retains
+`ReceiveError::Timestamp` and `FileTimeError::{Nanoseconds,Unrepresentable}` until
+the step renders its failure on stderr; no caller parses an error string. Valid
+pre-epoch input keeps the receiver's prior normalization to the epoch. No runtime
+timeout, floor or chosen range is introduced. A network timestamp of i64::MAX
+seconds/u32::MAX nanoseconds previously panicked in `SystemTime` addition on the
+daemon's context-step thread. [Red/green and owed release-listener proof](../research/measurements/remote-fixes-v1/README.md).
+
 #### A client's authority, judged of what runs and of whom its key is now (remote-01 to 03, 2026-11-13)
 
 The adversarial review of D180 (docs/bugs/2026-11-13/remote.md) found three ways a client
@@ -8721,6 +8732,18 @@ policy collected at the next build, which grew nothing. Measured: PM M426's harn
 
 ### D217. A kill waits as long as its microVM goes on ending, by what its host has shown; a freeze, to its end (built)
 
+**Concurrent record writers** (runs-07). A daemon and each API host hold the
+stable `ends.lock` exclusively across reread, maximum merge and publication. The
+existing store `Locked` wrapper unlocks before closing (M244); locking the replaced
+record's inode would not serialize the next reader. Publication uses the existing
+platform `write_in`: a uniquely owned temporary file, synced and renamed whole.
+A failed write retains this process's learned maximum, and its next observation
+can persist that retained maximum even when it is faster. The focused race test
+holds the stable lock while another writer learns a helper end, publishes its own
+teardown snapshot and releases the lock: both maxima must survive. Existing cold
+liveness behavior and the record's millisecond format are unchanged; no new wait,
+cache, runtime number or platform adapter. See the [runs fix evidence](../research/measurements/runs-fixes/README.md).
+
 **Found.** The audit of what was taken from Docker (docs/audit/2026-10-16_docker-framing.md):
 a microVM whose command outlived its SIGKILL had its VM killed 10 s later and its end given
 up 2 s after that (moby daemon/kill.go), a signal that could not be sent waited out 2 s
@@ -9667,6 +9690,11 @@ stores.
   44.4, 1 MiB close together 74 against 855. Held by
   `a_file_mapped_in_many_ranges_is_looked_at_once` (mutation-checked: 8 looks for 8
   ranges).
+- **A file its window cannot follow is a reply refused** (memory-01, PM M573; D197's slice
+  4 on Windows). Where `reconcile` cannot make a file's ranges what it is (its size unread,
+  its grown pages not mapped), it refuses, typed (`fs::Unfollowed`), and the reply that
+  would tell the guest the file's size is refused it (EIO): its guest never hears a size
+  whose bytes its window does not hold, and the file is followed again at its next request.
 - **Each window's page structures in its head, not its guest's memory** (PM M300). Linux
   describes a window's pages as it probes the device, with page structures (64 bytes for
   each 4 KiB page) it took from guest RAM: a 64th of the window (M269), from a guest that,
@@ -11889,6 +11917,33 @@ took, decided (PM M412):
   guest reads the file's bytes, and zeros past its end, as on Unix.
 - **Followed as the Unix window follows a file**: before the guest hears a size,
   `reconcile` makes each range what the file is then, a grown file's new bytes the guest's.
+- **Never zeros in place of a file's bytes** (memory-01, PM M573). A section to write is made
+  only of a handle "created with the GENERIC_READ and GENERIC_WRITE access rights", one to
+  read of one with GENERIC_READ (Microsoft's CreateFileMappingW, PAGE_READWRITE and
+  PAGE_READONLY), and a share's server opens a mapping to be read alone to read
+  (`SHARED_NEEDS_WRITE`). The window kept a node's first handle: a file mapped to be read
+  and then, elsewhere in the window, to be written grew, no section to write could be made
+  of the handle kept, and `reconcile`, having freed the written range's views, placed
+  writable zeros over its file's bytes, the guest's stores reaching no file. So:
+  - a node keeps the handle given for a mapping to be written over one given to read
+    alone, as the Unix window's node keeps a descriptor opened to write (window.rs
+    `Table::insert`);
+  - a mapping's new section is made before anything of it is let go of, and where none can
+    be made, or its file's size cannot be read, it is left as it was;
+  - where a view cannot be placed once its old ones are freed ("BaseAddress and ViewSize
+    must exactly match those of the placeholder", Microsoft's MapViewOfFile3, so a view
+    replaces only a freed placeholder), its ranges stay placeholders (`Held::LetGo`), as a
+    range let go of for a cut is, a vCPU that reaches one waiting until it is made again or
+    unmapped;
+  - each is refused, typed (`fs::Unfollowed`: its size, its section, a view), and the reply
+    that would tell the guest the file's size is refused it (EIO): the guest never hears a
+    size whose bytes its window does not hold. The request itself was the server's, done:
+    a refused LOOKUP's or CREATE's node and handle stay the server's until the guest's
+    unmount, as for any reply its guest did not take.
+  Held by `a_range_mapped_to_be_written_after_one_to_be_read_stays_its_files` and
+  `a_range_no_view_of_its_file_can_be_made_for_is_refused_never_zeros` (red before,
+  mutation-checked); a view refused after its section was made is unit-unreachable, and
+  unverified.
 - **No cut under a mapping.** NTFS refuses to cut a file short while any section of it is
   held, a view or a handle (ERROR_USER_MAPPED_FILE, M412). So the window keeps views alone,
   each section's handle closed once its views are placed. A guest's own cut (a SETATTR of
@@ -14033,7 +14088,7 @@ other's but what the move sends, and what the other takes by content:
   (D197); each its extended attributes under names of its own (Linux's `trusted.` and
   `security.` under `user.shards.`, Windows' as EAs of hexadecimal names). The move reads
   and makes each through the share server's own calls (`server::guest`: `read`, `set`
-  and its makers), its stream (version 2) holding each entry's kind and mode, its device
+  and its makers), its stream (version 3) holding each entry's kind and mode, its device
   number, its owner where one is recorded (none where the host made it, so that it stays
   its share's default owner's, D38), its attributes by the guest's names, and its name as
   the guest's, which a Windows host keeps escaped as WSL escapes it; a directory takes its
@@ -14046,6 +14101,22 @@ other's but what the move sends, and what the other takes by content:
   its path there, whatever device and inode it had here, its guest's open handles and
   working directory in it going on. A bind's host path is the other machine's to share
   at the same place, as a network file system shares it, checked there before the move.
+- **Its regular-file hardlinks** (migrate-05, 2026-11-13). Version 3 adds an entry naming
+  an earlier regular file in volume data. The source's opened file supplies the share
+  server's device/file-id and link count; only multiply-linked volume files retain a
+  first-name record, for one stream, with fallible map/name growth. Both destination
+  names must be allowed volume-data paths. `Beneath::make_hardlink` walks both parents
+  through held directories, rejects a missing or non-regular source (including a
+  symlink), and uses the existing Unix/NT `link_at` seam, never replacing a destination.
+  No metadata or bytes are replayed for an alias: the inode's contents and attributes
+  stay shared. POSIX.1-2024 `linkat` specifies shared identity and flags 0's no-follow
+  behavior; the share server's LINK handler already uses that seam. Readers accept
+  version 2 as before; older readers refuse version 3 before extraction. Version/tag
+  numbers are assigned grammar, path sizes retain the existing PATH_MAX bound, and
+  link count greater than one is the host's alias fact, not a tuning choice. The red
+  test `a_volumes_hardlinks_keep_shared_contents_after_move` failed at `73af9fb62`
+  against the landed migrate-01 extractor. [Decision, tests and remaining platform/VM
+  checks](../research/measurements/migrate/fix-review-2026-11-13.md).
 - **Nothing it sends reaches out of the move's directory** (migrate-01, 2026-11-13). The
   machine moved to puts the stream's entries in a directory of the move's own
   (`private/move-…`), and a name that passes `relative` (no `..`, no root, no empty
@@ -14073,7 +14144,7 @@ other's but what the move sends, and what the other takes by content:
   against, at a volume's `_data` and beside it) and `beneath_goes_through_no_symlink`
   (`server::guest`, every target). Not an
   archive of go-archive's (crates/archive), whose oracle is untouched: the move's stream is
-  its own format (version 2).
+  its own format (version 3; readers also take version 2).
 - **Its CPU.** A restore on another CPU than its snapshot's is no longer refused where that
   CPU has every feature its guest found: the guest is told the CPU it found, each of its
   vCPUs given its snapshot's ID registers (HVF, KVM on arm64) or CPUID (KVM on x86_64),
@@ -18144,6 +18215,16 @@ changes.
 
 ### D133. A builder's memory, plugged as its build needs it (virtio-mem)
 
+**Review memory-17 (2026-11-13):** the give-back connection's largest host
+request is ROOM: Giver::tell and tell_first use the canonical decimal `i64`
+encoding, or an empty payload for no budget. GIVE_BACK is empty too. Its exact
+bound is one minus sign plus `floor(log10(abs(i64::MIN))) + 1` decimal digits,
+computed with unsigned_abs and ilog10. No calibration/cold-start guess is needed;
+the fixed integer type bounds the arithmetic on every supported target. A longer
+header follows the existing connection-end path before allocation or payload
+read. Both signed extremes remain accepted. Red/green evidence and platform
+limits: `docs/research/measurements/memory-fixes-v1/README.md`.
+
 **R03 review memory-11..15 (2026-11-13):** reserve slack, pause/read floors,
 retry count, growth/retention ratios and boot floor remain owed to ROOT with
 designs in `docs/research/measurements/memory-fixes-v1/owed-designs.md`.
@@ -19407,6 +19488,16 @@ the run's directory.
   `an_event_is_as_long_as_its_message_says`; the daemon's segments and rendering.
 
 ### D122. The members an `EXPOSE` is for: one receiver for each incoming port
+
+**Review gaps (network-06/07, 2026-11-13), owed to ROOT.** Whole-range holder
+selection and IPv6 wildcard acceptance have not been validated against split
+listeners or IPV6_V6ONLY in the pinned guest. A port must have its own holder;
+expanding contests also requires excluding the original range from fallback DNAT
+and retaining each mapped destination port. IPv4 selection must parse the kernel's
+`INET_DIAG_SKV6ONLY` attribute; an absent/malformed observation must not be guessed
+dual-stack. The fixed message's IPv6 source alone cannot establish acceptance.
+The proposed live fixtures and failure/ownership requirements are
+[recorded here](../research/measurements/network-fixes-v1/README.md#network-05-07-guest-kernel-and-api-reproductions).
 
 An `EXPOSE … FOR <network>` opened a port of the microVM for every member of the network.
 On a network of one member that is a receiver; on a network of several, a connection
@@ -22189,6 +22280,14 @@ Tested:
 - `several_platforms_make_one_image_of_their_manifests` checks buildx's refusal.
 
 ### D99. IPv6 on a network of microVMs
+
+**API-run parity gap (network-05, 2026-11-13), owed to ROOT.** Unlike the daemon,
+API-run still supplies neither its guest's `uplink6=` nor the network process's
+`NET_ADDRESS` for IPv6 egress. Its IPv4 policy unit results do not prove this path.
+The correction must share the home's ULA derivation and paired programming, with
+NET_ADDRESS acknowledged before frames are served and the same narrowed grants
+and `confine-eth0` preserved. Fresh/restored API IPv6 receipt and default-deny
+witnesses are [owed with an exact fixture](../research/measurements/network-fixes-v1/README.md#network-05-07-guest-kernel-and-api-reproductions).
 
 A network made with `--ipv6` (`shards network create --ipv6`, or a run's `--network` on
 one) gives each microVM an IPv6 address of its IPv6 subnet, as dockerd gives each
@@ -28438,6 +28537,23 @@ pin, read on Linux and never run), as data and pure functions the injector drive
   CLI's refresh (JSON and form) and revocation found, and a refresh of another or a near placeholder passed; the
   minting endpoint read widely; no token or placeholder in `Debug`; a 100 000-deep array read. clippy `-D warnings`
   clean. Each of 14 guards removed in turn fails its test (`scripts/step8-reds.py`).
+- *A token host's informational responses wait for its final one (creds-10, amended 2026-11-13).* A 1xx
+  response went to the guest at once, before the final response's body named its tokens, so a 103
+  (or any 1xx) that repeated a token issued in that final response passed unread. RFC 9110 §15.2 has a
+  proxy forward each 1xx unless it asked for it, and lets a user agent ignore an unexpected one; it sets
+  no deadline, only that they precede the final response. So on a sign-in's token host a 1xx but 100 is
+  held (HTTP/1.1's head in `Ended::interims`, HTTP/2's fields on its stream, together at most `TO_GUEST`
+  octets, past which the message breaks or the stream is refused 502), read with the final response's
+  head and trailers for its tokens (`signin::unechoed`'s places), and sent before it as it came; one
+  that holds a token refuses the response 502, nothing captured. A final response that is not read
+  whole names no token and goes after them at once. A 100 Continue goes at once as its status alone
+  (§15.2.1 gives it no fields; a client may be waiting on it before it sends its body), so that it
+  carries nothing and waits for nothing. Not chosen: holding a 100 too, which stalls a client that
+  waits for it until its own timer. Tests: `inject::tests::leaks`' HTTP/1.1 103 repeating the access
+  token (refused), a benign 103 (sent before the token response) and a 100 with a field repeating it
+  (sent bare), and an HTTP/2 103 repeating the refresh token (refused), red before (a real token
+  reached the guest), green after; HTTP/1.1's and HTTP/2's holds removed, and each's reading of the
+  held responses removed, each fail them.
 - *A token in a token response's head or trailers is refused (creds-01, amended 2026-11-13).* A capture wrote the
   placeholders into the body's token places alone and passed the head (HTTP/1.1's, through `signin::frame`) and an
   HTTP/2 stream's fields and trailers (through `give`) as they came, so a host repeating a token there (a field, a

@@ -1,0 +1,26 @@
+source 73af9fb62722a87d878f97b0d1bd989fb2bbc999
+runner adacachy2 Linux x86_64
+command cargo test -p shards a_volumes_hardlinks_keep_shared_contents_after_move --bin shards
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 09s
+     Running unittests src/main.rs (/home/adalundhe/g121-tmp/fix-migrate-v1/target/debug/deps/shards-4856591bb4e0ee80)
+
+running 1 test
+test daemon::moves::tests::a_volumes_hardlinks_keep_shared_contents_after_move ... FAILED
+
+failures:
+
+---- daemon::moves::tests::a_volumes_hardlinks_keep_shared_contents_after_move stdout ----
+
+thread 'daemon::moves::tests::a_volumes_hardlinks_keep_shared_contents_after_move' (842900) panicked at crates/shards/src/daemon/moves.rs:2872:9:
+assertion `left == right` failed
+  left: [98, 101, 102, 111, 114, 101]
+ right: [97, 102, 116, 101, 114]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    daemon::moves::tests::a_volumes_hardlinks_keep_shared_contents_after_move
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 903 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards --bin shards`
