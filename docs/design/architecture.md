@@ -26846,6 +26846,18 @@ and no exec, attach or terminal (the plan's steps 5, 6 and 7).
   `output_taken_before_the_runs_end_reaches_its_owner_whole`,
   `output_said_after_the_runs_end_reaches_its_owner_before_its_end`). No literal is added: both
   ends are the protocol's own events.
+  The run host (`api_run.rs` `records`) ends cut every channel its orchestrator gave room to or
+  was told of that has no end once its VM's capture is over, at its end or at a frame cut short:
+  what it held past the orchestrator's room goes first, as a record's own end sends it (a
+  record's bytes past the room it was granted for: from a guest that keeps its credit, at most
+  the 3 bytes by which `grant`'s least, an errno's record, passes a room of less), then `OUTPUT_END`
+  `Aborted(104)`, ECONNRESET's Linux number (include/uapi/asm-generic/errno.h), a guest's errno
+  as init's own aborts are, the stream it came on having ended under it. So nothing the host took
+  of the guest is lost, and the owner's pipe ends with the capture, not with the host's exit
+  after its cleanup; D240's guest-abort allowance stands, the abort said. Before, those bytes and
+  the channel's end were dropped (control-01's follow-up; red
+  `bytes_held_past_the_room_reach_the_orchestrator_as_the_capture_is_cut`). The typed end
+  reaches the session (`Flow::ended`); `ImageGuest` gives its caller the pipe's EOF alone.
 - *Every member's log, within the run's one cap* (goal 58's step 7, slice 3; ROOT's ruling and the
   person's decision, 2026-11-13). The log is the run's: every member's output is kept, owned or not.
   - *Kept whoever reads it.* A drained member's records are kept as the daemon takes them (above);
@@ -27742,6 +27754,24 @@ record docs/research/s33-veil-creds/STEP8.md).
   sign-in's refresh meanwhile joins that one ask (`SignIns::refresh`), and the broker's `Turn` makes it one across
   runs. Refused: the network process refreshing on its own, which would need the refresh token in it and would let two
   runs rotate one sign-in's tokens out from under each other (RFC 6749 §6, f47).
+- *The body read whole, either framing (#74, plan step 33).* Such a POST is held (`Parked`'s `Holding`) with one
+  Content-Length of no more than `TO_HOST`, or chunked (RFC 9112 §7.1): its body is decoded as it comes by its own
+  framing (`walk`, the reader every body of the HTTP/1.1 path goes through, so a held body is read by the rules a
+  passed one is), each chunk's extensions passed over and its trailer section (§7.1.2) no part of what is asked, none
+  of the guest's bytes taken until it is answered, so one that goes on goes as it came. Chunking that is broken (a
+  size line that is no hex, data not ended by CRLF, a control in an extension, a size line or trailer section past
+  `TO_HOST`) is refused 400 (`Refusal::Malformed`), as it is on a body passed on. One whose end has not come when
+  what the flow holds (`Ended::held`: the parked head and `pending`) leaves the guest no TCP window (`tcp::full`)
+  cannot end, and goes on as any request, as one whose Content-Length is past `TO_HOST` does, as HTTP/2's does
+  (`H2::stuck`). Before, a chunked refresh went on to the provider carrying the refresh placeholder, and one whose
+  Content-Length fit `TO_HOST` alone but not with its head waited for ever. No literal of its own: §7.1's grammar,
+  `TO_HOST` and its window scale. Tests (`cargo test -p shards-net --profile test-release --lib` with
+  `chunked_refresh`, `chunking_is_refused` and `past_the_hold`): a chunked refresh, its JSON split across chunks with
+  extensions, asked outside and answered with the sign-in's placeholders, and then a chunked revocation with
+  trailer fields answered 200 on the same connection, neither reaching the host; three brokenly chunked POSTs
+  refused 400, nothing reaching the host; over a connection holding `TO_HOST`, a chunked POST of twice it and one with
+  a Content-Length of `TO_HOST` whose head's fields hold a sixteenth of it more (each past the hold by more than the
+  TLS record still being deframed, which the window does not count) going on to the host as they came.
 - *Question 2: the grant, its hosts, its placeholders.* A run captures a sign-in only where a sign-in grant
   (`shards_dns::credential::SignInGrant`: the sign-in's name in the store, its CLI, the hosts its access token goes to,
   and what an earlier capture gave) names its CLI, whose profile names its token host, and its egress reaches that host
@@ -28022,7 +28052,7 @@ docs/research/s33-veil-creds/STEP7.md and STEP8.md).
   `invalid_grant`.) A refresh of the sign-in's placeholder is asked outside (`Upward::Refreshing`), joined to one
   under way, and answered on its stream from the broker's answer, its tokens the sign-in's placeholders; a
   revocation is answered 200 on its stream (RFC 7009 §2.2), never sent; anything else goes on as any request. A
-  chunked one over HTTP/1.1 goes on as any request, its response read all the same.
+  chunked one over HTTP/1.1 is held and decoded alike (step 8's second slice, *The body read whole*).
 - *Responses, per stream.* Each final response with a body (`TokenResponse`, R04: `Reading`, `Capturing`,
   `Written`) has its head held and its body read whole, none of it to the guest before; one coded otherwise than as
   its sender wrote it is refused 502 on its stream (`signin::readable_fields`, the HTTP/1.1 check over decoded
