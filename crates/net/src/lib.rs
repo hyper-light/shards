@@ -11,6 +11,7 @@ pub mod bridge;
 pub mod ca;
 #[cfg(target_os = "linux")]
 pub mod confine;
+mod decode;
 #[cfg(windows)]
 mod dial;
 /// The answers its resolver gives a network's members (D46): shards-dns, shared with the
@@ -30,7 +31,7 @@ pub mod tcp;
 pub mod wire;
 
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
+use std::collections::{BinaryHeap, HashMap, VecDeque};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, UdpSocket};
 #[cfg(unix)]
@@ -418,11 +419,17 @@ pub struct Config {
     /// is, or at those the host's resolver answered for it through this process; the host
     /// itself (`dns::HOST`) at the gateway, which is its loopback there.
     pub named: Vec<(String, u16)>,
-    /// What the named have resolved to, each address with its grant's port.
-    pub learned: HashSet<(IpAddr, u16)>,
+    /// One current, expiring answer per granted name and address question type.
+    learned: Vec<Learned>,
     /// Whether any name may be asked past the microVM (`NETWORK --dns`); else only the
     /// named's, and every other question is REFUSED.
     pub dns_all: bool,
+}
+
+#[derive(Debug, Clone)]
+struct Learned {
+    answer: dns::Resolved,
+    until: Instant,
 }
 
 /// The TCP ports a policy's flows reach past the microVM, which the network process is held
@@ -519,7 +526,7 @@ impl Config {
             policy,
             resolvers: Vec::new(),
             named: Vec::new(),
-            learned: HashSet::new(),
+            learned: Vec::new(),
             dns_all: false,
         }
     }
@@ -590,6 +597,38 @@ impl Config {
             .collect()
     }
 
+    /// RFC 2181 §5.4: replace an RRset instead of merging historical answers. The
+    /// finite grant list admits at most its A and AAAA answers; each fits one DNS
+    /// message. TTL zero grants no cached authority to a later connection.
+    fn learn(&mut self, answer: dns::Resolved, now: Instant) -> io::Result<()> {
+        self.learned.retain(|was| {
+            was.until > now && !(was.answer.name == answer.name && was.answer.kind == answer.kind)
+        });
+        if answer.ttl == 0
+            || answer.addresses.is_empty()
+            || !self
+                .named
+                .iter()
+                .any(|(name, _)| name.eq_ignore_ascii_case(&answer.name))
+        {
+            return Ok(());
+        }
+        let until = now
+            .checked_add(Duration::from_secs(u64::from(answer.ttl)))
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "DNS lifetime exceeds the clock"))?;
+        self.learned.try_reserve(1).map_err(io::Error::other)?;
+        self.learned.push(Learned { answer, until });
+        Ok(())
+    }
+
+    fn learned(&self, name: &str, to: IpAddr, now: Instant) -> bool {
+        self.learned.iter().any(|found| {
+            found.until > now
+                && found.answer.name.eq_ignore_ascii_case(name)
+                && found.answer.addresses.iter().any(|ip| ip.to_canonical() == to)
+        })
+    }
+
     /// Where a connection to `to`'s `port` goes under a build's proxy (D110): to the
     /// proxy's socket where it is the gateway's proxy port; none for anything else.
     fn proxy_flow(&self, to: IpAddr, port: u16) -> Option<std::path::PathBuf> {
@@ -610,13 +649,15 @@ impl Config {
         if proto == Proto::Tcp && to == IpAddr::V4(self.gateway_ip) && self.host_granted(port) {
             return true;
         }
+        let now = Instant::now();
         let named = proto == Proto::Tcp
-            && (self.learned.contains(&(to, port))
-                || self.named.iter().any(|(h, p)| {
-                    // An IPv6 address as a URL writes it, in brackets (RFC 3986 §3.2.2).
-                    let h = h.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(h);
-                    *p == port && h.parse::<IpAddr>().ok().map(|a| a.to_canonical()) == Some(to)
-                }));
+            && self.named.iter().any(|(h, p)| {
+                // An IPv6 address as a URL writes it, in brackets (RFC 3986 §3.2.2).
+                let h = h.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(h);
+                *p == port
+                    && (h.parse::<IpAddr>().ok().map(|a| a.to_canonical()) == Some(to)
+                        || self.learned(h, to, now))
+            });
         match &self.policy {
             // The proxy's one flow is the stack's own (`proxy_flow`), past this.
             Policy::DenyAll | Policy::Proxy { .. } => false,
@@ -1444,6 +1485,7 @@ fn answer_other(stack: &mut Stack<'_>, sock: &UnixStream, m: &shards_ipc::Messag
             }
             stack.cfg.policy = Policy::Ports(ports);
             stack.cfg.named = named;
+            stack.cfg.learned.clear();
             stack.cfg.dns_all = dns_all;
             answer(sock, shards_ipc::kind::NET_POLICY)
         } else if m.kind == shards_ipc::kind::NET_SIGN_INS {
@@ -2405,13 +2447,9 @@ impl<'r> Stack<'r> {
             if key.1 == IpAddr::V4(self.cfg.gateway_ip)
                 && key.2 == 53
                 && !self.cfg.named.is_empty()
-                && let Some((name, addrs)) = dns::a_records(got)
+                && let Some(answer) = dns::a_records(got)
             {
-                for (host, port) in &self.cfg.named {
-                    if host.eq_ignore_ascii_case(&name) {
-                        self.cfg.learned.extend(addrs.iter().map(|a| (*a, *port)));
-                    }
-                }
+                let _ = self.cfg.learn(answer, Instant::now());
             }
             o.datagram((key.1, key.2), key.0, got);
         }
@@ -2799,6 +2837,7 @@ impl<'r> Stack<'r> {
     /// flow (D242, #74 step 8): an answer, which may be a token response, outlives no flow.
     fn release(&mut self, slot: u32) {
         if let Some(c) = self.credentials.as_mut() {
+            c.leases.gone(self.tcp.token(slot));
             c.sign_ins.gone(self.tcp.token(slot));
         }
         self.tcp.release(slot);
@@ -2862,12 +2901,8 @@ impl<'r> Stack<'r> {
         self.buf = buf;
         // What answers of the guest's DNS over TCP resolved granted names to.
         if let Some(d) = c.dns.as_mut() {
-            for (name, addrs) in d.learned.drain(..) {
-                for (host, port) in &self.cfg.named {
-                    if host.eq_ignore_ascii_case(&name) {
-                        self.cfg.learned.extend(addrs.iter().map(|a| (*a, *port)));
-                    }
-                }
+            for answer in d.learned.drain(..) {
+                let _ = self.cfg.learn(answer, Instant::now());
             }
         }
         self.settle(slot, c);
@@ -2878,6 +2913,7 @@ impl<'r> Stack<'r> {
     /// on, does nothing, or is armed again for when it ends (review 2.14).
     fn timers(&mut self, now: Instant) {
         ring::expire(now);
+        self.cfg.learned.retain(|found| found.until > now);
         // Each credential's value goes as its lease ends (D242), wiped.
         if let Some(c) = self.credentials.as_mut() {
             c.leases.lapse(now);
@@ -2953,7 +2989,8 @@ impl<'r> Stack<'r> {
     fn next_timer(&self) -> Option<Instant> {
         let timer = self.timers.peek().map(|Reverse((at, _))| *at);
         let lease = self.credentials.as_ref().and_then(|c| c.leases.next_end());
-        [timer, lease, ring::expire(Instant::now())]
+        let dns = self.cfg.learned.iter().map(|found| found.until).min();
+        [timer, lease, dns, ring::expire(Instant::now())]
             .into_iter()
             .flatten()
             .min()
@@ -3930,7 +3967,16 @@ mod tests {
         cfg.named = named;
         let learned = IpAddr::from([203, 0, 113, 9]);
         assert!(!cfg.allows(learned, Proto::Tcp, 443), "not yet resolved");
-        cfg.learned.insert((learned, 443));
+        cfg.learn(
+            dns::Resolved {
+                name: "mcp.example".into(),
+                kind: dns::AddressKind::A,
+                addresses: vec![learned],
+                ttl: 60,
+            },
+            Instant::now(),
+        )
+        .unwrap();
         assert!(cfg.allows(learned, Proto::Tcp, 443));
         assert!(!cfg.allows(learned, Proto::Tcp, 80));
         assert!(!cfg.allows(learned, Proto::Udp, 443));
@@ -3945,10 +3991,96 @@ mod tests {
         assert!(!cfg.allows(IpAddr::from([0x2001, 0xdb8, 0, 0, 0, 0, 0, 8]), Proto::Tcp, 8443));
         let learned6 = IpAddr::from([0x2001, 0xdb8, 0, 0, 0, 0, 0, 9]);
         assert!(!cfg.allows(learned6, Proto::Tcp, 443), "not yet resolved");
-        cfg.learned.insert((learned6, 443));
+        cfg.learn(
+            dns::Resolved {
+                name: "mcp.example".into(),
+                kind: dns::AddressKind::Aaaa,
+                addresses: vec![learned6],
+                ttl: 60,
+            },
+            Instant::now(),
+        )
+        .unwrap();
         assert!(cfg.allows(learned6, Proto::Tcp, 443));
         assert!(!cfg.allows(learned6, Proto::Tcp, 8443));
         assert_eq!(Ports::decode(&[6, 0, 1]), None);
+    }
+
+    #[test]
+    fn dns_authority_expires_without_retaining_answer_history() {
+        let region = Region::map(shards_netring::memory().unwrap()).unwrap();
+        let (_, pr) = shards_netring::doorbell().unwrap();
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let mut cfg = Config::on_bridge(Policy::Ports(Ports::default()), [2, 0, 0, 0, 0, 1], &bridge);
+        cfg.named = vec![("mcp.example".into(), 443)];
+        let mut stack = stack(cfg, region.producer(1, pr));
+        let now = Instant::now();
+        let answer = |kind, ip, ttl| dns::Resolved {
+            name: "mcp.example".into(),
+            kind,
+            addresses: vec![ip],
+            ttl,
+        };
+        let v6: IpAddr = "2001:db8::7".parse().unwrap();
+        stack
+            .cfg
+            .learn(answer(dns::AddressKind::Aaaa, v6, 1), now)
+            .unwrap();
+        for last in 1..=16 {
+            let ip = IpAddr::from([203, 0, 113, last]);
+            stack.cfg.learn(answer(dns::AddressKind::A, ip, 1), now).unwrap();
+            assert_eq!(stack.cfg.learned.len(), 2, "historical answers retained");
+            assert!(stack.cfg.learned("mcp.example", ip, now));
+        }
+        let due = now + Duration::from_secs(1);
+        assert!(!stack.cfg.learned("mcp.example", v6, due));
+        assert!(
+            stack.next_timer().is_some_and(|at| at <= due),
+            "expiry never wakes"
+        );
+        stack.timers(due);
+        assert!(stack.cfg.learned.is_empty(), "expired addresses still allocated");
+        stack
+            .cfg
+            .learn(answer(dns::AddressKind::Aaaa, v6, 0), now)
+            .unwrap();
+        assert!(!stack.cfg.allows(v6, Proto::Tcp, 443));
+        assert!(stack.cfg.learned.is_empty(), "zero TTL cached");
+    }
+
+    #[test]
+    fn dns_answers_replace_the_names_previous_authority() {
+        let region = Region::map(shards_netring::memory().unwrap()).unwrap();
+        let (_, pr) = shards_netring::doorbell().unwrap();
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let mut cfg = Config::on_bridge(Policy::Ports(Ports::default()), [2, 0, 0, 0, 0, 1], &bridge);
+        cfg.named = vec![("mcp.example".into(), 443)];
+        let mut stack = stack(cfg, region.producer(1, pr));
+        let resolver = UdpSocket::bind("127.0.0.1:0").unwrap();
+        resolver.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let key = (12345, IpAddr::V4(stack.cfg.gateway_ip), 53);
+        let at = resolver.local_addr().unwrap();
+        stack.flow(key, (at.ip(), at.port()), b"question");
+        let (_, from) = resolver.recv_from(&mut [0; 32]).unwrap();
+        let answer = |ip: [u8; 4]| {
+            let mut msg = vec![0x12, 0x34, 0x81, 0x80, 0, 1, 0, 1, 0, 0, 0, 0];
+            msg.extend_from_slice(b"\x03mcp\x07example\0\0\x01\0\x01");
+            msg.extend_from_slice(&[0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4]);
+            msg.extend_from_slice(&ip);
+            msg
+        };
+        let first = [203, 0, 113, 7];
+        let next = [203, 0, 113, 8];
+        resolver.send_to(&answer(first), from).unwrap();
+        stack.on_udp(0);
+        assert!(stack.cfg.allows(IpAddr::from(first), Proto::Tcp, 443));
+        resolver.send_to(&answer(next), from).unwrap();
+        stack.on_udp(0);
+        assert!(stack.cfg.allows(IpAddr::from(next), Proto::Tcp, 443));
+        assert!(
+            !stack.cfg.allows(IpAddr::from(first), Proto::Tcp, 443),
+            "the replaced DNS answer still grants a new flow"
+        );
     }
 
     /// The daemon's control socket publishes and the VM's lets go, and neither says the

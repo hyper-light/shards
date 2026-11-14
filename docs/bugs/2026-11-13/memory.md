@@ -54,6 +54,8 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 
 **Test sketch:** Gate the reader immediately after collecting a plugged range/pointer; complete UNPLUG from another thread; release the gate. Require a safely skipped/retried chunk or a consistent owned copy, with no invalid dereference. Exercise both each_used and page_at on each OS and verify final migration handles replugged/unplugged state.
 
+**Status (2026-11-13):** fixed in 29196c6b3 (red `live_copy_keeps_bytes_after_their_block_is_unplugged` and `live_copy_page_keeps_bytes_after_their_block_is_unplugged`, SIGBUS at 04ae8a9cd; focused green r7). Evidence: `docs/research/measurements/memory-fixes-v1/README.md`.
+
 ### memory-03 — P1 / high — Stopping a VM during live precopy can unmap a layer underneath a read
 
 **Location:** `crates/vmm/src/devices/virtio/pmem.rs:464–469`; teardown `crates/vmm/src/vm/runtime.rs:1182`.
@@ -71,6 +73,8 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 **Fix direction:** Hold mapping ownership across read operations and make active precopy a typed lifecycle operation that teardown cancels/joins or waits for before releasing mapped files and the hypervisor.
 
 **Test sketch:** Gate a read after its released check, stop the VM, then resume the read. Require teardown to wait or copying to return a typed stopped error before unmapping. Observe actual mapping release and VM destruction order; repeat for run swap as well as layer mappings.
+
+**Status (2026-11-13):** fixed in e5e2ef793 (red `a_live_layer_read_waits_for_the_mapping_owner`, r13). Teardown also waits for typed save/precopy reader ownership. Actual stop-during-stream VM coverage is owed to ROOT; see `docs/research/measurements/memory-fixes-v1/README.md`.
 
 ### memory-04 — P2 / high — Removing a builder's budget can permanently leave its old guest cap installed
 
@@ -90,6 +94,8 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 
 **Test sketch:** Using give.rs's builder()/gave() helpers, acknowledge an initial ROOM, start GIVE_BACK without answering, call budget_written with None, then supply GAVE and call late. Assert the next peer frame is ROOM with empty payload. It is currently absent. Repeat with a pending HELD and multiple builders, only one busy.
 
+**Status (2026-11-13):** fixed in 27522e6ca with typed pending state aef83d2c4 and acknowledgment completion 8951ffa2d (red `a_budget_removed_during_an_ask_is_delivered_after_its_answer`, resumed r2). It retains and transmits removal after either pending reply; evidence is in `docs/research/measurements/memory-fixes-v1/README.md`.
+
 ### memory-05 — P2 / high — APFS live-copy failure resumes a VM whose layer mapping is lost
 
 **Location:** `crates/vmm/src/vm/runtime.rs:566–569`.
@@ -108,6 +114,8 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 
 **Test sketch:** Inject map_file_shared_at failure, then stage-2 mapper failure, during initial precopy extent discovery. Assert no resume occurs after lost=true and the VM reports a terminal error with cleanup, rather than continuing.
 
+**Status (2026-11-13):** fixed in fb58160ac (red `a_live_copy_whose_mapping_was_lost_stops_instead_of_resuming`, r14). Unit continuation proof; actual APFS/map-back fault injection is owed to ROOT. Evidence: `docs/research/measurements/memory-fixes-v1/README.md`.
+
 ### memory-06 — P3 / medium — A fixed two-second policy still controls pressure, budget retries, and recent-growth protection
 
 **Location:** `crates/abi/src/lib.rs:74`; `crates/vmm/src/platform/pressure.rs:37`.
@@ -119,6 +127,8 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 **Confidence:** High policy violation; no performance/2x-goal failure measured.
 
 **Fix/test direction:** Keep only required OS trigger bounds in the adapter; derive caller pacing and growth protection from observed completion/progress, with explicit cold-start behavior. Test different completion scales and short pressure pulses, showing the non-Linux control policy changes with observations rather than this literal.
+
+**Status (2026-11-13):** owed to ROOT: `cargo test -p shards moves_live --test moved` and the corresponding pressure/cold-start variants. Unchanged pending a locally derived design; see finding 06 in `docs/research/measurements/memory-fixes-v1/owed-designs.md`.
 
 ### memory-07 — P3 / medium — PSI's stall threshold and fallback percentage are inherited constants
 
@@ -132,6 +142,8 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 
 **Fix/test direction:** Derive the trigger level using the host's observed pressure and reclamation outcomes within authority; retain typed unavailable-data/cold-start states. Feed multiple pressure/reclaim histories and assert the chosen trigger is derived, not always this pair of values.
 
+**Status (2026-11-13):** owed to ROOT: `cargo test -p shards --test budget` and the corresponding pressure/cold-start variants. Unchanged pending a locally derived design; see finding 07 in `docs/research/measurements/memory-fixes-v1/owed-designs.md`.
+
 ### memory-08 — P3 / medium — PSI fallback polls at a chosen ten-second interval
 
 **Location:** `crates/vmm/src/platform/pressure.rs:34`, used at `:147–148`.
@@ -143,6 +155,8 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 **Confidence:** High policy violation and static notification delay; no live latency measurement.
 
 **Fix/test direction:** Use available event notification or learned progress/observation pacing with an explicit degraded state. Simulate trigger unavailability and short pressure transitions, and observe notification latency under different learned schedules.
+
+**Status (2026-11-13):** owed to ROOT: `cargo test -p shards --test budget` and the corresponding pressure/cold-start variants. Unchanged pending a locally derived design; see finding 08 in `docs/research/measurements/memory-fixes-v1/owed-designs.md`.
 
 ### memory-09 — P3 / medium — DAX's minimum file size is a portable fixed benchmark result
 
@@ -156,6 +170,8 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 
 **Fix/test direction:** Learn or derive the crossover on the deployment host, accounting for cold read, warm reread, overwrite, memory and core scheduling. Verify the selection responds to measured cost curves and has a documented cold-start state, rather than asserting a global 1 MiB threshold.
 
+**Status (2026-11-13):** owed to ROOT: `cargo test -p shards --test budget` and the corresponding pressure/cold-start variants. Unchanged pending a locally derived design; see finding 09 in `docs/research/measurements/memory-fixes-v1/owed-designs.md`.
+
 ### memory-10 — P3 / medium — FUSE budget refresh uses an arbitrary 100x coefficient
 
 **Location:** `crates/vmm/src/devices/virtio/fs/headroom.rs:21`, used at `:91`.
@@ -167,6 +183,8 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 **Confidence:** High policy violation; no quantified budget overrun reproduced.
 
 **Fix/test direction:** Derive refresh policy from observed room-change and observation costs or use budget-change notifications. Test a budget reduction immediately after observation with variable read costs and demonstrate bounded staleness from the chosen method's evidence.
+
+**Status (2026-11-13):** owed to ROOT: `cargo test -p shards --test budget` and the corresponding pressure/cold-start variants. Unchanged pending a locally derived design; see finding 10 in `docs/research/measurements/memory-fixes-v1/owed-designs.md`.
 
 ### memory-11 — P3 / medium — Builder memory reserve still includes a fixed 64 MiB slack
 
@@ -180,6 +198,8 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 
 **Fix/test direction:** Derive slack from observed uncharged kernel/overshoot cost with cold-start uncertainty, while preserving real pinned-kernel invariants. Exercise distinct CPU counts and cold growth workloads, observing reserve adequacy and cost rather than asserting 64 MiB.
 
+**Status (2026-11-13):** owed to ROOT: `cargo test -p shards --test build a_builders_memory_is_plugged_as_fast_as_its_jobs_take_it` and the corresponding pressure/cold-start variants. Unchanged pending a locally derived design; see finding 11 in `docs/research/measurements/memory-fixes-v1/owed-designs.md`.
+
 ### memory-12 — P3 / medium — One-millisecond pacing and read-timeout floors remain chosen constants
 
 **Location:** `crates/init/src/plug.rs:113` and `:1350`; `crates/shards/src/build/builder.rs:251`.
@@ -191,6 +211,8 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 **Confidence:** High policy violation; actual scheduling distributions unrun.
 
 **Fix/test direction:** Use readiness/completion events and the existing learned waiting mechanism. At an expired deadline do a nonblocking availability check; test it does not install a fixed-duration blocking floor. Verify grower progress/stall judgment under varying scheduler holds without a fixed millisecond clock.
+
+**Status (2026-11-13):** owed to ROOT: `cargo test -p shards-init plug::tests::` and the corresponding pressure/cold-start variants. Unchanged pending a locally derived design; see finding 12 in `docs/research/measurements/memory-fixes-v1/owed-designs.md`.
 
 ### memory-13 — P3 / medium — Hotplug still gives up after exactly one retry
 
@@ -204,6 +226,8 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 
 **Fix/test direction:** Judge actual driver/VM progress and typed inability, with explicit cold-start/held states, rather than a fixed attempt budget. Extend the existing fake Grows cases with a third-window successful completion and a genuine terminal failure so the two are distinguished by evidence.
 
+**Status (2026-11-13):** owed to ROOT: `cargo test -p shards-init plug::tests::` and the corresponding pressure/cold-start variants. Unchanged pending a locally derived design; see finding 13 in `docs/research/measurements/memory-fixes-v1/owed-designs.md`.
+
 ### memory-14 — P3 / medium — Growth and unplug retention use a fixed 2x working-memory multiplier
 
 **Location:** `crates/init/src/plug.rs:798` and `:1562`.
@@ -215,6 +239,8 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 **Confidence:** High policy violation; no claim that geometric growth itself is wrong.
 
 **Fix/test direction:** Derive requested headroom and retained reserve from observed burst/plug/reclaim behavior and costs, with explicit cold-start treatment. Test bursty and steady traces and pressure transitions, preserving peak and alignment invariants while allowing the chosen headroom to differ.
+
+**Status (2026-11-13):** owed to ROOT: `cargo test -p shards --test build a_build_held_short_of_memory_has_its_builder_give_back` and the corresponding pressure/cold-start variants. Unchanged pending a locally derived design; see finding 14 in `docs/research/measurements/memory-fixes-v1/owed-designs.md`.
 
 ### memory-15 — P3 / medium — Builders always boot with a chosen 512 MiB floor
 
@@ -228,7 +254,11 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 
 **Fix/test direction:** Derive the boot requirement from the pinned guest's actual startup resource need and observed cold starts, account for uncertainty, and keep unavailable-data state explicit. Exercise startup on different supported architectures/CPU counts and verify the selected amount has evidence beyond the literal.
 
+**Status (2026-11-13):** owed to ROOT: `cargo test -p shards --test build a_builders_memory_is_plugged_as_its_build_needs_it` and the corresponding pressure/cold-start variants. Unchanged pending a locally derived design; see finding 15 in `docs/research/measurements/memory-fixes-v1/owed-designs.md`.
+
 ### memory-16 — P4 / low — Head deduplication stops considering new kinds after 64
+
+**Status (2026-11-13):** fixed in d794c1dd5 (red `a_heads_duplicate_after_the_sixty_fourth_kind_is_kept_once` at 5ede7aecb). Focused results and remaining performance validation: `docs/research/measurements/memory-fixes-v1/README.md`.
 
 **Location:** `crates/vmm/src/devices/virtio/head.rs:696`, used at `:749`.
 

@@ -198,6 +198,9 @@ struct Common {
     /// `--said-to FD` (Windows: `--said-to NAME`): where it tells its spawner how that
     /// report came out, for the spawner to record.
     said_to: Option<LinkArg>,
+    /// `--final-use FD` (Windows: `--final-use NAME`): where a managed VM tells its keeper what
+    /// its machine used in all once down (D260), for the keeper to record.
+    final_use: Option<LinkArg>,
     snapshot_dir: Option<PathBuf>,
     then: AfterSnapshot,
     vsock: Option<PathBuf>,
@@ -217,6 +220,7 @@ impl Common {
             console: Console::Stdout,
             said: None,
             said_to: None,
+            final_use: None,
             snapshot_dir: None,
             then: AfterSnapshot::Stop,
             vsock: None,
@@ -260,6 +264,7 @@ impl Common {
                 )
             }
             "--said-to" => self.said_to = Some(link_arg("--said-to", text(value("--said-to")?)?)?),
+            "--final-use" => self.final_use = Some(link_arg("--final-use", text(value("--final-use")?)?)?),
             "--snapshot-dir" => self.snapshot_dir = Some(PathBuf::from(value("--snapshot-dir")?)),
             "--snapshot-then" => {
                 self.then = match text(value("--snapshot-then")?)?.as_str() {
@@ -402,6 +407,8 @@ struct Run {
     attach: Option<String>,
     /// Where it tells its spawner how its console's report came out ([`Common::said_to`]).
     said_to: Option<LinkArg>,
+    /// Where a managed VM tells its keeper its final use ([`Common::final_use`]).
+    final_use: Option<LinkArg>,
     gpu_report: Option<GpuReportTarget>,
     /// `--host-managed`: a plain boot takes rates from its host's clients (D255).
     managed: bool,
@@ -684,6 +691,7 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
             workload: common.workload,
             attach,
             said_to: None,
+            final_use: None,
             gpu_report: None,
             managed: false,
         });
@@ -713,6 +721,7 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
         mode,
         workload: common.workload,
         said_to: common.said_to.take(),
+        final_use: common.final_use.take(),
         attach,
         gpu_report,
         managed: common.host_managed,
@@ -1107,6 +1116,28 @@ fn use_answer(
     )
 }
 
+/// What this machine used in all (D260's final use), as a use's answer says it: its vCPUs'
+/// whole guest time, read by `guest` once they have stopped, then this process's own use.
+fn final_use_of(guest: impl FnOnce() -> Result<shards_vmm::vm::GuestTimes, String>) -> String {
+    use_answer(guest, || shards_vmm::platform::process_usage(std::process::id()))
+}
+
+/// Tells a managed VM's keeper its final use, `used` (final_use.rs, D260): its length, a u32,
+/// big-endian, then it; then waits for the keeper's answer, which it gives once its record is
+/// in place, so that the record is there before this process ends and its client sees its
+/// end. A keeper that ended, or a channel that cannot be read (Windows' pipe, whose reader,
+/// the CLI, keeps it as this process ends), ends the wait.
+fn tell_final_use(mut to: std::fs::File, used: &str) {
+    let Ok(len) = u32::try_from(used.len()) else {
+        return;
+    };
+    if let Err(e) = to.write_all(&[&len.to_be_bytes()[..], used.as_bytes()].concat()) {
+        report(format_args!("telling its final use: {e}"));
+        return;
+    }
+    let _ = std::io::Read::read(&mut to, &mut [0u8; 1]);
+}
+
 /// What a rate's ask holds: what `hold` held the vCPUs to, none where it lets them be, and
 /// the hold's `period` in nanoseconds; or why not. A period no u64 counts in nanoseconds
 /// holds nothing, as no client could hear it.
@@ -1130,6 +1161,15 @@ fn rate_answer(
 /// less theirs.
 pub fn guest_times() -> Result<shards_vmm::vm::GuestTimes, String> {
     Ok(RUNNING.get().ok_or("the microVM has not started")?.guest_times())
+}
+
+/// What each of this VM's vCPUs ran of its guest in all, by index, those gone among them
+/// (`Handle::whole_guest_times`): its whole once its machine is down.
+pub fn whole_guest_times() -> Result<shards_vmm::vm::GuestTimes, String> {
+    Ok(RUNNING
+        .get()
+        .ok_or("the microVM has not started")?
+        .whole_guest_times())
 }
 
 /// This VM paused where it is, every vCPU held out of its guest (`frozen`), or let go on
@@ -1595,6 +1635,7 @@ pub fn run(args: impl Iterator<Item = OsString>) -> ExitCode {
         workload,
         attach,
         said_to,
+        final_use,
         gpu_report,
         managed,
     } = match parsed(parse_run(args.into_iter()), RUN_USAGE) {
@@ -1608,6 +1649,13 @@ pub fn run(args: impl Iterator<Item = OsString>) -> ExitCode {
         return ExitCode::FAILURE;
     }
     let said_to = match said_to.map(|to| handed("--said-to", to)).transpose() {
+        Ok(to) => to,
+        Err(e) => {
+            report(e);
+            return ExitCode::FAILURE;
+        }
+    };
+    let final_use = match final_use.map(|to| handed("--final-use", to)).transpose() {
         Ok(to) => to,
         Err(e) => {
             report(e);
@@ -1648,14 +1696,14 @@ pub fn run(args: impl Iterator<Item = OsString>) -> ExitCode {
             if managed && let Ok((handle, _)) = &started {
                 let _ = RUNNING.set(handle.clone());
             }
-            supervise(started, cfg.console, false, said_to, input)
+            supervise(started, cfg.console, false, said_to, input, final_use)
         }
         Mode::Template(rootfs) => {
             boot_into(&mut cfg, rootfs, true);
             // Restored copies dial the host through this device, served by whatever
             // restores them.
             cfg.vsock.get_or_insert_with(VsockHost::default);
-            supervise(start(&cfg), cfg.console, true, said_to, input)
+            supervise(start(&cfg), cfg.console, true, said_to, input, None)
         }
         Mode::Workload(rootfs) => run_in(cfg, rootfs, &workload),
         Mode::Warm { rootfs, fd } => warm_boot(cfg, rootfs, fd),
@@ -1727,7 +1775,7 @@ pub fn restore(args: impl Iterator<Item = OsString>) -> ExitCode {
         (Ok((handle, _)), Some(to)) => to.hand_after(handle, RECORD_FOR),
         _ => None,
     };
-    let code = supervise(started, console, false, said_to, InputOwner::Console);
+    let code = supervise(started, console, false, said_to, InputOwner::Console, None);
     if let Some(h) = handing {
         h.now();
     }
@@ -1980,6 +2028,15 @@ fn serve_workload(
         static TIMING: workload::Timing = workload::Timing::new();
         let to_guest = &TO_GUEST;
         let warm = matches!(command, Command::Warm(..));
+        // A warm VM's owner hears what its machine used in all once it is down (D260's final
+        // use), on a handle of the link of its own: the run's goes with its workload.
+        let final_link = match &command {
+            Command::Warm(link, _) => link
+                .try_clone()
+                .inspect_err(|e| report(format_args!("its final use's link: {e}")))
+                .ok(),
+            Command::Given { .. } => None,
+        };
         if let Command::Given { interactive, .. } = &command {
             // SAFETY: isatty(3) on this process's stdin.
             let reads_terminal = *interactive && std::io::IsTerminal::is_terminal(&std::io::stdin());
@@ -2327,7 +2384,14 @@ fn serve_workload(
             handle.stop();
             return failed(format!("workload thread: {e}"));
         }
-        let reason = running.wait_then(crate::warm::tell_kept);
+        // Once every vCPU has stopped, past its guest's last instruction, and before this
+        // process lets go of its memory: what it used in all, read then, is its whole.
+        let reason = running.wait_then(|| {
+            crate::warm::tell_kept();
+            if let Some(link) = &final_link {
+                crate::warm::final_use(link, &final_use_of(whole_guest_times));
+            }
+        });
         // Its joiners (D119), which the guest ended with its workload, tell the daemon how
         // each ended before this process goes, as the relay has had 5 s to (below).
         crate::warm::await_joiners(std::time::Duration::from_secs(5));
@@ -2774,9 +2838,10 @@ fn sealing(paths: &crate::confine::Paths, snapshot: Option<&Path>) {
 
 /// Gives up the directory of the snapshot this VM saved, committed by now, before its
 /// spawner hears it is ready, and so before anything of a run's workload runs in its
-/// guest. On Linux, a Landlock layer without it, checked: making a file there must be
-/// refused. Nothing of the snapshot is open by then (vmm snapshot::Staged::commit closes
-/// its files), and Landlock takes back nothing open. On macOS nothing can be given up:
+/// guest. On Linux, a Landlock layer without it, on every thread (its vCPUs' and devices'
+/// among them, `confine::landlock`), checked: making a file there must be refused.
+/// Nothing of the snapshot is open by then (vmm snapshot::Staged::commit closes its
+/// files), and Landlock takes back nothing open. On macOS nothing can be given up:
 /// App Sandbox's grants last the process's life (PM M102); [`moved`] holds instead. A VM
 /// that saved no snapshot has nothing to give up.
 fn seal() -> Result<(), String> {
@@ -3147,6 +3212,22 @@ fn ask(wanted: &[crate::grant::Wanted]) -> Result<(), String> {
 /// anything but `shards`, starts no VM.
 #[cfg(windows)]
 fn ask(wanted: &[crate::grant::Wanted]) -> Result<(), String> {
+    asked(wanted, crate::grant_ask::obtain)
+}
+
+/// [`ask`] for the last grants this VM asks for, its grants sealed after them, before its
+/// guest starts (`grant_ask::obtain_sealed`).
+#[cfg(windows)]
+fn ask_sealed(wanted: &[crate::grant::Wanted]) -> Result<(), String> {
+    asked(wanted, crate::grant_ask::obtain_sealed)
+}
+
+/// `wanted` asked of this VM's spawner by `obtain`, in an AppContainer alone.
+#[cfg(windows)]
+fn asked(
+    wanted: &[crate::grant::Wanted],
+    obtain: fn(&crate::grant::Link, &[crate::grant::Wanted]) -> Result<(), String>,
+) -> Result<(), String> {
     if !shards_ipc::in_app_container() {
         return Err(
             "shards-vm is not in an AppContainer, which confines every VM on Windows: start it with \
@@ -3158,7 +3239,7 @@ fn ask(wanted: &[crate::grant::Wanted]) -> Result<(), String> {
     let link = grants.as_ref().ok_or(
         "nothing was granted to this VM: start it with `shards run vm --kernel`, which grants it its files",
     )?;
-    crate::grant_ask::obtain(link, wanted)
+    obtain(link, wanted)
 }
 
 /// `paths` as the VM asks for them: files it reads read-only, files it writes read-write,
@@ -3184,7 +3265,14 @@ fn granted(paths: &crate::confine::Paths) -> Result<(), String> {
         .chain(paths.write_under.iter().map(|p| (Access::MakeDir, p.clone())))
         .chain(paths.vsock.iter().map(|p| (Access::Listen, p.clone())))
         .collect();
-    ask(&wanted)
+    // The last it asks for: on macOS its link closes after unless it dials (`confine`); on
+    // Windows it stays, for its dials, its files' ranges and its snapshots (D196), and its
+    // grants are sealed.
+    #[cfg(target_os = "macos")]
+    let last = ask;
+    #[cfg(windows)]
+    let last = ask_sealed;
+    last(&wanted)
 }
 
 /// Has the spawner dial, beside `vsock`, every host port the guest connects to: App
@@ -3314,16 +3402,17 @@ fn confine(paths: &crate::confine::Paths) -> Result<(), String> {
             Ok(())
         }
     });
+    // Its sockets narrowed to what its paths let it dial, then Landlock, on every thread.
     #[cfg(target_os = "linux")]
-    return crate::confine::landlock(paths);
+    return crate::confine::sockets(paths).and_then(|()| crate::confine::landlock(paths));
     // As on macOS; and once its partition is set up, before anything of its guest's is
-    // read, this process forbids itself dynamic code (D141, PM M202). Its snapshots its
-    // spawner stages, over the link (D196), which stays open for them.
+    // read, this process forbids itself dynamic code (D141, PM M202). Its grants are sealed
+    // as they are granted (`ask_sealed`), and the link stays for what its spawner does for
+    // it after: its dials, its files' ranges and its snapshots (D196).
     #[cfg(windows)]
     {
         shards_vmm::hv::forbid_dynamic_code_once_set_up();
         granted(paths)?;
-        let stages = !paths.write_under.is_empty();
         // Its spawner stages its snapshots and reads its files' ranges for it, as long as
         // the link stays: it may make no FSCTL (D141), and a restore copies a template's
         // writable layer by its ranges (D196), as any save of it copies its layer and swap
@@ -3333,17 +3422,7 @@ fn confine(paths: &crate::confine::Paths) -> Result<(), String> {
         shards_vmm::platform::set_stager(Box::new(SpawnerStages))?;
         match &paths.vsock {
             Some(vsock) => dial_through_spawner(vsock),
-            None if stages => Ok(()),
-            // Nothing more asked of the spawner but ranges, which it answers on the link it
-            // keeps: no grant after (`SEALED`).
-            None => {
-                let grants = GRANTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                match grants.as_ref() {
-                    Some(link) => shards_ipc::write_message(&link.to, shards_ipc::kind::SEALED, &[])
-                        .map_err(|e| format!("sealing its grants: {e}")),
-                    None => Ok(()),
-                }
-            }
+            None => Ok(()),
         }
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
@@ -3362,6 +3441,7 @@ fn supervise(
     template: bool,
     said_to: Option<std::fs::File>,
     input: InputOwner,
+    final_use: Option<std::fs::File>,
 ) -> ExitCode {
     let (handle, running) = match started {
         Ok(v) => v,
@@ -3374,7 +3454,12 @@ fn supervise(
     if matches!(input, InputOwner::Console) {
         forward_stdin(handle.clone());
     }
-    let reason = running.wait();
+    // Its final use told once every vCPU has stopped and before its memory goes (D260).
+    let reason = running.wait_then(|| {
+        if let Some(to) = final_use {
+            tell_final_use(to, &final_use_of(whole_guest_times));
+        }
+    });
     drop(terminal);
     report_timing(&handle, None);
     match reason {
@@ -3534,6 +3619,41 @@ mod rate_tests {
             read.host.unwrap_err().starts_with("its VM process: "),
             "{refused}"
         );
+    }
+
+    /// A VM's final use (D260) is its vCPUs' whole guest time, read first, then this
+    /// process's own use, read after it: never less CPU than a reading before the final one.
+    #[test]
+    fn a_final_use_reads_its_whole_guest_then_its_process() {
+        let times = shards_vmm::vm::GuestTimes {
+            vcpus: vec![
+                shards_vmm::vm::VcpuTime {
+                    index: 0,
+                    guest_ns: 7,
+                    unread: None,
+                },
+                shards_vmm::vm::VcpuTime {
+                    index: 3,
+                    guest_ns: 11,
+                    unread: Some(shards_abi::guest_time::Unread::Gone),
+                },
+            ],
+            departed_ns: 0,
+        };
+        let before = shards_vmm::platform::process_usage(std::process::id()).unwrap();
+        let read = std::cell::Cell::new(false);
+        let answer = super::final_use_of(|| {
+            read.set(true);
+            Ok(times.clone())
+        });
+        assert!(read.get());
+        let used = shards_abi::rate::read_used(answer.as_bytes()).unwrap();
+        assert_eq!(used.guest, Ok(times));
+        assert!(used.host.unwrap().cpu_ns >= before.cpu_ns, "{answer}");
+        let unstarted = super::final_use_of(|| Err("the microVM has not started".into()));
+        let used = shards_abi::rate::read_used(unstarted.as_bytes()).unwrap();
+        assert_eq!(used.guest, Err("the microVM has not started"));
+        assert!(used.host.is_ok(), "{unstarted}");
     }
 }
 

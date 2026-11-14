@@ -41,6 +41,10 @@ A later uid-1000 run sees the same bind. `node_owner` uses `.ok().flatten() ... 
 
 **Confidence:** high in the source path and permissions consequence; live fault behavior unverified. **Fix direction:** propagate persistence errors and undo creation; distinguish absent metadata from failed reads and malformed records, allowing the fallback only for actual absence. **Test:** force owner-xattr persistence failure on an ordinary bind file and require explicit failure and no orphan; separately fault reads of a root-owned 0600 record and verify uid 1000 cannot read it. Observe actual guest permissions and cleanup.
 
+**Status (2026-11-13):** fixed in 978d29f03d6084ec91d6d3010bd15b4e62c1302b (red `owner_metadata_failures_refuse_creation_and_lookup`, kiln r4); green regression +49 server tests and shards-vmm all-target clippy on macOS arm64 (r7). Evidence: `docs/research/measurements/runs-fixes/README.md`; real-VM fault/permissions validation owed to ROOT.
+
+**Status (2026-11-13), follow-up:** fixed in 8b2505f423ac560dc2e853e6f6b394bfbe356429 (red `unrecorded_nondevice_nodes_keep_the_runs_user`, r34; green same test +50 server tests and VMM clippy r35). This corrects a regression introduced by 978d29f03: unrecorded native nondevices use the run user, while devices retain root. Guest-created native kinds without owner-xattr support retain their existing persistence exception; it is not claimed fixed by the ordinary-file metadata work.
+
 ### runs-02 — P1 / high — A renamed daemon home can make its daemon mutate another home's state
 
 **At head:** `crates/shards/src/daemon.rs:2477`; effects at `:2267`, `:2287–2292`; request path retention at `crates/ipc/src/slots/fifo.rs:275`.
@@ -60,6 +64,8 @@ The replacement `A` exists and the old lock still has a link in `B`. The old dae
 
 **Confidence:** high for the Unix counterexample; no Windows rename claim. **Fix direction:** retain directory identity/handles, operate relative to the owned directory, and detect replacement before absolute-path work; cleanup must target the old directory rather than its reused pathname. **Test:** rename `A→B`, recreate/start `A`, stop the old daemon through B's Engine socket, and verify A's PID, request lists, stopping files and continuing query responses remain owned by the new daemon.
 
+**Status (2026-11-13):** fixed in d3b11258a (red `renamed_home_cleanup_keeps_replacement_files`, resumed kiln r5; green regression including old-home remainder removal + stopping-lock check, shards all-target clippy r12 on macOS arm64). Landed on main via 3956d259b. Real-daemon/VM validation remains owed to ROOT as `docs/research/measurements/runs-fixes/README.md` specifies.
+
 ### runs-03 — P1 / high — BootStop cannot cancel a boot blocked sending its initial request
 
 **At head:** `crates/api/src/image/session.rs:934–937`; same warm path `:894–898`; blocking write `:233–238`; stop registration `:741`.
@@ -71,6 +77,8 @@ The replacement `A` exists and the old lock still has a link in `B`. The old dae
 **Evidence:** D231 at `architecture.md:25076–25115` promises stop kills the host and its tree during a boot and ends the boot. `Shared::send` has an unbounded pipe write; `patience` bounds only the later condvar wait. Existing stop stand-ins send small requests that fit the pipe, so they do not exercise this boundary. This API and BootStop implementation are introduced in the review range.
 
 **Confidence:** high in the blocking/control gap; live scheduling reproduction unrun. **Fix direction:** hold the spawned host in the stop state before any potentially blocking CREATE I/O, retaining ownership through all initialization/error exits. Ensure stop can kill the host without acquiring the writer lock. **Test:** a stand-in announces its PID but never reads stdin; send a staged payload exceeding pipe capacity, wait until the write blocks, call stop, and require `Ended(Stopped)`, host/tree termination and resource cleanup without resuming the reader. Exercise fresh and warm paths.
+
+**Status (2026-11-13):** fixed in a7ad98b9bb873f750fe7eadf916343c176c4e3c4 (red `a_stop_cancels_a_create_whose_host_never_reads`, kiln r20; green regression +33 session tests and API all-target clippy r22). Exact logs retained in `docs/research/measurements/runs-fixes/runs03-{red,green}.log`; real-VM cancellation/resource checks remain owed to ROOT.
 
 ### runs-04 — P1 / high — An orchestrator pool hands out a dead warm host and fails its run
 
@@ -84,6 +92,8 @@ The replacement `A` exists and the old lock still has a link in `B`. The old dae
 
 **Confidence:** high; no live host kill performed. **Fix direction:** evict ready hosts on terminal state and retain typed definitely-untaken versus possibly-started failure semantics across CREATE. Retry only the definitely-untaken case; do not retry an uncertain run and risk duplicate execution. **Test:** hold a warmed host in the pool, kill and reap it before the next boot, then require the next request to run exactly once on a healthy replacement. Also kill during handoff and assert typed uncertainty rather than an unsafe replay.
 
+**Status (2026-11-13):** fixed in bc0f69b5c3e4d3471236b2d2b13cbd1bcdc4246d (red `a_dead_warm_host_is_definitely_untaken`, kiln r13; green r14/r18). Replacement is limited to definitely pre-CREATE dead spares; uncertain handoffs remain non-replayed failures. Landed on main via 3956d259b; the real-VM fault scenario remains pending.
+
 ### runs-05 — P1 / high — Long-lived API runs and warm hosts block all image-store collection
 
 **At head:** `crates/shards/src/api_run.rs:3507`, `:3526`, `:3618`, `:3750`; lease creation `crates/shards/src/run.rs:940`; exclusive collection `crates/image/src/store.rs:2296–2297`.
@@ -95,6 +105,8 @@ The replacement `A` exists and the old lock still has a link in `B`. The old dae
 **Evidence:** `run.rs:376–378` defines the lease as lasting until the VM has its rootfs; D26 at `architecture.md:1293–1316` relies on open/mapped files thereafter. The daemon drops its corresponding lease at `daemon.rs:4397`. D253 introduces the API composition but omits that release. The held lease refutes the suspected normal-live API `.new-<pid>` deletion race: collection cannot reach it while this lease is held.
 
 **Confidence:** high in ownership and lock conflict; disk exhaustion not exercised. **Fix direction:** release preparation lease after launch/readiness and template settlement, before WARMED or serving the workload. **Test:** after STARTED and separately WARMED, collect unrelated garbage and require completion while the hosts remain alive and workload progress continues. Do not claim a daemon shutdown join deadlock: `daemon.rs:1911` explicitly exits internally without waiting for these scoped threads.
+
+**Status (2026-11-13):** fixed in 4f2384399f497103b054b8362e6d134f2f59618f by releasing the preparation lease after readiness, before warm wait and run serving. The live red/green is owed to ROOT: add/run `cargo test -p shards --test api_image a_live_api_run_and_a_warm_host_do_not_hold_up_collection` with unrelated garbage and live progress witnesses. The source path is unambiguous; api_run's 43 unit tests and shards all-target clippy pass (kiln r24), and are not represented as a live GC reproduction.
 
 ### runs-06 — P2 / medium — Container facts and copy ownership silently use another platform's config
 
@@ -113,6 +125,8 @@ let (config, manifest) = self.image_facts(c.image_id.as_deref());
 **Evidence:** D179 at `architecture.md:13251–13266` requires the chosen platform's own config and disk; `containers.rs:72–76` documents why `image_manifest` is retained. `Store::images`/`image` uses the named preferred manifest (`store.rs:1868–1874`), not the container's selected one. These older helpers were not updated for the expanded multi-platform state.
 
 **Confidence:** high, source-proven; runtime emulation/copy unrun. **Fix direction:** use the container's recorded manifest, with an explicit old-record fallback; preserve effective creation config if needed after image removal/retagging. **Test:** start both variants, compare guest uid/env with container Config and ImageManifestDescriptor, and check extracted file ownership for each; repeat after changing the preferred platform.
+
+**Status (2026-11-13):** fixed in 4ec005478df8a5cd957de25d3791cec46f264906 (red `container_facts_keep_the_runs_selected_manifest`, kiln r27; green regression, 2 inspect tests, 11 command tests and shards all-target clippy r29). Exact logs: `docs/research/measurements/runs-fixes/runs06-{red,green}.log`. Both inspect and ownership-mode copy consume the recorded manifest; missing selected config is refused for copy. Guest/copy ownership proof remains owed to ROOT as the fix record specifies.
 
 ### runs-07 — P2 / medium — Concurrent processes lose learned end maxima and can corrupt the record
 

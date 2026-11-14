@@ -49,6 +49,8 @@ Priority mapping used: P0 critical, P1 high, P2 medium, P5 low; no P3/P4 finding
 
 **Unrun regression:** Teach a short W*, start a spinner (and separately a stopped child), delay the first `Wait::look(false)` past W*, and assert the first observation does not refuse. Then verify an actually observed still interval can refuse.
 
+**Status (2026-11-13):** fixed in b42c86598 (a party's first look, and one that first finds a process of it, is `Found::Based` and judges nothing), its harness test in d3f66aff7 (red `harness.rs::a_first_look_past_w_star_judges_nothing`: with Party's based look removed, refused at its first look 2 W* in; green on macOS arm64, adas-mac-studio.local, at 6467c39a7).
+
 ### waits-03 — P2 / medium — Already-satisfied test states teach tiny W* records
 
 **Location:** `crates/shards/tests/common/mod.rs:3366`; concrete callers `:2382`, `:4872`; `crates/shards/tests/warm.rs:610`.
@@ -64,6 +66,8 @@ Priority mapping used: P0 critical, P1 high, P2 medium, P5 low; no P3/P4 finding
 **Fix direction:** Track whether the answer was initially unavailable and genuinely awaited; teach only such waits. Probe buffered channel/socket/state readiness before opening a learning interval.
 
 **Unrun regression:** At one call site, satisfy a state before constructing its Patience, call done without holds, and require `Seen::Cold`. Repeat with a prequeued matching guest line. Then supply a genuine delayed answer and require learning from that interval.
+
+**Status (2026-11-13):** fixed in d3f66aff7 (red `harness.rs::an_answer_already_there_teaches_nothing`: a Wait teaches only from `Stage::Awaited`; Following, engine.rs' `Patient` and `Vm::wait_lines` read what is there before they wait, api_image.rs reads an ended member's channel through `judged_there`; with the stage check removed, its kind learned from a state already there). ROOT's KVM refusal at 18b2e0d60 (api_image.rs:2288, W* 20.97 ms, R* 0 ns of CPU) was such a record.
 
 ### waits-04 — P2 / medium — A FIFO reader's death teaches a successful take
 
@@ -97,6 +101,8 @@ Priority mapping used: P0 critical, P1 high, P2 medium, P5 low; no P3/P4 finding
 
 **Unrun regression:** Prefill Body's BufReader, gate execution after the timing begins without performing socket I/O, then finish the copy. Require no silence sample. Repeat in RanOut and require no rearming. Assert None, not merely “not zero.”
 
+**Status (2026-11-13):** Confirmed and fixed (#77, 18b90d4b6; PM M572, D222). Red on 9efde7252: `http::tests::a_read_of_bytes_already_there_is_no_silence` (a 64 KiB body sent whole, read after its bytes had come) taught `slowest_silence_us: Some(12)`. Fixed by readiness, not a threshold: `http::Sock` times a socket read only where poll(2)/WSAPoll with no wait found nothing ready, so bytes in BufReader, the TLS session or the socket teach none. The same test past a 1 µs run-out asserts `Some(1)` kept, no rearming. Green on macOS arm64; mutation (readiness not asked) red, `Some(3)`. Windows twin compiled on CI only.
+
 ### waits-06 — P2 / medium — Retry-After exceeding a trouble budget is falsely learned as a trouble passed
 
 **Location:** `crates/registry/src/registry.rs:1810`, `:1771`, caller `:860`.
@@ -113,6 +119,8 @@ Priority mapping used: P0 critical, P1 high, P2 medium, P5 low; no P3/P4 finding
 
 **Unrun regression:** Prime 300 ms budget; call wait with Retry-After 1 s; invoke over as production does. Require unchanged troubles count and `budget()==None`, then verify a later trouble can pass beyond 300 ms and teach its actual length.
 
+**Status (2026-11-13):** Confirmed and fixed (#77, 18b90d4b6; PM M572, D222). Red on 9efde7252: a 503 `Retry-After: 1` on a path that passed 0.3 s answered `503` and left `troubles: 2, trouble_us: 300000`, the failure taught as a trouble passed. Under ROOT's #77 ruling a named wait past the budget now runs the trouble out (`Phase::RanOut`, told once), is waited, and once over teaches its whole length: `registry::tests::a_trouble_past_the_longest_its_path_passed_runs_out_told_once` (`trouble_us >= 1 s`, `troubles == 2`) and the passing-trouble test (`Retry-After: 2` past a 0.5 s moment, longest >= 2 s). Mutation (the named-wait guard removed) red, told 0.
+
 ### waits-07 — P2 / medium — The first successful dial suppresses restored route trouble and handshake records
 
 **Location:** `crates/registry/src/patience.rs:398`; production order `crates/registry/src/http.rs:945`, `:952`, `:997`.
@@ -128,6 +136,8 @@ Priority mapping used: P0 critical, P1 high, P2 medium, P5 low; no P3/P4 finding
 **Fix direction:** Merge independent fields according to their actual changes, maintaining the three-way persistence base, or register the route before teaching its connect.
 
 **Unrun regression:** Persist routed trouble_us=300000 and a 2 s first handshake sample; instantiate fresh Paths, call waited(Connect,10 ms), then located in actual production order. Require budget 300 ms and handshake timeout 6 s, rather than None and 1 s.
+
+**Status (2026-11-13):** Confirmed and fixed (#77, 18b90d4b6; PM M572, D222). Red on 9efde7252: `patience::tests::a_connect_before_its_route_is_known_keeps_its_routes_record` (production order: `waited(Connect, 10 ms)`, then `located`) gave budget `None` where 300 ms was due. `Paths::learn` now merges what the client showed over the record read as a record merges (`Shown::merged`), its base then that record: budget 300 ms, handshake 6 s, connect the client's own, the record written back `troubles` 4 + 1. Mutation (`learn` back to the slowest alone) red.
 
 ### waits-08 — P2 / medium — An unreaped daemon zombie keeps startup waiting forever
 
@@ -163,6 +173,8 @@ Priority mapping used: P0 critical, P1 high, P2 medium, P5 low; no P3/P4 finding
 
 **Unrun regression:** Write current spinner PID with deliberately wrong start to a home's daemon.pid and require Patience's party gone. Separately leave a macOS daemon child unreaped after exit and require a terminal state wait after its final recheck.
 
+**Status (2026-11-13):** fixed in d3f66aff7 (red `harness.rs::a_daemon_named_by_another_start_is_no_party`: the daemon is `shards_ipc::Named` by ID and start, checked again once read; red `harness.rs::an_unreaped_daemon_is_gone` (Unix): a process found ended, `shards_api::Watch::ended`, is no live member, its end progress once; each guard's removal held its wait, 60 s and 10 s).
+
 ### waits-10 — P2 / medium — A cold command wait can hang after its client exits while another process holds output open
 
 **Location:** `crates/shards/tests/common/mod.rs:1999`, `:2010`, `:2690`, `:2715`; `crates/api/src/judge.rs` Judge::begin/found.
@@ -178,6 +190,8 @@ Priority mapping used: P0 critical, P1 high, P2 medium, P5 low; no P3/P4 finding
 **Fix direction:** Give post-exit drain its own explicit lifecycle, observations and learning policy; end it from the actual stream-holder state or a properly judged drain, rather than reusing an eternally cold client wait.
 
 **Unrun regression:** Fresh call-site kind; launch a stand-in which spawns a silent inherited-output holder then exits. Assert the helper returns/reports held output after client end; cleanup holder through a test gate. Repeat with learned kind.
+
+**Status (2026-11-13):** fixed in d3f66aff7 (red `harness.rs::streams_held_past_a_commands_end_are_judged_from_its_end`: past its client's end a Wait drains in `Stage::Answered`, judged by a judge begun at the answer over the record it left, a gone party found still; with the judge not begun anew it waited out the holder's 30 s). The gone-found-still guard's own removal survived that test on macOS, whose looks found the holder before its parent exited; it is reasoned (a holder no look found), not yet shown red.
 
 ### waits-11 — P2 / medium — Concurrent record writers can make the persisted slowest answer shrink
 

@@ -71,6 +71,8 @@ Priority mapping for the user's requested notification: **P0 critical; P1 high; 
 
 **Catching test:** feed oversized invalid writable descriptors under an allocation observer or bounded child-process allocation budget. Assert no allocation proportional to offered capacity and a device error without process termination.
 
+**Status (2026-11-13):** fixed in ed428676f16b70033b168a842e1b147048e508a3 (red `invalid_response_is_rejected_before_applying_the_request`, r9; green 13 IOMMU tests and VMM clippy, r10, macOS arm64). The red proves late buffer validation/state mutation; the original allocation-abort/RSS scenario remains unrun and owed to ROOT. Staging is fallibly bounded by this host's page size, independently of offered response capacity. Follow-up 18f3a90ad completes replies with a protocol-derived stack buffer if scratch is unavailable (reservation-refusal red at 03ccb5eab; green 13 tests/clippy at r16).
+
 ### devices-04 — P1 / high — Reset can strand a vCPU and teardown behind years of I/O debt
 
 **Location:** `crates/vmm/src/devices/virtio/block.rs:885`; charging at `:982`.
@@ -86,6 +88,8 @@ Priority mapping for the user's requested notification: **P0 critical; P1 high; 
 **Fix direction:** give limiter waits cancellation/readiness notifications, validate charges before accruing debt, and make reset wake in-flight waits before joining workers without broadening another device's authority.
 
 **Catching test:** deterministically accrue debt, observe the worker entering the limiter wait, issue status reset, and assert reset and subsequent VM teardown complete without waiting for the debt deadline. Include ordinary valid I/O and hostile invalid lengths.
+
+**Status (2026-11-14):** fixed in de1da2168000250e609f05c729fa13a39a39752e (red `reset_cancels_only_its_own_limiter_wait`; green 7 block tests, 4 limiter tests, VMM clippy, macOS arm64). Cancellation preserves shared debt and wakes only the resetting device. Full VM teardown remains owed to ROOT: `cargo test -p shards --test hotplug devices_are_plugged_into_a_running_microvm_and_its_disks_grow`.
 
 ### devices-05 — P1 / high — Capacity and generation are not published as one coherent configuration
 
@@ -103,6 +107,8 @@ Priority mapping for the user's requested notification: **P0 critical; P1 high; 
 
 **Catching test:** barriers around capacity publication and generation update, with the guest's generation/low/high/generation sequence arranged as above; assert it retries or reads a coherent capacity. Separately race cloned `DiskSize` growers and assert capacity never decreases.
 
+**Status (2026-11-14):** fixed in a8628ac21 (red `capacity_and_generation_are_published_together`: observed `(2, 0)`; green 8 block tests and VMM clippy, macOS arm64). Capacity and generation now change under one mutex that all capacity/config-generation reads take. No odd-generation retry convention is assumed.
+
 ### devices-06 — P2 / medium — VFIO hot-unplug retains MSI routes
 
 **Location:** `crates/vmm/src/devices/pci/vfio.rs:2114`.
@@ -118,6 +124,8 @@ Priority mapping for the user's requested notification: **P0 critical; P1 high; 
 **Fix direction:** quiesce and explicitly unroute all interrupt modes while their descriptors remain valid, then remove DMA/BAR mappings and the device file; propagate cleanup failures with a defined retained/refused state.
 
 **Catching test:** enable MSI/MSI-X, clear bus mastering only, unplug and replug repeatedly. Assert the route inventory returns to baseline each time, including FD-number reuse and masked-vector cases.
+
+**Status (2026-11-14):** fixed in e06c9bc9f (red `unplug_releases_interrupt_routes_before_closing_eventfds`, revision 57673d129: 0 routes removed, expected 3; green 2 VFIO module tests and VMM clippy on Linux x86_64, 9a4be9126). Actual hardware IRQ disabling/route inventory remains owed to ROOT with `cargo test -p shards --test hotplug a_hosts_function_is_plugged_into_a_running_microvm` on the assigned nested VFIO fixture, extended to leave MSI enabled before clear-master-only removal.
 
 ### devices-07 — P2 / medium — Deep joins size /dev/shm from the wrong VM
 
@@ -185,6 +193,14 @@ Priority mapping for the user's requested notification: **P0 critical; P1 high; 
 **Fix direction:** introduce scoped device refusal/result variants with affected device identity and cause/retry semantics; encode and decode them on DEVICE/DEVICED, formatting text only at presentation.
 
 **Catching test:** round-trip `NoSlots`, `StillDriven`, `ShrinkRefused` and host failure variants across the actual codec, then assert callers match variants while presentation wording can change independently.
+
+### devices-11 — ROOT decision — Disk-file ownership across runs
+
+Added by ROOT, 2026-11-13, outside the original ten-finding review:
+
+> plug must refuse, typed, a disk file that another run already has plugged writable. Two kernels mounting one ext4 read-write corrupt it, which is what ext4 MMP (Documentation/filesystems/ext4/mmp.rst) exists to refuse, and their growths take different Steps holds. Read-only sharing stays allowed. Identify a file by (dev, inode) on Unix and by its file ID on Windows, never by path. Amend D214.
+
+**Status (2026-11-13):** assigned to the devices lane by ROOT; implementation pending. The original review counts above describe devices-01 through devices-10 only.
 
 ## Checked and found sound
 

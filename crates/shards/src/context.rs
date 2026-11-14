@@ -905,32 +905,37 @@ pub(crate) fn chosen(home: &Path, args: &mut Vec<OsString>) -> Result<Chosen, St
     chosen_in(home, args, &|name| std::env::var(name).ok())
 }
 
+/// The context `args`' own options choose, the last of them counting, and how many words
+/// at their front they are: what [`chosen`] takes off before the command. A client's
+/// command the daemon judges by the words that follow them (daemon/remote.rs, `judge`).
+pub(crate) fn choice<A: AsRef<std::ffi::OsStr>>(args: &[A]) -> Result<(Option<String>, usize), String> {
+    let mut given = None;
+    let mut taken = 0;
+    loop {
+        let word = |i: usize| args.get(i).and_then(|a| a.as_ref().to_str());
+        match word(taken) {
+            Some("--context" | "-c") => {
+                let name = word(taken.saturating_add(1)).ok_or("flag needs an argument: --context")?;
+                given = Some(name.to_string());
+                taken = taken.saturating_add(2);
+            }
+            Some(flag) if flag.starts_with("--context=") => {
+                given = Some(flag.trim_start_matches("--context=").to_string());
+                taken = taken.saturating_add(1);
+            }
+            _ => return Ok((given, taken)),
+        }
+    }
+}
+
 /// [`chosen`], `env` this process's environment.
 fn chosen_in(
     home: &Path,
     args: &mut Vec<OsString>,
     env: &dyn Fn(&str) -> Option<String>,
 ) -> Result<Chosen, String> {
-    let mut given = None;
-    loop {
-        let first = args.first().and_then(|a| a.to_str()).map(str::to_string);
-        match first.as_deref() {
-            Some("--context" | "-c") => {
-                let name = args
-                    .get(1)
-                    .and_then(|a| a.to_str())
-                    .ok_or("flag needs an argument: --context")?
-                    .to_string();
-                args.drain(..2);
-                given = Some(name);
-            }
-            Some(flag) if flag.starts_with("--context=") => {
-                given = Some(flag.trim_start_matches("--context=").to_string());
-                args.remove(0);
-            }
-            _ => break,
-        }
-    }
+    let (given, taken) = choice(args)?;
+    args.drain(..taken.min(args.len()));
     let env = |name: &str| env(name).filter(|v| !v.is_empty());
     let name = match given {
         Some(name) => name,
@@ -1085,6 +1090,25 @@ impl crate::build::policy::Resolve for PolicyBuilder<'_> {
         let said = self.asked(&["resolve"], asked, env)?;
         crate::build::policy::wire::read_known(&said)
     }
+}
+
+/// A build's `words` as the machine is sent them: before its context, each of `secrets`, by
+/// id, as the pipe it is read from there (`synced::SECRET`), and each of `agents`, by id, as
+/// the agent it reaches there (`synced::AGENT_SOCKET`).
+fn sent_words(words: &[String], secrets: &[&str], agents: &[&str]) -> Vec<String> {
+    let mut words = words.to_vec();
+    let at = words
+        .iter()
+        .position(|w| w == crate::synced::CONTEXT)
+        .unwrap_or(words.len());
+    for id in agents.iter().rev() {
+        words.insert(at, format!("--ssh={id}={}{id}", crate::synced::AGENT_SOCKET));
+    }
+    for (i, id) in secrets.iter().enumerate().rev() {
+        let id = shards_cmdline::go::csv_field(&format!("id={id}"));
+        words.insert(at, format!("--secret={id},src={}{i}", crate::synced::SECRET));
+    }
+    words
 }
 
 /// A build of a context of this client's (D180 part 3c): what the machine builds, of its copy
@@ -1861,18 +1885,9 @@ fn build_there(
             *keys = crate::build::sshkey::keyring(std::mem::take(keys));
         }
     }
-    let mut words = built.words.clone();
-    let at = words
-        .iter()
-        .position(|w| w == crate::synced::CONTEXT)
-        .unwrap_or(words.len());
-    for id in agents.keys().rev() {
-        words.insert(at, format!("--ssh={id}={}{id}", crate::synced::AGENT_SOCKET));
-    }
-    for (i, (id, _)) in secrets.iter().enumerate().rev() {
-        let id = shards_cmdline::go::csv_field(&format!("id={id}"));
-        words.insert(at, format!("--secret={id},src={}{i}", crate::synced::SECRET));
-    }
+    let secret_ids: Vec<&str> = secrets.iter().map(|(id, _)| id.as_str()).collect();
+    let agent_ids: Vec<&str> = agents.keys().map(String::as_str).collect();
+    let words = sent_words(&built.words, &secret_ids, &agent_ids);
     // This client's own paths, which what the build prints there says in place of its
     // copies': its context's, its build file's directory's, and each tree's, by its key.
     let mut shown = built.context.as_os_str().as_encoded_bytes().to_vec();
@@ -3562,6 +3577,25 @@ pub(crate) fn clients(home: &Path) -> Vec<Client> {
     out
 }
 
+/// A client as its connection proved it (remote-03): the name the daemon judged its key
+/// enrolled under, and that key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Proved {
+    pub name: String,
+    pub key: Vec<u8>,
+}
+
+impl Proved {
+    /// Whether `home` enrolls it still: its name's record, of the key it proved. Read for
+    /// each operation, as its record is the one account of whom the home enrolls, which a
+    /// removal (`remove client`) or a client made again under the name changes.
+    pub(crate) fn enrolled(&self, home: &Path) -> bool {
+        invite::valid_name(&self.name)
+            && read_client(&home.join("clients").join(&self.name))
+                .is_some_and(|c| c.name == self.name && c.key == self.key)
+    }
+}
+
 /// Enrolls `key` as client `name`: the daemon's, as a client joins.
 pub(crate) fn enroll(home: &Path, name: &str, key: &[u8]) -> Result<(), String> {
     let text = format!(
@@ -4087,6 +4121,36 @@ mod tests {
         assert_eq!(crate::cli::request::seccomp_profile(json), Ok(json.to_string()));
     }
 
+    /// remote-09: what this client's shards sends of a build naming every kind of path a build
+    /// names, here, is held to its copies there (`synced::held_to_copies`), so that the
+    /// machine's refusal of any other path refuses no build of a client's.
+    #[test]
+    fn what_a_client_sends_of_a_build_is_held_to_its_copies() {
+        let dir = shards_testdir::TempDir::new("ctx-held").unwrap();
+        let t = AsRef::<Path>::as_ref(&dir).to_str().unwrap().to_string();
+        for sub in ["ctx", "cachein", "named", "layout"] {
+            std::fs::create_dir_all(dir.join(sub)).unwrap();
+        }
+        std::fs::write(dir.join("ctx").join("Dockerfile"), "FROM scratch\n").unwrap();
+        std::fs::write(dir.join("ctx").join("p.rego"), "package docker\n").unwrap();
+        let words: Vec<String> = "build --output=type=local,dest=T/out --iidfile=T/iid --metadata-file=T/meta --cache-to=type=local,dest=T/cache --cache-from=type=local,src=T/cachein --build-context=n=T/named --build-context=l=oci-layout://T/layout:v1 --policy=filename=T/ctx/p.rego --secret=id=s,src=T/s --ssh=default -f T/ctx/Dockerfile T/ctx"
+            .split(' ')
+            .map(|w| w.replace('T', &t))
+            .collect();
+        let built = building(&words, &|| Ok(Vec::new())).unwrap().unwrap();
+        let sent = sent_words(&built.words, &["s"], &["default"]);
+        assert_eq!(crate::synced::held_to_copies(&sent, 1), Ok(()), "{sent:?}");
+        let artifact = artifact_building(&[
+            "build".to_string(),
+            "agent".to_string(),
+            dir.join("ctx").to_str().unwrap().to_string(),
+            "-t".to_string(),
+            "a".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(crate::synced::held_to_copies(&artifact.words, 0), Ok(()));
+    }
+
     /// What a context carries, and what it refuses until it carries it.
     #[test]
     fn an_artifacts_build_is_of_the_machines_copy_of_its_directory() {
@@ -4247,6 +4311,32 @@ mod tests {
     /// A command shards starts by a word a user types too, `HERE` in its environment, runs
     /// here, where its home's current context, or its starter's `DOCKER_CONTEXT`, names
     /// another machine's.
+    /// remote-03: a client as its connection proved it is enrolled while its name's record
+    /// holds its key: not once it is removed, nor once its name is another key's.
+    #[test]
+    fn a_proved_client_is_enrolled_while_its_record_holds_its_key() {
+        let home = shards_testdir::TempDir::new("ctx-proved").unwrap();
+        let (one, other) = (vec![1u8; 44], vec![2u8; 44]);
+        let proved = |key: &[u8]| Proved {
+            name: "laptop".into(),
+            key: key.to_vec(),
+        };
+        assert!(!proved(&one).enrolled(&home));
+        enroll(&home, "laptop", &one).unwrap();
+        assert!(proved(&one).enrolled(&home));
+        assert!(!proved(&other).enrolled(&home));
+        std::fs::remove_file(home.join("clients").join("laptop")).unwrap();
+        assert!(!proved(&one).enrolled(&home));
+        enroll(&home, "laptop", &other).unwrap();
+        assert!(!proved(&one).enrolled(&home));
+        assert!(proved(&other).enrolled(&home));
+        let elsewhere = Proved {
+            name: "../laptop".into(),
+            key: other.clone(),
+        };
+        assert!(!elsewhere.enrolled(&home));
+    }
+
     #[test]
     fn here_holds_a_child_to_this_machine() {
         let home = shards_testdir::TempDir::new("ctx-here").unwrap();

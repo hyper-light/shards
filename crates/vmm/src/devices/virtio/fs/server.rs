@@ -495,6 +495,18 @@ fn cstring(s: &str) -> Result<CString, Errno> {
 thread_local! {
     /// The names this thread's server has opened, for a test of what it never opens.
     static OPENED: std::cell::RefCell<Vec<CString>> = const { std::cell::RefCell::new(Vec::new()) };
+    static OWNER_ERRORS: std::cell::Cell<(Option<Errno>, Option<Errno>)> = const { std::cell::Cell::new((None, None)) };
+}
+
+#[cfg(test)]
+fn owner_fault(name: &CStr, writing: bool) -> Result<(), Errno> {
+    if name == owner_xattr()?.as_c_str() {
+        let (read, write) = OWNER_ERRORS.get();
+        if let Some(error) = if writing { write } else { read } {
+            return Err(error);
+        }
+    }
+    Ok(())
 }
 
 /// What a file system holds and has room for, as a guest's STATFS asks it.
@@ -2044,10 +2056,11 @@ impl Server {
             caller.1
         };
         let dir = dir_fd(s, parent)?;
-        let mode = match stat_at(dir, name) {
+        let host = stat_at(dir, name);
+        let mode = match &host {
             Ok(host) => kept
                 .mode
-                .filter(|m| *m != mode_of(&host) & 0o7777 || kept.kind.is_some()),
+                .filter(|m| *m != mode_of(host) & 0o7777 || kept.kind.is_some()),
             Err(_) => kept.mode,
         };
         let owner = Owner {
@@ -2063,13 +2076,24 @@ impl Server {
         let recorded = if owner == Owner::default() && set_owner_of(s, parent).is_none() {
             Ok(())
         } else {
-            open_meta(dir, name, None)
-                .and_then(|fd| fset_xattr(fd.raw(), &owner_xattr()?, owner.encode().as_bytes(), 0))
+            match open_meta(dir, name, None) {
+                Ok(fd) => fset_xattr(fd.raw(), &owner_xattr()?, owner.encode().as_bytes(), 0),
+                // These native kinds cannot carry user.* metadata; regular files must.
+                Err(ENODATA)
+                    if kept.kind.is_none()
+                        && host
+                            .as_ref()
+                            .is_ok_and(|h| native_without_owner(mode_of(h) & S_IFMT)) =>
+                {
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            }
         };
-        // A node made in another's place is the guest's kind only as recorded: unrecorded,
-        // it is no node of the guest's.
-        if let (Err(e), Some(_)) = (recorded, kept.kind) {
-            let _ = unlink_at(dir, name, false);
+        // Without its record a later run would inherit this node as a host-made file.
+        if let Err(e) = recorded {
+            let directory = is_dir(&stat_at(dir, name)?);
+            unlink_at(dir, name, directory)?;
             return Err(e);
         }
         Ok(())
@@ -2240,16 +2264,24 @@ impl NodeFd {
 /// `name` in `dir`, opened only to read and set its attributes: not followed, not waiting
 /// on a FIFO's writer, taking no terminal. A device node is not opened, as its driver's
 /// open acts (a serial line raises DTR, a tape rewinds as it closes) where the guest only
-/// looked, as at an `ls -l` of a shared /dev: it has no attributes here (ENODATA), as
+/// looked, as at an `ls -l` of a shared /dev. Unix symlinks are not opened for metadata
+/// either: a no-follow open can refuse one. Both stay root's (ENODATA), as
 /// Linux gives a special file no `user.` ones (fs/xattr.c `xattr_permission`), the
 /// owner's among them (audit V08). `known` is the node's file type where the caller has
 /// just looked at it, which spares looking again.
+/// Native devices and symlinks cannot be opened for these attributes without
+/// entering a driver or following a link. Linux also disallows user.* on FIFOs/sockets.
+fn native_without_owner(kind: u32) -> bool {
+    (DEVICE_OPENS_DRIVER && matches!(kind, S_IFCHR | S_IFBLK | S_IFLNK))
+        || (cfg!(target_os = "linux") && matches!(kind, S_IFIFO | S_IFSOCK))
+}
+
 fn open_meta(dir: host::Raw, name: &CStr, known: Option<u32>) -> Result<NodeFd, Errno> {
     let kind = match known {
         Some(kind) => kind,
         None => mode_of(&stat_at(dir, name)?) & S_IFMT,
     };
-    if DEVICE_OPENS_DRIVER && matches!(kind, S_IFCHR | S_IFBLK) {
+    if native_without_owner(kind) {
         return Err(ENODATA);
     }
     open_at(dir, name, META_FLAGS, 0).map(NodeFd::Owned)
@@ -2264,6 +2296,9 @@ fn node_fd_known(s: &mut State, nodeid: u64, known: Option<u32>) -> Result<NodeF
     let node = s.nodes.get(&nodeid).ok_or(ENOENT)?;
     if node.dir {
         return Ok(NodeFd::Borrowed(dir_fd(s, nodeid)?));
+    }
+    if let Some((pin, _)) = s.pins.get(&nodeid) {
+        return Ok(NodeFd::Borrowed(pin.raw()));
     }
     let (dir, name) = reach(s, nodeid)?;
     open_meta(dir, &name, known)
@@ -2355,14 +2390,32 @@ fn node_owner(s: &mut State, nodeid: u64, st: Option<&Stat>) -> Result<Owner, Er
     let unrecorded = unrecorded_owner(s, nodeid);
     let fd = match node_fd_known(s, nodeid, st.map(|st| mode_of(st) & S_IFMT)) {
         Ok(fd) => fd,
-        Err(ENODATA) => return Ok(Owner::default()),
-        Err(_) => return Ok(unrecorded),
+        Err(ENODATA) => {
+            let found;
+            let st = match st {
+                Some(st) => st,
+                None => {
+                    found = node_stat(s, nodeid)?;
+                    &found
+                }
+            };
+            let kind = mode_of(st) & S_IFMT;
+            if !native_without_owner(kind) {
+                return Err(ENODATA);
+            }
+            // Devices remain root's; an unrecorded link/FIFO/socket is a host file.
+            return Ok(if matches!(kind, S_IFCHR | S_IFBLK) {
+                Owner::default()
+            } else {
+                unrecorded
+            });
+        }
+        Err(e) => return Err(e),
     };
-    Ok(fget_xattr(fd.raw(), &owner_xattr()?)
-        .ok()
-        .flatten()
-        .and_then(|v| Owner::parse(&v))
-        .unwrap_or(unrecorded))
+    match fget_xattr(fd.raw(), &owner_xattr()?)? {
+        Some(bytes) => Owner::parse(&bytes).ok_or(EIO),
+        None => Ok(unrecorded),
+    }
 }
 
 /// Directory node `nodeid`'s descriptor: the root's; one held; or one opened again along
@@ -3907,6 +3960,67 @@ mod tests {
             );
             assert_eq!(owned(&devs, ROOT, "null").1, 0);
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unrecorded_nondevice_nodes_keep_the_runs_user() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let (path, s) = dir();
+        std::fs::write(path.join("target"), b"host").unwrap();
+        std::os::unix::fs::symlink("target", path.join("link")).unwrap();
+        let fifo = CString::new(path.join("fifo").as_os_str().as_bytes()).unwrap();
+        // SAFETY: a live NUL-terminated path of this test's disposable FIFO.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        assert_eq!(
+            answer(&s, &req(op::SETXATTR, ROOT, 0, &owner_word("1000:1000"))).0,
+            0
+        );
+        assert_eq!(owned(&s, ROOT, "link").1, 1000);
+        assert_eq!(owned(&s, ROOT, "fifo").1, 1000);
+    }
+
+    /// A metadata failure must never turn a guest-made node into the next user's file.
+    #[test]
+    fn owner_metadata_failures_refuse_creation_and_lookup() {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                OWNER_ERRORS.set((None, None));
+            }
+        }
+        let _reset = Reset;
+        let (path, s) = dir();
+        assert_eq!(
+            answer(&s, &req(op::SETXATTR, ROOT, 0, &owner_word("1000:1000"))).0,
+            0
+        );
+        OWNER_ERRORS.set((None, Some(EIO)));
+        let mut body = 0o600u32.to_le_bytes().to_vec();
+        body.extend_from_slice(&[0; 12]);
+        body.extend(name("private"));
+        assert_eq!(answer(&s, &req(op::MKNOD, ROOT, 0, &body)).0, -EIO);
+        assert!(!path.join("private").exists());
+        let mut mkdir = 0o700u32.to_le_bytes().to_vec();
+        mkdir.extend_from_slice(&[0; 4]);
+        mkdir.extend(name("private-dir"));
+        assert_eq!(answer(&s, &req(op::MKDIR, ROOT, 0, &mkdir)).0, -EIO);
+        assert!(!path.join("private-dir").exists());
+        OWNER_ERRORS.set((None, None));
+        assert_eq!(answer(&s, &req(op::MKNOD, ROOT, 0, &body)).0, 0);
+        OWNER_ERRORS.set((Some(EIO), None));
+        assert_eq!(answer(&s, &req(op::LOOKUP, ROOT, 1000, &name("private"))).0, -EIO);
+        OWNER_ERRORS.set((None, None));
+        let file = std::fs::File::open(path.join("private")).unwrap();
+        use super::host::AsRaw as _;
+        fset_xattr(
+            host::Owned::from(file).raw(),
+            &owner_xattr().unwrap(),
+            b"broken",
+            0,
+        )
+        .unwrap();
+        assert_eq!(answer(&s, &req(op::LOOKUP, ROOT, 1000, &name("private"))).0, -EIO);
     }
 
     /// A join share's volumes each take their own owner of the host's files (D38): set on

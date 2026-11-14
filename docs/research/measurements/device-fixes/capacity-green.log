@@ -1,0 +1,22 @@
+From /Users/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/devices-carrier-5a6c0d1d02/devices.bundle
+ * branch                p/fix-devices-v1 -> FETCH_HEAD
+Previous HEAD position was 91dfe52ad test(vmm): reproduce torn disk capacity publication
+HEAD is now at a8628ac21 fix(vmm): publish disk capacity and generation under one lock
+   Compiling shards-vmm v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/vmm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.44s
+     Running unittests src/lib.rs (/Users/adalundhe/g121-tmp/fix-devices/target/debug/deps/shards_vmm-645a41c49a1f33e2)
+
+running 8 tests
+test devices::virtio::block::tests::config_space_reports_capacity_segments_and_block_size ... ok
+test devices::virtio::block::tests::a_join_disk_writes_only_its_writable_ranges ... ok
+test devices::virtio::block::tests::a_refused_worker_leaves_the_queue_paused ... ok
+test devices::virtio::block::tests::a_transfer_reaches_device_memory_and_its_lost_pages_fail_it ... ok
+test devices::virtio::block::tests::reset_cancels_only_its_own_limiter_wait ... ok
+test devices::virtio::block::tests::a_join_disk_reads_each_image_at_its_range ... ok
+test devices::virtio::block::tests::a_through_range_moves_a_request_whole ... ok
+test devices::virtio::block::tests::capacity_and_generation_are_published_together ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 495 filtered out; finished in 0.15s
+
+    Checking shards-vmm v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/vmm)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.10s

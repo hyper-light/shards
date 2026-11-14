@@ -106,12 +106,15 @@ const OWN: [&str; 26] = [
 /// (`context::kept_here`): a child of a command run `--context default` reads the same
 /// home, whose current context may be another machine's. No client of this machine's runs
 /// one (daemon/remote.rs `owners`).
-pub(crate) const INTERNAL: [&str; 9] = [
+pub(crate) const INTERNAL: [&str; 10] = [
     // The VM's broker (`shards run vm --kernel`, `shards restore vm`, macOS).
     "grants",
     // The recorder of a directly booted VM's console report (`shards run vm --kernel`,
     // `shards restore vm`, Unix; D12).
     "console-said",
+    // The keeper of a managed VM's final use (`shards run vm --kernel --host-managed`, Unix;
+    // D260).
+    "final-use",
     // The writer of a restore's working set (`shards restore`, Linux).
     "working-set",
     // A budgeted build's writer outside its budget, which the build starts (D188): refused
@@ -129,6 +132,41 @@ pub(crate) const INTERNAL: [&str; 9] = [
     // An image's run for an orchestrator, which shards-api starts (D231).
     "api-run",
 ];
+
+/// The words [`dispatch`] runs `args` as, its context's options taken off first (`context::
+/// chosen`): `help CMD…` is `CMD… --help`, and shards' grammar said as the command it runs,
+/// each again until neither changes them, as `dispatch` turns to itself. A turn that comes
+/// back to words it gave already ends there, as `dispatch` would never end.
+pub(crate) fn command_words(args: &[String]) -> Vec<String> {
+    let mut said = args.to_vec();
+    let mut seen = std::collections::HashSet::new();
+    loop {
+        let next = match said.split_first() {
+            Some((help, rest)) if help == "help" && !rest.is_empty() => {
+                let mut asked = rest.to_vec();
+                asked.push("--help".to_string());
+                asked
+            }
+            _ => match shards_cmdline::grammar::rewrite(&said) {
+                Some(rewritten) if rewritten != said => rewritten,
+                _ => return said,
+            },
+        };
+        if !seen.insert(std::mem::replace(&mut said, next)) {
+            return said;
+        }
+    }
+}
+
+/// Whether a command of `words`' is its machine's owner's alone, which no client's command
+/// runs (D180): a context's, a client's or an invitation's own. Judged where it runs, of
+/// the variable the daemon's listener names its client by (`client_grants::CLIENT_VAR`),
+/// whatever words the client sent the daemon.
+fn owners_alone(words: &[&str], client: &str) -> Option<String> {
+    let first = words.first().copied()?;
+    (!client.is_empty() && matches!(first, "context" | "client" | "invitation"))
+        .then(|| format!("{first}: this machine's owner's to run, not client {client}'s"))
+}
 
 fn dispatch(args: Vec<OsString>) -> ExitCode {
     // shards' own grammar, `ACTION THING ...`, said as the command it runs.
@@ -224,6 +262,9 @@ fn dispatch(args: Vec<OsString>) -> ExitCode {
             return unknown(&shards_cmdline::catalog::unknown(word));
         }
         _ => {}
+    }
+    if let Some(why) = owners_alone(&words, &crate::client_grants::client_here()) {
+        return failed(&why);
     }
     match words.as_slice() {
         // `shards run vm --kernel FILE ...`: a kernel booted directly, in the VM process.
@@ -1160,6 +1201,66 @@ fn said_recorded(args: &[OsString]) -> (Vec<OsString>, Option<std::os::fd::Owned
     })
 }
 
+/// Where a managed VM `args` start records its final use (D260, final_use.rs): beside its
+/// vsock socket, where it is booted `--host-managed` with one.
+fn final_use_record(args: &[OsString]) -> Option<PathBuf> {
+    let vsock = vm_options(args)
+        .find(|(word, _)| *word == "--vsock")
+        .and_then(|(_, value)| value);
+    crate::final_use::record_of(
+        vsock.map(OsString::as_os_str),
+        has_vm_flag(args, "--host-managed"),
+    )
+}
+
+/// `args` with `--final-use NAME` after their command, where `NAME` is given: before any
+/// option's value and any workload's `--`.
+fn with_final_use(args: Vec<OsString>, name: OsString) -> Vec<OsString> {
+    let mut with = Vec::with_capacity(args.len().saturating_add(2));
+    let mut words = args.into_iter();
+    with.extend(words.next());
+    with.extend([crate::final_use::FLAG.into(), name]);
+    with.extend(words);
+    with
+}
+
+/// A managed VM's final use kept (D260, final_use.rs) on Unix: its keeper, `shardsd final-use
+/// PATH`, started on one end of a socket pair, in the VM's own containment as a managed VM's
+/// console recorder is, and the other end given the VM as `--final-use FD` once this process
+/// becomes it ([`said_kept`] leaves it open through the exec). Where it is not managed, or its
+/// keeper cannot start, none: its client then reads no final use (`Unused::Untold`).
+#[cfg(unix)]
+fn final_use_kept(args: Vec<OsString>) -> (Vec<OsString>, Option<std::os::fd::OwnedFd>) {
+    use std::os::fd::{AsFd as _, AsRawFd as _};
+    let Some(record) = final_use_record(&args) else {
+        return (args, None);
+    };
+    let started = (|| -> Result<std::os::fd::OwnedFd, String> {
+        let (ours, theirs) =
+            std::os::unix::net::UnixStream::pair().map_err(|e| format!("its socket: {e}"))?;
+        let keeper = shardsd()?;
+        let stderr = std::io::stderr();
+        shards_ipc::spawn(
+            &keeper,
+            &["final-use".as_ref(), record.as_os_str()],
+            &[(theirs.as_fd(), 3), (stderr.as_fd(), 2)],
+            false,
+        )
+        .map_err(|e| format!("{}: {e}", keeper.display()))?;
+        Ok(std::os::fd::OwnedFd::from(ours))
+    })();
+    match started {
+        Ok(fd) => {
+            let name = fd.as_raw_fd().to_string().into();
+            (with_final_use(args, name), Some(fd))
+        }
+        Err(e) => {
+            shards_vmm::debug!("not keeping its final use: {e}");
+            (args, None)
+        }
+    }
+}
+
 /// Keeps `to`, the VM's end of its report's pipe ([`said_recorded`]), open through the exec
 /// into it.
 #[cfg(unix)]
@@ -1374,6 +1475,8 @@ fn vm(args: &[OsString]) -> ExitCode {
     };
     // What it keeps of its console learned, and its report's recorder started (D12).
     let (args, said_to) = said_recorded(&args);
+    // A managed VM's final use's keeper started (D260).
+    let (args, final_use_to) = final_use_kept(args);
     let args = args.as_slice();
     let broker = match shardsd() {
         Ok(bin) => bin,
@@ -1429,7 +1532,10 @@ fn vm(args: &[OsString]) -> ExitCode {
     with.push("--cwd".into());
     with.push(cwd.into());
     with.extend(args.iter().skip(1).cloned());
-    if let Err(e) = shares::inherit(shared).and_then(|()| said_kept(said_to)) {
+    if let Err(e) = shares::inherit(shared)
+        .and_then(|()| said_kept(said_to))
+        .and_then(|()| said_kept(final_use_to))
+    {
         return failed(&e);
     }
     if let Err(why) = carried.keep_for_exec() {
@@ -1459,12 +1565,17 @@ fn vm(args: &[OsString]) -> ExitCode {
     };
     // What it keeps of its console learned, and its report's recorder started (D12).
     let (args, said_to) = said_recorded(&args);
+    // A managed VM's final use's keeper started (D260).
+    let (args, final_use_to) = final_use_kept(args);
     let args = args.as_slice();
     let with = match working_set_writer(args) {
         Ok(with) => with,
         Err(e) => return failed(&e),
     };
-    if let Err(e) = shares::inherit(shared).and_then(|()| said_kept(said_to)) {
+    if let Err(e) = shares::inherit(shared)
+        .and_then(|()| said_kept(said_to))
+        .and_then(|()| said_kept(final_use_to))
+    {
         return failed(&e);
     }
     if let Err(why) = carried.keep_for_exec() {
@@ -1692,6 +1803,23 @@ fn vm(args: &[OsString]) -> ExitCode {
         Ok(((recording, OwnedHandle::from(to_this)), SAID_TO.into()))
     });
     let (recording, said_to) = said.unzip();
+    // A managed VM's final use (D260): told on a pipe of its own, kept by this process, which
+    // waits for it, before this process exits, and so before its client sees its end.
+    let (args, final_use) = match final_use_record(&args).map(|record| std::io::pipe().map(|p| (record, p))) {
+        Some(Ok((record, (from_vm, to_this)))) => (
+            with_final_use(args, crate::final_use::NAME.into()),
+            Some((record, from_vm, OwnedHandle::from(to_this))),
+        ),
+        Some(Err(e)) => {
+            shards_vmm::debug!("not keeping its final use: its pipe: {e}");
+            (args, None)
+        }
+        None => (args, None),
+    };
+    let (final_use_from, final_use_to): (Option<_>, Option<_>) = match final_use {
+        Some((record, from_vm, to_vm)) => (Some((record, from_vm)), Some(to_vm)),
+        None => (None, None),
+    };
     // Its shares served before its VM process starts, in its AppContainer (shares.rs).
     let (args, shared, share_process) = match shares::served(&args, &job) {
         Ok(shared) => shared,
@@ -1763,6 +1891,10 @@ fn vm(args: &[OsString]) -> ExitCode {
         name: SAID_TO,
         handle: said_to.as_handle(),
     }));
+    given.extend(final_use_to.as_ref().map(|to_vm| shards_ipc::Given {
+        name: crate::final_use::NAME,
+        handle: to_vm.as_handle(),
+    }));
     // A warm VM holds its spawner's NUL for the clients it lets go of, as the daemon's
     // do: its AppContainer opens no file by name (PM M351).
     let warm = served.iter().any(|(name, _)| name == WARM);
@@ -1809,7 +1941,15 @@ fn vm(args: &[OsString]) -> ExitCode {
     // The VM's ends are its own now: its exit ends the requests, what it hands over of its
     // working set, and its shares, whose process then exits.
     drop(given);
-    drop((asks_to, answers_from, to_keeper, shared, said_to, report_writer));
+    drop((
+        asks_to,
+        answers_from,
+        to_keeper,
+        shared,
+        said_to,
+        report_writer,
+        final_use_to,
+    ));
     let child = match spawned {
         Ok(child) => child,
         Err(e) => return failed(&format!("{}: {e}", bin.display())),
@@ -1850,7 +1990,23 @@ fn vm(args: &[OsString]) -> ExitCode {
                 }
             }
         });
+        // Its final use read as it comes, which a pipe's buffer may not hold whole.
+        let final_use = final_use_from.and_then(|(record, mut from_vm)| {
+            let kept = std::thread::Builder::new()
+                .name("final-use".into())
+                .spawn_scoped(scope, move || {
+                    if let Err(e) = crate::final_use::keep(&mut from_vm, &record) {
+                        let _ = writeln!(std::io::stderr(), "shards: a managed VM's final use: {e}");
+                    }
+                });
+            kept.inspect_err(|e| shards_vmm::debug!("not keeping its final use: {e}"))
+                .ok()
+        });
         let ended = child.wait();
+        // Its final use recorded before this process says how it ended.
+        if let Some(final_use) = final_use {
+            let _ = final_use.join();
+        }
         // What it could not grant, the VM was told and said.
         if let Ok(serving) = serving {
             let _ = serving.join();
@@ -2300,5 +2456,41 @@ mod said_options {
         assert_eq!(added.first(), Some(&"--console-said"), "{added:?}");
         assert_eq!(added.get(2..), Some(["--said-to", "3"].as_slice()), "{added:?}");
         assert!(super::has_vm_flag(&with, "--said-to"), "{with:?}");
+    }
+}
+
+#[cfg(test)]
+mod owners_alone {
+    /// remote-01: a context's, a client's and an invitation's commands refuse a client's
+    /// command where they run, of the variable the daemon's listener names it by, whatever
+    /// words reached the daemon; this machine's own user runs them.
+    #[test]
+    fn an_owners_command_refuses_a_clients_command_where_it_runs() {
+        for words in [["client", "grant"], ["invitation", "rm"], ["context", "use"]] {
+            assert!(super::owners_alone(&words, "alice").is_some(), "{words:?}");
+            assert!(super::owners_alone(&words, "").is_none(), "{words:?}");
+        }
+        assert!(super::owners_alone(&["ps", "-a"], "alice").is_none());
+    }
+
+    /// The words `dispatch` runs: `help` and shards' grammar said as the command they are,
+    /// as many times as they turn into another.
+    #[test]
+    fn command_words_are_what_dispatch_runs() {
+        let words = |s: &str| s.split(' ').map(str::to_string).collect::<Vec<_>>();
+        assert_eq!(
+            super::command_words(&words("help grant client a --dir /")),
+            words("client grant a --dir / --help")
+        );
+        assert_eq!(
+            super::command_words(&words("remove client a")),
+            words("client rm a")
+        );
+        assert_eq!(super::command_words(&words("list vms")), words("ps"));
+        assert_eq!(
+            super::command_words(&words("help help ps")),
+            words("ps --help --help")
+        );
+        assert_eq!(super::command_words(&words("ps -a")), words("ps -a"));
     }
 }

@@ -54,6 +54,8 @@ Ranking: P0 critical; P1 high security/resource priority; P2 high correctness pr
 
 **Catching test:** in a disposable network-process child on both Linux architectures, observe seccomp state and attempt an excluded harmless syscall; require the same typed refusal/termination outcome. Test the actual carried helper, not just a library function.
 
+**Status (2026-11-13):** fixed in 33d5f8af715ea94021b65a7c8dc793f65a2339a6 and native startup regression in 53e89b2b8843eb39dd2fc00b732d525aeca256c6 (red `tests::startup_installs_a_native_seccomp_filter` at 46e739f13: actual aarch64 child `Seccomp:0`, expected 2). Following ROOT's platform-compiler handoff, merged 994e7715d including a729003e9; both processes use the same `shards-syscall-filter::compile` with each target's native AUDIT_ARCH and libc allowlist. Docker Desktop native Linux arm64 startup/refusal tests and both crates' clippy passed; actual carried-helper VM smoke and musl remain ROOT/CI's. Evidence: `docs/research/measurements/network-fixes-v1/README.md`.
+
 ### network-03 — P1 / high: DNS-derived authority accumulates forever in host memory
 
 **Location:** `crates/net/src/lib.rs:2412`, `:2868`, `:613`; `crates/dns/src/lib.rs:291`. Learning machinery predates the base; D192/D236 add new production uses in the review range.
@@ -69,6 +71,8 @@ Ranking: P0 critical; P1 high security/resource priority; P2 high correctness pr
 **Fix direction:** retain name/address associations with expiry and an explicit admitted resource envelope; retire stale authority while handling currently established connections deliberately. Do not fix this by inventing a cache capacity or TTL floor.
 
 **Catching test:** give the same granted name N distinct TTL-0/TTL-1 answers over UDP and TCP, advance a controlled clock, and require learned storage to return to the currently authorized set. Check that an expired address cannot open a new flow and unrelated names never grant authority. ROOT should measure actual host memory against a fixed live transport count.
+
+**Status (2026-11-13):** fixed in e2237fb29 (red `tests::dns_answers_replace_the_names_previous_authority` at 5a3d27784, real connected UDP learning path). Current per-name/type answers replace history and expire at their received TTL; zero-TTL answers retain no later-connect authority. Focused initial tests passed; final merged-source gate and the explicit zero-TTL compatibility limitation are recorded in `docs/research/measurements/network-fixes-v1/README.md#network-03-dns-authority-lifetime`. ROOT owes VM/resource runs; network-11 remains separate.
 
 ### network-04 — P1 / high: UDP holder changes can reuse a still-live conntrack zone and restore an old destination
 
