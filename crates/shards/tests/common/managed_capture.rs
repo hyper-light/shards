@@ -670,7 +670,13 @@ pub(super) fn bound(at: std::net::SocketAddrV4) -> Vec<u64> {
         let mut size = libc::socklen_t::try_from(size_of::<libc::c_int>()).ok()?;
         // SAFETY: getsockopt(2) writes at most `size` bytes into `kind`, which holds them.
         let got = unsafe {
-            libc::getsockopt(fd, libc::SOL_SOCKET, libc::SO_TYPE, (&raw mut kind).cast(), &raw mut size)
+            libc::getsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_TYPE,
+                (&raw mut kind).cast(),
+                &raw mut size,
+            )
         };
         if got != 0 || kind != libc::SOCK_DGRAM {
             return None;

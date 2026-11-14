@@ -910,9 +910,14 @@ fn a_slow_start_is_refused_only_past_a_whole_slice_without_progress_or_hold() {
     let patience = || Patience::of(&home);
     {
         let _vm = StandIn::running(&home);
-        let read = judge(&late(start), Instant::now(), patience(), &seen, &home.join("no-slice")).unwrap_or_else(
-            |stalled| panic!("a start of {start:?} with a VM not yet judged refused: {stalled}"),
-        );
+        let read = judge(
+            &late(start),
+            Instant::now(),
+            patience(),
+            &seen,
+            &home.join("no-slice"),
+        )
+        .unwrap_or_else(|stalled| panic!("a start of {start:?} with a VM not yet judged refused: {stalled}"));
         assert!(read.start() >= Some(start), "{:?}", read.start());
     }
     // A slice whose tasks stall on memory all along, as PSI says it (`some ... total=` µs).

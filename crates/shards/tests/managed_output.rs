@@ -766,7 +766,6 @@ fn a_helpers_panic_ends_the_read_beside_it_and_is_what_fails() {
     observer.join(Until::Ordered).unwrap();
 }
 
-
 /// A socket of this process's is found once by its address while other sockets come and go
 /// (`managed_capture::bound`, which finds an observer's): CI's aarch64 musl run 43513425954
 /// found one twice, `[114149, 114149]`. /proc/net/udp is no snapshot: its reader takes the
@@ -804,7 +803,13 @@ fn a_socket_is_found_once_while_others_come_and_go() {
         let found: Vec<Vec<u64>> = (0..threads * batch).map(|_| managed_capture::bound(at)).collect();
         stop.store(true, Ordering::Relaxed);
         let torn: Vec<_> = found.iter().filter(|ids| ids.len() != 1).collect();
-        assert!(torn.is_empty(), "{} of {} finds not once: {:?}", torn.len(), found.len(), torn.first());
+        assert!(
+            torn.is_empty(),
+            "{} of {} finds not once: {:?}",
+            torn.len(),
+            found.len(),
+            torn.first()
+        );
     });
     drop(held);
 }
