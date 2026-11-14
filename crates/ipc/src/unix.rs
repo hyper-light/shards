@@ -1156,15 +1156,48 @@ fn take_fds(msg: &libc::msghdr, fds: &mut Vec<OwnedFd>) -> io::Result<()> {
 pub const SOCKET: &str = "daemon.sock";
 
 /// Whether process `pid` lives: kill(2) with signal 0 asks, one of another user's among
-/// those that do (EPERM).
+/// those that do (EPERM), and one that has exited does not, whether or not its parent has
+/// reaped it (waits-08): a zombie answers kill(2) and keeps its start, so a client that
+/// waits on a daemon while it lives would wait for ever on one its supervisor leaves
+/// unreaped. Windows' twin asks its handle whether it has ended.
 pub(crate) fn alive(pid: u32) -> bool {
     // Zero or less would name a process group, or every process.
-    let Some(pid) = libc::pid_t::try_from(pid).ok().filter(|&pid| pid > 0) else {
+    let Some(id) = libc::pid_t::try_from(pid).ok().filter(|&pid| pid > 0) else {
         return false;
     };
     // SAFETY: kill(2) with signal 0 only asks whether the process exists.
-    let alive = unsafe { libc::kill(pid, 0) } == 0;
-    alive || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    let exists =
+        unsafe { libc::kill(id, 0) } == 0 || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
+    exists && !exited(pid)
+}
+
+/// Whether process `pid` has exited, unreaped: on Linux its `/proc/<pid>/stat` state, field
+/// 3, after the last ')', `Z` (zombie) or `X` (dead, proc(5)). One whose state cannot be read
+/// (gone meanwhile, or hidden) is not known to have.
+#[cfg(target_os = "linux")]
+fn exited(pid: u32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+        stat.rfind(')')
+            .and_then(|i| stat.get(i.saturating_add(1)..))
+            .and_then(|fields| fields.split_ascii_whitespace().next())
+            .is_some_and(|state| matches!(state, "Z" | "X"))
+    })
+}
+
+/// Whether process `pid` has exited, unreaped: on macOS `proc_pid_rusage`'s
+/// `ri_proc_exit_abstime`, set as it exits (XNU's `proc_exit`), as crates/api's judge reads
+/// a process ending. One whose rusage cannot be read (another user's) is not known to have.
+#[cfg(not(target_os = "linux"))]
+fn exited(pid: u32) -> bool {
+    let Ok(pid) = libc::c_int::try_from(pid) else {
+        return false;
+    };
+    // SAFETY: a rusage_info_v0, plain data, for proc_pid_rusage to fill.
+    let mut info: libc::rusage_info_v0 = unsafe { std::mem::zeroed() };
+    // SAFETY: proc_pid_rusage(3) of `pid` into a rusage_info_v0 of ours, which RUSAGE_INFO_V0
+    // names.
+    let r = unsafe { libc::proc_pid_rusage(pid, libc::RUSAGE_INFO_V0, (&raw mut info).cast()) };
+    r == 0 && info.ri_proc_exit_abstime != 0
 }
 
 /// When process `pid` started ([`crate::started`]): on Linux its `/proc/<pid>/stat`

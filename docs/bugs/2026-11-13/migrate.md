@@ -192,6 +192,8 @@ Priorities: **P0 = critical**, **P1 = high**, **P3 = medium**, **P5 = low**; no 
 
 **Status (2026-11-13):** owed to ROOT: D191 measured wake/CPU-clock/kick-cost campaign, then its existing derived-period design; no picked replacement period added. [Fix evidence](../../research/measurements/migrate/fix-review-2026-11-13.md).
 
+**Status (2026-11-14):** owed to ROOT: the learner and its cold start are built (78c3b7012, 951010ac1): `platform::granule` learns g, the least lateness of the governors' waits and a thread clock's measured step (cold: `SOONEST`; unreadable clock typed `Unclocked`), and `hold::derived_period` is D191's vcpus × g / share, said in the debug log beside the 100 ms in force. Held by `platform::granule::tests` (3) and `vm::hold::tests::a_holds_derived_period_resolves_its_share`; mutations (an early end counted, the first move taken as the step, g its wake alone) each caught; `cargo clippy -p shards-vmm --all-targets -- -D warnings` clean (adas-mac-studio-3.local). The switch waits on ROOT's kick-cost runs on each backend, `SHARDS_LOG=debug cargo test -p shards --test boot a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket` at D191's rates reading each "derived … from g" line, and on the image API's `RATED` carrying each rate's period (D191, "Its learner, built"). Windows' priority governor's copy of the period is platform-11's.
+
 ### migrate-10 — P3 / medium — Migration/restore retains chosen cutoffs and budgets forbidden by the brief
 
 **Location:** `crates/shards/src/daemon/moves.rs:69-70`; `crates/vmm/src/vm/live.rs:76-78`; `crates/vmm/src/hv/mod.rs:74`; `crates/vmm/src/snapshot/mod.rs:178`.
@@ -214,6 +216,8 @@ Priorities: **P0 = critical**, **P1 = high**, **P3 = medium**, **P5 = low**; no 
 **Regression sketch:** Vary link progress, restore working-set sizes, resource allowance and concurrent snapshot publication. Verify decisions follow the learned/admitted inputs rather than these fixed thresholds; require live before/after and mutation evidence from ROOT.
 
 **Status (2026-11-13):** owed to ROOT: cold-link, contention and working-set campaigns plus stopping/budget/publication designs in the fix evidence; no replacement constants added. [Fix evidence](../../research/measurements/migrate/fix-review-2026-11-13.md).
+
+**Status (2026-11-14):** partly fixed: the snapshot reader's eight looks went in b0072d884 (red 606f6bdea: ten replacements in a row refused, `snapshot::tests::on_disk::a_reader_follows_every_replacement_and_refuses_a_pointer_to_a_gone_generation`; the mutant looking again at a pointer that did not move hangs and fails it; 36 snapshot, granule and hold tests green, adas-mac-studio-3.local). It looks again as long as its generation was replaced, and refuses a pointer to a gone generation as that (D176's decoders, "A reader looks again as long as its generation was replaced"). Owed to ROOT, each with its design in the fix evidence above: the live move's 30 rounds, 8 MiB and 3x stopping rules (cold-link and slow-link moves, `cargo test -p shards --test moved` on a two-host pair with a throttled link), the 64 MiB pre-copy cap (a working set past it restored on each backend), the 1 MiB copy chunks and packing frames with two queued, and the 50 ms / 1 s recording horizon; none is derivable from what this lane can run, and no number replaced another.
 
 ### migrate-11 — P0 / critical — A move's plan names reach home paths unchecked
 

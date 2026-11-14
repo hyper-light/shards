@@ -2989,10 +2989,8 @@ fn written(paths: &mut crate::confine::Paths, snapshot: Option<&Path>, vsock: Op
     if let Some(dir) = snapshot {
         let _ = std::fs::create_dir_all(dir);
     }
-    #[cfg(any(target_os = "macos", windows))]
-    {
-        paths.vsock = vsock.map(Path::to_path_buf);
-    }
+    paths.vsock = vsock.map(Path::to_path_buf);
+    // Where its socket, which its spawner binds for it, is removed as its device goes.
     #[cfg(not(any(target_os = "macos", windows)))]
     paths
         .sockets_under
@@ -3000,8 +2998,8 @@ fn written(paths: &mut crate::confine::Paths, snapshot: Option<&Path>, vsock: Op
 }
 
 /// The socket this VM asks its spawner for access on (`--grants FD`): one a process, as
-/// its VM is.
-#[cfg(target_os = "macos")]
+/// its VM is. On Linux, for its vsock path and its dials beside it alone.
+#[cfg(unix)]
 static GRANTS: std::sync::OnceLock<std::os::unix::net::UnixStream> = std::sync::OnceLock::new();
 
 /// The pipes this VM asks its spawner for access on (`--grants HANDLE`): taken, and so
@@ -3164,14 +3162,11 @@ fn served_shares(cfg: &mut Config, served: &[i32], warm: bool) -> Result<(), Str
         return Ok(());
     }
     served_beside_daemon(cfg, warm, "--slates-fs-fd")?;
-    // The socket `--grants` took, where the VM process asks a broker for access (macOS).
-    #[cfg(target_os = "macos")]
+    // The socket `--grants` took, where the VM process asks a broker for access.
     let grants = {
         use std::os::fd::AsRawFd as _;
         GRANTS.get().map(|link| link.as_raw_fd())
     };
-    #[cfg(not(target_os = "macos"))]
-    let grants: Option<i32> = None;
     for (i, &fd) in served.iter().enumerate() {
         if served.iter().take(i).any(|&other| other == fd) || grants == Some(fd) {
             return Err(format!("--slates-fs-fd {fd}: given twice"));
@@ -3224,8 +3219,8 @@ fn served_shares(cfg: &mut Config, served: &[String], warm: bool) -> Result<(), 
     Ok(())
 }
 
-/// Takes the socket at descriptor `fd` to ask the spawner for access on (macOS).
-#[cfg(target_os = "macos")]
+/// Takes the socket at descriptor `fd` to ask the spawner for access on.
+#[cfg(unix)]
 fn grants(fd: &str) -> Result<(), String> {
     let fd = fd
         .parse::<i32>()
@@ -3269,11 +3264,6 @@ fn grants(pipe: &str) -> Result<(), String> {
     }
     *grants = Some(link);
     Ok(())
-}
-
-#[cfg(not(any(target_os = "macos", windows)))]
-fn grants(_: &str) -> Result<(), String> {
-    Err("--grants: macOS and Windows alone grant a VM its files".into())
 }
 
 /// On macOS, where the VM process is in App Sandbox from its launch, asks its spawner for
@@ -3363,8 +3353,9 @@ fn granted(paths: &crate::confine::Paths) -> Result<(), String> {
 }
 
 /// Has the spawner dial, beside `vsock`, every host port the guest connects to: App
-/// Sandbox lets this process dial nothing outside its container (PM M67).
-#[cfg(target_os = "macos")]
+/// Sandbox lets this process dial nothing outside its container (PM M67), and on Linux
+/// its filter refuses it every connect (D30).
+#[cfg(unix)]
 fn dial_through_spawner(vsock: &Path) -> Result<(), String> {
     use std::os::unix::ffi::OsStrExt as _;
     static DIALING: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -3489,9 +3480,28 @@ fn confine(paths: &crate::confine::Paths) -> Result<(), String> {
             Ok(())
         }
     });
-    // Its sockets narrowed to what its paths let it dial, then Landlock, on every thread.
+    // Its sockets narrowed, every connect refused, then Landlock, on every thread; and
+    // its vsock path bound, and its dials beside it made, by its spawner (D30), whose link
+    // closes where it has none to make.
     #[cfg(target_os = "linux")]
-    return crate::confine::sockets(paths).and_then(|()| crate::confine::landlock(paths));
+    return crate::confine::sockets()
+        .and_then(|()| crate::confine::landlock(paths))
+        .and_then(|()| match &paths.vsock {
+            Some(vsock) => {
+                let link = GRANTS.get().ok_or(
+                    "a VM given a vsock path has its spawner bind it and dial beside it: start it with \
+                     `shards run vm --kernel` or `shards restore vm`, which answer it (--grants)",
+                )?;
+                crate::grant_ask::listen_at(link, vsock)?;
+                dial_through_spawner(vsock)
+            }
+            None => {
+                if let Some(link) = GRANTS.get() {
+                    shards_ipc::end(link);
+                }
+                Ok(())
+            }
+        });
     // As on macOS; and once its partition is set up, before anything of its guest's is
     // read, this process forbids itself dynamic code (D141, PM M202). Its grants are sealed
     // as they are granted (`ask_sealed`), and the link stays for what its spawner does for

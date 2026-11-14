@@ -58,6 +58,25 @@ impl Asker {
     fn may_ask(&self, q: &[u8]) -> bool {
         self.any || query_name(q).is_some_and(|name| self.names.contains(&name))
     }
+
+    /// What question `q` of its is answered, as its grants stand.
+    fn verdict(&self, q: &[u8]) -> Verdict {
+        if let Some(answer) = self.local.iter().find(|t| t.holds(q)).and_then(|t| t.answer(q)) {
+            Verdict::Here(answer)
+        } else if self.may_ask(q) {
+            Verdict::Upstream
+        } else {
+            Verdict::Refused
+        }
+    }
+}
+
+/// What a question is answered: from its asker's names here (D181), by the microVM's
+/// resolver, or REFUSED.
+enum Verdict {
+    Here(Vec<u8>),
+    Upstream,
+    Refused,
 }
 
 /// Starts the relay on `listen` (port 53 of every switch address) and `upstream`
@@ -396,8 +415,8 @@ pub(crate) fn tcp_share(askers: usize, sockets: usize) -> usize {
 }
 
 /// The TCP questions: each connection on a thread of its own, its asker known by its
-/// address, each question answered REFUSED or relayed to the microVM's resolver `to` over a
-/// connection of its own; idle for `WAIT`, it is closed.
+/// address, each question answered from its names here, REFUSED, or relayed to the
+/// microVM's resolver `to` over a connection of its own; idle for `WAIT`, it is closed.
 fn serve_tcp(listener: &TcpListener, to: SocketAddr, askers: &RwLock<Vec<Asker>>) {
     // By each asker's link, which outlasts its place in the list as askers come and go.
     let held: std::sync::Mutex<HashMap<u32, usize>> = std::sync::Mutex::new(HashMap::new());
@@ -407,15 +426,18 @@ fn serve_tcp(listener: &TcpListener, to: SocketAddr, askers: &RwLock<Vec<Asker>>
             let Ok(SocketAddr::V4(from)) = conn.peer_addr() else {
                 continue;
             };
-            let (asker, share) = {
+            let (link, share) = {
                 let a = askers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
                 (
-                    a.iter().find(|a| a.addrs.contains(from.ip())).cloned(),
+                    a.iter().find(|a| a.addrs.contains(from.ip())).map(|a| a.link),
                     tcp_share(a.len(), 2),
                 )
             };
-            let Some(asker) = asker else { continue };
-            let link = asker.link;
+            let Some(link) = link else { continue };
+            let asker = Who {
+                link,
+                addr: *from.ip(),
+            };
             {
                 let mut h = held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 let n = h.entry(link).or_insert(0);
@@ -428,7 +450,7 @@ fn serve_tcp(listener: &TcpListener, to: SocketAddr, askers: &RwLock<Vec<Asker>>
             let served = std::thread::Builder::new()
                 .name("agentdns-conn".into())
                 .spawn_scoped(scope, move || {
-                    let _ = serve_connection(&mut conn, to, &asker);
+                    let _ = serve_connection(&mut conn, to, askers, asker);
                     if let Some(n) = held
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -449,25 +471,46 @@ fn serve_tcp(listener: &TcpListener, to: SocketAddr, askers: &RwLock<Vec<Asker>>
     });
 }
 
-fn serve_connection(conn: &mut TcpStream, to: SocketAddr, asker: &Asker) -> io::Result<()> {
+/// A TCP connection's asker: its link, and the address it connected from.
+#[derive(Clone, Copy)]
+struct Who {
+    link: u32,
+    addr: Ipv4Addr,
+}
+
+/// Each question on `conn`, judged by its asker's grants as they stand when it comes, not
+/// as they stood when the connection opened (network-09): a member's peers that came or
+/// went since are answered as they are now (D181), and once its asker is let go of, or its
+/// link no longer has the address it connected from, the connection is closed.
+fn serve_connection(
+    conn: &mut TcpStream,
+    to: SocketAddr,
+    askers: &RwLock<Vec<Asker>>,
+    who: Who,
+) -> io::Result<()> {
     conn.set_read_timeout(Some(WAIT))?;
     conn.set_write_timeout(Some(WAIT))?;
     let mut upstream: Option<TcpStream> = None;
     while let Some(q) = crate::dnsrelay::read_message(conn)? {
-        if let Some(answer) = asker
-            .local
+        let verdict = askers
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
-            .find(|t| t.holds(&q))
-            .and_then(|t| t.answer(&q))
-        {
-            crate::dnsrelay::write_message(conn, &answer)?;
-            continue;
-        }
-        if !asker.may_ask(&q) {
-            if let Some(no) = refused(&q) {
-                crate::dnsrelay::write_message(conn, &no)?;
+            .find(|a| a.link == who.link && a.addrs.contains(&who.addr))
+            .map(|a| a.verdict(&q));
+        match verdict {
+            None => break,
+            Some(Verdict::Here(answer)) => {
+                crate::dnsrelay::write_message(conn, &answer)?;
+                continue;
             }
-            continue;
+            Some(Verdict::Refused) => {
+                if let Some(no) = refused(&q) {
+                    crate::dnsrelay::write_message(conn, &no)?;
+                }
+                continue;
+            }
+            Some(Verdict::Upstream) => {}
         }
         if upstream.is_none() {
             let up = TcpStream::connect_timeout(&to, WAIT)?;
@@ -609,6 +652,69 @@ fn relay(listen: &UdpSocket, upstream: &UdpSocket, askers: &RwLock<Vec<Asker>>, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_existing_tcp_session_uses_the_members_current_names() {
+        fn table(entries: &[(&str, &str)]) -> shards_dns::Names {
+            let mut names = shards_dns::Names::default();
+            for &(name, ip) in entries {
+                names.add(name, ip.parse().unwrap());
+            }
+            names
+        }
+        fn question(name: &str) -> Vec<u8> {
+            let mut q = vec![0x12, 0x34, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0];
+            q.push(u8::try_from(name.len()).unwrap());
+            q.extend_from_slice(name.as_bytes());
+            q.extend_from_slice(&[0, 0, 1, 0, 1]);
+            q
+        }
+        fn ask(conn: &mut TcpStream, name: &str) -> Vec<u8> {
+            crate::dnsrelay::write_message(conn, &question(name)).unwrap();
+            crate::dnsrelay::read_message(conn).unwrap().unwrap()
+        }
+        let askers = std::sync::Arc::new(RwLock::new(vec![Asker {
+            link: 7,
+            any: false,
+            names: Vec::new(),
+            addrs: vec![Ipv4Addr::LOCALHOST],
+            local: vec![table(&[("departed", "192.0.2.7"), ("keeper", "192.0.2.8")])],
+        }]));
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let at = listener.local_addr().unwrap();
+        let upstream = TcpListener::bind("127.0.0.1:0").unwrap();
+        upstream.set_nonblocking(true).unwrap();
+        let to = upstream.local_addr().unwrap();
+        let current = std::sync::Arc::clone(&askers);
+        // The filtered cargo test process owns this listener thread and its workers.
+        std::thread::spawn(move || serve_tcp(&listener, to, &current));
+        let mut conn = TcpStream::connect(at).unwrap();
+        conn.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        assert_eq!(ask(&mut conn, "departed")[3] & 0x0f, 0);
+        askers.write().unwrap().first_mut().unwrap().local =
+            vec![table(&[("keeper", "192.0.2.8"), ("joined", "192.0.2.9")])];
+        assert_eq!(
+            ask(&mut conn, "departed")[3] & 0x0f,
+            5,
+            "the old TCP session kept a departed member"
+        );
+        let joined = ask(&mut conn, "joined");
+        assert_eq!(
+            shards_dns::a_records(&joined).unwrap().addresses,
+            ["192.0.2.9".parse::<std::net::IpAddr>().unwrap()]
+        );
+        assert_eq!(ask(&mut conn, "keeper")[3] & 0x0f, 0);
+        askers.write().unwrap().clear();
+        crate::dnsrelay::write_message(&mut conn, &question("keeper")).unwrap();
+        assert!(
+            crate::dnsrelay::read_message(&mut conn).unwrap().is_none(),
+            "a revoked asker retained its session"
+        );
+        assert!(
+            upstream.accept().is_err(),
+            "a local or refused name went upstream"
+        );
+    }
 
     /// One asker holding its share of the IDs is refused more, and another still asks; one
     /// answered or let go has room again.

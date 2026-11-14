@@ -15,6 +15,15 @@ use std::io::{Read as _, Write as _};
 use std::num::NonZeroU64;
 use std::time::{Duration, Instant};
 
+/// A lane's ask, its answer waited for as long as it takes (`Duration::MAX`), as a caller
+/// with no bound of its own waits: what it answered, or why not.
+macro_rules! answered {
+    ($ask:expr) => {
+        $ask.and_then(|mut ask| ask.wait(std::time::Duration::MAX))
+            .map(|got| got.expect("Duration::MAX waits until the answer"))
+    };
+}
+
 use common::{
     Party, Patience, TempDir, ask, booted, cannot_run_vms, guest_init, kernel, run_shards_env, served,
 };
@@ -1453,7 +1462,7 @@ fn an_orchestrators_members_are_signaled_and_their_mcp_connections_reached_on_it
     let execs = dialed.execs.expect("exec lanes subscribed");
     // The harness's connection to its bridge, held for the controller until it asks.
     let said = on_endpoint(&*guest, "codex's MCP connection", || {
-        let McpConnection { mut from, .. } = execs.mcp(codex_at).unwrap();
+        let McpConnection { mut from, .. } = answered!(execs.mcp(codex_at)).unwrap();
         let mut said = Vec::new();
         while said.len() < shards_testguest::MCP_INITIALIZE.len() {
             match from.next_record().unwrap() {
@@ -1477,22 +1486,22 @@ fn an_orchestrators_members_are_signaled_and_their_mcp_connections_reached_on_it
             let Member::Running(MemberControl {
                 mut steering,
                 mut end,
-            }) = execs.member(at).unwrap()
+            }) = answered!(execs.member(at)).unwrap()
             else {
                 panic!("member {at} runs");
             };
-            let sent = steering.signal(signal);
+            let sent = steering.signal(signal, Duration::MAX);
             let ended = end.wait();
-            let after = steering.signal(signal);
+            let after = steering.signal(signal, Duration::MAX);
             (sent, ended, after)
         })
     };
     let (sent, ended, after) = signalled(codex_at, 15);
-    assert_eq!(sent, Ok(()));
+    assert_eq!(sent, Ok(Some(())));
     assert_eq!(ended, Ok(exec::End::Signaled(15)), "TERM, never an exit of 143");
     assert_eq!(after, Err(Fault::Unsteered(Unsteered::Ended)));
     let (sent, ended, _) = signalled(claude_at, 9);
-    assert_eq!(sent, Ok(()));
+    assert_eq!(sent, Ok(Some(())));
     assert_eq!(ended, Ok(exec::End::Signaled(9)));
     assert_eq!(
         ask(&*guest, |g| g.wait_member(&codex(), Duration::MAX)).unwrap(),
@@ -1502,7 +1511,9 @@ fn an_orchestrators_members_are_signaled_and_their_mcp_connections_reached_on_it
         ask(&*guest, |g| g.wait_member(&claude, Duration::MAX)).unwrap(),
         Some(MemberEnd::Signaled(9))
     );
-    let again = on_endpoint(&*guest, "an ended member's lane", || execs.member(codex_at));
+    let again = on_endpoint(&*guest, "an ended member's lane", || {
+        answered!(execs.member(codex_at))
+    });
     assert!(
         matches!(again, Ok(Member::Ended(exec::End::Signaled(15)))),
         "{again:?}"

@@ -478,12 +478,13 @@ impl<D: Disk> Daemon<D> {
                 };
                 let id = c.id.clone();
                 match (method, rest) {
-                    ("GET", ["json"]) => Answer::document(
-                        200,
-                        self.scoped_mounts(crate::daemon::inspect_doc::json(
-                            &self.container_value(c, call.flag("size")),
-                        )),
-                    ),
+                    ("GET", ["json"]) => match self.container_value(c, call.flag("size")) {
+                        Ok(document) => Answer::document(
+                            200,
+                            self.scoped_mounts(crate::daemon::inspect_doc::json(&document)),
+                        ),
+                        Err(e) => Answer::error(500, e.to_string()),
+                    },
                     ("POST", ["start"]) => self.engine_start(threads, &id, call),
                     ("POST", ["stop"]) => self.engine_stop(threads, &id, call, false),
                     ("POST", ["kill"]) => self.engine_stop(threads, &id, call, true),
