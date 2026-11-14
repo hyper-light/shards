@@ -2212,6 +2212,36 @@ audit's "Security and test coverage").
     only beside a vsock path it was given (`--vsock`), `/dev/null`, its own `/proc` entry, and `/dev/kvm` and the
     huge page settings where the host has them. No directory may take a file from another
     (`REFER`). Rules hold inodes: a template keeps its rule when the daemon renames it.
+  - Every layer reaches every thread (review platform-01, [PM M568]). A layer restricts
+    the thread that makes it and the threads it starts after
+    [man: landlock_restrict_self(2)], and a VM process has threads by its first layer (its
+    exec port's, its rates', its stdin's) and every vCPU and device thread by its seal:
+    a thread compromised among them reaches through a sibling what the layer took away.
+    Where the ABI has `LANDLOCK_RESTRICT_SELF_TSYNC` (v8), one call gives every thread the
+    caller's new domain atomically. On every ABI from v5, the primitive every kernel it
+    runs on has, each thread is asked in turn: a real-time signal (`SIGRTMIN + 1`, past
+    the vCPUs' kick), whose handler makes the restriction in the thread it interrupts and
+    answers through a futex, as glibc's setxid broadcast makes setuid(2) every thread's,
+    until a listing of `/proc/self/task` names no thread not settled. A thread is settled
+    by its answer, or by being gone or exiting (`PF_EXITING`: it runs no more user code,
+    and drops a signal sent to it alone). A thread started after its creator answered is
+    restricted already; one started before is named by the next listing. The handler
+    restarts what it interrupts where the kernel restarts it (`SA_RESTART`), and the VM
+    process's waits go on past EINTR, as past the vCPUs' kicks; a vCPU's KVM_RUN ends as a
+    kick's does, and runs again.
+    - No constant: an answer wakes its wait, which looks at the thread as it ends, first
+      after as long as the caller's own restriction took (the cold start), then as long
+      as the last answer took, twice as long each time one is still awaited (saturating),
+      at least the monotonic clock's resolution. A short wait only looks sooner.
+    - A thread asleep with the signal blocked (`S`, its `SigBlk`) at two looks in turn,
+      the second after a wait as long as all before it, waits with it blocked: Mesa's
+      threads block every signal for their lives (u_thread_create). It cannot be asked,
+      and the layer fails, closed: a seal's failure hands its run to another VM
+      (daemon.rs, `hand_over`). glibc's pthread_create blocks every signal for a moment,
+      which one look may meet.
+    - Unverified limits: a thread id reused within one pass would need the kernel's ids
+      to wrap as it runs; a thread that blocks the signal and runs without sleeping is
+      waited for.
   - Its own `/proc` entry stays looked up for its life, a descriptor of it held from the
     first layer on (PM M305): procfs makes a new inode for `/proc/PID` each time its dentry
     is made afresh (fs/proc/base.c, `proc_pid_lookup`), a live process's unused dentry goes

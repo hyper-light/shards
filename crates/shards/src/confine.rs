@@ -525,12 +525,18 @@ pub struct Paths {
     pub vsock: Option<std::path::PathBuf>,
 }
 
-/// Applies `paths` to this process with Landlock
+/// Applies `paths` to every thread of this process with Landlock
 /// (https://docs.kernel.org/userspace-api/landlock.html), as App Sandbox's grants do on
 /// macOS (D30). Every filesystem access Landlock's ABI v5 knows is handled, and only
 /// `paths` are allowed, with `/dev/kvm`, `/dev/null`, this process's `/proc` entry and the
 /// kernel's transparent huge page settings. TCP is refused, and where the ABI knows them
 /// (v6), signals to other processes and abstract Unix sockets outside this one.
+///
+/// A layer restricts the thread that makes it and the threads it starts after, not the
+/// ones already running (landlock_restrict_self(2)); a VM process has some by then (its
+/// exec port's, its rates', its stdin's), and a seal's layer comes with every vCPU and
+/// device thread running. So each layer reaches every thread ([`every_thread`]): at once
+/// where the ABI has `TSYNC` (v8), else by each thread making it itself.
 ///
 /// It fails closed (PM M66): a kernel without Landlock, or whose ABI is older than v5, the
 /// first that governs a device's ioctls (/dev/kvm's), starts no VM, and neither does a path
@@ -544,6 +550,24 @@ pub struct Paths {
 /// set, the daemon writes: no VM may write a template.
 #[cfg(target_os = "linux")]
 pub fn landlock(paths: &Paths) -> Result<(), String> {
+    let (ruleset, abi) = ruleset(paths)?;
+    // SAFETY: prctl(2) with integer arguments.
+    if unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0 {
+        return Err(format!("no_new_privs: {}", std::io::Error::last_os_error()));
+    }
+    let reach = if abi >= TSYNC_ABI {
+        Reach::AtOnce
+    } else {
+        Reach::Asked
+    };
+    every_thread(&ruleset, reach).map_err(|e| format!("Landlock: {e}"))?;
+    shards_vmm::debug!("confined by Landlock ABI v{abi}, {reach:?}");
+    Ok(())
+}
+
+/// [`landlock`]'s ruleset for `paths`, and the kernel's Landlock ABI.
+#[cfg(target_os = "linux")]
+fn ruleset(paths: &Paths) -> Result<(std::os::fd::OwnedFd, i64), String> {
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     use std::os::unix::ffi::OsStrExt;
 
@@ -723,17 +747,383 @@ pub fn landlock(paths: &Paths) -> Result<(), String> {
     for d in &paths.devices {
         allow(d, write | IOCTL_DEV)?;
     }
-    // SAFETY: prctl(2) with integer arguments; landlock_restrict_self(2) on our ruleset.
-    unsafe {
-        if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
-            return Err(format!("no_new_privs: {}", std::io::Error::last_os_error()));
+    Ok((ruleset, abi))
+}
+
+/// The first Landlock ABI that restricts every thread of a process at once
+/// (`LANDLOCK_RESTRICT_SELF_TSYNC`, include/uapi/linux/landlock.h).
+#[cfg(target_os = "linux")]
+const TSYNC_ABI: i64 = 8;
+/// landlock_restrict_self(2)'s flag for it.
+#[cfg(target_os = "linux")]
+const RESTRICT_SELF_TSYNC: u32 = 1 << 3;
+
+/// How a Landlock layer reaches every thread of this process.
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reach {
+    /// One call with `TSYNC` (ABI v8), which gives every thread the caller's new domain
+    /// atomically ("overrides the Landlock configuration of sibling threads").
+    AtOnce,
+    /// Each thread restricting itself, asked in turn ([`asked`]): what every ABI from v5
+    /// can, as glibc makes a setuid(2) every thread's (nptl's `__nptl_setxid`, its
+    /// SIGSETXID) and as Landlock's documentation says to before v8.
+    Asked,
+}
+
+/// Restricts every thread of this process with `ruleset`, as `reach` says.
+#[cfg(target_os = "linux")]
+fn every_thread(ruleset: &std::os::fd::OwnedFd, reach: Reach) -> Result<(), String> {
+    use std::os::fd::AsRawFd;
+    match reach {
+        Reach::AtOnce => restrict(ruleset.as_raw_fd(), RESTRICT_SELF_TSYNC).map_err(|e| e.to_string()),
+        Reach::Asked => asked::every_thread(ruleset.as_raw_fd()),
+    }
+}
+
+/// landlock_restrict_self(2) of the calling thread (with `TSYNC`, of every thread).
+/// Async-signal-safe: one syscall, its error read from errno.
+#[cfg(target_os = "linux")]
+fn restrict(ruleset: std::os::fd::RawFd, flags: u32) -> std::io::Result<()> {
+    // SAFETY: landlock_restrict_self(2) on a descriptor the caller holds open.
+    if unsafe { libc::syscall(libc::SYS_landlock_restrict_self, ruleset, flags) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+/// Every thread of this process asked, one at a time, to restrict itself with a ruleset:
+/// by a signal whose handler makes landlock_restrict_self(2) in the thread it interrupts,
+/// and answers through a futex.
+///
+/// - The calling thread is restricted first. Then, until a listing of the process's threads
+///   (`/proc/self/task`, which its own `/proc` rule lets it read) names none not settled,
+///   each one named is asked. A thread started after its creator was restricted is
+///   restricted (landlock_restrict_self(2): "and its future children"), and one started
+///   before is named by the next listing, as its creator was by this one: when a listing
+///   names no thread not settled, none is left unrestricted.
+/// - A thread is settled once it answered, or once it is gone or exiting
+///   (`/proc/self/task/TID/stat`'s flags, PF_EXITING, include/linux/sched.h): one that
+///   entered its exit runs no more of this process's code, and never takes a signal sent
+///   to it alone (kernel/signal.c, `exit_signals`), so its answer is not awaited.
+/// - The wait for an answer is woken by it. Only a thread that never takes the signal
+///   leaves it unwoken, so the asked thread is looked at as each wait ends: the first wait
+///   as long as the calling thread's own restriction took (the cold start), each after an
+///   answer as long as that answer took, each while one is awaited twice the last
+///   (saturating), at least the monotonic clock's resolution. What it costs is a look at a
+///   thread that is slow to answer; a too short wait only looks sooner.
+/// - A thread asleep (`S`, an interruptible wait) with the signal blocked
+///   (`/proc/self/task/TID/status`, SigBlk) at two looks in turn, the second after a wait as
+///   long as every one before it, waits with it blocked, and only what it waits for wakes
+///   it: it cannot be asked, and the layer fails, closed. Mesa's threads block every signal
+///   for their lives (u_thread_create). glibc's pthread_create blocks every signal for a
+///   moment around its clone, and may wait for a lock then; its thread takes the signal as
+///   it unblocks it.
+/// - A thread id is settled once: one reused by a new thread within one pass would need
+///   the kernel's thread ids to wrap (pid_max) while the pass runs.
+#[cfg(target_os = "linux")]
+mod asked {
+    use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
+    use std::time::{Duration, Instant};
+
+    /// The ruleset the asked thread restricts itself with.
+    static RULESET: AtomicI32 = AtomicI32::new(-1);
+    /// The thread asked: the only one the handler acts in, once.
+    static ASKED: AtomicI32 = AtomicI32::new(0);
+    /// Its answer: [`UNANSWERED`], then [`RESTRICTED`] or [`FAILED`] plus the error.
+    static ANSWER: AtomicU32 = AtomicU32::new(UNANSWERED);
+    const UNANSWERED: u32 = 0;
+    const RESTRICTED: u32 = 1;
+    const FAILED: u32 = 2;
+    /// One pass at a time: its statics are one pass's.
+    static PASS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// The signal that asks: the real-time signal after the vCPUs' kick (vmm hv/kvm,
+    /// SIGRTMIN), which nothing else in a VM process takes or blocks.
+    fn signal() -> libc::c_int {
+        libc::SIGRTMIN() + 1
+    }
+
+    /// An asked thread, as `/proc/self/task/TID` shows it.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Seen {
+        /// Gone, or exiting: settled.
+        Ended,
+        /// Asleep with the signal blocked: it cannot be asked.
+        Deaf,
+        /// Live, to be waited for.
+        Live,
+    }
+
+    /// What asking a thread came to.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Asked {
+        /// It restricted itself, in this long.
+        Restricted(Duration),
+        /// It ended before it could.
+        Ended,
+    }
+
+    /// The handler: in the asked thread alone, for a signal this process sent it, the
+    /// restriction and its answer; errno kept for the code it interrupted. Async-signal-safe:
+    /// atomics, prctl(2), landlock_restrict_self(2), futex(2).
+    extern "C" fn restrict_here(_: libc::c_int, info: *mut libc::siginfo_t, _: *mut libc::c_void) {
+        // SAFETY: __errno_location(3) is this thread's errno, and getpid(2) and gettid(2)
+        // have no preconditions; the kernel passes an SA_SIGINFO handler its siginfo.
+        let (errno, ours, me) = unsafe {
+            let errno = *libc::__errno_location();
+            let ours = info
+                .as_ref()
+                .is_some_and(|i| i.si_code == libc::SI_TKILL && i.si_pid() == libc::getpid());
+            (errno, ours, libc::syscall(libc::SYS_gettid) as i32)
+        };
+        if ours
+            && ASKED
+                .compare_exchange(me, 0, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+        {
+            // SAFETY: prctl(2) with integer arguments: no_new_privs, which
+            // landlock_restrict_self(2) needs of the thread, and which only takes privilege away.
+            let nnp = unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } == 0;
+            let answer = match nnp.then(|| super::restrict(RULESET.load(Ordering::SeqCst), 0)) {
+                Some(Ok(())) => RESTRICTED,
+                Some(Err(e)) => FAILED.saturating_add(e.raw_os_error().unwrap_or(0).unsigned_abs()),
+                None => FAILED.saturating_add(libc::EPERM.unsigned_abs()),
+            };
+            ANSWER.store(answer, Ordering::SeqCst);
+            // SAFETY: futex(2) waking a waiter on a word of ours.
+            unsafe {
+                libc::syscall(
+                    libc::SYS_futex,
+                    ANSWER.as_ptr(),
+                    libc::FUTEX_WAKE | libc::FUTEX_PRIVATE_FLAG,
+                    1,
+                )
+            };
         }
-        if libc::syscall(libc::SYS_landlock_restrict_self, ruleset.as_raw_fd(), 0u32) != 0 {
-            return Err(format!("Landlock: {}", std::io::Error::last_os_error()));
+        // SAFETY: as above.
+        unsafe { *libc::__errno_location() = errno };
+    }
+
+    /// Installs [`restrict_here`] for [`signal`], once: restarting what it interrupts where
+    /// the kernel restarts it (SA_RESTART); every wait a VM process makes that it does not
+    /// goes on past EINTR, as it does past the vCPUs' kicks.
+    fn install() -> Result<(), String> {
+        static INSTALLED: std::sync::OnceLock<Result<(), String>> = std::sync::OnceLock::new();
+        INSTALLED
+            .get_or_init(|| {
+                // SAFETY: an all-zero sigaction is a valid value to fill; sigaction(2) from it.
+                unsafe {
+                    let mut action: libc::sigaction = std::mem::zeroed();
+                    let handler: extern "C" fn(libc::c_int, *mut libc::siginfo_t, *mut libc::c_void) =
+                        restrict_here;
+                    action.sa_sigaction = handler as libc::sighandler_t;
+                    action.sa_flags = libc::SA_SIGINFO | libc::SA_RESTART;
+                    libc::sigemptyset(&mut action.sa_mask);
+                    if libc::sigaction(signal(), &action, std::ptr::null_mut()) != 0 {
+                        return Err(format!(
+                            "its signal's handler: {}",
+                            std::io::Error::last_os_error()
+                        ));
+                    }
+                }
+                Ok(())
+            })
+            .clone()
+    }
+
+    /// The process's threads, by id.
+    fn threads() -> Result<Vec<i32>, String> {
+        let at = |e: std::io::Error| format!("/proc/self/task: {e}");
+        let mut found = Vec::new();
+        for entry in std::fs::read_dir("/proc/self/task").map_err(at)? {
+            if let Some(tid) = entry
+                .map_err(at)?
+                .file_name()
+                .to_str()
+                .and_then(|n| n.parse().ok())
+            {
+                found.push(tid);
+            }
+        }
+        Ok(found)
+    }
+
+    /// Thread `tid` as its `/proc` entry shows it: see [`Seen`].
+    fn seen(tid: i32) -> Result<Seen, String> {
+        /// PF_EXITING (include/linux/sched.h).
+        const EXITING: u64 = 0x4;
+        let read = |file: &str| match std::fs::read_to_string(format!("/proc/self/task/{tid}/{file}")) {
+            Ok(text) => Ok(Some(text)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound || e.raw_os_error() == Some(libc::ESRCH) => {
+                Ok(None)
+            }
+            Err(e) => Err(format!("/proc/self/task/{tid}/{file}: {e}")),
+        };
+        let Some(stat) = read("stat")? else {
+            return Ok(Seen::Ended);
+        };
+        // Its fields after the name, whose parentheses close last (proc_pid_stat(5)):
+        // the state, then the parent, group, session, terminal, its group, and the flags.
+        let fields: Vec<&str> = stat
+            .rsplit_once(')')
+            .map(|(_, rest)| rest.split_whitespace().collect())
+            .unwrap_or_default();
+        let (state, flags) = match (fields.first(), fields.get(6).and_then(|f| f.parse::<u64>().ok())) {
+            (Some(state), Some(flags)) => (*state, flags),
+            _ => {
+                return Err(format!(
+                    "/proc/self/task/{tid}/stat: no state and flags in {stat:?}"
+                ));
+            }
+        };
+        if flags & EXITING != 0 {
+            return Ok(Seen::Ended);
+        }
+        // Asleep, where only what it waits for wakes it: a signal it blocks cannot.
+        if state != "S" {
+            return Ok(Seen::Live);
+        }
+        let Some(status) = read("status")? else {
+            return Ok(Seen::Ended);
+        };
+        let blocked = status
+            .lines()
+            .find_map(|l| l.strip_prefix("SigBlk:"))
+            .and_then(|b| u64::from_str_radix(b.trim(), 16).ok())
+            .ok_or_else(|| format!("/proc/self/task/{tid}/status: no SigBlk"))?;
+        let bit = u32::try_from(signal() - 1)
+            .ok()
+            .and_then(|b| 1u64.checked_shl(b))
+            .unwrap_or(0);
+        Ok(if blocked & bit != 0 {
+            Seen::Deaf
+        } else {
+            Seen::Live
+        })
+    }
+
+    /// The monotonic clock's resolution: the shortest wait worth asking for.
+    fn resolution() -> Duration {
+        let mut res = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        // SAFETY: clock_getres(2) writing into a timespec of ours.
+        let ok = unsafe { libc::clock_getres(libc::CLOCK_MONOTONIC, &mut res) } == 0;
+        let nanos = u32::try_from(res.tv_nsec).ok().filter(|_| ok && res.tv_sec == 0);
+        Duration::from_nanos(u64::from(nanos.unwrap_or(1).max(1)))
+    }
+
+    /// Waits until [`ANSWER`] is no longer `was`, or for `at_most`.
+    fn wait(was: u32, at_most: Duration) {
+        let ts = libc::timespec {
+            tv_sec: libc::time_t::try_from(at_most.as_secs()).unwrap_or(libc::time_t::MAX),
+            tv_nsec: libc::c_long::from(at_most.subsec_nanos()),
+        };
+        // SAFETY: futex(2) waiting on a word of ours, with a relative timeout of ours.
+        unsafe {
+            libc::syscall(
+                libc::SYS_futex,
+                ANSWER.as_ptr(),
+                libc::FUTEX_WAIT | libc::FUTEX_PRIVATE_FLAG,
+                was,
+                &raw const ts,
+            )
+        };
+    }
+
+    /// Asks thread `tid` of process `pid` to restrict itself, the first wait `first` long.
+    fn ask(pid: i32, tid: i32, first: Duration, least: Duration) -> Result<Asked, String> {
+        ANSWER.store(UNANSWERED, Ordering::SeqCst);
+        ASKED.store(tid, Ordering::SeqCst);
+        let sent = Instant::now();
+        // SAFETY: tgkill(2) to a thread of this process.
+        if unsafe { libc::syscall(libc::SYS_tgkill, pid, tid, signal()) } != 0 {
+            let e = std::io::Error::last_os_error();
+            ASKED.store(0, Ordering::SeqCst);
+            return match e.raw_os_error() {
+                Some(libc::ESRCH) => Ok(Asked::Ended),
+                _ => Err(format!("asking thread {tid}: {e}")),
+            };
+        }
+        let mut wait_for = first.max(least);
+        let mut deaf_before = false;
+        loop {
+            wait(UNANSWERED, wait_for);
+            match ANSWER.load(Ordering::SeqCst) {
+                UNANSWERED => {}
+                RESTRICTED => return Ok(Asked::Restricted(sent.elapsed())),
+                failed => {
+                    let errno = i32::try_from(failed.saturating_sub(FAILED)).unwrap_or(0);
+                    return Err(format!(
+                        "thread {tid}: {}",
+                        std::io::Error::from_raw_os_error(errno)
+                    ));
+                }
+            }
+            let now = seen(tid)?;
+            // Deaf at one look may be a moment's: glibc's pthread_create blocks every
+            // signal around its clone, and can wait for a lock then. Deaf again after a
+            // wait as long as all before it, it waits so.
+            let settled = match now {
+                Seen::Live => false,
+                Seen::Deaf => std::mem::replace(&mut deaf_before, true),
+                Seen::Ended => true,
+            };
+            deaf_before &= now == Seen::Deaf;
+            // Taken back, unless its handler took it as this looked.
+            if !settled
+                || ASKED
+                    .compare_exchange(tid, 0, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_err()
+            {
+                wait_for = wait_for.saturating_mul(2);
+                continue;
+            }
+            return match now {
+                Seen::Deaf => Err(format!(
+                    "thread {tid} blocks signal {} as it waits: it cannot be asked to restrict itself",
+                    signal()
+                )),
+                _ => Ok(Asked::Ended),
+            };
         }
     }
-    shards_vmm::debug!("confined by Landlock ABI v{abi}");
-    Ok(())
+
+    /// Restricts every thread of this process with `ruleset`.
+    pub(super) fn every_thread(ruleset: std::os::fd::RawFd) -> Result<(), String> {
+        let _pass = PASS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        install()?;
+        // SAFETY: getpid(2) and gettid(2) have no preconditions.
+        let (pid, me) = unsafe { (libc::getpid(), libc::syscall(libc::SYS_gettid) as i32) };
+        let started = Instant::now();
+        super::restrict(ruleset, 0).map_err(|e| e.to_string())?;
+        let took = started.elapsed();
+        RULESET.store(ruleset, Ordering::SeqCst);
+        let passed = settle(pid, me, took, resolution());
+        RULESET.store(-1, Ordering::SeqCst);
+        passed
+    }
+
+    /// Asks every thread but `me` in turn until a listing names none not settled, the
+    /// first wait `took` long.
+    fn settle(pid: i32, me: i32, mut took: Duration, least: Duration) -> Result<(), String> {
+        let mut settled = vec![me];
+        loop {
+            let left: Vec<i32> = threads()?.into_iter().filter(|t| !settled.contains(t)).collect();
+            if left.is_empty() {
+                return Ok(());
+            }
+            for tid in left {
+                if let Asked::Restricted(answered_in) = ask(pid, tid, took, least)? {
+                    took = answered_in;
+                }
+                settled.push(tid);
+            }
+        }
+    }
 }
 
 #[cfg(all(test, target_os = "linux"))]
@@ -1085,6 +1475,233 @@ mod tests {
         unsafe { libc::syscall(libc::SYS_exit_group, status) };
         loop {
             std::hint::spin_loop();
+        }
+    }
+
+    /// A thread started before its process is confined, which on each word it is sent
+    /// tries what it names and says whether it could. `deaf` blocks every signal first, as
+    /// Mesa's threads do (u_thread_create).
+    fn sibling(
+        dir: std::path::PathBuf,
+        deaf: bool,
+    ) -> (
+        std::sync::mpsc::Sender<&'static str>,
+        std::sync::mpsc::Receiver<bool>,
+    ) {
+        let (ask, asked) = std::sync::mpsc::channel::<&'static str>();
+        let (tell, told) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            if deaf {
+                // SAFETY: sigset operations on a local set; pthread_sigmask on this thread.
+                unsafe {
+                    let mut all: libc::sigset_t = std::mem::zeroed();
+                    libc::sigfillset(&mut all);
+                    libc::pthread_sigmask(libc::SIG_BLOCK, &all, std::ptr::null_mut());
+                }
+            }
+            for what in asked {
+                let could = match what {
+                    "read other" => std::fs::read(dir.join("other")).is_ok(),
+                    "write snap" => std::fs::write(
+                        dir.join("snap")
+                            .join(format!("{:?}", std::thread::current().id())),
+                        b"x",
+                    )
+                    .is_ok(),
+                    "write out" => std::fs::write(
+                        dir.join("out").join(format!("{:?}", std::thread::current().id())),
+                        b"x",
+                    )
+                    .is_ok(),
+                    _ => false,
+                };
+                let _ = tell.send(could);
+            }
+        });
+        (ask, told)
+    }
+
+    /// In a child process (`THREADS_CHILD` names its directory, `THREADS_REACH` how its
+    /// layers reach its threads): three threads started before it is confined, and one
+    /// between its first layer and its seal, as a VM's are (its exec port's, its vCPUs');
+    /// then each tries what it must not reach. Prints each outcome.
+    fn threads_child(dir: &str, reach: &str) -> ! {
+        use std::io::Write as _;
+        let dir = std::path::PathBuf::from(dir);
+        let first = Paths {
+            read: vec![dir.join("granted")],
+            write_under: vec![dir.join("out"), dir.join("snap")],
+            ..Paths::default()
+        };
+        let mut kept = first.clone();
+        kept.write_under.retain(|d| d != &dir.join("snap"));
+        let apply = |paths: &Paths| -> Result<(), String> {
+            match reach {
+                "asked" => {
+                    let (ruleset, _) = ruleset(paths)?;
+                    // SAFETY: prctl(2) with integer arguments.
+                    unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
+                    every_thread(&ruleset, Reach::Asked)
+                }
+                _ => landlock(paths),
+            }
+        };
+        let mut siblings: Vec<_> = (0..3).map(|_| sibling(dir.clone(), false)).collect();
+        let mut out = format!("first: {:?}\n", apply(&first));
+        let tries = |siblings: &[(
+            std::sync::mpsc::Sender<&'static str>,
+            std::sync::mpsc::Receiver<bool>,
+        )],
+                     what: &'static str| {
+            siblings
+                .iter()
+                .map(|(ask, told)| {
+                    ask.send(what).unwrap();
+                    if told.recv().unwrap() { "ok" } else { "refused" }
+                })
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        out.push_str(&format!(
+            "siblings read other: {}\n",
+            tries(&siblings, "read other")
+        ));
+        siblings.push(sibling(dir.clone(), false));
+        out.push_str(&format!(
+            "siblings write snap: {}\n",
+            tries(&siblings, "write snap")
+        ));
+        out.push_str(&format!("sealed: {:?}\n", apply(&kept)));
+        out.push_str(&format!(
+            "sealed siblings write snap: {}\n",
+            tries(&siblings, "write snap")
+        ));
+        out.push_str(&format!(
+            "sealed siblings write out: {}\n",
+            tries(&siblings, "write out")
+        ));
+        let _ = std::io::stdout().write_all(out.as_bytes());
+        end(0)
+    }
+
+    /// In a child process: a thread that blocks every signal and sleeps so, started before
+    /// it is confined by asking each thread: the layer fails, closed, naming the thread,
+    /// where one made at once (TSYNC) reaches it.
+    fn deaf_child(dir: &str, reach: &str) -> ! {
+        use std::io::Write as _;
+        let dir = std::path::PathBuf::from(dir);
+        let paths = Paths {
+            read: vec![dir.join("granted")],
+            ..Paths::default()
+        };
+        let (ask, told) = sibling(dir.clone(), true);
+        // Asleep in its receive, the signal blocked.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        // SAFETY: prctl(2) with integer arguments.
+        unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
+        let applied = match reach {
+            "asked" => ruleset(&paths).and_then(|(ruleset, _)| every_thread(&ruleset, Reach::Asked)),
+            _ => ruleset(&paths).and_then(|(ruleset, _)| every_thread(&ruleset, Reach::AtOnce)),
+        };
+        ask.send("read other").unwrap();
+        let read = told.recv().unwrap();
+        let _ = std::io::stdout()
+            .write_all(format!("applied: {applied:?}\ndeaf read other: {read}\n").as_bytes());
+        end(0)
+    }
+
+    /// Every thread of a confined process is confined, the ones it had before its layer
+    /// among them, and a seal reaches every thread too: at once where the ABI has TSYNC
+    /// (v8), and on every ABI by each thread asked (platform-01).
+    #[test]
+    fn every_thread_of_a_confined_process_is_confined() {
+        if let (Ok(dir), Ok(reach)) = (std::env::var("THREADS_CHILD"), std::env::var("THREADS_REACH")) {
+            threads_child(&dir, &reach);
+        }
+        let abi = {
+            // SAFETY: landlock_create_ruleset(2) asking only the ABI's version.
+            unsafe {
+                libc::syscall(
+                    libc::SYS_landlock_create_ruleset,
+                    std::ptr::null::<u8>(),
+                    0usize,
+                    1u32,
+                )
+            }
+        };
+        let mut reaches = vec!["asked"];
+        if abi >= TSYNC_ABI {
+            reaches.push("landlock");
+        }
+        for reach in reaches {
+            let dir_guard = shards_testdir::TempDir::new("threads").unwrap();
+            let dir = dir_guard.join("threads");
+            for d in ["out", "snap"] {
+                std::fs::create_dir_all(dir.join(d)).unwrap();
+            }
+            std::fs::write(dir.join("granted"), b"g").unwrap();
+            std::fs::write(dir.join("other"), b"o").unwrap();
+            let (code, said, err) = child_of(
+                "confine::tests::every_thread_of_a_confined_process_is_confined",
+                &[("THREADS_CHILD", dir.to_str().unwrap()), ("THREADS_REACH", reach)],
+            );
+            assert_eq!(code, Some(0), "{reach}: {said}\n{err}");
+            for line in [
+                "first: Ok(())",
+                "siblings read other: refused,refused,refused\n",
+                "siblings write snap: ok,ok,ok,ok\n",
+                "sealed: Ok(())",
+                "sealed siblings write snap: refused,refused,refused,refused\n",
+                "sealed siblings write out: ok,ok,ok,ok\n",
+            ] {
+                assert!(said.contains(line), "{reach}: {line}\n{said}\n{err}");
+            }
+        }
+    }
+
+    /// A thread that blocks the asking signal as it waits cannot be asked: the layer fails,
+    /// closed, rather than leave it unrestricted or wait on it for ever; TSYNC reaches it.
+    #[test]
+    fn a_thread_that_cannot_be_asked_fails_the_layer() {
+        if let (Ok(dir), Ok(reach)) = (std::env::var("DEAF_CHILD"), std::env::var("DEAF_REACH")) {
+            deaf_child(&dir, &reach);
+        }
+        let abi = {
+            // SAFETY: landlock_create_ruleset(2) asking only the ABI's version.
+            unsafe {
+                libc::syscall(
+                    libc::SYS_landlock_create_ruleset,
+                    std::ptr::null::<u8>(),
+                    0usize,
+                    1u32,
+                )
+            }
+        };
+        let dir_guard = shards_testdir::TempDir::new("deaf").unwrap();
+        let dir = dir_guard.join("deaf");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("granted"), b"g").unwrap();
+        std::fs::write(dir.join("other"), b"o").unwrap();
+        let test = "confine::tests::a_thread_that_cannot_be_asked_fails_the_layer";
+        let (code, said, err) = child_of(
+            test,
+            &[("DEAF_CHILD", dir.to_str().unwrap()), ("DEAF_REACH", "asked")],
+        );
+        assert_eq!(code, Some(0), "{said}\n{err}");
+        assert!(
+            said.contains("applied: Err(") && said.contains("blocks signal"),
+            "{said}\n{err}"
+        );
+        if abi >= TSYNC_ABI {
+            let (code, said, err) = child_of(
+                test,
+                &[("DEAF_CHILD", dir.to_str().unwrap()), ("DEAF_REACH", "tsync")],
+            );
+            assert_eq!(code, Some(0), "{said}\n{err}");
+            assert!(
+                said.contains("applied: Ok(())\ndeaf read other: false"),
+                "{said}\n{err}"
+            );
         }
     }
 

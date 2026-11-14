@@ -24029,3 +24029,27 @@ syscall 302`), and the target's limits are unchanged: green. `cargo test -p
 shards-vm-process confine::` 8 of 8 and `cargo clippy -p shards-vm-process
 --all-targets -- -D warnings` clean on that host. No constant. Owed to ROOT: a confined
 VM on KVM (every VM test runs under the filter), x86_64 and arm64 through L1.
+
+### M568. A Landlock layer left the VM process's other threads unconfined, its seal too (D30)
+
+Linux x86_64, adacachy2 (7.3.3-1-cachyos, Landlock ABI 11), 2026-11-13, policy df2acf47,
+role implementer. Review platform-01: landlock_restrict_self(2) with no flags restricts
+the calling thread alone, and the VM process confined itself, and later sealed its
+template, with other threads running. Reproduced by
+`confine::tests::every_thread_of_a_confined_process_is_confined` (shards-vm-process): a
+child with three threads started before its first layer and one between it and its seal
+has each try to read a file outside its paths, then write in the snapshot directory
+before and after the seal. Layered as before (the caller alone, the mutant), the
+threads read it (`siblings read other: ok,ok,ok`) and wrote the sealed directory
+(`sealed siblings write snap: ok,ok,ok,ok`): red. Both ways the layer now reaches every
+thread, TSYNC (v8) and each thread asked (every ABI from v5, run here by forcing it),
+make those `refused` while each may still write its kept directory: green. Mutants:
+TSYNC's flag dropped, red for TSYNC alone; the asking pass dropped, red for it alone.
+`a_thread_that_cannot_be_asked_fails_the_layer`: a thread asleep with every signal
+blocked (as Mesa's) fails an asked layer (`blocks signal` SIGRTMIN + 1 `as it waits`), and TSYNC
+confines it (`deaf read other: false`); with its refusal mutated into "ended", the layer
+said Ok and the thread read the file: red. `cargo test -p shards-vm-process confine::`
+9 of 9 and its clippy clean on that host. The ABI before v8 is unverified on a real
+kernel of that ABI (no host here has one): the asking pass ran on ABI 11. Owed to ROOT:
+VM runs on KVM, a template's seal among them (daemon.rs pool tests), x86_64 and arm64
+through L1, and one on a kernel of ABI 5 to 7.
