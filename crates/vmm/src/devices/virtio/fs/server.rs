@@ -3421,6 +3421,48 @@ mod tests {
         assert_eq!(answer(&s, &req(op::READDIR, ROOT, 0, &readdir(fh, 0, 4096))).0, 0);
     }
 
+    #[test]
+    fn a_failed_refused_reply_cleanup_detaches_its_server() {
+        for failure in ["closed", "empty", "errno"] {
+            let (_p, s) = dir();
+            let mut body = Vec::new();
+            for word in [2 | linux::O_CREAT, 0o100_644, 0, 0] {
+                body.extend_from_slice(&word.to_le_bytes());
+            }
+            body.extend(name("f"));
+            let request = req(op::CREATE, ROOT, 0, &body);
+            let mut reply = s.handle(&request).unwrap();
+            #[cfg(unix)]
+            let (mut served, device) = super::super::Stream::pair().unwrap();
+            #[cfg(windows)]
+            let (mut served, device) = crate::platform::pipe_stream::pair(true);
+            std::thread::scope(|scope| {
+                let worker = scope.spawn(|| {
+                    let release = super::super::read_frame(&mut served).unwrap().unwrap();
+                    assert_eq!(u32::from_le_bytes(release[4..8].try_into().unwrap()), op::RELEASE);
+                    if failure != "closed" {
+                        let answer = if failure == "empty" {
+                            Vec::new()
+                        } else {
+                            super::super::proto::unfollowed(&release).unwrap()
+                        };
+                        super::super::write_frame(&mut served, &answer).unwrap();
+                    }
+                    drop(served);
+                });
+                let slot = super::super::Slot::new();
+                slot.attach(device).unwrap();
+                assert!(slot.refuse(&request, &mut reply));
+                assert!(slot.conn.lock().unwrap().is_none(), "{failure}");
+                assert_eq!(
+                    slot.ask_into(&request, &mut Vec::new()).unwrap_err().kind(),
+                    std::io::ErrorKind::NotConnected
+                );
+                worker.join().unwrap();
+            });
+        }
+    }
+
     /// A directory's handle, as a share's root is opened: on Windows with backup semantics,
     /// which a directory is opened by.
     fn root_of(p: &std::path::Path) -> host::Owned {
