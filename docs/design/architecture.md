@@ -12025,6 +12025,17 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     now comes after a read, one that waits for nothing where the look is due. Red/green:
     harness.rs `a_streams_answer_that_has_come_is_read_before_a_look_judges_it` (a stream
     whose answer is there from its second read, its kind taught a W* of a nanosecond).
+  - *Amended (2026-11-14): a look lists processes without starting one.* Each look at a
+    party listed the system's processes by spawning `ps`: 16 to 25 ms a look on adacachy2
+    (1,200 processes), above a learned W* of 8 ms, the cost that left `Following` no time
+    to read. `common::processes()` now reads them in the test's own process: on Linux
+    `/proc/PID/stat` (its `comm` and parent), on macOS libproc (proc_listallpids(3) and
+    PROC_PIDT_SHORTBSDINFO's `p_comm` and parent), on Windows Toolhelp32 as before. The
+    `ps` path is gone. A name is now the kernel's own on every host, its executable's file
+    name as its exec cut it (macOS's `ps -o comm` had said a whole path). Red/green: harness.rs
+    `a_party_look_lists_processes_without_starting_one`, a stand-in alone that lists the
+    processes and counts what the children it reaped meanwhile cost (getrusage(2)
+    RUSAGE_CHILDREN): none.
 - **A direct boot's waits follow its guest and its VM process** (every host). boot.rs'
   `a_guest_grows_and_gives_back_its_memory` failed on the arm64 Windows host with no
   `SHARDS-TEST PLUGGED` a minute from the test's start, while its guest, booted in 13 s of
@@ -12113,8 +12124,8 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
   - *New parties and waits in tests/common.* `Party::started` (with `Patience::started`)
     follows every process this test's process started and what descends from them: the run
     hosts shards-api's `ImageShards` starts, their VM processes, and the host's own work
-    before its VM exists. `processes()` leaves out the `ps` that lists them, which is the
-    test process's child as it lists. `judged(party, asked, stop, call)` runs a call that
+    before its VM exists. `processes()` starts no process to list them (amended
+    2026-11-14, below). `judged(party, asked, stop, call)` runs a call that
     blocks until its answer or its run's end on a scoped thread, its return both its answer
     and its liveness; a refusal calls `stop`, which ends the call, and says the wait's
     account. On it: `booted` (`boot_stoppable` given `Duration::MAX`, a `BootStop` its stop)
