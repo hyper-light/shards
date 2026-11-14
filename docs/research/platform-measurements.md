@@ -24028,3 +24028,12 @@ anonymous memory, then consumed the live-copy bytes: SIGBUS in each (kiln r4/r5)
 At 29196c6b3 both pass; memory::tests:: 25/25 and vmm clippy pass (r7).
 This is correctness evidence, not a VM/performance measurement. Full commands,
 ownership change and ROOT's remaining gates: `measurements/memory-fixes-v1/README.md`.
+
+### M564. MCP bridge termination with the harness stdin writer retained (D254)
+
+Linux x86_64, adacachy2, 2026-11-13: real-pipe unit regressions at e74696f22
+failed peer-end and stdout-error completion while stdin remained open; the old
+copy test passed (1 pass, 2 failures). At f7d83f73a all 7 MCP tests and shards-init
+all-target clippy passed. Normal socket half-close still delivers later stdin.
+This is functional evidence, not a performance measurement or real-VM result.
+[Commands, output excerpts, policy and owed coverage](measurements/inithex-fixes/README.md).
