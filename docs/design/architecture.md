@@ -27961,10 +27961,36 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
     opened at once beside a write end held by the party the test follows (`watched`), so a
     read ends with that party; a VM's end is checked by its ID and start (`Named::lives`),
     as macOS showed a pipe a process held ending microseconds after its `NOTE_EXIT`.
-  - *Owed* (ROOT): on Windows the readers still read to their pipes' end (no select(2) of
-    an anonymous pipe; `end_group` already follows the job, and std's pipes there are not
-    inheritable, but shards' spawns mark a child's ends inheritable while they create it,
-    which `INHERITING` guards against shards' own std spawns and not an embedder's); the real-VM stop tests (`api_image`) on HVF, KVM and WHP; profiling of the
+  - *Windows: the same word, never a pipe's end* (2026-11-14, winreaders lane; PM M583).
+    The readers there read to their pipes' end: std's anonymous pipes on Windows are
+    synchronous (CreatePipe), and a read of one waits for bytes or its writers' end alone.
+    shards' own spawns give a child exactly its handles (PROC_THREAD_ATTRIBUTE_HANDLE_LIST in
+    `create_plain` and `create`), but UpdateProcThreadAttribute's documentation
+    requires each listed handle be inheritable and CreateProcessW's bInheritHandles TRUE, so a
+    spawn holds a copy of each inheritable while it creates the child; `INHERITING` keeps
+    shards' own std spawns (`spawn_std`) out of that window, and an embedder's
+    `std::process::Command` (bInheritHandles TRUE, no list: every inheritable handle of the
+    process) is not held out. The handle list closes inheritance for shards' children and
+    cannot for another's: no shards-side flag changes what an embedder's CreateProcessW
+    takes. So the reader, not inheritance, is the fix, as on Unix:
+    - the host's answers and diagnostics are `shards_ipc::output_pair`s: a named pipe's
+      overlapped read end, this process's and not inheritable, and its synchronous write end
+      (the child's stdout/stderr; its inheritable copy is the spawn's, for its list alone);
+    - the watcher's word (`Gone`) is a manual-reset event, set once `end_group` has followed
+      the host's Job to its end; it stays set for every reader and read after it;
+    - each reader (`UntilGone`, `Draining::Reading`) reads with the event beside the read
+      (`Pipe::read_unless`: an overlapped read the event cancels with nothing moved, or that
+      finished first and keeps its bytes); once told it peeks what the pipe holds
+      (PeekNamedPipe, `Pipe::held`), reads exactly those (`Draining::Left(n)`) and ends at
+      0, never waiting for the pipe's end. The EOF read as the ending is gone (no fallback).
+    No literal: the pipe's quota is the system's (`Window::System`, as CreatePipe's is), and
+    every wait is on the event or the Job's end. Red/green: shards-api's
+    `a_told_reader_drains_what_its_pipe_holds_and_ends_though_a_writer_holds_it` and
+    `a_stop_returns_though_a_process_outside_its_hosts_job_holds_its_pipes` (a stand-in host
+    duplicates its stdout and stderr into a process outside its Job, the state an embedder's
+    inheriting spawn leaves) hang with the old reader put back and pass with this one
+    (Windows 11 x86_64; PM M583).
+  - *Owed* (ROOT): the real-VM stop tests (`api_image`) on HVF, KVM and WHP; profiling of the
     exit watcher's `/proc` walk per run end on a host of many processes (R14).
 - *A stop for a boot under way* (2026-11-13, kiln plan 01a1cd8e862e7169a074db3d5fa33f3d,
   step 17, for Hex's delete of a microVM still booting): `Images::boot_stoppable(spec,
