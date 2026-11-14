@@ -567,13 +567,23 @@ impl Machine {
     /// connection's, so that a client's half-close (an attach's end of stdin) reaches it.
     fn engine_step(&self, client: &str) -> Result<Running, Error> {
         let reached = |e: std::io::Error| Error::new(format!("this machine's Engine API: {e}"));
+        // The key its connection proved, as the listener judged it as the step started: each
+        // call the connection makes is judged by it again (engine.rs, remote-03).
+        let proved = crate::context::clients(&self.home)
+            .into_iter()
+            .find(|c| c.name == client)
+            .map(|c| crate::context::Proved {
+                name: c.name,
+                key: c.key,
+            })
+            .ok_or_else(|| Error::new(server::REVOKED_WORDS))?;
         // A connection of the daemon's own making, its other end the API's to serve as the
         // client's (D228), so that what its calls make is judged by what the client holds.
         #[cfg(unix)]
         let (conn, theirs) = shards_ipc::Stream::pair().map_err(reached)?;
         #[cfg(windows)]
         let (conn, theirs) = shards_ipc::Stream::plain_pair().map_err(reached)?;
-        super::lock(&ENGINE_CLIENTS).push((client.to_string(), theirs));
+        super::lock(&ENGINE_CLIENTS).push((proved, theirs));
         if let Some(wake) = LISTENER.get() {
             wake();
         }
@@ -1082,7 +1092,7 @@ impl Machine {
 
 /// Clients' connections to this machine's Engine API through their contexts (D228), by
 /// client, for the daemon's listener to take ([`take_engine_clients`]).
-static ENGINE_CLIENTS: std::sync::Mutex<Vec<(String, shards_ipc::Stream)>> =
+static ENGINE_CLIENTS: std::sync::Mutex<Vec<(crate::context::Proved, shards_ipc::Stream)>> =
     std::sync::Mutex::new(Vec::new());
 
 /// What wakes the daemon's listener, given as it listens for clients.
@@ -1090,7 +1100,7 @@ static LISTENER: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>> = std::sync::O
 
 /// The connections clients made to the Engine API through their contexts since the last
 /// look, each with its client (D228).
-pub(super) fn take_engine_clients() -> Vec<(String, shards_ipc::Stream)> {
+pub(super) fn take_engine_clients() -> Vec<(crate::context::Proved, shards_ipc::Stream)> {
     std::mem::take(&mut *super::lock(&ENGINE_CLIENTS))
 }
 
@@ -1727,12 +1737,27 @@ pub(super) fn listen(
         exe,
         agents: Arc::default(),
     };
+    let watched = home.clone();
     std::thread::Builder::new()
         .name("remote".into())
         .spawn(move || {
-            let served = server::serve(&identity, at, machine, |bound, _stopper| {
+            let served = server::serve(&identity, at, machine, |bound, stopper| {
                 // The daemon ends with its process, the listener with it: it is not stopped.
                 let _ = tx.send(Ok(bound));
+                let revoking = std::thread::Builder::new()
+                    .name("remote-revoke".into())
+                    .spawn(move || {
+                        if let Err(e) = revoke_as_removed(&watched, &stopper) {
+                            super::log(format!(
+                                "the clients' removals: {e}: a removed client's connection is refused at its next command instead"
+                            ));
+                        }
+                    });
+                if let Err(e) = revoking {
+                    super::log(format!(
+                        "a thread for the clients' removals: {e}: a removed client's connection is refused at its next command instead"
+                    ));
+                }
             });
             if let Err(e) = served {
                 super::log(format!("other machines' clients on {at}: {e}"));
@@ -1753,6 +1778,57 @@ pub(super) fn listen(
         key.get(..12).unwrap_or_default()
     ));
     Ok(bound)
+}
+
+/// Ends the connections of each client this home no longer enrolls as its key proved, as its
+/// record goes (remote-03): the home's `clients` directory watched for the daemon's life, the
+/// listener told each time it changes ([`server::Stopper::revalidate`]), and once as the watch
+/// begins, for a removal before it. Its error, where the watch cannot be made or waited on, or
+/// the listener has ended.
+fn revoke_as_removed(home: &std::path::Path, stopper: &server::Stopper) -> Result<(), String> {
+    let dir = home.join("clients");
+    shards_vmm::platform::create_private_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let watch = shards_vmm::platform::open_dir(&dir)
+        .and_then(|d| shards_vmm::platform::FileWatch::new(&d))
+        .map_err(|e| format!("watching {}: {e}", dir.display()))?;
+    loop {
+        stopper.revalidate().map_err(|e| e.to_string())?;
+        changed(&watch).map_err(|e| format!("watching {}: {e}", dir.display()))?;
+        watch.clear();
+    }
+}
+
+/// Waits until `watch` sees a change.
+#[cfg(unix)]
+fn changed(watch: &shards_vmm::platform::FileWatch) -> std::io::Result<()> {
+    let mut polled = libc::pollfd {
+        fd: watch.fd().as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    loop {
+        // SAFETY: poll(2) on one pollfd, of a descriptor `watch` holds open.
+        if unsafe { libc::poll(&raw mut polled, 1, -1) } >= 0 {
+            return Ok(());
+        }
+        let e = std::io::Error::last_os_error();
+        if e.kind() != std::io::ErrorKind::Interrupted {
+            return Err(e);
+        }
+    }
+}
+
+/// Waits until `watch` sees a change: its event set.
+#[cfg(windows)]
+fn changed(watch: &shards_vmm::platform::FileWatch) -> std::io::Result<()> {
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+    use windows_sys::Win32::System::Threading::{INFINITE, WaitForSingleObject};
+    // SAFETY: an event `watch` holds.
+    match unsafe { WaitForSingleObject(watch.fd().as_raw_handle(), INFINITE) } {
+        WAIT_OBJECT_0 => Ok(()),
+        _ => Err(std::io::Error::last_os_error()),
+    }
 }
 
 #[cfg(test)]

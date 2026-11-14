@@ -3567,6 +3567,25 @@ pub(crate) fn clients(home: &Path) -> Vec<Client> {
     out
 }
 
+/// A client as its connection proved it (remote-03): the name the daemon judged its key
+/// enrolled under, and that key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Proved {
+    pub name: String,
+    pub key: Vec<u8>,
+}
+
+impl Proved {
+    /// Whether `home` enrolls it still: its name's record, of the key it proved. Read for
+    /// each operation, as its record is the one account of whom the home enrolls, which a
+    /// removal (`remove client`) or a client made again under the name changes.
+    pub(crate) fn enrolled(&self, home: &Path) -> bool {
+        invite::valid_name(&self.name)
+            && read_client(&home.join("clients").join(&self.name))
+                .is_some_and(|c| c.name == self.name && c.key == self.key)
+    }
+}
+
 /// Enrolls `key` as client `name`: the daemon's, as a client joins.
 pub(crate) fn enroll(home: &Path, name: &str, key: &[u8]) -> Result<(), String> {
     let text = format!(
@@ -4252,6 +4271,32 @@ mod tests {
     /// A command shards starts by a word a user types too, `HERE` in its environment, runs
     /// here, where its home's current context, or its starter's `DOCKER_CONTEXT`, names
     /// another machine's.
+    /// remote-03: a client as its connection proved it is enrolled while its name's record
+    /// holds its key: not once it is removed, nor once its name is another key's.
+    #[test]
+    fn a_proved_client_is_enrolled_while_its_record_holds_its_key() {
+        let home = shards_testdir::TempDir::new("ctx-proved").unwrap();
+        let (one, other) = (vec![1u8; 44], vec![2u8; 44]);
+        let proved = |key: &[u8]| Proved {
+            name: "laptop".into(),
+            key: key.to_vec(),
+        };
+        assert!(!proved(&one).enrolled(&home));
+        enroll(&home, "laptop", &one).unwrap();
+        assert!(proved(&one).enrolled(&home));
+        assert!(!proved(&other).enrolled(&home));
+        std::fs::remove_file(home.join("clients").join("laptop")).unwrap();
+        assert!(!proved(&one).enrolled(&home));
+        enroll(&home, "laptop", &other).unwrap();
+        assert!(!proved(&one).enrolled(&home));
+        assert!(proved(&other).enrolled(&home));
+        let elsewhere = Proved {
+            name: "../laptop".into(),
+            key: other.clone(),
+        };
+        assert!(!elsewhere.enrolled(&home));
+    }
+
     #[test]
     fn here_holds_a_child_to_this_machine() {
         let home = shards_testdir::TempDir::new("ctx-here").unwrap();
