@@ -124,8 +124,8 @@ fn devices_are_plugged_into_a_run_and_its_disk_grows() {
         run_shards_env(&["plug"], &["volume", "plugged", &contested], &env)
     };
     let results = std::thread::scope(|scope| {
-        let a = scope.spawn(&attempt);
-        let b = scope.spawn(&attempt);
+        let a = scope.spawn(attempt);
+        let b = scope.spawn(attempt);
         [a.join().unwrap(), b.join().unwrap()]
     });
     assert_eq!(
