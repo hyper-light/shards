@@ -76,6 +76,11 @@ impl Port {
         lock(&self.out).kept.said()
     }
 
+    /// How many of its last bytes it keeps to quote.
+    pub fn keep(&self) -> usize {
+        lock(&self.out).kept.keep()
+    }
+
     /// Whether its guest's kernel said it panicked, through its machine's pvpanic device.
     pub fn panicked(&self) -> bool {
         self.panicked.load(Ordering::Acquire)

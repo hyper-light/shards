@@ -34,6 +34,11 @@ impl Kept {
         }
     }
 
+    /// How many of its last bytes it keeps.
+    pub fn keep(&self) -> usize {
+        self.keep
+    }
+
     /// Adds what the console said.
     pub fn push(&mut self, bytes: &[u8]) {
         for &v in bytes {
