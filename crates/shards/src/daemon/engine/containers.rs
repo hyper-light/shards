@@ -296,25 +296,22 @@ impl<D: Disk> Daemon<D> {
             Err(e) => return refused(&e, 400),
         };
         let sized = call.flag("size");
-        let summaries = match listing
+        let summaries: Vec<Value> = listing
             .containers
             .iter()
             .map(|c| self.summary(c, sized))
-            .collect::<Result<Vec<Value>, _>>()
-        {
-            Ok(values) => values,
-            Err(e) => return refused(&e, 500),
-        };
+            .collect();
         Answer::json(200, &Value::Array(summaries))
     }
 
     /// Container `c` as a list sums it up (moby container.Summary): its ports while it
     /// runs, its networks and mounts as inspect gives them.
-    pub(super) fn summary(&self, c: &Container, sized: bool) -> Result<Value, String> {
-        let doc: Value = serde_json::from_str(&crate::daemon::inspect_doc::json(
-            &self.container_value(c, sized).map_err(|e| e.to_string())?,
-        ))
-        .unwrap_or_default();
+    pub(super) fn summary(&self, c: &Container, sized: bool) -> Value {
+        let doc: Value = self
+            .container_document(c, sized, false)
+            .ok()
+            .and_then(|document| serde_json::from_str(&crate::daemon::inspect_doc::json(&document)).ok())
+            .unwrap_or_default();
         let at = |path: &str| doc.pointer(path).cloned().unwrap_or(Value::Null);
         let paused = lock(&self.paused).contains(&c.id);
         let removing = lock(&self.removing).contains(&c.id);
@@ -367,7 +364,7 @@ impl<D: Disk> Daemon<D> {
                 o.insert("SizeRootFs".into(), at("/SizeRootFs"));
             }
         }
-        Ok(summary)
+        summary
     }
 
     /// `GET /containers/{id}/json`: its InspectResponse, as `inspect` gives it.

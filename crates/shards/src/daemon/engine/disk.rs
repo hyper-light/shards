@@ -89,14 +89,7 @@ impl<D: Disk> Daemon<D> {
         if containers {
             let mut kept: Vec<crate::containers::Container> = lock(&self.containers).all().cloned().collect();
             kept.sort_by_key(|c| std::cmp::Reverse(c.created));
-            let items = match kept
-                .iter()
-                .map(|c| self.summary(c, true))
-                .collect::<Result<Vec<Value>, _>>()
-            {
-                Ok(values) => values,
-                Err(e) => return Answer::error(500, e),
-            };
+            let items: Vec<Value> = kept.iter().map(|c| self.summary(c, true)).collect();
             if !verbose {
                 out.insert("Containers".into(), Value::Array(items.clone()));
             }

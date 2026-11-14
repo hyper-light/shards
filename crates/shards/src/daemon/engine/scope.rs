@@ -768,15 +768,11 @@ impl<D: Disk> Daemon<D> {
             Err(e) => return refused(&e, 400),
         };
         let sized = call.flag("size");
-        let summaries = match of_scope(listing.containers.iter(), &scope.provider)
+        let summaries: Vec<Value> = of_scope(listing.containers.iter(), &scope.provider)
             .iter()
             .take(limit.unwrap_or(usize::MAX))
             .map(|c| self.summary(c, sized))
-            .collect::<Result<Vec<Value>, _>>()
-        {
-            Ok(values) => values,
-            Err(e) => return refused(&e, 500),
-        };
+            .collect();
         Answer::json(200, &Value::Array(summaries))
     }
 }

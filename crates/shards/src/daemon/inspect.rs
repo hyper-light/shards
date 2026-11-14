@@ -695,6 +695,18 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         c: &crate::containers::Container,
         sized: bool,
     ) -> Result<shards_template::Value, ShmOwnerRefused> {
+        self.container_document(c, sized, true)
+    }
+
+    /// `c`'s inspect document; with `shm` false, one whose HostConfig.ShmSize is 0, for a
+    /// listing's summary, which shows none (moby container.Summary): a run whose
+    /// shared-memory owner is gone still lists, where inspecting it is refused.
+    pub(super) fn container_document(
+        &self,
+        c: &crate::containers::Container,
+        sized: bool,
+        shm: bool,
+    ) -> Result<shards_template::Value, ShmOwnerRefused> {
         use super::inspect_doc::{Facts, Health, Net, document};
         let dir = super::lock(&self.containers).dir(&c.id);
         let mut request = std::fs::read(dir.join(super::REQUEST))
@@ -704,7 +716,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 image: c.image.clone(),
                 ..shards_ipc::Run::default()
             });
-        let shm = self.shm_size(c, &request)?;
+        let shm = if shm { self.shm_size(c, &request)? } else { 0 };
         // One its microVM's engine made is on that engine's network, or on the microVM's
         // own, its engine's host's (D181), as its engine says it.
         if let Some(m) = &c.engine_made {
@@ -1390,12 +1402,12 @@ mod tests {
     #[test]
     fn shm_owner_refuses_cycles_and_missing_records() {
         let run = shards_ipc::Run::default();
-        assert!(
-            matches!(shm_owner("a".into(),run.clone(),|_,run| Ok(Some(("a".into(),run.clone())))), Err(ShmOwnerRefused::Cycle(id)) if id == "a")
-        );
-        assert!(
-            matches!(shm_owner("a".into(),run,|_,_| Err(ShmOwnerRefused::Missing("b".into()))), Err(ShmOwnerRefused::Missing(id)) if id == "b")
-        );
+        let cycle = shm_owner("a".into(), run.clone(), |_, run| {
+            Ok(Some(("a".into(), run.clone())))
+        });
+        assert_eq!(cycle.unwrap_err(), ShmOwnerRefused::Cycle("a".into()));
+        let missing = shm_owner("a".into(), run, |_, _| Err(ShmOwnerRefused::Missing("b".into())));
+        assert_eq!(missing.unwrap_err(), ShmOwnerRefused::Missing("b".into()));
     }
 
     /// As encoding/json's Indent lays out what it is given, by Go's own answers
