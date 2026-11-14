@@ -1,0 +1,48 @@
+From /Users/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/fix-memory-carrier-5596c6ba47/change.bundle
+ * branch              HEAD       -> FETCH_HEAD
+Previous HEAD position was 29196c6b fix: own live-copy bytes before guest memory can unplug (memory-02)
+HEAD is now at 2e8135af Merge current main before memory-02 landing
+   Compiling shards-vmm v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/vmm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 11.11s
+     Running unittests src/lib.rs (/Users/adalundhe/g121-tmp/fix-memory-v1/target/debug/deps/shards_vmm-645a41c49a1f33e2)
+
+running 2 tests
+test memory::tests::live_copy_keeps_bytes_after_their_block_is_unplugged ... ok
+test memory::tests::live_copy_page_keeps_bytes_after_their_block_is_unplugged ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 488 filtered out; finished in 0.01s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running unittests src/lib.rs (/Users/adalundhe/g121-tmp/fix-memory-v1/target/debug/deps/shards_vmm-645a41c49a1f33e2)
+
+running 25 tests
+test memory::tests::huge_pages_go_where_a_boot_touched_none_or_all ... ok
+test memory::tests::index_accesses_are_aligned_only ... ok
+test memory::tests::live_copy_page_keeps_bytes_after_their_block_is_unplugged ... ok
+test memory::tests::a_range_is_untouched_as_each_of_its_pages_is ... ok
+test memory::tests::device_memory_is_reached_as_ram_is_and_its_lost_pages_fail ... ok
+test memory::tests::rejects_misaligned_and_overlapping ... ok
+test memory::tests::roundtrip_and_bounds ... ok
+test memory::tests::runs_of_data_are_whole_blocks_and_each_region_takes_its_own ... ok
+test memory::tests::live_copy_keeps_bytes_after_their_block_is_unplugged ... ok
+test memory::tests::memory_to_plug_with_none_plugged_is_saved_and_remade ... ok
+test memory::tests::a_restores_zero_gaps_do_not_fill_its_templates_sparse_file ... ok
+test memory::tests::a_save_leaves_nothing_of_the_file_before ... ok
+test memory::tests::a_save_leaves_untouched_ram_untouched ... ok
+test memory::tests::the_memory_given_back_holds_nothing ... ok
+test memory::tests::memory_to_plug_is_whole_blocks_and_withheld_until_plugged ... ok
+test memory::tests::what_a_devices_dma_holds_pinned_is_kept ... ok
+test memory::tests::regions_round_trip_whatever_order_their_ranges_come_in ... ok
+test memory::tests::saves_runs_of_used_pages_and_holes_between ... ok
+test memory::tests::saves_sparsely_and_restores_copy_on_write ... ok
+test memory::tests::memory_plugged_is_saved_and_plugged_back ... ok
+test memory::tests::a_files_ram_gives_back_what_its_guest_frees ... ok
+test memory::tests::copies_are_exact_at_every_alignment ... ok
+test memory::tests::host_threads_take_turns ... ok
+test memory::tests::a_nested_access_is_refused ... ok
+test memory::tests::long_copies_are_exact ... ok
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 465 filtered out; finished in 0.09s
+
+    Checking shards-vmm v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/vmm)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.70s

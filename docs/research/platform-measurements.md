@@ -7660,6 +7660,12 @@ without ACK. At 50716d946, RFC 9293 table 6 and ACK processing refuse it; 20 foc
 TCP tests and shards-net all-targets clippy pass. This is correctness evidence, not
 new performance or platform-parity data. [Commands, output, rules and owed real-VM checks](measurements/network-fixes-v1/README.md).
 
+**network-02 confinement follow-up (2026-11-13).** At 33d5f8af7, adacachy2
+(Linux amd64) ran three focused network confinement tests and clippy for
+shards-net/shards-net-process, all passing. Native arm64 execution is owed;
+removing the arm64 startup omission is not an arm64 measured result. No VM or
+performance campaign ran. [Exact scope/output](measurements/network-fixes-v1/README.md#network-02-native-seccomp-on-both-linux-architectures).
+
 ### M211. The limits a build's `RUN` step starts with
 
 - **Question.** A container's process starts with Docker's limits (`defaults::limits`,
@@ -9255,6 +9261,13 @@ new performance or platform-parity data. [Commands, output, rules and owed real-
     not, and it was not isolated here.
 
 ### M248. A process placed in a slice of the user's service manager: what it costs, and where its memory is charged (D183)
+
+**2026-11-13 cleanup correction (platform-12):** this placement measurement does not
+derive the former 10 ms cleanup polling interval. Cleanup now waits on the existing
+shared file-change notification and the learned judge deadline. The cold-leaf regression
+failed before the change and passed after it; all six parents unit tests and shards
+clippy passed on Linux x86_64. [Commands, source revisions, logs and real-cgroup work owed](measurements/platform-fixes/platform12.md).
+No new performance or placement-cost claim is made by those unit results.
 
 - **Question.** `--cgroup-parent` puts a microVM's processes under a slice the user's own
   systemd manages, so that the slice's limits and accounting cover them. What does asking
@@ -13382,6 +13395,11 @@ new performance or platform-parity data. [Commands, output, rules and owed real-
   CPUs.
 
 ### M317. A busy microVM's threads under XNU's real-time fail-safe, and its device workers on a busy host (D4)
+
+**2026-11-13, platform-11:** this measured policy comparison does not establish fixed
+computation/constraint literals as host-independent bounds. [Online-value/cold-start
+design and evidence still owed](measurements/platform-fixes/held.md) keep that R03
+finding open; no new scheduling or host-fairness result is claimed.
 
 - **Question.** A microVM's vCPU threads run at Mach's time-constraint policy (D4, M8, M10),
   and D4 left open what XNU does to them when a guest keeps them busy. A gate's block
@@ -24042,6 +24060,14 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   aarch64-unknown-linux-musl (zig) and x86_64-pc-windows-msvc (xwin). R11, R15: no VM run here;
   the api_image and managed_output KVM loop is ROOT's. R16: the fetched logs (116 MB) removed.
 
+### Review memory-02: a live-copy value outlives unplug (2026-11-13)
+
+Two focused unit cases at 04ae8a9cd, macOS arm64, really plugged and unplugged
+anonymous memory, then consumed the live-copy bytes: SIGBUS in each (kiln r4/r5).
+At 29196c6b3 both pass; memory::tests:: 25/25 and vmm clippy pass (r7).
+This is correctness evidence, not a VM/performance measurement. Full commands,
+ownership change and ROOT's remaining gates: `measurements/memory-fixes-v1/README.md`.
+
 
 ### Remote-05. Private request arguments in the daemon log (2026-11-13)
 
@@ -24073,6 +24099,16 @@ clippy pass (r8). These are functional unit results, not a real DNS-provider or
 real-VM result. RFC1034 §3.1 supplies the terminal-root-dot normalization rule;
 no chosen runtime value, wait or cache is added.
 [Commands, red output, green excerpts and owed variant](measurements/inithex-fixes/README.md).
+
+### Review memory-03/05: live-copy mapping ownership and terminal map-back loss
+
+On macOS arm64, the real Shared read completed while its release mutex was held
+at bebc160ab (r13, failed assertion); e5e2ef793 serializes it with release and
+keeps teardown behind the active reader. At 5185919b8 the live-copy continuation
+resumed after a Lost scan outcome (r14, failed assertion); fb58160ac stops instead.
+The latter is a unit continuation, not injected APFS/hypervisor failure. Commands,
+source revisions, light results and ROOT's remaining gates are in
+[the memory fix evidence](measurements/memory-fixes-v1/README.md).
 
 ### M566. What the run host's managed control scope refused was said as "invalid data", and init's relay end could land within a frame
 
@@ -24128,3 +24164,70 @@ no chosen runtime value, wait or cache is added.
   clippy -D warnings for shards-vm-process (macOS) and shards-init
   (aarch64-unknown-linux-musl); cargo fmt --check clean. R11, R15: no VM run here: api_image's
   three cases on KVM are ROOT's, at a main holding 02a03edf2 and this.
+
+### M567. A confined VM process changed another process's limits: prlimit64 of any pid (D30)
+
+Linux x86_64, adacachy2 (7.3.3-1-cachyos, Landlock ABI 11), 2026-11-13, policy df2acf47,
+role implementer. Review platform-04 (docs/bugs/2026-11-13/platform.md) said the VM
+process's filter allowed prlimit64(2) whatever its pid. Reproduced by
+`confine::tests::a_confined_vm_sets_only_its_own_limits` (shards-vm-process): a confined
+child, under `confine()`'s filter, sets the `RLIMIT_NOFILE` of a disposable process of
+its user's (the test binary waiting on its stdin, never a daemon) to 0 and 0. With the
+rule as it was (`Rule::any(SYS_prlimit64)`, the mutant restoring it), the call returned
+0 and the target's `/proc/PID/limits` went from `Max open files 1048576 1048576` to `0
+0`: red. With the rule allowing pid 0 and the process's own alone, the child reads and
+sets its own limits (both 0), the other's call traps (exit 159, `seccomp refused
+syscall 302`), and the target's limits are unchanged: green. `cargo test -p
+shards-vm-process confine::` 7 of 7 and `cargo clippy -p shards-vm-process
+--all-targets -- -D warnings` clean on that host. No constant. Owed to ROOT: a confined
+VM on KVM (every VM test runs under the filter), x86_64 and arm64 through L1.
+
+### M568. A Landlock layer left the VM process's other threads unconfined, its seal too (D30)
+
+Linux x86_64, adacachy2 (7.3.3-1-cachyos, Landlock ABI 11), 2026-11-13, policy df2acf47,
+role implementer. Review platform-01: landlock_restrict_self(2) with no flags restricts
+the calling thread alone, and the VM process confined itself, and later sealed its
+template, with other threads running. Reproduced by
+`confine::tests::every_thread_of_a_confined_process_is_confined` (shards-vm-process): a
+child with three threads started before its first layer and one between it and its seal
+has each try to read a file outside its paths, then write in the snapshot directory
+before and after the seal. Layered as before (the caller alone, the mutant), the
+threads read it (`siblings read other: ok,ok,ok`) and wrote the sealed directory
+(`sealed siblings write snap: ok,ok,ok,ok`): red. Both ways the layer now reaches every
+thread, TSYNC (v8) and each thread asked (every ABI from v5, run here by forcing it),
+make those `refused` while each may still write its kept directory: green. Mutants:
+TSYNC's flag dropped, red for TSYNC alone; the asking pass dropped, red for it alone.
+`a_thread_that_cannot_be_asked_fails_the_layer`: a thread asleep with every signal
+blocked (as Mesa's) fails an asked layer (`blocks signal` SIGRTMIN + 1 `as it waits`), and TSYNC
+confines it (`deaf read other: false`); with its refusal mutated into "ended", the layer
+said Ok and the thread read the file: red. `cargo test -p shards-vm-process confine::`
+9 of 9 and its clippy clean on that host. The ABI before v8 is unverified on a real
+kernel of that ABI (no host here has one): the asking pass ran on ABI 11. Owed to ROOT:
+VM runs on KVM, a template's seal among them (daemon.rs pool tests), x86_64 and arm64
+through L1, and one on a kernel of ABI 5 to 7.
+
+### M569. A confined VM process dialed its user's sockets, its daemon's Engine API among them (D30)
+
+Linux x86_64, adacachy2 (7.3.3-1-cachyos, Landlock ABI 11), 2026-11-13, policy df2acf47,
+role implementer. Review platform-02: the filter allowed AF_UNIX sockets and connect(2)
+whatever they named, and Landlock's rules before v9 do not govern a connect. Reproduced
+by `confine::tests::a_confined_vm_dials_only_beside_its_vsock_path` (shards-vm-process):
+a child binds two listeners of its user's first, `engine.sock` outside its paths and
+`socks/v_5` beside the vsock path it is given, is confined, dials both, then makes a
+datagram socket. With neither the sockets layer's connect refusal nor Landlock's
+`RESOLVE_UNIX` (the mutant), a VM given no vsock path dialed both (`dial outside: ok`):
+red. Now: no vsock path, both refused with EACCES by the seccomp layer alone and by
+Landlock's v9 rules alone; given one, Landlock lets it dial beside it alone (`dial
+outside: refused 13`, `dial beside: ok`); with the seccomp layer alone it dials both,
+what a kernel before v9 leaves (D30's owed spawner dialing); the datagram socket traps
+(exit 159, `seccomp refused syscall 41`), and without the layer is made. Mutants, each
+red for its own case: the connect refusal dropped; `RESOLVE_UNIX` dropped; the socket
+type rule dropped. `seccomp::layer` (`a_layer_answers_its_rules_and_allows_the_rest`,
+the instruction model over every number and value) and the crate's tests 9 of 9;
+`cargo test -p shards-vm-process confine::` 10 of 10; clippy for both crates clean on
+that host. The layer's cost per syscall is ROOT's to measure (R14): the kernel's cache
+skips every filter for a syscall each allows whatever its arguments
+(`seccomp_cache_check_allow`), and one the first filter checks, ioctl's KVM_RUN among
+them, runs both. Owed to ROOT: VM runs on KVM (a daemon's
+warm VMs, `shards build`'s builder with its vsock ports, the GPU's VM process), x86_64
+and arm64 through L1.

@@ -2805,9 +2805,10 @@ fn sealing(paths: &crate::confine::Paths, snapshot: Option<&Path>) {
 
 /// Gives up the directory of the snapshot this VM saved, committed by now, before its
 /// spawner hears it is ready, and so before anything of a run's workload runs in its
-/// guest. On Linux, a Landlock layer without it, checked: making a file there must be
-/// refused. Nothing of the snapshot is open by then (vmm snapshot::Staged::commit closes
-/// its files), and Landlock takes back nothing open. On macOS nothing can be given up:
+/// guest. On Linux, a Landlock layer without it, on every thread (its vCPUs' and devices'
+/// among them, `confine::landlock`), checked: making a file there must be refused.
+/// Nothing of the snapshot is open by then (vmm snapshot::Staged::commit closes its
+/// files), and Landlock takes back nothing open. On macOS nothing can be given up:
 /// App Sandbox's grants last the process's life (PM M102); [`moved`] holds instead. A VM
 /// that saved no snapshot has nothing to give up.
 fn seal() -> Result<(), String> {
@@ -3345,8 +3346,9 @@ fn confine(paths: &crate::confine::Paths) -> Result<(), String> {
             Ok(())
         }
     });
+    // Its sockets narrowed to what its paths let it dial, then Landlock, on every thread.
     #[cfg(target_os = "linux")]
-    return crate::confine::landlock(paths);
+    return crate::confine::sockets(paths).and_then(|()| crate::confine::landlock(paths));
     // As on macOS; and once its partition is set up, before anything of its guest's is
     // read, this process forbids itself dynamic code (D141, PM M202). Its snapshots its
     // spawner stages, over the link (D196), which stays open for them.
