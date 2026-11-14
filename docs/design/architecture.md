@@ -27729,35 +27729,55 @@ API's protocol: its output drained, its end, its connections.
   - `Until::At(instant)` is the old finite budget, unchanged: a take that reaches it is
     `GpuProbe(Pending)`, an instant already past refused `Pending` at once.
   - `Until::Released` has no clock. A take (`ManagedGuest::take_gpu_report(Duration::MAX)`)
-    waits until the report's writer closes after its frame, or until its VM process ends as
-    its native receipt says (`TerminalScope::Released`, which the guest's watcher already
-    waits on, as every managed wait follows its VM process, D215): refused
-    `GpuProbe(GpuProbeError::Ended)`, typed, a new variant, where it ended with no complete
-    frame (its writer still open elsewhere, or the frame torn), or with the receipt's own
-    refusal where the watcher's observation failed (an end not proven is not said as one). A
-    finite `patience` still caps the take, and the end answers a finite take too, where it
-    used to wait out its deadline. A take begun after the watcher let the pipe go answers
-    `Ended` too, where it said `Unavailable`. A writer closed with nothing is `Unreported`,
-    as before.
+    waits until the report's writer closes after its frame, or until its VM process ends, as
+    its kernel says (*How it waits*): refused `GpuProbe(GpuProbeError::Ended)`, typed, a new
+    variant, where it ended with no complete frame (its writer still open elsewhere, or the
+    frame torn). A finite `patience` still caps the take, and the end answers a finite take
+    too, where it used to wait out its deadline. A take begun after the watcher let the pipe
+    go answers `Ended` too, where it said `Unavailable`. A writer closed with nothing is
+    `Unreported`, as before.
   - `GpuReportRequest::until()` replaces `deadline()`: a native launcher that bounded its
     own launch by the report's instant (Hex's macOS remote launch, `until.min(deadline)`)
     takes `until().instant()`, none for `Released`.
-  - *How it waits.* The watcher, as its wait on the receipt returns, records how it ended
-    (`ReportWatch`: `Unasked`, `Watching(Ending)`, `Ended(Result)`) and tells the take,
-    before the report's cleanup, which waits for the take to let the report go. Unix: a
-    second private pipe (close-on-exec), whose one writer the watcher drops; the take polls
-    the report pipe and the end pipe's read end together (one poll(2), -1 with no deadline),
-    and on the end's POLLHUP reads the report pipe once more, so a frame its writer closed
-    before the end is still the frame. Windows: a private manual-reset event the watcher
-    sets; the pending overlapped read waits on its own event and that one together
-    (WaitForMultipleObjects, INFINITE with no deadline), checks the read once more without
-    waiting, and cancels it as the deadline path does, its cells kept until the watcher's
-    cleanup completes it. No thread, timer or poll period of ours.
+  - *How it waits* (amended 2026-11-14: the person called the first form, below, "a tad
+    dangerous"). The take waits on the VM process itself, an object its kernel signals as it
+    exits, beside the report's pipe: no step of ours stands between the end and the take.
+    `boot_managed` holds the launched process (the receipt's `Identity`: on Linux and macOS
+    the VM process, the launched `shards` become it in place; on Windows the `shards` that
+    starts it, holds it in its Job and exits after it) by its pid and start as the launch
+    returns (`physical::report::Vm::of`, the holds `connect_borrowed_before` and
+    `vm_process` already make): a pidfd (pidfd_open(2), readable at exit) on Linux, a
+    kqueue with EVFILT_PROC/NOTE_EXIT registered on macOS, a handle with SYNCHRONIZE
+    (OpenProcess) on Windows, each held from before its start is read, so a pid given to
+    another process since is that process's start, never followed. A process found exited,
+    its pid another start's, or (Unix) no process's (ESRCH: ended and reaped) is `Vm::Ended`:
+    the take reads the pipe once and answers. Any other failure to hold it refuses the boot,
+    `Refusal::Process` with its cause, the launch stopped, as an identity that cannot be read
+    is. The pipe is a `report::Opened` until it follows that process (`follow`), a
+    `Receiver` after: a take of a report that follows nothing cannot be written. Unix: one
+    poll(2) of the report pipe and the held descriptor (-1 with no deadline); the descriptor
+    readable, the report pipe is read once more, so a frame its writer closed before the end
+    is still the frame. Windows: the pending overlapped read waits on its own event and the
+    process handle together (WaitForMultipleObjects, INFINITE with no deadline), checks the
+    read once more without waiting, and cancels it as the deadline path does, its cells kept
+    until the watcher's cleanup completes it. The watcher still follows the receipt alone
+    (D215); it tells the take nothing. A take holds the report, so the watcher's cleanup
+    waits for it, which ends no later than the process does; an observation of the receipt
+    that failed is said as the guest's managed end before that cleanup, so the guest's waits
+    learn it while a take still waits on a VM process that may live. No thread, timer or poll
+    period of ours.
+  - *The first form, gone.* The watcher told the take: on Unix by dropping the one writer
+    of a private end pipe the take polled, on Windows by SetEvent of a private manual-reset
+    event. A SetEvent that failed (none documented for an owned event of full access) left
+    a take with no clock unwoken for good, and the take's end was only as sure as the
+    receipt's observation and the watcher's step after it. Both, and `ReportWatch`
+    (`Unasked`, `Watching(Ending)`, `Ended(Result)`) with them, were deleted in the same
+    landing; no path tells a take anything. A take whose VM process is alive answers no
+    observation failure of the receipt's: an end not proven is not said as one, and the
+    process's own end comes from its kernel.
   - *Literals and cold start.* None: -1 and INFINITE are the OSes' own "no timeout", the
-    create's instant and the caller's patience the only clocks. Nothing learned, no cold
-    start. Uncertainty: on Windows a SetEvent that failed (no documented failure for an owned
-    event of full access) leaves a take with no clock unwoken; the watcher records it as the
-    guest's managed end.
+    create's instant and the caller's patience the only clocks; ESRCH is pidfd_open(2)'s and
+    kevent(2)'s documented "no such process". Nothing learned, no cold start.
   - *Wire.* API only: the deadline never crossed a wire. The report frame, the image channel
     (version 30) and `ImageSpec::gpu_report` are unchanged.
   - *Tests (light)*, shards-api: `client::tests::a_report_with_no_clock_is_refused_ended_as_its_vm_process_ends`
@@ -27775,6 +27795,28 @@ API's protocol: its output drained, its end, its connections.
     no-clock tests green; restored, `-- managed` 14 passed. Owed (ROOT): the Windows reader's
     end wait and these tests, run first on CI's Windows legs; Hex's own managed GPU create with
     `Until::Released` on a real VM.
+  - *Tests of the amendment (light)*, shards-api. The stand-in VM process is a real process
+    now, a child of the test binary's (`client::tests::waiter`), its pid and start the
+    stand-in receipt's identity: `a_report_with_no_clock_is_refused_ended_as_its_vm_process_ends`
+    (it exits as its stdin ends, reaped; `Ended`, no answer before), `a_report_with_no_clock_is_taken_as_it_comes`
+    (unchanged but for the process), and the new
+    `a_report_with_no_clock_wakes_as_its_vm_process_is_killed`: the process killed outright
+    (`Child::kill`: SIGKILL, TerminateProcess) while a take with `Until::Released` and
+    `Duration::MAX` waits, its receipt saying nothing (`terminal()` none) before the take
+    answers `Ended`; each answer judged by `while_runs::answer` (failed where the take is found
+    blocked in the kernel at two looks a millisecond apart), no production timeout. D232's
+    report tests follow this test process itself (`report::tests::followed`). Red, the first
+    form with the watcher's signal removed (the end pipe's writer never dropped, as a failed
+    SetEvent leaves the event; the kill test ported, the receipt saying `Released`): both
+    no-clock end tests failed "blocked in the kernel 11.18 ms / 15.46 ms past its 1ms", the
+    take never woken. Green, this form: `cargo test -p shards-api --lib -- report managed` 30
+    passed on adas-mac-studio.local (macOS arm64; adas-mac-studio-3.local was at 0 of 14
+    cores idle) and on adacachy2 (Linux x86_64); the held descriptor left out of the poll
+    (`poll(.., 1, ..)`), both end tests failed "blocked in the kernel" and the as-it-comes
+    test passed; restored, green. `cargo clippy -p shards-api --all-targets -- -D warnings`
+    clean on both, and `cargo xwin clippy` of it for x86_64-pc-windows-msvc clean. Owed
+    (ROOT): the Windows reader's process-handle wait and these tests on a Windows host (CI's
+    Windows legs first).
 - *Through an orchestrator's run* (Hex lead's ask, Hex goal 39; D231's run host). Hex publishes
   no GPU box's VM Live without its VM process's own renderer report, checked host-side; an
   image run gave none (`/run/shards/gpus` is what init was asked, not what the renderer
