@@ -15897,8 +15897,10 @@ Red/green evidence: `docs/research/measurements/device-fixes/README.md`.
 response span before applying a request. Its total must fit the split ring's
 u32 used length (virtio §2.7.8). Reply staging is fallibly reserved, at most
 one page as queried from the running host, independent of guest capacity;
-properties, zero padding and the request tail stream through it. A failure
-to validate/reserve writes no reply and applies no domain operation. This
+properties, zero padding and the request tail stream through it. A failed
+span validation writes no reply and applies no domain operation. If scratch
+reservation or page-size lookup fails, a stack buffer sized from PROBE
+properties plus the protocol tail completes the response without heap staging. This
 adds no cache or selected transfer-size constant. The evidence above distinguishes
 its bounded red guard test from the original allocator-pressure scenario owed
 to ROOT.

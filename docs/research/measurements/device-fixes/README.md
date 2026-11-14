@@ -55,4 +55,20 @@ host's queried page size (platform::page_size). This covers RAM and device-memor
 spans; Access::write retains fault-checked device-memory copies.
 No selected chunk constant, cache, timeout, new state or OS-specific twin.
 The R01–R16 accounting above applies; source establishes the staging bound,
-not a measured allocation-free or performance claim. Final merged rerun pending.
+not a measured allocation-free or performance claim. Merged source checks at c503ec56 and 54dcaa49 also passed all 13 tests and clippy. The pushes were overtaken by concurrent main landings; no force push was attempted.
+
+### devices-03 scratch-failure follow-up
+
+Red `03ccb5eab`: `cargo test -p shards-vmm padded_probe_response_streams_across_descriptors --lib`
+on the same Mac, exit 101: a deliberately impossible test-only reservation
+returned zero bytes instead of the 16,388-byte padded reply. This exercises
+reservation failure without allocating gigabytes or changing the production
+chunk bound. Captured output: `reply-scratch-red.log`.
+
+Green `18f3a90ad`, Kiln r16: 13 IOMMU tests passed and VMM clippy clean.
+Output: `reply-scratch-green.log`. A protocol-derived stack buffer of PROBE's
+properties plus request tail completes replies if page-size lookup or scratch
+reservation fails. It introduces no new failure/refusal or selected fallback
+size. The malformed-span guard and split/padded replies also pass.
+Source policy accounting remains as above; host allocator/RSS measurements and
+real-guest invalid-buffer/MSI tests remain ROOT's.
