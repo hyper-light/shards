@@ -17758,6 +17758,9 @@ revision before comparing a changed API/implementation.
 
 ### M430. Devices plugged into a running microVM: what each step costs, and what a bus of slots costs a boot (D214)
 
+- **Correctness follow-up, 2026-11-13 (devices-02, D154).** A full-span IOMMU mapping overflow was reproduced by a focused unit test (red 1 failed; green 11 IOMMU tests passed, VMM clippy clean) on adas-mac-studio-3.local, macOS arm64. See `measurements/device-fixes/README.md` for revisions and Kiln runs. These unit results do not revalidate M430's timings or hardware MSI behavior.
+
+
 - **Question.** What does a disk plugged into a running microVM cost, from the host's call to
   its guest's first read of it, and its unplug, from the guest's remove to the host's? And
   what does a PCI bus of empty slots, which a machine must have to be plugged into, cost its
@@ -23764,6 +23767,14 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   shards-init clippy clean. D251 now refuses full backlogs without a retry or deadline;
   [commands and R01–R16 account](measurements/control-fixes-v1/README.md). Real-VM
   aborted-lane resource counts remain ROOT's.
+
+- **Control-01 follow-up (2026-11-13).** An orchestrator's session ended a member channel's
+  pipe at its first credit refused by the run's end, records already taken left queued, and
+  at the run's end itself, while its host may still send output after it. Red at d7b62bd7d
+  (the owner read the first of two records, and nothing of one said after the end), green at
+  cf2764c6e, each guard's mutation red, on adas-mac-studio-3.local macOS 26.2 arm64; D240
+  says the pump's ends; [commands and R01–R16 account](measurements/control-01-v1/README.md).
+  Real-VM managed_output and api_image lanes remain ROOT's.
 
 ### M560. CI's musl test job: its build and its tests as steps of their own, each limit derived (M420, M547)
 

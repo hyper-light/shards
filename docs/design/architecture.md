@@ -15851,6 +15851,14 @@ Docker on Linux does, which refuses several of them for want of a VM.
 
 ### D154. KVM on arm64, and a host's PCI function passed through (VFIO)
 
+**Review devices-02 (2026-11-13).** An IOMMU MAP has an inclusive end
+(virtio 1.3 §5.13.6.6), including `u64::MAX`. Translation bounds the
+remaining inclusive span by the nonempty request before adding the final
+byte, so a full-space MMIO mapping cannot overflow to a zero-length part.
+No timeout, cache, allocation limit or platform-specific path is added.
+Red/green evidence: `docs/research/measurements/device-fixes/README.md`.
+
+
 D13 planned KVM on arm64 Linux hosts, and none ran a VM: the KVM backend was x86_64's.
 D153's test path for VFIO is a guest given the test function, passing it to a guest of
 its own, on an arm64 Mac (D132): shards' VM process inside that guest is an arm64 Linux
@@ -26779,6 +26787,17 @@ and no exec, attach or terminal (the plan's steps 5, 6 and 7).
   come. Before, init aborted every member's pipes as the command ended, and the daemon ended
   the capture at the run's DONE, and agents' reports were cut mid-line (PM M543, "Lost at
   the run's end").
+  An orchestrator's session (shards-api's `session.rs`, `pump`) gives an owner's pipe its end
+  only once every record it took of that channel is written and no more can come: the
+  channel's own end (`OUTPUT_END`), or the end of its run host's answers. The run's end is
+  neither: its host says it as its VM goes, while its capture's reader may still be sending
+  what the VM left, and a credit that cannot go (the host's channel closed by the run's end or
+  by `stop`) ends the pump's credits, never its writes. Before, a pump ended its pipe at the
+  run's end and at its first refused credit, records already taken left behind
+  (docs/bugs/2026-11-13/control.md, control-01; red:
+  `output_taken_before_the_runs_end_reaches_its_owner_whole`,
+  `output_said_after_the_runs_end_reaches_its_owner_before_its_end`). No literal is added: both
+  ends are the protocol's own events.
 - *Every member's log, within the run's one cap* (goal 58's step 7, slice 3; ROOT's ruling and the
   person's decision, 2026-11-13). The log is the run's: every member's output is kept, owned or not.
   - *Kept whoever reads it.* A drained member's records are kept as the daemon takes them (above);
