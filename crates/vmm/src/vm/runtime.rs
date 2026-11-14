@@ -834,7 +834,7 @@ impl Handle {
     /// The whole lines of the last bytes its guest wrote to its console, as many as it was
     /// told to keep ([`Config::said`]), and whether that was all it said: a kernel's panic
     /// says there why it resets its machine (`panic=-1`).
-    pub fn console_said(&self) -> crate::devices::serial::Said {
+    pub fn console_said(&self) -> crate::devices::said::Said {
         self.serial.said()
     }
 
