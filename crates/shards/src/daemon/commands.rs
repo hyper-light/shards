@@ -32,6 +32,25 @@ use super::{Daemon, RunState, STOP_GRACE, lock};
 use crate::containers::{Container, Registry, Removal, State as Life, now};
 use crate::spec::{LOG_STDERR, LOG_STDOUT};
 
+/// Ownership-mode copy must not guess a different platform's user or root when its
+/// recorded image config is unavailable.
+#[derive(Debug)]
+enum CopyUserRefusal {
+    ContainerGone,
+    ConfigMissing { image: String, manifest: Option<String> },
+}
+
+impl CopyUserRefusal {
+    fn message(self, container: &str) -> String {
+        match self {
+            Self::ContainerGone => format!("microVM {container}: its record is no longer there"),
+            Self::ConfigMissing { image, manifest } => format!(
+                "microVM {container}: image {image}, manifest {manifest:?}: its user config is unavailable"
+            ),
+        }
+    }
+}
+
 use super::ends::{End, Followed};
 
 /// How a microVM [`end_all`](Daemon::end_all) ended came to its end: it had already,
@@ -824,7 +843,10 @@ impl<D: crate::containers::Disk> Daemon<D> {
             // resolves, on the mounts its command sees (copy.rs, `writable`).
             // `-a`: everything the microVM's user's (archive_tarcopyoptions_unix.go).
             let user = if args.get(3).is_some_and(|a| a == "1") {
-                self.container_user(&id)
+                match self.container_user(&id) {
+                    Ok(user) => user,
+                    Err(e) => return refuse(e.message(&id)),
+                }
             } else {
                 String::new()
             };
@@ -898,28 +920,34 @@ impl<D: crate::containers::Disk> Daemon<D> {
     }
 
     /// The user microVM `id` runs as: its run's, else its image's.
-    fn container_user(&self, id: &str) -> String {
+    fn container_user(&self, id: &str) -> Result<String, CopyUserRefusal> {
         let dir = lock(&self.containers).dir(id);
         let run = std::fs::read(dir.join(super::REQUEST))
             .ok()
             .and_then(|b| shards_ipc::Run::decode(&b));
-        match run {
-            Some(r) if !r.user.is_empty() => r.user,
-            _ => lock(&self.containers)
-                .get(id)
-                .and_then(|c| c.image_id.clone())
-                .and_then(|image| {
-                    let store = self.store().ok()??;
-                    let found = store
-                        .images()
-                        .ok()?
-                        .into_iter()
-                        .find(|i| i.id.to_string() == image)?;
-                    let config: serde_json::Value = serde_json::from_slice(found.config.as_deref()?).ok()?;
-                    config.pointer("/config/User")?.as_str().map(str::to_string)
-                })
-                .unwrap_or_default(),
+        if let Some(r) = run
+            && !r.user.is_empty()
+        {
+            return Ok(r.user);
         }
+        let c = lock(&self.containers)
+            .get(id)
+            .cloned()
+            .ok_or(CopyUserRefusal::ContainerGone)?;
+        let Some(image) = c.image_id else {
+            return Ok(String::new());
+        };
+        let (config, _) = self.image_facts(Some(&image), c.image_manifest.as_deref());
+        let config = config.ok_or(CopyUserRefusal::ConfigMissing {
+            image,
+            manifest: c.image_manifest,
+        })?;
+        // An absent User field is OCI's root default; an absent config is not.
+        Ok(config
+            .get("User")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned())
     }
 
     /// `shards read changes CONTAINER` (moby daemon/changes.go, ContainerChanges): what the
