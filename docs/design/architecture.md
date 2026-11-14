@@ -12024,9 +12024,25 @@ took, decided (PM M412):
     unmapped;
   - each is refused, typed (`fs::Unfollowed`: its size, its section, a view), and the reply
     that would tell the guest the file's size is refused it (EIO): the guest never hears a
-    size whose bytes its window does not hold. The request itself was the server's, done:
-    a refused LOOKUP's or CREATE's node and handle stay the server's until the guest's
-    unmount, as for any reply its guest did not take.
+    size whose bytes its window does not hold. The request itself was the server's, done.
+    Before replacing its success with EIO, the device retires only the unpublished reply's
+    acquisitions (memory-18, found by the Windows P0 lane): RELEASE/RELEASEDIR for its new
+    open handle, then one FORGET per entry, including READDIRPLUS's nonzero entries.
+    Earlier accepted references and handles remain. The same cleanup follows a reply
+    that cannot be written whole into guest memory. Completed creates/writes stay done;
+    cleanup removes no files and undoes no mutation. These are ordinary framed FUSE
+    requests, understood by the existing share servers. A cleanup failure is typed
+    (`Unreleased`): a transport or malformed one disconnects the slot rather than reuse a
+    partial exchange, and remaining resources then depend on connection/session teardown;
+    a RELEASE the server refuses (`Refused`, an errno) is a whole exchange, so the slot
+    stays and the entry is still forgotten, as Linux's `fuse_create_open` releases and
+    forgets regardless and `fuse_file_put` ends a synchronous RELEASE with
+    `fuse_release_end(args, 0)` (fs/fuse/file.c, dir.c).
+    The frame bounds are `fuse_in_header` (40 bytes), `fuse_entry_out` (128),
+    `fuse_release_in` (8 + 4 + 4 + 8), and `fuse_out_header` (16), from Linux v6.18's UAPI;
+    FORGET's one reference is the count each entry acquires, not a policy value. No
+    estimator/cold-start threshold is needed. Sources, alternatives, red/green, and
+    unrun failure/platform cases: PM M574, `docs/research/measurements/memory-fixes-v1/memory-18.md`.
   Held by `a_range_mapped_to_be_written_after_one_to_be_read_stays_its_files` and
   `a_range_no_view_of_its_file_can_be_made_for_is_refused_never_zeros` (red before,
   mutation-checked); a view refused after its section was made is unit-unreachable, and
