@@ -3546,6 +3546,13 @@ impl Party {
             match ran {
                 Ran::Based => based = true,
                 Ran::Still => {}
+                Ran::Held => {
+                    if looked.found == Found::Still {
+                        looked.found = Found::Held;
+                        looked.what =
+                            "its host held a thread of this process beside its waiter from running".into();
+                    }
+                }
                 Ran::Others(cpu) => {
                     looked.cpu = looked.cpu.saturating_add(cpu);
                     if self.cpu == Cpu::Progress && looked.found != Found::Progressed {
@@ -3708,6 +3715,16 @@ impl Party {
 ///   A thread's own clock brings a running thread up to date as it is read
 ///   (kernel/sched/core.c `task_sched_runtime`). The process's clock still counts a thread
 ///   that ran and exited between two looks; either showing a run is its progress.
+/// - macOS, beside that: each other thread's own times (task_threads(2) and
+///   thread_info(THREAD_BASIC_INFO), as [`ServerThread`] reads one). proc_pid_rusage(2) did
+///   not show a thread spinning beside its waiter within 450 µs windows on HVF
+///   (`a_judged_calls_own_work_is_its_progress`' first form, and ROOT's batch: this file's
+///   `a_machines_host_work_is_its_progress` refused under 14 busy loops), where its own
+///   times did.
+/// - Linux and macOS: whether another thread is runnable as it is read (Linux its state `R`,
+///   macOS `TH_STATE_RUNNING`, each running or waiting for a CPU): one whose others ran
+///   nothing since the look before while one of them was runnable was held by its host
+///   ([`Ran::Held`]), as a busy host keeps a spinning thread from its CPU.
 /// - Windows: QueryProcessCycleTime and QueryThreadCycleTime, cycle counts, exact (their
 ///   time undocumented: what they ran is said as no CPU time, R* a refusal's diagnosis).
 ///
@@ -3724,14 +3741,23 @@ struct Beside {
 }
 
 /// One look's reading, in its OS's units (Unix nanoseconds, Windows cycles): the looking
-/// thread's counter, this process's, then the looking thread's again; on Linux each other
-/// thread's own counter too, by its thread ID.
+/// thread's counter, this process's, then the looking thread's again; on Linux and macOS
+/// each other thread's own counter too, by its thread ID (macOS: its port's name), and
+/// whether one of them was runnable.
 struct Reading {
     before: u64,
     process: u64,
     after: u64,
-    #[cfg(target_os = "linux")]
-    others: std::collections::BTreeMap<u32, u64>,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    others: Others,
+}
+
+/// This process's threads but the calling one, each by its ID and its own CPU time, and
+/// whether one was runnable as it was read.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+struct Others {
+    cpu: std::collections::BTreeMap<u32, u64>,
+    runnable: bool,
 }
 
 /// What [`Beside::look`] found.
@@ -3741,6 +3767,8 @@ enum Ran {
     Based,
     /// Nothing beyond its waiter's own run and the counters' uncertainty.
     Still,
+    /// Nothing, while one of its other threads was runnable: its host held it.
+    Held,
     /// Its other threads ran, this much (none said on Windows, whose cycles are no time).
     Others(Duration),
 }
@@ -3756,9 +3784,14 @@ impl Beside {
             Some((by, last)) if by == thread => Some(self.others(&last, &now)),
             _ => None,
         };
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let held = now.others.runnable;
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        let held = false;
         self.last = Some((thread, now));
         match others {
             None => Ran::Based,
+            Some(0) if held => Ran::Held,
             Some(0) => Ran::Still,
             Some(ns) if cfg!(unix) => Ran::Others(Duration::from_nanos(ns)),
             Some(_) => Ran::Others(Duration::ZERO),
@@ -3808,8 +3841,8 @@ impl Beside {
             before: ns(before),
             process: ns(process),
             after: ns(after),
-            #[cfg(target_os = "linux")]
-            others: other_threads_cpu()?,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            others: other_threads()?,
         })
     }
 
@@ -3833,16 +3866,16 @@ impl Beside {
     }
 }
 
-/// What the other threads' own counters grew by from `last` to `now` (Linux; none read
-/// elsewhere). A thread not read at the look before began since: all it ran is since.
-#[cfg(target_os = "linux")]
+/// What the other threads' own counters grew by from `last` to `now` (Linux and macOS; none
+/// read elsewhere). A thread not read at the look before began since: all it ran is since.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn threads_ran(last: &Reading, now: &Reading) -> u64 {
-    now.others.iter().fold(0u64, |ran, (tid, &cpu)| {
-        ran.saturating_add(cpu.saturating_sub(last.others.get(tid).copied().unwrap_or(0)))
+    now.others.cpu.iter().fold(0u64, |ran, (tid, &cpu)| {
+        ran.saturating_add(cpu.saturating_sub(last.others.cpu.get(tid).copied().unwrap_or(0)))
     })
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn threads_ran(_: &Reading, _: &Reading) -> u64 {
     0
 }
@@ -3861,10 +3894,13 @@ fn thread_cpu(
 /// `make_thread_cpuclock`; glibc's and musl's `pthread_getcpuclockid` make the same). A
 /// thread that ended between this process's listing and its read is left out.
 #[cfg(target_os = "linux")]
-fn other_threads_cpu() -> Option<std::collections::BTreeMap<u32, u64>> {
+fn other_threads() -> Option<Others> {
     // SAFETY: gettid(2) takes nothing and always succeeds.
     let me = unsafe { libc::gettid() };
-    let mut others = std::collections::BTreeMap::new();
+    let mut others = Others {
+        cpu: std::collections::BTreeMap::new(),
+        runnable: false,
+    };
     for entry in std::fs::read_dir("/proc/self/task").ok()? {
         let Some(tid) = entry
             .ok()
@@ -3884,9 +3920,99 @@ fn other_threads_cpu() -> Option<std::collections::BTreeMap<u32, u64>> {
         let (Ok(tid), Ok(ns)) = (u32::try_from(tid), u64::try_from(cpu.as_nanos())) else {
             continue;
         };
-        others.insert(tid, ns);
+        others.cpu.insert(tid, ns);
+        // Its state (`/proc/self/task/<tid>/stat` field 3, after its command's closing
+        // parenthesis, proc(5)).
+        others.runnable |= std::fs::read_to_string(format!("/proc/self/task/{tid}/stat"))
+            .ok()
+            .and_then(|stat| {
+                stat.rsplit_once(')')
+                    .map(|(_, rest)| rest.trim_start().starts_with('R'))
+            })
+            .unwrap_or(false);
     }
     Some(others)
+}
+
+#[cfg(target_os = "macos")]
+unsafe extern "C" {
+    /// This task's port, which the SDK's `mach_task_self()` reads (mach/mach_init.h), as
+    /// shards-vmm's `platform` binds it.
+    static mach_task_self_: libc::mach_port_t;
+    /// Releases one reference of right `name` in `task`'s port space (mach/mach_port.h;
+    /// libSystem), which libc binds no name for.
+    fn mach_port_deallocate(task: libc::mach_port_t, name: libc::mach_port_t) -> libc::kern_return_t;
+}
+
+/// This process's threads but the calling one, each by its port's name, its user and system
+/// time (thread_info(THREAD_BASIC_INFO), as [`ServerThread`] reads one), and whether one is
+/// `TH_STATE_RUNNING` (running or waiting for a CPU). A thread that ended between the list
+/// and its read is left out.
+#[cfg(target_os = "macos")]
+fn other_threads() -> Option<Others> {
+    // SAFETY: this thread's own pthread, whose port it returns without a new reference.
+    let me = unsafe { libc::pthread_mach_thread_np(libc::pthread_self()) };
+    let mut list: libc::thread_act_array_t = std::ptr::null_mut();
+    let mut count: libc::mach_msg_type_number_t = 0;
+    // SAFETY: a read of the task's port, which the system sets before main and never
+    // changes.
+    let task = unsafe { mach_task_self_ };
+    // SAFETY: task_threads(2) of this task, into a list and a count it allocates and fills;
+    // each port it names carries a send right of ours, released below.
+    if unsafe { libc::task_threads(task, &raw mut list, &raw mut count) } != libc::KERN_SUCCESS {
+        return None;
+    }
+    let ports: Vec<libc::thread_act_t> = (0..usize::try_from(count).unwrap_or(0))
+        // SAFETY: `count` ports the call wrote at `list`.
+        .map(|i| unsafe { *list.add(i) })
+        .collect();
+    let mut others = Others {
+        cpu: std::collections::BTreeMap::new(),
+        runnable: false,
+    };
+    for &port in &ports {
+        if port != me
+            && let Some((ns, runnable)) = thread_times(port)
+        {
+            others.cpu.insert(port, ns);
+            others.runnable |= runnable;
+        }
+        // SAFETY: the send right task_threads gave of this port, released once.
+        unsafe { mach_port_deallocate(task, port) };
+    }
+    let bytes = usize::try_from(count)
+        .ok()
+        .and_then(|n| n.checked_mul(std::mem::size_of::<libc::thread_act_t>()))
+        .unwrap_or(0);
+    // SAFETY: the list task_threads allocated in this task, of `count` ports, freed once.
+    unsafe { libc::vm_deallocate(task, list as libc::vm_address_t, bytes as libc::vm_size_t) };
+    Some(others)
+}
+
+/// Thread `port`'s user and system time in nanoseconds, and whether it is
+/// `TH_STATE_RUNNING`; none where it cannot be read (it ended).
+#[cfg(target_os = "macos")]
+fn thread_times(port: libc::thread_act_t) -> Option<(u64, bool)> {
+    // SAFETY: plain data, for thread_info to fill.
+    let mut info: libc::thread_basic_info = unsafe { std::mem::zeroed() };
+    let flavor = libc::thread_flavor_t::try_from(libc::THREAD_BASIC_INFO).ok()?;
+    let mut count = libc::THREAD_BASIC_INFO_COUNT;
+    // SAFETY: THREAD_BASIC_INFO of a thread port of ours into a thread_basic_info of its
+    // count's size (mach/thread_info.h).
+    let code = unsafe { libc::thread_info(port, flavor, (&raw mut info).cast(), &raw mut count) };
+    if code != libc::KERN_SUCCESS {
+        return None;
+    }
+    let us = |t: libc::time_value_t| {
+        u64::try_from(t.seconds)
+            .ok()?
+            .checked_mul(1_000_000)?
+            .checked_add(u64::try_from(t.microseconds).ok()?)
+    };
+    let ns = us(info.user_time)?
+        .checked_add(us(info.system_time)?)?
+        .checked_mul(1000)?;
+    Some((ns, info.run_state == libc::TH_STATE_RUNNING))
 }
 
 /// `read` (clock_gettime(2) or clock_getres(2)) of CPU clock `clock`.
@@ -3999,7 +4125,7 @@ impl ServerThread {
         ServerThread { tid, last: 0 }
     }
 
-    /// Its own CPU clock, `make_thread_cpuclock`'s (see [`other_threads_cpu`]), in
+    /// Its own CPU clock, `make_thread_cpuclock`'s (see [`other_threads`]), in
     /// nanoseconds.
     #[cfg(target_os = "linux")]
     fn read(&self) -> Option<u64> {
