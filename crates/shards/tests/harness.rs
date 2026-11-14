@@ -804,6 +804,57 @@ fn judged_end(party: &mut std::process::Child) -> Result<std::process::ExitStatu
     )
 }
 
+/// A judged call's own work, on its own thread of this process, is its party's progress
+/// (ROOT's batch 22, f385b8dac: api_image.rs' `refused` closures boot through
+/// `common::booted`, whose shards-api client checks a spec on the call's thread; a refusal
+/// answered in 206 µs on HVF, and one of 28.6 ms on KVM, both at 0 ns of the started
+/// processes' CPU, taught their call site a W* that refused the next call 206 µs and 31 ms
+/// in as it worked). Do: a started stand-in idle throughout, the party's live process; from
+/// one call site, its kind's kept record removed, a call that answers at once, then one busy
+/// for 200 ms on its own thread, then one asleep there for 1 s, past the W* the busy one
+/// taught. Expect: the first two
+/// answer; the sleeper, idle on its thread, is refused.
+#[test]
+fn a_judged_calls_own_work_is_its_progress() {
+    #[track_caller]
+    fn work(ms: u64, sleep: bool, forget: bool) -> Result<(), String> {
+        if forget {
+            let site = std::panic::Location::caller();
+            let _ = std::fs::remove_file(common::WaitKind::kept_at(site, "", ""));
+        }
+        common::judged(
+            common::Party::started(None),
+            "a call's own work",
+            || {},
+            || {
+                if sleep {
+                    std::thread::sleep(Duration::from_millis(ms));
+                    return;
+                }
+                let until = Instant::now() + Duration::from_millis(ms);
+                let mut spun = 0u64;
+                while Instant::now() < until {
+                    spun = std::hint::black_box(spun.wrapping_add(1));
+                }
+            },
+        )
+    }
+    let call = |ms: u64, sleep: bool, forget: bool| work(ms, sleep, forget);
+    let mut idle = stand_in_doing("idle")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let quick = call(0, false, true);
+    let busy = call(200, false, false);
+    let idle_call = call(1000, true, false);
+    drop(idle.stdin.take());
+    idle.wait().unwrap();
+    assert!(quick.is_ok(), "{quick:?}");
+    assert!(busy.is_ok(), "{busy:?}");
+    assert!(idle_call.is_err(), "a call idle on its own thread not refused");
+}
+
 /// What an `answer` stand-in writes.
 const ANSWER: &[u8] = b"answered";
 

@@ -12263,6 +12263,29 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     at its test's bound scaled to 100 ms, cut a call on a stand-in busy for a second. Green:
     `a_judged_call_goes_on_while_its_party_works`, two rounds held to the stand-in's end
     through `judged`, the second judged on what the first taught.
+  - *A `judged` call's own thread is its party's member* (2026-11-14, ROOT's batch 22 at
+    f385b8dac, lane judgecli). `judged` runs its call on a thread of the test process:
+    shards-api's client, whose spec checks, image reads and requests no started process
+    shows. Two call sites of api_image.rs' `refused` closures learned W* from a refusal
+    answered at 0 ns of the started processes' CPU and refused the next call as it worked
+    on its own thread: `a_members_arguments_follow_its_images_command_in_order` (1384:40,
+    HVF, W* 206.625 µs, its next call building two arguments of half `MAX_PAYLOAD` each)
+    and `what_the_image_does_not_grant_is_refused_before_boot` (278:40, KVM, adacachy2's
+    record `28637460 0 28637460`, refused 31.3 ms in, "its last progress its start").
+    `judging`'s worker names itself as it starts (`ServerThread::this`, the serving
+    threads' reader: Linux its own CPU clock, `make_thread_cpuclock`'s; macOS
+    `thread_info(THREAD_BASIC_INFO)` of its `pthread_mach_thread_np` port; Windows
+    `QueryThreadCycleTime` of its `OpenThread` handle) and is let go of before it returns,
+    under one lock, so its clock is read only while it lives. Each look of the waiter's
+    reads it: grown, its call progressed; not grown and runnable, its host held it; else
+    nothing of it. So a call working in-process is progress and one idle there is not. A
+    first try, `Beside` (the process's CPU past its waiter's), held on Linux but not on
+    macOS, where a spinning thread's work did not show within 450 µs windows (adas-mac-
+    studio.local, "made no progress for 485.125µs, past ... (434.75µs) ... this process's
+    threads beside its waiter ran 2.25ms ago"). No number changed (R03). Held by
+    harness.rs' `a_judged_calls_own_work_is_its_progress` (an idle started stand-in; from
+    one call site, its record removed, a call that answers at once, one busy 200 ms on its
+    thread, one asleep there 1 s).
   - What would falsify it: a `judged` call refused while what this test started ran. Or a
     `client_output` refused while its client or its home's daemon worked. Or a host's hold
     (ETXTBSY, a killed daemon's descriptors, a scanner's handle) cut.
