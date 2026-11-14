@@ -5,10 +5,13 @@
 printk ring through from then on), `virtio_mmio_init` and `virtio_console_init` (both
 module_init: hvc0 registers, and replays the printk ring, at the later of the two, as the
 driver probes its device; drivers/tty/hvc/hvc_console.c `hvc_check_console`), and
-`pvpanic_mmio_driver_init` where the kernel has it. Every initcall's line goes to the UART
-here (`console=ttyS0`, not quiet), which slows the boot: the times are an upper bound.
+`pvpanic_mmio_driver_init` where the kernel has it. Every initcall's line goes to the console
+here (not quiet), which slows the boot: the times are an upper bound.
 
-Usage: initcalls.py SHARDS KERNEL TESTGUEST [N]
+Usage: initcalls.py SHARDS KERNEL TESTGUEST [N] [CONSOLE]
+
+CONSOLE is ttyS0 for a build with the UART, hvc0 (the default) for one with virtio-console:
+what hvc0 says before it registers it replays from the printk ring, with its times.
 """
 
 import os
@@ -19,6 +22,7 @@ import tempfile
 
 shards, kernel, guest = sys.argv[1:4]
 n = int(sys.argv[4]) if len(sys.argv) > 4 else 20
+console = sys.argv[5] if len(sys.argv) > 5 else "hvc0"
 names = ["crash_save_vmcoreinfo_init", "virtio_mmio_init", "virtio_console_init",
          "pvpanic_mmio_driver_init"]
 env = dict(os.environ, DOCKER_CONFIG=tempfile.mkdtemp(prefix="console-initcalls-"))
@@ -26,7 +30,7 @@ seen = {name: [] for name in names}
 for _ in range(n):
     p = subprocess.run(
         [shards, "run", "--kernel", kernel, "--init", guest, "--cpus", "1", "--memory", "256",
-         "--cmdline", "console=ttyS0 panic=-1 initcall_debug shards_test=console shards_console_kib=0"],
+         "--cmdline", f"console={console} panic=-1 initcall_debug shards_test=console shards_console_kib=0"],
         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env)
     out = p.stdout.decode(errors="replace")
     for name in names:
