@@ -469,20 +469,8 @@ impl Handle {
         if sh.template.load(Ordering::Acquire) {
             return Err("the microVM has its template still to save".into());
         }
-        {
-            let mut saving = lock(&sh.saving);
-            if sh.exiting() {
-                return Err("the microVM has stopped".into());
-            }
-            if *saving {
-                return Err("the microVM is being saved already".into());
-            }
-            *saving = true;
-        }
-        let saved = self.save_parked(parts, save);
-        *lock(&sh.saving) = false;
-        sh.saved.notify_all();
-        saved
+        let _reading = sh.begin_read(HostRead::Save).map_err(|e| e.to_string())?;
+        self.save_parked(parts, save)
     }
 
     /// Copies the running machine's memory, writable layer and run's swap into `out` for a
@@ -510,6 +498,7 @@ impl Handle {
         if sh.released_at_us.get().is_none() {
             return Err("the microVM has not started".into());
         }
+        let _reading = sh.begin_read(HostRead::Precopy).map_err(|e| e.to_string())?;
         let vm = parts.vm.upgrade().ok_or("the microVM has stopped")?;
         let fail = |e: std::io::Error| format!("sending its memory: {e}");
         let carried = Carried {
@@ -564,9 +553,15 @@ impl Handle {
                 swap.as_ref().map(|s| s.run_data()).transpose(),
             )
         };
-        self.resume();
+        let found = found.0.and_then(|layer| found.1.map(|swap| (layer, swap)));
+        let outcome = match found {
+            Ok(runs) => Scanned::Mapped(runs),
+            Err(e) if self.control.lost() => Scanned::Lost(e),
+            Err(e) => Scanned::Failed(e),
+        };
+        let found = self.shared.finish_scan(outcome);
         precopied.paused_us = crate::log::uptime_us().saturating_sub(paused);
-        let (layer_runs, swap_runs) = (found.0?, found.1?);
+        let (layer_runs, swap_runs) = found?;
         let mut buf = vec![0u8; live::MAX_RECORD];
         let mut send = |kind: u8, runs: &[(u64, u64)], read: &Reader<'_>| {
             for &(off, len) in runs {
@@ -628,8 +623,8 @@ impl Handle {
         let fail = |e: std::io::Error| format!("sending its memory: {e}");
         let (layer, swap) = (self.control.layer(), self.control.swap());
         for gpa in written.iter() {
-            if let Some((plugged, at, bytes)) = self.memory.page_at(gpa) {
-                w.record(if plugged { live::PLUGGED } else { live::RAM }, at, bytes)
+            if let Some((plugged, at, bytes)) = self.memory.page_at(gpa).map_err(|e| e.to_string())? {
+                w.record(if plugged { live::PLUGGED } else { live::RAM }, at, &bytes)
                     .map_err(fail)?;
                 continue;
             }
@@ -873,6 +868,44 @@ impl Handle {
     }
 }
 
+/// Whether extent discovery left every withdrawn mapping available to the guest.
+enum Scanned<T> {
+    Mapped(T),
+    Failed(String),
+    Lost(String),
+}
+
+/// Host operations that keep mappings alive until their last read, including errors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HostRead {
+    Save,
+    Precopy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReadRefused {
+    Stopped,
+    Busy(HostRead),
+}
+
+impl std::fmt::Display for ReadRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Stopped => f.write_str("the microVM has stopped"),
+            Self::Busy(kind) => write!(f, "the microVM has a {kind:?} reader already"),
+        }
+    }
+}
+
+struct Reading<'a>(&'a Shared);
+
+impl Drop for Reading<'_> {
+    fn drop(&mut self) {
+        *lock(&self.0.saving) = None;
+        self.0.saved.notify_all();
+    }
+}
+
 #[derive(Debug)]
 struct Shared {
     kickers: Vec<OnceLock<hv::Kicker>>,
@@ -908,9 +941,9 @@ struct Shared {
     parts: OnceLock<Parts>,
     /// Whether a template's snapshot is still to be taken, its coordinator waiting.
     template: AtomicBool,
-    /// Whether a snapshot the host asked for is being taken: one at a time, and the
-    /// machine is taken apart only once it is done (`Running::teardown`).
-    saving: Mutex<bool>,
+    /// The host reader, if any: save and precopy exclude each other and teardown
+    /// cannot release mappings until that reader has finished, including error paths.
+    saving: Mutex<Option<HostRead>>,
     saved: Condvar,
     /// The host's hold on the vCPUs' CPU time, a run's limit (D191), and its governor's
     /// thread, made as the first limit comes and joined as the machine is taken apart.
@@ -1002,7 +1035,7 @@ impl Shared {
             committed: Condvar::new(),
             parts: OnceLock::new(),
             template: AtomicBool::new(false),
-            saving: Mutex::new(false),
+            saving: Mutex::new(None),
             saved: Condvar::new(),
             hold: Hold::new(vcpus as usize),
             guest: GuestClocks::default(),
@@ -1011,10 +1044,39 @@ impl Shared {
         }
     }
 
-    /// Waits until no save the host asked for reads the machine.
+    fn finish_scan<T>(&self, outcome: Scanned<T>) -> Result<T, String> {
+        match outcome {
+            Scanned::Mapped(value) => {
+                self.hold.resume();
+                Ok(value)
+            }
+            Scanned::Failed(e) => {
+                self.hold.resume();
+                Err(e)
+            }
+            Scanned::Lost(e) => {
+                self.stop(ExitReason::Error(e.clone()));
+                Err(e)
+            }
+        }
+    }
+
+    fn begin_read(&self, kind: HostRead) -> Result<Reading<'_>, ReadRefused> {
+        let mut reading = lock(&self.saving);
+        if self.exiting() {
+            return Err(ReadRefused::Stopped);
+        }
+        if let Some(kind) = *reading {
+            return Err(ReadRefused::Busy(kind));
+        }
+        *reading = Some(kind);
+        Ok(Reading(self))
+    }
+
+    /// Waits until no host save or live copy reads the machine.
     fn await_save(&self) {
         let mut saving = lock(&self.saving);
-        while *saving {
+        while saving.is_some() {
             saving = wait(&self.saved, saving);
         }
     }
@@ -1909,6 +1971,51 @@ impl Cut<'_> {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_live_copy_whose_mapping_was_lost_stops_instead_of_resuming() {
+        let sh = Shared::new(0);
+        let result = sh.finish_scan::<()>(Scanned::Lost("layer map-back failed".into()));
+        assert_eq!(result, Err("layer map-back failed".into()));
+        assert!(sh.exiting(), "a live copy resumed after losing its layer mapping");
+    }
+
+    #[test]
+    fn a_live_copy_with_intact_mappings_can_continue_after_a_scan_error() {
+        let sh = Shared::new(0);
+        assert_eq!(sh.finish_scan(Scanned::Mapped(7)), Ok(7));
+        assert_eq!(
+            sh.finish_scan::<()>(Scanned::Failed("extent read failed".into())),
+            Err("extent read failed".into())
+        );
+        assert!(!sh.exiting());
+    }
+
+    #[test]
+    fn live_copy_excludes_save_and_teardown_until_its_guard_is_gone() {
+        let sh = Shared::new(0);
+        let reading = sh.begin_read(HostRead::Precopy).unwrap();
+        assert!(matches!(
+            sh.begin_read(HostRead::Save),
+            Err(ReadRefused::Busy(HostRead::Precopy))
+        ));
+        let (ended, end) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                sh.await_save();
+                ended.send(()).unwrap();
+            });
+            assert!(end.try_recv().is_err());
+            drop(reading);
+            end.recv().unwrap();
+        });
+        drop(sh.begin_read(HostRead::Save).unwrap());
+        sh.stop(ExitReason::Stopped);
+        assert!(matches!(
+            sh.begin_read(HostRead::Precopy),
+            Err(ReadRefused::Stopped)
+        ));
+    }
 
     /// A restore copies its generation's writable layer into an empty file or into a clone
     /// of another generation's, takes a clone of its own generation's as it is, and refuses
