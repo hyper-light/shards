@@ -1145,7 +1145,7 @@ fn instead(args: &[OsString]) -> ExitCode {
     .filter(|(handle, _)| !handle.as_raw_handle().is_null())
     .collect();
     let args: Vec<&std::ffi::OsStr> = args.iter().map(OsString::as_os_str).collect();
-    match shards_ipc::spawn_grouped(program.path(), &args, &fds, &[]).and_then(|child| child.wait()) {
+    match shards_ipc::spawn_grouped(&program.path(), &args, &fds, &[]).and_then(|child| child.wait()) {
         Ok(status) => ExitCode::from(u8::try_from(status).unwrap_or(1)),
         Err(e) => failed(&format!("{}: {e}", bin.display())),
     }
