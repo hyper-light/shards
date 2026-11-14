@@ -11464,7 +11464,8 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
   process (`vm::start`: boot.rs', confined.rs' and acg.rs' in-process boots, hotplug.rs'
   steps, guest_time.rs) has no VM process of its own, its vCPUs threads beside the other
   tests' and the wait's own poll: its waits follow its console alone (`Heard::console`,
-  `common::machine_ended`).
+  `common::machine_ended`). Amended by Part 5 below: its waits follow its console and its
+  process's threads beside its waiter, each stage its own kind.
 - **The tests' waits on guests, streams and daemons' words are judged too** (#77, W6's slice
   2b part 2, 2026-11-13; the person's ruling as above and R03: "we do not tolerate arbitrary
   constants. learned and data-derived values. Period."). `common::DAEMON_QUIET` (60 s, a
@@ -11830,6 +11831,62 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     campaign), build_windows.rs, build.rs (code mode among them), managed_output.rs and its
     parts (member_stdin, log_lanes, metrics), and harness_bringup.rs, whose `Observer` changed
     beneath it.
+- **Part 5: a machine's stages, and the host's work its guest waits on** (#77, 2026-11-14;
+  ROOT's KVM run c33 on adacachy2, Linux x86_64, at 5ded5b857, every kept judge record
+  cleared first). hotplug.rs:127 was refused: `the guest did not say "SHARDS-PLUG WAIT 2":
+  its guest's progress made no progress for 1.090575ms, past the slowest answer of its kind
+  seen on this host (1.056001ms), 4.185884ms into its wait ... (a machine of this test's
+  process) ... its record W* 1.056001ms, R* 0ns of CPU in 1.056001ms`, its guest having said
+  WAIT 0, `grow vda 4096`'s `GREW vda 37` and WAIT 1. Two defects, each enough for it:
+  - *One call site's stages were one kind.* `ask`'s wait for `WAIT n+1` keyed its kind by its
+    call site alone, so a grow (a size read again) taught the W* that judged a rescan, a
+    disk's probe and its first 1 MiB read and write. A wait for a guest's line is now keyed
+    by its call site and what it awaits (`Heard::console(awaited)`,
+    `WaitKind::of(site, PROGRESS, guest_text(awaited))`, kept as a command's line is, by its
+    SHA-256's first 16 hex digits): `common::guest_text` says what the run minted as its
+    placeholders (`generic`, as a command's line) and every run of digits as `{n}`, so a step's
+    number, PCI address, size and salt say no other work, and a run of more rounds
+    (`SHARDS_PLUG_ROUNDS`) keys its stages as one of fewer did. hotplug.rs' `ask` keys each
+    step by what it asked and the line it awaits (`until_asked`: `disk {n}:{n}.{n} {n} =>
+    SHARDS-PLUG WAIT {n}`, apart from `grow vda {n} => ...`). Each new kind starts cold, its
+    liveness alone, as every kind does (D215). The other guest-line waits (`Vm::wait_for*`)
+    keep their call site's key (ROOT kept this slice to hotplug.rs:127's).
+  - *Its party read no CPU at all.* `Members::Machine` was its console's words alone, so a
+    guest that worked silently on the host's side (its rescan's config-space exits on its
+    vCPU threads, its disk served by the VMM's threads) showed nothing. A machine's party
+    now follows this process's threads beside its waiter (`common::Beside`): each look reads
+    the looking thread's CPU counter, this process's, and the looking thread's again; the
+    waiter ran at most what its counter grew from before the look before's process reading to
+    after this one's, so what the process's counter grew past that, and past the two
+    counters' resolutions as their OS says them, is the other threads': their vCPUs, devices
+    and any test thread doing the host's part of a step. Unix reads the process through D215's
+    `shards_api::Watch` (Linux's CPU clock, 1 ns; macOS' proc_pid_rusage, one Mach unit,
+    42 ns) and the thread by CLOCK_THREAD_CPUTIME_ID (clock_getres: 1 ns Linux, 42 ns macOS);
+    Windows by QueryProcessCycleTime and QueryThreadCycleTime, exact cycle counts, no
+    resolution to allow, and no CPU time said for them (R* is diagnosis). A look by another
+    thread than the look before is based. Nothing here is a chosen number (R03): the
+    uncertainty is the clocks' own resolution, cold start is D215's (no record, liveness
+    alone; a first look based). Measured before choosing (macOS 26 arm64, this harness's
+    method in Python, `docs/research/measurements/judge-machine/beside.py 200000 0` and
+    `3000 0.001`, `CLOCK_PROCESS_CPUTIME_ID` at its 1 µs and the thread clock at 42 ns):
+    a lone thread's bracketed lower bound passed zero in 9,430 of 200,000 back-to-back looks
+    (worst 584 ns), never past the two resolutions' sum; with 1 ms sleeps, 0 of 3,000. So
+    the resolutions are subtracted, never only zero. What it can hide: a binary whose tests
+    run two machines at once counts each one's CPU as the other's progress, a stall seen once
+    the other ends (hotplug.rs' second test runs only beside a host's edu function;
+    guest_time.rs has one); and, like a VM process's (D215), a guest spinning on nothing.
+  - Red with each guard removed, green with both, on adas-mac-studio-3.local (macOS arm64,
+    kiln r1950, eb05eaeaa): harness.rs `one_call_sites_guest_stages_are_judged_apart` (a
+    stand-in: a grow's stage answered at once, then a disk's after 50 ms of nothing; keyed by
+    the call site alone, refused 18.2 ms in at W* 146 µs), `a_machines_host_work_is_its_progress`
+    (a thread of the test spinning 200 ms as the host's work; with no `Beside`, refused
+    11.8 ms in at W* 255 µs, "R* 0ns of CPU"), `a_machines_waiter_alone_is_no_progress` (a
+    stand-in whose waiter spins on its looks, nothing else running: refused; with the
+    waiter's own run not taken off, never refused in 10 s at W* 146 µs), and
+    `a_guest_waits_text_is_keyed_without_its_numbers`.
+  - Owed (ROOT): hotplug.rs and guest_time.rs on KVM, HVF and WHP, their records cleared;
+    the harness's Windows run of `a_machines_waiter_alone_is_no_progress`, which holds the
+    cycle counters' accounting of a running thread (unverified here).
 
 **The storm's watch, by the host's word (audit of picked constants, 2026-11-09).** The test
 guest's storm said its main thread stood still after 15 s and took its host's stream for
@@ -26023,7 +26080,10 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
       own process, read by its console's words alone (no CPU of its own is read), and its
       words' baseline was read as the wait began. The guest said nothing for longer than
       that call site's slowest answer, whose asks (`grow vda`, a plug, an unplug) share one
-      kind: what its guest did is not observable to its wait at all.
+      kind: what its guest did is not observable to its wait at all. Fixed by D209's Part 5
+      (#77, ROOT's KVM run c33's same refusal): each of its stages is a kind of its own
+      (call site and awaited text, numbers generic), and a machine of the test's process
+      progresses while its process's threads beside its waiter run.
     - *Only an answer waited for teaches* (#77; docs/bugs/2026-11-13/waits.md waits-03). A
       test's wait moves through explicit stages (common/mod.rs `Stage`): `Begun`, its
       answer not yet found missing; `Awaited`, found missing at least once, by a look

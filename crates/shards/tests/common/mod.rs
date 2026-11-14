@@ -2917,10 +2917,9 @@ fn number_said(text: &str, value: &str, placeholder: &str) -> String {
     said
 }
 
-/// `text`, a guest's line a wait awaits and what it was asked for it ([`Heard::console`],
-/// [`Heard::running_for`]), as its wait's kind is keyed by it beside its call site: each
-/// value this run minted said as its placeholder ([`generic`]), then each run of digits as
-/// `{n}`. One call site's waits for different stages are kept apart by their words (#77,
+/// `text`, a guest's line a wait awaits and what it was asked for it ([`Heard::console`]),
+/// as its wait's kind is keyed by it beside its call site: each value this run minted said
+/// as its placeholder ([`generic`]), then each run of digits as `{n}`. One call site's waits for different stages are kept apart by their words (#77,
 /// ROOT's KVM run c33: hotplug.rs' `ask` waited for `SHARDS-PLUG WAIT 1`, a grow, and then
 /// `WAIT 2`, a rescan and a disk's first read, as one kind, whose W* the grow taught); the
 /// numbers a stage carries (its step, a PCI address, a size, a salt) say no other work, and
@@ -3355,7 +3354,7 @@ impl Party {
             match ran {
                 Ran::Based => based = true,
                 Ran::Still => {}
-                Ran::Ran(cpu) => {
+                Ran::Others(cpu) => {
                     looked.cpu = looked.cpu.saturating_add(cpu);
                     if self.cpu == Cpu::Progress && looked.found != Found::Progressed {
                         looked.found = Found::Progressed;
@@ -3472,6 +3471,7 @@ impl Party {
 ///   (`Watch::resolution`, clock_getres(2)).
 /// - Windows: QueryProcessCycleTime and QueryThreadCycleTime, cycle counts, exact (their
 ///   time undocumented: what they ran is said as no CPU time, R* a refusal's diagnosis).
+///
 /// Other tests of its process run beside it too: a binary whose tests run two machines at
 /// once has each machine's CPU the other's progress, a stall shown only once the other ends.
 #[derive(Default)]
@@ -3501,7 +3501,7 @@ enum Ran {
     /// Nothing beyond its waiter's own run and the counters' uncertainty.
     Still,
     /// Its other threads ran, this much (none said on Windows, whose cycles are no time).
-    Ran(Duration),
+    Others(Duration),
 }
 
 impl Beside {
@@ -3528,8 +3528,8 @@ impl Beside {
             .saturating_sub(uncertain);
         match others {
             0 => Ran::Still,
-            ns if cfg!(unix) => Ran::Ran(Duration::from_nanos(ns)),
-            _ => Ran::Ran(Duration::ZERO),
+            ns if cfg!(unix) => Ran::Others(Duration::from_nanos(ns)),
+            _ => Ran::Others(Duration::ZERO),
         }
     }
 
@@ -5269,7 +5269,7 @@ impl Vm {
     /// whose CPU time counts only as it starts.
     #[track_caller]
     pub fn wait_for_any(&mut self, texts: &[&str]) -> String {
-        let heard = Heard::running_for(self.child.id(), &texts.join(" | "));
+        let heard = Heard::running(self.child.id());
         self.wait_lines(texts, heard)
     }
 
@@ -5279,7 +5279,7 @@ impl Vm {
     /// host has CPUs, which show CPU time for ever.
     #[track_caller]
     pub fn wait_for_any_streamed(&mut self, texts: &[&str], streamed: Option<&AtomicU64>) -> String {
-        let heard = Heard::streaming_for(self.child.id(), streamed, &texts.join(" | "));
+        let heard = Heard::streaming(self.child.id(), streamed);
         self.wait_lines(texts, heard)
     }
 
@@ -5442,19 +5442,12 @@ impl<'a> Heard<'a> {
     /// time counted only before its first line, and `streamed`'s bytes as it carries them.
     #[track_caller]
     pub fn streaming(vm: u32, streamed: Option<&'a AtomicU64>) -> Heard<'a> {
-        Heard::streaming_for(vm, streamed, "")
-    }
-
-    /// [`streaming`](Self::streaming), waiting for `awaited`: its kind its call site's and
-    /// `awaited`'s ([`guest_text`]).
-    #[track_caller]
-    pub fn streaming_for(vm: u32, streamed: Option<&'a AtomicU64>, awaited: &str) -> Heard<'a> {
         Heard::with(
             std::panic::Location::caller(),
             Party::client(vm, None),
             Guest::Streaming,
             streamed,
-            awaited,
+            "",
         )
     }
 
@@ -5462,19 +5455,12 @@ impl<'a> Heard<'a> {
     /// time counted throughout: for a guest of fewer vCPUs than its host has CPUs.
     #[track_caller]
     pub fn running(vm: u32) -> Heard<'static> {
-        Heard::running_for(vm, "")
-    }
-
-    /// [`running`](Self::running), waiting for `awaited`: its kind its call site's and
-    /// `awaited`'s ([`guest_text`]).
-    #[track_caller]
-    pub fn running_for(vm: u32, awaited: &str) -> Heard<'static> {
         Heard::with(
             std::panic::Location::caller(),
             Party::client(vm, None),
             Guest::Running,
             None,
-            awaited,
+            "",
         )
     }
 
