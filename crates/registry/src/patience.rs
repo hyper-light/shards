@@ -17,9 +17,11 @@
 //!   second before any wait is measured, and doubled for each timeout in a row (§5.5)
 //!   until one is answered;
 //! - how long a trouble (a passing failure, RFC 9110 §15.6.3 to §15.6.5, or a download
-//!   that brings nothing) is ridden out: no longer than the longest this path has passed;
-//!   a path that has passed none rides it out while it lasts, as one does after a trouble
-//!   ran out, until one passes, by the same rule (D222's run-out clause).
+//!   that brings nothing) is ridden out before it runs out: the longest this path has
+//!   passed. A run-out is told once and is no failure: the trouble is then ridden out while
+//!   it lasts, as one is on a path that has passed none (the cold start), and as each of the
+//!   path's is until one passes, which teaches its length. A re-ask past a run-out that the
+//!   far end refuses, or ends before any answer, is its end (D222's run-out clause).
 //!
 //! What a path showed is kept in the home, in the image store's `links/`, in the one
 //! record of the path that its transfers learn into too (D226, crate::links): by its host
@@ -392,16 +394,19 @@ impl Paths {
     }
 
     /// Starts the path from what it showed before, as kept; what it has shown since this
-    /// client asked it is kept over that, each slowest the slower of the two, both seen.
+    /// client asked it is kept over that, as a record keeps it ([`Shown::merged`]): each
+    /// slowest the slower, each pace the newer sample's, the longest trouble the longer, and
+    /// the troubles this client passed added. Only what it has shown is its own: a connect
+    /// it took before its route was known keeps the route's record's handshakes and
+    /// troubles (waits-07). The record read is then what it writes its own over.
     pub(crate) fn learn(&self, key: &str, shown: Shown) {
         self.with(key, |p| {
             if p.changed {
-                p.shown.slowest_answer_us = slower(p.shown.slowest_answer_us, shown.slowest_answer_us);
-                p.shown.slowest_silence_us = slower(p.shown.slowest_silence_us, shown.slowest_silence_us);
+                p.shown = shown.clone().merged(&p.base, &p.shown);
             } else {
                 p.shown = shown.clone();
-                p.base = shown;
             }
+            p.base = shown;
         });
     }
 
@@ -502,14 +507,15 @@ impl Paths {
         });
     }
 
-    /// How long a trouble of `key`'s is ridden out: no longer than the longest it has
+    /// How long a trouble of `key`'s is ridden out before it runs out: the longest it has
     /// passed; none where it has passed none, or where its last ran out and none has
     /// passed since, whose trouble is ridden out while it lasts (`Bounded`).
     pub(crate) fn budget(&self, key: &str) -> Option<Duration> {
         self.with(key, |p| bounded(Some(p.shown.trouble_us), p.trouble).bound())
     }
 
-    /// A trouble that lasted `lasted` passed: the longest where it is longer, a run-out over.
+    /// A trouble that lasted `lasted` passed, one that ran out past the longest included:
+    /// the longest where it is longer, a run-out over.
     pub(crate) fn passed(&self, key: &str, lasted: Duration) {
         let us = micros(lasted);
         self.with(key, |p| {
@@ -520,10 +526,11 @@ impl Paths {
         });
     }
 
-    /// A trouble of `key`'s lasted the longest it had passed and was given up on. It learns
-    /// nothing: until one passes, its troubles are ridden out while they last.
-    pub(crate) fn trouble_ran_out(&self, key: &str) {
-        self.with(key, |p| p.trouble = Out::Yes);
+    /// A trouble of `key`'s outlasted the longest it had passed, and is ridden out while it
+    /// lasts, as its troubles are until one passes, which teaches its length
+    /// ([`Paths::passed`]). Whether it began the run-out: one under way is told no more.
+    pub(crate) fn trouble_ran_out(&self, key: &str) -> bool {
+        self.with(key, |p| std::mem::replace(&mut p.trouble, Out::Yes) == Out::No)
     }
 }
 
@@ -674,7 +681,10 @@ mod tests {
         assert_eq!(paths.answer("t:443"), Bounded::Slowest(Duration::from_secs(7)));
         paths.answered("s:443", Duration::from_secs(2));
         paths.learn("s:443", kept);
-        assert_eq!(paths.budget("s:443"), None, "what it showed since is kept");
+        // What it showed since is kept over the record, and what it did not show is the
+        // record's: its trouble, where it passed none (waits-07); its paces, newer, its own.
+        assert_eq!(paths.budget("s:443"), Some(Duration::from_secs(200)));
+        assert_eq!(paths.timeout("s:443", Wait::Connect), Duration::from_secs(9));
         assert_eq!(
             paths.answer("s:443"),
             Bounded::Slowest(Duration::from_secs(7)),
@@ -820,5 +830,43 @@ mod tests {
         drop(paths);
         let record = crate::links::read(&crate::links::file(&dir, "r:443", Some(wired))).unwrap();
         assert_eq!(record.shown.trouble_us, 300_000_000);
+    }
+
+    /// A client's first connect is taught before its route is known, as `Client::connect`
+    /// dials and only then says where it left from: its route's record, read then, keeps
+    /// the trouble it passed and the handshake it learned, the connect only this client's,
+    /// and what it writes back adds its own to the record, no more (waits-07). Before, the
+    /// connect's change kept only the record's slowest answer and silence: the trouble
+    /// cold, the handshake 1 s.
+    #[test]
+    fn a_connect_before_its_route_is_known_keeps_its_routes_record() {
+        let dir = shards_testdir::TempDir::new("route-late").unwrap();
+        let wired = std::net::IpAddr::from([192, 168, 1, 92]);
+        let mut handshake = Pace::default();
+        handshake.add(Duration::from_secs(2));
+        handshake.at_us = 1;
+        let kept = Shown {
+            trouble_us: 300_000,
+            troubles: 4,
+            handshake,
+            ..Shown::default()
+        };
+        crate::links::update(&crate::links::file(&dir, "r:443", Some(wired)), |r| {
+            r.shown = kept
+        })
+        .unwrap();
+        let paths = Paths::default();
+        paths.keep_in(&dir);
+        paths.waited("r:443", Wait::Connect, Duration::from_millis(10));
+        paths.located("r:443", wired);
+        assert_eq!(paths.budget("r:443"), Some(Duration::from_millis(300)));
+        assert_eq!(paths.timeout("r:443", Wait::Handshake), Duration::from_secs(6));
+        assert_eq!(paths.timeout("r:443", Wait::Connect), Duration::from_secs(1));
+        paths.passed("r:443", Duration::from_millis(100));
+        drop(paths);
+        let record = crate::links::read(&crate::links::file(&dir, "r:443", Some(wired))).unwrap();
+        assert_eq!((record.shown.trouble_us, record.shown.troubles), (300_000, 5));
+        assert_eq!(record.shown.handshake.n, 1);
+        assert_eq!(record.shown.connect.n, 1);
     }
 }
