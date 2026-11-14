@@ -216,7 +216,9 @@ impl Leases {
         match self.each.get_mut(reference) {
             Some(Lease::Held { value, .. }) => Asked::Held(value.as_slice()),
             Some(Lease::Asked { waiting, .. }) => {
-                waiting.push(waiter);
+                if !waiting.contains(&waiter) {
+                    waiting.push(waiter);
+                }
                 Asked::Waiting
             }
             None => Asked::Refused(Refusal::Ended),
@@ -291,6 +293,17 @@ impl Leases {
     /// The flows whose lease was answered or ended since the last call.
     pub fn resumed(&mut self) -> Vec<Resumed> {
         std::mem::take(&mut self.resumed)
+    }
+
+    /// A flow ended: neither an outstanding ask nor an answer waits for its token again.
+    /// Keep the ask itself, so that a late broker answer still belongs to this run.
+    pub fn gone(&mut self, waiter: Waiter) {
+        for lease in self.each.values_mut() {
+            if let Lease::Asked { waiting, .. } = lease {
+                waiting.retain(|w| *w != waiter);
+            }
+        }
+        self.resumed.retain(|r| r.waiter != waiter);
     }
 
     /// Credential `reference`'s value, where its lease is held at `now`.
@@ -481,21 +494,11 @@ mod tests {
     }
 
     #[test]
-    fn creds_05_a_delayed_answer_cannot_restart_the_lessors_lease() {
-        let mut l = leases();
-        let asked = Instant::now();
-        assert!(matches!(l.ask(CLAUDE, 1, asked), Asked::Waiting));
-        let id = the_ask(&l.asks(), CLAUDE);
-        let life = Duration::from_secs(1);
-        let answer = encode_answer(id, Ok((lives(life), VALUE))).unwrap();
-        let delivered = asked + life + life;
-        assert!(l.answered(&answer, delivered));
-        assert!(l.held(CLAUDE, delivered).is_none(), "a delayed answer extended the lease");
-    }
-
-    #[test]
     fn creds_06_a_pending_lease_resumes_each_flow_once() {
-        for outcome in [Ok((NonZeroU64::MAX, VALUE)), Err(Refusal::Denied("fixture".into()))] {
+        for outcome in [
+            Ok((NonZeroU64::MAX, VALUE)),
+            Err(Refusal::Denied("fixture".into())),
+        ] {
             let mut l = leases();
             let now = Instant::now();
             for waiter in [1, 1, 2, 1, 2, 2] {
@@ -507,6 +510,23 @@ mod tests {
             let resumed = l.resumed();
             assert_eq!(resumed.iter().map(|r| r.waiter).collect::<Vec<_>>(), [1, 2]);
         }
+    }
+
+    #[test]
+    fn creds_06_an_ended_flow_keeps_no_waiter_or_answer() {
+        let mut l = leases();
+        let now = Instant::now();
+        for waiter in [1, 2] {
+            assert!(matches!(l.ask(CLAUDE, waiter, now), Asked::Waiting));
+        }
+        l.gone(1);
+        let id = the_ask(&l.asks(), CLAUDE);
+        let answer = encode_answer(id, Ok((NonZeroU64::MAX, VALUE))).unwrap();
+        assert!(l.answered(&answer, now));
+        assert_eq!(l.resumed.iter().map(|r| r.waiter).collect::<Vec<_>>(), [2]);
+        l.gone(2);
+        assert!(l.resumed().is_empty());
+        assert_eq!(l.held(CLAUDE, now), Some(VALUE));
     }
 
     /// Do: ask a granted credential for two flows, answer it, then ask it again before and

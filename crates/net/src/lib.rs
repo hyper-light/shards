@@ -2799,6 +2799,7 @@ impl<'r> Stack<'r> {
     /// flow (D242, #74 step 8): an answer, which may be a token response, outlives no flow.
     fn release(&mut self, slot: u32) {
         if let Some(c) = self.credentials.as_mut() {
+            c.leases.gone(self.tcp.token(slot));
             c.sign_ins.gone(self.tcp.token(slot));
         }
         self.tcp.release(slot);
