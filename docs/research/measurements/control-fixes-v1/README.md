@@ -287,3 +287,12 @@ IPC and remote. [Complete green log](logs/r12-merged-green.log). Five cap tests
 were already green on the identical cap source in R11. This is the focused green
 combination over main f7a3edfbc; subsequent doc/comment changes are not executable
 changes. R10 never ran a command (carrier folder unavailable); not a test result.
+
+R13 at 4ce3d80a4 on adacachy2 Linux 7.3.3 x86_64: all 8 MCP tests, 6 lane
+tests and shards-init all-target clippy passed on a cold owned target, then that
+target was removed in the same command. [Linux green](logs/r13-linux-green.log).
+Merge 7765f515d81c45c2a39905ce0fc46233945f0cad incorporates main bfd2cca4c;
+its only conflict was the platform-measurements append, resolved by preserving
+both the control and memory-16 records. No init/ABI/dependency/lock inputs differ
+from the native-tested source (git diff --stat 4ce3d80a4..7765f515d over those
+paths is empty). Mac focused checks are rerun after this documentation conflict.
