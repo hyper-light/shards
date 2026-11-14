@@ -24246,6 +24246,19 @@ kernel of that ABI (no host here has one): the asking pass ran on ABI 11. Owed t
 VM runs on KVM, a template's seal among them (daemon.rs pool tests), x86_64 and arm64
 through L1, and one on a kernel of ABI 5 to 7.
 
+Amended 2026-11-13 (ROOT: R03, the wait's doubling was a chosen multiplier, D222). The
+wait has no timeout now: an asked thread's answer (an eventfd) or its end (its thread
+pidfd, PIDFD_THREAD) wakes it, and a thread that blocks the asking signal, or a process
+that ignores it (SigBlk, SigIgn), fails the layer at once, typed (`Unasked::Deaf`). On
+adacachy2, `cargo test -p shards-vm-process confine::` 11 of 11, the asked pass run under
+the filter an ABI-5 host has (`confine_as(5)`), `-p shards-syscall-filter` 9 of 9 (rules
+on two arguments added up, against the instruction model), clippy clean for both.
+Mutants, each red: the SigBlk/SigIgn check dropped, the deaf test's pass waited until
+the 240 s bound killed it (exit 124); the pidfd dropped from the wait,
+`a_wait_for_an_answer_ends_with_the_answer_or_the_thread` timed out on a thread that
+ended unanswered (`left: Err(Timeout)`); the thread-pidfd rule dropped, the asked pass
+trapped under that filter (exit 159).
+
 ### M569. A confined VM process dialed its user's sockets, its daemon's Engine API among them (D30)
 
 Linux x86_64, adacachy2 (7.3.3-1-cachyos, Landlock ABI 11), 2026-11-13, policy df2acf47,
