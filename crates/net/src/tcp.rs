@@ -955,6 +955,23 @@ impl Conn {
         }
     }
 
+    /// RFC 9293 §3.10.7.4, table 6: a segment must overlap the advertised receive
+    /// window before its acknowledgement or FIN can change this connection.
+    fn accepts(&self, seg: &wire::Tcp<'_>) -> bool {
+        let Some(len) = u32::try_from(seg.payload.len())
+            .ok()
+            .and_then(|len| len.checked_add(u32::from(seg.flags & FIN != 0)))
+        else {
+            return false;
+        };
+        let window = u32::from(self.window()) << self.our_scale();
+        if window == 0 {
+            return len == 0 && seg.seq == self.rcv_nxt;
+        }
+        let within = |seq: u32| seq.wrapping_sub(self.rcv_nxt) < window;
+        within(seg.seq) || (len != 0 && within(seg.seq.wrapping_add(len - 1)))
+    }
+
     /// A segment from the guest for this connection; its bytes through the injector, given
     /// `run`, where it serves the flow.
     pub fn on_segment(&mut self, seg: &wire::Tcp<'_>, out: &mut dyn ToGuest, mut run: Option<&mut Run<'_>>) {
@@ -998,6 +1015,14 @@ impl Conn {
             return;
         }
         if self.state != State::Open {
+            return;
+        }
+        if !self.accepts(seg) {
+            self.ack(out);
+            return;
+        }
+        // The fifth check in RFC 9293 §3.10.7.4: no ACK, no segment processing.
+        if seg.flags & ACK == 0 {
             return;
         }
         if seg.flags & ACK != 0 {
@@ -1091,7 +1116,10 @@ impl Conn {
         if before(seg.seq, self.rcv_nxt) {
             answer = true;
         }
-        if seg.flags & FIN != 0 && seq.wrapping_add(data.len() as u32) == self.rcv_nxt && !self.guest_fin {
+        if seg.flags & FIN != 0
+            && seg.seq.wrapping_add(seg.payload.len() as u32) == self.rcv_nxt
+            && !self.guest_fin
+        {
             self.guest_fin = true;
             self.rcv_nxt = self.rcv_nxt.wrapping_add(1);
             answer = true;
@@ -1461,7 +1489,10 @@ mod tests {
                     "FIN {seq} flags {flags} ended the host stream"
                 );
                 c.on_segment(
-                    &wire::Tcp { payload: b"x", ..segment(5001, 1001, ACK) },
+                    &wire::Tcp {
+                        payload: b"x",
+                        ..segment(5001, 1001, ACK)
+                    },
                     &mut sent,
                     None,
                 );
@@ -1470,6 +1501,27 @@ mod tests {
                 assert_eq!(byte, *b"x");
             }
         }
+    }
+
+    #[test]
+    fn fins_keep_their_sequence_when_old_payload_is_trimmed() {
+        let mut sent = Sent::default();
+        let (mut c, mut client) = opened(&mut sent);
+        c.on_segment(&segment(5001, 1001, FIN), &mut sent, None);
+        assert!(!c.guest_fin, "an in-window FIN without ACK was accepted");
+        c.on_segment(
+            &wire::Tcp {
+                payload: b"old",
+                ..segment(4998, 1001, FIN | ACK)
+            },
+            &mut sent,
+            None,
+        );
+        assert!(c.guest_fin, "the FIN after the old bytes is at RCV.NXT");
+        assert_eq!(c.rcv_nxt, 5002);
+        let mut got = Vec::new();
+        client.read_to_end(&mut got).unwrap();
+        assert!(got.is_empty(), "old bytes were delivered again");
     }
 
     /// The guest's bytes go straight to the host's socket while nothing waits before them,
