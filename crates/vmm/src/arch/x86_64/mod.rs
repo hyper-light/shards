@@ -7,6 +7,7 @@ pub mod boot;
 pub mod cpuid;
 pub mod ioapic;
 pub mod mmio;
+pub mod xsave;
 
 /// Guest-physical memory map (research doc §6.4, after Firecracker's layout).
 pub mod layout {

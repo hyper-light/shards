@@ -9,7 +9,7 @@
 //! Whatever was started is ended where a later step fails.
 
 use std::ffi::{OsStr, OsString};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 #[cfg(unix)]
 use std::os::fd::{AsFd as _, BorrowedFd, RawFd};
@@ -236,16 +236,17 @@ type Env = Vec<(&'static str, OsString)>;
 /// The VM process's binary for its command `args`, its environment, and whether it runs a
 /// GPU: the GPU's build where its command asks for one (D144), which on Unix says MoltenVK's
 /// errors alone (`MVK_CONFIG_LOG_LEVEL` 1, MoltenVK's errors-only level); else `vm`. Either
-/// is checked against this build's digest as it is about to start (`helpers::verified`).
-fn program(args: &[&OsStr], vm: &Path) -> Result<(PathBuf, Env, bool), String> {
+/// is checked to be this build's as it is about to start, and held until it has
+/// (`helpers::program`).
+fn program(args: &[&OsStr], vm: &Path) -> Result<(crate::helpers::Program, Env, bool), String> {
     #[cfg_attr(windows, allow(unused_mut))]
     let mut env = crate::netproc::child_env();
     if !args.iter().any(|a| *a == "--gpu") {
-        return Ok((crate::helpers::checked(vm)?, env, false));
+        return Ok((crate::helpers::program(vm)?, env, false));
     }
     #[cfg(unix)]
     env.push(("MVK_CONFIG_LOG_LEVEL", "1".into()));
-    Ok((crate::helpers::vm_gpu()?, env, true))
+    Ok((crate::helpers::program(&crate::helpers::vm_gpu()?)?, env, true))
 }
 
 /// `args` with `words` right after its command, where Windows' `--grants` goes
@@ -404,7 +405,13 @@ fn launch_with(
         started.as_ref().map(|(_, side, mac)| (side, mac)),
     );
     let argv = after_command(args, &words);
-    let spawned = spawn(group, &binary, &argv, &fds, &crate::netproc::env_pairs(&env));
+    let spawned = spawn(
+        group,
+        &binary.path(),
+        &argv,
+        &fds,
+        &crate::netproc::env_pairs(&env),
+    );
     drop(fds);
     let vm = match spawned {
         Ok(vm) => vm,
@@ -414,7 +421,7 @@ fn launch_with(
                 drop(side);
                 crate::netproc::reap(&process, record);
             }
-            return Err(format!("starting {who} ({}): {e}", binary.display()));
+            return Err(format!("starting {who} ({}): {e}", binary.shown()));
         }
     };
     // The VM holds its ends now, its side of the ring among them: as it goes, its network
@@ -579,7 +586,7 @@ fn launch(plan: Plan<'_>, kind: Kind) -> Result<Launched, String> {
     let argv = after_command(args, &words);
     let err = std::io::stderr();
     let suspended = shards_ipc::spawn_suspended(&shards_ipc::Spawn {
-        program: &binary,
+        program: &binary.path(),
         args: &argv,
         // Before its words: `--net` takes the handles its grants name (vm_run.rs `net_host`).
         grants_at: 1,
@@ -594,7 +601,7 @@ fn launch(plan: Plan<'_>, kind: Kind) -> Result<Launched, String> {
         group,
         graphics: gpu,
     })
-    .map_err(|e| format!("starting {who} ({}): {e}", binary.display()))?;
+    .map_err(|e| format!("starting {who} ({}): {e}", binary.shown()))?;
     // Shared with it already, and its handles duplicated into it.
     drop((given, sockets));
     // Before the VM runs: ended with the suspended VM, where it cannot start.
@@ -612,7 +619,7 @@ fn launch(plan: Plan<'_>, kind: Kind) -> Result<Launched, String> {
     let giver = suspended.giver().map_err(|e| format!("answering {who}: {e}"))?;
     let mut vm = suspended
         .resume()
-        .map_err(|e| format!("starting {who} ({}): {e}", binary.display()))?;
+        .map_err(|e| format!("starting {who} ({}): {e}", binary.shown()))?;
     // Its AppContainer's profile goes once it has, as its follower lets it go.
     vm.hold(container);
     // Its ends are its own now.

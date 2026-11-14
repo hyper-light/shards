@@ -19,7 +19,9 @@
 use std::fs;
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
+
+use shards_vmm::platform::FileIdentity;
 
 mod carried {
     include!(concat!(env!("OUT_DIR"), "/helpers.rs"));
@@ -38,21 +40,61 @@ pub fn vm() -> Result<PathBuf, String> {
     ours("shards-vm", carried::SHARDS_VM, carried::SHARDS_VM_SHA256)
 }
 
-/// The VM process at `vm`, which [`vm`] gave, checked again as it is about to start
-/// (launch.rs): this build's own checked against its digest and written again where it
-/// differs ([`verified`]); any other (`SHARDS_VM_BINARY`'s, a carrier's beside it, D237)
-/// as it is, its bytes its giver's to answer for.
-pub fn checked(vm: &Path) -> Result<PathBuf, String> {
-    match DIR.get() {
-        Some(Ok((dir, _))) if !carried::BESIDE && given().is_none() && vm == dir.join(exe("shards-vm")) => {
-            verified(
-                dir,
-                &exe("shards-vm"),
-                carried::SHARDS_VM,
-                carried::SHARDS_VM_SHA256,
-            )
+/// A helper about to start ([`program`]): this build's, its bytes checked to be those it
+/// carries, held open until it has started; or another's, as it is.
+#[derive(Debug)]
+pub struct Program {
+    path: PathBuf,
+    /// The file checked, open until it has started: on Linux what it starts through, on
+    /// Windows what keeps others from writing, renaming or deleting it ([`Program::path`]).
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    held: Option<fs::File>,
+}
+
+impl Program {
+    /// What to start. On Linux a helper checked is started through its own descriptor,
+    /// `/proc/PID/fd/N` of this process, which the process that starts it (this one, or its
+    /// spawner, PM M158: of the same user, which proc(5) lets open it) opens as the very file
+    /// checked, whatever has been renamed over its name since; its name where /proc is not
+    /// there. macOS has no fexecve(2), and Windows' CreateProcess takes a name: there it is
+    /// its name, the file held open meanwhile, which on Windows no other handle may write,
+    /// rename or delete ([`open_checked`]); on macOS nothing holds its name.
+    pub fn path(&self) -> PathBuf {
+        #[cfg(target_os = "linux")]
+        if let Some(file) = &self.held {
+            use std::os::fd::AsRawFd as _;
+            let own = PathBuf::from(format!("/proc/{}/fd/{}", std::process::id(), file.as_raw_fd()));
+            if fs::symlink_metadata(&own).is_ok() {
+                return own;
+            }
         }
-        _ => Ok(vm.to_path_buf()),
+        self.path.clone()
+    }
+
+    /// Its name, as what is said of it says it.
+    pub fn shown(&self) -> std::path::Display<'_> {
+        self.path.display()
+    }
+}
+
+/// The helper at `path`, which [`vm`], [`net`] or [`vm_gpu`] gave, as a process is about to
+/// start it: this build's own checked to hold the bytes it carries ([`checked`]), and held
+/// open; any other (`SHARDS_VM_BINARY`'s, a carrier's beside it, D237) as it is, its bytes
+/// its giver's to answer for.
+pub fn program(path: &Path) -> Result<Program, String> {
+    let ours = match DIR.get() {
+        Some(Ok((dir, _))) if !carried::BESIDE => all_carried()
+            .into_iter()
+            .find(|(name, _, _)| *path == dir.join(exe(name)))
+            .map(|carried| (dir, carried)),
+        _ => None,
+    };
+    match ours {
+        Some((dir, (name, bytes, sha))) => checked(dir, &exe(name), bytes, sha),
+        None => Ok(Program {
+            path: path.to_path_buf(),
+            held: None,
+        }),
     }
 }
 
@@ -62,43 +104,100 @@ fn exe(name: &str) -> String {
 }
 
 /// The helper `name` of this build's directory, its bytes `bytes`, whose SHA-256 is `sha`:
-/// checked against it ([`verified`]); or, for a carried `shards` (D237), the one beside it.
+/// checked ([`checked`]); or, for a carried `shards` (D237), the one beside it.
 fn ours(name: &str, bytes: &[u8], sha: &str) -> Result<PathBuf, String> {
     let dir = dir()?;
     if carried::BESIDE {
         return Ok(dir.join(exe(name)));
     }
-    verified(&dir, &exe(name), bytes, sha)
+    checked(&dir, &exe(name), bytes, sha).map(|program| program.path)
 }
 
-/// `name` in `dir`, checked as a process is about to start it: its bytes' SHA-256 is `sha`,
-/// this build's digest of `bytes` (D36), or it is written again whole from them
-/// ([`publish`]), as it is where it is not there. Its length says nothing of its bytes, and
-/// they can change after they were written whole (by hand, by a program of this user's, on
-/// the disk), so each start reads them all (runs-10). A helper Windows will not let be
-/// replaced, as one a running VM process holds, is refused with why.
-fn verified(dir: &Path, name: &str, bytes: &[u8], sha: &str) -> Result<PathBuf, String> {
+/// Each helper this process checked, by path, and which version of its file it found to
+/// hold this build's bytes: one a helper, so at most as many as this build carries. A
+/// version is the file's identity and times (`platform::file_identity`), which any write to
+/// it or any file renamed over it changes, so that its bytes are read again then and only
+/// then.
+static CHECKED: Mutex<Vec<(PathBuf, FileIdentity)>> = Mutex::new(Vec::new());
+
+/// `name` in `dir`, checked as a process is about to start it, and held open: its bytes'
+/// SHA-256 is `sha`, this build's digest of `bytes` (D36). Its length says nothing of its
+/// bytes, and they can change after they were written whole (by hand, by a program of this
+/// user's, on the disk), so they are read whole as this process first starts it and again
+/// whenever its file's version has changed since (runs-10); else its version alone is read.
+/// Where they differ, or it is not there, it is written again whole from `bytes`
+/// ([`publish`]) and checked again; one that cannot be written, or written is still not
+/// this build's, is refused with why.
+fn checked(dir: &Path, name: &str, bytes: &[u8], sha: &str) -> Result<Program, String> {
     let path = dir.join(name);
-    match digest(&path) {
-        Ok(found) if found == sha => return Ok(path),
-        Ok(_) => {}
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(e) => return Err(at(&path, e)),
-    }
-    publish(dir, name, bytes).map_err(|e| {
+    let refused = |why: String| {
         format!(
-            "{}: not this build's bytes (SHA-256 {sha}), and not written again: {e}",
+            "{}: not this build's bytes (SHA-256 {sha}), and not written again: {why}",
             path.display()
         )
-    })
+    };
+    if let Some(held) = open_checked(&path, sha).map_err(|e| at(&path, e))? {
+        return Ok(Program {
+            path,
+            held: Some(held),
+        });
+    }
+    publish(dir, name, bytes).map_err(refused)?;
+    match open_checked(&path, sha).map_err(|e| at(&path, e))? {
+        Some(held) => Ok(Program {
+            path,
+            held: Some(held),
+        }),
+        None => Err(refused("written again, it reads as other bytes".into())),
+    }
 }
 
-/// The SHA-256 of `path`'s bytes, in lowercase hex as build.rs writes the carried digests.
-fn digest(path: &Path) -> io::Result<String> {
+/// The file at `path`, open, where it holds the bytes whose SHA-256 is `sha`: read whole
+/// unless [`CHECKED`] has its version, and kept there where they are and its version did not
+/// change as they were read. None where it is not there or holds others. On Windows it is
+/// opened sharing only reads, so that while it is held no other handle writes, renames or
+/// deletes it (CreateFileW's dwShareMode), which its start's own open, for reading and
+/// executing, shares.
+fn open_checked(path: &Path, sha: &str) -> io::Result<Option<fs::File>> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+        options.share_mode(FILE_SHARE_READ);
+    }
+    let file = match options.open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let version = shards_vmm::platform::file_identity(&file)?;
+    let known = |checked: &[(PathBuf, FileIdentity)]| checked.iter().any(|(p, v)| p == path && *v == version);
+    if known(&lock_checked()) {
+        return Ok(Some(file));
+    }
+    if digest(&file)? != sha || shards_vmm::platform::file_identity(&file)? != version {
+        return Ok(None);
+    }
+    let mut checked = lock_checked();
+    checked.retain(|(p, _)| p != path);
+    checked.push((path.to_path_buf(), version));
+    Ok(Some(file))
+}
+
+fn lock_checked() -> std::sync::MutexGuard<'static, Vec<(PathBuf, FileIdentity)>> {
+    CHECKED.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The SHA-256 of the bytes `file` reads, from its start, in lowercase hex as build.rs writes
+/// the carried digests.
+fn digest(mut file: &fs::File) -> io::Result<String> {
     use sha2::Digest as _;
-    use std::io::BufRead as _;
+    use std::io::{BufRead as _, Seek as _};
+    file.rewind()?;
     // Read through std's own buffer, its size std's choice.
-    let mut file = io::BufReader::new(fs::File::open(path)?);
+    let mut file = io::BufReader::new(file);
     let mut hasher = sha2::Sha256::new();
     loop {
         let n = match file.fill_buf() {
@@ -169,12 +268,13 @@ pub fn vm_gpu() -> Result<PathBuf, String> {
         }
     }
     let dir = dir()?;
-    verified(
+    checked(
         &dir,
         &exe("shards-vm-gpu"),
         carried::SHARDS_VM_GPU,
         carried::SHARDS_VM_GPU_SHA256,
     )
+    .map(|program| program.path)
 }
 
 /// Writes `bytes` to `name` in `dir` whole: to a staging file of this writer's own, synced
@@ -255,6 +355,17 @@ fn carried() -> [(&'static str, &'static [u8], &'static str); 2] {
     ]
 }
 
+/// [`carried`], and the GPU's VM process, written out only as a GPU VM needs it.
+fn all_carried() -> [(&'static str, &'static [u8], &'static str); 3] {
+    let [vm, net] = carried();
+    let gpu = (
+        "shards-vm-gpu",
+        carried::SHARDS_VM_GPU,
+        carried::SHARDS_VM_GPU_SHA256,
+    );
+    [vm, net, gpu]
+}
+
 /// The directory of `exe`, a `shards` built to be carried (`SHARDS_HELPERS=beside`, D237),
 /// where the program carrying it wrote the VM and network processes out beside it: that
 /// program owns the directory's life and the helpers' signatures, so nothing here writes,
@@ -324,7 +435,7 @@ fn dir() -> Result<PathBuf, String> {
 
 /// Whether `dir` holds every helper at the size it was written: what the first process
 /// of a build wrote, all of it, since a directory appears only once its files are synced.
-/// Whether their bytes are still this build's is checked as each is started ([`verified`]).
+/// Whether their bytes are still this build's is checked as each is started ([`checked`]).
 fn complete(dir: &Path) -> bool {
     carried().iter().all(|(name, bytes, _)| {
         fs::metadata(dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX)))
@@ -627,13 +738,13 @@ mod tests {
         let dir = shards_testdir::TempDir::new("helper-sha").unwrap();
         let bytes = b"this build's helper";
         let path = dir.join("helper");
-        assert_eq!(verified(&dir, "helper", bytes, &sha(bytes)).unwrap(), path);
+        assert_eq!(checked(&dir, "helper", bytes, &sha(bytes)).unwrap().path, path);
         assert_eq!(fs::read(&path).unwrap(), bytes);
         let mut flipped = bytes.to_vec();
         flipped[0] ^= 1;
         fs::write(&path, &flipped).unwrap();
         assert_eq!(fs::metadata(&path).unwrap().len(), bytes.len() as u64);
-        assert_eq!(verified(&dir, "helper", bytes, &sha(bytes)).unwrap(), path);
+        assert_eq!(checked(&dir, "helper", bytes, &sha(bytes)).unwrap().path, path);
         assert_eq!(fs::read(&path).unwrap(), bytes);
     }
 
@@ -646,11 +757,114 @@ mod tests {
         let bytes = b"this build's helper";
         fs::write(dir.join("helper"), b"this build's helpeR").unwrap();
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o500)).unwrap();
-        let refused = verified(&dir, "helper", bytes, &sha(bytes));
+        let refused = checked(&dir, "helper", bytes, &sha(bytes));
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
         let refused = refused.unwrap_err();
         assert!(refused.contains("not this build's bytes"), "{refused}");
         assert_eq!(fs::read(dir.join("helper")).unwrap(), b"this build's helpeR");
+    }
+
+    /// A helper's bytes are read once for each version of its file: a start that finds the
+    /// version it checked reads none of them, and one whose file was written since, its
+    /// length kept, reads them again and writes this build's back (runs-10).
+    #[test]
+    fn a_helper_is_read_again_only_once_its_file_changed() {
+        let dir = shards_testdir::TempDir::new("helper-version").unwrap();
+        let bytes = b"this build's helper";
+        let path = dir.join("helper");
+        let first = checked(&dir, "helper", bytes, &sha(bytes)).unwrap();
+        let version = shards_vmm::platform::file_identity(first.held.as_ref().unwrap()).unwrap();
+        drop(first);
+        assert!(lock_checked().contains(&(path.clone(), version)));
+        // Its version known: started with no read of its bytes, which a digest that is not
+        // its bytes' shows.
+        assert!(open_checked(&path, "not its digest").unwrap().is_some());
+        let mut flipped = bytes.to_vec();
+        flipped[0] ^= 1;
+        fs::write(&path, &flipped).unwrap();
+        assert!(open_checked(&path, &sha(bytes)).unwrap().is_none());
+        drop(checked(&dir, "helper", bytes, &sha(bytes)).unwrap());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+    }
+
+    /// A helper checked starts as the file checked: on Linux through its descriptor, even
+    /// once another file is renamed over its name; on Windows its name is held, and nothing
+    /// is renamed over it; on macOS, which has neither, its name (D36's gap).
+    #[test]
+    fn a_checked_helper_starts_as_the_file_checked() {
+        let dir = shards_testdir::TempDir::new("helper-held").unwrap();
+        let (good, other): (&str, &str) = if cfg!(windows) {
+            (
+                r"C:\Windows\System32\hostname.exe",
+                r"C:\Windows\System32\whoami.exe",
+            )
+        } else if Path::new("/usr/bin/true").exists() {
+            ("/usr/bin/true", "/usr/bin/false")
+        } else {
+            ("/bin/true", "/bin/false")
+        };
+        let bytes = fs::read(good).unwrap();
+        let program = checked(&dir, "tool", &bytes, &sha(&bytes)).unwrap();
+        let swapped = dir.join("swapped");
+        fs::copy(other, &swapped).unwrap();
+        let renamed = fs::rename(&swapped, dir.join("tool"));
+        let status = std::process::Command::new(program.path())
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        if cfg!(windows) {
+            assert!(renamed.is_err(), "a file was renamed over a held helper");
+            assert!(status.success());
+        } else if cfg!(target_os = "linux") {
+            renamed.unwrap();
+            assert!(status.success(), "started the file renamed over it");
+        } else {
+            renamed.unwrap();
+            assert!(!status.success());
+        }
+    }
+
+    /// What a start's check of a helper costs, a version known and its bytes read, as
+    /// `SHARDS_HELPER_COST_BYTES` bytes (a helper's size: shards-vm's, as its cache holds it)
+    /// say: n, p50, p90, p99 and max of each. A measurement, run alone:
+    /// `cargo test --profile test-release -p shards --bin shards a_helper_checks_cost -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn a_helper_checks_cost() {
+        let size: usize = std::env::var("SHARDS_HELPER_COST_BYTES")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or_else(|| fs::metadata(vm().unwrap()).unwrap().len() as usize);
+        let dir = shards_testdir::TempDir::new("helper-cost").unwrap();
+        let bytes: Vec<u8> = (0..size).map(|i| (i as u8).wrapping_mul(31)).collect();
+        let want = sha(&bytes);
+        let path = dir.join("helper");
+        drop(checked(&dir, "helper", &bytes, &want).unwrap());
+        let n = 200;
+        let time = |f: &dyn Fn()| {
+            let mut took: Vec<std::time::Duration> = (0..n)
+                .map(|_| {
+                    let t0 = std::time::Instant::now();
+                    f();
+                    t0.elapsed()
+                })
+                .collect();
+            took.sort();
+            let at = |q: f64| took[((n as f64 * q) as usize).min(n - 1)];
+            format!(
+                "n {n} p50 {:?} p90 {:?} p99 {:?} max {:?}",
+                at(0.5),
+                at(0.9),
+                at(0.99),
+                took[n - 1]
+            )
+        };
+        let known = time(&|| assert!(open_checked(&path, &want).unwrap().is_some()));
+        let read = time(&|| {
+            let file = fs::File::open(&path).unwrap();
+            assert_eq!(digest(&file).unwrap(), want);
+        });
+        println!("helper check, {size} bytes: version known: {known}; bytes read: {read}");
     }
 
     fn names(root: &Path) -> Vec<String> {

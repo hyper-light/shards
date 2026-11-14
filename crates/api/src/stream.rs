@@ -618,6 +618,21 @@ mod tests {
         assert!(Stream::set_read_timeout(&a, Some(Duration::ZERO)).is_err());
     }
 
+    /// A timeout set after its peer answered and closed (PM M579) is taken, as a stream's waits
+    /// are its own (`waits`), no socket option that macOS refuses on an ended socket, and the
+    /// answer is read whole, then its end: an API client reads a fully answered request.
+    #[test]
+    fn a_timeout_set_after_its_peer_answered_and_closed_reads_the_answer() {
+        let (mut a, mut b) = pair().unwrap();
+        b.write_all(b"answer").unwrap();
+        drop(b);
+        Stream::set_read_timeout(&a, Some(Duration::from_secs(5))).unwrap();
+        Stream::set_write_timeout(&a, Some(Duration::from_secs(5))).unwrap();
+        let mut answer = Vec::new();
+        a.read_to_end(&mut answer).unwrap();
+        assert_eq!(answer, b"answer");
+    }
+
     #[test]
     fn already_queued_data_is_read_before_waiting_out_a_timeout() {
         let (mut a, mut b) = pair().unwrap();

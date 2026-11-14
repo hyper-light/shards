@@ -82,6 +82,10 @@ fn confine_as(abi: i64) -> Result<(), String> {
         libc::SYS_sched_yield,
         libc::SYS_sched_getaffinity,
         libc::SYS_getrandom,
+        // The C library's sysconf(_SC_PHYS_PAGES), the host's memory, which a snapshot's
+        // state is read within (vmm snapshot `StateRefused::PastHost`, migrate-04), as
+        // /proc/meminfo is past Landlock's rules: glibc's and musl's ask sysinfo(2).
+        libc::SYS_sysinfo,
         libc::SYS_getpid,
         libc::SYS_gettid,
         libc::SYS_getppid,
@@ -390,12 +394,12 @@ const MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED: u32 = 1 << 4;
 /// threads it starts, the address of a socket it was given (`getsockname`, libGLX_nvidia),
 /// the C library's `getresuid` and `getresgid` as a driver asks whether it runs set-uid or
 /// set-gid, anonymous files of memory (`memfd_create`): Mesa's, NVIDIA's and the renderer's
-/// own shared memory, and `sysinfo`, by which the C library's `sysconf(_SC_PHYS_PAGES)`
-/// says the host's memory to Mesa's Intel driver, which sizes an integrated GPU's heap by
-/// it (glibc's and musl's sysconf; Mesa's os_get_total_physical_memory; refused, ANV on
-/// Intel's UHD Graphics ended its VM process before it was ready).
+/// own shared memory. (`sysinfo`, by which the C library's `sysconf(_SC_PHYS_PAGES)` says
+/// the host's memory to Mesa's Intel driver, which sizes an integrated GPU's heap by it, is
+/// every VM process's now: Mesa's os_get_total_physical_memory; refused, ANV on Intel's UHD
+/// Graphics ended its VM process before it was ready.)
 #[cfg(target_os = "linux")]
-const GPU_SYSCALLS: [libc::c_long; 8] = [
+const GPU_SYSCALLS: [libc::c_long; 7] = [
     libc::SYS_statfs,
     libc::SYS_sched_get_priority_max,
     libc::SYS_sched_get_priority_min,
@@ -403,7 +407,6 @@ const GPU_SYSCALLS: [libc::c_long; 8] = [
     libc::SYS_getresuid,
     libc::SYS_getresgid,
     libc::SYS_memfd_create,
-    libc::SYS_sysinfo,
 ];
 
 /// What a GPU's VM process reads and controls besides a VM process's, on Linux (D201), as

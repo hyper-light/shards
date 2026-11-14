@@ -275,9 +275,11 @@ impl Giver {
             }
             // A read that waits for nothing where the time is spent: what has come alone.
             let left = until.saturating_duration_since(Instant::now());
-            self.conn
-                .set_read_timeout(Some(left.max(Duration::from_millis(1))))
-                .map_err(|e| format!("hearing the builder: {e}"))?;
+            shards_ipc::timeout_set(
+                self.conn
+                    .set_read_timeout(Some(left.max(Duration::from_millis(1)))),
+            )
+            .map_err(|e| format!("hearing the builder: {e}"))?;
             let mut chunk = [0u8; 256];
             match io::Read::read(&mut super::reading(&self.conn), &mut chunk) {
                 Ok(0) => return Err("the builder's give-back connection ended".into()),
@@ -1430,7 +1432,7 @@ fn ask_needed(
             }
             continue;
         }
-        conn.set_read_timeout(None)
+        shards_ipc::timeout_set(conn.set_read_timeout(None))
             .map_err(|e| format!("hearing the builder: {e}"))?;
         if read_frame_from(conn, &mut buf)? == kind::NEEDED {
             break;
