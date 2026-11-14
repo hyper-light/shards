@@ -35,6 +35,8 @@ Priority mapping for the user's requested notification: **P0 critical; P1 high; 
 
 **Catching test:** pause A immediately after metadata acquisition, complete B, write a sentinel above 128 MiB, resume A, and assert both file length and sentinel survive. Also verify A is refused or resolves to the current larger size.
 
+**Status (2026-11-13):** fixed in 74c757e1f (red `daemon::devices::tests::growths_of_one_disk_never_shorten_its_file`: with the fix's hold removed, the 128 MiB growth paused between its read and its set left the file at 134217728 bytes after the 256 MiB growth and its guest's write; green with it, on adas-mac-studio-3.local, macOS arm64; the refusal's mutant red in `a_disk_grown_smaller_is_refused_and_keeps_its_bytes`). D214 amended.
+
 ### devices-02 — P1 / high — A full-span IOMMU mapping makes translation loop until allocation failure
 
 **Location:** `crates/vmm/src/devices/virtio/iommu.rs:508`.
@@ -50,6 +52,8 @@ Priority mapping for the user's requested notification: **P0 critical; P1 high; 
 **Fix direction:** make span arithmetic checked or express the bounded remaining span without overflow, require positive progress, and consistently handle/reject a full-address-space mapping before publishing it.
 
 **Catching test sketch:** `attach(1, endpoint, 0); map(1, 0, u64::MAX, 0, READ|WRITE|MMIO); translate(endpoint, 0, 4, true)`. Assert a typed refusal or bounded correct result. Run the old path only in a resource-bounded child with a completion watchdog; do not allow the infinite allocation into the shared test process.
+
+**Status (2026-11-13):** fixed in 2d17282b6765a51ccc70572a30a0ce552ebcc3a0 (red `full_span_mapping_translates_an_msi_without_overflow`, Kiln r4; green IOMMU tests 11/11 and VMM clippy, r6, macOS arm64). Evidence: `docs/research/measurements/device-fixes/README.md`. Real-VM MSI validation owed to ROOT.
 
 ### devices-03 — P1 / high — IOMMU response descriptors control an infallible host allocation
 
@@ -67,6 +71,8 @@ Priority mapping for the user's requested notification: **P0 critical; P1 high; 
 
 **Catching test:** feed oversized invalid writable descriptors under an allocation observer or bounded child-process allocation budget. Assert no allocation proportional to offered capacity and a device error without process termination.
 
+**Status (2026-11-13):** fixed in ed428676f16b70033b168a842e1b147048e508a3 (red `invalid_response_is_rejected_before_applying_the_request`, r9; green 13 IOMMU tests and VMM clippy, r10, macOS arm64). The red proves late buffer validation/state mutation; the original allocation-abort/RSS scenario remains unrun and owed to ROOT. Staging is fallibly bounded by this host's page size, independently of offered response capacity. Follow-up 18f3a90ad completes replies with a protocol-derived stack buffer if scratch is unavailable (reservation-refusal red at 03ccb5eab; green 13 tests/clippy at r16).
+
 ### devices-04 — P1 / high — Reset can strand a vCPU and teardown behind years of I/O debt
 
 **Location:** `crates/vmm/src/devices/virtio/block.rs:885`; charging at `:982`.
@@ -82,6 +88,8 @@ Priority mapping for the user's requested notification: **P0 critical; P1 high; 
 **Fix direction:** give limiter waits cancellation/readiness notifications, validate charges before accruing debt, and make reset wake in-flight waits before joining workers without broadening another device's authority.
 
 **Catching test:** deterministically accrue debt, observe the worker entering the limiter wait, issue status reset, and assert reset and subsequent VM teardown complete without waiting for the debt deadline. Include ordinary valid I/O and hostile invalid lengths.
+
+**Status (2026-11-14):** fixed in de1da2168000250e609f05c729fa13a39a39752e (red `reset_cancels_only_its_own_limiter_wait`; green 7 block tests, 4 limiter tests, VMM clippy, macOS arm64). Cancellation preserves shared debt and wakes only the resetting device. Full VM teardown remains owed to ROOT: `cargo test -p shards --test hotplug devices_are_plugged_into_a_running_microvm_and_its_disks_grow`.
 
 ### devices-05 — P1 / high — Capacity and generation are not published as one coherent configuration
 
@@ -181,6 +189,14 @@ Priority mapping for the user's requested notification: **P0 critical; P1 high; 
 **Fix direction:** introduce scoped device refusal/result variants with affected device identity and cause/retry semantics; encode and decode them on DEVICE/DEVICED, formatting text only at presentation.
 
 **Catching test:** round-trip `NoSlots`, `StillDriven`, `ShrinkRefused` and host failure variants across the actual codec, then assert callers match variants while presentation wording can change independently.
+
+### devices-11 — ROOT decision — Disk-file ownership across runs
+
+Added by ROOT, 2026-11-13, outside the original ten-finding review:
+
+> plug must refuse, typed, a disk file that another run already has plugged writable. Two kernels mounting one ext4 read-write corrupt it, which is what ext4 MMP (Documentation/filesystems/ext4/mmp.rst) exists to refuse, and their growths take different Steps holds. Read-only sharing stays allowed. Identify a file by (dev, inode) on Unix and by its file ID on Windows, never by path. Amend D214.
+
+**Status (2026-11-13):** assigned to the devices lane by ROOT; implementation pending. The original review counts above describe devices-01 through devices-10 only.
 
 ## Checked and found sound
 

@@ -1328,6 +1328,22 @@ fn agents_have_ipv6_where_a_joined_network_says_so() {
 
 /// A remote MCP server's host and port, as its URL says or its scheme's own (§4.4).
 #[test]
+fn mcp_absolute_name_matches_its_dns_question() {
+    let mut question = vec![0; 12];
+    question[5] = 1;
+    question.extend_from_slice(b"\x03MCP\x07example\0\0\x01\0\x01");
+    let name = shards_dns::query_name(&question).unwrap();
+    for url in ["https://MCP.example./sse", "http://MCP.example.:8080/mcp"] {
+        let (host, _) = shards_agentfile::agentfile::mcp_endpoint(url.as_bytes()).unwrap();
+        assert_eq!(
+            host,
+            name.as_bytes(),
+            "the grant must match its DNS question: {url}"
+        );
+    }
+}
+
+#[test]
 fn a_remote_mcp_servers_endpoint_is_its_urls() {
     use shards_agentfile::agentfile::mcp_endpoint;
     let e = |u: &str| mcp_endpoint(u.as_bytes()).map(|(h, p)| (String::from_utf8(h).unwrap(), p));
@@ -1670,6 +1686,46 @@ fn each_member_reaches_its_own_names() {
         reach
     };
     assert_eq!(by_member(said(&read)), by_member(said(&directives)));
+}
+
+/// A member's port grant to any address reaches every name the image grants on that port
+/// (D246, inithex-02): its init lets it out there to any address, and the network process
+/// admits a kept name's addresses for any member that asks them. Do: read an Agentfile whose
+/// agent a reaches a provider by name on one network, and a and b are both granted its port
+/// to any address on another, beside an agent c granted another port alone. Expect: a and b
+/// each reach the provider, c nothing; and the Agentfile still builds, as every member
+/// granted the port reaches it alike.
+#[test]
+fn a_port_grant_reaches_every_name_the_image_grants_on_it() {
+    use shards_agentfile::agentfile as af;
+    let text = "FROM alpine\nAGENT a FROM ./a\nAGENT b FROM ./b\nAGENT c FROM ./c\n\
+        NETWORK --egress=api.example:443 named\nEXPOSE 443 AS egress FOR named\n\
+        CONNECT a WITH a ON named\n\
+        NETWORK --egress=443 wide\nEXPOSE 443 AS egress FOR wide\n\
+        CONNECT a WITH a ON wide\nCONNECT b WITH b ON wide\n\
+        NETWORK --egress=8443 other\nEXPOSE 8443 AS egress FOR other\nCONNECT c WITH c ON other\n";
+    let directives = af::resolve_targets(&stage_directives(text)).unwrap();
+    af::connections(&directives).unwrap();
+    af::held(&directives).unwrap();
+    let reach: Vec<(String, Vec<String>)> = af::named_reach(&directives)
+        .into_iter()
+        .map(|(_, name, named)| {
+            let named = named
+                .iter()
+                .map(|(host, port)| format!("{}:{port}", String::from_utf8_lossy(host)))
+                .collect();
+            (String::from_utf8(name).unwrap(), named)
+        })
+        .collect();
+    let owned = |list: &[&str]| list.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+    assert_eq!(
+        reach,
+        [
+            ("a".to_string(), owned(&["api.example:443"])),
+            ("b".to_string(), owned(&["api.example:443"])),
+            ("c".to_string(), owned(&[])),
+        ]
+    );
 }
 
 /// What no destination of a network's is, refused by name and why: one let in rather than

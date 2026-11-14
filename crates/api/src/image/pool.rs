@@ -56,6 +56,8 @@ struct Key {
 /// Why a warm host did not take a run.
 #[derive(Debug)]
 pub(super) enum Taken {
+    /// The host ended before CREATE was attempted; it certainly never received this run.
+    Untaken,
     /// Its microVM is another request's (`wire::Cause::Unfit`): the run gets a host of its
     /// own.
     Unfit,
@@ -394,7 +396,9 @@ impl<H: Hosts> Pooling<H> {
         let guest = match warm.map(|w| self.hosts.take(w, spec, request, patience, stop)) {
             Some(Ok(guest)) => Ok(guest),
             Some(Err(Taken::Refused(refused))) => Err(refused),
-            Some(Err(Taken::Unfit)) | None => self.hosts.fresh(spec, request, patience, stop),
+            Some(Err(Taken::Untaken | Taken::Unfit)) | None => {
+                self.hosts.fresh(spec, request, patience, stop)
+            }
         };
         match guest {
             Ok(guest) => Ok(Box::new(Pooled {
@@ -477,6 +481,15 @@ impl<W: Send> ImageGuest for Pooled<W> {
         self.guest.wait_member(member, timeout)
     }
 
+    fn wait_channel(
+        &self,
+        member: &super::MemberName,
+        channel: wire::Channel,
+        timeout: Duration,
+    ) -> Result<Option<super::ChannelEnd>, ImageRefusal> {
+        self.guest.wait_channel(member, channel, timeout)
+    }
+
     fn stats(&self, scope: wire::StatsScope, patience: Duration) -> Result<wire::Stats, ImageRefusal> {
         self.guest.stats(scope, patience)
     }
@@ -542,7 +555,7 @@ impl<W: Send> ImageGuest for Pooled<W> {
         self.guest.stop()
     }
 
-    fn wait_for(&self, timeout: Duration) -> Result<Option<wire::RunEnd>, ImageRefusal> {
+    fn wait_for(&self, timeout: Duration) -> Result<Option<wire::RunEnded>, ImageRefusal> {
         self.guest.wait_for(timeout)
     }
 
@@ -579,6 +592,8 @@ mod tests {
         failed: usize,
         /// Its warm hosts refuse their runs as another microVM's.
         unfit: bool,
+        /// One spare ended before its CREATE.
+        untaken: bool,
     }
 
     #[derive(Debug, Default)]
@@ -664,6 +679,14 @@ mod tests {
         ) -> Result<Option<super::super::MemberEnd>, ImageRefusal> {
             none()
         }
+        fn wait_channel(
+            &self,
+            _: &super::super::MemberName,
+            _: wire::Channel,
+            _: Duration,
+        ) -> Result<Option<super::super::ChannelEnd>, ImageRefusal> {
+            none()
+        }
         fn stats(&self, _: wire::StatsScope, _: Duration) -> Result<wire::Stats, ImageRefusal> {
             none()
         }
@@ -718,7 +741,7 @@ mod tests {
         fn stop(&self) -> Result<(), ImageRefusal> {
             Ok(())
         }
-        fn wait_for(&self, _: Duration) -> Result<Option<wire::RunEnd>, ImageRefusal> {
+        fn wait_for(&self, _: Duration) -> Result<Option<wire::RunEnded>, ImageRefusal> {
             Ok(None)
         }
         fn keep_diagnostics(&self, _: std::fs::File) -> Result<(), ImageRefusal> {
@@ -766,6 +789,9 @@ mod tests {
             _: &BootStop,
         ) -> Result<Box<dyn ImageGuest>, Taken> {
             drop(warm);
+            if std::mem::take(&mut self.log().untaken) {
+                return Err(Taken::Untaken);
+            }
             if self.log().unfit {
                 return Err(Taken::Unfit);
             }
@@ -857,6 +883,25 @@ mod tests {
         hosted.until("every run's end told", |l| l.ended_runs == 3);
         drop(pools);
         hosted.until("every warm host ended with its pools", |l| l.warm == 0);
+    }
+
+    #[test]
+    fn a_definitely_untaken_spare_leaves_its_run_a_fresh_host() {
+        let hosted = Hosted::default();
+        let pools = Pooling::new(hosted.clone(), 1, KEEP_TEST).unwrap();
+        drop(
+            pools
+                .boot(&spec(), &request(1, None), PATIENCE, &BootStop::new())
+                .unwrap(),
+        );
+        until_ready(&pools, 1);
+        hosted.tell(|l| l.untaken = true);
+        let guest = pools
+            .boot(&spec(), &request(1, None), PATIENCE, &BootStop::new())
+            .unwrap();
+        assert_eq!(hosted.log().fresh, 2);
+        assert_eq!(hosted.log().taken, 0);
+        drop(guest);
     }
 
     /// D253's pools: a warm host that finds its run another microVM's (`Unfit`) gives the run

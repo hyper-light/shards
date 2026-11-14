@@ -41,6 +41,8 @@ writer.write_all(&framed).and_then(|()| writer.write_all(&written))
 
 **Confidence:** High for both source paths; live TLS and actual-provider behavior unverified.
 
+**Status (2026-11-13):** fixed in b7b692113 (red `inject::tests::leaks::a_token_responses_head_never_carries_its_tokens_to_the_guest`, `an_h2_token_responses_fields_and_trailers_never_carry_its_tokens_to_the_guest`)
+
 ### creds-02 — P0 / critical — A chunked response can carry the complete credential in an unmasked extension
 
 **Location:** `crates/net/src/inject.rs:877`, `:2142`, `:1349`.
@@ -77,6 +79,8 @@ The bytes nevertheless enter `Mask.queue` and are released to `guest.writer()`. 
 
 **Confidence:** High by complete source trace; not run.
 
+**Status (2026-11-13):** fixed in b26011d07 (red `inject::tests::leaks::a_chunks_extension_never_carries_a_value_to_the_guest`)
+
 ### creds-03 — P0 / critical — Lease expiry or rotation disables masking of responses already in flight
 
 **Location:** `crates/net/src/inject.rs:1309`, `:1339`; `crates/net/src/lib.rs:1299`, `:2883`.
@@ -94,6 +98,8 @@ D242 **explicitly acknowledges post-expiry echoes as an unmasked residual** (`ar
 **Regression sketch:** Send with synthetic `T`, withhold the response, expire the lease or call the real refresh-follow path, then return `T`. For H1 and H2 assert that the stream is refused/reset or its full guest plaintext contains no `T`. Repeat with a newly leased `T2` and an old-`T` response.
 
 **Confidence:** High; explicitly confirmed by both code and design record, no live reproduction.
+
+**Status (2026-11-13):** fixed in 72420e789 (red `inject::tests::leaks::an_echo_after_its_lease_lapsed_is_masked_still`, `inject::tests::leaks::an_h2_echo_of_a_value_rotated_while_its_response_waits_is_masked`)
 
 ### creds-04 — P0 / critical — Compressed echoes bypass the raw-byte response mask
 
@@ -113,6 +119,10 @@ D242 **explicitly lists compressed response/WebSocket echoes as residuals** (`ar
 
 **Confidence:** High for source behavior; no decompression/live-provider test run.
 
+**Status (2026-11-13):** fixed in c767cea93 (red `inject::tests::leaks::a_coded_echo_never_reaches_the_guest`, `a_transfer_coded_echo_never_reaches_the_guest`, `an_h2_coded_echo_never_reaches_the_guest`). Filled requests ask `identity` and offer no WebSocket extension. Residual: a tunnel's own framing after a 101 (a value split across WebSocket frames).
+
+**Status (2026-11-13, refined):** coded responses to filled requests decoded (gzip, deflate, zstd), masked and sent as identity in 18e36b097 (red `inject::tests::leaks::a_coded_echo_reaches_the_guest_decoded_and_masked`, `an_h2_coded_echo_reaches_the_guest_decoded_and_masked`); br, unknown or stacked codings stay 502 `Unmaskable(Coded)`.
+
 ### creds-05 — P1 / high — Lease duration restarts at each delivery hop, authorizing use after the lessor's deadline
 
 **Location:** `crates/net/src/lease.rs:266`; supporting `crates/shards/src/api_run.rs:1353`, `crates/api/src/image/session.rs:1375`.
@@ -128,6 +138,8 @@ D242 **explicitly lists compressed response/WebSocket echoes as residuals** (`ar
 **Regression sketch:** Obtain a lease ending at `t0 + 1s`, encode its answer at `t0`, and deliver it at `t0 + 2s` using injected Instants through the actual relay. Assert `held(reference, late_now)` is `None` and a pending request sends no upstream head. Current source creates a new live lease instead.
 
 **Confidence:** High for the deadline extension; no scheduling/backpressure reproduction run.
+
+**Status (2026-11-13):** fixed in a52f4518c (red `lease::tests::creds_05_a_delayed_answer_cannot_restart_the_lessors_lease` at 6eb3ad718). The injector conservatively spends the full first-ask wait from the broker's returned life; spent/unrepresentable budgets are typed `Lapsed` before a value is retained. Merged lease tests: 14 passed; shards-net all-target clippy passed on macOS arm64. Early refusal and renewal-boundary limits are explicit in `docs/research/measurements/creds-fixes-v1/README.md`.
 
 ### creds-06 — P1 / high — Repeated retries of one pending lease accumulate unbounded duplicate waiters
 
@@ -154,6 +166,8 @@ Some(Lease::Asked { waiting, .. }) => {
 
 **Confidence:** High for linear retained growth; exhaustion limits and runtime measurements unverified.
 
+**Status (2026-11-13):** fixed in 1b21eb21a403024baae2a7b815b8b1f5ac987255 (red `lease::tests::creds_06_a_pending_lease_resumes_each_flow_once` at 6eb3ad718). Merged-tree lease tests: 12 passed; shards-net all-target clippy and policy check passed on macOS arm64. See `docs/research/measurements/creds-fixes-v1/README.md` for revisions, retained output and coordinator work.
+
 ### creds-07 — P3 / medium — The CA's constraints authorize descendants outside exact host grants
 
 **Location:** `crates/net/src/ca.rs:93`, `:116`.
@@ -169,6 +183,8 @@ Some(Lease::Asked { waiting, .. }) => {
 **Regression sketch:** Extend `its_leaves_hold_for_granted_hosts_alone` with a descendant and require signing refusal (and verifier refusal if exact-host constraints are advertised). Evaluate IP SAN constraints separately before claiming all other name forms are denied.
 
 **Confidence:** High for the scope gap under RFC semantics; actual TLS verifier execution unrun. Medium reflects the existing outer exact-SNI guard.
+
+**Status (2026-11-13):** fixed in 09ffbfd32 (red `ca::tests::creds_07_ungranted_descendants_and_addresses_are_not_signed` at 6eb3ad718). The signer rejects ungranted descendants and addresses as typed `LeafError::Ungranted` before key generation/signing; 4 CA tests and shards-net all-target clippy passed on macOS arm64. Certificate DNS constraints remain subtrees, and the exact-host signing guard enforces the narrower grant.
 
 ### creds-08 — P3 / medium — A sign-in POST with Expect: 100-continue stalls before its headers can reach the origin
 

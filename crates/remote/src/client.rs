@@ -555,6 +555,10 @@ impl Handler for Client<'_> {
             };
             self.answer = Some(Answer::Refused(words.to_string()));
         }
+        if self.answer.is_none() && self.failed.is_none() && code == Some(u64::from(server::REVOKED)) {
+            // Removed from the daemon's clients as its command ran, or before the stream said so.
+            self.answer = Some(Answer::Refused(server::REVOKED_WORDS.to_string()));
+        }
         if self.answer.is_none() && self.failed.is_none() {
             let at = self.remote.address;
             self.failed = Some(match self.stream {

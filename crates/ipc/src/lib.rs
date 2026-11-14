@@ -680,6 +680,10 @@ pub mod kind {
     /// [`LANE_HELD`] (M24); on Windows none, its owner answering [`LANE_HELD`] with the socket
     /// the VM relays it onto, or none for one it closes.
     pub const LANE_ACCEPTED: u8 = 102;
+    /// A VM → its owner, last, once its machine is down and before its process lets go of
+    /// it (D260's final use): what its vCPUs ran of its guest in all, each by its index, then
+    /// what this process used of its host, as `shards_abi::rate::used` writes a use's answer.
+    pub const FINAL_USE: u8 = 106;
 
     /// Whether a network process's control message of `kind` hands it sockets: published
     /// ports' (`PUBLISH`, `NET_PUBLISHED`) and a peer's link (`NET_PEER`). Beside the
