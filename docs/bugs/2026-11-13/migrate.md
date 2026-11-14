@@ -78,6 +78,8 @@ Priorities: **P0 = critical**, **P1 = high**, **P3 = medium**, **P5 = low**; no 
 
 **Status (2026-11-13):** fixed by the memory reviewer as memory-02 in 29196c6b3, integrated here; red `live_copy_keeps_bytes_after_their_block_is_unplugged` / `live_copy_page_keeps_bytes_after_their_block_is_unplugged`, focused green in memory-fixes-v1. No duplicate implementation in this lane. [Fix evidence](../../research/measurements/migrate/fix-review-2026-11-13.md).
 
+**Integration (2026-11-13):** all five `live_copy_` unit tests passed again on migration merge 7720df839, with shards-vmm/shards clippy clean. Real guest unplug during migration remains owed to ROOT; [retained log](../../research/measurements/migrate/livecopy-03-integrated.log).
+
 ### migrate-04 — P1 / high — A forged snapshot header defeats the state allocation bound
 
 **Location:** `crates/vmm/src/snapshot/mod.rs:652-655`; `crates/vmm/src/platform/mod.rs:242-255`.
@@ -115,6 +117,8 @@ Priorities: **P0 = critical**, **P1 = high**, **P3 = medium**, **P5 = low**; no 
 **Fix direction:** Carry per-volume file identity and hardlink records; recreate aliases to an already imported inode using safely rooted operations.
 
 **Regression sketch:** Extend `a_volumes_files_move_as_its_guest_saw_them` with `hard_link(a,b)`, check destination identity/link count, write one alias and read the other. Then exercise open guest handles across a real move.
+
+**Status (2026-11-13):** fixed in fd33ec11a (red `a_volumes_hardlinks_keep_shared_contents_after_move`, committed in 5bf16ecff and rerun against the landed migrate-01 Beneath extractor at 73af9fb62). Version 3 carries regular-file aliases; both names stay under plan-authorized volume data and Beneath traversal. [Red/green and remaining VM/platform checks](../../research/measurements/migrate/fix-review-2026-11-13.md).
 
 ### migrate-06 — P1 / high — vCPU shaping re-enables TSC-deadline outside the configured baseline
 
