@@ -1903,7 +1903,15 @@ fn a_home_removed_once_is_gone_with_its_daemon() {
     std::fs::create_dir(path.join("networks")).unwrap();
     std::fs::write(path.join("networks").join("made-as-it-went.json"), "{}").unwrap();
     std::fs::remove_file(&lock).unwrap();
-    eventually(&home, "the daemon outlived its home", || !alive(daemon));
+    // Followed by its pid: its record, by which a home's patience finds its daemon, went
+    // with the rest, and that patience found none of its party running at its first look
+    // (KVM batch 22, refused 3 ms in).
+    let mut patience = Patience::client(daemon.unsigned_abs(), &home);
+    while alive(daemon) {
+        assert!(patience.holds(), "the daemon outlived its home");
+        std::thread::sleep(patience.next_look());
+    }
+    patience.done();
     eventually(&home, "what was left of the home was left", || !path.exists());
 }
 
