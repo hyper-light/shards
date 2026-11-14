@@ -304,7 +304,7 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 
 **Author:** ROOT, assigned 2026-11-14 (parity with Docker's bind mounts).
 
-**Status (2026-11-14):** fixed in @FIX@ (red `an_exec_only_directory_is_walked_through_and_never_listed` at ba3e0fc31, macOS arm64: the walk `a/b/c/file` refused `Err(-13)`). @GREEN@ Owed to ROOT (real VMs): a `-v` share holding `a/b/c/file` with `a/b` mode 0111 on the host, read in the guest as the run's user (`cat /share/a/b/c/file` prints it; `ls /share/a/b` refused, Permission denied; `chmod 755 /share/a/b` refused), on Hypervisor.framework, KVM and WHP.
+**Status (2026-11-14):** fixed in e1618c17f (the walk) and c96f0b4d7 (Linux: walked through unwatched) (red `an_exec_only_directory_is_walked_through_and_never_listed` at ba3e0fc31, macOS arm64: the walk `a/b/c/file` refused `Err(-13)`). Green on ROOT's merge 5a4979bf8 with main fe645ca13: fs:: 90/90 on macOS arm64 (adas-mac-studio-3) and 93/93 on Linux x86_64 (adacachy2), shards-vmm clippy clean on both; mutants red on both (no search fallback: the walk refused EACCES again; no SETATTR refusal), and on Linux the watch that refuses EACCES. Landed by ROOT from the stopped lane's commits. Owed to ROOT (real VMs): a `-v` share holding `a/b/c/file` with `a/b` mode 0111 on the host, read in the guest as the run's user (`cat /share/a/b/c/file` prints it; `ls /share/a/b` refused, Permission denied; `chmod 755 /share/a/b` refused), on Hypervisor.framework, KVM and WHP.
 
 **Location:** `crates/vmm/src/devices/virtio/fs/server.rs`, `dir_fd` (each directory opened to be read) and `node_owner`'s path through it; `server_unix.rs` `open_beneath`; `docs/design/architecture.md` D38.
 
