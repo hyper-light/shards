@@ -124,6 +124,21 @@ fn op(code: u16, jt: u8, jf: u8, k: u32) -> libc::sock_filter {
 /// every value they list, of one argument. A syscall's rules that fail it must all fail it
 /// with one error.
 pub fn compile(rules: &[Rule]) -> Result<Filter, String> {
+    compile_over(rules, libc::SECCOMP_RET_TRAP)
+}
+
+/// Compiles `rules` as a layer over a filter installed before it: the syscalls they name
+/// are answered as [`compile`] answers them (an argument they do not list traps), and every
+/// other is allowed, for the filter under it to decide. The kernel runs every filter a
+/// thread has and takes the most restrictive answer (seccomp(2), "the action of the
+/// highest precedence"), so a layer only narrows: a syscall's argument the first filter
+/// cannot check beside another's, or a refusal decided once the process knows its paths.
+pub fn layer(rules: &[Rule]) -> Result<Filter, String> {
+    compile_over(rules, libc::SECCOMP_RET_ALLOW)
+}
+
+/// [`compile`], a syscall no rule names answered with `none`.
+fn compile_over(rules: &[Rule], none: u32) -> Result<Filter, String> {
     let mut sorted: Vec<&Rule> = rules.iter().collect();
     sorted.sort_by_key(|r| r.syscall);
     let mut syscalls = Vec::with_capacity(sorted.len());
@@ -142,7 +157,7 @@ pub fn compile(rules: &[Rule]) -> Result<Filter, String> {
     let target = |i: usize| match syscalls.get(i) {
         Some((_, Verdict::Check(..))) => Target::Block(i),
         Some((_, Verdict::Return(action))) => Target::Ret(*action),
-        None => Target::Ret(libc::SECCOMP_RET_TRAP),
+        None => Target::Ret(none),
     };
     // A syscall's check: its argument loaded over the number in A, which nothing after it
     // needs, its bits under each mask compared with the values of that mask in turn, then
@@ -169,10 +184,11 @@ pub fn compile(rules: &[Rule]) -> Result<Filter, String> {
             values,
             &|_| Target::Ret(libc::SECCOMP_RET_ALLOW),
             &|_| Err("a value's check".to_string()),
+            libc::SECCOMP_RET_TRAP,
         )?);
         Ok(block)
     };
-    let prog = search(prog, &keys, &target, &check)?;
+    let prog = search(prog, &keys, &target, &check, none)?;
     // The kernel refuses a longer one (kernel/seccomp.c, seccomp_prepare_filter).
     if prog.len() > libc::BPF_MAXINSNS as usize {
         return Err(format!(
@@ -260,7 +276,7 @@ enum Target {
 const REACH: usize = u8::MAX as usize;
 
 /// The search for the number in A among `keys`, sorted and distinct, key `i` going to
-/// `target(i)`, and a number none of them is to a trap, laid after the code in `prog`:
+/// `target(i)`, and a number none of them is to the return `none`, laid after the code in `prog`:
 /// halved while more than [`LEAF`] are left, then compared one by one, each comparison
 /// jumping straight to its target in a pool after the code: each return once, and each
 /// check `block` makes. A program spends its instructions on comparisons, and its install
@@ -272,15 +288,16 @@ fn search(
     keys: &[u32],
     target: &impl Fn(usize) -> Target,
     block: &impl Fn(usize) -> Result<Vec<libc::sock_filter>, String>,
+    none: u32,
 ) -> Result<Vec<libc::sock_filter>, String> {
     if keys.is_empty() {
-        prog.push(op(RET_K, 0, 0, libc::SECCOMP_RET_TRAP));
+        prog.push(op(RET_K, 0, 0, none));
         return Ok(prog);
     }
     // A subtree's pool holds at most every return the search has, and its checks: the
     // returns, counted while few (past that, each half pools apart), and how many of the
     // keys before each are checks, where any is.
-    let mut rets = [libc::SECCOMP_RET_TRAP; 8];
+    let mut rets = [none; 8];
     let (mut distinct, mut checks) = (1, 0);
     for i in 0..keys.len() {
         match target(i) {
@@ -312,6 +329,7 @@ fn search(
         checks_before,
         target,
         block,
+        none,
     };
     search.dispatch(keys, 0)?;
     search.pool(search.prog.len(), 0)?;
@@ -330,6 +348,8 @@ struct Search<'a, T, B> {
     checks_before: Vec<usize>,
     target: &'a T,
     block: &'a B,
+    /// Where a number none of the keys is goes.
+    none: u32,
 }
 
 impl<T, B> Search<'_, T, B>
@@ -349,8 +369,7 @@ where
             }
             // None of them: the last comparison's other way.
             let last = self.prog.len().saturating_sub(1);
-            self.pending
-                .push((last, false, Target::Ret(libc::SECCOMP_RET_TRAP)));
+            self.pending.push((last, false, Target::Ret(self.none)));
             return Ok(());
         }
         let half = keys.len() / 2;
@@ -865,11 +884,18 @@ mod tests {
 
     /// What `rules` make of `nr` with `args`, read from the rules alone.
     fn model(rules: &[Rule], nr: u32, args: [u64; 6]) -> u32 {
+        model_over(rules, nr, args, libc::SECCOMP_RET_TRAP)
+    }
+
+    /// [`model`], a syscall no rule names answered with `none`.
+    fn model_over(rules: &[Rule], nr: u32, args: [u64; 6], none: u32) -> u32 {
         let mine: Vec<&Rule> = rules
             .iter()
             .filter(|r| r.syscall == libc::c_long::from(nr))
             .collect();
-        if let Some(errno) = mine.iter().find_map(|r| r.errno) {
+        if mine.is_empty() {
+            none
+        } else if let Some(errno) = mine.iter().find_map(|r| r.errno) {
             libc::SECCOMP_RET_ERRNO | u32::from(errno)
         } else if mine.iter().any(|r| r.arg.is_none())
             || mine.iter().any(|r| {
@@ -889,7 +915,19 @@ mod tests {
     /// as its rules say; another architecture is killed at once. Returns the most
     /// instructions an allowed syscall ran.
     fn answers_as_its_rules_say(rules: &[Rule]) -> usize {
-        let prog = compile(rules).unwrap().0;
+        answers_over(rules, libc::SECCOMP_RET_TRAP)
+    }
+
+    /// [`answers_as_its_rules_say`] of a filter whose unnamed syscalls go to `none`: a
+    /// [`compile`]d one's trap, a [`layer`]'s allow.
+    fn answers_over(rules: &[Rule], none: u32) -> usize {
+        let prog = if none == libc::SECCOMP_RET_ALLOW {
+            layer(rules)
+        } else {
+            compile(rules)
+        }
+        .unwrap()
+        .0;
         check(&prog);
         let top = rules.iter().map(|r| r.syscall as u32).max().unwrap_or(0);
         let mut most = 0;
@@ -917,7 +955,11 @@ mod tests {
             }
             for args in cases {
                 let (verdict, ran) = run(&prog, &data(nr, AUDIT_ARCH, args));
-                assert_eq!(verdict, model(rules, nr, args), "syscall {nr}, {args:x?}");
+                assert_eq!(
+                    verdict,
+                    model_over(rules, nr, args, none),
+                    "syscall {nr}, {args:x?}"
+                );
                 if verdict == libc::SECCOMP_RET_ALLOW {
                     most = most.max(ran);
                 }
@@ -961,6 +1003,28 @@ mod tests {
         answers_as_its_rules_say(&wide);
     }
 
+    /// A layer answers the syscalls its rules name as a filter of them does, an argument
+    /// they do not list trapping, and allows every other, for the filter under it to decide:
+    /// shards-vm's, a socket's type and a connect refused (confine.rs, `sockets`).
+    #[test]
+    fn a_layer_answers_its_rules_and_allows_the_rest() {
+        let allow = libc::SECCOMP_RET_ALLOW;
+        answers_over(&shaped(), allow);
+        answers_over(&[], allow);
+        let sockets = [
+            Rule::with(41, 1, &[1, 5, 0x80001, 0x80805]),
+            Rule::with(53, 1, &[1, 5]),
+            Rule::fails(42, libc::EACCES as u16),
+        ];
+        answers_over(&sockets, allow);
+        let prog = layer(&sockets).unwrap().0;
+        assert_eq!(
+            run(&prog, &data(41, AUDIT_ARCH, [1, 2, 0, 0, 0, 0])).0,
+            libc::SECCOMP_RET_TRAP
+        );
+        assert_eq!(run(&prog, &data(16, AUDIT_ARCH, [0; 6])).0, allow);
+    }
+
     /// Filters of every size up to 600 syscalls, some failed and some with a check of 1 to
     /// 40 values, one of 300, compile to programs the kernel takes, answering as their rules say:
     /// their jumps reach their pools wherever a subtree's falls against 255 instructions.
@@ -1001,10 +1065,16 @@ mod tests {
         for n in 1..=400usize {
             let keys: Vec<u32> = (0..n as u32).map(|k| k * 2).collect();
             let number = || vec![op(LD_W_ABS, 0, 0, NR)];
-            let returns = search(number(), &keys, &|i| Target::Ret(errno(i)), &long)
-                .unwrap_or_else(|e| panic!("{n} returns: {e}"));
-            let checks =
-                search(number(), &keys, &Target::Block, &long).unwrap_or_else(|e| panic!("{n} checks: {e}"));
+            let returns = search(
+                number(),
+                &keys,
+                &|i| Target::Ret(errno(i)),
+                &long,
+                libc::SECCOMP_RET_TRAP,
+            )
+            .unwrap_or_else(|e| panic!("{n} returns: {e}"));
+            let checks = search(number(), &keys, &Target::Block, &long, libc::SECCOMP_RET_TRAP)
+                .unwrap_or_else(|e| panic!("{n} checks: {e}"));
             for (prog, expect) in [
                 (returns, errno as fn(usize) -> u32),
                 (checks, |_| libc::SECCOMP_RET_ALLOW),

@@ -42,6 +42,8 @@ Separately, `seal()` applies another thread-only Landlock layer at `vm_run.rs:27
 
 **Catching test:** spawn a held sibling before initial confinement; install a handler and signal that sibling to `openat` a disposable forbidden sentinel. Require refusal. After snapshot sealing, repeat a template-write attempt from each existing worker, not just the sealing thread.
 
+**Status (2026-11-13):** fixed in 4221c9488 (red `confine::tests::every_thread_of_a_confined_process_is_confined`, siblings read a file outside the paths and wrote the sealed directory under a caller-only layer; also `a_thread_that_cannot_be_asked_fails_the_layer`). TSYNC where the ABI has v8, each thread asked by signal on every ABI from v5; PM M568, D30.
+
 ### platform-02 — Linux pathname Unix sockets reach unscoped host authority
 
 **Location:** `crates/shards/src/confine.rs:606`, supporting `:107`, `:255`; `crates/shards/src/daemon.rs:2393`; `crates/shards/src/daemon/engine.rs:502`.
@@ -65,6 +67,8 @@ Its peer check allows `Ok(uid) if uid == ours` (`daemon/engine.rs:504`); the VM 
 **Fix direction:** mediate Linux host dialing as on macOS and deny arbitrary VM connects; use pathname restrictions where supported with an equally closed older-kernel path.
 
 **Catching test:** a same-UID Unix listener outside every grant must reject a confined connection. Repeat against a disposable daemon and require an unscoped Engine request to fail.
+
+**Status (2026-11-13):** fixed in d6f234c6f (red `confine::tests::a_confined_vm_dials_only_beside_its_vsock_path`, a VM given no vsock path dialed a same-user `engine.sock` listener): a seccomp layer on every kernel refuses every connect of a VM given no vsock path (every daemon VM) and every datagram socket, and Landlock v9 `RESOLVE_UNIX` scopes one given a vsock path. Remaining: before ABI v9 a VM given a vsock path (the builder, `run vm --kernel --vsock`) still dials any path; spawner dialing on Linux is owed (D30). PM M569.
 
 ### platform-03 — Windows snapshot staging leaves the grants broker open after guest start
 
@@ -94,7 +98,7 @@ The staging branch keeps the link open without sending `SEALED`. The broker's `s
 
 **Catching test:** start a disposable snapshot-capable, no-vsock confined actor; after initial setup send GRANT Write for an ungranted sentinel. Require refusal and no change, while a valid STAGE/COMMIT still succeeds.
 
-**Status (2026-11-14):** fixed in 1e8c83104 (red `grant_answer::windows_tests::a_vm_that_stages_its_snapshots_is_granted_nothing_more_once_it_starts`, e889915c4: the sentinel overwritten on Windows 10.0.26200 x86_64; PM M567, `docs/research/measurements/windows-p0/`).
+**Status (2026-11-14):** fixed in 1e8c83104 (red `grant_answer::windows_tests::a_vm_that_stages_its_snapshots_is_granted_nothing_more_once_it_starts`, e889915c4: the sentinel overwritten on Windows 10.0.26200 x86_64; PM M570, `docs/research/measurements/windows-p0/`).
 
 ### platform-04 — Unfiltered prlimit64 changes other host processes' hard limits
 
@@ -118,6 +122,8 @@ The same-user spawner meets Linux's UID/GID permission check; its hard descripto
 **Fix direction:** remove the unconditional rule; permit PID zero/self only, with only required operations.
 
 **Catching test:** use a disposable same-UID target with communication FDs already open. The confined actor attempts the cross-process reduction; target must retain its limits and successfully open a new file. Never target a real daemon during validation.
+
+**Status (2026-11-13):** fixed in 146b02d37 (red `confine::tests::a_confined_vm_sets_only_its_own_limits`: a confined child set a disposable target's `RLIMIT_NOFILE` from 1048576/1048576 to 0/0); prlimit64 is allowed for pid 0 and the process's own pid alone. PM M567, D30.
 
 ## P1 — high
 
