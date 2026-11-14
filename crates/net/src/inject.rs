@@ -2392,7 +2392,7 @@ impl Ended {
                     let mut coded = Zeroizing::new(Vec::new());
                     let (taken, ended) = walk(framing, bytes, crate::tcp::TO_GUEST, &mut |p| {
                         if let Piece::Data(b) = p {
-                            coded.extend_from_slice(b);
+                            signin::append(&mut coded, b);
                         }
                         Ok(())
                     })?;

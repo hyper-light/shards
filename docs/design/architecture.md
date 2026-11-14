@@ -28078,7 +28078,13 @@ docs/research/s33-veil-creds/STEP3.md).
   bypassed (the coded bytes chunked as they came), the H2 decoder bypassed, and each of the three
   budget checks removed, each fail their tests. Still residual: a tunnel's own framing (a value
   split across WebSocket frames, or a protocol other than WebSocket after a 101), which the mask
-  reads as bytes; a decoded body's buffers, which grow without being wiped, as rustls's own do.
+  reads as bytes. A decoded body's own buffers (its decoder's output, gzip's sink, zstd's pending
+  octets, the coded run of a turn, the run the mask lets go) grow through `signin::append`, each
+  buffer let go of wiped as it drops (creds-13, amended 2026-11-13); red before (a block let go of
+  while a body decoded held its plaintext, seen by the test binary's allocator, `decode::watch`),
+  green after, and either growth by `extend_from_slice` again fails it. Still residual: the
+  decoders' own windows and buffers (zlib-rs's 32 KiB window, flate2's output buffer, ruzstd's
+  window), let go of unwiped as the decoder drops, as rustls's buffers are.
 - *Audit (f26).* `shards-net: credential <reference> filled in toward <host> at <s>.<ns> (Unix
   time)`, on the network process's stderr (its run host's diagnostics); never the value or the
   placeholder.
