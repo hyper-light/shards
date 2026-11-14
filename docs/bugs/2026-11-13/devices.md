@@ -143,7 +143,7 @@ Priority mapping for the user's requested notification: **P0 critical; P1 high; 
 
 **Catching test:** persist 66 linked requests with unequal root/intermediate limits and assert c65's result equals `shm_bytes(sizes(c0).2)`; ROOT's E2E should compare guest statfs with c0's maximum.
 
-**Status (2026-11-14):** fixed in 4eaefdf9c (red `shm_owner_follows_every_join_to_the_vm_budget`: resolved budget 0 rather than 536870912; green 3 inspect tests plus shards clippy on macOS arm64). Complete traversal has cycle/missing/storage refusal variants; startup and inspect return these errors instead of guessing an intermediate budget.
+**Status (2026-11-14):** fixed in 8df184aa2 (red `shm_owner_follows_every_join_to_the_vm_budget`: resolved budget 0 rather than 536870912; green 4 inspect tests plus shards clippy on macOS arm64; Codex's 0d6a24c37/4eaefdf9c cherry-picked as 6ea0a8463/ad8308bb8, 8df184aa2 keeps listings whole). D156 amended. Owed to ROOT: c0 `--memory 512m`, c1..c65 each `--network container:c(n-1)`, then `statfs /dev/shm` in c65 equals half c0's microVM maximum (`shm_bytes`).
 
 ### devices-08 — P2 / medium — Device paths retain fixed budgets without required derivation
 

@@ -16239,9 +16239,6 @@ is read after it, so that what a user has keeps working.
 
 ### D156. A run's IPC, hostname, cgroups, umask and writable layer, as its microVM has them
 
-Review devices-07 (2026-11-14): /dev/shm sizing follows every IPC and VM-owner link, with cycle detection and typed missing-owner/storage refusal. There is no selected traversal depth. A lookup's visited set lives only for that lookup; it is not cached. Startup and inspect/list propagate unresolved ownership rather than using an intermediate run's allowance. Unit red/green: `docs/research/measurements/device-fixes/README.md`; live chained-join mount verification is owed to ROOT.
-
-
 A run's flags for the namespaces it has, its umask and its writable layer are taken as
 Docker's CLI takes them, and mean what they can for a microVM: a run shares no kernel
 with its host, so "host" is the microVM's, and what one run shares with another it shares
@@ -16330,6 +16327,18 @@ inside the microVM the other runs in (D119).
   joiner's donor's /dev/shm not copied from its namespace; sharing without the donor's
   leave; `--uts host` not naming the run by its host; a joiner's writable layer not
   sized; a joiner not in the microVM's cgroup namespace with `--cgroupns host`).
+
+**Amended 2026-11-14 (devices-07).** The /dev/shm of a run that joins another's microVM
+is sized by the run whose microVM it is, followed through every link, IPC
+(`--ipc container:`) then the microVM's owner (`--network container:`, or the engine that
+made it, D181), with no chosen depth: each lookup keeps the IDs it has passed and refuses
+a cycle, a missing owner's record or no memory for its set, typed (`ShmOwnerRefused`). The
+walk had stopped after 64 links and sized the mount by the 64th run's allowance, half its
+host's memory where that run had no limit of its own, instead of the limited microVM's.
+A start and an `inspect` refuse a run whose owner cannot be found; a listing's summary,
+which shows no ShmSize (moby container.Summary), sums it up still. Unit red/green and
+mutation: `docs/research/measurements/device-fixes/README.md`; the chained mount itself
+is owed to ROOT's real-VM run (there).
 
 ### D155. A run's CPUs, real-time time, isolation and runtime, as its microVM has them
 
