@@ -19821,6 +19821,19 @@ killer's ends, the global one's in a builder that holds its build at no `memory.
 recorded `short yes`, and its next builder may have all its host's memory, as D148's runs
 (`a_new_homes_build_that_runs_out_is_recorded_short`).
 
+**A step's limits are the kernel's own for all of its memory (2026-11-14, memory-15's third
+defect).** `Plug::raise_limits` scaled each limit from `MemTotal` at boot to `MemTotal` at
+boot plus `HOTPLUG_SIZE`, which also scaled what the kernel sized from memory it never
+counts in `MemTotal` and the page structures the plugged memory costs. On HVF a step of a
+builder booted at its learned boot under 2560 MiB saw `kernel.threads-max` 21801 where a
+guest booted with all 2560 MiB has 19535 (+11.6%, `a_builders_memory_is_plugged_as_its_build_needs_it`
+red at af629d8ed); before memory-15, at 0faaf2628^, it saw 20929 (+7.1%), within that
+test's tenth then: the defect predates memory-15, which widened it by booting smaller. Now
+each limit is its boot's value and what the added memory, less a 64-byte `struct page` for
+each page, adds by the kernel's formula (`plug::Limits::raised`, above); the test still
+holds each limit at or above the guest booted with all of it and within a tenth past it,
+its window not widened.
+
 **R03 review memory-11..15 (2026-11-13):** reserve slack, pause/read floors,
 retry count, growth/retention ratios and boot floor remain owed to ROOT with
 designs in `docs/research/measurements/memory-fixes-v1/owed-designs.md`.
@@ -19925,13 +19938,17 @@ given the rest as its build needs it, up to what it may have.
 - **What the kernel sized by the memory it booted with** is raised to what it sizes by all
   of it, so that a step sees what it saw in a builder booted with all its memory: the
   layers' tmpfs (`size=` and `nr_inodes=` of all of it, where `size=100%` would be of 512
-  MiB); `kernel.threads-max`, the user namespaces' maxima, epoll's watches, `tcp_mem` and
-  `udp_mem`, each in proportion to the memory; `fs.file-max` by the memory added, a file
-  for each 10 KiB, as the kernel's own sizing has it (a proportion came out short on
-  x86_64); TCP's buffers within their caps; TCP's orphans and TIME-WAIT buckets by its
-  table's sizing; inotify's watches, which the kernel holds at 8192 below about 1 GiB, in
-  their proportion to epoll's; and init's RLIMIT_SIGPENDING, half the threads, which
-  every step inherits. Its processes are Docker's build steps', unlimited, as are its open
+  MiB); `kernel.threads-max`, the user namespaces' maxima (half the threads), epoll's
+  watches, `tcp_mem`, `udp_mem`, TCP's largest buffers within their caps and
+  `fs.file-max`, each its boot's value and what the memory added, less its page structures
+  (a 64-byte `struct page` a page), adds by the kernel's own formula, rounded up
+  (`plug::Limits::raised`: a thread for each 8 kernel stacks, `THREAD_SIZE` 16 KiB on
+  x86_64 and arm64; an epoll item for each 25 × 184 bytes; a 16th and an 8th of the pages
+  for TCP's and UDP's pages; a 128th of the bytes for the buffers; a file for each 10 KiB),
+  never in proportion (memory-15's third defect, below); TCP's orphans and TIME-WAIT
+  buckets by its table's sizing; inotify's watches, which the kernel holds at 8192 below
+  about 1 GiB, in their proportion to epoll's; and init's RLIMIT_SIGPENDING, half the
+  threads, which every step inherits. Its processes are Docker's build steps', unlimited, as are its open
   files (1048576) and locked memory, whatever the memory (2026-10-12, PM M211: a step had
   kept the builder's kernel's own, 1024 of 4096 files).
 - **No snapshot.** Memory plugged is not saved, so a snapshot of a VM with memory to plug
