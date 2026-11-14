@@ -219,3 +219,13 @@ by traps, owned targets removed after landing. Earlier amd64 target cleanup exit
 Some early automatic merge messages in the first slices omitted the requested
 coauthor trailer; those landed histories are not rewritten. Later commits and
 merges carry it. This is a recorded attribution gap, not a waived requirement.
+
+Native ARM merged-source gate: Kiln r12 could not dispatch before a server timeout;
+r14's carrier sync was stopped without a test verdict. A read-only check found
+no owned container and the source still at 53e89b2b8. Pushed the signed branch,
+then used the prepared clone directly, avoiding the stalled carrier sync.
+Kiln r16 checked exact merge `e7822b6b75574ec1b5c5f811ee4f7a359ee3de90`
+(main a33644dbe) on Linux 6.12.65-linuxkit aarch64 / Rust 1.98.1:
+`NETWORK_CHECK_ROOT=$HOME/g121-tmp/network-arm02-v1 bash docs/research/measurements/network-fixes-v1/native-arm02.sh green`.
+Startup test 1 passed, forbidden-syscall test 1 passed, both crates' clippy passed,
+overall exit 0. This is the focused tested merge for amended landing contention.
