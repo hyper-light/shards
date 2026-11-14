@@ -154,6 +154,8 @@ Some(Lease::Asked { waiting, .. }) => {
 
 **Confidence:** High for linear retained growth; exhaustion limits and runtime measurements unverified.
 
+**Status (2026-11-13):** fixed in 1b21eb21a403024baae2a7b815b8b1f5ac987255 (red `lease::tests::creds_06_a_pending_lease_resumes_each_flow_once` at 6eb3ad718). Merged-tree lease tests: 12 passed; shards-net all-target clippy and policy check passed on macOS arm64. See `docs/research/measurements/creds-fixes-v1/README.md` for revisions, retained output and coordinator work.
+
 ### creds-07 — P3 / medium — The CA's constraints authorize descendants outside exact host grants
 
 **Location:** `crates/net/src/ca.rs:93`, `:116`.

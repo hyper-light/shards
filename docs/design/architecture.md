@@ -27201,6 +27201,12 @@ VM failing. On the orchestrator's side
   lease it gave is released once: as the host says `RELEASED`, as the channel ends where it
   never says it, or at once where given after the run's release or with none of its life left
   (answered `Ended` or `Lapsed`).
+- *Pending waiter ownership (creds-06).* Repeated asks of a pending reference keep one
+  waiter per live flow, including multiple HTTP/2 streams of the same flow. Releasing its
+  TCP slot removes that token from pending and resumed lease records. The broker ask
+  itself stays identifiable so late answers still belong to this run. The vector's bound
+  derives from live callers, with no timeout, chosen size or duplicate queue. Red/green
+  and the teardown test: docs/research/measurements/creds-fixes-v1/README.md.
 - *Refusals, typed through.* The broker's `Denied` and `Unavailable` (in its words),
   `KeyReplaced { asked, current }` (the fields of the daemon's `Refused::KeyReplaced`, D176 part
   6), `Ended` and `Lapsed`; and the run host's own `Ungranted` and `Live`. The run host maps the

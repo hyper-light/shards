@@ -24040,3 +24040,15 @@ copy test passed (1 pass, 2 failures). At f7d83f73a all 7 MCP tests and shards-i
 all-target clippy passed. Normal socket half-close still delivers later stdin.
 This is functional evidence, not a performance measurement or real-VM result.
 [Commands, output excerpts, policy and owed coverage](measurements/inithex-fixes/README.md).
+
+### M565. Pending credential leases retain one waiter per live flow (D242, creds-06)
+
+2026-11-13, adas-mac-studio.local, Darwin arm64; implementer light checks only.
+Red 6eb3ad718: `cargo test -p shards-net creds_ -- --nocapture` reproduces duplicate
+waiters `[1, 1, 2, 1, 2, 2]` where two distinct flows should resume once each.
+Fix 1b21eb21a deduplicates pending flow tokens and removes pending/resumed tokens
+on flow release. The outstanding broker ask remains identifiable for a late answer.
+Merged 16ebc78cf: `cargo test -p shards-net lease::`, 12 passed; shards-net all-target
+clippy and development-policy check passed. Exact commands, setup failures, retained
+output and unrun work: [record](measurements/creds-fixes-v1/README.md).
+No performance, allocation, exhaustion or real-VM result is claimed; ROOT owns those.
