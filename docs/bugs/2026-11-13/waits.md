@@ -255,6 +255,8 @@ Priority mapping used: P0 critical, P1 high, P2 medium, P5 low; no P3/P4 finding
 
 **Unrun regression:** Delay an otherwise live VM's take/write, supply a fourth usable warm candidate, force the first eight ephemeral choices to collide, vary a registry's declared window across 60 s, and give a nonlookup answer beyond 30 s. Require behavior governed by liveness/progress and actual path state. A focused source audit should additionally reject the literal polls/windows without a cited sufficient bound.
 
+**Status (2026-11-14):** partly fixed in 095cbe98e: `http.rs:48` RACE derived (RFC 8305 §5/§8 over the path's RFC 6298 connect estimator; red `patience::tests::a_dial_starts_its_next_address_as_its_paths_connects_retransmit` at 5b7e1748b, 300 ms whatever the path showed; PM M577, D222). Every other row is owed to ROOT, with its design and red test in D222's "The chosen waits left (review waits-12)" table: each needs a daemon, VM, guest or registry run to prove it.
+
 ## Checked and found sound
 
 - `progress.rs::found` has the requested precedence: ending, stopped, ran, held, still. This is a source observation, not a portability pass. Record W* is max; R* is diagnostic; u64-saturated rates use u128 cross-products.

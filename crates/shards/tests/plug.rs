@@ -116,6 +116,27 @@ fn devices_are_plugged_into_a_run_and_its_disk_grows() {
         none.stderr
     );
 
+    // Concurrent same-destination requests have one owner and leave no hidden mount.
+    let contested = format!("{}:/contended", dir.display());
+    let barrier = std::sync::Barrier::new(2);
+    let attempt = || {
+        barrier.wait();
+        run_shards_env(&["plug"], &["volume", "plugged", &contested], &env)
+    };
+    let results = std::thread::scope(|scope| {
+        let a = scope.spawn(attempt);
+        let b = scope.spawn(attempt);
+        [a.join().unwrap(), b.join().unwrap()]
+    });
+    assert_eq!(
+        results.iter().filter(|r| r.status == Some(0)).count(),
+        1,
+        "statuses/errors: {:?}",
+        results.iter().map(|r| (r.status, &r.stderr)).collect::<Vec<_>>()
+    );
+    shards(&["unplug"], &["volume", "plugged", "/contended"]);
+    assert!(inside(&["slurp", "/contended/from-host"]).contains("errno 2"));
+
     // Off Linux no host's function is plugged in: refused by name, with its host's own
     // limit, as a run's start refuses one (D154; PM M401, M402, M403).
     #[cfg(not(target_os = "linux"))]

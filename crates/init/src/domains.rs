@@ -627,36 +627,22 @@ fn harness_env(dir: &str, label: &str, image: &[String], given: &[String]) -> Re
     Ok(env)
 }
 
-/// The program `d` starts, its config's `run.command`'s first word: an absolute one as
-/// written, a relative one its directory's, and a bare name found on the `PATH` of `env`,
-/// the environment it runs with, as execvp(3) finds one (its own artifact's before the
-/// system's tools, the inherited `PATH` letting a launcher such as nohup find its child):
-/// here, as the child may not allocate.
-fn executable(d: &Domain, env: &[CString]) -> Result<CString, String> {
+/// Candidate names are prepared before clone, but only searched by the confined
+/// child in its actual mounts and cwd. A relative command containing `/` remains
+/// relative to the artifact, as its config specifies; PATH entries use exec's rules.
+fn executable(d: &Domain, env: &[CString]) -> Result<(bool, Vec<CString>), String> {
     let first = d.argv.first().map(|a| a.to_bytes()).unwrap_or_default();
-    let cstr = |b: Vec<u8>| CString::new(b).map_err(|_| format!("{}: a NUL in its program", d.label));
-    if first.starts_with(b"/") {
-        return cstr(first.to_vec());
-    }
-    if first.contains(&b'/') {
-        return cstr([d.dir.as_slice(), b"/", first].concat());
-    }
-    let path = env
-        .iter()
-        .rev()
-        .find_map(|e| e.to_bytes().strip_prefix(b"PATH="))
-        .unwrap_or_default();
-    path.split(|&b| b == b':')
-        .filter_map(|p| CString::new([p, b"/", first].concat()).ok())
-        // SAFETY: access(2) of a NUL-terminated path.
-        .find(|c| unsafe { libc::access(c.as_ptr(), libc::X_OK) == 0 })
-        .ok_or_else(|| {
-            format!(
-                "{}: {:?} is on no directory of PATH",
-                d.label,
-                String::from_utf8_lossy(first)
-            )
-        })
+    let env: Vec<_> = env.iter().map(|e| e.as_bytes().to_vec()).collect();
+    let (explicit, paths) = if first.contains(&b'/') && !first.starts_with(b"/") {
+        (true, vec![[d.dir.as_slice(), b"/", first].concat()])
+    } else {
+        crate::run::candidates(first, &env)
+    };
+    let paths = paths
+        .into_iter()
+        .map(|p| CString::new(p).map_err(|_| format!("{}: a NUL in its program PATH", d.label)))
+        .collect::<Result<_, _>>()?;
+    Ok((explicit, paths))
 }
 
 /// `d`'s command line (D256): its program as found ([`executable`]), the rest of its config's
@@ -667,30 +653,6 @@ fn command_line<'a>(program: &'a CStr, d: &'a Domain, args: &'a [CString]) -> Ve
         .chain(d.argv.iter().skip(1).map(CString::as_c_str))
         .chain(args.iter().map(CString::as_c_str))
         .collect()
-}
-
-/// Where `home`, a member's `HOME`, lies among the mounts it may write as it starts, each by
-/// its mount point in its view (`points`: its scratch's `/tmp`, a writable volume's as
-/// declared and as it lies in the image): the deepest that is `home` or holds it, by its
-/// place in `points`, and `home`'s components beneath it. None where none does, or where
-/// `home` is no absolute path that stays where it says (`..`).
-fn home_in<'h>(home: &'h str, points: &[&str]) -> Option<(usize, Vec<&'h str>)> {
-    let comps: Vec<&str> = home
-        .strip_prefix('/')?
-        .split('/')
-        .filter(|c| !c.is_empty() && *c != ".")
-        .collect();
-    if comps.contains(&"..") {
-        return None;
-    }
-    let plain = format!("/{}", comps.join("/"));
-    let (at, point) = points
-        .iter()
-        .enumerate()
-        .filter(|(_, p)| within(&plain, p))
-        .max_by_key(|(_, p)| p.len())?;
-    let depth = point.split('/').filter(|c| !c.is_empty()).count();
-    Some((at, comps.get(depth..).unwrap_or_default().to_vec()))
 }
 
 /// Whether `p` is relative and stays inside the directory it is relative to: the twin of
@@ -877,6 +839,8 @@ struct Prepared {
     hide: Vec<CString>,
     hostname: CString,
     argv: Vec<*const libc::c_char>,
+    paths: Vec<CString>,
+    explicit: bool,
     envp: Vec<*const libc::c_char>,
     /// Its `/etc/hosts`, where it has a link.
     hosts: Option<Vec<u8>>,
@@ -2091,7 +2055,8 @@ pub fn start(
             }
             l.name_in(&mut env).map_err(|e| format!("{}: {e}", d.label))?;
         }
-        let argv0 = executable(d, &env)?;
+        let (explicit, paths) = executable(d, &env)?;
+        let argv0 = d.argv.first().ok_or_else(|| format!("{}: no program", d.label))?;
         // Its run-time arguments (D256): its command line points into them until it execs.
         let given_args = crate::staged::args(member, setup).map_err(|e| format!("{}: {e}", d.label))?;
         let workdir = crate::staged::workdir(member, setup)
@@ -2103,34 +2068,29 @@ pub fn start(
             .find_map(|e| e.to_bytes().strip_prefix(b"HOME="))
             .map(String::from_utf8_lossy)
             .unwrap_or_default();
-        // What it may write as it starts, each where it sees it: its scratch, at /tmp, and
-        // each writable volume given it, at its mount point as declared and as it lies in
-        // the image, with init's own mount of it.
-        let mut writable: Vec<(&str, crate::staged::Mount<'_>)> = Vec::new();
+        // Include read-only covers: staged files must land in the mount visible at
+        // their final path, not behind it in an ancestor's backing directory.
+        let mut mounts = Vec::new();
         if let Some(s) = &scratch {
-            writable.push(("/tmp", crate::staged::Mount::Held(s.as_fd())));
-        }
-        for (sh, at, real) in staged
-            .iter()
-            .filter(|(sh, _, _)| !sh.ro && given_volume(d, &sh.dest))
-        {
-            writable.extend([
-                (real.as_str(), crate::staged::Mount::At(at.as_str())),
-                (sh.dest.as_str(), crate::staged::Mount::At(at.as_str())),
-            ]);
-        }
-        let points: Vec<&str> = writable.iter().map(|(p, _)| *p).collect();
-        let place = home_in(&home, &points)
-            .and_then(|(i, beneath)| {
-                Some(crate::staged::Home {
-                    mount: writable.get(i)?.1,
-                    beneath,
-                })
-            })
-            .ok_or_else(|| {
-                format!("HOME, {home:?}, lies in neither its scratch nor a writable volume given it")
+            mounts.push(crate::staged::MountPoint {
+                path: "/tmp",
+                canonical: "/tmp",
+                mount: crate::staged::Mount::Held(s.as_fd()),
+                read_only: false,
             });
-        crate::staged::files(place, (d.id, d.id), member, setup).map_err(|e| format!("{}: {e}", d.label))?;
+        }
+        for (sh, at, real) in staged.iter().filter(|(sh, _, _)| given_volume(d, &sh.dest)) {
+            for path in [real.as_str(), sh.dest.as_str()] {
+                mounts.push(crate::staged::MountPoint {
+                    path,
+                    canonical: real.as_str(),
+                    mount: crate::staged::Mount::At(at.as_str()),
+                    read_only: sh.ro,
+                });
+            }
+        }
+        crate::staged::files(&home, &mounts, (d.id, d.id), member, setup)
+            .map_err(|e| format!("{}: {e}", d.label))?;
         let dir = server.start(
             i,
             d,
@@ -2219,11 +2179,13 @@ pub fn start(
                 .collect(),
             hostname: CString::new(d.cgroup.as_str())
                 .map_err(|_| format!("{}: a NUL in its name", d.label))?,
-            argv: command_line(&argv0, d, &given_args)
+            argv: command_line(argv0, d, &given_args)
                 .into_iter()
                 .map(CStr::as_ptr)
                 .chain([std::ptr::null()])
                 .collect(),
+            paths,
+            explicit,
             envp: env.iter().map(|a| a.as_ptr()).chain([std::ptr::null()]).collect(),
             hosts: d.link.as_ref().map(|l| l.hosts.clone()),
             resolv: d.resolv.clone(),
@@ -3072,11 +3034,8 @@ fn exec_child(p: &Prepared, c: &Confinement) -> ! {
         if libc::chdir(c.workdir.as_ptr()) != 0 {
             fail(out, c"entering its working directory");
         }
-        libc::execve(
-            p.argv.first().copied().unwrap_or(std::ptr::null()),
-            p.argv.as_ptr(),
-            p.envp.as_ptr(),
-        );
+        // Its program found only now, in its own view (confine-04).
+        let _ = crate::run::exec_found(&p.paths, p.explicit, p.argv.as_ptr(), p.envp.as_ptr());
         crate::domains::fail(out, setup, crate::managed::Step::Exec, c"running its command")
     }
 }
@@ -3515,32 +3474,6 @@ mod tests {
         assert!(d("/etc").is_err());
     }
 
-    /// A member's HOME lies in the deepest of its writable mounts that holds it, however it
-    /// is written but for `..`; what is staged for it goes there (staged.rs), never to a
-    /// mount beside it.
-    #[test]
-    fn a_members_home_lies_in_the_deepest_mount_that_holds_it() {
-        let points = ["/tmp", "/var/home/claude", "/home/claude", "/home/claude/.cache"];
-        assert_eq!(home_in("/tmp", &points), Some((0, vec![])));
-        assert_eq!(home_in("/tmp/h/i", &points), Some((0, vec!["h", "i"])));
-        assert_eq!(home_in("/home/claude", &points), Some((2, vec![])));
-        assert_eq!(home_in("//home/claude/./", &points), Some((2, vec![])));
-        assert_eq!(home_in("/home/claude/.cache/x", &points), Some((3, vec!["x"])));
-        assert_eq!(home_in("/var/home/claude/w", &points), Some((1, vec!["w"])));
-        for nowhere in [
-            "/root",
-            "/home",
-            "/home/claudette",
-            "tmp",
-            "",
-            "/tmp/../etc",
-            "/home/claude/../x",
-        ] {
-            assert_eq!(home_in(nowhere, &points), None, "{nowhere}");
-        }
-        assert_eq!(home_in("/tmp", &[]), None);
-    }
-
     /// A domain of `argv` whose directory is `dir`.
     fn domain_at(dir: &str, argv: &[&str]) -> Domain {
         Domain {
@@ -3567,36 +3500,57 @@ mod tests {
     /// bare name found on the PATH it runs with, whatever gave that PATH last.
     #[test]
     fn a_members_program_is_found_on_the_path_it_runs_with() {
-        use std::os::unix::fs::PermissionsExt as _;
-        let dir = shards_testdir::TempDir::new("program").unwrap();
-        let root = dir.path().to_str().unwrap();
-        for (d, mode) in [("bin", 0o755), ("other", 0o755)] {
-            std::fs::create_dir(dir.path().join(d)).unwrap();
-            let tool = dir.path().join(d).join("tool");
-            std::fs::write(&tool, b"#!/bin/sh\n").unwrap();
-            std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(mode)).unwrap();
+        let d = domain_at("/artifact", &["tool"]);
+        let env = vec![CString::new("PATH=/missing:/bin").unwrap()];
+        let (explicit, paths) = executable(&d, &env).unwrap();
+        assert!(!explicit);
+        assert_eq!(
+            paths,
+            [
+                CString::new("/missing/tool").unwrap(),
+                CString::new("/bin/tool").unwrap()
+            ]
+        );
+        for (argv, expected) in [("bin/tool", "/artifact/bin/tool"), ("/bin/tool", "/bin/tool")] {
+            let (explicit, paths) = executable(&domain_at("/artifact", &[argv]), &[]).unwrap();
+            assert!(explicit);
+            assert_eq!(paths, [CString::new(expected).unwrap()]);
         }
-        let env = |path: String| vec![CString::new("HOME=/tmp").unwrap(), CString::new(path).unwrap()];
-        let found = |argv: &[&str], path: String| executable(&domain_at(root, argv), &env(path));
-        let at = |p: &str| CString::new(format!("{root}/{p}")).unwrap();
-        assert_eq!(
-            found(&["tool"], format!("PATH={root}/none:{root}/bin")).unwrap(),
-            at("bin/tool")
-        );
-        assert_eq!(
-            found(&["tool"], format!("PATH={root}/other:{root}/bin")).unwrap(),
-            at("other/tool")
-        );
-        assert_eq!(
-            found(&["bin/tool", "-x"], "PATH=/nowhere".into()).unwrap(),
-            at("bin/tool")
-        );
-        assert_eq!(
-            found(&["/usr/bin/env"], "PATH=/nowhere".into()).unwrap(),
-            CString::new("/usr/bin/env").unwrap()
-        );
-        let e = found(&["tool"], "PATH=/nowhere".into()).unwrap_err();
-        assert!(e.contains("\"tool\" is on no directory of PATH"), "{e}");
+    }
+
+    #[test]
+    fn a_members_relative_path_is_resolved_in_its_working_directory() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = shards_testdir::TempDir::new("relative-program").unwrap();
+        std::fs::create_dir(dir.path().join("bin")).unwrap();
+        for file in ["bin/tool", "tool"] {
+            std::fs::write(dir.path().join(file), b"#!/bin/sh\nexit 23\n").unwrap();
+            std::fs::set_permissions(dir.path().join(file), std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let mut d = domain_at(dir.path().to_str().unwrap(), &["tool"]);
+        d.workdir = CString::new(dir.path().to_str().unwrap()).unwrap();
+        for path in ["PATH=bin", "PATH=:/usr/bin", "PATH=missing:bin"] {
+            let (explicit, paths) = executable(&d, &[CString::new(path).unwrap()]).unwrap();
+            let argv = [c"tool".as_ptr(), std::ptr::null()];
+            let envp = [std::ptr::null()];
+            // SAFETY: the child uses only async-signal-safe syscalls and prepared buffers.
+            let pid = unsafe { libc::fork() };
+            assert!(pid >= 0);
+            if pid == 0 {
+                // SAFETY: only this child's cwd changes; all buffers remain live until exec.
+                unsafe {
+                    if libc::chdir(d.workdir.as_ptr()) != 0 {
+                        libc::_exit(125);
+                    }
+                    crate::run::exec_found(&paths, explicit, argv.as_ptr(), envp.as_ptr());
+                    libc::_exit(126);
+                }
+            }
+            let mut status = 0;
+            // SAFETY: waitpid of the child just made, with a valid status pointer.
+            assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
+            assert_eq!(libc::WEXITSTATUS(status), 23, "{path}");
+        }
     }
 
     /// A member's command line (D256): its program as found, the rest of its config's
@@ -4091,6 +4045,8 @@ mod tests {
                     hide: Vec::new(),
                     hostname: CString::default(),
                     argv: argv.to_vec(),
+                    paths: vec![c"/bin/cat".into()],
+                    explicit: true,
                     envp: vec![std::ptr::null()],
                     hosts: None,
                     resolv: None,

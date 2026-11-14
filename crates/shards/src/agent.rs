@@ -216,20 +216,24 @@ fn attach_sbom(
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     // Built here, as the artifact is, whatever context the home has chosen.
     let (here, this) = crate::context::HERE;
-    let ran = std::process::Command::new(exe)
-        .env(here, this)
-        .arg("build")
-        .arg("--progress=plain")
-        .arg(format!("--sbom={sbom}"))
-        .arg("--provenance=false")
-        .arg("--output")
-        .arg(format!("type=oci,dest={},tar=false", out.display()))
-        .arg("-f")
-        .arg(&file)
-        .arg(content)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .map_err(|e| format!("scanning {}: {e}", content.display()))?;
+    let ran = shards_ipc::spawn_std(
+        std::process::Command::new(exe)
+            .env(here, this)
+            .arg("build")
+            .arg("--progress=plain")
+            .arg(format!("--sbom={sbom}"))
+            .arg("--provenance=false")
+            .arg("--output")
+            .arg(format!("type=oci,dest={},tar=false", out.display()))
+            .arg("-f")
+            .arg(&file)
+            .arg(content)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped()),
+    )
+    .and_then(std::process::Child::wait_with_output)
+    .map_err(|e| format!("scanning {}: {e}", content.display()))?;
     if !ran.status.success() {
         return Err(format!(
             "scanning {} for an SBOM failed:\n{}",

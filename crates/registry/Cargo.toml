@@ -28,9 +28,12 @@ time = { version = "0.3.55", features = ["parsing"] }
 # injector's upstream side verifies too (D242).
 shards-verify = { path = "../verify" }
 
-[target.'cfg(unix)'.dependencies]
-# The daemon's children, credential helpers among them, made by its spawner (PM M158).
+# The daemon's children, credential helpers among them, made by its spawner (PM M158); on
+# Windows by std's Command through shards_ipc::spawn_std, which no shards spawn's inheritable
+# handles reach (platform-07).
 shards-ipc = { path = "../ipc" }
+
+[target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]

@@ -6673,6 +6673,54 @@ pub(crate) fn candidates(argv0: &[u8], env: &[Vec<u8>]) -> (bool, Vec<Vec<u8>>) 
     (false, found)
 }
 
+/// The first of `candidates` that is a file, no directory, and executable by the caller
+/// (Go's exec.LookPath, `findExecutable`), looked for in the caller's own view as it is now:
+/// its mounts, its confinement and its working directory, which a relative candidate is
+/// relative to; then execve(2) of it. Returns only where none ran, with the step that
+/// failed and the candidate it failed at, errno set: a path the command names is the only
+/// candidate, and each failure is its own; past the last searched, [`step::NOT_IN_PATH`].
+///
+/// # Safety
+/// `argv` and `envp` are NULL-terminated arrays of NUL-terminated strings that outlive the
+/// call. It makes system calls alone, so a child of a multithreaded fork may call it.
+pub(crate) unsafe fn exec_found(
+    candidates: &[CString],
+    explicit: bool,
+    argv: *const *const libc::c_char,
+    envp: *const *const libc::c_char,
+) -> (u8, usize) {
+    // SAFETY: stat(2), faccessat(2) and execve(2) of NUL-terminated paths the caller holds,
+    // with the arrays the caller vouches for.
+    unsafe {
+        for (i, path) in candidates.iter().enumerate() {
+            let mut st: libc::stat = std::mem::zeroed();
+            if libc::stat(path.as_ptr(), &mut st) != 0 {
+                if explicit {
+                    return (step::STAT, i);
+                }
+                continue;
+            }
+            if st.st_mode & libc::S_IFMT == libc::S_IFDIR {
+                if explicit {
+                    *libc::__errno_location() = libc::EISDIR;
+                    return (step::ACCESS, i);
+                }
+                continue;
+            }
+            if libc::faccessat(libc::AT_FDCWD, path.as_ptr(), libc::X_OK, libc::AT_EACCESS) != 0 {
+                if explicit {
+                    return (step::ACCESS, i);
+                }
+                continue;
+            }
+            libc::execve(path.as_ptr(), argv, envp);
+            return (step::EXEC, i);
+        }
+        *libc::__errno_location() = libc::ENOENT;
+        (step::NOT_IN_PATH, 0)
+    }
+}
+
 /// What the child needs, built before fork.
 struct Child<'a> {
     stdio: [RawFd; 3],

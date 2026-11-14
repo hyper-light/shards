@@ -1,0 +1,38 @@
+
+
+== f0cd0859 platform-10: the pool's unit test without integer thirds 2026-11-14T05:25:11.7038272Z
+== cargo test -p shards-vmm hv::whp:: platform::windows_files:: platform::windows_thread:: exit 0
+test hv::whp::tests::a_watched_range_is_cut_where_part_of_it_is_unmapped ... ok
+test hv::whp::state::tests::a_decoders_bounds_are_what_a_save_makes ... ok
+test hv::whp::state::tests::a_state_naming_registers_no_snapshot_keeps_is_refused ... ok
+test hv::whp::tests::the_emulator_writes_no_memory_the_guest_may_only_read ... ok
+test hv::whp::tests::the_emulator_reaches_no_memory_unmapped_or_replaced ... ok
+test hv::whp::tests::a_write_populate_copies_a_views_pages_in_the_kernel ... ok
+test hv::whp::tests::a_partitions_writes_are_watched_where_it_maps_them ... ok
+test hv::whp::state::tests::states_round_trip_and_damage_is_an_error ... ok
+test platform::windows_files::tests::a_taken_version_moves_the_next_past_it ... ok
+test platform::windows_files::tests::a_directory_holding_an_open_file_is_renamed_by_no_rename ... ok
+test platform::windows_files::tests::a_punched_hole_reads_zeros_and_is_given_back ... ok
+test platform::windows_files::tests::a_names_versions_are_found_whatever_their_case ... ok
+test platform::windows_files::tests::a_version_is_one_past_the_highest_listed ... ok
+test platform::windows_files::tests::only_plain_names_pass ... ok
+test platform::windows_files::tests::write_in_as_the_rename_probes_writers ... ignored, a measurement: docs/research/measurements/write-in-versions/run.sh
+test platform::windows_files::tests::in_an_open_directory_by_its_handle ... ok
+test platform::windows_files::tests::beneath_a_root_no_reparse_point_is_followed ... ok
+test platform::windows_thread::tests::a_pool_is_half_of_its_cpus_time ... ok
+test platform::windows_files::tests::a_copy_takes_its_data_alone_of_the_disk ... ok
+test platform::windows_thread::tests::a_thread_set_otherwise_is_left_as_it_is ... ok
+test platform::windows_files::tests::a_write_through_another_case_lands_as_the_next_version ... ok
+test platform::windows_thread::tests::credit_carries_a_thread_that_waits_across_its_clocks_steps ... ok
+test platform::windows_files::tests::a_held_version_keeps_no_write_from_landing ... ok
+test platform::windows_files::tests::written_whole_in_an_open_directory_and_listed ... ok
+test platform::windows_thread::tests::a_thread_run_long_goes_back_to_normal_and_is_raised_again_as_it_waits ... ok
+test platform::windows_thread::tests::a_thread_that_waits_between_its_runs_stays_raised ... ok
+test platform::windows_files::tests::a_long_listing_is_whole ... ok
+test platform::windows_thread::tests::raised_threads_sharing_a_cpu_take_no_more_than_half_of_it ... ok
+test platform::windows_files::tests::writers_racing_to_one_name_each_land_whole ... ok
+test platform::windows_files::tests::a_name_being_removed_is_not_found ... ok
+test result: ok. 29 passed; 0 failed; 1 ignored; 0 measured; 444 filtered out; finished in 12.92s
+== done 2026-11-14T05:25:42.5853510Z status 0
+
+[exited with code 0]

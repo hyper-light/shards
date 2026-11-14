@@ -103,6 +103,25 @@ const WIN32K_DISABLED: u64 = 1 << 28;
 /// meanwhile would have been made on that one.
 static STATION_SWITCH: RwLock<()> = RwLock::new(());
 
+/// Held to read by each of shards' spawns while it holds a handle inheritable, made so for
+/// its child's handle list alone (PROC_THREAD_ATTRIBUTE_HANDLE_LIST), and to write by each
+/// spawn of std's ([`spawn_std`]): a child std makes inherits every inheritable handle of this
+/// process (CreateProcessW's bInheritHandles, TRUE in std, whose own lock, CREATE_PROCESS_LOCK,
+/// is private to it), so one made meanwhile took another child's handles with it (platform-07).
+static INHERITING: RwLock<()> = RwLock::new(());
+
+/// [`crate::spawn_std`] on Windows: `command` spawned while none of shards' own spawns holds a
+/// handle inheritable ([`INHERITING`]).
+pub fn spawn_std(command: &mut std::process::Command) -> io::Result<std::process::Child> {
+    let _alone = INHERITING.write().unwrap_or_else(PoisonError::into_inner);
+    command.spawn()
+}
+
+/// [`INHERITING`] held to read: while a spawn of shards' holds a handle inheritable.
+fn inheriting() -> std::sync::RwLockReadGuard<'static, ()> {
+    INHERITING.read().unwrap_or_else(PoisonError::into_inner)
+}
+
 /// Whether this Windows refuses the second mitigation word (windows-2022, M201): found by
 /// the first child made, which then goes without it.
 static NO_SECOND_WORD: AtomicBool = AtomicBool::new(false);
@@ -2119,7 +2138,9 @@ fn spawn_env(
         }
     }
     // Copies of its standard handles made to be inherited, the caller's own left as they
-    // are: no spawn by std meanwhile takes them.
+    // are; no spawn by std meanwhile takes them, nor its grants pipe's read end
+    // ([`INHERITING`]).
+    let inheriting = inheriting();
     let copies: Vec<(usize, OwnedHandle)> = stdio
         .iter()
         .enumerate()
@@ -2191,6 +2212,11 @@ fn spawn_env(
         made => made,
     }?;
     drop(copies);
+    let grants = grants.map(|(read, write)| {
+        drop(read);
+        write
+    });
+    drop(inheriting);
     // SAFETY: the handles CreateProcessW returned, owned from here on.
     let (process, thread) = unsafe {
         (
@@ -2217,8 +2243,7 @@ fn spawn_env(
             return Err(e);
         }
     }
-    if let Some((read, write)) = grants {
-        drop(read);
+    if let Some(write) = grants {
         let mut told = String::new();
         for (handle, n) in past {
             let theirs = child.give(handle).inspect_err(|_| {
@@ -2397,6 +2422,7 @@ pub fn given_fd(n: i32) -> io::Result<Option<OwnedHandle>> {
 /// [`spawn`], left suspended: for a spawner that hands another child this one's process
 /// before either runs.
 pub fn spawn_suspended(s: &Spawn<'_>) -> io::Result<Suspended> {
+    let inheriting = inheriting();
     let (pipe_read, pipe_write) = pipe()?;
     let pipe_value = pipe_read.as_raw_handle() as usize;
     let pipe_arg = pipe_value.to_string();
@@ -2456,6 +2482,7 @@ pub fn spawn_suspended(s: &Spawn<'_>) -> io::Result<Suspended> {
         container: None,
     };
     drop(pipe_read);
+    drop(inheriting);
     let mut told = String::new();
     for g in s.given {
         let theirs = child.give(g.handle).map_err(|e| {
@@ -2625,23 +2652,20 @@ fn create(
     second: bool,
     desktop: Option<&[u16]>,
 ) -> io::Result<PROCESS_INFORMATION> {
-    // Standard input, output and error are inherited, made inheritable as std makes them;
-    // one this process lacks (a null or invalid handle) the child lacks too.
-    let mut inherited: Vec<RawHandle> = vec![pipe_read.as_raw_handle()];
+    // Standard input, output and error are inherited, each by a copy made inheritable for the
+    // child's handle list alone, closed once it is made: the caller's own are left as they
+    // are lent (platform-07). One this process lacks (a null or invalid handle) the child
+    // lacks too.
     let stdio = |h: Option<BorrowedHandle<'_>>| {
         h.map(|h| h.as_raw_handle())
             .filter(|&h| !h.is_null() && h != INVALID_HANDLE_VALUE)
+            .map(inheritable_copy)
+            .transpose()
     };
-    let (stdin, stdout, stderr) = (stdio(s.stdin), stdio(Some(s.stdout)), stdio(Some(s.stderr)));
-    for h in [stdin, stdout, stderr].into_iter().flatten() {
-        // SAFETY: a handle the caller lends us, for the child's handle list alone.
-        if unsafe { SetHandleInformation(h, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) } == 0 {
-            return Err(last());
-        }
-        if !inherited.contains(&h) {
-            inherited.push(h);
-        }
-    }
+    let copies = [stdio(s.stdin)?, stdio(Some(s.stdout))?, stdio(Some(s.stderr))?];
+    let [stdin, stdout, stderr] = copies.each_ref().map(|c| c.as_ref().map(|c| c.as_raw_handle()));
+    let mut inherited: Vec<RawHandle> = vec![pipe_read.as_raw_handle()];
+    inherited.extend([stdin, stdout, stderr].into_iter().flatten());
     // The group's job first, the outermost, then its own (PROC_THREAD_ATTRIBUTE_JOB_LIST).
     let jobs: Vec<HANDLE> = s
         .group
@@ -2855,6 +2879,110 @@ pub fn given(pipe: usize) -> io::Result<Vec<(String, Handed)>> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// Whether `handle` is inheritable (GetHandleInformation).
+    fn inheritable(handle: RawHandle) -> bool {
+        let mut flags = 0u32;
+        // SAFETY: a handle the caller holds, and a word for its flags.
+        let ok = unsafe { windows_sys::Win32::Foundation::GetHandleInformation(handle, &raw mut flags) };
+        assert_ne!(ok, 0, "{}", last());
+        flags & HANDLE_FLAG_INHERIT != 0
+    }
+
+    /// Do: make a confined child, suspended, whose standard output and error are a file this
+    /// process opened, not inheritable, as std opens every file. Expect the file's handle not
+    /// inheritable still once the child is made: a copy made for the child alone was, the
+    /// lender's handle left as it lent it (platform-07).
+    #[test]
+    fn a_confined_childs_standard_handles_are_left_as_their_lender_has_them() {
+        use std::os::windows::io::AsHandle as _;
+        let dir = shards_testdir::TempDir::new("stdio-lent").unwrap();
+        let out = File::create(dir.join("out")).unwrap();
+        assert!(!inheritable(out.as_raw_handle()));
+        let shell = std::env::var_os("ComSpec").unwrap();
+        let args = [OsStr::new("/c"), OsStr::new("exit 0")];
+        let made = spawn_suspended(&Spawn {
+            program: Path::new(&shell),
+            args: &args,
+            grants_at: args.len(),
+            given: &[],
+            stdin: None,
+            stdout: out.as_handle(),
+            stderr: out.as_handle(),
+            sockets: &[],
+            env: &[],
+            container: None,
+            holds: Holds::Nothing,
+            group: None,
+            graphics: false,
+        })
+        .unwrap();
+        let after = inheritable(out.as_raw_handle());
+        drop(made);
+        assert!(!after, "the lent handle left inheritable");
+    }
+
+    /// Do: hold a pipe's write end inheritable, as a spawn of shards' holds its child's
+    /// handles until it is made, while another thread starts a child by std's Command
+    /// ([`spawn_std`]) that runs for seconds; then close every write end this process holds.
+    /// Expect the pipe's writers all gone while that child runs: std's child, made once the
+    /// spawn let go of its inheritable handles, took none of them; one made meanwhile kept a
+    /// write end, and the pipe open, until it ended (platform-07).
+    #[test]
+    fn a_child_of_stds_takes_no_handle_held_inheritable_for_another() {
+        use windows_sys::Win32::Foundation::{ERROR_BROKEN_PIPE, GetLastError};
+        use windows_sys::Win32::System::Pipes::PeekNamedPipe;
+        let (read, write) = pipe().unwrap();
+        // The read end pipe() makes inheritable; the write end the child would hold.
+        // SAFETY: our own handle, made not inheritable again.
+        let set = unsafe { SetHandleInformation(read.as_raw_handle(), HANDLE_FLAG_INHERIT, 0) };
+        assert_ne!(set, 0);
+        let (started, start) = std::sync::mpsc::channel();
+        let child = std::thread::scope(|s| {
+            let held = INHERITING.read().unwrap_or_else(PoisonError::into_inner);
+            let copy = inheritable_copy(write.as_raw_handle()).unwrap();
+            let std_child = s.spawn(move || {
+                started.send(()).unwrap();
+                let shell = std::env::var_os("ComSpec").unwrap();
+                spawn_std(
+                    std::process::Command::new(shell)
+                        .args(["/c", "ping -n 4 127.0.0.1 >NUL"])
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null()),
+                )
+                .unwrap()
+            });
+            start.recv().unwrap();
+            // Long enough for a spawn that does not wait to have made its child.
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            drop(copy);
+            drop(held);
+            std_child.join().unwrap()
+        });
+        drop(write);
+        let mut ready = 0u32;
+        // SAFETY: a pipe handle `read` holds; only the count asked for.
+        let ok = unsafe {
+            PeekNamedPipe(
+                read.as_raw_handle(),
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                &raw mut ready,
+                std::ptr::null_mut(),
+            )
+        };
+        // SAFETY: no arguments.
+        let broken = ok == 0 && unsafe { GetLastError() } == ERROR_BROKEN_PIPE;
+        let mut child = child;
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(
+            broken,
+            "std's child holds a write end made inheritable for another"
+        );
+    }
 
     /// A detached child runs, its end and status seen as any child's, though it is in no
     /// console, process group nor Job of this process's.

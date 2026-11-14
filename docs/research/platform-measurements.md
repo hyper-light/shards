@@ -17849,6 +17849,8 @@ finding open; no new scheduling or host-fairness result is claimed.
 
 ### M430. Devices plugged into a running microVM: what each step costs, and what a bus of slots costs a boot (D214)
 
+Review devices-08 and devices-09 (2026-11-14, D214's and D232's amendments): a plug's guest steps on D215's learned judge in place of 30 s; a GPU selection bounded by its renderer transport (`UINT32_MAX / 33`) in Rust and the renderer patches, the host catalog by Vulkan's `uint32_t`. Unit and clippy green on macOS arm64 and Linux x86_64; patches dry-run applied to both pinned renderer sources. No renderer build, GPU or real VM run; the remaining device literals' measurements are owed (D214). See `measurements/device-fixes/README.md`.
+
 Review devices-10 (2026-11-14, D214's amendment): device refusals typed across DEVICE/DEVICED; codec red/green, VMM, daemon and clippy green on macOS arm64, Linux x86_64 clippy. No real VM run. See `measurements/device-fixes/README.md`.
 
 Review devices-11 (2026-11-14, D214's amendment): disk files claimed by identity, one writer, read-only shared; 9 daemon devices unit tests and shards clippy green on macOS arm64, the claim check's mutation red. No real VM plug was run. See `measurements/device-fixes/README.md`.
@@ -24660,3 +24662,75 @@ and `cargo clippy -p shards-ipc -p shards --all-targets -- -D warnings`.
 daemon cannot start under `SHARDS_HELPERS=skip` (exit 1 before it served), at the base
 `97f404be8` too: not these changes'. Linux's `/proc` state read and Windows ran on CI only.
 [Commands and owed runs](measurements/waits-fixes-v1/README.md).
+
+### M577. A dial's next address starts as its path's connects would send their second SYN (review waits-12, D222)
+
+At `5b7e1748b` (the race asked of the path, still RACE's 300 ms),
+`cargo test -p shards-registry --lib patience::tests::a_dial_starts_its_next_address_as_its_paths_connects_retransmit`
+failed: a path that had shown no connect raced at 300 ms, not RFC 8305 §8's 250 ms. At
+`095cbe98e` it passed, with shards-registry's lib tests (176) and `cargo clippy -p
+shards-registry --all-targets -- -D warnings`, macOS arm64 (adas-mac-studio-3.local). Expected
+values, each from RFC 6298 §2.2 on the path's first connect: 10 ms gives 30 ms, held at
+the 100 ms minimum; 150 ms gives 450 ms; 1.5 s gives 4.5 s, held at the 2 s maximum; a
+handshake teaches the race nothing. This is unit evidence, not a dial over a real network.
+
+### M578. Windows' emulator registry, spawn inheritance, slot waits, versioned names and raised CPU sets (platform-05..10, D140, D191, D195, D196)
+
+Taken over from the Codex lane while jupiter was offline; run in the Windows 11 x86_64
+container on adacachy (Windows 10.0.26200.8037, 8 CPUs, NTFS, Rust 1.98.1,
+x86_64-pc-windows-msvc), `cargo test -p <crate> --lib -- <filter>` through
+[run.ps1](measurements/platform-fixes/windows-0510/run.ps1). WHP is not in the container: no
+partition was made, and the WHP tests that need one skipped.
+
+- **Red** at 190b49d9b ([log](measurements/platform-fixes/windows-0510/red-190b49d9b.log)),
+  each new test failing at its finding's assertion, 7 of 7: an unplugged sub-block still
+  reached by the emulator (05); the emulator writing read-only memory (06); a confined
+  spawn's lent stdout left inheritable, and a std child holding a pipe end made inheritable
+  for another (07); a surrogate-named directory unwatched (08); `newest_in(STATE)` missing
+  `state.~1` (09); three raised spinners pinned to one CPU raised for 3 s (10).
+- **Green**: shards-ipc `windows::tests` and `slots::` 44 passed, 1 ignored (a measurement),
+  at 9f95ae7db ([log](measurements/platform-fixes/windows-0510/green-9f95ae7db.log)); shards-vmm
+  `hv::whp::`, `platform::windows_files::`, `platform::windows_thread::` 29 passed, 1 ignored,
+  at f0cd08598 ([log](measurements/platform-fixes/windows-0510/green-vmm-f0cd08598.log)).
+- **Mutations** at f0cd08598, each guard removed alone and its test run
+  ([patches](measurements/platform-fixes/windows-0510/mutations/),
+  [log](measurements/platform-fixes/windows-0510/mutations-f0cd08598.log)): 10 of 10 fail at
+  their assertions: an exact-match unmap and a map without a cut (05), no write check (06),
+  the lent handle made inheritable and an unguarded `spawn_std` (07), a lossy watch name and
+  swallowed watch failures (08), names matched by case and collisions ignored (09), the pool
+  ignored (10).
+- shards-registry `credentials` 12 passed on Windows at 74a405cd, its helpers started through
+  `spawn_std` ([log](measurements/platform-fixes/windows-0510/registry-74a405cd.log)).
+- **Clippy** at 6b40699fa, `-p shards-vmm -p shards-ipc -p shards-registry -p shards-api -p shards
+  --all-targets -- -D warnings`, clean: `cargo xwin clippy` for x86_64-pc-windows-msvc and
+  aarch64-pc-windows-msvc, and `cargo clippy` for aarch64-apple-darwin, on
+  adas-mac-studio.local ([clippy.sh](measurements/platform-fixes/windows-0510/clippy.sh)).
+
+Owed to ROOT, unrun: the real-WHP guest routes of 05 and 06 (D140); 09's sensitivity query's
+cost on a restore (D196); 10's host-wide owner across VM processes, an R02 decision, and its
+jupiter measurement (D191); the 8-target lint, CI and Windows E2E on main.
+
+### M579. macOS refuses SO_RCVTIMEO on a socket whose peer closed; hyper-quic recounts a replayed first Initial (D180, remote-06)
+
+*SO_RCVTIMEO after a close.* On macOS 26.2 (adas-mac-studio.local, arm64), `setsockopt(SO_RCVTIMEO)`
+on a Unix stream socket whose peer wrote six bytes and closed returned EINVAL, as XNU's
+`sosetoptlock` refuses options on a socket with SS_CANTRCVMORE and SS_CANTSENDMORE both set; on one
+whose peer only shut its write side it was taken; on one shut both ways by its own side, EINVAL. A
+read after the refusal returned the six bytes whole, then its end. Method: a standalone program over
+`UnixStream::pair` (each case in turn), built with rustc and run once. This was ROOT's k16
+`a_contexts_engine_is_its_machines` failure at 994e7715d (context.rs:711, `Os { code: 22 }`): the
+tests' `common::Following` set the timeout before each judged read, so an Engine API relay that
+answered and closed before the next read failed it. Such a read waits for nothing; `common::timed`
+takes the refusal for no timeout needed. `shards_api::client` sets read timeouts before its reads
+too; whether its paths meet a closed peer first is unchecked (owed, ROOT).
+
+*A replayed first Initial.* `net::tests::replayed_and_unauthenticated_datagrams_do_not_advance_liveness`
+(a real `Driver` taking a hand-driven client's first datagram, then the same datagram 1 ms later)
+heard the replay on Codex's frame-total rule: hyper-quic e0613f52's `handle_first_packet` calls
+`on_packet_authenticated` and `process_decrypted_packet` without `drops_authenticated`, so the first
+packet's number never enters its space's dedup window and the replay's CRYPTO frame is recorded
+again (read from the source; the counters themselves were not printed for a replay). Its first
+packet took the handshake's progress to 1141, which three PINGs after it left unchanged. With
+CRYPTO counted by new handshake data, the replay hears nothing (macOS arm64,
+adas-mac-studio-3.local).
+

@@ -1,7 +1,10 @@
 //! Exact native identity -> live Vulkan device UUID correlation. The renderer owns
 //! immutable UUID selection; this module does not choose devices or own holders.
 
-pub use shards_abi::gpu::{JoinError, MAX_PHYSICAL_GPUS, PhysicalGpu, PhysicalGpuError, check_selection};
+pub use shards_abi::gpu::{
+    JoinError, MAX_HOST_GPUS, MAX_PHYSICAL_GPUS, PhysicalGpu, PhysicalGpuError, check_selection,
+    selection_fits,
+};
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,7 +128,7 @@ fn native(
 
 pub fn resolve(selected: &[PhysicalGpu], host: &[Properties], metal: bool) -> Result<Vec<usize>, JoinError> {
     check_selection(selected).map_err(JoinError::Selection)?;
-    if host.len() > MAX_PHYSICAL_GPUS {
+    if host.len() > MAX_HOST_GPUS {
         return Err(JoinError::Count);
     }
     let mut resolved = Vec::new();

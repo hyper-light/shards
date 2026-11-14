@@ -1,0 +1,14 @@
+diff --git a/crates/vmm/src/platform/windows_files.rs b/crates/vmm/src/platform/windows_files.rs
+index acaa9fc67..ced1cd392 100644
+--- a/crates/vmm/src/platform/windows_files.rs
++++ b/crates/vmm/src/platform/windows_files.rs
+@@ -407,7 +407,8 @@ fn land(file: &File, dir: &File, name: &str, naming: Naming) -> io::Result<u64>
+ /// [`Naming`] does not): so each collision moves the next past it, and a write ends once it
+ /// meets a name nothing holds, where it chose the same taken name for ever (platform-09).
+ fn next_version(listed: Option<u64>, taken: Option<u64>) -> Option<u64> {
+-    listed.max(taken).map_or(Some(1), |n| n.checked_add(1))
++    let _ = taken;
++    listed.map_or(Some(1), |n| n.checked_add(1))
+ }
+ 
+ /// How a directory tells two names apart: by case where it is case-sensitive
