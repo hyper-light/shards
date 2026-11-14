@@ -776,6 +776,16 @@ pub fn input_pair(room: u32) -> io::Result<(Stream, io::PipeWriter)> {
     ))
 }
 
+/// A child's output: a pipe of bytes, its read end overlapped, this process's, for a read
+/// that a wake ends ([`Pipe::read_unless`]); its write end not, as a child's standard output
+/// is written (std's Write, synchronous). Made as a [`Stream`]'s are (this user's alone, no
+/// remote client's, its name random), neither end inheritable; its quota the system's, as an
+/// anonymous pipe's (CreatePipe) is. A run host's answers and diagnostics (D231).
+pub fn output_pair() -> io::Result<(Pipe, io::PipeWriter)> {
+    let (server, client) = pair_with_client(Window::System, false, false)?;
+    Ok((Pipe(server), io::PipeWriter::from(client)))
+}
+
 /// A connected pair of a pipe's ends, of bytes alone and overlapped, made as a [`Stream`]'s
 /// are (this user's alone, no remote client's, its name random): a share's stream on
 /// Windows (D197), its server end its share process's and its other its VM's, each a
@@ -814,6 +824,21 @@ impl Pipe {
             Called::Done(Err(e)) if ended(&e) => Called::Done(Ok(0)),
             called => called,
         }
+    }
+
+    /// A read into `buf` that `wake` ends: what it read, `Some(0)` at the end of its
+    /// writers; `None` where `wake` was set first and it read nothing.
+    pub fn read_unless(&self, buf: &mut [u8], wake: &Event) -> io::Result<Option<usize>> {
+        match self.read_within(buf, &[wake], None) {
+            Called::Done(done) => done.map(Some),
+            Called::Cancelled | Called::Late => Ok(None),
+        }
+    }
+
+    /// The bytes it holds to read now, without taking them (PeekNamedPipe): 0 once its
+    /// writers have gone and it holds none.
+    pub fn held(&self) -> io::Result<usize> {
+        Ok(available(self.raw(), None)?.map_or(0, |n| usize::try_from(n).unwrap_or(usize::MAX)))
     }
 
     /// All of `buf` written, or the error that cut it short; waiting no longer than `cancels`

@@ -8,6 +8,7 @@
 
 fn main() {
     println!("cargo::rustc-check-cfg=cfg(hv, values(none(), \"hvf\", \"kvm\", \"whp\"))");
+    shards_version();
     let os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     if let Some(backend) = match (os.as_str(), arch.as_str()) {
@@ -201,4 +202,33 @@ fn compile_hvf_shim() {
         .arg(&obj));
     println!("cargo::rustc-link-search=native={}", out.display());
     println!("cargo::rustc-link-lib=static=shardshvf");
+}
+
+/// shards' version, its package's (`crates/shards/Cargo.toml`, the one binary's, D36), as
+/// `SHARDS_VERSION`: what a snapshot records it was saved by (D176), from the VM process,
+/// whose own package version is not shards'.
+fn shards_version() {
+    let manifest = std::path::Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default())
+        .join("../shards/Cargo.toml");
+    println!("cargo::rerun-if-changed={}", manifest.display());
+    let text = match std::fs::read_to_string(&manifest) {
+        Ok(text) => text,
+        Err(e) => {
+            println!("cargo::error={}: {e}", manifest.display());
+            return;
+        }
+    };
+    // The first `version = "…"` line: [package]'s, which comes first in the manifest.
+    let version = text.lines().find_map(|line| {
+        let value = line
+            .trim()
+            .strip_prefix("version")?
+            .trim_start()
+            .strip_prefix('=')?;
+        Some(value.trim().trim_matches('"').to_string())
+    });
+    match version {
+        Some(version) if !version.is_empty() => println!("cargo::rustc-env=SHARDS_VERSION={version}"),
+        _ => println!("cargo::error={}: no package version", manifest.display()),
+    }
 }
