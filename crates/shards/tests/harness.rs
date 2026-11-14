@@ -119,21 +119,22 @@ fn a_commands_words_are_its_subcommands() {
         "/t/shards"
     };
     for (args, said) in [
-        (&["run", "--rm", "alpine", "echo"][..], "shards run"),
-        (&["run", "alpine", "echo", "hi"], "shards run"),
-        (&["push", "localhost:5000/x"], "shards push"),
-        (&["build", "-t", "x", "."], "shards build"),
-        (&["stop", "daemon"], "shards stop daemon"),
-        (&["stop", "web"], "shards stop"),
-        (&["run", "vm", "--kernel", "k"], "shards run vm"),
-        (&["image", "ls"], "shards image ls"),
-        (&["compose", "up", "-d"], "shards compose up"),
-        (&["buildx", "build", "."], "shards buildx build"),
-        (&["--version"], "shards"),
-        (&["rm", "-f", "t-1234"], "shards rm"),
-        (&["inspect", "t-1234"], "shards inspect"),
+        ("run --rm alpine echo", "shards run"),
+        ("run alpine echo hi", "shards run"),
+        ("push localhost:5000/x", "shards push"),
+        ("build -t x .", "shards build"),
+        ("stop daemon", "shards stop daemon"),
+        ("stop web", "shards stop"),
+        ("run vm --kernel k", "shards run vm"),
+        ("image ls", "shards image ls"),
+        ("compose up -d", "shards compose up"),
+        ("buildx build .", "shards buildx build"),
+        ("--version", "shards"),
+        ("rm -f t-1234", "shards rm"),
+        ("inspect t-1234", "shards inspect"),
     ] {
-        assert_eq!(words(shards, args), said, "{args:?}");
+        let args: Vec<&str> = args.split_whitespace().collect();
+        assert_eq!(words(shards, &args), said, "{args:?}");
     }
     assert_eq!(words("git", &["clone", "https://x/y"]), "git clone");
     assert_eq!(words("sh", &["-c", "true"]), "sh");

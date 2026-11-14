@@ -10600,6 +10600,42 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     seed; every runner of one CI image shares its key, so a cached target keeps CI warm).
     Each answer is taught in, merged with what another process kept, and written whole and
     renamed into place; a keep that fails is the next answer's to make.
+  - *A wait on a command is keyed by its call site and its command's words* (#77, the CI
+    triage at d24ef4cfd: build.rs' `policy_eval_answers` closure and
+    `builds_push_what_they_build` ran many commands from one call site, and a W* of 13.4 ms
+    and 3.49 ms, learned from quick refused commands, judged a real build and a push).
+    `run_command`'s and `client_output`'s kind is `WaitKind::of(site, command_words(cmd))`,
+    kept as `<call site>-<words>`. The words are the program's file stem, then its
+    subcommand's: each a plain word (ASCII lowercase letters and `-`, no flag) up to the
+    first that is not; its first argument; its second only where shards-cmdline's catalog
+    names no command of the first that takes arguments itself (`run`, `push`, `build`, whose
+    next word is an image, a name or a path), or shards' grammar reads the two as ACTION
+    THING (`grammar::form`: `run vm`, `stop daemon`). So `shards run --rm alpine` is `shards
+    run`, `docker push localhost:5000/x` is `docker push`, `docker compose up -d` is `docker
+    compose up`, and no run's own name, path, tag or digest is ever a word: each run of a
+    call site keys the same kinds. A wait on no command (`Patience`, `judged`, a guest's)
+    keeps its call site's key alone (`WaitKind::at`), its kept record read as before; a
+    command's key with no record is a cold start. Held by harness.rs'
+    `one_call_sites_commands_are_judged_apart` (a stand-in that exits, then one that works a
+    moment three times between 200 ms of nothing, from one call site: red at f9bdaeda5,
+    refused in its first quiet window) and `a_commands_words_are_its_subcommands`.
+  - *A party's I/O is not read: its CPU already shows every byte it moves* (#77, measured).
+    Asked whether a party blocked on a peer outside it (Docker Hub, a test's registry
+    thread) moves data a look misses, `docs/research/measurements/judge-io/io_vs_cpu.py`
+    sampled a child each ~1 ms for 3 s, reading a TCP socket fed 64 KiB each 50 ms, or
+    writing 1 MiB to a file each 50 ms (with and without fsync): its I/O counters never grew
+    over a sample its CPU did not (macOS 26 arm64, proc_pid_rusage RUSAGE_INFO_V4: 0 of
+    454, 462 and 449 samples; Linux 7.3 x86_64, `/proc/<pid>/io`: 0 of 1842 and 2674, and 1
+    of 2670, a sample in which the probe's `schedstat` run time, which lags for a running
+    task, missed what `clock_gettime`'s CPU clock that `Watch` reads counts). The counters
+    grow in system calls the process's own threads make, which its CPU clock counts at
+    nanosecond grain. Network bytes are not in them at all on macOS (`ri_diskio_*` count
+    disk I/O alone: 0 bytes grown over the socket run), nor on Linux for the `recv`/`send`
+    family that Rust's std sockets call (`rchar`/`wchar` count read/write-family VFS calls:
+    0 grown over the socket run). Windows' `GetProcessIoCounters` is not measured. A party
+    that waits on its peer moves no bytes while it waits, so its I/O cannot tell it from a
+    stalled one either; what keeps a slow pull or push judged is its own kind's W*, learned
+    from whole pulls and pushes (the key above), not a quick command's.
   - *Cold* (no answer of its kind on this host), it follows its client's liveness alone:
     it waits while the client lives. *Learned*, it is looked at each W* past its start
     (`shards_api::Judge`, shared) and fails only at a look that finds its party made no
