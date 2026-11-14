@@ -11,10 +11,14 @@
 //! any of them become `?`, as ps shows any control character.
 //!
 //! Left out: this process, kernel threads, and processes of this program not yet
-//! anything else (shards-init's standby forks), which are not the run's, but its
-//! reaper under `--init`, docker-init's part, which `docker top` lists (D115); and those
-//! of another run's cgroup, as containerd lists a container's processes by its
-//! cgroup: a joiner sharing the workload's PID namespace shows in it (D119).
+//! anything else (shards-init's standby forks, and each member's starter, D243), which are
+//! not the run's, but its reaper under `--init`, docker-init's part, which `docker top`
+//! lists (D115); and those of another run's cgroup, as containerd lists a container's
+//! processes by its cgroup: a joiner sharing the workload's PID namespace shows in it
+//! (D119). This program's processes are known by the file they run, its device and inode,
+//! never by a name: `/proc/PID/exe` reads a program's path in its own mounts (d_path(9)
+//! from a root it does not reach), which a run's program can have at this one's, as an
+//! image's `/init` is (confine-11).
 
 use std::io;
 
@@ -112,7 +116,7 @@ pub fn dump(reaper: Option<libc::pid_t>, members: Members<'_>) -> Vec<u8> {
     let me: Option<u32> = std::fs::read_link("/proc/self")
         .ok()
         .and_then(|p| p.to_str()?.parse().ok());
-    let mine = std::fs::read_link("/proc/self/exe").ok();
+    let mine = image("/proc/self");
     let Ok(dir) = std::fs::read_dir("/proc") else {
         return out;
     };
@@ -131,7 +135,7 @@ pub fn dump(reaper: Option<libc::pid_t>, members: Members<'_>) -> Vec<u8> {
             continue;
         }
         let reaped = reaper.is_some_and(|r| u32::try_from(r) == Ok(pid));
-        if !reaped && mine.is_some() && std::fs::read_link(format!("{base}/exe")).ok() == mine {
+        if !reaped && mine.is_some() && image(&base) == mine {
             continue;
         }
         if !members.have(&std::fs::read(format!("{base}/cgroup")).unwrap_or_default()) {
@@ -156,6 +160,15 @@ pub fn dump(reaper: Option<libc::pid_t>, members: Members<'_>) -> Vec<u8> {
         );
     }
     out
+}
+
+/// The file the process at `base` runs, by its identity: its device and inode, through
+/// `/proc/PID/exe`, which the kernel resolves to the file itself (proc(5)). None where it
+/// has none (a zombie) or this process may not read it.
+fn image(base: &str) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt as _;
+    let file = std::fs::metadata(format!("{base}/exe")).ok()?;
+    Some((file.dev(), file.ino()))
 }
 
 /// `bytes`, with RS and US as `?`.

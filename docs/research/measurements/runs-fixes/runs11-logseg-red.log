@@ -1,0 +1,15 @@
+# runs-11 LOG_SEGMENT red: adas-mac-studio-3.local (macOS arm64), kiln run; each mutant one commit
+# over 8f7036683 (not landed).
+## Mutant 793714dd7: 20 MiB segments put back (unit ignored).
+$ cargo test -p shards --bin shards -- disk::tests::settings_read_back daemon::tests::a_runs_log_is_held
+test disk::tests::settings_read_back_and_come_to_their_amounts ... FAILED
+thread 'disk::tests::settings_read_back_and_come_to_their_amounts' panicked at crates/shards/src/disk.rs:443:9:
+  left: (32768, 2)
+ right: (16384, 4)
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 961 filtered out; finished in 0.03s
+## Mutant 4d83179c1: runs without members' logs held by their count alone (Managed::cap
+## returns before cap::hold, as before).
+test daemon::tests::a_runs_log_is_held_to_its_bound_whatever_its_segments ... FAILED
+thread 'daemon::tests::a_runs_log_is_held_to_its_bound_whatever_its_segments' panicked at crates/shards/src/daemon.rs:10503:13:
+the log was not held to its bound: no thread of this process ran for 944.541µs its host did not hold it in, 27.210125ms into the wait, the slowest of its tests' waits seen 643.125µs (D215)
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 961 filtered out; finished in 0.04s
