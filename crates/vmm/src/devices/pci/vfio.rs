@@ -2112,6 +2112,13 @@ impl super::hotplug::Plugged for VfioFunction {
     }
 
     fn unplugged(&self) {
+        // Route objects belong to the slot and outlive this function. Remove each
+        // route while its eventfd is open; closing it alone leaves the slot's GSI.
+        let mut irqs = self.irqs();
+        self.intx_off(&mut irqs);
+        self.msi_off(&mut irqs);
+        self.msix_off(&mut irqs);
+        drop(irqs);
         self.map_windows(false);
     }
 }
