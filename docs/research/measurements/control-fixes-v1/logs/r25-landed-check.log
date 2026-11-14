@@ -1,0 +1,23 @@
+From https://github.com/hyper-light/shards
+ * branch                p/fix-control-v1 -> FETCH_HEAD
+   e51d7eea5..f8e5948bc  p/fix-control-v1 -> origin/p/fix-control-v1
+Previous HEAD position was e51d7eea5 Merge main 6a52ef516 after focused green 30d6080e9; host check required
+HEAD is now at f8e5948bc Merge main 6df152edc after focused green 30d6080e9; check host dependency update
+f8e5948bc30a3a26390d3fb9b365c370f2a85075
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=aarch64_apple_darwin
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-apple-darwin'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/control-target/debug/build/aws-lc-sys-d98af8b5bc544aaa/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/control-target/debug/build/aws-lc-sys-d98af8b5bc544aaa/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/control-target/debug/build/aws-lc-sys-d98af8b5bc544aaa/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/control-target/debug/build/aws-lc-sys-d98af8b5bc544aaa/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o"]).
+    Checking shards-net v0.1.0 (/Users/adalundhe/g121-tmp/fix-control/crates/net)
+    Checking shards v0.7.0 (/Users/adalundhe/g121-tmp/fix-control/crates/shards)
+    Finished `dev` profile [unoptimized] target(s) in 13.54s
+To github.com:hyper-light/shards.git
+   6df152edc..f8e5948bc  HEAD -> main

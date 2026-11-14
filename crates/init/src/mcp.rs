@@ -525,4 +525,22 @@ mod tests {
         assert_eq!(server.join().unwrap(), b"asked\n");
         assert_eq!(output, b"answered\n");
     }
+    #[test]
+    fn a_bridge_input_failure_does_not_wait_for_its_idle_socket() {
+        let dir = shards_testdir::TempDir::new("bridge-read").unwrap();
+        let input = std::fs::File::open(dir.path()).unwrap();
+        let (_held_output, output) = pipe();
+        let (socket, peer) = UnixStream::pair().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let bridge = std::thread::spawn(move || {
+            tx.send(copy_both(input, output, socket).map_err(|e| e.raw_os_error()))
+                .unwrap();
+        });
+        let result = rx.recv_timeout(std::time::Duration::from_secs(1));
+        if result.is_err() {
+            peer.shutdown(std::net::Shutdown::Write).unwrap();
+        }
+        bridge.join().unwrap();
+        assert_eq!(result, Ok(Err(Some(libc::EISDIR))));
+    }
 }
