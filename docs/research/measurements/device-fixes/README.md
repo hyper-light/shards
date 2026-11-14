@@ -72,3 +72,11 @@ reservation fails. It introduces no new failure/refusal or selected fallback
 size. The malformed-span guard and split/padded replies also pass.
 Source policy accounting remains as above; host allocator/RSS measurements and
 real-guest invalid-buffer/MSI tests remain ROOT's.
+
+## devices-04
+
+Red `74924eba3`: `cargo test -p shards-vmm reset_cancels_only_its_own_limiter_wait --lib`, 1 failed (reset still waiting). The worker consumes an actual published block read; the test waits for limiter admission, resets on another thread, and releases the wait on watchdog failure before joining every actor. No disk large enough for resource exhaustion is allocated.
+
+Green `de1da2168`: `cargo test -p shards-vmm devices::virtio::block::tests --lib` 7 passed; `cargo test -p shards-vmm devices::virtio::limit::tests --lib` 4 passed; `cargo clippy -p shards-vmm --all-targets -- -D warnings` clean. Host adas-mac-studio-3.local, Darwin arm64; CARGO_INCREMENTAL=0, lane target. Logs reset-red.log/reset-green.log. Cancellation publishes under the condvar mutex, wakes waiters and checks an owned atomic token; shared debt and pause count stay unchanged. A new activation clears its token only after the old worker joined. Invalid read/write spans and disk bounds are checked before charging.
+
+R01/R04 cancellation returns a typed bool internally and block status IOERR on cancelled work; R03 no production deadline or chosen number added; R05 affected condvar wait no longer depends on debt expiry; R06/07/13 local methods, ownership comments; R09/10 real unit red/green; R11/12 shared code, no platform fork; R08/14 no performance claim; R15 bounded focused tests, no subagents/VMs; R16 lane target removed at finish. ROOT owes the hotplug real-VM test in the finding status and reset during active limited I/O on KVM/HVF.
