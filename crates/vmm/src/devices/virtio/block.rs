@@ -86,6 +86,11 @@ impl Backend {
 #[derive(Debug, Clone)]
 pub struct DiskSize(Arc<Backend>);
 
+#[cfg(test)]
+std::thread_local! {
+    static GROW_PUBLISHED: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+}
+
 impl DiskSize {
     /// Takes its file's length now as the disk's capacity, where it grew, and tells the
     /// driver: what its host made it, `set_len`, before. Returns its capacity in bytes. An
@@ -117,6 +122,12 @@ impl DiskSize {
         }
         if sectors > now {
             capacity.store(sectors, Ordering::Release);
+            #[cfg(test)]
+            GROW_PUBLISHED.with(|hook| {
+                if let Some(hook) = hook.borrow_mut().take() {
+                    hook();
+                }
+            });
             grown.fetch_add(1, Ordering::AcqRel);
             if let Some(interrupt) = interrupt.lock().unwrap_or_else(PoisonError::into_inner).as_ref() {
                 interrupt.config_change();
@@ -1661,6 +1672,44 @@ mod tests {
         assert_eq!(unsafe { JOIN.read_at(ptr, 512, 0) }, Err(S_IOERR));
         // SAFETY: the mapping made above.
         unsafe { libc::munmap(host, 2 * p) };
+    }
+
+    #[test]
+    fn capacity_and_generation_are_published_together() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let dir = shards_testdir::TempDir::new("capacity-publish").unwrap();
+        let file = File::create(dir.join("disk")).unwrap();
+        file.set_len(SECTOR).unwrap();
+        let block = Block::open(&dir.join("disk"), false, "capacity").unwrap();
+        let size = block.size().unwrap();
+        let (published, saw_publish) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        file.set_len(2 * SECTOR).unwrap();
+        let grower = std::thread::spawn(move || {
+            GROW_PUBLISHED.set(Some(Box::new(move || {
+                published.send(()).unwrap();
+                released.recv().unwrap();
+            })));
+            size.grow().unwrap();
+        });
+        saw_publish.recv().unwrap();
+        let (read, read_result) = mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let mut cap = [0u8; 8];
+            block.read_config(0, &mut cap);
+            read.send((u64::from_le_bytes(cap), block.config_generation()))
+                .unwrap();
+        });
+        let early = read_result.recv_timeout(Duration::from_millis(100));
+        release.send(()).unwrap();
+        grower.join().unwrap();
+        reader.join().unwrap();
+        assert!(
+            early.is_err(),
+            "configuration exposed a partially published growth: {early:?}"
+        );
+        assert_eq!(read_result.recv().unwrap(), (2, 1));
     }
 
     #[test]
