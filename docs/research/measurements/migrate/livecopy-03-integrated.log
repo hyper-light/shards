@@ -1,0 +1,13 @@
+source 7720df8391bd9da2e3e5d4511cf243a2db4db7ae
+runner Linux-7.3.3-1-cachyos-x86_64-with-glibc2.44
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running unittests src/lib.rs (/home/adalundhe/g121-tmp/fix-migrate-v1/target/debug/deps/shards_vmm-e6b20389332fddb3)
+
+running 5 tests
+test vm::runtime::tests::a_live_copy_with_intact_mappings_can_continue_after_a_scan_error ... ok
+test vm::runtime::tests::a_live_copy_whose_mapping_was_lost_stops_instead_of_resuming ... ok
+test memory::tests::live_copy_page_keeps_bytes_after_their_block_is_unplugged ... ok
+test vm::runtime::tests::live_copy_excludes_save_and_teardown_until_its_guard_is_gone ... ok
+test memory::tests::live_copy_keeps_bytes_after_their_block_is_unplugged ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 519 filtered out; finished in 0.00s
