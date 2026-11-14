@@ -413,17 +413,21 @@ pub fn recv_judged(sock: &UnixStream, judge: &mut Judge<'_>) -> io::Result<Optio
 }
 
 /// Waits in poll(2) until `fd` has one of `events`, its end or an error, or `due` passes (none:
-/// as long as that takes): whether it came. A wait a signal cut short is made again.
+/// as long as that takes): whether it came. Each wait looks at `fd` at least once, a `due`
+/// already past with a poll of 0 ms: readiness is the wait's word, and its judge, asked where
+/// none came, judges its party by what it ran meanwhile. A wait that asked its judge without
+/// looking refused an idle VM whose socket had room all along, as the judge's own first
+/// reading of the VM outlasted W* (batch 26 at 1f71dea19: a daemon's stop SIGTERM refused
+/// `Stalled` 50 to 90 µs in, SO_NWRITE 0 before and after, and its run SIGKILLed at its grace's
+/// end; 9 in 72 stops, six at once, on an M4 Max). A wait a signal cut short is made again.
 fn await_events(fd: BorrowedFd<'_>, events: libc::c_short, due: Option<Instant>) -> io::Result<bool> {
     loop {
         let ms = match due {
             None => -1,
+            // Rounded up, so that a poll that times out ends at or past `due`: one of 0 ms only
+            // where `due` has passed.
             Some(due) => {
                 let left = due.saturating_duration_since(Instant::now());
-                if left.is_zero() {
-                    return Ok(false);
-                }
-                // Rounded up: a wait of 0 ms would return at once, and spin.
                 libc::c_int::try_from(left.as_micros().div_ceil(1000)).unwrap_or(libc::c_int::MAX)
             }
         };
@@ -435,6 +439,7 @@ fn await_events(fd: BorrowedFd<'_>, events: libc::c_short, due: Option<Instant>)
         // SAFETY: poll(2) on one valid pollfd.
         match unsafe { libc::poll(&mut pfd, 1, ms) } {
             n if n > 0 => return Ok(true),
+            0 if due.is_some_and(|due| Instant::now() >= due) => return Ok(false),
             0 => {}
             _ => {
                 let e = io::Error::last_os_error();
@@ -2324,6 +2329,32 @@ pub(crate) mod tests {
         let mut judge = judge_every(std::time::Duration::from_millis(10), &asked, Some(3));
         let e = super::send_judged(&ours, 7, &payload, &[], &mut judge).unwrap_err();
         assert_eq!(e.kind(), std::io::ErrorKind::TimedOut, "{e}");
+    }
+
+    /// Do send, judged, to a socket with room, and receive, judged, from one with a message
+    /// waiting, each with a judge whose first due has passed as it answers (its first reading
+    /// of its party outlasting W*) and that refuses at its next ask. Expect: both go, the judge
+    /// asked once. Red before: a wait whose due had passed asked its judge without looking at
+    /// the socket, and the judge refused a party that had nothing to do (batch 26, a daemon's
+    /// stop SIGTERM refused `Stalled` with its VM's socket empty).
+    #[test]
+    fn a_judged_wait_looks_before_its_judge_is_asked_again() {
+        let past = || {
+            let asked = std::sync::atomic::AtomicUsize::new(0);
+            move || {
+                if asked.fetch_add(1, std::sync::atomic::Ordering::Relaxed) > 0 {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "judged stalled",
+                    ));
+                }
+                Ok(Some(std::time::Instant::now()))
+            }
+        };
+        let (ours, theirs) = super::UnixStream::pair().unwrap();
+        super::send_judged(&ours, 4, &15u32.to_be_bytes(), &[], &mut past()).unwrap();
+        let m = super::recv_judged(&theirs, &mut past()).unwrap().unwrap();
+        assert_eq!((m.kind, m.payload.as_slice()), (4, &15u32.to_be_bytes()[..]));
     }
 
     /// A judged receive waits for its message past its judge's dues while its judge says go on,
