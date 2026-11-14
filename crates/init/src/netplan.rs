@@ -967,6 +967,21 @@ mod tests {
     /// A remote MCP server reaches the agents its FOR names, or every agent, at its port,
     /// one on no network given a network of its own; a harness is no agent.
     #[test]
+    fn mcp_absolute_name_matches_its_dns_question() {
+        let spec = crate::json::parse(
+            br#"{"networks":[],"connections":[],"mcp":[{"name":"tools","source":"https://MCP.example./mcp","for":{"kind":null,"names":["a"]}}]}"#,
+        ).unwrap();
+        let p = plan(&spec, &names(&["a", "b"]), None, None).unwrap();
+        let a = p.links[0].as_ref().unwrap();
+        let mut question = vec![0; 12];
+        question[5] = 1;
+        question.extend_from_slice(b"\x03MCP\x07example\0\0\x01\0\x01");
+        assert_eq!(a.named, vec![(shards_dns::query_name(&question).unwrap(), 443)]);
+        assert!(p.links[1].is_none(), "no grant for the other member");
+        assert!(!a.dns, "no unrestricted DNS grant");
+    }
+
+    #[test]
     fn remote_mcp_servers_reach_whom_they_are_for() {
         let spec = crate::json::parse(
             br#"{"networks":[],"connections":[],
