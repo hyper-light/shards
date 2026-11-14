@@ -8201,15 +8201,15 @@ impl Gated {
     /// init, left going.
     fn start(&self, home: &Path, args: &[&str]) -> Going {
         let mut child = common::as_tests_run(&mut self.command())
-                .args(args)
-                .env("SHARDS_HOME", home)
-                .env("SHARDS_KERNEL", kernel())
-                .env("SHARDS_INIT", self.init())
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-                .unwrap();
+            .args(args)
+            .env("SHARDS_HOME", home)
+            .env("SHARDS_KERNEL", kernel())
+            .env("SHARDS_INIT", self.init())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
         let collect = |mut from: Box<dyn std::io::Read + Send>| {
             std::thread::spawn(move || {
                 let mut text = String::new();

@@ -1480,7 +1480,7 @@ impl<D: Disk> Daemon<D> {
         let home = std::fs::canonicalize(&self.home).map_err(|e| format!("{}: {e}", self.home.display()))?;
         let mut files = Vec::new();
         let cancel = shards_registry::http::Cancel::new();
-        let image = c.image_id.clone().unwrap_or_else(|| c.image.clone());
+        let image = c.image_id.clone();
         if let Ok((found, _lease)) = crate::run::find_image(
             &image,
             shards_ipc::Pull::Never,
@@ -1527,7 +1527,7 @@ impl<D: Disk> Daemon<D> {
             id: c.id.clone(),
             name: c.name.clone(),
             image: c.image.clone(),
-            image_id: c.image_id.clone().unwrap_or_default(),
+            image_id: c.image_id.clone(),
             arch: std::env::consts::ARCH.into(),
             format: shards_vmm::snapshot::FORMAT,
             hypervisor: shards_vmm::hv::BACKEND.map(str::to_string),
@@ -1725,6 +1725,9 @@ impl<D: Disk> Daemon<D> {
             .ok_or_else(|| format!("no container {id}"))?;
         let home = std::fs::canonicalize(&self.home).map_err(|e| format!("{}: {e}", self.home.display()))?;
         let dir = lock(&self.containers).dir(id).join(SNAPSHOTS).join(snapshot);
+        // Its plan says this build's format, which a snapshot of an older one is once
+        // rewritten in.
+        super::snapshots::migrated(&dir, &|e| format!("{}: {e}", dir.display()))?;
         let pinned = shards_vmm::snapshot::read(&dir)?;
         let mut files = Vec::new();
         for (path, _) in shards_vmm::snapshot::backing_of(&pinned) {
@@ -1763,7 +1766,7 @@ impl<D: Disk> Daemon<D> {
             id: c.id.clone(),
             name: c.name.clone(),
             image: c.image.clone(),
-            image_id: c.image_id.clone().unwrap_or_default(),
+            image_id: c.image_id.clone(),
             arch: std::env::consts::ARCH.into(),
             format: shards_vmm::snapshot::FORMAT,
             hypervisor: shards_vmm::hv::BACKEND.map(str::to_string),

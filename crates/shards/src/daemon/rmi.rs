@@ -37,7 +37,7 @@ impl Record {
 pub(super) struct User {
     pub id: String,
     pub running: bool,
-    pub image: Option<String>,
+    pub image: String,
     pub manifest: Option<String>,
 }
 
@@ -243,11 +243,7 @@ fn conflict(reference: &str, hard: bool, message: &str) -> Refused {
 /// checkImageDeleteConflict.
 fn check_conflict(id: &Digest, all: &[Record], users: &[User], mask: u8) -> Result<(), Refused> {
     let image = id.to_string();
-    let using = |running: bool| {
-        users
-            .iter()
-            .find(|u| u.running == running && u.image.as_deref() == Some(image.as_str()))
-    };
+    let using = |running: bool| users.iter().find(|u| u.running == running && u.image == *image);
     if mask & RUNNING != 0
         && let Some(u) = using(true)
     {
@@ -324,7 +320,7 @@ pub(super) fn delete(
                 mask &= !ACTIVE_REFERENCE;
             }
             let image = id.to_string();
-            if let Some(u) = users.iter().find(|u| u.image.as_deref() == Some(image.as_str())) {
+            if let Some(u) = users.iter().find(|u| u.image == *image) {
                 let name = parsed.familiar();
                 if !force {
                     return Err(conflict(
@@ -416,10 +412,7 @@ pub(super) fn check_platforms(
     force: bool,
 ) -> Result<(), Refused> {
     let image = id.to_string();
-    for u in users
-        .iter()
-        .filter(|u| u.image.as_deref() == Some(image.as_str()))
-    {
+    for u in users.iter().filter(|u| u.image == *image) {
         let made_of = u.manifest.as_deref().unwrap_or(named);
         let Some((_, platform)) = taken.iter().find(|(m, _)| m == made_of) else {
             continue;
@@ -479,7 +472,7 @@ mod tests {
         User {
             id: "f".repeat(64),
             running,
-            image: Some(digest(c).to_string()),
+            image: digest(c).to_string(),
             manifest: None,
         }
     }
@@ -513,7 +506,7 @@ mod tests {
         assert_eq!(check(&[made_of(false, Some(&amd))], true), Ok(()));
         // Another image's microVMs hold nothing of it.
         let other = User {
-            image: Some(digest('b').to_string()),
+            image: digest('b').to_string(),
             ..made_of(true, Some(&amd))
         };
         assert_eq!(check(&[other], false), Ok(()));

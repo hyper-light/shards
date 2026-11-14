@@ -487,7 +487,7 @@ mod tests {
     fn container(policy: &str, max: i64, count: u64, by_hand: bool) -> Container {
         let mut c: Container = serde_json::from_value(serde_json::json!({
             "id": "c", "name": "n", "image": "i", "command": [], "created": 1, "state": "exited",
-            "started": 1, "finished": 2, "exit_code": 1, "auto_remove": false,
+            "started": 1, "finished": 2, "exit_code": 1, "auto_remove": false, "image_id": "sha256:i",
         }))
         .unwrap();
         c.restart = crate::containers::Restart {

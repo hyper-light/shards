@@ -5376,7 +5376,7 @@ impl<D: Disk> Daemon<D> {
             id: id.to_string(),
             name: name.clone(),
             image: run.image.clone(),
-            image_id: Some(prepared.image_id.clone()),
+            image_id: prepared.image_id.clone(),
             image_manifest: Some(prepared.image_manifest.clone()),
             command: prepared
                 .spec
@@ -16653,7 +16653,9 @@ mod tests {
             Some(format!("{regs:x?}"))
         }
         fn process(b: &[u8]) -> Option<String> {
-            shards_ipc::Named::parse(std::str::from_utf8(b).ok()?).map(|n| format!("{n:?}"))
+            shards_ipc::Named::parse(std::str::from_utf8(b).ok()?)
+                .ok()
+                .map(|n| format!("{n:?}"))
         }
         // As context.rs reads it for an invitation.
         fn address(b: &[u8]) -> Option<String> {
