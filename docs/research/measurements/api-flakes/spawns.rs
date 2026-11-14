@@ -6,6 +6,7 @@
 //! their peers still found open, and how long each one's end then took.
 use super::*;
 use std::os::unix::net::UnixListener;
+use std::process::{Command, Stdio};
 use std::sync::atomic::AtomicBool;
 
 /// Starts `kind`'s processes until `stop`, keeping eight of its own alive at once (four

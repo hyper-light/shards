@@ -16,7 +16,6 @@ use std::ffi::OsString;
 use std::hash::{BuildHasher as _, RandomState};
 use std::io::{self, Read as _, Write as _};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -100,19 +99,22 @@ impl ConfiguredShards {
         &self.paths
     }
 
-    /// Its client's runtime directories and nothing inherited, but on Windows the system
-    /// root the OS reports. Without it Winsock loads no provider: its catalog names them as
-    /// `%SystemRoot%\system32\…`, expanded in the process's own environment, so WSAStartup
-    /// fails with WSAEPROVIDERFAILEDINIT (10106) and `shards` opens no socket, its vsock's
-    /// included (seen on Windows 11 26200; Hex's own Windows launches pass it too).
-    fn environment(&self, command: &mut Command) -> Result<(), Refusal> {
-        command
-            .env_clear()
-            .env("SHARDS_CACHE", self.paths.cache())
-            .env("SHARDS_HOME", self.paths.home());
+    /// The whole environment its `shards` is given: its client's runtime directories, and on
+    /// Windows the system root the OS reports. Without it Winsock loads no provider: its
+    /// catalog names them as `%SystemRoot%\system32\…`, expanded in the process's own
+    /// environment, so WSAStartup fails with WSAEPROVIDERFAILEDINIT (10106) and `shards` opens
+    /// no socket, its vsock's included (seen on Windows 11 26200; Hex's own Windows launches
+    /// pass it too). On Windows the spawn adds this process's LOCALAPPDATA, as it does for
+    /// every child it gives an environment of its own (`shards_ipc::spawn_in`).
+    fn environment(&self) -> Result<Vec<(&'static str, OsString)>, Refusal> {
+        #[cfg_attr(not(windows), allow(unused_mut))]
+        let mut env = vec![
+            ("SHARDS_CACHE", argument_copy(self.paths.cache().as_os_str())?),
+            ("SHARDS_HOME", argument_copy(self.paths.home().as_os_str())?),
+        ];
         #[cfg(windows)]
-        command.env("SystemRoot", system_root()?);
-        Ok(())
+        env.push(("SystemRoot", system_root()?));
+        Ok(env)
     }
 }
 
@@ -407,10 +409,6 @@ fn launch(
     // its own to say, after shards' end, where shards' words end.
     let piped = |e: io::Error| Refusal::Boot(format!("a pipe for shards' output: {e}"));
     let (output, writer) = io::pipe().map_err(piped)?;
-    let (stdout, stderr) = (
-        writer.try_clone().map_err(piped)?,
-        writer.try_clone().map_err(piped)?,
-    );
     let marker = end_mark();
     let probe_keep = probe
         .map(|bound| {
@@ -435,18 +433,9 @@ fn launch(
         scratch.resize(bound, 0);
         probe_scratch = Some(scratch);
     }
-    let mut command = Command::new(&binary);
-    if let Some(environment) = environment {
-        environment.environment(&mut command)?;
-    }
-    let child = shards_ipc::spawn_std(
-        command
-            .args(&args)
-            .stdin(Stdio::null())
-            .stdout(stdout)
-            .stderr(stderr),
-    )
-    .map_err(|e| Refusal::Boot(format!("{}: {e}", binary.display())))?;
+    let env = environment.map(ConfiguredShards::environment).transpose()?;
+    let child = spawn_shards(&binary, &args, env.as_deref(), &writer)
+        .map_err(|e| Refusal::Boot(format!("{}: {e}", binary.display())))?;
     // Shared: the guest, its drain and its watcher, threads that outlive this call, each hold it.
     let shared = Arc::new(Shared {
         state: Mutex::new(State {
@@ -480,16 +469,12 @@ fn launch(
         managed_owners: std::sync::atomic::AtomicUsize::new(0),
         report: Mutex::new(None),
     });
-    #[cfg(unix)]
-    let process = Process::Booted(child.id());
-    // Shared: the watcher, which outlives this call, reaps it; on Windows the guest kills it too.
-    let child = Arc::new(Mutex::new(child));
-    #[cfg(windows)]
+    // Shared: the watcher, which outlives this call, reaps it; the guest kills it.
+    let child = Arc::new(child);
     let process = Process::Booted(child.clone());
     let started = start_threads(&shared, &child, output, writer);
     if let Err(e) = started {
-        let mut child = lock(&child);
-        let _ = child.kill();
+        let _ = child.kill(shards_ipc::signal::SIGKILL);
         let _ = child.wait();
         return Err(Refusal::Boot(format!("a thread to watch shards: {e}")));
     }
@@ -501,6 +486,45 @@ fn launch(
         records: &progress::RECORDS,
         _dir: Some(dir),
     })
+}
+
+/// Starts `binary` (found as [`shards_ipc::on_path`] finds a name alone) with `args`, its
+/// stdout and stderr `output`, its stdin none, and `env` alone for its environment where
+/// given, else this process's. By `shards_ipc`'s spawn, which gives it those three alone
+/// (D248): std's would hand it whatever another thread of this process made in that moment
+/// and had not yet marked close-on-exec (macOS: no SOCK_CLOEXEC, no
+/// POSIX_SPAWN_CLOEXEC_DEFAULT in std), another run's input or output among them, for as
+/// long as this `shards` runs.
+fn spawn_shards(
+    binary: &Path,
+    args: &[OsString],
+    env: Option<&[(&'static str, OsString)]>,
+    output: &io::PipeWriter,
+) -> io::Result<shards_ipc::Child> {
+    let found = shards_ipc::on_path(binary, None)?;
+    let null = shards_ipc::null()?;
+    let args: Vec<&std::ffi::OsStr> = args.iter().map(OsString::as_os_str).collect();
+    #[cfg(unix)]
+    let fds = {
+        use std::os::fd::AsFd as _;
+        [(null.as_fd(), 0), (output.as_fd(), 1), (output.as_fd(), 2)]
+    };
+    #[cfg(windows)]
+    let fds = {
+        use std::os::windows::io::AsHandle as _;
+        [
+            (null.as_handle(), 0),
+            (output.as_handle(), 1),
+            (output.as_handle(), 2),
+        ]
+    };
+    match env {
+        Some(env) => {
+            let env: Vec<(&str, &std::ffi::OsStr)> = env.iter().map(|(k, v)| (*k, v.as_os_str())).collect();
+            shards_ipc::spawn_in(&found, &args, &fds, false, &env)
+        }
+        None => shards_ipc::spawn(&found, &args, &fds, false),
+    }
 }
 
 /// `shards run --kernel …` for `spec`, its vsock at `vsock`, its console's last `said` bytes
@@ -866,7 +890,7 @@ struct State {
     /// How shards ended, with its last words, once reaped.
     ended_as: String,
     /// Its exit status, as the watcher reaped it.
-    status: Option<Result<std::process::ExitStatus, String>>,
+    status: Option<Result<i32, String>>,
     /// Pending None -> native completion or failed observer; never a release ledger.
     managed: Option<Result<crate::ManagedEnd, Refusal>>,
     managed_ports: Vec<u32>,
@@ -913,11 +937,11 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 /// to exit.
 fn start_threads(
     shared: &Arc<Shared>,
-    child: &Arc<Mutex<Child>>,
+    child: &Arc<shards_ipc::Child>,
     output: io::PipeReader,
     writer: io::PipeWriter,
 ) -> io::Result<()> {
-    let exit = Exit::of(child)?;
+    let exit = Exit { child: child.clone() };
     let drainer = shared.clone();
     std::thread::Builder::new()
         .name("shards-api-drain".into())
@@ -987,77 +1011,19 @@ fn drain(shared: &Shared, mut output: io::PipeReader) {
 /// The process's exit, awaited without reaping it, so that its pid stays its own (and a
 /// signal sent to it reaches no other process) until [`State::exited`] says it has gone.
 struct Exit {
-    #[cfg(unix)]
-    pid: libc::id_t,
-    #[cfg(windows)]
-    handle: std::os::windows::io::OwnedHandle,
     /// The process, reaped once it has exited, under the state's lock.
-    child: Arc<Mutex<Child>>,
+    child: Arc<shards_ipc::Child>,
 }
 
 impl Exit {
-    fn of(child: &Arc<Mutex<Child>>) -> io::Result<Exit> {
-        let process = lock(child);
-        #[cfg(unix)]
-        return Ok(Exit {
-            pid: process.id(),
-            child: child.clone(),
-        });
-        #[cfg(windows)]
-        {
-            use std::os::windows::io::AsHandle as _;
-            Ok(Exit {
-                handle: process.as_handle().try_clone_to_owned()?,
-                child: child.clone(),
-            })
-        }
-    }
-
-    /// Waits for the process to exit.
-    fn awaited(&self) -> io::Result<()> {
-        #[cfg(unix)]
-        loop {
-            // SAFETY: a siginfo_t, plain data, for waitid(2) to fill.
-            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-            // SAFETY: waitid(2) of our own child into `info`; WNOWAIT leaves it unreaped.
-            let r = unsafe {
-                libc::waitid(
-                    libc::P_PID,
-                    self.pid,
-                    &raw mut info,
-                    libc::WEXITED | libc::WNOWAIT,
-                )
-            };
-            if r == 0 {
-                return Ok(());
-            }
-            let e = io::Error::last_os_error();
-            if e.kind() != io::ErrorKind::Interrupted {
-                return Err(e);
-            }
-        }
-        #[cfg(windows)]
-        {
-            use std::os::windows::io::AsRawHandle as _;
-            use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
-            use windows_sys::Win32::System::Threading::{INFINITE, WaitForSingleObject};
-            // SAFETY: a process handle this value owns.
-            if unsafe { WaitForSingleObject(self.handle.as_raw_handle(), INFINITE) } == WAIT_OBJECT_0 {
-                Ok(())
-            } else {
-                Err(io::Error::last_os_error())
-            }
-        }
-    }
-
     /// Waits for the process to exit, then for its last words, and says how it ended. Its
     /// words end at the end mark this writes after its exit: the drain reaches the mark
     /// through what is in the pipe ahead of it, which is finite, with no clock.
     fn watch(self, shared: &Shared, writer: io::PipeWriter) {
-        let awaited = self.awaited();
+        let awaited = self.child.ended();
         // What it ran by its end, read while it is a zombie, before it is reaped below.
         #[cfg(unix)]
-        let ended_cpu = progress::ran_by_end(self.pid, None);
+        let ended_cpu = progress::ran_by_end(self.child.id(), None);
         #[cfg(windows)]
         let ended_cpu = None;
         let mut tail = finish_drain(shared, writer);
@@ -1076,7 +1042,7 @@ impl Exit {
         }
         // Reaped under the state's lock as `exited` is set, so no signal sent while it is
         // false reaches another process, and none is left a zombie, dropped or not.
-        state.status = Some(lock(&self.child).wait().map_err(|e| e.to_string()));
+        state.status = Some(self.child.wait().map_err(|e| e.to_string()));
         state.observed_exited = state.status.as_ref().is_some_and(Result::is_ok);
         state.said = said;
         state.ended_cpu = ended_cpu;
@@ -1116,13 +1082,9 @@ struct ShardsGuest {
 
 /// A guest's VM process, as this client has it.
 enum Process {
-    /// Booted here, this process's child, by its pid: its watcher reaps it.
-    #[cfg(unix)]
-    Booted(u32),
-    /// Booted here, this process's child: ended through it, as Windows sends a process no
-    /// signal; its watcher reaps it.
-    #[cfg(windows)]
-    Booted(Arc<Mutex<Child>>),
+    /// Booted here, this process's child: killed through it while unreaped; its watcher
+    /// reaps it.
+    Booted(Arc<shards_ipc::Child>),
     /// Taken back, by what it was taken back by: another's child.
     Taken(Taken),
 }
@@ -1145,13 +1107,13 @@ impl ShardsGuest {
                 .clone()
                 .unwrap_or_else(|| Err("no status reaped".into()));
             state.ended_as = match &status {
-                Ok(status) => said(&format!("shards {status}"), &state.said),
+                Ok(status) => said(&format!("shards exit status: {status}"), &state.said),
                 Err(e) => format!("shards: {e}"),
             };
             state.end = Some(match status {
                 _ if state.stopping => End::Stopped,
-                Ok(status) if status.code() == Some(0) => End::PowerOff,
-                Ok(status) if status.code() == Some(3) => End::Reset,
+                Ok(0) => End::PowerOff,
+                Ok(3) => End::Reset,
                 _ => End::Failed(state.ended_as.clone()),
             });
         }
@@ -1186,19 +1148,12 @@ impl ShardsGuest {
         }
         match &self.process {
             Process::Taken(taken) => taken.process.kill(),
-            #[cfg(unix)]
-            Process::Booted(pid) => {
-                if let Ok(pid) = libc::pid_t::try_from(*pid) {
-                    // SAFETY: kill(2) of our own child, unreaped while `exited` is false.
-                    unsafe { libc::kill(pid, libc::SIGKILL) };
-                }
-            }
-            // Windows sends a process no signal: shards' daemon ends a VM's process as its
-            // Job's (shards_ipc `Child::kill`), and `run --kernel`'s VM, in a Job that ends with
-            // it (cli/mod.rs `vm`), ends as it does.
-            #[cfg(windows)]
+            // Unreaped while `exited` is false, and the child's own lock holds off its reap.
+            // On Windows, which sends a process no signal, it is ended: shards' daemon ends a
+            // VM's process as its Job's, and `run --kernel`'s VM, in a Job that ends with it
+            // (cli/mod.rs `vm`), ends as it does.
             Process::Booted(child) => {
-                let _ = lock(child).kill();
+                let _ = child.kill(shards_ipc::signal::SIGKILL);
             }
         }
     }
@@ -1219,7 +1174,7 @@ impl ShardsGuest {
                 failure,
             };
             let root = match &self.process {
-                Process::Booted(child) => lock(child).as_handle().try_clone_to_owned(),
+                Process::Booted(child) => child.as_handle().try_clone_to_owned(),
                 Process::Taken(taken) => taken.process.duplicate(),
             }
             .map_err(|e| {
@@ -2972,12 +2927,14 @@ impl Guest for ShardsGuest {
             return Err(refusal);
         }
         #[cfg(unix)]
-        let (pid, started) = (*booted, crate::taken::started(*booted));
+        let (pid, started) = (booted.id(), crate::taken::started(booted.id()));
         #[cfg(windows)]
         let (pid, started) = {
-            use std::os::windows::io::AsRawHandle as _;
-            let child = lock(booted);
-            (child.id(), crate::taken::created(child.as_raw_handle()))
+            use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
+            (
+                booted.id(),
+                crate::taken::created(booted.as_handle().as_raw_handle()),
+            )
         };
         drop(state);
         Ok(Identity {
@@ -3031,6 +2988,98 @@ impl Drop for ShardsGuest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::{Child, Command, Stdio};
+
+    /// Do start `shards` the SDK's way ([`spawn_shards`]), again and again, while four threads make
+    /// input pairs (`shards_ipc::input_pair`: a socketpair that std makes, then marks
+    /// close-on-exec, on macOS) and let them go. Expect: no child holds a socket, as none was
+    /// given one; each says so from its own descriptor table. Red with std's `Command` in
+    /// `spawn_shards`'s place (control-04: one SDK process's run B's `shards` holding run A's input
+    /// or output): on macOS 14 to 26 of the 64 children held pairs' ends in each of six
+    /// runs (D248, control-04).
+    #[cfg(unix)]
+    #[test]
+    fn a_started_shards_holds_no_socket_another_thread_was_making() {
+        use std::io::BufRead as _;
+        use std::sync::atomic::AtomicBool;
+        let stop = AtomicBool::new(false);
+        let me = std::env::current_exe().unwrap();
+        let args = [
+            "--exact",
+            "client::tests::sockets_held_report",
+            "--ignored",
+            "--nocapture",
+            "--test-threads=1",
+        ]
+        .map(OsString::from);
+        let env = [("SHARDS_API_SOCKETS_HELD", OsString::from("1"))];
+        // Sets `stop` as the scope's body ends, by a panic too, so the makers end and the
+        // scope joins them: a failed check fails the test rather than hanging it.
+        struct Stop<'a>(&'a AtomicBool);
+        impl Drop for Stop<'_> {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Relaxed);
+            }
+        }
+        let held: Vec<String> = std::thread::scope(|scope| {
+            let _stop = Stop(&stop);
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    while !stop.load(Ordering::Relaxed) {
+                        drop(shards_ipc::input_pair(1).unwrap());
+                    }
+                });
+            }
+            let mut held = Vec::new();
+            for _ in 0..64 {
+                let (said, output) = io::pipe().unwrap();
+                let child = spawn_shards(&me, &args, Some(&env), &output).unwrap();
+                drop(output);
+                // Read to libtest's last line, not to the pipe's end: a std child another test
+                // of this binary starts meanwhile can hold the write end (the race tested).
+                let mut out = Vec::new();
+                for l in io::BufReader::new(said).lines().map_while(Result::ok) {
+                    let last = l.starts_with("test result:");
+                    out.push(l);
+                    if last {
+                        break;
+                    }
+                }
+                assert_eq!(child.wait().unwrap(), 0, "{out:#?}");
+                // After libtest's own `test … ... ` on the same line.
+                let line = out
+                    .iter()
+                    .find_map(|l| l.get(l.find("sockets-held ")?..))
+                    .unwrap_or_else(|| panic!("no report: {out:#?}"))
+                    .to_string();
+                if !line.starts_with("sockets-held 0 ") {
+                    held.push(line);
+                }
+            }
+            held
+        });
+        assert!(
+            held.is_empty(),
+            "children held sockets they were never given: {held:?}"
+        );
+    }
+
+    /// [`a_started_shards_holds_no_socket_another_thread_was_making`]'s child: says how many
+    /// sockets it holds, from its own descriptor table (macOS's /dev/fd, Linux's
+    /// /proc/self/fd through it), the directory's own descriptor not one.
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "the child a_started_shards_holds_no_socket_another_thread_was_making runs"]
+    fn sockets_held_report() {
+        use std::os::unix::fs::FileTypeExt as _;
+        assert!(std::env::var_os("SHARDS_API_SOCKETS_HELD").is_some());
+        let held = std::fs::read_dir("/dev/fd")
+            .unwrap()
+            .filter_map(|e| e.ok()?.file_name().to_str()?.parse::<i32>().ok())
+            .filter(|&fd| std::fs::metadata(format!("/dev/fd/{fd}")).is_ok_and(|m| m.file_type().is_socket()))
+            .collect::<Vec<_>>();
+        println!("sockets-held {} {held:?}", held.len());
+    }
     use crate::{Disk, Share};
 
     #[derive(Default)]
@@ -4410,23 +4459,14 @@ mod tests {
         assert_eq!(node.runtime_paths().try_clone().unwrap(), *node.runtime_paths());
         assert!(Shards::configured("relative".into(), home.clone()).is_err());
         assert!(Shards::configured(cache.clone(), "".into()).is_err());
-        let mut command = Command::new(dir.join("never-started"));
-        command.env("FORBIDDEN_MODEL_INPUT", "value");
-        node.environment(&mut command).unwrap();
         #[cfg_attr(not(windows), allow(unused_mut))]
         let mut expected = vec![
-            (OsString::from("SHARDS_CACHE"), Some(cache.into_os_string())),
-            (OsString::from("SHARDS_HOME"), Some(home.into_os_string())),
+            ("SHARDS_CACHE", cache.into_os_string()),
+            ("SHARDS_HOME", home.into_os_string()),
         ];
         #[cfg(windows)]
-        expected.push((OsString::from("SystemRoot"), Some(system_root().unwrap())));
-        assert_eq!(
-            command
-                .get_envs()
-                .map(|(name, value)| (name.to_owned(), value.map(OsString::from)))
-                .collect::<Vec<_>>(),
-            expected
-        );
+        expected.push(("SystemRoot", system_root().unwrap()));
+        assert_eq!(node.environment().unwrap(), expected);
         let mut spec = spec();
         spec.binary = None;
         assert!(matches!(
@@ -4444,21 +4484,20 @@ mod tests {
     fn a_configured_providers_child_opens_sockets() {
         let dir = shards_testdir::TempDir::new("api-env-child").unwrap();
         let node = Shards::configured(dir.join("cache"), dir.join("home")).unwrap();
-        let mut command = Command::new(std::env::current_exe().unwrap());
-        command.args([
+        let args = [
             "--exact",
             "client::tests::in_a_configured_environment_a_socket_binds",
             "--ignored",
             "--test-threads=1",
-        ]);
-        node.environment(&mut command).unwrap();
-        let out = command.output().unwrap();
-        assert!(
-            out.status.success(),
-            "{}{}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        );
+        ]
+        .map(OsString::from);
+        let (mut said, output) = io::pipe().unwrap();
+        let env = node.environment().unwrap();
+        let child = spawn_shards(&std::env::current_exe().unwrap(), &args, Some(&env), &output).unwrap();
+        drop(output);
+        let mut out = String::new();
+        said.read_to_string(&mut out).unwrap();
+        assert_eq!(child.wait().unwrap(), 0, "{out}");
     }
 
     /// [`a_configured_providers_child_opens_sockets`]'s child, run in its environment alone.
@@ -4941,7 +4980,7 @@ mod tests {
     #[cfg(unix)]
     fn booted_pid(guest: &ShardsGuest) -> u32 {
         match guest.process {
-            Process::Booted(pid) => pid,
+            Process::Booted(ref child) => child.id(),
             Process::Taken(_) => panic!("a guest taken back"),
         }
     }
