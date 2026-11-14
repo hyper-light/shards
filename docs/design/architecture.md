@@ -16057,6 +16057,9 @@ is read after it, so that what a user has keeps working.
 
 ### D156. A run's IPC, hostname, cgroups, umask and writable layer, as its microVM has them
 
+Review devices-07 (2026-11-14): /dev/shm sizing follows every IPC and VM-owner link, with cycle detection and typed missing-owner/storage refusal. There is no selected traversal depth. A lookup's visited set lives only for that lookup; it is not cached. Startup and inspect/list propagate unresolved ownership rather than using an intermediate run's allowance. Unit red/green: `docs/research/measurements/device-fixes/README.md`; live chained-join mount verification is owed to ROOT.
+
+
 A run's flags for the namespaces it has, its umask and its writable layer are taken as
 Docker's CLI takes them, and mean what they can for a microVM: a run shares no kernel
 with its host, so "host" is the microVM's, and what one run shares with another it shares

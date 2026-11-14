@@ -143,6 +143,8 @@ Priority mapping for the user's requested notification: **P0 critical; P1 high; 
 
 **Catching test:** persist 66 linked requests with unequal root/intermediate limits and assert c65's result equals `shm_bytes(sizes(c0).2)`; ROOT's E2E should compare guest statfs with c0's maximum.
 
+**Status (2026-11-14):** fixed in 4eaefdf9c (red `shm_owner_follows_every_join_to_the_vm_budget`: resolved budget 0 rather than 536870912; green 3 inspect tests plus shards clippy on macOS arm64). Complete traversal has cycle/missing/storage refusal variants; startup and inspect return these errors instead of guessing an intermediate budget.
+
 ### devices-08 — P2 / medium — Device paths retain fixed budgets without required derivation
 
 **Locations:** `crates/shards/src/daemon/devices.rs:97`, `:334`; `crates/shards/src/daemon.rs:134`; `crates/vmm/src/devices/virtio/gpu/mod.rs:53`; `crates/vmm/src/devices/virtio/iommu.rs:45`; `crates/vmm/src/devices/virtio/block.rs:186` (`THROUGH_MAX`).
