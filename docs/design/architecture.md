@@ -27393,7 +27393,14 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
       left, never cold (the answer just taught it, or it was learned), and a look that finds
       its party gone finds it still, as no process of it that could write runs. Main kept
       the client's own judge, which a cold kind never judges, so that a silent holder's
-      liveness held its test for ever. The drain teaches nothing.
+      liveness held its test for ever. The drain teaches nothing. A command's wait finds
+      its answer missing as it begins (`run_ending`'s `Wait::absent`), as its client
+      started just then: an end its first check finds before any look (the client quicker
+      than its waiter's thread's first turn) is an answer, never one already there
+      (`Stage::Begun`), which taught nothing and left the drain's kind cold, judging nothing
+      until its holder's end (2026-11-14: adacachy2 at f385b8dac, 7 of 30 whole-binary
+      runs; `a_commands_end_found_before_its_first_look_teaches_its_kind`, whose client
+      has ended as its spawn returns, red there).
     - *A party is what was found of it until it ends* (waits-09, waits-10). A process once
       found is followed until it has gone or ended, wherever it is listed since: a daemon's
       microVMs as they end after it (a daemon stop's party), a client's children reparented

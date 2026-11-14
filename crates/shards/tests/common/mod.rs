@@ -2706,6 +2706,10 @@ fn run_ending(
         }
     };
     let mut wait = Wait::begin(kind, child.id(), home.as_deref(), &asked.join(" "));
+    // Its answer, its client's end, is missing as it begins: its client started just now,
+    // so an end its first check finds before any look is its party's answer, which teaches
+    // its kind, never one there before it.
+    wait.absent();
     let mut status = None;
     loop {
         if status.is_none()
