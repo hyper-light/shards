@@ -35,6 +35,10 @@ restored.
   shards exit 0. On adas-mac-studio.local (macOS 26.2 arm64), at 764f87712: `cargo test -p shards
   --bin shards -- grant_answer::` 5 of 5, and `cargo xwin clippy --target aarch64-pc-windows-msvc`
   of the three crates exit 0.
+- **Merged tree** 424a7180d (main 31d154797 merged in, whose commits touch crates/shards and
+  crates/vmm): on Windows `grant_answer::windows_tests` 7 of 7 and the three crates' clippy exit
+  0; on adas-mac-studio.local `grant_answer::` 5 of 5, macOS and aarch64-pc-windows-msvc clippy
+  exit 0.
 - **Owed (ROOT)**: the WHP real-VM tests that confine a VM with a snapshot directory and no vsock
   path, and one with a vsock path: `cargo test -p shards --profile test-release --test snapshot`,
   `--test restore`, `--test vsock` and `--test confined -- the_vm_process_is_confined` on jupiter.
