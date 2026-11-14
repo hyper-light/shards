@@ -126,6 +126,45 @@ test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 141 filtered out
 Development policy checks passed; evidence/coordinator review is still required.
 ```
 
+## creds-07: the CA signs exact grants
+
+Fix `09ffbfd32`: `Ca::leaf` checks its immutable exact-host authorization list,
+ASCII case-insensitively, before generating a key or signing. `LeafError::Ungranted`
+is distinct from a certificate-operation failure; the injector only renders it.
+The list is authorization state, not a performance cache; it lives with this run's
+CA and changes only by creating a new CA. No new wait, cache, runtime number or
+platform implementation is introduced.
+
+The red at `6eb3ad718` accepted `child.api.example.test` under a grant to
+`api.example.test`. The retained regression also checks unrelated DNS names, IPv4,
+IPv6 and an allowed host in uppercase. Existing negative verifier cases separately
+issue certificates in test code, bypassing the production signer guard, to retain
+coverage that DNS constraints reject unrelated names. Exact-host authorization is
+the signer's responsibility: RFC 5280 §4.2.1.10 defines DNS constraints as subtrees.
+No unsupported exact-host encoding is added to the certificate and no assumption
+that subtree constraints reject descendants is retained.
+
+Green source `09ffbfd32278364250b30368256684855a843e34`, on merged main `67a344fde`:
+`cargo test -p shards-net ca::`: **4 passed, 0 failed, 0 ignored**;
+`cargo clippy -p shards-net --all-targets -- -D warnings`: passed (resumed-run r5,
+runner log `~/g121-tmp/fix-creds-v1-07-green.log`).
+
+```text
+test ca::tests::creds_07_ungranted_descendants_and_addresses_are_not_signed ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 169 filtered out
+Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.28s
+```
+
+## Lease landing
+
+creds-05/06 landed at `67a344fde0bb7e150a19174097b8b18a93a7c9e6`.
+Last focused checks on merge `74426d1ad`: 14 lease tests and shards-net all-target
+clippy passed, runner `~/g121-tmp/fix-creds-v1-lease-final.log` (resumed-run r4).
+The final disjoint merge `67a344fde` changed API/shards/VMM/docs only; its diff
+against `74426d1ad` had no shards-net/dependency/Cargo inputs. It was pushed at once
+under ROOT's amended landing-under-contention rule. No focused results are claimed
+for those unrelated crates.
+
 ## Policy accounting and coordinator work
 
 R01/R04/R06/R07/R13: checked ranges, no new production panic, explicit Asked/Held
