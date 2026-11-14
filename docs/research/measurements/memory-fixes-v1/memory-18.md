@@ -74,7 +74,7 @@ or connection end; no periodic probe, cache or new deadline was added.
 Fix c37547114, shared allocation-free entry walk eddbef457, failure tests fbabcfe6b.
 New cases also cover accepted handles/pins surviving refused OPENs, repeated
 refusal of an error reply, READDIRPLUS and directory handles, and cleanup transport,
-malformed and errno failures. Green results are recorded below after main merge.
+malformed and errno failures. Green results: the takeover section below.
 
 R01/R04: new byte fields use checked ranges/conversions, poisoned locks recover,
 cleanup uses bounded stack frames and typed failure. Existing success entry IDs
@@ -98,3 +98,55 @@ python3 scripts/check-development-policy
 Also owed: actual repeated window failures during LOOKUP/CREATE on HVF/KVM/WHP,
 external-share peer compatibility/failure, cleanup under real pressure/teardown,
 allocation/fault/RPC cost and the supported target matrix. No ratio is claimed.
+
+## Claude takeover: green, mutants, a refused RELEASE (2026-11-14)
+
+The Codex lane stopped before its green ran. Claude implementer (takeover brief,
+policy read at main 97f404be8: the same AGENTS/rules/evidence hashes as above) kept
+the series a738422f5..3bcd9f808 and its merge ca4cb7cf0, merged main 118d14ccf
+(c1f469464, clean), and added ee3cf6fe9:
+
+- A RELEASE the server answers with an errno is a whole exchange: the stream is in
+  step, so the slot stays attached (`Unreleased::Refused` is logged, typed), and the
+  CREATE's entry is still forgotten. Linux does both: `fuse_create_open` (fs/fuse/dir.c)
+  calls `fuse_sync_release` then queues the FORGET whatever the RELEASE answered, and
+  `fuse_file_put` (fs/fuse/file.c) ends a synchronous RELEASE with
+  `fuse_release_end(args, 0)`, its error unread (read in a v7.2-rc4 checkout). The
+  Codex version detached the share for it, which leaves the guest every later request
+  ENODEV for the rest of its run over one handle. A closed stream or a malformed
+  answer (`Transport`, `Malformed`) still detaches.
+- New test `a_refused_lookup_of_a_node_the_guest_holds_keeps_its_reference`: a LOOKUP
+  of a node the guest already holds, refused eight times, leaves its one reference.
+- `a_failed_refused_reply_cleanup_detaches_its_server` became
+  `a_broken_cleanup_exchange_detaches_its_server_and_a_refused_release_does_not`: the
+  errno case now checks the FORGET that follows and that the slot serves a LOOKUP.
+
+Harness: `memory-18-run.sh` (a carrier clones the repo, fetches a bundle, runs the
+focused tests, clippy and each mutant, restoring and touching the file after each).
+All on ee3cf6fe9, rustc 1.98.1, `CARGO_INCREMENTAL=0`, one cargo, `nice -n 10`:
+
+| host | `cargo test -p shards-vmm --lib devices::virtio::fs` | memory-18's 7 | clippy `-D warnings` |
+|---|---|---|---|
+| macOS arm64, kiln r1751 (uname Adas-Mac-Studio-3) | 88 passed, 1 ignored | 7/7 | clean |
+| Linux x86_64 adacachy2, kiln r1753 | 89 passed, 1 ignored | 7/7 | clean |
+
+Mutants (each killed on both hosts unless noted; `green-memory-18-macos.log`,
+`green-memory-18-linux.log`):
+
+| mutant | killed by |
+|---|---|
+| red: no cleanup (`release_reply` not called) | lookups (9,9,0,0,0), creates (9,9,8,8,0), delivery, directory, held lookup |
+| no FORGET walk | lookups, creates, directory (4,25,1,1,0), held lookup |
+| FORGET(2) for each entry | held lookup (its node forgotten) |
+| no RELEASE | creates (1,1,8,8,0), directory (1,1,9,9,0) |
+| `scatter` takes a short write as whole | delivery (16-byte buffer) |
+| a failed `scatter` refused without cleanup | delivery (buffer outside guest memory) |
+| a broken exchange keeps its connection | broken-cleanup test, "closed" |
+| a refused RELEASE skips its FORGET | broken-cleanup worker (LOOKUP where FORGET was due) |
+| a refused RELEASE detaches (guard `if false`; macOS r1779) | broken-cleanup, "errno": the next LOOKUP NotConnected |
+
+On Linux the last ran as a Refused/Malformed swap, killed by the "empty" case
+instead; the guard-only form ran on macOS.
+
+Not run here (ROOT's): Windows (the server's NTFS path; `pipe_stream` pairs), the real
+VM tests named above, and real window failures under LOOKUP/CREATE on HVF/KVM/WHP.

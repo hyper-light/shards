@@ -290,7 +290,7 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 
 **Found by:** the Windows P0 lane, recorded in D197 and assigned by ROOT after memory-01 landed at b2e3b069a (fix 7f0cb8ce9).
 
-**Status (2026-11-13):** fixed in c37547114 with shared entry traversal eddbef457 (red `refused_lookups_leave_the_held_count_unchanged` and `refused_creates_leave_the_held_count_unchanged`, abecce1a5). Eight refused lookups left nine nodes; eight refused creates also left eight handles and descriptors. Evidence and remaining platform/VM work: `docs/research/measurements/memory-fixes-v1/memory-18.md`.
+**Status (2026-11-14):** fixed in c37547114, eddbef457, fbabcfe6b and ee3cf6fe9 (red `refused_lookups_leave_the_held_count_unchanged` and `refused_creates_leave_the_held_count_unchanged`, abecce1a5: eight refused lookups left nine nodes; eight refused creates also left eight handles and descriptors). Green on ee3cf6fe9 (a merge of main 118d14ccf) on macOS arm64 and Linux x86_64, nine guard mutants killed; a RELEASE the server refuses keeps the share and still forgets its entry. Owed to ROOT: Windows `cargo test -p shards-vmm --lib devices::virtio::fs`, and the real-VM runs in `docs/research/measurements/memory-fixes-v1/memory-18.md`.
 
 **Location:** `crates/vmm/src/devices/virtio/fs/mod.rs`, the window-reconciliation refusal after `Slot::ask_into`; `server.rs` lookup/handle ownership.
 
