@@ -1031,18 +1031,25 @@ fn pumped(shared: &Arc<Shared>, members: &[MemberInfo]) -> Result<Vec<Pumped>, I
 }
 
 /// Moves member `member`'s `channel` into `writer` as its bytes come, and grants the host
-/// room for each part once written; ends at the channel's end, closing the pipe. A caller
-/// that let go of its end drops the rest, as a closed pipe drops `docker run`'s output,
-/// still granting room, so that the member is never held by a reader that left.
+/// room for each part once written; ends once every part the session took is written and
+/// no more can come, closing the pipe: at the channel's end, or at the end of its host's
+/// answers. The run's end is neither (control-01): its host may still say output after it,
+/// as its capture's reader sends what its VM's end left beside the end it says. A credit
+/// that cannot go, the host's channel closed by the run's end or by `stop`, or broken,
+/// ends the credits alone: what was taken still goes. A caller that let go of its end drops
+/// the rest, as a closed pipe drops `docker run`'s output, still granting room, so that the
+/// member is never held by a reader that left.
 fn pump(shared: &Shared, member: u32, channel: Channel, mut writer: io::PipeWriter) {
+    // Each a latch, set once: the owner's pipe taking writes, and the host's channel credits.
     let mut open = true;
+    let mut granting = true;
     loop {
         let next = shared.wait(Duration::MAX, |s| {
             let flow = s.flows.entry((member, channel)).or_default();
             if let Some(part) = flow.queued.pop_front() {
                 return Some(Some(part));
             }
-            (flow.ended.is_some() || s.end.is_some() || s.answered).then_some(None)
+            (flow.ended.is_some() || s.answered).then_some(None)
         });
         let Some(Some(part)) = next else {
             return;
@@ -1051,8 +1058,8 @@ fn pump(shared: &Shared, member: u32, channel: Channel, mut writer: io::PipeWrit
             open = false;
         }
         let taken = u64::try_from(part.len()).unwrap_or(u64::MAX);
-        if shared.credit(member, channel, taken).is_err() {
-            return;
+        if granting && shared.credit(member, channel, taken).is_err() {
+            granting = false;
         }
     }
 }
