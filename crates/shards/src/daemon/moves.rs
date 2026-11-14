@@ -1656,7 +1656,12 @@ impl<D: Disk> Daemon<D> {
         payload.extend_from_slice(&LIVE_ROUNDS.to_be_bytes());
         payload.extend_from_slice(&LIVE_ENOUGH.to_be_bytes());
         use shards_ipc::fd::AsFd as _;
-        if let Err(e) = socket.send(shards_ipc::kind::PRECOPY, &payload, &[out.as_fd()]) {
+        if let Err(e) = socket.send(
+            &self.answers.run_send,
+            shards_ipc::kind::PRECOPY,
+            &payload,
+            &[out.as_fd()],
+        ) {
             lock(&inbox).precopying = None;
             return Err(format!("asking its microVM: {e}"));
         }
@@ -1755,7 +1760,12 @@ impl<D: Disk> Daemon<D> {
             _ => return Err(format!("{reference} is not running").into()),
         };
         socket
-            .send(shards_ipc::kind::MOVED, &[u8::from(moved)], &[])
+            .send(
+                &self.answers.run_send,
+                shards_ipc::kind::MOVED,
+                &[u8::from(moved)],
+                &[],
+            )
             .map_err(|e| format!("telling its microVM: {e}"))?;
         if !moved {
             let at = lock(&self.containers).dir(&id).join(SNAPSHOTS).join(snapshot);

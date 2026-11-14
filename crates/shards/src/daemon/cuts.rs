@@ -35,6 +35,11 @@ struct Watcher {
 /// The files watched, by their watch's number, one a file.
 static WATCHED: LazyLock<Mutex<HashMap<i32, Watched>>> = LazyLock::new(Default::default);
 
+/// What the watcher has learned of room in a run's socket for a cut it tells
+/// ([`RunSocket`]'s judged send; runs-11 `TAKE_TIMEOUT`): the watcher's own, as the watcher
+/// is this process's and holds no daemon's.
+static TOLD: shards_api::Record = shards_api::Record::new();
+
 /// The watches written since [`look`] last took them, and its wake.
 static FIRED: Mutex<Vec<i32>> = Mutex::new(Vec::new());
 static WAKE: Condvar = Condvar::new();
@@ -113,7 +118,7 @@ fn named(payload: &[u8]) -> Option<(u32, u64, &[u8])> {
 }
 
 fn tell(run: &str, socket: &RunSocket, said: &[u8]) {
-    if let Err(e) = socket.send(kind::CUT, said, &[]) {
+    if let Err(e) = socket.send(&TOLD, kind::CUT, said, &[]) {
         log(format!(
             "container {run}: telling its microVM of a file cut short: {e}"
         ));
@@ -216,7 +221,7 @@ mod tests {
         let path = dir.join("f");
         std::fs::write(&path, vec![1u8; 1 << 20]).unwrap();
         let (ours, vm) = UnixStream::pair().unwrap();
-        let socket = Arc::new(RunSocket::new(ours));
+        let socket = Arc::new(RunSocket::new(ours, std::process::id()));
         let named = |share: u32, node: u64, size: u64| {
             let mut payload = said(share, node);
             payload.extend_from_slice(&size.to_be_bytes());

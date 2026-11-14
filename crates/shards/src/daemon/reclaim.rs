@@ -8,10 +8,11 @@ use std::sync::atomic::Ordering;
 use std::sync::{Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+use shards_api::Seen;
 use shards_vmm::platform::PressureWatches;
 
 use super::health::{Quiet, Wait};
-use super::{Daemon, RunState, TAKE_TIMEOUT, Threads, lock, log};
+use super::{Daemon, RunState, Threads, lock, log};
 use crate::containers::Disk;
 use crate::pressure::{Pressure, Saying};
 
@@ -232,9 +233,10 @@ impl<D: Disk> Daemon<D> {
             builtin: shards_abi::run::builtin::RECLAIM,
             ..Default::default()
         };
+        let before = self.answers.reclaim.seen();
         let asked = Instant::now();
         let quiet = self.exec_waiting(id, &spec, None, 64, wait);
-        said_if_long(id, "giving back what it holds cold", asked.elapsed());
+        said_if_long(id, "giving back what it holds cold", asked.elapsed(), &before);
         match quiet {
             Ok(q) => match given(&q) {
                 Ok(gave) => Some(gave),
@@ -289,13 +291,17 @@ impl<D: Disk> Daemon<D> {
     }
 }
 
-/// Says that an exec of the daemon's own in container `id` took past [`TAKE_TIMEOUT`]; each
-/// at debug.
-pub(super) fn said_if_long(id: &str, what: &str, took: Duration) {
+/// Says that an exec of the daemon's own in container `id` took past the slowest answer of its
+/// kind seen before it, `before` (its record's, read as the exec began: D215's W*; runs-11
+/// `TAKE_TIMEOUT`), each at debug. A kind with no answer before (cold) has no slowest to pass:
+/// nothing is said.
+pub(super) fn said_if_long(id: &str, what: &str, took: Duration, before: &Seen) {
     shards_vmm::debug!("container {id}: {what}: answered after {took:?}");
-    if took > TAKE_TIMEOUT {
+    if let Seen::Learned { slowest, .. } = before
+        && took > *slowest
+    {
         log(format!(
-            "container {id}: {what}: answered after {took:?}, its microVM running"
+            "container {id}: {what}: answered after {took:?}, past the slowest before ({slowest:?}), its microVM running"
         ));
     }
 }
