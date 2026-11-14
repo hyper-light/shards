@@ -110,8 +110,12 @@ const MAGIC: [u8; 8] = *b"SHRDSNAP";
 ///     UART (arm64) this machine no longer has, and is refused ([`ResumeRefused::OlderMachine`]).
 /// 32: and a pvpanic device among its MMIO devices (devices/pvpanic.rs), its state whether
 ///     its guest's kernel said it panicked.
-const VERSION: u32 = 32;
-/// The first format whose state says who saved it ([`decode_saver`]).
+/// 33: its saver records whether its guest's init announced a contract at all, and the
+///     contract only where it did: a guest that runs no shards-init (a test guest, a
+///     `--init` of the user's own) announces none, which 30-32 wrote as contract 0 and a
+///     resume refused as another init's (D176).
+const VERSION: u32 = 33;
+/// The first format whose state says who saved it ([`decode_saved_by`]).
 const VERSION_WITH_SAVER: u32 = 30;
 /// The version of shards this build is (crates/shards/Cargo.toml, by build.rs): what a
 /// state it writes says it was saved by.
@@ -586,7 +590,10 @@ fn encode(s: &Snapshot, generation: &str, identities: &[Identity]) -> Result<Vec
     w.u32(s.config.vcpus);
     w.u64(s.config.memory_mib);
     w.bytes(SAVED_BY.as_bytes());
-    w.u64(s.init.unwrap_or(0));
+    w.bool(s.init.is_some());
+    if let Some(init) = s.init {
+        w.u64(init);
+    }
     w.seq(&disks, |w, (path, read_only)| {
         w.bytes(path);
         w.bool(*read_only);
@@ -732,19 +739,27 @@ fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
             "snapshot format {version}; this shards reads {VERSION}"
         )));
     }
-    let (_, init) = decode_saver(&mut r)?;
+    decode_saved_by(&mut r)?;
+    let init = decode_init(&mut r)?;
     let mut decoded = decode_body(r, generation, vcpus, memory_mib)?;
-    decoded.snapshot.init = Some(init).filter(|&init| init != 0);
+    decoded.snapshot.init = init;
     Ok(decoded)
 }
 
-/// Who saved a state of this build's format, after its head: the shards version and the
-/// contract its guest's init announced, 0 for none.
-fn decode_saver(r: &mut Reader<'_>) -> codec::Result<(String, u64)> {
+/// Which shards saved a state of format 30 or later, after its head.
+fn decode_saved_by(r: &mut Reader<'_>) -> codec::Result<String> {
     let by = std::str::from_utf8(r.bytes(MAX_SAVED_BY)?)
-        .map_err(|_| DecodeError("a saver's version that is not UTF-8".into()))?
-        .to_string();
-    Ok((by, r.u64()?))
+        .map_err(|_| DecodeError("a saver's version that is not UTF-8".into()))?;
+    Ok(by.to_string())
+}
+
+/// The contract a state of this build's format says its guest's init announced, after its
+/// saver's version: none where its guest runs no shards-init.
+fn decode_init(r: &mut Reader<'_>) -> codec::Result<Option<u64>> {
+    match r.bool()? {
+        true => Ok(Some(r.u64()?)),
+        false => Ok(None),
+    }
 }
 
 /// A state's body, after its head and its saver.
@@ -1249,8 +1264,9 @@ pub fn relocate(dir: &Path, to: &dyn Fn(&Path) -> Option<PathBuf>) -> Result<(),
 /// and stay.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResumeRefused {
-    /// Saved by shards `saved_by`, whose guest's init announced `init_abi` (0: none), where
-    /// this build's speaks `ours`.
+    /// Saved by shards `saved_by`, whose guest's shards-init announced `init_abi`, where this
+    /// build's speaks `ours`. A guest that runs no shards-init has no init contract to break,
+    /// and is not refused for it.
     OlderInit {
         saved_by: String,
         init_abi: u64,
@@ -1262,8 +1278,9 @@ pub enum ResumeRefused {
     Unrecorded { format: u32 },
     /// Saved by shards `saved_by` in format `format`, from 30 on and before this build's:
     /// its guest's drivers are bound to a machine this build no longer makes (31: its
-    /// console a 16550 UART, now virtio-console; 32: no pvpanic device), so its guest
-    /// cannot run on.
+    /// console a 16550 UART, now virtio-console; 32: no pvpanic device), or (32) its saver's
+    /// record says its init's contract as this build no longer reads it, so its guest
+    /// cannot run on. Only its saver's version is read of it.
     OlderMachine { format: u32, saved_by: String },
     /// Saved in format `format`, past this build's: by a newer shards.
     Newer { format: u32 },
@@ -1346,11 +1363,12 @@ fn saver_refused(bytes: &[u8]) -> Result<(), Result<ResumeRefused, DecodeError>>
     if format > VERSION {
         return Err(Ok(ResumeRefused::Newer { format }));
     }
-    let (saved_by, init_abi) = decode_saver(&mut r).map_err(Err)?;
+    let saved_by = decode_saved_by(&mut r).map_err(Err)?;
     if format < VERSION {
         return Err(Ok(ResumeRefused::OlderMachine { format, saved_by }));
     }
-    if init_abi != shards_abi::IDENTITY {
+    let init = decode_init(&mut r).map_err(Err)?;
+    if let Some(init_abi) = init.filter(|&abi| abi != shards_abi::IDENTITY) {
         return Err(Ok(ResumeRefused::OlderInit {
             saved_by,
             init_abi,
@@ -2043,11 +2061,14 @@ mod tests {
     }
 
     /// A resume reads a state's head and saver alone, before its guest runs: one saved by a
-    /// build whose init announced this build's contract resumes; one whose init announced
-    /// another, or none, is refused naming the shards that saved it; one of a format before
-    /// 30, which records no saver (shards 0.7.0's 28 among them), or past this build's, is
-    /// refused by its format. Red before the saver's record, where only the guest's own
-    /// first message after its restore found its init another's.
+    /// build whose init announced this build's contract resumes, and so does one whose guest
+    /// runs no shards-init and announced none; one whose init announced another is refused
+    /// naming the shards that saved it; one of a format before 30, which records no saver
+    /// (shards 0.7.0's 28 among them), or past this build's, is refused by its format, of
+    /// 30 to 32 by its machine, its saver's version alone read. Red before the saver's
+    /// record, where only the guest's own first message after its restore found its init
+    /// another's; and red with format 32's record (none written as contract 0), where every
+    /// save of a guest of the user's own init was refused as another init's.
     #[test]
     fn a_resume_refuses_a_saved_init_of_another_contract_naming_its_saver() {
         let ids = vec![Identity::default(); 3];
@@ -2078,10 +2099,11 @@ mod tests {
             said.contains("start it again from its image; its volumes are kept"),
             "{said}"
         );
-        assert!(matches!(
-            refused(&as_saved(None)),
-            ResumeRefused::OlderInit { init_abi: 0, .. }
-        ));
+        let no_init = as_saved(None);
+        assert_eq!(saver_refused(&no_init), Ok(()));
+        assert_eq!(decode(&no_init).unwrap().snapshot.init, None);
+        // The record says which: none its flag alone, a contract its flag and its 8 bytes.
+        assert_eq!(ours.len(), no_init.len() + 8);
         let with_format = |format: u32| {
             let mut bytes = ours.clone();
             bytes[8..12].copy_from_slice(&format.to_le_bytes());
@@ -2119,6 +2141,10 @@ mod tests {
         let mut cut_short = ours.clone();
         cut_short.truncate(head + 4 + 1);
         assert!(saver_refused(&cut_short).unwrap_err().is_err());
+        // Cut within its init's contract, after the flag that says it has one.
+        let mut cut_init = ours.clone();
+        cut_init.truncate(head + 4 + SAVED_BY.len() + 1 + 4);
+        assert!(saver_refused(&cut_init).unwrap_err().is_err());
     }
 
     /// Backing files are named by absolute path (audit A18).
@@ -2478,7 +2504,7 @@ mod tests {
         }
 
         /// [`resumable`] reads a user's snapshot directory's state and writes nothing: one
-        /// saved with this build's init resumes, one saved with another's or of an older
+        /// saved with this build's init resumes, as does one whose guest runs none, one saved with another's or of an older
         /// format is refused typed and left as it was, and a directory with no snapshot is
         /// unreadable.
         #[test]
@@ -2498,6 +2524,8 @@ mod tests {
                 dir.join(current(&dir).unwrap()).join(STATE)
             };
             saved(Some(shards_abi::IDENTITY));
+            assert_eq!(resumable(&dir), Ok(()));
+            saved(None);
             assert_eq!(resumable(&dir), Ok(()));
             let state = saved(Some(shards_abi::IDENTITY ^ 1));
             let before = fs::read(&state).unwrap();
