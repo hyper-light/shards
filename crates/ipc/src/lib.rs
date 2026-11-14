@@ -2379,12 +2379,21 @@ mod pipe;
 #[cfg(windows)]
 pub use pipe::{
     Arriving, Event, ExitWatch, Listener, Message, Pipe, Poller, Stream, await_any, await_streams, byte_pair,
-    end, hung_up, readable_raw, recv, recv_by, send,
+    end, hung_up, input_pair, readable_raw, recv, recv_by, send,
 };
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
 pub use windows::*;
+
+/// A caller's ordinary pipe writer paired with a cancellable reader. Ending a clone of
+/// the reader wakes an idle read and refuses later writes, without another relay thread.
+#[cfg(unix)]
+pub fn input_pair() -> std::io::Result<(Stream, std::io::PipeWriter)> {
+    use std::os::fd::OwnedFd;
+    let (reader, writer) = Stream::pair()?;
+    Ok((reader, std::io::PipeWriter::from(OwnedFd::from(writer))))
+}
 
 /// A new file at `path`, its user's alone wherever it is, as a file a user's secret is
 /// written to must be (an invitation, a home's identity): mode 0600 on Unix; on Windows a

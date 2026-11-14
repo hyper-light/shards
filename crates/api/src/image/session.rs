@@ -61,6 +61,16 @@ struct InputFlow {
     room: u64,
     taken: bool,
     ended: Option<(u64, wire::StreamEnd)>,
+    /// The feeder's cancellation handle; no read is allowed to outlive its input.
+    reader: Option<shards_ipc::Stream>,
+}
+
+impl InputFlow {
+    fn close(&mut self) {
+        if let Some(reader) = self.reader.take() {
+            shards_ipc::end(&reader);
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -153,6 +163,11 @@ struct Asked<T> {
 }
 
 impl State {
+    fn close_inputs(&mut self) {
+        for input in self.inputs.values_mut() {
+            input.close();
+        }
+    }
     /// A session's state before its host has answered, for a request staging `members`:
     /// those whose stdin it asks for named, for their flows to be made with its start.
     fn asking(members: &[wire::MemberStage]) -> State {
@@ -1113,6 +1128,17 @@ fn feed(shared: &Shared, member: u32, mut reader: impl io::Read) {
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(_) => return,
         };
+        // An end may have woken the read, or raced its bytes. Neither sends a new word
+        // after that input's known end.
+        {
+            let state = lock(&shared.state);
+            if state.end.is_some()
+                || state.answered
+                || state.inputs.get(&member).is_none_or(|f| f.ended.is_some())
+            {
+                return;
+            }
+        }
         if n == 0 {
             let end = wire::InputEnd {
                 member,
@@ -1131,8 +1157,25 @@ fn feed(shared: &Shared, member: u32, mut reader: impl io::Read) {
 }
 
 /// The owner's write end, and the reader driven by its member's feeder.
-fn input_pipe(_shared: &Shared, _member: u32) -> io::Result<(impl io::Read + Send + use<>, io::PipeWriter)> {
-    io::pipe()
+fn input_pipe(shared: &Shared, member: u32) -> io::Result<(impl io::Read + Send + use<>, io::PipeWriter)> {
+    struct Reader(shards_ipc::Stream);
+    impl io::Read for Reader {
+        fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+            shards_ipc::read(&self.0, out)
+        }
+    }
+    let (reader, writer) = shards_ipc::input_pair()?;
+    let cancel = reader.try_clone()?;
+    let mut state = lock(&shared.state);
+    if state.end.is_some() || state.answered {
+        return Err(io::ErrorKind::BrokenPipe.into());
+    }
+    let flow = state.inputs.get_mut(&member).ok_or(io::ErrorKind::InvalidInput)?;
+    if flow.ended.is_some() {
+        return Err(io::ErrorKind::BrokenPipe.into());
+    }
+    flow.reader = Some(cancel);
+    Ok((Reader(reader), writer))
 }
 
 /// Sends `typed`, bytes for member `member`'s stdin, as one `INPUT` frame in its parts, never
@@ -1196,6 +1239,7 @@ fn read_answers(shared: &Arc<Shared>, mut from_host: io::PipeReader) {
         ));
     }
     state.answered = true;
+    state.close_inputs();
     shared.changed.notify_all();
 }
 
@@ -1328,12 +1372,14 @@ fn take(shared: &Shared, kind: u8, payload: &[u8]) -> Result<bool, String> {
             if flow.ended.replace((e.written, e.end)).is_some() {
                 return Err("a stdin ended twice".into());
             }
+            flow.close();
         }
         k::ENDED => {
             let end = wire::RunEnded::decode(payload).map_err(bad)?;
             if state.end.replace(end).is_some() {
                 return Err("the run ended twice".into());
             }
+            state.close_inputs();
             ended = true;
         }
         other => return Err(format!("unknown answer kind {other}")),
@@ -2005,6 +2051,7 @@ impl ImageGuest for Session {
         self.shared.wait(Duration::MAX, |s| s.end_seen().map(|_| ()));
         lock(&self.shared.to_host).take();
         lock(&self.shared.state).stopped();
+        lock(&self.shared.state).close_inputs();
         self.shared.changed.notify_all();
         Ok(())
     }
@@ -2025,6 +2072,7 @@ impl ImageGuest for Session {
 /// closed, its cue to finish and exit, which the watcher then reaps.
 impl Drop for Session {
     fn drop(&mut self) {
+        lock(&self.shared.state).close_inputs();
         let running = {
             let state = lock(&self.shared.state);
             state.end.is_none() && !state.gone()
@@ -2416,7 +2464,7 @@ mod tests {
                 ..InputFlow::default()
             },
         );
-        let (reader, held_writer) = input_pipe(&shared, 1).unwrap();
+        let (reader, mut held_writer) = input_pipe(&shared, 1).unwrap();
         let (entered, entering) = std::sync::mpsc::channel();
         let (done, finished) = std::sync::mpsc::channel();
         let feeding = {
@@ -2435,6 +2483,12 @@ mod tests {
         .encode();
         take(&shared, wire::to_client::INPUT_ENDED, &end).unwrap();
         let released = finished.recv_timeout(Duration::from_secs(1));
+        if released.is_ok() {
+            assert!(
+                held_writer.write_all(b"x").is_err(),
+                "an ended input still took bytes"
+            );
+        }
         // Release and join an old blocking feeder before asserting the red result.
         drop(held_writer);
         feeding.join().unwrap();
