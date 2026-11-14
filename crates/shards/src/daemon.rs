@@ -10548,15 +10548,15 @@ mod tests {
     /// A daemon of a home of its own, which starts no VM itself: its tests play the warm
     /// VMs, over socket pairs, and hold each step of a run's start as long as they like
     /// (audit A06).
-    struct Test<D: Disk + Opens = Real> {
-        daemon: Daemon<D>,
+    pub(super) struct Test<D: Disk + Opens = Real> {
+        pub(super) daemon: Daemon<D>,
         home: shards_testdir::TempDir,
         /// The processes of the warm VMs played, ended with the test.
         vms: Mutex<Vec<Arc<shards_ipc::Child>>>,
     }
 
     impl Test {
-        fn new(tag: &str) -> Test {
+        pub(super) fn new(tag: &str) -> Test {
             Test::on(tag, Real)
         }
     }

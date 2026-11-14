@@ -1014,6 +1014,31 @@ impl<D: Disk> Daemon<D> {
 mod tests {
     use super::*;
 
+    /// A pending word's own exec wait owns its progress and host holds. Elapsed wall time
+    /// alone cannot finish its group's round, including while it waits behind host reclaim.
+    #[cfg(any(target_os = "macos", windows))]
+    #[test]
+    fn a_pending_member_word_is_not_a_failed_give_back() {
+        let t = super::super::tests::Test::new("group-pending");
+        let slowest = std::time::Duration::from_millis(1);
+        t.daemon.answers.room.teach(slowest, slowest);
+        let pid = std::process::id();
+        lock(&t.daemon.groups.words).insert(pid, Word {
+            saying: Saying::Room,
+            since: Instant::now() - slowest * 2,
+            next: None,
+        });
+        let mut hold = Hold {
+            round: Some(Round { id: 1, of: [(pid, Given::Asked)].into() }),
+            ..Hold::default()
+        };
+        t.daemon.judge_round("pending", &[], &mut hold);
+        assert!(hold.round.is_some(), "a pending word was treated as a completed failed pass");
+        hold.answered(Answered { pid, round: 1, gave: Some(Gave { freed: 1, unplugging: 0 }) });
+        t.daemon.judge_round("pending", &[], &mut hold);
+        assert!(hold.round.is_none(), "a completed give-back was not judged");
+    }
+
     #[test]
     fn a_group_is_named_as_a_file_of_the_home_alone() {
         for good in ["agents", "ci-42", "a.b_c", "A9"] {
