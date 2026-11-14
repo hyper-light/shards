@@ -21028,6 +21028,23 @@ before its own judge takes over, as the give-back's test does. Owed to ROOT: the
 their sleeps and pipes' one-message window, pipe.rs `MESSAGE_FRAME`) and the WHP latency of each
 send and `GUEST_TIME`.
 
+Amended 2026-11-14 (stopregress lane): a judged wait looks at its socket before it asks its
+judge again. `await_events` returned "not ready" without a poll where the judge's due had
+already passed, and the judge's first look (`Follow::begin`'s reading of the VM process) can
+itself outlast a W* of tens of µs on a loaded host: on macOS, where a judged send waits for
+POLLOUT before its first write, the send then asked its judge with nothing looked at, and an
+idle VM, which runs no CPU, was refused `Stalled` with its socket empty. The daemon's stop
+(`stop_each`) sends a run's stop signal so and drops a refused one: the run was SIGKILLed at its
+grace's end, `stop_ends_runs_and_waiting_vms` failing 137 (HVF batch 26 at 1f71dea19) or 125
+(the SIGKILL refused too, its VM killed). Reproduced on adas-mac-studio-3 (M4 Max) with six
+copies of the test at once: 9 of 72 stops refused 50 to 90 µs in, SO_NWRITE 0 before and after
+each refusal, the VM process's threads all sleeping (ps -M); 0 of 10 alone. Now a due already
+past is a poll of 0 ms, and only a poll that found nothing by its due asks the judge. Red as a
+unit test, macOS arm64: `a_judged_wait_looks_before_its_judge_is_asked_again` (a judge whose
+first due has passed and that refuses at its next ask) fails `TimedOut` with the early return
+put back. Linux's judged send writes before it waits, and Windows' `read_by` looks
+(`available`) before its deadline: neither met this.
+
 ### The `crates/shards` figures of the picked-constants audit (2026-11-09): each from its source
 
 **Found.** The audit of 2026-11-09 (docs/audit/2026-11-09_picked-constants.md, "crates/shards")
