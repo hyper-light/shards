@@ -3797,6 +3797,63 @@ mod tests {
         assert_eq!(answer(&s, &req(op::LOOKUP, vb, 0, &name("y"))).0, -ESTALE);
     }
 
+    /// memory-19 (docs/bugs/2026-11-13/memory.md): a host directory its owner, the share
+    /// process, may search but not read (mode 0111) is walked through, as a kernel's walk asks
+    /// only search permission of each directory on the way (path_resolution(7)): the file
+    /// `a/b/c/file` beneath it is opened and read, as a bind mount reads it. Nothing more of
+    /// it is had: its listing is refused, as its host refuses it, and so is a change of its
+    /// mode, which the server never makes of a directory it may not read. Root reads every
+    /// directory, so as root this is a SKIP.
+    #[cfg(unix)]
+    #[test]
+    fn an_exec_only_directory_is_walked_through_and_never_listed() {
+        // SAFETY: geteuid reads this process's effective uid.
+        if unsafe { libc::geteuid() } == 0 {
+            eprintln!("SKIP: root reads every directory");
+            return;
+        }
+        let (root, s) = dir();
+        std::fs::create_dir_all(root.join("a/b/c")).unwrap();
+        std::fs::write(root.join("a/b/c/file"), "reached").unwrap();
+        let mode = |m| {
+            std::fs::set_permissions(root.join("a/b"), std::os::unix::fs::PermissionsExt::from_mode(m)).unwrap();
+        };
+        mode(0o111);
+        let id = |r: (i32, Vec<u8>)| match r.0 {
+            0 => Ok(u64::from_le_bytes(r.1[0..8].try_into().unwrap())),
+            e => Err(e),
+        };
+        let mut b = None;
+        let walked = (|| -> Result<Vec<u8>, i32> {
+            let a = id(answer(&s, &req(op::LOOKUP, ROOT, 0, &name("a"))))?;
+            let at = id(answer(&s, &req(op::LOOKUP, a, 0, &name("b"))))?;
+            b = Some(at);
+            let c = id(answer(&s, &req(op::LOOKUP, at, 0, &name("c"))))?;
+            let f = id(answer(&s, &req(op::LOOKUP, c, 0, &name("file"))))?;
+            let fh = id(answer(&s, &req(op::OPEN, f, 0, &[0; 8])))?;
+            // fuse_read_in: fh, offset, size, read_flags, lock_owner, flags, padding.
+            let mut body = fh.to_le_bytes().to_vec();
+            body.extend(0u64.to_le_bytes());
+            body.extend(64u32.to_le_bytes());
+            body.extend([0u8; 4 + 8 + 4 + 4]);
+            match answer(&s, &req(op::READ, f, 0, &body)) {
+                (0, data) => Ok(data),
+                (e, _) => Err(e),
+            }
+        })();
+        let refused = b.map(|b| {
+            (
+                answer(&s, &req(op::OPENDIR, b, 0, &[0; 8])).0,
+                answer(&s, &req(op::SETATTR, b, 0, &setattr(fattr::MODE, 0o755))).0,
+            )
+        });
+        let left = std::fs::metadata(root.join("a/b")).unwrap().permissions();
+        mode(0o755);
+        assert_eq!(walked, Ok(b"reached".to_vec()));
+        assert_eq!(refused, Some((-EACCES, -EACCES)));
+        assert_eq!(std::os::unix::fs::PermissionsExt::mode(&left) & 0o7777, 0o111);
+    }
+
     /// A snapshot keeps the share (D176): a server of the same directory, given what one
     /// saved, answers for the nodes and handles its guest holds, a directory's node and an
     /// open file's handle read on; only as the first thing it is told, and only of that
