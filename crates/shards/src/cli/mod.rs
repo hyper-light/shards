@@ -1100,7 +1100,12 @@ fn instead(args: &[OsString]) -> ExitCode {
         Ok(bin) => bin,
         Err(e) => return failed(&e),
     };
-    let e = std::process::Command::new(&bin)
+    // Checked, and held as it replaces this process (`helpers::program`).
+    let program = match crate::helpers::program(&bin) {
+        Ok(program) => program,
+        Err(e) => return failed(&e),
+    };
+    let e = std::process::Command::new(program.path())
         .args(args)
         .env("MVK_CONFIG_LOG_LEVEL", MOLTENVK_LOG_LEVEL)
         .exec();
@@ -1120,7 +1125,11 @@ fn instead(args: &[OsString]) -> ExitCode {
         Ok(bin) => bin,
         Err(e) => return failed(&e),
     };
-    match std::process::Command::new(&bin).args(args).status() {
+    let program = match crate::helpers::program(&bin) {
+        Ok(program) => program,
+        Err(e) => return failed(&e),
+    };
+    match std::process::Command::new(program.path()).args(args).status() {
         Ok(status) => ExitCode::from(status.code().and_then(|c| u8::try_from(c).ok()).unwrap_or(1)),
         Err(e) => failed(&format!("{}: {e}", bin.display())),
     }

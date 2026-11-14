@@ -422,6 +422,49 @@ pub fn version_of(entry: &str) -> &str {
     }
 }
 
+/// Which file `file` is, and which of its versions (unix.rs `FileIdentity`): its volume's
+/// serial number and 128-bit file ID (FileIdInfo, which ReFS needs past the 64-bit index),
+/// its length (FileStandardInfo's end of file), and its last write and change times
+/// (FileBasicInfo). A write to it changes both times; a file renamed over its name is
+/// another ID.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileIdentity {
+    volume: u64,
+    id: [u8; 16],
+    len: i64,
+    written: i64,
+    changed: i64,
+}
+
+/// [`FileIdentity`] of the file `file` holds open.
+pub fn file_identity(file: &File) -> io::Result<FileIdentity> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_BASIC_INFO, FILE_ID_INFO, FILE_STANDARD_INFO, FileBasicInfo, FileIdInfo, FileStandardInfo,
+    };
+    fn info<T: Default>(file: &File, class: i32) -> io::Result<T> {
+        let mut out = T::default();
+        let size = u32::try_from(size_of::<T>()).map_err(io::Error::other)?;
+        // SAFETY: a handle `file` holds open, and a buffer of the class's own type, `size`
+        // bytes.
+        if unsafe { GetFileInformationByHandleEx(file.as_raw_handle(), class, (&raw mut out).cast(), size) }
+            == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(out)
+    }
+    let id: FILE_ID_INFO = info(file, FileIdInfo)?;
+    let basic: FILE_BASIC_INFO = info(file, FileBasicInfo)?;
+    let standard: FILE_STANDARD_INFO = info(file, FileStandardInfo)?;
+    Ok(FileIdentity {
+        volume: id.VolumeSerialNumber,
+        id: id.FileId.Identifier,
+        len: standard.EndOfFile,
+        written: basic.LastWriteTime,
+        changed: basic.ChangeTime,
+    })
+}
+
 /// The name `name`'s newest version goes by in the directory `dir` holds open
 /// ([`write_in`]): the highest `name.~N` listed there, else `name` itself.
 pub fn newest_in(dir: &File, name: &str) -> io::Result<String> {
