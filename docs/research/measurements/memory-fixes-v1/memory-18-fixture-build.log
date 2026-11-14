@@ -1,0 +1,19 @@
+From /Users/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/fix-memory-carrier-5596c6ba47/change.bundle
+ * branch                HEAD       -> FETCH_HEAD
+Previous HEAD position was bfd2cca4c Merge concurrent main for the tested head fast-forward
+HEAD is now at a738422f5 test: refused FUSE replies must release their server resources (memory-18)
+   Compiling libc v0.2.189
+   Compiling shards-abi v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/abi)
+   Compiling shards-vmm v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/vmm)
+   Compiling shards-ipc v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/ipc)
+   Compiling shards-testdir v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/testdir)
+   Compiling shards-netring v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/netring)
+   Compiling shards-apple v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/apple)
+error[E0425]: cannot find value `O_RDWR` in module `linux`
+    --> crates/vmm/src/devices/virtio/fs/server.rs:3279:41
+     |
+3279 |                     for word in [linux::O_RDWR | linux::O_CREAT | linux::O_EXCL, 0o100_400, 0, 0] {
+     |                                         ^^^^^^ not found in `linux`
+
+For more information about this error, try `rustc --explain E0425`.
+error: could not compile `shards-vmm` (lib test) due to 1 previous error

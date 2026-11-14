@@ -5385,6 +5385,15 @@ mod hosted {
     mod tests {
         use super::*;
 
+        /// A lane's ask, its answer waited for as long as it takes (`Duration::MAX`), as a caller
+        /// with no bound of its own waits: what it answered, or why not.
+        macro_rules! answered {
+            ($ask:expr) => {
+                $ask.and_then(|mut ask| ask.wait(std::time::Duration::MAX))
+                    .map(|got| got.expect("Duration::MAX waits until the answer"))
+            };
+        }
+
         /// A run's live state as its host holds it, of no members, its VM's link `link` and its
         /// managed output `capture`, kept in `home`.
         fn live<'a>(
@@ -5692,22 +5701,25 @@ mod hosted {
                 let Member::Running(MemberControl {
                     mut steering,
                     mut end,
-                }) = execs.member(1).unwrap()
+                }) = answered!(execs.member(1)).unwrap()
                 else {
                     panic!("member 1 runs");
                 };
-                assert_eq!(steering.signal(15), Ok(()));
+                assert_eq!(steering.signal(15, std::time::Duration::MAX), Ok(Some(())));
                 let Member::Running(MemberControl {
                     steering: mut killed,
                     end: mut kill_end,
-                }) = execs.member(2).unwrap()
+                }) = answered!(execs.member(2)).unwrap()
                 else {
                     panic!("member 2 runs");
                 };
-                assert_eq!(killed.signal(9), Ok(()));
+                assert_eq!(killed.signal(9, std::time::Duration::MAX), Ok(Some(())));
                 process.join().unwrap();
                 let size = protocol::Size { rows: 50, cols: 132 };
-                assert_eq!(steering.resize(size), Err(Fault::Unsteered(Unsteered::Terminal)));
+                assert_eq!(
+                    steering.resize(size, std::time::Duration::MAX),
+                    Err(Fault::Unsteered(Unsteered::Terminal))
+                );
                 agent.ends.told(1, protocol::members::End::Signaled(15)).unwrap();
                 agent.ends.told(2, protocol::members::End::Signaled(9)).unwrap();
                 assert_eq!(end.wait(), Ok(shards_remote::control::exec::End::Signaled(15)));
@@ -5716,7 +5728,7 @@ mod hosted {
                     Ok(shards_remote::control::exec::End::Signaled(9))
                 );
                 assert_eq!(
-                    execs.member(0).map(|_| ()),
+                    answered!(execs.member(0)).map(|_| ()),
                     Err(Fault::Unstarted(Unstarted::Refused))
                 );
                 // Its MCP connection, as its VM hands it over.
@@ -5745,7 +5757,7 @@ mod hosted {
                     mut from,
                     mut to,
                     mut end,
-                } = execs.mcp(1).unwrap();
+                } = answered!(execs.mcp(1)).unwrap();
                 assert_eq!(
                     from.next_record().unwrap(),
                     Got::Record {
@@ -5761,15 +5773,18 @@ mod hosted {
                 assert_eq!(from.next_record().unwrap(), Got::Finished);
                 assert_eq!(end.wait(), Ok(0));
                 assert_eq!(
-                    execs.mcp(0).map(|_| ()),
+                    answered!(execs.mcp(0)).map(|_| ()),
                     Err(Fault::Unstarted(Unstarted::Refused))
                 );
                 agent.over();
                 assert_eq!(
-                    execs.member(1).map(|_| ()),
+                    answered!(execs.member(1)).map(|_| ()),
                     Err(Fault::Unstarted(Unstarted::Failed))
                 );
-                assert_eq!(execs.mcp(1).map(|_| ()), Err(Fault::Unstarted(Unstarted::Failed)));
+                assert_eq!(
+                    answered!(execs.mcp(1)).map(|_| ()),
+                    Err(Fault::Unstarted(Unstarted::Failed))
+                );
                 served.revoke.revoke();
                 serving.join().unwrap().unwrap();
                 let _ = driver.join();
