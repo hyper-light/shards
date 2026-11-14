@@ -458,6 +458,8 @@ unsafe impl Sync for Shared {}
 impl Shared {
     /// Copies `len` bytes at `off` of it into `buf`, from its mapping (D176 part 7).
     fn read(&self, off: u64, buf: &mut [u8]) -> std::io::Result<()> {
+        // The same owner excludes release and APFS mapping withdrawal for the whole copy.
+        let _file = lock(&self.file);
         let end = off
             .checked_add(buf.len() as u64)
             .filter(|&end| end <= self.len as u64);
@@ -1411,6 +1413,31 @@ mod tests {
     use super::super::head::kept_block_at;
     use super::super::head::{HEAD_BLOCK, read_head_index, save_head, words_equal};
     use super::*;
+
+    #[test]
+    fn a_live_layer_read_waits_for_the_mapping_owner() {
+        let dir = shards_testdir::TempDir::new("live-read").unwrap();
+        let page = platform::page_size().unwrap();
+        let mapped = Arc::new(Shared::map(file(&dir, "data", page as u64), page).unwrap());
+        let owner = lock(&mapped.file);
+        let (started, ready) = std::sync::mpsc::channel();
+        let (done, completion) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            let mapped = &mapped;
+            scope.spawn(move || {
+                started.send(()).unwrap();
+                done.send(mapped.read(0, &mut [0])).unwrap();
+            });
+            ready.recv().unwrap();
+            let premature = completion.recv_timeout(std::time::Duration::from_secs(1));
+            drop(owner);
+            assert!(
+                matches!(premature, Err(std::sync::mpsc::RecvTimeoutError::Timeout)),
+                "a read completed while release still owned the mapping: {premature:?}"
+            );
+            completion.recv().unwrap().unwrap();
+        });
+    }
 
     /// Slots no hypervisor maps: whatever a window asks of them is done.
     struct Unmapped;

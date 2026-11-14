@@ -242,7 +242,7 @@ fn run() -> Result<(), String> {
     // alone (PM M209).
     #[cfg(target_os = "linux")]
     shards_net::confine::at_start(proxy).map_err(|e| e.to_string())?;
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[cfg(target_os = "linux")]
     shards_net::confine::filter().map_err(|e| format!("its seccomp filter: {e}"))?;
     #[cfg(not(target_os = "linux"))]
     let _ = proxy;

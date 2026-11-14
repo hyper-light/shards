@@ -36,7 +36,7 @@ There is also an ordering hazard in this same completion path: `api_run.rs:3844�
 
 **Status (2026-11-13):** fixed in cf2764c6e (red `image::session::tests::output_taken_before_the_runs_end_reaches_its_owner_whole` and `output_said_after_the_runs_end_reaches_its_owner_before_its_end`, d7b62bd7d; adas-mac-studio-3.local macOS arm64: the owner read A alone, and nothing, before; A then B, and the record said after the run's end, after; both guards' mutations red; shards-api clippy clean). Real-VM managed_output and api_image lanes remain ROOT's; see [evidence](../../research/measurements/control-01-v1/README.md).
 
-**Status (2026-11-13), follow-up:** the run host's bytes held past the owner's room at a VM capture's end with no record end, dropped before, fixed in 347d16312 (red `api_run::hosted::tests::bytes_held_past_the_room_reach_the_orchestrator_as_the_capture_is_cut`, 53faf0804): delivered, then `OUTPUT_END Aborted(104)` for each unended channel; both guards' mutations red; shards clippy clean.
+**Status (2026-11-13), follow-up:** the run host's bytes held past the owner's room at a VM capture's end with no record end, dropped before, fixed in 347d16312 (red `api_run::hosted::tests::bytes_held_past_the_room_reach_the_orchestrator_as_the_capture_is_cut`, 53faf0804): delivered, then `OUTPUT_END Aborted(104)` for each unended channel; both guards' mutations red; shards clippy clean. The typed end reaches its owner: `ImageGuest::wait_channel` answers `ChannelEnd::{Closed, Aborted(errno), WithRun}` (final-use lane, `a_channels_end_is_read_as_its_host_told_it`).
 
 ### control-02 — P1 / high — aborting a pending socket lane leaves its workers and frees its admission
 
