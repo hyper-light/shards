@@ -98,6 +98,8 @@ pub(super) fn last() -> Errno {
 
 /// `fd`'s attribute `name`, or none.
 pub(super) fn fget_xattr(fd: host::Raw, name: &CStr) -> Result<Option<Vec<u8>>, Errno> {
+    #[cfg(test)]
+    super::owner_fault(name, false)?;
     let mut buf = vec![0u8; 256];
     loop {
         // SAFETY: fgetxattr(2) into a buffer of its length.
@@ -119,6 +121,8 @@ pub(super) fn fget_xattr(fd: host::Raw, name: &CStr) -> Result<Option<Vec<u8>>, 
 }
 
 pub(super) fn fset_xattr(fd: host::Raw, name: &CStr, value: &[u8], flags: u32) -> Result<(), Errno> {
+    #[cfg(test)]
+    super::owner_fault(name, true)?;
     let mut host_flags = 0;
     if flags & linux::XATTR_CREATE != 0 {
         host_flags |= libc::XATTR_CREATE;

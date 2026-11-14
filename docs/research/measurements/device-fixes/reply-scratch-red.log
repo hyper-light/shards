@@ -1,0 +1,43 @@
+From /Users/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/devices-carrier-5a6c0d1d02/devices.bundle
+ * branch              p/fix-devices-v1 -> FETCH_HEAD
+Previous HEAD position was adea6b7e Merge origin/main before landing devices-03
+HEAD is now at 03ccb5ea test(vmm): exercise IOMMU reply scratch reservation refusal
+   Compiling shards-vmm v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/vmm)
+warning: unused doc comment
+   --> crates/vmm/src/devices/virtio/iommu.rs:797:1
+    |
+797 | / /// Serves one request of `chain` from guest memory `mem`: reads its device-readable part,
+798 | | /// then writes its device-writable part, PROBE's properties at its start and the tail,
+799 | | /// the status and three reserved bytes, at its end. Returns the bytes written: all of
+800 | | /// that part.
+    | |_-------------^
+    |   |
+    |   rustdoc does not generate documentation for macro invocations
+    |
+    = help: to document an item produced by a macro, the macro must produce the documentation as part of its expansion
+    = note: `#[warn(unused_doc_comments)]` (part of `#[warn(unused)]`) on by default
+
+warning: `shards-vmm` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.69s
+     Running unittests src/lib.rs (/Users/adalundhe/g121-tmp/fix-devices/target/debug/deps/shards_vmm-645a41c49a1f33e2)
+
+running 1 test
+test devices::virtio::iommu::tests::padded_probe_response_streams_across_descriptors ... FAILED
+
+failures:
+
+---- devices::virtio::iommu::tests::padded_probe_response_streams_across_descriptors stdout ----
+
+thread 'devices::virtio::iommu::tests::padded_probe_response_streams_across_descriptors' (16648906) panicked at crates/vmm/src/devices/virtio/iommu.rs:1202:9:
+assertion `left == right` failed: a reply still completes when scratch is unavailable
+  left: 0
+ right: 16388
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    devices::virtio::iommu::tests::padded_probe_response_streams_across_descriptors
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 490 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards-vmm --lib`
