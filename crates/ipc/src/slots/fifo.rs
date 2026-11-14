@@ -1410,4 +1410,58 @@ mod tests {
         assert_eq!(asked.request, ps);
         assert!(!asked.waited, "a rest there at once waited on its client");
     }
+
+    /// A wait on a FIFO's reader is a take only where a write after it moved bytes (D185,
+    /// waits-04): a reader that goes while a write of more than PIPE_BUF waits for room
+    /// wakes that wait too (`await_fifo_room`), and the write after it fails, so that wait
+    /// is told no end. Red with its end told as the wait woke: a take learned from a client
+    /// that took nothing. Its twin, a reader that drains as each wait begins, is a take each.
+    #[test]
+    fn a_readers_end_is_no_take() {
+        let home = home("fifo-take");
+        let path = home.join("f");
+        make_fifo(&path).unwrap();
+        let fill = |writer: &File| while write_now(writer, &[0; 1 << 16]).unwrap().is_some() {};
+        let drain = |reader: &File| {
+            let mut buf = vec![0; 1 << 16];
+            loop {
+                match (&*reader).read(&mut buf) {
+                    Ok(0) => return,
+                    Ok(_) => {}
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => return,
+                    Err(e) => panic!("{e}"),
+                }
+            }
+        };
+        let rest = vec![1u8; libc::PIPE_BUF * 4];
+        // Its reader gone as the wait begins.
+        let mut reader = Some(open_now(&path, false).unwrap());
+        let writer = blocking(open_now(&path, true).unwrap()).unwrap();
+        fill(&writer);
+        let mut waits = Vec::new();
+        let failed = write_all_waiting(&writer, &rest, |w| {
+            drop(reader.take());
+            waits.push(w);
+        })
+        .unwrap_err();
+        assert_eq!(failed.kind(), io::ErrorKind::BrokenPipe, "{failed}");
+        assert!(matches!(waits.as_slice(), [Wait::Began(_)]), "{waits:?}");
+        drop(writer);
+        // Its reader draining as each wait begins: each wait a take.
+        let reader = open_now(&path, false).unwrap();
+        let writer = blocking(open_now(&path, true).unwrap()).unwrap();
+        fill(&writer);
+        let mut waits = Vec::new();
+        write_all_waiting(&writer, &rest, |w| {
+            if matches!(w, Wait::Began(_)) {
+                drain(&reader);
+            }
+            waits.push(w);
+        })
+        .unwrap();
+        assert!(!waits.is_empty() && waits.len() % 2 == 0, "{waits:?}");
+        for pair in waits.chunks(2) {
+            assert!(matches!(pair, [Wait::Began(_), Wait::Ended(_)]), "{waits:?}");
+        }
+    }
 }
