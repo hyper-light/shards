@@ -44,6 +44,8 @@ Separately, `seal()` applies another thread-only Landlock layer at `vm_run.rs:27
 
 **Status (2026-11-13):** fixed in 4221c9488 (red `confine::tests::every_thread_of_a_confined_process_is_confined`, siblings read a file outside the paths and wrote the sealed directory under a caller-only layer; also `a_thread_that_cannot_be_asked_fails_the_layer`). TSYNC where the ABI has v8, each thread asked by signal on every ABI from v5; PM M568, D30.
 
+**Follow-up (2026-11-13):** 33f370d67 (no multiplier: a thread that blocks or ignores the asking signal fails the layer at once, typed; any other is waited for as long as it lives, its PIDFD_THREAD pidfd waking the wait) and b92a75e83 (asked by SIGSYS, which Mesa's threads leave unblocked; red: a Mesa-like thread kept writing the sealed directory). PM M568.
+
 ### platform-02 — Linux pathname Unix sockets reach unscoped host authority
 
 **Location:** `crates/shards/src/confine.rs:606`, supporting `:107`, `:255`; `crates/shards/src/daemon.rs:2393`; `crates/shards/src/daemon/engine.rs:502`.
@@ -69,6 +71,8 @@ Its peer check allows `Ok(uid) if uid == ours` (`daemon/engine.rs:504`); the VM 
 **Catching test:** a same-UID Unix listener outside every grant must reject a confined connection. Repeat against a disposable daemon and require an unscoped Engine request to fail.
 
 **Status (2026-11-13):** fixed in d6f234c6f (red `confine::tests::a_confined_vm_dials_only_beside_its_vsock_path`, a VM given no vsock path dialed a same-user `engine.sock` listener): a seccomp layer on every kernel refuses every connect of a VM given no vsock path (every daemon VM) and every datagram socket, and Landlock v9 `RESOLVE_UNIX` scopes one given a vsock path. Remaining: before ABI v9 a VM given a vsock path (the builder, `run vm --kernel --vsock`) still dials any path; spawner dialing on Linux is owed (D30). PM M569.
+
+**Follow-up (2026-11-13):** cc85d760a closes the remaining gap: a VM process on Linux dials nothing itself on any kernel (its seccomp layer refuses every connect); its spawner binds its vsock path and dials the host ports beside it, as on macOS and Windows; `RESOLVE_UNIX` is an extra layer, granted nowhere. PM M569.
 
 ### platform-03 — Windows snapshot staging leaves the grants broker open after guest start
 
