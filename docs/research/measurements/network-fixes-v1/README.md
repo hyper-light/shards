@@ -53,8 +53,11 @@ worktree; remote source is an independent GitHub clone. Kiln runs:
   [Clippy completion](green01-clippy.log).
 
 Merged main `b8da5eca33a57c7b6231725135b7adc8c29ea23f` into
-`aaa4f87b4ca360e6675c97948dc35edc602ff687`; merged-source recheck recorded below
-when complete. Signing receipts require exactly one gpgsig on each commit/merge.
+`aaa4f87b4ca360e6675c97948dc35edc602ff687`; r7 rechecked source
+`0f5f80816` with 20 TCP tests and clippy passing ([output](merged01.log)). The first
+ff push was rejected because main advanced; this is not a landing. The next merged
+source is rechecked before retrying. Signing receipts require exactly one gpgsig
+on each commit/merge.
 
 ### Policy/evidence accounting for network-01
 
