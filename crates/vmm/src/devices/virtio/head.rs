@@ -913,6 +913,31 @@ mod tests {
             .unwrap()
     }
 
+    #[test]
+    fn a_heads_duplicate_after_the_sixty_fourth_kind_is_kept_once() {
+        let dir = shards_testdir::TempDir::new("head-kinds").unwrap();
+        let head = Head::new(66 * HEAD_BLOCK).unwrap();
+        // Only one word per block is resident; the remaining pages stay zeros.
+        for block in 0..66 {
+            let value = if block == 65 { 65 } else { block + 1 };
+            // SAFETY: a word in each block of this test's unmapped, private head.
+            unsafe {
+                head.host()
+                    .as_ptr()
+                    .add(block * HEAD_BLOCK)
+                    .cast::<u64>()
+                    .write(value as u64)
+            };
+        }
+        let kept = file(&dir, "saved");
+        let index = save_head(&kept, head.host(), head.len(), None).unwrap();
+        assert_eq!(
+            index[65], index[64],
+            "an equal block past the chosen kind cap was stored twice"
+        );
+        assert_eq!(kept.metadata().unwrap().len(), 66 * HEAD_BLOCK as u64);
+    }
+
     /// A window's head makes its device whole sections, the fewest whose page structures,
     /// a 2 MiB block each, it holds; a window not whole 2 MiB ranges, or past any address,
     /// has none (D189).
