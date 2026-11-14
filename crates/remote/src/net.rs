@@ -343,6 +343,17 @@ struct Conn {
     quic: Connection,
     connected: bool,
     liveness: Liveness,
+    received: u64,
+}
+
+impl Conn {
+    fn heard_authenticated(&mut self, now: Instant) {
+        let total = received(&self.quic.stats().frame_rx);
+        if total > self.received {
+            self.liveness.heard(now);
+        }
+        self.received = total;
+    }
 }
 
 /// When a connection was last heard from, and how its waits stand (the person's ruling,
@@ -945,6 +956,7 @@ impl Io<'_> {
             self.next,
             Conn {
                 handle,
+                received: received(&quic.stats().frame_rx),
                 quic,
                 connected: false,
                 liveness,
@@ -1659,6 +1671,7 @@ impl<H: Handler> Driver<H> {
                             &mut self.next,
                             Conn {
                                 handle,
+                                received: received(&quic.stats().frame_rx),
                                 quic,
                                 connected: false,
                                 liveness,
@@ -1680,11 +1693,8 @@ impl<H: Handler> Driver<H> {
             Some(DatagramEvent::ConnectionEvent(handle, event)) => {
                 if let Some(key) = self.key_of(handle) {
                     if let Some(conn) = self.conns.get_mut(&key) {
-                        let before = received(&conn.quic.stats().frame_rx);
                         conn.quic.handle_event(event, self.endpoint.configs_mut());
-                        if received(&conn.quic.stats().frame_rx) > before {
-                            conn.liveness.heard(now);
-                        }
+                        conn.heard_authenticated(now);
                     }
                     self.pump(now, key);
                     return Ok(Some(key));
@@ -1908,11 +1918,8 @@ impl<H: Handler> Driver<H> {
             let mut events = Vec::new();
             while let Some(event) = conn.quic.poll_endpoint_events() {
                 if let Some(event) = self.endpoint.handle_event(conn.handle, event) {
-                    let before = received(&conn.quic.stats().frame_rx);
                     conn.quic.handle_event(event, self.endpoint.configs_mut());
-                    if received(&conn.quic.stats().frame_rx) > before {
-                        conn.liveness.heard(now);
-                    }
+                    conn.heard_authenticated(now);
                 }
             }
             while let Some(event) = conn.quic.poll() {
