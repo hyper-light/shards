@@ -439,7 +439,7 @@ const ANSWER: &[u8] = b"answered";
 fn a_judged_read_goes_on_while_its_party_works() {
     let busy = Duration::from_secs(1);
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
-    let port = listener.local_addr().unwrap().port();
+    let port = crate::common::minted_port(listener.local_addr().unwrap().port());
     for round in 0..2 {
         let mut party = stand_in_doing(&format!("answer {port} {}", busy.as_millis()))
             .stdout(std::process::Stdio::null())
@@ -651,4 +651,50 @@ fn a_call_sites_commands_are_keyed_by_their_whole_line() {
         .filter(|name| name.starts_with(&prefix))
         .collect();
     assert_eq!(records.len(), 2, "{records:#?}");
+}
+
+/// The two call sites the CI triage at d24ef4cfd found judged by a quick refused command's
+/// W* (#77) now key that command apart from their real one, and key each alike run after
+/// run. Do: make build.rs' `builds_push_what_they_build` lines (its context a `TempDir`, its
+/// registry `writable_registry`'s) twice over, and `policy_eval_answers`' refused and
+/// resolved lines. Expect: the refused and the real line apart; the second round's lines
+/// the first's.
+#[test]
+fn the_triaged_call_sites_key_their_refused_command_apart() {
+    let shards = |args: &[&str]| {
+        let mut cmd = std::process::Command::new("/t/shards");
+        cmd.args(args);
+        common::command_line(&cmd)
+    };
+    let mut rounds = Vec::new();
+    for _ in 0..2 {
+        let ctx = TempDir::new("build-push-ctx");
+        let (port, _) = common::writable_registry();
+        let ctx = ctx.to_str().unwrap();
+        let name = format!("localhost:{port}/team/built:1");
+        let refused = shards(&["build", "--push", ctx]);
+        let built = shards(&["build", "--push", "-t", &name, ctx]);
+        assert_ne!(refused, built);
+        rounds.push((refused, built));
+    }
+    assert_eq!(rounds[0], rounds[1], "a run's own directory or port in its key");
+    let eval = |source: &str, platform: &str| {
+        shards(&[
+            "buildx",
+            "policy",
+            "eval",
+            "--print",
+            "--platform",
+            platform,
+            source,
+        ])
+    };
+    assert_ne!(
+        eval("docker-image://alpine:3.20", "bogus/x/y/z"),
+        eval("docker-image://alpine:3.20", "linux/arm64")
+    );
+    assert_ne!(
+        shards(&["buildx", "policy", "eval", "--print", "./nope"]),
+        shards(&["buildx", "policy", "eval", "docker-image://alpine:3.20"])
+    );
 }

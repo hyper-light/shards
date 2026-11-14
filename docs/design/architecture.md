@@ -10600,7 +10600,25 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     seed; every runner of one CI image shares its key, so a cached target keeps CI warm).
     Each answer is taught in, merged with what another process kept, and written whole and
     renamed into place; a keep that fails is the next answer's to make.
-  - *A wait on a command is keyed by its call site and its command's words* (#77, the CI
+  - *Its key is its whole command line, what a run mints of its own made generic* (#77,
+    ROOT's ruling (a) of 2026-11-13). Words alone left build.rs' two call sites one kind
+    each: `build --push CTX`, refused, and `build --push -t localhost:PORT/team/built:1 CTX`
+    both `shards build`; every `buildx policy eval` `shards buildx policy`. So a command's
+    kind is `WaitKind::of(site, words, command_line(cmd))`, kept as
+    `<call site>-<words>-<the line's SHA-256, its first 16 hex digits>`. The line is its
+    program's file stem and every argument, each value the run minted said as the
+    placeholder its minting helper registered (`common::minted`), longest first: a
+    `TempDir` (its path and its canonical path) as `{dir NAME}`, the directory every one of
+    the run's is under as `{testdir}`, each port a helper was handed (`fixed_port`, the
+    registries, fake S3, Azure Blob and GitHub Actions, `serve_file`, and the tests' own
+    listeners through `minted_port`) as `{port}`, and the process's ID, which the slices,
+    builders and pipes the tests name are made of, as `{pid}`; a number is replaced only
+    where no digit is beside it. A helper that mints a new kind of value registers its own
+    placeholder; a value no helper registers stays as it is, its kind cold each run. Held by
+    harness.rs' `a_call_sites_commands_are_keyed_by_their_whole_line` (red at 802f21ba4: one
+    record for the refused and the real line; two after, and still two after two rounds
+    with new directories and ports) and `the_triaged_call_sites_key_their_refused_command_apart`.
+  - *Its words name its command in its key and its account* (#77, the CI
     triage at d24ef4cfd: build.rs' `policy_eval_answers` closure and
     `builds_push_what_they_build` ran many commands from one call site, and a W* of 13.4 ms
     and 3.49 ms, learned from quick refused commands, judged a real build and a push).

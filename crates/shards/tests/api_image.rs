@@ -1664,7 +1664,7 @@ fn tls_host(names: &[&str]) -> TlsHost {
     config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     let config = std::sync::Arc::new(config);
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
+    let port = crate::common::minted_port(listener.local_addr().unwrap().port());
     let (tx, asked) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         for sock in listener.incoming().flatten() {

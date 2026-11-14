@@ -203,7 +203,7 @@ fn run_steps_reach_the_network_unless_it_is_none() {
         return;
     };
     let server = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
-    let port = server.local_addr().unwrap().port();
+    let port = crate::common::minted_port(server.local_addr().unwrap().port());
     // Serves one connection if one comes before the build is done: the build's end (its
     // word, or its sender dropped as the test fails) ends it, no bound of its own, so that a
     // build that never connects fails the test rather than hangs it.
