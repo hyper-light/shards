@@ -497,30 +497,32 @@ impl Watch {
     /// Takes all guest memory away and starts recording. Call with every vCPU out of the
     /// guest.
     pub fn start(&self) -> Result<()> {
-        *lock(&self.recording) = Some(Recording::default());
-        let regions = lock(&self.regions).clone();
-        for r in &regions {
-            if let Err(e) = sys::protect(r.gpa, r.len, sys::Perms::NONE) {
-                self.stop();
-                return Err(e.into());
-            }
+        let mut recording = lock(&self.recording);
+        *recording = Some(Recording::default());
+        let dirty = lock(&self.dirty);
+        if let Err(e) = self.rest(true, dirty.is_some()) {
+            drop(dirty);
+            drop(recording);
+            self.stop();
+            return Err(e);
         }
         Ok(())
     }
 
-    /// Stops recording and gives the guest all its memory back. Returns the pages touched
-    /// since [`Watch::start`], in the order of their first touch; none if it never started.
-    /// Callable from any thread, while vCPUs run: a vCPU that faulted before the memory
-    /// came back gets its page back in [`Vcpu::run`]. Under the recording's lock, as each
-    /// page a vCPU gets back ([`Watch::give`]).
+    /// Stops recording and gives the guest its memory back: all of it, or, while its
+    /// writes are watched for a live move, all but its writes ([`Watch::rest`]), which
+    /// the watch takes as they come. Returns the pages touched since [`Watch::start`], in
+    /// the order of their first touch; none if it never started. Callable from any thread,
+    /// while vCPUs run: a vCPU that faulted before the memory came back gets its page back
+    /// in [`Vcpu::run`]. Under the recording's lock, as each page a vCPU gets back
+    /// ([`Watch::give`]).
     pub fn stop(&self) -> Vec<Touch> {
         let mut recording = lock(&self.recording);
         let recorded = recording.take();
         if recorded.is_some() {
-            for r in lock(&self.regions).iter() {
-                // It fails only once the VM is gone, with nothing left to give back.
-                let _ = sys::protect(r.gpa, r.len, r.perms);
-            }
+            let dirty = lock(&self.dirty);
+            // It fails only once the VM is gone, with nothing left to give back.
+            let _ = self.rest(false, dirty.is_some());
         }
         drop(recording);
         recorded.map(|r| r.touches).unwrap_or_default()
@@ -530,15 +532,35 @@ impl Watch {
     /// taken away for writing, and every page written from now on noted, until
     /// [`unwatch_writes`](Self::unwatch_writes). Callable while vCPUs run.
     pub fn watch_writes(&self) -> Result<()> {
+        let recording = lock(&self.recording);
         let mut dirty = lock(&self.dirty);
         *dirty = Some(std::collections::BTreeSet::new());
-        for r in lock(&self.regions).iter().filter(|r| r.perms.writes()) {
-            if let Err(e) = sys::protect(r.gpa, r.len, r.perms.read_only()) {
-                *dirty = None;
-                drop(dirty);
-                self.unwatch_writes();
-                return Err(e.into());
-            }
+        if let Err(e) = self.rest(recording.is_some(), true) {
+            *dirty = None;
+            // It fails only once the VM is gone, with nothing left to give back.
+            let _ = self.rest(recording.is_some(), false);
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// Puts every region back to what a page of it has until the guest faults on it, by
+    /// what watches it: nothing while a working set is recorded, which notes every first
+    /// touch; else all but its writes while they are watched for a live move, which notes
+    /// each; else all of it. Each of the two ends only what is its own: a recording's end
+    /// leaves a live move's watch its writes taken away (migrate-02), and the watch's end
+    /// leaves a recording its memory taken away. Call under both locks, the recording's
+    /// first, as `give` takes them.
+    fn rest(&self, recording: bool, watched: bool) -> Result<()> {
+        for r in lock(&self.regions).iter() {
+            let perms = if recording {
+                sys::Perms::NONE
+            } else if watched {
+                r.perms.read_only()
+            } else {
+                r.perms
+            };
+            sys::protect(r.gpa, r.len, perms)?;
         }
         Ok(())
     }
@@ -573,17 +595,14 @@ impl Watch {
         Ok(pages)
     }
 
-    /// Stops watching the guest's writes, and gives it all its memory back.
+    /// Stops watching the guest's writes, and gives it its memory back: all of it, or none
+    /// while a working set is recorded ([`Watch::rest`]).
     pub fn unwatch_writes(&self) {
         let recording = lock(&self.recording);
         let mut dirty = lock(&self.dirty);
         *dirty = None;
-        if recording.is_none() {
-            for r in lock(&self.regions).iter() {
-                // It fails only once the VM is gone, with nothing left to give back.
-                let _ = sys::protect(r.gpa, r.len, r.perms);
-            }
-        }
+        // It fails only once the VM is gone, with nothing left to give back.
+        let _ = self.rest(recording.is_some(), false);
     }
 
     /// Gives `page` back after a fault on it, `write` if a write, in memory the guest may
@@ -1385,6 +1404,36 @@ mod tests {
         .unwrap();
         // SAFETY: the reservation is never unmapped.
         unsafe { vm.map_ram(ram, RAM, ram_len) }.unwrap();
+        // A guest that reads a page of its own and writes another, powers off (PSCI
+        // SYSTEM_OFF), writes the next page, powers off, and writes the next: mov x1, x0;
+        // add x3, x1, #2 * PAGE; ldr x2, [x3]; str x1, [x1]; mov w0, #SYSTEM_OFF; hvc #0;
+        // then twice add x1, x1, #PAGE; str x1, [x1]; hvc #0.
+        const CODE: u64 = 0x9000_0000;
+        let code_len = 4 * PAGE as usize;
+        let code = crate::platform::reserve(code_len).unwrap().as_ptr();
+        let page_imm = u32::try_from(PAGE >> 12).unwrap() << 10;
+        let next = 0x9140_0021 | page_imm;
+        let program = [
+            0xaa00_03e1,
+            0x9140_0023 | (2 * page_imm),
+            0xf940_0062,
+            0xf900_0021,
+            0x5280_0100,
+            0x72b0_8000,
+            0xd400_0002,
+            next,
+            0xf900_0021,
+            0xd400_0002,
+            next,
+            0xf900_0021,
+            0xd400_0002u32,
+        ];
+        for (i, word) in program.iter().enumerate() {
+            // SAFETY: within the fresh reservation, word aligned.
+            unsafe { code.cast::<u32>().add(i).write(*word) };
+        }
+        // SAFETY: the reservation is never unmapped.
+        unsafe { vm.map_ram(code, CODE, code_len) }.unwrap();
         let gic = vm
             .create_gic(&GicLayout {
                 dist_base: 0x0800_0000,
@@ -1478,6 +1527,48 @@ mod tests {
                 assert_eq!(st.x[5], 0x1111_0005);
                 assert_eq!(st.v[31], (31u128 << 64) | 0xdead_beef);
                 to_b.send(st).unwrap();
+
+                // A working set's recording and a live move's watch of the guest's writes,
+                // each begun within the other, each keep what is theirs as the other ends
+                // (migrate-02): a read within the recording is recorded, though the watch
+                // took writes alone away; and each page written after the recording ended,
+                // begun within the watch or the watch within it, is noted.
+                struct NoDevices;
+                impl Io for NoDevices {
+                    fn mmio_read(&self, _addr: u64, data: &mut [u8]) {
+                        data.fill(0);
+                    }
+                    fn mmio_write(&self, _addr: u64, _data: &[u8]) {}
+                }
+                watch.start().unwrap();
+                watch.watch_writes().unwrap();
+                a.boot(Entry {
+                    pc: CODE,
+                    x0: CODE + PAGE,
+                })
+                .unwrap();
+                assert_eq!(a.run(&NoDevices).unwrap(), Exit::Shutdown);
+                let touched = watch.stop();
+                assert!(
+                    touched.iter().any(|t| t.gpa == CODE + 3 * PAGE && !t.written),
+                    "the read within the watch, recorded: {touched:?}"
+                );
+                assert_eq!(watch.written().unwrap(), [CODE + PAGE]);
+                assert_eq!(a.run(&NoDevices).unwrap(), Exit::Shutdown);
+                assert_eq!(
+                    watch.written().unwrap(),
+                    [CODE + 2 * PAGE],
+                    "the write after the recording ended, the watch begun within it"
+                );
+                watch.start().unwrap();
+                watch.stop();
+                assert_eq!(a.run(&NoDevices).unwrap(), Exit::Shutdown);
+                assert_eq!(
+                    watch.written().unwrap(),
+                    [CODE + 3 * PAGE],
+                    "the write after a recording within the watch ended"
+                );
+                watch.unwatch_writes();
                 done_rx.recv().unwrap();
             });
             s.spawn(move || {
