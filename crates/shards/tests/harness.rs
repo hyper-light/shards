@@ -544,8 +544,9 @@ fn a_give_back_is_followed_while_its_memory_falls() {
             .spawn()
             .unwrap();
         let mut lines = std::io::BufRead::lines(std::io::BufReader::new(stand_in.stdout.take().unwrap()));
+        // Its line follows libtest's "test stand_in ... ", which ends with no newline.
         assert!(
-            lines.any(|l| l.unwrap() == "mapped"),
+            lines.any(|l| l.unwrap().ends_with("mapped")),
             "the stand-in mapped nothing"
         );
         let peak = shards_vmm::platform::process_usage(stand_in.id())
