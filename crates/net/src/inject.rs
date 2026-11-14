@@ -815,9 +815,11 @@ enum Chunk {
     Trailers(Vec<u8>),
 }
 
-/// A body's bytes, as its framing reads them: data, or the framing between.
+/// A body's bytes, as its framing reads them: data, a chunk's size line whole (its extensions
+/// too, RFC 9112 §7.1.1) and the size it says, or the rest of the framing between.
 enum Piece<'b> {
     Data(&'b [u8]),
+    Size { line: &'b [u8], size: u64 },
     Frame(&'b [u8]),
 }
 
@@ -874,7 +876,7 @@ fn walk(
                             continue;
                         }
                         let size = chunk_size(line).ok_or(Broken("a chunk's size line"))?;
-                        out(Piece::Frame(line)).map_err(fail)?;
+                        out(Piece::Size { line, size }).map_err(fail)?;
                         *chunk = if size == 0 {
                             Chunk::Trailers(Vec::new())
                         } else {
@@ -1295,6 +1297,18 @@ fn filled_in(mask: &mut Mask, sent: &[(&str, &[u8])], host: &str, grants: &[crat
     }
 }
 
+/// A chunk's size line that holds a value filled in (`Mask::size`).
+#[derive(Debug)]
+struct Holds;
+
+impl fmt::Display for Holds {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a chunk's size that is a value filled in")
+    }
+}
+
+impl std::error::Error for Holds {}
+
 /// A value filled into the request under way, as it went (creds-03): held for its response's
 /// mask, whatever becomes of its lease, until that response ends; wiped as it drops.
 struct Filled {
@@ -1396,6 +1410,22 @@ impl Mask {
                 .min(self.queue.len())
         };
         self.release(upto, out)
+    }
+
+    /// A chunk's size line as its size alone (RFC 9112 §7.1: `chunk-size CRLF`, in its fewest
+    /// hex digits), on its way to `out` as framing; refused where a value filled in lies in it,
+    /// as no same-length mask of it keeps its framing.
+    fn size(&mut self, size: u64, out: &mut dyn FnMut(&[u8]) -> io::Result<()>) -> io::Result<()> {
+        let line = format!("{size:x}\r\n");
+        let line = line.as_bytes();
+        if self
+            .filled
+            .iter()
+            .any(|f| line.windows(f.value.len()).any(|w| w == f.value.as_slice()))
+        {
+            return Err(io::Error::other(Holds));
+        }
+        self.push(line, false, out)
     }
 
     /// Lets the first `n` bytes go on.
@@ -1823,7 +1853,7 @@ impl Ended {
                     pending,
                     crate::tcp::TO_HOST,
                     &mut |piece| match piece {
-                        Piece::Data(b) | Piece::Frame(b) => host.writer().write_all(b),
+                        Piece::Data(b) | Piece::Size { line: b, .. } | Piece::Frame(b) => host.writer().write_all(b),
                     },
                 )
                 .map_err(|Broken(why)| Refusal::Malformed(why))?;
@@ -2138,11 +2168,21 @@ impl Ended {
                 }
                 Response::Body(framing) => {
                     let Ended { mask, guest, .. } = self;
+                    // A chunk's size line goes as its size alone, its extensions cut (creds-02):
+                    // their bytes would reach the guest, and they are no data to mask.
+                    let mut holds = false;
                     let mut piece = |p: Piece<'_>| match p {
                         Piece::Data(b) => mask.push(b, true, &mut |b| guest.writer().write_all(b)),
+                        Piece::Size { size, .. } => mask
+                            .size(size, &mut |b| guest.writer().write_all(b))
+                            .inspect_err(|e| holds |= e.get_ref().is_some_and(|e| e.is::<Holds>())),
                         Piece::Frame(b) => mask.push(b, false, &mut |b| guest.writer().write_all(b)),
                     };
-                    let (taken, ended) = walk(framing, bytes, crate::tcp::TO_GUEST, &mut piece)?;
+                    let walked = walk(framing, bytes, crate::tcp::TO_GUEST, &mut piece);
+                    let (taken, ended) = walked.map_err(|broken| match holds {
+                        true => Broken("a chunk's size that is a value filled in"),
+                        false => broken,
+                    })?;
                     bytes = bytes.get(taken..).unwrap_or_default();
                     if ended {
                         mask.end_message(&mut |b| guest.writer().write_all(b))
@@ -5029,7 +5069,7 @@ pub(crate) mod tests {
                         data.extend_from_slice(d);
                         all.extend_from_slice(d);
                     }
-                    Piece::Frame(f) => all.extend_from_slice(f),
+                    Piece::Size { line: f, .. } | Piece::Frame(f) => all.extend_from_slice(f),
                 }
                 Ok(())
             })

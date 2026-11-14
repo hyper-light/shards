@@ -44,6 +44,61 @@ fn h1_sent(credentials: &mut Credentials, root: &CertifiedIssuer<'static, KeyPai
     bench
 }
 
+/// Do: a granted host's request, filled in; the host answers chunked, the value in a chunk's
+/// extension, as a token and as a quoted string (RFC 9112 §7.1.1). Expect: the value nowhere in
+/// what the guest read; its chunks' sizes and data as they came.
+#[test]
+fn a_chunks_extension_never_carries_a_value_to_the_guest() {
+    let root = root("shards test root");
+    let mut credentials = credentials(&root);
+    let mut bench = h1_sent(&mut credentials, &root, "");
+    let v = value();
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5;echo={v}\r\nhello\r\n6 ; q=\"{v}\"\r\n world\r\n0\r\n\r\n"
+    );
+    bench.answer(response.as_bytes());
+    bench.until(&mut credentials, &mut unanswered, |b| b.got.ends_with(b"0\r\n\r\n"));
+    assert!(
+        !holds(&bench.got, VALUE),
+        "a chunk's extension carried the value to the guest: {}",
+        lossy(&bench.got)
+    );
+    assert!(
+        bench.got.ends_with(b"\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n"),
+        "{}",
+        lossy(&bench.got)
+    );
+}
+
+/// A chunk's size line, a byte at a time, is one piece of framing, its size as it says; a size
+/// line holding a value filled in is refused, as no mask of it keeps its framing.
+#[test]
+fn a_chunks_size_line_is_read_whole_and_never_carries_a_value() {
+    let mut framing = Framing::Chunked(Chunk::Size(Vec::new()));
+    let mut sizes = Vec::new();
+    for &b in b"1a;ext=\"x y\"\r\n".iter() {
+        let (taken, ended) = walk(&mut framing, &[b], 64, &mut |p| {
+            if let Piece::Size { size, line } = p {
+                sizes.push((size, line.to_vec()));
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!((taken, ended), (1, false));
+    }
+    assert_eq!(sizes, [(0x1a, b"1a;ext=\"x y\"\r\n".to_vec())]);
+    let mut mask = Mask::default();
+    mask.fill(b"deadbeef", b"kiln-placeholder-0");
+    let mut out = Vec::new();
+    let mut to = |b: &[u8]| {
+        out.extend_from_slice(b);
+        Ok(())
+    };
+    assert!(mask.size(0xdeadbeef, &mut to).is_err(), "a size line carried a value");
+    assert!(mask.size(0x1a, &mut to).is_ok());
+    assert_eq!(out, b"1a\r\n");
+}
+
 /// Do: a granted host's request, filled in; its lease lapses before the host answers, and the
 /// host echoes the value in a field and in its body. Expect: both echoes masked with the
 /// placeholder's bytes, the value nowhere in what the guest read.
