@@ -1098,7 +1098,7 @@ struct Inbox {
     pausing: Vec<(u64, mpsc::Sender<Result<(), String>>)>,
     /// The device steps its VM was asked for (`DEVICE`, D214) and has yet to answer, each
     /// by its number.
-    devices: Vec<(u64, mpsc::Sender<Result<String, String>>)>,
+    devices: Vec<(u64, mpsc::Sender<Result<String, shards_ipc::device::Refusal>>)>,
     /// The guest times its VM was asked for (`GUEST_TIME`) and has yet to answer, each by
     /// its number.
     guest_times: Vec<(u64, mpsc::Sender<Result<shards_vmm::vm::GuestTimes, String>>)>,
@@ -6326,11 +6326,7 @@ impl<D: Disk> Daemon<D> {
                             .position(|(n, _)| *n == u64::from_be_bytes(*number))
                     {
                         let (_, told) = inbox.devices.swap_remove(i);
-                        let text = String::from_utf8_lossy(said.get(1..).unwrap_or_default()).into_owned();
-                        let _ = told.send(match said.first() {
-                            Some(0) => Ok(text),
-                            _ => Err(text),
-                        });
+                        let _ = told.send(shards_ipc::device::decode(said));
                     }
                 }
                 // Its VM's answer to the guest times it was asked for.

@@ -196,6 +196,8 @@ Priority mapping for the user's requested notification: **P0 critical; P1 high; 
 
 **Catching test:** round-trip `NoSlots`, `StillDriven`, `ShrinkRefused` and host failure variants across the actual codec, then assert callers match variants while presentation wording can change independently.
 
+**Status (2026-11-14):** fixed in 170f6e360 (red `device_refusals_keep_identity_and_retry_across_the_wire`, Codex's 53265a0fe cherry-picked as 300b8f353: the old encoding returned retry Unknown for NoSlots, expected AfterRelease; green 2 ipc codec tests, 2 hotplug and 9 block VMM tests, 9 daemon devices tests and clippy of ipc, vmm, shards and shards-vm-process on macOS arm64, and Linux x86_64 clippy; see README). D214 amended. Owed to ROOT: `cargo test -p shards --test hotplug` on KVM, Hypervisor.framework and WHP (its assertions now match `Refusal::StillDriven`, `Shrink` and `NoDevice`), and `cargo test -p shards --test plug`.
+
 ### devices-11 — ROOT decision — Disk-file ownership across runs
 
 Added by ROOT, 2026-11-13, outside the original ten-finding review:
