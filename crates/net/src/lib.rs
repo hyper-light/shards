@@ -1329,14 +1329,15 @@ pub fn serve(
                         stack.forget(sock.raw_sock(), e.token, poll::Interest::READ);
                     }
                 }
-                token::LISTENER => match stack.published.of(e.token) {
-                    Some(i) => match stack.published.get(i) {
-                        Some((Listener::Tcp(_), _)) => stack.accept(i),
-                        Some((Listener::Udp(_), _)) => stack.receive(i),
-                        None => {}
-                    },
-                    None => {}
-                },
+                token::LISTENER => {
+                    if let Some(i) = stack.published.of(e.token) {
+                        match stack.published.get(i) {
+                            Some((Listener::Tcp(_), _)) => stack.accept(i),
+                            Some((Listener::Udp(_), _)) => stack.receive(i),
+                            None => {}
+                        }
+                    }
+                }
                 token::TCP => stack.on_socket(e),
                 token::PEER => stack.on_peer(index as usize, e),
                 token::UDP => stack.on_udp(index),
