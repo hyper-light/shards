@@ -4265,32 +4265,45 @@ mod tests {
         let _ = std::fs::remove_dir_all(&p);
     }
 
-    /// Native inotify admission can fail although stat/lookup succeeds. The guest
-    /// must receive that failure rather than a directory with a silently absent watch.
+    /// confine-08: a directory whose watch the host refuses (its user's watches all taken,
+    /// `max_inotify_watches`, ENOSPC) is refused its LOOKUP with that errno, holding no
+    /// guest reference, rather than served unwatched; once a watch is free again, it is
+    /// looked up. The limit is a user namespace's own (inotify(7), `/proc/sys/user`), so the
+    /// test runs as root of a namespace of its own (`unshare --map-auto --map-root-user`),
+    /// lowering its namespace's limit to the watches it holds; else a SKIP.
     #[cfg(target_os = "linux")]
     #[test]
     fn a_failed_host_watch_admission_refuses_lookup() {
-        use std::os::unix::fs::PermissionsExt as _;
-        // This test runs as the runner's ordinary user: root bypasses MAY_READ.
+        use std::io::Write as _;
+        const LIMIT: &str = "/proc/sys/user/max_inotify_watches";
+        let own_namespace = std::fs::read_to_string("/proc/self/uid_map")
+            .is_ok_and(|m| m.split_whitespace().collect::<Vec<_>>() != ["0", "0", "4294967295"]);
         // SAFETY: geteuid reads this process's effective uid.
-        let uid = unsafe { libc::geteuid() };
-        assert_ne!(uid, 0, "run the watch admission test as an unprivileged user");
+        if unsafe { libc::geteuid() } != 0 || !own_namespace {
+            let _ = writeln!(std::io::stderr(), "SKIP: not root of a user namespace of its own");
+            return;
+        }
+        let Ok(was) = std::fs::read_to_string(LIMIT) else {
+            let _ = writeln!(std::io::stderr(), "SKIP: {LIMIT} unreadable");
+            return;
+        };
         let (p, s) = dir();
-        let child = p.join("no-read");
-        std::fs::create_dir(&child).unwrap();
-        std::fs::set_permissions(&child, std::fs::Permissions::from_mode(0o111)).unwrap();
+        std::fs::create_dir(p.join("d")).unwrap();
         let (tx, _rx) = std::sync::mpsc::channel();
         s.watch_dirs(1, tx).unwrap();
-        let (error, _) = answer(&s, &req(op::LOOKUP, ROOT, 0, &name("no-read")));
-        assert_eq!(error, -libc::EACCES);
-        assert!(
-            !s.holds_dir(b"no-read"),
-            "failed lookup retained a guest reference"
-        );
-        std::fs::set_permissions(&child, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let (error, _) = answer(&s, &req(op::LOOKUP, ROOT, 0, &name("no-read")));
-        assert_eq!(error, 0, "admission recovers when the native cause clears");
-        assert!(s.holds_dir(b"no-read"));
+        // The share's root is watched; no other watch may be had now.
+        if std::fs::write(LIMIT, "1").is_err() {
+            let _ = writeln!(std::io::stderr(), "SKIP: {LIMIT} not writable");
+            return;
+        }
+        let (error, _) = answer(&s, &req(op::LOOKUP, ROOT, 0, &name("d")));
+        let held = s.holds_dir(b"d");
+        std::fs::write(LIMIT, was.trim()).unwrap();
+        assert_eq!(error, -libc::ENOSPC);
+        assert!(!held, "a refused lookup kept a guest reference");
+        let (error, _) = answer(&s, &req(op::LOOKUP, ROOT, 0, &name("d")));
+        assert_eq!(error, 0, "admitted once a watch is free");
+        assert!(s.holds_dir(b"d"));
         let _ = std::fs::remove_dir_all(&p);
     }
 
