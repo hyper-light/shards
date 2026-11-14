@@ -25,8 +25,8 @@ pub(super) enum Job {
         id: String,
         dir: PathBuf,
         seq: u64,
-        /// How many segments the log keeps, the newest made (D161).
-        files: u64,
+        /// How the log keeps its output (D161): its segments, the newest made, and their bound.
+        kept: crate::spec::LogRetention,
         /// The segment before, rotated now, is compressed (D162).
         pack: bool,
         socket: Arc<RunSocket>,
@@ -159,12 +159,12 @@ impl<D: Disk> Daemon<D> {
                 id,
                 dir,
                 seq,
-                files,
+                kept,
                 pack,
                 socket,
             } => {
                 let made = shards_vmm::platform::open_dir(&dir)
-                    .and_then(|d| crate::segments::new_segment(&d, seq, files))
+                    .and_then(|d| crate::segments::new_segment(&d, seq, kept.files))
                     .map_err(|e| log(format!("container {id}: log segment {seq}: {e}")))
                     .ok();
                 let sent = match &made {
@@ -178,8 +178,10 @@ impl<D: Disk> Daemon<D> {
                 }
                 // The segment the VM finished is weighed in its run's one log cap, shared with its
                 // members' logs (D240), once the VM has the next.
-                if made.is_some() {
-                    self.managed.cap(&id);
+                if made.is_some()
+                    && let Err(e) = self.managed.cap(&id, &dir, kept.size.saturating_mul(kept.files))
+                {
+                    log(format!("container {id}: holding its log to its bound: {e}"));
                 }
                 // Once the VM writes the new one, the one before is done.
                 if pack
