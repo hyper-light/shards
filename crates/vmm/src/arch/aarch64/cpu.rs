@@ -274,11 +274,10 @@ pub fn feature_register(feature: &str) -> Option<u16> {
     Some(match feature {
         "fp" | "asimd" | "fphp" | "asimdhp" | "dit" => 0xc020,
         "ssbs" | "bti" => 0xc021,
-        "aes" | "pmull" | "sha1" | "sha2" | "sha3" | "sha512" | "sm3" | "sm4"
-        | "crc32" | "atomics" | "asimdrdm" | "asimddp" | "asimdfhm" | "flagm"
-        | "flagm2" | "rng" => 0xc030,
-        "dcpop" | "dcpodp" | "jscvt" | "fcma" | "lrcpc" | "ilrcpc" | "frint"
-        | "sb" | "bf16" | "ebf16" | "i8mm" | "dgh" => 0xc031,
+        "aes" | "pmull" | "sha1" | "sha2" | "sha3" | "sha512" | "sm3" | "sm4" | "crc32" | "atomics"
+        | "asimdrdm" | "asimddp" | "asimdfhm" | "flagm" | "flagm2" | "rng" => 0xc030,
+        "dcpop" | "dcpodp" | "jscvt" | "fcma" | "lrcpc" | "ilrcpc" | "frint" | "sb" | "bf16" | "ebf16"
+        | "i8mm" | "dgh" => 0xc031,
         "wfxt" | "rpres" | "cssc" | "hbc" | "mops" => 0xc032,
         "ecv" => 0xc038,
         "afp" => 0xc039,
@@ -299,7 +298,6 @@ pub fn feature_register(feature: &str) -> Option<u16> {
     })
 }
 
-
 #[cfg(test)]
 mod feature_name_tests {
     #[test]
@@ -307,8 +305,15 @@ mod feature_name_tests {
         for name in ["aes", "pmull", "sha1", "sha2", "crc32", "atomics"] {
             assert_eq!(super::feature_register(name), Some(0xc030), "{name}");
         }
-        for (name, reg) in [("fphp", 0xc020), ("ssbs", 0xc021), ("dcpop", 0xc031),
-            ("cssc", 0xc032), ("ecv", 0xc038), ("afp", 0xc039), ("uscat", 0xc03a)] {
+        for (name, reg) in [
+            ("fphp", 0xc020),
+            ("ssbs", 0xc021),
+            ("dcpop", 0xc031),
+            ("cssc", 0xc032),
+            ("ecv", 0xc038),
+            ("afp", 0xc039),
+            ("uscat", 0xc03a),
+        ] {
             assert_eq!(super::feature_register(name), Some(reg), "{name}");
         }
         assert_eq!(super::feature_register("paca"), None);

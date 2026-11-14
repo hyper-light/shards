@@ -24054,3 +24054,10 @@ copy test passed (1 pass, 2 failures). At f7d83f73a all 7 MCP tests and shards-i
 all-target clippy passed. Normal socket half-close still delivers later stdin.
 This is functional evidence, not a performance measurement or real-VM result.
 [Commands, output excerpts, policy and owed coverage](measurements/inithex-fixes/README.md).
+
+### Migration review CPU-name regression, 2026-11-13 (migrate-08, D245)
+
+Linux x86_64 pure CPU tests: `aes` failed register mapping at ae37abb52 (r7), then
+3 Arm CPU tests and10 x86 CPUID tests passed at f004611b5; shards/shards-vmm all-target
+clippy passed (r8). These are code-path checks, not an Arm VM or performance result.
+[Commands and residual conservative refusals](measurements/migrate/fix-review-2026-11-13.md).

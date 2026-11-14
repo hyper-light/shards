@@ -133,8 +133,7 @@ pub fn masked(template: &[Leaf], vcpus: u32, invariant_tsc: bool) -> Vec<Masked>
 /// not reintroduce it after `within` masked it. No baseline keeps the native capability.
 pub fn deadline_timer(supported: bool, baseline: &[[u32; 7]]) -> bool {
     supported
-        && (baseline.is_empty()
-            || leaf_of(baseline, 1, 0).is_some_and(|leaf| leaf[5] & TSC_DEADLINE != 0))
+        && (baseline.is_empty() || leaf_of(baseline, 1, 0).is_some_and(|leaf| leaf[5] & TSC_DEADLINE != 0))
 }
 
 /// The CPUID vCPU `index` of `count` sees.

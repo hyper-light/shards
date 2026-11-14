@@ -28440,6 +28440,11 @@ baseline's CPUID1.ECX24 before vCPU shaping; shaping may not restore a masked fe
 Without a baseline the host capability remains native. [Focused red/green evidence and
 remaining two-host checks](../research/measurements/migrate/fix-review-2026-11-13.md).
 
+**Review migrate-08 (2026-11-13).** Arm baseline readiness uses the shared CPU map for
+both macOS feature names and Linux HWCAP spellings. Unknown and multi-register names
+remain checked conservatively, so a partial baseline does not hide an exposed feature.
+[Regression proof, mapped scope and remaining native checks](../research/measurements/migrate/fix-review-2026-11-13.md).
+
 ### D246. Members held apart by an orchestrator: each member's reach of the names kept, named in its request and held by the run host before the microVM starts (built; real-VM validation owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 15 (Hex's): a harness Hex launches
