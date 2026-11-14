@@ -11,11 +11,12 @@
 //! elsewhere; it is connected through its descriptor (`/proc/self/fd/N`), so that it is not
 //! resolved again. Its status is 0, connected, or the errno it was refused with.
 //!
-//! Each lane runs on a thread of its own, as init's member ports do: a connect that waits on
-//! a full backlog holds that lane alone, never init's loop.
+//! Each lane runs on a thread of its own, as init's member ports do. A full socket backlog
+//! is refused with EAGAIN: no blocking connect may outlive a controller's abandoned ask.
 
 use std::io::{self, Write};
-use std::os::fd::AsFd;
+use std::os::fd::{AsFd, AsRawFd, FromRawFd};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 
@@ -99,7 +100,40 @@ fn errno_of(e: &io::Error) -> u32 {
 fn connect(root: &Path, path: &[u8]) -> Result<UnixStream, u32> {
     let root = crate::inroot::Root::open(root).map_err(|_| errno::ESRCH)?;
     let at = root.open_at(path, libc::O_PATH).map_err(|e| errno_of(&e))?;
-    UnixStream::connect(crate::inroot::path(&at)).map_err(|e| errno_of(&e))
+    let path = crate::inroot::path(&at);
+    // SAFETY: a zeroed sockaddr_un is valid; the checked pathname leaves its NUL intact.
+    let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    let path = path.as_os_str().as_bytes();
+    if path.len() >= addr.sun_path.len() {
+        return Err(errno::ENAMETOOLONG);
+    }
+    addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    for (to, from) in addr.sun_path.iter_mut().zip(path) {
+        *to = *from as libc::c_char;
+    }
+    // Linux connect(2): an AF_UNIX socket with a full listen backlog returns EAGAIN when
+    // nonblocking. Refuse it rather than wait on a workload that may never accept.
+    // SAFETY: socket(2) with constant domain/type, returning a fresh owned descriptor.
+    let fd = unsafe {
+        libc::socket(libc::AF_UNIX, libc::SOCK_STREAM | libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK, 0)
+    };
+    if fd < 0 {
+        return Err(errno_of(&io::Error::last_os_error()));
+    }
+    // SAFETY: the successful socket(2) returned a fresh descriptor, owned here alone.
+    let conn = unsafe { UnixStream::from_raw_fd(fd) };
+    // SAFETY: addr is an initialized sockaddr_un of the exact length passed to connect(2).
+    if unsafe {
+        libc::connect(
+            conn.as_raw_fd(),
+            (&raw const addr).cast(),
+            std::mem::size_of_val(&addr) as libc::socklen_t,
+        )
+    } != 0 {
+        return Err(errno_of(&io::Error::last_os_error()));
+    }
+    conn.set_nonblocking(false).map_err(|e| errno_of(&e))?;
+    Ok(conn)
 }
 
 /// Carries `local` to the host: dials the exec port, says `token` in its HELLO and the lane's
