@@ -801,7 +801,7 @@ mod tests {
             stop_signal: None,
             stop_timeout: None,
             ports: Vec::new(),
-            image_id: None,
+            image_id: String::new(),
             image_manifest: None,
             labels: Default::default(),
             annotations: Default::default(),

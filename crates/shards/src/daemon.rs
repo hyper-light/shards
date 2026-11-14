@@ -5376,7 +5376,7 @@ impl<D: Disk> Daemon<D> {
             id: id.to_string(),
             name: name.clone(),
             image: run.image.clone(),
-            image_id: Some(prepared.image_id.clone()),
+            image_id: prepared.image_id.clone(),
             image_manifest: Some(prepared.image_manifest.clone()),
             command: prepared
                 .spec

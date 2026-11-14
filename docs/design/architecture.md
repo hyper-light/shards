@@ -14925,9 +14925,24 @@ its user could not change, and a user nobody recorded was taken for the most pri
 one. No release made such a record: `image_id` came in 993756c9e (2026-10-02), before
 v0.3.0, the first release, and in every release (`git grep 'image_id: ' TAG` for v0.3.0 to v0.7.0)
 the daemon's one record maker writes `Some(prepared.image_id)`, the `None`s in test
-modules alone. So there is nothing to migrate; the refusal stands where no image is named.
-Red/green: commands.rs `a_copy_as_the_user_of_a_record_with_no_image_is_refused`, a record
-read without its `image_id` key, answered root before.
+modules alone. So there is nothing to migrate.
+The image ID is required (legacy4, 2026-11-14): `Container.image_id` is a `String` with no
+`serde(default)`, and a record without it, or with it null (how the `Option` wrote none), is
+refused as the store reads it, typed (`containers::Unread::NoImage`, "its record names no
+image ID, which every record shards makes names"), its microVM never seen and its
+directory left as it is and noted, as an unreadable record's is. Every branch for none is
+gone with the `Option`: `cp -a`'s `CopyUserRefusal::NoImage` (no record it reads can lack
+one), `ps --filter ancestor`'s, `images`' counts and `prune`'s users, `inspect`'s image facts
+and size, the Engine API's `ImageID` and the listing's `image_id` (an empty string for
+none), a move's plan (the same), and a live move's look for its image by reference
+instead (`unwrap_or_else(|| c.image.clone())`). Not one release could need them: the one
+maker writes the image the run resolved (`git grep 'image_id: ' v0.3.0..v0.7.0`: the
+daemon's `Some(prepared.image_id.clone())`, the `None`s in test modules alone), and no
+release assigns the field after (`git grep '.image_id = '` names none in v0.7.0 or now).
+A moved record (D176 part 6) is held to the same, refused as its stream's record is read.
+Red/green: containers.rs `a_record_with_no_image_id_is_refused` (absent and null; both
+read with no image before), and commands.rs `a_copy_as_the_user_of_a_record_gone_is_refused`
+for the refusal that remains.
 The two-platform store regression changes the preference both ways, checks each selected
 User/Env/descriptor and a missing manifest. Real guest/inspect/copy agreement remains
 ROOT's live check in the [runs fix record](../research/measurements/runs-fixes/README.md).
