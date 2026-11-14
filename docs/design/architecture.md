@@ -21829,6 +21829,20 @@ guard (an exec let into the namespace's root): `a_granted_runs_execs_join_its_le
 fails. The bpf(2) steps themselves need init's privileges, which no unit test has: the
 real-VM twin below is owed. The reaper's own cgroup namespace has no unit test reaching it.
 
+**inithex-01's twin, its node moved** (2026-11-14): its first runs (ROOT, HVF at 6f3cd4428,
+KVM x86_64 at 3f2705f8d) said `ceiling before: errno 13` and `after: errno 13`, none
+detached: the node was made in the run's `--tmpfs /run`, which the run mounts nodev
+(`setup.rs`'s tmpfs defaults, moby's MergeTmpfsOptions, since ea4f387a0), and open(2) refuses
+a device node on a nodev mount EACCES in `may_open` before `inode_permission` reaches the
+device program (Linux v7.2 fs/namei.c `may_open_dev`, then `do_inode_permission`,
+`devcgroup_inode_permission`). So the test never reached the program; no production layer
+changed, and none was loosened. The node is now made in the run's /dev, a tmpfs without
+nodev (run.rs `container_mounts`), and the workload says its mount's flag (`ceiling mount:
+dev`, statvfs's ST_NODEV), which the test asserts with `mknod done`: DAC passes root's own
+0600 node, Landlock (no domain beside the grant, and an open's Landlock check is
+`security_file_open`, after the program) says EACCES if anything, so `errno 1` before and
+after is the device program's alone, and a detached program lets the open succeed.
+
 **Evidence owed** (ROOT):
 - inithex-01's real-VM twin: `cargo test -p shards --profile test-release --test nesting
   a_granted_workload_cannot_detach_its_device_program` (testguest `nesting ceiling`: the
