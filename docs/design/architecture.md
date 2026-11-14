@@ -32370,7 +32370,7 @@ are none.
   `a_members_arguments_follow_its_images_command_in_order` (written; built and linted only),
   whose harness is the test guest's `argv` mode, writing its command line word by word, each
   with its NUL. Booted through `ImageShards` with `MemberSpec::args` of `--resume`, `s 1` and an
-  empty one, its stdout is its program as found in its own `bin`, its image's options (`argv`,
+  empty one, its stdout is its program as its image's command names it (argv[0] as given, as runc passes it; the file found by the member's own search, confine-04), its image's options (`argv`,
   `--from-image`), then those three. An argument holding a NUL is refused as "a member's
   argument" by its place alone, and two of half `run::MAX_PAYLOAD` each as "the spec", before
   any run host starts.

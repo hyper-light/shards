@@ -1321,7 +1321,7 @@ fn a_harness_reads_its_orchestrators_stdin_exactly_and_its_close_is_its_end() {
 
 /// D256: a member's run-time arguments follow its image's command on its command line, each
 /// whole and in its order. The harness, the test guest writing its command line word by word,
-/// each with its NUL, says its program as found in its own `bin`, its image's options, then its
+/// each with its NUL, says its program as its image's command names it, its image's options, then its
 /// run's `--resume`, `s 1` and an empty one: none split, joined or dropped. An argument holding
 /// a NUL, which no command line exec'd holds, is refused by its place, never its bytes; and
 /// arguments past the channel's bound are refused whole, never cut; each before any run host
@@ -1352,8 +1352,12 @@ fn a_members_arguments_follow_its_images_command_in_order() {
     let guest = boot(&home, &given(["--resume", "s 1", ""].map(String::from).to_vec()));
     let said = read_all(&*guest, Channel::Stdout);
     let (program, rest) = said.split_at(said.iter().position(|&b| b == 0).unwrap_or(said.len()));
-    assert!(
-        program.starts_with(b"/") && program.ends_with(b"/bin/codex"),
+    // Its program as its image's command names it: the member's own search finds its file
+    // (confine-04, `run::exec_found`) and its argv[0] stays as given, as runc's execve(2)
+    // passes a container's command.
+    assert_eq!(
+        program,
+        b"codex",
         "its command line: {:?}",
         String::from_utf8_lossy(&said)
     );
