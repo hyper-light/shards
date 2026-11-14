@@ -321,3 +321,13 @@ ROOT's 05:10Z contention amendment, R15 ran
 on the same warm Mac target: clean. [Check log](logs/r15-contention-check.log).
 Full focused green remains 7765f515d (R14); native init green 4ce3d80a4 (R13),
 whose inputs remain unchanged. No conflict was resolved in this later merge.
+
+A further ff refusal led to conflict-free merge
+d95f6104944a37479271c8d64248a66cadc17168 (main 33d28bf88), adding DNS, net and
+registry changes plus daemon/build callers. R16 repeated the same four-crate
+Mac `cargo check --tests`: clean. Because DNS is also an init dependency, R17
+ran `cargo check -j 4 -p shards-init --tests` natively on adacachy2: clean, then
+removed its owned target. [Mac check](logs/r16-contention-mac-check.log),
+[Linux check](logs/r17-contention-linux-check.log). No test or clippy result is
+claimed for this later combination; R14/R13 remain the named full focused greens,
+as ROOT's contention amendment requires. This merge resolved no conflicts.
