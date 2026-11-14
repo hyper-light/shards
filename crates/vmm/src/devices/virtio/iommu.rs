@@ -1081,6 +1081,34 @@ mod tests {
     }
 
     #[test]
+    fn invalid_response_is_rejected_before_applying_the_request() {
+        use crate::devices::virtio::queue::Descriptor;
+        let page = crate::platform::page_size().unwrap();
+        let mem = GuestMemory::anonymous(&[(0x8000_0000, page)]).unwrap();
+        let a = mem.access().unwrap();
+        let req = attach(1, 8, 0);
+        a.write(0x8000_0000, &req).unwrap();
+        let state = Mutex::new(Translation::new(vec![8], MSI));
+        let chain = Chain {
+            head: 0,
+            descriptors: vec![
+                Descriptor {
+                    addr: 0x8000_0000,
+                    len: req.len() as u32,
+                    writable: false,
+                },
+                Descriptor {
+                    addr: 0x8000_0000 + page as u64 - 4,
+                    len: 8,
+                    writable: true,
+                },
+            ],
+        };
+        assert_eq!(answer(&chain, &a, &state), 0);
+        assert!(!state.lock().unwrap().attached.contains_key(&8));
+    }
+
+    #[test]
     fn full_span_mapping_translates_an_msi_without_overflow() {
         let mut t = Translation::new(vec![8], MSI);
         assert_eq!(status(&mut t, &attach(1, 8, 0)), S_OK);
