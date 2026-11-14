@@ -715,8 +715,8 @@ impl Bearer {
 
     /// containerd's `doBearerAuth`, tried again as the registry's own requests are
     /// (registry.rs `send_here`, D222): a timeout, a cut connection, a 408, 502, 503 or
-    /// 504 ridden out within the token server's budget (crate::patience), and a 500 asked again once, unless
-    /// it repeats. Docker Hub's token server answered a pull with a 502, which the next
+    /// 504 ridden out while it lasts, past the token server's budget a run-out, told once
+    /// (crate::patience), and a 500 asked again once, unless it repeats. Docker Hub's token server answered a pull with a 502, which the next
     /// asking passed (dev 3c2e3cd3's CI), and twice within 50 ms, which failed a build of
     /// CI's job 117733752147 (2026-10-18) past the five quick attempts this took before.
     fn fetch(&self, http: &Client, scopes: &[String]) -> Result<Token, Error> {
@@ -731,20 +731,23 @@ impl Bearer {
                 }
                 Err(failed) => failed,
             };
+            // Past a run-out, a re-ask its far end refuses or ends unanswered is its end
+            // (D222).
+            let gone = failed.status.is_none() && trouble.gone(http, &self.realm, &failed.error);
             let passing = match failed.status {
-                None => failed.error.kind() == ErrorKind::Transient,
+                None => !gone && failed.error.kind() == ErrorKind::Transient,
                 Some(408 | 502 | 503 | 504) => true,
                 Some(500) => last != Some(500),
                 Some(_) => false,
             };
-            let wait = passing
-                .then(|| trouble.wait(http, &self.realm, asked, None))
-                .flatten();
+            let wait = passing.then(|| trouble.wait(http, &self.realm, asked, None));
             let Some(wait) = wait else {
                 // The credentials' refusal stays one, for a login to say so; anything else
                 // is tried no more, as before.
                 let kind = match failed.error.kind() {
                     ErrorKind::Refused => ErrorKind::Refused,
+                    ErrorKind::Gone => ErrorKind::Gone,
+                    _ if gone => ErrorKind::Gone,
                     _ => ErrorKind::Other,
                 };
                 return Err(Error::of(
