@@ -250,11 +250,9 @@ const INOTIFY_WATCHES: (u64, u64) = (8192, 1_048_576);
 const TCP_RMEM_MAX: u64 = 32 << 20;
 const TCP_WMEM_MAX: u64 = 4 << 20;
 
-/// The kernel's limits sized by its memory at boot, each in proportion to it (kernel/fork.c
-/// `fork_init`, fs/eventpoll.c `eventpoll_init`, net/ipv4/tcp.c `tcp_init`, net/ipv4/udp.c
-/// `udp_init`), as PM M193 measured them.
-const LINEAR: &[&str] = &[
-    "kernel/threads-max",
+/// The namespaces of each kind a user may make, which the kernel sets to half its threads
+/// at boot (kernel/fork.c `fork_init`, `init_user_ns.ucount_max`).
+const NAMESPACES: &[&str] = &[
     "user/max_user_namespaces",
     "user/max_pid_namespaces",
     "user/max_uts_namespaces",
@@ -263,10 +261,19 @@ const LINEAR: &[&str] = &[
     "user/max_mnt_namespaces",
     "user/max_cgroup_namespaces",
     "user/max_time_namespaces",
-    "fs/epoll/max_user_watches",
-    "net/ipv4/tcp_mem",
-    "net/ipv4/udp_mem",
 ];
+/// A kernel stack, `THREAD_SIZE`: 16 KiB on x86_64 (arch/x86/include/asm/page_64_types.h,
+/// `THREAD_SIZE_ORDER` 2 without KASAN) and on arm64 (arch/arm64/include/asm/memory.h,
+/// `MIN_THREAD_SHIFT` 14 without KASAN, a page where pages are larger with `VMAP_STACK`);
+/// the pinned kernels have no KASAN (resources/kernel).
+fn thread_size() -> u64 {
+    (16 << 10_u64).max(page_size())
+}
+/// A `struct page`'s bytes, one for each page (include/linux/mm_types.h, 64 on 64-bit
+/// kernels without debug options): what a guest's boot takes of its memory for its page
+/// structures, from memblock, never in MemTotal.
+const STRUCT_PAGE: u64 = 64;
+
 /// TCP's orphans and TIME-WAIT sockets, each half its established table's buckets
 /// (net/ipv4/tcp.c `tcp_init`): a bucket for each 128 KiB of the memory rounded up to a
 /// MiB, rounded up to a power of two, at most 512 Ki (mm/mm_init.c
@@ -433,6 +440,65 @@ fn scaled(v: u64, to: u64, from: u64) -> u64 {
     u64::try_from(s).unwrap_or(u64::MAX)
 }
 
+/// What the kernel sizes by the memory it has as it boots, each of a sum of its pages at
+/// the time (PM M193): its threads (kernel/fork.c `set_max_threads`), epoll's items
+/// (fs/eventpoll.c `eventpoll_init`), TCP's and UDP's pages and TCP's buffers, each of its
+/// free buffer pages (net/ipv4/tcp.c `tcp_init_mem`, `tcp_init`; net/ipv4/udp.c
+/// `udp_init`), and its files (fs/file_table.c `files_maxfiles_init`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Limits {
+    threads: u64,
+    epoll: u64,
+    tcp_mem: [u64; 3],
+    udp_mem: [u64; 3],
+    tcp_rmem: [u64; 3],
+    tcp_wmem: [u64; 3],
+    files: u64,
+}
+
+impl Limits {
+    /// What a guest booted with `more` bytes more than this one sizes, by the kernel's own
+    /// formulas of the pages it adds: the memory less its page structures ([`STRUCT_PAGE`]),
+    /// which that guest's boot takes from memblock. Each is this boot's, which the kernel
+    /// sized from what it had at the time, and what the added pages add to it, rounded up,
+    /// so that none is short of that guest's for the floors each formula takes; never
+    /// proportional, which scaled what a boot's kernel counts beside MemTotal by the ratio
+    /// of the memory too (about 17 MiB at every size, PM M193): from a boot of a few hundred
+    /// MiB, a builder's steps had 11% more threads than a guest booted with all of it.
+    /// What the added pages raise beside them (the kernel's watermarks, hash tables and
+    /// what it has used) is left out, so each comes out at or over that guest's.
+    fn raised(&self, more: u64, page: u64, stack: u64) -> Limits {
+        let page = page.max(1);
+        let pages = (more / page).saturating_sub((more / page).saturating_mul(STRUCT_PAGE).div_ceil(page));
+        let bytes = pages.saturating_mul(page);
+        // `limit / 4 * 3`, `limit`, twice the first (`tcp_init_mem`, `udp_init`).
+        let mem = |limit: u64| [limit / 4 * 3, limit, limit / 4 * 3 * 2];
+        // The largest buffer: its free buffer pages' bytes over 128, within `cap`
+        // (`tcp_init`: `nr_free_buffer_pages() << (PAGE_SHIFT - 7)`).
+        let buffer = |[least, default, most]: [u64; 3], cap: u64| {
+            [
+                least,
+                default,
+                most.saturating_add(bytes.div_ceil(128)).min(cap).max(most),
+            ]
+        };
+        Limits {
+            // A thread for each 8 stacks of memory: `nr_pages * PAGE_SIZE / (THREAD_SIZE * 8)`.
+            threads: self
+                .threads
+                .saturating_add(bytes.div_ceil(stack.max(1).saturating_mul(8))),
+            // `((totalram / 25) << PAGE_SHIFT) / EP_ITEM_COST`.
+            epoll: self.epoll.saturating_add(bytes.div_ceil(25 * EP_ITEM_COST)),
+            // A 16th of its free buffer pages, and an 8th.
+            tcp_mem: mem(self.tcp_mem[1].saturating_add(pages.div_ceil(16))),
+            udp_mem: mem(self.udp_mem[1].saturating_add(pages.div_ceil(8))),
+            tcp_rmem: buffer(self.tcp_rmem, TCP_RMEM_MAX),
+            tcp_wmem: buffer(self.tcp_wmem, TCP_WMEM_MAX),
+            files: self.files.saturating_add(bytes.div_ceil(FILE_BYTES)),
+        }
+    }
+}
+
 impl Plug {
     /// Begins what the kernel adds beside its cgroup uncharged ([`Uncharged`]) with what it
     /// holds beside it as it is held, where nothing was learned before (a template's
@@ -467,64 +533,65 @@ impl Plug {
         tmpfs_holding(self.full())
     }
 
-    /// Raises what the kernel sized by the memory it booted with to what it sizes by all
-    /// of it: each limit in proportion to the memory scaled by their ratio; files by the
-    /// memory added; TCP's buffers within their caps; TCP's orphans and TIME-WAIT buckets
-    /// by its table's sizing; inotify's watches, which the kernel holds at 8192 below
-    /// about 1 GiB, in their proportion to epoll's items, within their clamps; and init's
-    /// RLIMIT_SIGPENDING, half the threads, as the kernel gives PID 1 (`fork_init`), which
-    /// every step inherits. Its processes are Docker's, unlimited (`defaults::limits`,
-    /// PM M211), not the kernel's.
+    /// Raises what the kernel sized by the memory it booted with to what it sizes in a guest
+    /// booted with all of it ([`Limits::raised`]), each read and written back in its sysctl;
+    /// and init's RLIMIT_SIGPENDING, half the threads, as the kernel gives PID 1
+    /// (`fork_init`), which every step inherits. Its processes are Docker's, unlimited
+    /// (`defaults::limits`, PM M211), not the kernel's.
     pub fn raise_limits(&self) -> io::Result<()> {
-        let (to, from) = (self.full(), self.boot);
         let sysctl = |name: &str| format!("/proc/sys/{name}");
-        for name in LINEAR {
+        let read = |name: &str| -> io::Result<Vec<u64>> {
             let path = sysctl(name);
-            let now = std::fs::read_to_string(&path).map_err(|e| err(format!("{path}: {e}")))?;
-            let raised: Vec<String> = now
-                .split_whitespace()
-                .map(|v| v.parse::<u64>().map(|v| scaled(v, to, from).to_string()))
-                .collect::<Result<_, _>>()
-                .map_err(|e| err(format!("{path}: {e}")))?;
-            std::fs::write(&path, raised.join(" ")).map_err(|e| err(format!("{path}: {e}")))?;
-        }
-        for (name, cap) in [
-            ("net/ipv4/tcp_rmem", TCP_RMEM_MAX),
-            ("net/ipv4/tcp_wmem", TCP_WMEM_MAX),
-        ] {
-            let path = sysctl(name);
-            let now = std::fs::read_to_string(&path).map_err(|e| err(format!("{path}: {e}")))?;
-            let mut values: Vec<u64> = now
+            std::fs::read_to_string(&path)
+                .map_err(|e| err(format!("{path}: {e}")))?
                 .split_whitespace()
                 .map(str::parse)
                 .collect::<Result<_, _>>()
-                .map_err(|e| err(format!("{path}: {e}")))?;
-            if let Some(max) = values.last_mut() {
-                *max = scaled(*max, to, from).min(cap).max(*max);
-            }
+                .map_err(|e| err(format!("{path}: {e}")))
+        };
+        let one = |name: &str| -> io::Result<u64> {
+            read(name)?
+                .first()
+                .copied()
+                .ok_or_else(|| err(format!("{}: empty", sysctl(name))))
+        };
+        let three = |name: &str| -> io::Result<[u64; 3]> {
+            <[u64; 3]>::try_from(read(name)?).map_err(|v| err(format!("{}: {v:?}", sysctl(name))))
+        };
+        let write = |name: &str, values: &[u64]| -> io::Result<()> {
+            let path = sysctl(name);
             let line: Vec<String> = values.iter().map(u64::to_string).collect();
-            std::fs::write(&path, line.join(" ")).map_err(|e| err(format!("{path}: {e}")))?;
+            std::fs::write(&path, line.join(" ")).map_err(|e| err(format!("{path}: {e}")))
+        };
+        let booted = Limits {
+            threads: one("kernel/threads-max")?,
+            epoll: one("fs/epoll/max_user_watches")?,
+            tcp_mem: three("net/ipv4/tcp_mem")?,
+            udp_mem: three("net/ipv4/udp_mem")?,
+            tcp_rmem: three("net/ipv4/tcp_rmem")?,
+            tcp_wmem: three("net/ipv4/tcp_wmem")?,
+            files: one("fs/file-max")?,
+        };
+        let sized = booted.raised(self.most, page_size(), thread_size());
+        write("kernel/threads-max", &[sized.threads])?;
+        for name in NAMESPACES {
+            write(name, &[sized.threads / 2])?;
         }
-        let path = sysctl("fs/file-max");
-        let files = number(&path).ok_or_else(|| err(format!("{path}: not a number")))?;
-        let files = files.saturating_add(to.saturating_sub(from) / FILE_BYTES);
-        std::fs::write(&path, files.to_string()).map_err(|e| err(format!("{path}: {e}")))?;
-        let mib = to.div_ceil(1 << 20);
+        write("fs/epoll/max_user_watches", &[sized.epoll])?;
+        write("net/ipv4/tcp_mem", &sized.tcp_mem)?;
+        write("net/ipv4/udp_mem", &sized.udp_mem)?;
+        write("net/ipv4/tcp_rmem", &sized.tcp_rmem)?;
+        write("net/ipv4/tcp_wmem", &sized.tcp_wmem)?;
+        write("fs/file-max", &[sized.files])?;
+        let mib = self.full().div_ceil(1 << 20);
         let buckets = (mib << 3).next_power_of_two().min(TCP_TABLE_MOST);
         for name in TCP_TABLE {
-            let path = sysctl(name);
-            let now = number(&path).ok_or_else(|| err(format!("{path}: not a number")))?;
-            std::fs::write(&path, (buckets / 2).max(now).to_string())
-                .map_err(|e| err(format!("{path}: {e}")))?;
+            write(name, &[(buckets / 2).max(one(name)?)])?;
         }
-        let epoll =
-            number(&sysctl("fs/epoll/max_user_watches")).ok_or_else(|| err("fs.epoll.max_user_watches"))?;
-        let watches =
-            scaled(epoll, EP_ITEM_COST, 4 * INOTIFY_WATCH_COST).clamp(INOTIFY_WATCHES.0, INOTIFY_WATCHES.1);
-        std::fs::write(sysctl("fs/inotify/max_user_watches"), watches.to_string())
-            .map_err(|e| err(format!("fs.inotify.max_user_watches: {e}")))?;
-        let threads = number(&sysctl("kernel/threads-max")).ok_or_else(|| err("kernel.threads-max"))?;
-        let half = threads / 2;
+        let watches = scaled(sized.epoll, EP_ITEM_COST, 4 * INOTIFY_WATCH_COST)
+            .clamp(INOTIFY_WATCHES.0, INOTIFY_WATCHES.1);
+        write("fs/inotify/max_user_watches", &[watches])?;
+        let half = sized.threads / 2;
         let limit = libc::rlimit {
             rlim_cur: half,
             rlim_max: half,
@@ -539,38 +606,11 @@ impl Plug {
         Ok(())
     }
 
-    /// Holds the build at the memory the builder has: mounts the builder's cgroup2 (D133),
-    /// makes the build's cgroup with its `memory.high`, starts the process that grows it
-    /// in the root cgroup, which nothing slows, and moves init into the build's. What the
-    /// grower says comes out of the descriptor returned, a line at a time (D137).
-    pub fn hold(&self) -> io::Result<OwnedFd> {
-        mount_cgroups()?;
-        let enable = |dir: &str| {
-            std::fs::write(format!("{dir}/cgroup.subtree_control"), "+memory +cpu +cpuset")
-                .map_err(|e| err(format!("{dir}: enabling controllers: {e}")))
-        };
-        enable("/sys/fs/cgroup")?;
-        for dir in [
-            BUILD.to_string(),
-            format!("{BUILD}/init"),
-            format!("{BUILD}/steps"),
-        ] {
-            match std::fs::create_dir(&dir) {
-                Err(e) if e.kind() != io::ErrorKind::AlreadyExists => return Err(err(format!("{dir}: {e}"))),
-                _ => {}
-            }
-        }
-        enable(BUILD)?;
-        enable(&format!("{BUILD}/steps"))?;
-        // Its peak, counted afresh by each giving back through this descriptor
-        // ([`shrink_run`], [`answer_give_backs`]), as a run's; none where it does not open.
-        if let Ok(peak) = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(format!("{BUILD}/memory.peak"))
-        {
-            let _ = PEAK.set(peak);
-        }
+    /// Holds the build at the memory the builder has, in its cgroup ([`hold_build`]): its
+    /// `memory.high`, and the process that grows it, started in the root cgroup, which
+    /// nothing slows, as init is still there. What the grower says comes out of the
+    /// descriptor returned, a line at a time (D137).
+    fn hold(&self) -> io::Result<OwnedFd> {
         begin_period(mem_total().map_or(0, |total| staying(self.boot, total)));
         self.learn_uncharged_cold()?;
         set_high(self.cgroup, high(self.cgroup, self.most, 0)?)?;
@@ -599,8 +639,6 @@ impl Plug {
             grow(*self, &events, &said);
         }
         drop((events, said));
-        std::fs::write(format!("{BUILD}/init/cgroup.procs"), "1")
-            .map_err(|e| err(format!("moving init into the build's cgroup: {e}")))?;
         Ok(notes)
     }
 
@@ -643,6 +681,58 @@ impl Plug {
         let _ = GROWER.set(pid);
         Ok(())
     }
+}
+
+/// Makes the build's cgroup and moves init into it, every builder's, booted cold with all
+/// it may have or with memory to plug (D133, memory-15): mounts the builder's cgroup2, makes
+/// `build` with `init`, where init goes, and `steps`, where each step has its own, so that
+/// what a build holds is counted (`memory.peak`, `memory.events`, `memory.stat`) for its
+/// needs to be recorded ([`needed`]) and its cold files given back at its host's word
+/// ([`answer_give_backs`], D188). Where it has memory to plug (`plug`), the build is held at
+/// what it has first ([`Plug::hold`]), whose grower it starts before init moves: what the
+/// grower says comes out of the descriptor returned, a line at a time (D137). Called by PID
+/// 1 before it starts any thread.
+pub fn hold_build(plug: Option<Plug>) -> io::Result<Option<OwnedFd>> {
+    mount_cgroups()?;
+    make_build(std::path::Path::new(CGROUPS))?;
+    // Its peak, counted afresh by each giving back through this descriptor
+    // ([`shrink_run`], [`answer_give_backs`]), as a run's; none where it does not open.
+    if let Ok(peak) = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(format!("{BUILD}/memory.peak"))
+    {
+        let _ = PEAK.set(peak);
+    }
+    let notes = plug.map(|plug| plug.hold()).transpose()?;
+    std::fs::write(format!("{BUILD}/init/cgroup.procs"), "1")
+        .map_err(|e| err(format!("moving init into the build's cgroup: {e}")))?;
+    Ok(notes)
+}
+
+/// The builder's cgroup2's mount, where [`BUILD`] is.
+const CGROUPS: &str = "/sys/fs/cgroup";
+
+/// Makes the build's cgroup under the cgroup2 at `root`: `build`, `build/init` and
+/// `build/steps`, the controllers a step's limits need enabled down to `steps`, those
+/// made before kept.
+fn make_build(root: &std::path::Path) -> io::Result<()> {
+    let build = root.join("build");
+    let enable = |dir: &std::path::Path| {
+        std::fs::write(dir.join("cgroup.subtree_control"), "+memory +cpu +cpuset")
+            .map_err(|e| err(format!("{}: enabling controllers: {e}", dir.display())))
+    };
+    enable(root)?;
+    for dir in [build.clone(), build.join("init"), build.join("steps")] {
+        match std::fs::create_dir(&dir) {
+            Err(e) if e.kind() != io::ErrorKind::AlreadyExists => {
+                return Err(err(format!("{}: {e}", dir.display())));
+            }
+            _ => {}
+        }
+    }
+    enable(&build)?;
+    enable(&build.join("steps"))
 }
 
 /// The most a run's cgroup may hold that its host's budget leaves its microVM (D188), in
@@ -1187,9 +1277,8 @@ pub fn grower() -> Option<libc::pid_t> {
     GROWER.get().copied()
 }
 
-/// The builder's cgroup2 at /sys/fs/cgroup, mounted once: by [`Plug::hold`], or by the
-/// first step with limits.
-pub fn mount_cgroups() -> io::Result<()> {
+/// The builder's cgroup2 at /sys/fs/cgroup, mounted once, as it starts ([`hold_build`]).
+fn mount_cgroups() -> io::Result<()> {
     let root = std::path::Path::new("/sys/fs/cgroup");
     if root.join("cgroup.controllers").exists() {
         return Ok(());
@@ -1287,12 +1376,17 @@ pub fn needed() -> io::Result<(u64, u64)> {
     let beside = beside(BUILD, BOOT.get().copied().unwrap_or(0))?;
     let events = std::fs::read_to_string(format!("{BUILD}/memory.events"))
         .map_err(|e| err(format!("{BUILD}/memory.events: {e}")))?;
-    let killed = events
+    Ok((needed_for(peak, beside), killed(&events)))
+}
+
+/// The processes a cgroup's `memory.events` says any OOM killer ended (`oom_kill`): a cold
+/// builder's kernel's, which holds the build at no `memory.high`, as a held one's.
+fn killed(events: &str) -> u64 {
+    events
         .lines()
         .find_map(|l| l.strip_prefix("oom_kill "))
         .and_then(|n| n.trim().parse().ok())
-        .unwrap_or(0);
-    Ok((needed_for(peak, beside), killed))
+        .unwrap_or(0)
 }
 
 /// The least memory in whole blocks whose hold, its [`reserve`] beside it and nothing left
@@ -1886,6 +1980,135 @@ mod tests {
         cgroup: BUILD,
         whose: "the builder's",
     };
+
+    /// Every builder's build has its cgroup as it starts, with memory to plug or not
+    /// (memory-15): `build`, `build/init` for init and `build/steps` for its steps, the
+    /// controllers enabled down to `steps`; made again over what is there.
+    #[test]
+    fn a_builders_cgroup_is_made_as_it_starts() {
+        let root = shards_testdir::TempDir::new("plug-cgroup").unwrap();
+        for _ in 0..2 {
+            make_build(&root).unwrap();
+        }
+        for dir in ["", "build", "build/steps"] {
+            assert_eq!(
+                std::fs::read_to_string(root.join(dir).join("cgroup.subtree_control")).unwrap(),
+                "+memory +cpu +cpuset",
+                "{dir}"
+            );
+        }
+        assert!(root.join("build/init").is_dir());
+        assert!(!root.join("build/init/cgroup.subtree_control").exists());
+    }
+
+    /// A build ended short of memory says the processes its kernel ended, a cold builder's
+    /// as a held one's (memory-15): its host records it short (D148).
+    #[test]
+    fn a_builds_kills_are_read_from_its_events() {
+        let events = "low 0\nhigh 12\nmax 0\noom 1\noom_kill 2\noom_group_kill 0\n";
+        assert_eq!(killed(events), 2);
+        assert_eq!(killed("low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\n"), 0);
+    }
+
+    /// What a guest booted small sizes once raised is what one booted with all of it sizes,
+    /// or up to a tenth more, never less: from each size the pinned kernel was booted with
+    /// (PM M193, the pinned kernel 6.18.48, 4 KiB pages) to each larger one.
+    #[test]
+    fn a_small_boots_limits_are_raised_to_a_full_boots() {
+        let row = |threads, epoll, tcp_mem, udp_mem, rmem, wmem, files| Limits {
+            threads,
+            epoll,
+            tcp_mem,
+            udp_mem,
+            tcp_rmem: [4096, 131072, rmem],
+            tcp_wmem: [4096, 16384, wmem],
+            files,
+        };
+        let booted = [
+            (
+                512 * MIB,
+                row(
+                    3995,
+                    108989,
+                    [5688, 7585, 11376],
+                    [11376, 15171, 22752],
+                    3883872,
+                    3883872,
+                    48903,
+                ),
+            ),
+            (
+                GIB,
+                row(
+                    8009,
+                    223365,
+                    [11361, 15151, 22722],
+                    [22725, 30302, 45450],
+                    7757344,
+                    4194304,
+                    100244,
+                ),
+            ),
+            (
+                4 * GIB,
+                row(
+                    31607,
+                    895777,
+                    [46362, 61819, 92724],
+                    [92727, 123638, 185454],
+                    31651456,
+                    4194304,
+                    402298,
+                ),
+            ),
+            (
+                16 * GIB,
+                row(
+                    128038,
+                    3643481,
+                    [190890, 254522, 381780],
+                    [381783, 509045, 763566],
+                    33554432,
+                    4194304,
+                    1636622,
+                ),
+            ),
+            (
+                64 * GIB,
+                row(
+                    513765,
+                    14634317,
+                    [768324, 1024432, 1536648],
+                    [1536648, 2048864, 3073296],
+                    33554432,
+                    4194304,
+                    6573917,
+                ),
+            ),
+        ];
+        let within = |got: u64, full: u64| got >= full && got <= full + full / 10;
+        for (i, (small, from)) in booted.iter().enumerate() {
+            for (large, full) in booted.iter().skip(i + 1) {
+                let got = from.raised(large - small, 4096, 16 << 10);
+                let pairs = [
+                    (got.threads, full.threads),
+                    (got.epoll, full.epoll),
+                    (got.files, full.files),
+                    (got.tcp_rmem[2], full.tcp_rmem[2]),
+                    (got.tcp_wmem[2], full.tcp_wmem[2]),
+                ]
+                .into_iter()
+                .chain(got.tcp_mem.into_iter().zip(full.tcp_mem))
+                .chain(got.udp_mem.into_iter().zip(full.udp_mem));
+                for (got_one, full_one) in pairs {
+                    assert!(
+                        within(got_one, full_one),
+                        "{small} to {large}: {got:?}, booted with all of it {full:?}"
+                    );
+                }
+            }
+        }
+    }
 
     /// What a build needed is the least memory in whole blocks whose hold, with nothing
     /// left to plug and its kernel holding what it holds beside it, keeps its peak: a block

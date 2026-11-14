@@ -9648,6 +9648,12 @@ value already in flight, whose acknowledgment remains consumable. Desired room
 and request/reply state have one owner; budget removal cannot disappear behind
 a late answer. Red and light-check evidence: `docs/research/measurements/memory-fixes-v1/README.md`.
 
+**Review memory-15 (2026-11-14):** a builder booted cold, with all it may have and nothing
+to plug (D133), answers `GIVE_BACK` and `ROOM` as one with memory to plug: its build has
+its cgroup from its start (`plug::hold_build`), which it had only where it plugged, so it
+gave nothing back; it gives back its files' cold pages, and unplugs nothing, having none
+plugged (D133's "Every builder's build has its cgroup").
+
 
 **Found.** The user's plan, item 4: memory that tracks the working set, reclaimed at the
 host's pressure, not on a timer. A run's guest keeps what its workload reads in its page
@@ -18904,7 +18910,9 @@ A run's microVM was sized at boot: without `-m`, 256 MiB less what its kernel ke
 where a Docker container without `-m` may hold its host's memory (`memory.max` "max",
 `MemTotal` its host's: shards-dind, docker 29.3.1); with `-m`, booted with all of it, its
 page structures paid at boot (21 MiB and 4 ms per GiB, PM M82). D133's virtio-mem gives a
-builder memory as its build needs it; runs now have it too.
+builder memory as its build needs it; runs now have it too. A builder after a build of its
+home ran out, a new home's first build too, its builder booted cold (memory-15), may have
+all its host's memory, as a run without a limit may (D133's `build::builder_most`).
 
 - **A run without a limit** boots as before, with a region to plug of the host's memory
   less that, and is given memory as its processes reach what it has, up to the host's
@@ -20032,6 +20040,64 @@ KVM arm64 (L1) and WHP, at 4 and 32 vCPUs, n ≥ 20 each with p50/p90/p99/max, f
 cold start and the learned boot; and `cargo test -p shards --test build
 a_builders_memory_is_plugged_as_its_build_needs_it` across cold homes.
 
+**The builder-memory tests' shape since memory-15 (2026-11-14).** A home's first builder
+boots with its ceiling and plugs nothing, so a test of plugging that builds once in a new
+home tests the cold start instead (`a_builders_memory_is_plugged_as_its_build_needs_it`
+failed on HVF at b70a73d42 at its limits assertion: init raises a step's limits to a guest's
+booted with all it may have only where it has memory to plug, `Plug::raise_limits`; a cold
+builder's are its kernel's own). Each test of plugging (tests/build.rs `a_builders_steps_see_the_memory_it_may_have`,
+`a_builders_memory_is_plugged_as_its_build_needs_it`,
+`a_builders_memory_is_plugged_as_fast_as_its_jobs_take_it`, and build_windows.rs' twins)
+first builds once in its home, which learns its guest's boot (`common::learned_boot` reads
+the `boot` line), and holds that boot under what the measured step touches, so that the
+step's memory must be plugged; the step's kernel says what it may still plug
+(`vm.pluggable_kbytes`, D149), more than none before and less after. The give-back tests'
+first build, which fills their cache, warms their homes as it is. The cold start has a test
+of its own, `a_builders_memory_in_a_new_home_is_all_it_may_have`: a new home's builder's VM
+process is given its ceiling as both `--memory` and `--memory-max`, its kernel has nothing to
+plug, it gives back its files' cold pages at its build's word (D188), its VM process's
+footprint falling with them, and the home then holds a learned boot under the ceiling, its
+next builder having memory to plug. No test-only knob: the record a first build writes is
+the warm state, as a user's home reaches it.
+
+**Every builder's build has its cgroup (2026-11-14, memory-15's first defect).** On HVF a
+new home's builder gave nothing back (`a_builders_memory_in_a_new_home_is_all_it_may_have`
+red at af629d8ed): its host's `GIVE_BACK` reclaims the build cgroup's cold files
+(`run::reclaim_cold(BUILD)`) and `ROOM` holds it within its room (`plug::hold_within`), but
+`/sys/fs/cgroup/build` was made by `Plug::hold` alone, which a builder with nothing to plug
+never ran: its steps ran under the root's cgroup, and its answerer found no cgroup to give
+from. Now init makes `build`, `build/init` (init) and `build/steps` as every builder starts
+(`plug::hold_build`, `make_build`), its `memory.peak` opened there, and a step's cgroup is
+always under `build` (`build::step_cgroup`, its `plugging` argument gone); what is a
+plugging builder's alone is the hold, `memory.high` and the grower (`Plug::hold`, its grower
+forked in the root cgroup before init moves into `build/init`). Every builder shares its
+budget's page (`plug::make_cap`), as a run's init does, so that a cold builder is held within
+its room as a warm one is (D188). No second path: no builder's steps run outside `build`.
+
+**A cold builder's needs are recorded (2026-11-14, memory-15's second defect).** A builder
+with nothing to plug answered `NEEDS` with no need and no process ended, so a new home's
+first build recorded `needed 0` (`a_builders_ceiling_comes_from_its_host_and_its_homes_builds`
+red at af629d8ed), and one that ran out at its ceiling was never recorded short. With the
+build's cgroup always there, every builder answers from it (`plug::needed`: `memory.peak`,
+what its kernel holds beside it, and `memory.events`' `oom_kill`, which counts any OOM
+killer's ends, the global one's in a builder that holds its build at no `memory.high`,
+`plug::killed`); `Builder::plugging` is gone. A new home's first build that runs out is
+recorded `short yes`, and its next builder may have all its host's memory, as D148's runs
+(`a_new_homes_build_that_runs_out_is_recorded_short`).
+
+**A step's limits are the kernel's own for all of its memory (2026-11-14, memory-15's third
+defect).** `Plug::raise_limits` scaled each limit from `MemTotal` at boot to `MemTotal` at
+boot plus `HOTPLUG_SIZE`, which also scaled what the kernel sized from memory it never
+counts in `MemTotal` and the page structures the plugged memory costs. On HVF a step of a
+builder booted at its learned boot under 2560 MiB saw `kernel.threads-max` 21801 where a
+guest booted with all 2560 MiB has 19535 (+11.6%, `a_builders_memory_is_plugged_as_its_build_needs_it`
+red at af629d8ed); before memory-15, at 0faaf2628^, it saw 20929 (+7.1%), within that
+test's tenth then: the defect predates memory-15, which widened it by booting smaller. Now
+each limit is its boot's value and what the added memory, less a 64-byte `struct page` for
+each page, adds by the kernel's formula (`plug::Limits::raised`, above); the test still
+holds each limit at or above the guest booted with all of it and within a tenth past it,
+its window not widened.
+
 **R03 review memory-11..15 (2026-11-13):** reserve slack, pause/read floors,
 retry count, growth/retention ratios and boot floor remain owed to ROOT with
 designs in `docs/research/measurements/memory-fixes-v1/owed-designs.md`.
@@ -20136,13 +20202,17 @@ given the rest as its build needs it, up to what it may have.
 - **What the kernel sized by the memory it booted with** is raised to what it sizes by all
   of it, so that a step sees what it saw in a builder booted with all its memory: the
   layers' tmpfs (`size=` and `nr_inodes=` of all of it, where `size=100%` would be of 512
-  MiB); `kernel.threads-max`, the user namespaces' maxima, epoll's watches, `tcp_mem` and
-  `udp_mem`, each in proportion to the memory; `fs.file-max` by the memory added, a file
-  for each 10 KiB, as the kernel's own sizing has it (a proportion came out short on
-  x86_64); TCP's buffers within their caps; TCP's orphans and TIME-WAIT buckets by its
-  table's sizing; inotify's watches, which the kernel holds at 8192 below about 1 GiB, in
-  their proportion to epoll's; and init's RLIMIT_SIGPENDING, half the threads, which
-  every step inherits. Its processes are Docker's build steps', unlimited, as are its open
+  MiB); `kernel.threads-max`, the user namespaces' maxima (half the threads), epoll's
+  watches, `tcp_mem`, `udp_mem`, TCP's largest buffers within their caps and
+  `fs.file-max`, each its boot's value and what the memory added, less its page structures
+  (a 64-byte `struct page` a page), adds by the kernel's own formula, rounded up
+  (`plug::Limits::raised`: a thread for each 8 kernel stacks, `THREAD_SIZE` 16 KiB on
+  x86_64 and arm64; an epoll item for each 25 × 184 bytes; a 16th and an 8th of the pages
+  for TCP's and UDP's pages; a 128th of the bytes for the buffers; a file for each 10 KiB),
+  never in proportion (memory-15's third defect, below); TCP's orphans and TIME-WAIT
+  buckets by its table's sizing; inotify's watches, which the kernel holds at 8192 below
+  about 1 GiB, in their proportion to epoll's; and init's RLIMIT_SIGPENDING, half the
+  threads, which every step inherits. Its processes are Docker's build steps', unlimited, as are its open
   files (1048576) and locked memory, whatever the memory (2026-10-12, PM M211: a step had
   kept the builder's kernel's own, 1024 of 4096 files).
 - **No snapshot.** Memory plugged is not saved, so a snapshot of a VM with memory to plug
