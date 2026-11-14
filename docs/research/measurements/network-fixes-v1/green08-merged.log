@@ -1,0 +1,57 @@
+From https://github.com/hyper-light/shards
+ * branch              p/fix-network-v1 -> FETCH_HEAD
+   7aa3c4a3..4b7e93f1  p/fix-network-v1 -> origin/p/fix-network-v1
+Previous HEAD position was 18e5e2aa Merge current main before native macOS network-03 correction
+HEAD is now at 4b7e93f1 Merge current main and urgent macOS correction before network-08 gate
+Linux 6.12.65-linuxkit aarch64
+rustc 1.98.1 (48a229cea 2026-09-01)
+   Compiling num-traits v0.2.19
+   Compiling libc v0.2.189
+   Compiling shards-abi v0.1.0 (/src/crates/abi)
+   Compiling num-integer v0.1.47
+   Compiling num-bigint v0.4.8
+   Compiling shards-archive v0.1.0 (/src/crates/archive)
+   Compiling shards-testdir v0.1.0 (/src/crates/testdir)
+   Compiling shards-cmdline v0.1.0 (/src/crates/cmdline)
+   Compiling shards-init v0.1.0 (/src/crates/init)
+    Finished `test` profile [unoptimized] target(s) in 4.54s
+     Running unittests src/main.rs (/target/debug/deps/shards_init-9c7504c0e8b6ec1f)
+
+running 2 tests
+test dnsrelay::tests::an_open_tcp_client_and_a_lost_udp_query_leave_other_clients_progress ... ok
+test dnsrelay::tests::a_full_id_space_refuses_then_releases_its_questions ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 283 filtered out; finished in 0.07s
+
+   Compiling shards-abi v0.1.0 (/src/crates/abi)
+   Compiling shards-init v0.1.0 (/src/crates/init)
+    Finished `test` profile [unoptimized] target(s) in 3.49s
+     Running unittests src/main.rs (/target/debug/deps/shards_init-9c7504c0e8b6ec1f)
+
+running 2 tests
+test agentdns::tests::a_refused_query_keeps_its_id_and_question ... ok
+test agentdns::tests::no_asker_takes_anothers_share_of_the_ids ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 283 filtered out; finished in 0.04s
+
+info: downloading component clippy
+   Compiling shards-abi v0.1.0 (/src/crates/abi)
+    Checking memchr v2.8.3
+    Checking num-traits v0.2.19
+    Checking aho-corasick v1.1.5
+    Checking regex-syntax v0.8.11
+    Checking num-integer v0.1.47
+    Checking libc v0.2.189
+    Checking num-bigint v0.4.8
+    Checking regex-automata v0.4.18
+    Checking shards-template v0.1.0 (/src/crates/template)
+    Checking regex v1.13.1
+    Checking shards-archive v0.1.0 (/src/crates/archive)
+    Checking shards-cmdline v0.1.0 (/src/crates/cmdline)
+    Checking shards-testdir v0.1.0 (/src/crates/testdir)
+    Checking shards-erofs v0.1.0 (/src/crates/erofs)
+    Checking shards-dns v0.1.0 (/src/crates/dns)
+    Checking shards-user v0.1.0 (/src/crates/user)
+    Checking shards-devcgroup v0.1.0 (/src/crates/devcgroup)
+    Checking shards-init v0.1.0 (/src/crates/init)
+    Finished `dev` profile [unoptimized] target(s) in 4.07s

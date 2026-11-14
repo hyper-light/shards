@@ -154,6 +154,8 @@ let (config, manifest) = self.image_facts(c.image_id.as_deref());
 
 **Confidence:** high in the interleaving; loader outcome unrun. **Fix direction:** serialize GPU extraction or use unique writer staging and verified atomic publication. **Test:** barrier two callers around create/write/rename to force this schedule; require every returned helper to be complete and both callers to avoid extraction-induced failure.
 
+**Status (2026-11-13):** fixed in d720debff92c7a3eda0022799bf1085a641b9cfa (red `concurrent_gpu_writers_publish_their_own_complete_files`, r42; green regression +4 helper cases reported and shards all-target clippy r44). Two carried-helper cases return early under skip. Writer-owned staging and close-before-publish prevent the forced empty-file race; logs in `docs/research/measurements/runs-fixes/runs08-{red,green}.log`. Real carried/GPU/crash checks remain owed to ROOT.
+
 ### runs-09 — P2 / medium — Concurrent disk-setting commands can publish partial settings
 
 **At head:** `crates/shards/src/disk.rs:139–145`, read/modify/write at `:258–266`. **Inherited at base; still present.**
@@ -216,3 +218,6 @@ Attempted explicit delivery to ROOT / main Shards kiln agent `01a148884a4770fdaf
 
 Main landing update (2026-11-13): ROOT confirms runs-05, runs-06 and the runs-01
 native-owner follow-up landed through signed c6dd46525 (merge of fc1bb4797).
+
+Main landing update (2026-11-13): ROOT confirms runs-07 landed through signed
+02d3fe33b (merge of a68fc0ce4), own-file drift documentation only.

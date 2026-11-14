@@ -2929,6 +2929,19 @@ rather than a container on the build host's kernel.
 
 ### One binary (D36)
 
+**GPU publication (runs-08).** Each lazy GPU writer creates its own staging
+file with create_new, using PID, clock nanoseconds and a process sequence as
+identity discriminators (platform write_in's scheme). A collision or sequence
+wrap refuses creation; it never unlinks another writer's file. Zero/one are
+sequence initialization/increment, not selected operational limits. It writes,
+syncs and closes the writable handle before renaming that same file into place:
+Linux can reject a writable executable with ETXTBSY
+([execve(2)](https://man7.org/linux/man-pages/man2/execve.2.html)). Ordinary errors
+remove only the owned staging path. The two-writer regression formerly observed
+empty final bytes; both writers now publish complete closed files. Real carried
+executables, signatures, GPU and crash-debris checks remain owed in the
+[runs record](../research/measurements/runs-fixes/README.md).
+
 shards is one file to install and run, `shards`: every command, the daemon included,
 one CLI.
 
@@ -4315,6 +4328,18 @@ A slow client holds the command's output back: what a command writes is never ke
 without bound.
 
 ### Networks of microVMs (D46)
+
+**Relay progress correction (network-08, 2026-11-13).** A persistent TCP client's
+lifetime no longer owns 127.0.0.11's UDP/accept loop. Each TCP worker owns its
+client and upstream sockets; observed descriptor capacity admits it, counting
+three possible sockets through every return/spawn failure. Both guest resolvers
+share one in-flight DNS-ID owner, bounded by the complete 16-bit ID space and
+current per-asker share. Responses/expiry release ownership; allocation/clock/full
+refusals admit no untracked query. Waits use readiness or the earliest deadline,
+including agentdns's former periodic expiry probe. The inherited five-second
+timing and worker memory-envelope validation remain owed under network-12/R14.
+Four functional unit tests and init clippy pass on Linux arm64 GNU; real guest,
+fault and resource coverage remain ROOT's. [Evidence and exact remaining runs](../research/measurements/network-fixes-v1/README.md#network-08-independent-dns-relay-clients).
 
 `shards network` makes networks of microVMs as `docker network` makes them of
 containers, with Docker's inputs and words: create, ls, inspect, rm, prune, connect and

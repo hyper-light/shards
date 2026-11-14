@@ -94,6 +94,11 @@ Runs-07's concurrent end-record red lost its helper maximum; after stable-lock
 reread/merge and atomic unique staging, the regression and all 5 end tests pass,
 with shards all-target clippy. Two-process/VM crash publication remains owed.
 
+Runs-08's forced two-writer red published empty helper bytes; the publication
+regression, helper module check and shards all-target clippy pass after correction.
+Two carried-helper cases return early under skip; actual carried executables,
+signatures, crash and GPU runs remain owed in the linked record.
+
 ### M2. Object lifecycle (`lifecycle`, n=200, µs)
 
 | Operation | p50 | p99 |
@@ -9312,6 +9317,14 @@ Correctness follow-up devices-04 (2026-11-14): focused reset red/green and limit
     while its median is shorter. Why the quiet median is the slower, unmeasured: a likely
     cause is the host's cores waking from idle for each paced ask, which busy cores do
     not, and it was not isolated here.
+
+**network-08 concurrency follow-up (2026-11-13).** M247's serial local UDP timings
+do not establish concurrent-client progress. On Mac3 Docker Linux aarch64 /
+Rust1.98.1, 7aa3c4a34's socket red fails when a held TCP session blocks another
+UDP client. With 74ea2d725, merged at4b7e93f10, two relay and two agentdns tests
+plus init clippy pass, including partial TCP input and a withheld UDP answer.
+No new latency, memory, fault or VM campaign is claimed.
+[Commands, logs, design and owed runs](measurements/network-fixes-v1/README.md#network-08-independent-dns-relay-clients).
 
 ### M248. A process placed in a slice of the user's service manager: what it costs, and where its memory is charged (D183)
 
