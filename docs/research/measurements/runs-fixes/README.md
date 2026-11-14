@@ -525,3 +525,12 @@ macOS arm64 on adas-mac-studio-3.local (kiln), Linux x86_64 on adacachy2 for sha
   [runs11-sweep-red.log](runs11-sweep-red.log), [runs11-sweep-green.log](runs11-sweep-green.log).
 - `TAKE_TIMEOUT`, `TAKEOVER`, `LOG_SEGMENT`: not built (ROOT cut the lane's scope); each
   is owed with its design above and its measurement in runs.md's Status lines.
+
+Built by the runs-11 owed lane (Claude, branch p/runs11-owed-v1, 2026-11-14), macOS arm64 on
+adas-mac-studio-3.local (kiln r24, r43):
+- `TAKEOVER`: b1a8f0800. Waited for while the lock is held; once the home has a start kept
+  (`ends` `start MS`), the holder `daemon.pid` names judged by D215 a slice at a time,
+  `HolderStalled` typed. The identity is `daemon.pid`, not the lock's own file (Windows'
+  LockFileEx over the whole file bars other readers). D185.
+  [runs11-takeover-red.log](runs11-takeover-red.log),
+  [runs11-takeover-green.log](runs11-takeover-green.log).

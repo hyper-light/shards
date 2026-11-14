@@ -600,7 +600,6 @@ fn a_volume_shared_here_moves_with_one_and_the_other_goes_on_here() {
 /// test's.
 #[test]
 fn a_moved_microvms_published_port_answers_there() {
-    use std::io::{Read as _, Write as _};
     let Some((here, there, _listening, image)) = machines("ports") else {
         return;
     };
@@ -613,7 +612,13 @@ fn a_moved_microvms_published_port_answers_there() {
     assert_eq!(run.status, Some(0), "{run}");
     let log_here = || logs(&here, "web");
     until(&here, "serving", &mut || log_here().contains("ready"), &log_here);
-    let ask = |home: &Path| {
+    /// What `web`'s guest answers at the port `home` published its 7000 at, read as a
+    /// stream `home`'s daemon carries to its guest: a judged wait whose kind is its caller's
+    /// site, as a running guest's answer and a restored one's first are two kinds (D209
+    /// Part 7).
+    #[track_caller]
+    fn ask(home: &Path) -> String {
+        use std::io::Read as _;
         let listed = shards_in(home, &["port", "web", "7000"]);
         let port: u16 = listed
             .stdout
@@ -630,7 +635,7 @@ fn a_moved_microvms_published_port_answers_there() {
             .read_to_string(&mut got)
             .unwrap();
         got
-    };
+    }
     let answered = ask(&here);
     assert!(
         answered.starts_with("from ") && answered.ends_with("\nhello"),
@@ -1555,7 +1560,6 @@ fn a_volume_shared_here_moves_to_another_host_with_one_and_the_other_goes_on_her
 /// checks it before anything moves, and binds it), else on one each machine picks.
 #[test]
 fn a_moved_microvms_published_port_answers_on_another_host() {
-    use std::io::Read as _;
     let Some((here, image)) = another_machine("port") else {
         return;
     };
@@ -1578,12 +1582,15 @@ fn a_moved_microvms_published_port_answers_on_another_host() {
     assert_eq!(run.status, Some(0), "{run}");
     let log_here = || logs(&here, &name);
     until(&here, "serving", &mut || log_here().contains("ready"), &log_here);
-    // The port the machine `at` asks published it at, and what the guest answered there, at
-    // address `ip`.
-    let ask = |at: &[&str], ip: std::net::IpAddr| {
+    /// The port the machine `at` asks published `name` at, and what its guest answered
+    /// there, at address `ip`: a judged wait whose kind is its caller's site, as a running
+    /// guest's answer and a restored one's first are two kinds (D209 Part 7).
+    #[track_caller]
+    fn ask(here: &Path, name: &str, at: &[&str], ip: std::net::IpAddr) -> (u16, String) {
+        use std::io::Read as _;
         let mut args = at.to_vec();
-        args.extend(["port", name.as_str(), "7000"]);
-        let listed = shards_in(&here, &args);
+        args.extend(["port", name, "7000"]);
+        let listed = shards_in(here, &args);
         let port: u16 = listed
             .stdout
             .lines()
@@ -1600,19 +1607,19 @@ fn a_moved_microvms_published_port_answers_on_another_host() {
         // Read as a stream this machine's home carries or relays, a judged wait: the other
         // machine's daemon is no party of this host's.
         let mut got = String::new();
-        common::Following::of_home(&c, &here)
+        common::Following::of_home(&c, here)
             .read_to_string(&mut got)
             .unwrap();
         (port, got)
-    };
-    let (_, answered) = ask(&[], std::net::Ipv4Addr::LOCALHOST.into());
+    }
+    let (_, answered) = ask(&here, &name, &[], std::net::Ipv4Addr::LOCALHOST.into());
     assert!(
         answered.starts_with("from ") && answered.ends_with("\nhello"),
         "{answered}"
     );
     let moved = shards_in(&here, &["move", "vm", &name, "peer"]);
     moved_to_peer(&here, &moved, &name);
-    let (port, answered) = ask(&["--context", "peer"], peer_address(&here));
+    let (port, answered) = ask(&here, &name, &["--context", "peer"], peer_address(&here));
     assert!(
         answered.starts_with("from ") && answered.ends_with("\nhello"),
         "{answered}"

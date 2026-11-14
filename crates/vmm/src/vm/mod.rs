@@ -202,20 +202,24 @@ pub use guest_time::{GuestTimes, VcpuTime};
 /// CPU resource units), and as Hex charges and caps a microVM (`hex_api::MIN_CPU_MILLI`). A
 /// unit, not a tuning: a daemon's whole CPUs are this many of it (D191, D247).
 pub const MILLI_PER_CPU: u64 = 1000;
-/// The period a machine's hold holds its vCPUs to their rate over (D191, D247): CFS
-/// bandwidth control's default, `cpu.max`'s 100000 µs (kernel/sched/sched.h l. 445-447,
-/// `default_bw_period_us`, Linux 1590cf03), which Docker's `--cpus` is a quota of. An
-/// upstream default R03 holds insufficient: its derivation, vcpus × g over the share, runs
-/// beside it (`hold::derived_period`, g learned by `platform::granule`, each limit's said in
-/// the debug log), in force once the kicks it costs are measured on each backend and the
-/// image API's rate answer carries each rate's period (D191, "Its period"; migrate-09).
-const HOLD_PERIOD: std::time::Duration = std::time::Duration::from_millis(100);
+/// What a hold holds its vCPUs to (D191, D247): the rate, none where it lets them be, and the
+/// period its governor holds it over, derived from what this process has learned of its
+/// step (`granule::period`). Where it lets them be, the period a hold of every vCPU's whole
+/// CPU would have, g itself: the finest it resolves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rated {
+    pub milli: Option<std::num::NonZeroU64>,
+    pub period: std::time::Duration,
+}
 
-/// The period this build's hold holds a machine's vCPUs to their rate over: what a run's
-/// host tells its orchestrator (D247), which derives its own window from it rather than
-/// copying a number.
-pub fn hold_period() -> std::time::Duration {
-    HOLD_PERIOD
+impl Rated {
+    /// Its period in nanoseconds, as a rate's answer says it: none where it is none or past
+    /// what a u64 counts, which no period `granule::period` derives is.
+    pub fn period_ns(&self) -> Option<std::num::NonZeroU64> {
+        u64::try_from(self.period.as_nanos())
+            .ok()
+            .and_then(std::num::NonZeroU64::new)
+    }
 }
 #[cfg(any(hv, test))]
 mod hold;

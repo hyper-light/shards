@@ -26,36 +26,45 @@
 //! A priority is strict where Linux's slice kept a thread's share its weight's: a raised
 //! thread that runs on takes its CPU from every thread below it, and Microsoft keeps raised
 //! priorities for threads that respond and lowers processor-intensive ones (Scheduling
-//! Priorities). So a governor watches each raised thread: every [`PERIOD`] it reads the CPU
+//! Priorities). So a governor watches each raised thread: every [`period`] it reads the CPU
 //! time the thread used since its last look (GetThreadTimes, as the hold reads its vCPUs',
 //! D191) and keeps its credit: half of the time that passed, less what it used, never more
-//! than half a period nor less than none. A thread out of credit goes back to
+//! than a period nor less than none. A thread out of credit goes back to
 //! THREAD_PRIORITY_NORMAL, to share its host's CPUs as before, and is raised again once a
 //! look finds it some. A raised thread so takes from its host's threads half a CPU over any
-//! long stretch, and a period more at most (its credit, and what it runs past it before
+//! long stretch, and two periods more at most (its credit, and what it runs past it before
 //! the next look): what a fair scheduler gives one thread beside one busy thread of its
 //! weight (Linux's slice, `run_promptly`).
+//!
+//! The period is D191's for one thread held to half a CPU (`granule::period`): 1 × g over a
+//! half, 2g, g what this process has learned of its governors' step, its thread clock's
+//! (GetThreadTimes' 15.625 ms, PM M294) where that is the coarser. Cold, the governor measures
+//! both as it starts, before its first look (`granule::measure`: one shortest wait, and two of
+//! its clock's steps of its own CPU time); a thread raised before that is credited at a g of
+//! `granule::LEAST_WAIT`, a 2 ms period, so small a credit that it may go back to normal until
+//! the first look: less authority, never more.
 //!
 //! A thread's half bounds what it takes alone, not what raised threads take together: three
 //! that share one CPU each run a third of it, each under its half, and keep it from the
 //! host's threads between them (platform-10). So the raised threads that may run on one set
 //! of CPUs (GetThreadGroupAffinity: a processor group and a mask in it, read at each look)
 //! also share a pool, credited half of each of those CPUs' time and charged what they ran
-//! raised, kept to half a period of each and none: a thread is raised only while its own
-//! credit and its set's pool both have some. Raised threads so take half of the CPUs they
-//! run on over any long stretch, and half a period of each more at most, however many share
-//! them. A pool is the governor's, one a process: the raised threads of other processes (other
+//! raised, kept to a period of each and none: a thread is raised only while its own credit
+//! and its set's pool both have some. Raised threads so take half of the CPUs they run on
+//! over any long stretch, and two periods of each more at most, however many share them. A pool is the governor's, one a process: the raised threads of other processes (other
 //! VM processes on the host) draw on pools of their own, which no owner here sees (owed,
 //! D191).
 //!
 //! The credit is what keeps a thread that waits raised, as GetThreadTimes counts: in whole
 //! steps of its clock, 15.625 ms (PM M294), each charged to the thread that runs as it
-//! ticks, 6.4 a period. Judged by each period alone, a thread that ran 1 ms of every 6 (17
-//! ms a period at most) was charged 4 steps, 62.5 ms, of one period, more than its half,
-//! and went back to normal for a period (`a_thread_that_waits_between_its_runs_stays_raised`
-//! on CI's windows-2025, 2026-11-06: 187.5 ms, 12 steps, in its second). With its credit,
-//! what it does not use of each period's half carries over, and the steps that land on its
-//! runs must outrun half of a stretch by half a period more.
+//! ticks. Judged by each period alone, a thread that ran 1 ms of every 6 (17 ms of 100 at
+//! most) was charged 4 steps, 62.5 ms, of one 100 ms period, more than its half, and went
+//! back to normal for a period (`a_thread_that_waits_between_its_runs_stays_raised` on CI's
+//! windows-2025, 2026-11-06: 187.5 ms, 12 steps, in its second). With its credit, what it
+//! does not use of each period's half carries over. Its credit holds the most one look can
+//! charge a thread, the whole period of its one CPU (every step of the period landing on its
+//! runs), so that no single look's steps put a thread that keeps to its half back to normal:
+//! at 2g, a look of two steps charged both.
 
 use std::io;
 use std::marker::PhantomData;
@@ -71,18 +80,27 @@ use windows_sys::Win32::System::Threading::{
 };
 use windows_sys::Win32::System::WindowsProgramming::THREAD_PRIORITY_ERROR_RETURN;
 
+use super::granule;
 use crate::sync::{lock, wait};
 
-/// The time over which the governor counts each thread's use: the hold's period (D191),
-/// over which GetThreadTimes' clock held three spinning threads to within a tenth of a CPU of
-/// their share (PM M294).
-const PERIOD: Duration = Duration::from_millis(100);
 /// The priority a watched thread runs at while it has credit.
 const RAISED: THREAD_PRIORITY = THREAD_PRIORITY_ABOVE_NORMAL;
 
-/// The most credit a thread keeps, in nanoseconds: what one period gives, half of it.
-fn most_credit() -> u64 {
-    u64::try_from(PERIOD.as_nanos() / 2).unwrap_or(u64::MAX)
+/// The time over which the governor counts each thread's use at `g`: D191's period for one
+/// thread held to half a CPU (`granule::HALF_CPU`), 2g (`granule::period`).
+fn period_at(g: Duration) -> Result<Duration, granule::Outgrown> {
+    granule::period(1, granule::HALF_CPU, g)
+}
+
+/// [`period_at`] g as this process knows it now (`granule::g`).
+fn period() -> Result<Duration, granule::Outgrown> {
+    period_at(granule::g())
+}
+
+/// The most credit a thread keeps over `period`, in nanoseconds: the most one look can charge
+/// it, the whole period of its one CPU.
+fn most_credit(period: Duration) -> u64 {
+    u64::try_from(period.as_nanos()).unwrap_or(u64::MAX)
 }
 
 /// The CPUs a thread may run on: a processor group, and its mask of them in it
@@ -167,7 +185,7 @@ static ADDED: Condvar = Condvar::new();
 static GOVERNOR: OnceLock<Result<(), String>> = OnceLock::new();
 
 /// The calling thread raised while the governor finds it credit: while it uses no more
-/// than half of its CPU, by half a period over any stretch.
+/// than half of its CPU, by a period over any stretch.
 /// Held by the thread while it runs, and dropped before it ends, which takes it from the
 /// governor's watch and sets it back to THREAD_PRIORITY_NORMAL.
 #[derive(Debug)]
@@ -188,8 +206,10 @@ impl Drop for Watch {
 
 /// Raises the calling thread to [`RAISED`] and has the governor watch it ([`Watch`]). A
 /// thread its program or its user set at another priority is left at it, unwatched: `None`.
+/// Refused, the thread left as it is, where no period is derived ([`granule::Outgrown`]).
 pub fn raise_current() -> Result<Option<Watch>, String> {
     GOVERNOR.get_or_init(start_governor).clone()?;
+    let period = period().map_err(|e| format!("the priority governor's period: {e}"))?;
     // SAFETY: the calling thread's pseudo-handle, which is not closed.
     let current = unsafe { GetThreadPriority(GetCurrentThread()) };
     if u32::try_from(current).is_ok_and(|p| p == THREAD_PRIORITY_ERROR_RETURN) {
@@ -223,7 +243,7 @@ pub fn raise_current() -> Result<Option<Watch>, String> {
         handle,
         ran: 0,
         at: Instant::now(),
-        credit: most_credit(),
+        credit: most_credit(period),
         raised: false,
         cpus: Cpus { group: 0, mask: 0 },
     };
@@ -231,7 +251,7 @@ pub fn raise_current() -> Result<Option<Watch>, String> {
     watched.cpus = Cpus::of(handle)?;
     let mut governed = lock(&WATCHED);
     // Raised only where its CPUs' pool has credit, as each look raises it.
-    if governed.pooled(watched.cpus, watched.at, 0) > 0 {
+    if governed.pooled(watched.cpus, watched.at, 0, period) > 0 {
         set(handle, RAISED)?;
         watched.raised = true;
     }
@@ -265,52 +285,77 @@ fn start_governor() -> Result<(), String> {
 }
 
 /// Once a period, for as long as the process runs, a look at every thread it watches; while
-/// it watches none, a wait for one.
+/// it watches none, a wait for one. Each period derived as its look begins, from g as the
+/// process knows it then; each wait's lateness taught to it (`granule::LATE`).
 fn govern() {
+    // Its wake and its thread clock's step, g's, measured before it is raised: one shortest
+    // wait, and two of its clock's steps of its own CPU time at most.
+    if let Err(e) = granule::measure() {
+        crate::debug!("the priority governor knows no clock step: {}", e.0);
+    }
     // It looks on time however busy the threads it raises keep the CPUs: above them, as the
     // hold's governor runs above its vCPUs (PM M294), for the moment a look takes.
     if let Err(e) = super::windows::run_time_critical() {
         crate::debug!("the priority governor runs at its default priority: {e}");
     }
     loop {
-        {
+        let period = {
             let mut governed = lock(&WATCHED);
             while governed.threads.is_empty() {
                 governed = wait(&ADDED, governed);
             }
             // Under the lock, which a thread takes to leave the watch before it ends: no
             // thread is set once its Watch is gone.
-            governed.look(Instant::now());
-        }
-        std::thread::sleep(PERIOD);
+            match period() {
+                Ok(period) => {
+                    governed.look(Instant::now(), period);
+                    period
+                }
+                // No period, no look: every thread back to normal and let go of, as no
+                // other is raised (`raise_current`).
+                Err(e) => {
+                    crate::warn!("the priority governor: {e}");
+                    for w in &mut governed.threads {
+                        raise(w, false);
+                    }
+                    governed.threads.clear();
+                    governed.pools.clear();
+                    continue;
+                }
+            }
+        };
+        let began = Instant::now();
+        std::thread::sleep(period);
+        granule::LATE.waited(period, began);
     }
 }
 
 /// The `credit` of threads that may run on `cpus` CPUs, once `passed` has gone by since it
 /// was last given its due and they used `used` nanoseconds of CPU time: half of each CPU's
-/// time added, kept to half a period of each ([`most_credit`]). A thread alone is one CPU's.
-fn credited(credit: u64, passed: Duration, used: u64, cpus: u64) -> u64 {
+/// time added, kept to a `period` of each ([`most_credit`]). A thread alone is one CPU's.
+fn credited(credit: u64, passed: Duration, used: u64, cpus: u64, period: Duration) -> u64 {
     let half = u64::try_from(passed.as_nanos() / 2).unwrap_or(u64::MAX);
     credit
         .saturating_add(half.saturating_mul(cpus))
         .saturating_sub(used)
-        .min(most_credit().saturating_mul(cpus))
+        .min(most_credit(period).saturating_mul(cpus))
 }
 
 impl Governed {
     /// The credit of the pool of the threads that may run on `cpus`, once given its due at
     /// `now` and charged `used`: made full where there was none, as a thread's own credit
     /// starts.
-    fn pooled(&mut self, cpus: Cpus, now: Instant, used: u64) -> u64 {
+    fn pooled(&mut self, cpus: Cpus, now: Instant, used: u64, period: Duration) -> u64 {
         let count = cpus.count();
         match self.pools.iter_mut().find(|p| p.cpus == cpus) {
             Some(pool) => {
-                pool.credit = credited(pool.credit, now.saturating_duration_since(pool.at), used, count);
+                let passed = now.saturating_duration_since(pool.at);
+                pool.credit = credited(pool.credit, passed, used, count, period);
                 pool.at = now;
                 pool.credit
             }
             None => {
-                let credit = most_credit().saturating_mul(count).saturating_sub(used);
+                let credit = most_credit(period).saturating_mul(count).saturating_sub(used);
                 self.pools.push(Pool {
                     cpus,
                     credit,
@@ -321,14 +366,15 @@ impl Governed {
         }
     }
 
-    /// One look at every watched thread at `now`: each charged what it used since its last
-    /// ([`charge`]), and its CPUs' pool what it ran raised; then each raised where its own
-    /// credit and its pool's both have some, else back at THREAD_PRIORITY_NORMAL.
-    fn look(&mut self, now: Instant) {
+    /// One look at every watched thread at `now`, over `period`: each charged what it used
+    /// since its last ([`charge`]), and its CPUs' pool what it ran raised; then each raised
+    /// where its own credit and its pool's both have some, else back at
+    /// THREAD_PRIORITY_NORMAL.
+    fn look(&mut self, now: Instant, period: Duration) {
         // Each set of CPUs a thread may run on, and what its threads ran raised.
         let mut sets: Vec<(Cpus, u64)> = Vec::new();
         for w in &mut self.threads {
-            let used = charge(w, now).unwrap_or(0);
+            let used = charge(w, now, period).unwrap_or(0);
             match sets.iter_mut().find(|(cpus, _)| *cpus == w.cpus) {
                 Some((_, sum)) => *sum = sum.saturating_add(used),
                 None => sets.push((w.cpus, used)),
@@ -338,7 +384,7 @@ impl Governed {
             .retain(|p| sets.iter().any(|(cpus, _)| *cpus == p.cpus));
         let credits: Vec<(Cpus, u64)> = sets
             .into_iter()
-            .map(|(cpus, used)| (cpus, self.pooled(cpus, now, used)))
+            .map(|(cpus, used)| (cpus, self.pooled(cpus, now, used, period)))
             .collect();
         for w in &mut self.threads {
             let pooled = credits
@@ -349,13 +395,13 @@ impl Governed {
     }
 }
 
-/// A watched thread's look at `now`, once a period has passed since its last: its credit
+/// A watched thread's look at `now`, once a `period` has passed since its last: its credit
 /// given half of the time since and charged the CPU time it used, and its CPUs read again.
 /// What it ran raised, its pool's to be charged: `None` where no look was due or its time is
 /// unread.
-fn charge(w: &mut Watched, now: Instant) -> Option<u64> {
+fn charge(w: &mut Watched, now: Instant, period: Duration) -> Option<u64> {
     let passed = now.saturating_duration_since(w.at);
-    if passed < PERIOD {
+    if passed < period {
         return None;
     }
     let ran = match super::windows::thread_time(w.handle) {
@@ -368,7 +414,7 @@ fn charge(w: &mut Watched, now: Instant) -> Option<u64> {
     let used = ran.saturating_sub(w.ran);
     w.ran = ran;
     w.at = now;
-    w.credit = credited(w.credit, passed, used, 1);
+    w.credit = credited(w.credit, passed, used, 1, period);
     match Cpus::of(w.handle) {
         Ok(cpus) => w.cpus = cpus,
         Err(e) => crate::debug!("a watched thread's CPUs are those last read: {e}"),
@@ -499,26 +545,52 @@ mod tests {
         assert_eq!(after, THREAD_PRIORITY_NORMAL);
     }
 
+    /// GetThreadTimes' step (PM M294), as a test's g.
+    const STEP: u64 = 15_625_000;
+
+    /// The governor's look is D191's period for one thread at half a CPU, 2g (platform-11):
+    /// 31.25 ms at GetThreadTimes' step, 2 ms cold, never a fixed 100 ms.
+    #[test]
+    fn the_look_is_d191s_period_for_half_a_cpu() {
+        assert_eq!(
+            period_at(Duration::from_nanos(STEP)),
+            Ok(Duration::from_nanos(2 * STEP))
+        );
+        assert_eq!(period_at(granule::LEAST_WAIT), Ok(2 * granule::LEAST_WAIT));
+        assert!(period_at(Duration::MAX).is_err());
+        assert!(period().unwrap() >= 2 * granule::LEAST_WAIT);
+    }
+
+    /// One look can charge a thread its whole period, every step of it landing on its runs: a
+    /// thread with its credit keeps some, and stays raised, as one at half a period's credit
+    /// did not; one that spins two periods through, charged all of each, has none.
+    #[test]
+    fn a_look_charged_its_whole_period_keeps_a_thread_raised() {
+        let period = Duration::from_nanos(2 * STEP);
+        let full = most_credit(period);
+        assert_eq!(full, 2 * STEP);
+        let once = credited(full, period, 2 * STEP, 1, period);
+        assert!(once > 0, "out of credit at one look's steps");
+        assert_eq!(credited(once, period, 2 * STEP, 1, period), 0);
+    }
+
     /// What CI's clock charged a thread that ran 1 ms of every 6: whole 15.625 ms steps
-    /// (PM M294), none to two a period and 4 in one (62.5 ms, more than its half), which
-    /// put it back to normal where each period was judged alone. It keeps credit through
-    /// them; one that spins, charged 7 steps of a period, has none left at its first look;
-    /// one charged 4 steps of every period runs out of it at its fourth.
+    /// (PM M294), none to two a 2g look and two in two looks running. It keeps credit
+    /// through them; one charged a step more than half of each look's runs out of it.
     #[test]
     fn credit_carries_a_thread_that_waits_across_its_clocks_steps() {
-        const STEP: u64 = 15_625_000;
-        let mut credit = most_credit();
-        for steps in [1, 0, 1, 2, 0, 1, 4, 0, 1, 1, 2, 1] {
-            credit = credited(credit, PERIOD, steps * STEP, 1);
+        let period = Duration::from_nanos(2 * STEP);
+        let mut credit = most_credit(period);
+        for steps in [1, 0, 1, 2, 0, 1, 0, 2, 0, 1, 1, 0, 1] {
+            credit = credited(credit, period, steps * STEP, 1, period);
             assert!(credit > 0, "out of credit at {steps} steps");
         }
-        assert_eq!(credited(most_credit(), PERIOD, 7 * STEP, 1), 0);
-        let (mut credit, mut looks) = (most_credit(), 0);
+        let (mut credit, mut looks) = (most_credit(period), 0);
         while credit > 0 {
-            credit = credited(credit, PERIOD, 4 * STEP, 1);
+            credit = credited(credit, period, 2 * STEP, 1, period);
             looks += 1;
         }
-        assert_eq!(looks, 4);
+        assert_eq!(looks, 2);
     }
 
     /// The highest CPU this process may run on, as a mask of it alone.
@@ -599,33 +671,41 @@ mod tests {
         assert!(host_ran > 0, "the normal thread never ran");
     }
 
-    /// A set of CPUs' pool is credited half of each CPU's time and kept to half a period of
-    /// each: three threads of one CPU running all of it between them drain it, at a third of
-    /// it each, under what each alone is credited; on two CPUs they take three quarters of
+    /// A set of CPUs' pool is credited half of each CPU's time and kept to a period of each:
+    /// three threads of one CPU running all of it between them drain it, at a third of it
+    /// each, under what each alone is credited; on two CPUs they take three quarters of
     /// them, and drain it too, as two would not.
     #[test]
     fn a_pool_is_half_of_its_cpus_time() {
-        let full = u64::try_from(PERIOD.as_nanos()).unwrap();
-        assert!(
-            credited(most_credit(), PERIOD, full / 3, 1) > 0,
-            "each thread's own credit, at a third of the CPU"
-        );
+        let period = Duration::from_nanos(2 * STEP);
+        let full = most_credit(period);
+        let mut own = full;
+        for _ in 0..4 {
+            own = credited(own, period, full / 3, 1, period);
+            assert!(own > 0, "each thread's own credit, at a third of the CPU");
+        }
+        let mut pool = full;
+        for _ in 0..2 {
+            pool = credited(pool, period, full, 1, period);
+        }
+        assert_eq!(pool, 0, "one CPU's pool, all of it run");
+        let two = 2 * full;
         assert_eq!(
-            credited(most_credit(), PERIOD, full, 1),
-            0,
-            "one CPU's pool, all of it run"
-        );
-        let two = 2 * most_credit();
-        assert_eq!(
-            credited(two, PERIOD, 0, 2),
+            credited(two, period, 0, 2, period),
             two,
-            "kept to half a period of each CPU"
+            "kept to a period of each CPU"
         );
-        assert_eq!(credited(two, PERIOD, full, 2), two, "half of two CPUs used");
+        assert_eq!(
+            credited(two, period, full, 2, period),
+            two,
+            "half of two CPUs used"
+        );
         let three_quarters = full * 3 / 2;
-        let once = credited(two, PERIOD, three_quarters, 2);
-        assert!(once < two);
-        assert_eq!(credited(once, PERIOD, three_quarters, 2), 0);
+        let mut drained = two;
+        for _ in 0..4 {
+            drained = credited(drained, period, three_quarters, 2, period);
+        }
+        assert_eq!(drained, 0);
     }
 
     /// A thread its program set at another priority is left at it.
