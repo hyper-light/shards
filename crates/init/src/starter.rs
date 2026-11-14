@@ -9,9 +9,13 @@
 //! The member's first process forks it once it is confined, in its working directory, just
 //! before its program runs ([`fork`]), so it is everything that process is: its IDs, no
 //! capability, `no_new_privs`, its Landlock domain, its seccomp filter, its namespaces and
-//! its cgroup (whose `pids.max` it counts in). Its parent is the member's namespace init
-//! (`CLONE_PARENT`), so the member's program never has it as a child, and it ends with the
-//! member as every process of the member's PID namespace does. It holds nothing of the
+//! its cgroup (whose `pids.max` it counts in). It is that process's child, as nothing else
+//! can be: that process is PID 1 of the member's PID namespace, to which the kernel refuses
+//! `CLONE_PARENT` (kernel/fork.c `copy_process`: no namespace's init makes siblings). Its
+//! exit signal is none, so the member's program, waiting for every child it has, sees none
+//! of it (kernel/exit.c `eligible_child`: a child that reports by no SIGCHLD is waited for
+//! only with `__WCLONE` or `__WALL`), and it ends with the member as every process of the
+//! member's PID namespace does. It holds nothing of the
 //! member's: its stdio, launch status and ruleset closed, it keeps one descriptor, its end
 //! of a channel to init ([`STARTER_FD`]), which the member's program never has (close-on-
 //! exec). It is not dumpable (`PR_SET_DUMPABLE` 0), so no process of the member's, which has
@@ -328,11 +332,10 @@ fn send(channel: RawFd, message: &[u8], fds: &[RawFd]) -> io::Result<()> {
 /// Called in a process of one thread that holds its starter's channel at [`STARTER_FD`],
 /// close-on-exec, and that execs or exits next.
 pub(crate) unsafe fn fork() {
-    // SAFETY: clone(2) as fork(2), its parent the caller's (`CLONE_PARENT`), its exit
-    // signal the caller's own (kernel/fork.c, `copy_process`); the child calls the kernel
-    // alone and never returns.
+    // SAFETY: clone(2) as fork(2), of no exit signal (flags 0: the module's doc); the child
+    // calls the kernel alone and never returns.
     unsafe {
-        let pid = libc::syscall(libc::SYS_clone, libc::CLONE_PARENT as libc::c_ulong, 0, 0, 0, 0);
+        let pid = libc::syscall(libc::SYS_clone, 0 as libc::c_ulong, 0, 0, 0, 0);
         if pid == 0 {
             serve()
         }

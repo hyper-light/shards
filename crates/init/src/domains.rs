@@ -4109,6 +4109,72 @@ mod tests {
         assert_eq!(said, "exited 0");
     }
 
+    /// confine-10's starter where a member is as init starts it: its first process is PID 1
+    /// of a PID namespace of its own (`start`'s `CLONE_NEWPID`), to which the kernel refuses
+    /// `CLONE_PARENT` (kernel/fork.c `copy_process`: no namespace's init makes siblings, its
+    /// `SIGNAL_UNKILLABLE`), which left every member with no starter and every command run in
+    /// one refused (`Refusal::NoStarter`). Its starter is born its child, of no exit signal,
+    /// so its program's `wait(2)` sees no child of it (kernel/exit.c `eligible_child`: a child
+    /// that reports by no SIGCHLD is waited for only with `__WCLONE` or `__WALL`), and a
+    /// command run in it signals its PID 1. Run as root of IDs past its own (`unshare
+    /// --map-auto --map-root-user`), where uid 1000 is another's; else a SKIP.
+    #[test]
+    fn a_member_first_of_its_pid_namespace_has_its_starter() {
+        let said = as_root_of_own_mounts(|| {
+            // SAFETY: unshare(2) of this single-threaded child: its next child is PID 1 of a
+            // PID namespace of its own.
+            if unsafe { libc::unshare(libc::CLONE_NEWPID) } != 0 {
+                return format!("SKIP: unshare: {}", io::Error::last_os_error());
+            }
+            let c = member_confinement(1000, Vec::new(), "/");
+            let (starter, theirs) = crate::starter::channel().unwrap();
+            let mut fds = [0 as RawFd; 2];
+            // SAFETY: pipe2(2) into a two-element array.
+            assert_eq!(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) }, 0);
+            // SAFETY: both descriptors were just made, and are owned here alone.
+            let (r, w) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+            let Some(member) = a_confined_member(&c, || {
+                // SAFETY: dup3(2) of the starter's end to where the starter holds it, the
+                // starter forked as a member's first process forks it, then waitpid(2),
+                // getpid(2) and write(2) of a byte of this stack's.
+                unsafe {
+                    libc::dup3(theirs.as_raw_fd(), crate::starter::STARTER_FD, libc::O_CLOEXEC);
+                    crate::starter::fork();
+                    libc::close(crate::starter::STARTER_FD);
+                    let waited = libc::waitpid(-1, std::ptr::null_mut(), libc::WNOHANG);
+                    let none = waited == -1 && *libc::__errno_location() == libc::ECHILD;
+                    let byte = [match (libc::getpid() == 1, none) {
+                        (false, _) => b'n',
+                        (true, true) => b'e',
+                        (true, false) => b'w',
+                    }];
+                    libc::write(w.as_raw_fd(), byte.as_ptr().cast(), 1);
+                }
+            }) else {
+                return "SKIP: confining the member".into();
+            };
+            drop((theirs, w));
+            let mut waited = [0u8; 1];
+            // SAFETY: read(2) into a one-byte buffer of ours.
+            unsafe { libc::read(r.as_raw_fd(), waited.as_mut_ptr().cast(), 1) };
+            let said = command_in(&starter, &[c"/bin/sh", c"-c", c"kill -0 1"]);
+            // SAFETY: kill(2) and waitpid(2) of this process's own child.
+            unsafe {
+                libc::kill(member, libc::SIGKILL);
+                libc::waitpid(member, std::ptr::null_mut(), 0);
+            }
+            let waited = match waited[0] {
+                b'e' => "its wait sees no child",
+                b'w' => "its wait sees its starter",
+                b'n' => "it is not PID 1",
+                _ => "it said nothing",
+            };
+            format!("{waited}; command {said}")
+        });
+        let Some(said) = said else { return };
+        assert_eq!(said, "its wait sees no child; command exited 0");
+    }
+
     /// `argv`, run by `starter` as init runs a command in a member, its stdio /dev/null: how
     /// it ended, as `exited N` or `signal N`, or why it did not start.
     fn command_in(starter: &crate::starter::Starter, argv: &[&CStr]) -> String {

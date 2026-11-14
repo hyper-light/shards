@@ -30254,10 +30254,15 @@ ruleset, the run's seccomp filter.
   - *The starter* (init's `starter.rs`). The member's first process, once confined and in
     its working directory, forks it just before its program runs, so it is everything that
     process is: its IDs, no capability, `no_new_privs`, its Landlock domain, its seccomp
-    filter, its namespaces and its cgroup. Its parent is the member's namespace init
-    (`CLONE_PARENT`), so the member's program never has it as a child (a program that waits
-    for every child would wait on it), and it ends with the member, as every process of the
-    member's PID namespace does once the reaper exits. It holds one descriptor, its end of a
+    filter, its namespaces and its cgroup. It is that process's child, of no exit signal
+    (ROOT, 2026-11-14; was `CLONE_PARENT`, which the kernel refuses that process, PID 1 of
+    the member's PID namespace: kernel/fork.c `copy_process`, no namespace's init makes
+    siblings, so no member had a starter and every command run in one was refused
+    `NoStarter`; red domains.rs `a_member_first_of_its_pid_namespace_has_its_starter`). A
+    child that reports by no SIGCHLD is waited for only with `__WCLONE` or `__WALL`
+    (kernel/exit.c `eligible_child`), so the member's program, which a program that waits
+    for every child would wait on, sees none of it, and it ends with the member, as every
+    process of the member's PID namespace does once the reaper exits. It holds one descriptor, its end of a
     seqpacket channel to init (`starter::STARTER_FD`, next above the ruleset's), which the
     member's program never has (close-on-exec); its stdio, the launch status and the ruleset
     it closes. It is not dumpable (`PR_SET_DUMPABLE` 0), so no process of the member's, which
