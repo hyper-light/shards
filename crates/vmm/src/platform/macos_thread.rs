@@ -13,8 +13,8 @@
 //! DEPRESSPRI for a real-time thread the fail-safe demoted). A run's vCPU busy for a
 //! second ran next to nothing for the eleven after (PM M317). So each thread made
 //! real-time here is watched by a governor, which looks at it once a scheduler tick. One
-//! that has run a whole tick since it was last seen waiting is looked at every millisecond,
-//! the constraint its policy asks for, for a tick more: found waiting at any look, it was
+//! that has run a whole tick since it was last seen waiting is looked at as finely as its host
+//! wakes (the cold pair's constraint, below), for a tick more: found waiting at any look, it was
 //! waiting between its runs, as an I/O-bound vCPU or a device worker does, and stays; found
 //! running at every one, it goes to timeshare, as any program's thread runs, and is
 //! real-time again once it is seen waiting. One so moved is at most three ticks into the
@@ -22,28 +22,104 @@
 //! do. Moved at the first tick found running instead, a block device's vCPUs, waiting on
 //! its answers half their time, were moved too and read fewer than with no governor
 //! (PM M317).
+//!
+//! The policy's pair is each thread's own (platform-11), never a figure of a host's:
+//! - *Its computation*, the CPU it may run before another real-time thread may preempt it, is
+//!   its batch: the most CPU the governor has seen it run between two looks that each found
+//!   it waiting, which bounds every run between its waits in that span from above, so that
+//!   none is preempted for its computation's sake. XNU takes one from 50 µs to 50 ms
+//!   (osfmk/kern/sched_rt.c `sched_realtime_timebase_init`: `min_rt_quantum`, "smallest rt
+//!   computation (50 us)", `max_rt_quantum`, "maximum rt computation (50 ms)"); a batch
+//!   outside is held to them.
+//! - *Its constraint*, the time within which it asks to have run its computation, is D191's
+//!   period for one thread at half a CPU (`granule::period(1, HALF_CPU, computation)`, twice
+//!   the computation): the most a fair scheduler gives a thread that contends at all.
+//! - *Cold*, before the governor has seen a batch, the computation is the host's measured
+//!   wake (`granule::measure`: the lateness of its shortest wait), held to XNU's least: a
+//!   thread asks for no more than the host's own wake grain until it is seen to need more.
+//! - *Typed failure*: no wake measured, or a pair the timebase cannot say in a u32 of its
+//!   ticks, leaves the thread at its policy, why said ([`Unconstrained`]).
 
 use std::marker::PhantomData;
 use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use super::granule;
 use crate::sync::{lock, wait};
 
-/// CPU time a vCPU may use per scheduling period before XNU's real-time fail-safe
-/// demotes it, and the latency window it asks for. These are the values measured in M10.
-const COMPUTATION_NS: u64 = 500_000;
-const CONSTRAINT_NS: u64 = 1_000_000;
+/// The least and the most computation XNU takes of a time-constraint policy
+/// (osfmk/kern/sched_rt.c `sched_realtime_timebase_init`: `min_rt_quantum`, 50 µs;
+/// `max_rt_quantum`, 50 ms).
+const MIN_RT_QUANTUM: Duration = Duration::from_micros(50);
+const MAX_RT_QUANTUM: Duration = Duration::from_millis(50);
+
+/// A thread's time-constraint pair: the CPU it may run before another real-time thread may
+/// preempt it, and the time within which it asks to have run it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Constraint {
+    computation: Duration,
+    constraint: Duration,
+}
+
+/// Why a thread is not made real-time by its own pair.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Unconstrained {
+    /// No wake of the host's was measured, which a cold thread's computation is.
+    Unmeasured,
+    /// Its constraint is past what D191's period says ([`granule::Outgrown`]).
+    Outgrown(granule::Outgrown),
+    /// The pair is past what the timebase says in a u32 of its ticks, or it is unread.
+    Timebase(String),
+}
+
+impl std::fmt::Display for Unconstrained {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Unconstrained::Unmeasured => f.write_str("no wake of the host's measured"),
+            Unconstrained::Outgrown(o) => write!(f, "its constraint: {o}"),
+            Unconstrained::Timebase(why) => write!(f, "its pair in the timebase's ticks: {why}"),
+        }
+    }
+}
+
+/// The pair of a thread whose batch is `batch`: its computation the batch held to XNU's
+/// bounds, its constraint D191's period for one thread at half a CPU of it.
+fn constraint_of(batch: Duration) -> Result<Constraint, Unconstrained> {
+    let computation = batch.clamp(MIN_RT_QUANTUM, MAX_RT_QUANTUM);
+    let constraint = granule::period(1, granule::HALF_CPU, computation).map_err(Unconstrained::Outgrown)?;
+    Ok(Constraint {
+        computation,
+        constraint,
+    })
+}
+
+/// A cold thread's pair: its batch the host's measured wake, before the governor has seen
+/// it run ([`granule::measure`], once a process).
+fn cold() -> Result<Constraint, Unconstrained> {
+    if let Err(e) = granule::measure() {
+        crate::debug!("the real-time policy knows no clock step: {}", e.0);
+    }
+    constraint_of(granule::step().late.ok_or(Unconstrained::Unmeasured)?)
+}
+
+/// The batch learned of a thread that ran `span` of CPU between two looks that each found it
+/// waiting, `batch` before: the most seen.
+fn learned(batch: Option<Duration>, span: Duration) -> Option<Duration> {
+    match (batch, span.is_zero()) {
+        (batch, true) => batch,
+        (None, false) => Some(span),
+        (Some(batch), false) => Some(batch.max(span)),
+    }
+}
 
 /// How often the governor looks: XNU's scheduler tick, at which it ages timeshare threads'
 /// usage (osfmk/kern/sched.h, `SCHED_TICK_SHIFT`: a second shifted right by 3).
 const TICK: Duration = Duration::from_millis(1000 >> 3);
 /// What XNU's fail-safe lets a real-time thread run without blocking: 100 quanta
 /// (sched_prim.c, `MAX_UNSAFE_RT_QUANTA`) of 10 ms (`DEFAULT_PREEMPTION_RATE`, 100 a
-/// second).
+/// second). A thread suspected of running without a wait is looked at every constraint of
+/// the cold pair, as finely as the host wakes ([`govern`]).
 const FAIL_SAFE: Duration = Duration::from_millis(100 * 10);
-/// How often a thread suspected of running without a wait is looked at: the constraint its
-/// policy asks for.
-const SUSPECT_LOOK: Duration = Duration::from_nanos(CONSTRAINT_NS);
 // A suspect, found once it has run a tick past its last wait (two at most past the look
 // before) and moved a tick after, has run at most three by then.
 const _: () = assert!(3 * TICK.as_millis() < FAIL_SAFE.as_millis());
@@ -70,8 +146,12 @@ struct Watched {
     /// Whether the governor has it at the time-constraint policy.
     realtime: bool,
     /// When it was found to have run a tick past its last wait, if it has not been seen
-    /// waiting since: it is looked at every [`SUSPECT_LOOK`] until a tick from then.
+    /// waiting since: it is looked at every constraint of the cold pair until a tick from then.
     suspected: Option<Instant>,
+    /// The most CPU it was seen to run between two looks that each found it waiting.
+    batch: Option<Duration>,
+    /// The pair it was last set at, or would be once it waits.
+    asked: Constraint,
 }
 
 static WATCHED: Mutex<Vec<Watched>> = Mutex::new(Vec::new());
@@ -112,13 +192,16 @@ pub fn make_current_realtime() -> Result<Watch, String> {
     }
     // SAFETY: the calling thread's own port, which lives as long as it does.
     let port = unsafe { libc::pthread_mach_thread_np(libc::pthread_self()) };
-    set_realtime(port)?;
+    let asked = cold().map_err(|e| e.to_string())?;
+    set_realtime(port, asked)?;
     lock(&WATCHED).push(Watched {
         port,
         // As if last seen waiting as it began, its time before now counted.
         waited_at: 0,
         realtime: true,
         suspected: None,
+        batch: None,
+        asked,
     });
     ADDED.notify_one();
     Ok(Watch {
@@ -127,23 +210,25 @@ pub fn make_current_realtime() -> Result<Watch, String> {
     })
 }
 
-/// The time-constraint policy, for the thread `port` names.
-fn set_realtime(port: libc::mach_port_t) -> Result<(), String> {
+/// The time-constraint policy of `pair`, for the thread `port` names.
+fn set_realtime(port: libc::mach_port_t, pair: Constraint) -> Result<(), String> {
     let mut tb = MachTimebaseInfo { numer: 0, denom: 0 };
     // SAFETY: a struct for mach_timebase_info to fill.
     if unsafe { mach_timebase_info(&raw mut tb) } != 0 || tb.numer == 0 {
         return Err("mach_timebase_info failed".into());
     }
-    let to_abs = |ns: u64| {
-        ns.checked_mul(u64::from(tb.denom))
+    let to_abs = |d: Duration| {
+        u64::try_from(d.as_nanos())
+            .ok()
+            .and_then(|ns| ns.checked_mul(u64::from(tb.denom)))
             .map(|v| v / u64::from(tb.numer))
             .and_then(|v| u32::try_from(v).ok())
-            .ok_or("thread policy interval out of range")
+            .ok_or_else(|| Unconstrained::Timebase(format!("{d:?} past a u32 of its ticks")).to_string())
     };
     let mut policy = libc::thread_time_constraint_policy {
         period: 0,
-        computation: to_abs(COMPUTATION_NS)?,
-        constraint: to_abs(CONSTRAINT_NS)?,
+        computation: to_abs(pair.computation)?,
+        constraint: to_abs(pair.constraint)?,
         preemptible: 1,
     };
     // SAFETY: a thread port of this task, and a policy of the flavor's count of words.
@@ -206,13 +291,18 @@ fn start_governor() -> Result<(), String> {
 }
 
 /// Once a tick, for as long as the process runs, a look at every thread it watches, and
-/// every [`SUSPECT_LOOK`] at those suspected of running without a wait; while it watches
-/// none, a wait for one.
+/// every constraint of the cold pair at those suspected of running without a wait; while it
+/// watches none, a wait for one.
 fn govern() {
     // It looks on time however busy the threads it watches keep the CPUs: at their
-    // policy, which its sleeps between looks keep it clear of the fail-safe in.
+    // policy, its own pair the cold one (a look's batch is no more than the host's wake),
+    // which its sleeps between looks keep it clear of the fail-safe in.
     // SAFETY: the calling thread's own port, which lives as long as it does.
-    if let Err(e) = set_realtime(unsafe { libc::pthread_mach_thread_np(libc::pthread_self()) }) {
+    let port = unsafe { libc::pthread_mach_thread_np(libc::pthread_self()) };
+    if let Err(e) = cold()
+        .map_err(|e| e.to_string())
+        .and_then(|pair| set_realtime(port, pair))
+    {
         crate::debug!("the real-time governor runs at its default policy: {e}");
     }
     let mut ticked: Option<Instant> = None;
@@ -233,7 +323,14 @@ fn govern() {
             watched.iter().any(|w| w.suspected.is_some())
         };
         let next = ticked.map_or(TICK, |t| TICK.saturating_sub(t.elapsed()));
-        std::thread::sleep(if suspects { next.min(SUSPECT_LOOK) } else { next });
+        // A suspect is looked at as finely as the host wakes, the cold pair's constraint, so
+        // that a look lands in one of its waits where it waits at all (M317's rule): its own
+        // constraint, twice a batch of up to 50 ms, would look too seldom to see one.
+        let suspect_look = cold().map(|pair| pair.constraint);
+        std::thread::sleep(match (suspects, suspect_look) {
+            (true, Ok(look)) => next.min(look),
+            _ => next,
+        });
     }
 }
 
@@ -248,13 +345,24 @@ fn look(w: &mut Watched, now: Instant) -> bool {
     let ran = info.pth_user_time.saturating_add(info.pth_system_time);
     let tick = u64::try_from(TICK.as_nanos()).unwrap_or(u64::MAX);
     if info.pth_run_state == libc::TH_STATE_WAITING || info.pth_run_state == libc::TH_STATE_UNINTERRUPTIBLE {
+        // What it ran since it was last seen waiting: its batch's bound, while it was
+        // real-time (a span at timeshare is no real-time run's).
+        if w.realtime {
+            w.batch = learned(w.batch, Duration::from_nanos(ran.saturating_sub(w.waited_at)));
+        }
         w.waited_at = ran;
         w.suspected = None;
-        if !w.realtime {
-            match set_realtime(w.port) {
-                Ok(()) => w.realtime = true,
-                Err(e) => crate::debug!("a thread waiting stays at timeshare: {e}"),
-            }
+        let pair = w.batch.map_or(Ok(w.asked), constraint_of);
+        match pair {
+            Ok(pair) if !w.realtime || pair != w.asked => match set_realtime(w.port, pair) {
+                Ok(()) => {
+                    w.realtime = true;
+                    w.asked = pair;
+                }
+                Err(e) => crate::debug!("a thread waiting stays at its policy: {e}"),
+            },
+            Ok(_) => {}
+            Err(e) => crate::debug!("a thread waiting stays at its policy: {e}"),
         }
         return true;
     }
@@ -279,9 +387,47 @@ fn look(w: &mut Watched, now: Instant) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use std::sync::mpsc;
+
+    /// A thread's pair is its own batch's (platform-11): its computation the batch held to
+    /// XNU's 50 µs to 50 ms, its constraint twice it (D191 at half a CPU); never M10's fixed
+    /// 0.5 and 1 ms whatever it runs.
+    #[test]
+    fn a_threads_pair_is_its_batchs() {
+        let pair = |c, k| {
+            Ok(Constraint {
+                computation: c,
+                constraint: k,
+            })
+        };
+        let us = Duration::from_micros;
+        assert_eq!(constraint_of(us(3_000)), pair(us(3_000), us(6_000)));
+        assert_eq!(constraint_of(us(120)), pair(us(120), us(240)));
+        assert_eq!(constraint_of(us(7)), pair(MIN_RT_QUANTUM, 2 * MIN_RT_QUANTUM));
+        assert_eq!(
+            constraint_of(Duration::from_secs(1)),
+            pair(MAX_RT_QUANTUM, 2 * MAX_RT_QUANTUM)
+        );
+        // Cold: the host's measured wake, held to XNU's least.
+        let cold = cold().unwrap();
+        assert!(cold.computation >= MIN_RT_QUANTUM && cold.constraint == 2 * cold.computation);
+        assert_eq!(cold, constraint_of(granule::step().late.unwrap()).unwrap());
+    }
+
+    /// A thread's batch is the most it was seen to run between two waiting looks; a span of
+    /// none teaches nothing.
+    #[test]
+    fn a_batch_is_the_most_run_between_two_waits() {
+        let ms = Duration::from_millis;
+        assert_eq!(learned(None, Duration::ZERO), None);
+        assert_eq!(learned(None, ms(2)), Some(ms(2)));
+        assert_eq!(learned(Some(ms(2)), ms(1)), Some(ms(2)));
+        assert_eq!(learned(Some(ms(2)), ms(5)), Some(ms(5)));
+        assert_eq!(learned(Some(ms(5)), Duration::ZERO), Some(ms(5)));
+    }
 
     /// The calling thread's CPU time.
     fn ran_here() -> Duration {
