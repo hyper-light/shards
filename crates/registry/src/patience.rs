@@ -43,7 +43,7 @@ pub(crate) const FIRST: Duration = Duration::from_secs(1);
 /// no connect: RFC 8305's Connection Attempt Delay "in the absence of RTT data" (§8).
 pub(crate) const ATTEMPT_DELAY: Duration = Duration::from_millis(250);
 /// The least and the most a learned Connection Attempt Delay may be: RFC 8305 §5's Minimum
-/// ("to prevent congestion collapse in the presence of high packet-loss rates") and
+/// ("required to avoid congestion collapse in the presence of high packet-loss rates") and
 /// Maximum Connection Attempt Delay, as §8 recommends them.
 const ATTEMPT_DELAY_MIN: Duration = Duration::from_millis(100);
 const ATTEMPT_DELAY_MAX: Duration = Duration::from_secs(2);
@@ -90,11 +90,15 @@ impl Pace {
     /// before any connect is seen): RFC 8305 §5's delay "should correspond to the time when
     /// the previous attempt is sending its second TCP SYN, based on the TCP's
     /// retransmission timer [RFC6298]", which this path's connects pace: SRTT + 4·RTTVAR
-    /// (§2.3), within §5's least and most. RFC 6298 §2.4's 1 s rounding is TCP's own guard
-    /// against retransmitting early, which §5's minimum stands for here.
+    /// (§2.3), within §5's least and most, and with no backoff: it "should only try to
+    /// approximate the time of the first SYN retransmission". RFC 6298 §2.4's 1 s rounding
+    /// is TCP's own guard against retransmitting early, which §5's minimum stands for here.
     pub(crate) fn attempt_delay(&self) -> Duration {
-        let _ = (ATTEMPT_DELAY_MIN, ATTEMPT_DELAY_MAX);
-        Duration::from_millis(300)
+        if self.n == 0 {
+            return ATTEMPT_DELAY;
+        }
+        let us = self.srtt_us.saturating_add(self.rttvar_us.saturating_mul(4));
+        Duration::from_micros(us).clamp(ATTEMPT_DELAY_MIN, ATTEMPT_DELAY_MAX)
     }
 
     /// The estimator a record keeps of `kept`, as it holds it now, and `own`, a client's,
