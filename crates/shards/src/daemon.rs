@@ -1014,22 +1014,19 @@ struct Keep<'a> {
 /// run to every command (docs/audit/2026-09-30_arc.md).
 /// A run's socket to its VM. A message bigger than the socket's buffer (8 KiB on macOS)
 /// goes out in more than one write, and another sender's between them would spoil both,
-/// and the VM's reading after them: senders take turns. On Unix a send waits for room while
-/// the VM's process goes on, judged by `record`, the daemon's one record of such sends
-/// (D215's judge, `Answers::run_send`; runs-11 `TAKE_TIMEOUT`): a socket full while that
-/// process ran no CPU over a whole W* is one nothing reads, and its send fails typed
-/// ([`health::Stalled`]), rather than every sender after it waiting. On Windows a send waits
-/// for room at most `TAKE_TIMEOUT` (runs-11 slice (b), owed).
+/// and the VM's reading after them: senders take turns. A send waits for room while the VM's
+/// process goes on, judged by `record`, the daemon's one record of such sends (D215's judge,
+/// `Answers::run_send`; runs-11 `TAKE_TIMEOUT`): a socket full while that process ran no CPU
+/// over a whole W* is one nothing reads, and its send fails typed ([`health::Stalled`]),
+/// rather than every sender after it waiting.
 struct RunSocket {
     stream: UnixStream,
     sending: Mutex<()>,
     /// Its VM's process, by which each send is judged.
-    #[cfg(unix)]
     vm: u32,
 }
 
 impl RunSocket {
-    #[cfg(unix)]
     fn new(stream: UnixStream, vm: u32) -> RunSocket {
         RunSocket {
             stream,
@@ -1038,20 +1035,8 @@ impl RunSocket {
         }
     }
 
-    #[cfg(windows)]
-    fn new(stream: UnixStream, _vm: u32) -> RunSocket {
-        if let Err(e) = shards_ipc::timeout_set(stream.set_write_timeout(Some(TAKE_TIMEOUT))) {
-            log(format!("a run's socket: {e}"));
-        }
-        RunSocket {
-            stream,
-            sending: Mutex::new(()),
-        }
-    }
-
-    /// Sends one message to its VM, judged by `record` on Unix (`Answers::run_send`), whose
-    /// kind learns from each send that went whole.
-    #[cfg(unix)]
+    /// Sends one message to its VM, judged by `record` (`Answers::run_send`), whose kind learns
+    /// from each send that went whole.
     fn send(
         &self,
         record: &shards_api::Record,
@@ -1064,18 +1049,6 @@ impl RunSocket {
         shards_ipc::send_judged(&self.stream, kind, payload, fds, &mut || judged.judge())?;
         judged.answered();
         Ok(())
-    }
-
-    #[cfg(windows)]
-    fn send(
-        &self,
-        _record: &shards_api::Record,
-        kind: u8,
-        payload: &[u8],
-        fds: &[BorrowedFd<'_>],
-    ) -> std::io::Result<()> {
-        let _turn = lock(&self.sending);
-        shards_ipc::send(&self.stream, kind, payload, fds)
     }
 }
 
@@ -17543,18 +17516,17 @@ mod tests {
         let t = Test::new("metrics-stalled");
         t.run(|t| {
             // A metrics read answered before, in 50 ms, its microVM running 50 us of it.
-            t.daemon
-                .answers
-                .metrics
-                .teach(Duration::from_millis(50), Duration::from_micros(50));
+            let slowest = Duration::from_millis(50);
+            t.daemon.answers.metrics.teach(slowest, Duration::from_micros(50));
             let (_, starting, vm) = running(t, "stalled");
             let out = t.home.join("metrics.json");
             let asked = metrics(t, "stalled", &out);
             let exec = heard_whole(&vm);
             assert_eq!(exec.kind, kind::EXEC_RUN);
             let conn = stream_of(exec.fds.first().unwrap());
-            // Its VM process, a sleep, runs nothing: judged past the daemon's own TAKE_TIMEOUT.
-            let told = read_past("the stalled exec was told nothing", TAKE_TIMEOUT, &conn, |c| {
+            // Its VM process, a sleep, runs nothing: past the daemon's own W*, over which it
+            // waits on a VM process that runs nothing.
+            let told = read_past("the stalled exec was told nothing", slowest, &conn, |c| {
                 shards_ipc::recv(c).map(|m| m.map(|m| (m.kind, m.payload)))
             });
             // Ended as an exec told SIGKILL ends; or, told nothing, let go. Its stdio let go of
