@@ -1110,7 +1110,10 @@ fn a_policy_through_a_context_is_the_clients_its_builder_the_machine() {
     let log = std::fs::read_to_string(machine.join("daemon.log")).unwrap();
     assert!(log.contains("client laptop: policy step platform\n"), "{log}");
     assert!(log.contains("client laptop: policy step resolve\n"), "{log}");
-    assert!(log.contains("client laptop: policy step resolve ended, status 0"), "{log}");
+    assert!(
+        log.contains("client laptop: policy step resolve ended, status 0"),
+        "{log}"
+    );
     assert!(!log.contains("client laptop: shards buildx policy"), "{log}");
     assert!(!log.contains(dir.to_str().unwrap()), "{log}");
 }

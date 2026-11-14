@@ -973,7 +973,7 @@ struct RunSocket {
 
 impl RunSocket {
     fn new(stream: UnixStream) -> RunSocket {
-        if let Err(e) = stream.set_write_timeout(Some(TAKE_TIMEOUT)) {
+        if let Err(e) = shards_ipc::timeout_set(stream.set_write_timeout(Some(TAKE_TIMEOUT))) {
             log(format!("a run's socket: {e}"));
         }
         RunSocket {
@@ -7748,8 +7748,8 @@ impl<D: Disk> Daemon<D> {
                 return Err(failed(e));
             }
         }
-        link.set_read_timeout(Some(TAKE_TIMEOUT)).map_err(failed)?;
-        link.set_write_timeout(Some(TAKE_TIMEOUT)).map_err(failed)?;
+        shards_ipc::timeout_set(link.set_read_timeout(Some(TAKE_TIMEOUT))).map_err(failed)?;
+        shards_ipc::timeout_set(link.set_write_timeout(Some(TAKE_TIMEOUT))).map_err(failed)?;
         let _waiting = Waiting::of(Some(TAKE_TIMEOUT));
         for ((dir, read_only, only), name) in volumes {
             let mut payload = name.as_bytes().to_vec();
@@ -7816,8 +7816,8 @@ impl<D: Disk> Daemon<D> {
                 return Err(failed(e));
             }
         }
-        link.set_read_timeout(Some(TAKE_TIMEOUT)).map_err(failed)?;
-        link.set_write_timeout(Some(TAKE_TIMEOUT)).map_err(failed)?;
+        shards_ipc::timeout_set(link.set_read_timeout(Some(TAKE_TIMEOUT))).map_err(failed)?;
+        shards_ipc::timeout_set(link.set_write_timeout(Some(TAKE_TIMEOUT))).map_err(failed)?;
         let _waiting = Waiting::of(Some(TAKE_TIMEOUT));
         for ((dir, read_only, only), name) in volumes {
             let mut payload = name.as_bytes().to_vec();
@@ -7905,7 +7905,7 @@ impl<D: Disk> Daemon<D> {
         socket
             .send(kind::JOIN_SHARE, &number.to_be_bytes(), &[vms.as_fd()])
             .map_err(failed)?;
-        door.set_write_timeout(Some(TAKE_TIMEOUT)).map_err(failed)?;
+        shards_ipc::timeout_set(door.set_write_timeout(Some(TAKE_TIMEOUT))).map_err(failed)?;
         Ok((door, process))
     }
 
@@ -7958,7 +7958,7 @@ impl<D: Disk> Daemon<D> {
             // The process ends as the other end of its connection goes, with ours.
             return Err(failed(e));
         }
-        door.set_write_timeout(Some(TAKE_TIMEOUT)).map_err(failed)?;
+        shards_ipc::timeout_set(door.set_write_timeout(Some(TAKE_TIMEOUT))).map_err(failed)?;
         Ok(door)
     }
 
@@ -8976,13 +8976,10 @@ fn hand_over(
 ) -> Result<(), Untaken> {
     // A live VM reads its run at once: one that has stopped reading fails the send once a
     // write of it has waited TAKE_TIMEOUT for room, as a run's socket does (`RunSocket`).
-    // macOS refuses options on a socket its peer has closed (EINVAL): the send then finds
-    // the end at once.
-    match vm.set_write_timeout(Some(TAKE_TIMEOUT)) {
-        Ok(()) => {}
-        Err(e) if e.kind() == io::ErrorKind::InvalidInput => {}
-        Err(e) => return Err(Untaken::Surely(e.to_string())),
-    }
+    // A VM that has closed its end needs no bound: the send finds the end at once
+    // (`shards_ipc::timeout_set`).
+    shards_ipc::timeout_set(vm.set_write_timeout(Some(TAKE_TIMEOUT)))
+        .map_err(|e| Untaken::Surely(e.to_string()))?;
     // A request cut short is no request: the VM never had all of it.
     shards_ipc::send(vm, kind::RUN, payload, fds).map_err(|e| Untaken::Surely(e.to_string()))?;
     // MAX_FDS a message at most; the VM takes the run only once it has them all.
@@ -8994,13 +8991,10 @@ fn hand_over(
 
 /// Waits for a warm VM sent a run to say it has taken it.
 fn taken(vm: &UnixStream) -> Result<(), Untaken> {
-    // macOS refuses options on a socket its peer has closed (EINVAL, xnu sosetoptlock):
-    // the read then finds the end at once.
-    match vm.set_read_timeout(Some(TAKE_TIMEOUT)) {
-        Ok(()) => {}
-        Err(e) if e.kind() == io::ErrorKind::InvalidInput => {}
-        Err(e) => return Err(Untaken::Unknown(e.to_string())),
-    }
+    // A VM that has closed its end needs no bound: the read finds the end at once
+    // (`shards_ipc::timeout_set`).
+    shards_ipc::timeout_set(vm.set_read_timeout(Some(TAKE_TIMEOUT)))
+        .map_err(|e| Untaken::Unknown(e.to_string()))?;
     let _waiting = Waiting::of(Some(TAKE_TIMEOUT));
     match shards_ipc::recv(vm) {
         Ok(Some(m)) if m.kind == kind::TAKEN => Ok(()),
@@ -9330,8 +9324,7 @@ fn grant(
     record: &shards_api::Record,
 ) -> Result<(), GrantError> {
     let started = |why: String| GrantError { why, started: true };
-    link.set_read_timeout(None)
-        .map_err(|e| started(format!("VM {pid}: {e}")))?;
+    shards_ipc::timeout_set(link.set_read_timeout(None)).map_err(|e| started(format!("VM {pid}: {e}")))?;
     // A VM the host has not let run yet: its stacks would hold nothing (PM M166).
     let unstarted = || shards_vmm::platform::launched(pid) == Some(false);
     let mut sampled: Option<String> = None;
