@@ -691,6 +691,7 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
             workload: common.workload,
             attach,
             said_to: None,
+            final_use: None,
             gpu_report: None,
             managed: false,
         });
