@@ -3311,9 +3311,11 @@ mod tests {
         let (told, answer) = std::sync::mpsc::channel::<Result<shards_vmm::vm::GuestTimes, String>>();
         let t0 = Instant::now();
         let (done, finished) = std::sync::mpsc::channel();
+        let vm = idle.id();
         std::thread::scope(|s| {
-            s.spawn(|| {
-                let _ = done.send(super::guest_timed(&answer, idle.id(), &record));
+            let record = &record;
+            s.spawn(move || {
+                let _ = done.send(super::guest_timed(&answer, vm, record));
             });
             let said = finished.recv_timeout(Duration::from_secs(10));
             // Dropped, so that a wait that did not stop ends.

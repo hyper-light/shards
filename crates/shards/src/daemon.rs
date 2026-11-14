@@ -220,7 +220,9 @@ fn open_layer(at: &Path) -> std::io::Result<std::fs::File> {
 }
 
 /// How long a warm VM may take to say it has taken a run: it does so right after it
-/// receives one.
+/// receives one. On Unix every wait it bounded is judged (runs-11 `TAKE_TIMEOUT`); Windows'
+/// are slice (b)'s, owed.
+#[cfg(any(windows, test))]
 const TAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The home's empty directory, every join share's root (D119): its server makes nothing in
