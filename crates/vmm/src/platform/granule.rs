@@ -104,6 +104,19 @@ pub fn step() -> Step {
     }
 }
 
+/// Half a CPU, in milli-CPU: the most a fair scheduler gives a thread that contends for its
+/// CPU at all, the share Windows' raised threads are credited and macOS's real-time threads'
+/// constraint is derived at. A thread's priority matters only where another thread is ready on
+/// that CPU; beside k ≥ 1 ready threads of its priority, Windows gives each a time slice in
+/// turn (Microsoft, Scheduling Priorities), as Linux's fair scheduler gives threads of one
+/// weight w each w / (w + k·w) (kernel/sched/core.c `sched_prio_to_weight`, one weight for
+/// every nice-0 thread): 1 / (k + 1) ≤ 1/2, at k = 1 the most. A bound, not a pick: no
+/// contended thread is owed more.
+pub const HALF_CPU: std::num::NonZeroU64 = match std::num::NonZeroU64::new(crate::vm::MILLI_PER_CPU / 2) {
+    Some(half) => half,
+    None => std::num::NonZeroU64::MIN,
+};
+
 /// g now, for a governor whose least wait is [`LEAST_WAIT`]: [`Step::g`] of what is known.
 pub fn g() -> Duration {
     step().g(LEAST_WAIT)
