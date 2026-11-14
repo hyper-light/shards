@@ -909,6 +909,69 @@ fn a_wait_is_refused_though_its_own_polls_keep_its_daemon_busy() {
     );
 }
 
+/// A wait's looks that its waiter's own polls made late are no hold of its host's (D209
+/// Part 8): on adas-mac-studio-3.local, busy, the test above was "not refused 177-197 ms in
+/// (W* 59.554375ms)", each `ps` poll and each look slower than when W* was taught, every
+/// look so late past its due that the judge took the time for its host's hold of it, and
+/// its party's window saw only the looks' own durations. Red so: a look that saw a whole
+/// W* of its own polling past its first goes on. Do: start a daemon that runs no microVM;
+/// teach a wait's kind its W* by a state found at its first look; then wait for a state that
+/// never comes, polling between looks with a stand-in of this test's own busy a whole W*.
+/// Expect: refused at the look after the first poll, which says so at the next.
+#[test]
+fn a_wait_is_refused_though_its_own_polls_outlast_w_star() {
+    let home = TempDir::new("outlast");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_LOCAL_STORE", std::ffi::OsStr::new("none")),
+    ];
+    let started = common::command()
+        .arg("ps")
+        .envs(env)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        started.status.success(),
+        "{}",
+        String::from_utf8_lossy(&started.stderr)
+    );
+    let _served = Served(&env);
+    let mut taught = outlasted(&home);
+    let _ = taught.holds();
+    taught.done();
+    let shards_api::Seen::Learned { slowest, .. } = outlasted(&home).seen() else {
+        panic!("its kind learned nothing of an answer");
+    };
+    let busy = format!("busy {}", slowest.as_millis().saturating_add(1));
+    let poll = || {
+        let run = common::run_command(stand_in_doing(&busy), &["stand-in".to_string(), busy.clone()]);
+        assert_eq!(run.status, Some(0), "{run}");
+        assert!(
+            run.elapsed > slowest,
+            "a poll of {:?} within W* {slowest:?}",
+            run.elapsed
+        );
+    };
+    let mut patience = outlasted(&home);
+    assert!(patience.holds(), "refused at its start");
+    poll();
+    // Its first look past W*: a refusal there is said at the next.
+    let _ = patience.holds();
+    poll();
+    assert!(
+        !patience.holds(),
+        "a wait for a state that never comes, each poll its waiter's own and longer than W* \
+         {slowest:?}, not refused at its look past its first poll: {}",
+        patience.account()
+    );
+}
+
+/// [`Patience::of`] at one call site: one kind for every wait made through it.
+fn outlasted(home: &std::path::Path) -> Patience {
+    Patience::of(home)
+}
+
 /// A command's wait is keyed by its call site and its whole command line, what a run mints
 /// of its own made generic (ROOT's ruling (a), 2026-11-13, #77): one call site's quick
 /// refused command is kept apart from its real one, as build.rs' `builds_push_what_they_build`

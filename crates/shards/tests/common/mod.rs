@@ -3953,6 +3953,9 @@ pub struct Wait {
     daemon_ran: Option<String>,
     live: Live,
     stage: Stage,
+    /// Whether it waits on a command of its thread's own ([`Wait::begin`]): its span is its
+    /// thread's own work ([`OWN`]) as it ends.
+    command: bool,
 }
 
 /// Where a [`Wait`] is, by what its caller has found of its answer.
@@ -3980,6 +3983,29 @@ thread_local! {
         const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
 }
 
+thread_local! {
+    /// The spans this thread waited on its own commands ([`Wait::begin`]'s waits, each kept as
+    /// it ends), and how many of its waits live: a look of another of its waits that its
+    /// commands made late was late for its own work, no hold of its host's (D209 Part 8).
+    /// Let go of as its last live wait ends.
+    static OWN: std::cell::RefCell<(usize, Vec<(Instant, Instant)>)> =
+        const { std::cell::RefCell::new((0, Vec::new())) };
+}
+
+/// The time from `from` to `to` this thread spent waiting on its own commands ([`OWN`]).
+fn own_work(from: Instant, to: Instant) -> Duration {
+    OWN.with(|own| {
+        own.borrow()
+            .1
+            .iter()
+            .rev()
+            .take_while(|(_, ended)| *ended > from)
+            .fold(Duration::ZERO, |sum, (began, ended)| {
+                sum.saturating_add((*ended).min(to).saturating_duration_since((*began).max(from)))
+            })
+    })
+}
+
 /// The clients this thread has begun against `home`, none where it has none.
 fn asked_of(home: Option<&Path>) -> u64 {
     home.map_or(0, |home| {
@@ -3997,13 +4023,19 @@ impl Wait {
                 *n = n.saturating_add(1);
             });
         }
-        Wait::on(kind, Party::client(client, home), asked)
+        let mut wait = Wait::on(kind, Party::client(client, home), asked);
+        wait.command = true;
+        wait
     }
 
     /// A wait beginning now on `party`, `asked` naming what it waits for.
     fn on(kind: &'static WaitKind, party: Party, asked: &str) -> Wait {
         let began = Instant::now();
         let polls = asked_of(party.home.as_deref());
+        OWN.with(|own| {
+            let mut own = own.borrow_mut();
+            own.0 = own.0.saturating_add(1);
+        });
         Wait {
             kind,
             judge: shards_api::Judge::begin(&kind.record),
@@ -4021,6 +4053,7 @@ impl Wait {
             daemon_ran: None,
             live: Live::new(),
             stage: Stage::Begun,
+            command: false,
         }
     }
 
@@ -4074,6 +4107,10 @@ impl Wait {
         if now < self.next && due.is_none_or(|due| now < due) {
             return Ok(());
         }
+        let own = self
+            .judge
+            .late_from()
+            .map_or(Duration::ZERO, |from| own_work(from, now));
         let mut looked = self.party.look();
         if self.stage == Stage::Answered && looked.found == Found::Gone {
             looked.found = Found::Still;
@@ -4082,6 +4119,7 @@ impl Wait {
             began: now,
             ended: Instant::now(),
             resolution: looked.resolution,
+            own,
         };
         self.work = self.work.saturating_add(looked.cpu);
         if self.daemon_ran.is_none() {
@@ -4194,6 +4232,21 @@ impl Wait {
             stall.waited(),
             self.account()
         )
+    }
+}
+
+impl Drop for Wait {
+    fn drop(&mut self) {
+        let span = (self.began, Instant::now());
+        OWN.with(|own| {
+            let mut own = own.borrow_mut();
+            own.0 = own.0.saturating_sub(1);
+            if own.0 == 0 {
+                own.1.clear();
+            } else if self.command {
+                own.1.push(span);
+            }
+        });
     }
 }
 

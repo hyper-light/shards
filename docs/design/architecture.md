@@ -12502,6 +12502,47 @@ harness test).
     look` reading none), "refused 95.909834ms into its server's 114.523251ms of work: a
     stand-in asking this process made no progress for 57.591376ms, past the slowest answer
     of its kind seen on this host (38.174417ms), 78.591334ms into its wait".
+- *A waiter's own polls taken for its host's hold.* harness.rs
+  `a_wait_is_refused_though_its_own_polls_keep_its_daemon_busy` failed 3 of 4 on
+  adas-mac-studio-3.local while it was busy (2 of 14 cores idle), "not refused 177-197 ms in
+  (W* 59.554375ms)", and passed 6 of 6 quieter.
+  - *The cause, from its looks' times.* The test's waiter polls `ps -a -q` between looks,
+    synchronously. Its looks' times, kept on that host under load (a busy `yes` per core
+    and per core twice and six times beside it, a diagnostic print of each poll's span
+    and the wait's account, not committed; logs in
+    adas-mac-studio-3.local:~/g121-tmp/judge-party/runs, `base-*`, `red*`, `diag-*`): its base look about 25-33 ms, each
+    poll 35-50 ms, each look about 25-30 ms (each reads the process table through `ps -A`).
+    The judge counts the time a look runs late, past its due or the look before's end, as
+    its host's hold of the judge (ROOT's ruling, 2026-11-13), and takes it out of the
+    party's window. A look here is late because its waiter was polling, not because its
+    host held it: with polls and looks as long as W*, nearly every look is late, its
+    window keeps only the looks' own durations and the on-time remainder of each W*, and
+    the refusal comes only once those add up to a whole W*. With W* taught on a quiet
+    host (59.6 ms) and polls and looks slower under load, that was past the test's 2 W*.
+    Under the loads above the test passed (alone 6 of 6, 4 of 4 and 6 of 6; with the whole
+    binary 4 of 4 and 3 of 3): each run teaches its kind its own poll as it begins, and the record keeps
+    the slowest, so W* rose with the load (58, 80, 95 ms); the red needs polls slower than
+    the W* taught, as the busy host's were.
+  - *The fix: the waiter's own work is no hold* (`shards_api::Span::own`). Each `Wait` a
+    thread makes on a command of its own (`Wait::begin`, run_command's) keeps its span as
+    it ends (`common::OWN`, let go of as the thread's last wait ends); a look of another of
+    its waits passes the judge the time those spans cover within its lateness, from
+    `Judge::late_from` (its due, or the look before's end) to its beginning, and the judge
+    takes only the rest for its host's hold. A look late for any other reason (its thread
+    held, a frozen process) is held as before. shards-api's own `Follow` makes no polls
+    between looks: its `own` is zero. No literal.
+  - *Held by* crates/api judge.rs `a_look_its_caller_made_late_by_its_own_work_is_not_held`
+    (the busy host's look replayed on an injected clock: base 0-33 ms, a poll 33-93 ms, a
+    look 93-123 ms; its lateness its host's, 26 ms seen of a W* and it goes on; its
+    caller's own, 60 ms, refused) and harness.rs
+    `a_wait_is_refused_though_its_own_polls_outlast_w_star` (a daemon that runs no microVM;
+    a kind taught W* by a state found at its first look; then a state that never comes,
+    polled between looks by a stand-in of the test's own busy a whole W*: refused at the
+    look after the first poll). On adas-mac-studio-3.local (kiln r224, 37ecff8e1's tree):
+    green; red with `own` not subtracted, judge.rs's test failed and harness.rs's "not
+    refused at its look past its first poll ... 115.439625ms in ... its record W*
+    27.602875ms". Under a busy `yes` per core: the whole harness binary 3 of 3 (30 passed,
+    3 ignored each), the three tests above 6 of 6.
 - *Not reproduced: two moved.rs refusals* (ROOT, HVF, adas-mac-studio.local, main
   8d1c89a05, one run of `--test moved -- --test-threads=1`, 14 of 16):
   - moved.rs:62:19 `a_cpu_baseline_is_all_its_guest_finds_and_goes_with_it`: "shards run
