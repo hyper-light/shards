@@ -684,6 +684,7 @@ pub struct Block {
     /// What a worker needs besides its queue, from activation until reset.
     context: Option<(Arc<GuestMemory>, Arc<DeviceInterrupt>)>,
     worker: Option<Worker>,
+    stopping: Arc<AtomicBool>,
     /// The queue while paused.
     paused: Option<Queue>,
     /// Its microVM's I/O limits (D178), and whether this device holds them paused.
@@ -761,6 +762,7 @@ impl Block {
             backend: Arc::new(backend),
             context: None,
             worker: None,
+            stopping: Arc::new(AtomicBool::new(false)),
             paused: None,
             limit: None,
             holds_limit: false,
@@ -775,7 +777,9 @@ impl Block {
             return Err("virtio-blk started before activation".into());
         };
         let (backend, mem, limit) = (self.backend.clone(), memory.clone(), self.limit);
-        let answer = move |chain: &Chain| handle(chain, &mem, &backend, limit);
+        self.stopping.store(false, Ordering::Release);
+        let stopping = self.stopping.clone();
+        let answer = move |chain: &Chain| handle(chain, &mem, &backend, limit, &stopping);
         match Worker::start("virtio-blk", queue, memory, interrupt, answer) {
             Ok(worker) => {
                 self.worker = Some(worker);
@@ -790,7 +794,11 @@ impl Block {
 
     /// Stops the worker after the request it is executing; returns its queue.
     fn stop(&mut self) -> Option<Queue> {
-        self.worker.take()?.stop()
+        let worker = self.worker.take()?;
+        if let Some(limit) = self.limit {
+            limit.cancel(&self.stopping);
+        }
+        worker.stop()
     }
 
     /// The device's interrupt, given at activation and taken at reset: who tells the
@@ -935,7 +943,13 @@ impl Drop for Block {
 }
 
 /// Executes one request; returns the bytes written into the driver's buffers.
-fn handle(chain: &Chain, mem: &GuestMemory, backend: &Backend, limit: Option<&Limiter>) -> u32 {
+fn handle(
+    chain: &Chain,
+    mem: &GuestMemory,
+    backend: &Backend,
+    limit: Option<&Limiter>,
+    stopping: &AtomicBool,
+) -> u32 {
     // The status byte is the last byte of the last writable descriptor.
     let Some(last) = chain.writable().last().copied() else {
         debug!("virtio-blk: request without a status byte");
@@ -947,7 +961,7 @@ fn handle(chain: &Chain, mem: &GuestMemory, backend: &Backend, limit: Option<&Li
     let Some(status_at) = last.addr.checked_add(u64::from(last.len) - 1) else {
         return 0;
     };
-    let (status, data_written) = match execute(chain, last, mem, backend, limit) {
+    let (status, data_written) = match execute(chain, last, mem, backend, limit, stopping) {
         Ok(n) => (S_OK, n),
         Err(status) => (status, 0),
     };
@@ -965,6 +979,7 @@ fn execute(
     mem: &GuestMemory,
     backend: &Backend,
     limit: Option<&Limiter>,
+    stopping: &AtomicBool,
 ) -> Result<u32, u8> {
     let mut header = [0u8; 16];
     let body = gather_header(chain, &mem.access().map_err(|_| S_IOERR)?, &mut header)?;
@@ -979,7 +994,25 @@ fn execute(
         && matches!(kind, T_IN | T_OUT)
     {
         let data = if kind == T_IN { &out } else { &body };
-        limit.take(data.iter().map(|d| u64::from(d.len)).sum());
+        if kind == T_OUT && backend.read_only {
+            return Err(S_IOERR);
+        }
+        // Validate the claimed work before charging it: malformed spans must not
+        // accumulate years of debt without moving a byte.
+        let total: u64 = data.iter().map(|d| u64::from(d.len)).sum();
+        let end = sector
+            .checked_mul(SECTOR)
+            .and_then(|start| start.checked_add(total))
+            .ok_or(S_IOERR)?;
+        if end > backend.capacity().saturating_mul(SECTOR) {
+            return Err(S_IOERR);
+        }
+        for d in data {
+            mem.io_ptr(d.addr, d.len as usize).map_err(|_| S_IOERR)?;
+        }
+        if !limit.take_until(total, stopping) {
+            return Err(S_IOERR);
+        }
     }
     match kind {
         T_IN => transfer(&out, sector, mem, backend, Direction::Read),

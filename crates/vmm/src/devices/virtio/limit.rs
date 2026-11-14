@@ -23,6 +23,7 @@
 //! While its devices pause, as a snapshot pauses them (D176), no request waits: the one a
 //! worker has in hand is served at once, its cost kept, so that the pause waits for no limit.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -116,14 +117,23 @@ impl Limiter {
     /// Charges a request of `bytes`, before it is served: back once its limits let it go,
     /// at once where it has none.
     pub fn take(&self, bytes: u64) {
+        self.take_until(bytes, &AtomicBool::new(false));
+    }
+
+    /// Charges a request, waiting only while this device is running. A cancelled
+    /// request returns false; its debt remains, so resetting cannot lift the limit.
+    pub fn take_until(&self, bytes: u64, stopping: &AtomicBool) -> bool {
         let mut s = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if stopping.load(Ordering::Acquire) {
+            return false;
+        }
         let now = Instant::now();
         let (by_bytes, by_requests) = (s.bytes.charge(now, bytes), s.requests.charge(now, 1));
         let wait = by_bytes.max(by_requests).unwrap_or_default();
         let Some(deadline) = now.checked_add(wait).filter(|_| !wait.is_zero()) else {
-            return;
+            return true;
         };
-        while s.pauses == 0 {
+        while s.pauses == 0 && !stopping.load(Ordering::Acquire) {
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 break;
@@ -151,6 +161,15 @@ impl Limiter {
         if by_requests.is_some() {
             s.requests.late = over;
         }
+        !stopping.load(Ordering::Acquire)
+    }
+
+    /// Publishes cancellation under the wait mutex, closing the notify-before-wait
+    /// race without putting any other device into the shared paused state.
+    pub fn cancel(&self, stopping: &AtomicBool) {
+        let _state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        stopping.store(true, Ordering::Release);
+        self.paused.notify_all();
     }
 
     #[cfg(test)]
