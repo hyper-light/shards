@@ -26748,6 +26748,16 @@ API's protocol: its output drained, its end, its connections.
     as the connect waits, its peer holding the connection open, refused `Exited`, its answer
     waited for at the scale of that kill and reap; a pid of another start refused
     `DifferentStart` before any dial, and a reaped one refused `Process`, neither followed.
+    Run (docs/research/measurements/borrowed-no-clock/run.sh, its log beside it) on
+    adas-mac-studio-3.local, macOS 26 (Darwin 25.2.0) on arm64, rustc 1.98.1, at e960039cc:
+    red, today's behavior through the new signature (`Duration::MAX` refused `Bounds`), all
+    three failed; green, `client::borrowed_tests` 12 passed, 2 ignored; clippy clean. Each
+    guard's removal failed its test: the watch dropped (m1), the connect found blocked past
+    the kill's scale; the hold unchecked at the handshake's end (m2), `Channel(Closed)` for
+    `Exited`; the start comparison dropped (m3), the other start followed. The m1/green pair
+    shows a kqueue with NOTE_EXIT is readable to poll(2) on macOS. Owed (ROOT): Linux and
+    Windows runs of these (CI's matrix; the Windows WSAEventSelect wait is compiled and run
+    there first), and Hex's own campaign through a real VM's offered streams.
 - *The report.* D232's report reaches the client on its private pipe: one complete scoped
   frame by the deadline, anything else uncertainty. On Windows the pipe is a named pipe, as
   Windows' anonymous pipes are (which take no overlapped reads), with a name of the
