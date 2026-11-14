@@ -2213,7 +2213,8 @@ mod tests {
             let name = format!("g-{}", "a".repeat(MAX_NAME - 2));
             fs::create_dir(dir.join(&name)).unwrap();
             let snap = sample(&nowhere(), 1);
-            let state = encode(&snap, &name, &vec![Identity::default(); 3]).unwrap();
+            let ids: [Identity; 3] = std::array::from_fn(|_| Identity::default());
+            let state = encode(&snap, &name, &ids).unwrap();
             let forged = |memory_mib: u64, len: u64| {
                 let mut bytes = state[..HEAD].to_vec();
                 bytes[HEAD - 8..].copy_from_slice(&memory_mib.to_le_bytes());
