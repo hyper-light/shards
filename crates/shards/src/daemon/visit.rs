@@ -84,7 +84,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             _ => None,
         };
         if let Some(socket) = socket
-            && let Err(e) = socket.send(kind::SIGNAL, &9u32.to_be_bytes(), &[])
+            && let Err(e) = socket.send(&self.answers.run_send, kind::SIGNAL, &9u32.to_be_bytes(), &[])
         {
             log(format!("container {id}: ending a visit: {e}"));
         }

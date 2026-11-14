@@ -25081,6 +25081,48 @@ against 2e00a1043 (whose starts read no bytes) on one template, HVF, KVM and WHP
 - **Owed.** n=20 with p50/p90/p99/max on HVF and KVM (with exits per KiB on KVM), the
   initcall timings, and the raw logs beside this record.
 
+### M589. A test's look at a worker that waits for glibc's lock, and a stopped run host judged by its FIFO (D233, D231; shards-api's `while_runs` and `a_stop_returns_once_its_host_and_every_process_it_started_are_gone`)
+
+- **Question.** After M587, `a_report_with_no_clock_is_taken_as_it_comes` still failed 1 of 200
+  whole-library runs on adacachy2, its worker in `futex_wait` at both looks, 20.6 ms past its
+  1 ms. Is that a wait for an event, which `while_runs::answer` must refuse, or a hold? And
+  M586's FIFO judgement stood in one more test.
+- **Method.** adacachy2: Linux 7.3.3-1-cachyos, x86_64, 32 CPUs; rustc 1.98.1; at main
+  1820978ae, 2026-11-14. Three builds of the library's tests, each `nice -n 10 $bin
+  --test-threads=64` from `crates/api`, 300 rounds: main (base); main with
+  `Worker::waiting` also reading the thread's `/proc/self/task/<tid>/syscall` (proc(5): the
+  call's number and arguments) and the `/proc/self/maps` line that holds a futex's address
+  (diagnostic; the base and diagnostic rounds side by side); and the fix. `/proc/<tid>/stack`
+  was refused (EACCES), and `kernel.yama.ptrace_scope` is 1.
+- **Results.**
+  - Base: 3 of 300 rounds failed in `while_runs` (`a_report_with_no_clock_is_refused_ended_as_its_vm_process_ends`,
+    `..._is_taken_as_it_comes`, `..._wakes_as_its_vm_process_is_killed`).
+  - Diagnostic: 4 of 300, every one `futex(word, 0x80, 2)`, FUTEX_WAIT|FUTEX_PRIVATE_FLAG on
+    the value 2, at both looks: glibc's contended low-level lock (nptl/lowlevellock.c
+    `__lll_lock_wait`; 2 is "locked, with waiters"). Three words at +0x30 of an anonymous
+    mapping aligned to 64 MiB (a non-main malloc arena's `heap_info`, then its mutex), in
+    `..._refused_ended_...` (2, 9.7 and 24.4 ms past) and `..._taken_as_it_comes` (5.1 ms);
+    one in libc's writable data at +0xb00 of its mapping, in
+    `borrowed_tests::no_clock::a_pid_that_names_another_process_is_never_followed` (2.4 ms).
+    Malloc's arena locks, held by a thread this load ran late.
+  - Condition variables and parks wait FUTEX_WAIT_BITSET, glibc's and std's alike, and so does
+    std's `Mutex` on Linux (library/std/src/sys/pal/unix/futex.rs: "Use FUTEX_WAIT_BITSET
+    rather than FUTEX_WAIT"), so a look tells glibc's lock from them by the call alone.
+  - Fixed (`while_runs::held_lock`: a thread in FUTEX_WAIT on 2 is not waiting for an event):
+    0 of 300 rounds. Its unit test holds the calls above to it, and a BITSET wait, a FUTEX_WAIT
+    on 1, a poll and a running thread out of it.
+  - `stream::tests::a_nonblocking_read_fails_at_once_and_its_handle_says_when_to_read`, seen
+    once in M587's 150, failed in none of these 900 rounds: its shape is not known.
+  - `a_stop_returns_once_its_host_and_every_process_it_started_are_gone` judged its host by
+    its FIFO's writers, as M586's test did: now by its ID and start. It failed in none of the
+    600 base and diagnostic rounds, so no red here; M586 holds the mechanism. 0 of 300 fixed.
+- **Decision.** No production change. A look counts a glibc low-level lock's wait as the
+  host's hold, as `D` is. Such a lock names no holder (its word is 0, 1 or 2), so there is no
+  cheap look at whether its holder runs: a deadlock through one is not refused by the look and
+  surfaces as whatever bounds the run (the test harness, CI's job). A std `Mutex`'s wait is
+  still counted, its deadlock refused as before. Linux alone; macOS's TH_STATE_WAITING is
+  unchanged (unverified there).
+
 ### M590. What a held microVM's governor costs, beside the vCPU it holds (D191; boot.rs's managed rate test, api_image's orchestrator rate test)
 
 - **Question.** Three ceiling failures held at a quarter CPU (KVM boot.rs:2299, 510.05 ms of the

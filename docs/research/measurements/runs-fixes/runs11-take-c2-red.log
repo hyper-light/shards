@@ -1,0 +1,29 @@
+# runs-11 TAKE_TIMEOUT slice (c2), red by mutation on 2bc6a0e4e, macOS arm64, adas-mac-studio-3.local, kiln r593 (each mutant restored after)
+## M1 (RunSocket's 10 s write timeout and plain send back): cargo test -p shards --bin shards -- run_socket
+test daemon::tests::a_run_socket_waits_for_room_while_its_vm_runs ... FAILED
+test daemon::tests::senders_on_a_run_socket_take_turns ... ok
+test daemon::tests::a_run_socket_whose_vm_reads_and_runs_nothing_fails_its_send ... FAILED
+thread 'daemon::tests::a_run_socket_waits_for_room_while_its_vm_runs' panicked at crates/shards/src/daemon.rs:10141:9:
+thread 'daemon::tests::a_run_socket_whose_vm_reads_and_runs_nothing_fails_its_send' panicked at crates/shards/src/daemon.rs:10189:18:
+test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 973 filtered out; finished in 10.15s
+## M2 (RunSocket's judge never refuses: judged.judge().or(Ok(None))): cargo test -p shards --bin shards -- run_socket
+test daemon::tests::senders_on_a_run_socket_take_turns ... ok
+test daemon::tests::a_run_socket_whose_vm_reads_and_runs_nothing_fails_its_send ... FAILED
+test daemon::tests::a_run_socket_waits_for_room_while_its_vm_runs ... ok
+thread 'daemon::tests::a_run_socket_whose_vm_reads_and_runs_nothing_fails_its_send' panicked at crates/shards/src/daemon.rs:10189:18:
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 973 filtered out; finished in 10.66s
+## M3 (GUEST_TIME's 10 s wait back: due = now + TAKE_TIMEOUT, its timeout an error): cargo test -p shards --bin shards -- guest_times
+test daemon::commands::tests::a_vm_that_runs_nothing_and_never_answers_its_guest_times_is_refused ... FAILED
+test daemon::commands::tests::a_vm_slow_to_answer_its_guest_times_while_it_runs_is_waited_for ... FAILED
+thread 'daemon::commands::tests::a_vm_that_runs_nothing_and_never_answers_its_guest_times_is_refused' panicked at crates/shards/src/daemon/commands.rs:3322:18:
+thread 'daemon::commands::tests::a_vm_slow_to_answer_its_guest_times_while_it_runs_is_waited_for' panicked at crates/shards/src/daemon/commands.rs:3280:9:
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 974 filtered out; finished in 10.54s
+## M4 (GUEST_TIME's judge never refuses): cargo test -p shards --bin shards -- guest_times
+test daemon::commands::tests::a_vm_that_runs_nothing_and_never_answers_its_guest_times_is_refused ... FAILED
+test daemon::commands::tests::a_vm_slow_to_answer_its_guest_times_while_it_runs_is_waited_for ... ok
+thread 'daemon::commands::tests::a_vm_that_runs_nothing_and_never_answers_its_guest_times_is_refused' panicked at crates/shards/src/daemon/commands.rs:3324:18:
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 974 filtered out; finished in 10.61s
+## M5 (said_if_long's threshold TAKE_TIMEOUT again): cargo test -p shards --bin shards -- long_past
+test daemon::reclaim::tests::an_answer_is_long_past_its_kinds_slowest_before_it ... FAILED
+thread 'daemon::reclaim::tests::an_answer_is_long_past_its_kinds_slowest_before_it' panicked at crates/shards/src/daemon/reclaim.rs:416:9:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 975 filtered out; finished in 0.00s

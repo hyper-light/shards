@@ -834,7 +834,7 @@ impl<D: Disk> Daemon<D> {
             0
         };
         let payload = save_ask(flags, tokens, [staged.name(), snapshot, &microvm]);
-        if let Err(e) = socket.send(kind::SAVE, &payload, &fds) {
+        if let Err(e) = socket.send(&self.answers.run_send, kind::SAVE, &payload, &fds) {
             lock(&inbox).saving = None;
             return Err(format!("asking its microVM: {e}"));
         }

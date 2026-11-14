@@ -504,31 +504,39 @@ fn signaled_ignoring(image: &Path, command: &[&str], signals: &[Signal], ignorin
         .unwrap();
     // A regression fails the test instead of hanging it: its child, only reaped after
     // `done`, ended outright once its wait is refused, its VM process having run nothing over
-    // a whole window past the slowest such run seen (D209, `common::Heard::running`).
+    // a whole window past the slowest such run seen (D209, `common::Heard::running`). Judged
+    // while its guest works for itself: until its command says `ready`, and from the last
+    // signal to its end. Not between, where it waits idle for the signals this test paces:
+    // there a guest that runs nothing is not stuck.
     let pid = i32::try_from(child.id()).unwrap();
     let vm = child.id();
     let (done, watch) = std::sync::mpsc::channel::<()>();
-    std::thread::spawn(move || {
-        let mut heard = common::Heard::running(vm);
-        loop {
-            match watch.recv_timeout(heard.next_look()) {
-                Ok(()) => {
-                    heard.answered();
-                    return;
-                }
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) if heard.look(true).is_ok() => {}
-                // Refused, or the test gone without saying it is done.
-                Err(_) => {
-                    common::kill_now(pid);
-                    return;
-                }
-            }
+    let watchdog = std::thread::spawn(move || {
+        let refused = heed(&watch, common::Heard::running(vm))
+            .and_then(|()| {
+                watch
+                    .recv()
+                    .map_err(|_| "the test ended as it signalled".to_string())
+            })
+            .and_then(|()| heed(&watch, common::Heard::running(vm)))
+            .err();
+        if refused.is_some() {
+            common::kill_now(pid);
         }
+        refused
     });
     let mut out = std::io::BufReader::new(child.stdout.take().unwrap());
     let mut ready = String::new();
     out.read_line(&mut ready).unwrap();
-    assert_eq!(ready, "ready\n");
+    let _ = done.send(());
+    if ready != "ready\n" {
+        drop(done);
+        let status = child.wait().unwrap();
+        panic!(
+            "{ready:?} for its first line, ended {status}; its watch: {:?}",
+            watchdog.join().unwrap()
+        );
+    }
     for (i, &signal) in signals.iter().enumerate() {
         if i > 0 {
             std::thread::sleep(Duration::from_millis(500));
@@ -544,16 +552,38 @@ fn signaled_ignoring(image: &Path, command: &[&str], signals: &[Signal], ignorin
             common::interrupt(&child);
         }
     }
+    let _ = done.send(());
     let mut rest = Vec::new();
     out.read_to_end(&mut rest).unwrap();
     let mut stderr = String::new();
     child.stderr.take().unwrap().read_to_string(&mut stderr).unwrap();
     let status = child.wait().unwrap().code();
     let _ = done.send(());
+    // Its watch's refusal, which ended it, said where its status is read.
+    if let Some(refused) = watchdog.join().unwrap() {
+        stderr.push_str(&format!("\n--- its watch refused it\n{refused}"));
+    }
     Output {
         status,
         stdout: rest,
         stderr,
+    }
+}
+
+/// Judges `heard`'s guest until the test says on `said` that what it waits for came: refused,
+/// what its wait says of itself; the test gone without saying, that.
+fn heed(said: &std::sync::mpsc::Receiver<()>, mut heard: common::Heard<'_>) -> Result<(), String> {
+    loop {
+        match said.recv_timeout(heard.next_look()) {
+            Ok(()) => {
+                heard.answered();
+                return Ok(());
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => heard.look(true)?,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                return Err("the test ended without saying its wait's answer came".into());
+            }
+        }
     }
 }
 

@@ -874,6 +874,7 @@ impl<D: Disk> Daemon<D> {
         };
         // What it is held within past what it uses, as its init answers (none with no
         // budget): never less than the least room a run goes on in, however short.
+        let before = self.answers.room.seen();
         let told_at = Instant::now();
         let quiet = self.exec_waiting(
             &id,
@@ -882,7 +883,12 @@ impl<D: Disk> Daemon<D> {
             1 << 12,
             Wait::WhileRuns(pid, &self.answers.room),
         );
-        super::reclaim::said_if_long(&id, "telling its microVM its budget's room", told_at.elapsed());
+        super::reclaim::said_if_long(
+            &id,
+            "telling its microVM its budget's room",
+            told_at.elapsed(),
+            &before,
+        );
         let held = match quiet {
             Ok(q) if q.status == Some(0) && q.cut.is_none() => std::str::from_utf8(&q.output)
                 .ok()

@@ -305,8 +305,7 @@ impl<D: Disk> Daemon<D> {
                                 ));
                                 starved_since = Some(Instant::now());
                             }
-                            // Said again at each failure: a wake may have said there was room.
-                            self.starving.store(true, Ordering::SeqCst);
+                            self.slots_starved.store(true, Ordering::SeqCst);
                             break;
                         }
                         Err(e) => {

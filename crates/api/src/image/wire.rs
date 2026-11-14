@@ -1045,8 +1045,9 @@ pub enum RunEnd {
     Exited(u32),
     /// `STOP`: its VM killed at once.
     Stopped,
-    /// Its VM, its host or its guest failed, or its own command never started, in its VM's
-    /// words (D249).
+    /// Its VM, its host or its guest failed, in their words: among them its own command never
+    /// started, or its guest's init failed its run after it started, each in init's words
+    /// (D249), never as an exit status.
     Failed(String),
 }
 
