@@ -77,6 +77,10 @@ its real-daemon/VM counterpart remains unrun.
 Runs-04's exited-after-WARMED stand-in failed as not safely retryable before the
 change; afterward the regression, 5 pool tests and 30 session tests pass, with
 shards-api all-target clippy. Actual VM death during handoff remains ROOT's check.
+Runs-03's blocked CREATE red timed out; after stop registration moved ahead of
+CREATE, the same regression and 33 session tests pass, with API all-target clippy.
+The main landing of runs-01/02/04 is 3956d259b; merged gate revisions and remaining
+live checks are recorded there.
 
 ### M2. Object lifecycle (`lifecycle`, n=200, µs)
 

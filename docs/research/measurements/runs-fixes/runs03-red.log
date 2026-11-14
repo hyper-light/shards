@@ -1,0 +1,38 @@
+From /Users/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/fix-runs-carrier-5fa18a445a/changes.bundle
+ * branch              HEAD       -> FETCH_HEAD
+HEAD is now at b6e302bf Merge main before runs-01, runs-02 and runs-04 landing
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CARGO_ENCODED_RUSTFLAGS': ''
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=universal_prefixed
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-apple-darwin'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-runs-v1/target/debug/build/aws-lc-sys-ecbaf10c801fee9d/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-runs-v1/target/debug/build/aws-lc-sys-ecbaf10c801fee9d/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-runs-v1/target/debug/build/aws-lc-sys-ecbaf10c801fee9d/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-runs-v1/target/debug/build/aws-lc-sys-ecbaf10c801fee9d/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o"]).
+   Compiling shards-api v0.1.0 (/Users/adalundhe/g121-tmp/fix-runs-v1/source/crates/api)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.62s
+     Running unittests src/lib.rs (/Users/adalundhe/g121-tmp/fix-runs-v1/target/debug/deps/shards_api-df5c0a73e5fb01b6)
+
+running 1 test
+test image::session::tests::a_stop_cancels_a_create_whose_host_never_reads ... FAILED
+
+failures:
+
+---- image::session::tests::a_stop_cancels_a_create_whose_host_never_reads stdout ----
+
+thread 'image::session::tests::a_stop_cancels_a_create_whose_host_never_reads' (54190302) panicked at crates/api/src/image/session.rs:3573:13:
+blocked CREATE did not end stopped: Err(Timeout)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    image::session::tests::a_stop_cancels_a_create_whose_host_never_reads
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 197 filtered out; finished in 10.08s
+
+error: test failed, to rerun pass `-p shards-api --lib`
