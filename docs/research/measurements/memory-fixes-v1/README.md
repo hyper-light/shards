@@ -148,3 +148,8 @@ and lifetime this save; no new cache/poller/platform implementation. R09/R10:
 the unit regression above is the retained red. R08/R11/R14/R15: performance,
 other supported targets and real VMs remain ROOT's. R16: the existing single
 remote compiler/owned target is reused, with no local build/test.
+
+Green at `3b8ec2938` (main `e2744a6fb` included), resumed r17, same Mac:
+`cargo test -p shards-vmm devices::virtio::head::tests:: --lib` passed 9, with
+1 measurement test ignored; VMM all-target clippy passed. `green-memory-16.log`
+retains output. ROOT still owes real head snapshot/restore and cost measurements.
