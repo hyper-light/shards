@@ -1573,24 +1573,38 @@ fn try_slot(home: &Path) -> Taken {
     else {
         return Taken::Gone;
     };
-    let mut record = [0u8; 16];
-    match free.read(&mut record) {
-        Ok(16) => {}
-        // No writer: no daemon.
-        Ok(0) => return Taken::Gone,
-        Ok(n) => panic!("a record of {n} bytes on free"),
-        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Taken::Busy,
-        Err(e) => panic!("free: {e}"),
+    // A slot removed since it was offered, its record left on the list, is passed over for
+    // the next, as a client passes it (`shards_ipc::slots::take`): one whose thread ended
+    // before its client came, as a daemon out of descriptors may (KVM, ENOENT on its `say`).
+    let removed = |e: &std::io::Error| matches!(e.raw_os_error(), Some(libc::ENOENT | libc::ENXIO));
+    loop {
+        let mut record = [0u8; 16];
+        match free.read(&mut record) {
+            Ok(16) => {}
+            // No writer: no daemon.
+            Ok(0) => return Taken::Gone,
+            Ok(n) => panic!("a record of {n} bytes on free"),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Taken::Busy,
+            Err(e) => panic!("free: {e}"),
+        }
+        let n: u64 = std::str::from_utf8(&record).unwrap().trim_end().parse().unwrap();
+        // Its daemon holds the other end of each: neither open waits.
+        let answer = match std::fs::File::open(dir.join(format!("{n}.answer"))) {
+            Ok(answer) => answer,
+            Err(e) if removed(&e) => continue,
+            Err(e) => panic!("slot {n}'s answer: {e}"),
+        };
+        let mut say = match std::fs::OpenOptions::new()
+            .write(true)
+            .open(dir.join(format!("{n}.say")))
+        {
+            Ok(say) => say,
+            Err(e) if removed(&e) => continue,
+            Err(e) => panic!("slot {n}'s say: {e}"),
+        };
+        say.write_all(&[0]).unwrap();
+        return Taken::Slot(Silent { _say: say, answer });
     }
-    let n: u64 = std::str::from_utf8(&record).unwrap().trim_end().parse().unwrap();
-    // Its daemon holds the other end of each: neither open waits.
-    let answer = std::fs::File::open(dir.join(format!("{n}.answer"))).unwrap();
-    let mut say = std::fs::OpenOptions::new()
-        .write(true)
-        .open(dir.join(format!("{n}.say")))
-        .unwrap();
-    say.write_all(&[0]).unwrap();
-    Taken::Slot(Silent { _say: say, answer })
 }
 
 /// How many bytes wait in the pipe `out` reads: FIONREAD on Unix, PeekNamedPipe on Windows.
