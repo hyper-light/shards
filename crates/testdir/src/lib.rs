@@ -289,7 +289,10 @@ pub fn program(path: &Path, text: &str) -> io::Result<()> {
         let status = writer.wait()?;
         wrote?;
         if !status.success() {
-            return Err(io::Error::other(format!("{} not written: {status}", path.display())));
+            return Err(io::Error::other(format!(
+                "{} not written: {status}",
+                path.display()
+            )));
         }
         Ok(())
     }
@@ -304,7 +307,10 @@ pub fn program_copy(from: &Path, to: &Path) -> io::Result<()> {
     {
         let copied = std::process::Command::new("cp").arg(from).arg(to).status()?;
         if !copied.success() {
-            return Err(io::Error::other(format!("{} not copied: {copied}", from.display())));
+            return Err(io::Error::other(format!(
+                "{} not copied: {copied}",
+                from.display()
+            )));
         }
         Ok(())
     }
