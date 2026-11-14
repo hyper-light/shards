@@ -26360,9 +26360,32 @@ virtio 1.3 §5.11's `VIRTIO_FS_F_NOTIFICATION` unused), and what a FUSE server n
     most it takes over a network (its documentation's).
   - Where the whole tree is watched (macOS, Windows), a change is told only where the guest
     holds its directory (`Server::holds_dir`). Each path waits once however often it
-    changes, at most 16384 (Linux's default `max_queued_events`, past which a guest's own
-    watcher would hear only that it lost events); past them, its nearest waiting directory
-    or its share's root stands for it, once a share.
+    changes.
+  - *Lost changes* (confine-06, confine-09, 2026-11-14; was: at most 16384 waiting, Linux's
+    default `max_queued_events`, past which a path's nearest waiting directory or its share's
+    root stood for it). A host's watcher can say only that changes beneath a place were not
+    each said: inotify's `IN_Q_OVERFLOW` (inotify(7)), ReadDirectoryChangesW's empty answer
+    (its buffer overflowed, MSDN), FSEvents' `MustScanSubDirs` (which it sets on events the
+    kernel or the stream dropped, FSEvents.h). Each is typed (`notices::Change::Beneath`)
+    and told, as its changes are taken, by every node the guest holds at that place or
+    beneath it (`Server::held_beneath`). Touching a directory wakes no watch of a file in it
+    (an inotify watch is of its inode, not recursive), so the root alone, which was all that
+    was told, left a guest's watch of a nested file asleep. Every watch the guest has holds
+    its inode (inotify_user.c `inotify_new_watch`), and a FUSE inode is its server's node
+    until the guest forgets it, so telling every node held wakes every watch there.
+  - *What waits is bounded by what the guest holds* (R03): a share's changes, each told by
+    its path, are no more than the nodes its guest holds as each is told (`Server::held`,
+    its node table's size, the root's always among them, so never below one). Past them,
+    telling each path costs more than telling every node held, which wakes every watch the
+    guest has, so the share's changes are told as lost beneath its root; a share's places
+    lost are as bounded, past them its root standing for them. No number of the host's
+    enters: a guest that holds a whole tree (a recursive watcher looks up each directory and
+    file) waits for as many paths as it holds; one that holds its root alone, for one, and a
+    loss then touches the root, all it can watch. Cold start: the share's root alone, one.
+    Uncertainty: a name the guest holds no node of is told past the bound only by its
+    directory's own change, as inotify's own overflow tells it nothing more; a watch of the
+    directory is still woken. Failure: a share with no server (none for its place) is told
+    nothing of what it lost, as none of its nodes is held.
   - *Told on a pipe straight to the guest:* records `TAG\0PATH\0` (`shards_abi::run::
     notice`), TAG the share's virtio-fs tag (`shards share --notices TAGS`), from the share
     process to the stdin of the guest's `NOTICE` built-in, which the daemon and `shards
@@ -26393,7 +26416,8 @@ virtio 1.3 §5.11's `VIRTIO_FS_F_NOTIFICATION` unused), and what a FUSE server n
 - *Verified* (light tests, the change's own): unit, server.rs
   `a_notice_changes_nothing_on_the_host`, `a_name_found_by_another_case_is_trusted_for_no_time`,
   `a_directory_is_held_while_the_guest_knows_it`, `the_hosts_changes_where_the_guest_looks_are_noticed`
-  (Linux); notices.rs `changes_are_told_once_and_within_bounds`,
+  (Linux), `lost_events_wake_a_file_the_guest_holds` (Linux); notices.rs `changes_are_told_once`,
+  `lost_changes_are_told_by_every_node_the_guest_holds_beneath`,
   `the_hosts_changes_are_told_where_the_guest_looks` (each host's watcher, a change made by
   another process); shards-abi's records; init's `notices_are_told_whole_across_reads`;
   shards-apple's `a_change_beneath_is_told_by_its_path`; share.rs's flags. Real VMs, tests/plug.rs

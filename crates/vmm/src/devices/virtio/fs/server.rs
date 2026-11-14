@@ -1028,21 +1028,22 @@ impl Server {
         reopen_for_changes(s.root.raw())
     }
 
-    /// The paths within the share an event of its watches is of (D235): a name made,
-    /// written, changed, moved or removed in a directory the guest holds, or that directory
-    /// itself; every directory it holds where events were lost (`IN_Q_OVERFLOW`); none for
-    /// another's watch.
+    /// The changes within the share an event of its watches is of (D235): at a name made,
+    /// written, changed, moved or removed in a directory the guest holds, or at that
+    /// directory itself; beneath the share's root where events were lost (`IN_Q_OVERFLOW`),
+    /// which every node the guest holds tells ([`held_beneath`](Self::held_beneath)); none
+    /// for another's watch.
     #[cfg(target_os = "linux")]
-    pub fn noticed(&self, event: &crate::platform::Named) -> Vec<Vec<u8>> {
+    pub fn noticed(&self, event: &crate::platform::Named) -> Vec<super::notices::Change> {
+        use super::notices::Change;
         let mut s = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         let Some(w) = s.watching.as_mut() else {
             return Vec::new();
         };
-        let nodes: Vec<u64> = if event.watched < 0 {
-            w.of_node.keys().copied().collect()
-        } else {
-            w.nodes_of.get(&event.watched).cloned().unwrap_or_default()
-        };
+        if event.watched < 0 {
+            return vec![Change::Beneath(Vec::new())];
+        }
+        let nodes: Vec<u64> = w.nodes_of.get(&event.watched).cloned().unwrap_or_default();
         if event.mask & libc::IN_IGNORED != 0
             && let Some(gone) = w.nodes_of.remove(&event.watched)
         {
@@ -1055,15 +1056,46 @@ impl Server {
             let Some(mut path) = path_of(&s, node) else {
                 continue;
             };
-            if event.watched >= 0 && !event.name.is_empty() {
+            if !event.name.is_empty() {
                 if !path.is_empty() {
                     path.push(b'/');
                 }
                 path.extend_from_slice(&event.name);
             }
-            paths.push(path);
+            paths.push(Change::At(path));
         }
         paths
+    }
+
+    /// How many nodes the guest holds now, the share's root among them: every file a watch
+    /// of the guest's can be of (notices.rs, [`Pending`](super::notices::Pending)).
+    pub fn held(&self) -> usize {
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .nodes
+            .len()
+    }
+
+    /// The path within the share of every node the guest holds at `place` or beneath it
+    /// (empty for the share's root), its names joined by `/`: what tells a change lost
+    /// there (D235). None in a join share, whose changes are told of nothing.
+    pub fn held_beneath(&self, place: &[u8]) -> Vec<Vec<u8>> {
+        let s = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if s.joined {
+            return Vec::new();
+        }
+        let within = |path: &[u8]| {
+            place.is_empty()
+                || path
+                    .strip_prefix(place)
+                    .is_some_and(|rest| rest.is_empty() || rest.first() == Some(&b'/'))
+        };
+        s.nodes
+            .keys()
+            .filter_map(|&node| path_of(&s, node))
+            .filter(|path| within(path))
+            .collect()
     }
 
     /// Whether the directory at `path` within the share, its names joined by `/`, is one
@@ -2601,7 +2633,6 @@ fn lookup(s: &mut State, parent: u64, name: &CStr) -> Result<(u64, Stat, Owner),
 /// Node `node`'s path within its share, its names from the root down joined by `/`, as the
 /// guest last named them: none where its chain is broken, or longer than the tables, which
 /// is a loop no directory has.
-#[cfg(target_os = "linux")]
 fn path_of(s: &State, node: u64) -> Option<Vec<u8>> {
     let mut names: Vec<&[u8]> = Vec::new();
     let mut at = node;
@@ -4283,7 +4314,9 @@ mod tests {
                 let event = rx
                     .recv_timeout(std::time::Duration::from_secs(10))
                     .unwrap_or_else(|_| panic!("no event of {last:?}; heard {paths:?}"));
-                paths.extend(s.noticed(&event));
+                paths.extend(s.noticed(&event).into_iter().map(|c| match c {
+                    super::super::notices::Change::At(p) | super::super::notices::Change::Beneath(p) => p,
+                }));
             }
             paths
         };
@@ -4319,8 +4352,15 @@ mod tests {
             mask: libc::IN_Q_OVERFLOW,
             name: Vec::new(),
         };
-        let told = s.noticed(&lost);
-        assert!(told.iter().any(|p| p == b"d/f"), "{told:?}");
+        assert_eq!(
+            s.noticed(&lost),
+            [super::super::notices::Change::Beneath(Vec::new())]
+        );
+        let mut held = s.held_beneath(b"");
+        held.sort();
+        assert_eq!(held, [&b""[..], b"d", b"d/f"]);
+        assert_eq!(s.held_beneath(b"d/f"), [b"d/f"]);
+        assert!(s.held_beneath(b"e").is_empty());
         let _ = std::fs::remove_dir_all(&p);
     }
 
