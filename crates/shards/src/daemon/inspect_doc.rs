@@ -294,14 +294,14 @@ pub(super) fn document(f: &Facts<'_>) -> Value {
             None => (String::new(), Vec::new()),
         }
     };
-    let image_id = c.image_id.clone().unwrap_or_default();
+    let image_id = &c.image_id;
     Struct::new("container.InspectResponse")
         .tagged("ID", Some("Id"), false, s(&c.id))
         .field("Created", s(&go_time(Some(c.created))))
         .field("Path", s(&path))
         .field("Args", strs(&args, false))
         .field("State", state(f))
-        .field("Image", s(&image_id))
+        .field("Image", s(image_id))
         // Its files are its guest's: none is the host's to name.
         .field("ResolvConfPath", s(""))
         .field("HostnamePath", s(""))
@@ -1570,7 +1570,7 @@ mod tests {
                 stop_signal: None,
                 stop_timeout: run.stop_timeout,
                 ports: Vec::new(),
-                image_id: Some(golden["image_id"].as_str().unwrap().to_owned()),
+                image_id: golden["image_id"].as_str().unwrap().to_owned(),
                 image_manifest: None,
                 labels: Default::default(),
                 annotations: crate::daemon::annotations(&run),

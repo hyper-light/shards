@@ -172,8 +172,11 @@ mod client {
     /// stand-in's own work, not that.
     fn stand_in(dir: &shards_testdir::TempDir, body: &str) -> PathBuf {
         let path = dir.path().join("shards");
-        shards_testdir::program(&path, &format!("#!/bin/sh\n[ \"$1\" = --warm ] && exit 0\n{body}\n"))
-            .unwrap();
+        shards_testdir::program(
+            &path,
+            &format!("#!/bin/sh\n[ \"$1\" = --warm ] && exit 0\n{body}\n"),
+        )
+        .unwrap();
         let warmed = std::process::Command::new(&path)
             .arg("--warm")
             .stdin(std::process::Stdio::null())

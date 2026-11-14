@@ -67,9 +67,9 @@ pub struct Container {
     #[serde(default)]
     pub ports: Vec<PortRecord>,
     /// Its image's ID, what its reference resolved to as it was made (`images` counts
-    /// the microVMs of each); none in a record from before shards kept it.
-    #[serde(default)]
-    pub image_id: Option<String>,
+    /// the microVMs of each). Required: a record without one is refused as it is read
+    /// ([`Unread::NoImage`]), as no shards wrote one (D179).
+    pub image_id: String,
     /// The manifest of its image it was made from: the platform its microVM runs, one of
     /// a multi-platform image's (D179); none in a record from before shards kept it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -741,7 +741,49 @@ enum Loaded {
     Record(Box<Container>),
     Missing,
     /// Why it cannot be read.
-    Unreadable(String),
+    Unreadable(Unread),
+}
+
+/// Why a microVM's record is not read, and the microVM not seen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Unread {
+    /// It names no image ID, absent or null: a record no shards made, as every one since
+    /// before v0.3.0 named its image's (D179), so neither its image's user nor its image
+    /// is known. Never read with none.
+    NoImage,
+    /// It is another microVM's, by this ID.
+    Another(String),
+    /// Its bytes are no record.
+    Malformed(String),
+    /// Its file could not be read.
+    Failed(String),
+}
+
+impl std::fmt::Display for Unread {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Unread::NoImage => {
+                f.write_str("its record names no image ID, which every record shards makes names")
+            }
+            Unread::Another(id) => write!(f, "its record is container {id}'s"),
+            Unread::Malformed(e) => write!(f, "its record cannot be read ({e})"),
+            Unread::Failed(e) => f.write_str(e),
+        }
+    }
+}
+
+/// Why `bytes` are no record: [`Unread::NoImage`] where they are one but for its image's ID.
+fn unread(bytes: &[u8], e: &serde_json::Error) -> Unread {
+    let named = serde_json::from_slice::<serde_json::Value>(bytes)
+        .ok()
+        .and_then(|v| {
+            v.as_object()
+                .map(|o| o.get("image_id").is_some_and(|id| !id.is_null()))
+        });
+    match named {
+        Some(false) => Unread::NoImage,
+        _ => Unread::Malformed(e.to_string()),
+    }
 }
 
 /// The record in `file` of the directory `dir`, which is named for its microVM.
@@ -752,11 +794,11 @@ fn load(disk: &dyn Disk, dir: &Path, name: &str, file: &str) -> Loaded {
     match disk.read(&dir.join(file), crate::build::holdable()) {
         Ok(bytes) => match serde_json::from_slice::<Container>(&bytes) {
             Ok(c) if c.id == name => Loaded::Record(Box::new(c)),
-            Ok(c) => Loaded::Unreadable(format!("its record is container {}'s", c.id)),
-            Err(e) => Loaded::Unreadable(format!("its record cannot be read ({e})")),
+            Ok(c) => Loaded::Unreadable(Unread::Another(c.id)),
+            Err(e) => Loaded::Unreadable(unread(&bytes, &e)),
         },
         Err(e) if e.kind() == io::ErrorKind::NotFound => Loaded::Missing,
-        Err(e) => Loaded::Unreadable(e.to_string()),
+        Err(e) => Loaded::Unreadable(Unread::Failed(e.to_string())),
     }
 }
 
@@ -911,7 +953,7 @@ mod tests {
             stop_signal: None,
             stop_timeout: None,
             ports: Vec::new(),
-            image_id: None,
+            image_id: format!("sha256:{}", "a".repeat(64)),
             image_manifest: None,
             labels: Default::default(),
             annotations: Default::default(),
@@ -1905,5 +1947,49 @@ mod tests {
             });
         }
         assert!(states > 1000, "{states} states");
+    }
+
+    /// A record names its image's ID or is refused as it is read, typed (`Unread::NoImage`),
+    /// without it or with it null, its microVM never seen; one with it reads. Red before
+    /// legacy4, which read such a record with no image (`Option`, `serde(default)`).
+    #[test]
+    fn a_record_with_no_image_id_is_refused() {
+        let home = shards_testdir::TempDir::new("no-image-id").unwrap();
+        let root = home.join("containers");
+        let made = serde_json::to_value(container("ok", "ok", State::Exited)).unwrap();
+        let record = |id: &str, image: Option<serde_json::Value>| {
+            let mut r = made.clone();
+            r["id"] = id.into();
+            r["name"] = id.into();
+            match image {
+                Some(image) => r["image_id"] = image,
+                None => drop(r.as_object_mut().unwrap().remove("image_id")),
+            }
+            r
+        };
+        let rows = [
+            ("ok", Some(made["image_id"].clone())),
+            ("none", None),
+            ("null", Some(serde_json::Value::Null)),
+        ];
+        for (id, image) in rows {
+            std::fs::create_dir_all(root.join(id)).unwrap();
+            std::fs::write(
+                root.join(id).join("config.json"),
+                serde_json::to_vec(&record(id, image)).unwrap(),
+            )
+            .unwrap();
+        }
+        for (id, why) in [("none", Unread::NoImage), ("null", Unread::NoImage)] {
+            let Loaded::Unreadable(got) = load(&Real, &root.join(id), id, RECORD) else {
+                panic!("{id}: read");
+            };
+            assert_eq!(got, why, "{id}");
+        }
+        let mut notes = Vec::new();
+        let r = Registry::open(&home, &mut |n| notes.push(n)).unwrap();
+        assert_eq!(r.all().map(|c| c.id.as_str()).collect::<Vec<_>>(), ["ok"]);
+        assert_eq!(notes.len(), 2, "{notes:?}");
+        assert!(notes.iter().all(|n| n.contains("names no image ID")), "{notes:?}");
     }
 }

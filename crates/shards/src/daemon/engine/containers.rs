@@ -336,7 +336,7 @@ impl<D: Disk> Daemon<D> {
             "Id": c.id,
             "Names": [format!("/{}", c.name)],
             "Image": c.image,
-            "ImageID": c.image_id.clone().unwrap_or_default(),
+            "ImageID": c.image_id,
             "Command": crate::daemon::commands::command_line(&c.command),
             "Created": i64::try_from(c.created / 1_000_000_000).unwrap_or(0),
             "Ports": ports,

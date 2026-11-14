@@ -35,6 +35,9 @@ const IIR_RDI: u8 = 0x04;
 const IIR_RLSI: u8 = 0x06;
 const IIR_FIFO_ENABLED: u8 = 0xc0;
 
+const FCR_FIFO: u8 = 1 << 0;
+const FCR_CLEAR_RX: u8 = 1 << 1;
+
 const LCR_DLAB: u8 = 1 << 7;
 const MCR_DTR: u8 = 1 << 0;
 const MCR_RTS: u8 = 1 << 1;
@@ -70,8 +73,9 @@ struct State {
     /// THR-empty interrupt is pending until IIR reports it or THR is written.
     thri_pending: bool,
     overrun: bool,
-    /// Received bytes the guest has not read: at most [`rx_capacity`] as they are taken,
-    /// and never more than [`RX_FIFO`], which a restore holds a snapshot's to.
+    /// Received bytes the guest has not read: never more than [`rx_capacity`], as they are
+    /// taken only below it and a change of mode clears them, which a restore holds a
+    /// snapshot's to.
     rx: VecDeque<u8>,
     out: Box<dyn Write + Send>,
     /// The console's last bytes, at most [`keep`](State::keep).
@@ -306,10 +310,16 @@ impl MmioDevice for Serial {
                 }
             }
             IIR_FCR => {
-                s.fifo_enabled = v & 1 != 0;
-                if v & 0x02 != 0 {
+                // PC16550D datasheet (National Semiconductor, June 1995), 8.5 FIFO Control
+                // Register: "When changing from the FIFO Mode to the 16450 Mode and vice
+                // versa, data is automatically cleared from the FIFOs"; FCR0 "must be a 1
+                // when other FCR bits are written to or they will not be programmed", so
+                // FCR1's clear of the receiver is taken only with it.
+                let fifo = v & FCR_FIFO != 0;
+                if fifo != s.fifo_enabled || (fifo && v & FCR_CLEAR_RX != 0) {
                     s.rx.clear();
                 }
+                s.fifo_enabled = fifo;
                 self.room.notify_all();
             }
             LCR => s.lcr = v,
@@ -352,11 +362,12 @@ impl MmioDevice for Serial {
         s.fifo_enabled = r.bool()?;
         s.thri_pending = r.bool()?;
         s.overrun = r.bool()?;
-        // At most the FIFO's depth, the most this receiver holds in either mode (taken only
-        // while below `rx_capacity`; a FIFO turned off keeps what it held). A snapshot whose
-        // receiver held more is of a build before the FIFO's depth bounded it, and is refused.
+        // At most what the receiver holds in its mode, `rx_capacity`: bytes are taken only
+        // below it, and a change of mode clears them (8.5). A snapshot whose receiver held
+        // more is of a build before the FIFO's depth bounded it, or before a change of mode
+        // cleared it, and is refused.
         let rx = r
-            .bytes(RX_FIFO)
+            .bytes(rx_capacity(&s))
             .map_err(|e| codec::DecodeError(format!("the console's receiver: {}", e.0)))?;
         s.rx.clear();
         s.rx.extend(rx);
@@ -463,7 +474,7 @@ mod tests {
         assert_eq!(rd(&s, LSR) & (LSR_THRE | LSR_TEMT), LSR_THRE | LSR_TEMT);
 
         // RX interrupt only once enabled; clears when the FIFO drains.
-        s.write(IIR_FCR, &[1]);
+        s.write(IIR_FCR, &[FCR_FIFO]);
         s.input(b"ab");
         assert!(!line.0.load(Ordering::SeqCst));
         s.write(IER_DLM, &[IER_RDI]);
@@ -504,7 +515,7 @@ mod tests {
     #[test]
     fn overrun_is_reported_and_cleared() {
         let s = Serial::new(Box::new(Sink::default()), Arc::new(Line::default()), 0);
-        s.write(IIR_FCR, &[1]);
+        s.write(IIR_FCR, &[FCR_FIFO]);
         s.write(MCR, &[MCR_LOOP]);
         for _ in 0..=RX_FIFO {
             s.write(RBR_THR_DLL, &[0x5a]);
@@ -513,41 +524,76 @@ mod tests {
         assert_eq!(rd(&s, LSR) & LSR_OE, 0);
     }
 
-    /// A snapshot's receiver restores whole up to the FIFO's depth, and the guest reads it
-    /// all; one that held more, as a build before 66652aafb kept up to 4096 bytes, is
-    /// refused (a malformed state), never restored. Red before legacy3, which restored the
-    /// 4096.
+    /// A snapshot's receiver restores whole up to what its mode holds, the FIFO's 16 bytes
+    /// or in 16450 mode the receiver buffer register's one, and the guest reads it all; one
+    /// that held more, as a build before 66652aafb kept up to 4096 bytes, or one before a
+    /// change of mode cleared the FIFO left 16 in 16450 mode, is refused (a malformed
+    /// state), never restored. Red before legacy3, which restored the 4096, and the 16450
+    /// rows red before legacy4, which restored up to 16 there.
     #[test]
-    fn a_receiver_past_the_fifos_depth_is_refused() {
-        fn state(held: &[u8]) -> Vec<u8> {
+    fn a_receiver_past_its_modes_depth_is_refused() {
+        fn state(fifo: bool, held: &[u8]) -> Vec<u8> {
             let mut w = Writer::default();
             for v in [0, 3, MCR_OUT2, 0, 12, 0] {
                 w.u8(v);
             }
-            w.bool(true);
+            w.bool(fifo);
             w.bool(false);
             w.bool(false);
             w.u32(held.len() as u32);
             held.iter().for_each(|&b| w.u8(b));
             w.into_bytes()
         }
-        let full: Vec<u8> = (0..RX_FIFO as u8).collect();
-        let s = Serial::new(Box::new(Sink::default()), Arc::new(Line::default()), 0);
-        let bytes = state(&full);
-        let mut r = Reader::new(&bytes);
-        s.restore(&mut r).unwrap();
-        r.finish().unwrap();
-        let read: Vec<u8> = full.iter().map(|_| rd(&s, RBR_THR_DLL)).collect();
-        assert_eq!(read, full);
-        assert_eq!(rd(&s, LSR) & LSR_DR, 0);
-        for held in [RX_FIFO + 1, 4096] {
-            let held: Vec<u8> = (0..=u8::MAX).cycle().take(held).collect();
+        for (fifo, depth) in [(true, RX_FIFO), (false, 1)] {
+            let full: Vec<u8> = (0..depth as u8).collect();
             let s = Serial::new(Box::new(Sink::default()), Arc::new(Line::default()), 0);
-            let bytes = state(&held);
-            let refused = s.restore(&mut Reader::new(&bytes)).unwrap_err();
-            assert!(refused.0.contains("the console's receiver"), "{refused}");
-            assert_eq!(rd(&s, LSR) & LSR_DR, 0, "{} bytes restored", held.len());
+            let bytes = state(fifo, &full);
+            let mut r = Reader::new(&bytes);
+            s.restore(&mut r).unwrap();
+            r.finish().unwrap();
+            let read: Vec<u8> = full.iter().map(|_| rd(&s, RBR_THR_DLL)).collect();
+            assert_eq!(read, full);
+            assert_eq!(rd(&s, LSR) & LSR_DR, 0);
+            for held in [depth + 1, RX_FIFO + 1, 4096] {
+                let held: Vec<u8> = (0..=u8::MAX).cycle().take(held).collect();
+                let s = Serial::new(Box::new(Sink::default()), Arc::new(Line::default()), 0);
+                let bytes = state(fifo, &held);
+                let refused = s.restore(&mut Reader::new(&bytes)).unwrap_err();
+                assert!(refused.0.contains("the console's receiver"), "{refused}");
+                assert_eq!(rd(&s, LSR) & LSR_DR, 0, "{} bytes restored", held.len());
+            }
         }
+    }
+
+    /// A change of mode clears the receiver, FIFO to 16450 and back (PC16550D 8.5): what
+    /// the FIFO held is gone once FCR0 is reset, as is the 16450 receiver's byte once it is
+    /// set. FCR1 clears it only with FCR0 set, as other FCR bits are programmed only then.
+    /// Red before legacy4, which kept the FIFO's bytes as FCR0 went 1 to 0, 16 in a 16450
+    /// mode that holds one.
+    #[test]
+    fn a_change_of_mode_clears_the_receiver() {
+        let s = Serial::new(Box::new(Sink::default()), Arc::new(Line::default()), 0);
+        s.write(IIR_FCR, &[FCR_FIFO]);
+        s.write(MCR, &[MCR_LOOP]);
+        for b in 0..RX_FIFO as u8 {
+            s.write(RBR_THR_DLL, &[b]);
+        }
+        assert_eq!(lock(&s.state).rx.len(), RX_FIFO);
+        s.write(IIR_FCR, &[0]);
+        assert_eq!(rd(&s, LSR) & LSR_DR, 0, "the FIFO's bytes outlived FCR0's reset");
+        assert_eq!(lock(&s.state).rx.len(), 0);
+        // 16450 mode: its one byte, which FCR1 without FCR0 leaves, and FCR0's set clears.
+        s.write(RBR_THR_DLL, &[0x5a]);
+        s.write(IIR_FCR, &[FCR_CLEAR_RX]);
+        assert_eq!(rd(&s, LSR) & LSR_DR, LSR_DR, "FCR1 without FCR0 was programmed");
+        s.write(IIR_FCR, &[FCR_FIFO]);
+        assert_eq!(rd(&s, LSR) & LSR_DR, 0, "the 16450 byte outlived FCR0's set");
+        // FIFO mode kept: FCR1 with FCR0 clears; FCR0 written again alone clears nothing.
+        s.write(RBR_THR_DLL, &[1]);
+        s.write(IIR_FCR, &[FCR_FIFO]);
+        assert_eq!(rd(&s, LSR) & LSR_DR, LSR_DR);
+        s.write(IIR_FCR, &[FCR_FIFO | FCR_CLEAR_RX]);
+        assert_eq!(rd(&s, LSR) & LSR_DR, 0);
     }
 
     /// Host input fills the receiver to its depth, the FIFO's or in 16450 mode its one
@@ -556,17 +602,27 @@ mod tests {
     #[test]
     fn host_input_waits_for_room_and_loses_nothing() {
         let s = Serial::new(Box::new(Sink::default()), Arc::new(Line::default()), 0);
+        // In 16450 mode the receiver holds one byte; then the FIFO, enabled while it holds
+        // none, as a change of mode clears it (PC16550D 8.5).
+        let typed: Vec<u8> = (0..=u8::MAX).cycle().take(3).collect();
+        let mut read = Vec::new();
+        std::thread::scope(|scope| {
+            scope.spawn(|| s.input(&typed));
+            while read.len() < typed.len() {
+                assert!(lock(&s.state).rx.len() <= 1);
+                if rd(&s, LSR) & LSR_DR != 0 {
+                    read.push(rd(&s, RBR_THR_DLL));
+                } else {
+                    std::thread::yield_now();
+                }
+            }
+        });
+        assert_eq!(read, typed);
+        s.write(IIR_FCR, &[FCR_FIFO]);
         let typed: Vec<u8> = (0..=u8::MAX).cycle().take(5 * RX_FIFO + 3).collect();
         let mut read = Vec::new();
         std::thread::scope(|scope| {
             scope.spawn(|| s.input(&typed));
-            // In 16450 mode the receiver holds one byte; then the FIFO, once enabled.
-            while rd(&s, LSR) & LSR_DR == 0 {
-                std::thread::yield_now();
-            }
-            assert_eq!(lock(&s.state).rx.len(), 1);
-            read.push(rd(&s, RBR_THR_DLL));
-            s.write(IIR_FCR, &[1]);
             while read.len() < typed.len() {
                 let held = lock(&s.state).rx.len();
                 assert!(held <= RX_FIFO, "{held}");

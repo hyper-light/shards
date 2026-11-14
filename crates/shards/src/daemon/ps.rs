@@ -185,7 +185,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             if filters.contains("volume") || filters.contains("network") {
                 continue;
             }
-            if ancestor && !c.image_id.as_ref().is_some_and(|i| images.contains(i)) {
+            if ancestor && !images.contains(&c.image_id) {
                 continue;
             }
             if !publish.is_empty() || !expose.is_empty() {
