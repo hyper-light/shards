@@ -168,10 +168,13 @@ impl<D: Disk> Daemon<D> {
                     .map_err(|e| log(format!("container {id}: log segment {seq}: {e}")))
                     .ok();
                 let sent = match &made {
-                    Some((log, index)) => {
-                        socket.send(kind::SEGMENT, &seq.to_be_bytes(), &[log.as_fd(), index.as_fd()])
-                    }
-                    None => socket.send(kind::SEGMENT, &seq.to_be_bytes(), &[]),
+                    Some((log, index)) => socket.send(
+                        &self.answers.run_send,
+                        kind::SEGMENT,
+                        &seq.to_be_bytes(),
+                        &[log.as_fd(), index.as_fd()],
+                    ),
+                    None => socket.send(&self.answers.run_send, kind::SEGMENT, &seq.to_be_bytes(), &[]),
                 };
                 if let Err(e) = sent {
                     log(format!("container {id}: answering for its log: {e}"));

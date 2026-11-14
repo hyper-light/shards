@@ -149,13 +149,18 @@ pub(super) struct Answers {
     /// A warm VM's taking of a run: the run's handoff sent, to its TAKEN (`daemon::hand_over`).
     pub take: Record,
     /// A microVM's join share's taking of a joiner's link: its door's `JOIN_LINK` sent
-    /// (`daemon::give_join_volumes`, Unix).
+    /// (`daemon::give_join_volumes`).
     pub door: Record,
     /// A join share's taking of a joiner's volume: its `JOIN_VOLUME` sent, to its `TAKEN`
-    /// (`daemon::give_join_volume`, Unix).
+    /// (`daemon::give_join_volume`).
     pub link: Record,
     /// A visit's VM holding its files, its STARTED after its RUN (`visit::await_holding`).
     pub held: Record,
+    /// Room in a run's socket for what the daemon sends its VM (`daemon::RunSocket`, Unix):
+    /// one record for every run's, as a run's own would be cold each run.
+    pub run_send: Record,
+    /// A VM's guest times, its `GUEST_TIMED` after its `GUEST_TIME` (`commands::guest_times_of`).
+    pub guest_time: Record,
     /// Each request for access a starting VM makes, from the answer before or its spawn
     /// (`daemon::grant`, macOS).
     #[cfg(target_os = "macos")]
@@ -177,6 +182,8 @@ impl Default for Answers {
             door: Record::new(),
             link: Record::new(),
             held: Record::new(),
+            run_send: Record::new(),
+            guest_time: Record::new(),
             #[cfg(target_os = "macos")]
             grants: Record::new(),
             builtins: Box::new([const { Record::new() }; 256]),
@@ -634,7 +641,10 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         inbox.execs_in_flight.push((number, held));
         let log = std::io::stderr();
         let fds = [handed.as_fd(), pipe.as_fd(), log.as_fd(), log.as_fd()];
-        if let Err(e) = inbox.socket.send(shards_ipc::kind::EXEC_RUN, &payload, &fds) {
+        if let Err(e) = inbox
+            .socket
+            .send(&self.answers.run_send, shards_ipc::kind::EXEC_RUN, &payload, &fds)
+        {
             inbox.execs_in_flight.retain(|(n, _)| *n != number);
             return Err(e);
         }
@@ -704,7 +714,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         }
         let [stdin, stdout, stderr] = stdio;
         let fds = [handed.as_fd(), stdin, stdout, stderr];
-        if let Err(e) = socket.send(shards_ipc::kind::EXEC_RUN, &payload, &fds) {
+        if let Err(e) = socket.send(&self.answers.run_send, shards_ipc::kind::EXEC_RUN, &payload, &fds) {
             let mut held = lock(&inbox);
             held.execs_in_flight.retain(|(n, _)| *n != number);
             held.exec_ids.retain(|(n, _)| *n != number);
@@ -833,7 +843,6 @@ fn await_exit(ours: &shards_ipc::Stream, wait: Wait<'_>) -> Ended {
 /// first answer, and once its party has gone (its socket's end then ends the wait), the
 /// socket's readiness alone; then its party looked at once each W* and the wait ended, typed
 /// ([`Stalled`]), where it ran nothing since the look before or could not be read.
-#[cfg(unix)]
 pub(super) struct Judged<'r> {
     pid: u32,
     record: &'r Record,
@@ -841,7 +850,6 @@ pub(super) struct Judged<'r> {
     begun: bool,
 }
 
-#[cfg(unix)]
 impl<'r> Judged<'r> {
     pub(super) fn of(pid: u32, record: &'r Record) -> Judged<'r> {
         Judged {
@@ -875,18 +883,15 @@ impl<'r> Judged<'r> {
 }
 
 /// A judged wait's end ([`Judged`]): its party stalled, or could not be read, as [`Cut`] says.
-#[cfg(unix)]
 #[derive(Debug)]
 pub(super) struct Stalled(pub(super) Cut);
 
-#[cfg(unix)]
 impl Stalled {
     fn error(cut: Cut) -> std::io::Error {
         std::io::Error::new(std::io::ErrorKind::TimedOut, Stalled(cut))
     }
 }
 
-#[cfg(unix)]
 impl std::fmt::Display for Stalled {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.0 {
@@ -902,7 +907,6 @@ impl std::fmt::Display for Stalled {
     }
 }
 
-#[cfg(unix)]
 impl std::error::Error for Stalled {}
 
 /// A wait on VM process `vm` judged by `record`, begun now: none where the process has gone

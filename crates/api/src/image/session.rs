@@ -3032,6 +3032,7 @@ mod tests {
 
     /// Whether every write end of `read`'s pipe is gone, every process's: a read that would
     /// wait finds its end (Unix), or a look at it finds it broken (Windows), at once.
+    #[cfg(any(target_os = "macos", windows))]
     fn writers_gone(read: &io::PipeReader) -> bool {
         #[cfg(unix)]
         {
@@ -4670,7 +4671,9 @@ mod tests {
     /// ended: Linux releases an exiting process's files in no set order (kernel/task_work.c:
     /// "no ordering guarantee", LIFO), its stderr's before another's, while it has not yet
     /// exited, so a pipe's end is no word that its holders have (7 in 800 on adacachy2, PM
-    /// M583).
+    /// M583). The host and its VM are each judged gone by its ID and start, never by `h`'s
+    /// end: a copy of its write end another test's fork holds until that child's exec (PM
+    /// M586, M589).
     #[cfg(unix)]
     #[test]
     fn a_stop_returns_once_its_host_and_every_process_it_started_are_gone() {
@@ -4687,14 +4690,19 @@ mod tests {
             &request,
             "exec 3>\"$HOST_SEEN\"\n\
              tail -f /dev/null 3>&- &\n\
-             echo \"$!\" >&3",
+             echo \"$$ $!\" >&3",
         );
         // Its start comes after its host has told its VM's pid.
         let session = Session::start(&spec, &request, Duration::MAX, &super::super::BootStop::new()).unwrap();
-        let vm: libc::pid_t = line(&host_end).trim().parse().unwrap();
+        let said = line(&host_end);
+        let pids: Vec<libc::pid_t> = said.split_whitespace().filter_map(|p| p.parse().ok()).collect();
+        let [host, vm] = pids[..] else {
+            panic!("its host told no host and VM ({said:?})");
+        };
         let mut leftover = Leftover(Some(vm));
-        let vm = named(vm);
+        let (host, vm) = (named(host), named(vm));
         let stopped = session.stop();
+        let host_gone = !host.lives();
         let vm_gone = !vm.lives();
         if vm_gone {
             leftover.0 = None;
@@ -4704,7 +4712,7 @@ mod tests {
             vm_gone,
             "the stop returned while the VM its run host started still ran"
         );
-        assert!(writers_gone(&host_end), "the run host outlived its stop");
+        assert!(host_gone, "the run host outlived its stop");
         assert!(lock(&session.shared.state).said_all);
         assert_eq!(
             session.wait_for(Duration::ZERO),

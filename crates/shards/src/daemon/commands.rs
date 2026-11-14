@@ -439,7 +439,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             self.listener_wake.wake();
         }
         let fds = [handed.as_fd(), stdin.as_fd(), stdout.as_fd(), stderr.as_fd()];
-        if let Err(e) = socket.send(kind::EXEC_RUN, &payload, &fds) {
+        if let Err(e) = socket.send(&self.answers.run_send, kind::EXEC_RUN, &payload, &fds) {
             let mut held = lock(&inbox);
             held.execs_in_flight.retain(|(n, _)| *n != number);
             held.exec_ids.retain(|(n, _)| *n != number);
@@ -523,7 +523,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         };
         lock(&inbox).execs_in_flight.push((number, held));
         let fds = [handed.as_fd(), stdin.as_fd(), stdout.as_fd(), stderr.as_fd()];
-        if let Err(e) = socket.send(kind::ATTACH_RUN, &payload, &fds) {
+        if let Err(e) = socket.send(&self.answers.run_send, kind::ATTACH_RUN, &payload, &fds) {
             lock(&inbox).execs_in_flight.retain(|(n, _)| *n != number);
             refuse(&format!("shards: the microVM: {e}"));
         }
@@ -1718,7 +1718,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             inbox.pausing.push((number, told));
         }
         let ask = [&[u8::from(frozen)][..], &number.to_be_bytes()].concat();
-        if let Err(e) = socket.send(shards_ipc::kind::PAUSE, &ask, &[]) {
+        if let Err(e) = socket.send(&self.answers.run_send, shards_ipc::kind::PAUSE, &ask, &[]) {
             lock(&inbox).pausing.retain(|(n, _)| *n != number);
             return Err(format!("asking its microVM: {e}"));
         }
@@ -1729,12 +1729,11 @@ impl<D: crate::containers::Disk> Daemon<D> {
 
     /// What each vCPU of run `id`'s microVM has run of its guest, and what those it no longer
     /// has ran: its VM asked (`GUEST_TIME`), on a joiner's (D119) link its provider's, and its
-    /// answer (`GUEST_TIMED`) waited for as long as a warm VM may take to say it has taken a
-    /// run, as it answers on receipt too.
+    /// answer (`GUEST_TIMED`) waited for while its VM's process goes on ([`guest_timed`]).
     pub(super) fn guest_times_of(&self, id: &str) -> Result<shards_vmm::vm::GuestTimes, String> {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let (inbox, socket) = match lock(&self.runs).get(id) {
-            Some(RunState::Tracked(t)) => (t.inbox.clone(), t.socket.clone()),
+        let (inbox, socket, vm) = match lock(&self.runs).get(id) {
+            Some(RunState::Tracked(t)) => (t.inbox.clone(), t.socket.clone(), t.vm.id()),
             _ => return Err("it is not running".into()),
         };
         let number = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1746,24 +1745,20 @@ impl<D: crate::containers::Disk> Daemon<D> {
             }
             inbox.guest_times.push((number, told));
         }
-        if let Err(e) = socket.send(shards_ipc::kind::GUEST_TIME, &number.to_be_bytes(), &[]) {
+        if let Err(e) = socket.send(
+            &self.answers.run_send,
+            shards_ipc::kind::GUEST_TIME,
+            &number.to_be_bytes(),
+            &[],
+        ) {
             lock(&inbox).guest_times.retain(|(n, _)| *n != number);
             return Err(format!("asking its microVM: {e}"));
         }
-        let answered = super::timed(Some(super::TAKE_TIMEOUT), || {
-            answer.recv_timeout(super::TAKE_TIMEOUT)
-        });
+        let answered = guest_timed(&answer, vm, &self.answers.guest_time);
         if answered.is_err() {
             lock(&inbox).guest_times.retain(|(n, _)| *n != number);
         }
-        match answered {
-            Ok(said) => said,
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(format!(
-                "its microVM did not answer in {} s",
-                super::TAKE_TIMEOUT.as_secs()
-            )),
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err("its microVM stopped".into()),
-        }
+        answered?
     }
 
     /// Whether run `id` runs joined to another's network (D119): in its provider's
@@ -1789,7 +1784,9 @@ impl<D: crate::containers::Disk> Daemon<D> {
             Some(RunState::Tracked(t)) => t.socket.clone(),
             _ => return false,
         };
-        let sent = socket.send(kind::SIGNAL, &linux.to_be_bytes(), &[]).is_ok();
+        let sent = socket
+            .send(&self.answers.run_send, kind::SIGNAL, &linux.to_be_bytes(), &[])
+            .is_ok();
         if sent {
             self.container_event(id, "kill", &[("signal", linux.to_string())]);
         }
@@ -2176,7 +2173,12 @@ impl<D: crate::containers::Disk> Daemon<D> {
                                 _ => (None, None),
                             };
                             if let Some(socket) = socket {
-                                let _ = socket.send(kind::SIGNAL, &9u32.to_be_bytes(), &[]);
+                                let _ = socket.send(
+                                    &self.answers.run_send,
+                                    kind::SIGNAL,
+                                    &9u32.to_be_bytes(),
+                                    &[],
+                                );
                             }
                             e.phase = Phase::VmKilled;
                             (e.followed, e.since) = (Followed::of(vm), Instant::now());
@@ -3188,9 +3190,123 @@ impl Show<'_, '_> {
     }
 }
 
+/// A VM's answer to `GUEST_TIME`, waited for on `answer` while its process `vm` goes on, judged
+/// by `record` (D215's judge, `Answers::guest_time`; runs-11 `TAKE_TIMEOUT`): before its kind's
+/// first answer, until it answers or its run ends (its inbox's end); then refused typed
+/// ([`super::health::Stalled`]) where its process ran no CPU over a whole W* of the slowest
+/// answer seen. Its answer teaches the record.
+fn guest_timed(
+    answer: &std::sync::mpsc::Receiver<Result<shards_vmm::vm::GuestTimes, String>>,
+    vm: u32,
+    record: &shards_api::Record,
+) -> Result<Result<shards_vmm::vm::GuestTimes, String>, String> {
+    use std::sync::mpsc::RecvTimeoutError;
+    let mut judged = super::health::Judged::of(vm, record);
+    loop {
+        let due = judged
+            .judge()
+            .map_err(|e| format!("its microVM did not answer: {e}"))?;
+        let got = match due {
+            None => super::timed(None, || answer.recv().map_err(|_| RecvTimeoutError::Disconnected)),
+            Some(due) => {
+                let left = due.saturating_duration_since(std::time::Instant::now());
+                super::timed(Some(left), || answer.recv_timeout(left))
+            }
+        };
+        match got {
+            Ok(said) => {
+                judged.answered();
+                return Ok(said);
+            }
+            // Its look is due: made as the loop goes round.
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return Err("its microVM stopped".into()),
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+
+    /// A VM slow to answer `GUEST_TIME`, its process going on, is waited for however long it
+    /// takes (runs-11 `TAKE_TIMEOUT`): red before, its answer was waited for 10 s
+    /// (`TAKE_TIMEOUT`, picked) and the ask failed. Its kind's record learned at 100 ms, the VM
+    /// (this process, a thread of it busy) answers at 10.5 s; a cold record learns from it.
+    #[cfg(unix)]
+    #[test]
+    fn a_vm_slow_to_answer_its_guest_times_while_it_runs_is_waited_for() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::Duration;
+        let record = shards_api::Record::new();
+        let slowest = Duration::from_millis(100);
+        record.teach(slowest, slowest / 1000);
+        let (told, answer) = std::sync::mpsc::channel();
+        let busy = AtomicBool::new(true);
+        let said = std::thread::scope(|s| {
+            s.spawn(|| {
+                while busy.load(Ordering::Relaxed) {
+                    std::hint::black_box(std::time::Instant::now());
+                }
+            });
+            s.spawn(move || {
+                std::thread::sleep(Duration::from_millis(10_500));
+                let _ = told.send(Ok(shards_vmm::vm::GuestTimes::default()));
+            });
+            let said = super::guest_timed(&answer, std::process::id(), &record);
+            busy.store(false, Ordering::Relaxed);
+            said
+        });
+        assert_eq!(said, Ok(Ok(shards_vmm::vm::GuestTimes::default())));
+        let cold = shards_api::Record::new();
+        let (told, answer) = std::sync::mpsc::channel();
+        told.send(Ok(shards_vmm::vm::GuestTimes::default())).unwrap();
+        assert!(super::guest_timed(&answer, std::process::id(), &cold).is_ok());
+        assert!(matches!(cold.seen(), shards_api::Seen::Learned { .. }));
+        // Its run's end, its inbox's sender dropped, ends the wait.
+        let (told, answer) = std::sync::mpsc::channel::<Result<shards_vmm::vm::GuestTimes, String>>();
+        drop(told);
+        assert_eq!(
+            super::guest_timed(&answer, std::process::id(), &cold),
+            Err("its microVM stopped".into())
+        );
+    }
+
+    /// A VM that never answers `GUEST_TIME`, its process running nothing, is refused typed
+    /// ([`super::super::health::Stalled`]) once it has run nothing for a whole W* of its kind's
+    /// slowest, never sooner.
+    #[cfg(unix)]
+    #[test]
+    fn a_vm_that_runs_nothing_and_never_answers_its_guest_times_is_refused() {
+        use std::time::{Duration, Instant};
+        let mut idle = std::process::Command::new("/bin/sleep")
+            .arg("600")
+            .spawn()
+            .unwrap();
+        let record = shards_api::Record::new();
+        let slowest = Duration::from_millis(100);
+        record.teach(slowest, slowest / 1000);
+        let (told, answer) = std::sync::mpsc::channel::<Result<shards_vmm::vm::GuestTimes, String>>();
+        let t0 = Instant::now();
+        let (done, finished) = std::sync::mpsc::channel();
+        let vm = idle.id();
+        std::thread::scope(|s| {
+            let record = &record;
+            s.spawn(move || {
+                let _ = done.send(super::guest_timed(&answer, vm, record));
+            });
+            let said = finished.recv_timeout(Duration::from_secs(10));
+            // Dropped, so that a wait that did not stop ends.
+            drop(told);
+            let e = said
+                .expect("a VM that ran nothing was waited for on")
+                .unwrap_err();
+            assert!(e.contains("ran no CPU"), "{e}");
+            assert!(t0.elapsed() >= slowest, "{:?}", t0.elapsed());
+        });
+        let _ = idle.kill();
+        let _ = idle.wait();
+    }
 
     /// `cp -a` copies as the microVM's user, its run's or else its image's: a microVM whose
     /// record is gone is refused, never copied as root. One whose record names no image ID

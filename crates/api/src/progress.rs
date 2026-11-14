@@ -1393,8 +1393,8 @@ mod tests {
     /// A wait that follows a process by its pid is refused `Stalled` at a look past W* that
     /// finds it ran nothing since the look before, and goes on at each look while it runs
     /// (D215; the daemon's `Wait::WhileRuns`). The sleeper is looked at until it is refused,
-    /// the first look or two taking in its start's own CPU.
-    #[cfg(unix)]
+    /// the first look or two taking in its start's own CPU. On Windows the sleeper is cmd's
+    /// pings of the loopback a second apart, its tree followed with it.
     #[test]
     fn a_process_followed_by_its_pid_is_judged_by_its_cpu() {
         let slowest = Duration::from_millis(20);
@@ -1406,7 +1406,13 @@ mod tests {
                 std::thread::sleep(due.saturating_duration_since(Instant::now()));
             }
         };
+        #[cfg(unix)]
         let mut sleeper = std::process::Command::new("sleep").arg("60").spawn().unwrap();
+        #[cfg(windows)]
+        let mut sleeper = std::process::Command::new("cmd")
+            .args(["/c", "ping -n 61 127.0.0.1 >nul"])
+            .spawn()
+            .unwrap();
         let followed = Followed::of_pid(sleeper.id()).unwrap().unwrap();
         let mut follow = Follow::begin(&record, followed).unwrap().unwrap();
         let refused = loop {
