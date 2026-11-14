@@ -28443,7 +28443,10 @@ API's protocol: its output drained, its end, its connections.
     interruptible sleep, `S`; Mach's TH_STATE_WAITING) at two looks in a row, never on the
     kernel's own uninterruptible work (`D`: a fault waiting for a memory map another thread
     holds, a `/proc` read), and the worker outlives its answer until the look is done with
-    it: a worker that had ended left a look nothing to read (PM M585).
+    it: a worker that had ended left a look nothing to read (PM M585). A take that waits for
+    its writer's close is judged from that close as the kernel says it (POLLHUP on a read end
+    of the test's own, Linux), never from the test's drop of its end: a copy another test's
+    fork made of it held the pipe open up to 29 ms longer (PM M587).
 - *Its VM process* (Hex lead's ask, 2026-11-14: "Give the managed guest's orchestrator the
   confined VM process's identity (pid and start time, as Identity names the host's), so it can
   read that process's memory as the VMM's"; on Windows `reserve_ram` commits the guest's RAM in
