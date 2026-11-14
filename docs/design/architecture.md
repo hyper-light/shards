@@ -34913,8 +34913,10 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
   - KVM x86-64 at 83d6e8613: boot.rs's three tests with the unpatched kernel 54fba99afaee 3/3,
     where they failed 3/3 before; with the patched 836568f8ad2c 3/3. Manual boots of each at 1
     and 4 vCPUs start at "Linux version", with exactly one.
-  - Owed: unit tests against rings captured from those kernels' memory (synthetic rings so far),
-    and HVF and WHP runs.
+  - Unit tests against rings captured from those kernels' memory (crates/vmm testdata/printk,
+    `capture-ring.py`, KVM boots to a snapshot): the unpatched kernel's console is given every
+    record from "Linux version" to "console [hvc0] enabled"; the patched one's, none.
+  - Owed: HVF and WHP runs.
 
 **Alternatives rejected.**
 - A write-only debug port (x86's 0xe9 debugcon): mainline x86 early_printk has no 0xe9
