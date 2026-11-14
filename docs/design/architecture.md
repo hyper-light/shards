@@ -34830,13 +34830,18 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
     write. Other devices and vCPUs do not.
   - Daemon, builder and managed runs write to a sink (`Console::Discard`), which never blocks.
     Only `run --kernel` with its console on a terminal can.
-  - Since then: a console on stdout writes through a writer of its own (`console::Output::Writer`).
-    The exit takes one buffer, uses it and returns. The host holds at most that one buffer while
-    it is written; the guest's next waits in its ring of one (`TRANSMIT_SIZE`), the guest
-    spinning on it. A blocked write holds no transport lock, so other exits and a pause or
-    snapshot land: unit test `a_blocked_stdout_holds_no_exit_and_no_pause`, which blocks when
-    the output is written in the exit instead. A console nobody reads still writes to its sink
-    in the exit.
+  - Since then, one output path for every console (the person: two mechanisms, and sink work
+    in the vCPU's exit, were not to stay). The notifying exit only takes the guest's buffer into
+    the writer's slot, uses it and returns. The device's writer thread delivers it to the
+    output, whichever it is (stdout, a sink nobody reads), and to D12's ring, then takes the
+    guest's next. The host holds at most that one buffer; the guest's next waits in its ring of
+    one (`TRANSMIT_SIZE`), the guest spinning on it.
+    - A blocked output holds no transport lock, so other exits and a pause or snapshot land.
+    - `Port::said` waits for the writer to deliver what it holds, so a reset's last lines are
+      quoted.
+    - Unit tests: `a_buffer_sent_is_used_in_its_exit_and_delivered_by_the_writer` (used within
+      its exit, written on no exit's thread; red when the hand-off is cut) and
+      `a_blocked_stdout_holds_no_exit_and_no_pause` (blocks when output is written in the exit).
 - **Kernels shards does not build** (`shards configure guest`, D28) keep upstream's lost
   backlog until the fix reaches them. A version-agnostic layer is designed, not built: at the
   first transmit after a fresh activation, the VMM would emit the ring's records older than the
