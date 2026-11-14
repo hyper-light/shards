@@ -689,7 +689,7 @@ mod tests {
                 (&end).write_all(&run::header(build::kind::HELD, 0)).unwrap();
             }
             late(&mut held, &mut unsaid, soon(), Instant::now(), &|| None);
-            (&end).set_nonblocking(true).unwrap();
+            end.set_nonblocking(true).unwrap();
             (&end)
                 .read_exact(&mut header)
                 .expect("budget removal was lost behind the pending answer");
