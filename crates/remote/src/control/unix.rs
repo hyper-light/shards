@@ -1456,6 +1456,175 @@ mod tests {
         echo.join().unwrap();
     }
 
+    /// What each exec's (and MCP connection's) streams are admitted: records of `record`
+    /// bytes, each output's window one record and its data frame's head, each stdin's its
+    /// taken frame; the handshake's and datagrams' a member stream's.
+    fn exec_admissions(record: usize) -> crate::control::exec::Admissions {
+        use crate::managed::{Admitted, DATA_HEAD, DATAGRAM_BYTES, input};
+        let link = |transport_bytes: usize| Admitted {
+            record_bytes: record,
+            transport_bytes: transport_bytes as u64,
+            // RFC 8446 §4: a handshake message's uint24 length and its four-byte head.
+            handshake_bytes: (1 << 24) - 1 + 4,
+            datagram_bytes: DATAGRAM_BYTES,
+        };
+        crate::control::exec::Admissions {
+            output: link(record + DATA_HEAD),
+            input: link(input::TAKEN_BYTES),
+        }
+    }
+
+    /// One controller thread drives an MCP connection's output and input and a socket lane at
+    /// once, without waiting on any: the harness echoes each record it is sent as its own, the
+    /// workload each byte it reads, so that every lane's bytes cross both ways while the
+    /// others' do; the thread sleeps on the wake alone. Then the connection ends as `write`'s
+    /// side ends it, its output finished and its end told.
+    #[test]
+    fn one_thread_drives_an_output_an_input_and_a_socket_lane_on_its_wake() {
+        use crate::control::exec::{Reply, Start};
+        use crate::control::{Got, McpConnection};
+        use crate::managed::input::Next;
+        use shards_abi::run::managed::InputEnd;
+        const RECORD: usize = 1024;
+        let dir = shards_testdir::TempDir::new("so").unwrap();
+        let listener = UnixListener::bind(dir.path().join("echo.sock")).unwrap();
+        let workload = std::thread::spawn(move || {
+            let (conn, _) = listener.accept().unwrap();
+            std::io::copy(&mut &conn, &mut &conn).unwrap();
+            conn.shutdown(std::net::Shutdown::Write).unwrap();
+        });
+        let (vm, hex) = (Identity::generate().unwrap(), Identity::generate().unwrap());
+        let (endpoint, served) = Endpoint::bind(
+            &vm,
+            hex.fingerprint(),
+            SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+            Streams {
+                outputs: &[],
+                inputs: &[],
+                execs: Some(exec_admissions(RECORD)),
+                sockets: Some(admission(1)),
+            },
+        )
+        .unwrap();
+        let at = endpoint.address;
+        std::thread::spawn(move || endpoint.run());
+        let _host = host(dir.path().to_owned(), served.sockets.unwrap());
+        let starts = served.execs.unwrap();
+        // The MCP connection's host: its harness echoes every record it is sent.
+        let harness = std::thread::spawn(move || {
+            let Start {
+                stdout,
+                stdin,
+                steer,
+                replies,
+                ..
+            } = starts.recv_timeout(PATIENCE).unwrap();
+            replies.tell(Reply::Started);
+            let (relay, input) = stdin.unwrap();
+            let mut written = 0u64;
+            loop {
+                match relay.next() {
+                    Next::Record { bytes, .. } => {
+                        written += bytes.len() as u64;
+                        stdout.0.wait_capacity().unwrap();
+                        let mut record = stdout.0.take_buffer().unwrap().unwrap();
+                        record.extend_from_slice(&bytes);
+                        stdout.0.submit(record).unwrap();
+                        relay.delivered(bytes);
+                    }
+                    Next::End => {
+                        input.ended(written, InputEnd::Closed);
+                        break;
+                    }
+                    Next::Abort(_) | Next::Gone => break,
+                }
+            }
+            stdout.1.finish().unwrap();
+            replies.tell(Reply::Exited(0));
+            while steer.recv().is_ok() {}
+            drop((stdout, input));
+        });
+        let (controller, mut dialed) = Controller::dial(
+            &hex,
+            vm.fingerprint(),
+            at,
+            Subscriptions {
+                outputs: &[],
+                inputs: &[],
+                execs: Some(exec_admissions(RECORD)),
+                sockets: Some(admission(1)),
+            },
+        )
+        .unwrap();
+        std::thread::spawn(move || controller.run());
+        let (execs, sockets) = (dialed.execs.take().unwrap(), dialed.sockets.take().unwrap());
+        let McpConnection {
+            mut from,
+            mut to,
+            mut end,
+        } = answered!(execs.mcp(0)).unwrap();
+        let mut lane = answered!(sockets.connect("echo.sock")).unwrap();
+
+        let sent = pattern(admission(1).window);
+        let said = &sent[..8 * RECORD + 1];
+        let (mut put, mut back) = (0, Vec::new());
+        let (mut wrote, mut shut, mut echoed, mut ended) = (0, false, Vec::new(), false);
+        let mut buf = vec![0u8; 8192];
+        while back.len() < said.len() || !ended {
+            dialed.wake.drain().unwrap();
+            while put < said.len() {
+                match to.try_write(&said[put..]) {
+                    Ok(Some(n)) => put += n,
+                    Ok(None) => break,
+                    Err(fault) => panic!("the input refused: {fault}"),
+                }
+            }
+            while back.len() < said.len() {
+                match from.try_next_record() {
+                    Ok(Some(Got::Record { at, bytes })) => {
+                        assert_eq!(at, back.len() as u64);
+                        back.extend_from_slice(&bytes);
+                    }
+                    Ok(None) => break,
+                    other => panic!("the output said {other:?}"),
+                }
+            }
+            while wrote < sent.len() {
+                match lane.try_write(&sent[wrote..]) {
+                    Ok(n) => wrote += n,
+                    Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+                    Err(e) => panic!("the socket's write refused: {e}"),
+                }
+            }
+            if wrote == sent.len() && !shut {
+                lane.shutdown_write().unwrap();
+                shut = true;
+            }
+            while !ended {
+                match lane.try_read(&mut buf) {
+                    Ok(0) => ended = true,
+                    Ok(n) => echoed.extend_from_slice(&buf[..n]),
+                    Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+                    Err(e) => panic!("the socket's read refused: {e}"),
+                }
+            }
+            if back.len() < said.len() || !ended {
+                assert!(
+                    dialed.wake.wait(PATIENCE).unwrap(),
+                    "no ring within patience: a wake lost"
+                );
+            }
+        }
+        assert_eq!(back, said, "the harness's echo exactly");
+        assert_eq!(echoed, sent, "the workload's echo exactly");
+        assert_eq!(to.end(), Ok((said.len() as u64, InputEnd::Closed)));
+        assert_eq!(from.next_record(), Ok(Got::Finished));
+        assert_eq!(end.wait(), Ok(0));
+        harness.join().unwrap();
+        drop(lane);
+        workload.join().unwrap();
+    }
+
     #[test]
     fn lanes_past_the_admitted_most_are_refused_until_one_ends() {
         let dir = shards_testdir::TempDir::new("sc").unwrap();

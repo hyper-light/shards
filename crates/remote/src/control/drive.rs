@@ -277,6 +277,18 @@ impl Output {
     /// long as the member writes nothing. [`Got::Finished`] once the output has finished, then
     /// again; a [`Fault`] once the lane is over, then again.
     pub fn next_record(&mut self) -> Result<Got, Fault> {
+        self.take(Waits::Yes)?.ok_or_else(gone)
+    }
+
+    /// As [`Output::next_record`] without waiting: `None` (its `WouldBlock`) where no record
+    /// has come; else its record, its finish or its fault, exactly as `next_record` says them,
+    /// the record handed out before acknowledged as that does. Its controller tries it again
+    /// after its [`Wake`] is drained.
+    pub fn try_next_record(&mut self) -> Result<Option<Got>, Fault> {
+        self.take(Waits::No)
+    }
+
+    fn take(&mut self, waits: Waits) -> Result<Option<Got>, Fault> {
         if let Some(offset) = self.held.take() {
             self.cursor = offset;
             self.asks.hand(Ask::Consumed {
@@ -285,9 +297,12 @@ impl Output {
             });
         }
         if let Some(over) = self.over {
-            return over.map(|()| Got::Finished);
+            return over.map(|()| Some(Got::Finished));
         }
-        let (got, over) = match self.heard.recv() {
+        let Some(heard) = hear(&self.heard, waits) else {
+            return Ok(None);
+        };
+        let (got, over) = match heard {
             Ok(Heard::Record { at, bytes }) => {
                 // The driver took it only at this lane's next offset, of an admitted length.
                 self.held = at.checked_add(bytes.len() as u64);
@@ -295,10 +310,10 @@ impl Output {
             }
             Ok(Heard::Finished) => (Ok(Got::Finished), Some(Ok(()))),
             Ok(Heard::Fault(fault)) => (Err(fault), Some(Err(fault))),
-            Ok(_) | Err(_) => (Err(gone()), Some(Err(gone()))),
+            Ok(_) | Err(()) => (Err(gone()), Some(Err(gone()))),
         };
         self.over = over;
-        got
+        got.map(Some)
     }
 
     /// The first byte not yet acknowledged: where a later dial's lane opens.
@@ -316,7 +331,29 @@ pub struct Input {
     cursor: u64,
     /// Where the endpoint said the next record starts and how long it may be.
     room: Option<(u64, u32)>,
+    /// Whether a record sent is not yet taken (R04).
+    flight: Flight,
     over: Option<Fault>,
+}
+
+/// A stdin's record: none in flight, or one sent and its taken not yet heard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Flight {
+    Idle,
+    Sent,
+}
+
+/// What a handle's channel says next, waited for or not: `None` where it says nothing yet;
+/// `Err` where its driver has gone.
+fn hear(heard: &mpsc::Receiver<Heard>, waits: Waits) -> Option<Result<Heard, ()>> {
+    match waits {
+        Waits::Yes => Some(heard.recv().map_err(|_| ())),
+        Waits::No => match heard.try_recv() {
+            Ok(said) => Some(Ok(said)),
+            Err(mpsc::TryRecvError::Empty) => None,
+            Err(mpsc::TryRecvError::Disconnected) => Some(Err(())),
+        },
+    }
 }
 
 impl Input {
@@ -331,16 +368,32 @@ impl Input {
     /// Bytes an earlier connection's record gave the member already are counted, not sent again
     /// (step 5: a new subscription is told where to go on, which may be past its cursor).
     pub fn write(&mut self, bytes: &[u8]) -> Result<usize, Fault> {
+        self.put(bytes, Waits::Yes)?.ok_or_else(gone)
+    }
+
+    /// As [`Input::write`] without waiting: `None` (its `WouldBlock`) where the endpoint has
+    /// no room, as while the record before is in flight; else how many bytes of `bytes` it
+    /// took, or its end ([`Fault::InputEnded`]) or fault, exactly as `write` says them. The
+    /// bytes it took are in flight, one record: [`Input::cursor`] passes them once the
+    /// endpoint has taken them, which the next try (or `write`, or `end`) hears. Its controller
+    /// tries it again after its [`Wake`] is drained.
+    pub fn try_write(&mut self, bytes: &[u8]) -> Result<Option<usize>, Fault> {
+        self.put(bytes, Waits::No)
+    }
+
+    fn put(&mut self, bytes: &[u8], waits: Waits) -> Result<Option<usize>, Fault> {
         if bytes.is_empty() {
-            return Ok(0);
+            return Ok(Some(0));
         }
-        let (accepted, room) = self.room()?;
+        let Some((accepted, room)) = self.room(waits)? else {
+            return Ok(None);
+        };
         if accepted > self.cursor {
             let taken = usize::try_from(accepted.saturating_sub(self.cursor))
                 .unwrap_or(usize::MAX)
                 .min(bytes.len());
             self.cursor = self.cursor.saturating_add(taken as u64);
-            return Ok(taken);
+            return Ok(Some(taken));
         }
         let len = usize::try_from(room).unwrap_or(usize::MAX).min(bytes.len());
         let mut frame = Vec::new();
@@ -348,16 +401,17 @@ impl Input {
             .map_err(|_| self.fail(gone()))?;
         self.send(frame);
         self.room = None;
-        // The driver took that taken only where this record ends (`Pace`).
-        let (next, _) = self.room()?;
-        self.cursor = next;
-        Ok(len)
+        self.flight = Flight::Sent;
+        if waits == Waits::Yes {
+            self.room(Waits::Yes)?;
+        }
+        Ok(Some(len))
     }
 
     /// Ends the stdin once all before it is taken (step 5's end, errno 0), and waits for the
     /// member's init to tell how it went: how many bytes its stdin took.
     pub fn end(&mut self) -> Result<(u64, InputEnd), Fault> {
-        let (accepted, _) = self.room()?;
+        let (accepted, _) = self.room(Waits::Yes)?.ok_or_else(gone)?;
         self.send(input::end(accepted, 0).to_vec());
         self.ended()
     }
@@ -373,20 +427,30 @@ impl Input {
         self.ended()
     }
 
-    /// Waits for what the endpoint says next of the stdin: the room for its next record, or its
-    /// end, which is a [`Fault::InputEnded`] here.
-    fn room(&mut self) -> Result<(u64, u32), Fault> {
+    /// What the endpoint says next of the stdin, waited for or not (`None`: nothing yet): the
+    /// room for its next record, or its end, which is a [`Fault::InputEnded`] here. Room told
+    /// with a record in flight says it was taken: the cursor passes it.
+    fn room(&mut self, waits: Waits) -> Result<Option<(u64, u32)>, Fault> {
         loop {
             if let Some(fault) = self.over {
                 return Err(fault);
             }
             if let Some(room) = self.room {
-                return Ok(room);
+                return Ok(Some(room));
             }
-            match self.heard.recv() {
-                Ok(Heard::Taken { accepted, room }) => self.room = Some((accepted, room)),
+            let Some(heard) = hear(&self.heard, waits) else {
+                return Ok(None);
+            };
+            match heard {
+                Ok(Heard::Taken { accepted, room }) => {
+                    // The driver took that taken only where the record in flight ends (`Pace`).
+                    if std::mem::replace(&mut self.flight, Flight::Idle) == Flight::Sent {
+                        self.cursor = accepted;
+                    }
+                    self.room = Some((accepted, room));
+                }
                 Ok(Heard::Fault(fault)) => self.over = Some(fault),
-                Ok(_) | Err(_) => self.over = Some(gone()),
+                Ok(_) | Err(()) => self.over = Some(gone()),
             }
         }
     }
@@ -395,7 +459,7 @@ impl Input {
     fn ended(&mut self) -> Result<(u64, InputEnd), Fault> {
         self.room = None;
         loop {
-            match self.room() {
+            match self.room(Waits::Yes) {
                 Ok(_) => self.room = None,
                 Err(fault) => return ended_or(fault),
             }
@@ -630,18 +694,15 @@ impl PendingExec {
     /// Why it did not start, typed, then again: the endpoint's refusal of its lane, the host's
     /// [`Fault::Unstarted`], or the connection's end.
     pub fn wait(&mut self, patience: Duration) -> Result<Option<Exec>, Fault> {
-        let Some(Answer { said, asks, heard }) = self.pending.wait(patience)? else {
+        let Some((started, asks, heard)) = self.started(patience)? else {
             return Ok(None);
-        };
-        let Heard::Started(started) = said else {
-            return Err(gone());
         };
         let Started {
             lane,
             stdout,
             stderr,
             stdin,
-        } = *started;
+        } = started;
         Ok(Some(Exec {
             stdout,
             stderr,
@@ -653,6 +714,21 @@ impl PendingExec {
                 exit: None,
             },
         }))
+    }
+
+    /// [`PendingExec::wait`]'s answer, its lane's own: its stdio, where its handle asks the
+    /// driver, and its lane's channel on.
+    fn started(
+        &mut self,
+        patience: Duration,
+    ) -> Result<Option<(Started, Asks, mpsc::Receiver<Heard>)>, Fault> {
+        let Some(Answer { said, asks, heard }) = self.pending.wait(patience)? else {
+            return Ok(None);
+        };
+        let Heard::Started(started) = said else {
+            return Err(gone());
+        };
+        Ok(Some((*started, asks, heard)))
     }
 }
 
@@ -739,13 +815,13 @@ impl PendingLog {
     /// is older), the endpoint's refusal of its lane, its host's [`Fault::Unstarted`], or the
     /// connection's end.
     pub fn wait(&mut self, patience: Duration) -> Result<Option<Log>, Fault> {
-        let Some(Exec { stdout, control, .. }) = self.exec.wait(patience)? else {
+        let Some((Started { lane, stdout, .. }, asks, _)) = self.exec.started(patience)? else {
             return Ok(None);
         };
         Ok(Some(Log {
             records: stdout,
-            lane: control.lane,
-            asks: control.asks,
+            lane,
+            asks,
             channels: self.channels,
             cursor: self.cursor,
             finished: false,
@@ -765,6 +841,7 @@ pub struct McpConnection {
     pub from: Output,
     pub to: Input,
     /// Its end: [`ExecControl::wait`]. It takes no resize or signal: its host lets them go.
+    /// Hung up ([`ExecControl::hangup`]), or let go before its end, the connection is.
     pub end: ExecControl,
 }
 
@@ -955,7 +1032,8 @@ impl MemberEnd {
     }
 }
 
-/// An exec's lane: its resizes and signals, and its exit.
+/// An exec's lane: its resizes and signals, and its exit. Hung up ([`ExecControl::hangup`]),
+/// or let go before its exit was heard, its exec is hung up.
 #[derive(Debug)]
 pub struct ExecControl {
     lane: u64,
@@ -1001,6 +1079,22 @@ impl ExecControl {
         };
         self.exit = Some(exit);
         exit
+    }
+
+    /// Hangs its exec up, whatever its stdio hold: its lane abandoned both ways (RESET_STREAM
+    /// and STOP_SENDING), as a log let go abandons its own, which its endpoint reads as its
+    /// controller gone. The endpoint lets the exec go at once, its record in flight with it,
+    /// and closes its host's steering, which hangs the exec up there; its stdio's lanes end,
+    /// each handle told so. An MCP connection hung up is the harness's connection closed.
+    pub fn hangup(self) {}
+}
+
+impl Drop for ExecControl {
+    /// Let go before its exit was heard: hung up.
+    fn drop(&mut self) {
+        if self.exit.is_none() {
+            self.asks.hand(Ask::Hangup { lane: self.lane });
+        }
     }
 }
 
@@ -1851,6 +1945,7 @@ impl Controller {
                     heard,
                     cursor: from,
                     room: None,
+                    flight: Flight::Idle,
                     over: None,
                 });
             }
@@ -2985,6 +3080,7 @@ impl Drive {
                     heard,
                     cursor: 0,
                     room: None,
+                    flight: Flight::Idle,
                     over: None,
                 })
             }

@@ -31292,6 +31292,22 @@ Hex's acceptance (its INTERFACE.md and red tests, step11-a-socket-lane) is held 
   - *Literals.* None chosen: poll(2)'s int and WaitForSingleObject's DWORD of milliseconds
     (`INFINITE`) are the APIs' own, a patience past them waiting until a ring, rounded up so no
     patience waits less than asked.
+  - *A member's stdio, and an exec's and MCP connection's, on the same wake* (Hex's ask after
+    D-10: one thread per output, input and MCP connection otherwise). `Output::try_next_record`
+    and `Input::try_write` answer `Ok(None)`, their `WouldBlock`, where no record has come or
+    the endpoint has no room, and otherwise exactly as `next_record` and `write` do: a record,
+    `Got::Finished`, `Fault::InputEnded`, or the lane's `Fault`, then again. `None` is the
+    crate's own "not yet", as a pending ask's `wait(Duration::ZERO)` says it; an `io::Result`
+    would carry these handles' typed ends and faults as `io::Error`s (R04). The driver already
+    rings for their words (records, finishes, room, faults, through each lane's mark), so the
+    one rule drives sockets, outputs, inputs and the pending asks from one thread. Each shares
+    its blocking twin's state (`Waits`, as the sockets'): an output's record handed out is
+    acknowledged by whichever call comes next. An input's try takes its bytes as one record and
+    answers at once, the record in flight (`Flight::Sent`, R04): no room until the endpoint has
+    taken it, and the cursor passes it as its taken is heard, by the next try, `write` or `end`.
+    `write` itself is unchanged, waiting for its record's taken. An abort with a record in
+    flight names the cursor before it, which the endpoint takes (an abort at or before the next
+    record's start, `managed::input`). No literal.
 - *Its scope.* An endpoint that serves its run's member streams knows its run and
   generation, which an ask names. One that serves sockets alone knows only the keys its
   connection pinned, and an ask there names the zero run and generation 0, as a controller of
@@ -31371,6 +31387,23 @@ function"), no time chosen.
   ring), `a_lanes_fault_rings_its_controllers_wake` (a cut read and written as
   `ConnectionReset` through the tries), and `one_thread_drives_several_lanes_on_its_wake` (three
   echoing lanes, one thread, sleeping on the wake alone).
+- Its outputs' and inputs' tries (policy df2acf47, implementer): `control::tests::lanes`, over
+  the real transport with an MCP connection's host played by the test,
+  `an_outputs_try_says_none_until_its_record_finish_or_fault_rings_the_wake` (none before a
+  record; two records, the first acknowledged by the try after it; the finish, then again; an
+  aborted output's `Revoked`, then again, as `next_record` says it) and
+  `an_inputs_try_says_none_until_its_room_end_or_fault_rings_the_wake` (none while its record
+  is in flight, the cursor not past it; room once its host delivered it; the host's end,
+  `InputEnded`, as `write` says it; a revoked input's `Revoked`), each found after a ring; and
+  `control::unix::tests::one_thread_drives_an_output_an_input_and_a_socket_lane_on_its_wake`
+  (an MCP connection whose harness echoes each record and a socket lane to an echoing workload,
+  one thread trying all three and sleeping on the wake alone, then the connection's end).
+  On adas-mac-studio-3.local (macOS arm64): shards-remote's `control::` 75 tests, three runs,
+  `loopback` 35, clippy `--all-targets -D warnings` clean. Its guards mutated: a try that finds
+  nothing saying its lane gone instead of none fails all three tries' tests; the cursor not
+  passed as a record in flight is taken fails the input's tries, the one-thread test, and the
+  blocking writes' `the_controller_drives_a_members_stdio_exactly_and_ends_as_it_ends` and
+  `a_newer_dial_supersedes_the_older_and_resumes_at_its_cursors`; restored, green.
   On adas-mac-studio-3.local (macOS arm64): shards-remote's `control::` 70 tests, `loopback`
   35, and clippy `--all-targets -D warnings` clean. Its guard mutated: the sweep's taking of
   the marks of the lanes it lets go removed, `a_lanes_fault_rings_its_controllers_wake` and
@@ -31941,6 +31974,23 @@ end `Failed`; its budget given back whole; its member lanes, D238),
 `a_resumed_runs_tokens_bring_its_engines_and_its_mcp_connections`, shards-api's
 `a_members_mcp_bridge_needs_the_runs_control_and_is_carried_with_it` and its wire tests at
 version 25.
+
+**Built** (its hangup, Hex's ask). An MCP connection's end, an exec's `ExecControl`, hangs its
+exec up as it is let go before its exit was heard, and on `ExecControl::hangup`, which lets it
+go: its lane abandoned both ways (RESET_STREAM and STOP_SENDING, the driver's `Ask::Hangup`),
+the mechanism a log let go before its end uses (D238). Its endpoint lets the exec go at once
+(`stop_exec`): the record in flight with it, its stdio's lanes reset (each handle's `Revoked`),
+and its host's steering closed, which its host reads as the hangup: the connection ended both
+ways. Without it, a controller's only way to end a connection whose harness had stopped reading
+was to wait for the record in flight to be taken or the run to end. A controller that lets go
+of `end` keeping `from` and `to` ends the connection too: read the end, or keep it. Tested:
+`control::tests::lanes`, `a_dropped_exec_control_hangs_its_mcp_connection_up_at_once` and
+`a_hung_up_exec_control_hangs_its_mcp_connection_up_at_once` (the host holding the record a
+write waits on, never delivered; the host's steering closes, the write ends `Revoked`, the
+output `Revoked`). Red before it, on the same host: the dropped control's test fails, its host's
+steering still open at the tests' patience (`Err(Timeout)`, not `Disconnected`); its guard
+mutated (the drop handing no `Hangup`), both fail so; restored, green (policy df2acf47,
+implementer; adas-mac-studio-3.local, macOS arm64, with the tries' run above).
 
 **Owed.** kiln's harness configs naming the bridge; a resumed daemon's run's members'
 connections, once managed scopes are restored (above).
