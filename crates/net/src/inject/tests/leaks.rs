@@ -43,10 +43,14 @@ fn h1_sent(credentials: &mut Credentials, root: &CertifiedIssuer<'static, KeyPai
         guest(credentials.ca.der().to_vec().into(), GRANTED, None),
         quiet(root, &[GRANTED]),
     );
-    let request = format!("GET /v1/models HTTP/1.1\r\nHost: {GRANTED}\r\nx-api-key: {PLACEHOLDER}\r\n{more}\r\n");
+    let request =
+        format!("GET /v1/models HTTP/1.1\r\nHost: {GRANTED}\r\nx-api-key: {PLACEHOLDER}\r\n{more}\r\n");
     bench.guest.writer().write_all(request.as_bytes()).unwrap();
     bench.until(credentials, &mut lease_all, |b| !b.h1().had.is_empty());
-    assert!(holds(&bench.h1().had[0].request, VALUE), "the value was not filled in");
+    assert!(
+        holds(&bench.h1().had[0].request, VALUE),
+        "the value was not filled in"
+    );
     bench
 }
 
@@ -63,14 +67,18 @@ fn a_chunks_extension_never_carries_a_value_to_the_guest() {
         "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5;echo={v}\r\nhello\r\n6 ; q=\"{v}\"\r\n world\r\n0\r\n\r\n"
     );
     bench.answer(response.as_bytes());
-    bench.until(&mut credentials, &mut unanswered, |b| b.got.ends_with(b"0\r\n\r\n"));
+    bench.until(&mut credentials, &mut unanswered, |b| {
+        b.got.ends_with(b"0\r\n\r\n")
+    });
     assert!(
         !holds(&bench.got, VALUE),
         "a chunk's extension carried the value to the guest: {}",
         lossy(&bench.got)
     );
     assert!(
-        bench.got.ends_with(b"\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n"),
+        bench
+            .got
+            .ends_with(b"\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n"),
         "{}",
         lossy(&bench.got)
     );
@@ -100,7 +108,10 @@ fn a_chunks_size_line_is_read_whole_and_never_carries_a_value() {
         out.extend_from_slice(b);
         Ok(())
     };
-    assert!(mask.size(0xdeadbeef, &mut to).is_err(), "a size line carried a value");
+    assert!(
+        mask.size(0xdeadbeef, &mut to).is_err(),
+        "a size line carried a value"
+    );
     assert!(mask.size(0x1a, &mut to).is_ok());
     assert_eq!(out, b"1a\r\n");
 }
@@ -113,10 +124,18 @@ fn an_echo_after_its_lease_lapsed_is_masked_still() {
     let root = root("shards test root");
     let mut credentials = credentials(&root);
     let mut bench = h1_sent(&mut credentials, &root, "");
-    assert_eq!(credentials.leases.lapse(Instant::now() + Duration::from_secs(120)), 1);
+    assert_eq!(
+        credentials
+            .leases
+            .lapse(Instant::now() + Duration::from_secs(120)),
+        1
+    );
     assert!(credentials.leases.held(CLAUDE, Instant::now()).is_none());
     let v = value();
-    let response = format!("HTTP/1.1 200 OK\r\nX-Echo: {v}\r\nContent-Length: {}\r\n\r\n{v}", v.len());
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nX-Echo: {v}\r\nContent-Length: {}\r\n\r\n{v}",
+        v.len()
+    );
     bench.answer(response.as_bytes());
     bench.until(&mut credentials, &mut unanswered, |b| whole(&b.got));
     assert!(
@@ -125,7 +144,11 @@ fn an_echo_after_its_lease_lapsed_is_masked_still() {
         lossy(&bench.got)
     );
     assert_eq!(
-        bench.got.windows(VALUE.len()).filter(|w| *w == echo_mask()).count(),
+        bench
+            .got
+            .windows(VALUE.len())
+            .filter(|w| *w == echo_mask())
+            .count(),
         2,
         "{}",
         lossy(&bench.got)
@@ -160,21 +183,36 @@ fn an_h2_echo_of_a_value_rotated_while_its_response_waits_is_masked() {
     let mut seen = Vec::new();
     let bearer = format!("Bearer {PLACEHOLDER}");
     peer.send_headers(1, &h2_request("GET", GRANTED, "/v1/models", Some(&bearer)), true);
-    h2_until(&mut bench, &mut peer, &mut seen, &mut credentials, &mut lease_all, |_, b| {
-        b.host().streams.values().any(|s| s.ended)
-    });
+    h2_until(
+        &mut bench,
+        &mut peer,
+        &mut seen,
+        &mut credentials,
+        &mut lease_all,
+        |_, b| b.host().streams.values().any(|s| s.ended),
+    );
     credentials.leases.forget(CLAUDE);
     peer.send_headers(3, &h2_request("GET", GRANTED, "/v1/rotated", Some(&bearer)), true);
-    h2_until(&mut bench, &mut peer, &mut seen, &mut credentials, &mut lease_rotated, |_, b| {
-        b.host().streams.values().filter(|s| s.ended).count() == 2
-    });
+    h2_until(
+        &mut bench,
+        &mut peer,
+        &mut seen,
+        &mut credentials,
+        &mut lease_rotated,
+        |_, b| b.host().streams.values().filter(|s| s.ended).count() == 2,
+    );
     let ids: Vec<u32> = bench.host().streams.keys().copied().collect();
     for id in ids {
         bench.host_mut().answer(id);
     }
-    h2_until(&mut bench, &mut peer, &mut seen, &mut credentials, &mut unanswered, |p, _| {
-        p.response(1).ended && p.response(3).ended
-    });
+    h2_until(
+        &mut bench,
+        &mut peer,
+        &mut seen,
+        &mut credentials,
+        &mut unanswered,
+        |p, _| p.response(1).ended && p.response(3).ended,
+    );
     let rotated = std::str::from_utf8(ROTATED).unwrap();
     assert_eq!(
         h2_leaked(&peer, &seen, &[value(), rotated]),
@@ -217,7 +255,12 @@ fn zstd(bytes: &[u8]) -> Vec<u8> {
 /// coded in more than one piece.
 fn echo_body() -> Vec<u8> {
     let filler = "x".repeat(70_000);
-    format!("{{\"echo\":\"{}\",\"filler\":\"{filler}\",\"again\":\"{}\"}}", value(), value()).into_bytes()
+    format!(
+        "{{\"echo\":\"{}\",\"filler\":\"{filler}\",\"again\":\"{}\"}}",
+        value(),
+        value()
+    )
+    .into_bytes()
 }
 
 /// `echo_body` as the guest is to have it: each value masked.
@@ -262,7 +305,9 @@ fn a_coded_echo_reaches_the_guest_decoded_and_masked() {
         match (chunked, coding.starts_with("Transfer")) {
             (true, true) => {}
             (true, false) => response.extend_from_slice(b"Transfer-Encoding: chunked\r\n"),
-            (false, _) => response.extend_from_slice(format!("Content-Length: {}\r\n", coded.len()).as_bytes()),
+            (false, _) => {
+                response.extend_from_slice(format!("Content-Length: {}\r\n", coded.len()).as_bytes())
+            }
         }
         response.extend_from_slice(b"\r\n");
         if chunked {
@@ -276,7 +321,9 @@ fn a_coded_echo_reaches_the_guest_decoded_and_masked() {
             response.extend_from_slice(&coded);
         }
         bench.answer(&response);
-        bench.until(&mut credentials, &mut unanswered, |b| b.closed || b.got.ends_with(b"\r\n0\r\n\r\n"));
+        bench.until(&mut credentials, &mut unanswered, |b| {
+            b.closed || b.got.ends_with(b"\r\n0\r\n\r\n")
+        });
         assert!(
             !holds(&bench.got, VALUE) && !holds(&bench.got, &coded),
             "{coding}: the value or its coding reached the guest"
@@ -293,7 +340,10 @@ fn a_coded_echo_reaches_the_guest_decoded_and_masked() {
         );
         let (data, whole) = dechunk(rest);
         assert!(whole, "{coding}: its last chunk never came");
-        assert!(data == masked_echo_body(), "{coding}: the decoded body is not the masked echo");
+        assert!(
+            data == masked_echo_body(),
+            "{coding}: the decoded body is not the masked echo"
+        );
         assert!(!bench.closed, "{coding}: the connection closed");
     }
 }
@@ -315,7 +365,11 @@ fn a_coded_echo_this_side_cannot_decode_is_refused() {
         response.extend_from_slice(coded);
         bench.answer(&response);
         bench.until(&mut credentials, &mut unanswered, |b| b.closed);
-        assert!(bench.got.starts_with(b"HTTP/1.1 502 "), "{coding}: {}", lossy(&bench.got));
+        assert!(
+            bench.got.starts_with(b"HTTP/1.1 502 "),
+            "{coding}: {}",
+            lossy(&bench.got)
+        );
         assert!(!holds(&bench.got, coded), "{coding}");
     }
 }
@@ -355,9 +409,14 @@ fn an_h2_coded_echo_reaches_the_guest_decoded_and_masked() {
     let mut request = h2_request("GET", GRANTED, "/v1/models", Some(&bearer));
     request.push(field("accept-encoding", b"gzip, br"));
     peer.send_headers(1, &request, true);
-    h2_until(&mut bench, &mut peer, &mut seen, &mut credentials, &mut lease_all, |p, _| {
-        p.response(1).ended || !p.ends().is_empty()
-    });
+    h2_until(
+        &mut bench,
+        &mut peer,
+        &mut seen,
+        &mut credentials,
+        &mut lease_all,
+        |p, _| p.response(1).ended || !p.ends().is_empty(),
+    );
     let codings: Vec<&[u8]> = bench
         .host()
         .at("/v1/models")
@@ -367,7 +426,11 @@ fn an_h2_coded_echo_reaches_the_guest_decoded_and_masked() {
         .map(|f| &f.value[..])
         .collect();
     assert_eq!(codings, [&b"identity"[..]]);
-    assert_eq!(h2_leaked(&peer, &seen, &[value()]), None, "the value reached the guest");
+    assert_eq!(
+        h2_leaked(&peer, &seen, &[value()]),
+        None,
+        "the value reached the guest"
+    );
     let Got { fields, data, ended } = peer.response(1);
     assert!(ended);
     assert_eq!(value_of(&fields, ":status"), Some(&b"200"[..]));
@@ -390,7 +453,9 @@ fn a_filled_websocket_takes_no_extension() {
     let sent = &bench.h1().had[0].request;
     assert!(!holds(sent, b"permessage-deflate"), "{}", lossy(sent));
     bench.answer(b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\nSec-WebSocket-Extensions: permessage-deflate\r\n\r\n");
-    bench.until(&mut credentials, &mut unanswered, |b| b.closed || !b.got.is_empty());
+    bench.until(&mut credentials, &mut unanswered, |b| {
+        b.closed || !b.got.is_empty()
+    });
     bench.settle(&mut credentials, &mut unanswered);
     assert!(bench.got.starts_with(b"HTTP/1.1 502 "), "{}", lossy(&bench.got));
     assert!(bench.closed);
@@ -425,13 +490,23 @@ fn a_chunked_token_responses_trailers_are_no_part_of_its_body() {
             .writer()
             .write_all(&post("/v1/oauth/token", TOKEN_HOST, EXCHANGE))
             .unwrap();
-        cli.until(&mut credentials, &mut |c| broker.serve(c), |b| !b.h1().had.is_empty());
+        cli.until(&mut credentials, &mut |c| broker.serve(c), |b| {
+            !b.h1().had.is_empty()
+        });
         cli.answer(&chunked_token_answer(trailers));
-        cli.until(&mut credentials, &mut |c| broker.serve(c), |b| b.closed || whole(&b.got));
+        cli.until(&mut credentials, &mut |c| broker.serve(c), |b| {
+            b.closed || whole(&b.got)
+        });
         let got = lossy(&cli.got);
-        assert!(got.starts_with("HTTP/1.1 200 OK\r\n"), "trailers {trailers:?}: {got}");
+        assert!(
+            got.starts_with("HTTP/1.1 200 OK\r\n"),
+            "trailers {trailers:?}: {got}"
+        );
         let expected = token_response(SIGNED_ACCESS, SIGNED_REFRESH);
-        assert!(got.ends_with(&format!("\r\n\r\n{expected}")), "trailers {trailers:?}: {got}");
+        assert!(
+            got.ends_with(&format!("\r\n\r\n{expected}")),
+            "trailers {trailers:?}: {got}"
+        );
         assert_eq!(broker.access, ISSUED_ACCESS.as_bytes());
     }
 }
@@ -450,7 +525,6 @@ fn echoing_token_answer(request: &[u8]) -> Vec<u8> {
     .into_bytes()
 }
 
-
 /// Do: Claude Code's code exchanged at its HTTP/1.1 token host, whose response repeats the
 /// issued tokens in its head. Expect: the response refused 502 before its tokens are asked
 /// outside; no real token in anything the guest read; nothing captured.
@@ -465,10 +539,14 @@ fn a_token_responses_head_never_carries_its_tokens_to_the_guest() {
         .writer()
         .write_all(&post("/v1/oauth/token", TOKEN_HOST, EXCHANGE))
         .unwrap();
-    cli.until(&mut credentials, &mut |c| broker.serve(c), |b| !b.h1().had.is_empty());
+    cli.until(&mut credentials, &mut |c| broker.serve(c), |b| {
+        !b.h1().had.is_empty()
+    });
     let answer = echoing_token_answer(&cli.h1().had[0].request);
     cli.answer(&answer);
-    cli.until(&mut credentials, &mut |c| broker.serve(c), |b| b.closed || whole(&b.got));
+    cli.until(&mut credentials, &mut |c| broker.serve(c), |b| {
+        b.closed || whole(&b.got)
+    });
     for real in [ISSUED_ACCESS, ISSUED_REFRESH] {
         assert!(
             !holds(&cli.got, real.as_bytes()),
@@ -477,7 +555,10 @@ fn a_token_responses_head_never_carries_its_tokens_to_the_guest() {
         );
     }
     assert!(cli.got.starts_with(b"HTTP/1.1 502 "), "{}", lossy(&cli.got));
-    assert!(broker.access.is_empty(), "a refused response's tokens were captured");
+    assert!(
+        broker.access.is_empty(),
+        "a refused response's tokens were captured"
+    );
 }
 
 /// The token host's HTTP/2 answer, its access token repeated in a field.
@@ -521,9 +602,14 @@ fn an_h2_token_responses_fields_and_trailers_never_carry_its_tokens_to_the_guest
         peer.send_headers(1, &h2_post("/v1/oauth/token", EXCHANGE), false);
         peer.send_data(1, EXCHANGE.as_bytes(), true);
         if trailers {
-            h2_until(&mut bench, &mut peer, &mut seen, &mut credentials, &mut |c| broker.serve(c), |_, b| {
-                b.host().streams.values().any(|s| s.ended)
-            });
+            h2_until(
+                &mut bench,
+                &mut peer,
+                &mut seen,
+                &mut credentials,
+                &mut |c| broker.serve(c),
+                |_, b| b.host().streams.values().any(|s| s.ended),
+            );
             let host = bench.host_mut();
             let s = host.streams.get_mut(&1).unwrap();
             s.answered = true;
@@ -534,16 +620,24 @@ fn an_h2_token_responses_fields_and_trailers_never_carry_its_tokens_to_the_guest
             host.peer
                 .send_headers(1, &[field("x-refresh", ISSUED_REFRESH.as_bytes())], true);
         }
-        h2_until(&mut bench, &mut peer, &mut seen, &mut credentials, &mut |c| broker.serve(c), |p, _| {
-            p.response(1).ended || !p.ends().is_empty()
-        });
+        h2_until(
+            &mut bench,
+            &mut peer,
+            &mut seen,
+            &mut credentials,
+            &mut |c| broker.serve(c),
+            |p, _| p.response(1).ended || !p.ends().is_empty(),
+        );
         assert_eq!(
             h2_leaked(&peer, &seen, &[ISSUED_ACCESS, ISSUED_REFRESH]),
             None,
             "a real token reached the guest (trailers: {trailers})"
         );
         assert_eq!(value_of(&peer.response(1).fields, ":status"), Some(&b"502"[..]));
-        assert!(broker.access.is_empty(), "a refused response's tokens were captured");
+        assert!(
+            broker.access.is_empty(),
+            "a refused response's tokens were captured"
+        );
     }
 }
 
@@ -566,4 +660,149 @@ fn a_tokens_echo_in_a_head_is_found_escaped_or_not() {
         );
     }
     assert_eq!(signin::unechoed(&tokens, [&b"X-Echo: kiln%2"[..]]), Ok(()));
+}
+
+/// A value of hex digits alone, as a released run's length writes them.
+const HEX_VALUE: &[u8] = b"80";
+
+/// Answers each lease asked with `HEX_VALUE`.
+fn lease_hex(credentials: &mut Credentials) -> usize {
+    let asks = credentials.leases.asks();
+    for ask in &asks {
+        let (id, _) = lease::decode_ask(ask).unwrap();
+        let life = NonZeroU64::new(60_000_000_000).unwrap();
+        let answer = lease::encode_answer(id, Ok((life, HEX_VALUE))).unwrap();
+        assert!(credentials.leases.answered(&answer, Instant::now()));
+    }
+    asks.len()
+}
+
+/// Do: a granted host's request filled in with a value of hex digits alone, its response gzip
+/// anyway, decoding to a run of 0x80 octets that holds no part of it. Expect: the decoded body's
+/// own chunk-size line, which would say `80`, never written (creds-12): the message broken, the
+/// value nowhere in what the guest read.
+#[test]
+fn a_decoded_bodys_own_size_line_never_carries_a_value() {
+    let root = root("shards test root");
+    let mut credentials = credentials(&root);
+    let mut bench = Bench::new(
+        guest(credentials.ca.der().to_vec().into(), GRANTED, None),
+        quiet(&root, &[GRANTED]),
+    );
+    bench.may_reset = true;
+    let request = format!("GET /v1/models HTTP/1.1\r\nHost: {GRANTED}\r\nx-api-key: {PLACEHOLDER}\r\n\r\n");
+    bench.guest.writer().write_all(request.as_bytes()).unwrap();
+    bench.until(&mut credentials, &mut lease_hex, |b| !b.h1().had.is_empty());
+    let coded = gzip(&[b'x'; 0x80]);
+    let mut response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\n\r\n",
+        coded.len()
+    )
+    .into_bytes();
+    response.extend_from_slice(&coded);
+    bench.answer(&response);
+    bench.settle(&mut credentials, &mut unanswered);
+    assert!(
+        !holds(&bench.got, b"\r\n80\r\n"),
+        "a decoded body's size line carried the value: {}",
+        lossy(&bench.got)
+    );
+    assert!(bench.reset, "the message was not broken");
+}
+
+/// Do: a granted host's request filled in and answered; then, on the same connection, a request
+/// that carries no placeholder, which the host answers with the value leased before (an endpoint
+/// that lists keys). Expect: the second response's value masked with its placeholder's bytes,
+/// the value nowhere in what the guest read (creds-09); the second request asking `identity`.
+#[test]
+fn a_response_to_a_request_with_no_fill_is_masked_against_the_values_leased() {
+    let root = root("shards test root");
+    let mut credentials = credentials(&root);
+    let mut bench = h1_sent(&mut credentials, &root, "");
+    bench.answer(b"HTTP/1.1 204 No Content\r\n\r\n");
+    bench.until(&mut credentials, &mut unanswered, |b| {
+        b.got.ends_with(b"\r\n\r\n")
+    });
+    bench.got.clear();
+    let request = format!("GET /v1/keys HTTP/1.1\r\nHost: {GRANTED}\r\nAccept-Encoding: gzip\r\n\r\n");
+    bench.guest.writer().write_all(request.as_bytes()).unwrap();
+    bench.until(&mut credentials, &mut unanswered, |b| b.h1().had.len() == 2);
+    let v = value();
+    let keys = format!("{{\"keys\":[\"{v}\"]}}");
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nX-Key: {v}\r\nContent-Length: {}\r\n\r\n{keys}",
+        keys.len()
+    );
+    bench.answer(response.as_bytes());
+    bench.until(&mut credentials, &mut unanswered, |b| whole(&b.got));
+    assert!(
+        !holds(&bench.got, VALUE),
+        "a value leased before reached the guest: {}",
+        lossy(&bench.got)
+    );
+    assert_eq!(
+        bench
+            .got
+            .windows(VALUE.len())
+            .filter(|w| *w == echo_mask())
+            .count(),
+        2,
+        "{}",
+        lossy(&bench.got)
+    );
+    let sent = &bench.h1().had[1].request;
+    assert!(
+        holds(sent, b"\r\nAccept-Encoding: identity\r\n") && !holds(sent, b"gzip"),
+        "{}",
+        lossy(sent)
+    );
+}
+
+/// The HTTP/2 test host's answer to any request: the value leased to the run, as an endpoint
+/// that lists keys gives it.
+fn h2_keys(_: &[hpack::Field], _: &[u8]) -> (Vec<hpack::Field>, Vec<u8>) {
+    (
+        vec![field(":status", b"200"), field("x-key", VALUE)],
+        [b"{\"keys\":[\"", VALUE, b"\"]}"].concat(),
+    )
+}
+
+/// Do: over HTTP/2, stream 1 filled in, then stream 3 with no placeholder; the host answers each
+/// with the value. Expect: the value nowhere in what the guest read, in a field or in DATA, on
+/// either stream (creds-09).
+#[test]
+fn an_h2_response_to_a_stream_with_no_fill_is_masked_against_the_values_leased() {
+    let root = root("shards test root");
+    let mut credentials = credentials(&root);
+    let host = H2Host::serving(&root, &[GRANTED], h2_keys);
+    let (mut bench, mut peer) = h2_bench(&credentials, GRANTED, host);
+    let mut seen = Vec::new();
+    let bearer = format!("Bearer {PLACEHOLDER}");
+    peer.send_headers(1, &h2_request("GET", GRANTED, "/v1/models", Some(&bearer)), true);
+    h2_until(
+        &mut bench,
+        &mut peer,
+        &mut seen,
+        &mut credentials,
+        &mut lease_all,
+        |p, _| p.response(1).ended,
+    );
+    peer.send_headers(3, &h2_request("GET", GRANTED, "/v1/keys", None), true);
+    h2_until(
+        &mut bench,
+        &mut peer,
+        &mut seen,
+        &mut credentials,
+        &mut unanswered,
+        |p, _| p.response(3).ended,
+    );
+    assert_eq!(
+        h2_leaked(&peer, &seen, &[value()]),
+        None,
+        "a value leased before reached the guest"
+    );
+    assert_eq!(
+        value_of(&peer.response(3).fields, "x-key"),
+        Some(&echo_mask()[..])
+    );
 }

@@ -23,6 +23,7 @@ mod context;
 mod daemon;
 mod disk;
 mod filters;
+mod final_use;
 mod from_image;
 mod frontend;
 mod google;
@@ -95,6 +96,9 @@ pub(crate) fn shardsd(args: Vec<std::ffi::OsString>) -> ExitCode {
         // for people to run.
         #[cfg(unix)]
         Some("console-said") => said::recorder(args),
+        // the keeper of a managed VM's final use (D260): not for people to run.
+        #[cfg(unix)]
+        Some("final-use") => final_use::keeper(args),
         // the writer of a restore's working set (`shards restore` on Linux): not for people to run.
         #[cfg(target_os = "linux")]
         Some("working-set") => working_set::keeper(),

@@ -285,19 +285,43 @@ pub fn refused(q: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// The address RRset a question asks for (RFC 1035 §3.2.2, RFC 3596 §2.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddressKind {
+    A,
+    Aaaa,
+}
+
+/// One answer's addresses and maximum lifetime; never a union of historical answers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Resolved {
+    pub name: String,
+    pub kind: AddressKind,
+    pub addresses: Vec<IpAddr>,
+    pub ttl: u32,
+}
+
 /// A response's question name, lowered and without its last dot, and the addresses of
 /// its answers' A and AAAA records (RFC 1035 §4.1, RFC 3596 §2.2): what a name granted to
 /// agents resolved to (D59). None for what is no response of one question.
-pub fn a_records(msg: &[u8]) -> Option<(String, Vec<IpAddr>)> {
+pub fn a_records(msg: &[u8]) -> Option<Resolved> {
+    // DNS-over-TCP's two-byte length bounds an admitted answer (RFC 1035 §4.2.2).
+    u16::try_from(msg.len()).ok()?;
     let be16 = |at: usize| Some(u16::from_be_bytes([*msg.get(at)?, *msg.get(at + 1)?]));
     if msg.get(2)? & 0x80 == 0 || be16(4)? != 1 {
         return None;
     }
     let (labels, end) = qname(msg.get(12..)?)?;
     let name = labels.join(".").to_ascii_lowercase();
+    let kind = match be16(12 + end)? {
+        TYPE_A => AddressKind::A,
+        TYPE_AAAA => AddressKind::Aaaa,
+        _ => return None,
+    };
     // Past the question's type and class.
     let mut at = 12 + end + 4;
     let mut out = Vec::new();
+    let mut ttl = None::<u32>;
     for _ in 0..be16(6)? {
         // An owner name: labels, ending in a zero byte or a two-byte pointer.
         loop {
@@ -312,17 +336,30 @@ pub fn a_records(msg: &[u8]) -> Option<(String, Vec<IpAddr>)> {
             }
         }
         let (kind, length) = (be16(at)?, usize::from(be16(at + 8)?));
+        let raw_ttl = u32::from_be_bytes(*msg.get(at + 4..at + 8)?.first_chunk::<4>()?);
+        // RFC 2181 §§5.2, 8: the lowest TTL wins; a set sign bit means zero.
+        let life = if raw_ttl > i32::MAX as u32 { 0 } else { raw_ttl };
+        if matches!(kind, TYPE_A | TYPE_AAAA | 5) {
+            ttl = Some(ttl.map_or(life, |was| was.min(life)));
+        }
         at += 10;
         if kind == TYPE_A && length == 4 {
             let o = msg.get(at..at + 4)?.first_chunk::<4>()?;
+            out.try_reserve(1).ok()?;
             out.push(IpAddr::V4(Ipv4Addr::from(*o)));
         } else if kind == TYPE_AAAA && length == 16 {
             let o = msg.get(at..at + 16)?.first_chunk::<16>()?;
+            out.try_reserve(1).ok()?;
             out.push(IpAddr::V6(Ipv6Addr::from(*o)));
         }
         at += length;
     }
-    Some((name, out))
+    Some(Resolved {
+        name,
+        kind,
+        addresses: out,
+        ttl: ttl.unwrap_or(0),
+    })
 }
 
 /// The address `d.c.b.a.in-addr.arpa` names, or the one `ip6.arpa`'s 32 nibbles name,
@@ -372,7 +409,7 @@ pub struct Stream {
     /// Refusals, framed, waiting for no answer to be part way.
     refusals: Vec<u8>,
     /// What answers of granted names resolved to, for the stack to learn.
-    pub learned: Vec<(String, Vec<IpAddr>)>,
+    pub learned: Vec<Resolved>,
 }
 
 /// The whole messages at the front of `buf`, taken from it, each with its length's bytes.
@@ -603,10 +640,12 @@ mod tests {
         m.extend_from_slice(&[0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 203, 0, 113, 10]);
         assert_eq!(
             a_records(&m),
-            Some((
-                "mcp.example".to_string(),
-                vec![IpAddr::from([203, 0, 113, 9]), IpAddr::from([203, 0, 113, 10])]
-            ))
+            Some(Resolved {
+                name: "mcp.example".to_string(),
+                kind: AddressKind::A,
+                addresses: vec![IpAddr::from([203, 0, 113, 9]), IpAddr::from([203, 0, 113, 10])],
+                ttl: 60,
+            })
         );
         // The query asked it, and is refused with its question kept.
         let mut q = vec![0x12, 0x34, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0];
@@ -683,6 +722,20 @@ mod tests {
     }
 
     #[test]
+    fn a_responses_keep_the_received_lifetime() {
+        let q = query("mcp.example", TYPE_A);
+        for (ttl, expected) in [(0u32, 0), (1, 1), (60, 60), (0x8000_0001, 0)] {
+            let mut reply = answered(&q, [203, 0, 113, 7]);
+            reply[q.len() + 6..q.len() + 10].copy_from_slice(&ttl.to_be_bytes());
+            assert_eq!(a_records(&reply).unwrap().ttl, expected);
+        }
+        let mut reply = answered(&q, [203, 0, 113, 7]);
+        reply[7] = 2;
+        reply.extend_from_slice(&[0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 1, 0, 4, 203, 0, 113, 8]);
+        assert_eq!(a_records(&reply).unwrap().ttl, 1, "the shortest lifetime wins");
+    }
+
+    #[test]
     fn tcp_questions_go_on_whole_and_only_as_granted() {
         let mut s = Stream::new(false, vec!["mcp.example".into()]);
         let granted = framed_msg(&query("MCP.example", TYPE_A));
@@ -719,7 +772,12 @@ mod tests {
         assert_eq!(s.held(), 0);
         assert_eq!(
             s.learned,
-            vec![("mcp.example".to_string(), vec![IpAddr::from([192, 0, 2, 7])])]
+            vec![Resolved {
+                name: "mcp.example".to_string(),
+                kind: AddressKind::A,
+                addresses: vec![IpAddr::from([192, 0, 2, 7])],
+                ttl: 60,
+            }]
         );
     }
 }

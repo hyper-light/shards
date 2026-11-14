@@ -143,15 +143,166 @@ Kiln r12 at that fix: `cargo test -p shards-net confine::tests`, then
 exit 0 ([full output](green02.log)). Own cold target, incremental disabled,
 one cargo at a time. Existing forked test admits used socket/epoll operations
 then proves an excluded openat terminates the child with the filter's refusal.
-Landlock tests remain distinct. Native arm64 GNU/musl and the actual carried
-helper/VM startup are **unverified**, owed to ROOT/CI, including:
+Landlock tests remain distinct. At this initial landing, native arm64 GNU/musl
+and carried-helper VM startup were unverified. The GNU follow-up below closes
+the native unit-test gap; musl and carried-helper VM startup remain owed, including:
 `cargo test -p shards-net confine::tests::the_filter_ends_a_process_that_makes_what_none_makes -- --exact --nocapture`.
 Run it on native arm64 Linux, then the normal carried network-helper VM smoke.
 
 R01/R04/R06/R07/R13: same fallible install path and minimal cfg seam; failures
 remain io::Result before serving frames. R02/R03/R05/R12: no new tuning,
 wait/cache or abstraction, native protocol identities reused. R08/R14: no
-performance claim; ROOT owns audit/profiling. R09/R10: native ARM red owed as
-above; r12 supplies only actual amd64 shared-path evidence. R11/R15/R16: one
+performance claim; ROOT owns audit/profiling. R09/R10: r12 supplies only actual
+amd64 shared-path evidence; native ARM evidence follows. R11/R15/R16: one
 assigned host, no local cargo/VM/fleet checks; signed landing and owned target
 cleanup are required, not inferred from this receipt.
+
+### Native ARM GNU follow-up requested by ROOT
+
+Policy re-read at main `994e7715d3677594a323ae58db1037f084890431`, then
+`a33644dbef6c967cbe16c98d64723f80d889600b`; hashes above unchanged. Role remains
+network implementer. ROOT explicitly assigned Docker Desktop arm64 Linux unit
+validation on a permitted Mac. Platform fixes `a729003e9` are included: net uses
+`shards-syscall-filter::compile` for its initial default-deny allowlist. The VM's
+later default-allow TSYNC restriction layer is a separate operation in that same
+compiler crate. No second compiler, ABI normalization or syscall-number copy was
+introduced; libc supplies each target's native numbers and the shared compiler
+rejects a different AUDIT_ARCH (including AUDIT_ARCH_AARCH64 on arm64).
+
+The regression calls the startup syscall boundary in a forked child, keeps it
+alive with a pipe, and reads its actual `/proc/<pid>/status`. It checks both mode
+2 and one additional `Seccomp_filters` entry relative to the parent, so an outer
+container filter cannot mask an omitted install. The child owns only its pipe
+ends; the parent closes the release pipe and reaps it before asserting. Mode 2
+is the Linux seccomp protocol identity, not a tuning value. Failure still returns
+through the existing io::Result before guest frames are served. No new runtime
+wait, cache, bound or allocation policy is added.
+
+Runner: `adas-mac-studio-3.local`, Docker Desktop, native Linux aarch64 GNU,
+Rust 1.98.1 (`rust:1.98.1`, local image a8a5f0a1e5fe). Docker's outer filter was
+explicitly disabled for the red witness; no host privilege or user daemon was
+changed. Own source/target at `~/g121-tmp/network-arm02-v1`, incremental disabled,
+four jobs, one cargo at a time. Commands are preserved in
+[native-arm02.sh](native-arm02.sh), runnable from a source checkout on a permitted
+Mac. The carrier fetched a named-branch git bundle into an independent clone.
+
+Follow-up Kiln runs (IDs belong to the ARM follow-up connection):
+
+- r3 setup failed because the bundle was not yet present; no test verdict.
+  A subsequent setup retry was stopped during toolchain preparation and is not
+  counted as reproduction. The corrected red owns both pipe-end lifetimes.
+- r7, `bash arm02.sh red`, source `46e739f131ca3b93e584d49dc37de03d419b3ca0`:
+  `cargo test -p shards-net-process startup_installs_a_native_seccomp_filter`
+  failed, exit 101: child Seccomp was 0, expected 2. This restores the original
+  x86-only startup gate and is the relevant guard-removal red.
+  [Raw output](arm02-red.log).
+- r9, `bash arm02.sh green`, source `53e89b2b8843eb39dd2fc00b732d525aeca256c6`:
+  that startup test passed (1); then
+  `cargo test -p shards-net confine::tests::the_filter_ends_a_process_that_makes_what_none_makes`
+  passed (1). Clippy setup then failed because static.rust-lang.org DNS failed;
+  the overall run exited 1 and is not reported as a complete green.
+  [Raw output](arm02-green-tests.log).
+- r11, `bash arm02.sh lint`, same source: toolchain download retry succeeded;
+  `cargo clippy -p shards-net -p shards-net-process --all-targets -- -D warnings`
+  passed, exit 0. [Raw output](arm02-green-clippy.log).
+
+R01/R04/R06/R07/R13: fallible install, same startup order, explicit child lifetime
+in the test, no production panic introduced. R02/R03/R05/R12: Linux ABI identities
+and existing shared compiler; no chosen policy constants, cache or new architecture.
+R09/R10: actual native red/green and relevant gate-removal witness above. R11:
+GNU arm64 unit execution verified; arm64 musl, carried-helper VM traffic and seven
+target CI remain ROOT/CI work. R08/R14: no performance claim, benchmark or profile.
+R15/R16: scoped remote tests only, no delegates/local cargo; own containers removed
+by traps, owned targets removed after landing. Earlier amd64 target cleanup exited
+0 (ARM follow-up r10). Final merge/check and ARM target cleanup recorded below.
+
+Some early automatic merge messages in the first slices omitted the requested
+coauthor trailer; those landed histories are not rewritten. Later commits and
+merges carry it. This is a recorded attribution gap, not a waived requirement.
+
+Native ARM merged-source gate: Kiln r12 could not dispatch before a server timeout;
+r14's carrier sync was stopped without a test verdict. A read-only check found
+no owned container and the source still at 53e89b2b8. Pushed the signed branch,
+then used the prepared clone directly, avoiding the stalled carrier sync.
+Kiln r16 checked exact merge `e7822b6b75574ec1b5c5f811ee4f7a359ee3de90`
+(main a33644dbe) on Linux 6.12.65-linuxkit aarch64 / Rust 1.98.1:
+`NETWORK_CHECK_ROOT=$HOME/g121-tmp/network-arm02-v1 bash docs/research/measurements/network-fixes-v1/native-arm02.sh green`.
+Startup test 1 passed, forbidden-syscall test 1 passed, both crates' clippy passed,
+overall exit 0. This is the focused tested merge for amended landing contention.
+
+Native ARM follow-up landed at `e37f837e03dba5c4c8f70ffccac379072df9ae19`,
+ff-pushed from f7a3edfbc. The first push was refused; new main touched net/inject
+and syscall-filter, so amended contention used warm native ARM
+`cargo check -p shards-net -p shards-net-process --tests`, Kiln r17, exit 0
+([output](arm02-landing-check.log)). No merge conflict occurred; the focused
+passed merge remains e7822b6b7. Every follow-up commit/merge has one gpgsig.
+
+## network-03: DNS authority lifetime
+
+Red `5a3d27784` exercises a real connected UDP resolver socket and `Stack::on_udp`:
+a TTL-60 answer A permits a new TCP flow; a subsequent answer B should replace A,
+but A remains allowed. Kiln r19 on Mac3 Docker Linux aarch64 / Rust1.98.1 failed
+exactly `the replaced DNS answer still grants a new flow`, exit101.
+[Output](red03.log). Code fix `e2237fb29` changes both UDP and TCP learning;
+the subsequent import cleanup and TTL-bound test are recorded by their commits.
+
+Sources: [RFC2181 §§5.2,5.4,8](https://www.rfc-editor.org/rfc/rfc2181.html),
+[RFC1035 §§3.2.1,4.2.2](https://www.rfc-editor.org/rfc/rfc1035.html).
+The authoritative input is the resolver answer received on the existing connected
+transport. Alternatives: keeping a union is contradicted by RRset replacement;
+lookup again at connect risks connecting to an answer different from the one
+checked; SNI/HTTP assertions do not cover arbitrary granted TCP (D236 alternatives).
+Keeping one current expiring answer at this existing owner is the narrow change.
+No extra cache/index or independent manager is introduced; this state is necessary
+to hold an IP connect to a name grant, not a performance cache.
+
+Keys are normalized granted name plus A/AAAA question type. Bound: at most those
+two protocol types per distinct granted name, each parsed from one u16-length DNS
+message. Replacing an answer frees the old address vector; the earliest expiry
+joins the existing readiness deadline, and timers drop expired answers even when
+no further DNS query arrives. The grant's current name/port is checked at admission,
+so retained state cannot preserve a removed port grant; NET_POLICY clears learning.
+The monotonic deadline uses the shortest received address/CNAME TTL. A high TTL sign
+bit means zero (RFC2181§8); no TTL floor, chosen capacity or guessed timeout exists.
+Clock overflow and failed vector reservation return io::Error and admit no new
+learned authority. Cold start has none; an unanswered name grants no IP flow.
+
+TTL-zero answers retain no authority for a later IP connect. This is a deliberate
+fail-closed compatibility limitation: the current stream has no identity binding
+that separate connect to the DNS transaction. A future transaction-aware connect
+would need an explicit authority token, consumption/revocation semantics and R02
+research; silently caching zero TTL is not a substitute. Already established TCP
+flows retain their opening grant and close normally; expiry affects new flows.
+This slice does not claim to fix network-11's owner/class/CNAME/status validation.
+
+Initial green attempt r20: 2 DNS-authority tests, 1 grant-port test, 1 answer-parser
+test and 2 TCP DNS tests passed; clippy failed on the now-unused HashSet import.
+[Output](green03-first.log). Removed that import and added parser assertions for
+TTL0/1, sign-bit-zero semantics and lowest-TTL selection. The focused merged-source
+gate below is required before landing. Harness: [native-dns03.sh](native-dns03.sh).
+Same permitted runner, one cargo, incremental0/jobs4, own cold target recreated
+after network-02's cleanup; no local cargo or VM tests.
+
+R01/R04: checked clock/length/allocation, current/expired/replaced answer states,
+existing wire-policy denial on failed authority admission; production assertions
+not added. R02/R03/R05/R12: protocol-derived lifetime/space and existing state owner,
+no picked controls or new architecture. R06/R07/R13: one learning operation shared
+by both transport callers, expiry joins the existing timer. R09/R10: actual UDP
+red; deterministic expiry/history/zero-TTL and TCP/parser regression evidence above.
+R08/R14: no profile, benchmark, resource ratio or performance claim; ROOT owns those.
+R11/R15/R16: Linux arm64 GNU light checks only; CI other targets, musl and real VMs
+unverified, targets removed after landing. Signed commits and merge evidence below.
+
+ROOT owes: `cargo test -p shards --test containers a_networks_egress_is_a_grant_of_its_destinations_alone -- --exact --nocapture`
+and `cargo test -p shards --test build a_remote_mcp_server_is_a_grant_of_that_server_alone -- --exact --nocapture`.
+Extend with rotating TTL0/TTL1 UDP and TCP answers and fixed live socket count,
+witness expired/replaced IP refusal, valid current IP success, established TCP
+continuity and host memory returning after expiry. These heavy VM/resource and
+adversarial runs were not executed here.
+
+Merged-source green: `309dd3ead659eed817f81183fc9fd73686e551c5`, includes main
+31e51b4b2. Kiln r21, same Linux arm64 GNU runner/toolchain: `native-dns03.sh green`
+passed 2 authority tests, 1 grant-port test, 2 answer/TTL tests, 2 TCP DNS tests
+(7 total), and both touched crates' clippy, overall exit0.
+[Full output](green03-merged.log). Policy checker and diff whitespace check passed
+locally; no local build/test ran. This is the focused tested merge for contention.

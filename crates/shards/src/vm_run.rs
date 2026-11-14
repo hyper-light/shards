@@ -198,6 +198,9 @@ struct Common {
     /// `--said-to FD` (Windows: `--said-to NAME`): where it tells its spawner how that
     /// report came out, for the spawner to record.
     said_to: Option<LinkArg>,
+    /// `--final-use FD` (Windows: `--final-use NAME`): where a managed VM tells its keeper what
+    /// its machine used in all once down (D260), for the keeper to record.
+    final_use: Option<LinkArg>,
     snapshot_dir: Option<PathBuf>,
     then: AfterSnapshot,
     vsock: Option<PathBuf>,
@@ -217,6 +220,7 @@ impl Common {
             console: Console::Stdout,
             said: None,
             said_to: None,
+            final_use: None,
             snapshot_dir: None,
             then: AfterSnapshot::Stop,
             vsock: None,
@@ -260,6 +264,7 @@ impl Common {
                 )
             }
             "--said-to" => self.said_to = Some(link_arg("--said-to", text(value("--said-to")?)?)?),
+            "--final-use" => self.final_use = Some(link_arg("--final-use", text(value("--final-use")?)?)?),
             "--snapshot-dir" => self.snapshot_dir = Some(PathBuf::from(value("--snapshot-dir")?)),
             "--snapshot-then" => {
                 self.then = match text(value("--snapshot-then")?)?.as_str() {
@@ -402,6 +407,8 @@ struct Run {
     attach: Option<String>,
     /// Where it tells its spawner how its console's report came out ([`Common::said_to`]).
     said_to: Option<LinkArg>,
+    /// Where a managed VM tells its keeper its final use ([`Common::final_use`]).
+    final_use: Option<LinkArg>,
     gpu_report: Option<GpuReportTarget>,
     /// `--host-managed`: a plain boot takes rates from its host's clients (D255).
     managed: bool,
@@ -684,6 +691,7 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
             workload: common.workload,
             attach,
             said_to: None,
+            final_use: None,
             gpu_report: None,
             managed: false,
         });
@@ -713,6 +721,7 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
         mode,
         workload: common.workload,
         said_to: common.said_to.take(),
+        final_use: common.final_use.take(),
         attach,
         gpu_report,
         managed: common.host_managed,
@@ -1109,8 +1118,24 @@ fn use_answer(
 
 /// What this machine used in all (D260's final use), as a use's answer says it: its vCPUs'
 /// whole guest time, read by `guest` once they have stopped, then this process's own use.
-fn final_use(guest: impl FnOnce() -> Result<shards_vmm::vm::GuestTimes, String>) -> String {
+fn final_use_of(guest: impl FnOnce() -> Result<shards_vmm::vm::GuestTimes, String>) -> String {
     use_answer(guest, || shards_vmm::platform::process_usage(std::process::id()))
+}
+
+/// Tells a managed VM's keeper its final use, `used` (final_use.rs, D260): its length, a u32,
+/// big-endian, then it; then waits for the keeper's answer, which it gives once its record is
+/// in place, so that the record is there before this process ends and its client sees its
+/// end. A keeper that ended, or a channel that cannot be read (Windows' pipe, whose reader,
+/// the CLI, keeps it as this process ends), ends the wait.
+fn tell_final_use(mut to: std::fs::File, used: &str) {
+    let Ok(len) = u32::try_from(used.len()) else {
+        return;
+    };
+    if let Err(e) = to.write_all(&[&len.to_be_bytes()[..], used.as_bytes()].concat()) {
+        report(format_args!("telling its final use: {e}"));
+        return;
+    }
+    let _ = std::io::Read::read(&mut to, &mut [0u8; 1]);
 }
 
 /// What a rate's ask holds: what `hold` held the vCPUs to, none where it lets them be, and
@@ -1610,6 +1635,7 @@ pub fn run(args: impl Iterator<Item = OsString>) -> ExitCode {
         workload,
         attach,
         said_to,
+        final_use,
         gpu_report,
         managed,
     } = match parsed(parse_run(args.into_iter()), RUN_USAGE) {
@@ -1623,6 +1649,13 @@ pub fn run(args: impl Iterator<Item = OsString>) -> ExitCode {
         return ExitCode::FAILURE;
     }
     let said_to = match said_to.map(|to| handed("--said-to", to)).transpose() {
+        Ok(to) => to,
+        Err(e) => {
+            report(e);
+            return ExitCode::FAILURE;
+        }
+    };
+    let final_use = match final_use.map(|to| handed("--final-use", to)).transpose() {
         Ok(to) => to,
         Err(e) => {
             report(e);
@@ -1663,14 +1696,14 @@ pub fn run(args: impl Iterator<Item = OsString>) -> ExitCode {
             if managed && let Ok((handle, _)) = &started {
                 let _ = RUNNING.set(handle.clone());
             }
-            supervise(started, cfg.console, false, said_to, input)
+            supervise(started, cfg.console, false, said_to, input, final_use)
         }
         Mode::Template(rootfs) => {
             boot_into(&mut cfg, rootfs, true);
             // Restored copies dial the host through this device, served by whatever
             // restores them.
             cfg.vsock.get_or_insert_with(VsockHost::default);
-            supervise(start(&cfg), cfg.console, true, said_to, input)
+            supervise(start(&cfg), cfg.console, true, said_to, input, None)
         }
         Mode::Workload(rootfs) => run_in(cfg, rootfs, &workload),
         Mode::Warm { rootfs, fd } => warm_boot(cfg, rootfs, fd),
@@ -1742,7 +1775,7 @@ pub fn restore(args: impl Iterator<Item = OsString>) -> ExitCode {
         (Ok((handle, _)), Some(to)) => to.hand_after(handle, RECORD_FOR),
         _ => None,
     };
-    let code = supervise(started, console, false, said_to, InputOwner::Console);
+    let code = supervise(started, console, false, said_to, InputOwner::Console, None);
     if let Some(h) = handing {
         h.now();
     }
@@ -2356,7 +2389,7 @@ fn serve_workload(
         let reason = running.wait_then(|| {
             crate::warm::tell_kept();
             if let Some(link) = &final_link {
-                crate::warm::final_use(link, &final_use(whole_guest_times));
+                crate::warm::final_use(link, &final_use_of(whole_guest_times));
             }
         });
         // Its joiners (D119), which the guest ended with its workload, tell the daemon how
@@ -3418,6 +3451,7 @@ fn supervise(
     template: bool,
     said_to: Option<std::fs::File>,
     input: InputOwner,
+    final_use: Option<std::fs::File>,
 ) -> ExitCode {
     let (handle, running) = match started {
         Ok(v) => v,
@@ -3430,7 +3464,12 @@ fn supervise(
     if matches!(input, InputOwner::Console) {
         forward_stdin(handle.clone());
     }
-    let reason = running.wait();
+    // Its final use told once every vCPU has stopped and before its memory goes (D260).
+    let reason = running.wait_then(|| {
+        if let Some(to) = final_use {
+            tell_final_use(to, &final_use_of(whole_guest_times));
+        }
+    });
     drop(terminal);
     report_timing(&handle, None);
     match reason {
@@ -3613,7 +3652,7 @@ mod rate_tests {
         };
         let before = shards_vmm::platform::process_usage(std::process::id()).unwrap();
         let read = std::cell::Cell::new(false);
-        let answer = super::final_use(|| {
+        let answer = super::final_use_of(|| {
             read.set(true);
             Ok(times.clone())
         });
@@ -3621,7 +3660,7 @@ mod rate_tests {
         let used = shards_abi::rate::read_used(answer.as_bytes()).unwrap();
         assert_eq!(used.guest, Ok(times));
         assert!(used.host.unwrap().cpu_ns >= before.cpu_ns, "{answer}");
-        let unstarted = super::final_use(|| Err("the microVM has not started".into()));
+        let unstarted = super::final_use_of(|| Err("the microVM has not started".into()));
         let used = shards_abi::rate::read_used(unstarted.as_bytes()).unwrap();
         assert_eq!(used.guest, Err("the microVM has not started"));
         assert!(used.host.is_ok(), "{unstarted}");

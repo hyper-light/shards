@@ -85,6 +85,13 @@ pub fn build(args: impl Iterator<Item = OsString>) -> ExitCode {
             Err(a) => return failed(&format!("{a:?} is not UTF-8")),
         }
     }
+    // A client's build names no path of this machine's but its own copies' (remote-09).
+    let words: Vec<String> = std::iter::once("build".to_string())
+        .chain(argv.iter().cloned())
+        .collect();
+    if let Some(why) = crate::synced::refused_for_client(&words) {
+        return failed(&why);
+    }
     let parsed = match flags::parse(&BUILD, PATH, &argv, &buildflags::validate) {
         Outcome::Run(parsed) => parsed,
         Outcome::Help { notices } => {
@@ -286,7 +293,7 @@ fn saying_waits<T>(
         let p = progress.borrow();
         p.live.is_none() && !p.quiet
     };
-    let say = |notice: &str| {
+    let say = |notice: shards_registry::registry::Notice<'_>| {
         if plain {
             let _ = writeln!(std::io::stderr(), "{notice}");
         }
@@ -1586,10 +1593,14 @@ impl Bases<'_> {
                     let p = self.progress.borrow();
                     p.live.is_none() && !p.quiet
                 };
-                let report = |event: Event<'_>| {
-                    if let (true, Event::Waiting(notice)) = (plain, event) {
+                let report = |event: Event<'_>| match (plain, event) {
+                    (true, Event::Waiting(notice)) => {
                         let _ = writeln!(std::io::stderr(), "{notice}");
                     }
+                    (true, Event::RanOut(run_out)) => {
+                        let _ = writeln!(std::io::stderr(), "{run_out}");
+                    }
+                    _ => {}
                 };
                 crate::pull::fetch(
                     self.home,
