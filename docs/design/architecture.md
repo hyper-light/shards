@@ -27916,12 +27916,20 @@ docs/research/s33-veil-creds/STEP7.md and STEP8.md).
 - *Requests, per stream, as the HTTP/1.1 path reads them.* No value is filled toward the token host (its fills
   dropped), and each request asks `accept-encoding: identity` in place of its own (RFC 9110 §12.5.3). A POST to the
   profile's token or revocation path with one Content-Length of no more than the connection holds (`TO_HOST`, the
-  HTTP/1.1 path's bound) is held (`Upward::Reading`) until its END_STREAM, its body then asked of `signin::ask`; a
-  body not of its Content-Length is malformed (RFC 9113 §8.1.1), its stream reset PROTOCOL_ERROR. A refresh of the
-  sign-in's placeholder is asked outside (`Upward::Refreshing`), joined to one under way, and answered on its stream
-  from the broker's answer, its tokens the sign-in's placeholders; a revocation is answered 200 on its stream
-  (RFC 7009 §2.2), never sent; anything else goes on as any request. Such a POST without a Content-Length goes on
-  as any request, as a chunked one does over HTTP/1.1, its response read all the same.
+  HTTP/1.1 path's bound), or with none, is held (`Upward::Reading`) until its END_STREAM, its body then asked of
+  `signin::ask`; a body not of its Content-Length is malformed (RFC 9113 §8.1.1), its stream reset PROTOCOL_ERROR.
+  HTTP/2 leaves Content-Length optional (§8.1.1: a request with content "can include" it; END_STREAM ends it, §8.1),
+  so a POST naming none is read to its END_STREAM. A held POST (either kind) whose END_STREAM has not come when what
+  only more of the guest's bytes can move (`H2::stuck`: its plaintext not yet framed, a block coming, the streams
+  `Reading`) leaves the guest no TCP window (`tcp::full`: `TO_HOST` less it, at the window scale of 7 this side
+  offers, is zero) cannot end, and goes on as any request, as one whose Content-Length is past `TO_HOST` does;
+  before, such a stream (two of 3 MiB at once, or one of `TO_HOST` with its fields) waited for ever. Bytes of every
+  other stream go on as the host takes them, so they are not counted. (Until #74's real-VM run, a POST with none went on unread: the test
+  guest's `tls-ask`, which sends none, had its refresh of the placeholder reach the host, answered 400
+  `invalid_grant`.) A refresh of the sign-in's placeholder is asked outside (`Upward::Refreshing`), joined to one
+  under way, and answered on its stream from the broker's answer, its tokens the sign-in's placeholders; a
+  revocation is answered 200 on its stream (RFC 7009 §2.2), never sent; anything else goes on as any request. A
+  chunked one over HTTP/1.1 goes on as any request, its response read all the same.
 - *Responses, per stream.* Each final response with a body (`TokenResponse`, R04: `Reading`, `Capturing`,
   `Written`) has its head held and its body read whole, none of it to the guest before; one coded otherwise than as
   its sender wrote it is refused 502 on its stream (`signin::readable_fields`, the HTTP/1.1 check over decoded

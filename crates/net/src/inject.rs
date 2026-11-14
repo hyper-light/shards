@@ -2385,12 +2385,13 @@ enum Upward {
     Sent { id: u32, state: StreamState },
     /// Answered here and never sent: what the guest sends on it is dropped.
     Answered,
-    /// A POST to a sign-in's token or revocation path (D242, step 8), its body of `length` octets
-    /// read whole before it is asked of `signin::ask`, as the HTTP/1.1 path reads one.
+    /// A POST to a sign-in's token or revocation path (D242, step 8), its body of `length` octets,
+    /// or to its END_STREAM where it named none, read whole before it is asked of `signin::ask`,
+    /// as the HTTP/1.1 path reads one.
     Reading {
         go: Box<http2::Go>,
         whole: Whole,
-        length: usize,
+        length: Option<usize>,
     },
     /// A sign-in's refresh, read whole and asked outside: its answer is given on the stream.
     Refreshing,
@@ -2560,10 +2561,11 @@ fn said_on_h2(response: &[u8]) -> Option<(Vec<hpack::Field>, &[u8])> {
 }
 
 /// An HTTP/2 request's fields, where they are a POST to sign-in `cli`'s token or revocation path
-/// with one Content-Length of no more than its connection holds (`TO_HOST`), as the HTTP/1.1 path
-/// reads a body whole (D242, step 8): what it is asked by, and its length. Anything else goes on as
-/// any request, its response read for tokens.
-fn token_post(cli: Cli, fields: &[hpack::Field]) -> Option<(Whole, usize)> {
+/// whose body can be read whole within what its connection holds (`TO_HOST`), as the HTTP/1.1 path
+/// reads one (D242, step 8): what it is asked by, and its one Content-Length, or none where it
+/// sends none, which HTTP/2 leaves optional (RFC 9113 §8.1.1), its body then ending at its
+/// END_STREAM. Anything else goes on as any request, its response read for tokens.
+fn token_post(cli: Cli, fields: &[hpack::Field]) -> Option<(Whole, Option<usize>)> {
     let one = |name: &[u8]| {
         let mut all = fields.iter().filter(|f| f.name == name);
         match (all.next(), all.next()) {
@@ -2577,10 +2579,12 @@ fn token_post(cli: Cli, fields: &[hpack::Field]) -> Option<(Whole, usize)> {
     if !method.eq_ignore_ascii_case("POST") || (path != profile.token.path && path != profile.revoke.path) {
         return None;
     }
-    let length = one(b"content-length")?
-        .parse::<usize>()
-        .ok()
-        .filter(|&n| n <= crate::tcp::TO_HOST)?;
+    let length = if fields.iter().any(|f| f.name == b"content-length") {
+        let n = one(b"content-length")?.parse::<usize>().ok();
+        Some(n.filter(|&n| n <= crate::tcp::TO_HOST)?)
+    } else {
+        None
+    };
     let content_type = fields
         .iter()
         .find(|f| f.name == b"content-type")
@@ -2696,6 +2700,21 @@ impl H2 {
                 .saturating_add(self.guest_block.as_ref().map_or(0, http2::Block::held)),
             |n, s| n.saturating_add(s.held()),
         )
+    }
+
+    /// What it holds of the guest's bytes that only more of the guest's can move: its plaintext
+    /// not yet framed, a block coming, and the streams read whole before they go (`Reading`).
+    /// Every other stream's goes on as its host takes it.
+    fn stuck(&self) -> usize {
+        self.streams
+            .values()
+            .filter(|s| matches!(s.up, Upward::Reading { .. }))
+            .fold(
+                self.from_guest
+                    .len()
+                    .saturating_add(self.guest_block.as_ref().map_or(0, http2::Block::held)),
+                |n, s| n.saturating_add(s.held()),
+            )
     }
 
     /// The guest's TLS bytes into its connection, its plaintext into `from_guest`; its TLS's
@@ -3344,14 +3363,19 @@ impl H2 {
             if let Some(answer) = run.credentials.sign_ins.take(asker) {
                 self.refreshed(gid, answer, run);
             }
-        } else if matches!(s.up, Upward::Reading { .. }) && !s.guest.receiving() {
+        } else if matches!(s.up, Upward::Reading { .. })
+            && (!s.guest.receiving() || crate::tcp::full(self.stuck()))
+        {
             self.read_whole(gid, run);
         }
     }
 
     /// A sign-in's POST, its body come whole: a refresh of the sign-in's placeholder asked
     /// outside, a revocation of one answered here, anything else parked to go on as any request.
-    /// A body whose length is not its Content-Length is malformed (RFC 9113 §8.1.1).
+    /// A body whose length is not its Content-Length is malformed (RFC 9113 §8.1.1). One whose
+    /// END_STREAM has not come while what only more of the guest's bytes can move fills what
+    /// its connection holds (`stuck`, `tcp::full`) cannot be read whole, as one whose
+    /// Content-Length is past it cannot: it goes on as any request.
     fn read_whole(&mut self, gid: u32, run: &mut Run<'_>) {
         let Some(s) = self.streams.get_mut(&gid) else {
             return;
@@ -3359,7 +3383,11 @@ impl H2 {
         let Upward::Reading { go, whole, length } = std::mem::replace(&mut s.up, Upward::Answered) else {
             return;
         };
-        if s.up_data.len() != length {
+        if s.guest.receiving() {
+            s.up = Upward::Parked(go);
+            return;
+        }
+        if length.is_some_and(|n| s.up_data.len() != n) {
             return self.reset(Which::Guest, gid, Code::Protocol);
         }
         match ask_whole(&whole, &go.host, &s.up_data, run) {
@@ -4345,6 +4373,8 @@ pub(crate) mod tests {
         passed: bool,
         /// The token its run resumes it by.
         waiter: u64,
+        /// The window its connection advertises the guest (`WINDOW`, unless a test sets it).
+        window: usize,
     }
 
     impl Bench {
@@ -4366,6 +4396,7 @@ pub(crate) mod tests {
                 audit: Vec::new(),
                 passed: false,
                 waiter: 7,
+                window: WINDOW,
             }
         }
 
@@ -4455,7 +4486,7 @@ pub(crate) mod tests {
         fn turn(&mut self, credentials: &mut Credentials) -> bool {
             let mut moved = false;
             // The guest's bytes, as the window takes them.
-            let room = WINDOW.saturating_sub(self.to_host.len() + self.held());
+            let room = self.window.saturating_sub(self.to_host.len() + self.held());
             let mut bytes = Vec::new();
             while self.guest.wants_write() && bytes.len() < room {
                 if !matches!(self.guest.write_tls(&mut Limited(&mut bytes, room)), Ok(n) if n > 0) {
@@ -6165,7 +6196,10 @@ pub(crate) mod tests {
             &mut |c| broker.serve(c),
             |p, _| p.response(1).ended,
         );
-        assert!(!bench.host().had("/v1/oauth/token"), "the refresh reached the host");
+        assert!(
+            !bench.host().had("/v1/oauth/token"),
+            "the refresh reached the host"
+        );
         assert_eq!(broker.provider_calls, 1);
         let Got { fields, data, .. } = peer.response(1);
         assert_eq!(value_of(&fields, ":status"), Some(&b"200"[..]));
@@ -6175,6 +6209,37 @@ pub(crate) mod tests {
         );
         let did: Vec<Did> = bench.audit.iter().map(|a| a.what).collect();
         assert_eq!(did, [Did::Refreshed]);
+        assert_eq!(peer.ends(), [], "a stream reset or the connection ended");
+    }
+
+    /// Do: over a connection that holds `TO_HOST`, as tcp.rs' does, a POST to the token path over
+    /// HTTP/2 with no Content-Length and a body one octet past it. Expect: no stall waiting for an
+    /// END_STREAM the guest has no window to send; it goes on to the host whole, as one with a
+    /// Content-Length past the hold does, the host's answer reaching the guest.
+    #[test]
+    fn an_h2_token_post_past_the_hold_without_a_content_length_goes_on() {
+        let root = root("shards test root");
+        let mut credentials = sign_in_credentials(&root, true);
+        let mut broker = Broker::holding(ISSUED_ACCESS, ISSUED_REFRESH);
+        let (mut bench, mut peer) = h2_token_bench(&root, &mut credentials, &[b"h2", b"http/1.1"]);
+        bench.window = crate::tcp::TO_HOST;
+        let mut seen = Vec::new();
+        let body: Vec<u8> = (0..=crate::tcp::TO_HOST).map(|i| b'a' + (i % 26) as u8).collect();
+        let mut fields = h2_post("/v1/oauth/token", "");
+        fields.retain(|f| f.name != b"content-length");
+        peer.send_headers(1, &fields, false);
+        peer.send_data(1, &body, true);
+        h2_until(
+            &mut bench,
+            &mut peer,
+            &mut seen,
+            &mut credentials,
+            &mut |c| broker.serve(c),
+            |p, _| p.response(1).ended,
+        );
+        assert_eq!(bench.host().at("/v1/oauth/token").body, body);
+        assert_eq!(broker.provider_calls, 0);
+        assert_eq!(value_of(&peer.response(1).fields, ":status"), Some(&b"400"[..]));
         assert_eq!(peer.ends(), [], "a stream reset or the connection ended");
     }
 
