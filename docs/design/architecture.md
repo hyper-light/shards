@@ -12254,6 +12254,16 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
       scripts, and the registry's credential helpers, whose own copies of that writer
       (`common::program`, `program_copy`, credentials.rs' `program`, auth.rs' `helper`'s) and
       install(1) are gone. No exec meets ETXTBSY, so nothing waits one out.
+    - *2026-11-14: the writer is a forked child, not sh or cp.* boot.rs'
+      `snapshot_tests_pass_on_a_kvm_host_of_this_architecture` runs the E2E binaries in an
+      arm64 Linux guest whose `PATH` is an empty `/e2e/bin`, with no /bin/sh: every test there
+      failed in `common::place` with `NotFound` from spawning `cp` (HVF, Adas-Mac-Studio-3,
+      main 1f71dea19). `program` and `program_copy` now fork a child that opens, writes or
+      copies, `fchmod`s 0755 and exits with its errno, calling only async-signal-safe
+      functions (POSIX `fork()`); no program is run, so a host needs no tools for a test to
+      write one. The test process never holds the file's write descriptor, as before.
+      `programs_are_written_where_no_tools_are` (testdir) writes and copies with `PATH` an
+      empty directory: red `NotFound` on cp, green on the child.
   - *The call sites.* The terminals' exit waits and Windows' modes are a `Wait` on the
     shell's party (terminal.rs, terminal_windows.rs). vsock.rs' 60 s `TIMEOUT` and its 20 s
     read are `Following` reads, its greeting a `within`. confined.rs' record wait and its
@@ -34860,13 +34870,34 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
     write. Other devices and vCPUs do not.
   - Daemon, builder and managed runs write to a sink (`Console::Discard`), which never blocks.
     Only `run --kernel` with its console on a terminal can.
-  - Not built yet: a host-side writer with a bounded buffer would let pause land while stdout
-    blocks.
-- **Kernels shards does not build** (`shards configure guest`, D28) keep upstream's lost
-  backlog until the fix reaches them. A version-agnostic layer is designed, not built: at the
-  first transmit after a fresh activation, the VMM would emit the ring's records older than the
-  first one sent, read through `printk.rs`. Its limits: VMCOREINFO has no record levels, so
-  `quiet` cannot be honoured; the boundary is matched by timestamp; it is skipped on restores.
+  - Since then, one output path for every console (the person: two mechanisms, and sink work
+    in the vCPU's exit, were not to stay). The notifying exit only takes the guest's buffer into
+    the writer's slot, uses it and returns. The device's writer thread delivers it to the
+    output, whichever it is (stdout, a sink nobody reads), and to D12's ring, then takes the
+    guest's next. The host holds at most that one buffer; the guest's next waits in its ring of
+    one (`TRANSMIT_SIZE`), the guest spinning on it.
+    - A blocked output holds no transport lock, so other exits and a pause or snapshot land.
+    - `Port::said` waits for the writer to deliver what it holds, so a reset's last lines are
+      quoted.
+    - Unit tests: `a_buffer_sent_is_used_in_its_exit_and_delivered_by_the_writer` (used within
+      its exit, written on no exit's thread; red when the hand-off is cut) and
+      `a_blocked_stdout_holds_no_exit_and_no_pause` (blocks when output is written in the exit).
+- **Kernels shards does not build** (`shards configure guest`, D28; `run --kernel`) keep upstream's
+  lost backlog. Built since: at the first buffer a fresh activation's guest sends, the console's
+  writer reads the printk ring through VMCOREINFO (`printk::backlog`). It delivers, before that
+  buffer, every record older than the one the buffer begins, matched by its time to the
+  microsecond and its text's start, as hvc prints them (a prefix a line, `\r\n`).
+  - A kernel that replays (patch 0015) sends its first record first, so nothing is added.
+  - Nothing is added when the buffer begins no record the ring holds (the boundary is never
+    guessed), after a restore, or when the kernel was told a level (`quiet`, `loglevel=`):
+    VMCOREINFO says no record's level, so the console's filter cannot be repeated.
+  - Unit test `a_late_console_is_given_what_it_missed_and_a_replaying_one_nothing`, red when the
+    match is removed.
+  - KVM x86-64 at 83d6e8613: boot.rs's three tests with the unpatched kernel 54fba99afaee 3/3,
+    where they failed 3/3 before; with the patched 836568f8ad2c 3/3. Manual boots of each at 1
+    and 4 vCPUs start at "Linux version", with exactly one.
+  - Owed: unit tests against rings captured from those kernels' memory (synthetic rings so far),
+    and HVF and WHP runs.
 
 **Alternatives rejected.**
 - A write-only debug port (x86's 0xe9 debugcon): mainline x86 early_printk has no 0xe9

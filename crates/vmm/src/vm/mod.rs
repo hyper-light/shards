@@ -1212,6 +1212,16 @@ fn kernel_cmdline(cfg: &Config) -> std::borrow::Cow<'_, str> {
     }
 }
 
+/// Whether a booted machine's console is given what its kernel logged before it registered
+/// (`devices::virtio::console`, D261): where the kernel's command line, as it boots, tells
+/// it no level to print at, every record it logs is one its console prints.
+#[cfg(hv)]
+fn console_backfill(cfg: &Config) -> bool {
+    !cmdline::kernel_part(&kernel_cmdline(cfg))
+        .split_whitespace()
+        .any(|word| word == "quiet" || word.starts_with("loglevel="))
+}
+
 /// Where the console's output goes.
 #[cfg(hv)]
 fn console_out(console: Console) -> Result<Box<dyn std::io::Write + Send>, String> {
