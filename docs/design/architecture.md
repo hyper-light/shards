@@ -19267,12 +19267,47 @@ has room to grow into. Twice is not a tuning: it is the delta-t estimator (Gott,
 363, 1993), what a run has grown to so far standing at the median for what it grows to in
 all, the estimator D215's `w` uses, with the same cold start (none: the run's use itself).
 A factor learned from realized peaks would be biased low, as the hold caps what a run can
-show (censored), so it is not learned naively. Owed to ROOT, to validate the median:
+show (censored), so it is not learned naively. The step: the run's use now, `u`, is a point
+of its growth episode, so `r = u/P` of the episode's final peak `P` is uniform on (0, 1);
+P(r > 1/2) = 1/2, so the median of `P` is `u / (1/2) = 2u`. The median is the point estimate
+under absolute loss, an even chance of the run growing past it or not (a quantile `q` would
+give `1/(1−q)`). Owed, the censored refinement: a Kaplan-Meier estimate of `P/u` over the
+growth episodes that ended below their hold (uncensored) and those the hold capped
+(censored), its cold start the median, 2, resting on ROOT's realized-episode measurement
+below. Owed to ROOT, to validate the median:
 realized episode ratios (final peak over the use at a growth episode's first ask) on real
 builds and runs; `cargo test -p shards --test build
 a_build_held_short_of_memory_has_its_builder_give_back` and
 `a_builders_memory_is_plugged_as_its_build_needs_it` on HVF and KVM; ask counts and stall
 per build, before and after, n ≥ 20, p50/p90/p99/max.
+
+**Review memory-15 (2026-11-14): what a builder boots with, learned per home and guest.**
+`BOOT_MEMORY_MIB`'s 512 is gone. As init would hold its build (with memory to plug or not),
+it notes what its guest needs then (`plug::note_startup`, `startup`): the least MemTotal whose
+hold leaves the first growth's working room (`working_room`) beside what its kernel uses and
+the reserve (memory-11's slack, its uncharged term cold, so its use again; at most a 64th for
+what may still be plugged; the CPUs' lists' eighth), `t ≥ (2·used + overshoot + working)·64/55`;
+and says it with MemTotal as it booted in `NEEDED` (`NEED KILLED START TOTAL`; an older init's
+two words still read). The host learns from it what that guest needs to boot
+(`build::boot_need`): past MemTotal, what the kernel took at boot is its image and its page
+structures, a 64th of what it booted with, allocated from memblock and never in MemTotal; the
+first stays as it was, the second is counted for the memory booted with, so the least `b`
+with `b − b/64 ≥ fixed + start`. The home's `builder-memory` keeps the most each guest needed
+(`boot IDENTITY BYTES`), a guest named by its kernel's and init's paths, lengths and times and
+its CPUs (`build::builder_identity`), one line each guest the home booted builders of. The
+next builder of that guest boots with it in whole blocks within its ceiling
+(`build::builder_boot`). The cold start, no record for this guest, boots with the ceiling,
+all it may have, which always boots: it costs that boot the page structures of all of it (a
+64th, PM M82, M193), once a home and guest, and a cold builder plugs nothing, so it gives
+back only its files' cold pages at its host's word (D188), never blocks. Never a guessed
+floor: the ceiling's own floor of 512 MiB is gone too, a ceiling held at least what its
+guest was learned to boot with, and all the host's memory where what is available holds no
+whole block (as where it is unread). A host whose memory is unread takes what its home
+recorded, else is refused (`build::HostMemoryUnread`), where it was given 512 MiB. Owed to
+ROOT: cold-home and warm-home builder boot time and VM-process footprint on HVF, KVM x86_64,
+KVM arm64 (L1) and WHP, at 4 and 32 vCPUs, n ≥ 20 each with p50/p90/p99/max, for the ceiling
+cold start and the learned boot; and `cargo test -p shards --test build
+a_builders_memory_is_plugged_as_its_build_needs_it` across cold homes.
 
 **R03 review memory-11..15 (2026-11-13):** reserve slack, pause/read floors,
 retry count, growth/retention ratios and boot floor remain owed to ROOT with

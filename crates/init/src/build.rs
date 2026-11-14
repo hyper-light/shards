@@ -209,6 +209,11 @@ fn serve() -> io::Result<()> {
         return Err(os_err("chroot"));
     }
     std::env::set_current_dir("/")?;
+    // What the guest needs as its build is held, for its host to learn its next builder's
+    // boot (memory-15): with memory to plug or not, before its grower or its build takes any.
+    if let Err(e) = crate::plug::note_startup() {
+        let _ = writeln!(io::stderr(), "shards-init: {e}; its next builder boots cold");
+    }
     let notes = match plug {
         Some(plug) => {
             // What its host's budget leaves the build (D188), shared by the grower and the
@@ -281,9 +286,16 @@ fn serve() -> io::Result<()> {
                 send(&b.conn, kind::EMULATED, why.as_bytes())?;
             }
             kind::NEEDS => {
-                let said = match crate::plug::needed() {
-                    Ok((need, killed)) => format!("{need} {killed}"),
-                    Err(e) => e.to_string(),
+                // A builder that plugs nothing (booted with all it may have: a cold one,
+                // memory-15) needed none past it, and its guest's start is still said.
+                let needed = match b.plugging {
+                    true => crate::plug::needed(),
+                    false => Ok((0, 0)),
+                };
+                let said = match (needed, crate::plug::startup_said()) {
+                    (Ok((need, killed)), Some(start)) => format!("{need} {killed} {start}"),
+                    (Ok((need, killed)), None) => format!("{need} {killed}"),
+                    (Err(e), _) => e.to_string(),
                 };
                 send(&b.conn, kind::NEEDED, said.as_bytes())?;
             }

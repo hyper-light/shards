@@ -921,9 +921,12 @@ fn peak_since(used: u64) -> u64 {
 /// (D133, D188, memory-14): the least whole blocks whose hold ([`needed_for`]), its kernel
 /// holding `beside` beside it uncharged with its [`slack`], keeps `held` (twice what the run
 /// uses, and its peak where a give-back keeps it). Twice is no tuning: it is the delta-t
-/// estimator (Gott, Nature 363, 1993), what a run has grown to so far standing at the median
-/// for what it grows to in all, the estimator D215's `w` uses; learned from realized peaks
-/// it would be biased low, as the hold caps what a run can show. The grower asks for it and
+/// estimator (Gott, Nature 363:315, 1993), the estimator D215's `w` uses. The run's use now,
+/// `u`, is a point of its growth episode, so `r = u/P` of the episode's final peak `P` is
+/// uniform on (0, 1): P(r > 1/2) = 1/2, and the median of `P` is `u / (1/2) = 2u`. The median
+/// is the point estimate under absolute loss, an even chance of growing past it or not; a
+/// quantile `q` would give `1/(1−q)`. Learned from realized peaks it would be biased low, as
+/// the hold caps what a run can show (censored): the refinement owed is D133's. The grower asks for it and
 /// a give-back keeps it, both of the run's own use, so that a give-back takes nothing a
 /// growth just asked for on the same use.
 fn holding(boot: u64, held: u64, beside: u64) -> u64 {
@@ -1232,6 +1235,41 @@ fn reserve(total: u64, left: u64, slack: u64) -> u64 {
 /// memory with the build 25 MiB short of its `memory.high`, so that its grower, woken
 /// only there, was never asked to plug more (PM M392).
 const PCP_FRACTION: u64 = 8;
+
+/// What the builder's guest needed as its build was held, and MemTotal as it booted
+/// ([`note_startup`], memory-15).
+static STARTUP: std::sync::OnceLock<(u64, u64)> = std::sync::OnceLock::new();
+
+/// Notes what the builder's guest needs as its build is about to be held, and MemTotal as
+/// it booted, for its host to learn what its next builder of this guest boots with
+/// (`kind::NEEDED`, memory-15). Called by PID 1 as it would hold its build, with or without
+/// memory to plug: a cold builder boots with all it may have, and plugs none. Once.
+pub fn note_startup() -> io::Result<()> {
+    let (total, free) = memory()?;
+    let boot = BOOT.get().copied().unwrap_or(total);
+    let start = startup(total.saturating_sub(free), overshoot(), working_room());
+    let _ = STARTUP.set((start, boot));
+    Ok(())
+}
+
+/// [`note_startup`]'s words: `START TOTAL`, none where it was not noted.
+pub fn startup_said() -> Option<String> {
+    STARTUP.get().map(|(start, total)| format!("{start} {total}"))
+}
+
+/// The MemTotal a builder needs as its build is held, its kernel then using `used` bytes:
+/// the least `t` whose hold leaves the build its first growth's working room (`working`,
+/// [`working_room`]) beside what the kernel uses and the [`reserve`] (its slack: the
+/// kernel's `overshoot` and what it adds uncharged, cold, its use so far, [`Uncharged`];
+/// the page structures of what it may still plug, at most a 64th of `t`; its CPUs' lists,
+/// an eighth): `t − t/64 − t/8 ≥ 2·used + overshoot + working`, so `t ≥ 64/55` of it.
+fn startup(used: u64, overshoot: u64, working: u64) -> u64 {
+    used.saturating_mul(2)
+        .saturating_add(overshoot)
+        .saturating_add(working)
+        .saturating_mul(64)
+        .div_ceil(55)
+}
 
 /// What the build has needed of its builder's memory so far, for its host to record
 /// (`kind::NEEDED`, D133): the least memory, in whole blocks, whose hold keeps the most its
@@ -1865,6 +1903,20 @@ mod tests {
                     "{peak}: {need} is not the least"
                 );
             }
+        }
+    }
+
+    /// What a builder needs as its build is held leaves its hold the first growth's working
+    /// room beside what its kernel uses and its reserve, whatever it may still plug, and no
+    /// block less does (memory-15).
+    #[test]
+    fn a_builders_start_leaves_its_hold_its_working_room() {
+        for (used, cpus) in [(90 * MIB, 1), (150 * MIB, 4), (400 * MIB, 32)] {
+            let (o, w) = (overshoot_of(cpus, 4096, None), working_room_of(cpus, 4096));
+            let t = startup(used, o, w);
+            let hold = |t: u64| i128::from(t) - i128::from(used) - i128::from(reserve(t, u64::MAX, o + used));
+            assert!(hold(t) >= i128::from(w), "{used} {cpus}: {}", hold(t));
+            assert!(hold(t - MIB) < i128::from(w), "{used} {cpus}: not the least");
         }
     }
 
