@@ -33538,6 +33538,20 @@ whose command exited before kiln deleted it went uncharged (Hex answered `NotRun
   process keeps for it (`warm::Link::try_clone`), as the process ends. The link closes as the
   process exits (its relay's handle holds it until then), so its owner reads it before the
   close. The daemon passes over the kind (its `_` arm); api-run keeps it (`Told::used`).
+- *Only for a run taken.* `warm::receive` keeps the final use's link (`took`) as the VM sends
+  TAKEN, and only then; `FINAL_USE` goes on that link alone. As first built the VM process
+  kept it from its start and told it whatever became of its run, so a warm VM that ended
+  without taking one (a request it refused, a macOS template left where it was granted)
+  said kind 106 where its owner reads TAKEN or the VM's end: the daemon's `taken` made that
+  `Untaken::Unknown` and kept the run on the ended VM instead of handing it to another, and
+  api-run refused it as "the VM said message kind 106 for its run". A VM that took no run
+  tells none, and its end alone tells its owner the run never started. Found on KVM
+  (adacachy2, main cf13e49e6): `tests/warm.rs`, whose `Warm::ends` read no `FINAL_USE`,
+  failed 1 of 6 on kind 106 after DONE; it now reads exactly one, whole (`read_used`), and
+  `a_warm_vm_that_takes_no_run_tells_no_final_use` holds the untaken VM to its end alone
+  (red at the test-only commit, green with the fix); the unit
+  `a_request_with_the_wrong_descriptors_is_refused` holds `took` empty for a refused request
+  (red with `took` set before the request is read). No number added.
 - *On the image channel* (VERSION 28): `ENDED` carries `wire::RunEnded { end: RunEnd,
   final_use: FinalUse }`; `FinalUse::Read(Microvm)`, each part its reading or its words, or
   `FinalUse::Unread(Unused)`: `NotStarted` (stopped or refused before its microVM started),
