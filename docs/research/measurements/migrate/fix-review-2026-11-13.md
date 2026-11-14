@@ -296,3 +296,34 @@ does not exercise hardlinks. Also run a real live move with a guest concurrently
 issuing virtio-mem unplug and verify either consistent completion or typed refusal,
 with source survival and no stale destination pages. No such VM test or resource
 measurement was run by this implementer.
+
+### Final migrate05 landing receipt
+
+Code and its original committed red `5bf16ecff` landed together at
+`5f42c94527d747959d2d732587cb566b860a0137`, confirmed with
+`git ls-remote origin refs/heads/main`. Fix `fd33ec11a` remains the implementation
+SHA. Two ordinary fast-forward refusals were resolved by merging verified remote
+main; no force push, signing bypass or borrowed shared origin/main ref was used.
+
+After the check at `26db8d358`, main `33d28bf884` touched tested dependencies.
+Merge `b4f7d341062b21f4202e04143d1c343f7addfd75` passed the same warm
+`cargo check -p shards-vmm -p shards --tests` (46.03s, exit 0), with log
+`~/g121-tmp/fix-migrate-v1/hardlink-main-check-b4f7d3410.log`. Main then advanced
+only documentation (`6389b6e096`); its conflict-free merge `5f42c9452` was pushed
+immediately under ROOT's disjoint-input rule. Full focused tests/clippy are those
+of `7720df839`, compile checks are those of `26db8d358` and `b4f7d3410`, and final
+`5f42c9452` adds no tested input beyond that last checked tree.
+
+Migrate03 is fixed by memory-02 (`29196c6b3`) and integrated/green here; 06/08
+previously landed at `24402e230`. Migrate04/07/09/10 remain owed with the accepted
+designs above, with no unmeasured implementation or comparative claim. No new
+outside-area finding was opened. The migrate11 P0 adopt/import work remains its
+owner's; this lane changed none of those functions. ROOT's Kiln mailbox rejected
+the final checkpoint with HTTP429 backpressure; the authorized local peer channel
+is the fallback, without a queue retry loop.
+
+Cleanup completed on adacachy2 (exit 0): only
+`~/g121-tmp/fix-migrate-v1/target` was removed and its absence checked. Source,
+red/green/compile logs and `hardlink-cleanup.log` remain. No build, test, VM or
+daemon job is left running by this lane. This final receipt is documentation-only;
+it changes none of the tested code or build inputs.
