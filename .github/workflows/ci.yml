@@ -236,10 +236,13 @@ jobs:
           ls -l "$bus"
           echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
       # What a hung test's processes are doing, kept as it hangs (scripts/ci/hang-watch.sh):
-      # gdb for their backtraces, where the runner boots microVMs.
+      # gdb for their backtraces, where the runner boots microVMs. Its package index read
+      # afresh first: an image's own names versions its mirrors may no longer serve (run
+      # 43513425954's ubuntu-24 20261028.624 asked for libc6-dbg 2.39-0ubuntu8.9, 404 on
+      # every mirror, five times).
       - name: Hang watcher's gdb (Linux x86_64)
         if: matrix.test && matrix.target == 'x86_64-unknown-linux-gnu'
-        run: scripts/retry 5 30 sudo apt-get install -y gdb
+        run: scripts/retry 5 30 sh -c 'sudo apt-get update && sudo apt-get install -y gdb'
       # Where the runner offers its backend's hypervisor, every VM test must run: one that
       # cannot fails rather than skips (tests/common, SHARDS_REQUIRE_VMS). Every test binary
       # runs, whatever fails before it: a failing one hides none after it.
@@ -394,10 +397,11 @@ jobs:
       - name: Host virtualization (what this runner offers each backend)
         run: ls -l /dev/kvm 2>&1 || true
       # What a hung test's processes are doing, kept as it hangs (scripts/ci/hang-watch.sh),
-      # read from the runner: gdb for their backtraces, where the runner boots microVMs.
+      # read from the runner: gdb for their backtraces, where the runner boots microVMs, its
+      # package index read afresh first, as the glibc job's is.
       - name: Hang watcher's gdb (x86_64)
         if: matrix.part == 'test' && matrix.target == 'x86_64-unknown-linux-musl'
-        run: scripts/retry 5 30 sudo apt-get install -y gdb
+        run: scripts/retry 5 30 sh -c 'sudo apt-get update && sudo apt-get install -y gdb'
       - name: On the native architecture, in Alpine
         timeout-minutes: 60
         shell: bash

@@ -16,6 +16,12 @@ set -eu
 # runner's DNS failed Alpine's index once ("DNS: transient error", CI run 38329714115).
 tries=0
 packages="build-base curl xz"
+# The tests' leak scan runs on Python 3 (api_image.rs' leak_scan, docs/research/measurements/
+# s33-leak-scan/scan.py), which rust:alpine has none of: CI run 43513425954's x86_64 job
+# failed its test at the scanner's spawn, NotFound.
+if [ "${MUSL_CI:-all}" != build ]; then
+    packages="$packages python3"
+fi
 # The renderer's build: bash for its script, pkg-config and Python for meson and ninja,
 # and Linux's headers (dma-buf, udmabuf).
 if [ -n "${SHARDS_GPU_LIBS:-}" ]; then
