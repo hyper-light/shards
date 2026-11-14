@@ -15858,6 +15858,17 @@ byte, so a full-space MMIO mapping cannot overflow to a zero-length part.
 No timeout, cache, allocation limit or platform-specific path is added.
 Red/green evidence: `docs/research/measurements/device-fixes/README.md`.
 
+**Review devices-03 (2026-11-13).** The IOMMU validates every writable
+response span before applying a request. Its total must fit the split ring's
+u32 used length (virtio §2.7.8). Reply staging is fallibly reserved, at most
+one page as queried from the running host, independent of guest capacity;
+properties, zero padding and the request tail stream through it. A failure
+to validate/reserve writes no reply and applies no domain operation. This
+adds no cache or selected transfer-size constant. The evidence above distinguishes
+its bounded red guard test from the original allocator-pressure scenario owed
+to ROOT.
+
+
 
 D13 planned KVM on arm64 Linux hosts, and none ran a VM: the KVM backend was x86_64's.
 D153's test path for VFIO is a guest given the test function, passing it to a guest of

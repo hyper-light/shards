@@ -69,6 +69,8 @@ Priority mapping for the user's requested notification: **P0 critical; P1 high; 
 
 **Catching test:** feed oversized invalid writable descriptors under an allocation observer or bounded child-process allocation budget. Assert no allocation proportional to offered capacity and a device error without process termination.
 
+**Status (2026-11-13):** fixed in ed428676f16b70033b168a842e1b147048e508a3 (red `invalid_response_is_rejected_before_applying_the_request`, r9; green 13 IOMMU tests and VMM clippy, r10, macOS arm64). The red proves late buffer validation/state mutation; the original allocation-abort/RSS scenario remains unrun and owed to ROOT. Staging is fallibly bounded by this host's page size, independently of offered response capacity.
+
 ### devices-04 — P1 / high — Reset can strand a vCPU and teardown behind years of I/O debt
 
 **Location:** `crates/vmm/src/devices/virtio/block.rs:885`; charging at `:982`.
