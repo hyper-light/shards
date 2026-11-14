@@ -34,6 +34,7 @@ R08/R11/R14/R15: no performance, matrix or real-VM claim; ROOT owes these.
 R16: no builds/tests on the shared Mac; only this lane's remote target is disposable.
 
 ROOT owes real VM validation (not run):
-`cargo test -p shards moved_live --test moved` on supported KVM/HVF/WHP,
-plus a pressure/unplug concurrent live-move campaign. The existing moved test
-names must be selected from `crates/shards/tests/moved.rs` before that run.
+`cargo test -p shards moves_live --test moved` on supported KVM/HVF/WHP,
+plus a pressure/unplug concurrent live-move campaign. The filter selects both existing live-move tests.
+Merged tree `2e8135afb`: r8 repeats the same 2/2 and 25/25 tests plus clippy successfully.
+Retained logs: `red-memory-02-page.log` (r5), `green-memory-02.log` (r8).
