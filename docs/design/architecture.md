@@ -4160,6 +4160,22 @@ Held by unit tests (`a_state_is_bounded_by_its_machine`,
 a template saved and restored on Hypervisor.framework, KVM of each architecture and WHP of
 each (E2E), a live move, and the 8-target lint.
 
+**A reader looks again as long as its generation was replaced** (migrate-10, 2026-11-14). A
+reader that found the generation its pointer named gone looked again 8 times
+(`READ_ATTEMPTS`, picked), then refused "its generations kept being replaced", however many
+generations a newer writer had yet to publish and however soon one would stay. Now it looks
+again as long as the pointer names another generation than the one it found gone
+(`pointed_open`): each look again follows one writer's whole publication (a generation
+written, synced, pointed at and the one before removed), each under a name no generation had
+(`fresh_name`: the time, the process and its count), so it reads the first that stays put for
+one look's length, and the loop is bounded by the writers' publications, not by a count. A
+pointer that still names the generation found gone is no replacement and is refused as that
+("its pointer names generation …, which is gone"); a pointer gone is "no snapshot here", as
+before. Red at `READ_ATTEMPTS` (ten replacements in a row refused), green without it:
+`snapshot::tests::on_disk::a_reader_follows_every_replacement_and_refuses_a_pointer_to_a_gone_generation`.
+Owed to ROOT: a reader beside writers that publish without pause (a template saved again and
+again while restores read it) on each backend, its reads' p50/p99/max of looks and time.
+
 ### D191's hold: CFS's period, and reads when the share could be spent
 
 **Found:** the governor read its vCPUs' time at least every 10 ms while they were busy, a
@@ -4231,6 +4247,33 @@ default, which R03 holds insufficient alone.
     progress (its spin count); and the guest time past the rate over a window. Report
     p50/p90/p99/max, with host, OS and revision.
   - Until then the period stays 100 ms, and no code of the derivation is written.
+- *Its learner, built* (2026-11-14, migrate-09; ROOT's takeover brief: the learner and its
+  cold start built ahead of the measurement). `platform::granule` learns g where it runs:
+  - *Wake* (`Late`): the least a governor's timed wait ended past what it asked, over every
+    such wait of the process's; a wait woken early (a new limit, the end) is not counted. The
+    least, as the soonest a wait ends is what the host resolves; a wait late on a loaded host
+    only adds above it.
+  - *Clock* (`clock_step`, `measure_clock`): the step the governor thread's CPU clock counts
+    in, read while it spins until the clock has moved twice, the second move a whole step;
+    once a process, as a hold's first limit begins, so it spins two of its steps at most
+    (31.25 ms on Windows, PM M294; nanoseconds' reads elsewhere). A clock that cannot be read
+    is typed `Unclocked`, and g is its wake's.
+  - *Cold*: neither known, g is `SOONEST`, the governor's least wait.
+  - `hold::derived_period(vcpus, milli, g)` is vcpus × g × 1000 / milli, none where it
+    outgrows a u64 of ns (typed, never saturated into a period). The governor feeds its waits
+    to `Late` and says each limit's derived period in the debug log beside the one in force.
+  - Still in force: `PERIOD`, 100 ms. Two things stand before the switch: the kick-cost
+    measurement above, and the image API's `RATED`, which carries no period, so the period an
+    image run's host says as the run starts (`Started::rate_period`) would no longer be the one
+    a rate is held over (wire VERSION 28; Hex reads it): `RATED` must carry each rate's period,
+    as the direct path's `RATE` answer (`Answer::Held { period_ns }`) already does.
+  - Held by `platform::granule::tests` (g cold, by its wake, by its clock; early ends not
+    counted; a clock's step its second move, and this host's measured) and
+    `vm::hold::tests::a_holds_derived_period_resolves_its_share`.
+  - *Owed to ROOT, exactly*: on each backend, `SHARDS_LOG=debug` runs of
+    `cargo test -p shards --test boot a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket` (or the
+    run D191's measurement drives) at the rates above, reading each limit's "derived … from g"
+    line beside the kicks a second and guest progress; then the switch, with `RATED`'s period.
 
 ### D38's and D197's virtio-fs frames: FUSE's own structures
 
@@ -7458,6 +7501,18 @@ ports` lists, built; (3e) connect and disconnect of a running member, built.
   2026-10-17: 30 s, and 120 s once answered), and says a
   port it cannot bind in shards' words. `--add-host NAME:host-gateway` is refused: a
   member reaches nothing of the command's.
+- **Found and closed: TCP DNS sessions held their accept's names (network-09,
+  2026-11-13).** The agents' resolver cloned a TCP asker's table of names and grants at
+  accept, so an open DNS-over-TCP connection answered a departed member's name, and never
+  a joined one's, for as long as it stayed open. Each question is now judged under the
+  relay's live askers, found by the connection's link and source address, with a typed
+  verdict (`Here`, `Upstream`, `Refused`); an asker let go of, or whose link no longer
+  has that address, has its connection closed. A question already sent upstream finishes
+  on its connection. Red/green and a mutation (`None => continue`) of
+  `an_existing_tcp_session_uses_the_members_current_names` on Linux x86_64;
+  [evidence](../research/measurements/network-fixes-v1/README.md#network-09-a-tcp-dns-session-judged-by-its-asker-as-it-stands).
+  The real-guest witness is ROOT's: an engine's three members, A's TCP session held
+  across B's end and D's start, A's old TCP and a fresh UDP question agreeing.
 - **Tested on real microVMs.** `a_microvms_own_engine_makes_each_container_a_member_of_its_switch`:
   two members serving one port, each at the port it was given on the command's loopback
   and at its own address on that port, from init's end of the switch's link; a port one
@@ -8196,6 +8251,20 @@ the host keeper; command append in the VM needs a compatible host notification. 
 start must establish that source or return typed watch-unavailable, rather than choose
 a first polling period. Cancellation and source end must wake the same wait. No new
 protocol or timing behavior is implemented here; [required fault scenario and proof](../research/measurements/control-fixes-v1/README.md).
+
+**Control-08, built (2026-11-14).** Log lanes no longer read on a clock (D238, "The daemon's
+log host"): a followed lane's watch is made before it says `Started`, as its wake latch is,
+and a lane no watch can be had for is refused `Unstarted::Failed`, its cause in the daemon's
+log and its run's end waiter forgotten. Alternatives weighed: (a) a learned interval, for
+which nothing in the lane gives a cost to trade latency against (its records' times give the
+writer's cadence, not what a reader's late look costs); (b) the producer notification above,
+which needs a host notification from the VM process for a command's log, a wire change not
+needed while the watch itself is the notification; (c) the refusal, taken: a watch needs what
+the latch needs (a descriptor; two on macOS, kqueue(2) and its directory's) and on Linux a
+watch of the process's one inotify instance (`max_user_watches`, inotify(7)), or an instance
+where the process could not make that one (`max_user_instances`), so a lane refused it is one
+the host is out of resources for, which its controller may ask again. The other `UNWATCHED`
+users (the listener, `logs -f`, a process's events, a log driver's copier) stay owed (runs-11).
 
 **Why.** shards is filesystem based (the user, repeatedly; 2026-10-18: `daemon.sock` was an
 error). Its own interfaces are files in the home; a socket stays only where an outside
@@ -10441,6 +10510,39 @@ kernel says when each comes, so init waits on that and on no clock:
 
 Owed: init's unit tests on a Linux host (they build for musl here, and run in a guest), and
 hotplug's E2E (tests/hotplug.rs) on KVM, Hypervisor.framework and WHP.
+
+**Amended 2026-11-14 (devices-11, ROOT's decision): a disk file has one writer.** Two
+kernels that each mount one ext4 read-write corrupt it: each journals and allocates
+without the other's knowledge, which ext4's multiple-mount protection exists to refuse
+(Linux Documentation/filesystems/ext4/mmp.rst), and two runs' growths of it take
+different holds of their microVMs' steps (devices-01). So `shards plug disk` claims the
+file it opened, by what the file is, never its path: its device and inode on Unix (POSIX
+`<sys/stat.h>`: `st_dev` and `st_ino` identify a file), on Windows its volume's serial
+number and 128-bit file ID (`GetFileInformationByHandleEx(FileIdInfo)`, FILE_ID_INFO,
+which ReFS's 128-bit IDs need where NTFS's 64-bit index would do). A hard link, a second
+path or a symlink to the file is the same file. The claim is a reader-writer one:
+- A writable plug is refused where any plug, of any run or this one at another path, has
+  the file; a read-only plug where one has it writable. Read-only plugs share it.
+- The refusal is typed (`DiskHeld::Writable`/`ReadOnly`, naming the holder's run and
+  path), and said as `shards: cannot plug into NAME: FILE: microVM ID has its file
+  plugged in writable at PATH`.
+- A claim is taken as the file is opened, before its VM is asked, so two plugs at once
+  cannot both pass; it is given back as the plug fails (as it drops), as it is unplugged,
+  and as its run is found ended at the next claim (the claims of runs that no longer run
+  are let go first, as `plugged` is). Where a failed plug's own unplug fails, other than
+  as its VM saying the device is off its bus, its claim stays until its run ends: its
+  VM may have the file still.
+- A growth opens its disk's file by path again; it is refused where that is not the file
+  plugged in, another put at its path since.
+- The claims are the daemon's, of one `SHARDS_HOME`: another home's daemon, or another
+  program, is not refused by them (an OS lock on the file would reach those; not built).
+  A run's own disks at its start (its writable layer, its template) are the daemon's own
+  files and are not plugged.
+Unit tests and the guard's mutation: `a_disk_file_is_plugged_writable_into_one_run_at_a_time`,
+`a_growth_refuses_a_file_put_in_its_disks_place` (docs/research/measurements/device-fixes/README.md).
+Owed to ROOT: two running microVMs, `shards plug disk A FILE:/d`, then `shards plug disk B
+FILE:/d` (and through a hard link) refused, `FILE:/d:ro` into B refused, then after
+`shards unplug disk A /d`, `:ro` into A and B both plugged.
 
 ### D228. A client's paths are its own; the machine's are its owner's to grant (built)
 
@@ -12875,6 +12977,18 @@ receive handler, as the real dispatcher does; send completion alone was no deliv
 witness. It changes no production authority rule. Native red and merged gates are
 in the same evidence record.
 [Unit reproduction and remaining VM checks](../research/measurements/network-fixes-v1/README.md#network-03-dns-authority-lifetime).
+
+**Answer records tied to the name (network-11, 2026-11-13).** What a granted name
+resolved to is what the resolver answered for that name alone: `shards_dns::a_records`
+takes a whole response (QR, OPCODE 0, TC clear, RFC 2181 §9) without error (RCODE 0) to
+one IN question, and of its answer section only records of the question's type and
+class IN owned by the name, or by the end of its CNAME chain (RFC 1034 §§3.6.2, 4.3.2),
+names read with compression (RFC 1035 §4.1.4) and compared without case (RFC 4343). A
+record of another owner, class or type, an error or a truncated response, and a chain
+that loops grant nothing; both transports read answers through it. Before, every A or
+AAAA record of the answer section became the name's address. Red/green and four
+mutations (owner, class, RCODE, loop) on macOS arm64;
+[evidence](../research/measurements/network-fixes-v1/README.md#network-11-a-responses-addresses-are-its-questions-names-alone).
 
 **Next.** IPv6 destinations (the network process learns A records alone); a destination
 on a network whose members' images have agents with grants of their own, held apart by
@@ -16430,6 +16544,18 @@ inside the microVM the other runs in (D119).
   leave; `--uts host` not naming the run by its host; a joiner's writable layer not
   sized; a joiner not in the microVM's cgroup namespace with `--cgroupns host`).
 
+**Amended 2026-11-14 (devices-07).** The /dev/shm of a run that joins another's microVM
+is sized by the run whose microVM it is, followed through every link, IPC
+(`--ipc container:`) then the microVM's owner (`--network container:`, or the engine that
+made it, D181), with no chosen depth: each lookup keeps the IDs it has passed and refuses
+a cycle, a missing owner's record or no memory for its set, typed (`ShmOwnerRefused`). The
+walk had stopped after 64 links and sized the mount by the 64th run's allowance, half its
+host's memory where that run had no limit of its own, instead of the limited microVM's.
+A start and an `inspect` refuse a run whose owner cannot be found; a listing's summary,
+which shows no ShmSize (moby container.Summary), sums it up still. Unit red/green and
+mutation: `docs/research/measurements/device-fixes/README.md`; the chained mount itself
+is owed to ROOT's real-VM run (there).
+
 ### D155. A run's CPUs, real-time time, isolation and runtime, as its microVM has them
 
 Every run is a microVM: its own kernel, its vCPUs host threads the VMM schedules. A run's
@@ -19550,6 +19676,17 @@ host networking does for its VM's containers (PM M177).
   daemon waits for the network process (none of 100, quiet and loaded). A joiner's are
   let go so too; without it, the daemon's own letting go at the joiner's end came first
   in each of 100 runs, which nothing but timing ordered.
+- **Found and closed: a slot for every listener ever published (network-10,
+  2026-11-13).** Each `NET_PUBLISHED` pushed a listener slot and each `NET_UNPUBLISHED`
+  only emptied it, so a guest on the host's network that binds and closes one port grew
+  the network process's listener vector by a slot a cycle until its run ended. Listeners
+  now take slots a free list hands on, as the guest's TCP connections do, each slot's
+  generation in its poll token, so the slots are the most ever published at once and a
+  slot's earlier listener's events never reach the next one's. Red/green and two
+  mutations (free list, generation) on macOS arm64;
+  [evidence](../research/measurements/network-fixes-v1/README.md#network-10-listener-slots-reused-under-generation-safe-tokens).
+  ROOT owes the real loop: a host-network guest binding and closing one port 10,000
+  times, the network process's fds and RSS flat, on Linux, macOS and Windows.
 
 ### D123. A run's record of processes: from the kernel, every one, whole
 
@@ -19653,11 +19790,30 @@ the run's directory.
 
 ### D122. The members an `EXPOSE` is for: one receiver for each incoming port
 
-**Review gaps (network-06/07, 2026-11-13), owed to ROOT.** Whole-range holder
-selection and IPv6 wildcard acceptance have not been validated against split
-listeners or IPV6_V6ONLY in the pinned guest. A port must have its own holder;
-expanding contests also requires excluding the original range from fallback DNAT
-and retaining each mapped destination port. IPv4 selection must parse the kernel's
+**Each port its own holder (network-06, 2026-11-14).** A contest had one holder for
+its whole range, chosen where it listened on any port of it: with web listening on
+7000 alone and api on 7001 alone under one `EXPOSE 7000-7001`, api's 7001 went to web.
+The chooser's `Choices` now keeps each contest's ports as runs, each its holder's: a
+port stays with its holder while it listens there, else goes to the first candidate
+listening on it, else to no one, and adjacent ports of one holder are one rule, at the
+holder's own ports (a mapped port keeps its member's). sock_diag's dump names the ports
+each candidate listens on (`listened`), once per candidate per round, where the old
+choice could stop at its holder's. Ranges two domains share only in part (each clipped
+to its own network's grants, netplan `ingress_of`) are contested where they meet
+(`contested` cuts at every range's ends) and `pre` programs only each range's
+uncontested rest (`uncontested`). Unit red/green and mutations (adacachy2, x86_64
+Linux): `chooser::tests::{each_port_of_a_range_goes_to_the_member_listening_on_it,
+a_choice_keeps_its_members_port_and_joins_adjacent_ports,
+ranges_that_meet_in_part_are_contested_where_they_meet}`
+([log](../research/measurements/network-fixes-v1/init0406-red-green.log)). Owed to
+ROOT: the split-listener fixture on real microVMs, TCP and UDP, one listener closing
+(`cargo test -p shards --test build a_port_comes_in_to_the_member_listening_on_it --
+--exact --nocapture`, extended to one unmapped 7000-7001 `EXPOSE` with web on 7000 and
+api on 7001), and M513's contested bind/listen latency again, as a round now dumps
+every candidate's sockets.
+
+**Review gap (network-07, 2026-11-13), owed to ROOT.** IPv6 wildcard acceptance has
+not been validated against IPV6_V6ONLY in the pinned guest. IPv4 selection must parse the kernel's
 `INET_DIAG_SKV6ONLY` attribute; an absent/malformed observation must not be guessed
 dual-stack. The fixed message's IPv6 source alone cannot establish acceptance.
 The proposed live fixtures and failure/ownership requirements are
@@ -19747,8 +19903,8 @@ receiver for an incoming port" above:
 - **A UDP flow follows its port's holder.** Linux keeps a flow's NAT binding for the
   flow's life (nf_nat_core.c; 120 s past its last datagram once it streams,
   nf_conntrack_proto_udp.c), so a client sending all along would have stayed with a
-  holder that had closed its socket. Each choice of a UDP port's holder has a conntrack
-  zone of its own (`ct zone set`, raw prerouting, the datagrams coming in and the holder's
+  holder that had closed its socket. Each holder of a UDP port has a conntrack
+  zone of its own (network-04 below) (`ct zone set`, raw prerouting, the datagrams coming in and the holder's
   answers): a flow admitted before is new in the new zone and is translated to the new
   holder, its old entry left to expire, as a guest kernel without ctnetlink (shards' has
   none) has no other way to end one; the old holder's answers past the change are new
@@ -19757,11 +19913,25 @@ receiver for an incoming port" above:
   A notification names the calling thread, which pidfd_open(2) refuses where it leads no
   thread group: the chooser, and the host network's binds (D124), open its group's leader
   then, so that a server binding on a thread of its own is seen (found by that test).
-- **Zone retirement review (network-04, 2026-11-13):** wrapping the chooser's u16
-  counter does not establish that its old NAT tuples expired. Real-kernel
-  confirmation and a typed owner refusal at exhaustion, or authoritative kernel
-  retirement before reuse, remain owed to ROOT. No copied timeout closes the gap.
-  [Fixture and design](../research/measurements/network-fixes-v1/README.md#network-04-conntrack-zone-retirement).
+- **A zone is one holder's for the run (network-04, 2026-11-14).** Each change of a
+  UDP holder took the next zone of a u16 counter, which wrapped to 1 while a flow
+  conntrack kept there could still be translated to the holder it was made for (no
+  ctnetlink in shards' guest kernel to end it; no clock ties the wrap to its expiry):
+  after 65,535 changes the same client tuple went to the old holder. Each UDP
+  candidate of each contest now has a zone of its own, fixed as the chooser starts
+  (`Choices::new`), so every entry conntrack keeps in a zone is translated to the one
+  holder that zone is for: a flow admitted before a change is new in the next
+  holder's zone, and one kept from an earlier turn of the same holder goes to that
+  holder again. No zone is reused and none retired, so no timeout or retirement
+  proof is needed. The bound is conntrack's: a zone is a u16 and zone 0 every other
+  flow's (`NF_CT_DEFAULT_ZONE_ID`, include/net/netfilter/nf_conntrack_zones.h), so
+  more than 65,535 UDP candidates refuse the run as its chooser starts
+  (`chooser::Refused::Zones(ZonesExhausted { needed })`), before any domain runs.
+  Unit red/green and mutations (adacachy2): `a_udp_zone_names_one_holder_for_the_run`,
+  `more_udp_candidates_than_zones_are_refused`. Owed to ROOT: `cargo test -p shards
+  --test build a_udp_flow_goes_to_its_ports_next_holder -- --exact --nocapture`
+  extended to hand the port back to the first holder and to the second again with one
+  client socket, each datagram answered by the holder of the moment.
 - **A choice costs a commit, not a grace period (PM M513).** M498 found a contested
   bind(2) and listen(2) each at 16 ms (p50) where an uncontested filtered one took 19 and
   14 µs: the chooser programmed each choice on a netfilter socket of its own and closed
@@ -27554,9 +27724,11 @@ to it, on a thread of its own:
 - *Followed* as `logs -f` follows a log: woken by its watch on the segment it reads
   (`platform::FileWatch`, a segment's coming among its changes), by its source's end (the run's,
   for its command; for a member, its channels all ended in the drain, a latch the drain sets), or
-  by its lane let go (its steering closed, which the endpoint does as it drops the lane); every
-  `UNWATCHED` where no watch can be had (PM M257). Unfollowed, it reads what is kept as it is
-  asked.
+  by its lane let go (its steering closed, which the endpoint does as it drops the lane). Its
+  watch is made before it starts: one no watch can be had for (PM M257) is refused
+  `Unstarted::Failed`, never read on a clock (control-08, D185's "Control-08, built"). Tested:
+  `daemon::managed::log_lanes::tests::a_followed_lane_no_watch_can_be_had_for_is_refused_not_read_on_a_clock`.
+  Unfollowed, it reads what is kept as it is asked.
 - *Its end*: its stream finished once read, and its exit told after, so that its lane goes.
 - *A gap in the log* (spec.rs `INDEX_GAP`, the index entry's bit 61; its stream byte 3; its
   bytes why and how many were lost): written by the daemon into members' logs alone (D240); a

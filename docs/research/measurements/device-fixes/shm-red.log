@@ -1,0 +1,40 @@
+   Compiling iri-string v0.7.14
+   Compiling arraydeque v0.5.1
+   Compiling yaml-rust2 v0.13.0
+   Compiling shards-build v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/build)
+   Compiling shards-git v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/git)
+   Compiling shards-vmm v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/vmm)
+   Compiling shards-rego v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/rego)
+   Compiling shards-seccomp v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/seccomp)
+   Compiling shards-testguest v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/testguest)
+   Compiling shards-archive v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/archive)
+   Compiling shards-flate v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/flate)
+   Compiling shards-tui v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/tui)
+   Compiling shards-ext4 v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/ext4)
+   Compiling shards-zstd v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/zstd)
+   Compiling shards-gateway v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/gateway)
+   Compiling shards-user v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/user)
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=aarch64_apple_darwin
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-apple-darwin'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-devices/target/debug/build/aws-lc-sys-6025558a37dbaa42/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-devices/target/debug/build/aws-lc-sys-6025558a37dbaa42/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-devices/target/debug/build/aws-lc-sys-6025558a37dbaa42/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-devices/target/debug/build/aws-lc-sys-6025558a37dbaa42/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o"]).
+   Compiling rustls-webpki v0.103.16
+   Compiling shards-gitsign v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/gitsign)
+   Compiling hyper-tls v0.1.0 (https://github.com/hyper-light/hyper-raft?rev=e0613f524b0df198cc61dc1e82b33c22d604cf7b#e0613f52)
+   Compiling shards-tuf v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/tuf)
+   Compiling rcgen v0.14.10
+   Compiling shards-sigstore v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/sigstore)
+   Compiling shards-verify v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/verify)
+   Compiling shards-registry v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/registry)
+   Compiling hyper-quic v0.1.0 (https://github.com/hyper-light/hyper-raft?rev=e0613f524b0df198cc61dc1e82b33c22d604cf7b#e0613f52)
+   Compiling shards-net v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/net)
+   Compiling shards-remote v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/remote)
+   Compiling shards-api v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/api)

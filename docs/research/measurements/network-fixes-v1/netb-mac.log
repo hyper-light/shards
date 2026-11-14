@@ -1,0 +1,45 @@
+# network part B, adas-mac-studio-3.local, Darwin 25.2.0 arm64, rustc 1.98.1, --profile test-release.
+# Carrier: blobless clone of hyper-light/shards + bundle of p/fix-network-b-v1; tree = merge 38bd7a9d0 (main 2e00a1043) + commits.
+# kiln run r1758 (tree 38bd7a9d0; red = 658eec242 acd4a34a8 reverted)
+=== RED tree: 38bd7a9d089b04f95ba06612044d633ac7d3ed3f with 658eec242 acd4a34a8 reverted
+test tests::only_the_asked_names_own_records_are_its_addresses ... FAILED
+thread 'tests::only_the_asked_names_own_records_are_its_addresses' (17040864) panicked at crates/dns/src/lib.rs:780:13:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+# kiln run r1794 (tree 685d9c214; red = 685d9c214 6fb0a6f66 cf6084eab 658eec242 acd4a34a8 reverted), red-net.log:
+running 3 tests
+test wire::tests::ipv6_headers_read_back_as_written ... FAILED
+test tests::a_named_grant_learns_only_its_names_own_records ... FAILED
+test tests::host_network_bind_close_cycles_keep_no_listener_history ... FAILED
+---- wire::tests::ipv6_headers_read_back_as_written stdout ----
+thread 'wire::tests::ipv6_headers_read_back_as_written' (17164803) panicked at crates/net/src/wire.rs:748:30:
+nine extension headers
+---- tests::a_named_grant_learns_only_its_names_own_records stdout ----
+thread 'tests::a_named_grant_learns_only_its_names_own_records' (17164801) panicked at crates/net/src/lib.rs:3271:13:
+another owner
+---- tests::host_network_bind_close_cycles_keep_no_listener_history stdout ----
+thread 'tests::host_network_bind_close_cycles_keep_no_listener_history' (17164802) panicked at crates/net/src/lib.rs:3241:9:
+64 listener slots kept for at most one live listener
+test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 187 filtered out; finished in 0.00s
+# red-netring.log (cargo test -p shards-netring -- shared_memory_passes_over_every_name_taken, alone):
+test tests::shared_memory_passes_over_every_name_taken ... FAILED
+thread 'tests::shared_memory_passes_over_every_name_taken' (17164914) panicked at crates/netring/src/lib.rs:1035:14:
+called `Result::unwrap()` on an `Err` value: Custom { kind: Other, error: "no free shared memory name" }
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s
+# r1794 green, tree 685d9c214: cargo test -p shards-net --lib -- <part B filters> policy dns_ learn publish wire:: ring::
+test tests::a_policy_reaches_the_resolver_at_its_own_port ... ok
+test ring::tests::memory_let_go_of_is_taken_again_or_handed_back ... ok
+test tests::a_named_grant_learns_only_its_names_own_records ... ok
+test ring::tests::a_ring_keeps_its_bytes_in_order_as_it_wraps_and_grows ... ok
+test tests::dns_authority_expires_without_retaining_answer_history ... ok
+test tests::dns_answers_replace_the_names_previous_authority ... ok
+test tests::a_hosted_port_is_let_go_by_its_number ... ok
+test tests::a_proxy_policy_reaches_its_proxy_alone ... ok
+test tests::host_network_bind_close_cycles_keep_no_listener_history ... ok
+test tests::a_listener_let_go_of_leaves_its_socket_value_to_the_next ... ok
+test wire::tests::* (6) ... ok
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 174 filtered out
+# kiln run r1803 (tree dbb7175de) green:
+cargo test -p shards-dns: test result: ok. 12 passed; 0 failed (incl. only_the_asked_names_own_records_are_its_addresses, a_responses_addresses_are_read)
+cargo test -p shards-net --lib -- <part B filters> wire::: test result: ok. 10 passed; 0 failed; 180 filtered out
+cargo test -p shards-netring -- tests::: test result: ok. 5 passed; 0 failed; 1 ignored (frames_cost, a measurement)
+cargo clippy -p shards-dns -p shards-net -p shards-netring --all-targets -- -D warnings: Finished, exit 0

@@ -307,9 +307,11 @@ impl<D: Disk> Daemon<D> {
     /// Container `c` as a list sums it up (moby container.Summary): its ports while it
     /// runs, its networks and mounts as inspect gives them.
     pub(super) fn summary(&self, c: &Container, sized: bool) -> Value {
-        let doc: Value =
-            serde_json::from_str(&crate::daemon::inspect_doc::json(&self.container_value(c, sized)))
-                .unwrap_or_default();
+        let doc: Value = self
+            .container_document(c, sized, false)
+            .ok()
+            .and_then(|document| serde_json::from_str(&crate::daemon::inspect_doc::json(&document)).ok())
+            .unwrap_or_default();
         let at = |path: &str| doc.pointer(path).cloned().unwrap_or(Value::Null);
         let paused = lock(&self.paused).contains(&c.id);
         let removing = lock(&self.removing).contains(&c.id);
@@ -374,11 +376,11 @@ impl<D: Disk> Daemon<D> {
                 .cloned()
                 .ok_or_else(|| format!("No such container: {given}"))
         });
-        match found {
-            Ok(c) => Answer::document(
-                200,
-                crate::daemon::inspect_doc::json(&self.container_value(&c, call.flag("size"))),
-            ),
+        match found.and_then(|c| {
+            self.container_value(&c, call.flag("size"))
+                .map_err(|e| e.to_string())
+        }) {
+            Ok(document) => Answer::document(200, crate::daemon::inspect_doc::json(&document)),
             Err(e) => refused(&e, 500),
         }
     }

@@ -717,6 +717,92 @@ impl Listener {
     }
 }
 
+/// Published ports' host sockets, each with the guest port it reaches, in a slot its token
+/// names with the slot's generation. A slot let go of is the next listener's, so the slots
+/// are as many as were ever published at once, never one for each ever published
+/// (network-10: a host-network guest binding and closing one port again and again), and
+/// what a slot's earlier listener left in the poller is never taken for the next one's.
+#[derive(Default)]
+struct Listeners {
+    slots: Vec<ListenerSlot>,
+    free: Vec<usize>,
+}
+
+#[derive(Default)]
+struct ListenerSlot {
+    generation: u32,
+    held: Option<(Listener, u16)>,
+}
+
+impl Listeners {
+    /// The token the next listener has, in the slot [`Listeners::insert`] gives it.
+    fn vacant(&self) -> u64 {
+        let i = self.free.last().copied().unwrap_or(self.slots.len());
+        let generation = self.slots.get(i).map_or(0, |s| s.generation).wrapping_add(1);
+        token::of(token::LISTENER, generation, u32::try_from(i).unwrap_or(u32::MAX))
+    }
+
+    /// Takes `listener` for guest port `port` into [`Listeners::vacant`]'s slot.
+    fn insert(&mut self, listener: Listener, port: u16) -> usize {
+        let i = self.free.pop().unwrap_or(self.slots.len());
+        if i == self.slots.len() {
+            self.slots.push(ListenerSlot::default());
+        }
+        if let Some(slot) = self.slots.get_mut(i) {
+            slot.generation = slot.generation.wrapping_add(1);
+            slot.held = Some((listener, port));
+        }
+        i
+    }
+
+    fn get(&self, i: usize) -> Option<&(Listener, u16)> {
+        self.slots.get(i).and_then(|s| s.held.as_ref())
+    }
+
+    fn token(&self, i: usize) -> u64 {
+        let generation = self.slots.get(i).map_or(0, |s| s.generation);
+        token::of(token::LISTENER, generation, u32::try_from(i).unwrap_or(u32::MAX))
+    }
+
+    /// The slot `token` names, if its listener is still that one.
+    fn of(&self, token: u64) -> Option<usize> {
+        let i = token::index(token) as usize;
+        self.slots
+            .get(i)
+            .filter(|s| s.held.is_some() && s.generation & 0xff_ffff == token::generation(token))
+            .map(|_| i)
+    }
+
+    /// Takes slot `i`'s listener out, the slot free for the next.
+    fn take(&mut self, i: usize) -> Option<(Listener, u16)> {
+        let held = self.slots.get_mut(i)?.held.take()?;
+        self.free.push(i);
+        Some(held)
+    }
+
+    /// Each listener's socket and token, to forget before [`Listeners::clear`].
+    fn registered(&self) -> Vec<(RawSock, u64)> {
+        self.slots
+            .iter()
+            .enumerate()
+            .filter_map(|(i, s)| Some((s.held.as_ref()?.0.raw_sock(), self.token(i))))
+            .collect()
+    }
+
+    /// Lets every listener go, each slot free for the next.
+    fn clear(&mut self) {
+        for i in 0..self.slots.len() {
+            let _ = self.take(i);
+        }
+    }
+
+    /// How many slots it keeps: as many as were ever published at once.
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.slots.len()
+    }
+}
+
 /// A host peer's datagrams to a published UDP port: the guest has them from a gateway
 /// port of the peer's own, and its answers to that port go back to the peer, from the
 /// host address it asked.
@@ -884,9 +970,9 @@ struct Stack<'r> {
     /// clock's origin ([`Stack::isn`]).
     isn_key: [u8; 16],
     began: Instant,
-    /// Published ports' host sockets, each with the guest port it reaches, in the slot its
-    /// token names; a slot emptied where the host's network let one go (D124).
-    published: Vec<Option<(Listener, u16)>>,
+    /// Published ports' host sockets, each with the guest port it reaches; a slot emptied
+    /// where the host's network let one go (D124), for the next to take.
+    published: Listeners,
     /// The host's network's ports (D124), by the daemon's number for each, at their slots.
     hosted: HashMap<u32, usize>,
     /// Published UDP ports' flows, by their gateway ports, and those ports by their
@@ -1131,7 +1217,7 @@ pub fn serve(
             key
         },
         began: Instant::now(),
-        published: Vec::new(),
+        published: Listeners::default(),
         hosted: HashMap::new(),
         inbound: HashMap::new(),
         inbound_ports: HashMap::new(),
@@ -1243,11 +1329,15 @@ pub fn serve(
                         stack.forget(sock.raw_sock(), e.token, poll::Interest::READ);
                     }
                 }
-                token::LISTENER => match stack.published.get(index as usize).and_then(Option::as_ref) {
-                    Some((Listener::Tcp(_), _)) => stack.accept(index as usize),
-                    Some((Listener::Udp(_), _)) => stack.receive(index as usize),
-                    None => {}
-                },
+                token::LISTENER => {
+                    if let Some(i) = stack.published.of(e.token) {
+                        match stack.published.get(i) {
+                            Some((Listener::Tcp(_), _)) => stack.accept(i),
+                            Some((Listener::Udp(_), _)) => stack.receive(i),
+                            None => {}
+                        }
+                    }
+                }
                 token::TCP => stack.on_socket(e),
                 token::PEER => stack.on_peer(index as usize, e),
                 token::UDP => stack.on_udp(index),
@@ -1407,9 +1497,7 @@ fn handed(
                 "a port of the host's network without its number",
             ));
         };
-        let at = stack.published.len();
-        stack.publish(ports, fds);
-        if stack.published.len() > at {
+        if let Some(at) = stack.publish(ports, fds) {
             stack.hosted.insert(u32::from_be_bytes(*id), at);
         }
         Ok(())
@@ -1607,19 +1695,7 @@ fn answer_other(stack: &mut Stack<'_>, sock: &UnixStream, m: &shards_ipc::Messag
             // registration it keeps by the socket's value would be taken for the next socket
             // given that value, which it would never register (a joiner's listener on the
             // host's network never accepting, jupiter 7 of 20 runs).
-            let listening: Vec<(RawSock, u64)> = stack
-                .published
-                .iter()
-                .enumerate()
-                .filter_map(|(i, slot)| {
-                    let (listener, _) = slot.as_ref()?;
-                    Some((
-                        listener.raw_sock(),
-                        token::of(token::LISTENER, 0, u32::try_from(i).unwrap_or(u32::MAX)),
-                    ))
-                })
-                .collect();
-            for (sock, named) in listening {
+            for (sock, named) in stack.published.registered() {
                 stack.forget(sock, named, poll::Interest::READ);
             }
             stack.published.clear();
@@ -1716,8 +1792,10 @@ impl<'r> Stack<'r> {
 
     /// Takes published ports' host sockets, each for the guest port and protocol its
     /// payload's next three bytes name (a big-endian u16, then the IP protocol number);
-    /// what does not pair up, or names another protocol, is closed.
-    fn publish(&mut self, ports: &[u8], fds: Vec<Handed>) {
+    /// what does not pair up, or names another protocol, is closed. The slot of the first
+    /// taken, if any was.
+    fn publish(&mut self, ports: &[u8], fds: Vec<Handed>) -> Option<usize> {
+        let mut first = None;
         for (fd, &[hi, lo, proto]) in fds.into_iter().zip(ports.as_chunks::<3>().0) {
             let listener = match proto {
                 wire::PROTO_TCP => Listener::Tcp(std::net::TcpListener::from(fd)),
@@ -1728,11 +1806,7 @@ impl<'r> Stack<'r> {
                 Listener::Tcp(l) => l.set_nonblocking(true),
                 Listener::Udp(u) => u.set_nonblocking(true),
             };
-            let named = token::of(
-                token::LISTENER,
-                0,
-                u32::try_from(self.published.len()).unwrap_or(u32::MAX),
-            );
+            let named = self.published.vacant();
             if nonblocking.is_ok()
                 && self
                     .poller
@@ -1744,10 +1818,11 @@ impl<'r> Stack<'r> {
                     )
                     .is_ok()
             {
-                self.published
-                    .push(Some((listener, u16::from_be_bytes([hi, lo]))));
+                let at = self.published.insert(listener, u16::from_be_bytes([hi, lo]));
+                first.get_or_insert(at);
             }
         }
+        first
     }
 
     /// Lets go of the host's network's port the daemon numbered `id` (D124), its slot
@@ -1756,12 +1831,10 @@ impl<'r> Stack<'r> {
         let Some(i) = self.hosted.remove(&id) else {
             return;
         };
-        if let Some(slot) = self.published.get_mut(i)
-            && let Some((listener, _)) = slot.take()
-        {
+        let named = self.published.token(i);
+        if let Some((listener, _)) = self.published.take(i) {
             // Forgotten before it closes ([`Poller::forget`]): on Windows a registration kept
             // by its value would be taken for the next socket given that value.
-            let named = token::of(token::LISTENER, 0, u32::try_from(i).unwrap_or(u32::MAX));
             self.forget(listener.raw_sock(), named, poll::Interest::READ);
         }
         self.inbound_ports.retain(|(published, _), _| *published != i);
@@ -1771,7 +1844,7 @@ impl<'r> Stack<'r> {
     /// Takes what published UDP port `i` holds: each datagram to the guest's port, from
     /// its peer's gateway port.
     fn receive(&mut self, i: usize) {
-        let Some((Listener::Udp(sock), guest_port)) = self.published.get(i).and_then(Option::as_ref) else {
+        let Some((Listener::Udp(sock), guest_port)) = self.published.get(i) else {
             return;
         };
         let guest_port = *guest_port;
@@ -1832,8 +1905,7 @@ impl<'r> Stack<'r> {
     /// from the gateway, as a userland proxy's connection comes from it.
     fn accept(&mut self, i: usize) {
         for _ in 0..BUDGET {
-            let Some((Listener::Tcp(listener), guest_port)) = self.published.get(i).and_then(Option::as_ref)
-            else {
+            let Some((Listener::Tcp(listener), guest_port)) = self.published.get(i) else {
                 return;
             };
             let guest_port = *guest_port;
@@ -2302,8 +2374,7 @@ impl<'r> Stack<'r> {
             if let Some(f) = self.inbound.get_mut(&u.dst_port)
                 && gateway.is_ipv4()
                 && f.guest_port == u.src_port
-                && let Some((Listener::Udp(sock), _)) =
-                    self.published.get(f.published).and_then(Option::as_ref)
+                && let Some((Listener::Udp(sock), _)) = self.published.get(f.published)
             {
                 let _ = pktinfo::send(sock, u.payload, f.peer, f.asked);
                 f.life.datagram(Instant::now(), true);
@@ -3132,7 +3203,7 @@ mod tests {
             scratch: Vec::new(),
             isn_key: [0; 16],
             began: Instant::now(),
-            published: Vec::new(),
+            published: Listeners::default(),
             hosted: HashMap::new(),
             inbound: HashMap::new(),
             inbound_ports: HashMap::new(),
@@ -3156,7 +3227,7 @@ mod tests {
     /// registration by its socket's value, and a listener let go of without that kept the
     /// next listener given its value from ever being waited on (a joiner on the host's
     /// network that never accepted, jupiter 7 of 20 runs). Eight in turn, each ready once a
-    /// connection waits on it.
+    /// connection waits on it, each in the slot the last let go of, under its own token.
     #[test]
     fn a_listener_let_go_of_leaves_its_socket_value_to_the_next() {
         let region = Region::map(shards_netring::memory().unwrap()).unwrap();
@@ -3166,15 +3237,22 @@ mod tests {
             Config::on_bridge(Policy::Host, [2, 0, 0, 0, 0, 1], &bridge),
             region.producer(1, pr),
         );
+        let mut before = None;
         for round in 0u32..8 {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let at = listener.local_addr().unwrap();
-            let index = stack.published.len();
-            stack.publish(&[0x1f, 0x90, wire::PROTO_TCP], vec![Handed::from(listener)]);
-            assert_eq!(stack.published.len(), index + 1, "round {round}: not taken");
+            let index = stack
+                .publish(&[0x1f, 0x90, wire::PROTO_TCP], vec![Handed::from(listener)])
+                .unwrap_or_else(|| panic!("round {round}: not taken"));
+            assert_eq!((index, stack.published.len()), (0, 1), "round {round}: a slot more");
             stack.hosted.insert(round, index);
             let waiting = std::net::TcpStream::connect(at).unwrap();
-            let listening = token::of(token::LISTENER, 0, u32::try_from(index).unwrap());
+            let listening = stack.published.token(index);
+            assert_eq!(stack.published.of(listening), Some(index));
+            // The last round's listener's token, of this slot, names this one not.
+            if let Some(was) = before.replace(listening) {
+                assert_eq!(stack.published.of(was), None, "round {round}: an old token taken");
+            }
             let deadline = Instant::now() + Duration::from_secs(5);
             let mut events = Vec::new();
             while !events.iter().any(|e: &poll::Event| e.token == listening) {
@@ -3193,17 +3271,84 @@ mod tests {
             stack.poller.wait(&mut events, Some(Duration::ZERO)).unwrap();
             drop(waiting);
             #[cfg(windows)]
-            let value = stack
-                .published
-                .get(index)
-                .and_then(Option::as_ref)
-                .map(|(l, _)| l.raw_sock())
-                .unwrap();
+            let value = stack.published.get(index).map(|(l, _)| l.raw_sock()).unwrap();
             stack.unpublish(round);
+            // What its listener left in the poller names no listener now, nor the next's.
+            assert_eq!(stack.published.of(listening), None, "round {round}: its token kept");
             // Nothing kept of its value, whatever the next socket given it is.
             #[cfg(windows)]
             assert!(!stack.poller.keeps(value), "round {round}: its registration kept");
         }
+    }
+
+    /// network-10: a host-network guest that binds and closes one port again and again
+    /// holds one listener at a time, and the stack keeps no slot for each closed one: its
+    /// listeners' storage follows what is published now, not how often it was.
+    // NET_PUBLISHED comes from the daemon's hostnet control on a Unix socket here.
+    #[cfg(unix)]
+    #[test]
+    fn host_network_bind_close_cycles_keep_no_listener_history() {
+        let region = Region::map(shards_netring::memory().unwrap()).unwrap();
+        let (_, pr) = shards_netring::doorbell().unwrap();
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let mut stack = stack(
+            Config::on_bridge(Policy::Host, [2, 0, 0, 0, 0, 1], &bridge),
+            region.producer(1, pr),
+        );
+        let (sock, _daemon) = std::os::unix::net::UnixStream::pair().unwrap();
+        for id in 0u32..64 {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let mut payload = id.to_be_bytes().to_vec();
+            payload.extend(8080u16.to_be_bytes());
+            payload.push(wire::PROTO_TCP);
+            handed(
+                &mut stack,
+                &sock,
+                shards_ipc::kind::NET_PUBLISHED,
+                &payload,
+                vec![Handed::from(listener)],
+            )
+            .unwrap();
+            assert_eq!(stack.hosted.len(), 1, "cycle {id}: not hosted");
+            stack.unpublish(id);
+            assert!(stack.hosted.is_empty(), "cycle {id}: still hosted");
+        }
+        assert!(
+            stack.published.len() <= 1,
+            "{} listener slots kept for at most one live listener",
+            stack.published.len()
+        );
+    }
+
+    /// network-11: an answer the resolver gave of another name, or of another class, grants
+    /// a destination named for one name nothing at its address; the name's own record
+    /// does (D192, D236).
+    #[test]
+    fn a_named_grant_learns_only_its_names_own_records() {
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let mut cfg = Config::on_bridge(Policy::Ports(Ports::default()), [2, 0, 0, 0, 0, 1], &bridge);
+        cfg.named = vec![("allowed.example".to_string(), 443)];
+        let mut q = vec![0x12, 0x34, 0x81, 0x80, 0, 1, 0, 1, 0, 0, 0, 0];
+        q.extend_from_slice(b"\x07allowed\x07example\x00\x00\x01\x00\x01");
+        let forbidden = IpAddr::from([203, 0, 113, 9]);
+        for (what, owner, class) in [
+            ("another owner", &b"\x09forbidden\x07example\x00"[..], 1u16),
+            ("another class", &[0xc0, 0x0c][..], 3),
+        ] {
+            let mut reply = q.clone();
+            reply.extend_from_slice(owner);
+            reply.extend_from_slice(&[0, 1]);
+            reply.extend_from_slice(&class.to_be_bytes());
+            reply.extend_from_slice(&[0, 0, 0, 60, 0, 4, 203, 0, 113, 9]);
+            if let Some(answer) = dns::a_records(&reply) {
+                cfg.learn(answer, Instant::now()).unwrap();
+            }
+            assert!(!cfg.allows(forbidden, Proto::Tcp, 443), "{what}");
+        }
+        let mut own = q.clone();
+        own.extend_from_slice(&[0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 203, 0, 113, 9]);
+        cfg.learn(dns::a_records(&own).unwrap(), Instant::now()).unwrap();
+        assert!(cfg.allows(forbidden, Proto::Tcp, 443), "its own record");
     }
 
     /// The guest's MAC as its run gives it (`NET_MAC`, D46): the one this side's frames

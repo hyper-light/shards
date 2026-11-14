@@ -13,14 +13,15 @@
 //!   Segments let go before it read them are said (`Rotated`), and it reads on from the oldest.
 //! - **Followed** as its log is written, woken by an append to the segment it reads, a segment's
 //!   coming, its source's end (the run's, for its command; the member's channels' all ended, for
-//!   a member) or its lane let go; where no watch can be had, every [`UNWATCHED`] as `logs -f`
-//!   reads. Unfollowed, it reads what is kept as it is asked.
+//!   a member) or its lane let go. Its watch is made before it starts: one no watch can be had
+//!   for (out of descriptors; on Linux, its user's inotify watches or instances spent, PM M257)
+//!   is refused `Failed`, its cause in the daemon's log, as one whose wake could not be made
+//!   is, never read on a clock (control-08). Unfollowed, it reads what is kept as it is asked.
 //! - **Its end**: its stream finished once read, and its exit told once that is consumed. A lane
 //!   let go (its controller's hangup, or its connection gone) ends its reading at once.
 
 use std::io;
 use std::path::Path;
-use std::time::Duration;
 
 use shards_abi::run::managed::Channel;
 use shards_remote::control::exec::{self, LogPos, LogRecord, Reply, Start, Unlogged, Unstarted};
@@ -29,7 +30,6 @@ use shards_vmm::platform::FileWatch;
 
 use super::execs::Held;
 use super::{Charge, drain, log};
-use crate::daemon::UNWATCHED;
 use crate::daemon::logs::{CHUNK, Kept, LogFile, Pos, Records};
 use crate::spec::LOG_STDERR;
 
@@ -54,8 +54,15 @@ enum End {
     Run(u64, shards_ipc::Stream),
     /// A member's: its drain's end.
     Member(shards_ipc::Latch),
-    /// Ended already, or the lane is not followed.
-    Now,
+}
+
+/// How a lane reads its log.
+enum Reading {
+    /// What is kept, as it is asked: unfollowed, or its source ended already.
+    Kept,
+    /// On as it is written until its source's `end`, woken by `watch`: an append to the
+    /// segment it reads, or a segment's coming.
+    Followed { end: End, watch: FileWatch },
 }
 
 /// What a wait woke on.
@@ -123,29 +130,28 @@ pub(super) fn serve(start: Start, logs: &Logs<'_>, admissions: exec::Admissions,
             );
         }
     };
-    let end = match (asked.follow, asked.source) {
-        (false, _) => Ok(End::Now),
-        (true, exec::LogSource::Command) => (logs.run_end)().map(|end| match end {
-            Some((waiter, stream)) => End::Run(waiter, stream),
-            None => End::Now,
-        }),
-        (true, exec::LogSource::Member(member)) => match logs.drain.and_then(|d| d.end_of(member)) {
-            Some(latch) => latch.map(End::Member),
-            None => Ok(End::Now),
-        },
-    };
-    let end = match end {
-        Ok(end) => end,
-        Err(e) => {
-            return refuse(
-                Reply::Unstarted(Unstarted::Failed),
-                &format!("its source's end: {e}"),
-            );
-        }
-    };
     let gone = match shards_ipc::Latch::new().and_then(|gone| Ok((gone.try_clone()?, gone))) {
         Ok(gone) => gone,
         Err(e) => return refuse(Reply::Unstarted(Unstarted::Failed), &format!("its wake: {e}")),
+    };
+    let end = match (asked.follow, asked.source) {
+        (false, _) => Ok(None),
+        (true, exec::LogSource::Command) => {
+            (logs.run_end)().map(|end| end.map(|(waiter, stream)| End::Run(waiter, stream)))
+        }
+        (true, exec::LogSource::Member(member)) => match logs.drain.and_then(|d| d.end_of(member)) {
+            Some(latch) => latch.map(|latch| Some(End::Member(latch))),
+            None => Ok(None),
+        },
+    };
+    let reading = match end {
+        Ok(None) => Ok(Reading::Kept),
+        Ok(Some(end)) => followed(end, FileWatch::new(file.dir()), logs.forget),
+        Err(e) => Err(format!("its source's end: {e}")),
+    };
+    let mut reading = match reading {
+        Ok(reading) => reading,
+        Err(what) => return refuse(Reply::Unstarted(Unstarted::Failed), &what),
     };
     replies.tell(Reply::Started);
     let reads = [asked.channels.stdout, asked.channels.stderr];
@@ -160,7 +166,7 @@ pub(super) fn serve(start: Start, logs: &Logs<'_>, admissions: exec::Admissions,
                 let_go.set();
             });
         let read = match watched {
-            Ok(_) => follow(&file, &mut records, &producer, &end, &waiting),
+            Ok(_) => follow(&file, &mut records, &producer, &mut reading, &waiting),
             Err(e) => Err(io::Error::new(e.kind(), format!("its lane's watch: {e}"))),
         };
         match read {
@@ -178,10 +184,31 @@ pub(super) fn serve(start: Start, logs: &Logs<'_>, admissions: exec::Admissions,
         }
         // Told once its stream has finished, or been let go, so that its lane goes.
         replies.tell(Reply::Exited(0));
-        if let End::Run(waiter, _) = &end {
+        if let Reading::Followed {
+            end: End::Run(waiter, _),
+            ..
+        } = &reading
+        {
             (logs.forget)(*waiter);
         }
     });
+}
+
+/// A lane followed to `end`, woken by `watch`: refused where its watch could not be made, its
+/// run's waiter forgotten, rather than read on a clock (control-08). Nothing a watch needs is
+/// the lane's to wait for: a descriptor (two on macOS, kqueue(2) and its directory's), and on
+/// Linux a watch of the process's one inotify instance (`max_user_watches`), or an instance of
+/// its own where the process could not make that (`max_user_instances`, inotify(7)).
+fn followed(end: End, watch: io::Result<FileWatch>, forget: &(dyn Fn(u64) + Sync)) -> Result<Reading, String> {
+    match watch {
+        Ok(watch) => Ok(Reading::Followed { end, watch }),
+        Err(e) => {
+            if let End::Run(waiter, _) = end {
+                forget(waiter);
+            }
+            Err(format!("its log's watch: {e}"))
+        }
+    }
 }
 
 /// The directory of `source`'s log: the run's for its command, `members/<index>` for a member
@@ -253,24 +280,22 @@ fn opened(run: &Path, dir: &Path, asked: exec::LogAsk) -> Result<(LogFile, [Pos;
     Ok((file, from))
 }
 
-/// Reads `file` with `records` into `producer`'s records, following it while `end` has not
-/// come: whether it read all it was to (its source's end, or what was kept), or was let go
-/// first.
+/// Reads `file` with `records` into `producer`'s records as `reading` says, following it
+/// until its source's end: whether it read all it was to (its source's end, or what was kept),
+/// or was let go first.
 fn follow(
     file: &LogFile,
     records: &mut Records,
     producer: &Producer,
-    end: &End,
+    reading: &mut Reading,
     gone: &shards_ipc::Latch,
 ) -> io::Result<bool> {
     let mut each = |kept: Kept<'_>| submit(producer, &kept);
-    if matches!(end, End::Now) {
+    let Reading::Followed { end, watch } = reading else {
         return records.read(file, &mut each);
-    }
-    // Each watch comes before a read, so that no append between them goes unseen; where none
-    // can be had (on Linux, its user's inotify instances spent: PM M257), it reads again every
-    // UNWATCHED, as `logs -f` does.
-    let mut watch = FileWatch::new(file.dir()).ok();
+    };
+    // Its directory watched before its first read, and each segment it reads before it reads
+    // it again, so that no append between them goes unseen.
     let mut watched = None;
     loop {
         if !records.read(file, &mut each)? {
@@ -278,13 +303,12 @@ fn follow(
         }
         if let Some(segment) = records.segment()
             && watched != Some(segment.seq())
-            && let Some(watch) = watch.as_mut()
         {
             watch.file(segment.index())?;
             watched = Some(segment.seq());
             continue;
         }
-        let woke = wait(watch.as_ref(), end, gone, watch.is_none().then_some(UNWATCHED))?;
+        let woke = wait(watch, end, gone)?;
         if woke.gone {
             return Ok(false);
         }
@@ -292,9 +316,7 @@ fn follow(
             // Its source has ended, all of it kept: what is left, then its end.
             return records.read(file, &mut each);
         }
-        if woke.changed
-            && let Some(watch) = &watch
-        {
+        if woke.changed {
             watch.clear();
         }
     }
@@ -356,29 +378,20 @@ fn submit(producer: &Producer, kept: &Kept<'_>) -> io::Result<bool> {
     Ok(producer.submit(record).is_ok())
 }
 
-/// Waits, `within` at most, until a followed log has more to do: its watch's change, its
-/// source's end, or its lane let go.
+/// Waits until a followed log has more to do: its watch's change, its source's end, or its
+/// lane let go.
 #[cfg(unix)]
-fn wait(
-    watch: Option<&FileWatch>,
-    end: &End,
-    gone: &shards_ipc::Latch,
-    within: Option<Duration>,
-) -> io::Result<Woke> {
+fn wait(watch: &FileWatch, end: &End, gone: &shards_ipc::Latch) -> io::Result<Woke> {
     use std::os::fd::AsFd as _;
     let end_fd = match end {
-        End::Run(_, stream) => Some(stream.as_fd()),
-        End::Member(latch) => Some(latch.fd()),
-        End::Now => None,
+        End::Run(_, stream) => stream.as_fd(),
+        End::Member(latch) => latch.fd(),
     };
-    let fds: Vec<_> = [watch.map(FileWatch::fd), end_fd, Some(gone.fd())]
-        .into_iter()
-        .flatten()
-        .collect();
-    let ready = crate::daemon::timed(within, || shards_ipc::await_any_within(&fds, within))?;
+    let fds = [watch.fd(), end_fd, gone.fd()];
+    let ready = crate::daemon::timed(None, || shards_ipc::await_any(&fds))?;
     let mut at = ready.into_iter();
-    let changed = watch.is_some() && at.next().unwrap_or(false);
-    let ended = end_fd.is_some() && at.next().unwrap_or(false);
+    let changed = at.next().unwrap_or(false);
+    let ended = at.next().unwrap_or(false);
     let gone = at.next().unwrap_or(false);
     Ok(Woke { changed, ended, gone })
 }
@@ -386,30 +399,24 @@ fn wait(
 /// Waits as Unix's does: a watch's event and the latches' by their events, the run's end by
 /// its stream (`shards_ipc::await_any`).
 #[cfg(windows)]
-fn wait(
-    watch: Option<&FileWatch>,
-    end: &End,
-    gone: &shards_ipc::Latch,
-    within: Option<Duration>,
-) -> io::Result<Woke> {
+fn wait(watch: &FileWatch, end: &End, gone: &shards_ipc::Latch) -> io::Result<Woke> {
     use std::os::windows::io::AsHandle as _;
-    let deadline = within.and_then(|d| std::time::Instant::now().checked_add(d));
     let streams: Vec<&shards_ipc::Stream> = match end {
         End::Run(_, stream) => vec![stream],
-        End::Member(_) | End::Now => Vec::new(),
+        End::Member(_) => Vec::new(),
     };
     let member = match end {
         End::Member(latch) => Some(latch.event().as_handle()),
-        End::Run(..) | End::Now => None,
+        End::Run(..) => None,
     };
-    let events: Vec<_> = [watch.map(FileWatch::fd), member, Some(gone.event().as_handle())]
+    let events: Vec<_> = [Some(watch.fd()), member, Some(gone.event().as_handle())]
         .into_iter()
         .flatten()
         .collect();
     let (streams_ready, events_ready) =
-        crate::daemon::timed(within, || shards_ipc::await_any(&streams, &events, deadline))?;
+        crate::daemon::timed(None, || shards_ipc::await_any(&streams, &events, None))?;
     let mut at = events_ready.into_iter();
-    let changed = watch.is_some() && at.next().unwrap_or(false);
+    let changed = at.next().unwrap_or(false);
     let member_ended = member.is_some() && at.next().unwrap_or(false);
     let gone = at.next().unwrap_or(false);
     let ended = member_ended || streams_ready.first().copied().unwrap_or(false);
@@ -421,6 +428,34 @@ fn wait(
 mod tests {
     use super::*;
     use crate::spec::{LOG_STDOUT, LogRetention};
+
+    /// control-08: a followed lane whose log's watch could not be made is refused, its run's
+    /// waiter forgotten, never read on a clock; one whose watch was made follows on it, its
+    /// waiter kept for its end.
+    #[test]
+    fn a_followed_lane_no_watch_can_be_had_for_is_refused_not_read_on_a_clock() {
+        let run = shards_testdir::TempDir::new("lane-unwatched").unwrap();
+        let forgot = std::sync::Mutex::new(Vec::new());
+        let forget = |waiter: u64| forgot.lock().unwrap().push(waiter);
+        let spent = || io::Error::other("no descriptor left");
+        let (stream, _ends) = shards_ipc::Stream::pair().unwrap();
+        let refused = followed(End::Run(7, stream), Err(spent()), &forget);
+        assert!(
+            matches!(&refused, Err(why) if why.starts_with("its log's watch")),
+            "a lane with no watch went on"
+        );
+        assert_eq!(*forgot.lock().unwrap(), [7], "its run's waiter was kept");
+        let latch = shards_ipc::Latch::new().unwrap();
+        assert!(followed(End::Member(latch), Err(spent()), &forget).is_err());
+        assert_eq!(forgot.lock().unwrap().len(), 1);
+        let watch = FileWatch::new(&shards_vmm::platform::open_dir(&run).unwrap());
+        let (stream, _ends) = shards_ipc::Stream::pair().unwrap();
+        assert!(matches!(
+            followed(End::Run(8, stream), watch, &forget),
+            Ok(Reading::Followed { end: End::Run(8, _), .. })
+        ));
+        assert_eq!(forgot.lock().unwrap().len(), 1, "a followed lane's waiter was forgotten");
+    }
 
     /// A lane asked from the oldest of a log whose older output the run's one cap let go says so
     /// first, `Rotated` with the oldest place kept, then reads from there; one whose log lost

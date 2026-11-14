@@ -1383,6 +1383,8 @@ struct Daemon<D: Disk = Real> {
     plugged: Mutex<devices::PluggedMap>,
     /// Each running microVM's device steps, one at a time (D214).
     device_steps: devices::Steps,
+    /// Which runs have each disk file plugged in, by its identity (devices-11, D214).
+    disk_claims: devices::DiskClaims,
     /// Each running microVM's join share process (D119), by the ID of the microVM whose
     /// run it is: the daemon's connection to it, on which each joiner's link to it goes.
     /// Made as the first joiner of that microVM's network brings volumes.
@@ -2212,6 +2214,7 @@ impl<D: Disk> Daemon<D> {
             paused: Mutex::default(),
             plugged: Mutex::default(),
             device_steps: devices::Steps::default(),
+            disk_claims: devices::DiskClaims::default(),
             join_shares: Mutex::default(),
             shared_by: Mutex::default(),
             noticing: Mutex::default(),
@@ -3790,7 +3793,7 @@ impl<D: Disk> Daemon<D> {
             .and_then(|opened| {
                 let cdi = prepared.cdi.as_ref().ok().and_then(Option::as_ref);
                 prepared.spec.setup =
-                    crate::setup::setup(&run, &opened.mounts, cdi, Some(self.microvm_shm(&id, &run)))?;
+                    crate::setup::setup(&run, &opened.mounts, cdi, Some(self.microvm_shm(&id, &run).map_err(|e| e.to_string())?))?;
                 // An emulated command is never PID 1 of its namespace, but under shards'
                 // reaper, as `--init` runs one (D179, PM M251): the emulator ends a program
                 // that dies of a signal by sending itself that signal, which a namespace's
