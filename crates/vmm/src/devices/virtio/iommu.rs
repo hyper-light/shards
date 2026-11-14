@@ -794,15 +794,15 @@ fn answer_request(state: &mut Translation, req: &[u8]) -> (u8, Vec<u8>) {
     }
 }
 
-/// Serves one request of `chain` from guest memory `mem`: reads its device-readable part,
-/// then writes its device-writable part, PROBE's properties at its start and the tail,
-/// the status and three reserved bytes, at its end. Returns the bytes written: all of
-/// that part.
 #[cfg(test)]
 std::thread_local! {
     static REFUSE_REPLY_SCRATCH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+/// Serves one request of `chain` from guest memory `mem`: reads its device-readable part,
+/// then writes its device-writable part, PROBE's properties at its start and the tail,
+/// the status and three reserved bytes, at its end. Returns the bytes written: all of
+/// that part.
 fn answer(chain: &Chain, mem: &Access<'_>, state: &Mutex<Translation>) -> u32 {
     let mut req = [0u8; READABLE_MAX];
     let mut len = 0usize;
@@ -829,9 +829,11 @@ fn answer(chain: &Chain, mem: &Access<'_>, state: &Mutex<Translation>) -> u32 {
     };
     // One host page bounds staging independently of the guest's offered capacity.
     // Page size is queried from this host, not a selected transfer-size constant.
-    let Ok(page) = crate::platform::page_size() else {
-        return 0;
-    };
+    // The largest defined reply is PROBE's properties plus its four-byte tail
+    // (§5.13.6). That protocol-sized stack buffer also works if scratch allocation
+    // or the page-size query fails: no valid request is completed without a reply.
+    let mut fallback = [0u8; PROBE_SIZE as usize + 4];
+    let page = crate::platform::page_size().unwrap_or(fallback.len());
     let chunk = page.min(total as usize);
     if chunk == 0 {
         return 0;
@@ -845,10 +847,16 @@ fn answer(chain: &Chain, mem: &Access<'_>, state: &Mutex<Translation>) -> u32 {
     };
     #[cfg(not(test))]
     let reserve = chunk;
-    if out.try_reserve_exact(reserve).is_err() {
-        return 0;
-    }
-    out.resize(chunk, 0u8);
+    let out = if out.try_reserve_exact(reserve).is_ok() {
+        out.resize(chunk, 0u8);
+        out.as_mut_slice()
+    } else {
+        let len = chunk.min(fallback.len());
+        let Some(buffer) = fallback.get_mut(..len) else {
+            return 0;
+        };
+        buffer
+    };
     let (status, props) = {
         let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
         let (status, props) = answer_request(&mut state, req.get(..len).unwrap_or_default());

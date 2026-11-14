@@ -188,6 +188,14 @@ Priority mapping for the user's requested notification: **P0 critical; P1 high; 
 
 **Catching test:** round-trip `NoSlots`, `StillDriven`, `ShrinkRefused` and host failure variants across the actual codec, then assert callers match variants while presentation wording can change independently.
 
+### devices-11 — ROOT decision — Disk-file ownership across runs
+
+Added by ROOT, 2026-11-13, outside the original ten-finding review:
+
+> plug must refuse, typed, a disk file that another run already has plugged writable. Two kernels mounting one ext4 read-write corrupt it, which is what ext4 MMP (Documentation/filesystems/ext4/mmp.rst) exists to refuse, and their growths take different Steps holds. Read-only sharing stays allowed. Identify a file by (dev, inode) on Unix and by its file ID on Windows, never by path. Amend D214.
+
+**Status (2026-11-13):** assigned to the devices lane by ROOT; implementation pending. The original review counts above describe devices-01 through devices-10 only.
+
 ## Checked and found sound
 
 - Split virtqueues: sizes/alignment and ring spans checked at construction; direct and indirect descriptor walks bounded by queue size, indirect nesting rejected, each descriptor copied once; available-index jumps bounded and used/event indices use explicit wrapping arithmetic. This does not validate every device consumer, as devices-03 demonstrates.
