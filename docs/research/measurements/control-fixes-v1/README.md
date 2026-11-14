@@ -243,8 +243,8 @@ setup both fail at cold start, return a typed watch-unavailable refusal (requiri
 wire compatibility design) rather than invent an initial wait period. Resource
 availability can notify retry without a clock. No learning scheme is claimed.
 
-ROOT must add watch-failure injection to the existing api_image log-lane fixture,
-then run `cargo test -p shards --test api_image -- --nocapture`, proving append,
+ROOT must add watch-failure injection to the existing managed_output log-lane fixture,
+then run `cargo test -p shards --test managed_output log_lanes_read_a_runs_command_and_each_agents_log_at_its_place_and_go_on_from_a_cursor -- --nocapture`, proving append,
 rotation, end and lane abort without periodic probes under that fault. That command
 alone currently does not inject the fault. Measure idle/cold/load CPU and wakeup
 latency only after the notification design is implemented. Until then control-08
