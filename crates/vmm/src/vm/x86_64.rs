@@ -511,7 +511,7 @@ fn assemble(
     let gpu = gpu
         .map(|(renderer, region)| super::gpu_device(&vm, renderer, region, ram))
         .transpose()?;
-    let (console_device, console) = ConsoleDevice::new(super::console_out(console)?, said);
+    let (console_device, console) = ConsoleDevice::new(super::console_out(console)?, said)?;
     let (devices, disk_sizes) = super::virtio_devices(
         config,
         &regions,

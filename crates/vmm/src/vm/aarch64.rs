@@ -641,7 +641,7 @@ fn assemble(
     let swap_device = swap
         .clone()
         .map(|w| Box::new(pmem::Pmem::swap(w)) as Box<dyn crate::devices::virtio::VirtioDevice>);
-    let (console_device, console) = ConsoleDevice::new(super::console_out(console)?, said);
+    let (console_device, console) = ConsoleDevice::new(super::console_out(console)?, said)?;
     let last = std::iter::once(Box::new(console_device) as Box<dyn crate::devices::virtio::VirtioDevice>)
         .chain(gpu)
         .chain(hotplug)

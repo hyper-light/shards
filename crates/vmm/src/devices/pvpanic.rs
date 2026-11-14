@@ -59,13 +59,13 @@ impl MmioDevice for PvPanic {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::devices::virtio::console::Console;
+    use crate::devices::virtio::console::{Console, Output};
 
     /// The device says it takes panics alone; a write of PANICKED is told, and nothing
     /// else is.
     #[test]
     fn a_panic_written_is_told_and_nothing_else() {
-        let (_console, port) = Console::new(Box::new(std::io::sink()), 0);
+        let (_console, port) = Console::new(Output::Inline(Box::new(std::io::sink())), 0).unwrap();
         let p = PvPanic::new(port.clone());
         let mut b = [0xffu8];
         p.read(0, &mut b);
