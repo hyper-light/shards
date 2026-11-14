@@ -44,6 +44,32 @@ run r1481, [`run.sh`](run.sh):
 | mutant 2: `return` on a refused credit | 17ef27f54 + mutation | `output_taken_before…` failed (A alone) |
 | clippy | `cargo clippy -p shards-api --all-targets -- -D warnings` | clean |
 
+## Follow-up: the run host's held bytes at its capture's end (ROOT's slice, 2026-11-13)
+
+At its VM's capture's end with no record's end, the run host (`crates/shards/src/api_run.rs`
+`read_records`) dropped what it held of a channel past its orchestrator's room (`Flows::waiting`)
+and said no end: the owner's pipe waited for the host's exit and ended short. Now `records` ends
+cut every channel its orchestrator gave room to or was told of that has no end (`Live::cut`),
+its held bytes first, as a record's own end sends them (`Live::end_channel`, shared with `End`
+and `Aborted` records), then `OUTPUT_END Aborted(104)`, ECONNRESET's Linux number. Room is not
+waited for: the session closes its host's stdin at the run's end, so no credit could come once
+the VM is gone, and what is held is bounded by the guest's credit (at most one record's; from a
+guest that keeps its credit, the 3 bytes by which `grant`'s least, an errno's record, passes a
+room of less). The typed end reaches the session (`Flow::ended`); `ImageGuest` gives its caller
+the pipe's EOF alone, so the owner sees the cut as the end of the bytes, not as its type.
+
+kiln run r1511, adas-mac-studio-3.local, macOS arm64, [`run-host.sh`](run-host.sh)
+(`SHARDS_HELPERS=skip`, empty `SHARDS_INIT_BINARY`/`SHARDS_SERVER_BINARY`: no guest is built
+or run by these unit tests):
+
+| Step | Source | Result |
+|---|---|---|
+| red | 53faf0804 (test, old host) | `bytes_held_past_the_room_reach_the_orchestrator_as_the_capture_is_cut` failed: the owner had `01234` alone |
+| green | 347d16312 | it passed; `api_run::hosted::tests` 7 passed |
+| mutant 1: `cut` returns at once | 347d16312 + mutation | failed (`01234` alone) |
+| mutant 2: `cut` drops what is held before the end | 347d16312 + mutation | failed (`01234` alone) |
+| clippy | `cargo clippy -p shards --all-targets -- -D warnings` | clean |
+
 ## Owed (ROOT)
 
 Real-VM: `cargo test -p shards --profile test-release --test managed_output` and the api_image
@@ -56,7 +82,7 @@ allowance and is unchanged here.
 |---|---|
 | R01 | No new fallible step; a refused credit is handled, no panic path added; clippy clean. |
 | R02/R05/R12 | One existing seam (`pump`), no new interface, cache or wait: the condvar wait it had, its end condition corrected to the authoritative events. |
-| R03 | No literal; both ends are the wire's own events. |
+| R03 | Session: no literal, both ends are the wire's own events. Host: `CUT` = 104, ECONNRESET's number in Linux's include/uapi/asm-generic/errno.h, the guest's errno space init's aborts use; no timer or size. |
 | R04 | The pump's two latches (owner's pipe open, credits granting) are documented, set once; the end is the channel's typed `OUTPUT_END` or the answers' end. |
 | R06/R07/R13 | Two lines of behaviour changed; the doc comment says why the run's end is no channel end. |
 | R08/R14 | No performance claim; EOF of an unended channel now waits for the host's exit, unmeasured, ROOT's. |
