@@ -74,3 +74,8 @@ Combined green: `8fea5f396`, resumed-session kiln r1, same Mac/Rust:
 `cargo test -p shards-vmm vm::runtime:: --lib` 6/6;
 `cargo clippy -p shards-vmm --all-targets -- -D warnings` clean.
 The end of that run is retained in `green-live-ownership.log`.
+
+Landing check: main through `5d805549d` changes no tested VMM input from
+`9068a72cd` (crate, ABI, IPC, netring, apple, afunix, ntfs, Cargo.lock/Toml).
+The `8fea5f396` test result therefore covers this disjoint merge per ROOT's
+2026-11-14 landing-under-contention instruction.
