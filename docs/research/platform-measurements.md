@@ -81,6 +81,15 @@ Runs-03's blocked CREATE red timed out; after stop registration moved ahead of
 CREATE, the same regression and 33 session tests pass, with API all-target clippy.
 The main landing of runs-01/02/04 is 3956d259b; merged gate revisions and remaining
 live checks are recorded there.
+Runs-05's preparation lease is released after readiness; 43 api_run unit tests
+and shards all-target clippy pass. Its live-VM collection/progress reproduction
+is explicitly owed; unit results are not that proof.
+Runs-06's real two-platform store fixture returned arm64 User for amd64 before
+correction; its regression, 2 inspect tests, 11 command tests and shards all-target
+clippy pass. Live emulated guest/copy agreement remains owed to ROOT.
+The runs-01 follow-up caught and corrected this lane's native nondevice-owner
+regression: uid 0 instead of 1000 before, correct after, with 50 server tests
+and VMM all-target clippy passing. Its exact red/green logs are retained.
 
 ### M2. Object lifecycle (`lifecycle`, n=200, µs)
 
@@ -17808,6 +17817,9 @@ finding open; no new scheduling or host-fairness result is claimed.
 
 ### M430. Devices plugged into a running microVM: what each step costs, and what a bus of slots costs a boot (D214)
 
+Correctness follow-up devices-06 (2026-11-14): 1 VFIO unplug route-ownership red; 2 module tests and VMM clippy green on adacachy2 Linux x86_64. Real VFIO hardware was not used. See `measurements/device-fixes/README.md` for the fixture and limitations.
+
+
 Correctness follow-up devices-05 (2026-11-14): capacity-publication red observed `(2, 0)`; 8 block tests and VMM clippy passed after the shared-lock fix on macOS arm64. See `measurements/device-fixes/README.md`; no M430 performance claim is refreshed.
 
 
@@ -24355,3 +24367,11 @@ and policy check passed on macOS arm64. The tests cover chunked/length refresh
 and revoke bodies, partial arrival, retries and a forwarded code exchange. The
 100 response is RFC 9110 §10.1.1's protocol response, no chosen timer or allowance.
 Commands, red/green excerpts, exact source revisions and unrun work are linked above.
+
+### Review memory-16: duplicate head kinds past a selected cap (D190)
+
+On adas-mac-studio.local, macOS arm64, red 5ede7aecb (resumed r16) saved an equal
+block twice after 65 distinct kinds: Some(65) instead of Some(64). d794c1dd5
+removes the 64-kind comparison cutoff; the input's block count bounds the search.
+The sparse-file/index regression checks actual retained identity and length.
+[Commands, results and unmeasured quadratic comparison cost](measurements/memory-fixes-v1/README.md).
