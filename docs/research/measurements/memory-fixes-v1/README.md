@@ -112,3 +112,7 @@ merge to use `cargo check -p shards --tests` after this focused green; a conflic
 requires focused tests. Resume policy read at main `a33644dbe`, role implementer,
 same policy hashes. Findings 06..15 remain [owed with designs](owed-designs.md),
 including cold starts, typed unavailable states and exact ROOT validation commands.
+
+Later input-changing merge `2389f0afb` (main `a33644dbe`): resumed r10 passed
+`cargo check -p shards --tests` on the same warm Mac target. Retained output:
+`check-memory-04.log`. No conflicts were resolved in this merge.
