@@ -16298,7 +16298,8 @@ person's decision, "refuse it clearly". A save records who saved it, after its s
 head (format 30): the shards version (`snapshot::SAVED_BY`, crates/shards/Cargo.toml's,
 which vmm's build.rs passes as `SHARDS_VERSION`, as the VM process that saves is a
 package of its own) and the contract its init announced on the control page
-(`Snapshot::init`, from `Control::guest_abi` as the cut is taken; 0 where none). Every
+(`Snapshot::init`, from `Control::guest_abi` as the cut is taken; none where its guest
+runs no shards-init, which format 33 records as such, below). Every
 resume asks `snapshot::resumable(dir)` before anything restores the snapshot or its guest
 runs: the daemon's `resumable` (`restore vm`, `start --checkpoint`), a move's `plan` (the
 saved and live moves' first step on the machine moved from), and `shards restore DIR`
@@ -16313,8 +16314,8 @@ a plan of its contract that is not of this build's shape next (`Refused::OtherPl
 field of a plan defaults (legacy5).
 The Engine API's `POST /containers/{id}/start?checkpoint=` reaches the same `resumable`
 and answers its refusal as moby answers a failed start (500, the words as its message). Refused typed (`ResumeRefused`):
-`OlderInit { saved_by, init_abi, ours }`, a saver whose init announced another contract or
-none ("this microVM was saved by shards 0.7.0, whose shards-init (contract …) cannot
+`OlderInit { saved_by, init_abi, ours }`, a saver whose shards-init announced another
+contract ("this microVM was saved by shards 0.7.0, whose shards-init (contract …) cannot
 continue in this shards (contract …): start it again from its image; its volumes are
 kept, its memory's state is not"); `Unrecorded { format }`, a state of a format before 30,
 whose saver is unrecorded and whose init's contract is in its device state, which is laid
@@ -16331,13 +16332,40 @@ format 30 alone. Its volumes and image are not the snapshot's: `rm vm` and a fre
 keep them. The CLI user sees the refusal on stderr and exit status 1, as `docker start`'s
 failed start (the daemon's `refuse`, and `failed` for `shards restore DIR`). Red/green:
 `a_resume_refuses_a_saved_init_of_another_contract_naming_its_saver` (this build's init
-resumes; another's and none refused naming `SAVED_BY`; 28 refused naming 0.7.0; past 30
+resumes, and so does a guest that runs none; another's refused naming `SAVED_BY`; 28 refused naming 0.7.0; past 30
 refused; a cut saver unreadable), `resumable_refuses_another_init_and_leaves_the_snapshot`
 (on disk: resumed, refused typed, the state left byte for byte, no snapshot unreadable) and
 `a_guest_whose_init_is_another_builds_is_refused_before_anything_moves` (a plan of another
 contract and one of an earlier daemon refused naming their saver, typed on the wire);
 red before this, where no state recorded a saver. Owed to ROOT: v0.7.0's release binary's
 `save vm m`, then this build's `restore vm m` printing the refusal and exiting 1.
+
+A guest that runs no shards-init (initzero, 2026-11-14). Formats 30 to 32 wrote the saver's
+init as a u64, 0 where the control page held none (`Control::guest_abi`), and `resumable`
+refused every state whose u64 was not this build's contract, so a save of a guest whose
+init is not shards-init (the test guest, `shards run --kernel … --init` of the user's own, a
+`--snapshot-dir` template of one) was refused as "saved by shards …, whose shards-init
+(contract 0000000000000000) cannot continue" by the very build that saved it: the HVF
+`snapshot.rs` storm test `restores_of_a_busy_machine_lose_no_interrupt_and_repeat_no_write`
+red 3 of 3 at main 490ddff78. Such a guest has no init contract a restore could break: its
+own init is in its memory, and nothing of shards speaks to it but the machine, which the
+format and machine checks hold. A save of format 33 or later is only ever written by a
+build whose shards-init announces its contract, so in it "none announced" says only that
+the guest runs no shards-init; format 33 records that as itself rather than as contract 0
+(R04): a flag, then the contract only where there is one (`decode_init`), and `resumable`
+refuses `OlderInit` only for a contract that is not this build's. The bytes change, so the
+format does (33); a state of 30 to 32 has only its saver's version read, and is refused
+`OlderMachine` as before, its init's record never parsed (no legacy reader). The workload's
+`OtherInit` is unchanged, and still refuses a guest that announced none: it is asked only
+once a guest has dialed the run's port and is to be sent a command in shards-init's
+protocol, which a guest of the user's own init never dials, and one that dials it without
+announcing a contract speaks a protocol it has not said it speaks. A move's plan names
+this build's contract for every microVM (`Plan::init`), so a custom-init guest's move is
+not refused at `ready`, and its restore there asks `resumable` of its state as any resume
+does. Red/green: `a_resume_refuses_a_saved_init_of_another_contract_naming_its_saver` and
+`resumable_refuses_another_init_and_leaves_the_snapshot` resume a save whose guest announced
+none, red with format 32's record put back. Owed to ROOT: the storm test on HVF past its
+restore.
 
 The checks after a guest dials (legacy5). The VM process checked a resumed guest's init
 contract once its connections came back (vm_run.rs), with words of its own; it is deleted,
