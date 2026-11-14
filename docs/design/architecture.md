@@ -2219,26 +2219,32 @@ audit's "Security and test coverage").
     to decide), on every thread (TSYNC, Linux 3.17), every kernel's: a socket is a stream
     or a sequenced-packet one, as every socket a VM process makes is, since a datagram
     socket can send to any socket file it names [net/unix/af_unix.c,
-    `unix_dgram_sendmsg`]; and a VM given no vsock path, as every VM a daemon runs is
-    (`--warm` takes none), fails every connect(2) with EACCES, as Landlock refuses one: its
-    user's sockets, its daemon's Engine API among them, cannot be dialed (review
+    `unix_dgram_sendmsg`]; and every connect(2) fails with EACCES, as Landlock refuses one:
+    its user's sockets, its daemon's Engine API among them, cannot be dialed (review
     platform-02, [PM M569]). The filter allows seccomp(2)'s `SET_MODE_FILTER` for the
     layer: unprivileged, under no_new_privs, a filter only takes syscalls away.
+  - A VM process dials nothing itself, on Linux as on macOS and Windows: a daemon's VMs
+    are given no vsock path (`--warm` takes none), their host ports served in their
+    process; one given one (`shards build`'s builder, `run vm --kernel --vsock`, `restore vm
+    --vsock`) asks its spawner on its grants socket (`--grants FD`; `grant_ask::listen_at`)
+    for a socket bound at that path, which Landlock lets it make nowhere, and has its
+    spawner dial the host ports beside it (`kind::DIAL`, a port, never a path;
+    `platform::set_dialer`). The spawner keeps each descriptor it sends until the VM's next
+    word (`TAKEN`), as on macOS, where XNU's collector flushes one in flight (M24). Its spawners on Linux:
+    the CLI's broker, `shardsd grants`, started by `run vm` and `restore vm` where a vsock
+    path is given (cli `dial_broker`), and the builder's launch, on a thread of its own
+    (launch.rs); the broker grants a VM on Linux nothing else, its files being Landlock's,
+    and nothing after its vsock path (grant_answer.rs `answer`).
 - **Linux: Landlock, failing closed** (`confine.rs`, `landlock`), applied just before the
   VM starts (rootless-security.md R3; [Documentation/userspace-api/landlock.rst]).
   - Every filesystem right Landlock's ABI v5 knows is handled, TCP bind and connect are
     refused, and on ABI v6 signals and abstract Unix sockets outside the process are too,
-    and on v9 connections to socket files (`RESOLVE_UNIX`) but beneath the directory of a
-    vsock path it was given, where the vsock muxer dials a guest's host ports
-    (`<path>_<port>`) [PM M569].
-  - Before v9 a VM given a vsock path (`shards build`'s builder, `run vm --kernel
-    --vsock`) can still dial any socket file its user can: no primitive of older kernels
-    scopes a connect by its path within the process. The closed way for those is its
-    spawner dialing for it, as on macOS and Windows (`platform::set_dialer`); owed.
+    and on v9 every connection to a socket file (`RESOLVE_UNIX`, granted nowhere), an
+    extra layer beside the filter's refusal [PM M569].
     Allowed: its kernel, initrd, init, pmem and disks, a restore's snapshot and the files it
-    records, the snapshot directory it saves, sockets made
-    only beside a vsock path it was given (`--vsock`), `/dev/null`, its own `/proc` entry, and `/dev/kvm` and the
-    huge page settings where the host has them. No directory may take a file from another
+    records, the snapshot directory it saves, the removal of the socket its spawner bound
+    at a vsock path it was given (`--vsock`), `/dev/null`, its own `/proc` entry, and
+    `/dev/kvm` and the huge page settings where the host has them. No directory may take a file from another
     (`REFER`). Rules hold inodes: a template keeps its rule when the daemon renames it.
   - Every layer reaches every thread (review platform-01, [PM M568]). A layer restricts
     the thread that makes it and the threads it starts after
@@ -2247,9 +2253,10 @@ audit's "Security and test coverage").
     a thread compromised among them reaches through a sibling what the layer took away.
     Where the ABI has `LANDLOCK_RESTRICT_SELF_TSYNC` (v8), one call gives every thread the
     caller's new domain atomically. On every ABI from v5, the primitive every kernel it
-    runs on has, each thread is asked in turn: a real-time signal (`SIGRTMIN + 1`, past
-    the vCPUs' kick), whose handler makes the restriction in the thread it interrupts and
-    answers on an eventfd, as glibc's setxid broadcast makes setuid(2) every thread's,
+    runs on has, each thread is asked in turn: SIGSYS, sent by tgkill(2), whose handler
+    (the filter's own, `seccomp::name_refusals`, which runs `seccomp::on_sent`'s hook for
+    a SIGSYS of `si_code` SI_TKILL from its own process, and reports a trap's, SYS_SECCOMP)
+    makes the restriction in the thread it interrupts and answers on an eventfd, as glibc's setxid broadcast makes setuid(2) every thread's,
     until a listing of `/proc/self/task` names no thread not settled. A thread is settled
     by its answer, or by being gone or exiting (`PF_EXITING`: it runs no more user code,
     and drops a signal sent to it alone). A thread started after its creator answered is
@@ -2263,6 +2270,14 @@ audit's "Security and test coverage").
       seal's failure hands its run to another VM (daemon.rs, `hand_over`). glibc's
       pthread_create blocks every signal for a moment, which a look may meet; that run
       fails closed too.
+    - SIGSYS, because every thread of a filtered process takes it (blocked, a trap ends
+      the process unreported) and Mesa's threads, which block every other signal for
+      their lives, leave it and SIGSEGV unblocked (src/util/u_thread.c, `u_thread_create`,
+      at mirror/mesa 8c427aae9): a GPU's VM process has those threads by its seal, from
+      its renderer's start (its held Vulkan instance, D201), before any snapshot. Asked by a
+      real-time signal, such a thread could not answer, and a GPU template's seal failed on
+      every kernel before v8 [PM M568]. Ordering the seal before the renderer's threads
+      cannot be: a template's guest runs with its GPU before it is saved.
     - Any other thread is waited for as long as it lives, with no timeout and no
       constant: its answer (an eventfd its handler writes) or its end (its thread pidfd,
       pidfd_open(2) `PIDFD_THREAD`, Linux 6.9, older than the v5 a VM needs, which polls
@@ -2941,6 +2956,32 @@ remove only the owned staging path. The two-writer regression formerly observed
 empty final bytes; both writers now publish complete closed files. Real carried
 executables, signatures, GPU and crash-debris checks remain owed in the
 [runs record](../research/measurements/runs-fixes/README.md).
+
+**Helper integrity before each start (runs-10).** A helper's directory is named by the
+helpers' digests, but `complete` and the GPU writer took a helper of the right length
+as this build's whatever its bytes: one byte changed (by hand, by a program of the
+user's, on the disk) was started as it was, in every later process. Now each time a
+process is about to start a helper (`helpers::vm`, `net`, `vm_gpu`, and `checked` for
+the path the daemon keeps, from `launch::program`), its bytes are read whole and their
+SHA-256 compared with the digest build.rs embedded beside them; where they differ, or
+the file is gone, the carried bytes are written again whole (staging of the writer's
+own, synced, closed, renamed over it: the bytes build.rs signed on macOS), and a helper
+that cannot be written again (Windows refuses to replace one a running VM process
+holds) is refused, saying its path, its digest and why. A helper `SHARDS_VM_BINARY`
+names, or a carrier's beside its `shards` (D237, signed by the carrier, its bytes not
+those this build carries), is its giver's to answer for and is started as it is.
+`complete` stays the check that a directory was placed whole. No literal: the digest is
+SHA-256 of the carried bytes, the read through std's buffer at std's size. **Cost owed
+(ROOT):** each VM start now reads shards-vm (2.98 MB in this Mac's cache) and each
+networked one shards-net (4.33 MB) through SHA-256; its latency is unmeasured:
+`docs/research/measurements/build-ab/ab.py` between this build and its parent on one
+template, and a cold `shards run --kernel` launch, on HVF, KVM and WHP. A start between
+the check and the exec can still find bytes changed in that window; only an exec of the
+checked descriptor (fexecve, which macOS lacks) would close it. Unit tests (helpers.rs):
+`a_helper_whose_bytes_changed_is_written_again_before_it_starts` (one byte flipped, its
+length kept: written again) and `a_changed_helper_that_cannot_be_written_again_is_refused`;
+with the digest check put back to the length check, the first fails (the flipped bytes
+are returned). [runs-fixes record](../research/measurements/runs-fixes/README.md#runs-10).
 
 shards is one file to install and run, `shards`: every command, the daemon included,
 one CLI.
@@ -8656,6 +8697,23 @@ configurable".
   set, nothing goes since D212, where dockerd's 2 GB reserve held before). A changed cache
   setting is the next build's collection's, grown or not: `configure disk` removes the
   home's `buildcache-gc` (D212).
+- **Concurrent commands (runs-09, 2026-11-14).** Two `configure disk` commands had shared
+  one staging name, `.disk.new`, and read, changed and written the file unlocked: a command
+  whose read was older wrote over another's update, and one's rename could publish the
+  other's staging file as it truncated it, then write into the published file and fail.
+  A command now rereads, changes and writes the file holding the home's `disk.lock` alone
+  (flock(2), LockFileEx: the image store's `Locked`, let go before it closes, PM M244): a
+  lock of its own, as the settings' file is replaced by each write. It writes through
+  `platform::write_in`, a staging file of the writer's own (`O_EXCL`), synced, renamed
+  over the file; on Windows that lands a version beside it (PM M345), and readers open
+  the newest (`open_newest_in`). Readers take no lock: each finds a whole file, the old or
+  the new. No literal: the lock and staging names are names. Unit tests (disk.rs):
+  `concurrent_settings_updates_keep_each_others_fields` (an update waits for another
+  command's held lock, then keeps both fields) and
+  `settings_publication_leaves_another_writers_staging_file_alone`; with the lock and the
+  owned staging removed, the base's transaction, both fail (the later snapshot drops
+  `log-history`; another writer's `.disk.new` is published).
+  [runs-fixes record](../research/measurements/runs-fixes/README.md#runs-09).
 - **A file that does not read**, edited by hand: a run is refused, saying the file and its
   line; a build's collection collects nothing and says so at every build (`WARNING: the
   build cache was not collected: ...`), the build itself done; `--reset` mends it.

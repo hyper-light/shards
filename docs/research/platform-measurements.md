@@ -24357,6 +24357,22 @@ the 240 s bound killed it (exit 124); the pidfd dropped from the wait,
 ended unanswered (`left: Err(Timeout)`); the thread-pidfd rule dropped, the asked pass
 trapped under that filter (exit 159).
 
+Amended again 2026-11-13 (ROOT: a GPU run must not fail on ABI < 8 because Mesa's threads
+block signals). Mesa's `u_thread_create` blocks every signal but SIGSYS and SIGSEGV in
+the threads it starts (src/util/u_thread.c lines 53 to 61, mirror/mesa 8c427aae9), and
+the GPU's VM process holds a Vulkan instance from its renderer's start (D201), so such
+threads exist by its seal. The asking signal is SIGSYS now, through the filter's own
+handler (`seccomp::on_sent` for a SIGSYS of SI_TKILL from the process itself; a trap's
+report unchanged). `every_thread_of_a_confined_process_is_confined` starts a thread
+blocking every signal but those two between the first layer and the seal, under the
+filter of an ABI-5 host: with the pass asking by SIGRTMIN + 1 (the code at cc85d760a,
+the test alone new), the seal left it writing the sealed directory (`sealed siblings
+write snap: refused,refused,refused,refused,ok`): red. Asked by SIGSYS, it is refused
+with the others and still writes its kept directory: green. confine:: 11 of 11, the
+filter's tests and clippy for both crates clean on adacachy2. Owed to ROOT: a GPU
+template's save and its run on a kernel of ABI 5 to 7 (no host here has one), and
+tests/gpu.rs on the GPU hosts.
+
 ### M569. A confined VM process dialed its user's sockets, its daemon's Engine API among them (D30)
 
 Linux x86_64, adacachy2 (7.3.3-1-cachyos, Landlock ABI 11), 2026-11-13, policy df2acf47,
@@ -24382,6 +24398,25 @@ skips every filter for a syscall each allows whatever its arguments
 them, runs both. Owed to ROOT: VM runs on KVM (a daemon's
 warm VMs, `shards build`'s builder with its vsock ports, the GPU's VM process), x86_64
 and arm64 through L1.
+
+Amended 2026-11-13 (ROOT's decision on the gap before ABI v9): a VM process on Linux dials
+nothing itself, as on macOS and Windows. Its seccomp layer refuses every connect(2), on
+every kernel, and Landlock's v9 `RESOLVE_UNIX` is handled and granted nowhere, an extra
+layer. A VM given a vsock path asks its spawner, over `--grants`, for a socket bound there
+and for each host port it dials beside it (`kind::DIAL`, a port). The CLI's broker
+(`shardsd grants`) answers `run vm` and `restore vm` given `--vsock`, and a thread of the
+builder's launch answers the builder. On adacachy2, `a_confined_vm_dials_only_beside_its_vsock_path`
+now has a VM given a vsock path dial a same-user `engine.sock` listener outside its grants,
+and its own vsock directory's `v_5`: both refused (`refused 13`) under the seccomp layer
+alone (a kernel before v9), under Landlock's v9 rules alone, and under both. Before this
+change the seccomp-alone case dialed both (`dial outside: ok`): red. Mutants, each red:
+the layer's connect refusal dropped (`dial outside: ok`), and `RESOLVE_UNIX` dropped (the
+Landlock-alone cases dialed). `grant_answer::linux_tests` (shards), 2 of 2: the broker binds
+the vsock path, dials `v_5` beside it and refuses `v_6`, and refuses a file grant, and any
+grant after the vsock path. confine:: 11 of 11; clippy for shards, shards-vm-process and
+shards-syscall-filter clean on that host and on adas-mac-studio.local (macOS arm64). Owed
+to ROOT: tests/vsock.rs, boot.rs's managed rate test, snapshot.rs's vsock restores and
+tests/build.rs, on KVM x86_64 and arm64 through L1.
 
 ### M570. A Windows VM that stages its snapshots and has no vsock path was granted files after its guest started (platform-03, D30, D141, D196)
 
