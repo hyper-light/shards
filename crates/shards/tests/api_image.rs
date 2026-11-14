@@ -2011,6 +2011,9 @@ impl Lessor for TestLessor {
 /// `host.docker.internal`, for server name `sni`: its harness reaches that destination alone,
 /// and `auth.openai.com:443` where `sign_in`, so that Codex's token host is one its egress
 /// reaches (D236); the guest's flows to it still go to the test's host, as it dials them.
+/// Its trust bundle, at the first of the paths D242 lays the run's CA over, holds no root of
+/// its own: a granted member is refused where its image has none (init's trust.rs), and with
+/// none of the image's, the run's CA laid over it is the one root the harness's client trusts.
 fn build_asking(home: &TempDir, tag: &str, port: u16, sni: &str, sign_in: bool) {
     let host = format!("host.docker.internal:{port}");
     let (token, ports) = if sign_in {
@@ -2023,7 +2026,8 @@ fn build_asking(home: &TempDir, tag: &str, port: u16, sni: &str, sign_in: bool) 
         tag,
         &["tls-ask", &host, sni],
         &format!(
-            "NETWORK --egress={host}{token} provider FOR codex\n\
+            "COPY <<EOF /etc/ssl/certs/ca-certificates.crt\nno roots of the image's own\nEOF\n\
+             NETWORK --egress={host}{token} provider FOR codex\n\
              EXPOSE --harnesses=codex {ports} AS egress FOR provider\nCONNECT codex WITH codex ON provider\n"
         ),
     );
