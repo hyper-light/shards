@@ -3393,16 +3393,21 @@ mod tests {
     }
 
     /// D233: a report asked with no clock that comes while its VM process lives is the report,
-    /// waited for until its writer closes after it.
+    /// waited for until its writer closes after it: judged from that close as the kernel
+    /// says it ([`every_writer_gone`]), not from the test's drop of its own end (PM M587).
     #[test]
     fn a_report_with_no_clock_is_taken_as_it_comes() {
         use std::io::Write as _;
         let (guest, native, mut vm, mut writer, report) = reported_model("ended");
+        #[cfg(target_os = "linux")]
+        let read = read_end_of(&writer);
         let taking = guest.try_clone().unwrap();
         let (worker, rx) = crate::while_runs::on_a_thread(move || taking.take_gpu_report(Duration::MAX));
         assert!(rx.recv_timeout(crate::while_runs::kept_wait()).is_err());
         writer.write_all(report.encode().unwrap().as_bytes()).unwrap();
         drop(writer);
+        #[cfg(target_os = "linux")]
+        every_writer_gone(&read);
         assert_eq!(
             crate::while_runs::answer(&rx, worker, Duration::from_millis(1)),
             Ok(report)
@@ -3410,6 +3415,55 @@ mod tests {
         vm.kill().unwrap();
         vm.wait().unwrap();
         native.publish(crate::TerminalScope::Released);
+    }
+
+    /// A read end of `writer`'s pipe of this test's own, a duplicate of the one this process
+    /// holds beside it (its guest's), found by the pipe both name in `/proc/self/fd`: for
+    /// [`every_writer_gone`] to ask the kernel about the pipe's writers.
+    #[cfg(target_os = "linux")]
+    fn read_end_of(writer: &io::PipeWriter) -> std::os::fd::OwnedFd {
+        use std::os::fd::{AsRawFd as _, BorrowedFd, RawFd};
+        let named = |fd: RawFd| std::fs::read_link(format!("/proc/self/fd/{fd}")).ok();
+        let pipe = named(writer.as_raw_fd()).unwrap();
+        for entry in std::fs::read_dir("/proc/self/fd").unwrap() {
+            let Ok(fd) = entry.unwrap().file_name().to_string_lossy().parse::<RawFd>() else {
+                continue;
+            };
+            if fd == writer.as_raw_fd() || named(fd).as_ref() != Some(&pipe) {
+                continue;
+            }
+            // SAFETY: a descriptor of this process, duplicated at once; another thread may
+            // have closed it and opened another as it was named, which the look after the
+            // duplicate refuses.
+            let Ok(read) = unsafe { BorrowedFd::borrow_raw(fd) }.try_clone_to_owned() else {
+                continue;
+            };
+            if named(read.as_raw_fd()).as_ref() == Some(&pipe) {
+                return read;
+            }
+        }
+        panic!("no read end of {pipe:?} in this process");
+    }
+
+    /// Waits, with no clock, until every write end of `read`'s pipe is gone, every process's,
+    /// as poll(2) says it: POLLHUP, which Linux reports however `events` is set and once the
+    /// pipe has no writer, data unread or not (fs/pipe.c `pipe_poll`). The test's own drop is
+    /// not that: a spawn of another test's that forks as this one holds its end copies it
+    /// into a child that holds it until its exec, as Linux's clone copies every descriptor
+    /// (PM M587).
+    #[cfg(target_os = "linux")]
+    fn every_writer_gone(read: &std::os::fd::OwnedFd) {
+        use std::os::fd::AsRawFd as _;
+        let mut asked = libc::pollfd {
+            fd: read.as_raw_fd(),
+            events: 0,
+            revents: 0,
+        };
+        // SAFETY: one initialized pollfd of a descriptor `read` owns, its count 1.
+        while unsafe { libc::poll(&mut asked, 1, -1) } != 1 {
+            assert_eq!(io::Error::last_os_error().kind(), io::ErrorKind::Interrupted);
+        }
+        assert_ne!(asked.revents & libc::POLLHUP, 0, "{:#x}", asked.revents);
     }
 
     /// A managed guest's VM process on Linux and macOS is the process its launcher started,
