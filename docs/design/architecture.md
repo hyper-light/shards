@@ -4160,6 +4160,22 @@ Held by unit tests (`a_state_is_bounded_by_its_machine`,
 a template saved and restored on Hypervisor.framework, KVM of each architecture and WHP of
 each (E2E), a live move, and the 8-target lint.
 
+**A reader looks again as long as its generation was replaced** (migrate-10, 2026-11-14). A
+reader that found the generation its pointer named gone looked again 8 times
+(`READ_ATTEMPTS`, picked), then refused "its generations kept being replaced", however many
+generations a newer writer had yet to publish and however soon one would stay. Now it looks
+again as long as the pointer names another generation than the one it found gone
+(`pointed_open`): each look again follows one writer's whole publication (a generation
+written, synced, pointed at and the one before removed), each under a name no generation had
+(`fresh_name`: the time, the process and its count), so it reads the first that stays put for
+one look's length, and the loop is bounded by the writers' publications, not by a count. A
+pointer that still names the generation found gone is no replacement and is refused as that
+("its pointer names generation …, which is gone"); a pointer gone is "no snapshot here", as
+before. Red at `READ_ATTEMPTS` (ten replacements in a row refused), green without it:
+`snapshot::tests::on_disk::a_reader_follows_every_replacement_and_refuses_a_pointer_to_a_gone_generation`.
+Owed to ROOT: a reader beside writers that publish without pause (a template saved again and
+again while restores read it) on each backend, its reads' p50/p99/max of looks and time.
+
 ### D191's hold: CFS's period, and reads when the share could be spent
 
 **Found:** the governor read its vCPUs' time at least every 10 ms while they were busy, a
@@ -4231,6 +4247,33 @@ default, which R03 holds insufficient alone.
     progress (its spin count); and the guest time past the rate over a window. Report
     p50/p90/p99/max, with host, OS and revision.
   - Until then the period stays 100 ms, and no code of the derivation is written.
+- *Its learner, built* (2026-11-14, migrate-09; ROOT's takeover brief: the learner and its
+  cold start built ahead of the measurement). `platform::granule` learns g where it runs:
+  - *Wake* (`Late`): the least a governor's timed wait ended past what it asked, over every
+    such wait of the process's; a wait woken early (a new limit, the end) is not counted. The
+    least, as the soonest a wait ends is what the host resolves; a wait late on a loaded host
+    only adds above it.
+  - *Clock* (`clock_step`, `measure_clock`): the step the governor thread's CPU clock counts
+    in, read while it spins until the clock has moved twice, the second move a whole step;
+    once a process, as a hold's first limit begins, so it spins two of its steps at most
+    (31.25 ms on Windows, PM M294; nanoseconds' reads elsewhere). A clock that cannot be read
+    is typed `Unclocked`, and g is its wake's.
+  - *Cold*: neither known, g is `SOONEST`, the governor's least wait.
+  - `hold::derived_period(vcpus, milli, g)` is vcpus × g × 1000 / milli, none where it
+    outgrows a u64 of ns (typed, never saturated into a period). The governor feeds its waits
+    to `Late` and says each limit's derived period in the debug log beside the one in force.
+  - Still in force: `PERIOD`, 100 ms. Two things stand before the switch: the kick-cost
+    measurement above, and the image API's `RATED`, which carries no period, so the period an
+    image run's host says as the run starts (`Started::rate_period`) would no longer be the one
+    a rate is held over (wire VERSION 28; Hex reads it): `RATED` must carry each rate's period,
+    as the direct path's `RATE` answer (`Answer::Held { period_ns }`) already does.
+  - Held by `platform::granule::tests` (g cold, by its wake, by its clock; early ends not
+    counted; a clock's step its second move, and this host's measured) and
+    `vm::hold::tests::a_holds_derived_period_resolves_its_share`.
+  - *Owed to ROOT, exactly*: on each backend, `SHARDS_LOG=debug` runs of
+    `cargo test -p shards --test boot a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket` (or the
+    run D191's measurement drives) at the rates above, reading each limit's "derived … from g"
+    line beside the kicks a second and guest progress; then the switch, with `RATED`'s period.
 
 ### D38's and D197's virtio-fs frames: FUSE's own structures
 
@@ -8187,6 +8230,20 @@ the host keeper; command append in the VM needs a compatible host notification. 
 start must establish that source or return typed watch-unavailable, rather than choose
 a first polling period. Cancellation and source end must wake the same wait. No new
 protocol or timing behavior is implemented here; [required fault scenario and proof](../research/measurements/control-fixes-v1/README.md).
+
+**Control-08, built (2026-11-14).** Log lanes no longer read on a clock (D238, "The daemon's
+log host"): a followed lane's watch is made before it says `Started`, as its wake latch is,
+and a lane no watch can be had for is refused `Unstarted::Failed`, its cause in the daemon's
+log and its run's end waiter forgotten. Alternatives weighed: (a) a learned interval, for
+which nothing in the lane gives a cost to trade latency against (its records' times give the
+writer's cadence, not what a reader's late look costs); (b) the producer notification above,
+which needs a host notification from the VM process for a command's log, a wire change not
+needed while the watch itself is the notification; (c) the refusal, taken: a watch needs what
+the latch needs (a descriptor; two on macOS, kqueue(2) and its directory's) and on Linux a
+watch of the process's one inotify instance (`max_user_watches`, inotify(7)), or an instance
+where the process could not make that one (`max_user_instances`), so a lane refused it is one
+the host is out of resources for, which its controller may ask again. The other `UNWATCHED`
+users (the listener, `logs -f`, a process's events, a log driver's copier) stay owed (runs-11).
 
 **Why.** shards is filesystem based (the user, repeatedly; 2026-10-18: `daemon.sock` was an
 error). Its own interfaces are files in the home; a socket stays only where an outside
@@ -27194,8 +27251,74 @@ exec's, and making no stream: the member's own are step 5's already.
 ended before its lane asked, or a fault, typed. Steering and end are separate handles, so that a
 caller can wait for the end on one thread and steer from another.
 `MemberSteering::signal` refuses a signal outside `1..=NSIG` before sending it; it and `resize`
-each wait for the answer, with `Fault::Unsteered` for a refusal and `Unsteered::Ended` for every
-steer once the end has come. `MemberEnd::wait` gives the member's end, `exec::End`.
+each wait for the answer within their caller's patience (below), with `Fault::Unsteered` for a
+refusal and `Unsteered::Ended` for every steer once the end has come. `MemberEnd::wait` gives
+the member's end, `exec::End`.
+
+*A lane's ask, waited for within its caller's patience* (Hex's decision 9, the Hex lead's ask
+from Hex's member-signal work, 2026-11-14). Every controller call that waited for its
+endpoint's answer (`Execs::member`, `exec`, `mcp` and `log`, `Sockets::connect`, and a member's
+`signal` and `resize`) waited on its lane's channel until the endpoint answered or the
+connection ended, with no bound and no timed form: an orchestrator that wanted its own bound
+needed a thread per ask, and one whose endpoint never answered could not let it go. Now each
+takes a `patience: Duration`, the convention of `ManagedGuest::rate(rate, patience)` and
+`host_use(patience)`, with `Duration::MAX` (or a patience past what the clock holds) waiting as
+before. A lane's ask cannot be asked twice (a second would open a second lane, or send a
+second signal), so a wait that runs out answers `Ok(None)` with the ask still pending, as
+`ImageGuest::wait_for(timeout)` and `ManagedGuest::wait_ended(timeout)` do, and a later wait
+follows the same ask on.
+- *Its shape.* An ask is sent at once and gives its pending handle: `Execs::member(member) ->
+  PendingMember`, `exec(member, spec) -> PendingExec`, `mcp(member) -> PendingMcp`,
+  `log(source, channels, cursor, follow) -> PendingLog`, `Sockets::connect(name) ->
+  PendingSocket`, each refused at once only where nothing could be sent (a frame that does not
+  encode, a socket name that is no file name: `Refused(Protocol)`). Each handle's
+  `wait(&mut self, patience) -> Result<Option<_>, Fault>` gives `Member`, `Exec`,
+  `McpConnection`, `Log` or `Socket` once; a fault, then the same fault again, as every other
+  handle of the module tells its end (`Output::next_record`, `MemberEnd::wait`); and, after its
+  answer was given, `Fault::Unawaited`. `MemberSteering::signal(signal, patience)` and
+  `resize(size, patience)` send once and answer `Result<Option<()>, Fault>`;
+  `MemberSteering::steered(patience)` follows the last one on. A steer asked while one awaits
+  its answer is refused `Fault::Awaiting` and never sent (the endpoint reads one steer at a
+  time, and the driver dropped a second one silently before); `steered` with none awaited is
+  `Unawaited`. Both refusals leave the lane as it was.
+- *Its states* (R04). A pending ask is `Awaited::{Awaiting, Answered, Over(Fault)}`, its
+  steering `Steering::{Ready, Awaiting, Over(Fault)}` (which replaces an `Option<Fault>`).
+- *An asker gone* (D251's cut). The driver tells a lane's handle its number as it takes the ask
+  (`Heard::Asked`). A pending handle let go hands the driver its channel back
+  (`Ask::Withdraw`); the driver, which alone tells that channel, finds there everything it told
+  and the handle did not hear, so no answer that crossed the drop is lost, and closes the lane
+  both ways, as a cut lane is closed (RESET_STREAM and STOP_SENDING), whatever its endpoint
+  said or says: one waiting for the endpoint's room never opens; one the endpoint has not
+  answered is let go there (its host's steering closes, which hangs an exec or a member's lane
+  up, exec.rs's reset path); one answered meanwhile is closed with what its answer made (an
+  exec's stdio lanes). The member's life is no lane's, as before: none ends it.
+- *Literals.* None: each patience is its caller's (R03). The clock's own bound decides only
+  that a patience past it waits as `Duration::MAX` does (`Instant::checked_add`, as std's
+  `recv_timeout` reads it).
+- *Callers.* No production caller in Shards or kiln waited on these (the daemon's and api-run's
+  are the endpoint's side); their tests and Hex's acceptance read the answers with
+  `Duration::MAX`, as they did, through the pending handles. The blocking forms are gone.
+- *Tested* (unit, loopback): `control::tests::a_lane_ask_is_sent_once_and_waited_for_within_each_waits_patience`
+  (sent before any wait; `Ok(None)` at a patience of none and a short one while its host holds
+  its answer; answered at a later wait, no second ask at the endpoint; a steer's answer followed
+  on with `steered`, a resize while it was awaited refused `Awaiting` and never reaching the
+  host), red on the base's blocking `Execs::member` (`a_members_ask_gives_way_within_its_patience`:
+  no answer within the test's patience); `a_lane_ask_let_go_unanswered_is_closed_as_its_lane_opens`
+  (a member's lane and an exec, each let go once its host had the ask, their host's steering
+  closed as the host answers `Running` and `Started`; the connection goes on);
+  `control::unix::tests::a_socket_lane_let_go_unanswered_is_cut_as_it_connects` (the workload's
+  socket ends). On adas-mac-studio.local (macOS arm64, implementer, policy df2acf47): red at
+  07d8f670f (no answer within the test's 10 s, FAILED); green with shards-remote's `control`
+  66 and `loopback` 33, shards-api's `control_lanes`, and the shards binary's
+  `daemon::managed::tests` and `api_run::` 71 (1 ignored), every caller moved to the pending
+  handles; clippy `-D warnings` clean for shards-remote, shards-api and shards (all targets,
+  `SHARDS_HELPERS=skip`). Mutations, each killed: the handle's withdrawal dropped (both let-go
+  tests fail), a steer sent while one awaits (the patience test), a run-out told as a fault
+  rather than `Ok(None)` (the patience test), the driver not reading the lane's number from
+  the channel handed back (both let-go tests).
+- *Owed* (ROOT): the real-VM callers moved here, compiled and linted but not run:
+  `api_image`'s member signals and MCP connection, `nesting`'s socket lanes, `managed_output`'s
+  log lanes; and the other targets' clippy, which CI's matrix runs.
 
 *A member's end, typed* (plan step 11; the Hex lead's ask 3, which makes kiln's interrupt and
 stop real signals: Hex sends INT and TERM to an image member over the orchestrator run's
@@ -27505,9 +27628,11 @@ to it, on a thread of its own:
 - *Followed* as `logs -f` follows a log: woken by its watch on the segment it reads
   (`platform::FileWatch`, a segment's coming among its changes), by its source's end (the run's,
   for its command; for a member, its channels all ended in the drain, a latch the drain sets), or
-  by its lane let go (its steering closed, which the endpoint does as it drops the lane); every
-  `UNWATCHED` where no watch can be had (PM M257). Unfollowed, it reads what is kept as it is
-  asked.
+  by its lane let go (its steering closed, which the endpoint does as it drops the lane). Its
+  watch is made before it starts: one no watch can be had for (PM M257) is refused
+  `Unstarted::Failed`, never read on a clock (control-08, D185's "Control-08, built"). Tested:
+  `daemon::managed::log_lanes::tests::a_followed_lane_no_watch_can_be_had_for_is_refused_not_read_on_a_clock`.
+  Unfollowed, it reads what is kept as it is asked.
 - *Its end*: its stream finished once read, and its exit told after, so that its lane goes.
 - *A gap in the log* (spec.rs `INDEX_GAP`, the index entry's bit 61; its stream byte 3; its
   bytes why and how many were lost): written by the daemon into members' logs alone (D240); a
@@ -30083,8 +30208,10 @@ Hex's acceptance (its INTERFACE.md and red tests, step11-a-socket-lane) is held 
     pipe ended (`shards_ipc::end`, whose reader then finds it hung up: ERROR_BROKEN_PIPE) or
     the guest's socket shut down both ways; a read's end still half-closes it.
 - *The controller* (`control::drive`). `Subscriptions::sockets` and `Dialed::sockets`;
-  `Sockets::connect(name)` answers a `Socket` or a typed `Fault`, `Fault::Unreached(errno)`
-  among them. `Socket` is `Read` and `Write`, with `shutdown_write`, `abort` and `split` (a
+  `Sockets::connect(name)` sends its ask at once and gives a `PendingSocket`, whose
+  `wait(patience)` answers `Ok(None)` while it is unanswered, then a `Socket` or a typed
+  `Fault`, `Fault::Unreached(errno)` among them (D238's *A lane's ask, waited for within its
+  caller's patience*); one let go unanswered is cut as it connects. `Socket` is `Read` and `Write`, with `shutdown_write`, `abort` and `split` (a
   reader and a writer for two threads). `Ok(0)` comes only at the socket's own FIN; a reset
   reads as `ConnectionReset`, its `Fault` its source.
 - *Its scope.* An endpoint that serves its run's member streams knows its run and

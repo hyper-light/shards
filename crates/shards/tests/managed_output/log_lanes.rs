@@ -15,6 +15,15 @@ use shards_remote::control::{Controller, Dialed, Execs, Fault, Got, Log, Logged,
 use shards_remote::identity::Fingerprint;
 use shards_remote::managed::{self as wire, Admitted, RunId};
 
+/// A lane's ask, its answer waited for as long as it takes (`Duration::MAX`), as a caller
+/// with no bound of its own waits: what it answered, or why not.
+macro_rules! answered {
+    ($ask:expr) => {
+        $ask.and_then(|mut ask| ask.wait(std::time::Duration::MAX))
+            .map(|got| got.expect("Duration::MAX waits until the answer"))
+    };
+}
+
 /// Agent `a`, owned by the run's controller (`shards.output=agent:a`), and agent `b`, which the
 /// daemon drains: declared in that order, so indexed 0 and 1.
 const A: u32 = 0;
@@ -431,9 +440,9 @@ fn log_lanes_read_a_runs_command_and_each_agents_log_at_its_place_and_go_on_from
                 // The command's log, followed from the oldest until all it writes is there: its
                 // cursor after its first record is where the lane of step 3 goes on.
                 let command = written("cmd");
-                let mut lane = execs
-                    .log(LogSource::Command, LogChannels::BOTH, LogCursor::OLDEST, true)
-                    .unwrap();
+                let mut lane =
+                    answered!(execs.log(LogSource::Command, LogChannels::BOTH, LogCursor::OLDEST, true))
+                        .unwrap();
                 let mut followed = Read::default();
                 let mut first = None;
                 while followed.bytes != command {
@@ -456,9 +465,13 @@ fn log_lanes_read_a_runs_command_and_each_agents_log_at_its_place_and_go_on_from
 
                 // 1. Read whole, unfollowed, from the oldest: every byte, each at its place.
                 let whole = read_whole(
-                    &mut execs
-                        .log(LogSource::Command, LogChannels::BOTH, LogCursor::OLDEST, false)
-                        .unwrap(),
+                    &mut answered!(execs.log(
+                        LogSource::Command,
+                        LogChannels::BOTH,
+                        LogCursor::OLDEST,
+                        false
+                    ))
+                    .unwrap(),
                     LogCursor::OLDEST,
                 );
                 assert_eq!(whole.bytes, command, "the command's log read whole");
@@ -474,9 +487,7 @@ fn log_lanes_read_a_runs_command_and_each_agents_log_at_its_place_and_go_on_from
                 let mut after = command.clone();
                 after[channel_at(*channel)].drain(..had.len());
                 let rest = read_whole(
-                    &mut execs
-                        .log(LogSource::Command, LogChannels::BOTH, mid, false)
-                        .unwrap(),
+                    &mut answered!(execs.log(LogSource::Command, LogChannels::BOTH, mid, false)).unwrap(),
                     mid,
                 );
                 assert_eq!(rest.bytes, after, "a lane from a cursor read what came before it");
@@ -485,14 +496,13 @@ fn log_lanes_read_a_runs_command_and_each_agents_log_at_its_place_and_go_on_from
                 // channels, the owned one's as the drained one's.
                 for (member, name) in [(B, "b"), (A, "a")] {
                     let read = read_whole(
-                        &mut execs
-                            .log(
-                                LogSource::Member(member),
-                                LogChannels::BOTH,
-                                LogCursor::OLDEST,
-                                true,
-                            )
-                            .unwrap(),
+                        &mut answered!(execs.log(
+                            LogSource::Member(member),
+                            LogChannels::BOTH,
+                            LogCursor::OLDEST,
+                            true,
+                        ))
+                        .unwrap(),
                         LogCursor::OLDEST,
                     );
                     assert_eq!(read.bytes, written(name), "agent {name}'s log");
@@ -502,16 +512,14 @@ fn log_lanes_read_a_runs_command_and_each_agents_log_at_its_place_and_go_on_from
                 assert_eq!(owned, written("a"), "agent a's owned output");
 
                 // 3, again: past every record of a lane read to its end, nothing.
-                let mut lane = execs
-                    .log(LogSource::Member(A), LogChannels::BOTH, LogCursor::OLDEST, false)
-                    .unwrap();
+                let mut lane =
+                    answered!(execs.log(LogSource::Member(A), LogChannels::BOTH, LogCursor::OLDEST, false))
+                        .unwrap();
                 read_whole(&mut lane, LogCursor::OLDEST);
                 let end = lane.cursor();
                 drop(lane);
                 let nothing = read_whole(
-                    &mut execs
-                        .log(LogSource::Member(A), LogChannels::BOTH, end, false)
-                        .unwrap(),
+                    &mut answered!(execs.log(LogSource::Member(A), LogChannels::BOTH, end, false)).unwrap(),
                     end,
                 );
                 assert_eq!(
@@ -522,14 +530,13 @@ fn log_lanes_read_a_runs_command_and_each_agents_log_at_its_place_and_go_on_from
 
                 // 4. A member the run lacks: the first index past its agents.
                 assert_eq!(
-                    execs
-                        .log(
-                            LogSource::Member(B + 1),
-                            LogChannels::BOTH,
-                            LogCursor::OLDEST,
-                            false
-                        )
-                        .map(|_| ()),
+                    answered!(execs.log(
+                        LogSource::Member(B + 1),
+                        LogChannels::BOTH,
+                        LogCursor::OLDEST,
+                        false
+                    ))
+                    .map(|_| ()),
                     Err(Fault::Unlogged(Unlogged::Unknown))
                 );
             });
@@ -599,8 +606,7 @@ fn log_lanes_are_refused_typed_where_a_run_keeps_no_log_or_no_copy() {
                 for (source, why) in refused {
                     for follow in [false, true] {
                         assert_eq!(
-                            execs
-                                .log(*source, LogChannels::BOTH, LogCursor::OLDEST, follow)
+                            answered!(execs.log(*source, LogChannels::BOTH, LogCursor::OLDEST, follow))
                                 .map(|_| ()),
                             Err(Fault::Unlogged(*why)),
                             "{name}: {source:?}, followed {follow}"
@@ -657,9 +663,9 @@ fn the_runs_one_log_cap_is_said_by_logs_and_by_a_lane_from_the_oldest_and_holds_
                     .into_iter()
                     .map(|output| scope.spawn(move || drained(output).len()))
                     .collect();
-                let mut lane = execs
-                    .log(LogSource::Member(B), LogChannels::BOTH, LogCursor::OLDEST, true)
-                    .unwrap();
+                let mut lane =
+                    answered!(execs.log(LogSource::Member(B), LogChannels::BOTH, LogCursor::OLDEST, true))
+                        .unwrap();
                 loop {
                     match lane.next_record() {
                         Ok(Logged::Record(_)) => {}
@@ -688,14 +694,13 @@ fn the_runs_one_log_cap_is_said_by_logs_and_by_a_lane_from_the_oldest_and_holds_
                 2 * each
             );
             for &member in &capped {
-                let mut lane = execs
-                    .log(
-                        LogSource::Member(member),
-                        LogChannels::BOTH,
-                        LogCursor::OLDEST,
-                        false,
-                    )
-                    .unwrap();
+                let mut lane = answered!(execs.log(
+                    LogSource::Member(member),
+                    LogChannels::BOTH,
+                    LogCursor::OLDEST,
+                    false,
+                ))
+                .unwrap();
                 let Ok(Logged::Record(LogRecord::Rotated { oldest })) = lane.next_record() else {
                     panic!("member {member}'s lane from the oldest did not begin with what the cap let go");
                 };
@@ -705,8 +710,7 @@ fn the_runs_one_log_cap_is_said_by_logs_and_by_a_lane_from_the_oldest_and_holds_
                     stderr: Some(LogPos::default()),
                 };
                 assert_eq!(
-                    execs
-                        .log(LogSource::Member(member), LogChannels::BOTH, before, false)
+                    answered!(execs.log(LogSource::Member(member), LogChannels::BOTH, before, false))
                         .map(|_| ()),
                     Err(Fault::Unlogged(Unlogged::Rotated { oldest })),
                     "member {member}: a place before the oldest kept"
