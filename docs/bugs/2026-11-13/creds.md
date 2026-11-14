@@ -117,6 +117,8 @@ D242 **explicitly lists compressed response/WebSocket echoes as residuals** (`ar
 
 **Confidence:** High for source behavior; no decompression/live-provider test run.
 
+**Status (2026-11-13):** fixed in c767cea93 (red `inject::tests::leaks::a_coded_echo_never_reaches_the_guest`, `a_transfer_coded_echo_never_reaches_the_guest`, `an_h2_coded_echo_never_reaches_the_guest`). Decision: refuse, not decode (D242's *Coded responses are refused*): filled requests ask `identity` and offer no WebSocket extension; a coded response to one is refused 502 (`Refusal::Unmaskable`). Residual: a tunnel's own framing after a 101 (a value split across WebSocket frames).
+
 ### creds-05 — P1 / high — Lease duration restarts at each delivery hop, authorizing use after the lessor's deadline
 
 **Location:** `crates/net/src/lease.rs:266`; supporting `crates/shards/src/api_run.rs:1353`, `crates/api/src/image/session.rs:1375`.
