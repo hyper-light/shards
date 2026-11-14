@@ -1200,6 +1200,17 @@ for the exit status.
     names them relative to it, as it named the socket, whose name had to fit a socket
     address whatever the home's path. The per-user directories macOS offers for sockets
     cost each new process 0.4–1.3 ms to look up [PM M26].
+  - **A renamed home remains its daemon's directory** (runs-02, 2026-11-13).
+    On Unix every stored home-relative pathname starts at `.` after the daemon's one
+    chdir, including its lock, registry, requests, stopping markers and final cleanup.
+    Renaming A to B and recreating A therefore never makes the old daemon write into A.
+    An unlinked lock still ends the daemon; final removal uses the current directory's
+    actual name, not `.` as a directory-entry removal. Windows keeps its absolute path:
+    its current directory cannot be renamed or removed while held (D185).
+    The subprocess unit reproduces the overwritten replacement marker before the fix
+    and verifies retained offers/PID and removal of the old remainder after it. See
+    [runs-fixes](../research/measurements/runs-fixes/README.md); live daemon/VM checks
+    remain ROOT's. This adds no timeout, polling, cache or platform manager.
   - It admits only clients of its own user: its slots are FIFOs of mode 0600 in a
     directory of 0700, and a connection's peer is checked besides (`getpeereid`,
     `SO_PEERCRED`): a home in a shared directory must not let another user run commands as
@@ -3269,6 +3280,16 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
       the guest makes records its maker, root's too, so it stays its maker's whoever a
       later run's user is: a root run's directory refuses a later run of user 1000 (it does
       not turn into theirs). Before that, a root-made file stays unrecorded, as before.
+    - *Owner I/O fails closed* (runs-01, 2026-11-13). An ordinary file or directory whose
+      maker cannot be persisted is removed and its creation refused with the host errno.
+      Failed reads and malformed records refuse lookup; only a missing record uses the
+      run's owner. Native Unix symlinks and device nodes hold no owner metadata here and
+      stay root's; Linux's `user.*` namespace also excludes FIFOs and sockets
+      (`fs/xattr.c`, `xattr_permission`). Metadata of a pinned unlinked file is read from
+      its pin, never guessed from its former path. No retry/deadline/size is added.
+      The focused fault test went red before the fix; actual Mac unit/clippy results and
+      remaining guest/platform validation are in
+      [runs-fixes](../research/measurements/runs-fixes/README.md).
     - *Root's stays root's.* A root run's host files are root's, as before.
     - *Device nodes stay root's.* A host device node has no attributes here (V08) and
       stays root's. The guest kernel opens a device node itself, as its own device of
@@ -25441,6 +25462,16 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
     already shared by the boot's session and its exit watcher (an `Arc`); the stop holds a
     clone only while the boot waits, as a borrow cannot reach the stopping thread from the
     boot's frame.
+  - *CREATE is under the stop too* (runs-03). Both a fresh run and a warm take
+    register their host before sending CREATE, in the shared `Begun::started` operation.
+    A protocol-sized staged file can block that pipe while the host reads nothing;
+    cancellation kills its reader without taking the writer mutex, so the write returns.
+    Send failures still release the registration; a stop wins over that transport error
+    and returns `Ended(Stopped)` only after the existing host/group cleanup completes.
+    `a_stop_cancels_a_create_whose_host_never_reads` observes the writer held, stops it,
+    and checks the typed end and reaped host/closed diagnostics. Red: the stop left it
+    blocked until test cleanup killed it. Green: the stop ends it without resuming the
+    reader. No new production deadline or polling interval.
   - *The whole tree.* On Unix the run host now leads a session and process group of its own
     (`POSIX_SPAWN_SETSID`), and shards-api's every kill of a host (a stop, its patience, its
     pools, a `stop` whose host cannot be asked) is SIGKILL to that group: its VM, network and
@@ -27460,8 +27491,10 @@ check refuses a grant toward no host as well.
 - *The CA (`shards_net::ca`).* Self-signed, `pathLenConstraint` 0 (it signs leaves alone),
   `keyCertSign`, ECDSA over P-256 with SHA-256 (the signature every TLS 1.3 client must
   verify, RFC 8446 §9.1). Name constraints are the grants' hosts as dNSName subtrees, written
-  critical (RFC 5280 §4.2.1.10). A leaf (`Ca::leaf`, the injector's, step 3) has a key of its
-  own and `serverAuth`.
+  critical (RFC 5280 §4.2.1.10). Those subtrees admit descendants; the signing API also
+  retains the exact granted hosts and refuses any other name as typed `LeafError::Ungranted`
+  before creating a key or signing (creds-07). The injector's SNI check remains separate.
+  A leaf (`Ca::leaf`, the injector's, step 3) has a key of its own and `serverAuth`.
 - *Its key is made as the process starts, before it confines itself.* AWS-LC's first draw
   from its random generator opens the VM-generation device (`crypto/ube/vm_ube_detect.c`,
   `open`) and marks a page `MADV_WIPEONFORK` (`crypto/ube/fork_ube_detect.c`), once per
@@ -27580,6 +27613,12 @@ VM failing. On the orchestrator's side
   lease it gave is released once: as the host says `RELEASED`, as the channel ends where it
   never says it, or at once where given after the run's release or with none of its life left
   (answered `Ended` or `Lapsed`).
+- *Pending waiter ownership (creds-06).* Repeated asks of a pending reference keep one
+  waiter per live flow, including multiple HTTP/2 streams of the same flow. Releasing its
+  TCP slot removes that token from pending and resumed lease records. The broker ask
+  itself stays identifiable so late answers still belong to this run. The vector's bound
+  derives from live callers, with no timeout, chosen size or duplicate queue. Red/green
+  and the teardown test: docs/research/measurements/creds-fixes-v1/README.md.
 - *Refusals, typed through.* The broker's `Denied` and `Unavailable` (in its words),
   `KeyReplaced { asked, current }` (the fields of the daemon's `Refused::KeyReplaced`, D176 part
   6), `Ended` and `Lapsed`; and the run host's own `Ungranted` and `Live`. The run host maps the
@@ -27636,10 +27675,15 @@ VM failing. On the orchestrator's side
   endpoint, the GPUs a run names (D232), the rate's period (D247), members' arguments
   (D256) and how a run's microVM started (D253)). A lease's life is the
   broker's: the answer carries it in nanoseconds (a u64, as `ready_by` is) past the answer's
-  arrival, which each side makes an instant on its own monotonic clock as it reads it. The run host reads it first, so its lease of a credential
-  ends no later than the network process's, whose next ask then finds the run host's ended. A
-  life past what a clock can name lives until the run ends; a life of none is no lease,
-  refused. Ask ids are u32s as the channel's other asks', a new one never a live lease's. No
+  arrival for the run host's bookkeeping. The injector's authorization instead starts that
+  budget at its first ask (creds-05): its ask precedes the SDK's settlement, so adding the
+  SDK's remaining life there cannot pass the lessor's original end. Broker work and all
+  relay/delivery time, including cold starts, spend the budget; retries never restart it.
+  A budget spent before delivery, or an unrepresentable end, is refused as typed `Lapsed`
+  before retaining the value. This can refuse early under delay; the run-host ledger can
+  still say `Live` until its later bookkeeping expiry, without sending a provider request.
+  Proof, alternatives and red/green: docs/research/measurements/creds-fixes-v1/README.md.
+  A life of none is no lease, refused. Ask ids are u32s as the channel's other asks', a new one never a live lease's. No
   deadline is set on an ask: each side waits on its answer or its channel's end. The run
   host's ledger is bounded by the run's grants, one lease of each at a time, a bound derived
   from the request rather than chosen.
@@ -28926,6 +28970,16 @@ different CPUs on KVM x86-64 and on Macs (two-hosts.sh `BASELINE=1`); the arm64 
 (CI on main); WHP x86-64's move refused at `ready` between two Windows hosts of different
 CPUs (two-hosts.sh on each; none here), and the WHP baseline's deciding runs above.
 
+**Review migrate-06 (2026-11-13).** KVM's TSC-deadline capability is admitted by the
+baseline's CPUID1.ECX24 before vCPU shaping; shaping may not restore a masked feature.
+Without a baseline the host capability remains native. [Focused red/green evidence and
+remaining two-host checks](../research/measurements/migrate/fix-review-2026-11-13.md).
+
+**Review migrate-08 (2026-11-13).** Arm baseline readiness uses the shared CPU map for
+both macOS feature names and Linux HWCAP spellings. Unknown and multi-register names
+remain checked conservatively, so a partial baseline does not hide an exposed feature.
+[Regression proof, mapped scope and remaining native checks](../research/measurements/migrate/fix-review-2026-11-13.md).
+
 ### D246. Members held apart by an orchestrator: each member's reach of the names kept, named in its request and held by the run host before the microVM starts (built; real-VM validation owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 15 (Hex's): a harness Hex launches
@@ -29700,6 +29754,12 @@ microVM's life (D231), so its pools live in its process, with shards-api:
 - *A pool* is the runs of one microVM: one exemplar, one run host program and environment.
   `boot` takes a ready warm host of its run's pool, else starts a host of its own, as
   `ImageShards` does; either way the pool counts the run, and its end as its guest drops.
+- *A spare already ended before CREATE* (runs-04) is `Taken::Untaken`: its watcher or
+  its process's terminal state proves it never received this run, and the pool starts a
+  fresh host. This check is at the take boundary, without periodic probes or another
+  lifetime manager. Once CREATE is attempted, a transport failure remains `Refused`:
+  there is no proof the run was not received, so it is never replayed. `Unfit` remains
+  the host's explicit refusal of a run for another microVM.
 - *Its size* is D26's, by the one rule (`shards_api::demand`, moved from the daemon). That is
   the largest burst of its runs within one refill window, an RFC 6298 retransmission timeout
   of its warm hosts' starts as timed from spawn to `WARMED`, at least one while in use, and
