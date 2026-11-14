@@ -96,9 +96,16 @@ fn stand_in() {
 /// [`stand_in`], doing `what`: `what`'s first word its first argument, a filter that names
 /// no test, so that it is its command's word ([`common::command_words`]) as a subcommand is.
 fn stand_in_doing(what: &str) -> std::process::Command {
+    stand_in_with(what, &[])
+}
+
+/// [`stand_in_doing`], `more` after its options' end (`--`): filters that name no test, so
+/// that its command line carries what a test's command carries (a path, a port).
+fn stand_in_with(what: &str, more: &[&str]) -> std::process::Command {
     let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
     let word = what.split_whitespace().next().unwrap_or("exit");
-    cmd.args([word, "stand_in", "--exact", "--ignored", "--test-threads=1"])
+    cmd.args([word, "stand_in", "--exact", "--ignored", "--test-threads=1", "--"])
+        .args(more)
         .env("SHARDS_STAND_IN", what);
     cmd
 }
@@ -592,4 +599,56 @@ fn a_wait_is_refused_though_its_own_polls_keep_its_daemon_busy() {
         patience.account(),
         std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default()
     );
+}
+
+/// A command's wait is keyed by its call site and its whole command line, what a run mints
+/// of its own made generic (ROOT's ruling (a), 2026-11-13, #77): one call site's quick
+/// refused command is kept apart from its real one, as build.rs' `builds_push_what_they_build`
+/// runs `build --push CTX`, refused for want of a tag, and then `build --push -t
+/// localhost:PORT/team/built:1 CTX`, which `shards build` and `buildx policy` words alone
+/// never told apart; and a run's own directories and ports key no new record each run.
+/// Do: from one call site, run a stand-in carrying the refused command's line and then the
+/// real one's, each with a context directory and a registry port of its own; then both
+/// again, with new ones. Expect: two records of the call site's on this host, the second
+/// round's keyed as the first's.
+#[test]
+fn a_call_sites_commands_are_keyed_by_their_whole_line() {
+    #[track_caller]
+    fn run_at(cmd: std::process::Command) -> &'static std::panic::Location<'static> {
+        let run = common::run_command(cmd, &["stand-in".to_string()]);
+        assert_eq!(run.status, Some(0), "{run}");
+        std::panic::Location::caller()
+    }
+    let mut site = None;
+    for _ in 0..2 {
+        let ctx = TempDir::new("build-push-ctx");
+        let (port, _) = common::writable_registry();
+        let ctx = ctx.to_str().unwrap();
+        let name = format!("localhost:{port}/team/built:1");
+        for line in [
+            vec!["build", "--push", ctx],
+            vec!["build", "--push", "-t", &name, ctx],
+        ] {
+            site = Some(run_at(stand_in_with("exit", &line)));
+        }
+    }
+    let site = site.unwrap();
+    let prefix: String = format!("{}-{}-{}-", site.file(), site.line(), site.column())
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let records: Vec<String> = std::fs::read_dir(common::workspace().join("target/judge-records"))
+        .unwrap()
+        .flatten()
+        .flat_map(|host| std::fs::read_dir(host.path()).into_iter().flatten().flatten())
+        .filter_map(|record| record.file_name().into_string().ok())
+        .filter(|name| name.starts_with(&prefix))
+        .collect();
+    assert_eq!(records.len(), 2, "{records:#?}");
 }
