@@ -24265,3 +24265,22 @@ the stage and commit still answered; both mutants (no `SEALED`; no broker refusa
 Unit-level functional evidence, no real VM: `confine` refuses any process outside an
 AppContainer, and the WHP real-VM tests are owed.
 [Commands, logs, mutants and owed runs](measurements/windows-p0/README.md).
+
+### M571. Pending credential leases own their time budget and live waiters (D242, creds-05/06)
+
+2026-11-13, adas-mac-studio.local, Darwin arm64; implementer light checks only.
+Red 6eb3ad718: `cargo test -p shards-net creds_ -- --nocapture` reproduces duplicate
+waiters `[1, 1, 2, 1, 2, 2]` where two distinct flows should resume once each.
+Fix 1b21eb21a deduplicates pending flow tokens and removes pending/resumed tokens
+on flow release. The outstanding broker ask remains identifiable for a late answer.
+Merged 16ebc78cf: `cargo test -p shards-net lease::`, 12 passed; shards-net all-target
+clippy and development-policy check passed. Exact commands, setup failures, retained
+output and unrun work: [record](measurements/creds-fixes-v1/README.md).
+No performance, allocation, exhaustion or real-VM result is claimed; ROOT owns those.
+
+creds-05: a52f4518c anchors returned remaining life at the first ask, conservatively
+spending broker work and all relay time, including cold starts. Spent or unrepresentable
+budgets resume as typed Lapsed without retaining a value; retries cannot reset the clock.
+Red at 6eb3ad718; merged 950c1a0fe, 14 lease tests and shards-net all-target clippy pass
+on the same Mac. The linked record includes the causality proof, alternatives and the
+early-refusal/renewal-boundary limitation. No wire timestamp or chosen grace is added.
