@@ -848,6 +848,23 @@ pub(crate) fn receive_tree(input: &mut dyn Read, context: &Path) -> Result<i64, 
 mod tests {
     use super::*;
 
+    #[test]
+    fn malformed_build_file_time_is_refused_before_the_file_is_created() {
+        let dir = shards_testdir::TempDir::new("remote-time").unwrap();
+        let (dockerfile, context) = (dir.join("dockerfile"), dir.join("context"));
+        let name = b"Dockerfile";
+        let mut input = MAGIC.to_vec();
+        input.extend_from_slice(&1u32.to_be_bytes());
+        input.extend_from_slice(&(name.len() as u32).to_be_bytes());
+        input.extend_from_slice(name);
+        input.extend_from_slice(&0o644u32.to_be_bytes());
+        input.extend_from_slice(&i64::MAX.to_be_bytes());
+        input.extend_from_slice(&u32::MAX.to_be_bytes());
+        input.extend_from_slice(&0u64.to_be_bytes());
+        assert!(receive(&mut input.as_slice(), &dockerfile, &context, 0).is_err());
+        assert!(!dockerfile.join("Dockerfile").exists());
+    }
+
     /// A time a Windows machine's NTFS kept, to 100 ns, is the client's time it was cut from,
     /// and no other; a copy's time to the nanosecond is its own alone.
     #[test]
