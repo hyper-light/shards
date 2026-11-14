@@ -233,6 +233,13 @@ code. The exact unit command already runnable is
 `cargo test -p shards-net inject::tests::expectations::`.
 Neither this VM variant nor a real provider sign-in was run by the implementer.
 
+After that focused green, main's P0 decoding change landed. Conflict-free merge
+`ddbe3c5485f99653c31c6c482c8d5fd715a7ba86` retains the same Expect transition;
+under ROOT's amended landing rule, `cargo check -p shards-net --tests` passed on
+the warm Mac target (resumed-run r10, `~/g121-tmp/fix-creds-v1-08-overlap-check.log`).
+The overlapping merge was compile-checked, not reported as a repeat of the
+46-test focused result at `62bfef2e5`.
+
 ## Policy accounting and coordinator work
 
 R01/R04/R06/R07/R13: checked ranges, no new production panic, explicit Asked/Held
