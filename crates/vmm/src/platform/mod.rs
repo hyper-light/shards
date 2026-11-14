@@ -7,11 +7,13 @@ use std::io;
 
 mod checked;
 mod copy;
+mod host_memory;
 mod progress;
 pub use checked::copy_checked;
 #[cfg(test)]
 pub use copy::COPIED;
 pub use copy::{copy_in, copy_out};
+pub use host_memory::{holdable, holdable_known, host_available, host_memory};
 pub use progress::{IDLE_VM_CPU, Look, Progress, progressed};
 
 #[cfg(unix)]
@@ -206,14 +208,14 @@ pub fn read_input(path: &std::path::Path, max: u64) -> io::Result<Option<Vec<u8>
 }
 
 /// [`read_beneath`] of a file that says in its first bytes how long it may be: `most` is
-/// given its first `head` bytes (all of it, if it is shorter) and answers the most the
-/// whole may hold, or why its head is none of the file's kind. A file longer than that is
-/// an error, found before more than its head is read.
+/// given its first `head` bytes (all of it, if it is shorter) and the file's length, and
+/// answers the most the whole may hold, or why its head or its length is refused. A file
+/// longer than that is an error, found before more than its head is read.
 pub fn read_beneath_by(
     root: &std::path::Path,
     rel: &[&str],
     head: usize,
-    most: impl FnOnce(&[u8]) -> io::Result<u64>,
+    most: impl FnOnce(&[u8], u64) -> io::Result<u64>,
 ) -> io::Result<Option<Vec<u8>>> {
     let name = rel.join("/");
     let file = match open_beneath_input(root, rel) {
@@ -224,7 +226,7 @@ pub fn read_beneath_by(
     let len = file.metadata()?.len();
     let mut first = vec![0u8; usize::try_from(len).map_or(head, |len| len.min(head))];
     read_exact_at(&file, &mut first, 0)?;
-    let max = most(&first)?;
+    let max = most(&first, len)?;
     read_whole(&file, &name, len, max)
 }
 

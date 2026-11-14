@@ -140,9 +140,66 @@ const HEAD: usize = MAGIC.len() + 4 + 4 + std::env::consts::ARCH.len() + 4 + MAX
 /// of its RAM, its vCPUs' registers, its devices' queues and a share's tables), each a
 /// small part of it (D176's decoders bound each), and the bytes of the files its guest
 /// holds open on a share that no path reaches, which alone nothing of the machine bounds:
-/// a save of more is refused, as a save past 64 MiB was.
-pub(crate) fn most_state(memory_mib: u64) -> u64 {
-    memory_mib.saturating_mul(1 << 20)
+/// a save of more is refused, as a save past 64 MiB was. None where that RAM is more bytes
+/// than a u64 counts: no machine's.
+pub(crate) fn most_state(memory_mib: u64) -> Option<u64> {
+    memory_mib.checked_mul(1 << 20)
+}
+
+/// Why a state file is refused before more than its head is read: each of its bounds, the
+/// machine its head claims and the host that reads it (migrate-04). A state is read whole,
+/// so its length is what its read allocates: none of these lets a head that claims a
+/// machine of any size, or a file of holes as long as it likes, have more allocated than
+/// this host has to give.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StateRefused {
+    /// Its head claims a machine whose RAM, `memory_mib` MiB, is more bytes than a u64
+    /// counts.
+    PastAnyMachine { memory_mib: u64 },
+    /// Longer than a state of the machine its head claims holds ([`most_state`]).
+    PastItsMachine { len: u64, most: u64 },
+    /// Longer than this host can hold now ([`platform::holdable_known`]): what it has
+    /// available, else all its memory. The head's claim is the file's own, so this is the
+    /// bound that is not.
+    PastHost { len: u64, holdable: u64 },
+    /// The host says neither what memory it has available nor what it has.
+    HostMemoryUnknown,
+}
+
+impl std::fmt::Display for StateRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StateRefused::PastAnyMachine { memory_mib } => {
+                write!(
+                    f,
+                    "a state of a machine of {memory_mib} MiB, more than any machine has"
+                )
+            }
+            StateRefused::PastItsMachine { len, most } => write!(
+                f,
+                "a state of {len} bytes, more than its machine's {most} bytes of memory keep"
+            ),
+            StateRefused::PastHost { len, holdable } => write!(
+                f,
+                "a state of {len} bytes, more than this host's {holdable} bytes of memory hold now"
+            ),
+            StateRefused::HostMemoryUnknown => {
+                write!(
+                    f,
+                    "this host says neither its memory nor what of it it has available"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for StateRefused {}
+
+impl StateRefused {
+    /// The refusal `e` carries, where [`read_state`]'s bound refused it.
+    pub fn of(e: &io::Error) -> Option<&StateRefused> {
+        e.get_ref().and_then(|e| e.downcast_ref())
+    }
 }
 /// A generation's name as [`fresh_name`] makes it, at its longest: `g-`, then the time's
 /// nanoseconds, this process's ID and a count, in hex, each of at most its type's digits.
@@ -647,18 +704,36 @@ fn decode_head(r: &mut Reader<'_>) -> codec::Result<(u32, String, u32, u64)> {
     Ok((version, generation, r.u32()?, r.u64()?))
 }
 
-/// The most the state whose first [`HEAD`] bytes are `head` may hold ([`most_state`]):
-/// what [`platform::read_beneath_by`] reads a state by.
-fn state_most(head: &[u8]) -> io::Result<u64> {
-    decode_head(&mut Reader::new(head))
-        .map(|(_, _, _, memory_mib)| most_state(memory_mib))
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))
+/// The most the state of `len` bytes whose first [`HEAD`] bytes are `head` may hold, on a
+/// host that can hold `holdable` bytes now: what [`platform::read_beneath_by`] reads a
+/// state by. Its length is refused past the machine its head claims ([`most_state`]) and
+/// past the host, whose bound is the one the file does not say.
+fn state_most(head: &[u8], len: u64, holdable: Option<u64>) -> io::Result<u64> {
+    let refused = |r: StateRefused| io::Error::new(io::ErrorKind::InvalidData, r);
+    let (_, _, _, memory_mib) = decode_head(&mut Reader::new(head))
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+    let most = most_state(memory_mib).ok_or_else(|| refused(StateRefused::PastAnyMachine { memory_mib }))?;
+    if len > most {
+        return Err(refused(StateRefused::PastItsMachine { len, most }));
+    }
+    let holdable = holdable.ok_or_else(|| refused(StateRefused::HostMemoryUnknown))?;
+    if len > holdable {
+        return Err(refused(StateRefused::PastHost { len, holdable }));
+    }
+    Ok(len)
 }
 
 /// The state file of generation `name` in `dir`, none where it is gone: refused past its
-/// machine's RAM before more than its head is read.
+/// machine's RAM and past what this host can hold now before more than its head is read.
 fn read_state(dir: &Path, name: &str) -> io::Result<Option<Vec<u8>>> {
-    platform::read_beneath_by(dir, &[name, STATE], HEAD, state_most)
+    read_state_within(dir, name, platform::holdable_known())
+}
+
+/// [`read_state`] on a host that can hold `holdable` bytes now.
+fn read_state_within(dir: &Path, name: &str, holdable: Option<u64>) -> io::Result<Option<Vec<u8>>> {
+    platform::read_beneath_by(dir, &[name, STATE], HEAD, |head, len| {
+        state_most(head, len, holdable)
+    })
 }
 
 fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
@@ -1204,7 +1279,11 @@ pub fn layout(dir: &Path) -> Result<(u64, Vec<(u64, u64)>), String> {
         .ok_or_else(|| at(&"gone"))?;
     let decoded = decode(&bytes).map_err(|e| at(&e))?;
     Ok((
-        decoded.snapshot.config.memory_mib.saturating_mul(1 << 20),
+        most_state(decoded.snapshot.config.memory_mib).ok_or_else(|| {
+            at(&StateRefused::PastAnyMachine {
+                memory_mib: decoded.snapshot.config.memory_mib,
+            })
+        })?,
         decoded.snapshot.plugged,
     ))
 }
@@ -1221,7 +1300,12 @@ fn state_of(snap: &Snapshot, name: &str) -> Result<Vec<u8>, String> {
     let state = encode(snap, name, &identities)?;
     // No more than a restore reads (D176): a share's tables, with the bytes of the files its
     // guest holds that no path reaches, are what grows it.
-    let most = most_state(snap.config.memory_mib);
+    let most = most_state(snap.config.memory_mib).ok_or_else(|| {
+        StateRefused::PastAnyMachine {
+            memory_mib: snap.config.memory_mib,
+        }
+        .to_string()
+    })?;
     if state.len() as u64 > most {
         return Err(format!(
             "the machine's state is {} bytes, more than a snapshot of its {} MiB of memory keeps ({most})",
@@ -1985,9 +2069,9 @@ mod tests {
             "the head of the longest name ends with the RAM's size"
         );
         assert_eq!((vcpus, memory_mib), (4, 1));
-        assert_eq!(state_most(head).unwrap(), 1 << 20);
-        assert_eq!(most_state(512), 512 << 20);
-        assert_eq!(most_state(u64::MAX), u64::MAX);
+        assert_eq!(state_most(head, 1 << 20, Some(u64::MAX)).unwrap(), 1 << 20);
+        assert_eq!(most_state(512), Some(512 << 20));
+        assert_eq!(most_state(u64::MAX), None);
         // A state of another architecture says so, whatever its name's length.
         let arch = std::env::consts::ARCH.as_bytes();
         let at = MAGIC.len() + 4;
@@ -1996,7 +2080,7 @@ mod tests {
             at..at + 4 + arch.len(),
             [&7u32.to_le_bytes()[..], b"riscv64"].concat(),
         );
-        let e = state_most(&foreign[..HEAD]).unwrap_err();
+        let e = state_most(&foreign[..HEAD], HEAD as u64, Some(u64::MAX)).unwrap_err();
         assert!(e.to_string().contains("snapshot of a riscv64 guest"), "{e}");
 
         let mut full = sample(&nowhere(), 1);
@@ -2036,6 +2120,13 @@ mod tests {
             let e = read_state(&dir, &name).unwrap_err();
             assert_eq!(e.kind(), io::ErrorKind::InvalidData, "{e}");
             assert!(read_state(&dir, "g-gone").unwrap().is_none());
+            assert_eq!(
+                StateRefused::of(&e),
+                Some(&StateRefused::PastItsMachine {
+                    len: (1 << 20) + 1,
+                    most: 1 << 20
+                })
+            );
 
             let files = Scratch::new("most-save");
             snap = sample(&files.0, 1);
@@ -2108,6 +2199,70 @@ mod tests {
                 .collect();
             names.sort();
             names
+        }
+
+        /// migrate-04: a state's head claims its machine, and so the most the state holds,
+        /// but the file is its sender's: a head that claims a machine of more bytes than a
+        /// u64 counts, or a sparse file longer than the host can hold now, is refused typed
+        /// from its head and length alone, before its whole is allocated (the refusal comes
+        /// from the bound `read_beneath_by` asks before it reads), whatever its RAM's claim.
+        #[test]
+        fn a_forged_states_head_has_no_more_allocated_than_the_host_holds() {
+            let dir = shards_testdir::TempDir::new("snap-forged").unwrap();
+            // The longest name, so that the head is HEAD long and ends with the RAM's MiB.
+            let name = format!("g-{}", "a".repeat(MAX_NAME - 2));
+            fs::create_dir(dir.join(&name)).unwrap();
+            let snap = sample(&nowhere(), 1);
+            let state = encode(&snap, &name, &vec![Identity::default(); 3]).unwrap();
+            let forged = |memory_mib: u64, len: u64| {
+                let mut bytes = state[..HEAD].to_vec();
+                bytes[HEAD - 8..].copy_from_slice(&memory_mib.to_le_bytes());
+                let file = fs::File::create(dir.join(&name).join(STATE)).unwrap();
+                std::io::Write::write_all(&mut &file, &bytes).unwrap();
+                // Holes past the head, as a move's sparse FILE lays them (daemon/moves.rs).
+                file.set_len(len).unwrap();
+            };
+            let refusal = |holdable: Option<u64>| {
+                let e = read_state_within(&dir, &name, holdable).unwrap_err();
+                assert_eq!(e.kind(), io::ErrorKind::InvalidData, "{e}");
+                StateRefused::of(&e).cloned()
+            };
+            // RAM of u64::MAX MiB: no machine's, so no bound of its.
+            forged(u64::MAX, 1 << 20);
+            assert_eq!(
+                refusal(Some(u64::MAX)),
+                Some(StateRefused::PastAnyMachine { memory_mib: u64::MAX })
+            );
+            // A machine as large as RAM may be, and a state longer than the host can hold.
+            forged(u64::MAX >> 20, 1 << 20);
+            assert_eq!(
+                refusal(Some(64 << 10)),
+                Some(StateRefused::PastHost {
+                    len: 1 << 20,
+                    holdable: 64 << 10
+                })
+            );
+            assert_eq!(refusal(None), Some(StateRefused::HostMemoryUnknown));
+            // Each way in reads it by the same bound: a move's relocation of what it placed
+            // (daemon/moves.rs `adopt`), a restore's read, and the names of its files.
+            forged(u64::MAX, 1 << 20);
+            fs::write(dir.join(CURRENT), &name).unwrap();
+            let past = "more than any machine has";
+            let e = relocate(&dir, &|p| Some(p.to_path_buf())).unwrap_err();
+            assert!(e.contains(past), "{e}");
+            let e = read(&dir).unwrap_err();
+            assert!(e.contains(past), "{e}");
+            let e = backing_named(&dir).unwrap_err();
+            assert!(e.contains(past), "{e}");
+            forged(u64::MAX >> 20, 1 << 20);
+            // Within both, it is read (and is then no state its decoder takes).
+            assert_eq!(
+                read_state_within(&dir, &name, Some(1 << 20))
+                    .unwrap()
+                    .unwrap()
+                    .len(),
+                1 << 20
+            );
         }
 
         /// A generation prepared for a VM that writes only what it is handed (D30, D176):
