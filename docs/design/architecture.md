@@ -5390,8 +5390,8 @@ then verifies it still handles Stop; without the retry it returns the same socke
 seen by context commands on Fedora. The daemon's side (`server.rs`, `daemon/remote.rs`)
 starts each command
 by its spawner as this machine's own shards (`SHARDS_CONTEXT=default`, so that a machine
-whose owner uses a context of their own never sends a client's command on), says each in
-its log (`client NAME: shards ARGS`), hangs a command up whose connection went (SIGHUP, as a
+whose owner uses a context of their own never sends a client's command on), records its client and operation in
+its log, without argument values or relay tokens (remote-05), hangs a command up whose connection went (SIGHUP, as a
 terminal that went away), and checks a client's enrollment again for each command, so that
 `shards remove client` ends its access at once. A join's refusal is the same whatever made
 it fail. The client's side (`client.rs`, `context.rs`) refuses here what a context does not
@@ -25763,6 +25763,14 @@ run's resolver answers, not the records' host mentions, which include help-text 
 answer (then address ranges as grants); a member that must reach one port by name beside
 another member's other names (then the per-member hold above, which lifts the refusal).
 
+**Absolute DNS names in MCP URLs** (inithex-04). The build's `mcp_endpoint`
+and init's paired reader omit a terminal root dot before lowercasing the grant's
+host, as DNS `query_name` omits that root label on the wire (RFC1034 §3.1).
+`https://MCP.example./mcp` therefore grants `mcp.example:443`, with the source URL
+kept as written. No unrestricted DNS or extra port is added. Two wire-question
+regressions reproduce the former spelling mismatch at build and in init's real
+netplan reader. [Evidence and owed real-VM variant](../research/measurements/inithex-fixes/README.md).
+
 ### D237. A program that carries shards writes its VM and network processes out beside its own `shards`, signed as it signs its own (built; real-VM validation owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 16: kiln is one binary, as shards is
@@ -27730,6 +27738,24 @@ record docs/research/s33-veil-creds/STEP8.md).
   sign-in's refresh meanwhile joins that one ask (`SignIns::refresh`), and the broker's `Turn` makes it one across
   runs. Refused: the network process refreshing on its own, which would need the refresh token in it and would let two
   runs rotate one sign-in's tokens out from under each other (RFC 6749 §6, f47).
+- *The body read whole, either framing (#74, plan step 33).* Such a POST is held (`Parked`'s `Holding`) with one
+  Content-Length of no more than `TO_HOST`, or chunked (RFC 9112 §7.1): its body is decoded as it comes by its own
+  framing (`walk`, the reader every body of the HTTP/1.1 path goes through, so a held body is read by the rules a
+  passed one is), each chunk's extensions passed over and its trailer section (§7.1.2) no part of what is asked, none
+  of the guest's bytes taken until it is answered, so one that goes on goes as it came. Chunking that is broken (a
+  size line that is no hex, data not ended by CRLF, a control in an extension, a size line or trailer section past
+  `TO_HOST`) is refused 400 (`Refusal::Malformed`), as it is on a body passed on. One whose end has not come when
+  what the flow holds (`Ended::held`: the parked head and `pending`) leaves the guest no TCP window (`tcp::full`)
+  cannot end, and goes on as any request, as one whose Content-Length is past `TO_HOST` does, as HTTP/2's does
+  (`H2::stuck`). Before, a chunked refresh went on to the provider carrying the refresh placeholder, and one whose
+  Content-Length fit `TO_HOST` alone but not with its head waited for ever. No literal of its own: §7.1's grammar,
+  `TO_HOST` and its window scale. Tests (`cargo test -p shards-net --profile test-release --lib` with
+  `chunked_refresh`, `chunking_is_refused` and `past_the_hold`): a chunked refresh, its JSON split across chunks with
+  extensions, asked outside and answered with the sign-in's placeholders, and then a chunked revocation with
+  trailer fields answered 200 on the same connection, neither reaching the host; three brokenly chunked POSTs
+  refused 400, nothing reaching the host; over a connection holding `TO_HOST`, a chunked POST of twice it and one with
+  a Content-Length of `TO_HOST` whose head's fields hold a sixteenth of it more (each past the hold by more than the
+  TLS record still being deframed, which the window does not count) going on to the host as they came.
 - *Question 2: the grant, its hosts, its placeholders.* A run captures a sign-in only where a sign-in grant
   (`shards_dns::credential::SignInGrant`: the sign-in's name in the store, its CLI, the hosts its access token goes to,
   and what an earlier capture gave) names its CLI, whose profile names its token host, and its egress reaches that host
@@ -28010,7 +28036,7 @@ docs/research/s33-veil-creds/STEP7.md and STEP8.md).
   `invalid_grant`.) A refresh of the sign-in's placeholder is asked outside (`Upward::Refreshing`), joined to one
   under way, and answered on its stream from the broker's answer, its tokens the sign-in's placeholders; a
   revocation is answered 200 on its stream (RFC 7009 §2.2), never sent; anything else goes on as any request. A
-  chunked one over HTTP/1.1 goes on as any request, its response read all the same.
+  chunked one over HTTP/1.1 is held and decoded alike (step 8's second slice, *The body read whole*).
 - *Responses, per stream.* Each final response with a body (`TokenResponse`, R04: `Reading`, `Capturing`,
   `Written`) has its head held and its body read whole, none of it to the guest before; one coded otherwise than as
   its sender wrote it is refused 502 on its stream (`signin::readable_fields`, the HTTP/1.1 check over decoded
