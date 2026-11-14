@@ -53,21 +53,56 @@ pub(super) enum Read<'a> {
     Ended,
 }
 
-/// The VM process a report's take waits on beside its pipe (D233): its launch's own process,
-/// held by its pid and start ([`Identity`](crate::Identity)) as the launch returns, so that
-/// the kernel says its end, whatever the guest's native receipt and watcher do: a pidfd
-/// (Linux), a kqueue with its exit registered (macOS), a process handle (Windows).
+/// The VM process a report's take waits on beside its pipe (D233), held by its pid and start
+/// as the launch returns, so that its kernel says its end, whatever the guest's native receipt
+/// and watcher do: a pidfd (Linux), a kqueue with its exit registered (macOS), a process
+/// handle (Windows). On Linux and macOS it is the launched process ([`Identity`](crate::Identity)),
+/// its `shards` become the VM process in place (exec). On Windows that `shards` starts the VM
+/// process as its child and names it in its record ([`vm_process_file`](crate::vm_process_file))
+/// before it runs: the VM process so named, which alone holds the report's writer once it
+/// runs; until it is named, that `shards` (`Unnamed`).
 #[derive(Debug)]
 pub(crate) enum Vm {
     Held(Held),
+    /// Windows: no VM process named yet. Its `shards` (the keeper), held, names one before it
+    /// runs and, unless killed, exits only after it: as the keeper's end is seen, its record
+    /// is read again, and the VM process it names is held in its place.
+    #[cfg(windows)]
+    Unnamed {
+        keeper: Held,
+        vsock: std::path::PathBuf,
+    },
     /// It had ended before it was held: no process has its pid (Unix), or the one that has
-    /// it now is another (its start another's), or it is held exited.
+    /// it now is another (its start another's), or it is held exited; on Windows, also a
+    /// keeper that ended naming none, which no VM process of its outlived.
     Ended,
 }
 
 impl Vm {
+    /// The VM process of the launch whose identity is `identity`, held; or its end.
+    pub fn of(identity: &crate::Identity) -> Result<Self, Refusal> {
+        #[cfg(unix)]
+        return Self::held(identity.pid, identity.started);
+        #[cfg(windows)]
+        {
+            // The keeper held before its record is read: a record it writes after the read
+            // is seen once its end is.
+            let keeper = Self::held(identity.pid, identity.started)?;
+            let vsock = std::path::PathBuf::from(crate::client::argument_copy(identity.vsock.as_os_str())?);
+            match keeper {
+                Self::Held(keeper) => {
+                    let mut vm = Self::Unnamed { keeper, vsock };
+                    vm.name(false)?;
+                    Ok(vm)
+                }
+                // Ended already: the VM process its record names, which may outlive it.
+                _ => Ok(named(&vsock, true)?.unwrap_or(Self::Ended)),
+            }
+        }
+    }
+
     /// Process `pid`, started at `started`, held; or its end, where it has none.
-    pub fn of(pid: u32, started: u64) -> Result<Self, ProcessFailure> {
+    fn held(pid: u32, started: u64) -> Result<Self, Refusal> {
         match Held::find(pid, started) {
             Ok(held) => Ok(Self::Held(held)),
             Err(ProcessFailure::Exited | ProcessFailure::DifferentStart { .. }) => Ok(Self::Ended),
@@ -78,8 +113,55 @@ impl Vm {
                 operation: crate::ProcessOperation::PidfdOpen | crate::ProcessOperation::RegisterExit,
                 code: libc::ESRCH,
             }) => Ok(Self::Ended),
-            Err(failure) => Err(failure),
+            Err(failure) => Err(Refusal::Process {
+                pid,
+                expected_started: started,
+                failure,
+            }),
         }
+    }
+
+    /// What its end is waited on through, none once it has ended: the VM process's, or on
+    /// Windows its keeper's until it is named.
+    #[cfg(unix)]
+    fn exit(&self) -> Option<std::os::fd::BorrowedFd<'_>> {
+        match self {
+            Self::Held(held) => Some(held.exit()),
+            Self::Ended => None,
+        }
+    }
+
+    #[cfg(windows)]
+    pub(super) fn exit(&self) -> Option<std::os::windows::io::BorrowedHandle<'_>> {
+        match self {
+            Self::Held(held) | Self::Unnamed { keeper: held, .. } => Some(held.exit()),
+            Self::Ended => None,
+        }
+    }
+
+    /// Windows: an unnamed VM process's record read again, `keeper_ended` once its keeper's
+    /// end is seen: the VM process it names held in the keeper's place; none named, the keeper
+    /// gone, `Ended`, and still `Unnamed` while it lives.
+    #[cfg(windows)]
+    pub(super) fn name(&mut self, keeper_ended: bool) -> Result<(), Refusal> {
+        let Self::Unnamed { vsock, .. } = self else {
+            return Ok(());
+        };
+        if let Some(next) = named(vsock, keeper_ended)? {
+            *self = next;
+        }
+        Ok(())
+    }
+}
+
+/// Windows: what the record beside `vsock` says of its VM process: the process it names, held
+/// (or its end); none named, `Ended` where its keeper has ended, else nothing yet.
+#[cfg(windows)]
+fn named(vsock: &std::path::Path, keeper_ended: bool) -> Result<Option<Vm>, Refusal> {
+    match crate::client::read_vm_process(vsock) {
+        Ok(named) => Vm::held(named.pid, named.started).map(Some),
+        Err(Refusal::VmProcess(crate::VmProcessRefusal::Unrecorded)) => Ok(keeper_ended.then_some(Vm::Ended)),
+        Err(why) => Err(why),
     }
 }
 
@@ -235,11 +317,14 @@ impl Receiver {
         if deadline.is_some_and(|deadline| now >= deadline) {
             return Err(pending());
         }
-        let exit = match &self.vm {
-            Vm::Held(held) => Some(held.exit()),
-            Vm::Ended => None,
+        #[cfg(unix)]
+        let framed = self.reader.frame(deadline, self.vm.exit())?;
+        #[cfg(windows)]
+        let framed = {
+            self.vm.name(false)?;
+            self.reader.frame(deadline, &mut self.vm)?
         };
-        let bytes = match self.reader.frame(deadline, exit)? {
+        let bytes = match framed {
             Read::Frame(bytes) => bytes,
             Read::Ended => return Err(Refusal::GpuProbe(GpuProbeError::Ended)),
         };
@@ -269,6 +354,24 @@ impl Receiver {
     }
 }
 
+/// This test process as a launch's VM process, which outlives its tests: a take that follows it
+/// never sees it end. On Windows it is the keeper, its record never written.
+#[cfg(test)]
+pub(crate) fn this_process() -> Vm {
+    let pid = std::process::id();
+    let vm = Vm::of(&crate::Identity {
+        pid,
+        started: crate::taken::started(pid).unwrap(),
+        vsock: std::env::current_dir().unwrap().join("no-vsock-here"),
+    })
+    .unwrap();
+    #[cfg(unix)]
+    assert!(matches!(vm, Vm::Held(_)));
+    #[cfg(windows)]
+    assert!(matches!(vm, Vm::Unnamed { .. }));
+    vm
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -279,10 +382,7 @@ mod tests {
     /// no take here sees its VM process end.
     fn followed(request: Request) -> (Receiver, io::PipeWriter) {
         let (opened, writer) = Opened::new(request).unwrap();
-        let pid = std::process::id();
-        let vm = Vm::of(pid, crate::taken::started(pid).unwrap()).unwrap();
-        assert!(matches!(vm, Vm::Held(_)));
-        (opened.follow(vm), writer)
+        (opened.follow(this_process()), writer)
     }
 
     fn fixture() -> (Request, GpuReport) {

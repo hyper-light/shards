@@ -27991,16 +27991,25 @@ API's protocol: its output drained, its end, its connections.
   - *How it waits* (amended 2026-11-14: the person called the first form, below, "a tad
     dangerous"). The take waits on the VM process itself, an object its kernel signals as it
     exits, beside the report's pipe: no step of ours stands between the end and the take.
-    `boot_managed` holds the launched process (the receipt's `Identity`: on Linux and macOS
-    the VM process, the launched `shards` become it in place; on Windows the `shards` that
-    starts it, holds it in its Job and exits after it) by its pid and start as the launch
-    returns (`physical::report::Vm::of`, the holds `connect_borrowed_before` and
-    `vm_process` already make): a pidfd (pidfd_open(2), readable at exit) on Linux, a
-    kqueue with EVFILT_PROC/NOTE_EXIT registered on macOS, a handle with SYNCHRONIZE
-    (OpenProcess) on Windows, each held from before its start is read, so a pid given to
-    another process since is that process's start, never followed. A process found exited,
-    its pid another start's, or (Unix) no process's (ESRCH: ended and reaped) is `Vm::Ended`:
-    the take reads the pipe once and answers. Any other failure to hold it refuses the boot,
+    `boot_managed` holds the VM process by its pid and start as the launch returns
+    (`physical::report::Vm::of`, the holds `connect_borrowed_before` and `vm_process` already
+    make): a pidfd (pidfd_open(2), readable at exit) on Linux, a kqueue with
+    EVFILT_PROC/NOTE_EXIT registered on macOS, a handle with SYNCHRONIZE (OpenProcess) on
+    Windows, each held from before its start is read, so a pid given to another process
+    since is that process's start, never followed. On Linux and macOS the VM process is the
+    receipt's `Identity`, the launched `shards` become it in place (exec). On Windows the
+    launched `shards` is its keeper: it starts the VM process as its child, names it in
+    `<vsock>.vm` while it is still suspended (`vm_process_file`, 1f26a6d1e), and exits after
+    it, but a keeper killed first leaves its VM process running, still holding the report's
+    writer. So on Windows the take holds the VM process the record names (`Vm::Held`); where
+    the record is not written yet it holds the keeper, held before the record is read
+    (`Vm::Unnamed`), and as the keeper's end is seen it reads the record again: the VM
+    process named is held in its place and the wait goes on; none named, its keeper gone, no
+    VM process of its ran (one started suspended ends with its Job's last handle), `Ended`.
+    The record is read again as a take begins too. (The first landing of this amendment,
+    b22f890bf, held the keeper alone on Windows, a premature `Ended` where it ended first;
+    ROOT found it.) A process found exited, its pid another start's, or (Unix) no process's
+    (ESRCH: ended and reaped) is `Vm::Ended`: the take reads the pipe once and answers. Any other failure to hold it refuses the boot,
     `Refusal::Process` with its cause, the launch stopped, as an identity that cannot be read
     is. The pipe is a `report::Opened` until it follows that process (`follow`), a
     `Receiver` after: a take of a report that follows nothing cannot be written. Unix: one
@@ -28063,9 +28072,13 @@ API's protocol: its output drained, its end, its connections.
     cores idle) and on adacachy2 (Linux x86_64); the held descriptor left out of the poll
     (`poll(.., 1, ..)`), both end tests failed "blocked in the kernel" and the as-it-comes
     test passed; restored, green. `cargo clippy -p shards-api --all-targets -- -D warnings`
-    clean on both, and `cargo xwin clippy` of it for x86_64-pc-windows-msvc clean. Owed
-    (ROOT): the Windows reader's process-handle wait and these tests on a Windows host (CI's
-    Windows legs first).
+    clean on both, and `cargo xwin clippy` of it for x86_64-pc-windows-msvc clean. Windows'
+    keeper: `client::tests::a_report_with_no_clock_outlives_its_vm_processs_keeper` (Windows
+    only): the receipt's identity a stand-in keeper that names a stand-in VM process in its
+    record after the take began, then exits first; the VM process writes its report after,
+    and the take returns it, where the keeper's hold answered `Ended`. Compiled and linted
+    for Windows only (`cargo xwin clippy`). Owed (ROOT): the Windows reader's process-handle
+    wait, the keeper's re-read and these tests on a Windows host (CI's Windows legs first).
 - *Through an orchestrator's run* (Hex lead's ask, Hex goal 39; D231's run host). Hex publishes
   no GPU box's VM Live without its VM process's own renderer report, checked host-side; an
   image run gave none (`/run/shards/gpus` is what init was asked, not what the renderer
