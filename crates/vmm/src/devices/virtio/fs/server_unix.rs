@@ -544,14 +544,35 @@ pub(super) fn set_times(
 /// O_NOFOLLOW where the kernel has no openat2, or the path is too long for one call, and on
 /// macOS. A path that no longer leads to a directory is stale.
 pub(super) fn open_beneath(dir: host::Raw, names: &[CString]) -> Result<host::Owned, Errno> {
+    beneath(dir, names, host::O_RDONLY | host::O_DIRECTORY)
+}
+
+/// The flags a directory is held with that the server may search but not read (memory-19):
+/// Linux's O_PATH, which asks no permission of the directory itself, and macOS's O_SEARCH,
+/// its search permission (open(2) of each). Names are looked up through either (openat(2));
+/// neither lists it, reads its attributes beyond its stat, or changes it.
+#[cfg(target_os = "linux")]
+const SEARCH_FLAGS: host::c_int = libc::O_PATH | host::O_DIRECTORY;
+#[cfg(target_os = "macos")]
+const SEARCH_FLAGS: host::c_int = libc::O_SEARCH;
+
+/// [`open_beneath`]'s directory, held to be searched alone ([`SEARCH_FLAGS`]): one its host
+/// lets the server, its files' owner, search but not read, as an exec-only directory (mode
+/// 0111). A kernel's walk asks no more of a directory on the way (path_resolution(7)).
+pub(super) fn search_beneath(dir: host::Raw, names: &[CString]) -> Result<host::Owned, Errno> {
+    beneath(dir, names, SEARCH_FLAGS)
+}
+
+/// The directory `names` lead to beneath `dir`, opened with `flags` ([`open_beneath`]).
+fn beneath(dir: host::Raw, names: &[CString], flags: host::c_int) -> Result<host::Owned, Errno> {
     #[cfg(target_os = "linux")]
-    if let Some(opened) = openat2_beneath(dir, names) {
+    if let Some(opened) = openat2_beneath(dir, names, flags) {
         return opened.map_err(stale);
     }
     let mut held: Option<host::Owned> = None;
     for name in names {
         let at = held.as_ref().map_or(dir, std::os::fd::AsRawFd::as_raw_fd);
-        let next = open_at(at, name, host::O_RDONLY | host::O_DIRECTORY | host::O_NOFOLLOW, 0);
+        let next = open_at(at, name, flags | host::O_NOFOLLOW, 0);
         held = Some(next.map_err(stale)?);
     }
     held.ok_or(EINVAL)
@@ -560,7 +581,11 @@ pub(super) fn open_beneath(dir: host::Raw, names: &[CString]) -> Result<host::Ow
 /// [`open_beneath`] in one openat2(2); none where this kernel has no openat2 (ENOSYS, or a
 /// seccomp filter's EPERM) or the path is longer than one call takes.
 #[cfg(target_os = "linux")]
-pub(super) fn openat2_beneath(dir: host::Raw, names: &[CString]) -> Option<Result<host::Owned, Errno>> {
+pub(super) fn openat2_beneath(
+    dir: host::Raw,
+    names: &[CString],
+    flags: host::c_int,
+) -> Option<Result<host::Owned, Errno>> {
     /// struct open_how (include/uapi/linux/openat2.h), which libc's leaves unbuilt.
     #[repr(C)]
     struct OpenHow {
@@ -577,7 +602,7 @@ pub(super) fn openat2_beneath(dir: host::Raw, names: &[CString]) -> Option<Resul
     }
     let path = CString::new(path).ok()?;
     let how = OpenHow {
-        flags: u64::try_from(host::O_RDONLY | host::O_DIRECTORY | host::O_CLOEXEC).ok()?,
+        flags: u64::try_from(flags | host::O_CLOEXEC).ok()?,
         mode: 0,
         resolve: libc::RESOLVE_BENEATH | libc::RESOLVE_NO_SYMLINKS,
     };

@@ -187,10 +187,16 @@ enum Slot {
     Handle(u64),
 }
 
-/// A descriptor in `State::fds`: a plain one, or a directory handle's stream.
+/// A descriptor in `State::fds`: a plain one, a directory's to be searched alone, or a
+/// directory handle's stream.
 #[derive(Debug)]
 enum Held {
     Fd(host::Owned),
+    /// A directory node's whose host lets the server, its files' owner, search it but not
+    /// read it, as an exec-only one (mode 0111; memory-19): names are looked up through it,
+    /// as a kernel's walk asks no more of a directory (path_resolution(7)); its listing, its
+    /// record and a change of it are refused, as its host refuses the server them.
+    Search(host::Owned),
     Dir(DirStream),
 }
 
@@ -569,7 +575,7 @@ fn rekey(root: host::Raw, nodes: &mut HashMap<u64, Node>) -> Result<(), String> 
         };
         let parent = match dirs {
             [] => None,
-            dirs => match open_beneath(root, dirs) {
+            dirs => match walk_beneath(root, dirs) {
                 Ok(dir) => Some(dir),
                 Err(_) => continue,
             },
@@ -1126,7 +1132,7 @@ impl Server {
         let st = if names.is_empty() {
             stat_fd(root)
         } else {
-            open_beneath(root, &names).and_then(|fd| stat_fd(fd.raw()))
+            walk_beneath(root, &names).and_then(|fd| stat_fd(fd.raw()))
         };
         let Ok(st) = st else {
             return false;
@@ -2148,6 +2154,11 @@ impl Server {
         let uid = a.u32()?;
         let gid = a.u32()?;
         let (dir, name) = at(s, nodeid)?;
+        // A directory the server may search alone (memory-19) it changes nothing of: its host
+        // refuses the server its reading, which no change of the guest's widens.
+        if searched_only(s, nodeid) {
+            return Err(EACCES);
+        }
         // A directory's own descriptor, which `at` gave: its attributes are changed through it.
         let own = s.nodes.get(&nodeid).is_some_and(|n| n.dir).then_some(dir);
         let mut owner = node_owner(s, nodeid, None)?;
@@ -2327,7 +2338,13 @@ fn node_fd(s: &mut State, nodeid: u64) -> Result<NodeFd, Errno> {
 fn node_fd_known(s: &mut State, nodeid: u64, known: Option<u32>) -> Result<NodeFd, Errno> {
     let node = s.nodes.get(&nodeid).ok_or(ENOENT)?;
     if node.dir {
-        return Ok(NodeFd::Borrowed(dir_fd(s, nodeid)?));
+        let fd = dir_fd(s, nodeid)?;
+        // Its attributes are read and set through a descriptor that reads it: one its host
+        // refuses the server is refused them, as its host refuses it them (xattr(7)).
+        if searched_only(s, nodeid) {
+            return Err(EACCES);
+        }
+        return Ok(NodeFd::Borrowed(fd));
     }
     if let Some((pin, _)) = s.pins.get(&nodeid) {
         return Ok(NodeFd::Borrowed(pin.raw()));
@@ -2422,6 +2439,10 @@ fn node_owner(s: &mut State, nodeid: u64, st: Option<&Stat>) -> Result<Owner, Er
     let unrecorded = unrecorded_owner(s, nodeid);
     let fd = match node_fd_known(s, nodeid, st.map(|st| mode_of(st) & S_IFMT)) {
         Ok(fd) => fd,
+        // A directory the server may search alone (memory-19) holds no record it can read:
+        // its host's, made so by its host, as the guest's own modes always leave the server
+        // its directories ([`host_perm`]).
+        Err(EACCES) if searched_only(s, nodeid) => return Ok(unrecorded),
         Err(ENODATA) => {
             let found;
             let st = match st {
@@ -2466,8 +2487,27 @@ fn dir_fd(s: &mut State, nodeid: u64) -> Result<host::Raw, Errno> {
         return Err(ENOTDIR);
     }
     let want = node.key;
-    if let Some(Held::Fd(fd)) = s.fds.get(Slot::Node(nodeid)) {
-        return Ok(fd.raw());
+    match s.fds.get(Slot::Node(nodeid)) {
+        Some(Held::Fd(fd)) => return Ok(fd.raw()),
+        // Held while its host refuses the server its reading: one its host lets it read
+        // again is held to be read once more, so that a search-only hold says the host now.
+        Some(Held::Search(fd)) => {
+            let search = fd.raw();
+            return match open_at(
+                search,
+                c".",
+                host::O_RDONLY | host::O_DIRECTORY | host::O_NOFOLLOW,
+                0,
+            ) {
+                Ok(read) => {
+                    let raw = read.raw();
+                    s.fds.insert(Slot::Node(nodeid), Held::Fd(read));
+                    Ok(raw)
+                }
+                Err(_) => Ok(search),
+            };
+        }
+        _ => {}
     }
     // The names down to it; a chain that breaks (a node the guest forgot) or loops (a
     // directory found again under one of its own, through a bind mount) leads nowhere.
@@ -2483,7 +2523,7 @@ fn dir_fd(s: &mut State, nodeid: u64) -> Result<host::Raw, Errno> {
         if let Some(v) = s.volumes.get(&at) {
             break v.fd.raw();
         }
-        if let Some(Held::Fd(fd)) = s.fds.get(Slot::Node(at)) {
+        if let Some(Held::Fd(fd) | Held::Search(fd)) = s.fds.get(Slot::Node(at)) {
             break fd.raw();
         }
         if names.len() > s.nodes.len() {
@@ -2491,14 +2531,35 @@ fn dir_fd(s: &mut State, nodeid: u64) -> Result<host::Raw, Errno> {
         }
     };
     names.reverse();
-    let fd = open_beneath(from, &names)?;
+    // [`walk_beneath`], held as what it was opened for.
+    let (fd, held): (_, fn(host::Owned) -> Held) = match open_beneath(from, &names) {
+        Ok(fd) => (fd, Held::Fd),
+        Err(EACCES) => (search_beneath(from, &names)?, Held::Search),
+        Err(e) => return Err(e),
+    };
     let st = stat_fd(fd.raw())?;
     if !is_dir(&st) || key(&st) != want {
         return Err(ESTALE);
     }
     let raw = fd.raw();
-    s.fds.insert(Slot::Node(nodeid), Held::Fd(fd));
+    s.fds.insert(Slot::Node(nodeid), held(fd));
     Ok(raw)
+}
+
+/// The directory `names` lead to beneath `dir`, to look at or look in: opened to be read, or,
+/// where its host refuses the server that, to be searched (memory-19), as a kernel's walk
+/// goes through a directory it may search and not read (path_resolution(7)).
+fn walk_beneath(dir: host::Raw, names: &[CString]) -> Result<host::Owned, Errno> {
+    match open_beneath(dir, names) {
+        Err(EACCES) => search_beneath(dir, names),
+        opened => opened,
+    }
+}
+
+/// Whether directory node `nodeid`'s descriptor, as [`dir_fd`] has just held it, searches
+/// it alone ([`Held::Search`]).
+fn searched_only(s: &State, nodeid: u64) -> bool {
+    matches!(s.fds.open.get(&Slot::Node(nodeid)), Some((Held::Search(_), _)))
 }
 
 /// An error opening a node's path, as the guest hears it: a path that no longer leads to a
@@ -2580,10 +2641,16 @@ fn lookup(s: &mut State, parent: u64, name: &CStr) -> Result<(u64, Stat, Owner),
     let previous = s.by_key.get(&at).copied().filter(|id| s.nodes.contains_key(id));
     let id = previous.unwrap_or_else(|| fresh_node(s));
     // Admit the native watch before publishing/counting the guest reference. A
-    // failed LOOKUP must retain neither a node nor a silently unwatched directory.
+    // failed LOOKUP must retain neither a node nor a silently unwatched directory. One the
+    // server may not read (memory-19) alone is walked through unwatched: inotify(7) watches
+    // only what its caller may read (EACCES), so no unprivileged program on its host is told
+    // of what changes in it; the guest sees that as its entries expire ([`VALID_S`]).
     #[cfg(target_os = "linux")]
     if is_dir(&st) {
-        watch_dir(s, id, dir, name)?;
+        match watch_dir(s, id, dir, name) {
+            Ok(()) | Err(EACCES) => {}
+            Err(e) => return Err(e),
+        }
     }
     let id = match previous {
         Some(id) => {
@@ -3816,7 +3883,8 @@ mod tests {
         std::fs::create_dir_all(root.join("a/b/c")).unwrap();
         std::fs::write(root.join("a/b/c/file"), "reached").unwrap();
         let mode = |m| {
-            std::fs::set_permissions(root.join("a/b"), std::os::unix::fs::PermissionsExt::from_mode(m)).unwrap();
+            std::fs::set_permissions(root.join("a/b"), std::os::unix::fs::PermissionsExt::from_mode(m))
+                .unwrap();
         };
         mode(0o111);
         let id = |r: (i32, Vec<u8>)| match r.0 {

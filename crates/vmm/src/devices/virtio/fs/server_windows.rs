@@ -494,6 +494,13 @@ pub(super) fn set_times(
     }
 }
 
+/// [`open_beneath`]'s directory for search alone: on Windows none. A file's mode refuses
+/// the server nothing there ([`MODES_REFUSE_OPENS`]), so no directory is one it may walk
+/// through and not list; one whose ACL refuses it its listing stays refused (EACCES).
+pub(super) fn search_beneath(_dir: host::Raw, _names: &[CString]) -> Result<host::Owned, Errno> {
+    Err(EACCES)
+}
+
 /// The directory `names` leads to beneath `dir`, opened one component at a time, never
 /// following a reparse point (a junction opened is its own empty directory): a path that
 /// no longer leads to one stale, as Unix's (`stale`).
