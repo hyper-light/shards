@@ -26886,7 +26886,17 @@ and no exec, attach or terminal (the plan's steps 5, 6 and 7).
   (`MemberSpec::workdir`), absolute and plain, refused relative or escaping at each end
   (D231). A project plugged into a running member is not the working directory of one that
   started before it (D235), so the project must be at its path as the member starts: a
-  boot-time path for that is owed, D235's and the orchestrator's to choose (D231).
+  boot-time path for that is owed, D235's and the orchestrator's to choose (D231). It is
+  entered as the member (confine-02,
+  [docs/bugs/2026-11-13/confine.md](../bugs/2026-11-13/confine.md)): the member's first
+  process changes to it after `domains::confine`, its uid, no capability, Landlock and seccomp
+  in force, as a command run in it does (D243), and its start fails `entering its working
+  directory` with the errno where the member could not enter it itself. Entered as root
+  before, a working directory a symlink in the member's own directory led beneath a directory
+  root alone may search was its cwd all the same, and what it read by relative names there it
+  read through a directory its uid may not search (red, Linux 7.3.3 x86_64:
+  `domains::tests::a_member_starts_in_no_working_directory_it_could_not_enter` read its
+  `sentinel`).
 - *Its root* (step 7, cfcb22755). The image's directories keep the image's owner and mode under
   the skeleton init mounts over (D59, "A member's root shows the image's directories as the image
   made them"). The record of step 7's four items:
@@ -27501,10 +27511,26 @@ docs/research/s33-veil-creds/STEP3.md).
   would rewrite every response). Bytes from where a value may still begin wait until it completes
   or fails, the rest going at once; a message's end lets everything go. Not masked, and recorded
   as the residuals: a value inside a compressed body (Content-Encoding) or a compressed WebSocket
-  message; a part of a value (OpenAI's 401 echoes a masked prefix and suffix, f16); a value echoed
-  after its lease ended, which this process no longer holds; a response's plaintext in rustls's own
-  buffer, which rustls does not wipe. A tunnel's pause after a value's proper prefix holds that
-  prefix until its next bytes or its end.
+  message; a part of a value (OpenAI's 401 echoes a masked prefix and suffix, f16); a response's
+  plaintext in rustls's own buffer, which rustls does not wipe. A tunnel's pause after a value's
+  proper prefix holds that prefix until its next bytes or its end.
+- *The mask's values are its own (creds-03, amended 2026-11-13).* A value echoed after its lease
+  ended, or after a sign-in's refresh let its lease go (`Leases::forget`) and a later request
+  leased the rotated one, was once a residual: the mask looked each value up in the run's leases
+  as the response came, so a lapsed or rotated lease turned it off for a response under way, and a
+  rotated lease masked the new value rather than the one that went. Now each value is copied into
+  the mask (`inject::Filled`, wiped as it drops) as it is filled in (`filled_in`, the same lookup
+  that wrote the head, at the same instant), and masked until that response ends: HTTP/1.1's
+  exchange (`exchange_ended`), an HTTP/2 stream (dropped with it), a tunnel (its flow's end). A
+  lapsed lease still authorizes nothing new (`go` refuses it `Lapsed`, as before); the copy only
+  masks. Its cost: one copy of each value filled in per response in flight (HTTP/1.1: one
+  exchange at a time; HTTP/2: each stream sent), freed as that response ends. Not chosen: closing a
+  flow's responses as their lease lapses or rotates, which breaks a response that is no echo; and
+  holding every value a lease ever had, which the finding forbids (unbounded, past any response).
+  Tests (macOS arm64, adas-mac-studio-3.local): `inject::tests::leaks`' lapsed H1 echo, in a field
+  and in the body, and its HTTP/2 stream whose value rotates while its response waits, red before
+  (the value reached the guest), green after; the mask given no value (`filled_in` not filling it)
+  fails both.
 - *Audit (f26).* `shards-net: credential <reference> filled in toward <host> at <s>.<ns> (Unix
   time)`, on the network process's stderr (its run host's diagnostics); never the value or the
   placeholder.
@@ -28189,16 +28215,35 @@ ruleset, the run's seccomp filter.
   root (domains.rs `child`), so the mount namespace's root, where setns(2) leaves a joiner,
   is the member's.
 - *Confined by the same values, through the same steps.* A member's `Started` keeps its
-  `Confinement` (its IDs, the last capability, the TCP rights Landlock refuses it, its
-  volumes, the run's plug roots, the socket directories it receives on, its seccomp filter,
-  its environment and working directory as it started), and `domains::confine` is the one
-  function its first process and a command run in it call, last before execve: the bounding
-  set, its IDs and no group, no capability, `no_new_privs`, its umask, its Landlock ruleset,
-  its signals a new process's, its seccomp filter. Its failure is typed
-  (`domains::Confining`, a step of thirteen).
+  `Confinement` (its IDs, the last capability, its Landlock ruleset, its volumes, the run's
+  plug roots, the socket directories it receives on, its seccomp filter, its environment and
+  working directory as it started), and `domains::confine` is the one function its first
+  process and a command run in it call, last before execve: the bounding set, its IDs and no
+  group, no capability, `no_new_privs`, its umask, its Landlock ruleset entered, its signals a
+  new process's, its seccomp filter. Its failure is typed (`domains::Confining`, a step of
+  twelve).
+- *One Landlock ruleset, the member's own* (confine-01,
+  [docs/bugs/2026-11-13/confine.md](../bugs/2026-11-13/confine.md)). Init makes the member's
+  ruleset (`domains::ruleset`: every filesystem right handled, the TCP rights its links do not
+  grant, both scopes) as it prepares the member, and keeps it in its `Confinement`. The
+  member's first process adds the rules (`domains::rules`: reads and execution under `/`, its
+  scratch, `/dev`, its volumes, the plug roots, its sockets' directories), each path as it sees
+  it in its mounts before anything of the member's runs, and enters it; a command run in the
+  member enters that same ruleset and adds nothing. landlock(7) attaches a rule to the inode
+  its descriptor names, and `landlock_restrict_self` copies a ruleset into each new domain, so
+  every process of the member is given exactly the rules its first process found. A command's
+  rules were found again by name at each exec before: a member that renamed the directory
+  holding a nested volume's mount point (the mount goes with it; only a mount point itself
+  cannot be renamed) and left a symlink to `/proc` at its old name gave its command every
+  right beneath `/proc`, a write to its own `/proc/self/comm` among them, which the member's
+  own ruleset refused. Each child holds the ruleset at `domains::RULESET_FD`, next above its
+  launch status or error channel, close-on-exec, past the descriptors of init's it closes, so
+  its program holds none of it; init's own descriptor of it is close-on-exec, as every
+  Landlock ruleset's is. The ruleset made at start fails the member's start, typed as init's
+  start's errors are; the step `Confining::Ruleset` is gone.
 - *Its own Landlock domain.* landlock(7) gives a ruleset to the process that enters it and its
   children, and has no way to join a domain: the command's domain is a sibling of its
-  member's, its rules the same. So the scopes hold between them: it signals, and reaches
+  member's, its ruleset the member's own. So the scopes hold between them: it signals, and reaches
   abstract Unix sockets of, its own processes alone, and the member's processes its not.
   Sharing the member's own domain would need a process of the member's to start each
   command, inside its seccomp filter and its pids.max, and is not built.
@@ -28245,7 +28290,8 @@ ruleset, the run's seccomp filter.
 | `exec_failed::MEMBER` 2 | the next class after RUNTIME 0 and DAEMON 1 |
 | `Refusal` codes 1 to 6 | this wire's own, each a variant |
 | `step::JOIN` 12, `step::CONFINE` 13 | run.rs's child's steps, after MKDIR 11 |
-| `Confining` 1 to 13 | the steps of `confine`, in order |
+| `Confining` 1 to 12 | the steps of `confine` and `rules`, in order |
+| `RULESET_FD` 4 | the first descriptor above a child's stdio (0 to 2) and its status or error channel (3) |
 | statuses 1, 126, 127 | `docker exec`'s (docker/cli; moby daemon/errors.go) |
 
 **Tests.** Unit: the entry and refusals round trip and nothing cut short decodes (abi
@@ -28253,7 +28299,11 @@ ruleset, the run's seccomp filter.
 `enter::tests`); `--for` resolved and refused by type (daemon `devices::tests`), and its
 privileges and user refused (daemon `commands::tests`); its variables sent as given, for init
 to lay over its member's, and its TERM left for init to choose (`spec::tests`); the client's
-request with its member (ipc); `exec --help`'s Shards options (cmdline). Real VMs, ROOT's
+request with its member (ipc); `exec --help`'s Shards options (cmdline). On a Linux kernel
+with Landlock, as root of IDs past the test's own (`unshare --map-auto --map-root-user`):
+`domains::tests::a_command_run_in_a_member_gains_no_landlock_right_its_member_lacks`
+(confine-01's member and its command, through `rules` and `confine`, on Linux 7.3.3
+x86_64: red before, `member refused (13); command written`). Real VMs, ROOT's
 (`cargo test -p shards --profile test-release --test member_exec`):
 `a_command_run_in_a_member_is_confined_as_the_member_is` (uid, PID namespace, name, caps and
 `no_new_privs`, signals, Landlock on files and TCP, seccomp, cgroup and network, another
