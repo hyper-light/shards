@@ -1725,9 +1725,9 @@ impl<D: Disk> Daemon<D> {
             .ok_or_else(|| format!("no container {id}"))?;
         let home = std::fs::canonicalize(&self.home).map_err(|e| format!("{}: {e}", self.home.display()))?;
         let dir = lock(&self.containers).dir(id).join(SNAPSHOTS).join(snapshot);
-        // Its plan says this build's format, which a snapshot of an older one is once
-        // rewritten in.
-        super::snapshots::migrated(&dir, &|e| format!("{}: {e}", dir.display()))?;
+        // A snapshot no build resumes is not moved: one whose init is another build's
+        // (D176).
+        shards_vmm::snapshot::resumable(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         let pinned = shards_vmm::snapshot::read(&dir)?;
         let mut files = Vec::new();
         for (path, _) in shards_vmm::snapshot::backing_of(&pinned) {

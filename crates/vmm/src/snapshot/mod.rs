@@ -45,9 +45,6 @@ const LOCK: &str = ".lock";
 const STATE: &str = "state";
 const MEMORY: &str = "memory";
 const WORKING_SET: &str = "working-set";
-/// Where [`migrate`] writes a state in this build's format before it renames it over the
-/// old one.
-const MIGRATED: &str = ".state.migrated";
 /// A run's swap, as its guest had it, where a snapshot of a run keeps one (D176).
 const SWAP: &str = "swap";
 /// A writable layer's head, the page structures its guest's kernel wrote there (D190).
@@ -104,23 +101,17 @@ const MAGIC: [u8; 8] = *b"SHRDSNAP";
 /// 28: and its PCI bus's slots for devices plugged in as it runs, 0 for none (D214): a
 ///     template's machine has them empty, its restored runs' to plug into.
 /// 29: and its immutable native GPU selection, rejoined before a restored guest runs.
-const VERSION: u32 = 29;
-/// The first format whose state says its GPU's native selection.
-const VERSION_WITH_GPU_SELECTION: u32 = 29;
-/// The first format whose DAX windows are laid out as this one's: each with its head
-/// before it (25) and its host's record of its pages (26), which 28 kept; adding native
-/// selectors (29) did not move them (D189).
-const VERSION_WITH_CURRENT_WINDOWS: u32 = 28;
-/// The oldest format [`migrate`] rewrites, shards 0.6.0's: for a machine with no DAX
-/// windows each since says what this one says, but for 27's runs of data, which a state
-/// before it holds none of (its restore maps its RAM from the file whole), 28's PCI slots,
-/// none before, and 29's GPU selection, none before (D176). Only the migration reads a
-/// format before [`VERSION`]: a restore refuses one.
-const VERSION_WITHOUT_WINDOWS: u32 = 24;
-/// The first format whose state says which runs of its RAM hold data.
-const VERSION_WITH_DATA: u32 = 27;
-/// The first format whose state says how many PCI slots its machine has (D214).
-const VERSION_WITH_SLOTS: u32 = 28;
+/// 30: and, after its head, who saved it: the shards version ([`SAVED_BY`]) and the
+///     contract its guest's init announced ([`shards_abi::IDENTITY`] of that build), which a
+///     resume compares with this build's before its guest runs ([`resumable`], D176). A
+///     state of any format before it names neither, and is refused, never read.
+const VERSION: u32 = 30;
+/// The version of shards this build is (crates/shards/Cargo.toml, by build.rs): what a
+/// state it writes says it was saved by.
+pub const SAVED_BY: &str = env!("SHARDS_VERSION");
+/// The longest version a state's saver record may name: SemVer 2.0.0 sets no bound, so
+/// this is the bound a generation's name has, which no version shards gives itself nears.
+const MAX_SAVED_BY: usize = MAX_NAME;
 /// The snapshot format this build writes and reads: what a snapshot kept for reuse is
 /// keyed by.
 pub const FORMAT: u32 = VERSION;
@@ -311,6 +302,10 @@ pub struct Snapshot {
     pub arch: Vec<u8>,
     /// The device bus's state.
     pub devices: Vec<u8>,
+    /// The contract its guest's init announced (the control page's [`shards_abi::control::ABI`]),
+    /// none where it had announced none: what its state records beside the shards that saved
+    /// it, for a resume to compare before its guest runs ([`resumable`], D176).
+    pub init: Option<u64>,
 }
 
 /// A generation, pinned: its state decoded and its memory file held open. Its files are
@@ -583,6 +578,8 @@ fn encode(s: &Snapshot, generation: &str, identities: &[Identity]) -> Result<Vec
     w.bytes(generation.as_bytes());
     w.u32(s.config.vcpus);
     w.u64(s.config.memory_mib);
+    w.bytes(SAVED_BY.as_bytes());
+    w.u64(s.init.unwrap_or(0));
     w.seq(&disks, |w, (path, read_only)| {
         w.bytes(path);
         w.bool(*read_only);
@@ -660,7 +657,7 @@ pub fn decodes(bytes: &[u8]) -> bool {
 
 /// A state's head, as far as its RAM's size: its format, its generation's name, its vCPUs
 /// and its RAM in MiB. Laid out so in every format a shards since 0.6.0 wrote: what bounds
-/// a state's read ([`state_most`]) and tells [`migrate`] its format. Its format is its
+/// a state's read ([`state_most`]) and tells [`resumable`] its format. Its format is its
 /// caller's to accept: a restore's [`decode`] this build's alone.
 fn decode_head(r: &mut Reader<'_>) -> codec::Result<(u32, String, u32, u64)> {
     let mut magic = [0u8; 8];
@@ -718,34 +715,33 @@ fn read_state_within(dir: &Path, name: &str, holdable: Option<u64>) -> io::Resul
     })
 }
 
-/// A state of this build's format, as a restore reads it: one of any other is refused, an
-/// older one never read here but rewritten once by [`migrate`].
+/// A state of this build's format, as a restore reads it: one of any other is refused
+/// ([`resumable`] says why, typed, before a resume reads it).
 fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
     let mut r = Reader::new(bytes);
     let (version, generation, vcpus, memory_mib) = decode_head(&mut r)?;
     if version != VERSION {
         return Err(DecodeError(format!(
-            "snapshot format {version}; this shards reads {VERSION}{}",
-            if (VERSION_WITHOUT_WINDOWS..VERSION).contains(&version) {
-                ", and rewrites a snapshot of it in its own as it first restores it (D176)"
-            } else {
-                ""
-            }
+            "snapshot format {version}; this shards reads {VERSION}"
         )));
     }
-    decode_body(r, version, generation, vcpus, memory_mib)
+    let (_, init) = decode_saver(&mut r)?;
+    let mut decoded = decode_body(r, generation, vcpus, memory_mib)?;
+    decoded.snapshot.init = Some(init).filter(|&init| init != 0);
+    Ok(decoded)
 }
 
-/// A state's body, after its head, laid out as format `version` laid it out: this build's
-/// for a restore ([`decode`]), or one from [`VERSION_WITHOUT_WINDOWS`] on for [`migrate`]
-/// alone, which reads it once to write it in this build's.
-fn decode_body(
-    mut r: Reader<'_>,
-    version: u32,
-    generation: String,
-    vcpus: u32,
-    memory_mib: u64,
-) -> codec::Result<Decoded> {
+/// Who saved a state of this build's format, after its head: the shards version and the
+/// contract its guest's init announced, 0 for none.
+fn decode_saver(r: &mut Reader<'_>) -> codec::Result<(String, u64)> {
+    let by = std::str::from_utf8(r.bytes(MAX_SAVED_BY)?)
+        .map_err(|_| DecodeError("a saver's version that is not UTF-8".into()))?
+        .to_string();
+    Ok((by, r.u64()?))
+}
+
+/// A state's body, after its head and its saver.
+fn decode_body(mut r: Reader<'_>, generation: String, vcpus: u32, memory_mib: u64) -> codec::Result<Decoded> {
     let path = platform::PATH_MOST;
     let disks = r.seq(VIRTIO_SLOTS, 5, |r| Ok((path_from(r.bytes(path)?)?, r.bool()?)))?;
     let pmem = r.seq(VIRTIO_SLOTS.saturating_sub(disks.len()), 4, |r| {
@@ -782,7 +778,7 @@ fn decode_body(
     let reporting = r.bool()?;
     let has_gpu = r.bool()?;
     let gpu_window = r.u64()?;
-    let gpu_devices = if version >= VERSION_WITH_GPU_SELECTION {
+    let gpu_devices = {
         use crate::vm::gpu_selection::{self, PhysicalGpu};
         let devices = r.seq(gpu_selection::MAX_PHYSICAL_GPUS, 8, |r| {
             Ok(match r.u8()? {
@@ -802,8 +798,6 @@ fn decode_body(
             return Err(DecodeError("GPU selectors without a GPU device".into()));
         }
         devices
-    } else {
-        Vec::new()
     };
     let swap_mib = r.u64()?;
     let share_window_mib = r.u64()?;
@@ -811,14 +805,12 @@ fn decode_body(
     let past = |what: &str| DecodeError(format!("{what} past what a guest addresses"));
     let plugged_most = most_plugged_runs(hotplug_mib).ok_or_else(|| past("memory to plug"))?;
     let plugged = r.seq(plugged_most, 16, |r| Ok((r.u64()?, r.u64()?)))?;
-    let pci_slots = if version >= VERSION_WITH_SLOTS { r.u8()? } else { 0 };
-    let data = if version >= VERSION_WITH_DATA {
+    let pci_slots = r.u8()?;
+    let data = {
         let said = r.bool()?;
         let data_most = most_data_runs(memory_mib).ok_or_else(|| past("guest memory"))?;
         let runs = r.seq(data_most, 16, |r| Ok((r.u64()?, r.u64()?)))?;
         said.then_some(runs)
-    } else {
-        None
     };
     let arch_state = r.bytes(usize::MAX)?.to_vec();
     let devices = r.bytes(usize::MAX)?.to_vec();
@@ -849,6 +841,7 @@ fn decode_body(
             data,
             arch: arch_state,
             devices,
+            init: None,
         },
         generation,
         identities,
@@ -1241,132 +1234,103 @@ pub fn relocate(dir: &Path, to: &dyn Fn(&Path) -> Option<PathBuf>) -> Result<(),
     platform::sync_dir(&generation).map_err(|e| at(&e))
 }
 
-/// What [`migrate`] did with a snapshot.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Migrated {
-    /// Its state was of this build's format already: nothing.
-    Current,
-    /// Its state, of format `from`, was rewritten in this build's, once.
-    Rewritten { from: u32 },
-}
-
-/// Why [`migrate`] did not leave a snapshot in this build's format (R04).
+/// Why a user's snapshot (a saved run, D176, or a directory `shards restore` was given)
+/// does not resume in this build (R04). Its guest's init is frozen in its memory as it was
+/// saved, and speaks the contract of the shards that saved it; shards-init and the shards
+/// that drives it ship as one binary (D36), so an init of another contract is refused
+/// before its guest runs, never spoken to. Its volumes and image are not the snapshot's,
+/// and stay.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MigrateRefused {
+pub enum ResumeRefused {
+    /// Saved by shards `saved_by`, whose guest's init announced `init_abi` (0: none), where
+    /// this build's speaks `ours`.
+    OlderInit { saved_by: String, init_abi: u64, ours: u64 },
+    /// Saved in format `format`, before 30: by a shards that recorded no saver, whose
+    /// init's contract cannot be read before its guest runs; and none of those builds' is
+    /// this one's, whose format records it.
+    Unrecorded { format: u32 },
+    /// Saved in format `format`, past this build's: by a newer shards.
+    Newer { format: u32 },
     /// It has no state to read, or its state could not be read: why.
     Unreadable(String),
-    /// A format this build has no reader of: before shards 0.6.0's, 24 (0.3.0 to 0.5.0
-    /// wrote 10, whose machines and devices were laid out otherwise, and no build since
-    /// 0.6.0 has read it), or past this build's.
-    Format { format: u32 },
-    /// Of format 24 to 27, of a machine with DAX windows, laid out before each window had
-    /// its head beside it (D189): its guest's page structures for them were in its memory
-    /// then, where this build's machine has none, so no rewrite gives them back.
-    WindowsLaidOutOtherwise { format: u32 },
-    /// Its state is not one of its format: why.
-    Malformed { format: u32, why: String },
-    /// Its state in this build's format could not be made or put in its place: why. The
-    /// old one stays as it was.
-    Unwritten(String),
 }
 
-impl std::fmt::Display for MigrateRefused {
+impl std::fmt::Display for ResumeRefused {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        const AGAIN: &str =
+            "start it again from its image; its volumes are kept, its memory's state is not";
         match self {
-            MigrateRefused::Unreadable(why) => f.write_str(why),
-            MigrateRefused::Format { format } => write!(
+            ResumeRefused::OlderInit { saved_by, init_abi, ours } => write!(
                 f,
-                "snapshot format {format}: this shards reads {VERSION}, and rewrites formats \
-                 {VERSION_WITHOUT_WINDOWS} (shards 0.6.0) to {} (0.7.0) in it; no reader of \
-                 {format} is kept",
-                VERSION - 1
+                "this microVM was saved by shards {saved_by}, whose shards-init (contract \
+                 {init_abi:016x}) cannot continue in this shards (contract {ours:016x}): {AGAIN}"
             ),
-            MigrateRefused::WindowsLaidOutOtherwise { format } => write!(
+            ResumeRefused::Unrecorded { format } => write!(
                 f,
-                "snapshot format {format} of a machine with DAX windows, laid out before \
-                 each had its head beside it: its guest's page structures for them were in \
-                 its memory, where this shards' machine has none, so it cannot be rewritten"
+                "this microVM was saved by {} (snapshot format {format}), whose shards-init \
+                 cannot continue in this shards: {AGAIN}",
+                released_in(*format)
             ),
-            MigrateRefused::Malformed { format, why } => {
-                write!(f, "a state of format {format} that is not one: {why}")
-            }
-            MigrateRefused::Unwritten(why) => write!(f, "its state could not be rewritten: {why}"),
+            ResumeRefused::Newer { format } => write!(
+                f,
+                "this microVM was saved by a newer shards (snapshot format {format}; this \
+                 shards reads {VERSION}): resume it with that shards"
+            ),
+            ResumeRefused::Unreadable(why) => f.write_str(why),
         }
     }
 }
 
-impl std::error::Error for MigrateRefused {}
+impl std::error::Error for ResumeRefused {}
 
-/// Rewrites the snapshot in `dir`, a user's (a saved run, D176, or a directory `shards
-/// restore` was given), in this build's format where its state is of an older one this
-/// build migrates, [`VERSION_WITHOUT_WINDOWS`] (shards 0.6.0) on: once, as it is first
-/// restored or moved, the only read of an older format there is. Its state is read whole,
-/// written in this format with the same generation, files and identities beside it,
-/// synced, renamed over the old one and the directory synced, with the snapshot's writers'
-/// lock held, so that a reader finds the old state or the new, and two first restores
-/// rewrite it once. A template is not a user's: one is keyed by the format (D25), so this
-/// build never looks one of an older format up, and is never given to this.
-pub fn migrate(dir: &Path) -> Result<Migrated, MigrateRefused> {
-    let unreadable =
-        |e: &dyn std::fmt::Display| MigrateRefused::Unreadable(format!("{}: {e}", dir.display()));
-    let lock = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(dir.join(LOCK))
-        .map_err(|e| unreadable(&e))?;
-    lock_exclusive(&lock).map_err(|e| unreadable(&e))?;
-    let generation = generation(dir).map_err(MigrateRefused::Unreadable)?;
+/// The shards a state of `format` before 30 was saved by, as its releases' tags name them
+/// (`git show v0.6.0:crates/vmm/src/snapshot/mod.rs`: 24; v0.7.0's: 28); a format between
+/// them or after 0.7.0's was only a build of main's.
+fn released_in(format: u32) -> String {
+    match format {
+        24 => "shards 0.6.0".into(),
+        28 => "shards 0.7.0".into(),
+        _ => "an earlier shards".into(),
+    }
+}
+
+/// Whether the snapshot in `dir`, a user's, resumes in this build: its state's head and
+/// saver read, none of the rest, and nothing written. Asked by every resume before
+/// anything restores it or its guest runs (the daemon's, a move's, `shards restore`'s).
+pub fn resumable(dir: &Path) -> Result<(), ResumeRefused> {
+    let generation = generation(dir).map_err(ResumeRefused::Unreadable)?;
     let name = generation
         .file_name()
         .and_then(|n| n.to_str())
-        .ok_or_else(|| unreadable(&"a generation with no name"))?
+        .ok_or_else(|| ResumeRefused::Unreadable(format!("{}: a generation with no name", dir.display())))?
         .to_string();
     let state = generation.join(STATE);
-    let at = |e: &dyn std::fmt::Display| format!("{}: {e}", state.display());
+    let at = |e: &dyn std::fmt::Display| ResumeRefused::Unreadable(format!("{}: {e}", state.display()));
     let bytes = read_state(dir, &name)
-        .map_err(|e| MigrateRefused::Unreadable(at(&e)))?
-        .ok_or_else(|| MigrateRefused::Unreadable(at(&"gone")))?;
-    let mut r = Reader::new(&bytes);
-    let (format, generation_named, vcpus, memory_mib) =
-        decode_head(&mut r).map_err(|e| MigrateRefused::Unreadable(at(&e)))?;
-    if format == VERSION {
-        return Ok(Migrated::Current);
+        .map_err(|e| at(&e))?
+        .ok_or_else(|| at(&"gone"))?;
+    saver_refused(&bytes).map_err(|e| e.unwrap_or_else(|e| at(&e)))
+}
+
+/// [`resumable`] of a state's bytes: a refusal, or why its head or saver do not decode.
+fn saver_refused(bytes: &[u8]) -> Result<(), Result<ResumeRefused, DecodeError>> {
+    let mut r = Reader::new(bytes);
+    let (format, ..) = decode_head(&mut r).map_err(Err)?;
+    if format < VERSION {
+        return Err(Ok(ResumeRefused::Unrecorded { format }));
     }
-    if !(VERSION_WITHOUT_WINDOWS..VERSION).contains(&format) {
-        return Err(MigrateRefused::Format { format });
+    if format > VERSION {
+        return Err(Ok(ResumeRefused::Newer { format }));
     }
-    let malformed = |why: String| MigrateRefused::Malformed { format, why };
-    let decoded = decode_body(r, format, generation_named, vcpus, memory_mib).map_err(|e| malformed(e.0))?;
-    if decoded.generation != name {
-        return Err(malformed(format!(
-            "the state of generation {}",
-            decoded.generation
-        )));
+    let (saved_by, init_abi) = decode_saver(&mut r).map_err(Err)?;
+    if init_abi != shards_abi::IDENTITY {
+        return Err(Ok(ResumeRefused::OlderInit {
+            saved_by,
+            init_abi,
+            ours: shards_abi::IDENTITY,
+        }));
     }
-    let config = &decoded.snapshot.config;
-    if format < VERSION_WITH_CURRENT_WINDOWS
-        && config.share_window_mib > 0
-        && (config.shares > 0 || config.join_share)
-    {
-        return Err(MigrateRefused::WindowsLaidOutOtherwise { format });
-    }
-    let unwritten = |e: &dyn std::fmt::Display| MigrateRefused::Unwritten(at(e));
-    let new = encode(&decoded.snapshot, &name, &decoded.identities)
-        .and_then(|state| bounded(state, memory_mib))
-        .map_err(|e| unwritten(&e))?;
-    let staged = generation.join(MIGRATED);
-    match fs::remove_file(&staged) {
-        Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(unwritten(&e)),
-        _ => {}
-    }
-    let file = create_unsynced(&staged, |mut f| f.write_all(&new)).map_err(|e| unwritten(&e))?;
-    platform::sync_durable(&file).map_err(|e| unwritten(&e))?;
-    drop(file);
-    fs::rename(&staged, &state).map_err(|e| unwritten(&e))?;
-    platform::sync_dir(&generation).map_err(|e| unwritten(&e))?;
-    Ok(Migrated::Rewritten { from: format })
+    Ok(())
 }
 
 /// [`fill`] for the last of a live move (D176 part 7): none of its memory, whose pages
@@ -1961,6 +1925,7 @@ mod tests {
             data: None,
             arch: vec![marker, 2, 3],
             devices: vec![9; 100],
+            init: None,
         }
     }
 
@@ -2050,81 +2015,57 @@ mod tests {
         assert!(decode(&short).unwrap_err().0.contains("2 identities for 3"));
     }
 
-    /// `s`'s state as format `version`, from [`VERSION_WITHOUT_WINDOWS`] to the one before
-    /// this, laid out as the builds that wrote it laid it out: [`encode`]'s, without what
-    /// came after it (29's GPU selection, 28's PCI slots, 27's runs of data). What a user's
-    /// snapshot of shards 0.6.0 or 0.7.0 holds, for [`migrate`]'s tests.
-    fn encode_older(s: &Snapshot, generation: &str, identities: &[Identity], version: u32) -> Vec<u8> {
-        assert!((VERSION_WITHOUT_WINDOWS..VERSION).contains(&version));
-        assert!(s.config.gpu_devices.is_empty() && s.config.pci_slots == 0 && s.data.is_none());
-        let mut w = Writer::default();
-        MAGIC.iter().for_each(|&b| w.u8(b));
-        w.u32(version);
-        w.bytes(std::env::consts::ARCH.as_bytes());
-        w.bytes(generation.as_bytes());
-        w.u32(s.config.vcpus);
-        w.u64(s.config.memory_mib);
-        w.seq(&s.config.disks, |w, (path, read_only)| {
-            w.bytes(path_bytes(path).unwrap());
-            w.bool(*read_only);
-        });
-        w.seq(&s.config.pmem, |w, path| w.bytes(path_bytes(path).unwrap()));
-        w.seq(identities, |w, identity| identity.encode(w));
-        w.bool(s.config.vsock);
-        w.bool(s.config.net.is_some());
-        w.bytes(&s.config.net.unwrap_or_default());
-        w.u32(s.config.shares);
-        w.bool(s.config.join);
-        w.bool(s.config.join_share);
-        w.u64(s.config.hotplug_mib);
-        w.bool(s.config.reporting);
-        w.bool(s.config.gpu.is_some());
-        w.u64(s.config.gpu.unwrap_or(0));
-        w.u64(s.config.swap_mib);
-        w.u64(s.config.share_window_mib);
-        w.u64(s.config.layer_mib);
-        w.seq(&s.plugged, |w, (gpa, len)| {
-            w.u64(*gpa);
-            w.u64(*len);
-        });
-        if version >= VERSION_WITH_SLOTS {
-            w.u8(0);
-        }
-        if version >= VERSION_WITH_DATA {
-            w.bool(false);
-            w.u32(0);
-        }
-        w.bytes(&s.arch);
-        w.bytes(&s.devices);
-        w.into_bytes()
-    }
-
-    /// A restore reads this build's format alone: a state of any before it, shards 0.6.0's
-    /// on, is refused, saying it is rewritten as it is first restored ([`migrate`]), and one
-    /// of a format no migration reads is refused without. The older ones' bodies read as
-    /// they were written by the migration's reader alone. Red before legacy4, whose
-    /// restore read formats 24 to 28 each time.
+    /// A resume reads a state's head and saver alone, before its guest runs: one saved by a
+    /// build whose init announced this build's contract resumes; one whose init announced
+    /// another, or none, is refused naming the shards that saved it; one of a format before
+    /// 30, which records no saver (shards 0.7.0's 28 among them), or past this build's, is
+    /// refused by its format. Red before the saver's record, where only the guest's own
+    /// first message after its restore found its init another's.
     #[test]
-    fn a_restore_refuses_a_state_of_an_older_format() {
+    fn a_resume_refuses_a_saved_init_of_another_contract_naming_its_saver() {
         let ids = vec![Identity::default(); 3];
-        let snap = sample(&nowhere(), 1);
-        for version in VERSION_WITHOUT_WINDOWS..VERSION {
-            let old = encode_older(&snap, "g-1", &ids, version);
-            let e = decode(&old).unwrap_err();
-            assert!(e.0.contains(&format!("snapshot format {version};")), "{e}");
-            assert!(e.0.contains("rewrites a snapshot of it"), "{e}");
-            let mut r = Reader::new(&old);
-            let (format, generation, vcpus, memory_mib) = decode_head(&mut r).unwrap();
-            let body = decode_body(r, format, generation, vcpus, memory_mib).unwrap();
-            assert_eq!(body.snapshot, snap, "{version}");
-        }
-        let mut older = encode_older(&snap, "g-1", &ids, VERSION_WITHOUT_WINDOWS);
-        older[8..12].copy_from_slice(&(VERSION_WITHOUT_WINDOWS - 1).to_le_bytes());
-        let e = decode(&older).unwrap_err();
-        assert!(
-            e.0.contains("this shards reads") && !e.0.contains("rewrites"),
-            "{e}"
+        let as_saved = |init: Option<u64>| {
+            let snap = Snapshot {
+                init,
+                ..sample(&nowhere(), 1)
+            };
+            encode(&snap, "g-1", &ids).unwrap()
+        };
+        let ours = as_saved(Some(shards_abi::IDENTITY));
+        assert_eq!(saver_refused(&ours), Ok(()));
+        assert_eq!(decode(&ours).unwrap().snapshot.init, Some(shards_abi::IDENTITY));
+        let older = shards_abi::IDENTITY ^ 1;
+        let refused = |bytes: &[u8]| saver_refused(bytes).unwrap_err().unwrap();
+        let other = refused(&as_saved(Some(older)));
+        assert_eq!(
+            other,
+            ResumeRefused::OlderInit {
+                saved_by: SAVED_BY.to_string(),
+                init_abi: older,
+                ours: shards_abi::IDENTITY,
+            }
         );
+        let said = other.to_string();
+        assert!(said.contains(&format!("saved by shards {SAVED_BY}")), "{said}");
+        assert!(said.contains("start it again from its image; its volumes are kept"), "{said}");
+        assert!(matches!(refused(&as_saved(None)), ResumeRefused::OlderInit { init_abi: 0, .. }));
+        let with_format = |format: u32| {
+            let mut bytes = ours.clone();
+            bytes[8..12].copy_from_slice(&format.to_le_bytes());
+            bytes
+        };
+        let released = refused(&with_format(28));
+        assert_eq!(released, ResumeRefused::Unrecorded { format: 28 });
+        assert!(released.to_string().contains("saved by shards 0.7.0"), "{released}");
+        assert_eq!(refused(&with_format(VERSION + 1)), ResumeRefused::Newer { format: VERSION + 1 });
+        // A restore reads none but this build's format.
+        let e = decode(&with_format(VERSION - 1)).unwrap_err();
+        assert!(e.0.contains(&format!("snapshot format {};", VERSION - 1)), "{e}");
+        // Cut within its saver's version, after a head of the generation "g-1".
+        let head = MAGIC.len() + 4 + 4 + std::env::consts::ARCH.len() + 4 + 3 + 4 + 8;
+        let mut cut_short = ours.clone();
+        cut_short.truncate(head + 4 + 1);
+        assert!(saver_refused(&cut_short).unwrap_err().is_err());
     }
 
     /// Backing files are named by absolute path (audit A18).
@@ -2483,103 +2424,42 @@ mod tests {
             );
         }
 
-        /// A user's snapshot of a format before this one, shards 0.6.0's (24) to 0.7.0's
-        /// (28), is refused by a restore until it is migrated: then its state is rewritten
-        /// once, in place, in this build's format, with its generation, files and their
-        /// identities as they were, and restores as it was saved; a second migration finds
-        /// it current and writes nothing. Red before legacy4, which read the older format at
-        /// every restore and had no migration.
+        /// [`resumable`] reads a user's snapshot directory's state and writes nothing: one
+        /// saved with this build's init resumes, one saved with another's or of an older
+        /// format is refused typed and left as it was, and a directory with no snapshot is
+        /// unreadable.
         #[test]
-        fn an_older_formats_snapshot_is_migrated_once_then_restores() {
-            for version in VERSION_WITHOUT_WINDOWS..VERSION {
-                let s = Scratch::new("migrate");
-                let dir = s.0.join("snap");
-                let snap = sample(&s.0, 1);
-                write(&dir, &snap, &ram(1)).unwrap();
-                let name = current(&dir).unwrap();
-                let state = dir.join(&name).join(STATE);
-                let ids = decode(&fs::read(&state).unwrap()).unwrap().identities;
-                fs::write(&state, encode_older(&snap, &name, &ids, version)).unwrap();
-                let e = read(&dir).unwrap_err();
-                assert!(e.contains("rewrites a snapshot of it"), "{version}: {e}");
-                assert_eq!(migrate(&dir), Ok(Migrated::Rewritten { from: version }));
-                assert!(!dir.join(&name).join(MIGRATED).exists());
-                let rewritten = fs::read(&state).unwrap();
-                assert_eq!(decode(&rewritten).unwrap().identities, ids);
-                let pinned = read(&dir).unwrap();
-                assert_eq!(pinned.snapshot, snap, "{version}");
-                assert_eq!(markers(&pinned), (1, 1));
-                assert_eq!(migrate(&dir), Ok(Migrated::Current));
-                assert_eq!(fs::read(&state).unwrap(), rewritten, "written twice");
-            }
-        }
-
-        /// What no migration rewrites faithfully is refused typed and left as it was: a
-        /// format before 0.6.0's (0.3.0 to 0.5.0 wrote 10) or past this build's, a machine
-        /// with DAX windows laid out before each had its head (24 to 27; 0.7.0's 28 is
-        /// rewritten), a body that is not its format's, and a directory with no snapshot.
-        #[test]
-        fn a_snapshot_no_migration_rewrites_is_refused_typed_and_left() {
-            let s = Scratch::new("unmigrated");
+        fn resumable_refuses_another_init_and_leaves_the_snapshot() {
+            let s = Scratch::new("resumable");
             let dir = s.0.join("snap");
-            let name = "g-1";
-            fs::create_dir_all(dir.join(name)).unwrap();
-            fs::write(dir.join(CURRENT), format!("{name}\n")).unwrap();
-            let state = dir.join(name).join(STATE);
-            let ids = vec![Identity::default(); 3];
-            let mut windowed = sample(&s.0, 1);
-            windowed.config.share_window_mib = 64;
-            let as_of = |version: u32| encode_older(&windowed, name, &ids, version);
-            let with_format = |format: u32| {
-                let mut bytes = as_of(VERSION_WITHOUT_WINDOWS);
-                bytes[8..12].copy_from_slice(&format.to_le_bytes());
-                bytes
+            let saved = |init: Option<u64>| {
+                write(
+                    &dir,
+                    &Snapshot {
+                        init,
+                        ..sample(&s.0, 1)
+                    },
+                    &ram(1),
+                )
+                .unwrap();
+                dir.join(current(&dir).unwrap()).join(STATE)
             };
-            let mut cut = as_of(VERSION_WITHOUT_WINDOWS);
-            cut.truncate(cut.len() - 1);
-            for (bytes, refused) in [
-                (with_format(10), MigrateRefused::Format { format: 10 }),
-                (
-                    with_format(VERSION_WITHOUT_WINDOWS - 1),
-                    MigrateRefused::Format {
-                        format: VERSION_WITHOUT_WINDOWS - 1,
-                    },
-                ),
-                (
-                    with_format(VERSION + 1),
-                    MigrateRefused::Format { format: VERSION + 1 },
-                ),
-                (
-                    as_of(VERSION_WITH_CURRENT_WINDOWS - 1),
-                    MigrateRefused::WindowsLaidOutOtherwise {
-                        format: VERSION_WITH_CURRENT_WINDOWS - 1,
-                    },
-                ),
-            ] {
-                fs::write(&state, &bytes).unwrap();
-                assert_eq!(migrate(&dir), Err(refused));
-                assert_eq!(fs::read(&state).unwrap(), bytes, "not left as it was");
-            }
-            fs::write(&state, &cut).unwrap();
+            saved(Some(shards_abi::IDENTITY));
+            assert_eq!(resumable(&dir), Ok(()));
+            let state = saved(Some(shards_abi::IDENTITY ^ 1));
+            let before = fs::read(&state).unwrap();
             assert!(matches!(
-                migrate(&dir),
-                Err(MigrateRefused::Malformed {
-                    format: VERSION_WITHOUT_WINDOWS,
-                    ..
-                })
+                resumable(&dir),
+                Err(ResumeRefused::OlderInit { ref saved_by, .. }) if saved_by == SAVED_BY
             ));
-            assert_eq!(fs::read(&state).unwrap(), cut);
-            fs::write(&state, as_of(VERSION_WITH_CURRENT_WINDOWS)).unwrap();
-            assert_eq!(
-                migrate(&dir),
-                Ok(Migrated::Rewritten {
-                    from: VERSION_WITH_CURRENT_WINDOWS
-                })
-            );
-            assert_eq!(decode(&fs::read(&state).unwrap()).unwrap().snapshot, windowed);
+            let mut older = before.clone();
+            older[8..12].copy_from_slice(&28u32.to_le_bytes());
+            fs::write(&state, &older).unwrap();
+            assert_eq!(resumable(&dir), Err(ResumeRefused::Unrecorded { format: 28 }));
+            assert_eq!(fs::read(&state).unwrap(), older, "written");
             assert!(matches!(
-                migrate(&s.0.join("none")),
-                Err(MigrateRefused::Unreadable(_))
+                resumable(&s.0.join("none")),
+                Err(ResumeRefused::Unreadable(_))
             ));
         }
 
