@@ -51,7 +51,7 @@ mod proc_allocation;
 pub use client::{
     ConfiguredShards, ManagedEnded, ManagedGuest, ManagedUse, ManagedUsed, Shards, attach_managed,
     boot_managed, connect_borrowed, connect_borrowed_before, connect_prepared, final_use_file, pause,
-    prepare_boot, prepare_native_boot, recorded_console_bytes, recorded_console_bytes_at,
+    prepare_boot, prepare_native_boot, recorded_console_bytes, recorded_console_bytes_at, vm_process_file,
 };
 pub use judge::{Found, Judge, Rate, Record, Seen, Span, Stall};
 pub use native::{
@@ -605,6 +605,21 @@ pub enum Refusal {
     HostUse(shards_abi::rate::UseBroken),
     /// [`release_app_containers`] deleted nothing, and why.
     Release(ReleaseRefusal),
+    /// A managed guest's VM process is not named yet, or its record is broken
+    /// ([`ManagedGuest::vm_process`]).
+    VmProcess(VmProcessRefusal),
+}
+
+/// Why [`ManagedGuest::vm_process`] names no VM process (D233's VM process): where its
+/// process has gone, it is [`Refusal::Process`] or [`Refusal::Ended`] instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VmProcessRefusal {
+    /// On Windows, its `shards` has not recorded the VM process it starts yet
+    /// ([`vm_process_file`]): it has not started it, or it is a `shards` from before the
+    /// record.
+    Unrecorded,
+    /// Its record names no process as `PID START` does.
+    Broken,
 }
 
 /// Why [`release_app_containers`] deleted no AppContainer profile of a managed VM's (D141).
@@ -640,6 +655,15 @@ pub struct Identity {
     pub started: u64,
     /// Where its vsock is reached (`--vsock`'s socket).
     pub vsock: PathBuf,
+}
+
+/// A managed guest's VM process, the confined process its VMM runs in and its guest's RAM is
+/// committed to (D233's VM process): by its pid and its start, as [`Identity`] names the
+/// process launched, counted as [`Identity::started`] counts it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VmProcess {
+    pub pid: u32,
+    pub started: u64,
 }
 
 impl std::fmt::Display for Refusal {
@@ -686,6 +710,12 @@ impl std::fmt::Display for Refusal {
             Refusal::Rate(why) => write!(f, "the guest's rate: {why}"),
             Refusal::HostUse(broken) => write!(f, "the guest's use: its VM process answered {broken}"),
             Refusal::Release(why) => write!(f, "the VM's AppContainers: {why}"),
+            Refusal::VmProcess(VmProcessRefusal::Unrecorded) => {
+                f.write_str("the guest's VM process is not recorded yet")
+            }
+            Refusal::VmProcess(VmProcessRefusal::Broken) => {
+                f.write_str("the guest's VM process's record names no process")
+            }
         }
     }
 }

@@ -46,17 +46,32 @@ pub fn keep(from: &mut impl Read, to: &Path) -> Result<bool, String> {
         Ok(_) => return Ok(false),
         Err(e) => return Err(format!("the VM's channel: {e}")),
     }
+    write_whole(to, &text)?;
+    Ok(true)
+}
+
+/// `bytes` recorded at `to`, whole: written beside it, made durable, then renamed over it, so
+/// a reader finds all of them or none.
+fn write_whole(to: &Path, bytes: &[u8]) -> Result<(), String> {
     let mut beside = to.as_os_str().to_owned();
     beside.push(format!(".{}.tmp", std::process::id()));
     let beside = std::path::PathBuf::from(beside);
     let written = std::fs::File::create(&beside)
-        .and_then(|mut f| f.write_all(&text).and_then(|()| f.sync_all()))
+        .and_then(|mut f| f.write_all(bytes).and_then(|()| f.sync_all()))
         .and_then(|()| std::fs::rename(&beside, to));
     if let Err(e) = written {
         let _ = std::fs::remove_file(&beside);
         return Err(format!("{}: {e}", to.display()));
     }
-    Ok(true)
+    Ok(())
+}
+
+/// A managed VM's process named at `to` (`shards_api::vm_process_file`), whole: `PID START`,
+/// as a home's PID files name a process. On Windows, where the VM process is this process's
+/// child, written while that child is still suspended, before it runs.
+#[cfg(any(windows, test))]
+pub fn name_vm(to: &Path, pid: u32, started: u64) -> Result<(), String> {
+    write_whole(to, format!("{pid} {started}\n").as_bytes())
 }
 
 /// `shards final-use PATH`, the keeper of a managed VM's final use on Unix: the VM's channel
@@ -94,6 +109,14 @@ pub fn keeper(mut args: impl Iterator<Item = std::ffi::OsString>) -> std::proces
 pub fn record_of(vsock: Option<&std::ffi::OsStr>, managed: bool) -> Option<std::path::PathBuf> {
     let vsock = std::path::absolute(vsock.filter(|_| managed)?).ok()?;
     Some(shards_api::final_use_file(&vsock))
+}
+
+/// Where a managed VM of `vsock`'s socket is named ([`name_vm`]), as [`record_of`] places its
+/// final use.
+#[cfg(any(windows, test))]
+pub fn vm_record_of(vsock: Option<&std::ffi::OsStr>, managed: bool) -> Option<std::path::PathBuf> {
+    let vsock = std::path::absolute(vsock.filter(|_| managed)?).ok()?;
+    Some(shards_api::vm_process_file(&vsock))
 }
 
 #[cfg(test)]
@@ -146,5 +169,25 @@ mod tests {
         assert_eq!(at("g/v"), Some(std::env::current_dir().unwrap().join("g/v.used")));
         assert_eq!(record_of(Some("/run/g/v".as_ref()), false), None);
         assert_eq!(record_of(None, true), None);
+        assert_eq!(
+            vm_record_of(Some("/run/g/v".as_ref()), true),
+            Some("/run/g/v.vm".into())
+        );
+        assert_eq!(vm_record_of(Some("/run/g/v".as_ref()), false), None);
+    }
+
+    /// A managed VM's process is named whole, as shards-api reads it back: its pid and start,
+    /// nothing left beside it.
+    #[test]
+    fn a_managed_vms_process_is_named_as_shards_api_reads_it() {
+        let dir = shards_testdir::TempDir::new("vm-named").unwrap();
+        let to = dir.join("v.vm");
+        name_vm(&to, 4_294_967_295, u64::MAX).unwrap();
+        assert_eq!(std::fs::read(&to).unwrap(), b"4294967295 18446744073709551615\n");
+        let left: Vec<_> = std::fs::read_dir(&*dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(left, ["v.vm"], "nothing left beside it");
     }
 }

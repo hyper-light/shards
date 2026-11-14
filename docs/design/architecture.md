@@ -27293,6 +27293,59 @@ API's protocol: its output drained, its end, its connections.
     shows a kqueue with NOTE_EXIT is readable to poll(2) on macOS. Owed (ROOT): Linux and
     Windows runs of these (CI's matrix; the Windows WSAEventSelect wait is compiled and run
     there first), and Hex's own campaign through a real VM's offered streams.
+- *Its VM process* (Hex lead's ask, 2026-11-14: "Give the managed guest's orchestrator the
+  confined VM process's identity (pid and start time, as Identity names the host's), so it can
+  read that process's memory as the VMM's"; on Windows `reserve_ram` commits the guest's RAM in
+  shards-vm.exe, not in the `shards` its launcher started). `ManagedGuest::vm_process()`
+  answers `VmProcess { pid, started }`, its start counted as `Identity::started` counts it
+  (`shards_ipc::started`: Linux's starttime, macOS's `ri_proc_start_abstime`, Windows' creation
+  FILETIME).
+  - *Linux and macOS: the launched process itself.* `shards run vm --kernel` becomes shards-vm
+    in place (cli/mod.rs `instead`, `Command::exec`) after starting its broker and keepers as
+    children, so the pid Hex's launcher started is the VM process from the exec on, and its
+    start is kept through exec (Linux sets `start_time` in `copy_process`; XNU sets `p_start` in
+    fork, which posix_spawn's new process takes too; `shards_ipc::started` documents both as
+    "kept through exec"). The answer is the
+    receipt's identity, no record. Before the exec (the launch's own setup, before the VM
+    serves its socket) the same process is still `shards`; nothing else ever holds that pid
+    and start.
+  - *Windows: its `shards`'s child, recorded.* Windows has no exec; `shards` starts shards-vm
+    confined (D141) and waits for it. A managed launch's `shards` (`--host-managed` with a
+    `--vsock`) now starts it suspended (`spawn_suspended`), writes `PID START\n` (the home's PID
+    files' form, `shards_ipc::Named`) whole, by rename, to `vm_process_file(vsock)`
+    (`<vsock>.vm`, beside D260's `.used` in the launcher's private directory), then resumes it:
+    the record is in place before the VM process runs. A record that cannot be written ends the
+    suspended child (its Job's last handle drops) and fails the launch, so no managed VM runs
+    unnamed. Not a wire: a file of one fixed line, read by the API that names its path, so no
+    version; a `shards` from before writes none, answered `Unrecorded`.
+  - *Typed answers* (R04): `Refusal::Ended` once the guest has ended; `Refusal::Process` with
+    `Exited` or `DifferentStart { observed }` where the named process has gone or its pid is
+    another's (each answer is checked against the OS as it is given: `taken::Held::find` on
+    Unix, `borrowed_windows::Held::find` on Windows, held by the process object before its
+    start is compared); `Refusal::VmProcess(Unrecorded | Broken)` on Windows; `ManagedIo`
+    where the record cannot be read.
+  - *Restarts.* None: one VM process serves a managed guest for its life (Unix: one exec;
+    Windows: `shards` starts one child and exits with it; D253's second boot of a template is
+    the run host's, not a managed launch's). Its end is the guest's.
+  - *Literals.* The record's longest, `VM_PROCESS_MOST`: a u32's decimal digits, a space, a
+    u64's, a newline (`shards_abi::rate::decimal_digits`), 32 bytes; read to a byte past it so a
+    longer one is `Broken` unread. Nothing learned, no cold start.
+  - *Tests (light).* shards-api `client::tests::a_managed_guests_vm_process_is_the_launched_process_on_unix`
+    (a real child as the receipt's identity: its pid and start read from the OS answered; an
+    identity of another start refused `DifferentStart` with the observed start; the child
+    killed and reaped, refused `Process`; the guest ended, `Ended`),
+    `a_vm_process_record_names_one_process_or_is_refused` (every host: none `Unrecorded`, the
+    longest read, fourteen malformed or over-long records `Broken`), and its Windows twin
+    `a_managed_guests_vm_process_on_windows_is_the_one_its_record_names` (compiled and run on
+    CI's Windows legs first); shards `final_use::tests::a_managed_vms_process_is_named_as_shards_api_reads_it`.
+    Run on adas-mac-studio-3.local (macOS arm64, Darwin 25) at b2563ac76: red, before it, no
+    `vm_process` to call (the tests do not compile); green, `cargo test -p shards-api --lib --
+    vm_process managed` 18 passed, 1 ignored (every managed test beside the new ones), and
+    `cargo test -p shards --bin shards final_use` 4 passed; the start-and-liveness check dropped
+    (m1), the Unix test failed at its stale identity; `cargo clippy -p shards-api -p shards
+    --all-targets -- -D warnings` clean. Windows' clippy: below. Owed (ROOT): the Windows twin
+    and a real managed launch on WHP, its record read against shards-vm.exe's own pid and
+    creation time; a real managed launch on HVF and KVM, the answer read against shards-vm's.
 - *The report.* D232's report reaches the client on its private pipe: one complete scoped
   frame by the deadline, anything else uncertainty. On Windows the pipe is a named pipe, as
   Windows' anonymous pipes are (which take no overlapped reads), with a name of the
