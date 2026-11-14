@@ -76,6 +76,8 @@ Ranking: P0 critical; P1 high security/resource priority; P2 high correctness pr
 
 **Native macOS follow-up (2026-11-13):** at main6389b6e09 the test's immediate nonblocking receive can precede loopback readability, failing first-answer admission before exercising replacement. Reproduced natively on Mac3 in test-release; 68968478b makes the test wait for the actual poller token before dispatch, as production already does. Authority code is unchanged. Commands and final gates: `docs/research/measurements/network-fixes-v1/README.md#network-03-native-macos-readiness-regression`.
 
+**Status (2026-11-14):** the failing test is fixed in 68968478b (the test's own readiness wait; production unchanged). Same Mac, loaded: before it (6389b6e09) the test failed 20 of 20 alone at lib.rs:4076; at main 97f404be8 it passed 50 of 50 alone and the whole shards-net lib 10 of 10 (`cargo test -p shards-net --profile test-release --lib dns_answers_replace_the_names_previous_authority`, adas-mac-studio-3; `docs/research/measurements/network-fixes-v1/mac03-loop.log`). The test called `on_udp` straight after the resolver's `send_to`; macOS loopback had not made the datagram readable yet, so the nonblocking `recv` found nothing and the first answer was never learned. Its pass in a whole-lib run (creds lane, 9f162fcdf; one of two here) is the same race lost the other way: other tests' threads delay the test past delivery.
+
 ### network-04 — P1 / high: UDP holder changes can reuse a still-live conntrack zone and restore an old destination
 
 **Location:** `crates/init/src/chooser.rs:465`; `crates/init/src/links.rs:1561`. New chooser behavior in the review range.

@@ -478,6 +478,19 @@ the contention rule. Native target cleanup r31 exited0. ROOT notification was
 rejected by Kiln429backpressure; acceptance is not claimed. Network08 resumed
 only after that landing, on p/fix-network-v1, preserving its unlanded work.
 
+### network-03 loop at main (2026-11-14, Claude takeover lane)
+
+ROOT asked whether the failure was intermittent at main. On one loaded Mac
+(adas-mac-studio-3, arm64), the pre-fix test at 6389b6e09 failed 20 of 20 runs
+alone; at main 97f404be8, with 68968478b's wait on the stack's own poller, it passed
+50 of 50 alone and the whole shards-net lib 10 of 10 ([log](mac03-loop.log)). The
+pre-fix test also failed one of two whole-lib runs: alone it loses the race between
+loopback delivery and its immediate nonblocking receive every time, beside other
+tests' threads only sometimes, which is why a whole-lib run could pass. The test
+depended on no other ordering: the resolver's question is read with a blocking
+`recv_from`, the poller's `wait` empties its event list first (poll.rs), and
+`a_records` parses deterministically. Fixed by 68968478b.
+
 ## network-08: independent DNS relay clients
 
 Red7aa3c4a34, Kiln r25, Mac3 Docker native Linux6.12.65-linuxkit aarch64 /
