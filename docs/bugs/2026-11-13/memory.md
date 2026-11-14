@@ -36,7 +36,7 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 
 **Test sketch:** Extend Windows window tests with READ then WRITE ranges of the same node using distinct RO/RW handles. Grow the file, reconcile, assert the old data at window offset `2 MiB + 4096` remains `0x5a`, write `0xa5` there, flush, and assert the host file contains `0xa5`. The existing file-window test supplies RW handles for every map and misses this interleaving.
 
-**Status (2026-11-14):** fixed in 7f0cb8ce9 (red `devices::virtio::fs::window::tests::a_range_mapped_to_be_written_after_one_to_be_read_stays_its_files` and `a_range_no_view_of_its_file_can_be_made_for_is_refused_never_zeros`, 4697f1e7b: zeros read where the file holds 0x5a on Windows 10.0.26200 x86_64; PM M571, `docs/research/measurements/windows-p0/`).
+**Status (2026-11-14):** fixed in 7f0cb8ce9 (red `devices::virtio::fs::window::tests::a_range_mapped_to_be_written_after_one_to_be_read_stays_its_files` and `a_range_no_view_of_its_file_can_be_made_for_is_refused_never_zeros`, 4697f1e7b: zeros read where the file holds 0x5a on Windows 10.0.26200 x86_64; PM M572, `docs/research/measurements/windows-p0/`).
 
 ### memory-02 — P1 / high — Live copying races virtio-mem unplug and reads inaccessible memory
 
