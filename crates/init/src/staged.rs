@@ -82,9 +82,8 @@ pub struct MountPoint<'a> {
 /// (uid, gid) with its mode: the directories on the way, its home's own among them, made
 /// 0700 and owned so where they are missing; nothing followed that a link could redirect;
 /// a file there before (a run's, on a volume that outlives it) replaced, as nothing of the
-/// member runs yet to read it; a path staged twice refused. `home` says why there is none
-/// where the member has no home it may write: a member given files then is refused, as it
-/// would never read them.
+/// member runs yet to read it; a path staged twice refused. Every final target is routed
+/// through the visible mount plan, with read-only covers refused before any write.
 pub fn files(
     home: &str,
     mounts: &[MountPoint<'_>],
@@ -96,12 +95,8 @@ pub fn files(
     if staged.is_empty() {
         return Ok(());
     }
-    let writable: Vec<_> = mounts.iter().filter(|p| !p.read_only).collect();
-    let points: Vec<_> = writable.iter().map(|p| p.path).collect();
-    let (index, beneath) = crate::domains::home_in(home, &points).ok_or_else(|| {
-        format!("files are staged for member {member}, whose HOME is no place it may write")
-    })?;
-    let mount = writable.get(index).ok_or("the home mount is missing")?.mount;
+    destination(home.as_bytes(), mounts)
+        .map_err(|e| format!("files are staged for member {member}, whose HOME {e}"))?;
     let mut paths = std::collections::BTreeSet::new();
     if let Some(f) = staged.iter().find(|f| !paths.insert(f.path)) {
         return Err(format!(
@@ -109,16 +104,37 @@ pub fn files(
             String::from_utf8_lossy(f.path)
         ));
     }
-    let held;
-    let mount = match mount {
-        Mount::Held(fd) => fd,
-        Mount::At(at) => {
-            held = std::fs::File::open(at).map_err(|e| format!("its volume at {at}: {e}"))?;
-            held.as_fd()
-        }
-    };
-    for f in staged {
-        write(mount, &beneath, owner, &f).map_err(|e| {
+    // Validate the entire plan before changing any backing volume. Paths may contain
+    // non-UTF-8 bytes; routing compares components without lossy conversion.
+    let targets: Vec<Vec<u8>> = staged
+        .iter()
+        .map(|f| [home.as_bytes(), b"/", f.path].concat())
+        .collect();
+    let places = targets
+        .iter()
+        .map(|path| {
+            let place = destination(path, mounts)?;
+            if place.1.is_empty() {
+                return Err(DestinationRefused::MountPoint);
+            }
+            Ok(place)
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("staging for member {member}: {e}"))?;
+    for (f, (mount, parts)) in staged.iter().zip(places) {
+        let (name, beneath) = parts
+            .split_last()
+            .ok_or_else(|| DestinationRefused::MountPoint.to_string())?;
+        let held;
+        let mount = match mount {
+            Mount::Held(fd) => fd,
+            Mount::At(at) => {
+                held = std::fs::File::open(at).map_err(|e| format!("its volume at {at}: {e}"))?;
+                held.as_fd()
+            }
+        };
+        let relative = members::File { path: name, ..*f };
+        write(mount, beneath, owner, &relative).map_err(|e| {
             format!(
                 "staging {} into member {member}: {e}",
                 String::from_utf8_lossy(f.path)
@@ -128,9 +144,60 @@ pub fn files(
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DestinationRefused {
+    Outside,
+    ReadOnly,
+    MountPoint,
+}
+
+impl std::fmt::Display for DestinationRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Outside => "is no place it may write",
+            Self::ReadOnly => "is covered by a read-only mount",
+            Self::MountPoint => "a staged file would replace a mount point",
+        })
+    }
+}
+
+fn destination<'p, 'm>(
+    path: &'p [u8],
+    mounts: &[MountPoint<'m>],
+) -> Result<(Mount<'m>, Vec<&'p [u8]>), DestinationRefused> {
+    let path = path.strip_prefix(b"/").ok_or(DestinationRefused::Outside)?;
+    let parts: Vec<_> = path
+        .split(|&b| b == b'/')
+        .filter(|p| !p.is_empty() && *p != b".")
+        .collect();
+    if parts.contains(&&b".."[..]) {
+        return Err(DestinationRefused::Outside);
+    }
+    let (point, depth) = mounts
+        .iter()
+        .filter_map(|point| {
+            let names: Vec<_> = point
+                .path
+                .as_bytes()
+                .split(|&b| b == b'/')
+                .filter(|p| !p.is_empty() && *p != b".")
+                .collect();
+            parts.starts_with(&names).then_some((point, names.len()))
+        })
+        .max_by_key(|(_, depth)| *depth)
+        .ok_or(DestinationRefused::Outside)?;
+    if point.read_only {
+        return Err(DestinationRefused::ReadOnly);
+    }
+    Ok((
+        point.mount,
+        parts.get(depth..).ok_or(DestinationRefused::Outside)?.to_vec(),
+    ))
+}
+
 fn write(
     mount: BorrowedFd<'_>,
-    beneath: &[&str],
+    beneath: &[&[u8]],
     (uid, gid): (u32, u32),
     f: &members::File<'_>,
 ) -> io::Result<()> {
@@ -138,11 +205,7 @@ fn write(
     let name = CString::new(parts.next().unwrap_or_default()).map_err(io::Error::other)?;
     let dirs = parts.next().map(|d| d.split(|&b| b == b'/'));
     let mut dir: Option<OwnedFd> = None;
-    for part in beneath
-        .iter()
-        .map(|c| c.as_bytes())
-        .chain(dirs.into_iter().flatten())
-    {
+    for part in beneath.iter().copied().chain(dirs.into_iter().flatten()) {
         let at = dir.as_ref().map_or(mount.as_raw_fd(), AsRawFd::as_raw_fd);
         dir = Some(directory(at, part, (uid, gid))?);
     }

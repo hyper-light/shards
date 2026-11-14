@@ -25036,6 +25036,14 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
   in neither are refused, as it would never read them. Before, the files went to the
   scratch whatever `HOME` said, and a harness whose `HOME` was a volume never read them
   (reproduced, docs/research/measurements/s7-home-workdir).
+- *Nested HOME mounts* (confine-03, 2026-11-13): staging receives the complete
+  member mount plan, including read-only covers and declared/image-resolved names.
+  Each final HOME-relative target selects its deepest visible mount. All destinations
+  are checked before writing; a read-only cover or a target equal to a mountpoint is a
+  typed refusal, rendered at the existing setup-error boundary. Byte components are
+  preserved, and the backing-directory walk still follows no symlinks. No writable
+  ancestor can receive files hidden behind a nested mount. Red/green evidence and
+  remaining real-guest validation: [fix-confine-v1](../research/measurements/fix-confine-v1/README.md).
 - *A member's working directory* (2026-11-12, kiln plan 01a1cd8e862e7169a074db3d5fa33f3d,
   step 7): `MemberSpec::workdir`, the project path it works in, carried in the request's
   version 4 and staged as `member-workdir=<index>\0<path>`, one for a member. It is absolute

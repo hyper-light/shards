@@ -669,30 +669,6 @@ fn command_line<'a>(program: &'a CStr, d: &'a Domain, args: &'a [CString]) -> Ve
         .collect()
 }
 
-/// Where `home`, a member's `HOME`, lies among the mounts it may write as it starts, each by
-/// its mount point in its view (`points`: its scratch's `/tmp`, a writable volume's as
-/// declared and as it lies in the image): the deepest that is `home` or holds it, by its
-/// place in `points`, and `home`'s components beneath it. None where none does, or where
-/// `home` is no absolute path that stays where it says (`..`).
-pub(crate) fn home_in<'h>(home: &'h str, points: &[&str]) -> Option<(usize, Vec<&'h str>)> {
-    let comps: Vec<&str> = home
-        .strip_prefix('/')?
-        .split('/')
-        .filter(|c| !c.is_empty() && *c != ".")
-        .collect();
-    if comps.contains(&"..") {
-        return None;
-    }
-    let plain = format!("/{}", comps.join("/"));
-    let (at, point) = points
-        .iter()
-        .enumerate()
-        .filter(|(_, p)| within(&plain, p))
-        .max_by_key(|(_, p)| p.len())?;
-    let depth = point.split('/').filter(|c| !c.is_empty()).count();
-    Some((at, comps.get(depth..).unwrap_or_default().to_vec()))
-}
-
 /// Whether `p` is relative and stays inside the directory it is relative to: the twin of
 /// the build's (shards_image osi.rs `inside`), as init links no host crate.
 fn inside(p: &str) -> bool {
@@ -3493,32 +3469,6 @@ mod tests {
             "{e}"
         );
         assert!(d("/etc").is_err());
-    }
-
-    /// A member's HOME lies in the deepest of its writable mounts that holds it, however it
-    /// is written but for `..`; what is staged for it goes there (staged.rs), never to a
-    /// mount beside it.
-    #[test]
-    fn a_members_home_lies_in_the_deepest_mount_that_holds_it() {
-        let points = ["/tmp", "/var/home/claude", "/home/claude", "/home/claude/.cache"];
-        assert_eq!(home_in("/tmp", &points), Some((0, vec![])));
-        assert_eq!(home_in("/tmp/h/i", &points), Some((0, vec!["h", "i"])));
-        assert_eq!(home_in("/home/claude", &points), Some((2, vec![])));
-        assert_eq!(home_in("//home/claude/./", &points), Some((2, vec![])));
-        assert_eq!(home_in("/home/claude/.cache/x", &points), Some((3, vec!["x"])));
-        assert_eq!(home_in("/var/home/claude/w", &points), Some((1, vec!["w"])));
-        for nowhere in [
-            "/root",
-            "/home",
-            "/home/claudette",
-            "tmp",
-            "",
-            "/tmp/../etc",
-            "/home/claude/../x",
-        ] {
-            assert_eq!(home_in(nowhere, &points), None, "{nowhere}");
-        }
-        assert_eq!(home_in("/tmp", &[]), None);
     }
 
     /// A domain of `argv` whose directory is `dir`.
