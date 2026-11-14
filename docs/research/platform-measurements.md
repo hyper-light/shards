@@ -24345,3 +24345,19 @@ and policy check passed on macOS arm64. The tests cover chunked/length refresh
 and revoke bodies, partial arrival, retries and a forwarded code exchange. The
 100 response is RFC 9110 §10.1.1's protocol response, no chosen timer or allowance.
 Commands, red/green excerpts, exact source revisions and unrun work are linked above.
+
+### Control-04/05: idle member input and lifetime cap metadata (2026-11-13, D240)
+
+adas-mac-studio.local, Darwin 25.2 arm64, implementer/control, policy df2acf47.
+Control-04: actual idle input reader held its feeder past INPUT_ENDED, red a39889e30
+Err(Timeout), fixed by owning and ending its IPC reader (151642d8c). At 76ace2f18 all
+32 session tests pass, including reader return with its writer retained, then write
+refusal. Control-05: actual cap-loss metadata grew with lifetime evictions, red
+738e3212d tested at ea6614b8b; fixed 76ace2f18 uses a durable cumulative record,
+at most 46 serialized bytes derived from two u64 decimal widths and syntax, legacy
+history streamed with fixed format-derived buffers. All 5 cap tests and clippy for
+shards/API/IPC pass. No VM or helper ran (inert embed inputs for filesystem-only unit
+checks). Windows physical old-version reclamation, fd/heap profiles and real-VM
+lifecycle propagation are owed, not passed. Control-06 needs a real stalled attached
+client red; control-08 remains owed with notification design, no substituted timer.
+[Commands, raw logs, designs and R01–R16 gaps](measurements/control-fixes-v1/README.md).

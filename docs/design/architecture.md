@@ -8057,6 +8057,16 @@ holds its output open); the answer waited for under the hosts' lock; a wait neve
 
 ### D185. The client and its daemon meet through files in the home (built)
 
+**Control-08 follow-up (2026-11-13), owed to ROOT.** The inherited `UNWATCHED`
+250 ms fallback in log lanes remains picked and violates R03; it is not validated by
+its reuse. Proposed design: notify the authoritative writer's append, rotation and
+terminal transitions over a shared per-run notification source, subscribing before
+checking the current segment to avoid a lost wakeup. Member append already crosses
+the host keeper; command append in the VM needs a compatible host notification. Cold
+start must establish that source or return typed watch-unavailable, rather than choose
+a first polling period. Cancellation and source end must wake the same wait. No new
+protocol or timing behavior is implemented here; [required fault scenario and proof](../research/measurements/control-fixes-v1/README.md).
+
 **Why.** shards is filesystem based (the user, repeatedly; 2026-10-18: `daemon.sock` was an
 error). Its own interfaces are files in the home; a socket stays only where an outside
 client's protocol demands one: the Engine API's `engine.sock` (D170), a context's
@@ -27236,6 +27246,14 @@ and no exec, attach or terminal (the plan's steps 5, 6 and 7).
   (AES-256-GCM, D239; the owner's key pinned), one record in flight, resumed a record behind and
   never ahead; an owner's lost connection takes nothing from the member. Design, literals and
   tests: D180's "A member's stdin, a stream its owner writes";
+  An orchestrator's session owns a cancellation handle for each taken input
+  (`session.rs`, control-04): member input end, run end, host answer end and session drop
+  end the actual reader, including one idle in a read. Its public writer stays a
+  `PipeWriter`; Unix uses the existing byte Stream pair, Windows an overlapped Stream
+  reader with a synchronous byte-pipe writer. Its Windows quota is the admitted ABI
+  `run::CHUNK`, not an upstream default. A post-read lifecycle check sends no newly read
+  bytes after a known end; a failed feeder spawn releases its cancellation handle.
+  [Red/green and Windows execution owed](../research/measurements/control-fixes-v1/README.md).
   record: [member-stdin-v1](../research/measurements/member-stdin-v1/README.md). Its
   connections are admitted as an exec's are (D16, "An exec's connection").
 - *stdout and stderr, captured whole* (P3). Each channel apart, its bytes as the member wrote
@@ -27317,7 +27335,10 @@ and no exec, attach or terminal (the plan's steps 5, 6 and 7).
     (`daemon/files.rs`, once the VM has its next segment): the command's newest grows unseen between
     its rotations, by a segment at most, which is the bound's one segment.
   - *Each owner's loss.* Each segment the cap lets go is its owner's record, `log.capped` beside its
-    log: a line of the segment and its output's bytes. `logs` says, on stderr, before what is kept,
+    log: cumulative segment and byte counts, durably replaced by the existing platform
+    atomic-write seam. A legacy segment/bytes history is streamed through fixed format-derived
+    buffers and replaced on the next loss; no log-open allocation follows lifetime history.
+    Windows readers select the newest version. `logs` says, on stderr, before what is kept,
     how much of each log's older output went to the run's one log cap; a log lane says it as
     `Rotated { oldest }` (D238). A segment its own retention let go meanwhile is no loss of the cap's.
   - *Compressed as the run's.* A member's segments rotated as they fill are compressed on the
@@ -27328,8 +27349,13 @@ and no exec, attach or terminal (the plan's steps 5, 6 and 7).
     left. A hold that fails (its disk) is said in the daemon's log, and holds again once a bound's
     worth more is kept; its logs keep their output meanwhile.
   - *Literals.* None chosen: the bound is the person's configured cap or the run's own log options;
-    `log.capped` is a name no segment takes (`logs::segment_of`); each record's line is the segment's
-    number and its bytes.
+    `log.capped` is a name no segment takes (`logs::segment_of`); its summary is `sum `,
+    two decimal u64 counters, their separator and newline. Its maximum serialized size is
+    therefore 46 bytes; counters use checked addition and malformed/overflowing old records
+    return InvalidData. The keeper serializes updates, disk remains authoritative, no cache
+    or timer is introduced. The private run/member directories retain the metadata's owner
+    boundary. Control-05 red/green and remaining Windows/version/profile checks:
+    [record](../research/measurements/control-fixes-v1/README.md).
   - *Tested* (light, on macOS arm64), red first, each with its behaviour absent (record:
     [agent-control-v1](../research/measurements/agent-control-v1/README.md)):
     - `daemon::managed::drain::tests::a_members_log_is_kept_and_counted_in_its_runs_cap`

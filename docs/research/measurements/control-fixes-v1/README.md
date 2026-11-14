@@ -138,3 +138,133 @@ green reader/writer plus boundary guards. R11 shared source, macOS arm64 run; ot
 owed CI/ROOT. R15/R16 focused tests only, owned target cleaned after landing. ROOT owes a
 real member exec with >4 MiB argv under sufficient stack rlimit on its supported VM hosts;
 this unit proof establishes framing, not that every guest stack configuration accepts argv.
+
+## Control-04: idle input cancellation
+
+Red a39889e300b07e27efa71b4afec546c42c619ff8, new-turn kiln r7 on
+adas-mac-studio.local, Darwin 25.2 arm64:
+`cargo test -j 4 -p shards-api an_ended_members_idle_input_releases_its_feeder`
+failed with `member end retained its idle input feeder`, Err(Timeout). The test
+announces entry into the actual reader, retains its writer, tells INPUT_ENDED,
+then releases and joins the reader before asserting the failure. Earlier r4/r5
+(missing Read import) and r6 (Rust 2024 opaque lifetime capture) were test-setup
+compile failures, not valid red evidence. [Actual red](logs/r7.log).
+
+Fix 9f2ce624afdc62d4f197480c864adae478b67fb3, completed by
+151642d8c16229969aa3826efc75aec29a432760: InputFlow owns a clone of the actual
+IPC reader. Input-ended, run-ended, answer-channel-ended and session drop call
+`shards_ipc::end` on it. The feeder rechecks the authoritative lifecycle after
+read, before emitting bytes or EOF. Spawn failure releases the clone and resets
+the take flag. The ordinary public PipeWriter interface is unchanged.
+
+The existing IPC Stream seam is used, avoiding a second pump or periodic probe.
+Unix converts the pair's writer OwnedFd to PipeWriter; reads use ipc::read for
+XNU's half-close behavior (M236). Windows uses its existing overlapped server
+Stream and a synchronous client PipeWriter, byte mode: an overlapped client would
+violate std::io::PipeWriter's synchronous Write contract. Existing native cancellation
+and peer-close detection are retained, not reimplemented. The Windows requested
+pipe room is run::CHUNK (the admitted ABI input record), rejects zero, and is a
+quota hint, not a new bound on Unix socket memory. Source contracts: Rust std's
+`library/std/src/sys/pal/windows/handle.rs` synchronous write and `pipe.rs`, and
+Microsoft [CreateNamedPipeW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createnamedpipew)
+(buffer quota), [synchronous/overlapped I/O](https://learn.microsoft.com/en-us/windows/win32/ipc/synchronous-and-overlapped-input-and-output).
+Windows execution and all real-VM propagation are unverified here.
+
+At ea6614b8b, r8 passed all 32 session tests and API/IPC clippy. At final source
+76ace2f1842bd9c056d745532be8b5622269d18c, r9 again passed all 32 session tests
+(including exact bytes then EOF, final captured output, and idle-input cancellation)
+and clippy for shards, shards-api and shards-ipc. The new cleanup test also verifies
+a subsequent held-writer write fails. It proves feeder return, not process-wide
+fd/heap counts. [Final combined log](logs/r9.log). No guard-removal mutation beyond
+the retained red source was run.
+
+## Control-05: bounded cap-loss metadata
+
+Red 738e3212d3ef67b4f4b4237df82ab1aa9d9a81e6, tested in ea6614b8b by r8:
+`cargo test -j 4 -p shards a_caps_loss_record_is_bounded_by_its_totals_not_its_history --bin shards`
+failed `lifetime eviction history remained on disk`. This drives the actual record
+function for 128 losses and checks exact totals and serialized metadata size.
+[Red](logs/r8.log). It is filesystem evidence, not an allocation profile.
+
+Fix 76ace2f1842bd9c056d745532be8b5622269d18c writes `sum segments bytes` with
+checked u64 totals, using existing platform::write_in durable whole replacement
+(Unix fsync/rename/directory sync; Windows versioned whole files). Readers use
+open_newest_in. A fixed stack chunk and line are each derived from the longest
+format line, `sum ` plus two decimal u64s and one separator; with newline the
+record is at most 46 bytes. Legacy `seq bytes` histories are streamed with the
+same bounded memory and replaced at the next eviction. Invalid data, oversized
+lines and counter overflow return InvalidData; no lifetime-sized allocation,
+cache, production timer or learned cold-start estimate is introduced.
+
+The existing keeper lock serializes cap updates; concurrent readers get an old
+whole or new whole record. Atomic replacement creates mode 0644 on Unix inside
+the existing private run/member directories, so its authority boundary remains
+that directory; the metadata has aggregate counts only. Windows can retain older
+versions while an external reader holds them: bounded current format is proved,
+physical retention under Windows holds is not. Legacy open time remains linear
+until the next eviction migrates it. No crash-injection claim is made about the
+pre-existing segment-removal-before-loss-record order.
+
+R9 at 76ace2f18, same Mac: `cargo test -j 4 -p shards daemon::managed::cap::tests --bin shards`
+passed all 5, including exact totals, cross-owner accounting, rotations, legacy
+migration, and oversized legacy line refusal. `cargo clippy -j 4 -p shards -p shards-api -p shards-ipc --all-targets -- -D warnings`
+clean. [Green](logs/r9.log). For these filesystem-only tests/checks the build used
+SHARDS_HELPERS=skip and SHARDS_INIT_BINARY=SHARDS_SERVER_BINARY=/usr/bin/true, preventing
+nested guest/helper builds; no helper or VM ran and none is claimed validated.
+
+## Control-06 and control-08: explicitly owed
+
+Control-06 has no actual lifecycle red here. ROOT must extend the existing live
+fixture and run:
+`cargo test -p shards --test managed_output supplied_owner_output_keeps_bytes_ack_cancel_and_neighbor_progress_independent -- --exact --nocapture`.
+The existing test does not establish this defect. Missing witness: attach a run
+with drained member output, leave its stderr reader open but unread, establish
+that managed-shown entered its blocked write, then stop and remove the run without
+releasing that reader; require viewer thread and run-owned fd return, and neighbor
+capture progress. Record baseline and changed source plus cleanup after failure.
+A fake blocked Write alone cannot prove real-client lifetime behavior. This is
+not a claim that daemon process exit waits on that worker.
+
+If confirmed, use a cancellable write adapter tied to the run/viewer lifecycle,
+with readiness on both output and cancellation. Do not set O_NONBLOCK on a dup of
+client stderr (it shares file-status flags), add a picked retry timeout, or move the
+blocked File into another detached worker. Windows needs a native cancellation
+state machine that covers cancellation racing entry into a synchronous write;
+a CancelSynchronousIo call before entry alone is insufficient. This cross-platform
+adapter remains design/implementation work, not a landed fix.
+
+Control-08 is a documented R03 source violation, not a runtime measurement. No
+replacement interval was chosen. Design owed: one per-run authoritative producer
+notification for append, rotation and terminal/cancel changes; subscribe before
+reading current state and recheck it before sleeping. Member logs can notify at
+the host keeper. Command logs are appended by the VM process and need a compatible
+host notification over an existing control connection. If watch and notification
+setup both fail at cold start, return a typed watch-unavailable refusal (requiring
+wire compatibility design) rather than invent an initial wait period. Resource
+availability can notify retry without a clock. No learning scheme is claimed.
+
+ROOT must add watch-failure injection to the existing api_image log-lane fixture,
+then run `cargo test -p shards --test api_image -- --nocapture`, proving append,
+rotation, end and lane abort without periodic probes under that fault. That command
+alone currently does not inject the fault. Measure idle/cold/load CPU and wakeup
+latency only after the notification design is implemented. Until then control-08
+remains owed with design, exactly as allowed by fix-brief.md.
+
+## Rules for control-04/05 and outstanding work
+
+| Rules | Proof and remaining gap |
+|---|---|
+| R01 | Checked counts/line offsets, fallible summary allocation, typed I/O errors; clippy clean. Existing feed AHEAD buffer allocation unchanged; full allocator audit remains ROOT's. |
+| R02/R03 | Existing IPC and durable-file seams; native contracts above; ABI CHUNK and decimal-u64 format bounds, no chosen timer. Alternatives: helper copies retain the same cancellation problem; append history cannot bound lifetime storage. No new learned cold state. |
+| R04 | InputFlow reader owned until terminal transition; authoritative end rechecked after read. Summary parsing has explicit invalid/overflow errors. |
+| R05/R12 | Actual reader is cancelled, no probe/cache/parallel relay. Disk authoritative; cap keeper serializes writers. Native Windows adapter necessary for public synchronous PipeWriter. |
+| R06/R07/R13 | Focused factory/close seam, streaming parser, comments explain native cancellation and legacy format; no manager or duplicated codec. |
+| R08/R14 | No comparative speed/memory claim, allocation profile or ratios. ROOT owns these, Windows retained versions and process-wide resource counts. |
+| R09/R10 | Actual reader Timeout and on-disk growth reds, retained source and logs, green exact lifecycle/bytes/totals guards; no extra mutation run. 06/08 have no runtime red and remain owed. |
+| R11 | macOS arm64 tested once per snapshot on the same runner. Linux guest-only 02/03 tested natively x86_64. All unrun Windows, other architectures/libcs and VM propagation remain unverified, CI/ROOT's. |
+| R15/R16 | Implementer light tests only, one cargo at a time, named owned clone/targets. No subagents, vendors, benchmarks, sweeps or VMs. Remove owned targets after landing; preserve signed sources/evidence. |
+
+Policy script and seven-target matrix are unrun here: the binding task restricts
+implementer commands to focused cargo checks; ROOT/CI own the policy and integration
+gates. No outside-area defect was added to this task. ROOT's inbox rejected status
+messages with backpressure (pending 4, authority 3); delivery has not been claimed.
