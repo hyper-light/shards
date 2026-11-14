@@ -12254,6 +12254,16 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
       scripts, and the registry's credential helpers, whose own copies of that writer
       (`common::program`, `program_copy`, credentials.rs' `program`, auth.rs' `helper`'s) and
       install(1) are gone. No exec meets ETXTBSY, so nothing waits one out.
+    - *2026-11-14: the writer is a forked child, not sh or cp.* boot.rs'
+      `snapshot_tests_pass_on_a_kvm_host_of_this_architecture` runs the E2E binaries in an
+      arm64 Linux guest whose `PATH` is an empty `/e2e/bin`, with no /bin/sh: every test there
+      failed in `common::place` with `NotFound` from spawning `cp` (HVF, Adas-Mac-Studio-3,
+      main 1f71dea19). `program` and `program_copy` now fork a child that opens, writes or
+      copies, `fchmod`s 0755 and exits with its errno, calling only async-signal-safe
+      functions (POSIX `fork()`); no program is run, so a host needs no tools for a test to
+      write one. The test process never holds the file's write descriptor, as before.
+      `programs_are_written_where_no_tools_are` (testdir) writes and copies with `PATH` an
+      empty directory: red `NotFound` on cp, green on the child.
   - *The call sites.* The terminals' exit waits and Windows' modes are a `Wait` on the
     shell's party (terminal.rs, terminal_windows.rs). vsock.rs' 60 s `TIMEOUT` and its 20 s
     read are `Following` reads, its greeting a `within`. confined.rs' record wait and its
@@ -27772,6 +27782,46 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
       (#77, ROOT's KVM run c33's same refusal): each of its stages is a kind of its own
       (call site and awaited text, numbers generic), and a machine of the test's process
       progresses while its process's threads beside its waiter run.
+    - *No window shorter than its looks resolve* (b26, ROOT's HVF batch at 1f71dea19, PM
+      M592). The run socket's judged send (`RunSocket::send`, `Answers::run_send`) teaches its
+      kind from every send, and one that found room at once taught a W* of about one look's
+      cost: 9.583 µs. A later send that did wait was refused 16.584 µs past its first look,
+      29.958 µs in ("its process ran no CPU in 16.584µs past the slowest answer seen
+      (9.583µs)", moved.rs:645 and three more moved.rs tests, containers.rs:2257; KVM's
+      plug.rs:177 said "its guest: " and nothing, the DEVICE exec's cut dropped). Over such a
+      window a reading shows nothing of a run: XNU adds a thread's run to its task's times
+      (proc_pid_rusage) as the thread leaves its CPU or enters the kernel, which its quantum
+      timer makes one each tick, and Linux's process CPU clock, read from another process,
+      holds a thread running on another CPU as of that CPU's last tick (kernel/sched/cputime.c
+      `thread_group_cputime`; CI's aarch64 run 43575280954 saw 2.6 ms of a spinning thread
+      unshown). Measured (PM M592): a spinning child's macOS times grew in steps of p50 12 µs,
+      p90 182 µs, p99 3.7 ms, max 12.9 ms. So a reading's resolution (`Watch::resolution`) is
+      its step, not its unit: the counter's unit or the kernel's tick, whichever is longer,
+      each the OS's own statement where it runs, none chosen: macOS's tick is
+      `kern.clockrate`'s `tick` (sysctl(3) KERN_CLOCKRATE; 10 ms, hz 100, on macOS 26), Linux's
+      the resolution of CLOCK_MONOTONIC_COARSE (clock_getres(2): one jiffy, `LOW_RES_NSEC`).
+      Windows' reading, QueryProcessCycleTime, keeps its resolution of none: whether it
+      shows a thread running on another CPU before its next interrupt is unmeasured (owed).
+      The judge then looks, and refuses, on a window of W* or its floor, whichever is longer
+      (`Judge::window`): the floor is the coarsest resolution of its looks' counters and the
+      longest of its looks, each learned from the wait's own spans (`Span`), so a W* below
+      what its looks resolve is looked at no more often than a look takes or a tick passes
+      (main's looked each 9.583 µs) and refuses over no shorter a window. Cold start: before
+      its first look a judge has no floor, and every judged wait's first look is its based
+      one, taken as it begins (`Follow::begin`), which sets it before its first due. Failure:
+      a tick that cannot be read refuses the follow typed (`ProcessFailure`, macOS's
+      `ProcessOperation::ClockRate`), never taken for no progress. The daemon's other
+      readers keep the same standard: a cgroup's emptying (`parents::emptied`) judges its
+      looks over its readings' resolution, and an end's watcher (`ends::Followed::goes_on`)
+      takes a look sooner than its reading's step after the look before as no evidence, its
+      end going on, the look before kept. An exec the judge ended says so wherever its
+      answer is read (`reclaim::said_of`: a DEVICE step, a resource update, a network's
+      switch), where plug said "its guest: " with nothing after. Red/green: health.rs'
+      `a_wait_is_never_refused_within_what_its_reading_resolves` (a 10 µs W*, an idle
+      process: refused only once a whole tick, read apart from shards-api, has shown it
+      still; red with the unit as the resolution, refused microseconds in) and judge.rs'
+      `a_w_star_below_what_its_looks_resolve_is_judged_over_what_they_do` (the moved.rs run's
+      own times). Whether the five HVF tests and plug.rs pass on real VMs is ROOT's run's.
     - *Only an answer waited for teaches* (#77; docs/bugs/2026-11-13/waits.md waits-03). A
       test's wait moves through explicit stages (common/mod.rs `Stage`): `Begun`, its
       answer not yet found missing; `Awaited`, found missing at least once, by a look
@@ -28265,7 +28315,24 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
     listing, refused by `proc_pidinfo` and by a `NOTE_EXIT` watch (ESRCH), and its waitid(2)
     end came 466 µs later. Watched before it is signalled, each process a round ends
     is waited on by its exit word; one still exiting after it (between `NOTE_EXIT` and
-    `SZOMB`), or exiting before the look, is listed until it is a zombie and looked at again. A host that ends as it should has reaped what it started, and its
+    `SZOMB`), or exiting before the look, is listed until it is a zombie and looked at again.
+    Amended 2026-11-14 (stopregress lane): a round's group SIGKILL that fails is refused only
+    where a listed process still runs (`Standing::Running`), never for one exiting
+    (`Standing::Exiting`: macOS `PROC_FLAG_INEXIT`, XNU's `P_LEXIT`, set by `exit1_internal`
+    before `proc_prepareexit`; Linux `PF_EXITING`). XNU's killpg passes over its zombies
+    (`killpg1`'s filter, `p_stat != SZOMB`) and every process past `proc_prepareexit`
+    (`pgrp_iterate`'s `proc_find`), and answers EPERM where it found none to signal
+    (xnu-12377.1.9 kern_sig.c, kern_proc.c): a group of the exited host, a zombie, and a VM
+    process still in its exit's teardown was refused as "a running process it could not
+    signal", and the stop with it (batch 26 at 1f71dea19, HVF api_image.rs:1249,
+    `Os { what: "the stopped run's processes", kind: PermissionDenied }`, 1 of 3 runs). Red
+    as a unit test: `a_groups_end_follows_a_process_already_exiting_to_its_end` (its `dd`
+    killed, seen exiting, then the group ended) fails EPERM with the old rule put back, and
+    passes with this one. A round with nothing to wait on (each listed process past where a
+    watch can be set) yields, then looks again: no word of the kernel's comes of an exiting
+    process's becoming a zombie but the look. Linux's kill(2) of a group reaches an exiting
+    process (its signal handlers stay until `release_task`), so there a failed kill with a
+    process listed is that process's refusal. A host that ends as it should has reaped what it started, and its
     group is empty; one it leaves is ended with it (before, waited on for as long as it
     held the diagnostics). Then its layers are swept, it is reaped, `exited` set, and its
     pipes' readers told (`Gone`, a byte on a pipe of the session's, never its end); each
@@ -34840,13 +34907,36 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
     write. Other devices and vCPUs do not.
   - Daemon, builder and managed runs write to a sink (`Console::Discard`), which never blocks.
     Only `run --kernel` with its console on a terminal can.
-  - Not built yet: a host-side writer with a bounded buffer would let pause land while stdout
-    blocks.
-- **Kernels shards does not build** (`shards configure guest`, D28) keep upstream's lost
-  backlog until the fix reaches them. A version-agnostic layer is designed, not built: at the
-  first transmit after a fresh activation, the VMM would emit the ring's records older than the
-  first one sent, read through `printk.rs`. Its limits: VMCOREINFO has no record levels, so
-  `quiet` cannot be honoured; the boundary is matched by timestamp; it is skipped on restores.
+  - Since then, one output path for every console (the person: two mechanisms, and sink work
+    in the vCPU's exit, were not to stay). The notifying exit only takes the guest's buffer into
+    the writer's slot, uses it and returns. The device's writer thread delivers it to the
+    output, whichever it is (stdout, a sink nobody reads), and to D12's ring, then takes the
+    guest's next. The host holds at most that one buffer; the guest's next waits in its ring of
+    one (`TRANSMIT_SIZE`), the guest spinning on it.
+    - A blocked output holds no transport lock, so other exits and a pause or snapshot land.
+    - `Port::said` waits for the writer to deliver what it holds, so a reset's last lines are
+      quoted.
+    - Unit tests: `a_buffer_sent_is_used_in_its_exit_and_delivered_by_the_writer` (used within
+      its exit, written on no exit's thread; red when the hand-off is cut) and
+      `a_blocked_stdout_holds_no_exit_and_no_pause` (blocks when output is written in the exit).
+- **Kernels shards does not build** (`shards configure guest`, D28; `run --kernel`) keep upstream's
+  lost backlog. Built since: at the first buffer a fresh activation's guest sends, the console's
+  writer reads the printk ring through VMCOREINFO (`printk::backlog`). It delivers, before that
+  buffer, every record older than the one the buffer begins, matched by its time to the
+  microsecond and its text's start, as hvc prints them (a prefix a line, `\r\n`).
+  - A kernel that replays (patch 0015) sends its first record first, so nothing is added.
+  - Nothing is added when the buffer begins no record the ring holds (the boundary is never
+    guessed), after a restore, or when the kernel was told a level (`quiet`, `loglevel=`):
+    VMCOREINFO says no record's level, so the console's filter cannot be repeated.
+  - Unit test `a_late_console_is_given_what_it_missed_and_a_replaying_one_nothing`, red when the
+    match is removed.
+  - KVM x86-64 at 83d6e8613: boot.rs's three tests with the unpatched kernel 54fba99afaee 3/3,
+    where they failed 3/3 before; with the patched 836568f8ad2c 3/3. Manual boots of each at 1
+    and 4 vCPUs start at "Linux version", with exactly one.
+  - Unit tests against rings captured from those kernels' memory (crates/vmm testdata/printk,
+    `capture-ring.py`, KVM boots to a snapshot): the unpatched kernel's console is given every
+    record from "Linux version" to "console [hvc0] enabled"; the patched one's, none.
+  - Owed: HVF and WHP runs.
 
 **Alternatives rejected.**
 - A write-only debug port (x86's 0xe9 debugcon): mainline x86 early_printk has no 0xe9

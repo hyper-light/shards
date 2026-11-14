@@ -75,12 +75,91 @@ impl std::fmt::Display for Unread {
 /// The last `keep` bytes of what the guest's kernel logged, in whole lines, each as its
 /// console would have shown it (`[seconds.micros] text`).
 pub fn read(memory: &GuestMemory, keep: usize) -> Result<Said, Unread> {
+    let mut kept = Kept::new(keep);
+    records(memory, &mut |ns, text| {
+        for line in text.split(|&b| b == b'\n') {
+            kept.push(&prefixed(ns, line, b"\n"));
+        }
+    })?;
+    Ok(kept.said())
+}
+
+/// What a console registered late missed (D261): the records its kernel logged before the
+/// one `first`, the console's first buffer, begins, each as hvc's console prints it
+/// (`[seconds.micros] text`, a line each, `\r\n`, hvc_console.c `hvc_console_print`).
+/// Nothing where the console's first record is the ring's first, as a kernel whose console
+/// replays its log (shards' patch 0015) sends it, and nothing where `first` begins no record
+/// the ring holds: the boundary is never guessed. The record is found by its time to the
+/// microsecond and its text's start, both of which `first` carries.
+pub fn backlog(memory: &GuestMemory, first: &[u8]) -> Result<Vec<u8>, Unread> {
+    let Some((micros, start)) = record_start(first) else {
+        return Ok(Vec::new());
+    };
+    let mut all: Vec<(u64, Vec<u8>)> = Vec::new();
+    records(memory, &mut |ns, text| all.push((ns, text.to_vec())))?;
+    let Some(at) = all
+        .iter()
+        .position(|(ns, text)| ns / 1_000 == micros && text.starts_with(start))
+    else {
+        return Ok(Vec::new());
+    };
+    let mut missed = Vec::new();
+    for (ns, text) in all.iter().take(at) {
+        for line in text.split(|&b| b == b'\n') {
+            missed.extend(prefixed(*ns, line, b"\r\n"));
+        }
+    }
+    Ok(missed)
+}
+
+/// `[seconds.micros] line` and `end`, as printk's console prefix writes a record's line
+/// (kernel/printk/printk.c `print_time`: `[%5lu.%06lu]`).
+fn prefixed(ns: u64, line: &[u8], end: &[u8]) -> Vec<u8> {
+    let mut out = format!("[{:5}.{:06}] ", ns / 1_000_000_000, ns % 1_000_000_000 / 1_000).into_bytes();
+    out.extend_from_slice(line);
+    out.extend_from_slice(end);
+    out
+}
+
+/// The time, in microseconds, and the text's start of the record a console's buffer begins
+/// with: `[seconds.micros] ` and what follows it to the line's end. None where it begins
+/// no record so.
+fn record_start(first: &[u8]) -> Option<(u64, &[u8])> {
+    let rest = first.strip_prefix(b"[")?;
+    let close = rest.iter().position(|&b| b == b']')?;
+    let stamp = std::str::from_utf8(rest.get(..close)?).ok()?.trim();
+    let (secs, micros) = stamp.split_once('.')?;
+    let micros = (micros.len() == 6)
+        .then(|| micros.parse::<u64>().ok())
+        .flatten()?;
+    let micros = secs
+        .parse::<u64>()
+        .ok()?
+        .checked_mul(1_000_000)?
+        .checked_add(micros)?;
+    let text = rest.get(close.checked_add(1)?..)?.strip_prefix(b" ")?;
+    let end = text
+        .iter()
+        .position(|&b| b == b'\r' || b == b'\n')
+        .unwrap_or(text.len());
+    Some((micros, text.get(..end)?))
+}
+
+/// Each record of the guest kernel's ring, oldest first, its time in nanoseconds and its
+/// text, to `each`.
+fn records(memory: &GuestMemory, each: &mut dyn FnMut(u64, &[u8])) -> Result<(), Unread> {
     let access = memory.access().map_err(|_| Unread::Busy)?;
     let ram: u64 = memory.regions().map(|(_, _, len)| len as u64).sum();
     let mut why = Unread::NoInfo;
     for info in infos(&access, memory) {
-        match walk(&access, &info, ram, keep) {
-            Ok(said) => return Ok(said),
+        let mut found: Vec<(u64, Vec<u8>)> = Vec::new();
+        match walk(&access, &info, ram, &mut |ns, text| {
+            found.push((ns, text.to_vec()))
+        }) {
+            Ok(()) => {
+                found.iter().for_each(|(ns, text)| each(*ns, text));
+                return Ok(());
+            }
             Err(e) => why = e,
         }
     }
@@ -260,7 +339,7 @@ fn within_ram(bits: u32, each: u64, ram: u64) -> Result<u64, Unread> {
 
 /// The ring VMCOREINFO's text `info` names, from its oldest record to its newest, as
 /// `prb_read_valid` reads each (kernel/printk/printk_ringbuffer.c).
-fn walk(access: &Access<'_>, info: &str, ram: u64, keep: usize) -> Result<Said, Unread> {
+fn walk(access: &Access<'_>, info: &str, ram: u64, each: &mut dyn FnMut(u64, &[u8])) -> Result<(), Unread> {
     let info = Info(info);
     let g = Guest {
         access,
@@ -306,7 +385,6 @@ fn walk(access: &Access<'_>, info: &str, ram: u64, keep: usize) -> Result<Said, 
         o("OFFSET(printk_info.ts_nsec)")?,
         o("OFFSET(printk_info.text_len)")?,
     );
-    let mut kept = Kept::new(keep);
     let mut id = tail;
     // At most a ring's worth: the IDs from the oldest to the newest.
     for _ in 0..count {
@@ -321,13 +399,7 @@ fn walk(access: &Access<'_>, info: &str, ram: u64, keep: usize) -> Result<Said, 
             let text_len = g.u16(plus(record, len_at)?)?;
             if let Some(text) = ring.text(&g, begin, next, text_len)? {
                 let ns = g.u64(plus(record, ts_at)?)?;
-                let line = format!(
-                    "[{:5}.{:06}] {}\n",
-                    ns / 1_000_000_000,
-                    ns % 1_000_000_000 / 1_000,
-                    String::from_utf8_lossy(&text)
-                );
-                kept.push(line.as_bytes());
+                each(ns, &text);
             }
         }
         if id == head {
@@ -335,7 +407,7 @@ fn walk(access: &Access<'_>, info: &str, ram: u64, keep: usize) -> Result<Said, 
         }
         id = id.wrapping_add(1) & ID_MASK;
     }
-    Ok(kept.said())
+    Ok(())
 }
 
 /// The text data ring (`struct prb_data_ring`): `size` bytes at `data`, `1 << bits`.
@@ -510,6 +582,107 @@ mod tests {
             cut.lines,
             b"[    2.000000] Kernel panic - not syncing\n[    2.000001] \n"
         );
+    }
+
+    /// A kernel whose console registered late (no patch 0015) sends first a record after
+    /// those it logged before: what it missed is the records before that one, as hvc prints
+    /// them. One whose console replays its log (patch 0015) sends its first record first:
+    /// nothing is missed. A first buffer that begins no record the ring holds, or no record
+    /// at all, gives nothing: the boundary is never guessed.
+    #[test]
+    fn a_late_console_is_given_what_it_missed_and_a_replaying_one_nothing() {
+        let fake = Fake::new("NUMBER(phys_base)=0\nNUMBER(pgtable_l5_enabled)=0\n", |pa| {
+            pa + X86_START_KERNEL_MAP
+        });
+        logged(&fake);
+        // hvc's console writes 16 bytes at a time (hvc_console.c N_OUTBUF).
+        let late = backlog(&fake.memory, b"[    2.000000] K").unwrap();
+        assert_eq!(late, b"[    0.001500] Linux version 6.18.48\r\n");
+        let replayed = backlog(&fake.memory, b"[    0.001500] L").unwrap();
+        assert!(replayed.is_empty(), "{}", String::from_utf8_lossy(&replayed));
+        assert!(backlog(&fake.memory, b"[    9.000000] X").unwrap().is_empty());
+        assert!(backlog(&fake.memory, b"init: started\r\n").unwrap().is_empty());
+        assert!(backlog(&fake.memory, b"[    2.000000]K").unwrap().is_empty());
+    }
+
+    /// A guest's memory holding a ring captured from a real boot of shards' pinned kernels
+    /// (docs/research/measurements/console-cost/capture-ring.py: an x86-64 guest of 1 vCPU
+    /// and 256 MiB, booted with the test guest to its first snapshot): its runs at their
+    /// guest-physical addresses, zeros between them.
+    fn captured(fixture: &[u8]) -> GuestMemory {
+        assert_eq!(&fixture[..8], b"SHRDRING");
+        let count = u32::from_le_bytes(fixture[8..12].try_into().unwrap());
+        let mut at = 12;
+        let mut runs = Vec::new();
+        for _ in 0..count {
+            let gpa = u64::from_le_bytes(fixture[at..at + 8].try_into().unwrap());
+            let len = u32::from_le_bytes(fixture[at + 8..at + 12].try_into().unwrap()) as usize;
+            runs.push((gpa, &fixture[at + 12..at + 12 + len]));
+            at += 12 + len;
+        }
+        let end = runs.iter().map(|(gpa, d)| gpa + d.len() as u64).max().unwrap();
+        let memory = GuestMemory::anonymous(&[(0, end.next_multiple_of(2 << 20) as usize)]).unwrap();
+        let a = memory.access().unwrap();
+        runs.iter().for_each(|(gpa, d)| a.write(*gpa, d).unwrap());
+        drop(a);
+        memory
+    }
+
+    /// The first 16 bytes hvc's console sends of the record of `memory`'s ring that `pick`
+    /// chooses from its records' texts (hvc_console.c N_OUTBUF).
+    fn first_buffer(memory: &GuestMemory, pick: impl Fn(&[Vec<u8>]) -> usize) -> Vec<u8> {
+        let mut all = Vec::new();
+        records(memory, &mut |ns, text| all.push((ns, text.to_vec()))).unwrap();
+        let texts: Vec<Vec<u8>> = all.iter().map(|(_, t)| t.clone()).collect();
+        let (ns, text) = &all[pick(&texts)];
+        prefixed(*ns, text, b"\r\n")[..16].to_vec()
+    }
+
+    /// The unpatched kernel (54fba99afaee) loses what it logged before its console
+    /// registered: its console's first buffer is the record after "console [hvc0]
+    /// enabled", and what it missed is every record from "Linux version" to that one.
+    #[test]
+    fn a_captured_unpatched_kernels_console_is_given_its_boot_from_the_first_line() {
+        let memory = captured(include_bytes!("../testdata/printk/ring-6.18.48-54fba99afaee.bin"));
+        let said = read(&memory, usize::MAX).unwrap();
+        assert!(
+            said.lines.starts_with(b"[    0.000000] Linux version 6.18.48"),
+            "{}",
+            String::from_utf8_lossy(&said.lines[..80])
+        );
+        let enabled = |t: &[Vec<u8>]| {
+            t.iter()
+                .position(|t| t.ends_with(b"console [hvc0] enabled"))
+                .unwrap()
+        };
+        let first = first_buffer(&memory, |t| enabled(t) + 1);
+        let missed = backlog(&memory, &first).unwrap();
+        let text = String::from_utf8_lossy(&missed);
+        assert!(text.starts_with("[    0.000000] Linux version 6.18.48"), "{text}");
+        assert!(
+            text.ends_with("console [hvc0] enabled\r\n"),
+            "{}",
+            String::from_utf8_lossy(&missed[missed.len() - 80..])
+        );
+        assert!(
+            text.contains("smp: Brought up") && text.contains("ACPI: RSDP"),
+            "{text}"
+        );
+    }
+
+    /// The patched kernel (836568f8ad2c, patch 0015) replays its log as its console
+    /// registers: its console's first buffer is the ring's first record, and nothing is
+    /// missed.
+    #[test]
+    fn a_captured_patched_kernels_console_misses_nothing() {
+        let memory = captured(include_bytes!("../testdata/printk/ring-6.18.48-836568f8ad2c.bin"));
+        let first = first_buffer(&memory, |_| 0);
+        assert!(
+            first.starts_with(b"[    0.000000] L"),
+            "{}",
+            String::from_utf8_lossy(&first)
+        );
+        assert!(backlog(&memory, &first).unwrap().is_empty());
     }
 
     #[test]

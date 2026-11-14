@@ -12,7 +12,7 @@ use crate::arch::aarch64::{self, Entry, boot, layout};
 use crate::devices::control::Control;
 use crate::devices::power::Power;
 use crate::devices::rtc::Pl031;
-use crate::devices::virtio::console::{Console as ConsoleDevice, Port as ConsolePort};
+use crate::devices::virtio::console::Port as ConsolePort;
 use crate::devices::virtio::{mmio as virtio_mmio, pmem};
 use crate::devices::vmgenid::VmGenId;
 use crate::devices::{Interrupt, MmioBus};
@@ -461,8 +461,7 @@ struct Assembled {
 fn assemble(
     memory: &Arc<GuestMemory>,
     config: &MachineConfig,
-    console: Console,
-    said: usize,
+    console: super::ConsoleSetup,
     hosts: super::Hosts<'_>,
     gpu: Option<super::MachineGpu<'_, '_>>,
     pci: super::Pci<'_>,
@@ -641,7 +640,7 @@ fn assemble(
     let swap_device = swap
         .clone()
         .map(|w| Box::new(pmem::Pmem::swap(w)) as Box<dyn crate::devices::virtio::VirtioDevice>);
-    let (console_device, console) = ConsoleDevice::new(super::console_out(console)?, said);
+    let (console_device, console) = console.device()?;
     let last = std::iter::once(Box::new(console_device) as Box<dyn crate::devices::virtio::VirtioDevice>)
         .chain(gpu)
         .chain(hotplug)
@@ -863,8 +862,7 @@ pub fn build_reported(cfg: &Config, report: Option<&mut super::GpuReportTo<'_>>)
         let a = assemble(
             &memory,
             &config,
-            cfg.console,
-            cfg.said,
+            super::ConsoleSetup::booted(cfg),
             hosts,
             (cfg.gpu || !cfg.gpu_devices.is_empty()).then_some(super::MachineGpu { saw: 0, report }),
             super::Pci {
@@ -1105,8 +1103,7 @@ pub fn restore(
     let a = assemble(
         &memory,
         &snap.config,
-        console,
-        said,
+        super::ConsoleSetup::restored(console, said),
         hosts,
         snap.config.gpu.map(|saw| super::MachineGpu { saw, report }),
         super::Pci {

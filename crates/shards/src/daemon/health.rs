@@ -1126,6 +1126,76 @@ mod tests {
         );
     }
 
+    /// b26 (ROOT's HVF batch at 1f71dea19, moved.rs:645, containers.rs:2257): a kind whose W*
+    /// was microseconds refused a live VM process 16.6 µs past its first look, a window in
+    /// which its reading (macOS: a clock tick's steps) shows nothing of a run. A wait is
+    /// judged over no window shorter than its VM process's reading shows, its kernel's tick
+    /// (`Watch::resolution`), whatever W* says: a process that runs nothing is refused only
+    /// once a whole tick has shown it still. Red with the reading's unit alone (42 ns on
+    /// macOS, 1 ns on Linux) as its resolution: refused microseconds in.
+    #[cfg(unix)]
+    #[test]
+    fn a_wait_is_never_refused_within_what_its_reading_resolves() {
+        let idle = sleeper();
+        let tick = tick();
+        let slowest = Duration::from_micros(10);
+        let record = learned(slowest);
+        let ended = waited(Wait::WhileRuns(idle.0.id(), &record), killed);
+        let Some(Cut::Stalled(stall)) = &ended.cut else {
+            panic!("{:?}", ended.cut);
+        };
+        assert!(
+            stall.over() >= tick,
+            "{stall:?} within its kernel's tick {tick:?}"
+        );
+        assert_eq!(stall.slowest(), slowest);
+        let resolution = shards_api::Followed::of_pid(idle.0.id())
+            .unwrap()
+            .and_then(|followed| shards_api::Watch::of(followed).unwrap())
+            .unwrap()
+            .resolution();
+        assert!(
+            resolution >= tick,
+            "{resolution:?} below its kernel's tick {tick:?}"
+        );
+    }
+
+    /// The kernel's tick, read here apart from shards-api: macOS's `kern.clockrate` `tick`.
+    #[cfg(target_os = "macos")]
+    fn tick() -> Duration {
+        let mut info = [0 as libc::c_int; 5];
+        let mut len = size_of_val(&info);
+        // SAFETY: sysctlbyname(3) into a local struct clockinfo's five ints.
+        let code = unsafe {
+            libc::sysctlbyname(
+                c"kern.clockrate".as_ptr(),
+                info.as_mut_ptr().cast(),
+                &raw mut len,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        assert_eq!((code, len), (0, size_of_val(&info)));
+        Duration::from_micros(u64::try_from(info[1]).unwrap())
+    }
+
+    /// The kernel's tick, read here apart from shards-api: Linux's CLOCK_MONOTONIC_COARSE
+    /// resolution, one jiffy.
+    #[cfg(target_os = "linux")]
+    fn tick() -> Duration {
+        // SAFETY: a timespec, plain data, for clock_getres(2) to fill.
+        let mut at: libc::timespec = unsafe { std::mem::zeroed() };
+        // SAFETY: clock_getres(2) into a local timespec.
+        assert_eq!(
+            unsafe { libc::clock_getres(libc::CLOCK_MONOTONIC_COARSE, &raw mut at) },
+            0
+        );
+        Duration::new(
+            u64::try_from(at.tv_sec).unwrap(),
+            u32::try_from(at.tv_nsec).unwrap(),
+        )
+    }
+
     /// A microVM process that cannot be read is never taken for one that ran nothing: its
     /// exec is ended at once, saying why, typed (D215's `Process`). macOS's reader refuses a
     /// pid past a C int's; Linux's finds no such process, whose wait follows its liveness.

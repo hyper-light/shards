@@ -25157,3 +25157,59 @@ against 2e00a1043 (whose starts read no bytes) on one template, HVF, KVM and WHP
   they passed 3/3 and 2/2.
 - **Owed.** The same per-thread breakdown on HVF (no per-thread reader there in this harness)
   and on WHP.
+
+### M591. A builder's step against a guest booted with all its memory: the reference boots with the builder's CPUs (D133; build.rs's `a_builders_memory_is_plugged_as_its_build_needs_it`)
+
+- **Question.** At 9146808cc on KVM (adacachy2, Linux x86_64, 32 CPUs; ROOT's batch 24, log
+  `~/g121-tmp/root-vsock/logs-b24-9146808cc/build.log`) a step of a builder booted with 430 of
+  2560 MiB had `kernel.threads-max` 19871 and its namespaces 9935, against 19886 and 9943 for a
+  guest booted with all 2560 MiB (-0.08%); `fs.epoll.max_user_watches` and `fs.file-max` were
+  under too (566080 against 566494, 253112 against 254232). Is `Limits::raised` (f6dc8ed06) short?
+- **Arithmetic from the log.** `pluggable_kbytes` 2181120 KiB: `more` = 545280 pages; the raise
+  takes a 64-byte `struct page` of each (8520 pages) and adds 16774 threads, so the builder's
+  boot sized 3097 threads (`set_max_threads`: a thread for each 32 pages of 4 KiB at
+  `fork_init`), 99104–99135 pages, and the full boot 636352–636383. By the threads, the
+  added memory cost the full boot 8001–8063 pages; by MemTotal after boot (the step's 2583028 kB
+  less 215040 kB still to plug, against the full boot's 2551632 kB), 7849: under 64 bytes a
+  page. Its memmap alone, 16 more 128 MiB sections (x86_64 `SECTION_SIZE_BITS` 27) at 2 MiB of
+  `struct page` each, is 8192 pages, and the boot-time dentry and inode hashes (fs/dcache.c,
+  fs/inode.c, `HASH_EARLY` from memblock on one node) grow by about 1344 more; between 512 MiB
+  and 1 GiB, and 16 and 64 GiB, guests of one kind cost 78–82 bytes an added page (PM M193's
+  rows). So the builder's own boot held about 2000 pages more beside its memory than the
+  reference's: the builder boots on every host CPU (`builder_cpus`, 32), the reference on one
+  (`run --kernel`'s default), and each CPU's first per-CPU chunk is taken from memblock before
+  `fork_init` (mm/percpu.c `pcpu_embed_first_chunk`, about 62 pages a CPU at this kernel's
+  static, reserved and dynamic sizes; 31 CPUs, about 1900 pages).
+- **Decision.** The raise is the kernel's formula of the pages added and stays; the test's
+  reference boots with the builder's CPUs, as a builder booted with all its memory would.
+  The window `[b, b + b/10]` is unchanged: its floor is the raise's own design (what the added
+  pages raise beside them, the hashes, watermarks and section rounding, is left out, so a step
+  comes out at or over), and HVF's +2.8% (main f385b8dac, ROOT's batch 22) sat inside it.
+- **Owed.** The green run on KVM at the fix (my run at 549b2752f: see the landing's report)
+  and on HVF, where the reference with more CPUs comes out lower and the step further over.
+
+### M592. How finely a process's CPU reading shows another's run on macOS (D215, b26)
+
+Method: `docs/research/measurements/judge-resolution/rusage-steps.c` (`cc -O2 rusage-steps.c
+-o rusage-steps && ./rusage-steps spin && ./rusage-steps wake`): a forked child spins, or
+wakes on each byte of a pipe and runs about 2 µs; the parent reads the child's
+proc_pid_rusage(2) RUSAGE_INFO_V0 user and system times back to back for 200 ms and records,
+for each read that found growth, the wall time since the read before that did, and each
+read's own cost. Host: adas-macbook-pro-2 (Mac17,6, macOS 26, 18 cores, load averages
+28/39/30, the session's utility QoS clamp), revision f7c89ca0d; `kern.clockrate` there:
+hz 100, tick 10000 µs, stathz 100.
+
+| mode | what | n | min | p50 | p90 | p99 | max |
+|---|---|---|---|---|---|---|---|
+| spin | one read's cost | 157,549 | 0 µs | 1 µs | 1 µs | 2 µs | 12.7 ms |
+| spin | wall between reads that found growth | 1,092 | 0 µs | 12 µs | 182 µs | 3.7 ms | 12.9 ms |
+| wake | from a byte written to the read that first showed its work | 22 | 3 µs | 5 µs | 9 µs | 13.2 ms | 13.2 ms |
+
+A spinning child, running throughout, shows its run in steps up to about a tick (12.9 ms,
+the tick and the reader's own lateness on a loaded host); a woken one is usually shown
+within microseconds, as its thread leaves its CPU, but not always (13.2 ms). The test
+judge's `Beside` saw none of a spinning thread within 450 µs windows on HVF. So a window of
+microseconds with no growth is no evidence that a process ran nothing: D215's readers take
+the kernel's tick as their resolution (`Watch::resolution`). The wake mode's n is small:
+its 1 ms sleeps between pokes ran about 8 ms under the session's QoS clamp.
+

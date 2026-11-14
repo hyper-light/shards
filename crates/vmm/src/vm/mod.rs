@@ -1212,6 +1212,61 @@ fn kernel_cmdline(cfg: &Config) -> std::borrow::Cow<'_, str> {
     }
 }
 
+/// Whether a booted machine's console is given what its kernel logged before it registered
+/// (`devices::virtio::console`, D261): where the kernel's command line, as it boots, tells
+/// it no level to print at, every record it logs is one its console prints.
+#[cfg(hv)]
+fn console_backfill(cfg: &Config) -> bool {
+    !cmdline::kernel_part(&kernel_cmdline(cfg))
+        .split_whitespace()
+        .any(|word| word == "quiet" || word.starts_with("loglevel="))
+}
+
+/// What a machine's console is made of: where its output goes, how much of it is kept to
+/// quote (D12), and whether it is given what its kernel logged before it registered (D261).
+#[cfg(hv)]
+#[derive(Debug, Clone, Copy)]
+struct ConsoleSetup {
+    console: Console,
+    said: usize,
+    backfill: bool,
+}
+
+#[cfg(hv)]
+impl ConsoleSetup {
+    /// A booted machine's, as `cfg` has it.
+    fn booted(cfg: &Config) -> ConsoleSetup {
+        ConsoleSetup {
+            console: cfg.console,
+            said: cfg.said,
+            backfill: console_backfill(cfg),
+        }
+    }
+
+    /// A restored machine's: its guest's console registered before its snapshot, so
+    /// nothing was missed.
+    fn restored(console: Console, said: usize) -> ConsoleSetup {
+        ConsoleSetup {
+            console,
+            said,
+            backfill: false,
+        }
+    }
+
+    /// The console's device, and its port for the machine's handle.
+    fn device(
+        self,
+    ) -> Result<
+        (
+            crate::devices::virtio::console::Console,
+            Arc<crate::devices::virtio::console::Port>,
+        ),
+        String,
+    > {
+        crate::devices::virtio::console::Console::new(console_out(self.console)?, self.said, self.backfill)
+    }
+}
+
 /// Where the console's output goes.
 #[cfg(hv)]
 fn console_out(console: Console) -> Result<Box<dyn std::io::Write + Send>, String> {

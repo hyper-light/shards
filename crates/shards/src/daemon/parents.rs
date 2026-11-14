@@ -328,7 +328,14 @@ fn emptied(events: &Path, procs: &Path, record: &shards_api::Record) -> std::io:
             }
         }
         if judge.due().is_some_and(|due| std::time::Instant::now() >= due) {
+            let began = std::time::Instant::now();
             let mut found = shards_api::Found::Gone;
+            // Judged over no window shorter than its readings show (`Watch::resolution`).
+            let resolution = watched
+                .iter()
+                .map(|(_, watch, _)| watch.resolution())
+                .max()
+                .unwrap_or_default();
             for (_, watch, from) in &mut watched {
                 let look = watch.look().unwrap_or(shards_api::Found::Held);
                 ran = ran.max(watch.cpu().saturating_sub(*from));
@@ -341,7 +348,13 @@ fn emptied(events: &Path, procs: &Path, record: &shards_api::Record) -> std::io:
                     _ => shards_api::Found::Gone,
                 };
             }
-            judge.found(found).map_err(|stall| {
+            let span = shards_api::Span {
+                began,
+                ended: std::time::Instant::now(),
+                resolution,
+                own: std::time::Duration::ZERO,
+            };
+            judge.found_over(found, span).map_err(|stall| {
                 std::io::Error::other(format!(
                     "its processes ran nothing for {:?}, past the slowest a leaf emptied in ({:?})",
                     stall.over(),
