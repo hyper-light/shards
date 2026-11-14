@@ -62,6 +62,8 @@ The replacement `A` exists and the old lock still has a link in `B`. The old dae
 
 **Confidence:** high for the Unix counterexample; no Windows rename claim. **Fix direction:** retain directory identity/handles, operate relative to the owned directory, and detect replacement before absolute-path work; cleanup must target the old directory rather than its reused pathname. **Test:** rename `A→B`, recreate/start `A`, stop the old daemon through B's Engine socket, and verify A's PID, request lists, stopping files and continuing query responses remain owned by the new daemon.
 
+**Status (2026-11-13):** fixed in d3b11258a (red `renamed_home_cleanup_keeps_replacement_files`, resumed kiln r5; green regression including old-home remainder removal + stopping-lock check, shards all-target clippy r12 on macOS arm64). Prepared on `p/fix-runs-v1`; main landing pending the recorded ff-push coordination. Real-daemon/VM validation remains owed to ROOT as `docs/research/measurements/runs-fixes/README.md` specifies.
+
 ### runs-03 — P1 / high — BootStop cannot cancel a boot blocked sending its initial request
 
 **At head:** `crates/api/src/image/session.rs:934–937`; same warm path `:894–898`; blocking write `:233–238`; stop registration `:741`.
