@@ -834,8 +834,29 @@ impl Handle {
     /// The whole lines of the last bytes its guest wrote to its console, as many as it was
     /// told to keep ([`Config::said`]), and whether that was all it said: a kernel's panic
     /// says there why it resets its machine (`panic=-1`).
+    ///
+    /// A kernel that stopped before its console registered (hvc0 does as its driver probes)
+    /// said it to its printk ring alone: where the console carried nothing, its last lines
+    /// are read from the guest's memory instead, under the same bound (`printk::read`).
     pub fn console_said(&self) -> crate::devices::said::Said {
-        self.console.said()
+        let said = self.console.said();
+        let keep = self.console.keep();
+        if !said.lines.is_empty() || keep == 0 {
+            return said;
+        }
+        match crate::printk::read(&self.memory, keep) {
+            Ok(logged) if !logged.lines.is_empty() => logged,
+            Ok(_) => said,
+            Err(e) => {
+                crate::debug!("the guest's kernel log: {e}");
+                said
+            }
+        }
+    }
+
+    /// Whether its guest's kernel said it panicked (pvpanic): what a reset alone does not say.
+    pub fn panicked(&self) -> bool {
+        self.console.panicked()
     }
 
     /// Whether the VM is recording a working set ([`SnapshotPolicy::working_set`]).

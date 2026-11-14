@@ -4,7 +4,7 @@
 //!
 //! - RSDP (rev 2) → XSDT → FADT (HW-reduced, rev 6.5) + MADT, FADT → DSDT
 //! - MADT: one Local APIC per vCPU (APIC id = index) and the IOAPIC, GSI base 0
-//! - DSDT: each virtio-mmio device (`LNRO0005`), the VM generation ID
+//! - DSDT: each virtio-mmio device (`LNRO0005`), the pvpanic device (`QEMU0001`), the VM generation ID
 //!   (`VMGENCTR`) with the Generic Event Device (`ACPI0013`) that tells the guest of a
 //!   new one, and `\_S5`
 //! - FADT SLEEP_CONTROL/STATUS registers on a port pair, so `reboot(RB_POWER_OFF)`
@@ -492,6 +492,16 @@ fn dsdt(virtio: &[MmioDevice], vmgenid: u64, pci: Option<&PciBridge>) -> Result<
         ));
     }
     devices.extend(vmgenid_devices(vmgenid));
+    // pvpanic-mmio.c's ACPI match, QEMU's own _HID for it (docs/specs/pvpanic.rst).
+    devices.extend(aml::device(
+        "PEVT",
+        [
+            aml::name(b"_HID", aml::string("QEMU0001")),
+            aml::name(b"_UID", aml::integer(0)),
+            crs(&[aml::memory32_fixed(layout::PVPANIC as u32, 0x1000)]),
+        ]
+        .concat(),
+    ));
     if let Some(p) = pci {
         devices.extend(pci_bridge(p)?);
     }

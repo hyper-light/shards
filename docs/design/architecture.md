@@ -11881,6 +11881,33 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     `one_call_sites_commands_are_judged_apart` (a stand-in that exits, then one that works a
     moment three times between 200 ms of nothing, from one call site: red at f9bdaeda5,
     refused in its first quiet window) and `a_commands_words_are_its_subcommands`.
+  - *Only a served answer teaches a command's kind* (2026-11-14, ROOT's batch 22 at
+    f385b8dac, lane judgecli). Words and line keep apart a call site's commands that say
+    different things, but one line can be refused or served by its home's state alone:
+    containers.rs' `a_logs_history_is_what_its_user_set` runs `shards run --rm --pull never
+    IMAGE exit 0` twice from its `shards` closure (call site 8499:34), first refused in
+    5.4 ms for a settings file its user broke by hand (`disk:2:`), then, the file reset,
+    served by a microVM's boot. On KVM (adacachy2, linux-x86_64-32) the refusal taught the
+    cold line's record `5435520 0 5435520` (kept at 12:03:03.143, every record of that call
+    site this run's own), and the served run, `Created` in its home 300 ms in, was refused
+    at a look that found a 6.06 ms gap ("its last progress process 2352022 ran 13.8 ms ago;
+    its record W* 5.43552ms, R* 0ns"), a host shared with another lane's harness units. A
+    refusal stops at a check before or along its words' work, so its time says nothing of
+    that work's gaps; a status of 0 is the one outcome that says the work was done, and a
+    nonzero status from served work (a run whose command exited so) teaches nothing either:
+    its kind stays cold, judged by its party's liveness, which is safe. So `run_command`'s
+    and `client_output`'s waits call `Wait::unserved` at a client's end of any other status
+    or a signal, which ends the wait unjudged from there and keeps nothing. A command's
+    kept record begins with the word `served`; one without it, kept before this rule, may
+    hold a refusal's answer and is read as none, its kind cold until its next served answer
+    rewrites it (`common::SERVED`): no number changed (R03). Its R* of 0 ns is no reader's:
+    a command's party CPU is summed at its wait's looks, the first of which finds the
+    client anew (`Found::Based`, no delta), and a client that ends and is reaped before the
+    next look is never read again; R* stays a refusal's diagnosis alone. Held by harness.rs'
+    `a_commands_refusal_teaches_its_kind_nothing` (one line from one call site, its record
+    removed: a stand-in refusing at once, status 1, then working three times between 200 ms
+    of nothing). Waits on no command (`judged`, a guest's, `Patience`) have no status and
+    still learn from each answer.
   - *A party's I/O is not read: its CPU already shows every byte it moves* (#77, measured).
     Asked whether a party blocked on a peer outside it (Docker Hub, a test's registry
     thread) moves data a look misses, `docs/research/measurements/judge-io/io_vs_cpu.py`
@@ -15789,8 +15816,8 @@ other's but what the move sends, and what the other takes by content:
   the daemon's own `key` step).
 - **Refused before anything moves, by what refuses it** (R04). The machine moved to answers
   `ready` with a `Refused` (daemon/moves.rs) as JSON on stdout, beside its words on
-  stderr, which a mover of an earlier build prints as before; this build's mover reads it
-  typed (cli/moves.rs `unready`). It is one of: another architecture; another hypervisor
+  stderr, as any step's failure says them; the mover reads it typed (cli/moves.rs
+  `unready`). It is one of: another architecture; another hypervisor
   (`Plan::hypervisor`, `hv::BACKEND`), whose own a snapshot's vCPUs, interrupt controller
   and devices are (KVM's x86-64 state is not WHP's, nor Hypervisor.framework's arm64 state
   KVM's), which a snapshot's head, naming its architecture alone, does not tell apart;
@@ -16014,11 +16041,16 @@ peer", each going on here as it should. What changed for them:
   waited for, compressing having taken the packer longer than reading it, a level down, to
   none, as on a link faster than the compressor, where it stays, no wait of the packer's
   there covering a level's cost. Nothing is measured but the stream's own waits and its
-  compressing. The machine moved to says it unpacks it (`Needs::unpacks`, `zstd`)
-  and is then asked `import --packed zstd`; one of an earlier build says nothing and is sent
-  the stream as it is, as before; held by `a_packed_stream_reads_back_as_it_was`,
-  `the_level_follows_who_waits` and `a_stream_is_packed_only_for_a_daemon_that_unpacks_it`
-  (packing.rs).
+  compressing. Every move's stream is packed: the machine moved to says it unpacks it
+  (`Needs::unpacks`, `zstd`, a field every answer has) and is then asked `import --packed
+  zstd`, which `import` requires. An answer without it, or one that does not unpack zstd, is
+  another build's daemon's, refused typed before anything moves (cli/moves.rs `needs_of`,
+  `OtherDaemon`); the send-as-it-is fallback for an earlier daemon, and `import`'s
+  unpacked stream, are deleted (legacy5, the no-legacy rule). Likewise the move's `key` step,
+  which every daemon of this build answers: one that fails is said ("NAME runs on CONTEXT,
+  and its key there could not be read"), never taken as no key. Held by
+  `a_packed_stream_reads_back_as_it_was`, `the_level_follows_who_waits` (packing.rs) and
+  `a_needs_missing_unpacks_is_refused_typed` (cli/moves.rs).
 - **Each move says what it sent and what the link did**, where `SHARDS_MOVE_TIMES` is set
   (`move: stream R bytes, sent W bytes, P of F frames as zstd; link A bytes acknowledged in
   T us, X B/s, rtt, packets lost, longest silence S us`), a failed move's too; two-hosts.sh
@@ -28443,7 +28475,10 @@ API's protocol: its output drained, its end, its connections.
     interruptible sleep, `S`; Mach's TH_STATE_WAITING) at two looks in a row, never on the
     kernel's own uninterruptible work (`D`: a fault waiting for a memory map another thread
     holds, a `/proc` read), and the worker outlives its answer until the look is done with
-    it: a worker that had ended left a look nothing to read (PM M585).
+    it: a worker that had ended left a look nothing to read (PM M585). A take that waits for
+    its writer's close is judged from that close as the kernel says it (POLLHUP on a read end
+    of the test's own, Linux), never from the test's drop of its end: a copy another test's
+    fork made of it held the pipe open up to 29 ms longer (PM M587).
 - *Its VM process* (Hex lead's ask, 2026-11-14: "Give the managed guest's orchestrator the
   confined VM process's identity (pid and start time, as Identity names the host's), so it can
   read that process's memory as the VMM's"; on Windows `reserve_ram` commits the guest's RAM in
@@ -34422,6 +34457,117 @@ whose command exited before kiln deleted it went uncharged (Hex answered `NotRun
   that powers off records its one vCPU's guest time and its process's CPU holding it; one not
   managed, and one killed, record none; the confined VM process's write to its inherited
   channel on each OS); Hex's adoption.
+
+### D261. The guest's console is virtio-console (hvc0); the 16550 UART is gone; a panic before it is told by pvpanic and read from the printk ring (built; real-VM runs owed)
+
+**Asked.** The person, 2026-11-14, on the emulated NS16550A (`devices/serial.rs`): "serial
+queues strike me as poor design, we can and should do better." Approved direction: virtio-console
+over virtio-mmio replaces the 16550 everywhere; the early-boot answer is pvpanic plus a
+post-mortem read of the printk ring through VMCOREINFO, not a debug port.
+
+**Decision.**
+- **The console is virtio-console** (VIRTIO 1.3 §5.3; `devices/virtio/console.rs`): one port,
+  no MULTIPORT, receiveq 0 and transmitq 1, the first virtio device on both architectures, so
+  KVM, HVF and WHP on x86-64 and arm64 share it (R12). Every command line says `console=hvc0`;
+  `earlycon` went with the UART it named.
+  - Output: a buffer per notification, written out on the device's worker, never on the
+    vCPU's thread. A UART traps every byte: printk before a tty opens costs an LSR poll and
+    a THR write per byte (Linux 8250_port.c `serial8250_console_write`, `wait_for_xmitr`).
+  - Input: into the buffers the guest posts, waiting while it has posted none, so nothing
+    is lost or held by the device. A paused console takes none.
+  - A snapshot keeps its queues alone.
+  - D12's report (`devices/said.rs`) moved over unchanged.
+- **Deleted, no dual path:** `serial.rs`, COM1 (its port 0x3f8, GSI 4, ACPI `PNP0501` and the
+  now-unused `aml::io`), arm64's UART node, `stdout-path` and `layout::UART`/`SPI_UART`, and
+  `serial::INPUT_AT_ONCE`.
+- **Snapshots.** Format 31 is the machine without the UART. A user's snapshot of format 30
+  holds a guest whose 8250 driver is bound to the deleted COM1/UART, so it is refused, not
+  migrated: `ResumeRefused::OlderMachine { format, saved_by }`, the same type and message as
+  olderinit's causes (D176), naming the shards that saved it. Format 32 adds pvpanic, so 31
+  is refused the same way. Templates are remade, keyed by the format (D25).
+  - The person's ruling (via ROOT): a migration that leaves a guest polling a dead port is a
+    hidden degraded state. Its cost would have been 2 frame times per byte, `wait_for_lsr`,
+    about 2 ms at the 9600 baud of divisor 12.
+- **pvpanic** (QEMU docs/specs/pvpanic.rst; `devices/pvpanic.rs`): one register taking
+  PANICKED (include/uapi/misc/pvpanic.h), written by the kernel's first panic notifier
+  (pvpanic.c, `.priority = INT_MAX`) before `panic=-1` resets.
+  - x86-64: found by ACPI `QEMU0001`, in the first page past the virtio-mmio windows.
+  - arm64: found by a `qemu,pvpanic-mmio` node (Documentation/devicetree/bindings/misc/
+    pvpanic-mmio.txt), at `GIC_REDIST_MAX_END`.
+  - It tells the console's port; `Handle::panicked`.
+  - The guest kernel gains `CONFIG_PVPANIC=y` and `CONFIG_PVPANIC_MMIO=y` (resources/kernel/
+    shards.config).
+- **The printk ring after a stop** (`printk.rs`). hvc0 registers only as its driver probes
+  (device_initcall), and then replays the ring (hvc_console.c `hvc_check_console`,
+  CON_PRINTBUFFER). A kernel that stops earlier said why to its ring alone, so where the
+  console carried nothing, `Handle::console_said` reads the ring's last lines from guest
+  memory under D12's bound.
+  - VMCOREINFO (CONFIG_VMCORE_INFO=y in both base configs) is a page filled at subsys_initcall
+    (kernel/vmcore_info.c l. 140-253), before any virtio probe.
+  - It names `prb`, every ring offset (printk.c `log_buf_vmcoreinfo_setup`, l. 980-1036) and
+    the address translation: x86-64 `phys_base` and `pgtable_l5_enabled`; arm64
+    `kimage_voffset`, `PHYS_OFFSET` and `VA_BITS`.
+  - The page is found by its first line `OSRELEASE=` at a page start. No channel hands it
+    over here; QEMU's is fw_cfg, which shards has none of.
+  - The ring is walked as `prb_read_valid`/`get_data` walk it.
+  - The refusal is typed: `printk::Unread`.
+  - Covered: panics from subsys_initcall on, which includes everything before hvc0.
+- **No KASLR in shards' boots**, checked for this:
+  - x86-64 boots `vmlinux` uncompressed (arch/x86_64/boot.rs), its zero page's loadflags
+    LOADED_HIGH alone (l. 287). `KASLR_FLAG` is set only by the bzImage decompressor (Linux
+    arch/x86/boot/compressed/kaslr.c l. 875) and read by `kaslr_enabled()` (asm/setup.h
+    l. 85-88), so the direct map is at its unrandomized base.
+  - arm64's base config has RANDOMIZE_BASE unset.
+  - So `printk_rb_static` is at its link address on both.
+
+**Alternatives rejected.**
+- A write-only debug port (x86's 0xe9 debugcon): mainline x86 early_printk has no 0xe9
+  target, so it needs a kernel patch. arm64 has no port I/O and no write-only earlycon
+  (EARLYCON_DECLARE lists UARTs and JTAG DCC). It would be x86-only (R11/R12) and still a
+  per-byte-exit device kept for early boot.
+- Keeping the UART for early boot only: the legacy path the person ruled out.
+
+**Literals (R03).** Each is a cited bound; none is learned, so none has a cold start.
+
+| Literal | Value | Source |
+|---|---|---|
+| `RECEIVE_SIZE` | 1 | Linux virtio_console.c `fill_queue` (l. 1290-1311): page-sized buffers until the ring is full; the rest of the host's input waits in the host |
+| `TRANSMIT_SIZE` | 1 | `put_chars`/`__send_to_port` (l. 596-640, 1118-1123): one buffer outstanding, spun on until used |
+| `INPUT_AT_ONCE` | 4 KiB | one receive buffer, a guest page (x86-64's only size; arm64 `CONFIG_ARM64_4K_PAGES=y`) |
+| `pvpanic::PANICKED` | 1 | include/uapi/misc/pvpanic.h |
+| x86 `PVPANIC` | 0xc000_4000 | derived: the first page past `VIRTIO_MMIO + VIRTIO_MMIO_MAX * STRIDE` |
+| arm64 `PVPANIC` | 0x0900_0000 | `GIC_REDIST_MAX_END`, the first device page past the redistributors |
+| printk `PAGE` | 4 KiB | `VMCOREINFO_BYTES` = PAGE_SIZE |
+| `X86_START_KERNEL_MAP`, `X86_PAGE_OFFSET_L4/L5` | 0xffffffff80000000, 0xffff888000000000, 0xff11000000000000 | arch/x86/include/asm/page_64_types.h; no KASLR, above |
+| `STATE_SHIFT`, `ID_MASK`, `COMMITTED`, `FINALIZED`, `EMPTY_LINE` | 62, !(3<<62), 1, 2, 0x3 | kernel/printk/printk_ringbuffer.h l. 121-153 |
+
+Every ring length is bounded by the guest's RAM (`within_ram`); a larger one is
+`Unread::PastRam`.
+
+**Evidence.**
+- Phase 1 design: ROOT's record of 2026-11-14.
+- Cost: PM M588 (`docs/research/measurements/console-cost/`).
+- Unit tests:
+  - devices::virtio::console: output written and kept; input waits for posted buffers and
+    loses nothing; a paused console holds input. A mutant that drops the wait goes red.
+  - devices::said; devices::pvpanic: only PANICKED is a panic, red for a kdump event.
+  - snapshot: OlderMachine for 30, red when let through.
+  - printk: x86-64 and arm64 maps, a wrapped block, an empty line, data-less and reserved
+    records left out, a ring past RAM, a missing number. A mutant without the wrapped-block
+    rule goes red.
+  - The x86 DSDT and the arm64 devicetree contract.
+- Hosts: macOS arm64 and Linux x86-64.
+
+**Owed (coordinator).**
+- The whole real-VM E2E, since every test command line moved to hvc0.
+- The Firecracker comparison: its guests keep `console=ttyS0`, Firecracker's own console
+  being a 16550 (src/vmm/src/devices/legacy/serial.rs), both quiet.
+- The A/B at n=20 on HVF and KVM (M588).
+- `initcalls.py`: how early hvc0 and VMCOREINFO come.
+- The pinned kernel's release with PVPANIC.
+- A real panic before hvc0 (pvpanic told, its ring's lines quoted) on HVF, KVM x86-64/arm64
+  and WHP.
+- A ring read from a real pinned kernel's memory.
 
 ## 4. Start path (≤ 5 ms budget)
 
