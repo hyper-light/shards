@@ -103,6 +103,19 @@ const WIN32K_DISABLED: u64 = 1 << 28;
 /// meanwhile would have been made on that one.
 static STATION_SWITCH: RwLock<()> = RwLock::new(());
 
+/// Held to read by each of shards' spawns while it holds a handle inheritable, made so for
+/// its child's handle list alone (PROC_THREAD_ATTRIBUTE_HANDLE_LIST), and to write by each
+/// spawn of std's ([`spawn_std`]): a child std makes inherits every inheritable handle of this
+/// process (CreateProcessW's bInheritHandles, TRUE in std, whose own lock, CREATE_PROCESS_LOCK,
+/// is private to it), so one made meanwhile took another child's handles with it (platform-07).
+static INHERITING: RwLock<()> = RwLock::new(());
+
+/// [`crate::spawn_std`] on Windows: `command` spawned while none of shards' own spawns holds a
+/// handle inheritable ([`INHERITING`]).
+pub fn spawn_std(command: &mut std::process::Command) -> io::Result<std::process::Child> {
+    command.spawn()
+}
+
 /// Whether this Windows refuses the second mitigation word (windows-2022, M201): found by
 /// the first child made, which then goes without it.
 static NO_SECOND_WORD: AtomicBool = AtomicBool::new(false);
@@ -2855,6 +2868,112 @@ pub fn given(pipe: usize) -> io::Result<Vec<(String, Handed)>> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// Whether `handle` is inheritable (GetHandleInformation).
+    fn inheritable(handle: RawHandle) -> bool {
+        let mut flags = 0u32;
+        // SAFETY: a handle the caller holds, and a word for its flags.
+        let ok = unsafe { windows_sys::Win32::Foundation::GetHandleInformation(handle, &raw mut flags) };
+        assert_ne!(ok, 0, "{}", last());
+        flags & HANDLE_FLAG_INHERIT != 0
+    }
+
+    /// Do: make a confined child, suspended, whose standard output and error are a file this
+    /// process opened, not inheritable, as std opens every file. Expect the file's handle not
+    /// inheritable still once the child is made: a copy made for the child alone was, the
+    /// lender's handle left as it lent it (platform-07).
+    #[test]
+    fn a_confined_childs_standard_handles_are_left_as_their_lender_has_them() {
+        use std::os::windows::io::AsHandle as _;
+        let dir = shards_testdir::TempDir::new("stdio-lent").unwrap();
+        let out = File::create(dir.join("out")).unwrap();
+        assert!(!inheritable(out.as_raw_handle()));
+        let shell = std::env::var_os("ComSpec").unwrap();
+        let args = [OsStr::new("/c"), OsStr::new("exit 0")];
+        let made = spawn_suspended(&Spawn {
+            program: Path::new(&shell),
+            args: &args,
+            grants_at: args.len(),
+            given: &[],
+            stdin: None,
+            stdout: out.as_handle(),
+            stderr: out.as_handle(),
+            sockets: &[],
+            env: &[],
+            container: None,
+            holds: Holds::Nothing,
+            group: None,
+            graphics: false,
+        })
+        .unwrap();
+        let after = inheritable(out.as_raw_handle());
+        drop(made);
+        assert!(!after, "the lent handle left inheritable");
+    }
+
+    /// Do: hold a pipe's write end inheritable, as a spawn of shards' holds its child's
+    /// handles until it is made, while another thread starts a child by std's Command
+    /// ([`spawn_std`]) that runs for seconds; then close every write end this process holds.
+    /// Expect the pipe's writers all gone while that child runs: std's child, made once the
+    /// spawn let go of its inheritable handles, took none of them; one made meanwhile kept a
+    /// write end, and the pipe open, until it ended (platform-07).
+    #[test]
+    fn a_child_of_stds_takes_no_handle_held_inheritable_for_another() {
+        use windows_sys::Win32::Foundation::{ERROR_BROKEN_PIPE, GetLastError};
+        use windows_sys::Win32::System::Pipes::PeekNamedPipe;
+        let (read, write) = pipe().unwrap();
+        // The read end pipe() makes inheritable; the write end the child would hold.
+        // SAFETY: our own handle, made not inheritable again.
+        assert_ne!(
+            unsafe { SetHandleInformation(read.as_raw_handle(), HANDLE_FLAG_INHERIT, 0) },
+            0
+        );
+        let (started, start) = std::sync::mpsc::channel();
+        let child = std::thread::scope(|s| {
+            let held = INHERITING.read().unwrap_or_else(PoisonError::into_inner);
+            let copy = inheritable_copy(write.as_raw_handle()).unwrap();
+            let std_child = s.spawn(move || {
+                started.send(()).unwrap();
+                let shell = std::env::var_os("ComSpec").unwrap();
+                spawn_std(
+                    std::process::Command::new(shell)
+                        .args(["/c", "ping -n 4 127.0.0.1 >NUL"])
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null()),
+                )
+                .unwrap()
+            });
+            start.recv().unwrap();
+            // Long enough for a spawn that does not wait to have made its child.
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            drop(copy);
+            drop(held);
+            std_child.join().unwrap()
+        });
+        drop(write);
+        let mut ready = 0u32;
+        // SAFETY: a pipe handle `read` holds; only the count asked for.
+        let ok = unsafe {
+            PeekNamedPipe(
+                read.as_raw_handle(),
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                &raw mut ready,
+                std::ptr::null_mut(),
+            )
+        };
+        // SAFETY: no arguments.
+        let broken = ok == 0 && unsafe { GetLastError() } == ERROR_BROKEN_PIPE;
+        let mut child = child;
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(
+            broken,
+            "std's child holds a write end made inheritable for another"
+        );
+    }
 
     /// A detached child runs, its end and status seen as any child's, though it is in no
     /// console, process group nor Job of this process's.

@@ -2386,6 +2386,25 @@ mod windows;
 #[cfg(windows)]
 pub use windows::*;
 
+/// Starts `command` by std's Command: every child shards starts so, whatever it then waits
+/// for (`spawn` then `wait` or `wait_with_output`, never `status` or `output`, which hold the
+/// spawn for the child's life). On Windows, where std's child inherits every handle this
+/// process holds inheritable (CreateProcessW, bInheritHandles TRUE, Rust's
+/// library/std/src/sys/process/windows.rs), it waits for each of shards' own spawns that holds
+/// one inheritable for its child alone ([`windows::spawn_std`]).
+#[cfg(windows)]
+pub fn spawn_std(command: &mut std::process::Command) -> std::io::Result<std::process::Child> {
+    windows::spawn_std(command)
+}
+
+/// Starts `command` by std's Command (Windows' twin above): a descriptor std's children
+/// inherit is one made without close-on-exec, which no shards spawn makes for its child
+/// (`unix::spawn` hands each one by dup2 in the child alone).
+#[cfg(not(windows))]
+pub fn spawn_std(command: &mut std::process::Command) -> std::io::Result<std::process::Child> {
+    command.spawn()
+}
+
 /// A caller's ordinary pipe writer paired with a cancellable reader. Ending a clone
 /// wakes an idle read; once all reader copies close, later writes fail. No relay thread.
 #[cfg(unix)]
