@@ -1643,6 +1643,21 @@ removes it; `--rm` removes it once it ends.
     never started the run, which goes to another VM; one that answers otherwise, or not
     in time, may have, and is ended and followed like any run, never retried: no run
     starts twice.
+  - **Which VMs a run tries** (runs-11, R03). A run once tried three warm VMs and failed
+    after them whatever stood ready (`HANDOFF_TRIES`, a number picked). Now a VM that
+    surely did not take it gives way to the next only where it had been waiting in its
+    pool before the run asked (`Ready::pooled`, the instant it joined its pool's waiting
+    VMs, before the run's): those are as many as the pools held then, each tried once,
+    however many ended unseen, so the tries are bounded by VMs that exist, not by a count.
+    One started after the run asked (for it, or a refill since) that surely did not take
+    it ends the start, said as `the VM started for the run did not take it: WHY`: a VM
+    made for the run failing so is no sign the next one would not, and starting VMs on
+    against a failure every VM may share has no end of its own. Cold start: an empty
+    pool's first VM is started for the run and is tried once. Unit test
+    `untaken_pooled_vms_give_way_to_each_other_and_a_fresh_one_ends_the_start` (four
+    pooled VMs ended unseen, the fifth serves; one started for the run, ended unseen, ends
+    the start after one ask); with the count of three put back, it fails (the run is
+    refused with a healthy fifth VM ready).
   - A record changed after it went is an error, not nothing to do.
   - **Evidence:** deterministic unit tests that play the warm VMs over socket pairs and
     hold each step (acquisition, TAKEN, STARTED, DONE) while `rm`, `rm -f`, `wait`,
@@ -2970,28 +2985,52 @@ executables, signatures, GPU and crash-debris checks remain owed in the
 **Helper integrity before each start (runs-10).** A helper's directory is named by the
 helpers' digests, but `complete` and the GPU writer took a helper of the right length
 as this build's whatever its bytes: one byte changed (by hand, by a program of the
-user's, on the disk) was started as it was, in every later process. Now each time a
-process is about to start a helper (`helpers::vm`, `net`, `vm_gpu`, and `checked` for
-the path the daemon keeps, from `launch::program`), its bytes are read whole and their
-SHA-256 compared with the digest build.rs embedded beside them; where they differ, or
-the file is gone, the carried bytes are written again whole (staging of the writer's
-own, synced, closed, renamed over it: the bytes build.rs signed on macOS), and a helper
-that cannot be written again (Windows refuses to replace one a running VM process
-holds) is refused, saying its path, its digest and why. A helper `SHARDS_VM_BINARY`
-names, or a carrier's beside its `shards` (D237, signed by the carrier, its bytes not
-those this build carries), is its giver's to answer for and is started as it is.
-`complete` stays the check that a directory was placed whole. No literal: the digest is
-SHA-256 of the carried bytes, the read through std's buffer at std's size. **Cost owed
-(ROOT):** each VM start now reads shards-vm (2.98 MB in this Mac's cache) and each
-networked one shards-net (4.33 MB) through SHA-256; its latency is unmeasured:
-`docs/research/measurements/build-ab/ab.py` between this build and its parent on one
-template, and a cold `shards run --kernel` launch, on HVF, KVM and WHP. A start between
-the check and the exec can still find bytes changed in that window; only an exec of the
-checked descriptor (fexecve, which macOS lacks) would close it. Unit tests (helpers.rs):
-`a_helper_whose_bytes_changed_is_written_again_before_it_starts` (one byte flipped, its
-length kept: written again) and `a_changed_helper_that_cannot_be_written_again_is_refused`;
-with the digest check put back to the length check, the first fails (the flipped bytes
-are returned). [runs-fixes record](../research/measurements/runs-fixes/README.md#runs-10).
+user's, on the disk) was started as it was, in every later process. Now every start of
+a helper this build carries goes through `helpers::program` (launch.rs for the VM
+process, its GPU build included; netproc.rs for the network process; `run --kernel` and
+`restore`'s exec): the file is opened, its version read (`platform::file_identity`: on
+Unix fstat's device, inode, length, write and change times; on Windows FileIdInfo's
+volume and 128-bit file ID, FileStandardInfo's length, FileBasicInfo's write and change
+times), and its bytes read whole through SHA-256 and compared with the digest build.rs
+embedded beside them only where this process has not yet checked that version. A write
+to the file changes its write and change times, and a file renamed over its name is
+another inode or ID, so changed bytes are read again at the next start. Where they
+differ, or the file is gone, the carried bytes are written again whole (staging of the
+writer's own, synced, closed, renamed over it: the bytes build.rs signed on macOS) and
+checked again; a helper that cannot be written again, or written is still not this
+build's, is refused, saying its path, its digest and why.
+
+- **The version cache** (`helpers::CHECKED`): key, the helper's path; value, the version
+  its bytes were last found to be this build's at; one entry a helper, so at most the
+  three this build carries, for the process's life; authority, the file's bytes, read
+  again whenever its version differs. Its benefit, measured: a start's check where the
+  version is known against one that reads the bytes (unit test `a_helper_checks_cost`,
+  [PM M580](../research/platform-measurements.md)). What it cannot see: bytes changed
+  below the file system (a disk's own fault) with no write through it; and on Windows a
+  writer that sets a file's write and change times back by SetFileInformationByHandle,
+  which only this user's own programs can, whose cache it is.
+- **Started as the file checked.** The checked file stays open until its process has
+  started (`helpers::Program`). On Linux the start goes through it, `/proc/PID/fd/N` of
+  the checking process, which the starting process (this one, or its spawner, PM M158,
+  of the same user) opens as the very file checked whatever has been renamed over its
+  name since (proc(5)); its name where /proc is not there. On Windows it is opened
+  sharing only reads (CreateFileW's dwShareMode), so while it is held no other handle
+  writes, renames or deletes it, and CreateProcess, which opens it to read and execute,
+  still may. macOS has no fexecve(2) and its posix_spawn takes a path: there the window
+  between the check and the exec stays, the start by name.
+- A helper `SHARDS_VM_BINARY` names, or a carrier's beside its `shards` (D237, signed by
+  the carrier, its bytes not those this build carries), is its giver's to answer for and
+  is started as it is.
+- No literal: the digest is SHA-256 of the carried bytes; the read goes through std's
+  buffer at std's size.
+- **Tests** (helpers.rs): `a_helper_whose_bytes_changed_is_written_again_before_it_starts`,
+  `a_changed_helper_that_cannot_be_written_again_is_refused`,
+  `a_helper_is_read_again_only_once_its_file_changed` (a known version reads no bytes;
+  a write since, its length kept, is read again and mended),
+  `a_checked_helper_starts_as_the_file_checked` (Linux: the file checked starts though
+  another was renamed over its name; Windows: no rename over a held helper, which still
+  starts; macOS: its name). Mutations: the version left out of the cache's key, and the
+  bytes unread, each fail. [runs-fixes record](../research/measurements/runs-fixes/README.md#runs-10).
 
 shards is one file to install and run, `shards`: every command, the daemon included,
 one CLI.
@@ -9052,6 +9091,17 @@ holds the stable lock while another writer learns a helper end, publishes its ow
 teardown snapshot and releases the lock: both maxima must survive. Existing cold
 liveness behavior and the record's millisecond format are unchanged; no new wait,
 cache, runtime number or platform adapter. See the [runs fix evidence](../research/measurements/runs-fixes/README.md).
+
+**The record read as written** (runs-12). `heard` publishes through `platform::write_in`,
+which on Windows replaces no file (PM M345): each write lands a version, `ends.~N`, and
+removes the plain name. The record was read as the plain name (`fs::read_to_string`), so
+on Windows every reader after the first write found none, and each host's slices were
+lost to the next process. Every reader now opens the newest version (`ends::newest`,
+`platform::open_newest_in`), on Unix the name itself. Unit test
+`each_published_record_is_read_back_by_the_next_process` (three publications, each read
+back by a new process's `Ends`), red on Windows with the plain read put back; Unix has
+no versions, so only Windows can show it red. The E2E reader
+(`a_kills_end_is_kept_as_this_hosts_in_its_home`) reads the newest version too.
 
 **Found.** The audit of what was taken from Docker (docs/audit/2026-10-16_docker-framing.md):
 a microVM whose command outlived its SIGKILL had its VM killed 10 s later and its end given
