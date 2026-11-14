@@ -184,15 +184,20 @@ struct Serve {
     stale: bool,
 }
 
-/// What the chooser holds of each contest: who holds its ports, and the conntrack zones
-/// its UDP flows are tracked in (links::program_chosen).
+/// What the chooser holds of each contest: who holds each of its ports, and the
+/// conntrack zones its UDP flows are tracked in (links::program_chosen).
 struct Choices {
     contests: Vec<Contest>,
-    /// Each contest's holder, by its candidate's index.
-    holders: Vec<Option<usize>>,
-    /// Each UDP contest's conntrack zone, of its holder's choice; the last zone given.
-    zones: Vec<Option<u16>>,
-    zone: u16,
+    /// Each contest's ports as they are held, the microVM's: runs of them, each its first
+    /// and last port and its holder's index, sorted and apart. A port goes to the member
+    /// listening on it (D122), so a range's ports may be several members'.
+    held: Vec<Vec<(u16, u16, usize)>>,
+    /// Each UDP contest's conntrack zone for each of its candidates, for the run (none for
+    /// TCP's). A zone is one holder's alone, so that every flow conntrack keeps in it is
+    /// translated to that holder: a flow admitted before a change is new in the next
+    /// holder's zone, and one kept from an earlier turn of the same holder goes to it
+    /// again (network-04).
+    zones: Vec<Vec<u16>>,
 }
 
 /// More UDP candidates than conntrack has zones for (a zone is a u16, and 0 every other
@@ -216,58 +221,86 @@ impl std::fmt::Display for ZonesExhausted {
 impl std::error::Error for ZonesExhausted {}
 
 impl Choices {
+    /// Each UDP candidate's zone, 1 up: zone 0 is every other flow's.
     fn new(contests: Vec<Contest>) -> Result<Self, ZonesExhausted> {
+        let needed: usize = contests
+            .iter()
+            .filter(|c| c.from.0 == 17)
+            .map(|c| c.candidates.len())
+            .sum();
+        let mut next = 0u16;
+        let zones = contests
+            .iter()
+            .map(|c| {
+                if c.from.0 != 17 {
+                    return Ok(Vec::new());
+                }
+                c.candidates
+                    .iter()
+                    .map(|_| {
+                        next = next.checked_add(1).ok_or(ZonesExhausted { needed })?;
+                        Ok(next)
+                    })
+                    .collect()
+            })
+            .collect::<Result<_, _>>()?;
         Ok(Self {
-            holders: vec![None; contests.len()],
-            zones: vec![None; contests.len()],
-            zone: 0,
+            held: vec![Vec::new(); contests.len()],
+            zones,
             contests,
         })
     }
 
-    /// Contest `c`'s holder, of what each candidate listens on (`listens`, by candidate,
-    /// the microVM's ports): its holder still, where it still listens; else the first of
-    /// its candidates that does.
+    /// Contest `c`'s ports, of what each candidate listens on (`listens`, by candidate,
+    /// the microVM's ports, sorted): each port its holder's still, where it still listens
+    /// there; else the first candidate's that does; else no one's.
     fn choose(&mut self, c: usize, listens: &[Vec<u16>]) {
-        let Some(contest) = self.contests.get(c) else {
+        let (Some(contest), Some(held)) = (self.contests.get(c), self.held.get_mut(c)) else {
             return;
         };
-        let listening = |k: usize| listens.get(k).is_some_and(|l| !l.is_empty());
-        let udp = contest.from.0 == 17;
-        let was = self.holders.get(c).copied().flatten();
-        let held = was.filter(|&k| listening(k));
-        let holder = held.or_else(|| (0..contest.candidates.len()).find(|&k| listening(k)));
-        if let Some(h) = self.holders.get_mut(c) {
-            *h = holder;
-        }
-        // A UDP port given another holder: a zone of its own, in which the flows the
-        // last one had are new, and go to this one (links::program_chosen).
-        if udp && holder != was {
-            let zone = holder.map(|_| self.next_zone());
-            if let Some(z) = self.zones.get_mut(c) {
-                *z = zone;
+        let on = |k: usize, port: u16| listens.get(k).is_some_and(|l| l.binary_search(&port).is_ok());
+        let mut ports: Vec<u16> = listens.iter().flatten().copied().collect();
+        ports.sort_unstable();
+        ports.dedup();
+        let mut next: Vec<(u16, u16, usize)> = Vec::new();
+        for port in ports {
+            let was = held
+                .iter()
+                .find(|&&(lo, hi, _)| lo <= port && port <= hi)
+                .map(|&(_, _, k)| k);
+            let Some(k) = was
+                .filter(|&k| on(k, port))
+                .or_else(|| (0..contest.candidates.len()).find(|&k| on(k, port)))
+            else {
+                continue;
+            };
+            match next.last_mut() {
+                Some((_, hi, by)) if *by == k && hi.checked_add(1) == Some(port) => *hi = port,
+                _ => next.push((port, port, k)),
             }
         }
+        *held = next;
     }
 
-    /// A conntrack zone no choice holds: 1 up, past 65535 to 1 again, by which time a
-    /// zone's flows have long expired (120 s at most, nf_conntrack_proto_udp.c); never 0,
-    /// every other flow's.
-    fn next_zone(&mut self) -> u16 {
-        self.zone = self.zone.checked_add(1).unwrap_or(1);
-        self.zone
-    }
-
-    /// The choices, as the chain `chosen` programs them.
+    /// The choices, as the chain `chosen` programs them: each run of a contest's ports to
+    /// its holder, at the holder's own ports, in the holder's zone where they are UDP's.
     fn chosen(&self) -> Vec<crate::links::Chosen> {
-        self.contests
-            .iter()
-            .zip(self.holders.iter().zip(&self.zones))
-            .filter_map(|(c, (h, z))| {
-                let (addr, at) = c.candidates.get((*h)?)?;
-                Some((c.from, *addr, *at, *z))
-            })
-            .collect()
+        let mut out = Vec::new();
+        for ((contest, held), zones) in self.contests.iter().zip(&self.held).zip(&self.zones) {
+            let (proto, first, _) = contest.from;
+            for &(lo, hi, k) in held {
+                let Some(&(addr, at)) = contest.candidates.get(k) else {
+                    continue;
+                };
+                // The holder's port: its range's, at the port's offset in the microVM's.
+                let theirs = |port: u16| port.checked_sub(first).and_then(|d| at.1.checked_add(d));
+                let (Some(alo), Some(ahi)) = (theirs(lo), theirs(hi)) else {
+                    continue;
+                };
+                out.push(((proto, lo, hi), addr, (at.0, alo, ahi), zones.get(k).copied()));
+            }
+        }
+        out
     }
 }
 
@@ -664,25 +697,16 @@ fn taken(m: &[u8], family: libc::c_int, addr: Ipv4Addr, (lo, hi): (u16, u16)) ->
             .and_then(|b| <[u8; 2]>::try_from(b).ok())
             .map(u16::from_be_bytes)
     };
-    let (Some(sport), Some(dport)) = (be16(20), be16(22)) else {
-        return None;
-    };
-    let Some(src) = m.get(24..40) else {
-        return None;
-    };
+    let (sport, dport) = (be16(20)?, be16(22)?);
+    let src = m.get(24..40)?;
     if sport < lo || hi < sport || dport != 0 {
         return None;
     }
     let src = if family == libc::AF_INET {
-        let Some(&[a, b, c, d]) = src.first_chunk::<4>() else {
-            return None;
-        };
+        let &[a, b, c, d] = src.first_chunk::<4>()?;
         IpAddr::V4(Ipv4Addr::new(a, b, c, d))
     } else {
-        let Ok(a) = <[u8; 16]>::try_from(src) else {
-            return None;
-        };
-        IpAddr::V6(std::net::Ipv6Addr::from(a))
+        IpAddr::V6(std::net::Ipv6Addr::from(<[u8; 16]>::try_from(src).ok()?))
     };
     let at = match src {
         IpAddr::V4(a) => a.is_unspecified() || a == addr,
@@ -773,6 +797,30 @@ mod tests {
             let first = *held_by.entry(zone).or_insert(to);
             assert_eq!(first, to, "round {round}: zone {zone} was {first}'s, given {to}");
         }
+    }
+
+    /// More UDP candidates than zones: refused, never a zone shared or zone 0.
+    #[test]
+    fn more_udp_candidates_than_zones_are_refused() {
+        let at = |i: u32| Ipv4Addr::from(0x0a00_0000 + i);
+        let contest = |port: u16, n: u32| Contest {
+            from: (17, port, port),
+            candidates: (0..n).map(|i| (at(i), (17, port, port))).collect(),
+        };
+        let max = u32::from(u16::MAX);
+        assert!(Choices::new(vec![contest(53, max - 1), contest(54, 1)]).is_ok());
+        assert_eq!(
+            Choices::new(vec![contest(53, max), contest(54, 1)]).err(),
+            Some(ZonesExhausted {
+                needed: usize::from(u16::MAX) + 1
+            })
+        );
+        // TCP's contests take none.
+        let tcp = Contest {
+            from: (6, 80, 80),
+            candidates: vec![(at(1), (6, 80, 80)), (at(2), (6, 80, 80))],
+        };
+        assert!(Choices::new(vec![contest(53, max), tcp]).is_ok());
     }
 
     /// network-06: web listens on 7000 alone, api on 7001 alone, both candidates for

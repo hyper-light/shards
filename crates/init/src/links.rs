@@ -1515,8 +1515,8 @@ const CHOSEN: &[u8] = b"chosen\0";
 /// connection tracking (D122).
 const CHOSEN_ZONE: &[u8] = b"chosen-zone\0";
 
-/// One of the chooser's choices: what comes in on eth0 to port `from` goes to `to`, at its
-/// port `at`; and, for a UDP port, the conntrack zone of this choice, which its flows, both
+/// One of the chooser's choices: what comes in on eth0 to ports `from` goes to `to`, at its
+/// ports `at`; and, for UDP's, the conntrack zone of that holder, which its flows, both
 /// ways, are tracked in.
 pub(crate) type Chosen = (
     crate::netplan::Egress,
@@ -1528,11 +1528,12 @@ pub(crate) type Chosen = (
 /// The chooser's choices, programmed again whole in one transaction: what comes in on
 /// eth0 to each port `from` goes to `to`, at its port `at`, as `pre` gives a port that is
 /// one domain's; a port of no one listening, nowhere here (the run's own command's, as a
-/// port no domain claims is). A UDP port's flows are tracked in its choice's zone, coming
-/// in and the holder's answers going out: a choice of another holder has a zone of its
-/// own, in which a flow admitted before is new, and so translated to the new holder, its
-/// entry in the old zone left to expire, as the old holder's answers past it are new
-/// flows no grant opens. Linux keeps a NAT binding for a flow's life (nf_nat_core.c; a
+/// port no domain claims is). A UDP port's flows are tracked in its holder's zone, coming
+/// in and the holder's answers going out: each holder has a zone of its own for the run
+/// (crate::chooser's `Choices`), in which a flow admitted before a change is new, and so
+/// translated to the new holder, its entry in the old holder's zone left to expire, or
+/// taken again, translated to that holder, should it hold the port again; the old
+/// holder's answers past the change are new flows no grant opens. Linux keeps a NAT binding for a flow's life (nf_nat_core.c; a
 /// UDP flow lives 30 s past its last datagram, 120 s once it streams,
 /// nf_conntrack_proto_udp.c), and a guest kernel without ctnetlink (shards' has none) has
 /// no other way to let one go.
