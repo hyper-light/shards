@@ -86,3 +86,38 @@ window was requested from ROOT through kiln (429 backpressure) and the authorize
 local Claude peer socket (transport sent, read acknowledgement not observed).
 Independent runs-02 confirmation/preparation continued while that window was
 pending. An unlanded fixing SHA is not described here as a main result.
+
+## runs-04
+
+Base aaeee3b1935cde71f93a1de90a6bd86ab80c121e plus the API patch.
+`cargo test -j 4 -p shards-api --lib a_dead_warm_host_is_definitely_untaken`
+red in kiln r13: a real stand-in process wrote WARMED and exited, was observed
+gone, and its take was refused instead of definitely untaken (1 failed). In r14
+the same test passes (1); `cargo test -j 4 -p shards-api --lib image::pool::tests`
+passes 5, and `cargo test -j 4 -p shards-api --lib image::session::tests` passes
+30. `cargo clippy -j 4 -p shards-api --all-targets -- -D warnings` passes (19.68s).
+Same macOS arm64 runner, owned target and environment as above; no VM was started.
+
+`Taken::Untaken` is an internal typed outcome, proven only before CREATE is
+attempted. Both the watcher-reaped state and the child process's terminal state
+are checked because either can win the race. The pool replaces that spare with a
+fresh host. A death after this check keeps the existing typed failure; a CREATE
+write may have reached the host, so the run is not replayed. There is no new
+wire variant, chosen number, cache, periodic probe, or process-lifetime owner.
+The pool's existing keep-alive bounds unused spares; dead spares are discarded at
+take, rather than adding a second death-notification path to the pool. Existing
+R01-R16 dispositions above apply; no performance or live-VM claim.
+
+Owed ROOT: `cargo test -p shards --test api_image` on supported real-VM hosts,
+with a warmed host killed/reaped before take and a second kill during CREATE;
+require one replacement run in the former case and a typed non-replayed failure
+in the latter. The existing suite needs this precise fault scenario added.
+
+Landing gate updates: f8884c10853b8483c51a6de604d16404dca8b5a6 passed
+runs-02's rename/cleanup and stopping-lock tests (one each) and
+`cargo check -j 4 -p shards-vmm -p shards --tests` (kiln r15). After another
+non-fast-forward rejection, 0e90f5866d010aac5c2e9d98e7c35f2c3b176a78 merged main
+18a17cb96; the same cargo check passed (r16, 16.27s), per ROOT's amended
+contention rule. Neither rejected push changed main. Main's RunEnded protocol
+change was retained while resolving the runs-04 stash's two test-frame conflicts;
+the focused API gate is rerun after that resolution.

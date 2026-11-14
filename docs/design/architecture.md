@@ -29588,6 +29588,12 @@ microVM's life (D231), so its pools live in its process, with shards-api:
 - *A pool* is the runs of one microVM: one exemplar, one run host program and environment.
   `boot` takes a ready warm host of its run's pool, else starts a host of its own, as
   `ImageShards` does; either way the pool counts the run, and its end as its guest drops.
+- *A spare already ended before CREATE* (runs-04) is `Taken::Untaken`: its watcher or
+  its process's terminal state proves it never received this run, and the pool starts a
+  fresh host. This check is at the take boundary, without periodic probes or another
+  lifetime manager. Once CREATE is attempted, a transport failure remains `Refused`:
+  there is no proof the run was not received, so it is never replayed. `Unfit` remains
+  the host's explicit refusal of a run for another microVM.
 - *Its size* is D26's, by the one rule (`shards_api::demand`, moved from the daemon). That is
   the largest burst of its runs within one refill window, an RFC 6298 retransmission timeout
   of its warm hosts' starts as timed from spawn to `WARMED`, at least one while in use, and

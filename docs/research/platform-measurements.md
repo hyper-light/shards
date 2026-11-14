@@ -74,6 +74,9 @@ Other host/guest checks remain owed to ROOT as the record names them.
 The same record retains runs-02's actual overwritten-marker unit red and green
 rename/cleanup + stopping-lock checks and shards all-target clippy on that Mac;
 its real-daemon/VM counterpart remains unrun.
+Runs-04's exited-after-WARMED stand-in failed as not safely retryable before the
+change; afterward the regression, 5 pool tests and 30 session tests pass, with
+shards-api all-target clippy. Actual VM death during handoff remains ROOT's check.
 
 ### M2. Object lifecycle (`lifecycle`, n=200, µs)
 
