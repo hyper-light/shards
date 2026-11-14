@@ -1,0 +1,14 @@
+    Checking hybrid-array v0.4.15
+    Checking crypto-common v0.2.2
+    Checking block-buffer v0.12.1
+    Checking flate2 v1.1.10
+    Checking digest v0.11.3
+    Checking serde_json v1.0.151
+    Checking serde v1.0.229
+    Checking sha2 v0.11.0
+    Checking base64 v0.23.1
+    Checking shards-image v0.1.0 (/home/adalundhe/g121-tmp/fix-inithex-v1/source/crates/image)
+    Checking shards-agentfile v0.1.0 (/home/adalundhe/g121-tmp/fix-inithex-v1/source/crates/agentfile)
+    Checking shards-init v0.1.0 (/home/adalundhe/g121-tmp/fix-inithex-v1/source/crates/init)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2m 45s
+
