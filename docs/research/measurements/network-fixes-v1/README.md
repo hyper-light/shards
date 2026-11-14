@@ -229,3 +229,10 @@ Kiln r16 checked exact merge `e7822b6b75574ec1b5c5f811ee4f7a359ee3de90`
 `NETWORK_CHECK_ROOT=$HOME/g121-tmp/network-arm02-v1 bash docs/research/measurements/network-fixes-v1/native-arm02.sh green`.
 Startup test 1 passed, forbidden-syscall test 1 passed, both crates' clippy passed,
 overall exit 0. This is the focused tested merge for amended landing contention.
+
+Native ARM follow-up landed at `e37f837e03dba5c4c8f70ffccac379072df9ae19`,
+ff-pushed from f7a3edfbc. The first push was refused; new main touched net/inject
+and syscall-filter, so amended contention used warm native ARM
+`cargo check -p shards-net -p shards-net-process --tests`, Kiln r17, exit 0
+([output](arm02-landing-check.log)). No merge conflict occurred; the focused
+passed merge remains e7822b6b7. Every follow-up commit/merge has one gpgsig.

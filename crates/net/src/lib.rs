@@ -3953,6 +3953,41 @@ mod tests {
         assert_eq!(Ports::decode(&[6, 0, 1]), None);
     }
 
+    #[test]
+    fn dns_answers_replace_the_names_previous_authority() {
+        let region = Region::map(shards_netring::memory().unwrap()).unwrap();
+        let (_, pr) = shards_netring::doorbell().unwrap();
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let mut cfg = Config::on_bridge(Policy::Ports(Ports::default()), [2, 0, 0, 0, 0, 1], &bridge);
+        cfg.named = vec![("mcp.example".into(), 443)];
+        let mut stack = stack(cfg, region.producer(1, pr));
+        let resolver = UdpSocket::bind("127.0.0.1:0").unwrap();
+        resolver.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let key = (12345, IpAddr::V4(stack.cfg.gateway_ip), 53);
+        let at = resolver.local_addr().unwrap();
+        stack.flow(key, (at.ip(), at.port()), b"question");
+        let (_, from) = resolver.recv_from(&mut [0; 32]).unwrap();
+        let answer = |ip: [u8; 4]| {
+            let mut msg = vec![0x12, 0x34, 0x81, 0x80, 0, 1, 0, 1, 0, 0, 0, 0];
+            msg.extend_from_slice(b"\x03mcp\x07example\0\0\x01\0\x01");
+            msg.extend_from_slice(&[0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4]);
+            msg.extend_from_slice(&ip);
+            msg
+        };
+        let first = [203, 0, 113, 7];
+        let next = [203, 0, 113, 8];
+        resolver.send_to(&answer(first), from).unwrap();
+        stack.on_udp(0);
+        assert!(stack.cfg.allows(IpAddr::from(first), Proto::Tcp, 443));
+        resolver.send_to(&answer(next), from).unwrap();
+        stack.on_udp(0);
+        assert!(stack.cfg.allows(IpAddr::from(next), Proto::Tcp, 443));
+        assert!(
+            !stack.cfg.allows(IpAddr::from(first), Proto::Tcp, 443),
+            "the replaced DNS answer still grants a new flow"
+        );
+    }
+
     /// The daemon's control socket publishes and the VM's lets go, and neither says the
     /// other's: a VM gives the network process nothing to serve (review 2.19).
     #[test]
