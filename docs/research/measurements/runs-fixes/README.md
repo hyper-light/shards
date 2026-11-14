@@ -538,3 +538,7 @@ adas-mac-studio-3.local (kiln r24, r43):
   run's log held to its bound in bytes at each rotation (D240's `cap::hold`), ROOT's ruling
   for logs that outlive the binary. D186. [runs11-logseg-red.log](runs11-logseg-red.log),
   [runs11-logseg-green.log](runs11-logseg-green.log).
+- `TAKE_TIMEOUT` slice (a): ac7f1119f. The run's handoff on Unix judged (shards_ipc
+  `send_judged`/`recv_judged`, `health::Judged` on `Answers::take`); [msg-dontwait.c](msg-dontwait.c)
+  measures macOS's `MSG_DONTWAIT` sends. D222. [runs11-take-a-red.log](runs11-take-a-red.log),
+  [runs11-take-a-green.log](runs11-take-a-green.log). Owed: (b) Windows, (c) the other sites.

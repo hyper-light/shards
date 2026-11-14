@@ -384,9 +384,11 @@ fn limits_said(out: &str) -> std::collections::BTreeMap<String, Vec<u64>> {
 }
 
 /// A builder's steps see the memory it may have, as a build on a host sees the host's,
-/// where its kernel reports what it may still plug (D149): `MemTotal` is all of it, not the
-/// 512 MiB it boots with, and one allocation of three times that is made, which the
-/// kernel's overcommit heuristic refused while it counted only memory plugged.
+/// where its kernel reports what it may still plug (D149): in a home that has learned what
+/// its guest needs to boot (D133, memory-15), its first build having ended, a builder boots
+/// with that and has the rest to plug, and its steps' `MemTotal` is all of it, not what it
+/// booted with; and one allocation of more than it booted with is made, which the kernel's
+/// overcommit heuristic refused while it counted only memory plugged.
 #[test]
 fn a_builders_steps_see_the_memory_it_may_have() {
     if cannot_run_vms() {
@@ -410,15 +412,28 @@ fn a_builders_steps_see_the_memory_it_may_have() {
         let shown = format!("--- stdout\n{}\n--- stderr\n{}", built.stdout, built.stderr);
         (built, shown)
     };
-    let (seen, shown) = build(
-        "build-report-ctx",
-        r#"["/bin/testguest", "stat", "/proc/sys/vm/pluggable_kbytes", "/proc/meminfo"]"#,
-    );
-    if seen.stderr.contains("/proc/sys/vm/pluggable_kbytes missing") {
+    let stat = r#"["/bin/testguest", "stat", "/proc/sys/vm/pluggable_kbytes", "/proc/meminfo"]"#;
+    // The home's first builder boots cold, with all it may have, and teaches the home what
+    // its guest needs to boot.
+    let (cold, shown) = build("build-report-cold-ctx", stat);
+    if cold.stderr.contains("/proc/sys/vm/pluggable_kbytes missing") {
         println!("SKIP: this guest kernel reports none of the memory it may plug (D149)");
         return;
     }
+    assert_eq!(cold.status, Some(0), "{shown}");
+    let boot = common::learned_boot(&home).unwrap_or_else(|| panic!("no boot learned: {shown}"));
+    assert!(
+        boot < 1536 << 20,
+        "its guest learned to boot with {boot} bytes: {shown}"
+    );
+    let (seen, shown) = build("build-report-ctx", stat);
     assert_eq!(seen.status, Some(0), "{shown}");
+    assert!(
+        common::pluggable_said(&seen.stderr)
+            .first()
+            .is_some_and(|&kib| kib > 0),
+        "a builder booted with {boot} bytes of 2560 MiB has nothing to plug: {shown}"
+    );
     let total_kib: u64 = seen
         .stderr
         .split_once("MemTotal:")
@@ -487,7 +502,9 @@ fn host_available() -> u64 {
 /// steps see `MemTotal` no more than the host had available as it started, and its build's
 /// need is recorded in the home as it ends; a build ended short of memory is recorded so,
 /// and the next builder may have all its host's memory, as a run with no limit may (D148):
-/// `MemTotal` of the host's less no more than what a builder boots with.
+/// `MemTotal` of the host's less no more than what the home learned its builders' guest
+/// needs to boot (memory-15), which holds what its kernel keeps past `MemTotal`, and a block
+/// of what whole blocks round off.
 #[test]
 fn a_builders_ceiling_comes_from_its_host_and_its_homes_builds() {
     if cannot_run_vms() {
@@ -580,17 +597,22 @@ fn a_builders_ceiling_comes_from_its_host_and_its_homes_builds() {
     let (seen, shown) = build(&meminfo, None);
     assert_eq!(seen.status, Some(0), "{shown}");
     let all = total_kib(&seen.stderr, &shown);
+    let boot_kib = common::learned_boot(&home).unwrap_or_else(|| panic!("no boot learned: {shown}")) >> 10;
     assert!(
-        all <= host_kib && all + (512 << 10) > host_kib,
-        "MemTotal {all} kB of a builder after a build ended short, on a host of {host_kib} kB: {shown}"
+        all <= host_kib && all + boot_kib + block_kib > host_kib,
+        "MemTotal {all} kB of a builder after a build ended short, its guest learned to boot with {boot_kib} kB, on a host of {host_kib} kB: {shown}"
     );
 }
 
-/// A builder boots with little memory and is given more as its build needs it (D133): a
-/// step that touches three times what it booted with succeeds, and so does a layer twice
-/// as large; its steps' limits, those the kernel sizes by its memory, are at least a guest's
-/// booted with all of it, and within a tenth of them; and a step that takes more than all of
-/// it fails, as one past the memory of a builder booted with all of it does.
+/// A builder boots with what its home learned its guest needs and is given more as its
+/// build needs it (D133, memory-15): in a home whose first build has ended, a builder that
+/// may have 2,560 MiB boots with less than 1,536 and has the rest to plug, its kernel says;
+/// a step that touches 1,536 MiB succeeds, and so does a 1 GiB layer, the kernel then
+/// having less to plug; its steps' limits, those the kernel sizes by its memory, are at
+/// least a guest's booted with all of it, and within a tenth of them; and a step that takes
+/// more than all of it fails, as one past the memory of a builder booted with all of it
+/// does. A home's first builder boots with all it may have and plugs nothing
+/// (`a_builders_memory_in_a_new_home_is_all_it_may_have`).
 #[test]
 fn a_builders_memory_is_plugged_as_its_build_needs_it() {
     if cannot_run_vms() {
@@ -604,24 +626,51 @@ fn a_builders_memory_is_plugged_as_its_build_needs_it() {
         ("SHARDS_INIT", guest_init().as_os_str()),
         ("SHARDS_BUILD_MEMORY", "2560".as_ref()),
     ];
+    let pluggable = "RUN [\"/bin/testguest\", \"stat\", \"/proc/sys/vm/pluggable_kbytes\"]";
+    // The home's first build, whose builder boots cold and teaches the home its guest's boot.
+    let first = context("build-plug-first", &format!("FROM {image}\n{pluggable}\n"));
+    let warmed = run_shards_env(&["build"], &["--progress=plain", first.to_str().unwrap()], &env);
+    if warmed.stderr.contains("/proc/sys/vm/pluggable_kbytes missing") {
+        println!("SKIP: this guest kernel reports none of the memory it may plug (D149)");
+        return;
+    }
+    assert_eq!(warmed.status, Some(0), "{warmed}");
+    let boot = common::learned_boot(&home).unwrap_or_else(|| panic!("no boot learned: {warmed}"));
+    assert!(
+        boot < 1536 << 20,
+        "its guest learned to boot with {boot} bytes: {warmed}"
+    );
     let ctx = context(
         "build-plug-ctx",
         &format!(
             "FROM {image}\n\
              USER root\n\
+             {pluggable}\n\
              RUN [\"/bin/testguest\", \"alloc\", \"1536\"]\n\
              RUN [\"/bin/testguest\", \"big\", \"/big\", \"1024\"]\n\
-             RUN [\"/bin/testguest\", \"limits\"]\n"
+             RUN [\"/bin/testguest\", \"limits\"]\n\
+             RUN [\"/bin/testguest\", \"stat\", \"/proc/sys/vm/pluggable_kbytes\", \"/proc/meminfo\"]\n"
         ),
     );
     let built = run_shards_env(
         &["build"],
-        &["--progress=plain", "-t", "plugged:1", ctx.to_str().unwrap()],
+        &[
+            "--progress=plain",
+            "--no-cache",
+            "-t",
+            "plugged:1",
+            ctx.to_str().unwrap(),
+        ],
         &env,
     );
     let shown = format!("--- stdout\n{}\n--- stderr\n{}", built.stdout, built.stderr);
     assert_eq!(built.status, Some(0), "{shown}");
     assert!(built.stderr.contains("allocated 1536"), "{shown}");
+    let said = common::pluggable_said(&built.stderr);
+    assert!(
+        matches!(said[..], [before, after] if before > 0 && after < before),
+        "what it could still plug, before its steps and after: {said:?} KiB, booted with {boot} bytes: {shown}"
+    );
 
     let full = common::vm_run(&[
         "--kernel",
@@ -654,7 +703,13 @@ fn a_builders_memory_is_plugged_as_its_build_needs_it() {
             ));
         }
     }
-    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    eprintln!("limits of a step of a builder booted with {boot} bytes of 2560 MiB: {stepped:?}");
+    eprintln!("limits of a guest booted with all 2560 MiB: {booted:?}");
+    assert!(
+        wrong.is_empty(),
+        "{}\n{shown}\n--- booted with all of it\n{full}",
+        wrong.join("\n")
+    );
 
     let ctx = context(
         "build-plug-over-ctx",
@@ -680,7 +735,10 @@ fn a_builders_memory_is_plugged_as_its_build_needs_it() {
 /// gigabyte of its layers, has it plugged in time (D133): what its CPUs keep on their own
 /// lists of the pages their ended jobs freed is kept out of the hold that wakes its grower.
 /// Without, its guest ran out of memory short of that hold, as a build of 8 compilers on 32
-/// vCPUs over its 1 GiB of packages did, and its grower never plugged more (PM M392).
+/// vCPUs over its 1 GiB of packages did, and its grower never plugged more (PM M392). In a
+/// home whose first build has ended, whose builder boots with what its guest was learned
+/// to need, less than the build's 4 GiB (memory-15): a home's first builder boots with all
+/// it may have, and plugs nothing.
 #[test]
 fn a_builders_memory_is_plugged_as_fast_as_its_jobs_take_it() {
     if cannot_run_vms() {
@@ -694,6 +752,17 @@ fn a_builders_memory_is_plugged_as_fast_as_its_jobs_take_it() {
         ("SHARDS_INIT", guest_init().as_os_str()),
         ("SHARDS_BUILD_MEMORY", "8192".as_ref()),
     ];
+    let first = context(
+        "build-fast-first",
+        &format!("FROM {image}\nRUN [\"/bin/testguest\", \"report\"]\n"),
+    );
+    let warmed = run_shards_env(&["build"], &["--progress=plain", first.to_str().unwrap()], &env);
+    assert_eq!(warmed.status, Some(0), "{warmed}");
+    let boot = common::learned_boot(&home).unwrap_or_else(|| panic!("no boot learned: {warmed}"));
+    assert!(
+        boot < 4096 << 20,
+        "its guest learned to boot with {boot} bytes: {warmed}"
+    );
     // A builder has a vCPU for each of its host's CPUs (build::builder_cpus): a job on a
     // quarter of them, as 8 compilers on 32, the rest idle, where what ended jobs freed stays
     // on their CPUs' own lists. A gigabyte its step writes to a tmpfs first stays in its
@@ -722,8 +791,9 @@ fn a_builders_memory_is_plugged_as_fast_as_its_jobs_take_it() {
 }
 
 /// A builder gives back what it holds cold at its build's word (D188 for D133's builders):
-/// a step reads a 256 MiB file of a cache mount, which an earlier build wrote, into its
-/// builder's page cache, then waits; the build is told once that its host is short of
+/// a step reads a 256 MiB file of a cache mount, which an earlier build wrote, the home's
+/// first, whose builder booted cold and taught the home its guest's boot (memory-15), into
+/// its builder's page cache, then waits; the build is told once that its host is short of
 /// memory (SHARDS_BUILD_PRESSURE's FIFO, as no unprivileged process may raise macOS's
 /// system pressure), and its builder gives back most of the file, its VM process then
 /// holding that much less on its host, the step going on to its end; and the build's
@@ -855,10 +925,238 @@ fn a_builder_gives_back_what_it_holds_cold_at_its_builds_word() {
     assert_eq!(layers(&told_out), layers(&untold_out), "{shown}");
 }
 
+/// A home's first builder boots with all it may have (D133, memory-15): with nothing
+/// learned of what its guest needs to boot, the cold start, its VM process is given its
+/// ceiling to boot with and nothing past it to plug, and its kernel says it has nothing to
+/// plug; it gives back what it holds cold at its build's word all the same, its files'
+/// pages (D188), its VM process then holding that much less, as
+/// `a_builder_gives_back_what_it_holds_cold_at_its_builds_word`'s warm builder does; and as
+/// it ends its home learns what its guest needs to boot, less than its ceiling, which the
+/// home's next builder boots with, having the rest to plug.
+#[cfg(unix)]
+#[test]
+fn a_builders_memory_in_a_new_home_is_all_it_may_have() {
+    use std::io::{BufRead as _, Write as _};
+    use std::os::unix::fs::OpenOptionsExt as _;
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("build-cold-home");
+    const CEILING: u64 = 2560;
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+        ("SHARDS_BUILD_MEMORY", "2560".as_ref()),
+    ];
+    assert_eq!(common::learned_boot(&home), None);
+    const MIB: u64 = 256;
+    let ctx = context(
+        "build-cold-ctx",
+        &format!(
+            "FROM {image}\n\
+             USER root\n\
+             RUN [\"/bin/testguest\", \"stat\", \"/proc/sys/vm/pluggable_kbytes\"]\n\
+             RUN --mount=type=cache,target=/c [\"/bin/testguest\", \"big\", \"/c/big\", \"{MIB}\"]\n\
+             RUN --mount=type=cache,target=/c [\"/bin/testguest\", \"read-dropped\", \"/c/big\", \"20\", \"/sum\"]\n"
+        ),
+    );
+    let fifo = home.join("pressure");
+    let path = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+    // SAFETY: mkfifo(3) of a NUL-terminated path.
+    assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+    let mut cmd = common::command();
+    cmd.args(["build", "--progress=plain"])
+        .arg(ctx.as_os_str())
+        .envs(env)
+        .env("SHARDS_BUILD_PRESSURE", &fifo)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped());
+    let mut built = cmd.spawn().unwrap();
+    // What the VM process was given to boot with and to plug to, in MiB, as its spawner
+    // started it (`--memory`, `--memory-max`).
+    let given = |vm: u32| {
+        let ps = std::process::Command::new("ps")
+            .args(["-o", "args=", "-p", &vm.to_string()])
+            .output()
+            .unwrap();
+        let args = String::from_utf8_lossy(&ps.stdout).into_owned();
+        let after = |flag: &str| {
+            let words: Vec<&str> = args.split_whitespace().collect();
+            words
+                .iter()
+                .position(|w| *w == flag)
+                .and_then(|i| words.get(i + 1))
+                .and_then(|v| v.parse::<u64>().ok())
+        };
+        (after("--memory"), after("--memory-max"), args)
+    };
+    let held_kib = |vm: u32| {
+        shards_vmm::platform::process_usage(vm)
+            .ok()
+            .map(|u| u.footprint >> 10)
+    };
+    let stderr = std::io::BufReader::new(built.stderr.take().unwrap());
+    let (mut lines, mut booted, mut before, mut gave, mut after) = (Vec::new(), None, None, None, None);
+    for line in stderr.lines() {
+        let line = line.unwrap();
+        if before.is_none() && line.contains(&format!("read /c/big {}", MIB << 20)) {
+            let vm = builder_vm(built.id()).unwrap_or_else(|| panic!("no builder VM under {}", built.id()));
+            booted = Some(given(vm));
+            before = Some((vm, held_kib(vm)));
+            let mut word = std::fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(&fifo)
+                .unwrap();
+            word.write_all(b"\n").unwrap();
+        }
+        if let Some((_, rest)) = line.split_once("the build's builders gave back ") {
+            gave = rest
+                .split_whitespace()
+                .next()
+                .and_then(|mib| mib.parse::<u64>().ok());
+            after = before.map(|(vm, _)| held_kib(vm));
+        }
+        lines.push(line);
+    }
+    let status = built.wait().unwrap();
+    let shown = lines.join("\n");
+    if shown.contains("/proc/sys/vm/pluggable_kbytes missing") {
+        println!("SKIP: this guest kernel reports none of the memory it may plug (D149)");
+        return;
+    }
+    assert!(status.success(), "{shown}");
+    let (memory, memory_max, args) =
+        booted.unwrap_or_else(|| panic!("its step never read the file:\n{shown}"));
+    assert_eq!(
+        (memory, memory_max),
+        (Some(CEILING), Some(CEILING)),
+        "a home's first builder, which may have {CEILING} MiB, given: {args}"
+    );
+    assert_eq!(
+        common::pluggable_said(&shown),
+        [0],
+        "a builder booted with all it may have has memory to plug:\n{shown}"
+    );
+    let gave = gave.unwrap_or_else(|| panic!("nothing given back said:\n{shown}"));
+    assert!(
+        gave >= MIB / 2,
+        "gave back {gave} MiB of the {MIB} MiB file:\n{shown}"
+    );
+    assert!(
+        shown.contains("dropped "),
+        "its step's page cache kept the file:\n{shown}"
+    );
+    let (Some((_, Some(before))), Some(Some(after))) = (before, after) else {
+        panic!("its builder's VM process's memory not read:\n{shown}");
+    };
+    eprintln!(
+        "a cold builder of {CEILING} MiB gave back {gave} MiB of the {MIB} MiB file; its VM process held {before} KiB, then {after} KiB"
+    );
+    assert!(
+        before.saturating_sub(after) >= (gave << 10) / 2,
+        "its builder's VM process held {before} KiB, then {after} KiB, having given back {gave} MiB:\n{shown}"
+    );
+    // Learned as it ended: what its guest needs to boot, which the next builder boots with.
+    let boot = common::learned_boot(&home).unwrap_or_else(|| panic!("no boot learned:\n{shown}"));
+    assert!(
+        boot > 0 && boot < CEILING << 20,
+        "its guest learned to boot with {boot} bytes"
+    );
+    let next = context(
+        "build-cold-next",
+        &format!("FROM {image}\nRUN [\"/bin/testguest\", \"stat\", \"/proc/sys/vm/pluggable_kbytes\"]\n"),
+    );
+    let warm = run_shards_env(&["build"], &["--progress=plain", next.to_str().unwrap()], &env);
+    assert_eq!(warm.status, Some(0), "{warm}");
+    assert!(
+        common::pluggable_said(&warm.stderr)
+            .first()
+            .is_some_and(|&kib| kib > 0),
+        "the home's next builder, its guest learned to boot with {boot} bytes, has nothing to plug: {warm}"
+    );
+}
+
+/// A home's first build that runs out of memory is recorded short (D133, D148, memory-15):
+/// its builder, booted cold with all it may have and nothing to plug, counts what its build
+/// held in the build's cgroup as a warm one does, and the processes its kernel ended; the
+/// home records the build's need and that it ended short, and its next builder may have all
+/// its host's memory, as a run with no limit may: `MemTotal` of the host's less no more than
+/// what the home learned its guest needs to boot, and a block.
+#[test]
+fn a_new_homes_build_that_runs_out_is_recorded_short() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("build-cold-short-home");
+    let env = |most: Option<&'static str>| {
+        let mut env = vec![
+            ("SHARDS_HOME", home.as_os_str()),
+            ("SHARDS_KERNEL", kernel().as_os_str()),
+            ("SHARDS_INIT", guest_init().as_os_str()),
+        ];
+        if let Some(m) = most {
+            env.push(("SHARDS_BUILD_MEMORY", m.as_ref()));
+        }
+        env
+    };
+    assert_eq!(common::learned_boot(&home), None);
+    let over = context(
+        "build-cold-short-ctx",
+        &format!("FROM {image}\nRUN [\"/bin/testguest\", \"alloc\", \"3072\"]\n"),
+    );
+    let ended = run_shards_env(
+        &["build"],
+        &["--progress=plain", over.to_str().unwrap()],
+        &env(Some("2560")),
+    );
+    assert!(
+        ended
+            .stderr
+            .contains("did not complete successfully: exit code: 137"),
+        "{ended}"
+    );
+    let said =
+        std::fs::read_to_string(home.join("builder-memory")).unwrap_or_else(|e| panic!("{e}: {ended}"));
+    let needed: u64 = said
+        .lines()
+        .find_map(|l| l.strip_prefix("needed "))
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("no need recorded: {said}"));
+    assert!(needed > 0 && said.contains("short yes"), "{said}\n{ended}");
+    let meminfo = context(
+        "build-cold-short-next",
+        &format!("FROM {image}\nRUN [\"/bin/testguest\", \"stat\", \"/proc/meminfo\"]\n"),
+    );
+    let seen = run_shards_env(
+        &["build"],
+        &["--progress=plain", meminfo.to_str().unwrap()],
+        &env(None),
+    );
+    assert_eq!(seen.status, Some(0), "{seen}");
+    let all: u64 = seen
+        .stderr
+        .split_once("MemTotal:")
+        .and_then(|(_, after)| after.split_whitespace().next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("no MemTotal: {seen}"));
+    let host_kib = common::host_memory() >> 10;
+    let boot_kib = common::learned_boot(&home).unwrap_or_else(|| panic!("no boot learned: {seen}")) >> 10;
+    let block_kib = 128 << 10;
+    assert!(
+        all <= host_kib && all + boot_kib + block_kib > host_kib,
+        "MemTotal {all} kB of a builder after a new home's build ended short, its guest learned to boot with {boot_kib} kB, on a host of {host_kib} kB: {seen}"
+    );
+}
+
 /// A build held short of memory has its builder give back what it holds cold at its host's
 /// word (D188 for D133's builders): `shards build` in a scope of the user's manager, which
-/// can swap nothing (`MemorySwapMax=0`), reads a 512 MiB file of a cache mount into its
-/// builder's page cache, the scope's `MemoryHigh` set as the read begins to what it holds
+/// can swap nothing (`MemorySwapMax=0`), reads a 512 MiB file of a cache mount, which the
+/// home's first build wrote, its builder booted cold (memory-15), into its builder's page
+/// cache, the scope's `MemoryHigh` set as the read begins to what it holds
 /// then and half the file; past that its memory stalls (PSI) as its host reclaims what it
 /// cannot swap, and the build's watcher, which watches its own cgroup's pressure, asks its
 /// builder to give back and tells it the room the budget leaves (`ROOM`). Its log says what it gave back and asked to unplug, and
