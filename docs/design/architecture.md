@@ -30552,6 +30552,22 @@ ruleset, the run's seccomp filter.
     it execs, as it may any of its own, which a synchronous wait in init would have let it
     hold init up by. The exec's start (`STARTED` or its refusal) is said once its error
     channel closes or reports; its end once its pidfd is readable.
+  - *Its terminal.* A command asked with `tty` is its own session's leader, the pty's peer its
+    stdin, stdout, stderr and controlling terminal (setsid, then `TIOCSCTTY` on fd 0, as runc
+    makes an exec's), and neither the starter nor init holds the peer once it is born, so the
+    master reads EIO as it ends (pty(7)). The exec's terminal, which its host's resizes
+    (`EXEC_RESIZE`) size and the kernel tells its foreground group as SIGWINCH, is one lookup,
+    `Exec::terminal`: the master its ask holds while asked and born, its stdout once
+    running. The starter's first cut (53b5654b5) left the running exec's terminal unsaid
+    (`Exec::tty` false), so every resize went nowhere and member_exec's
+    `a_command_run_in_a_member_has_a_terminal_that_resizes` waited for its SIGWINCH for ever
+    (ROOT, KVM adacachy2 at 8fdd66512 and HVF at 0ce6cdc66). Unit evidence on Linux x86_64
+    (adacachy2, 7.3.3, under `unshare --map-auto --map-root-user`): run.rs
+    `a_command_run_in_a_member_on_a_terminal_is_sized_by_its_host` red with main's lookup
+    (born: `None`) and with the running exec unmarked (running: `None`), green after;
+    domains.rs `a_command_run_in_a_member_on_a_terminal_has_it_as_its_sessions` (the member
+    PID 1 of its PID namespace; `stty size`, `/dev/tty`, the master to EIO) green on the
+    starter as it was, which refutes a starter fault, and red with `TIOCSCTTY` removed.
   - *Typed refusals.* A starter that could not be forked (its fork refused as the member
     started) or that a process of the member's ended is `Refusal::NoStarter` (wire code 7,
     `docker exec`'s 126); its commands running then end with it, their end SIGKILL, as the

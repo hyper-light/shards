@@ -4178,10 +4178,94 @@ mod tests {
         assert_eq!(said, "its wait sees no child; command exited 0");
     }
 
+    /// The starter's terminal path in the member as init starts it, PID 1 of a PID namespace
+    /// of its own: a command asked for with `tty` is the leader of a session of its own whose
+    /// controlling terminal is its stdio, init's pty's peer (`enter::terminal`, 24 by 80), as
+    /// runc makes an exec's (setsid, then TIOCSCTTY). What it shows is read from the master
+    /// until the kernel says EIO, which it says only once no process holds the peer
+    /// (pty(7)): the starter and init let go of theirs as it is born, so the read ends as the
+    /// command does. Run as root of IDs past its own (`unshare --map-auto --map-root-user`),
+    /// where uid 1000 is another's; else a SKIP.
+    #[test]
+    fn a_command_run_in_a_member_on_a_terminal_has_it_as_its_sessions() {
+        let said = as_root_of_own_mounts(|| {
+            // SAFETY: unshare(2) of this single-threaded child: its next child is PID 1 of a
+            // PID namespace of its own.
+            if unsafe { libc::unshare(libc::CLONE_NEWPID) } != 0 {
+                return format!("SKIP: unshare: {}", io::Error::last_os_error());
+            }
+            let c = member_confinement(1000, Vec::new(), "/");
+            let (starter, theirs) = crate::starter::channel().unwrap();
+            let Some(member) = a_confined_member(&c, || {
+                // SAFETY: as in `a_member_first_of_its_pid_namespace_has_its_starter`.
+                unsafe {
+                    libc::dup3(theirs.as_raw_fd(), crate::starter::STARTER_FD, libc::O_CLOEXEC);
+                    crate::starter::fork();
+                    libc::close(crate::starter::STARTER_FD);
+                    libc::close(theirs.as_raw_fd());
+                }
+            }) else {
+                return "SKIP: confining the member".into();
+            };
+            drop(theirs);
+            // Made once the member is, so that none of its processes holds it, as none of a
+            // member's holds an exec's terminal. Its peer the test's own uid's: devpts is the
+            // host's, whose inodes this namespace's root may not give away (chown(2) EPERM).
+            // SAFETY: geteuid(2) reads this process's effective uid.
+            let euid = unsafe { libc::geteuid() };
+            let size = shards_abi::run::Size { rows: 24, cols: 80 };
+            let said = match crate::enter::terminal(size, euid) {
+                Ok((master, peer)) => {
+                    let script = c"stty size; : </dev/tty && echo controlling; echo ok";
+                    let born = started(
+                        &starter,
+                        &[c"/bin/sh", c"-c", script],
+                        [peer.as_raw_fd(); 3],
+                        true,
+                    );
+                    drop(peer);
+                    match born {
+                        Ok(born) => {
+                            let shown = shown(&master);
+                            format!("{shown:?} {}", end(&starter, &born))
+                        }
+                        Err(why) => why,
+                    }
+                }
+                Err(e) => format!("no terminal: {e}"),
+            };
+            // SAFETY: kill(2) and waitpid(2) of this process's own child.
+            unsafe {
+                libc::kill(member, libc::SIGKILL);
+                libc::waitpid(member, std::ptr::null_mut(), 0);
+            }
+            said
+        });
+        let Some(said) = said else { return };
+        assert_eq!(said, "\"24 80\\r\\ncontrolling\\r\\nok\\r\\n\" exited 0");
+    }
+
+    /// What a terminal's master reads until the kernel says EIO, as it does once no process
+    /// holds its peer (pty(7)).
+    fn shown(master: &OwnedFd) -> String {
+        let mut shown = Vec::new();
+        let mut buf = [0u8; 256];
+        loop {
+            // SAFETY: read(2) into a buffer of ours, of its length.
+            let n = unsafe { libc::read(master.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) };
+            match usize::try_from(n) {
+                Ok(0) => break,
+                Ok(n) => shown.extend_from_slice(&buf[..n]),
+                Err(_) if io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) => {}
+                Err(_) => break,
+            }
+        }
+        String::from_utf8_lossy(&shown).into_owned()
+    }
+
     /// `argv`, run by `starter` as init runs a command in a member, its stdio /dev/null: how
     /// it ended, as `exited N` or `signal N`, or why it did not start.
     fn command_in(starter: &crate::starter::Starter, argv: &[&CStr]) -> String {
-        use std::io::Read as _;
         let null = || {
             OwnedFd::from(
                 std::fs::File::options()
@@ -4192,9 +4276,26 @@ mod tests {
             )
         };
         let stdio = [null(), null(), null()];
+        match started(starter, argv, stdio.each_ref().map(AsRawFd::as_raw_fd), false) {
+            Ok(born) => end(starter, &born),
+            Err(why) => why,
+        }
+    }
+
+    /// `argv` asked of `starter` on `stdio`, with a terminal or not, as init asks it: born
+    /// and past its exec, or why not.
+    fn started(
+        starter: &crate::starter::Starter,
+        argv: &[&CStr],
+        stdio: [RawFd; 3],
+        tty: bool,
+    ) -> Result<crate::starter::Born, String> {
+        use std::io::Read as _;
         let mut fds = [0 as RawFd; 2];
         // SAFETY: pipe2(2) into a two-element array.
-        assert_eq!(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) }, 0);
+        if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+            return Err(format!("its error channel: {}", io::Error::last_os_error()));
+        }
         // SAFETY: both descriptors were just made, and are owned here alone.
         let (err_r, err_w) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
         let argv: Vec<CString> = argv.iter().map(|a| (*a).to_owned()).collect();
@@ -4206,35 +4307,36 @@ mod tests {
             argv: &argv,
             envp: &[],
             cwd: c"/",
-            stdio: stdio.each_ref().map(AsRawFd::as_raw_fd),
+            stdio,
             err: err_w.as_raw_fd(),
-            tty: false,
+            tty,
         };
         if let Err(e) = starter.start(&asked) {
-            return format!("not asked: {e:?}");
+            return Err(format!("not asked: {e:?}"));
         }
-        drop((stdio, err_w));
-        let wait = |fd: RawFd| {
-            let mut p = libc::pollfd {
-                fd,
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            // SAFETY: poll(2) of one pollfd of ours.
-            assert_eq!(unsafe { libc::poll(&raw mut p, 1, -1) }, 1);
-        };
-        wait(starter.fd());
+        drop(err_w);
+        wait_readable(starter.fd());
         let born = match starter.answer() {
             Ok(Some(crate::starter::Answer::Born(born))) => born,
-            other => return format!("not born: {other:?}"),
+            other => return Err(format!("not born: {other:?}")),
         };
-        assert_eq!(born.id, 7);
-        let mut report = Vec::new();
-        std::fs::File::from(err_r).read_to_end(&mut report).unwrap();
-        if !report.is_empty() {
-            return format!("not run: {report:?}");
+        if born.id != 7 {
+            return Err(format!("born as exec {}", born.id));
         }
-        wait(born.pidfd.as_raw_fd());
+        let mut report = Vec::new();
+        if let Err(e) = std::fs::File::from(err_r).read_to_end(&mut report) {
+            return Err(format!("its error channel: {e}"));
+        }
+        if !report.is_empty() {
+            return Err(format!("not run: {report:?}"));
+        }
+        Ok(born)
+    }
+
+    /// How `born` ended, as `exited N` or `signal N`, once its pidfd says it has; reaped by
+    /// its starter after, as init has it reaped.
+    fn end(starter: &crate::starter::Starter, born: &crate::starter::Born) -> String {
+        wait_readable(born.pidfd.as_raw_fd());
         let status = crate::starter::ended(born.pid);
         starter.reap(born.ns_pid);
         match status.map(crate::managed::ended) {
@@ -4242,6 +4344,16 @@ mod tests {
             Some(shards_abi::run::members::End::Signaled(sig)) => format!("signal {sig}"),
             None => "no end".into(),
         }
+    }
+
+    fn wait_readable(fd: RawFd) {
+        let mut p = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: poll(2) of one pollfd of ours.
+        assert_eq!(unsafe { libc::poll(&raw mut p, 1, -1) }, 1);
     }
 
     /// confine-02 (docs/bugs/2026-11-13/confine.md): a member starts in its working

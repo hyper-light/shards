@@ -4725,6 +4725,15 @@ impl Exec {
         self.status = Some(f.status);
     }
 
+    /// Its terminal's master, where it runs on one: what its host's resizes size, from its
+    /// ask on, as the host may resize it before it has heard that it started.
+    fn terminal(&self) -> Option<RawFd> {
+        match &self.member {
+            Some(MemberExec::Asked(asked) | MemberExec::Born(asked, _)) => asked.master(),
+            _ => self.stdout.as_ref().filter(|_| self.tty).map(AsRawFd::as_raw_fd),
+        }
+    }
+
     /// Whether it is asked of member `member`'s starter as exec `id`, its answer to come.
     fn asked_of(&self, member: u32, id: u32) -> bool {
         self.id == id && matches!(&self.member, Some(MemberExec::Asked(a)) if a.member == member)
@@ -4777,6 +4786,7 @@ impl Exec {
         let n = read(asked.err.as_raw_fd(), &mut report).unwrap_or(0);
         let said = asked.launched(report.get(..n).unwrap_or_default());
         let (argv0, cwd) = (asked.argv0.clone(), asked.cwd.clone());
+        let tty = asked.master().is_some();
         let started = said.and_then(|()| {
             asked.stdio().map_err(|e| {
                 crate::enter::Failed::Refused(
@@ -4791,6 +4801,8 @@ impl Exec {
                     set_nonblocking(fd.as_raw_fd(), true);
                 }
                 (self.stdin, self.stdout, self.stderr) = (stdin, stdout, stderr);
+                // Its stdout a terminal's master, which its host's resizes size (EXEC_RESIZE).
+                self.tty = tty;
                 self.to_conn.extend(&[&run::header(kind::STARTED, 0)]);
                 self.member = Some(MemberExec::Running {
                     born,
@@ -5947,10 +5959,10 @@ impl Workload {
                                         kind::EXEC_RESIZE => {
                                             if let Some((id, rest)) = id_and(payload)
                                                 && let Some(size) = Size::decode(&rest)
-                                                && let Some(e) = execs.iter().find(|e| e.id == id && e.tty)
-                                                && let Some(fd) = e.stdout.as_ref()
+                                                && let Some(fd) =
+                                                    execs.iter().find(|e| e.id == id).and_then(Exec::terminal)
                                             {
-                                                resize(fd.as_raw_fd(), size);
+                                                resize(fd, size);
                                             }
                                         }
                                         // The host's answer to the run's bind on its network
@@ -7179,6 +7191,62 @@ mod exec_link_tests {
             into_joiner: false,
             member: None,
         }
+    }
+
+    /// A command run in a member on a terminal (D243) is sized by its host's resizes
+    /// (EXEC_RESIZE) from its ask on, as every exec on a terminal is: its terminal is its
+    /// master, asked of its starter, born, and running. Its starter's path had left the exec's
+    /// terminal unsaid, so its host's resizes went nowhere and a command waiting for its
+    /// SIGWINCH waited for ever (member_exec's
+    /// `a_command_run_in_a_member_has_a_terminal_that_resizes`, on KVM and HVF).
+    #[test]
+    fn a_command_run_in_a_member_on_a_terminal_is_sized_by_its_host() {
+        // SAFETY: geteuid(2) reads this process's effective uid.
+        let euid = unsafe { libc::geteuid() };
+        let (master, peer) = crate::enter::terminal(Size { rows: 24, cols: 80 }, euid).unwrap();
+        let mut fds = [0 as RawFd; 2];
+        // SAFETY: pipe2(2) into a two-element array.
+        assert_eq!(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) }, 0);
+        // SAFETY: both were just made; the write end closes here, as a command's does as it
+        // execs.
+        let err = unsafe {
+            libc::close(fds[1]);
+            OwnedFd::from_raw_fd(fds[0])
+        };
+        let mut child = running();
+        let pid = child.id() as libc::pid_t;
+        // SAFETY: pidfd_open(2) of the test's own child, not yet waited for.
+        let pidfd = unsafe { OwnedFd::from_raw_fd(libc::syscall(libc::SYS_pidfd_open, pid, 0) as RawFd) };
+        let born = crate::starter::Born {
+            id: 3,
+            pid,
+            ns_pid: pid,
+            pidfd,
+        };
+        let mut e = exec(3, None, Link::Gone);
+        e.member = Some(MemberExec::Born(
+            crate::enter::Asked::on_terminal(1, master, err),
+            born,
+        ));
+        // The size its peer reads once its host has sized the exec's terminal; none where it
+        // has none.
+        let sized = |e: &Exec, rows, cols| {
+            resize(e.terminal()?, Size { rows, cols });
+            // SAFETY: a winsize of zeroes, which TIOCGWINSZ fills from our peer.
+            let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+            // SAFETY: as above.
+            let got = unsafe { libc::ioctl(peer.as_raw_fd(), libc::TIOCGWINSZ, &raw mut ws) };
+            (got == 0).then_some((ws.ws_row, ws.ws_col))
+        };
+        let born_sized = sized(&e, 30, 100);
+        e.member_launched();
+        let running = matches!(e.member, Some(MemberExec::Running { failed: false, .. }));
+        let running_sized = sized(&e, 40, 120);
+        // Ended before anything is asserted, so that a red leaves no process behind.
+        assert_eq!(ended_by(&mut child), Some(libc::SIGTERM));
+        assert_eq!(born_sized, Some((30, 100)), "born, before it execs");
+        assert!(running);
+        assert_eq!(running_sized, Some((40, 120)), "running");
     }
 
     /// A process of the test's own, as an exec's runs: until something ends it.

@@ -47,6 +47,23 @@ pub struct Asked {
     pub cwd: Vec<u8>,
 }
 
+#[cfg(test)]
+impl Asked {
+    /// One asked of member `member`'s starter on terminal `master`, its error channel's read
+    /// end `err`, as [`start`] leaves one.
+    pub(crate) fn on_terminal(member: u32, master: OwnedFd, err: OwnedFd) -> Asked {
+        Asked {
+            member,
+            label: format!("member {member}"),
+            ours: Ours::Terminal(master),
+            err,
+            tried: Vec::new(),
+            argv0: b"sh".to_vec(),
+            cwd: Vec::new(),
+        }
+    }
+}
+
 /// Why no command started in the member.
 #[derive(Debug)]
 pub enum Failed {
@@ -180,6 +197,14 @@ impl Asked {
                     io::Error::from_raw_os_error(errno)
                 ),
             ),
+        }
+    }
+
+    /// Its terminal's master, which init holds, where it runs on one.
+    pub fn master(&self) -> Option<RawFd> {
+        match &self.ours {
+            Ours::Terminal(master) => Some(master.as_raw_fd()),
+            Ours::Pipes { .. } => None,
         }
     }
 
