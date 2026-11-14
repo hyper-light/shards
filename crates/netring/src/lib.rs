@@ -676,7 +676,11 @@ mod platform {
     /// that only its descriptor reaches it: macOS has no memfd.
     pub fn shared_memory(size: usize) -> io::Result<OwnedFd> {
         use std::sync::atomic::Ordering;
-        for _ in 0..16 {
+        // Each name refused as taken is an object some process made and has not unlinked,
+        // and each try a name not tried before, so the OS's finite table of such objects
+        // bounds the tries; a count of them would refuse memory with a free name past it
+        // (network-12).
+        loop {
             // Short: macOS bounds these names at 31 bytes (PSHMNAMLEN).
             let name = format!("/sf{}.{}", std::process::id(), NAMES.fetch_add(1, Ordering::Relaxed));
             let c = std::ffi::CString::new(name).map_err(|_| io::Error::other("a name with NUL"))?;
@@ -703,7 +707,6 @@ mod platform {
             }
             return Ok(fd);
         }
-        Err(io::Error::other("no free shared memory name"))
     }
 }
 
