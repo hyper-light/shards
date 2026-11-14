@@ -235,6 +235,10 @@ Local Rust 1.94.1 source `std/src/sys/process/windows.rs:330–342` explicitly d
 
 ### platform-12 — Delegated-cgroup cleanup polls at an arbitrary 10 ms interval
 
+**Status (2026-11-13):** fixed in ab5399eda (red `daemon::parents::tests::a_cold_leaf_waits_for_changes_without_periodic_reads`);
+one red failure, then the regression and six module tests green, plus shards clippy,
+on adacachy2/Linux x86_64. [Evidence and real-cgroup validation owed to ROOT](../../research/measurements/platform-fixes/platform12.md).
+
 **Location:** `crates/shards/src/daemon/parents.rs:339`; `crates/shards/src/daemon.rs:411–412`.
 
 **Defect:** Cleanup repeatedly probes cgroup files using a fixed production sleep despite cgroup readiness notifications and a surrounding learned deadline judge.

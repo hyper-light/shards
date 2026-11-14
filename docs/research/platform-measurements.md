@@ -9249,6 +9249,13 @@ revision before comparing a changed API/implementation.
 
 ### M248. A process placed in a slice of the user's service manager: what it costs, and where its memory is charged (D183)
 
+**2026-11-13 cleanup correction (platform-12):** this placement measurement does not
+derive the former 10 ms cleanup polling interval. Cleanup now waits on the existing
+shared file-change notification and the learned judge deadline. The cold-leaf regression
+failed before the change and passed after it; all six parents unit tests and shards
+clippy passed on Linux x86_64. [Commands, source revisions, logs and real-cgroup work owed](measurements/platform-fixes/platform12.md).
+No new performance or placement-cost claim is made by those unit results.
+
 - **Question.** `--cgroup-parent` puts a microVM's processes under a slice the user's own
   systemd manages, so that the slice's limits and accounting cover them. What does asking
   the user's manager for that cost the daemon, per microVM, from an ssh login (a session

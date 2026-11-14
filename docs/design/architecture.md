@@ -7494,6 +7494,18 @@ seen. No ×2."
 
 ### D183. `--cgroup-parent`: a microVM's processes under a slice of the user's service manager (slices 1, 2 and 3 built)
 
+**2026-11-13, platform-12:** a delegated leaf's cleanup now arms the existing shared
+`platform::FileWatch` on `cgroup.events` before reading its state. Linux v6.18's
+[`kernfs_notify_workfn`](https://github.com/torvalds/linux/blob/v6.18/fs/kernfs/file.c#L912)
+emits FS_MODIFY for kernel-originated changes, which the watch receives as IN_MODIFY.
+The watch is cleared before each read: a change before the read is in that read, one
+after it remains pending. Removal is also watched on the directory. The only timed
+wait is D215's next learned judge deadline; a cold record has no timer. Watch/open/wait
+errors remain `io::Error` refusals. This removes the chosen 10 ms read loop without
+adding a per-leaf thread or inotify instance. Direct POLLPRI was considered; the existing
+FileWatch handles ordinary-file fixtures and kernel notification through one owned
+interface. [Evidence and remaining real-cgroup validation](../research/measurements/platform-fixes/platform12.md).
+
 Decided by the user on 2026-10-14 ("so long as they apply appropriately to microvms").
 
 - **The microVM need.** A host running many microVMs needs to cap and account groups of

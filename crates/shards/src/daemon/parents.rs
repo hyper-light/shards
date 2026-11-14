@@ -349,7 +349,9 @@ fn emptied(events: &Path, procs: &Path, record: &shards_api::Record) -> std::io:
                 ))
             })?;
         }
-        let timeout = judge.due().map(|due| due.saturating_duration_since(std::time::Instant::now()));
+        let timeout = judge
+            .due()
+            .map(|due| due.saturating_duration_since(std::time::Instant::now()));
         super::timed(timeout, || shards_ipc::await_any_within(&[changed.fd()], timeout))?;
     }
 }
