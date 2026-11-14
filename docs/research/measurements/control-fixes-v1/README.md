@@ -331,3 +331,9 @@ removed its owned target. [Mac check](logs/r16-contention-mac-check.log),
 [Linux check](logs/r17-contention-linux-check.log). No test or clippy result is
 claimed for this later combination; R14/R13 remain the named full focused greens,
 as ROOT's contention amendment requires. This merge resolved no conflicts.
+
+Conflict-free merge 717b0f97417c74eb2d034a7f1aed2a23c7401478 adds main
+5f42c9452 (migration moves and vmm guest filesystem changes; init inputs unchanged).
+R18: the same warm four-crate Mac `cargo check --tests` clean.
+[Check](logs/r18-contention-check.log). Full focused greens remain R14/R13;
+DNS-combined native init check remains R17. No later conflict was resolved.
