@@ -24579,3 +24579,19 @@ the reply that would tell the guest its size refused: `window::tests` 12 of 12, 
 evidence on real NTFS views, no real VM; a view refused after its section was made is
 unit-unreachable, and the WHP DAX tests are owed.
 [Commands, logs, mutants and owed runs](measurements/windows-p0/README.md).
+
+### M574. A refused FUSE reply retires its unpublished acquisitions (memory-18, D197)
+
+Found by the Windows P0 lane. At abecce1a5 (Codex, kiln r28, macOS arm64), eight
+refused LOOKUPs left 9 nodes/references instead of the root's 1; eight CREATEs also
+left 8 handles and cached descriptors. c37547114 releases only the new handle and
+forgets each new entry before EIO; eddbef457 shares the entry walk with
+reconciliation; fbabcfe6b detaches a share whose cleanup exchange breaks; ee3cf6fe9
+(Claude takeover) keeps the share after a RELEASE the server refuses, still forgetting
+its entry, as Linux does, and holds a node the guest already has to one reference.
+Earlier accepted resources and completed mutations remain. On ee3cf6fe9, a merge of
+main 118d14ccf: `cargo test -p shards-vmm --lib devices::virtio::fs` 88/88 on macOS
+arm64 (adas-mac-studio-3) and 89/89 on Linux x86_64 (adacachy2), the seven memory-18
+tests among them, clippy clean on both; the red (no cleanup) and eight more mutants of
+the guard killed on both hosts. No real VM ran.
+[Sources, red/green, mutants and owed VM/platform work](measurements/memory-fixes-v1/memory-18.md).

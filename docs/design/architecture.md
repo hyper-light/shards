@@ -2957,6 +2957,32 @@ empty final bytes; both writers now publish complete closed files. Real carried
 executables, signatures, GPU and crash-debris checks remain owed in the
 [runs record](../research/measurements/runs-fixes/README.md).
 
+**Helper integrity before each start (runs-10).** A helper's directory is named by the
+helpers' digests, but `complete` and the GPU writer took a helper of the right length
+as this build's whatever its bytes: one byte changed (by hand, by a program of the
+user's, on the disk) was started as it was, in every later process. Now each time a
+process is about to start a helper (`helpers::vm`, `net`, `vm_gpu`, and `checked` for
+the path the daemon keeps, from `launch::program`), its bytes are read whole and their
+SHA-256 compared with the digest build.rs embedded beside them; where they differ, or
+the file is gone, the carried bytes are written again whole (staging of the writer's
+own, synced, closed, renamed over it: the bytes build.rs signed on macOS), and a helper
+that cannot be written again (Windows refuses to replace one a running VM process
+holds) is refused, saying its path, its digest and why. A helper `SHARDS_VM_BINARY`
+names, or a carrier's beside its `shards` (D237, signed by the carrier, its bytes not
+those this build carries), is its giver's to answer for and is started as it is.
+`complete` stays the check that a directory was placed whole. No literal: the digest is
+SHA-256 of the carried bytes, the read through std's buffer at std's size. **Cost owed
+(ROOT):** each VM start now reads shards-vm (2.98 MB in this Mac's cache) and each
+networked one shards-net (4.33 MB) through SHA-256; its latency is unmeasured:
+`docs/research/measurements/build-ab/ab.py` between this build and its parent on one
+template, and a cold `shards run --kernel` launch, on HVF, KVM and WHP. A start between
+the check and the exec can still find bytes changed in that window; only an exec of the
+checked descriptor (fexecve, which macOS lacks) would close it. Unit tests (helpers.rs):
+`a_helper_whose_bytes_changed_is_written_again_before_it_starts` (one byte flipped, its
+length kept: written again) and `a_changed_helper_that_cannot_be_written_again_is_refused`;
+with the digest check put back to the length check, the first fails (the flipped bytes
+are returned). [runs-fixes record](../research/measurements/runs-fixes/README.md#runs-10).
+
 shards is one file to install and run, `shards`: every command, the daemon included,
 one CLI.
 
@@ -8683,6 +8709,23 @@ configurable".
   set, nothing goes since D212, where dockerd's 2 GB reserve held before). A changed cache
   setting is the next build's collection's, grown or not: `configure disk` removes the
   home's `buildcache-gc` (D212).
+- **Concurrent commands (runs-09, 2026-11-14).** Two `configure disk` commands had shared
+  one staging name, `.disk.new`, and read, changed and written the file unlocked: a command
+  whose read was older wrote over another's update, and one's rename could publish the
+  other's staging file as it truncated it, then write into the published file and fail.
+  A command now rereads, changes and writes the file holding the home's `disk.lock` alone
+  (flock(2), LockFileEx: the image store's `Locked`, let go before it closes, PM M244): a
+  lock of its own, as the settings' file is replaced by each write. It writes through
+  `platform::write_in`, a staging file of the writer's own (`O_EXCL`), synced, renamed
+  over the file; on Windows that lands a version beside it (PM M345), and readers open
+  the newest (`open_newest_in`). Readers take no lock: each finds a whole file, the old or
+  the new. No literal: the lock and staging names are names. Unit tests (disk.rs):
+  `concurrent_settings_updates_keep_each_others_fields` (an update waits for another
+  command's held lock, then keeps both fields) and
+  `settings_publication_leaves_another_writers_staging_file_alone`; with the lock and the
+  owned staging removed, the base's transaction, both fail (the later snapshot drops
+  `log-history`; another writer's `.disk.new` is published).
+  [runs-fixes record](../research/measurements/runs-fixes/README.md#runs-09).
 - **A file that does not read**, edited by hand: a run is refused, saying the file and its
   line; a build's collection collects nothing and says so at every build (`WARNING: the
   build cache was not collected: ...`), the build itself done; `--reset` mends it.
@@ -11993,9 +12036,25 @@ took, decided (PM M412):
     unmapped;
   - each is refused, typed (`fs::Unfollowed`: its size, its section, a view), and the reply
     that would tell the guest the file's size is refused it (EIO): the guest never hears a
-    size whose bytes its window does not hold. The request itself was the server's, done:
-    a refused LOOKUP's or CREATE's node and handle stay the server's until the guest's
-    unmount, as for any reply its guest did not take.
+    size whose bytes its window does not hold. The request itself was the server's, done.
+    Before replacing its success with EIO, the device retires only the unpublished reply's
+    acquisitions (memory-18, found by the Windows P0 lane): RELEASE/RELEASEDIR for its new
+    open handle, then one FORGET per entry, including READDIRPLUS's nonzero entries.
+    Earlier accepted references and handles remain. The same cleanup follows a reply
+    that cannot be written whole into guest memory. Completed creates/writes stay done;
+    cleanup removes no files and undoes no mutation. These are ordinary framed FUSE
+    requests, understood by the existing share servers. A cleanup failure is typed
+    (`Unreleased`): a transport or malformed one disconnects the slot rather than reuse a
+    partial exchange, and remaining resources then depend on connection/session teardown;
+    a RELEASE the server refuses (`Refused`, an errno) is a whole exchange, so the slot
+    stays and the entry is still forgotten, as Linux's `fuse_create_open` releases and
+    forgets regardless and `fuse_file_put` ends a synchronous RELEASE with
+    `fuse_release_end(args, 0)` (fs/fuse/file.c, dir.c).
+    The frame bounds are `fuse_in_header` (40 bytes), `fuse_entry_out` (128),
+    `fuse_release_in` (8 + 4 + 4 + 8), and `fuse_out_header` (16), from Linux v6.18's UAPI;
+    FORGET's one reference is the count each entry acquires, not a policy value. No
+    estimator/cold-start threshold is needed. Sources, alternatives, red/green, and
+    unrun failure/platform cases: PM M574, `docs/research/measurements/memory-fixes-v1/memory-18.md`.
   Held by `a_range_mapped_to_be_written_after_one_to_be_read_stays_its_files` and
   `a_range_no_view_of_its_file_can_be_made_for_is_refused_never_zeros` (red before,
   mutation-checked); a view refused after its section was made is unit-unreachable, and
@@ -27125,8 +27184,74 @@ exec's, and making no stream: the member's own are step 5's already.
 ended before its lane asked, or a fault, typed. Steering and end are separate handles, so that a
 caller can wait for the end on one thread and steer from another.
 `MemberSteering::signal` refuses a signal outside `1..=NSIG` before sending it; it and `resize`
-each wait for the answer, with `Fault::Unsteered` for a refusal and `Unsteered::Ended` for every
-steer once the end has come. `MemberEnd::wait` gives the member's end, `exec::End`.
+each wait for the answer within their caller's patience (below), with `Fault::Unsteered` for a
+refusal and `Unsteered::Ended` for every steer once the end has come. `MemberEnd::wait` gives
+the member's end, `exec::End`.
+
+*A lane's ask, waited for within its caller's patience* (Hex's decision 9, the Hex lead's ask
+from Hex's member-signal work, 2026-11-14). Every controller call that waited for its
+endpoint's answer (`Execs::member`, `exec`, `mcp` and `log`, `Sockets::connect`, and a member's
+`signal` and `resize`) waited on its lane's channel until the endpoint answered or the
+connection ended, with no bound and no timed form: an orchestrator that wanted its own bound
+needed a thread per ask, and one whose endpoint never answered could not let it go. Now each
+takes a `patience: Duration`, the convention of `ManagedGuest::rate(rate, patience)` and
+`host_use(patience)`, with `Duration::MAX` (or a patience past what the clock holds) waiting as
+before. A lane's ask cannot be asked twice (a second would open a second lane, or send a
+second signal), so a wait that runs out answers `Ok(None)` with the ask still pending, as
+`ImageGuest::wait_for(timeout)` and `ManagedGuest::wait_ended(timeout)` do, and a later wait
+follows the same ask on.
+- *Its shape.* An ask is sent at once and gives its pending handle: `Execs::member(member) ->
+  PendingMember`, `exec(member, spec) -> PendingExec`, `mcp(member) -> PendingMcp`,
+  `log(source, channels, cursor, follow) -> PendingLog`, `Sockets::connect(name) ->
+  PendingSocket`, each refused at once only where nothing could be sent (a frame that does not
+  encode, a socket name that is no file name: `Refused(Protocol)`). Each handle's
+  `wait(&mut self, patience) -> Result<Option<_>, Fault>` gives `Member`, `Exec`,
+  `McpConnection`, `Log` or `Socket` once; a fault, then the same fault again, as every other
+  handle of the module tells its end (`Output::next_record`, `MemberEnd::wait`); and, after its
+  answer was given, `Fault::Unawaited`. `MemberSteering::signal(signal, patience)` and
+  `resize(size, patience)` send once and answer `Result<Option<()>, Fault>`;
+  `MemberSteering::steered(patience)` follows the last one on. A steer asked while one awaits
+  its answer is refused `Fault::Awaiting` and never sent (the endpoint reads one steer at a
+  time, and the driver dropped a second one silently before); `steered` with none awaited is
+  `Unawaited`. Both refusals leave the lane as it was.
+- *Its states* (R04). A pending ask is `Awaited::{Awaiting, Answered, Over(Fault)}`, its
+  steering `Steering::{Ready, Awaiting, Over(Fault)}` (which replaces an `Option<Fault>`).
+- *An asker gone* (D251's cut). The driver tells a lane's handle its number as it takes the ask
+  (`Heard::Asked`). A pending handle let go hands the driver its channel back
+  (`Ask::Withdraw`); the driver, which alone tells that channel, finds there everything it told
+  and the handle did not hear, so no answer that crossed the drop is lost, and closes the lane
+  both ways, as a cut lane is closed (RESET_STREAM and STOP_SENDING), whatever its endpoint
+  said or says: one waiting for the endpoint's room never opens; one the endpoint has not
+  answered is let go there (its host's steering closes, which hangs an exec or a member's lane
+  up, exec.rs's reset path); one answered meanwhile is closed with what its answer made (an
+  exec's stdio lanes). The member's life is no lane's, as before: none ends it.
+- *Literals.* None: each patience is its caller's (R03). The clock's own bound decides only
+  that a patience past it waits as `Duration::MAX` does (`Instant::checked_add`, as std's
+  `recv_timeout` reads it).
+- *Callers.* No production caller in Shards or kiln waited on these (the daemon's and api-run's
+  are the endpoint's side); their tests and Hex's acceptance read the answers with
+  `Duration::MAX`, as they did, through the pending handles. The blocking forms are gone.
+- *Tested* (unit, loopback): `control::tests::a_lane_ask_is_sent_once_and_waited_for_within_each_waits_patience`
+  (sent before any wait; `Ok(None)` at a patience of none and a short one while its host holds
+  its answer; answered at a later wait, no second ask at the endpoint; a steer's answer followed
+  on with `steered`, a resize while it was awaited refused `Awaiting` and never reaching the
+  host), red on the base's blocking `Execs::member` (`a_members_ask_gives_way_within_its_patience`:
+  no answer within the test's patience); `a_lane_ask_let_go_unanswered_is_closed_as_its_lane_opens`
+  (a member's lane and an exec, each let go once its host had the ask, their host's steering
+  closed as the host answers `Running` and `Started`; the connection goes on);
+  `control::unix::tests::a_socket_lane_let_go_unanswered_is_cut_as_it_connects` (the workload's
+  socket ends). On adas-mac-studio.local (macOS arm64, implementer, policy df2acf47): red at
+  07d8f670f (no answer within the test's 10 s, FAILED); green with shards-remote's `control`
+  66 and `loopback` 33, shards-api's `control_lanes`, and the shards binary's
+  `daemon::managed::tests` and `api_run::` 71 (1 ignored), every caller moved to the pending
+  handles; clippy `-D warnings` clean for shards-remote, shards-api and shards (all targets,
+  `SHARDS_HELPERS=skip`). Mutations, each killed: the handle's withdrawal dropped (both let-go
+  tests fail), a steer sent while one awaits (the patience test), a run-out told as a fault
+  rather than `Ok(None)` (the patience test), the driver not reading the lane's number from
+  the channel handed back (both let-go tests).
+- *Owed* (ROOT): the real-VM callers moved here, compiled and linted but not run:
+  `api_image`'s member signals and MCP connection, `nesting`'s socket lanes, `managed_output`'s
+  log lanes; and the other targets' clippy, which CI's matrix runs.
 
 *A member's end, typed* (plan step 11; the Hex lead's ask 3, which makes kiln's interrupt and
 stop real signals: Hex sends INT and TERM to an image member over the orchestrator run's
@@ -30014,8 +30139,10 @@ Hex's acceptance (its INTERFACE.md and red tests, step11-a-socket-lane) is held 
     pipe ended (`shards_ipc::end`, whose reader then finds it hung up: ERROR_BROKEN_PIPE) or
     the guest's socket shut down both ways; a read's end still half-closes it.
 - *The controller* (`control::drive`). `Subscriptions::sockets` and `Dialed::sockets`;
-  `Sockets::connect(name)` answers a `Socket` or a typed `Fault`, `Fault::Unreached(errno)`
-  among them. `Socket` is `Read` and `Write`, with `shutdown_write`, `abort` and `split` (a
+  `Sockets::connect(name)` sends its ask at once and gives a `PendingSocket`, whose
+  `wait(patience)` answers `Ok(None)` while it is unanswered, then a `Socket` or a typed
+  `Fault`, `Fault::Unreached(errno)` among them (D238's *A lane's ask, waited for within its
+  caller's patience*); one let go unanswered is cut as it connects. `Socket` is `Read` and `Write`, with `shutdown_write`, `abort` and `split` (a
   reader and a writer for two threads). `Ok(0)` comes only at the socket's own FIN; a reset
   reads as `ConnectionReset`, its `Fault` its source.
 - *Its scope.* An endpoint that serves its run's member streams knows its run and

@@ -3272,6 +3272,15 @@ mod terminal_tests {
 mod tests {
     use super::*;
 
+    /// A lane's ask, its answer waited for as long as it takes (`Duration::MAX`), as a caller
+    /// with no bound of its own waits: what it answered, or why not.
+    macro_rules! answered {
+        ($ask:expr) => {
+            $ask.and_then(|mut ask| ask.wait(std::time::Duration::MAX))
+                .map(|got| got.expect("Duration::MAX waits until the answer"))
+        };
+    }
+
     fn encoded(member: u32, channel: Channel, offset: u64, event: Event<'_>) -> Vec<u8> {
         let record = Record {
             member,
@@ -3506,7 +3515,7 @@ mod tests {
                 stderr,
                 stdin,
                 mut control,
-            } = execs.exec(0, spec.clone()).unwrap();
+            } = answered!(execs.exec(0, spec.clone())).unwrap();
             let (mut stderr, mut stdin) = (stderr.unwrap(), stdin.unwrap());
             assert_eq!(stdin.write(line).unwrap(), line.len());
             assert_eq!(
@@ -3527,7 +3536,7 @@ mod tests {
             assert_eq!(stderr.next_record().unwrap(), Got::Finished);
             assert_eq!(control.wait(), Ok(7));
             assert_eq!(
-                execs.exec(0, spec.clone()).map(|_| ()),
+                answered!(execs.exec(0, spec.clone())).map(|_| ()),
                 Err(Fault::Unstarted(Unstarted::Refused))
             );
             process.join().unwrap();
@@ -3536,18 +3545,18 @@ mod tests {
                 ..spec.clone()
             };
             assert_eq!(
-                execs.exec(0, as_root).map(|_| ()),
+                answered!(execs.exec(0, as_root)).map(|_| ()),
                 Err(Fault::Unstarted(Unstarted::Refused))
             );
             *lock(&budget) = Some(u64::MAX);
             assert_eq!(
-                execs.exec(0, spec).map(|_| ()),
+                answered!(execs.exec(0, spec)).map(|_| ()),
                 Err(Fault::Unstarted(Unstarted::Capacity))
             );
             // An MCP connection (D254) of a run that gave its member no bridge: refused before
             // anything reaches its VM process.
             assert_eq!(
-                execs.mcp(0).map(|_| ()),
+                answered!(execs.mcp(0)).map(|_| ()),
                 Err(Fault::Unstarted(Unstarted::Refused))
             );
             served.revoke.revoke();
@@ -3689,9 +3698,9 @@ mod tests {
             .unwrap();
             let driver = s.spawn(move || controller.run());
             let execs = dialed.execs.as_ref().unwrap();
-            let mut ran = execs
-                .log(LogSource::Command, LogChannels::BOTH, LogCursor::OLDEST, false)
-                .unwrap();
+            let mut ran =
+                answered!(execs.log(LogSource::Command, LogChannels::BOTH, LogCursor::OLDEST, false))
+                    .unwrap();
             assert_eq!(
                 read_all(&mut ran),
                 [
@@ -3704,28 +3713,24 @@ mod tests {
                 stderr: None,
             };
             assert_eq!(
-                execs
-                    .log(LogSource::Command, LogChannels::BOTH, older, false)
-                    .map(|_| ()),
+                answered!(execs.log(LogSource::Command, LogChannels::BOTH, older, false)).map(|_| ()),
                 Err(Fault::Unlogged(Unlogged::Rotated { oldest: at(1, 0, 0) }))
             );
             assert_eq!(
-                execs
-                    .log(LogSource::Member(2), LogChannels::BOTH, LogCursor::OLDEST, false)
+                answered!(execs.log(LogSource::Member(2), LogChannels::BOTH, LogCursor::OLDEST, false))
                     .map(|_| ()),
                 Err(Fault::Unlogged(Unlogged::Unknown))
             );
-            let mut member = execs
-                .log(LogSource::Member(1), LogChannels::BOTH, LogCursor::OLDEST, false)
-                .unwrap();
+            let mut member =
+                answered!(execs.log(LogSource::Member(1), LogChannels::BOTH, LogCursor::OLDEST, false))
+                    .unwrap();
             assert_eq!(
                 read_all(&mut member),
                 [(Channel::Stdout, at(0, 0, 0), b"kept\n".to_vec())]
             );
             // Followed from where it got to: what is kept as it is kept, then its end.
-            let mut followed = execs
-                .log(LogSource::Member(1), LogChannels::BOTH, member.cursor(), true)
-                .unwrap();
+            let mut followed =
+                answered!(execs.log(LogSource::Member(1), LogChannels::BOTH, member.cursor(), true)).unwrap();
             assert!(*lock(&charge.bytes) > 0, "a log lane reading is charged");
             drain
                 .keep(&encoded(1, Channel::Stderr, 0, Event::Data(b"\x00\xff more")))
@@ -3838,7 +3843,7 @@ mod tests {
                 mut from,
                 mut to,
                 mut end,
-            } = execs.mcp(0).unwrap();
+            } = answered!(execs.mcp(0)).unwrap();
             assert_eq!(
                 from.next_record().unwrap(),
                 Got::Record {
@@ -3863,7 +3868,7 @@ mod tests {
             assert_eq!(from.next_record().unwrap(), Got::Finished);
             assert_eq!(end.wait(), Ok(0));
             assert_eq!(
-                execs.mcp(1).map(|_| ()),
+                answered!(execs.mcp(1)).map(|_| ()),
                 Err(Fault::Unstarted(Unstarted::Refused))
             );
             // No room for another: let go, its harness reading its end.
@@ -3880,7 +3885,10 @@ mod tests {
             let harness = held(first + 3);
             bridges.close();
             assert_eq!(shards_ipc::Polled(&harness).read(&mut [0; 1]).unwrap(), 0);
-            assert_eq!(execs.mcp(0).map(|_| ()), Err(Fault::Unstarted(Unstarted::Failed)));
+            assert_eq!(
+                answered!(execs.mcp(0)).map(|_| ()),
+                Err(Fault::Unstarted(Unstarted::Failed))
+            );
             assert!(matches!(
                 bridges.hold(first + 4, 0, Stream::pair().unwrap().1),
                 Err(mcp::Unheld::Over)
@@ -3995,28 +4003,34 @@ mod tests {
             let Member::Running(MemberControl {
                 mut steering,
                 mut end,
-            }) = execs.member(0).unwrap()
+            }) = answered!(execs.member(0)).unwrap()
             else {
                 panic!("member 0 runs");
             };
             assert!(*lock(&charge.bytes) > 0, "a member's lane open is charged");
-            assert_eq!(steering.signal(15), Ok(()));
-            assert_eq!(steering.signal(15), Err(Fault::Unsteered(Unsteered::Ended)));
+            assert_eq!(steering.signal(15, std::time::Duration::MAX), Ok(Some(())));
             assert_eq!(
-                steering.resize(run::Size { rows: 24, cols: 80 }),
+                steering.signal(15, std::time::Duration::MAX),
+                Err(Fault::Unsteered(Unsteered::Ended))
+            );
+            assert_eq!(
+                steering.resize(run::Size { rows: 24, cols: 80 }, std::time::Duration::MAX),
                 Err(Fault::Unsteered(Unsteered::Terminal))
             );
             process.join().unwrap();
             ends.told(0, run::members::End::Signaled(15)).unwrap();
             assert_eq!(end.wait(), Ok(control::exec::End::Signaled(15)));
-            assert_eq!(steering.signal(9), Err(Fault::Unsteered(Unsteered::Ended)));
+            assert_eq!(
+                steering.signal(9, std::time::Duration::MAX),
+                Err(Fault::Unsteered(Unsteered::Ended))
+            );
             assert!(matches!(
-                execs.member(1),
+                answered!(execs.member(1)),
                 Ok(Member::Ended(control::exec::End::Exited(0)))
             ));
             *lock(&budget) = Some(u64::MAX);
             assert_eq!(
-                execs.member(0).map(|_| ()),
+                answered!(execs.member(0)).map(|_| ()),
                 Err(Fault::Unstarted(Unstarted::Capacity))
             );
             revoke.revoke();
