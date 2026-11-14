@@ -4132,7 +4132,11 @@ Held by `iommu::tests::the_longest_readable_part_is_probes` and
   but 0xFF, the broadcast, which Linux ignores in a Local APIC entry and which is past its
   xAPIC driver's highest, 0xFE: 255. 254 had come from Firecracker's MP table, whose IOAPIC
   takes an APIC id; shards' MADT gives its IOAPIC id 0, another namespace. KVM's and WHP's
-  limits and WHP's snapshot decoder take the one constant (`acpi::MAX_VCPUS`). On arm64, a
+  limits and WHP's snapshot decoder take the one constant (`acpi::MAX_VCPUS`), and so, since
+  2026-11-14, does the machine's own reader of its vCPU states (vm/x86_64.rs
+  `decode_vcpus`), which had kept 254: every 255-vCPU machine's snapshot, and so its move,
+  was refused as it restored ("sequence of 255 (limit 254)", snapshot.rs' storm on KVM);
+  unit test `a_snapshot_holds_a_state_for_each_vcpu_a_machine_may_have`. On arm64, a
   machine has as many as its memory map has GICv3 redistributors for (`layout::MAX_VCPUS`,
   123), which a snapshot's decoder takes too.
 - **A kernel's program headers are as many as its ELF header says**, below the gABI's escape
@@ -11919,6 +11923,16 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     `vsock_handshake` now says a read's refusal (`no answer after "…": <the wait's
     account>`) apart from the device's close (`refused after "…"`), which it had folded
     into one text.
+  - *Amended (2026-11-14): a stream is read before every look.* Traced on one monotonic
+    clock across the test and its VM process on adacachy2 (KVM) at cf13e49e6: a greeting
+    the device had written was read 40 ms late, a refused port's close 85 ms late, and a
+    bad handshake's close, made at once, never: its wait was refused 128 ms later. Each look
+    at the party spawned `ps` (16 to 25 ms there) against a learned W* of 8 ms, `pause` is
+    at most what is left before the judge's look, so none was, and `Following` looked again
+    without reading, its VM process idle meanwhile because it waited on the host. Every look
+    now comes after a read, one that waits for nothing where the look is due. Red/green:
+    harness.rs `a_streams_answer_that_has_come_is_read_before_a_look_judges_it` (a stream
+    whose answer is there from its second read, its kind taught a W* of a nanosecond).
 - **A direct boot's waits follow its guest and its VM process** (every host). boot.rs'
   `a_guest_grows_and_gives_back_its_memory` failed on the arm64 Windows host with no
   `SHARDS-TEST PLUGGED` a minute from the test's start, while its guest, booted in 13 s of
