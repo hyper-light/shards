@@ -18518,7 +18518,9 @@ A run's microVM was sized at boot: without `-m`, 256 MiB less what its kernel ke
 where a Docker container without `-m` may hold its host's memory (`memory.max` "max",
 `MemTotal` its host's: shards-dind, docker 29.3.1); with `-m`, booted with all of it, its
 page structures paid at boot (21 MiB and 4 ms per GiB, PM M82). D133's virtio-mem gives a
-builder memory as its build needs it; runs now have it too.
+builder memory as its build needs it; runs now have it too. A builder after a build of its
+home ran out, a new home's first build too, its builder booted cold (memory-15), may have
+all its host's memory, as a run without a limit may (D133's `build::builder_most`).
 
 - **A run without a limit** boots as before, with a region to plug of the host's memory
   less that, and is given memory as its processes reach what it has, up to the host's
@@ -19674,6 +19676,17 @@ plugging builder's alone is the hold, `memory.high` and the grower (`Plug::hold`
 forked in the root cgroup before init moves into `build/init`). Every builder shares its
 budget's page (`plug::make_cap`), as a run's init does, so that a cold builder is held within
 its room as a warm one is (D188). No second path: no builder's steps run outside `build`.
+
+**A cold builder's needs are recorded (2026-11-14, memory-15's second defect).** A builder
+with nothing to plug answered `NEEDS` with no need and no process ended, so a new home's
+first build recorded `needed 0` (`a_builders_ceiling_comes_from_its_host_and_its_homes_builds`
+red at af629d8ed), and one that ran out at its ceiling was never recorded short. With the
+build's cgroup always there, every builder answers from it (`plug::needed`: `memory.peak`,
+what its kernel holds beside it, and `memory.events`' `oom_kill`, which counts any OOM
+killer's ends, the global one's in a builder that holds its build at no `memory.high`,
+`plug::killed`); `Builder::plugging` is gone. A new home's first build that runs out is
+recorded `short yes`, and its next builder may have all its host's memory, as D148's runs
+(`a_new_homes_build_that_runs_out_is_recorded_short`).
 
 **R03 review memory-11..15 (2026-11-13):** reserve slack, pause/read floors,
 retry count, growth/retention ratios and boot floor remain owed to ROOT with

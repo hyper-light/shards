@@ -144,9 +144,6 @@ struct Builder {
     /// The step's SSH agent sockets, listened on here and relayed to the host while it
     /// runs: each mount's listener, the agent's id and the host's token for it.
     ssh: Vec<(std::os::unix::net::UnixListener, Vec<u8>, [u8; 16])>,
-    /// Whether the builder's memory is plugged as the build needs it (D133): a cold
-    /// builder's, booted with all it may have, is not (memory-15).
-    plugging: bool,
     /// What the process that grows its memory says, a line at a time: said in the output
     /// of the step that runs as it comes, which is the step its memory is short for.
     notes: Option<OwnedFd>,
@@ -253,7 +250,6 @@ fn serve() -> io::Result<()> {
         writing: None,
         serial: 0,
         ssh: Vec::new(),
-        plugging: plug.is_some(),
         notes,
         caches: crate::caches::Caches::default(),
     };
@@ -285,13 +281,9 @@ fn serve() -> io::Result<()> {
                 send(&b.conn, kind::EMULATED, why.as_bytes())?;
             }
             kind::NEEDS => {
-                // A builder that plugs nothing (booted with all it may have: a cold one,
-                // memory-15) needed none past it, and its guest's start is still said.
-                let needed = match b.plugging {
-                    true => crate::plug::needed(),
-                    false => Ok((0, 0)),
-                };
-                let said = match (needed, crate::plug::startup_said()) {
+                // Every builder's, a cold one's too, booted with all it may have
+                // (memory-15): its build's cgroup counts what it held either way.
+                let said = match (crate::plug::needed(), crate::plug::startup_said()) {
                     (Ok((need, killed)), Some(start)) => format!("{need} {killed} {start}"),
                     (Ok((need, killed)), None) => format!("{need} {killed}"),
                     (Err(e), _) => e.to_string(),

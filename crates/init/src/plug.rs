@@ -1309,12 +1309,17 @@ pub fn needed() -> io::Result<(u64, u64)> {
     let beside = beside(BUILD, BOOT.get().copied().unwrap_or(0))?;
     let events = std::fs::read_to_string(format!("{BUILD}/memory.events"))
         .map_err(|e| err(format!("{BUILD}/memory.events: {e}")))?;
-    let killed = events
+    Ok((needed_for(peak, beside), killed(&events)))
+}
+
+/// The processes a cgroup's `memory.events` says any OOM killer ended (`oom_kill`): a cold
+/// builder's kernel's, which holds the build at no `memory.high`, as a held one's.
+fn killed(events: &str) -> u64 {
+    events
         .lines()
         .find_map(|l| l.strip_prefix("oom_kill "))
         .and_then(|n| n.trim().parse().ok())
-        .unwrap_or(0);
-    Ok((needed_for(peak, beside), killed))
+        .unwrap_or(0)
 }
 
 /// The least memory in whole blocks whose hold, its [`reserve`] beside it and nothing left
@@ -1927,6 +1932,15 @@ mod tests {
         }
         assert!(root.join("build/init").is_dir());
         assert!(!root.join("build/init/cgroup.subtree_control").exists());
+    }
+
+    /// A build ended short of memory says the processes its kernel ended, a cold builder's
+    /// as a held one's (memory-15): its host records it short (D148).
+    #[test]
+    fn a_builds_kills_are_read_from_its_events() {
+        let events = "low 0\nhigh 12\nmax 0\noom 1\noom_kill 2\noom_group_kill 0\n";
+        assert_eq!(killed(events), 2);
+        assert_eq!(killed("low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\n"), 0);
     }
 
     /// What a build needed is the least memory in whole blocks whose hold, with nothing

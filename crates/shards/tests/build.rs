@@ -1077,6 +1077,79 @@ fn a_builders_memory_in_a_new_home_is_all_it_may_have() {
     );
 }
 
+/// A home's first build that runs out of memory is recorded short (D133, D148, memory-15):
+/// its builder, booted cold with all it may have and nothing to plug, counts what its build
+/// held in the build's cgroup as a warm one does, and the processes its kernel ended; the
+/// home records the build's need and that it ended short, and its next builder may have all
+/// its host's memory, as a run with no limit may: `MemTotal` of the host's less no more than
+/// what the home learned its guest needs to boot, and a block.
+#[test]
+fn a_new_homes_build_that_runs_out_is_recorded_short() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("build-cold-short-home");
+    let env = |most: Option<&'static str>| {
+        let mut env = vec![
+            ("SHARDS_HOME", home.as_os_str()),
+            ("SHARDS_KERNEL", kernel().as_os_str()),
+            ("SHARDS_INIT", guest_init().as_os_str()),
+        ];
+        if let Some(m) = most {
+            env.push(("SHARDS_BUILD_MEMORY", m.as_ref()));
+        }
+        env
+    };
+    assert_eq!(common::learned_boot(&home), None);
+    let over = context(
+        "build-cold-short-ctx",
+        &format!("FROM {image}\nRUN [\"/bin/testguest\", \"alloc\", \"3072\"]\n"),
+    );
+    let ended = run_shards_env(
+        &["build"],
+        &["--progress=plain", over.to_str().unwrap()],
+        &env(Some("2560")),
+    );
+    assert!(
+        ended
+            .stderr
+            .contains("did not complete successfully: exit code: 137"),
+        "{ended}"
+    );
+    let said =
+        std::fs::read_to_string(home.join("builder-memory")).unwrap_or_else(|e| panic!("{e}: {ended}"));
+    let needed: u64 = said
+        .lines()
+        .find_map(|l| l.strip_prefix("needed "))
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("no need recorded: {said}"));
+    assert!(needed > 0 && said.contains("short yes"), "{said}\n{ended}");
+    let meminfo = context(
+        "build-cold-short-next",
+        &format!("FROM {image}\nRUN [\"/bin/testguest\", \"stat\", \"/proc/meminfo\"]\n"),
+    );
+    let seen = run_shards_env(
+        &["build"],
+        &["--progress=plain", meminfo.to_str().unwrap()],
+        &env(None),
+    );
+    assert_eq!(seen.status, Some(0), "{seen}");
+    let all: u64 = seen
+        .stderr
+        .split_once("MemTotal:")
+        .and_then(|(_, after)| after.split_whitespace().next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("no MemTotal: {seen}"));
+    let host_kib = common::host_memory() >> 10;
+    let boot_kib = common::learned_boot(&home).unwrap_or_else(|| panic!("no boot learned: {seen}")) >> 10;
+    let block_kib = 128 << 10;
+    assert!(
+        all <= host_kib && all + boot_kib + block_kib > host_kib,
+        "MemTotal {all} kB of a builder after a new home's build ended short, its guest learned to boot with {boot_kib} kB, on a host of {host_kib} kB: {seen}"
+    );
+}
+
 /// A build held short of memory has its builder give back what it holds cold at its host's
 /// word (D188 for D133's builders): `shards build` in a scope of the user's manager, which
 /// can swap nothing (`MemorySwapMax=0`), reads a 512 MiB file of a cache mount, which the
