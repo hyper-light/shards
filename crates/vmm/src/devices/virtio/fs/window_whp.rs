@@ -1217,6 +1217,75 @@ mod tests {
         assert_eq!(read(&w, 2 * MIB - 1), 0x77);
     }
 
+    /// Do (memory-01): map a file's first range to be read, through a handle opened to read
+    /// alone, and its second to be written, through one opened to write too, as a share's
+    /// server answers each (`SHARED_NEEDS_WRITE`); grow the file and follow it. Expect the
+    /// second range's bytes to stay the file's and its grown bytes to be the file's too,
+    /// never zeros, and the guest's store there to reach the file.
+    #[test]
+    fn a_range_mapped_to_be_written_after_one_to_be_read_stays_its_files() {
+        const SIZE: u64 = 3 * MIB;
+        let dir = shards_testdir::TempDir::new("whp-rw").unwrap();
+        let path = dir.join("f");
+        std::fs::write(&path, vec![0x5a; SIZE as usize]).unwrap();
+        let open = |write: bool| {
+            OwnedHandle::from(
+                std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(write)
+                    .open(&path)
+                    .unwrap(),
+            )
+        };
+        let told = Arc::new(Told::default());
+        let w = window(&told, 4 * MIB);
+        assert_eq!(w.map(open(false), 9, 0, 0, 2 * MIB, false), Ok(2 * MIB));
+        assert_eq!(w.map(open(true), 9, 2 * MIB, 2 * MIB, 2 * MIB, true), Ok(MIB));
+        assert_eq!(read(&w, 2 * MIB + 4096), 0x5a);
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        std::os::windows::fs::FileExt::seek_write(&file, &[0x77; 4096], SIZE + 4096).unwrap();
+        let _ = w.reconcile(&[9]);
+        assert_eq!(read(&w, 2 * MIB + 4096), 0x5a, "its file's bytes, not zeros");
+        assert_eq!(read(&w, 3 * MIB + 4096), 0x77, "its grown bytes, the file's");
+        write(&w, 2 * MIB + 4096, 0xa5);
+        drop(w);
+        let now = std::fs::read(&path).unwrap();
+        assert_eq!(now[(2 * MIB + 4096) as usize], 0xa5, "the guest's store is the file's");
+    }
+
+    /// Do: map a range to be written, wholly past its file's end, through a handle opened to
+    /// read alone, as no server should give one; grow the file into it and follow it; let
+    /// it go of for a cut, and follow it again. Expect each follow refused, typed, the range
+    /// left as it was, never zeros in place of the file's bytes: no section to write can be
+    /// made of that handle (PM M412), and a vCPU that reaches the range let go of waits.
+    #[test]
+    fn a_range_no_view_of_its_file_can_be_made_for_is_refused_never_zeros() {
+        let dir = shards_testdir::TempDir::new("whp-ro").unwrap();
+        let path = dir.join("f");
+        std::fs::write(&path, vec![0x5a; MIB as usize]).unwrap();
+        let read_only = OwnedHandle::from(std::fs::File::open(&path).unwrap());
+        let told = Arc::new(Told::default());
+        let w = window(&told, 4 * MIB);
+        assert_eq!(w.map(read_only, 9, 2 * MIB, 0, 2 * MIB, true), Ok(0));
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_len(3 * MIB).unwrap();
+        std::os::windows::fs::FileExt::seek_write(&file, &[0x77; 4096], 2 * MIB).unwrap();
+        let _ = w.reconcile(&[9]);
+        w.evict(9);
+        let _ = w.reconcile(&[9]);
+        std::thread::scope(|scope| {
+            let (done, ran) = std::sync::mpsc::channel();
+            let w = &w;
+            scope.spawn(move || done.send(w.memory_fault(Some(GPA + 4096))).unwrap());
+            assert!(
+                ran.recv_timeout(std::time::Duration::from_millis(200)).is_err(),
+                "waits while its range is no view of its file"
+            );
+            w.unmap(0, 2 * MIB).unwrap();
+            assert!(ran.recv().unwrap(), "run again once it is unmapped");
+        });
+    }
+
     #[test]
     fn a_range_is_its_sections_bytes_each_way_and_stage_2_is_told_once() {
         let told = Arc::new(Told::default());
