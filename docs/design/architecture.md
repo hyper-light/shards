@@ -12739,6 +12739,10 @@ Established TCP flows keep their opening authorization until their normal close;
 expiry/replacement affects new flows. Clock overflow/allocation failure refuses new
 learned authority through the existing policy denial, with io::Error from admission.
 Answer owner/class/CNAME validation remains network-11, a separate pending finding.
+Native macOS test correction68968478b waits on UDP readiness before invoking the
+receive handler, as the real dispatcher does; send completion alone was no delivery
+witness. It changes no production authority rule. Native red and merged gates are
+in the same evidence record.
 [Unit reproduction and remaining VM checks](../research/measurements/network-fixes-v1/README.md#network-03-dns-authority-lifetime).
 
 **Next.** IPv6 destinations (the network process learns A records alone); a destination
@@ -14145,6 +14149,35 @@ other's but what the move sends, and what the other takes by content:
   (`server::guest`, every target). Not an
   archive of go-archive's (crates/archive), whose oracle is untouched: the move's stream is
   its own format (version 3; readers also take version 2).
+- **Nor does any name it gives** (migrate-11, 2026-11-13). Beside its stream's entries, a
+  move gives names the machine moved to makes paths of its home of: its plan's ID
+  (`containers/ID`), its snapshot's (`containers/ID/snapshots/S`, which a live move's rounds
+  are laid under and `snapshot::relocate` rewrites), its volumes' (`volumes/V`, renamed into
+  place), and the volume names its record's mounts carry, each of which becomes the host
+  directory its guest is shared (`volumes/V/_data`); and the machine it ran on joins the
+  snapshot `done` names to its directory before `snapshot::remove`. None was checked, and
+  `Path::join` takes `..` as it is and an absolute name as the whole path: a record mounting
+  `/etc` would have had its guest shared `/etc/_data`, an ID of `../x` its directory
+  outside `containers/`. Each is now one name of its kind (`Named::takes`), every rule from
+  its own source: an ID as `containers::new_id` makes one, `2 × MICROVM_ID_BYTES` (32,
+  moby's `stringid`) bytes in lowercase hex; a snapshot's one file's name by
+  `synced::name_alone`'s Windows rules (Microsoft's "Naming Files, Paths, and Namespaces"),
+  the stricter, on every host, so that what one host takes every host takes; a volume's the
+  local driver's (`Store::valid`, moby's validateName) and one file's name too, as the
+  driver's rule takes a trailing dot and Windows' device names. Each refuses a separator,
+  `.`, `..`, a root and a drive's colon, so none is more than one component; none is a
+  chosen number (R03). A name that is not is refused typed (`Refused::NotAName`: the
+  microVM, the field, the value), which the mover matches as it matches `ready`'s: `ready`
+  checks the plan before anything else, `import` right after it reads the plan and before
+  any entry is placed, `adopt` takes every name it joins through the same check
+  (`one_name`), and `done` its snapshot before it resolves the microVM. `server::guest::Beneath`
+  is not the seam for these: it places under a held root but renames nothing, and `adopt`'s
+  steps are renames and reads by path, each now of one checked component. Held by
+  `daemon::moves::tests::a_moves_names_are_each_one_name_of_their_kind` (each rule's
+  takes and refusals) and `daemon::tests::a_moves_names_that_are_no_one_name_are_refused_typed_and_reach_nothing`
+  (`ready`, `import` with a stream cut past its plan, `import` of a whole record whose mount
+  names `../../x`, and `done`: each refused typed, the home's tree unchanged and no staging
+  left), with a mutation of each check red (docs/bugs/2026-11-13/migrate.md, migrate-11).
 - **Its CPU.** A restore on another CPU than its snapshot's is no longer refused where that
   CPU has every feature its guest found: the guest is told the CPU it found, each of its
   vCPUs given its snapshot's ID registers (HVF, KVM on arm64) or CPUID (KVM on x86_64),

@@ -7709,6 +7709,13 @@ retired HashSet import. The cleanup, TTL tests and final merged gate are tracked
 in [the evidence record](measurements/network-fixes-v1/README.md#network-03-dns-authority-lifetime).
 No host-memory/performance or real-VM result is claimed.
 
+**network-03 native macOS test follow-up.** At6389b6e09, Mac3 Darwin arm64 /
+Rust1.98.1 test-release fails first-answer admission because the test dispatched
+its nonblocking receive without a readiness witness. 68968478b waits for the
+actual UDP poller token before each dispatch; production already does so. This
+is a test synchronization change, with native red and subsequent outcomes in
+[the scoped evidence](measurements/network-fixes-v1/README.md#network-03-native-macos-readiness-regression).
+
 ### M211. The limits a build's `RUN` step starts with
 
 - **Question.** A container's process starts with Docker's limits (`defaults::limits`,
