@@ -95,9 +95,6 @@ pub(super) enum What {
 /// Each running microVM's plugged devices, by microVM ID, then by path.
 pub(super) type PluggedMap = HashMap<String, HashMap<String, Plugged>>;
 
-/// How long its guest is given to find, mount or let go of a device.
-const GUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-
 /// Each running microVM's device steps (`plug`, `unplug`, `grow`), one at a time (D214):
 /// the microVMs one is under way in, and the wakeup of the steps waiting as one ends. A
 /// step reads what is plugged, changes the host's file or share, then asks its VM and its
@@ -604,7 +601,10 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// Runs init's DEVICE built-in with `args` in running microVM `id`'s guest: its
-    /// answer, or why it failed.
+    /// answer, or why it failed. Waited for while its microVM's process runs, judged by the
+    /// built-in's own record (D215's judge, devices-08): init waits on the kernel's word and on
+    /// no clock (D214), so a step ends as its guest answers, as its microVM ends, or where it
+    /// runs no CPU past the slowest step of its kind seen, never at a picked time.
     fn guest_device(&self, id: &str, args: &[&str]) -> Result<String, String> {
         let spec = shards_abi::run::Spec {
             builtin: shards_abi::run::builtin::DEVICE,
@@ -612,7 +612,7 @@ impl<D: Disk> Daemon<D> {
             ..Default::default()
         };
         let quiet = self
-            .exec_quietly(id, &spec, None, 1 << 12, GUEST_TIMEOUT)
+            .exec_answered(id, &spec, 1 << 12)
             .map_err(|e| format!("its guest: {e}"))?;
         let said = String::from_utf8_lossy(&quiet.output).trim().to_string();
         match quiet.status {
