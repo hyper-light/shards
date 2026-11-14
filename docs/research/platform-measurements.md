@@ -24048,7 +24048,17 @@ all-target clippy passed. Normal socket half-close still delivers later stdin.
 This is functional evidence, not a performance measurement or real-VM result.
 [Commands, output excerpts, policy and owed coverage](measurements/inithex-fixes/README.md).
 
-### M565. What the run host's managed control scope refused was said as "invalid data", and init's relay end could land within a frame
+### M565. Absolute-FQDN remote MCP grants compared to real DNS wire questions (D236)
+
+Linux x86_64, adacachy2, 2026-11-13: at 8e8e1c439 both Agentfile endpoint and
+init netplan tests fail `mcp.example.` versus `mcp.example` (kiln r7). At 79019fa55,
+3 focused Agentfile MCP tests, 8 init netplan tests, and both crates' all-target
+clippy pass (r8). These are functional unit results, not a real DNS-provider or
+real-VM result. RFC1034 §3.1 supplies the terminal-root-dot normalization rule;
+no chosen runtime value, wait or cache is added.
+[Commands, red output, green excerpts and owed variant](measurements/inithex-fixes/README.md).
+
+### M566. What the run host's managed control scope refused was said as "invalid data", and init's relay end could land within a frame
 
 - **Question.** ROOT's KVM runs of api_image at c120c8a95 (adacachy2) failed three ways, each
   after the VM process said, some 150 to 200 ms in, `the guest's signal connection is lost:

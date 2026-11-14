@@ -7168,7 +7168,7 @@ mod signals_end_tests {
     /// A relay broken by a failure while part of its managed control's frame had gone writes
     /// the rest of that control whole before its end: the host reads whole frames, then the
     /// end. Written at once after the part, the end was read as the frame's rest, and its
-    /// host's managed control refused what followed (PM M565).
+    /// host's managed control refused what followed (PM M566).
     #[test]
     fn the_relays_end_follows_its_control_whole_where_part_of_a_frame_went() {
         let (signals, mut host) = ours();
