@@ -153,3 +153,42 @@ Green at `3b8ec2938` (main `e2744a6fb` included), resumed r17, same Mac:
 `cargo test -p shards-vmm devices::virtio::head::tests:: --lib` passed 9, with
 1 measurement test ignored; VMM all-target clippy passed. `green-memory-16.log`
 retains output. ROOT still owes real head snapshot/restore and cost measurements.
+
+Memory-16 landed `bfd2cca4c`. Intermediate merges `0685425ef`, `27099a3de`,
+and `0c1141320` changed only API/CLI/net/documentation, disjoint from VMM inputs.
+The final merge included main `5d901fa71` (VFIO change) and passed
+`cargo check -p shards-vmm --tests`, resumed r18. `check-memory-16.log` retains
+that final result. All merges were automatic and signed.
+
+## memory-17
+
+Red `c61cc6b1d`, resumed r20, adacachy2, Linux 7.3.3-1-cachyos x86_64,
+rustc 1.98.1, native GNU target, cold lane-owned target, nice -n 10, one compiler:
+`cargo test -p shards-init a_give_back_room_` passed the signed extremes but
+failed the impossible-length test: the answerer waited for the payload of a
+21-byte ROOM rather than ending at the header. `red-memory-17.log` retains it.
+The parent closes its socket before asserting, so even the red joins the waiter.
+
+Fix `5826a9bcf` derives the maximum request payload from the existing encoder
+(`crates/shards/src/build/builder.rs`, Giver::tell/tell_first): empty GIVE_BACK;
+ROOM is empty or i64::to_string. i64::MIN has the longest representation: one
+minus sign plus floor(log10(unsigned_abs(MIN))) + 1 digits. This is exact from
+cold start; no local observation, estimator or reserve is needed. The unsigned
+magnitude is nonzero, so ilog10 cannot meet zero's precondition failure, and the
+sum fits every supported usize. The existing overlong-frame end path remains.
+Noncanonical padded numbers beyond the canonical encoder's maximum are refused;
+the two actual producers never send them. No installed/wire binary is added.
+
+R01/R03/R04: the derived arithmetic is type-bounded and introduces no new state
+or refusal representation; requests beyond it use the existing end transition.
+R02/R05/R06/R07/R12/R13: the authoritative source is this protocol's actual host
+encoder; no cache, polling or platform adapter added. Payload allocation stays
+bounded before read. R09/R10: the header-only socket regression fails the exact
+old read path and joins cleanly. R08/R11/R14/R15: no performance or real-VM claim;
+Linux arm64/musl and the other host/guest combinations remain CI/ROOT's.
+R16: cold target is exclusively this lane's and will be removed after landing.
+
+ROOT owes `cargo test -p shards --test build a_build_held_short_of_memory_has_its_builder_give_back`
+for the actual host-to-guest ROOM exchange. Policy checker is also owed:
+`python3 scripts/check-development-policy` (the implementer brief permits only
+focused cargo tests/clippy, plus the amended cargo-check gate).
