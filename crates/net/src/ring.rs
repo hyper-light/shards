@@ -77,24 +77,28 @@ struct Mapping {
 // SAFETY: memory this value alone holds, and moves with it.
 unsafe impl Send for Mapping {}
 
-/// The OS's page: what a mapping is made of.
-fn page() -> usize {
+/// The OS's page: what a mapping is made of. An OS that says none is an error, never a
+/// guessed size (network-12): a mapping of a size not whole pages would not be one.
+fn page() -> io::Result<usize> {
     static PAGE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *PAGE.get_or_init(|| {
-        #[cfg(unix)]
-        {
-            // SAFETY: sysconf(3) of a constant name.
-            usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).unwrap_or(4096)
-        }
-        #[cfg(windows)]
-        {
-            use windows_sys::Win32::System::SystemInformation::{GetSystemInfo, SYSTEM_INFO};
-            let mut info = SYSTEM_INFO::default();
-            // SAFETY: an info for the call to fill.
-            unsafe { GetSystemInfo(&raw mut info) };
-            usize::try_from(info.dwPageSize).unwrap_or(4096)
-        }
-    })
+    if let Some(&page) = PAGE.get() {
+        return Ok(page);
+    }
+    #[cfg(unix)]
+    // SAFETY: sysconf(3) of a constant name.
+    let said = usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).ok();
+    #[cfg(windows)]
+    let said = {
+        use windows_sys::Win32::System::SystemInformation::{GetSystemInfo, SYSTEM_INFO};
+        let mut info = SYSTEM_INFO::default();
+        // SAFETY: an info for the call to fill.
+        unsafe { GetSystemInfo(&raw mut info) };
+        usize::try_from(info.dwPageSize).ok()
+    };
+    let page = said
+        .filter(|p| p.is_power_of_two())
+        .ok_or_else(|| io::Error::other("the OS says no page size"))?;
+    Ok(*PAGE.get_or_init(|| page))
 }
 
 impl Mapping {
@@ -216,7 +220,7 @@ impl Ring {
             let len = need
                 .checked_next_power_of_two()
                 .ok_or(io::ErrorKind::OutOfMemory)?
-                .max(page());
+                .max(page()?);
             let mut grown = match spare(len) {
                 Some(kept) => kept,
                 None => Mapping::new(len)?,
@@ -277,7 +281,7 @@ impl Ring {
     #[cfg(test)]
     pub fn wrapped(end: &[u8], start: &[u8]) -> io::Result<Ring> {
         let len = end.len() + start.len();
-        let mut mem = Mapping::new(len.next_power_of_two().max(page()))?;
+        let mut mem = Mapping::new(len.next_power_of_two().max(page()?))?;
         let head = mem.len - end.len();
         let to = mem.bytes_mut();
         to.get_mut(head..).unwrap_or_default().copy_from_slice(end);
@@ -315,7 +319,7 @@ mod tests {
         let mut r = Ring::new();
         assert_eq!(r.capacity(), 0);
         assert_eq!(r.as_slices(), (&[][..], &[][..]));
-        let page = page();
+        let page = page().unwrap();
         let data: Vec<u8> = (0..3 * page as u32).map(|i| (i % 251) as u8).collect();
         r.extend(&data[..page - 10]).unwrap();
         assert_eq!(r.capacity(), page);
@@ -348,7 +352,7 @@ mod tests {
     #[test]
     fn memory_let_go_of_is_taken_again_or_handed_back() {
         expire(Instant::now() + crate::tcp::IDLE * 4);
-        let page = page();
+        let page = page().unwrap();
         let mut a = Ring::new();
         a.extend(&vec![1u8; page]).unwrap();
         let at = a.mem.as_ref().map(|m| m.at);

@@ -669,14 +669,20 @@ mod platform {
     use std::io;
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
+    /// The number in the next object's name.
+    pub(super) static NAMES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
     /// A POSIX shared memory object of `size` bytes, zeroed, its name unlinked at once, so
     /// that only its descriptor reaches it: macOS has no memfd.
     pub fn shared_memory(size: usize) -> io::Result<OwnedFd> {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static N: AtomicU64 = AtomicU64::new(0);
-        for _ in 0..16 {
+        use std::sync::atomic::Ordering;
+        // Each name refused as taken is an object some process made and has not unlinked,
+        // and each try a name not tried before, so the OS's finite table of such objects
+        // bounds the tries; a count of them would refuse memory with a free name past it
+        // (network-12).
+        loop {
             // Short: macOS bounds these names at 31 bytes (PSHMNAMLEN).
-            let name = format!("/sf{}.{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed));
+            let name = format!("/sf{}.{}", std::process::id(), NAMES.fetch_add(1, Ordering::Relaxed));
             let c = std::ffi::CString::new(name).map_err(|_| io::Error::other("a name with NUL"))?;
             // SAFETY: shm_open(2) with a NUL-terminated name.
             let fd =
@@ -701,7 +707,6 @@ mod platform {
             }
             return Ok(fd);
         }
-        Err(io::Error::other("no free shared memory name"))
     }
 }
 
@@ -1006,5 +1011,30 @@ mod tests {
         let mut consumer = b.consumer(1, cr, cw);
         push(&mut producer, &pw, &[b"across"]).unwrap();
         assert_eq!(take(&mut consumer).unwrap(), b"across");
+    }
+
+    /// network-12: however many of the names a shared memory object would take next are
+    /// another's, the next free one is taken, never an error after a chosen count of them.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn shared_memory_passes_over_every_name_taken() {
+        use std::sync::atomic::Ordering;
+        let (pid, next) = (std::process::id(), platform::NAMES.load(Ordering::Relaxed));
+        let taken: Vec<std::ffi::CString> = (next..next + 40)
+            .map(|n| std::ffi::CString::new(format!("/sf{pid}.{n}")).unwrap())
+            .collect();
+        for c in &taken {
+            // SAFETY: shm_open(2) of a NUL-terminated name, its descriptor closed at once.
+            let fd = unsafe { libc::shm_open(c.as_ptr(), libc::O_RDWR | libc::O_CREAT | libc::O_EXCL, 0o600) };
+            assert!(fd >= 0, "{c:?}: {}", io::Error::last_os_error());
+            // SAFETY: the descriptor just made.
+            unsafe { libc::close(fd) };
+        }
+        let made = platform::shared_memory(4096);
+        for c in &taken {
+            // SAFETY: shm_unlink(2) of a name this test made.
+            unsafe { libc::shm_unlink(c.as_ptr()) };
+        }
+        made.unwrap();
     }
 }

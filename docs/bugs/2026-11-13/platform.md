@@ -44,7 +44,7 @@ Separately, `seal()` applies another thread-only Landlock layer at `vm_run.rs:27
 
 **Status (2026-11-13):** fixed in 4221c9488 (red `confine::tests::every_thread_of_a_confined_process_is_confined`, siblings read a file outside the paths and wrote the sealed directory under a caller-only layer; also `a_thread_that_cannot_be_asked_fails_the_layer`). TSYNC where the ABI has v8, each thread asked by signal on every ABI from v5; PM M568, D30.
 
-**Follow-up (2026-11-13):** 33f370d67 (no multiplier: a thread that blocks or ignores the asking signal fails the layer at once, typed; any other is waited for as long as it lives, its PIDFD_THREAD pidfd waking the wait) and b92a75e83 (asked by SIGSYS, which Mesa's threads leave unblocked; red: a Mesa-like thread kept writing the sealed directory). PM M568.
+**Follow-up (2026-11-13):** 33f370d67 (no multiplier: a thread that blocks or ignores the asking signal fails the layer at once, typed; any other is waited for as long as it lives, its PIDFD_THREAD pidfd waking the wait) and b92a75e83 (asked by SIGSYS, which Mesa's threads leave unblocked; red: a Mesa-like thread kept writing the sealed directory). PM M568. And 6bf478ea1: a thread inside pthread_create's all-blocked window is waited for until it unblocks, ends, or runs on still blocking (deaf, failed closed); red `a_thread_inside_pthread_creates_window_is_asked_once_it_unblocks`.
 
 ### platform-02 — Linux pathname Unix sockets reach unscoped host authority
 
@@ -258,6 +258,8 @@ Local Rust 1.94.1 source `std/src/sys/process/windows.rs:330–342` explicitly d
 **Fix direction:** derive choices from online host/workload observations with documented conservative cold-start behavior and authority ceilings, or establish a genuine specification bound for each retained constant.
 
 **Catching test:** inject different clock/wake/capacity observations and cold-start states; require derived choices to follow those observations and preserve safety/refusal bounds. Coordinator owns real host contention validation.
+
+**Status (2026-11-14):** owed to ROOT, the design narrowed: Windows' priority governor's look (`windows_thread.rs` `PERIOD`) is D191's derivation for one thread's half-CPU credit, P = 1 × g / ½ = 2g, from the learner now built (`platform::granule`, migrate-09); it is not switched, as its credit cap (half a period) must also hold GetThreadTimes' tick-quantized charges of a thread that waits between runs (`a_thread_that_waits_between_its_runs_stays_raised`, CI windows-2025), which at 2g leaves one tick of slack where 100 ms left 3.2: ROOT owes that test's runs on windows-2025 and jupiter at 2g beside 100 ms, then the switch with the hold's. macOS's 0.5 / 1 ms time-constraint pair and the Windows pipes' 1 MiB / 64 KiB quotas stay owed with the design linked above: no derivation of either was found that this lane can test (the pair needs a guest timer deadline or measured batch cost; the quotas each caller's wire window), and no number replaced another.
 
 ### platform-12 — Delegated-cgroup cleanup polls at an arbitrary 10 ms interval
 

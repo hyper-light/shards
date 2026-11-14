@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use super::HOLD_PERIOD as PERIOD;
 use super::MILLI_PER_CPU;
 use super::group::GroupCpu;
-use crate::platform::ThreadClock;
+use crate::platform::{ThreadClock, granule};
 use crate::sync::{lock, wait, wait_timeout};
 
 /// The least it waits between reads, however little of the share is left: as closely as
@@ -279,6 +279,9 @@ impl Hold {
             // Periods follow one another on the clock, as late as the governor wakes; a
             // new limit, or a governor fallen a period behind, begins them again now.
             let now = Instant::now();
+            if last != Some(generation) {
+                self.say_derived(vcpus, milli);
+            }
             if last != Some(generation) || now.saturating_duration_since(start) >= PERIOD {
                 start = now;
             }
@@ -304,7 +307,12 @@ impl Hold {
                 };
                 let mut s = lock(&self.state);
                 if !s.ended && s.generation == generation {
+                    let began = Instant::now();
                     s = wait_timeout(&self.changed, s, next);
+                    // Its lateness learned where it ended on its own (`granule::Late`).
+                    if !s.ended && s.generation == generation {
+                        granule::LATE.waited(next, began);
+                    }
                 }
                 if s.ended {
                     return;
@@ -328,6 +336,27 @@ impl Hold {
             };
             start += PERIOD;
             self.set_held(None);
+        }
+    }
+
+    /// Says, as a new limit begins, the period D191 derives for it from what this process
+    /// has measured of its governors' step, beside the one in force: what ROOT's measurement
+    /// of the derivation reads (D191, "Its period"). The clock's step is measured the first
+    /// time, on the governor's thread, which spins two of its steps at most.
+    fn say_derived(&self, vcpus: u64, milli: NonZeroU64) {
+        let clock = granule::measure_clock();
+        let step = granule::step();
+        let g = step.g(SOONEST);
+        match (clock, derived_period(vcpus, milli, g)) {
+            (Ok(_), Some(derived)) => crate::debug!(
+                "the hold: {milli} milli-CPU over {PERIOD:?}; derived {derived:?} from g {g:?} ({step:?})"
+            ),
+            (Ok(_), None) => crate::debug!(
+                "the hold: {milli} milli-CPU over {PERIOD:?}; its derived period outgrows a u64 of ns at g {g:?}"
+            ),
+            (Err(granule::Unclocked(why)), _) => crate::debug!(
+                "the hold: {milli} milli-CPU over {PERIOD:?}; no clock step measured ({why}), g {g:?}"
+            ),
         }
     }
 
@@ -412,6 +441,21 @@ impl Hold {
     }
 }
 
+/// The period D191 derives for `vcpus` held to `milli` milli-CPU by a governor that resolves
+/// `g` (`platform::granule`): the shortest in which it resolves their share, vcpus × g / share,
+/// the share `milli` over [`MILLI_PER_CPU`] CPUs. None where it outgrows what a `Duration` of
+/// nanoseconds in a u64 holds. Not yet the period in force: `PERIOD` is, until the cost of
+/// the kicks a shorter period makes is measured on each backend and the image API's rate
+/// answer says each rate's period (D191, "Its period").
+pub(super) fn derived_period(vcpus: u64, milli: NonZeroU64, g: Duration) -> Option<Duration> {
+    let ns = g
+        .as_nanos()
+        .checked_mul(u128::from(vcpus))?
+        .checked_mul(u128::from(MILLI_PER_CPU))?
+        .checked_div(u128::from(milli.get()))?;
+    u64::try_from(ns).ok().map(Duration::from_nanos)
+}
+
 /// Whether vCPUs that used `before` and then `used` of a period's CPU time spend `share`
 /// in the next, as the two foretell: `used` again and as much more as it grew by, a
 /// machine's own trend, where none of their use is known before them. A machine's first
@@ -442,6 +486,21 @@ fn share_of(milli: NonZeroU64, period: u64) -> u64 {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// D191's derived period: vcpus × g over the share, the shortest in which the governor
+    /// resolves it. Four vCPUs held under 625 milli-CPU by GetThreadTimes' 15.625 ms ticks
+    /// take past CFS's 100 ms (PM M294); a whole CPU's share of each vCPU's, g; one past what
+    /// a u64 of ns holds, none.
+    #[test]
+    fn a_holds_derived_period_resolves_its_share() {
+        let tick = Duration::from_micros(15_625);
+        let milli = |m| NonZeroU64::new(m).unwrap();
+        assert_eq!(derived_period(4, milli(625), tick), Some(Duration::from_millis(100)));
+        assert_eq!(derived_period(4, milli(500), tick), Some(Duration::from_millis(125)));
+        assert_eq!(derived_period(4, milli(4000), SOONEST), Some(SOONEST));
+        assert_eq!(derived_period(1, milli(250), SOONEST), Some(Duration::from_millis(4)));
+        assert_eq!(derived_period(u64::MAX, milli(1), Duration::from_secs(u64::MAX)), None);
+    }
 
     /// A machine is busy next period where its use grows to its share as its last two
     /// periods foretell: its first, after none, at half the share; one that holds steady
