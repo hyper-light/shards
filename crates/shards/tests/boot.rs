@@ -2189,11 +2189,12 @@ fn shards_api_shares_a_directory_and_a_read_only_one() {
 
 /// A managed guest's rate (D255): a guest booted `--host-managed`, spinning its one vCPU, is
 /// held by its VM's governor to the quarter CPU a client asks on its vsock socket (`RATE`,
-/// `shards_abi::rate`), as `ManagedGuest::rate` asks it. Its VM process uses no more of the
-/// host's CPU than a quarter of the time passing, two of its governor's periods (its share
-/// where the window and the periods do not line up, and what its vCPU overruns before the
-/// governor reads, at the window's two ends) and what its VMM's own threads used past its
-/// vCPU's whole CPU over a window unheld just before. Its vCPU's whole CPU holds nothing, and
+/// `shards_abi::rate`), as `ManagedGuest::rate` asks it. Its vCPU runs its guest no more than
+/// a quarter of the time passing, two of its governor's periods (its share where the window
+/// and the periods do not line up, and what its vCPU overruns before the governor reads, at
+/// the window's two ends) and one step of its guest time's count (`guest_time_step`), read
+/// by `USE`: the hold holds its vCPUs, never its VM process's governor or devices, whose CPU
+/// is shards' own (D191). Its vCPU's whole CPU holds nothing, and
 /// none lifts its hold; each answer says the period its VM derives from g as it knows it then,
 /// 4g held to a quarter and g let be (D191). Its use
 /// (D260, `USE`, as `ManagedGuest::host_use` asks it), sampled twice a window apart once let
@@ -2267,22 +2268,17 @@ fn a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket() {
     let socket = dir.join("v");
     let mut child = boot(&socket, true);
     listening(&socket, &mut child);
-    // `shards run --kernel` becomes the VM process on Unix, the same pid; on Windows it
-    // starts the VM process, its child.
-    let pid = child.id();
-    #[cfg(windows)]
-    let pid = {
-        let found = common::vm_processes(pid);
-        assert_eq!(found.len(), 1, "shards {pid}'s VM processes: {found:?}");
-        found[0]
+    let used = |socket: &std::path::Path| {
+        let mut s = shards_vmm::platform::UnixStream::connect(socket).unwrap();
+        s.write_all(shards_abi::rate::USE_ASK).unwrap();
+        let mut answer = Vec::new();
+        s.read_to_end(&mut answer).unwrap();
+        answer
     };
-    let cpu = || shards_vmm::platform::process_usage(pid).unwrap().cpu_ns;
-    let window = || {
-        let (start, before) = (Instant::now(), cpu());
-        std::thread::sleep(Duration::from_secs(2));
-        (cpu() - before, u64::try_from(start.elapsed().as_nanos()).unwrap())
+    let read = |answer: &[u8]| {
+        let u = shards_abi::rate::read_used(answer).unwrap();
+        (u.guest.unwrap(), u.host.unwrap())
     };
-    let (free, free_wall) = window();
     let line = asked(&socket, 250).unwrap();
     let Ok(Answer::Held { milli, period_ns }) = read_answer(line.as_bytes()) else {
         panic!("asked a quarter CPU: {line:?}");
@@ -2294,16 +2290,21 @@ fn a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket() {
         Duration::from_nanos(period_ns.get()) >= 4 * shards_vmm::platform::granule::LEAST_WAIT,
         "held over {period_ns} ns"
     );
-    let (used, wall) = window();
-    let own = free.saturating_sub(free_wall);
-    let most = wall / 4 + 2 * period_ns.get() + own;
+    // Its window from before the first read is asked until the second is answered: the
+    // reads fall within it.
+    let (start, before) = (Instant::now(), read(&used(&socket)).0.total_ns());
+    std::thread::sleep(Duration::from_secs(2));
+    let ran = read(&used(&socket)).0.total_ns() - before;
+    let wall = u64::try_from(start.elapsed().as_nanos()).unwrap();
+    let step = u64::try_from(common::guest_time_step().as_nanos()).unwrap();
+    let most = wall / 4 + 2 * period_ns.get() + step;
     assert!(
-        used <= most,
-        "{used} ns of CPU in {wall} ns, held to a quarter CPU (unheld: {free} ns in {free_wall} ns)"
+        ran <= most,
+        "{ran} ns of guest in {wall} ns, held to a quarter CPU over {period_ns} ns, read in {step} ns steps"
     );
     assert!(
-        used >= wall / 20,
-        "{used} ns of CPU in {wall} ns: held, and never let go"
+        ran >= wall / 20,
+        "{ran} ns of guest in {wall} ns: held, and never let go"
     );
     // Let be, an answer says g as its VM knows it then (D191, migrate-09: a let-be is said
     // over g): never under the least wait, and never above the g its quarter was held over,
@@ -2325,17 +2326,6 @@ fn a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket() {
         );
         g = let_be;
     }
-    let used = |socket: &std::path::Path| {
-        let mut s = shards_vmm::platform::UnixStream::connect(socket).unwrap();
-        s.write_all(shards_abi::rate::USE_ASK).unwrap();
-        let mut answer = Vec::new();
-        s.read_to_end(&mut answer).unwrap();
-        answer
-    };
-    let read = |answer: &[u8]| {
-        let u = shards_abi::rate::read_used(answer).unwrap();
-        (u.guest.unwrap(), u.host.unwrap())
-    };
     let first_asked = Instant::now();
     let first = used(&socket);
     std::thread::sleep(Duration::from_secs(2));

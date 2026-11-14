@@ -25122,3 +25122,38 @@ against 2e00a1043 (whose starts read no bytes) on one template, HVF, KVM and WHP
   surfaces as whatever bounds the run (the test harness, CI's job). A std `Mutex`'s wait is
   still counted, its deadlock refused as before. Linux alone; macOS's TH_STATE_WAITING is
   unchanged (unverified there).
+
+### M590. What a held microVM's governor costs, beside the vCPU it holds (D191; boot.rs's managed rate test, api_image's orchestrator rate test)
+
+- **Question.** Three ceiling failures held at a quarter CPU (KVM boot.rs:2299, 510.05 ms of the
+  VM process's CPU in 2000.2 ms; KVM api_image.rs:661, 540 ms of guest in 2118.3 ms; HVF
+  boot.rs:2299, 548.6 ms of CPU in 2142.5 ms) each landed at 25.5–25.6%. Does the hold let its
+  vCPU run past its share, or did the tests measure more than it holds?
+- **Method.** adacachy2 (Linux x86_64, KVM, 32 CPUs), main 4625fba40 with a test-only
+  diagnostic: the VM process's threads' `/proc/<pid>/task/<tid>/schedstat` run time, read at
+  each window's two ends, one vCPU spinning, unheld for 2 s and then held to 250 milli-CPU for
+  2 s. Loads: none of ours (n=4), and 16 busy loops at nice 10 (n=4), the test at nice 10.
+  (32 busy loops starved the unheld vCPU to 8–42% of a CPU, so those 6 runs measure nothing here.)
+- **Found.**
+  - The vCPU thread ran at most 1.80 ms past wall/4 in the 8 runs: within its two periods'
+    slack, 8.0 ms at the 4.0 ms period these runs held over. That includes the 16-load run
+    that failed the process ceiling: vcpu0 ran 501849982 ns, wall/4 is 500050058 ns, and
+    `hold` ran 6365459 ns. The hold does not leak vCPU time.
+  - The governor thread (`hold`) ran 4946242, 5201829, 5607400, 6244044, 6365459, 6420751,
+    6705922 and 8015310 ns per 2 s held window (n=8: p50 6.24 ms, p90, p99 and max 8.02 ms),
+    0.247–0.401% of wall, and nothing while unheld.
+  - The tests measured more than the hold holds. boot.rs bounded the whole VM process,
+    governor included, and allowed "own" only from the unheld window, where the governor is
+    idle. That allowance was 0 in every run, since the unheld vCPU never had a whole CPU.
+    api_image bounded guest time, which KVM reads in USER_HZ steps (10 ms,
+    guest-cpu-time-v1), so a read can come a step short. 540000000 ns is 54 whole steps, and
+    one step is more than its two-period (about 8 ms) slack.
+- **Decided.** Each test bounds its vCPU's guest time by wall/4, two periods, and one step of
+  its hypervisor's count (`common::guest_time_step`: KVM 1e9 / `_SC_CLK_TCK` read live, HVF one
+  mach tick, WHP 100 ns). The unheld window and its "own" are gone. The governor's CPU stays
+  shards' own cost, not charged to the rate (D191).
+- **Checked.** At 44658872e on KVM (adacachy2), boot.rs's test passed 8/8 and api_image's 4/4,
+  half with 16 busy loops and half with none. On HVF (Adas-Mac-Studio-3, macOS arm64, unloaded)
+  they passed 3/3 and 2/2.
+- **Owed.** The same per-thread breakdown on HVF (no per-thread reader there in this harness)
+  and on WHP.

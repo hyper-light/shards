@@ -189,6 +189,30 @@ fn skip(why: &str) -> bool {
     true
 }
 
+/// The most a window's vCPU guest time, read twice, may say past what its vCPU ran between
+/// the reads: one step of its hypervisor's count (docs/research/measurements/
+/// guest-cpu-time-v1). KVM's is its thread's gtime in clock ticks, `sysconf(_SC_CLK_TCK)` a
+/// second (fs/proc/array.c), so a read may fall a step short of what ran; Hypervisor.framework's
+/// is mach_absolute_time's ticks, read as its vCPU is made to leave its guest at once
+/// (hv_vcpu.h), one tick at most in ns; WHP's its runtime counters' 100 ns
+/// (WinHvPlatformDefs.h, `TotalRuntime100ns`).
+pub fn guest_time_step() -> Duration {
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: sysconf(3) takes no pointers.
+        let hz = u64::try_from(unsafe { libc::sysconf(libc::_SC_CLK_TCK) }).unwrap();
+        Duration::from_nanos(1_000_000_000_u64.div_ceil(hz))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Duration::from_nanos(shards_vmm::platform::mach_ns(1) + 1)
+    }
+    #[cfg(windows)]
+    {
+        Duration::from_nanos(100)
+    }
+}
+
 /// Whether this host cannot run VMs: no backend for it yet, or no hardware virtualization
 /// (e.g. a CI runner that is itself a VM). VM tests then return early with a SKIP line,
 /// or fail where `SHARDS_REQUIRE_VMS=1` says they must run;
