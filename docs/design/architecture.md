@@ -19222,6 +19222,58 @@ header follows the existing connection-end path before allocation or payload
 read. Both signed extremes remain accepted. Red/green evidence and platform
 limits: `docs/research/measurements/memory-fixes-v1/README.md`.
 
+**Review memory-11 (2026-11-14): the reserve's slack, derived and learned.** The 64 MiB
+slack beside a held cgroup's `memory.high` (`plug::reserve`, and with it `needed_for` and a
+run's `plug_for`) is now two terms, neither picked:
+
+- *What the kernel lets a cgroup's charges pass its hold by* (`plug::overshoot`), a bound of
+  the kernel's own: a task's charges are counted past `memory.high` until they come to more
+  than `MEMCG_CHARGE_BATCH`'s 64 pages, then it reclaims at once (mm/memcontrol.c
+  `try_charge_memcg`, `current->memcg_nr_pages_over_high > MEMCG_CHARGE_BATCH`, Linux
+  7.2-rc4), so a task passes it by two charges at most, each of a batch or of the folio it
+  charges where larger: a PMD's where the kernel has THP (`hpage_pmd_size`; the pinned
+  kernels' configs have `CONFIG_TRANSPARENT_HUGEPAGE=y`), else 2^8 pages
+  (`PREFERRED_MAX_PAGECACHE_ORDER`), never past `MAX_XAS_ORDER`'s 2^11 pages
+  (include/linux/pagemap.h); one such task on each CPU online. A `hpage_pmd_size` unread
+  counts a PMD as the page table has it (a page of 8-byte entries), the larger case. On
+  32 CPUs with 4 KiB pages it is 128 MiB, past the 64 MiB it replaces; on 4 CPUs, 16 MiB.
+- *What the kernel adds beside the cgroup uncharged* (`plug::Uncharged`), learned by the
+  grower at each `memory.events` wake: the most `MemTotal − MemFree − memory.current` rose
+  between two wakes, less the page structures of memory plugged between them (a 64th, which
+  the reserve counts apart). Its cold start is what the kernel held beside the cgroup as its
+  hold was set, its use so far standing for what it adds (the delta-t estimator D215's `w`
+  uses). It lives in the page init, its grower and its builtins share (`CAP`'s `Shared`), so
+  each hold and give-back reads one value; without that page, a reader takes what the
+  kernel holds beside the cgroup now. A wake whose files are unread keeps what was learned,
+  never none; a hold that cannot read them at all is refused typed (`high` errs).
+
+What a build needed (`plug::needed`, `NEEDED`) now counts what its kernel holds beside it
+as it ends with the slack, where `needed_for` had stood the 64 MiB for both. The two terms
+can over-count: the CPUs' lists' pages are outside MemFree, so their growth is learned as
+uncharged and also kept in the reserve's eighth. Owed to ROOT: `cargo test -p shards --test
+build a_builders_memory_is_plugged_as_fast_as_its_jobs_take_it`, and PM M392's 8-compiler
+build on 32 vCPUs with each wake's `memory.peak − memory.high` and uncharged rise logged, on
+HVF and KVM at 4, 16 and 32 vCPUs: each observed maximum must sit under its term.
+
+**Review memory-14 (2026-11-14): growth and give-back both rest on the run's own use.**
+The grower asked for twice the builder's MemTotal and a give-back kept twice the run's
+use: two different bases, so a give-back just after a growth took back what that growth
+had asked for on the same use. Both now hold the least whole blocks whose hold
+(`needed_for`, the kernel's uncharged use and the slack beside it) keeps twice
+`memory.current` (`plug::holding`, `to_ask`, `to_keep`); a give-back keeps the run's peak
+since the last where that is more (PM M275), and the grower asks for a block more than is
+plugged at least, the unit the driver adds memory in, so that a run held at its hold always
+has room to grow into. Twice is not a tuning: it is the delta-t estimator (Gott, Nature
+363, 1993), what a run has grown to so far standing at the median for what it grows to in
+all, the estimator D215's `w` uses, with the same cold start (none: the run's use itself).
+A factor learned from realized peaks would be biased low, as the hold caps what a run can
+show (censored), so it is not learned naively. Owed to ROOT, to validate the median:
+realized episode ratios (final peak over the use at a growth episode's first ask) on real
+builds and runs; `cargo test -p shards --test build
+a_build_held_short_of_memory_has_its_builder_give_back` and
+`a_builders_memory_is_plugged_as_its_build_needs_it` on HVF and KVM; ask counts and stall
+per build, before and after, n ≥ 20, p50/p90/p99/max.
+
 **R03 review memory-11..15 (2026-11-13):** reserve slack, pause/read floors,
 retry count, growth/retention ratios and boot floor remain owed to ROOT with
 designs in `docs/research/measurements/memory-fixes-v1/owed-designs.md`.
