@@ -17849,6 +17849,9 @@ finding open; no new scheduling or host-fairness result is claimed.
 
 ### M430. Devices plugged into a running microVM: what each step costs, and what a bus of slots costs a boot (D214)
 
+Review devices-07 follow-up (2026-11-14): 65-link /dev/shm ownership red; 3 inspect unit tests and shards clippy passed on macOS arm64. See `measurements/device-fixes/README.md`. No real VM mount or new performance measurement was run.
+
+
 Correctness follow-up devices-06 (2026-11-14): 1 VFIO unplug route-ownership red; 2 module tests and VMM clippy green on adacachy2 Linux x86_64. Real VFIO hardware was not used. See `measurements/device-fixes/README.md` for the fixture and limitations.
 
 
