@@ -41,6 +41,8 @@ writer.write_all(&framed).and_then(|()| writer.write_all(&written))
 
 **Confidence:** High for both source paths; live TLS and actual-provider behavior unverified.
 
+**Status (2026-11-13):** fixed in b7b692113 (red `inject::tests::leaks::a_token_responses_head_never_carries_its_tokens_to_the_guest`, `an_h2_token_responses_fields_and_trailers_never_carry_its_tokens_to_the_guest`)
+
 ### creds-02 — P0 / critical — A chunked response can carry the complete credential in an unmasked extension
 
 **Location:** `crates/net/src/inject.rs:877`, `:2142`, `:1349`.
@@ -116,6 +118,8 @@ D242 **explicitly lists compressed response/WebSocket echoes as residuals** (`ar
 **Regression sketch:** Existing echo fixtures return `gzip(JSON(T))` with Content-Encoding gzip; first assert the compressed fixture does not literally contain `T`. Collect and decompress the guest response, and assert `T` never becomes available (or the injector refuses before forwarding). Cover H1 and H2.
 
 **Confidence:** High for source behavior; no decompression/live-provider test run.
+
+**Status (2026-11-13):** fixed in c767cea93 (red `inject::tests::leaks::a_coded_echo_never_reaches_the_guest`, `a_transfer_coded_echo_never_reaches_the_guest`, `an_h2_coded_echo_never_reaches_the_guest`). Decision: refuse, not decode (D242's *Coded responses are refused*): filled requests ask `identity` and offer no WebSocket extension; a coded response to one is refused 502 (`Refusal::Unmaskable`). Residual: a tunnel's own framing after a 101 (a value split across WebSocket frames).
 
 ### creds-05 — P1 / high — Lease duration restarts at each delivery hop, authorizing use after the lessor's deadline
 
