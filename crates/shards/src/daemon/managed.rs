@@ -4528,7 +4528,10 @@ mod tests {
             &charge,
         );
         let desired = climbed(&mut lock(&output.learning).quantum);
-        assert!(desired > most, "its quantum climbed to {desired}, within one record ({most})");
+        assert!(
+            desired > most,
+            "its quantum climbed to {desired}, within one record ({most})"
+        );
         assert!(
             matches!(
                 producer.admit(desired),
