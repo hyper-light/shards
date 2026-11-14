@@ -132,6 +132,8 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 
 **Status (2026-11-13):** owed to ROOT: `cargo test -p shards moves_live --test moved` and the corresponding pressure/cold-start variants. Unchanged pending a locally derived design; see finding 06 in `docs/research/measurements/memory-fixes-v1/owed-designs.md`.
 
+**Status (2026-11-14):** fixed in 2275e3829 (red, as each guard mutated back to its window: `pressure::saying::a_pressure_is_said_as_it_doubles`, `daemon::budget::tests::a_microvm_held_short_is_told_again_as_telling_it_weighs_against_how_long_it_was_short`, `daemon::groups::tests::the_groups_passes_follow_their_cost_against_how_long_groups_stayed_as_they_are`, `build::give::tests::a_cold_pass_judges_no_ask_and_its_first_answer_teaches_its_patience`, `platform::pressure::tests::a_lasting_pressure_is_said_again_as_its_act_weighs_against_how_long_it_lasted`, init `plug::tests::memory_that_came_within_a_peaks_period_is_kept`). The 2 s stays only as Linux's unprivileged trigger bound; D188, PM M574. Owed to ROOT: `cargo test -p shards moves_live --test moved`, `update_under_pressure_stress` (tests/containers.rs, ignored) for PM M466's rounds, macOS/Windows repeat counts under a raised system pressure.
+
 ### memory-07 — P3 / medium — PSI's stall threshold and fallback percentage are inherited constants
 
 **Location:** `crates/vmm/src/platform/pressure.rs:22` and `:32`.
@@ -146,6 +148,8 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 
 **Status (2026-11-13):** owed to ROOT: `cargo test -p shards --test budget` and the corresponding pressure/cold-start variants. Unchanged pending a locally derived design; see finding 07 in `docs/research/measurements/memory-fixes-v1/owed-designs.md`.
 
+**Status (2026-11-14):** fixed in 2275e3829 (red `platform::pressure::tests::a_windows_stall_is_pressure_once_it_costs_what_acting_does` with lmkd's 140 ms put back): the stall is the last give-back's cost (rent or buy), cold the kernel's least threshold; D188, PM M574. Owed to ROOT: `cargo test -p shards --test budget` on a loaded Linux host with cgroup v2 delegation, the trigger's word count and give-backs against lmkd's 140 ms.
+
 ### memory-08 — P3 / medium — PSI fallback polls at a chosen ten-second interval
 
 **Location:** `crates/vmm/src/platform/pressure.rs:34`, used at `:147–148`.
@@ -159,6 +163,8 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 **Fix/test direction:** Use available event notification or learned progress/observation pacing with an explicit degraded state. Simulate trigger unavailability and short pressure transitions, and observe notification latency under different learned schedules.
 
 **Status (2026-11-13):** owed to ROOT: `cargo test -p shards --test budget` and the corresponding pressure/cold-start variants. Unchanged pending a locally derived design; see finding 08 in `docs/research/measurements/memory-fixes-v1/owed-designs.md`.
+
+**Status (2026-11-14):** fixed in 2275e3829 (red `platform::pressure::tests::a_psi_files_stall_so_far_is_its_some_total` with avg10 put back): no trigger, the same trigger kept from `some total` read at once and each window; D188, PM M574. Owed to ROOT: the fallback on a kernel before 6.4 (or a refused trigger) with short pressure pulses.
 
 ### memory-09 — P3 / medium — DAX's minimum file size is a portable fixed benchmark result
 
@@ -188,6 +194,8 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 
 **Status (2026-11-13):** owed to ROOT: `cargo test -p shards --test budget` and the corresponding pressure/cold-start variants. Unchanged pending a locally derived design; see finding 10 in `docs/research/measurements/memory-fixes-v1/owed-designs.md`.
 
+**Status (2026-11-14):** fixed in 2275e3829 (red `devices::virtio::fs::headroom::tests::a_look_is_due_as_its_cost_weighs_against_how_long_its_verdicts_held` with the hundredfold rule put back): D215's pace of the look's cost and how long its verdicts held; D188, PM M574. Owed to ROOT: `cargo test -p shards --test budget a_microvm_held_to_a_budget_reads_through_fuse_at_the_pace_of_reads_held_to_none` and the share's look count and CPU against the hundredfold rule's (R14).
+
 ### memory-11 — P3 / medium — Builder memory reserve still includes a fixed 64 MiB slack
 
 **Location:** `crates/init/src/plug.rs:36`, consumed at `:1053`.
@@ -216,6 +224,8 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 
 **Status (2026-11-13):** owed to ROOT: `cargo test -p shards-init plug::tests::` and the corresponding pressure/cold-start variants. Unchanged pending a locally derived design; see finding 12 in `docs/research/measurements/memory-fixes-v1/owed-designs.md`.
 
+**Status (2026-11-14):** fixed in 2275e3829 (red `build::builder::tests::a_giver_past_its_deadline_looks_at_once` with the 1 ms floor put back, 200 looks over 100 ms; red `plug::tests::the_growers_looks_follow_their_cost_against_the_wait` with a 1 ms pace): grower and oom_said on D215's pace, the reply reader looks at once past its deadline; D137, PM M574. Owed to ROOT: `cargo test -p shards --test build a_builders_memory_is_plugged_as_fast_as_its_jobs_take_it` on HVF and KVM.
+
 ### memory-13 — P3 / medium — Hotplug still gives up after exactly one retry
 
 **Location:** `crates/init/src/plug.rs:1327–1346`.
@@ -229,6 +239,8 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 **Fix/test direction:** Judge actual driver/VM progress and typed inability, with explicit cold-start/held states, rather than a fixed attempt budget. Extend the existing fake Grows cases with a third-window successful completion and a genuine terminal failure so the two are distinguished by evidence.
 
 **Status (2026-11-13):** owed to ROOT: `cargo test -p shards-init plug::tests::` and the corresponding pressure/cold-start variants. Unchanged pending a locally derived design; see finding 13 in `docs/research/measurements/memory-fixes-v1/owed-designs.md`.
+
+**Status (2026-11-14):** fixed in 2275e3829 (red `plug::tests::memory_that_comes_after_a_third_ask_is_waited_for` with a give-up at the second window put back): asked again each window past W*, no count; ended typed by the driver's own "marking device broken" (`a_driver_that_stopped_for_good_is_given_up`), a refused ask, a lowered request or MemTotal unread; D137, PM M574. Owed to ROOT: a delayed-driver fault live (the device answering BUSY three windows) on a real builder.
 
 ### memory-14 — P3 / medium — Growth and unplug retention use a fixed 2x working-memory multiplier
 
