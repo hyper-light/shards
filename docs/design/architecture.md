@@ -10569,6 +10569,31 @@ Owed to ROOT: two running microVMs, `shards plug disk A FILE:/d`, then `shards p
 FILE:/d` (and through a hard link) refused, `FILE:/d:ro` into B refused, then after
 `shards unplug disk A /d`, `:ro` into A and B both plugged.
 
+
+**Amended 2026-11-14 (devices-10): a device step's refusal keeps its cause on the wire.**
+The VMM's plug, unplug and growth refused with text, and `DEVICED` carried a failure byte
+and that text, so nothing past the VM process could tell a full bus from a driver still
+bound or a host's VFIO failure but by its words (R04). They refuse by cause now,
+`shards_ipc::device::Refusal`, each with what it names: no bus (`NoBus`), every slot taken
+(`NoSlots { slots }`), nothing at a place (`NoDevice { devfn }`), a driver still driving it
+(`StillDriven { devfn, reason }`), a file shorter than its guest was told (`Shrink { has,
+asked }`) or not whole sectors (`Unaligned { bytes, sector }`), no microVM running
+(`Inactive`), a malformed step (`InvalidRequest`), what the device cannot do
+(`Unsupported`), the host's failure (`Host`), and, read on the asker's side, a VM that ended
+before it answered (`ConnectionEnded`) or an answer that could not be read (`InvalidReply`).
+Each says what its asker may do next (`Retry`): after a release (no slot, still driven),
+after correcting the ask, after reconciling (the step may have been done), or unknown (the
+host's). `DEVICED` after its number: `0` and the answer's text, or `1`, a cause byte, its
+numbers big-endian and its text; anything else, cut short, past a field's range or with
+text where its cause has none, reads as `InvalidReply`, never a success. The VM process and
+its daemon are one build (D36), so no older encoding is read. Callers match causes: a disk
+plug that fails after its VM took it keeps the file's claim unless the VM says it is off
+its bus (`NoDevice`); an Engine plug (D235) tells a host's failure (`Host`) from the
+microVM's; the CLI's and tests' words are made only to show one (the same words as before).
+An allocation failure of the answer ends the VM's link, which its asker reads as
+`ConnectionEnded`. Not typed by this: init's DEVICE built-in's answers, which come back as
+an exec's status and its words (a run's host already tells `DEVICE_BUSY` from the rest).
+Red/green: docs/research/measurements/device-fixes/README.md.
 ### D228. A client's paths are its own; the machine's are its owner's to grant (built)
 
 **The need.** Through a context (D180) a laptop runs microVMs on a GPU or x86_64 machine.
@@ -22682,13 +22707,25 @@ Tested:
 
 ### D99. IPv6 on a network of microVMs
 
-**API-run parity gap (network-05, 2026-11-13), owed to ROOT.** Unlike the daemon,
-API-run still supplies neither its guest's `uplink6=` nor the network process's
-`NET_ADDRESS` for IPv6 egress. Its IPv4 policy unit results do not prove this path.
-The correction must share the home's ULA derivation and paired programming, with
-NET_ADDRESS acknowledged before frames are served and the same narrowed grants
-and `confine-eth0` preserved. Fresh/restored API IPv6 receipt and default-deny
-witnesses are [owed with an exact fixture](../research/measurements/network-fixes-v1/README.md#network-05-07-guest-kernel-and-api-reproductions).
+**An orchestrator's run as a daemon's (network-05, 2026-11-14).** API-run supplied
+neither its guest's `uplink6=` nor its network process's `NET_ADDRESS`, so an image's
+agents with IPv6 and a grant past the microVM had no IPv6 there when run by an
+orchestrator. Both now share one derivation, `crate::networks::host_ipv6` (the home's
+engine ID's ULA /48, its last /64, `::2` and `::1`, moved from the daemon with
+`engine_id` and `ula_base`), and its two programs, `uplink6_entry` and
+`bridge_address`. api_run's `past6` gives it where the run is on the bridge and its
+image's agents have IPv6 and are granted anything past it (`Agentfile::egress6`), as
+the daemon's start does; its plan pushes `uplink6=` beside `confine-eth0`, and
+`tell_net` sends `NET_ADDRESS` first and waits for its answer before the published
+ports and the policy as the request narrows it. Unit red/green and mutations (macOS
+arm64): `api_run::tests::{an_orchestrated_runs_agents_reach_past_the_microvm_by_ipv6_as_a_daemons_do,
+an_orchestrated_runs_network_process_is_told_its_ipv6_before_its_policy}`
+([log](../research/measurements/network-fixes-v1/api05-red-green.log)). Owed to ROOT:
+`cargo test -p shards --test api_image a_published_ingress_port_reaches_its_member --
+--exact --nocapture` extended with build.rs's
+`agents_reach_past_the_microvm_by_ipv6_what_their_networks_grant` IPv6-only fixture,
+fresh and restored: the granted IPv6 address and port reached, an ungranted one
+refused, and the command unable to use its agents' grant.
 
 A network made with `--ipv6` (`shards network create --ipv6`, or a run's `--network` on
 one) gives each microVM an IPv6 address of its IPv6 subnet, as dockerd gives each
@@ -26460,7 +26497,7 @@ goal 52 (each test red on the code as it was, green after, red again with its gu
 - refusals typed across the VM process's boundary (*Refusals* above).
 Owed to ROOT: the figure's derivation above, and the real-GPU runs.
 
-### D233. A client that contains its own VM processes launches them through its native owner (built; real-VM validation owed)
+### D233. A client that contains its own VM processes launches them through its native owner (built; an orchestrator's run's report too; real-VM validation owed)
 
 **Why.** shards-api's client spawns the VM process (D215). A client that must contain every
 process it starts, in a cgroup or a Job object (Hex's node, for its accounting and its
@@ -26502,6 +26539,51 @@ API's protocol: its output drained, its end, its connections.
   client process's own, its nonce and counter as its socket directories have: a scope
   names a frame, not a channel, and a pipe named for its scope refused every other report
   of that scope while its one instance lived, ERROR_PIPE_BUSY (PM M533).
+- *Through an orchestrator's run* (Hex lead's ask, Hex goal 39; D231's run host). Hex publishes
+  no GPU box's VM Live without its VM process's own renderer report, checked host-side; an
+  image run gave none (`/run/shards/gpus` is what init was asked, not what the renderer
+  found). Now:
+  - `ImageSpec::gpu_report: Option<[u8; 16]>` names the report's scope, refused as
+    `with_gpu_report` refuses one (`ImageRefusal::GpuProbe`: zero `Scope`, no `gpu_devices`
+    `Empty`), before any run host starts and again as the channel reads it
+    (`WireError::Gpu`). Image channel version 29: `Request::gpu_report`, appended last.
+  - The run host gives its VM process the report pipe as a managed launch's client gives its
+    own: `--gpu-report` and `--gpu-report-scope` (launch.rs `run_reported`, the write end at
+    descriptor 9 on Unix, the one after the release, and by the name `gpu-report` on Windows,
+    the VM's alone once launched). A warm boot and a warm restore take them now, as a direct
+    boot did (vm_run.rs `report_target`): its spawner names the scope before it launches it.
+    A restore's renderer rejoins its snapshot's selection with the writer given
+    (`shards_vmm::vm::restore_reported`, format 29's selection), refused `Empty` for a
+    snapshot of none; so a GPU run restored from its template reports as one booted does.
+  - The run host reads the report to its pipe's end, at most a byte past what a report of its
+    GPUs holds (`report_bytes(n) + 1`, the managed reader's bound): a ready VM's at once, its
+    one writer closed before its guest ran (`write_report`), which its READY follows; one that
+    ended unready after it is reaped. Only the last launch's counts (a template that does
+    not restore is booted again, D253). It relays the frame as written, `GPU_REPORT` (to-client
+    kind 39), before `STARTED`, or before `REFUSED` where the VM did not start.
+  - shards-api holds it typed (session.rs `Report`: Unasked, Awaited, Relayed, Taken): a
+    relay unasked or twice breaks the channel; a start without one asked is refused
+    `ImageRefusal::Host`. `ImageGuest::take_gpu_report(patience)` reads it with the managed
+    launch's own reader (`physical::report::read`, which `Receiver::take` now calls: `Count`,
+    `Syntax`, `Unreported`, `Refused`, the frame's scope and selection), once (`ReportTaken`
+    after, the first take spending it whatever it came to), within the boot's patience and the
+    caller's (`Pending` past either); `Unavailable` for a run that asked none. A boot whose VM
+    its renderer refused is refused `ImageRefusal::GpuProbe(Refused(..))`, typed, in place of
+    the host's words.
+  - A run that asks for its report is no warm pool's (`ImagePools`): a warm host's VM starts
+    before its run names the scope, which the VM frames its report with as its renderer is
+    made. It boots on a host of its own, its pool told nothing; a warm host handed one
+    anyway refuses it `Unfit`. Its template still restores it (D253).
+  - *Literals.* Descriptor 9: the next after the run's release (`VM_RELEASE_FD`), a layout,
+    no tuned figure; the bound is D232's (`report_bytes`). Every wait is the caller's
+    patience or the boot's.
+  - *Evidence.* Unit and stand-in-host tests in shards-api (wire, image, session's
+    `an_image_boot_takes_its_vms_gpu_report_as_a_managed_launch_does`, pool), shards
+    (launch's handing, api-run's bounded read) and shards-vm-process (the warm flags), each
+    guard's removal failing its test (the evidence record in the landing report). Owed to
+    ROOT: real GPU runs through `ImageShards` on Linux (Venus, NVIDIA/AMD), macOS (Metal)
+    and Windows (WHP, a LUID matched against DXGI's), a boot and a template restore each, and
+    the gpu-feature VM process's build of `restore_reported` (scripts/gpu-libs).
 
 **Literals.** None new beyond D232's but SHA-256's 64-byte block (FIPS 180-4 §5.1.1), what an
 image is read in where its file system names no preferred size; every wait is the caller's

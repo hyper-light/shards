@@ -68,8 +68,11 @@ pub use shards_abi::run::nesting::Ready;
 /// ([`MemberEnded::end`]: exited, or killed by a signal), so that no side reads a signal as an
 /// exit of 128 plus it; 28, the run's final use with its end ([`RunEnded::final_use`], D260):
 /// what its microVM used in all, read once its machine was down, or why none was, so that a
-/// side that tells none is never read as having used nothing.
-pub const VERSION: u8 = 28;
+/// side that tells none is never read as having used nothing; 29, the run's GPU report
+/// (D233): the scope its orchestrator names ([`Request::gpu_report`]) and its VM process's
+/// report relayed ([`to_client::GPU_REPORT`]), so that a side that relays none never starts a
+/// GPU run whose orchestrator waits for its renderer's word.
+pub const VERSION: u8 = 29;
 
 /// What the orchestrator's side sends.
 pub mod to_host {
@@ -168,6 +171,12 @@ pub mod to_client {
     /// [`Revoked`](super::Revoked): the run's VM revoked a sign-in, answered in its network
     /// process; told, unanswered.
     pub const REVOKE: u8 = 38;
+    /// The run's VM process's GPU report (D232, D233), its frame's bytes as that process wrote
+    /// them on its private pipe, for a run whose request named a scope
+    /// ([`Request::gpu_report`]): once, before [`STARTED`], or before [`REFUSED`] where its VM
+    /// was refused its selection. Its orchestrator reads it as a managed launch's client reads
+    /// its own (`GpuReport::parse` against its scope and selection).
+    pub const GPU_REPORT: u8 = 39;
 }
 
 /// Why a payload could not be read or written.
@@ -531,6 +540,10 @@ pub struct Request {
     /// The roots the run's injector trusts beside the host's own, each a certificate's DER
     /// (D242), for its injected flows alone; empty for the host's alone. Appended in version 26.
     pub upstream_roots: Vec<Vec<u8>>,
+    /// The scope of the run's GPU report (D233): its VM process frames its renderer's report
+    /// with it, which its host relays ([`to_client::GPU_REPORT`]); none, no report. Nonzero,
+    /// and only with [`gpu_devices`](Self::gpu_devices). Appended in version 29.
+    pub gpu_report: Option<[u8; 16]>,
 }
 
 /// What a run's agent-control endpoint takes and serves (D252): the one key it takes, its
@@ -1706,6 +1719,14 @@ impl Request {
         for root in &self.upstream_roots {
             w.bytes(root)?;
         }
+        // The run's GPU report's scope, appended in version 29 (D233).
+        match &self.gpu_report {
+            None => w.u8(0),
+            Some(scope) => {
+                w.u8(1);
+                w.0.extend_from_slice(scope);
+            }
+        }
         w.done()
     }
 
@@ -1924,6 +1945,12 @@ impl Request {
         for _ in 0..n {
             upstream_roots.push(r.bytes()?.to_vec());
         }
+        // The run's GPU report's scope, appended in version 29 (D233): nonzero, and of a run
+        // that names its GPUs, as a managed launch's is (`PreparedBoot::with_gpu_report`).
+        let gpu_report = if r.flag()? { Some(r.array::<16>()?) } else { None };
+        if gpu_report.is_some_and(|scope| scope == [0; 16] || gpu_devices.is_empty()) {
+            return Err(WireError::Gpu);
+        }
         r.end()?;
         Ok(Request {
             image,
@@ -1941,6 +1968,7 @@ impl Request {
             gpu_devices,
             sign_ins,
             upstream_roots,
+            gpu_report,
         })
     }
 }
@@ -2466,8 +2494,9 @@ impl Started {
 
 impl Request {
     /// What a warm run host is started with and holds each run it is handed to (D253's
-    /// pools): this request with its members' stages, its deadline and its control ask taken
-    /// out, what alone may differ between the runs of one microVM; none of a run's secrets
+    /// pools): this request with its members' stages, its deadline, its control ask and its GPU
+    /// report's scope (D233) taken out, what alone may differ between the runs of one microVM;
+    /// none of a run's secrets
     /// is in it. Everything else is the microVM's: its image, size, command, ports, network,
     /// shares, nesting, credential grants and GPUs.
     pub fn exemplar(&self) -> Request {
@@ -2475,6 +2504,7 @@ impl Request {
             members: Vec::new(),
             ready_by: None,
             control: None,
+            gpu_report: None,
             ..self.clone()
         }
     }
@@ -3349,6 +3379,7 @@ mod tests {
             gpu_devices: Vec::new(),
             sign_ins: Vec::new(),
             upstream_roots: Vec::new(),
+            gpu_report: None,
         }
     }
 
@@ -4360,6 +4391,7 @@ mod tests {
             gpu_devices: Vec::new(),
             sign_ins: Vec::new(),
             upstream_roots: Vec::new(),
+            gpu_report: None,
         };
         let exemplar = full.exemplar();
         assert!(exemplar.members.is_empty() && exemplar.ready_by.is_none() && exemplar.control.is_none());
@@ -4613,6 +4645,7 @@ mod tests {
             gpu_devices: Vec::new(),
             sign_ins: Vec::new(),
             upstream_roots: Vec::new(),
+            gpu_report: None,
         }
     }
 
@@ -4704,6 +4737,44 @@ mod tests {
             ..request()
         };
         assert_eq!(Request::decode(&twice.encode().unwrap()), Err(WireError::Gpu));
+    }
+
+    /// D233 through D231: a run's GPU report's scope (version 29). Expect: a scope read back
+    /// whole, none as none; a zero scope, or one of a run that names no GPU, refused as a
+    /// managed launch's is; a request cut in it refused; and no warm host's exemplar keeps it.
+    #[test]
+    fn a_runs_gpu_report_scope_crosses_the_channel_with_its_gpus_alone() {
+        let gpus = vec![shards_abi::gpu::PhysicalGpu::MetalRegistry(7)];
+        let scoped = Request {
+            gpu_devices: gpus.clone(),
+            gpu_report: Some([3; 16]),
+            ..request()
+        };
+        let bytes = scoped.encode().unwrap();
+        assert_eq!(Request::decode(&bytes).unwrap(), scoped);
+        for cut in 1..=16 {
+            assert!(Request::decode(&bytes[..bytes.len() - cut]).is_err(), "cut {cut}");
+        }
+        let unscoped = Request {
+            gpu_devices: gpus.clone(),
+            ..request()
+        };
+        assert_eq!(
+            Request::decode(&unscoped.encode().unwrap()).unwrap().gpu_report,
+            None
+        );
+        let zero = Request {
+            gpu_report: Some([0; 16]),
+            ..scoped.clone()
+        };
+        assert_eq!(Request::decode(&zero.encode().unwrap()), Err(WireError::Gpu));
+        let gpuless = Request {
+            gpu_devices: Vec::new(),
+            ..scoped.clone()
+        };
+        assert_eq!(Request::decode(&gpuless.encode().unwrap()), Err(WireError::Gpu));
+        assert_eq!(scoped.exemplar().gpu_report, None);
+        assert_eq!(scoped.exemplar().gpu_devices, gpus);
     }
 
     /// A run's upstream roots (version 26, D242). Expect: each DER read back, in order; a request
