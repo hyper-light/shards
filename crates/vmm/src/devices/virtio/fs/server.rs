@@ -3274,9 +3274,9 @@ mod tests {
             for i in 0..8 {
                 let file = format!("f{i}");
                 let body = if opcode == op::CREATE {
-                    // A handle its read-only mode cannot reopen: held by its pin too.
+                    // A CREATE takes both its entry reference and an open handle.
                     let mut body = Vec::new();
-                    for word in [linux::O_RDWR | linux::O_CREAT | linux::O_EXCL, 0o100_400, 0, 0] {
+                    for word in [2 | linux::O_CREAT | linux::O_EXCL, 0o100_400, 0, 0] {
                         body.extend_from_slice(&word.to_le_bytes());
                     }
                     body.extend(name(&file));
