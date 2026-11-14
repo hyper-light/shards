@@ -102,18 +102,20 @@ pub fn measure_clock() -> Result<Duration, Unclocked> {
 /// The step a clock `read` counts in: read until it has moved twice, the second move's size.
 /// The thread reading spins, and a thread's CPU clock moves as it runs.
 pub fn clock_step(mut read: impl FnMut() -> io::Result<u64>) -> io::Result<Duration> {
-    let mut moved = |from: u64| -> io::Result<u64> {
-        loop {
-            let now = read()?;
-            if now != from {
-                return Ok(now);
-            }
-        }
-    };
     let first = read()?;
-    let once = moved(first)?;
-    let twice = moved(once)?;
+    let once = moved(&mut read, first)?;
+    let twice = moved(&mut read, once)?;
     Ok(Duration::from_nanos(twice.saturating_sub(once)))
+}
+
+/// What `read` says once it says other than `from`.
+fn moved(read: &mut impl FnMut() -> io::Result<u64>, from: u64) -> io::Result<u64> {
+    loop {
+        let now = read()?;
+        if now != from {
+            return Ok(now);
+        }
+    }
 }
 
 #[cfg(test)]
