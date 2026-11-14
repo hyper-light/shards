@@ -1069,28 +1069,25 @@ fn run_process(command: &str, env: &[(String, std::ffi::OsString)]) -> Result<Ve
 #[cfg(not(unix))]
 fn run_process(command: &str, env: &[(String, std::ffi::OsString)]) -> Result<Vec<u8>, String> {
     use std::io::Read as _;
-    use std::os::windows::process::CommandExt as _;
+    use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
     let said = |e: &dyn std::fmt::Display| format!("credential_process: {e}");
-    let mut child = shards_ipc::spawn_std(
-        std::process::Command::new("cmd.exe")
-            .arg("/C")
-            // Keep the configured shell text's quotes: cmd.exe does not use CRT escaping.
-            .raw_arg(format!("\"{command}\""))
-            .env_clear()
-            .envs(env.iter().map(|(k, v)| (k, v)))
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::inherit()),
-    )
-    .map_err(|e| said(&e))?;
-    let stdout = child.stdout.take();
-    let mut ended = |why: String| {
-        let _ = child.kill();
+    let cmd = shards_ipc::on_path(Path::new("cmd.exe"), None).map_err(|e| said(&e))?;
+    let (stdout, write) = std::io::pipe().map_err(|e| said(&e))?;
+    let null = crate::os::null().map_err(|e| said(&e))?;
+    let stderr = std::io::stderr();
+    let mut fds = vec![(null.as_handle(), 0), (write.as_handle(), 1)];
+    if !stderr.as_handle().as_raw_handle().is_null() {
+        fds.push((stderr.as_handle(), 2));
+    }
+    let vars: Vec<(&str, &std::ffi::OsStr)> = env.iter().map(|(k, v)| (k.as_str(), v.as_os_str())).collect();
+    // Keep the configured shell text's quotes: cmd.exe does not use CRT escaping.
+    let line = std::ffi::OsString::from(format!("/C \"{command}\""));
+    let child = shards_ipc::spawn_in_raw(&cmd, &line, &fds, &vars).map_err(|e| said(&e))?;
+    drop(write);
+    let ended = |why: String| {
+        let _ = child.kill(shards_ipc::signal::SIGKILL);
         let _ = child.wait();
         Err(said(&why))
-    };
-    let Some(stdout) = stdout else {
-        return ended("no output to read".into());
     };
     // Read on a thread of its own, so that waiting for it can end in time.
     let (tx, rx) = std::sync::mpsc::channel();
@@ -1114,8 +1111,8 @@ fn run_process(command: &str, env: &[(String, std::ffi::OsString)]) -> Result<Ve
         Err(_) => return ended(format!("it ran past {} s", PROCESS_WAIT.as_secs())),
     };
     match child.wait() {
-        Ok(status) if status.success() => Ok(out),
-        Ok(status) => Err(said(&format!("it exited {status}"))),
+        Ok(0) => Ok(out),
+        Ok(code) => Err(said(&format!("it exited {code}"))),
         Err(e) => Err(said(&e)),
     }
 }

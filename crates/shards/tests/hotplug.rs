@@ -114,7 +114,7 @@ fn devices_are_plugged_into_a_running_microvm_and_its_disks_grow() {
     std::fs::write(shared.join("hello"), "hello from a plugged share\n").unwrap();
 
     let mut cfg = Config::new(kernel().to_path_buf(), Some(test_guest().to_path_buf()));
-    cfg.cmdline = "console=ttyS0 panic=-1 quiet shards_test=pci-plug".into();
+    cfg.cmdline = "console=hvc0 panic=-1 quiet shards_test=pci-plug".into();
     cfg.memory_mib = 512;
     cfg.console = Console::Discard;
     // Its whole console kept: this test reads it as it goes (D12).
@@ -266,7 +266,7 @@ fn devices_are_plugged_into_a_running_microvm_and_its_disks_grow() {
     for i in 0..2 * boots {
         let slots = if i % 2 == 0 { 4 } else { 0 };
         let mut cfg = Config::new(kernel().to_path_buf(), Some(test_guest().to_path_buf()));
-        cfg.cmdline = "console=ttyS0 panic=-1 quiet shards_test=pci-plug".into();
+        cfg.cmdline = "console=hvc0 panic=-1 quiet shards_test=pci-plug".into();
         cfg.memory_mib = 512;
         cfg.console = Console::Discard;
         // Its whole console kept: this test reads it as it goes (D12).
@@ -345,7 +345,7 @@ fn a_hosts_function_is_plugged_into_a_running_microvm() {
     let f = vm::Vfio::of(&name).unwrap_or_else(|e| panic!("{e}"));
 
     let mut cfg = Config::new(kernel().to_path_buf(), Some(test_guest().to_path_buf()));
-    cfg.cmdline = "console=ttyS0 panic=-1 quiet shards_test=pci-plug".into();
+    cfg.cmdline = "console=hvc0 panic=-1 quiet shards_test=pci-plug".into();
     cfg.memory_mib = 512;
     cfg.console = Console::Discard;
     // Its whole console kept: this test reads it as it goes (D12).

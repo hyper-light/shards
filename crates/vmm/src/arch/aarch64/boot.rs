@@ -325,7 +325,6 @@ pub fn build_fdt(m: &Machine<'_>) -> Result<Vec<u8>, FdtError> {
 
     f.begin_node("chosen");
     f.prop_str("bootargs", m.cmdline);
-    f.prop_str("stdout-path", &format!("/uart@{:x}", layout::UART));
     f.prop("rng-seed", &m.rng_seed);
     if let Some((start, len)) = m.initrd {
         f.prop_u64s("linux,initrd-start", &[start]);
@@ -418,13 +417,6 @@ pub fn build_fdt(m: &Machine<'_>) -> Result<Vec<u8>, FdtError> {
     f.begin_node("psci");
     f.prop_strs("compatible", &["arm,psci-1.0", "arm,psci-0.2", "arm,psci"]);
     f.prop_str("method", if m.el2 { "smc" } else { "hvc" });
-    f.end_node();
-
-    f.begin_node(&format!("uart@{:x}", layout::UART));
-    f.prop_str("compatible", "ns16550a");
-    f.prop_u64s("reg", &[layout::UART, 0x1000]);
-    f.prop_u32("clock-frequency", 1_843_200);
-    f.prop_cells("interrupts", &[GIC_SPI, layout::SPI_UART, IRQ_LEVEL_HIGH]);
     f.end_node();
 
     f.begin_node(&format!("rtc@{:x}", layout::RTC));
@@ -602,7 +594,7 @@ mod tests {
         let m = Machine {
             mpidrs: &mpidrs,
             ram_size: 512 << 20,
-            cmdline: "console=ttyS0 panic=-1",
+            cmdline: "console=hvc0 panic=-1",
             initrd: Some((0x8200_0000, 0x1000)),
             gic_dist: (layout::GIC_DIST, 0x1_0000),
             gic_redist: (layout::GIC_REDIST, 3 * 0x2_0000),
@@ -618,7 +610,7 @@ mod tests {
         assert_eq!(root.path("cpus/cpu@101").u32("reg"), 0x101); // vCPU 17 -> Aff1=1, Aff0=1
         assert_eq!(root.path("cpus/cpu@0").str("enable-method"), "psci");
         let chosen = root.path("chosen");
-        assert_eq!(chosen.str("bootargs"), "console=ttyS0 panic=-1");
+        assert_eq!(chosen.str("bootargs"), "console=hvc0 panic=-1");
         assert_eq!(chosen.cells("linux,initrd-end"), vec![0, 0x8200_1000]);
         assert_eq!(chosen.props["rng-seed"].len(), 64);
         let timer = root.path("timer").cells("interrupts");

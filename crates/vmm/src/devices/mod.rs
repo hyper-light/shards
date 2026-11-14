@@ -7,7 +7,6 @@ pub mod pci;
 pub mod power;
 pub mod rtc;
 pub mod said;
-pub mod serial;
 pub mod virtio;
 pub mod vmgenid;
 

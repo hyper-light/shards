@@ -32,7 +32,7 @@ agents and all, is saved and restored in microseconds. Your agents can:
 Shards never needs root, and it is one file.
 
 ```console
-$ time shards run vm --kernel vmlinux --init shards-init --cmdline "console=ttyS0 quiet"
+$ time shards run vm --kernel vmlinux --init shards-init --cmdline "console=hvc0 quiet"
 shards-init: pid 1 running at uptime 0.012768s
 [    0.015804] reboot: Power down
 
@@ -268,7 +268,7 @@ cp target/$arch-unknown-linux-musl/guest/shards-init .
 Boot it:
 
 ```console
-$ shards run vm --kernel vmlinux --init shards-init --cpus 4 --memory 512 --cmdline "console=ttyS0 quiet"
+$ shards run vm --kernel vmlinux --init shards-init --cpus 4 --memory 512 --cmdline "console=hvc0 quiet"
 shards-init: pid 1 running at uptime 0.014162s
 [    0.018563] reboot: Power down
 ```
@@ -289,7 +289,7 @@ cp target/$arch-unknown-linux-musl/guest/shards-testguest .
 
 ```console
 $ shards run vm --kernel vmlinux --init shards-testguest --snapshot-dir snap \
-    --cmdline "console=ttyS0 quiet shards_test=resume"
+    --cmdline "console=hvc0 quiet shards_test=resume"
 $ du -h snap/*
  43M	snap/memory
  20K	snap/state
@@ -417,7 +417,7 @@ there too, and `docker save shards.local/NAME | shards import vm -` brings one b
 |---|---|
 | `--init FILE` | The static Linux binary to run as PID 1 |
 | `--initrd FILE` | An initramfs, instead of `--init` |
-| `--cmdline TEXT` | The kernel command line (default: `console=ttyS0 earlycon panic=-1`) |
+| `--cmdline TEXT` | The kernel command line (default: `console=hvc0 panic=-1`) |
 | `--cpus N` · `--memory MIB` | Size (default: 1 CPU, 256 MiB) |
 | `--disk FILE[:ro]` | A disk. Repeat for more |
 | `--vsock PATH` | A vsock device. Programs here connect to the Unix socket `PATH` and send `CONNECT <port>`; the guest reaches port P here at `PATH_P`. A restored copy needs its own `PATH` |

@@ -3889,6 +3889,14 @@ D12's too, derived apart):
   `CONNECT`, a space, a port of at most `u32::MAX`'s digits, and `\r\n` (a client's
   terminal may end it so; `\n` is Firecracker's). Case and spacing are taken as
   Firecracker takes them, within that length; a longer line is refused before its end.
+- **Superseded 2026-11-14 (hvc0): the NS16550A is gone.** The console is virtio-console
+  (`devices/virtio/console.rs`), and host input goes into the buffers the guest posts. Its rings
+  hold one buffer each: Linux's driver posts page-sized receive buffers until the ring is full
+  (drivers/char/virtio_console.c `fill_queue`, l. 1290-1311), and sends one transmit buffer at a
+  time, spinning until it is used (`put_chars`/`__send_to_port`, l. 596-640, 1118-1123). What the
+  guest has not taken waits in the host, so nothing is lost. The rows below for `serial.rs` record
+  what was replaced. Its successors are `RECEIVE_SIZE`/`TRANSMIT_SIZE` = 1 and `INPUT_AT_ONCE` = 4 KiB,
+  one guest page (x86-64's only size; arm64's `CONFIG_ARM64_4K_PAGES=y`).
 - **The console's receiver is the NS16550A's**: its 16-byte FIFO, or in 16450 mode its
   one register, as the guest's driver sizes it. Host input waits for room instead of
   overrunning it, as Firecracker reads stdin only as far as its FIFO has room, so nothing
@@ -13514,6 +13522,8 @@ retain those obligations; no Windows check or quota replacement is claimed compl
   API client's boot, the Windows VM-binary handoff), holds it to write while std makes its
   child. A new production std spawn must go through `spawn_std`; nothing enforces it but
   review (a workspace `disallowed-methods` would also hold every test's spawns). No literal.
+  **Superseded 2026-11-14 (control-04, D248):** no production std spawn remains on any OS;
+  `spawn_std` and `INHERITING` are deleted, and each child's handle list names its own alone.
 - **08** (6ff8f51f4; red 10bf97ed7). A waiting client watches its list's directory by its
   own name (its OsStr encoded as UTF-16, not through `to_string_lossy`), says no list only
   where the directory is absent (ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND) and refuses any
@@ -32507,6 +32517,47 @@ api_image` on HVF and WHP; Hex's image_real on macOS and Windows once Hex vendor
 
 **What would falsify it.** A run host that holds a descriptor or handle of its orchestrator's
 it was not given (then `shards_ipc::spawn` leaks to every child shards starts, D26).
+
+**2026-11-14, every child (control-04).** D248 held for the run host alone. The flaky3 lane
+found the same leak in every other production std spawn (docs/bugs/2026-11-13/control.md,
+control-04, 7e452a9fe): on macOS std's `new_pair` (rust-src
+`library/std/src/sys/net/connection/socket/unix.rs`) makes a socketpair and then marks it
+close-on-exec, and its `Command::spawn` sets no `POSIX_SPAWN_CLOEXEC_DEFAULT`, so a child std
+starts in that instant keeps what another thread is making (7,473 inherited writers in 20 s of
+8-thread stress). In one SDK process run B's `shards` held run A's input pair or output pipe,
+so A's member stdin never saw EOF, or A's drain never ended.
+- *Decided* (ROOT, option (a)): every production child is started by `shards_ipc`'s spawn,
+  on every OS, with cfg twins where Windows needs them: the SDK's `shards` (shards-api
+  `client.rs` `spawn_shards`, its watcher on `shards_ipc::Child`'s `ended`, `wait` and
+  `kill`), the registry's credential helpers (one `Talk` on every OS; a cancel's helper in a
+  job of its own on Windows, `spawn_grouped`), the SBOM scan (`agent.rs`), the Windows
+  VM-binary handoff (`cli/mod.rs` `instead`), the browser opener (`oidc.rs`), AWS's
+  `credential_process` on Windows (`spawn_in_raw`, cmd.exe's `/C` text kept as it is, as
+  std's `raw_arg` passed it) and `SHARDS_VMMAP`'s vmmap (`alloc_count.rs`). `on_path` moved to
+  shards-ipc, a `PATH` of the caller's own allowed (the credential helper's). Unix
+  `instead` stays an exec(2): it replaces this process, and keeps no descriptor not
+  already its own.
+- *Deleted* (no legacy paths): `shards_ipc::spawn_std` and Windows' `INHERITING` lock, which
+  only it needed (D195's platform-07), with its test. Linux's std uses pipe2 and
+  SOCK_CLOEXEC and was not exposed; it takes the one path all the same.
+- *Literals.* None in production. The test's 4 making threads and 64 children are a test's
+  load, not a runtime value: with std's spawn back, 14 to 26 of the 64 children held a
+  socket in each of six runs, so a run where none holds one is not a miss by chance.
+- *Test* (unit, macOS arm64): `client::tests::a_started_shards_holds_no_socket_another_thread_was_making`:
+  4 threads make and drop `shards_ipc::input_pair`s while `spawn_shards` starts this test
+  binary 64 times as a child that reports, from /dev/fd, every socket it holds. On
+  adas-mac-studio-3.local (macOS arm64, rustc 1.98.1), `cargo test -p shards-api --lib
+  <that test> -- --exact`: red, std's `Command` back in `spawn_shards` (the carrier's
+  `mutate.py`), 19, 18 and 14 of 64 children held 1 to 6 sockets each at 85a2727a1, and 26,
+  24 and 23 at f25955697; green, none in any of three runs at f25955697. Beside it: `client::tests` (46), `image::session` (41), the registry's
+  `credentials` (20) and shards-ipc's tests (78) pass; clippy, `-D warnings`, for shards-ipc,
+  shards-api, shards-registry and shards: clean on macOS; on Windows x86_64 (cargo xwin,
+  adas-mac-studio.local) clean for the first three, and shards' one error main's own
+  (`daemon/health.rs`'s fields unread on Windows, runs-11), none of this change's.
+- *Owed* (ROOT): `cargo test -p shards --profile test-release --test api_image` and an SDK
+  run of several images in one process on HVF and WHP; the Windows unit
+  `a_raw_command_line_keeps_its_quotes` and the registry's credential tests on Windows (CI's
+  Windows legs).
 
 ### D249. An orchestrator's run whose command never started ends failed, in its VM's words (built; real-VM validation owed)
 

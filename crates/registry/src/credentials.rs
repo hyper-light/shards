@@ -478,8 +478,10 @@ fn run_helper(
 /// ends whole, a script's children with it, which hold its output open (D184); otherwise
 /// it stays in its caller's, where a terminal's Ctrl-C reaches it and its prompts reach the
 /// terminal. How it failed is said as Go's os.ProcessState says it, the words its scripts know: an exit
-/// status (128 and its number, for a signal that ended it).
-#[cfg(unix)]
+/// status (128 and its number, for a signal that ended it). On Windows a helper started for a
+/// cancel is made in a job of its own (`shards_ipc::spawn_grouped`), which the cancel ends
+/// whole, as a Unix process group is; and every helper, as every child shards starts, holds
+/// the three handles it is given and none else (D248).
 struct Talk {
     program: String,
     child: Option<std::sync::Arc<shards_ipc::Child>>,
@@ -489,7 +491,6 @@ struct Talk {
     group: bool,
 }
 
-#[cfg(unix)]
 impl Talk {
     fn start(
         program: &str,
@@ -498,33 +499,39 @@ impl Talk {
         env: Env<'_>,
         cancel: Option<&Cancel>,
     ) -> Result<Talk, Error> {
-        use std::os::fd::AsFd as _;
         let fail = |e: std::io::Error| Error::new(format!("running {program}: {e}"));
         let path = env("PATH");
-        let search = path
-            .clone()
-            .or_else(|| std::env::var("PATH").ok())
-            .unwrap_or_default();
-        let found = std::env::split_paths(&search)
-            .map(|dir| dir.join(program))
-            .find(|p| p.is_file())
-            .ok_or_else(|| fail(std::io::ErrorKind::NotFound.into()))?;
+        let found = shards_ipc::on_path(
+            std::path::Path::new(program),
+            path.as_deref().map(std::ffi::OsStr::new),
+        )
+        .map_err(fail)?;
         let (stdin, mut to_stdin) = std::io::pipe().map_err(fail)?;
         let (stdout, from_stdout) = std::io::pipe().map_err(fail)?;
         let set: Vec<(&str, &std::ffi::OsStr)> = path.iter().map(|p| ("PATH", p.as_ref())).collect();
         let group = cancel.is_some();
-        let child = shards_ipc::spawn_with(
-            &found,
-            &[action.as_ref()],
-            &[
-                (stdin.as_fd(), 0),
-                (from_stdout.as_fd(), 1),
-                (std::io::stderr().as_fd(), 2),
-            ],
-            group,
-            &set,
-        )
-        .map_err(fail)?;
+        let stderr = std::io::stderr();
+        #[cfg(unix)]
+        let child = {
+            use std::os::fd::AsFd as _;
+            let fds = [(stdin.as_fd(), 0), (from_stdout.as_fd(), 1), (stderr.as_fd(), 2)];
+            shards_ipc::spawn_with(&found, &[action.as_ref()], &fds, group, &set)
+        };
+        #[cfg(windows)]
+        let child = {
+            use std::os::windows::io::AsHandle as _;
+            let fds = [
+                (stdin.as_handle(), 0),
+                (from_stdout.as_handle(), 1),
+                (stderr.as_handle(), 2),
+            ];
+            if group {
+                shards_ipc::spawn_grouped(&found, &[action.as_ref()], &fds, &set)
+            } else {
+                shards_ipc::spawn_with(&found, &[action.as_ref()], &fds, false, &set)
+            }
+        };
+        let child = child.map_err(fail)?;
         drop((stdin, from_stdout));
         let child = std::sync::Arc::new(child);
         let mut talk = Talk {
@@ -575,9 +582,9 @@ impl Talk {
 
     fn kill(&self, child: &shards_ipc::Child) -> std::io::Result<()> {
         if self.group {
-            child.kill_group(libc::SIGKILL)
+            child.kill_group(shards_ipc::signal::SIGKILL)
         } else {
-            child.kill(libc::SIGKILL)
+            child.kill(shards_ipc::signal::SIGKILL)
         }
     }
 
@@ -585,115 +592,6 @@ impl Talk {
     fn end(&mut self) {
         if let Some(child) = self.child.take() {
             let _ = self.kill(&child);
-            let _ = child.wait();
-        }
-        if let Some((cancel, n)) = self.cancel.take() {
-            cancel.forget_helper(n);
-        }
-    }
-}
-
-/// [`Talk`] where shards has no daemon: by std's Command. A cancel ends it by a handle of
-/// its own.
-#[cfg(windows)]
-struct Talk {
-    program: String,
-    child: Option<std::process::Child>,
-    cancel: Option<(Cancel, u64)>,
-}
-
-#[cfg(windows)]
-impl Talk {
-    fn start(
-        program: &str,
-        action: &str,
-        input: &[u8],
-        env: Env<'_>,
-        cancel: Option<&Cancel>,
-    ) -> Result<Talk, Error> {
-        use std::process::{Command, Stdio};
-        let mut command = Command::new(program);
-        command
-            .arg(action)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
-        if let Some(path) = env("PATH") {
-            command.env("PATH", path);
-        }
-        let mut child =
-            shards_ipc::spawn_std(&mut command).map_err(|e| Error::new(format!("running {program}: {e}")))?;
-        let watched = match cancel {
-            Some(cancel) => {
-                use std::os::windows::io::AsHandle as _;
-                match child.as_handle().try_clone_to_owned() {
-                    Ok(handle) => Some((cancel.clone(), cancel.watch_helper(handle))),
-                    Err(e) => {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        return Err(Error::new(format!("{program}: {e}")));
-                    }
-                }
-            }
-            None => None,
-        };
-        let stdin = child.stdin.take();
-        let mut talk = Talk {
-            program: program.to_string(),
-            child: Some(child),
-            cancel: watched,
-        };
-        if let Some(mut stdin) = stdin {
-            match stdin.write_all(input) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
-                Err(e) => {
-                    talk.end();
-                    return Err(Error::new(format!("{program}: {e}")));
-                }
-            }
-        }
-        Ok(talk)
-    }
-
-    fn ended(&self) -> bool {
-        use std::os::windows::io::AsRawHandle as _;
-        self.child.as_ref().is_some_and(|c| {
-            // SAFETY: a wait of no time on the process handle the Child holds open.
-            unsafe {
-                windows_sys::Win32::System::Threading::WaitForSingleObject(c.as_raw_handle(), 0)
-                    == windows_sys::Win32::Foundation::WAIT_OBJECT_0
-            }
-        })
-    }
-
-    fn finish(mut self) -> Result<(Option<String>, Vec<u8>), Error> {
-        let Some(mut child) = self.child.take() else {
-            return Err(Error::new(format!("{}: already finished", self.program)));
-        };
-        let mut out = Vec::new();
-        let read = match child.stdout.take() {
-            Some(stdout) => stdout.take(MAX_HELPER_OUTPUT).read_to_end(&mut out).map(drop),
-            None => Ok(()),
-        };
-        if read.is_err() {
-            let _ = child.kill();
-        }
-        let status = child.wait();
-        if let Some((cancel, n)) = self.cancel.take() {
-            cancel.forget_helper(n);
-            if cancel.is_cancelled() {
-                return Err(Error::of(crate::ErrorKind::Cancelled, "cancelled"));
-            }
-        }
-        let status = status.map_err(|e| Error::new(format!("{}: {e}", self.program)))?;
-        read.map_err(|e| Error::new(format!("{}: {e}", self.program)))?;
-        Ok(((!status.success()).then(|| status.to_string()), out))
-    }
-
-    fn end(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
             let _ = child.wait();
         }
         if let Some((cancel, n)) = self.cancel.take() {

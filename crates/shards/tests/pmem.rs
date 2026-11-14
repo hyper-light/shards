@@ -44,7 +44,7 @@ fn args(images: &[Image], extra_cmdline: &str) -> Vec<std::ffi::OsString> {
         "256".into(),
         "--cmdline".into(),
         format!(
-            "console=ttyS0 quiet shards_test=pmem shards_pmem={}{extra_cmdline}",
+            "console=hvc0 quiet shards_test=pmem shards_pmem={}{extra_cmdline}",
             spec.join(",")
         )
         .into(),
