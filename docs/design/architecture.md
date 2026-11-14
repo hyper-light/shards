@@ -22542,13 +22542,25 @@ Tested:
 
 ### D99. IPv6 on a network of microVMs
 
-**API-run parity gap (network-05, 2026-11-13), owed to ROOT.** Unlike the daemon,
-API-run still supplies neither its guest's `uplink6=` nor the network process's
-`NET_ADDRESS` for IPv6 egress. Its IPv4 policy unit results do not prove this path.
-The correction must share the home's ULA derivation and paired programming, with
-NET_ADDRESS acknowledged before frames are served and the same narrowed grants
-and `confine-eth0` preserved. Fresh/restored API IPv6 receipt and default-deny
-witnesses are [owed with an exact fixture](../research/measurements/network-fixes-v1/README.md#network-05-07-guest-kernel-and-api-reproductions).
+**An orchestrator's run as a daemon's (network-05, 2026-11-14).** API-run supplied
+neither its guest's `uplink6=` nor its network process's `NET_ADDRESS`, so an image's
+agents with IPv6 and a grant past the microVM had no IPv6 there when run by an
+orchestrator. Both now share one derivation, `crate::networks::host_ipv6` (the home's
+engine ID's ULA /48, its last /64, `::2` and `::1`, moved from the daemon with
+`engine_id` and `ula_base`), and its two programs, `uplink6_entry` and
+`bridge_address`. api_run's `past6` gives it where the run is on the bridge and its
+image's agents have IPv6 and are granted anything past it (`Agentfile::egress6`), as
+the daemon's start does; its plan pushes `uplink6=` beside `confine-eth0`, and
+`tell_net` sends `NET_ADDRESS` first and waits for its answer before the published
+ports and the policy as the request narrows it. Unit red/green and mutations (macOS
+arm64): `api_run::tests::{an_orchestrated_runs_agents_reach_past_the_microvm_by_ipv6_as_a_daemons_do,
+an_orchestrated_runs_network_process_is_told_its_ipv6_before_its_policy}`
+([log](../research/measurements/network-fixes-v1/api05-red-green.log)). Owed to ROOT:
+`cargo test -p shards --test api_image a_published_ingress_port_reaches_its_member --
+--exact --nocapture` extended with build.rs's
+`agents_reach_past_the_microvm_by_ipv6_what_their_networks_grant` IPv6-only fixture,
+fresh and restored: the granted IPv6 address and port reached, an ungranted one
+refused, and the command unable to use its agents' grant.
 
 A network made with `--ipv6` (`shards network create --ipv6`, or a run's `--network` on
 one) gives each microVM an IPv6 address of its IPv6 subnet, as dockerd gives each
