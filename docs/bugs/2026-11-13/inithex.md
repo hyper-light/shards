@@ -94,6 +94,8 @@ ROOT's live twin should let a resolve/dial a controlled provider, attempt b's di
 
 ### inithex-03 — P1 / high — failed MCP bridge waits forever for open harness stdin
 
+**Status (2026-11-13):** fixed in f7d83f73a (red `bridge_peer_end_releases_open_stdin`, `bridge_output_failure_releases_open_stdin`; Linux x86_64 r2/r4; [evidence](../../research/measurements/inithex-fixes/README.md)).
+
 **Location at head:** `crates/init/src/mcp.rs:201–205` (join at 203); entry at 182.
 
 **Defect:** The bridge joins its blocking stdin-copy thread before closing stdout or returning a socket/output error, so a harness waiting for a response cannot observe the connection's end.
@@ -123,6 +125,8 @@ down.and(up)
 **Catching test:** Start the actual bridge with piped stdio; the server accepts and reads one request, then ends the connection while the parent retains the stdin writer. Require stdout EOF and terminal failure/cut behavior without the parent first closing stdin. Twin: close the parent's stdout reader while retaining stdin and require bridge failure. Bound through ROOT's external judged wait; retain cleanup results.
 
 ### inithex-04 — P3 / medium — accepted absolute-FQDN MCP grant never matches DNS
+
+**Status (2026-11-13):** fixed in 79019fa55 (red `mcp_absolute_name_matches_its_dns_question` in shards-agentfile and shards-init; [evidence](../../research/measurements/inithex-fixes/README.md)).
 
 **Location at head:** `crates/agentfile/src/agentfile.rs:1487`; twin `crates/init/src/netplan.rs:132`.
 
