@@ -41,6 +41,8 @@ A later uid-1000 run sees the same bind. `node_owner` uses `.ok().flatten() ... 
 
 **Confidence:** high in the source path and permissions consequence; live fault behavior unverified. **Fix direction:** propagate persistence errors and undo creation; distinguish absent metadata from failed reads and malformed records, allowing the fallback only for actual absence. **Test:** force owner-xattr persistence failure on an ordinary bind file and require explicit failure and no orphan; separately fault reads of a root-owned 0600 record and verify uid 1000 cannot read it. Observe actual guest permissions and cleanup.
 
+**Status (2026-11-13):** fixed in 978d29f03d6084ec91d6d3010bd15b4e62c1302b (red `owner_metadata_failures_refuse_creation_and_lookup`, kiln r4); green regression +49 server tests and shards-vmm all-target clippy on macOS arm64 (r7). Evidence: `docs/research/measurements/runs-fixes/README.md`; real-VM fault/permissions validation owed to ROOT.
+
 ### runs-02 — P1 / high — A renamed daemon home can make its daemon mutate another home's state
 
 **At head:** `crates/shards/src/daemon.rs:2477`; effects at `:2267`, `:2287–2292`; request path retention at `crates/ipc/src/slots/fifo.rs:275`.
