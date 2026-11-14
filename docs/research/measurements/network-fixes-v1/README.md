@@ -116,3 +116,42 @@ event-loss handling. Kernel sources to verify before that broader decision:
 `include/uapi/linux/netfilter/nfnetlink_conntrack.h`. ROOT owes those R02/R04/R05
 ownership/kernel proofs and R09/R10 real reproduction. No blind fix or passing
 campaign is claimed.
+
+## network-02: native seccomp on both Linux architectures
+
+Code fix `33d5f8af715ea94021b65a7c8dc793f65a2339a6` removes the x86-only
+startup/compile/test guards. Native syscall identities come from libc. The sole
+legacy call `epoll_wait` remains x86_64-only; arm64's native ABI provides
+`epoll_pwait`. Sources: Linux `include/uapi/asm-generic/unistd.h`,
+`arch/x86/entry/syscalls/syscall_64.tbl`, and the existing
+`shards-syscall-filter` native AUDIT_ARCH dispatch. No x32/compat normalization,
+argument-width change, filesystem grant or arbitrary value is introduced.
+
+The platform reviewer (Kiln agent 01a1d7f2542d723485bfdee7ecd51d8e) confirmed
+their platform-05–12 lane does not touch VM confinement or syscall-filter, and
+emphasized native numbers, exact architecture dispatch and pointer limitations.
+Claude owns VM-process platform-01/02/04; this slice changes only net helper
+startup and `net/src/confine.rs`, not VM confinement or syscall-filter.
+
+The assigned Linux-only runner is adacachy2 (Linux x86_64, ample free disk/memory,
+nice -n 10). Native ARM red cannot execute on that host. The fix brief expressly
+allows an unambiguous source-path fix when real/native validation is owed: old
+arm64 always skipped the call. No passing amd64 test is labelled an arm64 red.
+
+Kiln r12 at that fix: `cargo test -p shards-net confine::tests`, then
+`cargo clippy -p shards-net -p shards-net-process --all-targets -- -D warnings`,
+exit 0 ([full output](green02.log)). Own cold target, incremental disabled,
+one cargo at a time. Existing forked test admits used socket/epoll operations
+then proves an excluded openat terminates the child with the filter's refusal.
+Landlock tests remain distinct. Native arm64 GNU/musl and the actual carried
+helper/VM startup are **unverified**, owed to ROOT/CI, including:
+`cargo test -p shards-net confine::tests::the_filter_ends_a_process_that_makes_what_none_makes -- --exact --nocapture`.
+Run it on native arm64 Linux, then the normal carried network-helper VM smoke.
+
+R01/R04/R06/R07/R13: same fallible install path and minimal cfg seam; failures
+remain io::Result before serving frames. R02/R03/R05/R12: no new tuning,
+wait/cache or abstraction, native protocol identities reused. R08/R14: no
+performance claim; ROOT owns audit/profiling. R09/R10: native ARM red owed as
+above; r12 supplies only actual amd64 shared-path evidence. R11/R15/R16: one
+assigned host, no local cargo/VM/fleet checks; signed landing and owned target
+cleanup are required, not inferred from this receipt.
