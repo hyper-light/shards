@@ -871,10 +871,10 @@ pub fn answer_give_backs(conn: std::fs::File) -> io::Result<()> {
     Ok(())
 }
 
-/// The most a frame on the give-back connection holds: a `GIVE_BACK` holds nothing and a
-/// `ROOM` a number, and a frame past this ends the connection rather than have its answerer
-/// hold it.
-const GIVE_FRAME: usize = 4096;
+/// The longest host request: Giver::tell encodes ROOM as an i64's decimal or nothing;
+/// GIVE_BACK is empty. The minus sign and digits of i64::MIN bound either request.
+/// A longer frame ends the connection before its payload is read or allocated.
+const GIVE_FRAME: usize = 1 + i64::MIN.unsigned_abs().ilog10() as usize + 1;
 
 /// What [`answer_give_backs`]'s process does until its connection ends: each frame read
 /// whole; each `GIVE_BACK` answered with a `GAVE` of what `give` gave back (the bytes its
