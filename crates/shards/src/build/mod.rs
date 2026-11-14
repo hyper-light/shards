@@ -6574,8 +6574,8 @@ mod memory_tests {
             Ok(4096)
         );
         assert_eq!(
-            builder_most(None, None, &Needed::default(), Some(300 * MIB)),
-            Ok(384)
+            builder_most(None, None, &Needed::default(), Some(300 * MIB + 1)),
+            Ok(super::whole_blocks_up(301))
         );
         assert_eq!(
             builder_most(None, Some(8 * GIB), &Needed::default(), None),
@@ -6588,9 +6588,11 @@ mod memory_tests {
     /// always boots (memory-15): never a chosen floor, which was 512 MiB whatever the guest.
     #[test]
     fn a_builder_boots_with_what_its_guest_was_learned_to_need_else_all_it_may_have() {
+        let up = super::whole_blocks_up;
         assert_eq!(builder_boot(16_384, None), 16_384);
-        assert_eq!(builder_boot(16_384, Some(300 * MIB)), 384);
-        assert_eq!(builder_boot(16_384, Some(700 * MIB + 1)), 768);
+        assert_eq!(builder_boot(16_384, Some(300 * MIB)), up(300));
+        assert_eq!(builder_boot(16_384, Some(700 * MIB + 1)), up(701));
+        assert!(up(701) >= 701);
         assert_eq!(builder_boot(256, Some(GIB)), 256);
         // Learned from a guest booted with 16 GiB whose kernel had 15.7 GiB of it: past
         // MemTotal its image and its page structures, 256 MiB; it needed 372 MiB held.
@@ -6601,7 +6603,8 @@ mod memory_tests {
         // the least b with b - b/64 >= 416 MiB.
         assert_eq!(need, (416 * MIB * 64).div_ceil(63));
         assert!(need - need / 64 >= 416 * MIB);
-        assert_eq!(builder_boot(16_384, Some(need)), 512);
+        assert_eq!(builder_boot(16_384, Some(need)), up(need.div_ceil(MIB)));
+        assert!(builder_boot(16_384, Some(need)) < 16_384 / 8);
     }
 
     /// A home's record of its builds' needs keeps the most any needed, whether any was
