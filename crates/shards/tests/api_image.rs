@@ -161,21 +161,26 @@ fn read_all(guest: &dyn ImageGuest, channel: Channel) -> Vec<u8> {
 /// What `channel` of the harness says to its end, read for as long as its run goes on: a
 /// wait judged as the tests' waits are (`common::judged`), its kind its call site. Refused,
 /// its run is stopped, which ends the channel, and what its wait said of itself comes back.
+/// The channel of a member that has ended already is read as one: no answer waited for,
+/// which teaches its kind nothing (`common::judged_there`; #77: such reads taught a W* of
+/// 21 ms, R* 0 ns, that refused a read waiting on an outside sign-in).
 #[track_caller]
 fn read_within(guest: &dyn ImageGuest, channel: Channel) -> Result<Vec<u8>, String> {
     let mut pipe = guest.take_output(&codex(), channel).unwrap();
-    common::judged(
-        Party::started(None),
-        "a member's channel",
-        || {
-            let _ = guest.stop();
-        },
-        move || {
-            let mut bytes = Vec::new();
-            let _ = pipe.read_to_end(&mut bytes);
-            bytes
-        },
-    )
+    let ended = matches!(guest.wait_member(&codex(), Duration::ZERO), Ok(Some(_)));
+    let stop = || {
+        let _ = guest.stop();
+    };
+    let read = move || {
+        let mut bytes = Vec::new();
+        let _ = pipe.read_to_end(&mut bytes);
+        bytes
+    };
+    if ended {
+        common::judged_there(Party::started(None), "a member's channel", stop, read)
+    } else {
+        common::judged(Party::started(None), "a member's channel", stop, read)
+    }
 }
 
 /// What an orchestrator stages into its harness at create reaches it alone, exactly, never

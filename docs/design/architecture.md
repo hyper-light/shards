@@ -24810,6 +24810,57 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
       words' baseline was read as the wait began. The guest said nothing for longer than
       that call site's slowest answer, whose asks (`grow vda`, a plug, an unplug) share one
       kind: what its guest did is not observable to its wait at all.
+    - *Only an answer waited for teaches* (#77; docs/bugs/2026-11-13/waits.md waits-03). A
+      test's wait moves through explicit stages (common/mod.rs `Stage`): `Begun`, its
+      answer not yet found missing; `Awaited`, found missing at least once, by a look
+      (whose callers look only after a check found their answer not come) or said so
+      (`Wait::absent`); `Answered`. Its answer teaches its kind only from `Awaited`: one
+      there as its wait began waited on no party, as D185's answers already in a slot and
+      D209's READY already said teach nothing. Waits that could find their answer there
+      check first: `Following` reads its stream once without blocking until a read finds
+      nothing there; engine.rs' `Patient` reads what its daemon has sent before it waits;
+      `Vm::wait_lines` reads the lines already come before it waits; api_image.rs reads an
+      ended member's channel through `judged_there`, judged should it stall but teaching
+      nothing. Evidence: ROOT's KVM run at 18b2e0d60 (adacachy2), api_image.rs:2288's
+      `an_h2_sign_in_gives_the_harness_placeholders_and_its_refresh_is_answered_outside`,
+      refused 181 ms into a read of its member's stdout ("no progress for 27.488912ms, past
+      ... (20.972496ms)") while its network process waited on auth.openai.com's round trip:
+      its kind's record, W* 20.97 ms with R* 0 ns of CPU over those 20.97 ms, an answer over
+      which no process of its party ran at all, is an ended member's output read from its
+      pipe, not a wait on the party. Its party did hold the network process: the run host is
+      this test's child (session.rs `start_host`, posix_spawn with a session of its own, no
+      second fork) and starts its VM and network processes as its own children
+      (launch.rs, `spawn_in_group` with no group, api-run having no spawner). The judge was
+      right to find that party still; its W* was no answer.
+    - *A wait answered goes on as a drain* (waits-10). A command's client's end is its
+      answer; what its streams still carry (a process it left holding them) is read in
+      `Stage::Answered`, judged by a judge begun at that answer over the record the answer
+      left, never cold (the answer just taught it, or it was learned), and a look that finds
+      its party gone finds it still, as no process of it that could write runs. Main kept
+      the client's own judge, which a cold kind never judges, so that a silent holder's
+      liveness held its test for ever. The drain teaches nothing.
+    - *A party is what was found of it until it ends* (waits-09, waits-10). A process once
+      found is followed until it has gone or ended, wherever it is listed since: a daemon's
+      microVMs as they end after it (a daemon stop's party), a client's children reparented
+      as it exits. Its daemon is the process its `daemon.pid` names by its ID and its start
+      (`shards_ipc::Named`, D185), checked again once its watch is read, never another
+      process given its ID. A process found ended (exited and not reaped,
+      `shards_api::Watch::ended`: on Unix its look's end under way, which a zombie's every
+      look says; on Windows every process of its tree exited, which their handles read
+      still) is no live member, its end progress once, at the look that first finds it
+      under way: a test's wait on a state reaps nothing, so an end under way for ever was
+      progress for ever.
+    - *A refusal as its test unwinds says itself* (#77 slice 2): `run_command` refused while
+      its thread is panicking (a cleanup's `Drop`) writes its account to stderr and returns
+      a run of no status; a panic while panicking aborts the test binary, all its tests
+      with it, as one of context.rs' did.
+    - Red/green (harness.rs, stand-ins, no microVM): `a_first_look_past_w_star_judges_nothing`
+      (waits-02), `an_answer_already_there_teaches_nothing` (waits-03),
+      `a_daemon_named_by_another_start_is_no_party` and `an_unreaped_daemon_is_gone`
+      (waits-09), `streams_held_past_a_commands_end_are_judged_from_its_end` (waits-10),
+      `a_cleanup_refused_as_its_test_fails_fails_it_alone` (slice 2); each guard's removal
+      fails its test (the carrier's mutations). No literal is chosen: W* and the windows are
+      the records' and the counters'; the tests' own sleeps and bounds are a test's.
     - macOS's scheduler counts each thread's time runnable, running or waiting for a CPU
       (proc_pid_rusage(2) RUSAGE_INFO_V4 `ri_runnable_time`, sys/resource.h, Mach
       absolute-time units; public, and like the rest no task port). Grown over a time the

@@ -315,6 +315,18 @@ impl Watch {
         self.last.cpu
     }
 
+    /// Whether the look before found it ended: on Unix its process exited and not yet
+    /// reaped (a zombie, whose every look says its end under way), on Windows every process
+    /// of its tree exited (their handles read them still). A waiter with no reap of its own
+    /// to come (a test's wait on a state, #77 waits-09) takes one found so twice for gone,
+    /// rather than for an end under way for ever.
+    pub fn ended(&self) -> bool {
+        #[cfg(unix)]
+        return self.last.ending;
+        #[cfg(windows)]
+        return self.followed.ended();
+    }
+
     /// Whether the look before found it stopped or frozen (a stop signal's, a debugger's, a
     /// suspension's), which [`look`](Self::look) finds `Still`: for a waiter that counts a
     /// stop its host made as its host's hold, as a test's waits count a kiln runner's
@@ -968,6 +980,11 @@ mod os {
 
         pub(super) fn pid(&self) -> u32 {
             self.pid
+        }
+
+        /// Whether every process of its tree has been seen to exit.
+        pub(super) fn ended(&self) -> bool {
+            self.members.iter().all(|m| m.exited)
         }
 
         /// The least time a change of what tells whether its tree ran stands for: none,

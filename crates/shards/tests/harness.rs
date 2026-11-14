@@ -57,7 +57,8 @@ fn a_daemons_whole_lines_are_its_words() {
 /// milliseconds, then its answer written there and its end; `idle`, nothing at all until
 /// its stdin closes; `pulse N MS`, N rounds of a moment's CPU then MS milliseconds of none,
 /// saying nothing, as a party that works between waits on a peer outside it; `falls MS`, a
-/// give-back ([`falls`]).
+/// give-back ([`falls`]); `leaves MS`, a stand-in `pulse 1 MS` started on its stdout and
+/// stderr, "holder PID" said there, and its own end, the holder left holding them.
 #[test]
 #[ignore = "a process of its own for the harness's stand-ins, which run it"]
 fn stand_in() {
@@ -93,6 +94,19 @@ fn stand_in() {
         let _ = std::io::stdin().read(&mut [0u8; 1]);
     } else if let Some(ms) = asked.strip_prefix("falls ").and_then(|ms| ms.parse().ok()) {
         falls(ms, busy);
+    } else if let Some(ms) = asked.strip_prefix("leaves ") {
+        #[allow(
+            clippy::zombie_processes,
+            reason = "left holding this stand-in's streams past its end, as its test asks, which ends it"
+        )]
+        let holder = stand_in_doing(&format!("pulse 1 {ms}"))
+            .stdin(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut out = std::io::stdout();
+        out.write_all(format!("holder {}\n", holder.id()).as_bytes())
+            .unwrap();
+        out.flush().unwrap();
     }
 }
 
@@ -834,4 +848,360 @@ fn the_triaged_call_sites_key_their_refused_command_apart() {
         shards(&["buildx", "policy", "eval", "--print", "./nope"]),
         shards(&["buildx", "policy", "eval", "docker-image://alpine:3.20"])
     );
+}
+
+/// [`Patience::of`] at its caller's call site, its kind made cold: what this host kept of it
+/// removed before the kind's first wait in this process.
+#[track_caller]
+fn cold_patience(home: &std::path::Path) -> Patience {
+    let site = std::panic::Location::caller();
+    let _ = std::fs::remove_file(common::WaitKind::kept_at(site, common::STATE, ""));
+    Patience::of(home)
+}
+
+/// [`cold_patience`] at one call site: one kind for every wait made through it.
+fn one_state(home: &std::path::Path) -> Patience {
+    cold_patience(home)
+}
+
+/// A wait whose first look at its party comes past its kind's W* judges nothing at that
+/// look: it has nothing before it to compare with (#77 waits-02; ROOT's KVM refusals at
+/// c120c8a95, "its last progress its start", 18.4 ms and 31.1 ms into waits of W* 3.527 µs
+/// and 14.0 ms). Red at 9efde7252, refused at that look, as a party found anew was found
+/// still and its wait's start taken for a look. Do: teach a kind its W* by a quick
+/// stand-in's end; follow a busy stand-in, then a sleeping one, each first looked at 2 W*
+/// past its wait's start; then follow a sleeping one look after look. Expect: neither first
+/// look refuses; the sleeper looked at on is refused, once its looks have seen a whole W*.
+#[test]
+fn a_first_look_past_w_star_judges_nothing() {
+    let kind = common::WaitKind::at(std::panic::Location::caller());
+    let mut quick = stand_in_doing("exit")
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut taught = common::Wait::begin(kind, quick.id(), None, "a quick stand-in");
+    while quick.try_wait().unwrap().is_none() {
+        taught.look(false).unwrap();
+    }
+    taught.answered();
+    let shards_api::Seen::Learned { slowest, .. } = kind.record().seen() else {
+        panic!("its kind learned nothing of an answer");
+    };
+    let spawn = |what: &str| {
+        stand_in_doing(what)
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap()
+    };
+    for what in ["busy 60000", "pulse 1 600000"] {
+        let mut party = spawn(what);
+        let mut wait = common::Wait::begin(kind, party.id(), None, what);
+        std::thread::sleep(slowest.saturating_mul(2));
+        let first = wait.look(false);
+        let _ = party.kill();
+        let _ = party.wait();
+        assert!(
+            first.is_ok(),
+            "{what}: refused at its first look: {}",
+            wait.account()
+        );
+    }
+    let mut sleeper = spawn("pulse 1 600000");
+    let mut wait = common::Wait::begin(kind, sleeper.id(), None, "a sleeping stand-in");
+    let began = Instant::now();
+    let refused = loop {
+        if wait.look(false).is_err() {
+            break true;
+        }
+        // Its start's own work past, it sleeps: a whole W* seen still well within this.
+        if began.elapsed() > slowest.saturating_mul(100).max(Duration::from_secs(10)) {
+            break false;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    let _ = sleeper.kill();
+    let _ = sleeper.wait();
+    assert!(
+        refused,
+        "a sleeper looked at on never refused: {}",
+        wait.account()
+    );
+}
+
+/// A wait that finds its answer already there teaches its kind nothing: it waited on no
+/// party (#77 waits-03: warm.rs' `until_ended`, `Vm::wait_lines`' lines already come and
+/// engine.rs' reads of what its daemon had sent taught their kinds the time of one look,
+/// which then refused waits that waited, engine.rs' "its daemon made no progress" among
+/// them). Red at 9efde7252, its kind learned from a state there as its wait began. Do: a
+/// state its home's daemon (a busy stand-in) is in already, told `done` at once; then one
+/// that comes after its wait found it missing for 50 ms; then a stream read to an end its
+/// peer had sent, and one its peer sends 50 ms later. Expect: cold after each answer
+/// already there, and learned from each that was waited for (the state's W* its wait's).
+#[test]
+fn an_answer_already_there_teaches_nothing() {
+    let home = TempDir::new("there");
+    let mut daemon = stand_in_doing("busy 60000")
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    std::fs::write(home.join("daemon.pid"), format!("{}\n", daemon.id())).unwrap();
+    one_state(&home).done();
+    let there = one_state(&home).seen();
+    let waited = Duration::from_millis(50);
+    let mut patience = one_state(&home);
+    let began = Instant::now();
+    while began.elapsed() < waited {
+        assert!(patience.holds(), "{}", patience.account());
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    patience.done();
+    let learned = one_state(&home).seen();
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    assert_eq!(
+        there,
+        shards_api::Seen::Cold,
+        "a state already there taught its kind"
+    );
+    assert!(
+        matches!(learned, shards_api::Seen::Learned { slowest, .. } if slowest >= waited),
+        "a state waited for taught {learned:?}"
+    );
+
+    let mut listener = Some(std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap());
+    let port = listener.as_ref().unwrap().local_addr().unwrap().port();
+    for delay in [None, Some(waited)] {
+        let (sent, told) = std::sync::mpsc::channel();
+        let serving = listener.take().unwrap();
+        let peer = std::thread::spawn(move || {
+            let (mut to, _) = serving.accept().unwrap();
+            if let Some(delay) = delay {
+                std::thread::sleep(delay);
+            }
+            to.write_all(b"x").unwrap();
+            drop(to);
+            sent.send(()).unwrap();
+            serving
+        });
+        let stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        if delay.is_none() {
+            told.recv().unwrap();
+        }
+        let (mut following, kind) = one_stream(&stream);
+        let mut read = Vec::new();
+        std::io::Read::read_to_end(&mut following, &mut read).unwrap();
+        assert_eq!(read, b"x");
+        let seen = kind.record().seen();
+        match delay {
+            None => assert_eq!(
+                seen,
+                shards_api::Seen::Cold,
+                "a stream ended already taught its kind"
+            ),
+            Some(_) => assert!(
+                matches!(seen, shards_api::Seen::Learned { .. }),
+                "a stream waited for taught nothing"
+            ),
+        }
+        listener = Some(peer.join().unwrap());
+    }
+}
+
+/// [`common::Following::of`] at one call site, its kind made cold as [`cold_patience`]'s is,
+/// with that kind.
+fn one_stream(
+    stream: &std::net::TcpStream,
+) -> (
+    common::Following<'_, std::net::TcpStream>,
+    &'static common::WaitKind,
+) {
+    cold_following(stream)
+}
+
+#[track_caller]
+fn cold_following(
+    stream: &std::net::TcpStream,
+) -> (
+    common::Following<'_, std::net::TcpStream>,
+    &'static common::WaitKind,
+) {
+    let site = std::panic::Location::caller();
+    let file = common::WaitKind::kept_at(site, common::STREAM, "");
+    // Removed before the kind's first wait in this process alone: its record is in memory
+    // from then on.
+    static REMOVED: std::sync::Once = std::sync::Once::new();
+    REMOVED.call_once(|| {
+        let _ = std::fs::remove_file(&file);
+    });
+    (
+        common::Following::of(stream, None),
+        common::WaitKind::awaiting(site, common::STREAM),
+    )
+}
+
+/// A home's `daemon.pid` names its daemon by its ID and its start (D185): a wait whose home
+/// names a process that has its ID and not its start follows no daemon (#77 waits-09: the
+/// tests' party read the ID alone, and followed whatever process had it since). Red at
+/// 9efde7252, a busy process holding its wait. Do: name a busy stand-in by its ID and a
+/// start that is not its own; wait on a state of that home. Expect: its party gone, the wait
+/// ended while that process is still busy.
+#[test]
+fn a_daemon_named_by_another_start_is_no_party() {
+    let home = TempDir::new("reused");
+    let mut busy = stand_in_doing("busy 60000")
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let start = shards_ipc::started(busy.id()).unwrap();
+    std::fs::write(
+        home.join("daemon.pid"),
+        format!("{} {}\n", busy.id(), start.wrapping_add(1)),
+    )
+    .unwrap();
+    let mut patience = Patience::of(&home);
+    let ended = loop {
+        if busy.try_wait().unwrap().is_some() {
+            break false;
+        }
+        if !patience.holds() {
+            break true;
+        }
+        std::thread::sleep(patience.next_look().min(Duration::from_millis(5)));
+    };
+    let _ = busy.kill();
+    let _ = busy.wait();
+    assert!(
+        ended,
+        "a process of another start followed as its daemon: {}",
+        patience.account()
+    );
+}
+
+/// A process that has exited and is not reaped is no live party of a wait on a state, whose
+/// waiter reaps nothing: its end is under way at one look, and it has ended at the next (#77
+/// waits-09: a zombie daemon's every look said its end under way, its waits' progress for
+/// ever). Red at 9efde7252, holding past 10 s. Do: name a stand-in that has exited, not
+/// reaped, its home's daemon; wait on a state of that home. Expect: its party gone, the
+/// wait ended.
+#[cfg(unix)]
+#[test]
+fn an_unreaped_daemon_is_gone() {
+    let home = TempDir::new("zombie");
+    let mut zombie = stand_in_doing("exit")
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    // SAFETY: waitid(2) of a child of this test's, WNOWAIT: it is left to reap.
+    let exited = unsafe {
+        let mut info: libc::siginfo_t = std::mem::zeroed();
+        libc::waitid(
+            libc::P_PID,
+            zombie.id(),
+            &raw mut info,
+            libc::WEXITED | libc::WNOWAIT,
+        )
+    };
+    assert_eq!(exited, 0, "{}", std::io::Error::last_os_error());
+    std::fs::write(home.join("daemon.pid"), format!("{}\n", zombie.id())).unwrap();
+    let mut patience = Patience::of(&home);
+    let began = Instant::now();
+    let ended = loop {
+        if !patience.holds() {
+            break true;
+        }
+        if began.elapsed() > Duration::from_secs(10) {
+            break false;
+        }
+        std::thread::sleep(patience.next_look().min(Duration::from_millis(5)));
+    };
+    let _ = zombie.wait();
+    assert!(ended, "an exited daemon held its wait: {}", patience.account());
+}
+
+/// A command's streams another process holds open past its end are read for as long as
+/// that holder makes progress, judged from its end by the record its end taught, its kind
+/// cold or not (#77 waits-10: a cold wait kept past its client's end followed a silent
+/// holder's liveness, and could hold its test for ever). Red at 9efde7252, waiting out the
+/// holder's 30 s. Do: from a call site whose kind is cold, run a stand-in that leaves a
+/// sleeping holder of its stdout and stderr and exits. Expect: its run back, status 0, its
+/// stdout said held open, long before the holder's end.
+#[test]
+fn streams_held_past_a_commands_end_are_judged_from_its_end() {
+    let hold = Duration::from_secs(30);
+    let began = Instant::now();
+    let run = cold_run(stand_in_doing(&format!("leaves {}", hold.as_millis())));
+    let elapsed = began.elapsed();
+    let holder: Option<u32> = run
+        .stdout
+        .lines()
+        .find_map(|line| line.split("holder ").nth(1)?.trim().parse().ok());
+    if let Some(holder) = holder {
+        #[cfg(unix)]
+        // SAFETY: kill(2) of the holder this test's stand-in started.
+        unsafe {
+            libc::kill(i32::try_from(holder).unwrap(), libc::SIGKILL);
+        }
+        #[cfg(windows)]
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/PID", &holder.to_string()])
+            .output();
+    }
+    assert_eq!(run.status, Some(0), "{run}");
+    assert!(holder.is_some(), "{run}");
+    assert!(
+        elapsed < hold,
+        "its run came back {elapsed:?} in, at its holder's end: {run}"
+    );
+    assert!(run.stdout.contains("still held open"), "{run}");
+}
+
+/// [`common::run_command`] at its caller's call site, its kind made cold.
+#[track_caller]
+fn cold_run(cmd: std::process::Command) -> common::Run {
+    let site = std::panic::Location::caller();
+    let file = common::WaitKind::kept_at(site, &common::command_words(&cmd), &common::keyed_line(&cmd));
+    let _ = std::fs::remove_file(file);
+    common::run_command(cmd, &["stand-in".to_string()])
+}
+
+/// A test that fails, whose cleanup's command its wait refuses as it unwinds.
+#[test]
+#[ignore = "a process of its own, which a_cleanup_refused_as_its_test_fails_fails_it_alone runs"]
+fn a_cleanup_refused_as_its_test_fails() {
+    struct Cleanup;
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = cleanup("pulse 1 600000");
+        }
+    }
+    let taught = cleanup("pulse 1 0");
+    assert_eq!(taught.status, Some(0), "{taught}");
+    let _cleanup = Cleanup;
+    panic!("its test fails");
+}
+
+/// A cleanup's command, at one call site.
+fn cleanup(what: &str) -> common::Run {
+    common::run_command(stand_in_doing(what), &["stand-in".to_string(), what.to_string()])
+}
+
+/// A cleanup whose command's wait is refused as its test unwinds fails that test alone: it
+/// never panics while panicking, which aborts the whole test binary (#77: one of context.rs'
+/// did). Red at 9efde7252, the binary aborted (SIGABRT). Do: run a test that teaches its
+/// cleanup's kind W*, then fails, its cleanup running a sleeper its wait refuses. Expect: the
+/// test failed as a test fails (libtest's 101), its cleanup's refusal said.
+#[test]
+fn a_cleanup_refused_as_its_test_fails_fails_it_alone() {
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "a_cleanup_refused_as_its_test_fails",
+            "--exact",
+            "--ignored",
+            "--test-threads=1",
+        ])
+        .output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(101), "{:?}\n{said}", out.status);
+    assert!(said.contains("as its test unwound"), "{said}");
 }
