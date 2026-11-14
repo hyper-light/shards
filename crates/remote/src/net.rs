@@ -348,7 +348,7 @@ struct Conn {
 
 impl Conn {
     fn heard_authenticated(&mut self, now: Instant) {
-        let total = received(&self.quic.stats().frame_rx);
+        let total = received(&self.quic);
         if total > self.received {
             self.liveness.heard(now);
         }
@@ -956,7 +956,7 @@ impl Io<'_> {
             self.next,
             Conn {
                 handle,
-                received: received(&quic.stats().frame_rx),
+                received: received(&quic),
                 quic,
                 connected: false,
                 liveness,
@@ -1671,7 +1671,7 @@ impl<H: Handler> Driver<H> {
                             &mut self.next,
                             Conn {
                                 handle,
-                                received: received(&quic.stats().frame_rx),
+                                received: received(&quic),
                                 quic,
                                 connected: false,
                                 liveness,
@@ -2244,12 +2244,20 @@ fn eliciting(f: &hyper_quic::FrameStats) -> u64 {
     .fold(0u64, u64::saturating_add)
 }
 
-/// At e0613f52 hyper-quic records these frames only after AEAD and duplicate rejection
-/// (connection/mod.rs `on_decrypted_packet`, `process_payload`). ACK-only packets count.
-/// PADDING-only packets and saturated counters under-count; neither can invent liveness.
-fn received(f: &hyper_quic::FrameStats) -> u64 {
+/// What `quic` has taken from its peer: at e0613f52 hyper-quic records its frames only after
+/// AEAD and duplicate rejection (connection/mod.rs `drops_authenticated`, then
+/// `frame_rx.record`). ACK-only packets count; PADDING-only packets and saturated counters
+/// under-count, which can invent no liveness. CRYPTO frames count by the new handshake data
+/// they carry (`handshake_progress`), never by their number: a server's connection takes its
+/// first packet without putting its number in its dedup window (`handle_first_packet` skips
+/// `drops_authenticated`), so a replay of a client's first Initial, CRYPTO and PADDING alone,
+/// is taken again and its CRYPTO frames counted, though it repeats data already read, which
+/// RFC 9000 §12.3 has a receiver discard.
+fn received(quic: &Connection) -> u64 {
+    let f = &quic.stats().frame_rx;
     [
-        eliciting(f),
+        eliciting(f).saturating_sub(f.crypto),
+        quic.handshake_progress(),
         f.acks,
         f.connection_close,
         f.fec_source,
@@ -3279,13 +3287,12 @@ mod tests {
                 matches!(h, Heard::Lost(..) | Heard::Connected(_))
             })
         };
-        // Even a continuous replay cannot retain this vanished handshake's place.
+        // Its first datagram replayed after each ask, as an answer would come, keeps no place.
         let patience = Duration::from_secs(20);
         let until = Instant::now() + patience;
         let mut attempts = 0;
         loop {
             attempts += 1;
-            socket.send_to(&first, address).unwrap();
             match attempt() {
                 Heard::Connected(_) => break,
                 refused => assert!(
@@ -3293,12 +3300,15 @@ mod tests {
                     "refused {attempts} times over {patience:?}: {refused:?}"
                 ),
             }
+            socket.send_to(&first, address).unwrap();
         }
         assert!(attempts >= 2, "its first attempt asks the holder");
-        assert!(
-            matches!(next_heard(&at_endpoint, |_| true), Heard::Lost(..)),
-            "its handshake was let go first"
-        );
+        // Let go as unanswering, its replays no answer: not as a handshake that answered and
+        // made no progress for its window, which a replay heard would have it be.
+        match next_heard(&at_endpoint, |_| true) {
+            Heard::Lost(_, why) => assert!(why.contains("no answer to a newcomer's PING"), "{why}"),
+            other => panic!("its handshake was let go first: {other:?}"),
+        }
         assert!(matches!(next_heard(&at_endpoint, |_| true), Heard::Connected(_)));
         endpoint.send(Command::Stop).unwrap();
         serving.join().unwrap().unwrap();
@@ -3306,16 +3316,43 @@ mod tests {
     }
 
     /// A client driven by hand on a socket of its own, its handshake advanced as a test says:
-    /// its first flight sent (its first datagram sent again, which its server hears and which advances
-    /// nothing), its server's datagrams read, and what it has to send held, split into its
-    /// packets, so that its Initial packets (acknowledging its server's Initial CRYPTO) and the
-    /// rest (its Handshake CRYPTO, its Finished) go each when the test says.
+    /// its first flight sent (its first datagram kept, to replay), its server's datagrams read,
+    /// and what it has to send held, split into its packets, so that its Initial packets
+    /// (acknowledging its server's Initial CRYPTO) and the rest (its Handshake CRYPTO, its
+    /// Finished) go each when the test says. Or its server's packets kept unread
+    /// ([`Hand::take`]), each space's handed to its connection when the test says, while it
+    /// answers ([`Hand::answer`]).
     struct Hand {
         socket: UdpSocket,
         endpoint: Endpoint,
         quic: Connection,
         to: SocketAddr,
         first: Vec<u8>,
+        unread: Vec<Vec<u8>>,
+        answered: Option<Instant>,
+    }
+
+    /// How often a hand answers ([`Hand::answer`]): each initial RTT (RFC 9002 §6.2.2, 333 ms),
+    /// so that each ask is answered with two thirds of its server's cold handshake probe
+    /// timeout, 999 ms (§6.2.1), to spare ([`Liveness::unanswering`]). Its server stays cold
+    /// as long as it acknowledges nothing (no RTT sample, §5.1).
+    const ANSWER_EVERY: Duration = Duration::from_millis(333);
+
+    /// A hand's congestion window: room for every answer it sends unacknowledged in the longest
+    /// a test waits on it ([`Contended::connects_within`]'s 30 s), one each [`ANSWER_EVERY`] (91),
+    /// each at most a datagram of 1200 bytes (an Initial's, RFC 9000 §14.1), its first flight and
+    /// its probes beside. The window a connection begins with, ten datagrams (RFC 9002 §7.2),
+    /// holds a peer that reads nothing of its server's, and so has nothing acknowledged, back
+    /// within seconds.
+    const HAND_WINDOW: u64 = 1200 * 128;
+
+    /// Long-header packet types (RFC 9000 §17.2).
+    const INITIAL: u8 = 0;
+    const HANDSHAKE: u8 = 2;
+
+    /// A long-header packet's type (RFC 9000 §17.2); none for a short one.
+    fn long_type(packet: &[u8]) -> Option<u8> {
+        packet.first().filter(|b| *b & 0x80 != 0).map(|b| (b >> 4) & 0x3)
     }
 
     #[test]
@@ -3405,12 +3442,93 @@ mod tests {
                 quic,
                 to,
                 first,
+                unread: Vec::new(),
+                answered: None,
             }
         }
 
-        /// Its first datagram again: heard, and no progress.
-        fn again(&self) {
-            self.socket.send_to(&self.first, self.to).unwrap();
+        /// An answer to its server, at most every [`ANSWER_EVERY`]: a PING its connection seals
+        /// in a packet of its own, of its newest keys' space and a packet number never sent
+        /// before, as a probe is (RFC 9000 §13.3, RFC 9002 §6.2.4). Its server authenticates it
+        /// and hears it; it carries no CRYPTO, so it advances no handshake.
+        fn answer(&mut self) {
+            if self.answered.is_some_and(|at| at.elapsed() < ANSWER_EVERY) {
+                return;
+            }
+            self.answered = Some(Instant::now());
+            self.gather();
+            self.quic.ping();
+            self.flush();
+        }
+
+        /// Keeps, unread, the packets of what its server has sent so far.
+        fn gather(&mut self) {
+            self.socket.set_nonblocking(true).unwrap();
+            let mut datagram = vec![0; DATAGRAM];
+            while let Ok((n, _)) = self.socket.recv_from(&mut datagram) {
+                self.unread.extend(coalesced(&datagram[..n]));
+            }
+            self.socket.set_nonblocking(false).unwrap();
+        }
+
+        /// Hands its connection the packets of type `ty` its server has sent (waiting for the
+        /// first), keeping the rest unread, and sends what it has to in answer; its Initial
+        /// packets lost on the way unless `acknowledged`, so that its server, which takes an RTT
+        /// sample from an acknowledgement (RFC 9002 §5.1), stays cold.
+        fn take(&mut self, ty: u8, acknowledged: bool) {
+            let until = Instant::now() + Duration::from_secs(60);
+            while !self.unread.iter().any(|p| long_type(p) == Some(ty)) {
+                assert!(Instant::now() < until, "no packet of type {ty} from its server");
+                self.gather();
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            let (these, rest) = std::mem::take(&mut self.unread)
+                .into_iter()
+                .partition::<Vec<_>, _>(|p| long_type(p) == Some(ty));
+            self.unread = rest;
+            for packet in these {
+                let mut response = Vec::new();
+                let bytes = BytesMut::from(packet.as_slice());
+                if let Some(DatagramEvent::ConnectionEvent(_, event)) =
+                    self.endpoint
+                        .handle(Instant::now(), self.to, None, None, bytes, &mut response)
+                {
+                    self.quic.handle_event(event, self.endpoint.configs_mut());
+                }
+            }
+            while self.quic.poll_endpoint_events().is_some() {}
+            match acknowledged {
+                true => self.flush(),
+                false => loop {
+                    let mut out = Vec::new();
+                    let Some(sent) =
+                        self.quic
+                            .poll_transmit(Instant::now(), 1, &mut out, self.endpoint.configs())
+                    else {
+                        break;
+                    };
+                    out.truncate(sent.size);
+                    let kept: Vec<Vec<u8>> = coalesced(&out)
+                        .into_iter()
+                        .filter(|p| long_type(p) != Some(INITIAL))
+                        .collect();
+                    self.send(&kept);
+                },
+            }
+        }
+
+        /// Sends all its connection has to send.
+        fn flush(&mut self) {
+            loop {
+                let mut out = Vec::new();
+                let Some(sent) =
+                    self.quic
+                        .poll_transmit(Instant::now(), 1, &mut out, self.endpoint.configs())
+                else {
+                    break;
+                };
+                self.socket.send_to(&out[..sent.size], self.to).unwrap();
+            }
         }
 
         /// Reads what its server sent within `within` of quiet, and returns the packets it has to
@@ -3545,11 +3663,21 @@ mod tests {
             crate::tls::client(of, self.server.fingerprint(), crate::tls::Known::Never).unwrap()
         }
 
+        /// A hand ([`Hand`]) with a window of [`HAND_WINDOW`], its transport otherwise a
+        /// client's.
         fn hand(&self) -> Hand {
-            Hand::connect(
-                self.address,
-                self.config(&crate::identity::Identity::generate().unwrap()),
+            let mut transport = crate::tls::transport(false, crate::tls::Known::Never);
+            let mut cubic = hyper_quic::congestion::CubicConfig::default();
+            cubic.initial_window(HAND_WINDOW);
+            transport.congestion(hyper_quic::congestion::Congestion::Cubic(cubic));
+            let config = crate::tls::client_with(
+                &crate::identity::Identity::generate().unwrap(),
+                self.server.fingerprint(),
+                transport,
+                crate::tls::ALPN,
             )
+            .unwrap();
+            Hand::connect(self.address, config)
         }
 
         /// The newcomer's attempt: refused (`Lost`) or connected.
@@ -3566,14 +3694,15 @@ mod tests {
         }
 
         /// Attempts until `until`, the holder answering each as `answer` says: each refused.
-        fn refused_until(&self, until: Instant, answer: impl Fn()) {
+        fn refused_until(&self, until: Instant, mut answer: impl FnMut()) {
             let mut attempts = 0;
             while Instant::now() < until {
                 attempts += 1;
                 let heard = self.attempt();
                 assert!(
                     matches!(heard, Heard::Lost(..)),
-                    "attempt {attempts}: the holder gave its place: {heard:?}"
+                    "attempt {attempts}: the holder gave its place: {heard:?}; its endpoint heard {:?}",
+                    self.at_endpoint.try_iter().collect::<Vec<_>>()
                 );
                 answer();
             }
@@ -3581,7 +3710,7 @@ mod tests {
 
         /// Attempts, the holder answering each as `answer` says, until one connects within
         /// `patience`: when it did.
-        fn connects_within(&self, patience: Duration, answer: impl Fn()) -> Instant {
+        fn connects_within(&self, patience: Duration, mut answer: impl FnMut()) -> Instant {
             let until = Instant::now() + patience;
             let mut attempts = 0;
             loop {
@@ -3604,32 +3733,30 @@ mod tests {
         }
     }
 
-    /// A handshake whose client answers every newcomer's ask (its first datagram again) but
-    /// never advances it gives its place to a newcomer once it has made no progress for a whole
-    /// window (ROOT's ruling on #72's unfinished handshakes). No handshake has completed at this
-    /// endpoint, so the window is the cold one: the first kPersistentCongestionThreshold (3) of
-    /// its handshake's probe timeouts, each backed off (RFC 9002 §6.2.1, §7.6.1), 7 of them, the
-    /// initial RTT's 999 ms each before any RTT sample (§6.2.2), its client acknowledging nothing.
-    /// Red with a handshake held by its answers alone: the newcomer refused at every attempt.
+    /// A handshake whose client answers every newcomer's ask (a PING of its own, newly sealed,
+    /// [`Hand::answer`]) but never advances it gives its place to a newcomer once it has made no
+    /// progress for a whole window (ROOT's ruling on #72's unfinished handshakes). Its client
+    /// reads its server's Initial at once and nothing after, its acknowledgement lost, so that
+    /// its answers are Handshake PINGs and its server takes no RTT sample. No handshake has completed at this endpoint,
+    /// so the window is the cold one: the first kPersistentCongestionThreshold (3) of its
+    /// handshake's probe timeouts, each backed off (RFC 9002 §6.2.1, §7.6.1), 7 of them, the
+    /// initial RTT's 999 ms each before any RTT sample (§6.2.2). Red with a handshake held by its
+    /// answers alone: the newcomer refused at every attempt.
     #[test]
     fn a_handshake_that_answers_but_never_advances_gives_its_place_after_a_window_without_progress() {
         let c = Contended::new();
         let began = Instant::now();
-        let holder = c.hand();
-        let mut datagram = vec![0; DATAGRAM];
-        holder
-            .socket
-            .set_read_timeout(Some(Duration::from_secs(60)))
-            .unwrap();
-        holder.socket.recv_from(&mut datagram).unwrap();
+        let mut holder = c.hand();
+        holder.take(INITIAL, false);
 
-        let took = c.connects_within(Duration::from_secs(30), || holder.again());
+        let took = c.connects_within(Duration::from_secs(30), || holder.answer());
         let waited = took - began;
+        let lost = next_heard(&c.at_endpoint, |_| true);
         assert!(
             waited >= Duration::from_millis(6_993),
-            "let go within the cold window of seven backed-off probe timeouts: {waited:?}"
+            "let go within the cold window of seven backed-off probe timeouts: {waited:?}, {lost:?}"
         );
-        match next_heard(&c.at_endpoint, |_| true) {
+        match lost {
             Heard::Lost(_, why) => assert!(why.contains("no progress"), "{why}"),
             other => panic!("its handshake was let go first: {other:?}"),
         }
@@ -3641,26 +3768,20 @@ mod tests {
     }
 
     /// A handshake that advances slowly keeps its place however long it takes in all: its client
-    /// answers each newcomer's ask, acknowledges its server's Initial 4 s in (within the cold
-    /// window of 7 s), and sends its Finished 4 s after that, past the cold window from its
-    /// start, which a handshake that never advanced would have given way at.
+    /// answers each newcomer's ask ([`Hand::answer`]: Initial PINGs, then Handshake ones),
+    /// acknowledges its server's Initial 4 s in (within the cold window of 7 s), and sends its
+    /// Finished 4 s after that, past the cold window from its start, which a handshake that never
+    /// advanced would have given way at.
     #[test]
     fn a_handshake_that_advances_slowly_keeps_its_place() {
         let c = Contended::new();
         let mut holder = c.hand();
         let step = Duration::from_secs(4);
-        let (initial, rest) = holder.read(Duration::from_millis(300));
-        assert!(
-            !initial.is_empty() && !rest.is_empty(),
-            "{} {}",
-            initial.len(),
-            rest.len()
-        );
         let start = Instant::now();
-        c.refused_until(start + step, || holder.again());
-        holder.send(&initial);
-        c.refused_until(start + step * 2, || holder.again());
-        holder.send(&rest);
+        c.refused_until(start + step, || holder.answer());
+        holder.take(INITIAL, true);
+        c.refused_until(start + step * 2, || holder.answer());
+        holder.take(HANDSHAKE, true);
         assert!(
             matches!(next_heard(&c.at_endpoint, |_| true), Heard::Connected(_)),
             "the slow handshake ended"
@@ -3695,17 +3816,13 @@ mod tests {
         }
 
         let began = Instant::now();
-        let holder = c.hand();
-        let mut datagram = vec![0; DATAGRAM];
-        holder
-            .socket
-            .set_read_timeout(Some(Duration::from_secs(60)))
-            .unwrap();
-        holder.socket.recv_from(&mut datagram).unwrap();
-        let took = c.connects_within(Duration::from_secs(30), || holder.again()) - began;
+        let mut holder = c.hand();
+        holder.take(INITIAL, false);
+        let took = c.connects_within(Duration::from_secs(30), || holder.answer()) - began;
         assert!(
             took >= Duration::from_millis(2_500),
-            "let go before the slowest handshake's window: {took:?}"
+            "let go before the slowest handshake's window: {took:?}, {:?}",
+            next_heard(&c.at_endpoint, |_| true)
         );
         assert!(
             took < Duration::from_millis(6_500),
