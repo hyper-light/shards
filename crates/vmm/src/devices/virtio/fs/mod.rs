@@ -252,10 +252,18 @@ impl Slot {
             .as_mut()
             .ok_or_else(|| Unreleased::Transport(io::ErrorKind::NotConnected.into()))
             .and_then(|conn| release_reply(conn, req, reply));
-        if let Err(why) = released {
-            debug!("virtio-fs: its refused reply's resources: {why}");
-            // A partial cleanup exchange cannot be followed by another request.
-            *conn = None;
+        match released {
+            Ok(()) => {}
+            // Its exchange whole, the stream stays in step: Linux, too, ignores a
+            // RELEASE's error (fs/fuse/file.c, fuse_file_put: fuse_release_end(args, 0)).
+            Err(why @ Unreleased::Refused { .. }) => {
+                debug!("virtio-fs: its refused reply's resources: {why}");
+            }
+            Err(why) => {
+                debug!("virtio-fs: its refused reply's resources: {why}");
+                // A partial cleanup exchange cannot be followed by another request.
+                *conn = None;
+            }
         }
         reply.clear();
         reply.extend_from_slice(&refused);
@@ -372,6 +380,7 @@ fn release_reply(conn: &mut Stream, req: &[u8], reply: &[u8]) -> Result<(), Unre
         OPENDIR => Some((RELEASEDIR, node, proto::OUT_HEADER_BYTES)),
         _ => None,
     };
+    let mut released = Ok(());
     if let Some((release, node, at)) = handle {
         let fh = long(reply, at).ok_or(Unreleased::Malformed)?;
         let flags = word(req, proto::IN_HEADER_BYTES).ok_or(Unreleased::Malformed)?
@@ -383,7 +392,11 @@ fn release_reply(conn: &mut Stream, req: &[u8], reply: &[u8]) -> Result<(), Unre
         body.get_mut(8..12)
             .ok_or(Unreleased::Malformed)?
             .copy_from_slice(&flags.to_le_bytes());
-        send(release, node, &body)?;
+        released = send(release, node, &body);
+    }
+    // A refused RELEASE still forgets its entry, as fuse_create_open's failure does.
+    if !matches!(released, Ok(()) | Err(Unreleased::Refused { .. })) {
+        return released;
     }
     let mut done = Ok(());
     for_each_entry(req, reply, |node| {
@@ -392,7 +405,7 @@ fn release_reply(conn: &mut Stream, req: &[u8], reply: &[u8]) -> Result<(), Unre
             done = send(proto::op::FORGET, node, &1u64.to_le_bytes());
         }
     });
-    done
+    done.and(released)
 }
 
 /// The descriptor of the file of node `node` of the server at the other end of `conn`,
