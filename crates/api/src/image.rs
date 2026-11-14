@@ -567,11 +567,11 @@ pub trait ImageGuest: Send + Sync {
     ) -> Result<Option<std::num::NonZeroU64>, ImageRefusal>;
     /// The period the run's VM's governor holds a [`rate`](Self::rate) over (D191, D247):
     /// each period the run's vCPUs together use at most the rate's share of it, held out of
-    /// their guest once it is spent until the period ends. As its run host said it as the run
-    /// started, the period its own build's hold uses, so that an orchestrator derives its
-    /// window from the run's own and copies no number: a period shards derives later (D191)
-    /// reaches it as it is.
-    fn rate_period(&self) -> Duration;
+    /// their guest once it is spent until the period ends. As its VM said it with its last
+    /// rate's answer, the period its governor derived for that rate from what it has learned
+    /// of its step (vcpus × g over the share), so that an orchestrator derives its window
+    /// from the run's own and copies no number: none until a rate has been answered.
+    fn rate_period(&self) -> Option<Duration>;
     /// How the run's microVM started (D253): restored from its image's template, booted saving
     /// one, or booted where its template did not restore, which was then removed; booted alone
     /// where its host had no template to restore or save. As its run host said it as the run
