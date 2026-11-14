@@ -24664,7 +24664,8 @@ daemon cannot start under `SHARDS_HELPERS=skip` (exit 1 before it served), at th
 At `5b7e1748b` (the race asked of the path, still RACE's 300 ms),
 `cargo test -p shards-registry --lib patience::tests::a_dial_starts_its_next_address_as_its_paths_connects_retransmit`
 failed: a path that had shown no connect raced at 300 ms, not RFC 8305 §8's 250 ms. At
-`095cbe98e` it passed, along with the registry's lib tests and clippy (see below). Expected
+`095cbe98e` it passed, with shards-registry's lib tests (176) and `cargo clippy -p
+shards-registry --all-targets -- -D warnings`, macOS arm64 (adas-mac-studio-3.local). Expected
 values, each from RFC 6298 §2.2 on the path's first connect: 10 ms gives 30 ms, held at
 the 100 ms minimum; 150 ms gives 450 ms; 1.5 s gives 4.5 s, held at the 2 s maximum; a
 handshake teaches the race nothing. This is unit evidence, not a dial over a real network.
