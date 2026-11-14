@@ -3027,6 +3027,20 @@ build's, is refused, saying its path, its digest and why.
   writes, renames or deletes it, and CreateProcess, which opens it to read and execute,
   still may. macOS has no fexecve(2) and its posix_spawn takes a path: there the window
   between the check and the exec stays, the start by name.
+  - *Its name (2026-11-14).* An exec takes a process's name (`comm`, what ps(1), top(1)
+    and pgrep(1) show) from its path's last part (fs/exec.c), so on Linux a helper started
+    through `/proc/PID/fd/N` was named `N`: at a932bc894 on adacachy2 the VM process's
+    `/proc/PID/comm` read `5`, its `/proc/PID/exe` `…/helpers/<digest>/shards-vm`, and
+    ps(1) and top(1) showed it so. Each helper now names itself after its file as it starts,
+    the VM process before it confines itself (`shards_ipc::name_after_executable`, in the
+    one crate both helpers link: `/proc/self/exe`'s last part, prctl(2) PR_SET_NAME, which
+    keeps its first 15 bytes, so `shards-vm`, `shards-vm-gpu` and `shards-net` whole). A
+    failure is said on stderr and the helper runs on: its name is no part of its work. Unit
+    tests (Linux): shards-ipc's
+    `name_tests::a_process_named_after_its_executable_shows_its_files_name`, and helpers.rs'
+    `a_helper_started_through_its_descriptor_is_shown_by_its_name`, which starts this
+    build's VM and network processes through `Program::path`, as launch.rs, netproc.rs and
+    `run --kernel`'s and `restore`'s exec do, and reads each one's name before it is reaped.
 - A helper `SHARDS_VM_BINARY` names, or a carrier's beside its `shards` (D237, signed by
   the carrier, its bytes not those this build carries), is its giver's to answer for and
   is started as it is.
@@ -11876,6 +11890,35 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
   snapshot, a whole 4 MiB round in each of three restores), 8,320 s, and the machine that
   goes on 12 MiB (1 MiB before, 8 MiB after and the rest of their round), 7,680 s, each going
   on while its bytes come.
+  - *Amended (2026-11-14): a stream's party is found on Linux, and its CPU is its progress
+    until its first byte.* At a932bc894 on adacachy2 (Linux x86_64, KVM, 32 CPUs), snapshot.rs'
+    storm tests failed `telling the guest it may finish` 10.7 ms and 15.3 ms into the
+    handshake (W* 9.0 ms and 10.1 ms: "a guest's stream made no progress"), and vsock.rs'
+    greeting 13.6 ms in (W* 12.7 ms), the guest then reading the host's close as `the host
+    said ""`; HVF passed them. Two causes. (1) A stream's party, this test's own VM processes
+    (`Members::Own`), was found by its processes' names, `shards-vm`, and since 8cdbf4a05 a
+    Linux VM process was named by the descriptor it was started through (`5`, runs-10's
+    *Its name* above): its party had no process, its look said `Gone`, and its wait,
+    which judges a gone party still, refused it a W* past its last byte, silently. A test's
+    own VM processes are now known by identity, never by name: each start of one registers
+    the ID it gave (`common::OwnVm`: `Vm`'s `run --kernel` and `restore`, warm.rs' warm VM,
+    budget.rs' stand-in), held until its owner has ended it, and the party is those IDs and
+    what descends from them by parent ID; the name lookup (`vm_processes_under`) is gone.
+    harness.rs `a_tests_own_vm_processes_are_known_by_their_ids` holds it (a stand-in named
+    as the test binary is). (2) Even found, its CPU was read as liveness from its start, so a wait
+    before any byte (`vsock_connect`'s handshake, `echo`'s, vsock.rs' greeting) had no
+    progress to show for the vsock device's and the guest kernel's work on its answer, and
+    the first answer of its kind refused a slower one: `Following` reads its party's CPU
+    as `Cpu::Progress` until its first byte and as `Cpu::Liveness` from then on, as
+    `Heard::streaming` does its guest's first line. The storm's spin past its start still
+    buys no wait. No literal (R03). A diagnostic on that host (an idle echo guest, 60
+    handshakes) answered in 50 µs to 5.5 ms, its VM process running throughout: the vsock
+    device is not at fault. Red/green: harness.rs
+    `a_streams_wait_follows_its_partys_work_until_its_first_byte` (a busy stand-in for the
+    party, a byte a second in after a 20 ms answer taught its kind) and the KVM tests.
+    `vsock_handshake` now says a read's refusal (`no answer after "…": <the wait's
+    account>`) apart from the device's close (`refused after "…"`), which it had folded
+    into one text.
 - **A direct boot's waits follow its guest and its VM process** (every host). boot.rs'
   `a_guest_grows_and_gives_back_its_memory` failed on the arm64 Windows host with no
   `SHARDS-TEST PLUGGED` a minute from the test's start, while its guest, booted in 13 s of
