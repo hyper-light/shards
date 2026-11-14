@@ -2227,7 +2227,9 @@ impl<'r> Stack<'r> {
                     Err(_) => gone = true,
                 }
             }
-            let mut buf = [0u8; 64 * 1024];
+            // Room for the largest message a peer sends, a whole frame and its length, so
+            // that one read can take it (network-12).
+            let mut buf = [0u8; 4 + shards_netring::MAX_FRAME];
             for _ in 0..BUDGET {
                 match (&peer.sock).read(&mut buf) {
                     Ok(0) => {
