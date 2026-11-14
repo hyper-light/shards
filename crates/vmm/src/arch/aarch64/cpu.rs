@@ -268,7 +268,21 @@ mod tests {
 /// The ID register containing an OS-named feature. Baseline readiness may ignore the
 /// name only when the guest baseline names that register; unknown names stay checked.
 pub fn feature_register(feature: &str) -> Option<u16> {
+    // Linux v6.18 arch/arm64/kernel/cpuinfo.c names HWCAPs; their ID fields are
+    // defined by arch/arm64/kernel/cpufeature.c. Retain unknown or multi-register
+    // features by name rather than treating a partial register baseline as masking them.
     Some(match feature {
+        "fp" | "asimd" | "fphp" | "asimdhp" | "dit" => 0xc020,
+        "ssbs" | "bti" => 0xc021,
+        "aes" | "pmull" | "sha1" | "sha2" | "sha3" | "sha512" | "sm3" | "sm4"
+        | "crc32" | "atomics" | "asimdrdm" | "asimddp" | "asimdfhm" | "flagm"
+        | "flagm2" | "rng" => 0xc030,
+        "dcpop" | "dcpodp" | "jscvt" | "fcma" | "lrcpc" | "ilrcpc" | "frint"
+        | "sb" | "bf16" | "ebf16" | "i8mm" | "dgh" => 0xc031,
+        "wfxt" | "rpres" | "cssc" | "hbc" | "mops" => 0xc032,
+        "ecv" => 0xc038,
+        "afp" => 0xc039,
+        "uscat" => 0xc03a,
         "FEAT_CSV2" | "FEAT_CSV3" | "FEAT_DIT" | "FEAT_FP16" => 0xc020,
         "FEAT_SSBS" | "FEAT_BTI" => 0xc021,
         "FEAT_CRC32" | "FEAT_FlagM" | "FEAT_FlagM2" | "FEAT_FHM" | "FEAT_DotProd" | "FEAT_SHA3"
@@ -293,6 +307,11 @@ mod feature_name_tests {
         for name in ["aes", "pmull", "sha1", "sha2", "crc32", "atomics"] {
             assert_eq!(super::feature_register(name), Some(0xc030), "{name}");
         }
+        for (name, reg) in [("fphp", 0xc020), ("ssbs", 0xc021), ("dcpop", 0xc031),
+            ("cssc", 0xc032), ("ecv", 0xc038), ("afp", 0xc039), ("uscat", 0xc03a)] {
+            assert_eq!(super::feature_register(name), Some(reg), "{name}");
+        }
+        assert_eq!(super::feature_register("paca"), None);
         assert_eq!(super::feature_register("FEAT_AES"), Some(0xc030));
         assert_eq!(super::feature_register("unknown_future_feature"), None);
     }
