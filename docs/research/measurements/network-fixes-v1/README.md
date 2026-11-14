@@ -86,6 +86,19 @@ remote target, exit 0. ROOT notification was rejected by Kiln inbox backpressure
 
 ## network-04: conntrack zone retirement
 
+**Fixed 2026-11-14 (Claude takeover lane, network part A), superseding the design below.**
+Zones are not retired or reused at all: each UDP candidate of each contest has a zone
+of its own for the chooser's life, assigned 1 up as it starts, so an entry conntrack
+keeps in a zone is only ever translated to that zone's one holder, whichever turn
+of holding made it. That closes the collision without a timer, a ctnetlink delete
+or a terminal notification: the bound is the kernel's u16 zone identity (0 the
+default zone), refused at start as `ZonesExhausted` before any domain runs.
+Red/green/mutation: [init0406-red-green.log](init0406-red-green.log) (kiln r1774,
+adacachy2, `cargo test -p shards-init --profile test-release --bins chooser::`; m1
+gives every candidate zone 1, failing the zone, split-port and exhaustion tests).
+The live wrap campaign below is no longer the fix's red; ROOT still owes the
+A-B-A-B handoff on real microVMs (D122).
+
 **Owed to ROOT; not fixed or live-confirmed.** Its decisive red is a kernel NAT
 binding being reused, not merely observing u16 arithmetic. The fix brief reserves
 real-VM/kernel campaigns to ROOT. The chooser still wraps its zone to 1, and
@@ -348,6 +361,13 @@ claiming this design implemented.
 
 ### network-06
 
+**Fixed 2026-11-14 (Claude takeover lane).** Per-port holders inside each contest
+(`Choices`), coalesced into runs at each holder's own ports, and contests cut
+where clipped ranges meet in part, with `pre` programming only uncontested rests.
+Red/green and mutations m2 (any port listened takes all) and m3 (contested only
+where equal): [init0406-red-green.log](init0406-red-green.log). The real-VM
+split-listener fixture below stays ROOT's.
+
 Starting command:
 `cargo test -p shards --test build a_port_comes_in_to_the_member_listening_on_it -- --exact --nocapture`.
 Extend to one unmapped 7000–7001 EXPOSE, web only7000 and api only7001, then close
@@ -457,6 +477,19 @@ disjoint daemon/migration inputs from main6a52ef516, so pushed immediately under
 the contention rule. Native target cleanup r31 exited0. ROOT notification was
 rejected by Kiln429backpressure; acceptance is not claimed. Network08 resumed
 only after that landing, on p/fix-network-v1, preserving its unlanded work.
+
+### network-03 loop at main (2026-11-14, Claude takeover lane)
+
+ROOT asked whether the failure was intermittent at main. On one loaded Mac
+(adas-mac-studio-3, arm64), the pre-fix test at 6389b6e09 failed 20 of 20 runs
+alone; at main 97f404be8, with 68968478b's wait on the stack's own poller, it passed
+50 of 50 alone and the whole shards-net lib 10 of 10 ([log](mac03-loop.log)). The
+pre-fix test also failed one of two whole-lib runs: alone it loses the race between
+loopback delivery and its immediate nonblocking receive every time, beside other
+tests' threads only sometimes, which is why a whole-lib run could pass. The test
+depended on no other ordering: the resolver's question is read with a blocking
+`recv_from`, the poller's `wait` empties its event list first (poll.rs), and
+`a_records` parses deterministically. Fixed by 68968478b.
 
 ## network-08: independent DNS relay clients
 

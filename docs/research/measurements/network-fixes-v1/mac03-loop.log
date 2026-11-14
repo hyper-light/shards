@@ -1,0 +1,26 @@
+# network-03 loop, adas-mac-studio-3.local (Darwin 25.2.0 arm64, rustc 1.98.1), kiln runs r1783 and r1801,
+# carrier /tmp/g121-shot/carrier-neta (run.sh MODE=loop03), cold CARGO_TARGET_DIR ~/g121-tmp/neta-mac/target,
+# CARGO_INCREMENTAL=0, CARGO_BUILD_JOBS=4. The runner was loaded (1 of 14 cores idle as r1783 started, 5 of 14 as r1801 did).
+# Each run: cargo test -q -p shards-net --profile test-release --lib dns_answers_replace_the_names_previous_authority
+# then (whole lib) cargo test -q -p shards-net --profile test-release --lib
+
+## r1783, main 97f404be8e0cda228f12f924d3517a1e6afb4a3c (has 68968478b, the test's readiness wait)
+Darwin 25.2.0 arm64
+rustc 1.98.1 (48a229cea 2026-09-01)
+97f404be8e0cda228f12f924d3517a1e6afb4a3c
+single: pass=50 fail=0
+whole-lib: pass=10 fail=0
+
+## r1801, 6389b6e09671c7a89288fbb2224b1648b5e4dd16 (before 68968478b: on_udp called straight after send_to)
+Darwin 25.2.0 arm64
+rustc 1.98.1 (48a229cea 2026-09-01)
+6389b6e09671c7a89288fbb2224b1648b5e4dd16
+RUN 1 .. RUN 20 FAILED, each:
+thread 'tests::dns_answers_replace_the_names_previous_authority' panicked at crates/net/src/lib.rs:4076:9:
+assertion failed: stack.cfg.allows(IpAddr::from(first), Proto::Tcp, 443)
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 182 filtered out; finished in 0.00s
+single: pass=0 fail=20
+# Whole lib (M=0 meant no runs, but macOS seq 1 0 counts down, so it ran twice): one run failed the same
+# assertion (179 passed; 1 failed; 3 ignored), the other passed: the immediate receive can win when other
+# tests' threads delay the test between send_to and on_udp.
+whole-lib: pass=1 fail=1
