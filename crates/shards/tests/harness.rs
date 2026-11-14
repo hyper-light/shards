@@ -19,6 +19,13 @@ const HEARTBEAT: &str = "shards daemon 70625: container 212eb2365f9391311256a9c2
 /// before D215's judge (it says once now, as a start first outlasts the slowest seen).
 const STARTING: &str = "shards daemon 7268: VM 7282: not ready in 10s: its CPU time 3265 ms (+3265 ms in 10s), 2101 page faults (+2101)\n";
 
+/// Names process `pid` `home`'s daemon, as a daemon names itself (`shards_ipc::Named`,
+/// D185): its ID and its start.
+fn name_daemon(home: &std::path::Path, pid: u32) {
+    let start = shards_ipc::started(pid).unwrap();
+    std::fs::write(home.join("daemon.pid"), format!("{pid} {start}\n")).unwrap();
+}
+
 fn say(home: &TempDir, what: &str) {
     std::fs::OpenOptions::new()
         .create(true)
@@ -452,7 +459,7 @@ fn a_runs_stop_grace_is_its_daemons_and_not_refused() {
             .unwrap()
     };
     let (mut daemon, mut client) = (spawn(), spawn());
-    std::fs::write(home.join("daemon.pid"), format!("{}\n", daemon.id())).unwrap();
+    name_daemon(&home, daemon.id());
     let run = home.join("containers").join("graced");
     std::fs::create_dir_all(&run).unwrap();
     let grace = slowest.saturating_mul(20);
@@ -506,7 +513,7 @@ fn a_patient_wait_goes_on_while_its_party_works() {
             .stdout(std::process::Stdio::null())
             .spawn()
             .unwrap();
-        std::fs::write(home.join("daemon.pid"), format!("{}\n", daemon.id())).unwrap();
+        name_daemon(&home, daemon.id());
         let mut patience = Patience::of(&home);
         while daemon.try_wait().unwrap().is_none() {
             if !patience.holds() {
@@ -1167,7 +1174,7 @@ fn an_answer_already_there_teaches_nothing() {
         .stdout(std::process::Stdio::null())
         .spawn()
         .unwrap();
-    std::fs::write(home.join("daemon.pid"), format!("{}\n", daemon.id())).unwrap();
+    name_daemon(&home, daemon.id());
     one_state(&home).done();
     let there = one_state(&home).seen();
     let waited = Duration::from_millis(50);
@@ -1405,7 +1412,7 @@ fn a_streams_wait_follows_its_partys_work_until_its_first_byte() {
             .spawn()
             .unwrap(),
     );
-    std::fs::write(home.join("daemon.pid"), format!("{}\n", daemon.0.id())).unwrap();
+    name_daemon(&home, daemon.0.id());
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
     let taught = Duration::from_millis(20);
@@ -1604,7 +1611,7 @@ fn an_unreaped_daemon_is_gone() {
         )
     };
     assert_eq!(exited, 0, "{}", std::io::Error::last_os_error());
-    std::fs::write(home.join("daemon.pid"), format!("{}\n", zombie.id())).unwrap();
+    name_daemon(&home, zombie.id());
     let mut patience = Patience::of(&home);
     let began = Instant::now();
     let ended = loop {
