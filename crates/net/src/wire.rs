@@ -727,6 +727,26 @@ mod tests {
         for cut in 0..opts.len() {
             let _ = ipv6(&opts[..cut]).and_then(|i| udp(i.payload));
         }
+        // network-12: any number of destination options and routing headers is taken
+        // (RFC 8200 §4: in any order, any number of times), nine as well as one, each
+        // read within the packet; a hop-by-hop header anywhere but first drops it.
+        let chain = |kinds: &[u8]| {
+            let mut ext = Vec::new();
+            for (i, _) in kinds.iter().enumerate() {
+                let following = kinds.get(i + 1).copied().unwrap_or(PROTO_UDP);
+                ext.extend_from_slice(&[following, 0, 1, 4, 0, 0, 0, 0]);
+            }
+            packet(kinds[0], &ext, &datagram)
+        };
+        let nine = chain(&[60, 43, 60, 60, 43, 60, 60, 60, 60]);
+        let ip = ipv6(&nine).expect("nine extension headers");
+        assert_eq!((ip.proto, ip.header.len()), (PROTO_UDP, IPV6 + 9 * 8));
+        assert_eq!(udp(ip.payload).unwrap().payload, b"x");
+        assert!(ipv6(&chain(&[0, 60])).is_some(), "hop-by-hop first");
+        assert!(ipv6(&chain(&[60, 0])).is_none(), "hop-by-hop after another");
+        for cut in 0..nine.len() {
+            let _ = ipv6(&nine[..cut]).and_then(|i| udp(i.payload));
+        }
     }
 
     /// The gateway answers a neighbor solicitation as a router, for the address asked, to
