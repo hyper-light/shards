@@ -7362,4 +7362,5 @@ pub(crate) mod tests {
 
     /// creds-01..04 (docs/bugs/2026-11-13/creds.md): a value never reaching the guest past the mask.
     mod leaks;
+    mod expectations;
 }
