@@ -8112,6 +8112,16 @@ holds its output open); the answer waited for under the hosts' lock; a wait neve
 
 ### D185. The client and its daemon meet through files in the home (built)
 
+**Control-08 follow-up (2026-11-13), owed to ROOT.** The inherited `UNWATCHED`
+250 ms fallback in log lanes remains picked and violates R03; it is not validated by
+its reuse. Proposed design: notify the authoritative writer's append, rotation and
+terminal transitions over a shared per-run notification source, subscribing before
+checking the current segment to avoid a lost wakeup. Member append already crosses
+the host keeper; command append in the VM needs a compatible host notification. Cold
+start must establish that source or return typed watch-unavailable, rather than choose
+a first polling period. Cancellation and source end must wake the same wait. No new
+protocol or timing behavior is implemented here; [required fault scenario and proof](../research/measurements/control-fixes-v1/README.md).
+
 **Why.** shards is filesystem based (the user, repeatedly; 2026-10-18: `daemon.sock` was an
 error). Its own interfaces are files in the home; a socket stays only where an outside
 client's protocol demands one: the Engine API's `engine.sock` (D170), a context's
@@ -8725,6 +8735,18 @@ policy collected at the next build, which grew nothing. Measured: PM M426's harn
 `build::gc::tests::a_collections_cost_by_records`.
 
 ### D217. A kill waits as long as its microVM goes on ending, by what its host has shown; a freeze, to its end (built)
+
+**Concurrent record writers** (runs-07). A daemon and each API host hold the
+stable `ends.lock` exclusively across reread, maximum merge and publication. The
+existing store `Locked` wrapper unlocks before closing (M244); locking the replaced
+record's inode would not serialize the next reader. Publication uses the existing
+platform `write_in`: a uniquely owned temporary file, synced and renamed whole.
+A failed write retains this process's learned maximum, and its next observation
+can persist that retained maximum even when it is faster. The focused race test
+holds the stable lock while another writer learns a helper end, publishes its own
+teardown snapshot and releases the lock: both maxima must survive. Existing cold
+liveness behavior and the record's millisecond format are unchanged; no new wait,
+cache, runtime number or platform adapter. See the [runs fix evidence](../research/measurements/runs-fixes/README.md).
 
 **Found.** The audit of what was taken from Docker (docs/audit/2026-10-16_docker-framing.md):
 a microVM whose command outlived its SIGKILL had its VM killed 10 s later and its end given
@@ -9672,6 +9694,11 @@ stores.
   44.4, 1 MiB close together 74 against 855. Held by
   `a_file_mapped_in_many_ranges_is_looked_at_once` (mutation-checked: 8 looks for 8
   ranges).
+- **A file its window cannot follow is a reply refused** (memory-01, PM M573; D197's slice
+  4 on Windows). Where `reconcile` cannot make a file's ranges what it is (its size unread,
+  its grown pages not mapped), it refuses, typed (`fs::Unfollowed`), and the reply that
+  would tell the guest the file's size is refused it (EIO): its guest never hears a size
+  whose bytes its window does not hold, and the file is followed again at its next request.
 - **Each window's page structures in its head, not its guest's memory** (PM M300). Linux
   describes a window's pages as it probes the device, with page structures (64 bytes for
   each 4 KiB page) it took from guest RAM: a 64th of the window (M269), from a guest that,
@@ -11894,6 +11921,33 @@ took, decided (PM M412):
   guest reads the file's bytes, and zeros past its end, as on Unix.
 - **Followed as the Unix window follows a file**: before the guest hears a size,
   `reconcile` makes each range what the file is then, a grown file's new bytes the guest's.
+- **Never zeros in place of a file's bytes** (memory-01, PM M573). A section to write is made
+  only of a handle "created with the GENERIC_READ and GENERIC_WRITE access rights", one to
+  read of one with GENERIC_READ (Microsoft's CreateFileMappingW, PAGE_READWRITE and
+  PAGE_READONLY), and a share's server opens a mapping to be read alone to read
+  (`SHARED_NEEDS_WRITE`). The window kept a node's first handle: a file mapped to be read
+  and then, elsewhere in the window, to be written grew, no section to write could be made
+  of the handle kept, and `reconcile`, having freed the written range's views, placed
+  writable zeros over its file's bytes, the guest's stores reaching no file. So:
+  - a node keeps the handle given for a mapping to be written over one given to read
+    alone, as the Unix window's node keeps a descriptor opened to write (window.rs
+    `Table::insert`);
+  - a mapping's new section is made before anything of it is let go of, and where none can
+    be made, or its file's size cannot be read, it is left as it was;
+  - where a view cannot be placed once its old ones are freed ("BaseAddress and ViewSize
+    must exactly match those of the placeholder", Microsoft's MapViewOfFile3, so a view
+    replaces only a freed placeholder), its ranges stay placeholders (`Held::LetGo`), as a
+    range let go of for a cut is, a vCPU that reaches one waiting until it is made again or
+    unmapped;
+  - each is refused, typed (`fs::Unfollowed`: its size, its section, a view), and the reply
+    that would tell the guest the file's size is refused it (EIO): the guest never hears a
+    size whose bytes its window does not hold. The request itself was the server's, done:
+    a refused LOOKUP's or CREATE's node and handle stay the server's until the guest's
+    unmount, as for any reply its guest did not take.
+  Held by `a_range_mapped_to_be_written_after_one_to_be_read_stays_its_files` and
+  `a_range_no_view_of_its_file_can_be_made_for_is_refused_never_zeros` (red before,
+  mutation-checked); a view refused after its section was made is unit-unreachable, and
+  unverified.
 - **No cut under a mapping.** NTFS refuses to cut a file short while any section of it is
   held, a view or a handle (ERROR_USER_MAPPED_FILE, M412). So the window keeps views alone,
   each section's handle closed once its views are placed. A guest's own cut (a SETATTR of
@@ -12689,6 +12743,10 @@ Established TCP flows keep their opening authorization until their normal close;
 expiry/replacement affects new flows. Clock overflow/allocation failure refuses new
 learned authority through the existing policy denial, with io::Error from admission.
 Answer owner/class/CNAME validation remains network-11, a separate pending finding.
+Native macOS test correction68968478b waits on UDP readiness before invoking the
+receive handler, as the real dispatcher does; send completion alone was no delivery
+witness. It changes no production authority rule. Native red and merged gates are
+in the same evidence record.
 [Unit reproduction and remaining VM checks](../research/measurements/network-fixes-v1/README.md#network-03-dns-authority-lifetime).
 
 **Next.** IPv6 destinations (the network process learns A records alone); a destination
@@ -14095,6 +14153,35 @@ other's but what the move sends, and what the other takes by content:
   (`server::guest`, every target). Not an
   archive of go-archive's (crates/archive), whose oracle is untouched: the move's stream is
   its own format (version 3; readers also take version 2).
+- **Nor does any name it gives** (migrate-11, 2026-11-13). Beside its stream's entries, a
+  move gives names the machine moved to makes paths of its home of: its plan's ID
+  (`containers/ID`), its snapshot's (`containers/ID/snapshots/S`, which a live move's rounds
+  are laid under and `snapshot::relocate` rewrites), its volumes' (`volumes/V`, renamed into
+  place), and the volume names its record's mounts carry, each of which becomes the host
+  directory its guest is shared (`volumes/V/_data`); and the machine it ran on joins the
+  snapshot `done` names to its directory before `snapshot::remove`. None was checked, and
+  `Path::join` takes `..` as it is and an absolute name as the whole path: a record mounting
+  `/etc` would have had its guest shared `/etc/_data`, an ID of `../x` its directory
+  outside `containers/`. Each is now one name of its kind (`Named::takes`), every rule from
+  its own source: an ID as `containers::new_id` makes one, `2 × MICROVM_ID_BYTES` (32,
+  moby's `stringid`) bytes in lowercase hex; a snapshot's one file's name by
+  `synced::name_alone`'s Windows rules (Microsoft's "Naming Files, Paths, and Namespaces"),
+  the stricter, on every host, so that what one host takes every host takes; a volume's the
+  local driver's (`Store::valid`, moby's validateName) and one file's name too, as the
+  driver's rule takes a trailing dot and Windows' device names. Each refuses a separator,
+  `.`, `..`, a root and a drive's colon, so none is more than one component; none is a
+  chosen number (R03). A name that is not is refused typed (`Refused::NotAName`: the
+  microVM, the field, the value), which the mover matches as it matches `ready`'s: `ready`
+  checks the plan before anything else, `import` right after it reads the plan and before
+  any entry is placed, `adopt` takes every name it joins through the same check
+  (`one_name`), and `done` its snapshot before it resolves the microVM. `server::guest::Beneath`
+  is not the seam for these: it places under a held root but renames nothing, and `adopt`'s
+  steps are renames and reads by path, each now of one checked component. Held by
+  `daemon::moves::tests::a_moves_names_are_each_one_name_of_their_kind` (each rule's
+  takes and refusals) and `daemon::tests::a_moves_names_that_are_no_one_name_are_refused_typed_and_reach_nothing`
+  (`ready`, `import` with a stream cut past its plan, `import` of a whole record whose mount
+  names `../../x`, and `done`: each refused typed, the home's tree unchanged and no staging
+  left), with a mutation of each check red (docs/bugs/2026-11-13/migrate.md, migrate-11).
 - **Its CPU.** A restore on another CPU than its snapshot's is no longer refused where that
   CPU has every feature its guest found: the guest is told the CPU it found, each of its
   vCPUs given its snapshot's ID registers (HVF, KVM on arm64) or CPUID (KVM on x86_64),
@@ -26871,6 +26958,11 @@ member's are, so one stdio protocol carries both. The pieces:
 - *Its connection*: an exec belongs to the connection that asked for it. That connection gone,
   or the lane stopped, hangs the exec up: its steering is dropped, its streams are let go.
 
+*Exec framing correction (control-07).* Both writer and parser admit MemberExec up to
+`exec::ASK_MOST`, the ABI spec payload plus its scope, rather than an ordinary frame's
+4 MiB cap. Other tags retain their existing bound; an overlarge exec header is refused
+before waiting for its bytes. Framed storage reserves fallibly. [Red/green record](../research/measurements/control-fixes-v1/README.md).
+
 *The controller's execs* (`control::Execs`, `Exec`, `ExecControl`). A controller dialed with
 `Subscriptions::execs` asks for one with `Execs::exec(member, spec)`, and its lane opens with the
 ask. Once the endpoint says `Started`, the controller opens the exec's stdio lanes, from their
@@ -27444,6 +27536,14 @@ and no exec, attach or terminal (the plan's steps 5, 6 and 7).
   (AES-256-GCM, D239; the owner's key pinned), one record in flight, resumed a record behind and
   never ahead; an owner's lost connection takes nothing from the member. Design, literals and
   tests: D180's "A member's stdin, a stream its owner writes";
+  An orchestrator's session owns a cancellation handle for each taken input
+  (`session.rs`, control-04): member input end, run end, host answer end and session drop
+  end the actual reader, including one idle in a read. Its public writer stays a
+  `PipeWriter`; Unix uses the existing byte Stream pair, Windows an overlapped Stream
+  reader with a synchronous byte-pipe writer. Its Windows quota is the admitted ABI
+  `run::CHUNK`, not an upstream default. A post-read lifecycle check sends no newly read
+  bytes after a known end; a failed feeder spawn releases its cancellation handle.
+  [Red/green and Windows execution owed](../research/measurements/control-fixes-v1/README.md).
   record: [member-stdin-v1](../research/measurements/member-stdin-v1/README.md). Its
   connections are admitted as an exec's are (D16, "An exec's connection").
 - *stdout and stderr, captured whole* (P3). Each channel apart, its bytes as the member wrote
@@ -27525,7 +27625,10 @@ and no exec, attach or terminal (the plan's steps 5, 6 and 7).
     (`daemon/files.rs`, once the VM has its next segment): the command's newest grows unseen between
     its rotations, by a segment at most, which is the bound's one segment.
   - *Each owner's loss.* Each segment the cap lets go is its owner's record, `log.capped` beside its
-    log: a line of the segment and its output's bytes. `logs` says, on stderr, before what is kept,
+    log: cumulative segment and byte counts, durably replaced by the existing platform
+    atomic-write seam. A legacy segment/bytes history is streamed through fixed format-derived
+    buffers and replaced on the next loss; no log-open allocation follows lifetime history.
+    Windows readers select the newest version. `logs` says, on stderr, before what is kept,
     how much of each log's older output went to the run's one log cap; a log lane says it as
     `Rotated { oldest }` (D238). A segment its own retention let go meanwhile is no loss of the cap's.
   - *Compressed as the run's.* A member's segments rotated as they fill are compressed on the
@@ -27536,8 +27639,13 @@ and no exec, attach or terminal (the plan's steps 5, 6 and 7).
     left. A hold that fails (its disk) is said in the daemon's log, and holds again once a bound's
     worth more is kept; its logs keep their output meanwhile.
   - *Literals.* None chosen: the bound is the person's configured cap or the run's own log options;
-    `log.capped` is a name no segment takes (`logs::segment_of`); each record's line is the segment's
-    number and its bytes.
+    `log.capped` is a name no segment takes (`logs::segment_of`); its summary is `sum `,
+    two decimal u64 counters, their separator and newline. Its maximum serialized size is
+    therefore 46 bytes; counters use checked addition and malformed/overflowing old records
+    return InvalidData. The keeper serializes updates, disk remains authoritative, no cache
+    or timer is introduced. The daemon's private home retains the metadata's owner
+    boundary. Control-05 red/green and remaining Windows/version/profile checks:
+    [record](../research/measurements/control-fixes-v1/README.md).
   - *Tested* (light, on macOS arm64), red first, each with its behaviour absent (record:
     [agent-control-v1](../research/measurements/agent-control-v1/README.md)):
     - `daemon::managed::drain::tests::a_members_log_is_kept_and_counted_in_its_runs_cap`

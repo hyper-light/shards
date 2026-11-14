@@ -1,0 +1,80 @@
+Previous HEAD position was 7aa3c4a3 network-08: reproduce DNS relay starvation by an open TCP client
+HEAD is now at 6389b6e0 Merge current main before owed network guest-fixture handoff
+Darwin 25.2.0 arm64
+rustc 1.98.1 (48a229cea 2026-09-01)
+6389b6e09671c7a89288fbb2224b1648b5e4dd16
+   Compiling libc v0.2.189
+   Compiling find-msvc-tools v0.1.14
+   Compiling shlex v2.0.1
+   Compiling dunce v1.0.5
+   Compiling pkg-config v0.3.34
+   Compiling fs_extra v1.3.0
+   Compiling aws-lc-rs v1.18.1 (/Users/adalundhe/g121-tmp/network-arm02-v1/source/vendor/aws-lc-rs)
+   Compiling zeroize v1.9.0
+   Compiling powerfmt v0.2.0
+   Compiling rustls-pki-types v1.15.1
+   Compiling shards-abi v0.1.0 (/Users/adalundhe/g121-tmp/network-arm02-v1/source/crates/abi)
+   Compiling deranged v0.5.8
+   Compiling time-core v0.1.9
+   Compiling untrusted v0.9.0
+   Compiling num-conv v0.2.2
+   Compiling rustls v0.23.46
+   Compiling time v0.3.55
+   Compiling jobserver v0.1.35
+   Compiling base64 v0.23.1
+   Compiling cc v1.5.1
+   Compiling once_cell v1.21.4
+   Compiling subtle v2.6.1
+   Compiling httparse v1.10.1
+   Compiling pem v4.0.0
+   Compiling cmake v0.1.58
+   Compiling yasna v0.6.0
+   Compiling aws-lc-sys v0.45.0 (/Users/adalundhe/g121-tmp/network-arm02-v1/source/vendor/aws-lc-sys)
+   Compiling shards-apple v0.1.0 (/Users/adalundhe/g121-tmp/network-arm02-v1/source/crates/apple)
+   Compiling zlib-rs v0.6.8
+   Compiling twox-hash v2.1.4
+   Compiling ruzstd v0.9.1
+   Compiling flate2 v1.1.10
+   Compiling shards-ipc v0.1.0 (/Users/adalundhe/g121-tmp/network-arm02-v1/source/crates/ipc)
+   Compiling shards-netring v0.1.0 (/Users/adalundhe/g121-tmp/network-arm02-v1/source/crates/netring)
+   Compiling shards-testdir v0.1.0 (/Users/adalundhe/g121-tmp/network-arm02-v1/source/crates/testdir)
+   Compiling shards-dns v0.1.0 (/Users/adalundhe/g121-tmp/network-arm02-v1/source/crates/dns)
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CARGO_ENCODED_RUSTFLAGS': ''
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=universal_prefixed
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-apple-darwin'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/network-dns03-macos-v1/target/test-release/build/aws-lc-sys-7b5d6722a5cf1ec1/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Using flag: -ffile-prefix-map=/Users/adalundhe/g121-tmp/network-arm02-v1/source/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/network-dns03-macos-v1/target/test-release/build/aws-lc-sys-7b5d6722a5cf1ec1/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/network-dns03-macos-v1/target/test-release/build/aws-lc-sys-7b5d6722a5cf1ec1/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/network-dns03-macos-v1/target/test-release/build/aws-lc-sys-7b5d6722a5cf1ec1/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o"]).
+   Compiling rustls-webpki v0.103.16
+   Compiling rcgen v0.14.10
+   Compiling shards-verify v0.1.0 (/Users/adalundhe/g121-tmp/network-arm02-v1/source/crates/verify)
+   Compiling shards-net v0.1.0 (/Users/adalundhe/g121-tmp/network-arm02-v1/source/crates/net)
+    Finished `test-release` profile [optimized + debuginfo] target(s) in 36.67s
+     Running unittests src/lib.rs (/Users/adalundhe/g121-tmp/network-dns03-macos-v1/target/test-release/deps/shards_net-e574ade02ce143cd)
+
+running 1 test
+test tests::dns_answers_replace_the_names_previous_authority ... FAILED
+
+failures:
+
+---- tests::dns_answers_replace_the_names_previous_authority stdout ----
+
+thread 'tests::dns_answers_replace_the_names_previous_authority' (16950378) panicked at crates/net/src/lib.rs:4076:9:
+assertion failed: stack.cfg.allows(IpAddr::from(first), Proto::Tcp, 443)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    tests::dns_answers_replace_the_names_previous_authority
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 182 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards-net --lib`

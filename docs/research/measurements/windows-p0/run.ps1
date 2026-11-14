@@ -22,11 +22,12 @@ New-Item -ItemType File -Force "$base\fake-server" | Out-Null
 $env:SHARDS_INIT_BINARY = "$base\fake-init"
 $env:SHARDS_SERVER_BINARY = "$base\fake-server"
 $status = 0
-if ($what -eq 'test' -or $what -eq 'all') {
+if ($what -eq 'test' -or $what -eq 'all' -or $what -eq 'quick') {
   $runs = @(
     @('-p','shards-vmm','--lib','--','devices::virtio::fs::window::tests'),
     @('-p','shards','--bin','shards','--','grant_answer::windows_tests')
   )
+  if ($what -eq 'quick') { $runs = @(,@('-p','shards-vmm','--lib','--','devices::virtio::fs::window::tests')) }
   foreach ($r in $runs) {
     $log = "$base\test-" + $r[1] + ".log"
     & cargo test -j 6 @r *> $log
@@ -55,7 +56,7 @@ if ($what -eq 'mutate' -or $what -eq 'all') {
     git checkout -q -f -- crates 2>&1 | Out-String
   }
 }
-if ($what -eq 'clippy' -or $what -eq 'all') {
+if ($what -eq 'clippy' -or $what -eq 'all' -or $what -eq 'quick') {
   foreach ($p in @('shards-vmm','shards-vm-process','shards')) {
     $log = "$base\clippy-$p.log"
     & cargo clippy -j 6 -p $p --all-targets -- -D warnings *> $log

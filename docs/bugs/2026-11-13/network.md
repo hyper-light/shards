@@ -74,6 +74,8 @@ Ranking: P0 critical; P1 high security/resource priority; P2 high correctness pr
 
 **Status (2026-11-13):** fixed in e2237fb29 (red `tests::dns_answers_replace_the_names_previous_authority` at 5a3d27784, real connected UDP learning path). Current per-name/type answers replace history and expire at their received TTL; zero-TTL answers retain no later-connect authority. Focused initial tests passed; final merged-source gate and the explicit zero-TTL compatibility limitation are recorded in `docs/research/measurements/network-fixes-v1/README.md#network-03-dns-authority-lifetime`. ROOT owes VM/resource runs; network-11 remains separate.
 
+**Native macOS follow-up (2026-11-13):** at main6389b6e09 the test's immediate nonblocking receive can precede loopback readability, failing first-answer admission before exercising replacement. Reproduced natively on Mac3 in test-release; 68968478b makes the test wait for the actual poller token before dispatch, as production already does. Authority code is unchanged. Commands and final gates: `docs/research/measurements/network-fixes-v1/README.md#network-03-native-macos-readiness-regression`.
+
 ### network-04 — P1 / high: UDP holder changes can reuse a still-live conntrack zone and restore an old destination
 
 **Location:** `crates/init/src/chooser.rs:465`; `crates/init/src/links.rs:1561`. New chooser behavior in the review range.
