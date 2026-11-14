@@ -8469,7 +8469,8 @@ the latch needs (a descriptor; two on macOS, kqueue(2) and its directory's) and 
 watch of the process's one inotify instance (`max_user_watches`, inotify(7)), or an instance
 where the process could not make that one (`max_user_instances`), so a lane refused it is one
 the host is out of resources for, which its controller may ask again. The other `UNWATCHED`
-users (the listener, `logs -f`, a process's events, a log driver's copier) stay owed (runs-11).
+users (the listener, `logs -f`, a process's events, a log driver's copier) refuse as well
+since runs-11 (below).
 
 **Why.** shards is filesystem based (the user, repeatedly; 2026-10-18: `daemon.sock` was an
 error). Its own interfaces are files in the home; a socket stays only where an outside
@@ -8928,10 +8929,73 @@ process.
 | `RETRY` (daemon.rs), the collector | 250 ms | none: `have_room` on a wake | the wake of descriptors let go of |
 | `daemon.pid`, `daemon.stopping` | `PID` | `PID START` | proc(5); `proc_pid_rusage`; `GetProcessTimes` |
 
-Still picked, owed: `UNWATCHED` (250 ms, `RETRY`'s other use), how often what could not make
-a file watch (Linux's 128 inotify instances a user, PM M257) looks instead: the listener at
-its home, `logs -f`, a process's events, a log driver's copier; and the macOS list watcher's
-250 ms look where `daemon.pid` names no live daemon. Neither has an event to wait for.
+Still picked, owed: the macOS list watcher's 250 ms look where `daemon.pid` names no live
+daemon, which has no event to wait for. `UNWATCHED` is gone (runs-11, below).
+
+**runs-11, built (2026-11-14): no follower and no slot waits on a clock.**
+- *`UNWATCHED` (250 ms, picked)*, how often what could not make a file watch looked instead,
+  is gone: where no watch can be made, the follower refuses, typed (`daemon::WatchRefused`,
+  made by `daemon::watch`), as control-08's log lanes do (27fa453ad). ROOT's ruling, 2026-11-14:
+  refuse; no clock fallback, no handle-only mode. A watch needs a descriptor (two on macOS,
+  kqueue(2) and its directory's) and on Linux a watch of the process's one inotify instance
+  (`max_user_watches`) or an instance of its own (`max_user_instances`, inotify(7); PM M257):
+  a host out of them is out of resources the follower could not wait for, and a look's
+  interval has no cost to be derived from. Each user:
+  - *The listener* makes its three watches (the home, `images/`, `contexts/`) before the
+    daemon says it serves (`home_watches`, in `serve`): a daemon that cannot make one does not
+    start, its starter told as of any start it cannot make. `listen` takes `[FileWatch; 3]`,
+    no `Option`.
+  - *`logs -f`* makes each log's watch before any of it is shown, and *`watch processes`*
+    its record's: one refused answers `shards: NAME: …: its watch could not be made, so it is
+    not followed: …`, status 1, its run's end waiter never asked for. `wait_readable` takes
+    no timeout.
+  - *A log driver's shipper* makes its watch as it begins to follow: refused, it ends with
+    `WatchRefused` (its cause in the daemon's log, as a driver that cannot be made ends it),
+    its waiter forgotten and its place kept, so that the shipper its run's next start or the
+    daemon's next start makes sends from there.
+  Red, each by mutation restoring the fallback or swallowing the refusal:
+  `a_follow_no_watch_can_be_made_for_is_refused_before_anything_is_shown` (`logs -f` and
+  `watch processes`: before, each followed its run to its end and said nothing),
+  `a_shipper_no_watch_can_be_made_for_ends_typed`, and
+  `a_daemon_that_cannot_watch_its_home_is_not_started` (each of the three directories). A
+  test makes a directory's watch fail by the name `unwatchable` in it (`cfg(test)` only).
+- *`SWEEP` (60 s, picked)*, after which a slot taken with no request was marked, and at the
+  second removed, is gone (ROOT's ruling, 2026-11-14: the taker names its process and the
+  daemon follows its end; a `shards_ipc::slots` protocol change). On Unix:
+  - A client names itself as it takes a slot: before it opens anything else of it, it writes
+    `PID START` (`this_process`, `Named`) in one write to the slot's sixth FIFO, `N.taker`
+    (32 bytes at most: a `u32`'s digits, a space, a `u64`'s, a newline; far under
+    `PIPE_BUF`, read whole, POSIX write(2)).
+  - `Slot::wait` waits on `say`, its stop and `taker`; once the name comes it tells its
+    caller (`Event::Named`) and follows that process: a kqueue of its `EVFILT_PROC`
+    `NOTE_EXIT` on macOS, its pidfd on Linux (pidfd_open(2), 5.3), its start checked once its
+    end is watched. A taker that ends before its first byte leaves the slot `Gone`, which its
+    maker replaces at once; what it wrote before it ended goes first.
+  - The gap between a client's read of its record and its name's write is closed by the take
+    lock, `requests/taking`: a client holds it shared (flock(2)) from before it reads a record
+    until it has named itself, let go of before its file closes (M244); a lock goes with its
+    holder's end. Where more slots of a list are taken than have named takers, the maker tries
+    it exclusive, never waiting (`Requests::quiet`): held, no client is taking a slot, so a
+    slot taken whose name is neither there to read (`Probe`) nor read (its wait says so before
+    it reads, drained then) is a taker's that ended in the gap, let go of and another offered.
+    Not held, a client is taking one, and its name or its request is an event that brings the
+    maker back. A slot left so holds no client's place nor the daemon's quiet; one whose taker
+    died in the gap waits for the maker's next event with no client taking.
+  - Windows' slots needed none of it: a client takes an instance by opening it, and its end
+    ends the instance's reads (M340), so `Slot::wait` is `Gone` already; `probe` is always
+    named and `quiet` never held.
+  - A build before takers: a client finds no `N.taker` and no `taking` and names nothing; a
+    daemon of it makes neither. Either way the slot is served as before, its request reaching
+    the daemon to step aside for its client's build.
+  Red, each by mutation: the taker's end not followed (the wait never ends), in
+  `slots::fifo::tests::a_slot_whose_taker_ends_before_its_request_is_gone`; the lock not
+  asked, and names not looked at, in
+  `daemon::slots::tests::a_slot_whose_taker_ended_taking_it_is_let_go_of_while_none_takes`.
+  Also `the_daemon_holds_the_take_lock_only_while_no_client_takes_a_slot`.
+  Owed to ROOT: a client killed between take and request on HVF, KVM and WHP hosts, its slot
+  re-offered as it ends (`cargo test -p shards --profile test-release --test daemon`); the
+  client path's added cost (an flock pair, a FIFO's open and write) by
+  `docs/research/measurements/build-ab/ab.py` against e0e21e89b.
 
 Held by unit tests: `a_request_cut_tells_its_client_to_ask_again` (red before: its slot ended
 unanswered), `a_requests_wait_is_learned_from_its_clients`,
@@ -11604,7 +11668,8 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
   process (`vm::start`: boot.rs', confined.rs' and acg.rs' in-process boots, hotplug.rs'
   steps, guest_time.rs) has no VM process of its own, its vCPUs threads beside the other
   tests' and the wait's own poll: its waits follow its console alone (`Heard::console`,
-  `common::machine_ended`).
+  `common::machine_ended`). Amended by Part 5 below: its waits follow its console and its
+  process's threads beside its waiter, each stage its own kind.
 - **The tests' waits on guests, streams and daemons' words are judged too** (#77, W6's slice
   2b part 2, 2026-11-13; the person's ruling as above and R03: "we do not tolerate arbitrary
   constants. learned and data-derived values. Period."). `common::DAEMON_QUIET` (60 s, a
@@ -11970,6 +12035,62 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     campaign), build_windows.rs, build.rs (code mode among them), managed_output.rs and its
     parts (member_stdin, log_lanes, metrics), and harness_bringup.rs, whose `Observer` changed
     beneath it.
+- **Part 5: a machine's stages, and the host's work its guest waits on** (#77, 2026-11-14;
+  ROOT's KVM run c33 on adacachy2, Linux x86_64, at 5ded5b857, every kept judge record
+  cleared first). hotplug.rs:127 was refused: `the guest did not say "SHARDS-PLUG WAIT 2":
+  its guest's progress made no progress for 1.090575ms, past the slowest answer of its kind
+  seen on this host (1.056001ms), 4.185884ms into its wait ... (a machine of this test's
+  process) ... its record W* 1.056001ms, R* 0ns of CPU in 1.056001ms`, its guest having said
+  WAIT 0, `grow vda 4096`'s `GREW vda 37` and WAIT 1. Two defects, each enough for it:
+  - *One call site's stages were one kind.* `ask`'s wait for `WAIT n+1` keyed its kind by its
+    call site alone, so a grow (a size read again) taught the W* that judged a rescan, a
+    disk's probe and its first 1 MiB read and write. A wait for a guest's line is now keyed
+    by its call site and what it awaits (`Heard::console(awaited)`,
+    `WaitKind::of(site, PROGRESS, guest_text(awaited))`, kept as a command's line is, by its
+    SHA-256's first 16 hex digits): `common::guest_text` says what the run minted as its
+    placeholders (`generic`, as a command's line) and every run of digits as `{n}`, so a step's
+    number, PCI address, size and salt say no other work, and a run of more rounds
+    (`SHARDS_PLUG_ROUNDS`) keys its stages as one of fewer did. hotplug.rs' `ask` keys each
+    step by what it asked and the line it awaits (`until_asked`: `disk {n}:{n}.{n} {n} =>
+    SHARDS-PLUG WAIT {n}`, apart from `grow vda {n} => ...`). Each new kind starts cold, its
+    liveness alone, as every kind does (D215). The other guest-line waits (`Vm::wait_for*`)
+    keep their call site's key (ROOT kept this slice to hotplug.rs:127's).
+  - *Its party read no CPU at all.* `Members::Machine` was its console's words alone, so a
+    guest that worked silently on the host's side (its rescan's config-space exits on its
+    vCPU threads, its disk served by the VMM's threads) showed nothing. A machine's party
+    now follows this process's threads beside its waiter (`common::Beside`): each look reads
+    the looking thread's CPU counter, this process's, and the looking thread's again; the
+    waiter ran at most what its counter grew from before the look before's process reading to
+    after this one's, so what the process's counter grew past that, and past the two
+    counters' resolutions as their OS says them, is the other threads': their vCPUs, devices
+    and any test thread doing the host's part of a step. Unix reads the process through D215's
+    `shards_api::Watch` (Linux's CPU clock, 1 ns; macOS' proc_pid_rusage, one Mach unit,
+    42 ns) and the thread by CLOCK_THREAD_CPUTIME_ID (clock_getres: 1 ns Linux, 42 ns macOS);
+    Windows by QueryProcessCycleTime and QueryThreadCycleTime, exact cycle counts, no
+    resolution to allow, and no CPU time said for them (R* is diagnosis). A look by another
+    thread than the look before is based. Nothing here is a chosen number (R03): the
+    uncertainty is the clocks' own resolution, cold start is D215's (no record, liveness
+    alone; a first look based). Measured before choosing (macOS 26 arm64, this harness's
+    method in Python, `docs/research/measurements/judge-machine/beside.py 200000 0` and
+    `3000 0.001`, `CLOCK_PROCESS_CPUTIME_ID` at its 1 µs and the thread clock at 42 ns):
+    a lone thread's bracketed lower bound passed zero in 9,430 of 200,000 back-to-back looks
+    (worst 584 ns), never past the two resolutions' sum; with 1 ms sleeps, 0 of 3,000. So
+    the resolutions are subtracted, never only zero. What it can hide: a binary whose tests
+    run two machines at once counts each one's CPU as the other's progress, a stall seen once
+    the other ends (hotplug.rs' second test runs only beside a host's edu function;
+    guest_time.rs has one); and, like a VM process's (D215), a guest spinning on nothing.
+  - Red with each guard removed, green with both, on adas-mac-studio-3.local (macOS arm64,
+    kiln r1950, eb05eaeaa): harness.rs `one_call_sites_guest_stages_are_judged_apart` (a
+    stand-in: a grow's stage answered at once, then a disk's after 50 ms of nothing; keyed by
+    the call site alone, refused 18.2 ms in at W* 146 µs), `a_machines_host_work_is_its_progress`
+    (a thread of the test spinning 200 ms as the host's work; with no `Beside`, refused
+    11.8 ms in at W* 255 µs, "R* 0ns of CPU"), `a_machines_waiter_alone_is_no_progress` (a
+    stand-in whose waiter spins on its looks, nothing else running: refused; with the
+    waiter's own run not taken off, never refused in 10 s at W* 146 µs), and
+    `a_guest_waits_text_is_keyed_without_its_numbers`.
+  - Owed (ROOT): hotplug.rs and guest_time.rs on KVM, HVF and WHP, their records cleared;
+    the harness's Windows run of `a_machines_waiter_alone_is_no_progress`, which holds the
+    cycle counters' accounting of a running thread (unverified here).
 
 **The storm's watch, by the host's word (audit of picked constants, 2026-11-09).** The test
 guest's storm said its main thread stood still after 15 s and took its host's stream for
@@ -19429,10 +19550,10 @@ were excluded by the review.
 | 10 ms poll (daemon.rs `take_lock`) | picked | Events, not looks: a blocking `File::lock` on a helper thread; a `platform::FileWatch` of the home (`requests/` lists, `daemon.stopping`); and the holder's exit (kqueue `EVFILT_PROC`/`NOTE_EXIT`, a pidfd, its process handle). | a unit test counting looks: one per event |
 | `HANDOFF_TRIES` 3 (daemon.rs `start_run`) | picked | Try each warm VM its pool held ready when the run began, then one booted for it. A VM booted for the run that also fails is a failure of the run, not of a VM: it ends typed, naming the last cause. The bound is the pool's own count. | `claim` to say whether a VM was ready or booted; red: four played warm VMs, three ending before `TAKEN`, the fourth takes the run |
 | 1 s, 10 ms polls (daemon.rs `with_its_process`) | picked | Wait on the VM process's exit event without reaping it (waitid `WNOWAIT`, kqueue, its handle), judged by D215 on a record of link-close-to-exit: cold while it lives and progresses. | red: a process that ends 1.5 s after its link closes still has its status said |
-| `UNWATCHED` 250 ms (daemon.rs) | picked (D185's admission) | The followers whose writer is the daemon (`logs -f`, events, the copiers) wait on that writer's own notification: one owner, a condvar, no file watch. Only files written by another process keep a watch. When that watch cannot be made (no inotify instance), wait for an instance to be let go of, as the listener waits for descriptors (`have_room`). | red: `logs -f` with no inotify instance follows each line without a clock |
+| `UNWATCHED` 250 ms (daemon.rs) | gone (runs-11, D185): refused typed where no watch can be made, ROOT's ruling over this row's design | The followers whose writer is the daemon (`logs -f`, events, the copiers) wait on that writer's own notification: one owner, a condvar, no file watch. Only files written by another process keep a watch. When that watch cannot be made (no inotify instance), wait for an instance to be let go of, as the listener waits for descriptors (`have_room`). | red: `logs -f` with no inotify instance follows each line without a clock |
 | 1 ms poll (cli/client.rs `ask_slot`) | picked | The client started the daemon, so it holds its child: wait on that child's exit and a `FileWatch` of `requests/` for the first list. The daemon's own `daemon.pid` covers one started by another client. | red: a counted-look test, a started daemon that offers slots late |
 | 250 ms (ipc slots/fifo.rs, macOS list with no process watch) | picked (D185) | select(2) sees a FIFO writer's end on macOS (M253's finding), so wait on the list's read end for it: no clock. | macOS unit test, the list's writer ended with no pid |
-| `SWEEP` 60 s (daemon/slots.rs) | picked | A client names itself (`this_process`) in its slot as it takes it, and the daemon follows that process's exit (one process watch per taken slot, released at its request): an abandoned slot goes as its taker ends, with no sweep. | red: a taker killed before its request; its slot re-offered at its exit |
+| `SWEEP` 60 s (daemon/slots.rs) | gone (runs-11, D185): built as this row says, the gap before a name closed by the take lock | A client names itself (`this_process`) in its slot as it takes it, and the daemon follows that process's exit (one process watch per taken slot, released at its request): an abandoned slot goes as its taker ends, with no sweep. | red: a taker killed before its request; its slot re-offered at its exit |
 | 60 s log window (daemon/slots.rs `said_at_most`) | picked, policy | Say each episode, at reaching the most and as clients in hand go below it, with how many waited and how long. A log line per episode is bounded by the log's own rotation (D163). | a unit test of the transitions |
 | 5 s (vm_run.rs, joiners' end reports, `warm::await_joiners`) | picked | Wait while each joiner's process lives, judged by D215 on a record of joiner end reports: cold, its liveness. | red: a joiner that reports at 6 s keeps its holder |
 | 5 s (vm_run.rs, the relay's outcome after the VM's end) | picked | The relay ends with its VM's sockets, so join its thread (its own end) and send it nothing to wait on. | red: a relay slow to drain past 5 s still has its outcome said |
@@ -19536,7 +19657,7 @@ progress; D222's estimators).
 The daemon's `REQUEST_TIMEOUT` and `RETRY`, and how a client knows its daemon, are D185's
 "Admission" (2026-11-09): a request cut told RESTART and its wait learned, a client out of
 descriptors refused with a spare and the daemon woken as descriptors go, a daemon known by its
-ID and start. `RETRY`'s use for what could not watch a file (`UNWATCHED`) is still owed.
+ID and start. `RETRY`'s use for what could not watch a file (`UNWATCHED`) is gone (runs-11).
 
 Held by unit tests (`a_pressure_is_said_as_it_doubles`,
 `each_word_asks_every_builder_once_and_says_the_sum_as_the_pressure_doubles`,
@@ -26178,7 +26299,10 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
       own process, read by its console's words alone (no CPU of its own is read), and its
       words' baseline was read as the wait began. The guest said nothing for longer than
       that call site's slowest answer, whose asks (`grow vda`, a plug, an unplug) share one
-      kind: what its guest did is not observable to its wait at all.
+      kind: what its guest did is not observable to its wait at all. Fixed by D209's Part 5
+      (#77, ROOT's KVM run c33's same refusal): each of its stages is a kind of its own
+      (call site and awaited text, numbers generic), and a machine of the test's process
+      progresses while its process's threads beside its waiter run.
     - *Only an answer waited for teaches* (#77; docs/bugs/2026-11-13/waits.md waits-03). A
       test's wait moves through explicit stages (common/mod.rs `Stage`): `Begun`, its
       answer not yet found missing; `Awaited`, found missing at least once, by a look

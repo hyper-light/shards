@@ -513,3 +513,15 @@ Owed, with designs (no other number substituted; each stays live until built):
   host's own write, compression, flush and reader costs within the user's history and
   the readers' memory bounds; cold start the file system's allocation granule clamped
   to the history. ROOT must define the objective and measure it before building.
+
+Built by the runs-11 tail lane (Claude, branch p/runs11-v1, 2026-11-14), on ROOT's rulings;
+macOS arm64 on adas-mac-studio-3.local (kiln), Linux x86_64 on adacachy2 for shards-ipc:
+- `UNWATCHED`: c1fe80299. Refused typed (`daemon::WatchRefused`) where no watch can be made,
+  each user (listener, `logs -f`, `watch processes`, the shipper); D185 *runs-11, built*.
+  [runs11-unwatched-red.log](runs11-unwatched-red.log),
+  [runs11-unwatched-green.log](runs11-unwatched-green.log).
+- `SWEEP`: 65bf5db0d. The taker's `PID START` in `N.taker`, its end followed by the slot's
+  wait; the take lock (`requests/taking`) for the gap before the name. D185 as above.
+  [runs11-sweep-red.log](runs11-sweep-red.log), [runs11-sweep-green.log](runs11-sweep-green.log).
+- `TAKE_TIMEOUT`, `TAKEOVER`, `LOG_SEGMENT`: not built (ROOT cut the lane's scope); each
+  is owed with its design above and its measurement in runs.md's Status lines.

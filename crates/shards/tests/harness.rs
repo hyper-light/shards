@@ -58,7 +58,8 @@ fn a_daemons_whole_lines_are_its_words() {
 /// its stdin closes; `pulse N MS`, N rounds of a moment's CPU then MS milliseconds of none,
 /// saying nothing, as a party that works between waits on a peer outside it; `falls MS`, a
 /// give-back ([`falls`]); `leaves MS`, a stand-in `pulse 1 MS` started on its stdout and
-/// stderr, "holder PID" said there, and its own end, the holder left holding them.
+/// stderr, "holder PID" said there, and its own end, the holder left holding them; `stages`
+/// and `spinner`, a machine's waits in a process of their own ([`stages`], [`spinner`]).
 #[test]
 #[ignore = "a process of its own for the harness's stand-ins, which run it"]
 fn stand_in() {
@@ -94,6 +95,10 @@ fn stand_in() {
         let _ = std::io::stdin().read(&mut [0u8; 1]);
     } else if let Some(ms) = asked.strip_prefix("falls ").and_then(|ms| ms.parse().ok()) {
         falls(ms, busy);
+    } else if asked == "stages" {
+        stages();
+    } else if asked == "spinner" {
+        spinner();
     } else if let Some(ms) = asked.strip_prefix("leaves ") {
         #[allow(
             clippy::zombie_processes,
@@ -1236,4 +1241,159 @@ fn concurrent_keeps_never_shrink_a_kept_record() {
         panic!("nothing kept");
     };
     assert_eq!(slowest, Duration::from_millis(100), "the slowest kept shrank");
+}
+
+/// [`common::Heard::console`] at its caller's call site, waiting for `awaited`, its kind made
+/// cold: what this host kept of it removed before the wait begins.
+#[track_caller]
+fn cold_console(awaited: &str) -> common::Heard<'static> {
+    let site = std::panic::Location::caller();
+    let line = common::guest_text(awaited);
+    let _ = std::fs::remove_file(common::WaitKind::kept_at(site, common::PROGRESS, &line));
+    common::Heard::console(awaited)
+}
+
+/// [`cold_console`] at one call site: one call site for every stage waited for through it, as
+/// hotplug.rs' `ask` waits for each of its steps.
+fn one_stage(awaited: &str) -> common::Heard<'static> {
+    cold_console(awaited)
+}
+
+/// A wait for a guest's line is keyed by what it awaits beside its call site, its numbers and
+/// what the run minted said generically (`common::guest_text`): a stage's step, address,
+/// size or salt says no other work, and one temporary directory's path another's. Do: key
+/// hotplug.rs' steps' texts. Expect: a disk's step at another address and step the same; a
+/// grow's apart; a path minted by the run said as its placeholder.
+#[test]
+fn a_guest_waits_text_is_keyed_without_its_numbers() {
+    let disk = common::guest_text("disk 00:02.0 20743 => SHARDS-PLUG WAIT 2");
+    assert_eq!(disk, "disk {n}:{n}.{n} {n} => SHARDS-PLUG WAIT {n}");
+    assert_eq!(
+        disk,
+        common::guest_text("disk 00:03.0 20743 => SHARDS-PLUG WAIT 15")
+    );
+    assert_ne!(disk, common::guest_text("grow vda 4096 => SHARDS-PLUG WAIT 1"));
+    let dir = TempDir::new("stage");
+    let said = common::guest_text(&format!("ls {} => DONE", dir.display()));
+    assert!(!said.contains(&dir.display().to_string()), "{said}");
+}
+
+/// One call site's waits for different stages of a machine's guest are judged apart: a quick
+/// stage's answer never bounds a slower one's (#77, ROOT's KVM run c33 at 5ded5b857, on
+/// adacachy2, Linux x86_64: hotplug.rs' `ask` waited for `SHARDS-PLUG WAIT 2`, a rescan and a
+/// disk's first read, at the W* of `WAIT 1`, a grow, 1.056 ms, and refused it 1.09 ms into its
+/// quiet). Red with the kind its call site's alone, refused at the second stage's first
+/// judged look. Do: in a stand-in, whose process nothing else runs in, from one call site
+/// wait for a grow's answer, answered at once, which teaches its kind W*; then for a disk's,
+/// answered after 50 ms of nothing said and nothing beside its waiter run. Expect: the second
+/// waited on to its answer, its kind cold, the stand-in's status 0.
+#[test]
+fn one_call_sites_guest_stages_are_judged_apart() {
+    let run = common::run_command(
+        stand_in_doing("stages"),
+        &["stand-in".to_string(), "stages".to_string()],
+    );
+    assert_eq!(run.status, Some(0), "{run}");
+}
+
+/// The quiet of [`stages`]' second stage: many times the first's W*, a look at a stand-in's
+/// party, well within a test's run.
+const QUIET: Duration = Duration::from_millis(50);
+
+/// [`one_call_sites_guest_stages_are_judged_apart`]'s stand-in.
+fn stages() {
+    for (awaited, quiet) in [
+        ("grow vda 4096 => SHARDS-PLUG WAIT 1", Duration::ZERO),
+        ("disk 00:02.0 20743 => SHARDS-PLUG WAIT 2", QUIET),
+    ] {
+        let mut heard = one_stage(awaited);
+        let began = Instant::now();
+        loop {
+            if let Err(refused) = heard.look(false) {
+                panic!("{awaited}: refused {:?} in: {refused}", began.elapsed());
+            }
+            if began.elapsed() >= quiet {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        heard.answered();
+        assert!(
+            matches!(heard.seen(), shards_api::Seen::Learned { .. }),
+            "{awaited}: its answer taught nothing"
+        );
+    }
+}
+
+/// A machine of the test's own process progresses while its threads beside its waiter run:
+/// its vCPUs, its devices, and the host's work its guest waits on (#77, ROOT's KVM run c33:
+/// hotplug.rs' party its console's words alone, refused while its guest rescanned and read a
+/// disk the VMM served, saying nothing). Red with `Party::machine` reading no CPU, refused at
+/// the second wait's first judged look. Do: from one call site wait for one stage twice: once
+/// answered at once, which teaches its kind W*; then answered once a thread of this process
+/// has spun for 200 ms, its waiter looking each millisecond and its console saying nothing.
+/// Expect: the second waited on to its answer.
+#[test]
+fn a_machines_host_work_is_its_progress() {
+    let work = Duration::from_millis(200);
+    for round in 0..2 {
+        let mut heard = one_stage("plug 00:02.0 => SHARDS-PLUG WAIT 1");
+        heard.look(false).unwrap();
+        if round == 0 {
+            heard.answered();
+            continue;
+        }
+        let began = Instant::now();
+        let host = std::thread::spawn(move || {
+            let mut spun = 0u64;
+            while began.elapsed() < work {
+                spun = std::hint::black_box(spun.wrapping_add(1));
+            }
+        });
+        while !host.is_finished() {
+            if let Err(refused) = heard.look(false) {
+                panic!(
+                    "refused {:?} into its host's {work:?} of work: {refused}",
+                    began.elapsed()
+                );
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        host.join().unwrap();
+        heard.answered();
+    }
+}
+
+/// A machine's waiter's own run is no progress of its machine's (D209: a wait's own polls are
+/// none of its party's): a waiter that spins on its looks, nothing else of its process
+/// running, is refused once a whole W* passed. Red with its waiter's own CPU counted, its
+/// party progressing for as long as its waiter looked. Do: in a stand-in, whose process
+/// nothing else runs in, teach a stage's kind W* by an answer at once; then wait for it again,
+/// looking without a pause. Expect: refused within 100 W* or 10 s, whichever is longer; the
+/// stand-in's status 0.
+#[test]
+fn a_machines_waiter_alone_is_no_progress() {
+    let run = common::run_command(
+        stand_in_doing("spinner"),
+        &["stand-in".to_string(), "spinner".to_string()],
+    );
+    assert_eq!(run.status, Some(0), "{run}");
+}
+
+/// [`a_machines_waiter_alone_is_no_progress`]'s stand-in.
+fn spinner() {
+    let mut taught = one_stage("remove 00:02.0 => SHARDS-PLUG WAIT 3");
+    taught.look(false).unwrap();
+    taught.answered();
+    let shards_api::Seen::Learned { slowest, .. } = taught.seen() else {
+        panic!("its kind learned nothing of an answer");
+    };
+    let mut heard = one_stage("remove 00:02.0 => SHARDS-PLUG WAIT 3");
+    let began = Instant::now();
+    while heard.look(false).is_ok() {
+        assert!(
+            began.elapsed() <= slowest.saturating_mul(100).max(Duration::from_secs(10)),
+            "a waiter spinning alone never refused (W* {slowest:?})"
+        );
+    }
 }

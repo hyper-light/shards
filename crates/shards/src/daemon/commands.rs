@@ -2952,19 +2952,18 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 }
                 return Ok(());
             }
+            // Followed as they grow: woken by an append to the segment each is read from, by
+            // a segment's coming, by the run's end, or by the client's hanging up, not by
+            // a timer (audit A12). Each watch comes before a read, so no append between
+            // them goes unseen; a log no watch can be made for is refused before any of it
+            // is shown, never read on a clock (runs-11).
+            for each in &mut followed {
+                each.watch = Some(super::watch(each.log.dir())?);
+            }
             for each in &mut followed {
                 if !each.read()? {
                     return Ok(());
                 }
-            }
-            // Followed as they grow: woken by an append to the segment each is read from, by
-            // a segment's coming, by the run's end, or by the client's hanging up, not by
-            // a timer (audit A12). Each watch comes before a read, so no append between
-            // them goes unseen. Where a log has no watch (on Linux, its user's inotify
-            // instances spent: PM M257), they are read again every UNWATCHED, as the listener
-            // looks, rather than end the follow.
-            for each in &mut followed {
-                each.watch = shards_vmm::platform::FileWatch::new(each.log.dir()).ok();
             }
             let Some((number, end)) = self.wake_at_end(&id)? else {
                 for each in &mut followed {
@@ -2994,9 +2993,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                     }
                     let watches: Vec<&shards_vmm::platform::FileWatch> =
                         followed.iter().filter_map(|each| each.watch.as_ref()).collect();
-                    let unwatched = followed.iter().any(|each| each.watch.is_none());
-                    let ready =
-                        wait_readable(&watches, &end, reply.0, unwatched.then_some(super::UNWATCHED))?;
+                    let ready = wait_readable(&watches, &end, reply.0)?;
                     // Once the microVM has ended, what is left of a line is all of it; and
                     // its members' logs are whole, its end told once they are (D240).
                     if ready[1] {
@@ -4025,15 +4022,14 @@ impl Window {
     }
 }
 
-/// Waits, for `timeout` at most, until a follow has more to do: one of its logs' `watches`
-/// has seen a change, the run has ended (`end`), or its `client` has said more or hung up;
-/// which have, the watches as one.
+/// Waits until a follow has more to do: one of its logs' `watches` has seen a change, the
+/// run has ended (`end`), or its `client` has said more or hung up; which have, the watches
+/// as one.
 #[cfg(unix)]
 pub(super) fn wait_readable(
     watches: &[&shards_vmm::platform::FileWatch],
     end: &UnixStream,
     client: &UnixStream,
-    timeout: Option<Duration>,
 ) -> io::Result<[bool; 3]> {
     use std::os::fd::AsRawFd as _;
     let mut polled = Vec::new();
@@ -4050,13 +4046,10 @@ pub(super) fn wait_readable(
         revents: 0,
     }));
     let count = libc::nfds_t::try_from(polled.len()).map_err(io::Error::other)?;
-    // Rounded up: a wait of 0 ms would return at once, and spin.
-    let ms = timeout.map_or(-1, |t| {
-        libc::c_int::try_from(t.as_micros().div_ceil(1000)).unwrap_or(libc::c_int::MAX)
-    });
     loop {
-        // SAFETY: poll(2) on `count` pollfds, of descriptors the caller holds open.
-        let n = unsafe { libc::poll(polled.as_mut_ptr(), count, ms) };
+        // SAFETY: poll(2) on `count` pollfds, of descriptors the caller holds open, for as
+        // long as it takes.
+        let n = unsafe { libc::poll(polled.as_mut_ptr(), count, -1) };
         if n >= 0 {
             break;
         }
@@ -4070,20 +4063,16 @@ pub(super) fn wait_readable(
     Ok([watched.iter().any(|p| p.revents != 0), ready(0), ready(1)])
 }
 
-/// Waits, for `timeout` at most, until a follow has more to do, as Unix's does: a watch's
+/// Waits until a follow has more to do, as Unix's does: a watch's
 /// event, and the streams by reads of no bytes (`shards_ipc::await_any`).
 #[cfg(windows)]
 pub(super) fn wait_readable(
     watches: &[&shards_vmm::platform::FileWatch],
     end: &UnixStream,
     client: &UnixStream,
-    timeout: Option<Duration>,
 ) -> io::Result<[bool; 3]> {
-    let deadline = timeout.and_then(|t| Instant::now().checked_add(t));
     let events: Vec<_> = watches.iter().map(|watch| watch.fd()).collect();
-    let (streams, signalled) = super::timed(timeout, || {
-        shards_ipc::await_any(&[end, client], &events, deadline)
-    })?;
+    let (streams, signalled) = super::timed(None, || shards_ipc::await_any(&[end, client], &events, None))?;
     Ok([
         signalled.iter().any(|&s| s),
         streams.first().copied().unwrap_or(false),

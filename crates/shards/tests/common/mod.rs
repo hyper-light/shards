@@ -2917,6 +2917,28 @@ fn number_said(text: &str, value: &str, placeholder: &str) -> String {
     said
 }
 
+/// `text`, a guest's line a wait awaits and what it was asked for it ([`Heard::console`]),
+/// as its wait's kind is keyed by it beside its call site: each value this run minted said
+/// as its placeholder ([`generic`]), then each run of digits as `{n}`. One call site's waits for different stages are kept apart by their words (#77,
+/// ROOT's KVM run c33: hotplug.rs' `ask` waited for `SHARDS-PLUG WAIT 1`, a grow, and then
+/// `WAIT 2`, a rescan and a disk's first read, as one kind, whose W* the grow taught); the
+/// numbers a stage carries (its step, a PCI address, a size, a salt) say no other work, and
+/// a run of more rounds keys its stages as a run of fewer did.
+pub fn guest_text(text: &str) -> String {
+    let mut said = String::with_capacity(text.len());
+    let mut digits = false;
+    for c in generic(text).chars() {
+        let digit = c.is_ascii_digit();
+        if !digit {
+            said.push(c);
+        } else if !digits {
+            said.push_str("{n}");
+        }
+        digits = digit;
+    }
+    said
+}
+
 /// A kind of the tests' own waits: the call site that waits ([`run_command`]'s caller,
 /// `#[track_caller]` through its wrappers) and, for a wait on a command, its command's words
 /// ([`command_words`]), with what its answers have taught D215's record:
@@ -3150,6 +3172,8 @@ pub struct Party {
     cpu: Cpu,
     /// Whether it has been looked at: its first look has nothing before it.
     looked: bool,
+    /// A machine of this process's: what this process's threads beside its waiter ran.
+    beside: Option<Beside>,
 }
 
 /// Whose processes a [`Party`]'s are, besides its home's daemon and what descends from it.
@@ -3162,9 +3186,10 @@ enum Members {
     /// `run --kernel`'s, `restore`'s, warm.rs' warm VM) and what descends from them: a
     /// [`Patience`]'s, and a guest's stream's ([`Following`]).
     Own,
-    /// None: a machine this test's process runs (`vm::start`), whose vCPUs are threads beside
-    /// its other tests' and its waits' own, and whose liveness is its caller's (its
-    /// `running.wait()`): its words alone ([`Heard::console`]).
+    /// None: a machine this test's process runs (`vm::start`), whose vCPUs and devices are
+    /// threads of this process, as is the host's work its guest waits on, and whose liveness
+    /// is its caller's (its `running.wait()`): its words ([`Heard::console`]), and what this
+    /// process's threads beside its waiter ran ([`Beside`]).
     Machine,
     /// Every process this test's process started and what descends from them: the run host
     /// shards-api's `ImageShards` starts and its VM process, which a call of the API's waits
@@ -3212,9 +3237,12 @@ impl Party {
         Party::with(Members::Own, home)
     }
 
-    /// The party of a machine this test's process runs.
+    /// The party of a machine this test's process runs: its words, and the CPU of this
+    /// process's threads beside the one that looks ([`Beside`]).
     pub fn machine() -> Party {
-        Party::with(Members::Machine, None)
+        let mut party = Party::with(Members::Machine, None);
+        party.beside = Some(Beside::default());
+        party
     }
 
     /// The party of every process this test's process started, and of `home`'s daemon where
@@ -3231,6 +3259,7 @@ impl Party {
             watched: std::collections::BTreeMap::new(),
             cpu: Cpu::Progress,
             looked: false,
+            beside: None,
         }
     }
 
@@ -3318,6 +3347,21 @@ impl Party {
         if self.said.as_mut().is_some_and(Said::said) {
             looked.found = Found::Progressed;
             looked.what = "its daemon said something".into();
+        }
+        if let Some(beside) = self.beside.as_mut() {
+            let ran = beside.look();
+            looked.resolution = looked.resolution.max(beside.uncertainty);
+            match ran {
+                Ran::Based => based = true,
+                Ran::Still => {}
+                Ran::Others(cpu) => {
+                    looked.cpu = looked.cpu.saturating_add(cpu);
+                    if self.cpu == Cpu::Progress && looked.found != Found::Progressed {
+                        looked.found = Found::Progressed;
+                        looked.what = "this process's threads beside its waiter ran".into();
+                    }
+                }
+            }
         }
         // Whether a process of it was found live: one found anew, or one still to be read.
         let mut live = false;
@@ -3408,6 +3452,152 @@ impl Party {
             (None, _) => who,
         }
     }
+}
+
+/// What this process's threads beside the one that looks ran since the look before: the CPU
+/// of a machine this process runs (`Members::Machine`), whose vCPUs and devices are threads
+/// of it, as is the host's work its guest waits on (a plug, a grow, a disk's reads), and
+/// never its waiter's own polling (D209: a wait's own polls are no progress of its party's;
+/// #77, ROOT's KVM run c33, hotplug.rs refused 1.09 ms into its guest's rescan, its party its
+/// words alone). Each look reads the looking thread's CPU counter, this process's, and the
+/// looking thread's again: the waiter ran at most what its counter grew by from before the
+/// look before's reading of this process to after this one's, so what this process's counter
+/// grew by past that, and past what either counter is uncertain by (its resolution, as its
+/// OS says it), is the other threads'. A look made by another thread than the look before
+/// has nothing before it. Read as each OS keeps them:
+/// - Unix: this process through D215's `shards_api::Watch` (Linux's CPU clock to the
+///   nanosecond, macOS' proc_pid_rusage(2) in Mach units), the thread through
+///   clock_gettime(2)'s CLOCK_THREAD_CPUTIME_ID, each counter's resolution its clock's
+///   (`Watch::resolution`, clock_getres(2)).
+/// - Windows: QueryProcessCycleTime and QueryThreadCycleTime, cycle counts, exact (their
+///   time undocumented: what they ran is said as no CPU time, R* a refusal's diagnosis).
+///
+/// Other tests of its process run beside it too: a binary whose tests run two machines at
+/// once has each machine's CPU the other's progress, a stall shown only once the other ends.
+#[derive(Default)]
+struct Beside {
+    /// The look before: the thread that made it, and what it read.
+    last: Option<(std::thread::ThreadId, Reading)>,
+    /// What a difference of two readings is uncertain by: the two counters' resolutions.
+    uncertainty: Duration,
+    #[cfg(unix)]
+    watch: Option<shards_api::Watch>,
+}
+
+/// One look's reading, in its OS's units (Unix nanoseconds, Windows cycles): the looking
+/// thread's counter, this process's, then the looking thread's again.
+#[derive(Clone, Copy)]
+struct Reading {
+    before: u64,
+    process: u64,
+    after: u64,
+}
+
+/// What [`Beside::look`] found.
+enum Ran {
+    /// Nothing before it to compare with: its first look, one by another thread, or one that
+    /// could not read a counter.
+    Based,
+    /// Nothing beyond its waiter's own run and the counters' uncertainty.
+    Still,
+    /// Its other threads ran, this much (none said on Windows, whose cycles are no time).
+    Others(Duration),
+}
+
+impl Beside {
+    fn look(&mut self) -> Ran {
+        let thread = std::thread::current().id();
+        let read = self.read();
+        let before = std::mem::replace(&mut self.last, read.map(|r| (thread, r)));
+        let (Some((by, last)), Some(now)) = (before, read) else {
+            return Ran::Based;
+        };
+        if by != thread {
+            return Ran::Based;
+        }
+        let waiter = now.after.saturating_sub(last.before);
+        let uncertain = if cfg!(windows) {
+            0
+        } else {
+            u64::try_from(self.uncertainty.as_nanos()).unwrap_or(u64::MAX)
+        };
+        let others = now
+            .process
+            .saturating_sub(last.process)
+            .saturating_sub(waiter)
+            .saturating_sub(uncertain);
+        match others {
+            0 => Ran::Still,
+            ns if cfg!(unix) => Ran::Others(Duration::from_nanos(ns)),
+            _ => Ran::Others(Duration::ZERO),
+        }
+    }
+
+    #[cfg(unix)]
+    fn read(&mut self) -> Option<Reading> {
+        let before = thread_cpu(libc::clock_gettime)?;
+        let process = match self.watch.as_mut() {
+            Some(watch) => {
+                watch.look().ok()?;
+                watch.cpu()
+            }
+            None => {
+                let watch = shards_api::Followed::of_pid(std::process::id())
+                    .ok()
+                    .flatten()
+                    .and_then(|followed| shards_api::Watch::of(followed).ok().flatten())?;
+                let cpu = watch.cpu();
+                self.uncertainty = watch.resolution().saturating_add(thread_cpu(libc::clock_getres)?);
+                self.watch = Some(watch);
+                cpu
+            }
+        };
+        let after = thread_cpu(libc::clock_gettime)?;
+        let ns = |d: Duration| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX);
+        Some(Reading {
+            before: ns(before),
+            process: ns(process),
+            after: ns(after),
+        })
+    }
+
+    #[cfg(windows)]
+    fn read(&mut self) -> Option<Reading> {
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetCurrentThread};
+        use windows_sys::Win32::System::WindowsProgramming::{QueryProcessCycleTime, QueryThreadCycleTime};
+        let (mut before, mut process, mut after) = (0u64, 0u64, 0u64);
+        // SAFETY: this thread's and this process's pseudo-handles, which need no closing, and
+        // a count each to write.
+        let read = unsafe {
+            QueryThreadCycleTime(GetCurrentThread(), &mut before) != 0
+                && QueryProcessCycleTime(GetCurrentProcess(), &mut process) != 0
+                && QueryThreadCycleTime(GetCurrentThread(), &mut after) != 0
+        };
+        read.then_some(Reading {
+            before,
+            process,
+            after,
+        })
+    }
+}
+
+/// `read` (clock_gettime(2) or clock_getres(2)) of the calling thread's CPU clock.
+#[cfg(unix)]
+fn thread_cpu(
+    read: unsafe extern "C" fn(libc::clockid_t, *mut libc::timespec) -> libc::c_int,
+) -> Option<Duration> {
+    let mut at = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: the calling thread's CPU clock read into a local timespec.
+    if unsafe { read(libc::CLOCK_THREAD_CPUTIME_ID, &raw mut at) } != 0 {
+        return None;
+    }
+    Some(Duration::new(
+        u64::try_from(at.tv_sec).ok()?,
+        u32::try_from(at.tv_nsec).ok()?,
+    ))
 }
 
 /// A wait of the tests' own on a party ([`Party`]), judged by its kind's record ([`WaitKind`])
@@ -5197,8 +5387,8 @@ impl Vm {
 /// it. Its progress: a line it has not printed before, or bytes more of a stream a test
 /// carries through it (`streamed`, as [`Following`] counts them); and its VM processes' CPU
 /// time ([`Party`]), throughout ([`Heard::running`]), or only before its first line, while it
-/// starts ([`Heard::streaming`]), or never, for a machine of this process's own
-/// ([`Heard::console`]). CPU time is progress throughout for a guest of fewer vCPUs than its
+/// starts ([`Heard::streaming`]); for a machine of this process's own ([`Heard::console`]),
+/// the CPU time of this process's threads beside the one that waits, throughout. CPU time is progress throughout for a guest of fewer vCPUs than its
 /// host has CPUs: a guest onlining a gigabyte it plugged says nothing as it does (the parity
 /// plan's step 10). It is only liveness once a guest of more vCPUs than that has its own
 /// words ([`Cpu::Liveness`]): a 64-vCPU guest on 4 TCG CPUs shows it for ever, its stream
@@ -5219,19 +5409,28 @@ enum Guest {
     Running,
     /// More: progress until its first line, its liveness after.
     Streaming,
-    /// A machine of this process's: none of its own to read.
+    /// A machine of this process's: this process's threads beside its waiter's, progress
+    /// throughout ([`Party::machine`]).
     Machine,
 }
 
 impl<'a> Heard<'a> {
+    /// A wait at `site` for `awaited` ([`guest_text`]), or for its guest's progress alone
+    /// where `awaited` is empty (an end, a state, a call's return).
     fn with(
         site: &'static std::panic::Location<'static>,
         party: Party,
         guest: Guest,
         streamed: Option<&'a AtomicU64>,
+        awaited: &str,
     ) -> Heard<'a> {
+        let kind = if awaited.is_empty() {
+            WaitKind::awaiting(site, PROGRESS)
+        } else {
+            WaitKind::of(site, PROGRESS, &guest_text(awaited))
+        };
         Heard {
-            wait: Wait::on(WaitKind::awaiting(site, PROGRESS), party, PROGRESS),
+            wait: Wait::on(kind, party, PROGRESS),
             guest,
             bytes: streamed.map_or(0, |s| s.load(Ordering::Relaxed)),
             streamed,
@@ -5248,6 +5447,7 @@ impl<'a> Heard<'a> {
             Party::client(vm, None),
             Guest::Streaming,
             streamed,
+            "",
         )
     }
 
@@ -5260,19 +5460,23 @@ impl<'a> Heard<'a> {
             Party::client(vm, None),
             Guest::Running,
             None,
+            "",
         )
     }
 
-    /// The guest of a machine this process runs (`vm::start`), by what it says alone: its
-    /// vCPUs are threads of this process, whose CPU time is its other tests' too, and its
-    /// own polling's.
+    /// The guest of a machine this process runs (`vm::start`), waiting for `awaited` (a line,
+    /// with what it was asked for it; empty for its end), its kind its call site's and
+    /// `awaited`'s ([`guest_text`]): by what it says, and by the CPU of this process's threads
+    /// beside the one that waits ([`Party::machine`]), its vCPUs and the host's work for them
+    /// among them.
     #[track_caller]
-    pub fn console() -> Heard<'static> {
+    pub fn console(awaited: &str) -> Heard<'static> {
         Heard::with(
             std::panic::Location::caller(),
             Party::machine(),
             Guest::Machine,
             None,
+            awaited,
         )
     }
 
@@ -5323,7 +5527,7 @@ pub fn machine_ended(
     handle: &shards_vmm::vm::Handle,
     ended: &std::sync::mpsc::Receiver<shards_vmm::vm::ExitReason>,
 ) -> Result<shards_vmm::vm::ExitReason, String> {
-    let mut heard = Heard::console();
+    let mut heard = Heard::console("");
     let mut console = handle.console_said();
     loop {
         match ended.recv_timeout(heard.next_look()) {

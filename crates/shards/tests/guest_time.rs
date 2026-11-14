@@ -89,8 +89,9 @@ fn watch(vcpus: u32, step: u64) {
     // Each vCPU thread's guest time may be read up to a step ahead of what this process's
     // CPU time says of it, and that time is read a step behind at most.
     let slack = (u64::from(vcpus) + 1).saturating_mul(step);
-    // While its guest says something new (`common::Heard::console`, D209).
-    let mut heard = common::Heard::console();
+    // While its guest says something new or its machine's threads run (`common::Heard::console`,
+    // D209): its end awaited.
+    let mut heard = common::Heard::console("");
     let mut console = handle.console_said();
     let (mut last, mut spun, mut samples) = (None::<GuestTimes>, None::<GuestTimes>, 0u32);
     let ended = loop {

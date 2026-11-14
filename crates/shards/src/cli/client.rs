@@ -2056,7 +2056,7 @@ mod tests {
     fn serve(slots: Vec<shards_ipc::slots::Slot>, stand: Stand, home: &Path) -> Option<File> {
         let mut exit = None;
         for (n, slot) in slots.into_iter().enumerate() {
-            let Ok(shards_ipc::slots::Waited::Opened(opened)) = slot.wait() else {
+            let Ok(shards_ipc::slots::Waited::Opened(opened)) = slot.wait(|| {}) else {
                 break;
             };
             let asked = opened.request().unwrap().unwrap();
@@ -2122,7 +2122,7 @@ mod tests {
                 let slot = requests.make(false).unwrap();
                 requests.offer(slot.number(), false).unwrap();
                 let _ = offered.send(slot.stopper().unwrap());
-                let Ok(shards_ipc::slots::Waited::Opened(opened)) = slot.wait() else {
+                let Ok(shards_ipc::slots::Waited::Opened(opened)) = slot.wait(|| {}) else {
                     return asks;
                 };
                 let asked = opened.request().unwrap().unwrap();
@@ -2194,7 +2194,7 @@ mod tests {
                 let slot = requests.make(streams).unwrap();
                 requests.offer(slot.number(), streams).unwrap();
                 let _ = offered.send(slot.stopper().unwrap());
-                let Ok(shards_ipc::slots::Waited::Opened(opened)) = slot.wait() else {
+                let Ok(shards_ipc::slots::Waited::Opened(opened)) = slot.wait(|| {}) else {
                     return asks;
                 };
                 let asked = opened.request().unwrap().unwrap();
