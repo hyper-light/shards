@@ -45,3 +45,18 @@ test result: ok. 63 passed; 0 failed; 0 ignored; 0 measured; 913 filtered out; f
 ## cargo clippy -p shards --all-targets -- -D warnings
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 12.93s
 EXIT 0
+
+# part 4 (TAKE_TIMEOUT deleted), green on d0914c6ad (merge of main 2b53dfc8c, slice (b) landed), macOS arm64, adas-mac-studio-3.local, kiln foreground run 13:07 PT
+## cargo test -p shards --bin shards -- run_socket guest_times long_past metrics_whose_microvm_runs_nothing hand_over handoff taken daemon::cuts the_files_asked_for daemon::health
+test daemon::tests::metrics_whose_microvm_runs_nothing_are_ended ... ok
+test daemon::tests::a_run_socket_whose_vm_reads_and_runs_nothing_fails_its_send ... ok
+test daemon::tests::a_run_socket_waits_for_room_while_its_vm_runs ... ok
+test daemon::commands::tests::a_vm_that_runs_nothing_and_never_answers_its_guest_times_is_refused ... ok
+test daemon::commands::tests::a_vm_slow_to_answer_its_guest_times_while_it_runs_is_waited_for ... ok
+test daemon::reclaim::tests::an_answer_is_long_past_its_kinds_slowest_before_it ... ok
+test daemon::tests::a_vm_slow_to_read_its_run_while_it_runs_keeps_its_handoff ... ok
+test daemon::tests::a_vm_that_reads_nothing_and_runs_nothing_fails_its_handoff ... ok
+test result: ok. 43 passed; 0 failed; 0 ignored; 0 measured; 935 filtered out; finished in 10.63s
+## cargo clippy -p shards --all-targets -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 14.97s
+EXIT 0
