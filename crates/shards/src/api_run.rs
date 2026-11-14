@@ -6023,7 +6023,6 @@ mod tests {
     /// as the run's asks read its owner's frames, a malformed one, and one come before the
     /// run's request, as on a warm host's channel, its pool's. Expect: the owner's decoded, its
     /// directory whole; the malformed one breaking the channel; the early one refusing the run
-
     /// (`Cause::Request`), so that no save is served on a channel no run owner holds.
     #[test]
     fn a_save_is_served_on_its_run_owners_channel_alone() {
