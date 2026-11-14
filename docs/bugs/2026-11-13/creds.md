@@ -95,6 +95,8 @@ D242 **explicitly acknowledges post-expiry echoes as an unmasked residual** (`ar
 
 **Confidence:** High; explicitly confirmed by both code and design record, no live reproduction.
 
+**Status (2026-11-13):** fixed in 72420e789 (red `inject::tests::leaks::an_echo_after_its_lease_lapsed_is_masked_still`, `inject::tests::leaks::an_h2_echo_of_a_value_rotated_while_its_response_waits_is_masked`)
+
 ### creds-04 — P0 / critical — Compressed echoes bypass the raw-byte response mask
 
 **Location:** `crates/net/src/inject.rs:1992`, `:2141`, `:3939`.
