@@ -3388,6 +3388,14 @@ pub struct Party {
     served: Option<u64>,
 }
 
+/// The name a VM process runs as (`shards-vm`, `shards-vm-gpu`): a daemon's descendant of
+/// another name is its helper (its spawner, its network process), whose run for a waiter's
+/// own clients is the daemon's ([`Looked::daemon_ran`]; ROOT's batch, KVM: the polled test's
+/// party progressed by a process of the daemon's serving its polls, 13 of 30 whole binaries
+/// never refused).
+#[cfg(unix)]
+const VM_PROCESS: &str = "shards-vm";
+
 /// Whose processes a [`Party`]'s are, besides its home's daemon and what descends from it.
 #[derive(Clone, Copy)]
 enum Members {
@@ -3493,7 +3501,7 @@ impl Party {
     /// daemon, and on Unix what descends from them, from one listing of the system's
     /// ([`processes`]); on Windows each is followed with what descends from it (shards-api's
     /// tree of a process, Toolhelp32). None for a machine of this process's.
-    fn members(&self) -> Vec<u32> {
+    fn members(&self) -> (Vec<u32>, std::collections::BTreeSet<u32>) {
         let listed = match self.members {
             Members::Machine => Vec::new(),
             Members::Client(_) if cfg!(windows) => Vec::new(),
@@ -3509,22 +3517,31 @@ impl Party {
                 .map(|(pid, ..)| *pid)
                 .collect(),
         };
-        let roots: Vec<u32> = own.into_iter().chain(self.daemon()).collect();
+        let daemon = self.daemon();
+        let roots: Vec<u32> = own.into_iter().chain(daemon).collect();
         #[cfg(windows)]
-        return roots;
+        return (roots, std::collections::BTreeSet::new());
         #[cfg(unix)]
         {
-            let mut tree = roots;
+            // Each member, and whether it is its daemon's helper: under the daemon, with no
+            // VM process between them.
+            let mut tree: Vec<(u32, bool)> = roots.into_iter().map(|pid| (pid, false)).collect();
             let mut i = 0;
-            while let Some(&parent) = tree.get(i) {
-                for (pid, ppid, _) in &listed {
-                    if *ppid == parent && !tree.contains(pid) {
-                        tree.push(*pid);
+            while let Some(&(parent, parent_helps)) = tree.get(i) {
+                let under_daemon = parent_helps || Some(parent) == daemon;
+                for (pid, ppid, name) in &listed {
+                    if *ppid == parent && !tree.iter().any(|(member, _)| member == pid) {
+                        tree.push((*pid, under_daemon && !name.starts_with(VM_PROCESS)));
                     }
                 }
                 i += 1;
             }
-            tree
+            let helpers = tree
+                .iter()
+                .filter(|(_, helps)| *helps)
+                .map(|(pid, _)| *pid)
+                .collect();
+            (tree.into_iter().map(|(pid, _)| pid).collect(), helpers)
         }
     }
 
@@ -3550,7 +3567,7 @@ impl Party {
     /// again (#77 waits-09: a zombie's every look says its end under way).
     pub fn look(&mut self) -> Looked {
         use shards_api::Found;
-        let members = self.members();
+        let (members, helpers) = self.members();
         let daemon = self.daemon();
         let mut looked = Looked {
             found: Found::Still,
@@ -3640,6 +3657,11 @@ impl Party {
             match (found, self.cpu) {
                 (Ok(Found::Progressed), Cpu::Progress) if daemon == Some(pid) => {
                     looked.daemon_ran = Some(format!("its daemon {pid} ran"));
+                }
+                (Ok(Found::Progressed), Cpu::Progress) if helpers.contains(&pid) => {
+                    looked
+                        .daemon_ran
+                        .get_or_insert_with(|| format!("its daemon's process {pid} ran"));
                 }
                 (Ok(Found::Progressed), Cpu::Progress) if looked.found != Found::Progressed => {
                     looked.found = Found::Progressed;
