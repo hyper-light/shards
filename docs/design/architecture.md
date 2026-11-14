@@ -19551,11 +19551,30 @@ the run's directory.
 
 ### D122. The members an `EXPOSE` is for: one receiver for each incoming port
 
-**Review gaps (network-06/07, 2026-11-13), owed to ROOT.** Whole-range holder
-selection and IPv6 wildcard acceptance have not been validated against split
-listeners or IPV6_V6ONLY in the pinned guest. A port must have its own holder;
-expanding contests also requires excluding the original range from fallback DNAT
-and retaining each mapped destination port. IPv4 selection must parse the kernel's
+**Each port its own holder (network-06, 2026-11-14).** A contest had one holder for
+its whole range, chosen where it listened on any port of it: with web listening on
+7000 alone and api on 7001 alone under one `EXPOSE 7000-7001`, api's 7001 went to web.
+The chooser's `Choices` now keeps each contest's ports as runs, each its holder's: a
+port stays with its holder while it listens there, else goes to the first candidate
+listening on it, else to no one, and adjacent ports of one holder are one rule, at the
+holder's own ports (a mapped port keeps its member's). sock_diag's dump names the ports
+each candidate listens on (`listened`), once per candidate per round, where the old
+choice could stop at its holder's. Ranges two domains share only in part (each clipped
+to its own network's grants, netplan `ingress_of`) are contested where they meet
+(`contested` cuts at every range's ends) and `pre` programs only each range's
+uncontested rest (`uncontested`). Unit red/green and mutations (adacachy2, x86_64
+Linux): `chooser::tests::{each_port_of_a_range_goes_to_the_member_listening_on_it,
+a_choice_keeps_its_members_port_and_joins_adjacent_ports,
+ranges_that_meet_in_part_are_contested_where_they_meet}`
+([log](../research/measurements/network-fixes-v1/init0406-red-green.log)). Owed to
+ROOT: the split-listener fixture on real microVMs, TCP and UDP, one listener closing
+(`cargo test -p shards --test build a_port_comes_in_to_the_member_listening_on_it --
+--exact --nocapture`, extended to one unmapped 7000-7001 `EXPOSE` with web on 7000 and
+api on 7001), and M513's contested bind/listen latency again, as a round now dumps
+every candidate's sockets.
+
+**Review gap (network-07, 2026-11-13), owed to ROOT.** IPv6 wildcard acceptance has
+not been validated against IPV6_V6ONLY in the pinned guest. IPv4 selection must parse the kernel's
 `INET_DIAG_SKV6ONLY` attribute; an absent/malformed observation must not be guessed
 dual-stack. The fixed message's IPv6 source alone cannot establish acceptance.
 The proposed live fixtures and failure/ownership requirements are
@@ -19645,8 +19664,8 @@ receiver for an incoming port" above:
 - **A UDP flow follows its port's holder.** Linux keeps a flow's NAT binding for the
   flow's life (nf_nat_core.c; 120 s past its last datagram once it streams,
   nf_conntrack_proto_udp.c), so a client sending all along would have stayed with a
-  holder that had closed its socket. Each choice of a UDP port's holder has a conntrack
-  zone of its own (`ct zone set`, raw prerouting, the datagrams coming in and the holder's
+  holder that had closed its socket. Each holder of a UDP port has a conntrack
+  zone of its own (network-04 below) (`ct zone set`, raw prerouting, the datagrams coming in and the holder's
   answers): a flow admitted before is new in the new zone and is translated to the new
   holder, its old entry left to expire, as a guest kernel without ctnetlink (shards' has
   none) has no other way to end one; the old holder's answers past the change are new
@@ -19655,11 +19674,25 @@ receiver for an incoming port" above:
   A notification names the calling thread, which pidfd_open(2) refuses where it leads no
   thread group: the chooser, and the host network's binds (D124), open its group's leader
   then, so that a server binding on a thread of its own is seen (found by that test).
-- **Zone retirement review (network-04, 2026-11-13):** wrapping the chooser's u16
-  counter does not establish that its old NAT tuples expired. Real-kernel
-  confirmation and a typed owner refusal at exhaustion, or authoritative kernel
-  retirement before reuse, remain owed to ROOT. No copied timeout closes the gap.
-  [Fixture and design](../research/measurements/network-fixes-v1/README.md#network-04-conntrack-zone-retirement).
+- **A zone is one holder's for the run (network-04, 2026-11-14).** Each change of a
+  UDP holder took the next zone of a u16 counter, which wrapped to 1 while a flow
+  conntrack kept there could still be translated to the holder it was made for (no
+  ctnetlink in shards' guest kernel to end it; no clock ties the wrap to its expiry):
+  after 65,535 changes the same client tuple went to the old holder. Each UDP
+  candidate of each contest now has a zone of its own, fixed as the chooser starts
+  (`Choices::new`), so every entry conntrack keeps in a zone is translated to the one
+  holder that zone is for: a flow admitted before a change is new in the next
+  holder's zone, and one kept from an earlier turn of the same holder goes to that
+  holder again. No zone is reused and none retired, so no timeout or retirement
+  proof is needed. The bound is conntrack's: a zone is a u16 and zone 0 every other
+  flow's (`NF_CT_DEFAULT_ZONE_ID`, include/net/netfilter/nf_conntrack_zones.h), so
+  more than 65,535 UDP candidates refuse the run as its chooser starts
+  (`chooser::Refused::Zones(ZonesExhausted { needed })`), before any domain runs.
+  Unit red/green and mutations (adacachy2): `a_udp_zone_names_one_holder_for_the_run`,
+  `more_udp_candidates_than_zones_are_refused`. Owed to ROOT: `cargo test -p shards
+  --test build a_udp_flow_goes_to_its_ports_next_holder -- --exact --nocapture`
+  extended to hand the port back to the first holder and to the second again with one
+  client socket, each datagram answered by the holder of the moment.
 - **A choice costs a commit, not a grace period (PM M513).** M498 found a contested
   bind(2) and listen(2) each at 16 ms (p50) where an uncontested filtered one took 19 and
   14 µs: the chooser programmed each choice on a netfilter socket of its own and closed

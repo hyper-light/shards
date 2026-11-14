@@ -86,6 +86,19 @@ remote target, exit 0. ROOT notification was rejected by Kiln inbox backpressure
 
 ## network-04: conntrack zone retirement
 
+**Fixed 2026-11-14 (Claude takeover lane, network part A), superseding the design below.**
+Zones are not retired or reused at all: each UDP candidate of each contest has a zone
+of its own for the chooser's life, assigned 1 up as it starts, so an entry conntrack
+keeps in a zone is only ever translated to that zone's one holder, whichever turn
+of holding made it. That closes the collision without a timer, a ctnetlink delete
+or a terminal notification: the bound is the kernel's u16 zone identity (0 the
+default zone), refused at start as `ZonesExhausted` before any domain runs.
+Red/green/mutation: [init0406-red-green.log](init0406-red-green.log) (kiln r1774,
+adacachy2, `cargo test -p shards-init --profile test-release --bins chooser::`; m1
+gives every candidate zone 1, failing the zone, split-port and exhaustion tests).
+The live wrap campaign below is no longer the fix's red; ROOT still owes the
+A-B-A-B handoff on real microVMs (D122).
+
 **Owed to ROOT; not fixed or live-confirmed.** Its decisive red is a kernel NAT
 binding being reused, not merely observing u16 arithmetic. The fix brief reserves
 real-VM/kernel campaigns to ROOT. The chooser still wraps its zone to 1, and
@@ -347,6 +360,13 @@ ROOT owes the paired-state unit fixture plus real guest route/receipt red before
 claiming this design implemented.
 
 ### network-06
+
+**Fixed 2026-11-14 (Claude takeover lane).** Per-port holders inside each contest
+(`Choices`), coalesced into runs at each holder's own ports, and contests cut
+where clipped ranges meet in part, with `pre` programming only uncontested rests.
+Red/green and mutations m2 (any port listened takes all) and m3 (contested only
+where equal): [init0406-red-green.log](init0406-red-green.log). The real-VM
+split-listener fixture below stays ROOT's.
 
 Starting command:
 `cargo test -p shards --test build a_port_comes_in_to_the_member_listening_on_it -- --exact --nocapture`.

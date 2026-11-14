@@ -94,6 +94,8 @@ Ranking: P0 critical; P1 high security/resource priority; P2 high correctness pr
 
 **Status (2026-11-13):** owed to ROOT: `cargo test -p shards --test build a_udp_flow_goes_to_its_ports_next_holder -- --exact --nocapture`, extended with a retained zone-1 tuple and forced allocator wrap. The existing one-handoff fixture does not reproduce wrap. Retirement design and owner-failure requirements: `docs/research/measurements/network-fixes-v1/README.md#network-04-conntrack-zone-retirement`. No allocator patch or passing reproduction is claimed.
 
+**Status (2026-11-14):** fixed in f2a8e2186 (red `chooser::tests::a_udp_zone_names_one_holder_for_the_run`, a5772afa8). Each UDP candidate has a zone of its own for the run, fixed as the chooser starts, so no zone is reused; more than 65,535 UDP candidates are refused at start (`ZonesExhausted`). Unit red/green and mutation on adacachy2: `docs/research/measurements/network-fixes-v1/init0406-red-green.log`. Owed to ROOT: `cargo test -p shards --test build a_udp_flow_goes_to_its_ports_next_holder -- --exact --nocapture`, extended to hand the port A, B, A, B with one client socket (D122).
+
 ### network-05 — P2 / high: Hex/API-run never programs the IPv6 uplink that daemon runs receive
 
 **Location:** `crates/shards/src/api_run.rs:2544`, `:3072`; supporting paths `:2841`, `crates/init/src/links.rs:1213`. API-run was added in the review range.
@@ -129,6 +131,8 @@ Ranking: P0 critical; P1 high security/resource priority; P2 high correctness pr
 **Catching test:** publish both ports with web/api's split listeners under one exposure range; each port must return its own member's payload. Repeat with UDP and with one listener closing while the other remains.
 
 **Status (2026-11-13):** owed to ROOT: `cargo test -p shards --test build a_port_comes_in_to_the_member_listening_on_it -- --exact --nocapture`, extended to one unmapped 7000–7001 exposure range with split listeners, TCP and UDP. Existing single-port holder tests do not reproduce a split range. Per-port partition, mapped-target and nft-programming requirements are recorded in `docs/research/measurements/network-fixes-v1/README.md#network-05-07-guest-kernel-and-api-reproductions`.
+
+**Status (2026-11-14):** fixed in f2a8e2186 and 10a3bc47f (red `chooser::tests::each_port_of_a_range_goes_to_the_member_listening_on_it`, a5772afa8; partial overlaps `ranges_that_meet_in_part_are_contested_where_they_meet`, mutation m3). Each port of a contest is its listener's; ranges clipped to meet in part are contested where they meet. Unit red/green and mutations on adacachy2: `docs/research/measurements/network-fixes-v1/init0406-red-green.log`. Owed to ROOT: `cargo test -p shards --test build a_port_comes_in_to_the_member_listening_on_it -- --exact --nocapture`, extended to one unmapped 7000-7001 exposure with split listeners, TCP and UDP, one closing; and M513's contested bind/listen latency (D122).
 
 ### network-07 — P2 / high: an IPv6-only listener can win an IPv4 published port
 
