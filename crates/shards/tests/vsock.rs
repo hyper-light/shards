@@ -34,7 +34,7 @@ fn guest_args(mode: &str, vsock: &Path) -> Vec<std::ffi::OsString> {
         "--memory".into(),
         "256".into(),
         "--cmdline".into(),
-        format!("console=ttyS0 quiet shards_test={mode}").into(),
+        format!("console=hvc0 quiet shards_test={mode}").into(),
         "--vsock".into(),
         vsock.into(),
     ]

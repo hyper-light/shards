@@ -1,5 +1,5 @@
 //! The x86_64 machine on any backend: RAM around the 32-bit MMIO gap, the in-kernel
-//! IOAPIC, ACPI tables, COM1, the i8042 and ACPI sleep ports the guest resets and powers
+//! IOAPIC, ACPI tables, the i8042 and ACPI sleep ports the guest resets and powers
 //! off through (docs/research/kvm-x86_64-ground-truth.md §3-§6), and the VM generation ID
 //! that makes each restored copy reseed its RNG.
 
@@ -12,7 +12,7 @@ use crate::devices::acpi_sleep::AcpiSleep;
 use crate::devices::control::Control;
 use crate::devices::i8042::I8042;
 use crate::devices::power::Power;
-use crate::devices::serial::Serial;
+use crate::devices::virtio::console::{Console as ConsoleDevice, Port as ConsolePort};
 use crate::devices::virtio::{mmio as virtio_mmio, pmem};
 use crate::devices::vmgenid::VmGenId;
 use crate::devices::{Interrupt, MmioBus, SharedLine};
@@ -206,7 +206,8 @@ pub struct Machine {
     pub vm: hv::Vm,
     pub memory: Arc<GuestMemory>,
     pub bus: Bus,
-    pub serial: Arc<Serial>,
+    /// Its console, hvc0: what it said, and its input.
+    pub console: Arc<ConsolePort>,
     pub control: Arc<Control>,
     /// Power-off (ACPI sleep control) and reset (i8042).
     pub power: Arc<Power>,
@@ -337,7 +338,7 @@ impl Interrupt for EdgeLine {
 struct Assembled {
     vm: hv::Vm,
     bus: Bus,
-    serial: Arc<Serial>,
+    console: Arc<ConsolePort>,
     control: Arc<Control>,
     power: Arc<Power>,
     vmgenid: VmGenId,
@@ -510,6 +511,7 @@ fn assemble(
     let gpu = gpu
         .map(|(renderer, region)| super::gpu_device(&vm, renderer, region, ram))
         .transpose()?;
+    let (console_device, console) = ConsoleDevice::new(super::console_out(console)?, said);
     let (devices, disk_sizes) = super::virtio_devices(
         config,
         &regions,
@@ -517,7 +519,8 @@ fn assemble(
         &windows,
         Some(&vm),
         hosts,
-        gpu.into_iter()
+        std::iter::once(Box::new(console_device) as Box<dyn crate::devices::virtio::VirtioDevice>)
+            .chain(gpu)
             .chain(hotplug)
             .chain(reporting)
             .chain(
@@ -578,16 +581,7 @@ fn assemble(
     }
     bus.mmio.insert(layout::CONTROL, 0x1000, control.clone())?;
 
-    let serial = Arc::new(Serial::new(
-        super::console_out(console)?,
-        Arc::new(LevelLine {
-            irqs: irqs.clone(),
-            gsi: layout::GSI_COM1,
-        }),
-        said,
-    ));
     let power = Arc::new(Power::default());
-    bus.pio.insert(u64::from(layout::COM1), 8, serial.clone())?;
     bus.pio
         .insert(u64::from(layout::I8042), 5, Arc::new(I8042::new(power.clone())))?;
     bus.pio.insert(
@@ -652,7 +646,7 @@ fn assemble(
     Ok(Assembled {
         vm,
         bus,
-        serial,
+        console,
         control,
         power,
         vmgenid,
@@ -796,7 +790,7 @@ pub fn build_reported(
         vm: a.vm,
         memory,
         bus: a.bus,
-        serial: a.serial,
+        console: a.console,
         control: a.control,
         power: a.power,
         finish: a.vmgenid,
@@ -865,7 +859,7 @@ pub fn restore(
         vm: a.vm,
         memory,
         bus: a.bus,
-        serial: a.serial,
+        console: a.console,
         control: a.control,
         power: a.power,
         finish: a.vmgenid,

@@ -25,6 +25,12 @@ const RECEIVE_SIZE: u16 = 1;
 /// has used it before the next, under the port's lock (virtio_console.c `put_chars`,
 /// l. 1118-1123, and `__send_to_port`, l. 596-640), so one is ever outstanding.
 const TRANSMIT_SIZE: u16 = 1;
+/// The most host input one receive buffer takes: Linux's driver posts a page each
+/// (`fill_queue`, `alloc_buf(.., PAGE_SIZE, ..)`), and shards' guest kernels have 4 KiB
+/// pages (x86-64's one size; arm64's `CONFIG_ARM64_4K_PAGES=y` in resources/kernel's base
+/// configuration). A reader of host input need read no more at once: the rest waits in the
+/// host.
+pub const INPUT_AT_ONCE: usize = 4 << 10;
 /// receiveq 0 and transmitq 1, port 0's (§5.3.2): no MULTIPORT, so no control queues.
 const QUEUES: [u16; 2] = [RECEIVE_SIZE, TRANSMIT_SIZE];
 const RECEIVEQ: usize = 0;

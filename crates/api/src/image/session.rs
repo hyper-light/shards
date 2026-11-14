@@ -4362,13 +4362,13 @@ mod tests {
     /// The stand-in run host of a boot that never starts: it makes a writable layer's file in
     /// its home's `layers`, named as the real host names one (layers.rs `fresh`), holds
     /// `$HOST_SEEN` open as long as it runs, starts a stand-in VM that never looks at its host
-    /// (as a VM mid-boot does not), tells the VM's pid, and never answers.
+    /// (as a VM mid-boot does not), tells its own pid and the VM's, and never answers.
     #[cfg(unix)]
     const NEVER_STARTS: &str = "#!/bin/sh\n\
         : >\"$SHARDS_HOME/layers/$$-0\"\n\
         exec 3>\"$HOST_SEEN\"\n\
         tail -f /dev/null 3>&- &\n\
-        echo \"$!\" >&3\n\
+        echo \"$$ $!\" >&3\n\
         wait\n";
 
     /// A valid CREATE can fill the pipe before STARTED waits begin. Its stop must own
@@ -4502,8 +4502,10 @@ mod tests {
     /// returns `Ended(Stopped)`, the run host gone and the VM it started gone with it, no
     /// orphan left, and no file of the host's left in its home's `layers`, another host's
     /// kept. The boot waits on its host alone: only the stop ends it. A boot that ends
-    /// before its host tells the VM's pid ends the test's wait with it, refused with the
-    /// boot's outcome.
+    /// before its host tells its own and its VM's pids ends the test's wait with it, refused
+    /// with the boot's outcome. Each is judged gone by its ID and start, never by its pipe's
+    /// end: a write end of `h` that another test's spawn copied as it forked is held until
+    /// that child's exec, after both have gone (PM M583, M586).
     #[cfg(unix)]
     #[test]
     fn a_stop_mid_boot_ends_the_boot_its_host_and_all_its_host_started() {
@@ -4531,16 +4533,20 @@ mod tests {
             });
             // Told once the host holds `h` and has started its VM: both running.
             let said = line(&host_end);
-            let Ok(vm) = said.trim().parse::<libc::pid_t>() else {
-                panic!("its host told no VM ({said:?}), the boot {:?}", booting.join());
+            let pids: Vec<libc::pid_t> = said.split_whitespace().filter_map(|p| p.parse().ok()).collect();
+            let [host, vm] = pids[..] else {
+                panic!(
+                    "its host told no host and VM ({said:?}), the boot {:?}",
+                    booting.join()
+                );
             };
             leftover.0 = Some(vm);
-            let vm = named(vm);
+            let (host, vm) = (named(host), named(vm));
             let stopped_at = Instant::now();
             stop.stop();
             let booted = booting.join().unwrap();
             let took = stopped_at.elapsed();
-            let host_gone = writers_gone(&host_end);
+            let host_gone = !host.lives();
             let vm_gone = !vm.lives();
             if vm_gone {
                 leftover.0 = None;

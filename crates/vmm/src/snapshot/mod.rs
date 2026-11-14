@@ -105,7 +105,12 @@ const MAGIC: [u8; 8] = *b"SHRDSNAP";
 ///     contract its guest's init announced ([`shards_abi::IDENTITY`] of that build), which a
 ///     resume compares with this build's before its guest runs ([`resumable`], D176). A
 ///     state of any format before it names neither, and is refused, never read.
-const VERSION: u32 = 30;
+/// 31: its console is virtio-console, the first of its virtio devices (hvc0), and it has
+///     no 16550 UART: a guest saved in 30 has its 8250 driver bound to a COM1 (x86-64) or
+///     UART (arm64) this machine no longer has, and is refused ([`ResumeRefused::OlderMachine`]).
+const VERSION: u32 = 31;
+/// The first format whose state says who saved it ([`decode_saver`]).
+const VERSION_WITH_SAVER: u32 = 30;
 /// The version of shards this build is (crates/shards/Cargo.toml, by build.rs): what a
 /// state it writes says it was saved by.
 pub const SAVED_BY: &str = env!("SHARDS_VERSION");
@@ -1253,6 +1258,10 @@ pub enum ResumeRefused {
     /// init's contract cannot be read before its guest runs; and none of those builds' is
     /// this one's, whose format records it.
     Unrecorded { format: u32 },
+    /// Saved by shards `saved_by` in format `format`, from 30 on and before this build's:
+    /// its guest's drivers are bound to a machine this build no longer makes (31: its
+    /// console a 16550 UART, now virtio-console), so its guest cannot run on.
+    OlderMachine { format: u32, saved_by: String },
     /// Saved in format `format`, past this build's: by a newer shards.
     Newer { format: u32 },
     /// It has no state to read, or its state could not be read: why.
@@ -1277,6 +1286,11 @@ impl std::fmt::Display for ResumeRefused {
                 "this microVM was saved by {} (snapshot format {format}), whose shards-init \
                  cannot continue in this shards: {AGAIN}",
                 released_in(*format)
+            ),
+            ResumeRefused::OlderMachine { format, saved_by } => write!(
+                f,
+                "this microVM was saved by shards {saved_by} (snapshot format {format}), whose \
+                 machine this shards no longer makes: {AGAIN}"
             ),
             ResumeRefused::Newer { format } => write!(
                 f,
@@ -1323,13 +1337,16 @@ pub fn resumable(dir: &Path) -> Result<(), ResumeRefused> {
 fn saver_refused(bytes: &[u8]) -> Result<(), Result<ResumeRefused, DecodeError>> {
     let mut r = Reader::new(bytes);
     let (format, ..) = decode_head(&mut r).map_err(Err)?;
-    if format < VERSION {
+    if format < VERSION_WITH_SAVER {
         return Err(Ok(ResumeRefused::Unrecorded { format }));
     }
     if format > VERSION {
         return Err(Ok(ResumeRefused::Newer { format }));
     }
     let (saved_by, init_abi) = decode_saver(&mut r).map_err(Err)?;
+    if format < VERSION {
+        return Err(Ok(ResumeRefused::OlderMachine { format, saved_by }));
+    }
     if init_abi != shards_abi::IDENTITY {
         return Err(Ok(ResumeRefused::OlderInit {
             saved_by,
@@ -2067,6 +2084,20 @@ mod tests {
             bytes[8..12].copy_from_slice(&format.to_le_bytes());
             bytes
         };
+        let machine = refused(&with_format(30));
+        assert_eq!(
+            machine,
+            ResumeRefused::OlderMachine {
+                format: 30,
+                saved_by: SAVED_BY.to_string()
+            }
+        );
+        assert!(
+            machine
+                .to_string()
+                .contains("whose machine this shards no longer makes"),
+            "{machine}"
+        );
         let released = refused(&with_format(28));
         assert_eq!(released, ResumeRefused::Unrecorded { format: 28 });
         assert!(
