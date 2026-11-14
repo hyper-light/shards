@@ -1733,6 +1733,63 @@ fn streams_held_past_a_commands_end_are_judged_from_its_end() {
     assert!(run.stdout.contains("still held open"), "{run}");
 }
 
+/// A command's end found by its run's first check, before any look at its party, is its
+/// kind's answer all the same: its run started its client as its wait began, so that end
+/// was never there before it. adacachy2 (KVM) at f385b8dac: with the whole binary running,
+/// [`streams_held_past_a_commands_end_are_judged_from_its_end`] waited out its holder's 30 s
+/// in 7 of 30 runs, its client's end found at that first check, its kind left cold, and its
+/// held streams judged by nothing. Red at f385b8dac, waiting out the holder's 30 s. Do: from
+/// a call site whose kind is cold, run a client that has ended by the time its spawn returns,
+/// having forked the holder of its streams (`pulse 1 30000`) and said "holder PID". Expect:
+/// its run back, status 0, its stdout said held open, long before the holder's end.
+#[cfg(unix)]
+#[test]
+fn a_commands_end_found_before_its_first_look_teaches_its_kind() {
+    use std::os::unix::process::CommandExt as _;
+    let hold = Duration::from_secs(30);
+    let mut cmd = stand_in_doing(&format!("pulse 1 {}", hold.as_millis()));
+    // The client forks the holder, which goes on to exec, says the holder's ID on its
+    // stdout (set up before this runs) and exits. Its spawn returns once every end of its
+    // exec-status pipe has closed, the client's at its exit among them.
+    // SAFETY: fork(2), write(2) of a stack buffer and _exit(2), each async-signal-safe.
+    unsafe {
+        cmd.pre_exec(|| match libc::fork() {
+            -1 => Err(std::io::Error::last_os_error()),
+            0 => Ok(()),
+            holder => {
+                let mut said = *b"holder 0000000000\n";
+                let mut id = holder.unsigned_abs();
+                for digit in said[7..17].iter_mut().rev() {
+                    *digit = b'0' + u8::try_from(id % 10).unwrap_or(0);
+                    id /= 10;
+                }
+                libc::write(1, said.as_ptr().cast(), said.len());
+                libc::_exit(0)
+            }
+        });
+    }
+    let began = Instant::now();
+    let run = cold_run(cmd);
+    let elapsed = began.elapsed();
+    let holder: Option<i32> = run
+        .stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("holder ")?.trim().parse().ok());
+    if let Some(holder) = holder {
+        // SAFETY: kill(2) of the holder this test's client forked.
+        unsafe {
+            libc::kill(holder, libc::SIGKILL);
+        }
+    }
+    assert_eq!(run.status, Some(0), "{run}");
+    assert!(holder.is_some(), "{run}");
+    assert!(
+        elapsed < hold,
+        "its run came back {elapsed:?} in, at its holder's end: {run}"
+    );
+    assert!(run.stdout.contains("still held open"), "{run}");
+}
+
 /// [`common::run_command`] at its caller's call site, its kind made cold.
 #[track_caller]
 fn cold_run(cmd: std::process::Command) -> common::Run {
