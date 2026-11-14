@@ -1767,7 +1767,7 @@ const VM_PROCESS_MOST: usize =
 /// The VM process a managed guest's record at `vsock` names ([`vm_process_file`]), read up to
 /// its longest and a byte past it, so a longer one is broken without being read whole.
 #[cfg(any(windows, test))]
-fn read_vm_process(vsock: &Path) -> Result<crate::VmProcess, Refusal> {
+pub(crate) fn read_vm_process(vsock: &Path) -> Result<crate::VmProcess, Refusal> {
     let file = match std::fs::File::open(vm_process_file(vsock)) {
         Ok(file) => file,
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
@@ -2121,19 +2121,13 @@ pub fn boot_managed(
     }
     // The report's take waits on the launched process itself, held from here (D233).
     let report = match opened
-        .map(|opened| {
-            crate::physical::report::Vm::of(identity.pid, identity.started).map(|vm| opened.follow(vm))
-        })
+        .map(|opened| crate::physical::report::Vm::of(identity).map(|vm| opened.follow(vm)))
         .transpose()
     {
         Ok(report) => report,
-        Err(failure) => {
+        Err(why) => {
             process.stop()?;
-            return Err(Refusal::Process {
-                pid: identity.pid,
-                expected_started: identity.started,
-                failure,
-            });
+            return Err(why);
         }
     };
     let shared = match managed_shared(plan.output_bytes, false, report) {
@@ -3188,7 +3182,6 @@ mod tests {
         io::PipeWriter,
         crate::physical::GpuReport,
     ) {
-        use crate::physical::{GpuProbe, GpuReport, ResolvedGpu};
         let here = std::env::current_dir().unwrap();
         let root = here.ancestors().last().unwrap();
         let vm = waiter(until);
@@ -3197,6 +3190,22 @@ mod tests {
             started: crate::taken::started(vm.id()).unwrap(),
             vsock: root.join("model").join("native").join("v"),
         };
+        let (guest, native, writer, report) = reported_model_as(identity);
+        (guest, native, vm, writer, report)
+    }
+
+    /// [`reported_model`] whose stand-in receipt names `identity`, a live process of the test's.
+    fn reported_model_as(
+        identity: Identity,
+    ) -> (
+        ManagedGuest,
+        triomphe::Arc<ModelNative>,
+        io::PipeWriter,
+        crate::physical::GpuReport,
+    ) {
+        use crate::physical::{GpuProbe, GpuReport, ResolvedGpu};
+        let here = std::env::current_dir().unwrap();
+        let root = here.ancestors().last().unwrap();
         let selected = crate::PhysicalGpu::MetalRegistry(7);
         let mut spec = spec();
         spec.gpu = true;
@@ -3244,7 +3253,48 @@ mod tests {
                 host_visible_bytes: 1,
             },
         };
-        (guest, native, vm, writer, report)
+        (guest, native, writer, report)
+    }
+
+    /// D233 on Windows: the launched `shards` (the receipt's identity) is the VM process's
+    /// keeper, not the VM process, which it starts as its child and names in its record. A
+    /// keeper that ends first, its VM process still running, is no VM's end: a take with no
+    /// clock goes on waiting on the VM process its record names, and takes the report that
+    /// process writes after its keeper has gone, never `Ended`.
+    #[cfg(windows)]
+    #[test]
+    fn a_report_with_no_clock_outlives_its_vm_processs_keeper() {
+        use std::io::Write as _;
+        let dir = shards_testdir::TempDir::new("d233-keeper").unwrap();
+        let vsock = dir.join("v");
+        let mut keeper = waiter("stdin");
+        let identity = Identity {
+            pid: keeper.id(),
+            started: crate::taken::started(keeper.id()).unwrap(),
+            vsock: vsock.clone(),
+        };
+        // Not named yet as the launch returns: the take follows the keeper.
+        let (guest, native, mut writer, report) = reported_model_as(identity);
+        let taking = guest.try_clone().unwrap();
+        let (worker, rx) = crate::while_runs::on_a_thread(move || taking.take_gpu_report(Duration::MAX));
+        assert!(rx.recv_timeout(crate::while_runs::kept_wait()).is_err());
+        // The keeper names its VM process, as `shards` does before it resumes it, then ends
+        // first, the VM process still running.
+        let mut vm = waiter("ended");
+        let started = crate::taken::started(vm.id()).unwrap();
+        std::fs::write(vm_process_file(&vsock), format!("{} {started}\n", vm.id())).unwrap();
+        drop(keeper.stdin.take());
+        assert!(keeper.wait().unwrap().success());
+        // The VM process writes its report after its keeper has gone.
+        writer.write_all(report.encode().unwrap().as_bytes()).unwrap();
+        drop(writer);
+        assert_eq!(
+            crate::while_runs::answer(&rx, worker, Duration::from_millis(1)),
+            Ok(report)
+        );
+        vm.kill().unwrap();
+        vm.wait().unwrap();
+        native.publish(crate::TerminalScope::Released);
     }
 
     /// D233, Hex's decision 9: a report asked with no clock is waited on until its VM process
@@ -3843,9 +3893,7 @@ mod tests {
         };
         let (opened, mut writer) = crate::physical::report::Opened::new(request).unwrap();
         // Its VM process this test process, which outlives the case.
-        let pid = std::process::id();
-        let receiver =
-            opened.follow(crate::physical::report::Vm::of(pid, crate::taken::started(pid).unwrap()).unwrap());
+        let receiver = opened.follow(crate::physical::report::this_process());
         // Caller error, first observer error, then the old observer's retry
         // after last-drop. New native-event waiting does not need that retry.
         receiver.fail_cancel_calls_for_test(3);
