@@ -19355,6 +19355,16 @@ the run's directory.
 
 ### D122. The members an `EXPOSE` is for: one receiver for each incoming port
 
+**Review gaps (network-06/07, 2026-11-13), owed to ROOT.** Whole-range holder
+selection and IPv6 wildcard acceptance have not been validated against split
+listeners or IPV6_V6ONLY in the pinned guest. A port must have its own holder;
+expanding contests also requires excluding the original range from fallback DNAT
+and retaining each mapped destination port. IPv4 selection must parse the kernel's
+`INET_DIAG_SKV6ONLY` attribute; an absent/malformed observation must not be guessed
+dual-stack. The fixed message's IPv6 source alone cannot establish acceptance.
+The proposed live fixtures and failure/ownership requirements are
+[recorded here](../research/measurements/network-fixes-v1/README.md#network-05-07-guest-kernel-and-api-reproductions).
+
 An `EXPOSE … FOR <network>` opened a port of the microVM for every member of the network.
 On a network of one member that is a receiver; on a network of several, a connection
 coming in had none, and shards refused it. Default deny asks that every grant name who, to
@@ -22136,6 +22146,14 @@ Tested:
 - `several_platforms_make_one_image_of_their_manifests` checks buildx's refusal.
 
 ### D99. IPv6 on a network of microVMs
+
+**API-run parity gap (network-05, 2026-11-13), owed to ROOT.** Unlike the daemon,
+API-run still supplies neither its guest's `uplink6=` nor the network process's
+`NET_ADDRESS` for IPv6 egress. Its IPv4 policy unit results do not prove this path.
+The correction must share the home's ULA derivation and paired programming, with
+NET_ADDRESS acknowledged before frames are served and the same narrowed grants
+and `confine-eth0` preserved. Fresh/restored API IPv6 receipt and default-deny
+witnesses are [owed with an exact fixture](../research/measurements/network-fixes-v1/README.md#network-05-07-guest-kernel-and-api-reproductions).
 
 A network made with `--ipv6` (`shards network create --ipv6`, or a run's `--network` on
 one) gives each microVM an IPv6 address of its IPv6 subnet, as dockerd gives each
