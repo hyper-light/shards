@@ -13522,6 +13522,8 @@ retain those obligations; no Windows check or quota replacement is claimed compl
   API client's boot, the Windows VM-binary handoff), holds it to write while std makes its
   child. A new production std spawn must go through `spawn_std`; nothing enforces it but
   review (a workspace `disallowed-methods` would also hold every test's spawns). No literal.
+  **Superseded 2026-11-14 (control-04, D248):** no production std spawn remains on any OS;
+  `spawn_std` and `INHERITING` are deleted, and each child's handle list names its own alone.
 - **08** (6ff8f51f4; red 10bf97ed7). A waiting client watches its list's directory by its
   own name (its OsStr encoded as UTF-16, not through `to_string_lossy`), says no list only
   where the directory is absent (ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND) and refuses any
@@ -15800,8 +15802,12 @@ other's but what the move sends, and what the other takes by content:
   volume of its name here already; a bind's host path absent; a port it publishes that this
   machine cannot bind. Where the microVM runs, before it is saved: a run with a managed
   scope (`Refused::Managed`), which a restore does not take yet: a cold move's save would
-  leave it stopped here, its resume refused too. A plan of an earlier build
-  names no hypervisor, and is taken as before. Held by
+  leave it stopped here, its resume refused too. Every field of `Plan` is in every plan
+  (no `serde` defaults): one that lacks any, or holds one of another kind, is another
+  build's, refused typed (`moves::plan_of`): `Refused::OlderInit` where its init's contract
+  is not this machine's or unsaid, else `Refused::OtherPlan { name, saved_by, why }`. Held by
+  `a_plan_missing_any_field_is_refused_typed` (moves.rs, red while the fields an earlier
+  build's plans lacked defaulted, legacy5), and by
   `a_microvm_of_another_hypervisor_is_refused_before_anything_moves` and
   `a_refusal_is_typed_on_the_wire_and_says_what_it_said` (moves.rs),
   `a_move_of_another_hypervisors_microvm_is_refused_typed` and
@@ -16302,7 +16308,9 @@ refused there before anything moves: a move's plan, saved or live, carries the s
 made it and its init's contract (`Plan::saved_by`, `Plan::init`, this build's: its guest
 runs under this daemon, or its snapshot was found resumable), and the `ready` step on the
 machine moved to refuses one of another contract, or a plan that names none, an earlier
-daemon's, first (`moves::Refused::OlderInit`, as JSON to the mover beside its words).
+daemon's, first (`moves::Refused::OlderInit`, as JSON to the mover beside its words), and
+a plan of its contract that is not of this build's shape next (`Refused::OtherPlan`): no
+field of a plan defaults (legacy5).
 The Engine API's `POST /containers/{id}/start?checkpoint=` reaches the same `resumable`
 and answers its refusal as moby answers a failed start (500, the words as its message). Refused typed (`ResumeRefused`):
 `OlderInit { saved_by, init_abi, ours }`, a saver whose init announced another contract or
@@ -16316,7 +16324,7 @@ them); `Newer { format }`; and `Unreadable`. The order: the check comes first, a
 legacy4's rewrite, as every state the rewrite took (24 to 29) is one whose init this build
 cannot confirm before it runs, and every released one's (0.6.0's, 0.7.0's) is another's
 (crates/abi changed 124 times after v0.7.0): a rewritten snapshot would only be refused
-later, at its init's first message (vm_run's check after the guest dials again), so
+later, at its init's first message, so
 `snapshot::migrate`, `Migrated`, `MigrateRefused`, `.state.migrated` and the older formats'
 reader (`decode_body`'s branches, the tests' `encode_older`) are deleted. A restore reads
 format 30 alone. Its volumes and image are not the snapshot's: `rm vm` and a fresh `run`
@@ -16330,6 +16338,22 @@ refused; a cut saver unreadable), `resumable_refuses_another_init_and_leaves_the
 contract and one of an earlier daemon refused naming their saver, typed on the wire);
 red before this, where no state recorded a saver. Owed to ROOT: v0.7.0's release binary's
 `save vm m`, then this build's `restore vm m` printing the refusal and exiting 1.
+
+The checks after a guest dials (legacy5). The VM process checked a resumed guest's init
+contract once its connections came back (vm_run.rs), with words of its own; it is deleted,
+as no resume reaches it: a VM process is told to resume (its request's `tokens`) only by
+its daemon (`restore vm`, `start --checkpoint`), after `resumable` read the state's saver, and the contract its
+restored control page announces is the saver's own (both `Control::guest_abi` as the cut
+is taken: the device state's `abi` and `Snapshot::init`). The workload's check
+(workload.rs `serve`, before any command is sent) stays, as a cold boot reaches it: a
+guest's init that `SHARDS_INIT` or `shards configure guest --init` names (D28) may be
+another build's, which no check before its boot reads. It is typed: `workload::OtherInit
+{ spoken, ours }` ("this microVM's shards-init (contract …) cannot run in this shards
+(contract …): boot the shards-init this shards carries"), worded as
+`ResumeRefused::OlderInit`, which it does not share: a cold boot has no saver to name, and
+the run's error path is words from there on (`serve`'s `String`, the run's 125). Held by
+`a_guest_init_of_another_contract_is_refused_typed` (workload.rs). Owed to ROOT: a cold
+`SHARDS_INIT=<another build's shards-init> shards run alpine true` failing 125 with it.
 
 ### D175. Sockets read in poll(2) on macOS, and streams ended one way at a time
 
@@ -27528,7 +27552,18 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
       left, never cold (the answer just taught it, or it was learned), and a look that finds
       its party gone finds it still, as no process of it that could write runs. Main kept
       the client's own judge, which a cold kind never judges, so that a silent holder's
-      liveness held its test for ever. The drain teaches nothing.
+      liveness held its test for ever. The drain teaches nothing. A command's wait finds
+      its answer missing as it begins (`run_ending`'s `Wait::absent`), as its client
+      started just then: an end its first check finds before any look (the client quicker
+      than its waiter's thread's first turn) is an answer, never one already there
+      (`Stage::Begun`), which taught nothing and left the drain's kind cold, judging nothing
+      until its holder's end (2026-11-14: adacachy2 at f385b8dac, 7 of 30 whole-binary
+      runs; `a_commands_end_found_before_its_first_look_teaches_its_kind`, whose client
+      has ended as its spawn returns, red there). So does each harness.rs wait that
+      teaches its kind by a quick stand-in's end (`Wait::absent`, `Heard::absent`):
+      `a_runs_stop_grace_is_its_daemons_and_not_refused` ("its kind learned nothing of an
+      answer") and `a_streaming_guests_cpu_is_its_liveness_and_its_stop_its_hosts_hold`
+      (never refused, its kind cold) failed so on adacachy2 with its 32 cores busy.
     - *A party is what was found of it until it ends* (waits-09, waits-10). A process once
       found is followed until it has gone or ended, wherever it is listed since: a daemon's
       microVMs as they end after it (a daemon stop's party), a client's children reparented
@@ -32149,8 +32184,7 @@ refusing typed. `arch::cpu` names a CPU per architecture:
   (`Plan::cpu_identity`: the leaves of `cpuid::IDENTITY`, which WHP's restore compares, as
   the machine's VM process reads them from a partition's vCPU), and the machine moved to
   refuses another before anything moves (`Refused::CpuIdentity`), where it was refused only
-  at the restore, after the whole stream. A plan of an earlier build names none, and its
-  CPU is found at the restore as before. WHP on arm64 tells a guest its ID registers, as
+  at the restore, after the whole stream. WHP on arm64 tells a guest its ID registers, as
   KVM and Hypervisor.framework do (`whp_arm64`'s `cpu_id`).
 
 **A baseline on WHP x86-64: researched, not built.** WHP has the means: its
@@ -32177,8 +32211,8 @@ ID registers say so; an instruction a program runs regardless is not stopped.
 0 and each feature leaf once), derived from it. The meet has no threshold.
 
 **Cold start.** A home with no `cpu-baseline` tells none: each guest is told its host's own
-CPU, as before, and `configure cpu --none` takes one away. A plan of an earlier build carries
-none (serde default) and is taken as before. A baseline written before a register joined
+CPU, as before, and `configure cpu --none` takes one away. A plan that carries no baseline
+field is another build's, refused at `ready` (D176, `Refused::OtherPlan`). A baseline written before a register joined
 `FEATURES` names no leaf for it: `within` leaves that leaf the host's, and `covers` checks
 only what the baseline names.
 
@@ -32504,6 +32538,47 @@ api_image` on HVF and WHP; Hex's image_real on macOS and Windows once Hex vendor
 
 **What would falsify it.** A run host that holds a descriptor or handle of its orchestrator's
 it was not given (then `shards_ipc::spawn` leaks to every child shards starts, D26).
+
+**2026-11-14, every child (control-04).** D248 held for the run host alone. The flaky3 lane
+found the same leak in every other production std spawn (docs/bugs/2026-11-13/control.md,
+control-04, 7e452a9fe): on macOS std's `new_pair` (rust-src
+`library/std/src/sys/net/connection/socket/unix.rs`) makes a socketpair and then marks it
+close-on-exec, and its `Command::spawn` sets no `POSIX_SPAWN_CLOEXEC_DEFAULT`, so a child std
+starts in that instant keeps what another thread is making (7,473 inherited writers in 20 s of
+8-thread stress). In one SDK process run B's `shards` held run A's input pair or output pipe,
+so A's member stdin never saw EOF, or A's drain never ended.
+- *Decided* (ROOT, option (a)): every production child is started by `shards_ipc`'s spawn,
+  on every OS, with cfg twins where Windows needs them: the SDK's `shards` (shards-api
+  `client.rs` `spawn_shards`, its watcher on `shards_ipc::Child`'s `ended`, `wait` and
+  `kill`), the registry's credential helpers (one `Talk` on every OS; a cancel's helper in a
+  job of its own on Windows, `spawn_grouped`), the SBOM scan (`agent.rs`), the Windows
+  VM-binary handoff (`cli/mod.rs` `instead`), the browser opener (`oidc.rs`), AWS's
+  `credential_process` on Windows (`spawn_in_raw`, cmd.exe's `/C` text kept as it is, as
+  std's `raw_arg` passed it) and `SHARDS_VMMAP`'s vmmap (`alloc_count.rs`). `on_path` moved to
+  shards-ipc, a `PATH` of the caller's own allowed (the credential helper's). Unix
+  `instead` stays an exec(2): it replaces this process, and keeps no descriptor not
+  already its own.
+- *Deleted* (no legacy paths): `shards_ipc::spawn_std` and Windows' `INHERITING` lock, which
+  only it needed (D195's platform-07), with its test. Linux's std uses pipe2 and
+  SOCK_CLOEXEC and was not exposed; it takes the one path all the same.
+- *Literals.* None in production. The test's 4 making threads and 64 children are a test's
+  load, not a runtime value: with std's spawn back, 14 to 26 of the 64 children held a
+  socket in each of six runs, so a run where none holds one is not a miss by chance.
+- *Test* (unit, macOS arm64): `client::tests::a_started_shards_holds_no_socket_another_thread_was_making`:
+  4 threads make and drop `shards_ipc::input_pair`s while `spawn_shards` starts this test
+  binary 64 times as a child that reports, from /dev/fd, every socket it holds. On
+  adas-mac-studio-3.local (macOS arm64, rustc 1.98.1), `cargo test -p shards-api --lib
+  <that test> -- --exact`: red, std's `Command` back in `spawn_shards` (the carrier's
+  `mutate.py`), 19, 18 and 14 of 64 children held 1 to 6 sockets each at 85a2727a1, and 26,
+  24 and 23 at f25955697; green, none in any of three runs at f25955697. Beside it: `client::tests` (46), `image::session` (41), the registry's
+  `credentials` (20) and shards-ipc's tests (78) pass; clippy, `-D warnings`, for shards-ipc,
+  shards-api, shards-registry and shards: clean on macOS; on Windows x86_64 (cargo xwin,
+  adas-mac-studio.local) clean for the first three, and shards' one error main's own
+  (`daemon/health.rs`'s fields unread on Windows, runs-11), none of this change's.
+- *Owed* (ROOT): `cargo test -p shards --profile test-release --test api_image` and an SDK
+  run of several images in one process on HVF and WHP; the Windows unit
+  `a_raw_command_line_keeps_its_quotes` and the registry's credential tests on Windows (CI's
+  Windows legs).
 
 ### D249. An orchestrator's run whose command never started ends failed, in its VM's words (built; real-VM validation owed)
 
