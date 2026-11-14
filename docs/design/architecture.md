@@ -27381,7 +27381,9 @@ API's protocol: its output drained, its end, its connections.
     vm_process managed` 18 passed, 1 ignored (every managed test beside the new ones), and
     `cargo test -p shards --bin shards final_use` 4 passed; the start-and-liveness check dropped
     (m1), the Unix test failed at its stale identity; `cargo clippy -p shards-api -p shards
-    --all-targets -- -D warnings` clean. Windows' clippy: below. Owed (ROOT): the Windows twin
+    --all-targets -- -D warnings` clean. Windows: `cargo xwin clippy -p shards-api -p shards
+    --all-targets --target x86_64-pc-windows-msvc -- -D warnings` (scripts/lint's form, these
+    crates alone) clean on adas-mac-studio.local at 8f2440013. Owed (ROOT): the Windows twin
     and a real managed launch on WHP, its record read against shards-vm.exe's own pid and
     creation time; a real managed launch on HVF and KVM, the answer read against shards-vm's.
 - *The report.* D232's report reaches the client on its private pipe: one complete scoped
@@ -32560,7 +32562,15 @@ seen on real runs:
       than the tail) and `a_diagnostics_bound_short_of_the_tail_is_refused_and_one_at_it_holds`
       (a bound one short of the tail refused typed, naming nothing; one at it, through the
       keeper's thread, the file never past it, ending as exactly the host's latest bytes).
-      Results: DIAG_RESULTS.
+      Run on adas-mac-studio-3.local (macOS arm64) on the merge 8f2440013 and its test fix
+      2f1d1b86b: red, before it, no bound to pass (the tests do not compile); green, `cargo test
+      -p shards-api --lib -- vm_process managed diagnostics` 21 passed, 1 ignored, beside the
+      unbounded test kept (`a_hosts_diagnostics_are_written_whole_to_the_file_its_caller_names`,
+      `u64::MAX`); the bound's check dropped (m2: a part never passes it), the cut test failed at
+      its cut; clippy of shards-api and shards clean, and Windows' (`cargo xwin clippy`, x86_64)
+      clean. Owed (ROOT): Windows' run of these tests (an append-only file there refused `Os` as
+      named, unexercised by a test: which a file's mode allows is the OS's), and api_image's
+      real-VM tests with a file per boot.
 
 **Literals.** The kind's number, 101: the next free above main's at landing (NET_LEASE 100).
 No other.
