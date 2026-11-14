@@ -9909,6 +9909,9 @@ template pays it once; what its restores pay is to be measured with mappings.
 
 ### D214. Devices plugged into a running microVM, and its disks grown (built: disks and shared directories through the CLI on Hypervisor.framework, KVM and WHP, WHP's run on CI's Windows runners; host functions in the VMM on KVM, and through the CLI for a run's workload on Linux, both passing nested on arm64 KVM; refused on WHP with Microsoft's documented limit, a function assigned as a VM starts alone)
 
+Review devices-05 (2026-11-14): a file disk publishes capacity and generation under one mutex, held from metadata acquisition through the monotonicity check and both updates. Each capacity/config-generation read takes that same mutex. A guest's split read therefore observes a coherent size or a changed generation; it needs no convention about odd generation values. The focused red/green is retained in `docs/research/measurements/device-fixes/README.md`.
+
+
 **Why.** The long-session roadmap's item 6 (2026-10-18): a microVM that runs for hours is
 given what it needs as it goes, not only what it booted with. Every shards device was a
 virtio-mmio one, placed in the devicetree or the kernel's command line as the machine was
