@@ -2264,12 +2264,21 @@ audit's "Security and test coverage").
     restarts what it interrupts where the kernel restarts it (`SA_RESTART`), and the VM
     process's waits go on past EINTR, as past the vCPUs' kicks; a vCPU's KVM_RUN ends as a
     kick's does, and runs again.
-    - Whether a thread can answer is read, not guessed: one that blocks the signal, or a
-      process that ignores it (`/proc/self/task/TID/status`, `SigBlk` and `SigIgn`),
-      cannot, and the layer fails at once, closed, typed (`asked::Unasked::Deaf`): a
-      seal's failure hands its run to another VM (daemon.rs, `hand_over`). glibc's
-      pthread_create blocks every signal for a moment, which a look may meet; that run
-      fails closed too.
+    - Whether a thread can answer is read, not guessed (`/proc/self/task/TID/status`,
+      `SigBlk` and `SigIgn`). A process that ignores the signal fails the layer at once,
+      closed, typed (`asked::Unasked::Deaf`): a seal's failure hands its run to another
+      VM (daemon.rs, `hand_over`). A thread that blocks it may be inside pthread_create's
+      window (glibc's and musl's block every signal around their clone, the new thread's
+      until it starts and their caller's until it returns) or deaf, and only evidence
+      tells them apart, never a time: it is sent the signal, which stays pending for it,
+      and looked at again until it unblocks (then it takes it and answers, waited for as
+      any other), ends, or has run since it was first seen blocking (its `stat` utime and
+      stime grown, in clock ticks) and blocks it still: then it is deaf, and the layer
+      fails closed. CPU time, not schedstat's timeslices, as a new thread's first
+      scheduling, which counts there, is the start it makes inside the window. Until one
+      of those, the pass yields to the scheduler between looks (sched_yield(2)), which
+      runs the thread where it can run; one asleep with the signal blocked for good is
+      waited for as long as it lives [PM M568].
     - SIGSYS, because every thread of a filtered process takes it (blocked, a trap ends
       the process unreported) and Mesa's threads, which block every other signal for
       their lives, leave it and SIGSEGV unblocked (src/util/u_thread.c, `u_thread_create`,

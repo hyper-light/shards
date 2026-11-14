@@ -24378,6 +24378,22 @@ filter's tests and clippy for both crates clean on adacachy2. Owed to ROOT: a GP
 template's save and its run on a kernel of ABI 5 to 7 (no host here has one), and
 tests/gpu.rs on the GPU hosts.
 
+Amended a third time 2026-11-13 (ROOT: a run must not fail because the SigBlk look met
+pthread_create's window, glibc's or musl's). A thread seen blocking the asking signal
+(SIGSYS) is sent it anyway and looked at again, the pass yielding between looks, until it
+unblocks (and answers), ends, or has run since the first look (utime plus stime grown) and
+still blocks: deaf, failed closed. `a_thread_inside_pthread_creates_window_is_asked_once_it_unblocks`
+holds a thread with every signal blocked asleep on an eventfd across the first look, a
+helper releasing it once SIGSYS shows pending for it (after the look), and it then
+unblocks: the layer is Ok and the thread is refused a file outside its paths. Mutant
+"a block is deaf" (the earlier rule): `applied: Err("thread … blocks or ignores signal 31
+…")`, and the thread read the file: red. `a_thread_that_cannot_be_asked_fails_the_layer`
+now has its thread block every signal and run on (spinning): the pass fails closed;
+mutant "a block is waited for as a thread that hears": the pass waited on it until the
+180 s bound killed it (exit 124): red. confine:: 12 of 12 and clippy for both crates clean
+on adacachy2. Owed to ROOT: a kernel of ABI 5 to 7, and a measure of the pass's yields
+while a thread sits in the window.
+
 ### M569. A confined VM process dialed its user's sockets, its daemon's Engine API among them (D30)
 
 Linux x86_64, adacachy2 (7.3.3-1-cachyos, Landlock ABI 11), 2026-11-13, policy df2acf47,
