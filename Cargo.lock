@@ -1415,6 +1415,7 @@ dependencies = [
  "libc",
  "rcgen",
  "rustls",
+ "ruzstd",
  "shards-abi",
  "shards-afunix",
  "shards-dns",

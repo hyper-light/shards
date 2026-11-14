@@ -49,6 +49,8 @@ Priority mapping used: P0 critical, P1 high, P2 medium, P5 low; no P3/P4 finding
 
 **Unrun regression:** Teach a short W*, start a spinner (and separately a stopped child), delay the first `Wait::look(false)` past W*, and assert the first observation does not refuse. Then verify an actually observed still interval can refuse.
 
+**Status (2026-11-13):** fixed in b42c86598 (a party's first look, and one that first finds a process of it, is `Found::Based` and judges nothing), its harness test in d3f66aff7 (red `harness.rs::a_first_look_past_w_star_judges_nothing`: with Party's based look removed, refused at its first look 2 W* in; green on macOS arm64, adas-mac-studio.local, at 6467c39a7).
+
 ### waits-03 — P2 / medium — Already-satisfied test states teach tiny W* records
 
 **Location:** `crates/shards/tests/common/mod.rs:3366`; concrete callers `:2382`, `:4872`; `crates/shards/tests/warm.rs:610`.
@@ -64,6 +66,8 @@ Priority mapping used: P0 critical, P1 high, P2 medium, P5 low; no P3/P4 finding
 **Fix direction:** Track whether the answer was initially unavailable and genuinely awaited; teach only such waits. Probe buffered channel/socket/state readiness before opening a learning interval.
 
 **Unrun regression:** At one call site, satisfy a state before constructing its Patience, call done without holds, and require `Seen::Cold`. Repeat with a prequeued matching guest line. Then supply a genuine delayed answer and require learning from that interval.
+
+**Status (2026-11-13):** fixed in d3f66aff7 (red `harness.rs::an_answer_already_there_teaches_nothing`: a Wait teaches only from `Stage::Awaited`; Following, engine.rs' `Patient` and `Vm::wait_lines` read what is there before they wait, api_image.rs reads an ended member's channel through `judged_there`; with the stage check removed, its kind learned from a state already there). ROOT's KVM refusal at 18b2e0d60 (api_image.rs:2288, W* 20.97 ms, R* 0 ns of CPU) was such a record.
 
 ### waits-04 — P2 / medium — A FIFO reader's death teaches a successful take
 
@@ -163,6 +167,8 @@ Priority mapping used: P0 critical, P1 high, P2 medium, P5 low; no P3/P4 finding
 
 **Unrun regression:** Write current spinner PID with deliberately wrong start to a home's daemon.pid and require Patience's party gone. Separately leave a macOS daemon child unreaped after exit and require a terminal state wait after its final recheck.
 
+**Status (2026-11-13):** fixed in d3f66aff7 (red `harness.rs::a_daemon_named_by_another_start_is_no_party`: the daemon is `shards_ipc::Named` by ID and start, checked again once read; red `harness.rs::an_unreaped_daemon_is_gone` (Unix): a process found ended, `shards_api::Watch::ended`, is no live member, its end progress once; each guard's removal held its wait, 60 s and 10 s).
+
 ### waits-10 — P2 / medium — A cold command wait can hang after its client exits while another process holds output open
 
 **Location:** `crates/shards/tests/common/mod.rs:1999`, `:2010`, `:2690`, `:2715`; `crates/api/src/judge.rs` Judge::begin/found.
@@ -178,6 +184,8 @@ Priority mapping used: P0 critical, P1 high, P2 medium, P5 low; no P3/P4 finding
 **Fix direction:** Give post-exit drain its own explicit lifecycle, observations and learning policy; end it from the actual stream-holder state or a properly judged drain, rather than reusing an eternally cold client wait.
 
 **Unrun regression:** Fresh call-site kind; launch a stand-in which spawns a silent inherited-output holder then exits. Assert the helper returns/reports held output after client end; cleanup holder through a test gate. Repeat with learned kind.
+
+**Status (2026-11-13):** fixed in d3f66aff7 (red `harness.rs::streams_held_past_a_commands_end_are_judged_from_its_end`: past its client's end a Wait drains in `Stage::Answered`, judged by a judge begun at the answer over the record it left, a gone party found still; with the judge not begun anew it waited out the holder's 30 s). The gone-found-still guard's own removal survived that test on macOS, whose looks found the holder before its parent exited; it is reasoned (a holder no look found), not yet shown red.
 
 ### waits-11 — P2 / medium — Concurrent record writers can make the persisted slowest answer shrink
 

@@ -1,0 +1,25 @@
+From /Users/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/devices-carrier-5a6c0d1d02/devices.bundle
+ * branch              p/fix-devices-v1 -> FETCH_HEAD
+Previous HEAD position was 6211b3a0 Merge current main and record devices-02 red/green evidence
+HEAD is now at e3254587 Merge origin/main before landing devices-02
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+     Running unittests src/lib.rs (/Users/adalundhe/g121-tmp/fix-devices/target/debug/deps/shards_vmm-645a41c49a1f33e2)
+
+running 11 tests
+test devices::virtio::iommu::tests::the_longest_readable_part_is_probes ... ok
+test devices::virtio::iommu::tests::probe_gives_the_msi_doorbell ... ok
+test devices::virtio::iommu::tests::dma_reaches_what_its_domain_maps ... ok
+test devices::virtio::iommu::tests::domains_go_with_their_last_endpoint ... ok
+test devices::virtio::iommu::tests::full_span_mapping_translates_an_msi_without_overflow ... ok
+test devices::virtio::iommu::tests::an_emulated_slots_msis_go_where_its_domain_maps_them ... ok
+test devices::virtio::iommu::tests::msis_land_untranslated_in_the_window_and_translated_elsewhere ... ok
+[9266          0us WARN] virtio-iommu: endpoint 0x8's host mapping of 0x400000: out of memory
+[9266         73us WARN] virtio-iommu: endpoint 0x8's host mappings: out of memory
+test devices::virtio::iommu::tests::a_slots_endpoint_is_translated_while_a_function_is_plugged_there ... ok
+test devices::virtio::iommu::tests::mappings_are_whole_pages_and_go_whole ... ok
+test devices::virtio::iommu::tests::a_groups_endpoints_share_their_follower ... ok
+test devices::virtio::iommu::tests::a_followed_endpoint_maps_what_it_sees ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 478 filtered out; finished in 0.01s
+
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.06s

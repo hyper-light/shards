@@ -36,13 +36,6 @@ fn gzip(bytes: &[u8]) -> Vec<u8> {
     coder.finish().unwrap()
 }
 
-/// What `coded` decodes to, as the guest's own decoder would read it.
-fn gunzip(coded: &[u8]) -> Vec<u8> {
-    let mut out = Vec::new();
-    let _ = flate2::read::GzDecoder::new(coded).read_to_end(&mut out);
-    out
-}
-
 /// A guest of the granted host, its request with the credential's placeholder in `x-api-key`
 /// (and `more` fields) sent and arrived, its lease answered, the host's answer not yet written.
 fn h1_sent(credentials: &mut Credentials, root: &CertifiedIssuer<'static, KeyPair>, more: &str) -> Bench {
@@ -192,89 +185,167 @@ fn an_h2_echo_of_a_value_rotated_while_its_response_waits_is_masked() {
     assert_eq!(value_of(&peer.response(1).fields, "x-echo"), Some(&masked[..]));
 }
 
-/// Do: a granted host's request, filled in, asking gzip; the host answers gzip anyway, its body
-/// an echo of the value that holds no run of the value's bytes. Expect: the request reaching the
-/// host asking `identity` alone (RFC 9110 §12.5.3); the response refused 502 before any of its
-/// body reaches the guest, so that nothing the guest reads decodes to the value.
-#[test]
-fn a_coded_echo_never_reaches_the_guest() {
-    let root = root("shards test root");
-    let mut credentials = credentials(&root);
-    let mut bench = h1_sent(&mut credentials, &root, "Accept-Encoding: gzip, br\r\n");
-    let coded = gzip(format!("{{\"echo\":\"{}\"}}", value()).as_bytes());
-    assert!(!holds(&coded, VALUE), "the fixture's coding holds the value as it is");
-    let mut response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\n\r\n",
-        coded.len()
-    )
-    .into_bytes();
-    response.extend_from_slice(&coded);
-    bench.answer(&response);
-    bench.until(&mut credentials, &mut unanswered, |b| b.closed || whole(&b.got));
-    let body = bench
-        .got
-        .windows(4)
-        .position(|w| w == b"\r\n\r\n")
-        .map_or(&[][..], |at| &bench.got[at + 4..]);
-    assert!(
-        !holds(&bench.got, &coded),
-        "the coded echo reached the guest, decoding to the value: {}",
-        holds(&gunzip(body), VALUE)
-    );
-    assert!(bench.got.starts_with(b"HTTP/1.1 502 "), "{}", lossy(&bench.got));
-    let sent = &bench.h1().had[0].request;
-    assert!(
-        holds(sent, b"\r\nAccept-Encoding: identity\r\n") && !holds(sent, b"gzip"),
-        "{}",
-        lossy(sent)
-    );
+/// A chunked body's data, its chunks joined (RFC 9112 §7.1), and whether its last chunk came.
+fn dechunk(mut body: &[u8]) -> (Vec<u8>, bool) {
+    let mut data = Vec::new();
+    loop {
+        let Some(eol) = body.windows(2).position(|w| w == b"\r\n") else {
+            return (data, false);
+        };
+        let size = usize::from_str_radix(std::str::from_utf8(&body[..eol]).unwrap(), 16).unwrap();
+        if size == 0 {
+            return (data, &body[eol..] == b"\r\n\r\n");
+        }
+        data.extend_from_slice(&body[eol + 2..eol + 2 + size]);
+        assert_eq!(&body[eol + 2 + size..eol + 4 + size], b"\r\n");
+        body = &body[eol + 4 + size..];
+    }
 }
 
-/// Do: as above, the host coding its echo as a transfer coding (`gzip, chunked`, RFC 9112 §7).
-/// Expect: refused 502, the coded bytes never reaching the guest.
-#[test]
-fn a_transfer_coded_echo_never_reaches_the_guest() {
-    let root = root("shards test root");
-    let mut credentials = credentials(&root);
-    let mut bench = h1_sent(&mut credentials, &root, "");
-    let coded = gzip(value().as_bytes());
-    let mut response = format!(
-        "HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip, chunked\r\n\r\n{:x}\r\n",
-        coded.len()
-    )
-    .into_bytes();
-    response.extend_from_slice(&coded);
-    response.extend_from_slice(b"\r\n0\r\n\r\n");
-    bench.answer(&response);
-    bench.until(&mut credentials, &mut unanswered, |b| {
-        b.closed || b.got.ends_with(b"0\r\n\r\n")
-    });
-    assert!(
-        !holds(&bench.got, &coded),
-        "the transfer-coded echo reached the guest: {}",
-        lossy(&bench.got)
-    );
-    assert!(bench.got.starts_with(b"HTTP/1.1 502 "), "{}", lossy(&bench.got));
+/// What the guest read of a response: its head and its body.
+fn split(got: &[u8]) -> (String, &[u8]) {
+    let at = got.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+    (lossy(&got[..at]), &got[at..])
 }
 
-/// The HTTP/2 test host's echo of the request's Authorization, gzip-coded.
+/// `bytes` zstd-coded, as ruzstd codes them.
+fn zstd(bytes: &[u8]) -> Vec<u8> {
+    ruzstd::encoding::compress_to_vec(bytes, ruzstd::encoding::CompressionLevel::Fastest)
+}
+
+/// The echo the coded tests' host gives: a JSON body that repeats the value, long enough to be
+/// coded in more than one piece.
+fn echo_body() -> Vec<u8> {
+    let filler = "x".repeat(70_000);
+    format!("{{\"echo\":\"{}\",\"filler\":\"{filler}\",\"again\":\"{}\"}}", value(), value()).into_bytes()
+}
+
+/// `echo_body` as the guest is to have it: each value masked.
+fn masked_echo_body() -> Vec<u8> {
+    let mask = lossy(&echo_mask());
+    let filler = "x".repeat(70_000);
+    format!("{{\"echo\":\"{mask}\",\"filler\":\"{filler}\",\"again\":\"{mask}\"}}").into_bytes()
+}
+
+/// Do: a granted host's request, filled in, asking gzip; the host answers coded anyway (RFC 9110
+/// §12.5.3 lets it), as a content coding (gzip, zstd) and as a transfer coding (`gzip, chunked`),
+/// framed by its length and chunked, its body an echo of the value that holds no run of the
+/// value's bytes. Expect: the request reaching the host asking `identity` alone; the guest given
+/// the response decoded, as `identity` and chunked, its Content-Encoding gone and each echo of
+/// the value masked; the value nowhere in what the guest read, coded or not.
+#[test]
+fn a_coded_echo_reaches_the_guest_decoded_and_masked() {
+    let root = root("shards test root");
+    let body = echo_body();
+    let cases: [(&str, Vec<u8>, bool); 4] = [
+        ("Content-Encoding: gzip", gzip(&body), false),
+        ("Content-Encoding: zstd", zstd(&body), false),
+        ("Content-Encoding: x-gzip", gzip(&body), true),
+        ("Transfer-Encoding: gzip, chunked", gzip(&body), true),
+    ];
+    for (coding, coded, chunked) in cases {
+        let mut credentials = credentials(&root);
+        let mut bench = h1_sent(&mut credentials, &root, "Accept-Encoding: gzip, br\r\n");
+        let sent = &bench.h1().had[0].request;
+        assert!(
+            holds(sent, b"\r\nAccept-Encoding: identity\r\n") && !holds(sent, b"gzip"),
+            "{}",
+            lossy(sent)
+        );
+        // gzip's Huffman codes leave no run of the value's bytes for a mask of coded bytes to find
+        // (zstd's raw literals may hold it as it is).
+        assert!(
+            coding.contains("zstd") || !holds(&coded, VALUE),
+            "the fixture's coding holds the value as it is"
+        );
+        let mut response = format!("HTTP/1.1 200 OK\r\n{coding}\r\n").into_bytes();
+        match (chunked, coding.starts_with("Transfer")) {
+            (true, true) => {}
+            (true, false) => response.extend_from_slice(b"Transfer-Encoding: chunked\r\n"),
+            (false, _) => response.extend_from_slice(format!("Content-Length: {}\r\n", coded.len()).as_bytes()),
+        }
+        response.extend_from_slice(b"\r\n");
+        if chunked {
+            for piece in coded.chunks(1000) {
+                response.extend_from_slice(format!("{:x}\r\n", piece.len()).as_bytes());
+                response.extend_from_slice(piece);
+                response.extend_from_slice(b"\r\n");
+            }
+            response.extend_from_slice(b"0\r\n\r\n");
+        } else {
+            response.extend_from_slice(&coded);
+        }
+        bench.answer(&response);
+        bench.until(&mut credentials, &mut unanswered, |b| b.closed || b.got.ends_with(b"\r\n0\r\n\r\n"));
+        assert!(
+            !holds(&bench.got, VALUE) && !holds(&bench.got, &coded),
+            "{coding}: the value or its coding reached the guest"
+        );
+        let (head, rest) = split(&bench.got);
+        assert!(head.starts_with("HTTP/1.1 200 OK\r\n"), "{coding}: {head}");
+        let lower = head.to_ascii_lowercase();
+        assert!(
+            lower.contains("\r\ntransfer-encoding: chunked\r\n")
+                && !lower.contains("content-encoding")
+                && !lower.contains("content-length")
+                && !lower.contains("gzip"),
+            "{coding}: {head}"
+        );
+        let (data, whole) = dechunk(rest);
+        assert!(whole, "{coding}: its last chunk never came");
+        assert!(data == masked_echo_body(), "{coding}: the decoded body is not the masked echo");
+        assert!(!bench.closed, "{coding}: the connection closed");
+    }
+}
+
+/// Do: as above, the host coding its echo as br, which no decoder of this side's reads, and as
+/// gzip twice over. Expect: refused 502 before any of it reaches the guest.
+#[test]
+fn a_coded_echo_this_side_cannot_decode_is_refused() {
+    let root = root("shards test root");
+    for coding in ["br", "gzip, gzip"] {
+        let mut credentials = credentials(&root);
+        let mut bench = h1_sent(&mut credentials, &root, "");
+        let coded = b"\x1b\x03\x00\xf8coded";
+        let mut response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Encoding: {coding}\r\nContent-Length: {}\r\n\r\n",
+            coded.len()
+        )
+        .into_bytes();
+        response.extend_from_slice(coded);
+        bench.answer(&response);
+        bench.until(&mut credentials, &mut unanswered, |b| b.closed);
+        assert!(bench.got.starts_with(b"HTTP/1.1 502 "), "{coding}: {}", lossy(&bench.got));
+        assert!(!holds(&bench.got, coded), "{coding}");
+    }
+}
+
+/// The HTTP/2 test host's echo of the request's Authorization, gzip-coded as one DATA frame's
+/// worth after another.
 fn h2_coded_echo(fields: &[hpack::Field], _: &[u8]) -> (Vec<hpack::Field>, Vec<u8>) {
     let auth = fields
         .iter()
         .find(|f| f.name == b"authorization")
         .map(|f| f.value.to_vec())
         .unwrap_or_default();
+    let body = [&auth[..], b"\n", &echo_body()[..]].concat();
+    let coded = gzip(&body);
     (
-        vec![field(":status", b"200"), field("content-encoding", b"gzip")],
-        gzip(&auth),
+        vec![
+            field(":status", b"200"),
+            field("content-encoding", b"gzip"),
+            field("content-length", coded.len().to_string().as_bytes()),
+        ],
+        coded,
     )
 }
 
-/// Do: over HTTP/2, stream 1 filled in and asking gzip; the host answers gzip, an echo of the
-/// value. Expect: the request asking `identity` alone; the stream answered 502 by the injector,
-/// the coded DATA never reaching the guest.
+/// Do: over HTTP/2, stream 1 filled in and asking gzip; the host answers gzip anyway, an echo of
+/// the value. Expect: the request asking `identity` alone; the stream's response decoded, its
+/// Content-Encoding and Content-Length gone and each echo masked; no value in anything the guest
+/// read; no stream reset.
 #[test]
-fn an_h2_coded_echo_never_reaches_the_guest() {
+fn an_h2_coded_echo_reaches_the_guest_decoded_and_masked() {
     let root = root("shards test root");
     let mut credentials = credentials(&root);
     let host = H2Host::serving(&root, &[GRANTED], h2_coded_echo);
@@ -287,13 +358,6 @@ fn an_h2_coded_echo_never_reaches_the_guest() {
     h2_until(&mut bench, &mut peer, &mut seen, &mut credentials, &mut lease_all, |p, _| {
         p.response(1).ended || !p.ends().is_empty()
     });
-    let coded = gzip(&[b"Bearer ", VALUE].concat());
-    let Got { fields, data, .. } = peer.response(1);
-    assert!(
-        !holds(&seen, &coded) && !holds(&gunzip(&data), VALUE),
-        "the coded echo reached the guest"
-    );
-    assert_eq!(value_of(&fields, ":status"), Some(&b"502"[..]));
     let codings: Vec<&[u8]> = bench
         .host()
         .at("/v1/models")
@@ -303,6 +367,15 @@ fn an_h2_coded_echo_never_reaches_the_guest() {
         .map(|f| &f.value[..])
         .collect();
     assert_eq!(codings, [&b"identity"[..]]);
+    assert_eq!(h2_leaked(&peer, &seen, &[value()]), None, "the value reached the guest");
+    let Got { fields, data, ended } = peer.response(1);
+    assert!(ended);
+    assert_eq!(value_of(&fields, ":status"), Some(&b"200"[..]));
+    assert_eq!(value_of(&fields, "content-encoding"), None);
+    assert_eq!(value_of(&fields, "content-length"), None);
+    let masked = [b"Bearer ", &echo_mask()[..], b"\n", &masked_echo_body()[..]].concat();
+    assert!(data == masked, "the decoded DATA is not the masked echo");
+    assert_eq!(peer.ends(), [], "a stream reset or the connection ended");
 }
 
 /// Do: a granted host's WebSocket upgrade, filled in, offering permessage-deflate (RFC 7692),
@@ -364,3 +437,133 @@ fn a_chunked_token_responses_trailers_are_no_part_of_its_body() {
 }
 
 const EXCHANGE: &str = r#"{"grant_type":"authorization_code","code":"c0de","redirect_uri":"https://platform.claude.com/oauth/code/callback","client_id":"9d1c250a-e61b-44d9-88ed-5944d1962f5e","code_verifier":"v","state":"s"}"#;
+
+/// The token host's answer to the code's exchange, its tokens repeated in its head: a field, a
+/// cookie and the reason phrase.
+fn echoing_token_answer(request: &[u8]) -> Vec<u8> {
+    let answer = token_response(ISSUED_ACCESS, ISSUED_REFRESH);
+    assert!(holds(request, br#""grant_type":"authorization_code""#));
+    format!(
+        "HTTP/1.1 200 {ISSUED_ACCESS}\r\nContent-Type: application/json\r\nX-Echo: {ISSUED_ACCESS}\r\nSet-Cookie: rt={ISSUED_REFRESH}; Secure\r\nContent-Length: {}\r\n\r\n{answer}",
+        answer.len()
+    )
+    .into_bytes()
+}
+
+
+/// Do: Claude Code's code exchanged at its HTTP/1.1 token host, whose response repeats the
+/// issued tokens in its head. Expect: the response refused 502 before its tokens are asked
+/// outside; no real token in anything the guest read; nothing captured.
+#[test]
+fn a_token_responses_head_never_carries_its_tokens_to_the_guest() {
+    let root = root("shards test root");
+    let mut credentials = sign_in_credentials(&root, false);
+    let ca = credentials.ca.der().to_vec();
+    let mut broker = Broker::default();
+    let mut cli = Bench::new(guest(ca.into(), TOKEN_HOST, None), quiet(&root, &[TOKEN_HOST]));
+    cli.guest
+        .writer()
+        .write_all(&post("/v1/oauth/token", TOKEN_HOST, EXCHANGE))
+        .unwrap();
+    cli.until(&mut credentials, &mut |c| broker.serve(c), |b| !b.h1().had.is_empty());
+    let answer = echoing_token_answer(&cli.h1().had[0].request);
+    cli.answer(&answer);
+    cli.until(&mut credentials, &mut |c| broker.serve(c), |b| b.closed || whole(&b.got));
+    for real in [ISSUED_ACCESS, ISSUED_REFRESH] {
+        assert!(
+            !holds(&cli.got, real.as_bytes()),
+            "a real token reached the guest: {}",
+            lossy(&cli.got)
+        );
+    }
+    assert!(cli.got.starts_with(b"HTTP/1.1 502 "), "{}", lossy(&cli.got));
+    assert!(broker.access.is_empty(), "a refused response's tokens were captured");
+}
+
+/// The token host's HTTP/2 answer, its access token repeated in a field.
+fn h2_echoing_token_answer(fields: &[hpack::Field], body: &[u8]) -> (Vec<hpack::Field>, Vec<u8>) {
+    let (mut head, answer) = h2_token_answer(fields, body);
+    head.push(field("x-echo", ISSUED_ACCESS.as_bytes()));
+    (head, answer)
+}
+
+/// A guest of the HTTP/2 token host answering as `answers` says, HTTP/2 chosen.
+fn h2_token_guest(
+    root: &CertifiedIssuer<'static, KeyPair>,
+    credentials: &mut Credentials,
+    answers: H2Answer,
+) -> (Bench, Peer) {
+    let guest = guest_offering(credentials.ca.der().to_vec().into(), TOKEN_HOST, None, &[b"h2"]);
+    let host = H2Host::serving(root, &[TOKEN_HOST], answers);
+    let mut bench = Bench::on(guest, Wire::H2(Box::new(host)));
+    bench.until(credentials, &mut unanswered, |b| !b.guest.is_handshaking());
+    (bench, Peer::new(End::Client, GUEST_HOLDS))
+}
+
+/// Do: over HTTP/2, the code's exchange at the token host, its response repeating the access
+/// token in a field; then on another connection, its refresh token in the response's trailers.
+/// Expect: each stream answered 502 by the injector; no real token in anything the guest read
+/// or decoded; nothing captured.
+#[test]
+fn an_h2_token_responses_fields_and_trailers_never_carry_its_tokens_to_the_guest() {
+    let root = root("shards test root");
+    for trailers in [false, true] {
+        let mut credentials = sign_in_credentials(&root, false);
+        let mut broker = Broker::default();
+        let answers: H2Answer = if trailers {
+            h2_token_answer
+        } else {
+            h2_echoing_token_answer
+        };
+        let (mut bench, mut peer) = h2_token_guest(&root, &mut credentials, answers);
+        bench.host_mut().auto = !trailers;
+        let mut seen = Vec::new();
+        peer.send_headers(1, &h2_post("/v1/oauth/token", EXCHANGE), false);
+        peer.send_data(1, EXCHANGE.as_bytes(), true);
+        if trailers {
+            h2_until(&mut bench, &mut peer, &mut seen, &mut credentials, &mut |c| broker.serve(c), |_, b| {
+                b.host().streams.values().any(|s| s.ended)
+            });
+            let host = bench.host_mut();
+            let s = host.streams.get_mut(&1).unwrap();
+            s.answered = true;
+            let (head, data) = h2_token_answer(&s.fields, &s.body);
+            let head: Vec<hpack::Field> = head.into_iter().filter(|f| f.name != b"content-length").collect();
+            host.peer.send_headers(1, &head, false);
+            host.peer.send_data(1, &data, false);
+            host.peer
+                .send_headers(1, &[field("x-refresh", ISSUED_REFRESH.as_bytes())], true);
+        }
+        h2_until(&mut bench, &mut peer, &mut seen, &mut credentials, &mut |c| broker.serve(c), |p, _| {
+            p.response(1).ended || !p.ends().is_empty()
+        });
+        assert_eq!(
+            h2_leaked(&peer, &seen, &[ISSUED_ACCESS, ISSUED_REFRESH]),
+            None,
+            "a real token reached the guest (trailers: {trailers})"
+        );
+        assert_eq!(value_of(&peer.response(1).fields, ":status"), Some(&b"502"[..]));
+        assert!(broker.access.is_empty(), "a refused response's tokens were captured");
+    }
+}
+
+/// A token's echo is found in a head as it came, percent-encoded and as a quoted string's pairs.
+#[test]
+fn a_tokens_echo_in_a_head_is_found_escaped_or_not() {
+    let body = token_response(ISSUED_ACCESS, ISSUED_REFRESH);
+    let tokens = signin::read(body.as_bytes()).unwrap().unwrap();
+    let pct: String = ISSUED_ACCESS.bytes().map(|b| format!("%{b:02X}")).collect();
+    let quoted: String = ISSUED_REFRESH.chars().flat_map(|c| ['\\', c]).collect();
+    for head in [
+        format!("X-Echo: {ISSUED_ACCESS}"),
+        format!("Location: /cb?t={pct}"),
+        format!("X-Echo: \"{quoted}\""),
+    ] {
+        assert_eq!(
+            signin::unechoed(&tokens, [head.as_bytes()]),
+            Err(signin::Refusal::Echoed),
+            "{head}"
+        );
+    }
+    assert_eq!(signin::unechoed(&tokens, [&b"X-Echo: kiln%2"[..]]), Ok(()));
+}
