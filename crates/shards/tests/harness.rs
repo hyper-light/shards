@@ -1471,8 +1471,9 @@ impl common::Timed for Arriving {
     fn set_read_timeout(&self, _: Option<Duration>) -> std::io::Result<()> {
         Ok(())
     }
-    fn set_nonblocking(&self, _: bool) -> std::io::Result<()> {
-        Ok(())
+    fn read_now(&self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let mut stream = self;
+        std::io::Read::read(&mut stream, buf)
     }
 }
 

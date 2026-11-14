@@ -6191,7 +6191,44 @@ pub struct Following<'a, S: Timed = shards_vmm::platform::UnixStream> {
 /// TCP stream to a port its daemon publishes.
 pub trait Timed {
     fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()>;
-    fn set_nonblocking(&self, on: bool) -> io::Result<()>;
+    /// A read of what is there now, waiting for nothing (WouldBlock where nothing is), that
+    /// leaves its descriptor's mode as it was. A non-blocking mode is its open socket's,
+    /// which every clone of it shares: `echo`'s writer, writing through one while a read
+    /// had set it, was refused (EAGAIN) as its peer stopped reading and ended, and the
+    /// stream stood still for good (HVF at f385b8dac, storm through its snapshot, D209).
+    fn read_now(&self, buf: &mut [u8]) -> io::Result<usize>;
+}
+
+/// [`Timed::read_now`] of socket `fd`: recv(2) with `MSG_DONTWAIT`, this call's alone.
+#[cfg(unix)]
+fn recv_now(fd: std::os::fd::RawFd, buf: &mut [u8]) -> io::Result<usize> {
+    // SAFETY: recv(2) into `buf`, of its length, from a socket its caller holds open.
+    let n = unsafe { libc::recv(fd, buf.as_mut_ptr().cast(), buf.len(), libc::MSG_DONTWAIT) };
+    usize::try_from(n).map_err(|_| io::Error::last_os_error())
+}
+
+/// [`Timed::read_now`] of socket `socket` on Windows, which has no `MSG_DONTWAIT`: as many
+/// bytes as are there (ioctlsocket `FIONREAD`), read by `read`, which cannot wait for them;
+/// WouldBlock where none are, its end among them, which the timed read after finds.
+#[cfg(windows)]
+fn recv_now(
+    socket: std::os::windows::io::BorrowedSocket<'_>,
+    buf: &mut [u8],
+    read: impl FnOnce(&mut [u8]) -> io::Result<usize>,
+) -> io::Result<usize> {
+    use std::os::windows::io::AsRawSocket as _;
+    use windows_sys::Win32::Networking::WinSock::{FIONREAD, SOCKET, ioctlsocket};
+    let mut there: u32 = 0;
+    // SAFETY: FIONREAD's count into a local, of a socket its caller holds open.
+    if unsafe { ioctlsocket(socket.as_raw_socket() as SOCKET, FIONREAD, &raw mut there) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let there = usize::try_from(there).unwrap_or(usize::MAX);
+    if there == 0 {
+        return Err(io::ErrorKind::WouldBlock.into());
+    }
+    let len = buf.len().min(there);
+    read(buf.get_mut(..len).unwrap_or_default())
 }
 
 /// A read timeout set, or none needed: macOS refuses SO_RCVTIMEO with EINVAL on a socket both
@@ -6211,8 +6248,14 @@ impl Timed for shards_vmm::platform::UnixStream {
     fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
         timed(shards_vmm::platform::UnixStream::set_read_timeout(self, timeout))
     }
-    fn set_nonblocking(&self, on: bool) -> io::Result<()> {
-        shards_vmm::platform::UnixStream::set_nonblocking(self, on)
+    fn read_now(&self, buf: &mut [u8]) -> io::Result<usize> {
+        #[cfg(unix)]
+        return recv_now(std::os::fd::AsRawFd::as_raw_fd(self), buf);
+        #[cfg(windows)]
+        return recv_now(std::os::windows::io::AsSocket::as_socket(self), buf, |b| {
+            let mut s = self;
+            s.read(b)
+        });
     }
 }
 
@@ -6220,8 +6263,14 @@ impl Timed for std::net::TcpStream {
     fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
         timed(std::net::TcpStream::set_read_timeout(self, timeout))
     }
-    fn set_nonblocking(&self, on: bool) -> io::Result<()> {
-        std::net::TcpStream::set_nonblocking(self, on)
+    fn read_now(&self, buf: &mut [u8]) -> io::Result<usize> {
+        #[cfg(unix)]
+        return recv_now(std::os::fd::AsRawFd::as_raw_fd(self), buf);
+        #[cfg(windows)]
+        return recv_now(std::os::windows::io::AsSocket::as_socket(self), buf, |b| {
+            let mut s = self;
+            s.read(b)
+        });
     }
 }
 
@@ -6257,11 +6306,7 @@ where
 
     /// A read of what is there now, waiting for nothing: WouldBlock where nothing is.
     fn read_now(&self, buf: &mut [u8]) -> io::Result<usize> {
-        let mut stream = self.stream;
-        stream.set_nonblocking(true)?;
-        let read = stream.read(buf);
-        stream.set_nonblocking(false)?;
-        read
+        self.stream.read_now(buf)
     }
 
     /// It read `n` bytes: `carried` counts them, and from its first its party's CPU is its
