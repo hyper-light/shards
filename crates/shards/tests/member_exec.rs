@@ -304,8 +304,9 @@ fn a_command_run_in_a_member_is_confined_as_the_member_is() {
     let said = confined(&ran);
     for want in [
         "confined uid=200001 gid=200001 groups=0",
-        // Its member's PID namespace: the member's reaper and command, and itself.
-        "confined pid=3 procs=3",
+        // Its member's PID namespace: the member's reaper and command, its starter (D243: the
+        // member's own process that starts each command run in it), and itself.
+        "confined pid=4 procs=4",
         "confined hostname=harness-codex",
         "confined caps eff=0000000000000000 prm=0000000000000000 inh=0000000000000000 bnd=0000000000000000 amb=0000000000000000 nnp=1",
         "confined signals ignored=0000000000000000 blocked=0000000000000000",
