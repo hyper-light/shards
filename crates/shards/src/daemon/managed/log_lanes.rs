@@ -199,7 +199,11 @@ pub(super) fn serve(start: Start, logs: &Logs<'_>, admissions: exec::Admissions,
 /// the lane's to wait for: a descriptor (two on macOS, kqueue(2) and its directory's), and on
 /// Linux a watch of the process's one inotify instance (`max_user_watches`), or an instance of
 /// its own where the process could not make that (`max_user_instances`, inotify(7)).
-fn followed(end: End, watch: io::Result<FileWatch>, forget: &(dyn Fn(u64) + Sync)) -> Result<Reading, String> {
+fn followed(
+    end: End,
+    watch: io::Result<FileWatch>,
+    forget: &(dyn Fn(u64) + Sync),
+) -> Result<Reading, String> {
     match watch {
         Ok(watch) => Ok(Reading::Followed { end, watch }),
         Err(e) => {
@@ -452,9 +456,16 @@ mod tests {
         let (stream, _ends) = shards_ipc::Stream::pair().unwrap();
         assert!(matches!(
             followed(End::Run(8, stream), watch, &forget),
-            Ok(Reading::Followed { end: End::Run(8, _), .. })
+            Ok(Reading::Followed {
+                end: End::Run(8, _),
+                ..
+            })
         ));
-        assert_eq!(forgot.lock().unwrap().len(), 1, "a followed lane's waiter was forgotten");
+        assert_eq!(
+            forgot.lock().unwrap().len(),
+            1,
+            "a followed lane's waiter was forgotten"
+        );
     }
 
     /// A lane asked from the oldest of a log whose older output the run's one cap let go says so
