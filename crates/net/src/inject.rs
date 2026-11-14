@@ -756,7 +756,18 @@ struct Parked {
     owed: Owed,
     /// Where it is a sign-in's token host's POST to its token or revocation path: its body is
     /// read whole before it goes, as a refresh or a revocation is answered outside.
-    whole: Option<Whole>,
+    whole: Option<Holding>,
+}
+
+/// A sign-in's POST held until its body has come whole (D242, step 8): what it is asked by, and
+/// its body as read so far, decoded by its own framing (RFC 9112 §6.3, §7.1); nothing of
+/// `pending` is taken until it is answered, so that one that goes on goes as it came.
+struct Holding {
+    whole: Whole,
+    framing: Framing,
+    /// How much of `pending` its framing has read.
+    read: usize,
+    body: Vec<u8>,
 }
 
 /// What a sign-in's request read whole is asked by (D242, step 8): its CLI, method, target and
@@ -815,9 +826,11 @@ enum Chunk {
     Trailers(Vec<u8>),
 }
 
-/// A body's bytes, as its framing reads them: data, or the framing between.
+/// A body's bytes, as its framing reads them: data, a chunk's size line whole (its extensions
+/// too, RFC 9112 §7.1.1) and the size it says, or the rest of the framing between.
 enum Piece<'b> {
     Data(&'b [u8]),
+    Size { line: &'b [u8], size: u64 },
     Frame(&'b [u8]),
 }
 
@@ -874,7 +887,7 @@ fn walk(
                             continue;
                         }
                         let size = chunk_size(line).ok_or(Broken("a chunk's size line"))?;
-                        out(Piece::Frame(line)).map_err(fail)?;
+                        out(Piece::Size { line, size }).map_err(fail)?;
                         *chunk = if size == 0 {
                             Chunk::Trailers(Vec::new())
                         } else {
@@ -1244,14 +1257,6 @@ fn rewrite(head: &[u8], edits: &[(Range<usize>, &[u8])]) -> Zeroizing<Vec<u8>> {
     out
 }
 
-/// A value to mask in a response, and the placeholder its bytes are masked with.
-struct Masked<'a> {
-    value: &'a [u8],
-    placeholder: &'a [u8],
-    /// KMP's failure function of `value`.
-    table: Vec<usize>,
-}
-
 /// KMP's failure function of `v` (Knuth, Morris and Pratt 1977): for each of its prefixes, the
 /// length of its longest proper prefix that is also its suffix.
 pub(crate) fn failure(v: &[u8]) -> Vec<usize> {
@@ -1280,18 +1285,66 @@ pub(crate) fn step(v: &[u8], table: &[usize], mut m: usize, b: u8) -> usize {
     if v.get(m) == Some(&b) { m + 1 } else { 0 }
 }
 
+/// The values just filled into a request toward `host`, each with its credential's reference:
+/// audited once each (f26), and given to `mask` as they went, for its response (creds-03).
+fn filled_in(mask: &mut Mask, sent: &[(&str, &[u8])], host: &str, grants: &[crate::Grant], audit: &mut Vec<Audit>) {
+    mask.clear();
+    let at = SystemTime::now();
+    for (i, &(reference, value)) in sent.iter().enumerate() {
+        if sent.iter().take(i).any(|&(r, _)| r == reference) {
+            continue;
+        }
+        audit.push(Audit {
+            host: host.to_string(),
+            reference: reference.to_string(),
+            what: Did::Filled,
+            at,
+        });
+        let placeholder = grants
+            .iter()
+            .find(|g| g.reference == reference)
+            .map_or(&b""[..], |g| g.placeholder.as_bytes());
+        mask.fill(value, placeholder);
+    }
+}
+
+/// A chunk's size line that holds a value filled in (`Mask::size`).
+#[derive(Debug)]
+struct Holds;
+
+impl fmt::Display for Holds {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a chunk's size that is a value filled in")
+    }
+}
+
+impl std::error::Error for Holds {}
+
+/// A value filled into the request under way, as it went (creds-03): held for its response's
+/// mask, whatever becomes of its lease, until that response ends; wiped as it drops.
+struct Filled {
+    value: Zeroizing<Vec<u8>>,
+    /// Its placeholder's bytes, which an echo of it is masked with.
+    placeholder: Vec<u8>,
+    /// KMP's failure function of `value`.
+    table: Vec<usize>,
+    /// How much of `value` the data so far ends with.
+    matched: usize,
+}
+
 /// A response's echoes of the values filled into its request, replaced as they come back (f16)
 /// by as many bytes of the value's placeholder, cycled: the whole placeholder where the value is
 /// as long or longer, a part of it where shorter. No length changes, so a response's framing
 /// stays as it came and none is recomputed (RFC 9112 §6.3, f43). A value is sought in a
 /// response's head and data alone, a chunked body's framing passed over, so that an echo split
 /// across chunks is found. The bytes from where a value may still begin wait until it completes
-/// or fails; the rest goes on at once, and a message's end lets everything go.
+/// or fails; the rest goes on at once, and a message's end lets everything go. Each value is the
+/// mask's own copy of what went, taken as it was filled in (creds-03): a lease that lapses or a
+/// value rotated outside while its response comes leaves its echo masked.
 #[derive(Default)]
 struct Mask {
-    /// The credentials filled into the request under way, each with how much of its value the
-    /// data so far ends with.
-    filled: Vec<(String, usize)>,
+    /// The values filled into the request under way.
+    filled: Vec<Filled>,
     /// Bytes not yet let go of, from the stream's byte `base`.
     queue: Zeroizing<Vec<u8>>,
     base: usize,
@@ -1300,49 +1353,31 @@ struct Mask {
 }
 
 impl Mask {
-    /// Each value filled into the request under way, and its placeholder, as its run holds
-    /// them: a value whose lease has ended is not held, and nothing is masked of it.
-    fn values<'r>(&self, run: &'r Run<'_>) -> Vec<Option<Masked<'r>>> {
-        self.filled
-            .iter()
-            .map(|(reference, _)| {
-                let value = run.credentials.leases.held(reference, run.now)?;
-                let placeholder = run
-                    .credentials
-                    .grants
-                    .iter()
-                    .find(|g| &g.reference == reference)?
-                    .placeholder
-                    .as_bytes();
-                Some(Masked {
-                    value,
-                    placeholder,
-                    table: failure(value),
-                })
-            })
-            .collect()
+    /// `value`, as it was filled into the request under way, masked with `placeholder`'s bytes in
+    /// its response from now on: once, however many places it was filled into.
+    fn fill(&mut self, value: &[u8], placeholder: &[u8]) {
+        if value.is_empty() || self.filled.iter().any(|f| f.value.as_slice() == value) {
+            return;
+        }
+        self.filled.push(Filled {
+            value: Zeroizing::new(value.to_vec()),
+            placeholder: placeholder.to_vec(),
+            table: failure(value),
+            matched: 0,
+        });
+    }
+
+    /// The values masked no more: the response they were filled in for has ended.
+    fn clear(&mut self) {
+        self.filled.clear();
     }
 
     /// `bytes` of a response, data an echo may lie in or its framing, on their way to `out`.
-    fn push(
-        &mut self,
-        bytes: &[u8],
-        data: bool,
-        run: &Run<'_>,
-        out: &mut dyn FnMut(&[u8]) -> io::Result<()>,
-    ) -> io::Result<()> {
+    fn push(&mut self, bytes: &[u8], data: bool, out: &mut dyn FnMut(&[u8]) -> io::Result<()>) -> io::Result<()> {
         if self.filled.is_empty() && self.queue.is_empty() {
             return out(bytes);
         }
-        let values = self.values(run);
-        let longest = values.iter().flatten().map(|m| m.value.len()).max().unwrap_or(0);
-        if longest == 0 {
-            // No value is held to seek: what waited for one goes on.
-            for (_, m) in &mut self.filled {
-                *m = 0;
-            }
-            self.at.clear();
-        }
+        let longest = self.filled.iter().map(|f| f.value.len()).max().unwrap_or(0);
         for &b in bytes {
             let pos = self.base + self.queue.len();
             self.queue.push(b);
@@ -1354,34 +1389,29 @@ impl Mask {
                 self.at.pop_front();
             }
             let mut whole = None;
-            for ((_, m), masked) in self.filled.iter_mut().zip(&values) {
-                let Some(v) = masked else {
-                    *m = 0;
-                    continue;
-                };
-                *m = step(v.value, &v.table, *m, b);
-                if *m == v.value.len() {
-                    whole = Some(v);
+            for (i, f) in self.filled.iter_mut().enumerate() {
+                f.matched = step(&f.value, &f.table, f.matched, b);
+                if f.matched == f.value.len() {
+                    whole = Some(i);
                 }
             }
-            if let Some(v) = whole {
-                let len = v.value.len();
-                let from = self.at.len().saturating_sub(len);
+            if let Some(f) = whole.and_then(|i| self.filled.get(i)) {
+                let from = self.at.len().saturating_sub(f.value.len());
                 for (i, &p) in self.at.iter().skip(from).enumerate() {
-                    let mask = v
+                    let mask = f
                         .placeholder
-                        .get(i.checked_rem(v.placeholder.len()).unwrap_or(0))
+                        .get(i.checked_rem(f.placeholder.len()).unwrap_or(0))
                         .copied();
                     if let Some(byte) = self.queue.get_mut(p.wrapping_sub(self.base)) {
                         *byte = mask.unwrap_or(b'*');
                     }
                 }
-                for (_, m) in &mut self.filled {
-                    *m = 0;
+                for f in &mut self.filled {
+                    f.matched = 0;
                 }
             }
         }
-        let held = self.filled.iter().map(|(_, m)| *m).max().unwrap_or(0);
+        let held = self.filled.iter().map(|f| f.matched).max().unwrap_or(0);
         let upto = if held == 0 {
             self.queue.len()
         } else {
@@ -1391,6 +1421,22 @@ impl Mask {
                 .min(self.queue.len())
         };
         self.release(upto, out)
+    }
+
+    /// A chunk's size line as its size alone (RFC 9112 §7.1: `chunk-size CRLF`, in its fewest
+    /// hex digits), on its way to `out` as framing; refused where a value filled in lies in it,
+    /// as no same-length mask of it keeps its framing.
+    fn size(&mut self, size: u64, out: &mut dyn FnMut(&[u8]) -> io::Result<()>) -> io::Result<()> {
+        let line = format!("{size:x}\r\n");
+        let line = line.as_bytes();
+        if self
+            .filled
+            .iter()
+            .any(|f| line.windows(f.value.len()).any(|w| w == f.value.as_slice()))
+        {
+            return Err(io::Error::other(Holds));
+        }
+        self.push(line, false, out)
     }
 
     /// Lets the first `n` bytes go on.
@@ -1409,8 +1455,8 @@ impl Mask {
     fn end_message(&mut self, out: &mut dyn FnMut(&[u8]) -> io::Result<()>) -> io::Result<()> {
         let n = self.queue.len();
         self.release(n, out)?;
-        for (_, m) in &mut self.filled {
-            *m = 0;
+        for f in &mut self.filled {
+            f.matched = 0;
         }
         self.at.clear();
         Ok(())
@@ -1420,7 +1466,7 @@ impl Mask {
 /// What a sign-in's request read whole comes to (R04).
 enum Outside {
     /// Its body has not come whole.
-    Waiting(Whole),
+    Waiting(Holding),
     /// Answered here or asked outside: it goes no further.
     Answered,
     /// Neither: it goes on as any request.
@@ -1818,7 +1864,7 @@ impl Ended {
                     pending,
                     crate::tcp::TO_HOST,
                     &mut |piece| match piece {
-                        Piece::Data(b) | Piece::Frame(b) => host.writer().write_all(b),
+                        Piece::Data(b) | Piece::Size { line: b, .. } | Piece::Frame(b) => host.writer().write_all(b),
                     },
                 )
                 .map_err(|Broken(why)| Refusal::Malformed(why))?;
@@ -1865,17 +1911,42 @@ impl Ended {
     /// A sign-in's request read whole (D242, step 8), once its body has come within the
     /// connection's window: a refresh of the sign-in's placeholder asked outside, its answer
     /// resuming the flow; a revocation of one answered here, its stored tokens untouched; anything
-    /// else passed on, its response read. An answered request's body goes no further.
-    fn outside(&mut self, parked: &Parked, whole: Whole, run: &mut Run<'_>) -> Result<Outside, Refusal> {
-        let Framing::Length(n) = parked.body else {
-            return Ok(Outside::Pass);
-        };
-        let n = usize::try_from(n).unwrap_or(usize::MAX);
-        if self.pending.len() < n {
-            return Ok(Outside::Waiting(whole));
+    /// else passed on, its response read. An answered request's body goes no further. A chunked
+    /// body is decoded (RFC 9112 §7.1), its extensions and trailer section no part of what is
+    /// asked; one broken is refused. One whose end has not come when what the flow holds leaves
+    /// the guest no window to send it (`tcp::full`) cannot be read whole: it goes on as any
+    /// request, as one whose Content-Length is past `TO_HOST` does.
+    fn outside(&mut self, parked: &Parked, mut held: Holding, run: &mut Run<'_>) -> Result<Outside, Refusal> {
+        let chunked = matches!(held.framing, Framing::Chunked(_));
+        let Holding {
+            framing, read, body, ..
+        } = &mut held;
+        let rest = self.pending.get(*read..).unwrap_or_default();
+        let mut trailers = body.len();
+        let (taken, ended) = walk(framing, rest, crate::tcp::TO_HOST, &mut |piece| {
+            if let Piece::Data(data) = piece {
+                trailers = body.len();
+                body.extend_from_slice(data);
+            }
+            Ok(())
+        })
+        .map_err(|Broken(why)| Refusal::Malformed(why))?;
+        *read += taken;
+        if !ended {
+            // What `held` counts, the request being out of `self.request` while it goes.
+            let holds = self.pending.len().saturating_add(parked.head.len());
+            return Ok(if crate::tcp::full(holds) {
+                Outside::Pass
+            } else {
+                Outside::Waiting(held)
+            });
         }
-        let body = self.pending.get(..n).unwrap_or_default();
-        let Some((index, asked)) = ask_whole(&whole, &parked.host, body, run) else {
+        if chunked {
+            // `walk` gives a chunked body's trailer section last, as data (an echo may lie in
+            // it): it is fields, not content (§7.1.2).
+            body.truncate(trailers);
+        }
+        let Some((index, asked)) = ask_whole(&held.whole, &parked.host, &held.body, run) else {
             return Ok(Outside::Pass);
         };
         match asked {
@@ -1896,7 +1967,7 @@ impl Ended {
                 self.request = Request::Head;
             }
         }
-        self.pending.drain(..n);
+        self.pending.drain(..held.read.min(self.pending.len()));
         Ok(Outside::Answered)
     }
 
@@ -1981,12 +2052,21 @@ impl Ended {
                 let path = signin::path(&target);
                 let ours = method.eq_ignore_ascii_case("POST")
                     && (path == profile.token.path || path == profile.revoke.path);
-                let fits = matches!(body, Framing::Length(n) if usize::try_from(n).is_ok_and(|n| n <= crate::tcp::TO_HOST));
-                (ours && fits).then(|| Whole {
-                    cli,
-                    method: method.clone(),
-                    target: target.clone(),
-                    content_type: values(&head, &fields, "content-type").next().map(<[u8]>::to_vec),
+                let fits = match body {
+                    Framing::Length(n) => usize::try_from(n).is_ok_and(|n| n <= crate::tcp::TO_HOST),
+                    Framing::Chunked(_) => true,
+                    Framing::Close => false,
+                };
+                (ours && fits).then(|| Holding {
+                    whole: Whole {
+                        cli,
+                        method: method.clone(),
+                        target: target.clone(),
+                        content_type: values(&head, &fields, "content-type").next().map(<[u8]>::to_vec),
+                    },
+                    framing: body.clone(),
+                    read: 0,
+                    body: Vec::new(),
                 })
             }
             None => {
@@ -2075,12 +2155,14 @@ impl Ended {
             .iter()
             .map(|(r, v)| (r.clone(), v.as_slice()))
             .collect();
+        let mut sent: Vec<(&str, &[u8])> = Vec::new();
         for (range, reference) in &parked.fills {
             let value = leases.held(reference, run.now).ok_or_else(|| Refusal::Unleased {
                 reference: reference.clone(),
                 why: lease::Refusal::Lapsed,
             })?;
             edits.push((range.clone(), value));
+            sent.push((reference, value));
         }
         let head = rewrite(&parked.head, &edits);
         self.host
@@ -2088,19 +2170,13 @@ impl Ended {
             .write_all(&head)
             .map_err(|e| Refusal::Upstream(e.to_string()))?;
         drop(head);
-        let at = SystemTime::now();
-        self.mask.filled.clear();
-        for (_, reference) in &parked.fills {
-            if !self.mask.filled.iter().any(|(r, _)| r == reference) {
-                run.audit.push(Audit {
-                    host: parked.host.clone(),
-                    reference: reference.clone(),
-                    what: Did::Filled,
-                    at,
-                });
-                self.mask.filled.push((reference.clone(), 0));
-            }
-        }
+        filled_in(
+            &mut self.mask,
+            &sent,
+            &parked.host,
+            &run.credentials.grants,
+            &mut run.audit,
+        );
         self.owed = Some(parked.owed);
         self.answered = false;
         self.request = match parked.body {
@@ -2133,15 +2209,25 @@ impl Ended {
                     buf.extend_from_slice(bytes.get(..take).unwrap_or_default());
                     bytes = bytes.get(take..).unwrap_or_default();
                     let head = std::mem::take(buf);
-                    self.response_head(head, run)?;
+                    self.response_head(head)?;
                 }
                 Response::Body(framing) => {
                     let Ended { mask, guest, .. } = self;
+                    // A chunk's size line goes as its size alone, its extensions cut (creds-02):
+                    // their bytes would reach the guest, and they are no data to mask.
+                    let mut holds = false;
                     let mut piece = |p: Piece<'_>| match p {
-                        Piece::Data(b) => mask.push(b, true, run, &mut |b| guest.writer().write_all(b)),
-                        Piece::Frame(b) => mask.push(b, false, run, &mut |b| guest.writer().write_all(b)),
+                        Piece::Data(b) => mask.push(b, true, &mut |b| guest.writer().write_all(b)),
+                        Piece::Size { size, .. } => mask
+                            .size(size, &mut |b| guest.writer().write_all(b))
+                            .inspect_err(|e| holds |= e.get_ref().is_some_and(|e| e.is::<Holds>())),
+                        Piece::Frame(b) => mask.push(b, false, &mut |b| guest.writer().write_all(b)),
                     };
-                    let (taken, ended) = walk(framing, bytes, crate::tcp::TO_GUEST, &mut piece)?;
+                    let walked = walk(framing, bytes, crate::tcp::TO_GUEST, &mut piece);
+                    let (taken, ended) = walked.map_err(|broken| match holds {
+                        true => Broken("a chunk's size that is a value filled in"),
+                        false => broken,
+                    })?;
                     bytes = bytes.get(taken..).unwrap_or_default();
                     if ended {
                         mask.end_message(&mut |b| guest.writer().write_all(b))
@@ -2152,7 +2238,7 @@ impl Ended {
                 }
                 Response::Tunnel => {
                     let Ended { mask, guest, .. } = self;
-                    mask.push(bytes, true, run, &mut |b| guest.writer().write_all(b))
+                    mask.push(bytes, true, &mut |b| guest.writer().write_all(b))
                         .map_err(queued)?;
                     return Ok(());
                 }
@@ -2251,7 +2337,7 @@ impl Ended {
 
     /// A response's head, whole: passed on, hop-by-hop fields cut and echoes masked, and what
     /// follows it read as its status and framing say.
-    fn response_head(&mut self, head: Vec<u8>, run: &Run<'_>) -> Result<(), Broken> {
+    fn response_head(&mut self, head: Vec<u8>) -> Result<(), Broken> {
         let lines = head.iter().filter(|&&b| b == b'\n').count();
         let mut read = vec![httparse::EMPTY_HEADER; lines];
         let mut response = httparse::Response::new(&mut read);
@@ -2291,7 +2377,7 @@ impl Ended {
         }
         let Ended { mask, guest, .. } = self;
         let mut out = |b: &[u8]| guest.writer().write_all(b);
-        mask.push(&passed, true, run, &mut out)
+        mask.push(&passed, true, &mut out)
             .and_then(|()| mask.end_message(&mut out))
             .map_err(|_| Broken("its bytes could not be queued"))?;
         self.answered = true;
@@ -2315,7 +2401,7 @@ impl Ended {
     /// masked no more, and the next request may come.
     fn exchange_ended(&mut self) {
         self.owed = None;
-        self.mask.filled.clear();
+        self.mask.clear();
         if matches!(self.request, Request::Sent) {
             self.request = Request::Head;
         }
@@ -2512,9 +2598,9 @@ fn ping(head: http2::Head, payload: &[u8], out: &mut Vec<u8>) -> Result<(), http
 }
 
 /// `value`, a field's, its echoes of the values `mask` masks replaced.
-fn masked(mask: &mut Mask, value: &[u8], run: &Run<'_>) -> Zeroizing<Vec<u8>> {
+fn masked(mask: &mut Mask, value: &[u8]) -> Zeroizing<Vec<u8>> {
     let mut out = Zeroizing::new(Vec::with_capacity(value.len()));
-    let _ = mask.push(value, true, run, &mut |b| {
+    let _ = mask.push(value, true, &mut |b| {
         out.extend_from_slice(b);
         Ok(())
     });
@@ -3605,19 +3691,19 @@ impl H2 {
         );
         drop(block);
         self.next_host = id.saturating_add(2);
-        let at = SystemTime::now();
-        s.mask.filled.clear();
-        for fill in &go.fills {
-            if !s.mask.filled.iter().any(|(r, _)| r == &fill.reference) {
-                run.audit.push(Audit {
-                    host: go.host.clone(),
-                    reference: fill.reference.clone(),
-                    what: Did::Filled,
-                    at,
-                });
-                s.mask.filled.push((fill.reference.clone(), 0));
-            }
-        }
+        // Each value just encoded, as `encode` read it of the same leases at the same instant.
+        let sent: Vec<(&str, &[u8])> = go
+            .fills
+            .iter()
+            .filter_map(|f| Some((f.reference.as_str(), leases.held(&f.reference, run.now)?)))
+            .collect();
+        filled_in(
+            &mut s.mask,
+            &sent,
+            &go.host,
+            &run.credentials.grants,
+            &mut run.audit,
+        );
         s.up = Upward::Sent {
             id,
             state: if end {
@@ -3819,7 +3905,7 @@ impl H2 {
             });
         }
         for f in &mut fields {
-            f.value = masked(&mut s.mask, &f.value, run);
+            f.value = masked(&mut s.mask, &f.value);
         }
         if trailers {
             s.down_last = Some(Last::Trailers(fields));
@@ -3936,7 +4022,7 @@ impl H2 {
                 down_data.extend_from_slice(b);
                 Ok(())
             };
-            let _ = mask.push(data, true, run, &mut out);
+            let _ = mask.push(data, true, &mut out);
             if end {
                 let _ = mask.end_message(&mut out);
                 *down_last = Some(Last::End);
@@ -4153,6 +4239,8 @@ pub(crate) mod tests {
         /// As Claude Code's token endpoint (`TOKEN_URL`), once its body is whole: a code's
         /// exchange with the issued tokens, anything else 400.
         Token,
+        /// Never: each request kept, the test writing the answer (`Bench::answer`).
+        Quiet,
     }
 
     /// An HTTPS server speaking HTTP/1.1, stepped in the bench's own turns: the injector's TLS
@@ -4165,8 +4253,8 @@ pub(crate) mod tests {
         slow: bool,
         /// Plaintext read and not yet framed.
         inbox: Vec<u8>,
-        /// The request under way: what came of it, and how much of its body is to come.
-        request: Option<(Vec<u8>, usize)>,
+        /// The request under way: what came of it, and where in its body's framing.
+        request: Option<(Vec<u8>, Framing)>,
         out: Vec<u8>,
         heads: Vec<Vec<u8>>,
         had: Vec<Had>,
@@ -4211,7 +4299,7 @@ pub(crate) mod tests {
         /// Frames what came: a head once it is whole, then its body as it comes.
         fn serve(&mut self) {
             loop {
-                let (mut request, left) = match self.request.take() {
+                let (mut request, mut framing) = match self.request.take() {
                     Some(under_way) => under_way,
                     None => {
                         let Some(end) = self.inbox.windows(4).position(|w| w == b"\r\n\r\n") else {
@@ -4226,17 +4314,31 @@ pub(crate) mod tests {
                             self.tls.writer().write_all(answer.as_bytes()).unwrap();
                             self.tls.writer().write_all(&head).unwrap();
                         }
-                        (head, len)
+                        let chunked = String::from_utf8_lossy(&head)
+                            .to_ascii_lowercase()
+                            .contains("\r\ntransfer-encoding: chunked\r\n");
+                        let framing = if chunked {
+                            Framing::Chunked(Chunk::Size(Vec::new()))
+                        } else {
+                            Framing::Length(len as u64)
+                        };
+                        (head, framing)
                     }
                 };
-                let piece: Vec<u8> = self.inbox.drain(..left.min(self.inbox.len())).collect();
+                let mut piece = Vec::new();
+                let (n, ended) = walk(&mut framing, &self.inbox, usize::MAX, &mut |p| {
+                    let (Piece::Data(b) | Piece::Size { line: b, .. } | Piece::Frame(b)) = p;
+                    piece.extend_from_slice(b);
+                    Ok(())
+                })
+                .unwrap();
+                self.inbox.drain(..n);
                 if self.answers == H1Answers::Echo {
                     self.tls.writer().write_all(&piece).unwrap();
                 }
                 request.extend_from_slice(&piece);
-                let left = left - piece.len();
-                if left > 0 {
-                    self.request = Some((request, left));
+                if !ended {
+                    self.request = Some((request, framing));
                     return;
                 }
                 if self.answers == H1Answers::Token {
@@ -5026,7 +5128,7 @@ pub(crate) mod tests {
                         data.extend_from_slice(d);
                         all.extend_from_slice(d);
                     }
-                    Piece::Frame(f) => all.extend_from_slice(f),
+                    Piece::Size { line: f, .. } | Piece::Frame(f) => all.extend_from_slice(f),
                 }
                 Ok(())
             })
@@ -5068,27 +5170,13 @@ pub(crate) mod tests {
     /// value's beginning waits only while it may be one, and a message's end lets it go.
     #[test]
     fn an_echo_is_masked_across_pieces_and_framing() {
-        let root = root("shards test root");
-        let mut credentials = credentials(&root);
-        assert!(matches!(
-            credentials.leases.ask(CLAUDE, 7, Instant::now()),
-            lease::Asked::Waiting
-        ));
-        lease_all(&mut credentials);
-        let run = Run {
-            credentials: &mut credentials,
-            waiter: 7,
-            now: Instant::now(),
-            audit: Vec::new(),
-            refused: Vec::new(),
-        };
         let mut mask = Mask::default();
-        mask.filled.push((CLAUDE.into(), 0));
+        mask.fill(VALUE, PLACEHOLDER.as_bytes());
         let mut out = Vec::new();
         let (a, b) = VALUE.split_at(10);
         let (b, c) = b.split_at(5);
         let mut push = |bytes: &[u8], data: bool, out: &mut Vec<u8>| {
-            mask.push(bytes, data, &run, &mut |o| {
+            mask.push(bytes, data, &mut |o| {
                 out.extend_from_slice(o);
                 Ok(())
             })
@@ -5503,6 +5591,156 @@ pub(crate) mod tests {
             one.h1().heads.is_empty() && two.h1().heads.is_empty(),
             "a refresh reached the provider"
         );
+    }
+
+    /// A POST of `chunks` to `target` at `host`, chunked (RFC 9112 §7.1), each chunk's size line
+    /// with an extension, its trailer section `trailers` (field lines, each CRLF-ended).
+    fn chunked_post(target: &str, host: &str, chunks: &[&str], trailers: &str) -> Vec<u8> {
+        let mut post = format!(
+            "POST {target} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n"
+        );
+        for chunk in chunks {
+            post.push_str(&format!("{:x};piece=\"a b\"\r\n{chunk}\r\n", chunk.len()));
+        }
+        post.push_str(&format!("0\r\n{trailers}\r\n"));
+        post.into_bytes()
+    }
+
+    /// Do: on one connection of the run's Claude Code, captured before, a chunked refresh of its
+    /// refresh placeholder, its JSON split across chunks with extensions, then a chunked
+    /// revocation of it with a trailer section. Expect: neither reaching the host; the refresh
+    /// asked outside once and answered with the sign-in's placeholders; the revocation answered
+    /// 200 here, the trailer field no part of the body asked, and each request's bytes taken
+    /// whole, so that the next head is read where it starts.
+    #[test]
+    fn a_chunked_refresh_and_revocation_are_answered_outside() {
+        let root = root("shards test root");
+        let mut credentials = sign_in_credentials(&root, true);
+        let ca = credentials.ca.der().to_vec();
+        let mut broker = Broker::holding(ISSUED_ACCESS, ISSUED_REFRESH);
+        let mut cli = Bench::new(guest(ca.into(), TOKEN_HOST, None), token_host(&root));
+        let refresh = refresh_body();
+        let (a, rest) = refresh.split_at(17);
+        let (b, c) = rest.split_at(40);
+        cli.guest
+            .writer()
+            .write_all(&chunked_post("/v1/oauth/token", TOKEN_HOST, &[a, b, c], ""))
+            .unwrap();
+        cli.until(&mut credentials, &mut |c| broker.serve(c), |b| {
+            assert!(b.h1().heads.is_empty(), "the refresh reached the host");
+            whole(&b.got)
+        });
+        assert_eq!(broker.provider_calls, 1);
+        let answer = String::from_utf8(cli.got.clone()).unwrap();
+        assert!(answer.starts_with("HTTP/1.1 200 OK\r\n"), "{answer}");
+        assert!(
+            answer.ends_with(&token_response(SIGNED_ACCESS, SIGNED_REFRESH)),
+            "{answer}"
+        );
+        assert!(!holds(&cli.got, ROTATED_REFRESH.as_bytes()));
+        cli.got.clear();
+        let revoke = format!(
+            r#"{{"token":"{SIGNED_REFRESH}","token_type_hint":"refresh_token","client_id":"9d1c250a-e61b-44d9-88ed-5944d1962f5e"}}"#
+        );
+        let (a, b) = revoke.split_at(9);
+        cli.guest
+            .writer()
+            .write_all(&chunked_post(
+                "/v1/oauth/token/revoke",
+                TOKEN_HOST,
+                &[a, b],
+                "X-Checksum: 1\r\nX-Other: 2\r\n",
+            ))
+            .unwrap();
+        cli.until(&mut credentials, &mut |c| broker.serve(c), |b| {
+            assert!(b.h1().heads.is_empty(), "the revocation reached the host");
+            whole(&b.got)
+        });
+        cli.settle(&mut credentials, &mut |c| broker.serve(c));
+        assert!(cli.got.starts_with(b"HTTP/1.1 200 OK\r\n"));
+        assert_eq!(broker.revoked, 1);
+        assert!(cli.h1().heads.is_empty(), "a request reached the provider");
+        assert!(!cli.closed, "the connection was ended");
+    }
+
+    /// Do: a chunked POST to the token path whose chunking is broken: a size line that is no
+    /// hex, a chunk's data not ended by CRLF, a control byte in an extension. Expect: refused 400
+    /// by the injector, nothing reaching the host or the provider.
+    #[test]
+    fn a_held_post_broken_in_its_chunking_is_refused() {
+        let root = root("shards test root");
+        for broken in ["zz\r\n", "5\r\nhelloXY", "5;a\x01\r\nhello\r\n0\r\n\r\n"] {
+            let mut credentials = sign_in_credentials(&root, true);
+            let mut broker = Broker::holding(ISSUED_ACCESS, ISSUED_REFRESH);
+            let mut cli = Bench::new(
+                guest(credentials.ca.der().to_vec().into(), TOKEN_HOST, None),
+                token_host(&root),
+            );
+            let post = format!(
+                "POST /v1/oauth/token HTTP/1.1\r\nHost: {TOKEN_HOST}\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n{broken}"
+            );
+            cli.guest.writer().write_all(post.as_bytes()).unwrap();
+            cli.until(&mut credentials, &mut |c| broker.serve(c), |b| {
+                b.closed && whole(&b.got)
+            });
+            assert!(
+                cli.got.starts_with(b"HTTP/1.1 400 Bad Request\r\n"),
+                "{broken:?}: {}",
+                String::from_utf8_lossy(&cli.got)
+            );
+            assert!(cli.h1().heads.is_empty(), "{broken:?} reached the host");
+            assert_eq!(broker.provider_calls, 0);
+        }
+    }
+
+    /// Do: over a connection that holds `TO_HOST`, as tcp.rs' does, a POST to the token path
+    /// whose body the hold cannot take whole: chunked, two chunks of `TO_HOST` octets each, and
+    /// one of a Content-Length of `TO_HOST` exactly, which fits alone but not with its head's
+    /// fields, a sixteenth of it more. Each is past the hold by more than a TLS record, which the
+    /// guest's bytes still being deframed can add to it. Expect: no stall waiting for an end the
+    /// guest has no window to send; each goes on to the host as it came, its head asking
+    /// `identity`, the host's answer reaching the guest.
+    #[test]
+    fn a_token_post_past_the_hold_goes_on() {
+        let root = root("shards test root");
+        let data: Vec<u8> = (0..crate::tcp::TO_HOST).map(|i| b'a' + (i % 26) as u8).collect();
+        let data = String::from_utf8(data).unwrap();
+        for chunked in [true, false] {
+            let mut credentials = sign_in_credentials(&root, true);
+            let mut broker = Broker::holding(ISSUED_ACCESS, ISSUED_REFRESH);
+            let mut cli = Bench::new(
+                guest(credentials.ca.der().to_vec().into(), TOKEN_HOST, None),
+                token_host(&root),
+            );
+            cli.window = crate::tcp::TO_HOST;
+            let post = if chunked {
+                chunked_post("/v1/oauth/token", TOKEN_HOST, &[&data, &data], "")
+            } else {
+                let pad = "p".repeat(data.len() / 16);
+                [
+                    format!(
+                        "POST /v1/oauth/token HTTP/1.1\r\nHost: {TOKEN_HOST}\r\nAccept-Encoding: gzip\r\nX-Pad: {pad}\r\nContent-Length: {}\r\n\r\n",
+                        data.len()
+                    )
+                    .as_bytes(),
+                    data.as_bytes(),
+                ]
+                .concat()
+            };
+            cli.guest.writer().write_all(&post).unwrap();
+            cli.until(&mut credentials, &mut |c| broker.serve(c), |b| whole(&b.got));
+            let end = post.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+            let had = &cli.h1().had[0].request;
+            assert!(holds(had, b"Accept-Encoding: identity\r\n") && !holds(had, b"gzip"));
+            assert!(had.starts_with(b"POST /v1/oauth/token HTTP/1.1\r\n"));
+            assert_eq!(
+                &had[had.len() - (post.len() - end)..],
+                &post[end..],
+                "chunked: {chunked}"
+            );
+            assert!(cli.got.starts_with(b"HTTP/1.1 400 Bad Request\r\n"));
+            assert_eq!(broker.provider_calls, 0);
+        }
     }
 
     /// Do: ask the endpoint that mints a key with a captured sign-in's access placeholder.
@@ -7004,4 +7242,7 @@ pub(crate) mod tests {
         assert_eq!(bench.host().told, []);
         assert!(!bench.closed);
     }
+
+    /// creds-01..04 (docs/bugs/2026-11-13/creds.md): a value never reaching the guest past the mask.
+    mod leaks;
 }

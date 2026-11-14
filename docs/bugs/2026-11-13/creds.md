@@ -77,6 +77,8 @@ The bytes nevertheless enter `Mask.queue` and are released to `guest.writer()`. 
 
 **Confidence:** High by complete source trace; not run.
 
+**Status (2026-11-13):** fixed in b26011d07 (red `inject::tests::leaks::a_chunks_extension_never_carries_a_value_to_the_guest`)
+
 ### creds-03 — P0 / critical — Lease expiry or rotation disables masking of responses already in flight
 
 **Location:** `crates/net/src/inject.rs:1309`, `:1339`; `crates/net/src/lib.rs:1299`, `:2883`.
@@ -94,6 +96,8 @@ D242 **explicitly acknowledges post-expiry echoes as an unmasked residual** (`ar
 **Regression sketch:** Send with synthetic `T`, withhold the response, expire the lease or call the real refresh-follow path, then return `T`. For H1 and H2 assert that the stream is refused/reset or its full guest plaintext contains no `T`. Repeat with a newly leased `T2` and an old-`T` response.
 
 **Confidence:** High; explicitly confirmed by both code and design record, no live reproduction.
+
+**Status (2026-11-13):** fixed in 72420e789 (red `inject::tests::leaks::an_echo_after_its_lease_lapsed_is_masked_still`, `inject::tests::leaks::an_h2_echo_of_a_value_rotated_while_its_response_waits_is_masked`)
 
 ### creds-04 — P0 / critical — Compressed echoes bypass the raw-byte response mask
 

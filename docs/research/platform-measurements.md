@@ -7653,6 +7653,13 @@ revision before comparing a changed API/implementation.
   network cost it nothing measurable. Open: the daemon's share on a quiet host; the peers'
   processes asked at once.
 
+**network-01 correctness follow-up (2026-11-13).** M210's finite connection-cost
+measurements do not validate segment acceptance. On `adas-mac-studio.local` (Darwin
+arm64, Rust 1.98.1), a socket-seam red at a6ca2403e accepts an empty FIN numbered zero
+without ACK. At 50716d946, RFC 9293 table 6 and ACK processing refuse it; 20 focused
+TCP tests and shards-net all-targets clippy pass. This is correctness evidence, not
+new performance or platform-parity data. [Commands, output, rules and owed real-VM checks](measurements/network-fixes-v1/README.md).
+
 ### M211. The limits a build's `RUN` step starts with
 
 - **Question.** A container's process starts with Docker's limits (`defaults::limits`,
@@ -17758,6 +17765,9 @@ revision before comparing a changed API/implementation.
 
 ### M430. Devices plugged into a running microVM: what each step costs, and what a bus of slots costs a boot (D214)
 
+- **Correctness follow-up, 2026-11-13 (devices-02, D154).** A full-span IOMMU mapping overflow was reproduced by a focused unit test (red 1 failed; green 11 IOMMU tests passed, VMM clippy clean) on adas-mac-studio-3.local, macOS arm64. See `measurements/device-fixes/README.md` for revisions and Kiln runs. These unit results do not revalidate M430's timings or hardware MSI behavior.
+
+
 - **Question.** What does a disk plugged into a running microVM cost, from the host's call to
   its guest's first read of it, and its unplug, from the guest's remove to the host's? And
   what does a PCI bus of empty slots, which a machine must have to be plugged into, cost its
@@ -23757,6 +23767,25 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   R10 red on main's code on both hosts, green after; R11 Unix and Windows written, macOS and
   Linux run; R15, R16 implementer, its runner targets removed after landing.
 
+- **Control-02 follow-up (2026-11-13).** A full AF_UNIX listen backlog retained init's
+  blocking-connect worker after its controller reset the lane. The focused regression was
+  red at bcc79fccd (Timeout, released by accept for cleanup), green at 3c28b68a7
+  (EAGAIN, worker joined) on adacachy2 Linux 7.3.3 x86_64; all six lane tests and
+  shards-init clippy clean. D251 now refuses full backlogs without a retry or deadline;
+  [commands and R01–R16 account](measurements/control-fixes-v1/README.md). Real-VM
+  aborted-lane resource counts remain ROOT's.
+
+- **Control-01 follow-up (2026-11-13).** An orchestrator's session ended a member channel's
+  pipe at its first credit refused by the run's end, records already taken left queued, and
+  at the run's end itself, while its host may still send output after it. Red at d7b62bd7d
+  (the owner read the first of two records, and nothing of one said after the end), green at
+  cf2764c6e, each guard's mutation red, on adas-mac-studio-3.local macOS 26.2 arm64; D240
+  says the pump's ends; [commands and R01–R16 account](measurements/control-01-v1/README.md).
+  Real-VM managed_output and api_image lanes remain ROOT's.
+  Follow-up: the run host now ends cut, `Aborted(104)`, each channel its VM's capture left
+  without an end, what it held past the owner's room first (red 53faf0804, green 347d16312,
+  two mutations red, same host).
+
 ### M560. CI's musl test job: its build and its tests as steps of their own, each limit derived (M420, M547)
 
 - **Question.** In CI run 43513425954 (main 70eba153d) the x86_64-unknown-linux-musl test job
@@ -24012,3 +24041,90 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   clippy -D warnings for shards-vm-process on macOS, x86_64-unknown-linux-gnu,
   aarch64-unknown-linux-musl (zig) and x86_64-pc-windows-msvc (xwin). R11, R15: no VM run here;
   the api_image and managed_output KVM loop is ROOT's. R16: the fetched logs (116 MB) removed.
+
+
+### Remote-05. Private request arguments in the daemon log (2026-11-13)
+
+This is correctness evidence, not a performance measurement. An enrolled fixture's
+refused request put its synthetic private argument in captured daemon stderr at
+`144818a4a` (1 regression failed); omitting raw argument/relay-token values at
+`68b43042c` passed all 5 remote module unit tests and shards all-target clippy on
+macOS arm64, Rust 1.98.1. Existing client/operation diagnostics remain. No new
+constant, cache, wait or platform branch. Exact commands, source revisions, logs,
+policy receipt and outstanding live-context checks are in
+[the evidence record](measurements/remote-fixes-v1/README.md). Guest execution and
+cross-machine/Windows checks are owed to ROOT; no performance claim is made.
+
+### M564. MCP bridge termination with the harness stdin writer retained (D254)
+
+Linux x86_64, adacachy2, 2026-11-13: real-pipe unit regressions at e74696f22
+failed peer-end and stdout-error completion while stdin remained open; the old
+copy test passed (1 pass, 2 failures). At f7d83f73a all 7 MCP tests and shards-init
+all-target clippy passed. Normal socket half-close still delivers later stdin.
+This is functional evidence, not a performance measurement or real-VM result.
+[Commands, output excerpts, policy and owed coverage](measurements/inithex-fixes/README.md).
+
+### M565. Absolute-FQDN remote MCP grants compared to real DNS wire questions (D236)
+
+Linux x86_64, adacachy2, 2026-11-13: at 8e8e1c439 both Agentfile endpoint and
+init netplan tests fail `mcp.example.` versus `mcp.example` (kiln r7). At 79019fa55,
+3 focused Agentfile MCP tests, 8 init netplan tests, and both crates' all-target
+clippy pass (r8). These are functional unit results, not a real DNS-provider or
+real-VM result. RFC1034 §3.1 supplies the terminal-root-dot normalization rule;
+no chosen runtime value, wait or cache is added.
+[Commands, red output, green excerpts and owed variant](measurements/inithex-fixes/README.md).
+
+### M566. What the run host's managed control scope refused was said as "invalid data", and init's relay end could land within a frame
+
+- **Question.** ROOT's KVM runs of api_image at c120c8a95 (adacachy2) failed three ways, each
+  after the VM process said, some 150 to 200 ms in, `the guest's signal connection is lost:
+  invalid data: its workload takes no more signals, ...`: staged_credentials and the h2
+  sign-in ended "the guest stopped before the command ended: failed to fill whole buffer",
+  and `an_orchestrators_members_are_signaled_...` saw `Lost(Transport(Peer))` at
+  api_image.rs:1377. What did the host's signal reader read that it could not parse, and does
+  M563's 02a03edf2 cover it?
+- **Found, from source.**
+  - "invalid data" is `Lost::Failed { kind: InvalidData, os: None }`. The watch after the
+    control scope says its own refusal as `Lost::Protocol` ("the guest sent on it what it never
+    sends"), so every one of these came from `capture::Control::serve`'s refusals, whose
+    messages `Lost::of` dropped; `Control::supervise` then ended the run's connection, which
+    is all three symptoms (the orchestrator test's lane lost as its run host's run ended).
+  - Init writes nothing on the signal connection but its `ControlQueue` and, last,
+    `SIGNALS_END` (crates/init/src/run.rs `say_signals_end`). Its frames and serve's parse
+    agree (shards-abi `run::header`, `managed::Abort`, `managed::InputEnded`); no image
+    channel version (24 to 27) touches this connection.
+  - Two byte sequences reach serve's refusal from a correct guest. (1) A whole `SIGNALS_END`
+    before `MANAGED_CONTROL_END`, written where a failure breaks init's relay: refused as
+    "managed abort frame" before 02a03edf2, taken as the relay's end since. c120c8a95 lacks
+    02a03edf2 (`git merge-base --is-ancestor` false). (2) `SIGNALS_END` written right after a
+    part of a control frame: init's relay end was one non-blocking write after whatever part
+    of its control had gone, and a vsock stream takes what its peer's credit has room for
+    (Linux 6.18 net/vmw_vsock/virtio_transport_common.c, `virtio_transport_get_credit`).
+    The init unit test below, with the fix removed, wrote `[45, 0, 0, 50, 0, 0, 0, 0, 0, 0, 0]`
+    for an abort of which three bytes had gone: the host reads `[45,0,0,50,0,0,0,0]` as no
+    header. 02a03edf2 does not cover (2), nor an end that went in part or not at all (read as
+    "the guest closed it before its end").
+  - Which of (1) and (2) ROOT's runs met is not told by their logs, which kept the kind alone.
+    (1) needs a failure that breaks init's relay; (2) needs that and a partial write. Either
+    way init's own words for that failure (`SYSTEM_ERR`) never reached the host: the cut came
+    first. Not found here.
+- **Decided.** serve returns `Unserved`, `Failed(io::Error)` or `Refused(Refusal)`, a
+  `Refusal` naming what came: `Frame { kind, len }`, `Header(bytes)`, `Payload { kind, why }`,
+  `Tenant(member)`, `Input(member)`. The loss keeps it (`Lost::Refused`), and the warning and
+  the run's end say it ("its managed control refused a frame of kind 1, 3 bytes long"). Init's
+  `say_signals_end` writes its control's rest whole first (`ControlQueue::finish`), then its
+  end whole, waiting for room (poll, no timeout: an event wait, the host reading the connection
+  to its end or closing it).
+- **Rules** (policy df2acf47, role implementer): R01 no new panic path; R03 no constant; R04
+  the refusal is typed through to the loss and the run's end; R05 the end's waits are
+  readiness waits; R09/R10 the symptom is ROOT's logs, and two unit tests reproduce the bytes:
+  `what_the_control_scope_refuses_is_named_in_the_loss_it_says` (shards-vm-process, feeds
+  take_signals a frame of a kind the scope never takes, init's misframed end, and an abort of a
+  member not admitted) red with the old `Lost::Failed` mapping (`left: Lost(Failed { kind:
+  InvalidData, os: None })`), and
+  `the_relays_end_follows_its_control_whole_where_part_of_a_frame_went` (shards-init) red
+  without `finish` (the bytes above). workload:: 41 of 41 on adas-mac-studio.local (macOS
+  arm64); init's signals_end_tests and capture::tests, 12 of 12, on adacachy2 (Linux x86_64);
+  clippy -D warnings for shards-vm-process (macOS) and shards-init
+  (aarch64-unknown-linux-musl); cargo fmt --check clean. R11, R15: no VM run here: api_image's
+  three cases on KVM are ROOT's, at a main holding 02a03edf2 and this.
