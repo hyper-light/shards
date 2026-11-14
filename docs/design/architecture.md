@@ -28889,7 +28889,11 @@ Hex's acceptance (its INTERFACE.md and red tests, step11-a-socket-lane) is held 
   before connecting anything comes back as `SOCKET_REFUSED` (53: id, errno), as `EXEC_FAILED`
   does.
 - *shards-init's leg* (`crates/init/src/lanes.rs`). Each ask runs on a thread of its own, so a
-  connect waiting on a full backlog holds that lane alone. The thread resolves the path inside
+  connect is nonblocking: a full Unix listen backlog returns Linux's EAGAIN, carried as
+  `Unreached`, instead of retaining a worker after its controller abandons the ask
+  (control-02, [red/green record](../research/measurements/control-fixes-v1/README.md)).
+  connect(2)'s AF_UNIX rule supplies this refusal; no retry or deadline is chosen.
+  The thread resolves the path inside
   the command's root (`/proc/PID/root` opened `O_PATH`, then openat2 `RESOLVE_IN_ROOT |
   RESOLVE_NO_MAGICLINKS`, `crate::inroot`), so no link the command planted leads elsewhere. It
   connects through the descriptor (`/proc/self/fd/N`), so the path is not resolved again and
