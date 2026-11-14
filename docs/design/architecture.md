@@ -2957,6 +2957,32 @@ empty final bytes; both writers now publish complete closed files. Real carried
 executables, signatures, GPU and crash-debris checks remain owed in the
 [runs record](../research/measurements/runs-fixes/README.md).
 
+**Helper integrity before each start (runs-10).** A helper's directory is named by the
+helpers' digests, but `complete` and the GPU writer took a helper of the right length
+as this build's whatever its bytes: one byte changed (by hand, by a program of the
+user's, on the disk) was started as it was, in every later process. Now each time a
+process is about to start a helper (`helpers::vm`, `net`, `vm_gpu`, and `checked` for
+the path the daemon keeps, from `launch::program`), its bytes are read whole and their
+SHA-256 compared with the digest build.rs embedded beside them; where they differ, or
+the file is gone, the carried bytes are written again whole (staging of the writer's
+own, synced, closed, renamed over it: the bytes build.rs signed on macOS), and a helper
+that cannot be written again (Windows refuses to replace one a running VM process
+holds) is refused, saying its path, its digest and why. A helper `SHARDS_VM_BINARY`
+names, or a carrier's beside its `shards` (D237, signed by the carrier, its bytes not
+those this build carries), is its giver's to answer for and is started as it is.
+`complete` stays the check that a directory was placed whole. No literal: the digest is
+SHA-256 of the carried bytes, the read through std's buffer at std's size. **Cost owed
+(ROOT):** each VM start now reads shards-vm (2.98 MB in this Mac's cache) and each
+networked one shards-net (4.33 MB) through SHA-256; its latency is unmeasured:
+`docs/research/measurements/build-ab/ab.py` between this build and its parent on one
+template, and a cold `shards run --kernel` launch, on HVF, KVM and WHP. A start between
+the check and the exec can still find bytes changed in that window; only an exec of the
+checked descriptor (fexecve, which macOS lacks) would close it. Unit tests (helpers.rs):
+`a_helper_whose_bytes_changed_is_written_again_before_it_starts` (one byte flipped, its
+length kept: written again) and `a_changed_helper_that_cannot_be_written_again_is_refused`;
+with the digest check put back to the length check, the first fails (the flipped bytes
+are returned). [runs-fixes record](../research/measurements/runs-fixes/README.md#runs-10).
+
 shards is one file to install and run, `shards`: every command, the daemon included,
 one CLI.
 
@@ -8671,6 +8697,23 @@ configurable".
   set, nothing goes since D212, where dockerd's 2 GB reserve held before). A changed cache
   setting is the next build's collection's, grown or not: `configure disk` removes the
   home's `buildcache-gc` (D212).
+- **Concurrent commands (runs-09, 2026-11-14).** Two `configure disk` commands had shared
+  one staging name, `.disk.new`, and read, changed and written the file unlocked: a command
+  whose read was older wrote over another's update, and one's rename could publish the
+  other's staging file as it truncated it, then write into the published file and fail.
+  A command now rereads, changes and writes the file holding the home's `disk.lock` alone
+  (flock(2), LockFileEx: the image store's `Locked`, let go before it closes, PM M244): a
+  lock of its own, as the settings' file is replaced by each write. It writes through
+  `platform::write_in`, a staging file of the writer's own (`O_EXCL`), synced, renamed
+  over the file; on Windows that lands a version beside it (PM M345), and readers open
+  the newest (`open_newest_in`). Readers take no lock: each finds a whole file, the old or
+  the new. No literal: the lock and staging names are names. Unit tests (disk.rs):
+  `concurrent_settings_updates_keep_each_others_fields` (an update waits for another
+  command's held lock, then keeps both fields) and
+  `settings_publication_leaves_another_writers_staging_file_alone`; with the lock and the
+  owned staging removed, the base's transaction, both fail (the later snapshot drops
+  `log-history`; another writer's `.disk.new` is published).
+  [runs-fixes record](../research/measurements/runs-fixes/README.md#runs-09).
 - **A file that does not read**, edited by hand: a run is refused, saying the file and its
   line; a build's collection collects nothing and says so at every build (`WARNING: the
   build cache was not collected: ...`), the build itself done; `--reset` mends it.
