@@ -2519,36 +2519,81 @@ fn own_vms() -> Vec<u32> {
         .collect()
 }
 
-/// Every process, its parent and its command's name, from `ps`: the `ps` that lists them
-/// not among them, which is this process's child as it lists ([`Party::started`]).
-#[cfg(unix)]
+/// Every process, its parent and its name, the kernel's own (its executable's file name as
+/// its exec cut it: Linux's `comm`, 15 bytes; macOS's `p_comm`, 16), read in this process
+/// with no process started: on Linux from `/proc/PID/stat` (proc(5)), on macOS from
+/// libproc (proc_listallpids(3), PROC_PIDT_SHORTBSDINFO). Every look at a wait's party
+/// lists them ([`Party::look`]), and a `ps` spawned for it took 16 to 25 ms on adacachy2
+/// (1,200 processes), more than a W* of 8 ms: the looks crowded out the reads they were
+/// between (D209). A process gone as it is read is left out.
+#[cfg(target_os = "linux")]
 pub fn processes() -> Vec<(u32, u32, String)> {
-    let Ok(lister) = Command::new("ps")
-        .args(["-A", "-o", "pid=,ppid=,comm="])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-    else {
+    let Ok(listed) = std::fs::read_dir("/proc") else {
         return Vec::new();
     };
-    let own = lister.id();
-    lister
-        .wait_with_output()
-        .map(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .lines()
-                .filter_map(|line| {
-                    let mut w = line.split_whitespace();
-                    Some((
-                        w.next()?.parse().ok()?,
-                        w.next()?.parse().ok()?,
-                        w.collect::<Vec<_>>().join(" "),
-                    ))
-                })
-                .filter(|(pid, ..)| *pid != own)
-                .collect()
+    listed
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let pid: u32 = entry.file_name().to_str()?.parse().ok()?;
+            let stat = std::fs::read_to_string(entry.path().join("stat")).ok()?;
+            // `PID (COMM) STATE PPID ...`: COMM may hold spaces and parentheses, so it ends at
+            // the last `)`.
+            let (head, rest) = stat.rsplit_once(')')?;
+            let name = head.split_once('(')?.1.to_string();
+            let ppid = rest.split_whitespace().nth(1)?.parse().ok()?;
+            Some((pid, ppid, name))
         })
-        .unwrap_or_default()
+        .collect()
+}
+
+/// [`processes`] on macOS: every process ID (proc_listallpids(3), asked again while its
+/// reply fills what it was given, which processes started meanwhile may have cut short),
+/// each one's parent and name from its short BSD info.
+#[cfg(target_os = "macos")]
+pub fn processes() -> Vec<(u32, u32, String)> {
+    let pids = loop {
+        // SAFETY: no buffer: the call says how many processes there are.
+        let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
+        let Some(count) = usize::try_from(count).ok().filter(|count| *count > 0) else {
+            return Vec::new();
+        };
+        let mut pids: Vec<libc::pid_t> = vec![0; count + 1];
+        let Ok(room) = libc::c_int::try_from(size_of_val(pids.as_slice())) else {
+            return Vec::new();
+        };
+        // SAFETY: a buffer of `room` bytes for the call to fill.
+        let filled = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), room) };
+        let filled = usize::try_from(filled).unwrap_or(0);
+        if filled < pids.len() {
+            pids.truncate(filled);
+            break pids;
+        }
+    };
+    let size = libc::c_int::try_from(size_of::<libc::proc_bsdshortinfo>()).unwrap_or(0);
+    pids.into_iter()
+        .filter_map(|pid| {
+            // SAFETY: proc_bsdshortinfo is plain C data, for which all zeroes is a value.
+            let mut info: libc::proc_bsdshortinfo = unsafe { std::mem::zeroed() };
+            // SAFETY: a buffer of `size` bytes for the call to fill.
+            let filled = unsafe {
+                libc::proc_pidinfo(pid, libc::PROC_PIDT_SHORTBSDINFO, 0, (&raw mut info).cast(), size)
+            };
+            if filled != size {
+                return None;
+            }
+            let comm: Vec<u8> = info
+                .pbsi_comm
+                .iter()
+                .take_while(|&&c| c != 0)
+                .map(|&c| c as u8)
+                .collect();
+            Some((
+                info.pbsi_pid,
+                info.pbsi_ppid,
+                String::from_utf8_lossy(&comm).into_owned(),
+            ))
+        })
+        .collect()
 }
 
 /// Runs `cmd` as built, `shards` itself ([`run_shards_with`]) or a program that runs it

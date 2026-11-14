@@ -111,6 +111,8 @@ fn stand_in() {
         let _ = std::io::stdin().read(&mut [0u8; 1]);
     } else if let Some(ms) = asked.strip_prefix("falls ").and_then(|ms| ms.parse().ok()) {
         falls(ms, busy);
+    } else if asked == "lists" {
+        lists();
     } else if asked == "stages" {
         stages();
     } else if asked == "spinner" {
@@ -133,6 +135,73 @@ fn stand_in() {
             .unwrap();
         out.flush().unwrap();
     }
+}
+
+/// A stand-in's listing of every process ([`common::processes`], what each look at a wait's
+/// party reads), and what processes it started cost meanwhile, as the children it reaped
+/// count it (getrusage(2) RUSAGE_CHILDREN: their page faults and CPU): said on stdout as
+/// `listed LISTED FAULTS CPU_US`.
+#[cfg(unix)]
+fn lists() {
+    let reaped = || {
+        // SAFETY: rusage is plain C data, for which all zeroes is a value.
+        let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+        // SAFETY: getrusage(2) into a local.
+        let rc = unsafe { libc::getrusage(libc::RUSAGE_CHILDREN, &raw mut usage) };
+        assert_eq!(rc, 0);
+        // time_t and suseconds_t are i64 on Linux, suseconds_t i32 on macOS.
+        #[allow(clippy::useless_conversion)]
+        let us = |t: libc::timeval| i64::from(t.tv_sec) * 1_000_000 + i64::from(t.tv_usec);
+        (
+            usage.ru_minflt + usage.ru_majflt,
+            us(usage.ru_utime) + us(usage.ru_stime),
+        )
+    };
+    let before = reaped();
+    let listed = common::processes();
+    let after = reaped();
+    let mut out = std::io::stdout();
+    out.write_all(
+        format!(
+            "listed {} {} {}\n",
+            listed.len(),
+            after.0 - before.0,
+            after.1 - before.1
+        )
+        .as_bytes(),
+    )
+    .unwrap();
+}
+
+#[cfg(not(unix))]
+fn lists() {}
+
+/// A look at a wait's party lists the system's processes without starting one (D209): red at
+/// 5bec7398b, where each look spawned `ps`, 16 to 25 ms of it on adacachy2 (1,200 processes)
+/// against a learned W* of 8 ms, which crowded `Following`'s reads out. Do: in a stand-in of
+/// its own, alone, list the processes and count what the children it reaped meanwhile cost.
+/// Expect: this host's processes listed, the stand-in among them, and no child's cost.
+#[cfg(unix)]
+#[test]
+fn a_party_look_lists_processes_without_starting_one() {
+    let out = stand_in_doing("lists").output().unwrap();
+    let said = String::from_utf8_lossy(&out.stdout);
+    let counts: Vec<i64> = said
+        .lines()
+        .find_map(|line| line.split("listed ").nth(1))
+        .unwrap_or_default()
+        .split_whitespace()
+        .filter_map(|n| n.parse().ok())
+        .collect();
+    let [listed, faults, cpu] = counts[..] else {
+        panic!("the stand-in said {said:?}");
+    };
+    assert!(listed > 1, "{listed} processes listed");
+    assert_eq!(
+        (faults, cpu),
+        (0, 0),
+        "a listing started a process: its faults and CPU (µs)"
+    );
 }
 
 /// The memory a give-back stand-in frees, in regions of this many bytes, this many.
