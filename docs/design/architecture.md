@@ -8950,7 +8950,7 @@ process.
     once, and one it cannot pends until the client has taken enough (npfs above; Wine's
     `reselect_write_queue` completes a pending write once the reader's unread bytes fit its
     buffer). So an answer is written in parts no larger than its line's outbound quota
-    (GetNamedPipeInfo's out buffer size, `LINE_BUFFER`), each waiting on the client for no
+    (GetNamedPipeInfo's out buffer size, the system's, `Window::System`, platform-11), each waiting on the client for no
     more than a quota's worth of its reading: a part that finishes at once teaches nothing,
     and one that pends is a take, from its pend (`ERROR_IO_PENDING`, `pipe::write_telling`)
     to its completion (ROOT, 2026-11-13), where the pipe is connected still as it finishes
@@ -13789,10 +13789,49 @@ sleeps teaching g their lateness (`granule::LATE`). On a host whose GetThreadTim
   M495's start latency (`cpu-elastic/phases.py` against `winnone.patch`, n 100 a side) at 2g
   beside 100 ms.
 - Still owed with platform-11's design (`docs/research/measurements/platform-fixes/held.md`):
-  the Windows pipes' `BUFFER` and `LINE_BUFFER` quotas, whose derivation needs each caller's
-  wire window (a message of `MAX_PAYLOAD` is 6 MiB, past either, so neither is a frame bound),
-  and macOS's 0.5 / 1 ms time-constraint pair (a guest timer's deadline or a measured batch
+  macOS's 0.5 / 1 ms time-constraint pair (a guest timer's deadline or a measured batch
   cost). No number replaced another.
+
+**The Windows pipes' quotas: each its caller's window (platform-11, 2026-11-14).** `BUFFER`
+(1 MiB, M340's throughput) and `LINE_BUFFER` (64 KiB, a Linux FIFO's) are gone, with no
+fallback: each pipe is made with its caller's window (`shards_ipc::Window`), its quota each
+way (CreateNamedPipeW's `nOutBufferSize` and `nInBufferSize`).
+- *A caller whose protocol writes frames of a bound asks for its longest*, so that a writer
+  writes one whole without waiting on its reader mid-frame (CreateNamedPipeW, Remarks: a
+  write past the quota "will block until the data is read from the pipe"):
+  - a [`Stream`] pair's, a message: its 6-byte header, `MAX_PAYLOAD` (a run's request, its
+    head and spec, `RunHead::LEN` + `run::MAX_PAYLOAD`) and a u64 for each of `MAX_FDS`
+    handles (`pipe::MESSAGE_FRAME`);
+  - a share's stream (D197, `shards_ipc::byte_pair`, through `os::share_pipe`, the daemon's,
+    an image run's, a CLI's and a remote client's shares): its length word and `fs::MAX_FRAME`
+    (`fs::STREAM_FRAME`), a control frame of the VM process's own (a share's tables) longer
+    and rarer, waiting on its reader past it;
+  - an input pair (`input_pair`), its caller's room, as before (`run::CHUNK`).
+- *A caller whose flow has no frame of its own asks for the system's* (`Window::System`): a
+  slot's line and its list (D185: on Unix a pipe, holding the kernel's default; an answer
+  past it waits on its client, as M261 decided), a slot's streams (a client's stdin, stdout,
+  stderr), a pair of bytes written in messages (`plain_pair`, a member's streams) and a
+  Docker client's pipe (`Listener`, HTTP). CreateNamedPipeW documents no default for a size
+  of zero, so its quota is the one CreatePipe's `nSize` of zero is given ("the system uses
+  the default buffer size"; anonymous pipes "are implemented using a named pipe"), read once
+  a process from an anonymous pipe made so (`pipe::system_quota`, GetNamedPipeInfo).
+- *Cold start*: none to learn; a frame is a protocol bound, and the system's quota is read
+  the first time a pipe of it is made (one CreatePipe and its two handles closed).
+- *Failure, typed*: a frame of no bytes or past a DWORD is refused (`WindowRefusal`, as
+  `io::ErrorKind::InvalidInput`); a system quota that cannot be read refuses the pipe
+  (`io::Error`, each time asked). The quota is advisory ("the system default, the system
+  minimum or maximum, or the specified size rounded up", CreateNamedPipeW): a reserve below
+  a frame is not refused, as a write past it waits on its reader rather than fails, so the
+  frame still arrives whole, only waited on; refusing would refuse every pipe on a host whose
+  maximum is lower.
+- Held: ipc `window::tests::a_pipes_quota_is_its_callers_window` (all hosts; red with a
+  frame asked for as a constant) and, on Windows, `pipe::tests::a_pipes_quota_is_its_callers_window_as_made`
+  (a Stream pair's quota holds its longest message, a 16-byte frame's does not, the system's
+  is CreatePipe's). Linted for x86_64-pc-windows-msvc; their Windows run is owed to ROOT:
+  `cargo test -p shards-ipc --lib pipe` and `cargo test -p shards-ipc --lib slots` on
+  windows-2025 (CI) and jupiter, then daemon.rs' `a_request_past_a_sockets_buffer_is_served`
+  and `a_stopping_daemon_waits_for_no_client_that_reads_nothing` (a 123 KiB answer past the
+  system's quota), and PM M340's throughput run (`docs/research/measurements/windows-pipe`, `cargo run --release` there on jupiter) at each new quota beside 1 MiB and 64 KiB.
 
 The user's plan, item 3 (2026-10-18): a run's `--cpus` as elastic as its memory (D148),
 every microVM given the host's CPUs, init bringing the run's online and `update --cpus`

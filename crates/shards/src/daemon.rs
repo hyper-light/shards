@@ -5045,7 +5045,7 @@ impl<D: Disk> Daemon<D> {
         };
         let streams = served
             .iter()
-            .map(|_| shards_ipc::byte_pair())
+            .map(|_| crate::os::share_pipe())
             .collect::<io::Result<Vec<_>>>()
             .map_err(|e| format!("a share's stream: {e}"))?;
         let mut args: Vec<&OsStr> = vec![OsStr::new("share")];
@@ -7935,7 +7935,7 @@ impl<D: Disk> Daemon<D> {
     ) -> Result<JoinDoor, String> {
         let failed = |e: io::Error| format!("its microVM's join share: {e}");
         let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
-        let (served, vms) = shards_ipc::byte_pair().map_err(failed)?;
+        let (served, vms) = crate::os::share_pipe().map_err(failed)?;
         let (door, theirs) = UnixStream::pair().map_err(failed)?;
         let theirs = theirs.share().map_err(failed)?;
         let at = self.home.join(JOIN_ROOT);
