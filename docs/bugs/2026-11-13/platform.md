@@ -255,6 +255,8 @@ Local Rust 1.94.1 source `std/src/sys/process/windows.rs:330–342` explicitly d
 
 **Catching test:** inject different clock/wake/capacity observations and cold-start states; require derived choices to follow those observations and preserve safety/refusal bounds. Coordinator owns real host contention validation.
 
+**Status (2026-11-14):** owed to ROOT, the design narrowed: Windows' priority governor's look (`windows_thread.rs` `PERIOD`) is D191's derivation for one thread's half-CPU credit, P = 1 × g / ½ = 2g, from the learner now built (`platform::granule`, migrate-09); it is not switched, as its credit cap (half a period) must also hold GetThreadTimes' tick-quantized charges of a thread that waits between runs (`a_thread_that_waits_between_its_runs_stays_raised`, CI windows-2025), which at 2g leaves one tick of slack where 100 ms left 3.2: ROOT owes that test's runs on windows-2025 and jupiter at 2g beside 100 ms, then the switch with the hold's. macOS's 0.5 / 1 ms time-constraint pair and the Windows pipes' 1 MiB / 64 KiB quotas stay owed with the design linked above: no derivation of either was found that this lane can test (the pair needs a guest timer deadline or measured batch cost; the quotas each caller's wire window), and no number replaced another.
+
 ### platform-12 — Delegated-cgroup cleanup polls at an arbitrary 10 ms interval
 
 **Status (2026-11-13):** fixed in ab5399eda (red `daemon::parents::tests::a_cold_leaf_waits_for_changes_without_periodic_reads`);
