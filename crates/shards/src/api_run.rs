@@ -870,15 +870,19 @@ fn network(
     Ok(egress)
 }
 
-/// eth0's IPv6 for the run's agents' flows past the microVM (D99, network-05). Today an
-/// orchestrator's run gives it none.
+/// eth0's IPv6 for the run's agents' flows past the microVM (D99), as a daemon's run on the
+/// default bridge has it: where its image's agents have IPv6 and are granted anything past
+/// it, and the run is on the bridge, which gives eth0 none. The home's
+/// (`crate::networks::host_ipv6`), which its init is told (`uplink6=`) and its network
+/// process (`NET_ADDRESS`), which holds the agents to their grants as the request narrows
+/// them; its command is kept to eth0's subnet as ever (`confine-eth0`), of IPv6 too.
 fn past6(
     agentfile: Option<&crate::agentfile::Agentfile>,
     run: &shards_ipc::Run,
     home: &std::path::Path,
 ) -> Option<(std::net::Ipv6Addr, std::net::Ipv6Addr)> {
-    let _ = (agentfile, run, home);
-    None
+    (run.network == "bridge" && agentfile.is_some_and(crate::agentfile::Agentfile::egress6))
+        .then(|| crate::networks::host_ipv6(home))
 }
 
 /// Refuses a published port that would widen the run: one the image's Agentfile declares
@@ -2234,6 +2238,9 @@ mod hosted {
         /// The anonymous volumes its `VOLUME`s made, removed as it ends (`--rm`'s).
         made: Vec<String>,
         bridge: Option<shards_net::bridge::Bridge>,
+        /// What its network process is told of its addresses (`NET_ADDRESS`), where its
+        /// agents' flows past the microVM go by IPv6 (`past6`).
+        address: Option<Vec<u8>>,
         /// The in-VM server's device, where its image is an Agentfile's (D60).
         server: Option<PathBuf>,
         /// Its microVM, made as every run's is, and its template (D253).
@@ -2357,6 +2364,8 @@ mod hosted {
         credentials: Option<Vec<u8>>,
         sign_ins: Option<Vec<u8>>,
         bridge: Option<shards_net::bridge::Bridge>,
+        /// eth0's IPv6 for its agents' flows past the microVM, where it has any (`past6`).
+        past6: Option<(std::net::Ipv6Addr, std::net::Ipv6Addr)>,
         points: Vec<crate::volumes::MountPoint>,
         opened: crate::volumes::Opened,
         made: Vec<String>,
@@ -2416,6 +2425,7 @@ mod hosted {
         } else {
             None
         };
+        let past6 = super::past6(agentfile.as_ref(), &run, home);
         // Its volumes: each share at its path as `-v` puts it, given where the image's
         // `VOLUME` there is for a member (D109), each other `VOLUME` a volume of the store.
         let store = crate::volumes::Store::new(home);
@@ -2492,6 +2502,7 @@ mod hosted {
             credentials,
             sign_ins,
             bridge,
+            past6,
             points,
             opened,
             made,
@@ -2513,6 +2524,7 @@ mod hosted {
             credentials,
             sign_ins,
             bridge,
+            past6,
             points,
             opened,
             made,
@@ -2577,6 +2589,10 @@ mod hosted {
         // Grants past the microVM: the run's own processes kept to eth0's subnet (D59).
         if agentfile.as_ref().is_some_and(|a| a.grants.past()) {
             setup.push(b"confine-eth0".to_vec());
+        }
+        // Its agents' flows past the microVM by IPv6 (D99): eth0's IPv6 for them alone.
+        if let Some(v6) = past6 {
+            setup.push(crate::networks::uplink6_entry(v6));
         }
         let capture = if active.is_empty() {
             None
@@ -2653,6 +2669,10 @@ mod hosted {
             signing: request.sign_ins.clone(),
             dirs: opened.dirs,
             made,
+            address: bridge
+                .as_ref()
+                .zip(past6)
+                .map(|(bridge, v6)| crate::networks::bridge_address(bridge, v6)),
             bridge,
             server,
             microvm,
@@ -3099,17 +3119,24 @@ mod hosted {
         })
     }
 
-    /// Tells the network process, before the VM has the run, its published ports and its
+    /// Tells the network process, before the VM has the run, its addresses where its agents
+    /// reach past the microVM by IPv6 (`NET_ADDRESS`, D99), its published ports and its
     /// policy, each answered by its own kind in the order asked (daemon/networks.rs
     /// `Asks`); the descriptors kept until answered (M24).
     pub(super) fn tell_net(
         net: &crate::netproc::Control,
+        address: Option<&[u8]>,
         listeners: &[publish::Listener],
         egress: Option<&[u8]>,
         sign_ins: Option<&[u8]>,
         credentials: Option<&[u8]>,
     ) -> Result<Option<Vec<u8>>, String> {
         let mut asked = Vec::new();
+        if let Some(address) = address {
+            crate::netproc::send(net, kind::NET_ADDRESS, address, &[])
+                .map_err(|e| format!("addresses: {e}"))?;
+            asked.push((kind::NET_ADDRESS, "addresses"));
+        }
         for batch in listeners.chunks(shards_ipc::MAX_FDS) {
             let ports: Vec<u8> = batch
                 .iter()
@@ -3721,6 +3748,7 @@ mod hosted {
             if let Some((_, control)) = &launched.net {
                 let ca = tell_net(
                     control,
+                    plan.address.as_deref(),
                     &plan.listeners,
                     plan.egress.as_deref(),
                     plan.sign_ins.as_deref(),
@@ -8046,6 +8074,51 @@ mod tests {
         }
     }
 
+    /// network-05: an orchestrated run whose agents reach past the microVM by IPv6 tells its
+    /// network process eth0's addresses, as a daemon's run on the bridge does, before its
+    /// policy. Do: tell a stand-in network process a bridge run's addresses and policy.
+    /// Expect: NET_ADDRESS first, its payload the bridge's IPv4 and the home's IPv6; then
+    /// NET_POLICY.
+    #[cfg(unix)]
+    #[test]
+    fn an_orchestrated_runs_network_process_is_told_its_ipv6_before_its_policy() {
+        use std::os::unix::net::UnixStream;
+        let home = shards_testdir::TempDir::new("api-addr6").unwrap();
+        let bridge = shards_net::bridge::Bridge::elect(&[]).unwrap();
+        let (guest6, gateway6) = crate::networks::host_ipv6(home.path());
+        let address = crate::networks::bridge_address(&bridge, (guest6, gateway6));
+        let policy = shards_net::encode_policy(
+            &shards_net::Ports::default(),
+            &[("[2001:db8::7]".into(), 443)],
+            false,
+        );
+        let (net, run_host) = UnixStream::pair().unwrap();
+        let told = std::thread::scope(|s| {
+            let network = s.spawn(|| {
+                let mut told = Vec::new();
+                let soon = || Instant::now() + Duration::from_secs(120);
+                while let Ok(Some(m)) = shards_ipc::recv_by(&net, soon()) {
+                    shards_ipc::send(&net, m.kind, &[], &[]).unwrap();
+                    told.push((m.kind, m.payload));
+                }
+                told
+            });
+            let ca = hosted::tell_net(&run_host, Some(&address), &[], Some(&policy), None, None);
+            assert_eq!(ca, Ok(None));
+            drop(run_host);
+            network.join().unwrap()
+        });
+        let kinds: Vec<u8> = told.iter().map(|(k, _)| *k).collect();
+        assert_eq!(kinds, [kind::NET_ADDRESS, kind::NET_POLICY]);
+        let mut want = bridge.guest().octets().to_vec();
+        want.push(bridge.subnet().1);
+        want.extend_from_slice(&bridge.gateway().octets());
+        want.extend_from_slice(&guest6.octets());
+        want.push(64);
+        want.extend_from_slice(&gateway6.octets());
+        assert_eq!(told[0].1, want);
+    }
+
     /// A run whose request grants a sign-in has the grant reach its network process, after its
     /// policy and before its credential grants, whose CA names its hosts and whose trust its
     /// members are given; a run that grants none tells it none (D242, step 8). Do: tell a
@@ -8095,6 +8168,7 @@ mod tests {
                 });
                 let ca = hosted::tell_net(
                     &run_host,
+                    None,
                     &[],
                     Some(&policy),
                     sign_ins.as_deref(),
