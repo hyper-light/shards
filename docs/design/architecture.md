@@ -10135,6 +10135,35 @@ host's disk as a run's (D190). M268 at larger sizes.
 
 ### D189. Volumes' file data once, in the host's page cache: virtio-fs DAX windows (built: every share's window as long as its host's memory, but on a virtual machine on an AMD CPU)
 
+**Review memory-09 (2026-11-14): which files a window maps, learned where it runs.**
+`DAX_SMALLEST`, 1 MiB, PM M338's crossover on the Mac and Fedora, held on every host, is
+gone. The server says which files *may* be mapped (a regular file it may read, and write
+where the window needs it: `Server::dax_of`, whatever its size); each share's device
+decides which *are* (`fs::crossover`), and only takes the window away (it clears
+`fuse_attr.flags`' FUSE_ATTR_DAX in a reply), never gives it, so no cost moves a
+permission. The device sees both ways: a READ, its server's answer timed from ask to
+reply, and a SETUPMAPPING, its own, timed from its descriptor's ask to its window's
+mapping, each a cost a byte of the file it served, kept by the file's size class (the
+power of two at or below its size, known from the attributes the replies told) as the
+cheapest and dearest seen, the spread its uncertainty. A class whose window's dearest
+costs no more a byte than FUSE's cheapest is mapped; one where they overlap, or FUSE's
+reach below, is read. The least class at and past which every known class is mapped is the
+crossover, and a class past it not yet known is mapped too. *Cold start:* a class with
+fewer than two costs of either way (two, the fewest that show a spread) is calibrating:
+its files are told each way in turn as the guest learns of them (the first mapped), each
+file keeping its way while it calibrates. *Failure:* a class in which a mapping failed is
+read, its errno kept (`Verdict::Failed`). A file the guest maps already keeps its mapping
+until its kernel lets the inode go (`fuse_dax_dontcache`). The learner is the device's,
+in the VM process's memory, as a restored VM's starts cold. *What it cannot see:* the
+guest's faults on a mapped page and its copies into its own page cache of what it read,
+which are its vCPUs', and a reread's cost. *Owed to ROOT:* D189's file-size/working-tree
+harness (PM M338's) on HVF, KVM x86_64 and WHP, and KVM arm64 through the L1 path: per
+size class, cold read, warm reread and overwrite, and resident memory, n ≥ 20 per class
+with p50/p90/p99/max, against the learner's chosen crossover; and `cargo test -p shards
+--test containers a_volumes_files_are_mapped_as_its_share_learns`, `a_volumes_large_files_go_through_its_dax_window`
+and the other DAX tests (dma, budget, saved, slates_fs), whose files are now mapped as a
+cold share calibrates: the first file of each size class mapped, the next read.
+
 **Found.** The user's plan, item 5. A volume's file the guest reads is in the host's page
 cache and again in the guest's (944 MiB of a 1 GiB file, PM M267), and every read and write
 goes through the share process: two copies a request, on one queue (the benchmark's
