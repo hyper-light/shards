@@ -354,3 +354,9 @@ R19's checked 41a972609. Source was fetched from the signed checkpoint branch
 p/fix-control-v1 into the same owned runner clone, sync:false, pinned to the SHA
 above; this avoids the observed long carrier handoff. No credentials moved and
 no local build ran. R22 is the latest full host focused green.
+
+Conflict-free merge b4075e66915014fe348badce300203ca92a5bb87 adds main 02d3fe33b
+(run end-state persistence only plus records). R23 repeated the same four-crate
+warm Mac `cargo check --tests`: clean. [Check](logs/r23-contention-check.log).
+Latest full host focused green remains R22 (30d6080e9); init check remains R19,
+whose crate/dependency inputs are unchanged. No conflict was resolved here.
