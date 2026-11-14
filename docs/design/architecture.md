@@ -26212,6 +26212,11 @@ member's are, so one stdio protocol carries both. The pieces:
 - *Its connection*: an exec belongs to the connection that asked for it. That connection gone,
   or the lane stopped, hangs the exec up: its steering is dropped, its streams are let go.
 
+*Exec framing correction (control-07).* Both writer and parser admit MemberExec up to
+`exec::ASK_MOST`, the ABI spec payload plus its scope, rather than an ordinary frame's
+4 MiB cap. Other tags retain their existing bound; an overlarge exec header is refused
+before waiting for its bytes. Framed storage reserves fallibly. [Red/green record](../research/measurements/control-fixes-v1/README.md).
+
 *The controller's execs* (`control::Execs`, `Exec`, `ExecControl`). A controller dialed with
 `Subscriptions::execs` asks for one with `Execs::exec(member, spec)`, and its lane opens with the
 ask. Once the endpoint says `Started`, the controller opens the exec's stdio lanes, from their

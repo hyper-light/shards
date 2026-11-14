@@ -109,3 +109,32 @@ not substituted for another lane's code. Candidate green results above describe 
 unlanded candidate only. Upstream proof is retained at ../inithex-fixes/README.md.
 The merge keeps an additional real-directory-read-error regression proving that idle
 socket output cannot delay an input error. Final merged checks are recorded below.
+
+Final control-03 merged checks: 698a860b9 passed 8 MCP tests, 6 lane tests and clippy
+(kiln r11); 9744c78b3, 68e3c8cd1 and 3a3983396 passed 8 MCP tests and clippy after
+fresh-main merges (r15/r16/r17). Repeated ff pushes were rejected as main advanced.
+A runner push attempt failed for absent GitHub credentials; it changed nothing remote.
+
+## Control-07: member-exec frame bound
+
+Red source 6db1979d61f94d30aa3f9735a696ecf0e31397c1, command
+`cargo test -j 4 -p shards-remote an_exec_ask_uses_its_run_spec_bound_beyond_an_ordinary_frame`
+on adas-mac-studio.local (Darwin25.2 arm64), old kiln r18: one failed, encoder rejected
+4,587,877 bytes at the unrelated 4 MiB cap. Fix 431571292dd9438de364a2ca1cf10f14badcb8df:
+MemberExec uses ASK_MOST (the ABI spec bound plus scope) in both put and peek; all other
+tags retain MAX_FRAME. Allocation of the framed buffer is fallible, checked before append.
+The regression roundtrips the large ask, rejects the same header under an ordinary tag,
+and rejects an exec header one past its bound without needing payload allocation.
+New-turn kiln r1: `cargo test -j 4 -p shards-remote control::exec::tests` (10 passed),
+`cargo test -j 4 -p shards-remote frame::tests` (2 passed),
+`cargo clippy -j 4 -p shards-remote --all-targets -- -D warnings` (clean).
+Environment and carrier follow the record above; one cargo at a time, no local builds.
+
+R01 checked arithmetic/fallible reservation; R02/R03 ABI Linux exec bound and field widths,
+no chosen number or learning/cold-start state; R04 existing typed protocol refusal; R05/R12
+existing frame seam with tag-derived admission; R06/R07/R13 one bound helper, no parallel
+codec. R08/R14 no performance or allocation-profile claims. R09/R10 actual red encoder and
+green reader/writer plus boundary guards. R11 shared source, macOS arm64 run; other targets
+owed CI/ROOT. R15/R16 focused tests only, owned target cleaned after landing. ROOT owes a
+real member exec with >4 MiB argv under sufficient stack rlimit on its supported VM hosts;
+this unit proof establishes framing, not that every guest stack configuration accepts argv.

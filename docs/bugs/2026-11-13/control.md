@@ -136,6 +136,8 @@ There is also an ordering hazard in this same completion path: `api_run.rs:3844�
 
 **Catching test:** Construct the spec above, assert `4 MiB < encoded length < MAX_PAYLOAD`, and require `Ask::frame`/`Ask::decode` round-trip plus endpoint admission. Add a real guest case with the appropriate stack limit.
 
+**Status (2026-11-13):** fixed in 431571292dd9438de364a2ca1cf10f14badcb8df (red `control::exec::tests::an_exec_ask_uses_its_run_spec_bound_beyond_an_ordinary_frame`, 6db1979d6). macOS arm64: red rejected 4,587,877-byte frame at 4 MiB; green 10 exec tests, 2 frame tests, shards-remote clippy. The larger bound applies only to MemberExec; other tags and one-past-ABI-bound are refused. [Evidence](../../research/measurements/control-fixes-v1/README.md).
+
 ### control-08 — P5 / low — log-follow fallback adopts an explicitly arbitrary polling interval
 
 **Location:** `crates/shards/src/daemon/managed/log_lanes.rs:287`; value `crates/shards/src/daemon.rs:252`.

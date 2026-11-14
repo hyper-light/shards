@@ -24077,3 +24077,11 @@ clippy pass (r8). These are functional unit results, not a real DNS-provider or
 real-VM result. RFC1034 §3.1 supplies the terminal-root-dot normalization rule;
 no chosen runtime value, wait or cache is added.
 [Commands, red output, green excerpts and owed variant](measurements/inithex-fixes/README.md).
+
+### Control-07: ABI exec-frame admission correction (2026-11-13)
+
+On adas-mac-studio.local (Darwin25.2 arm64), a valid 4,587,877-byte member-exec frame
+failed the ordinary 4 MiB bound, red at 6db1979d6. At 431571292 the ABI spec bound plus
+scope applies at encoding and parsing for that tag alone: 10 control-exec tests and 2
+frame tests passed; shards-remote clippy clean. No large-argv VM run or performance
+measurement is claimed. [Commands and policy account](measurements/control-fixes-v1/README.md).
