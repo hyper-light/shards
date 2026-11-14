@@ -33,9 +33,10 @@ use shards_vmm::platform::{Look, Progress};
 
 use super::lock;
 
-/// The home's record of this host's ends: `teardown MS`, `exit MS` and `helper MS`, the
-/// slowest a SIGKILLed command's end was heard after its SIGKILL, a killed VM process's
-/// after its kill, and a network or share process's after its VM had gone, in milliseconds.
+/// The home's record of this host's ends: `teardown MS`, `exit MS`, `helper MS` and `start MS`,
+/// the slowest a SIGKILLed command's end was heard after its SIGKILL, a killed VM process's
+/// after its kill, a network or share process's after its VM had gone, and a daemon's start
+/// from its home's lock to its slots' lists, in milliseconds.
 pub(crate) const RECORD: &str = "ends";
 
 /// Which end was heard.
@@ -48,6 +49,9 @@ pub(crate) enum End {
     /// A network or share process's, once its VM had gone and its spawner held nothing of
     /// it (`netproc::reap`).
     Helper,
+    /// The end of a daemon's start: its home's lock taken to its slots' lists made, which a
+    /// daemon waiting for the lock sees as the home served (`take_lock`, runs-11 TAKEOVER).
+    Start,
 }
 
 /// This host's ends as a home keeps them ([`RECORD`]).
@@ -64,6 +68,7 @@ struct Slowest {
     teardown: Duration,
     exit: Duration,
     helper: Duration,
+    start: Duration,
 }
 
 impl Slowest {
@@ -72,6 +77,7 @@ impl Slowest {
             End::Teardown => &mut self.teardown,
             End::Exit => &mut self.exit,
             End::Helper => &mut self.helper,
+            End::Start => &mut self.start,
         }
     }
 
@@ -90,6 +96,7 @@ impl Slowest {
                 "teardown" => slowest.teardown = ms,
                 "exit" => slowest.exit = ms,
                 "helper" => slowest.helper = ms,
+                "start" => slowest.start = ms,
                 _ => {}
             }
         }
@@ -102,6 +109,7 @@ impl Slowest {
             teardown: self.teardown.max(other.teardown),
             exit: self.exit.max(other.exit),
             helper: self.helper.max(other.helper),
+            start: self.start.max(other.start),
         }
     }
 }
@@ -163,10 +171,11 @@ impl Ends {
             return Ok(());
         }
         let text = format!(
-            "teardown {}\nexit {}\nhelper {}\n",
+            "teardown {}\nexit {}\nhelper {}\nstart {}\n",
             slowest.teardown.as_millis(),
             slowest.exit.as_millis(),
-            slowest.helper.as_millis()
+            slowest.helper.as_millis(),
+            slowest.start.as_millis()
         );
         let dir = shards_vmm::platform::open_dir(home_of(&self.path)).map_err(fail)?;
         shards_vmm::platform::write_in(&dir, RECORD, text.as_bytes()).map_err(fail)
@@ -299,7 +308,7 @@ mod tests {
         ends.heard(End::Teardown, Duration::from_millis(12_000)).unwrap();
         ends.heard(End::Exit, Duration::from_millis(1_400)).unwrap();
         assert_eq!(ends.slice(End::Teardown), Some(Duration::from_millis(19_383)));
-        assert_eq!(recorded(&home), "teardown 19383\nexit 1400\nhelper 0\n");
+        assert_eq!(recorded(&home), "teardown 19383\nexit 1400\nhelper 0\nstart 0\n");
         let next = Ends::kept_in(&home);
         assert_eq!(next.slice(End::Teardown), Some(Duration::from_millis(19_383)));
         assert_eq!(next.slice(End::Exit), Some(Duration::from_millis(1_400)));
@@ -321,7 +330,7 @@ mod tests {
         host.heard(End::Helper, Duration::from_millis(12_500)).unwrap();
         daemon.heard(End::Exit, Duration::from_millis(11_000)).unwrap();
         assert_eq!(daemon.slice(End::Helper), Some(Duration::from_millis(12_500)));
-        assert_eq!(recorded(&home), "teardown 0\nexit 11000\nhelper 12500\n");
+        assert_eq!(recorded(&home), "teardown 0\nexit 11000\nhelper 12500\nstart 0\n");
         let gone = shards_testdir::TempDir::new("ends-gone").unwrap();
         let lost = Ends::kept_in(&gone.join("no-such-home"));
         let said = lost.heard(End::Helper, Duration::from_secs(11)).unwrap_err();
