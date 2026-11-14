@@ -127,3 +127,41 @@ its API patch passed the dead-spare regression (1), pool module (5), session
 module (32, including main's new RunEnded/channel cases), and API all-target
 clippy (2.01s), kiln r18. Thus both conflicting test-frame edits retain main's
 new protocol and pass the focused tests. Fixing commit: bc0f69b5c.
+
+## runs-03
+
+Base 3956d259bd0d674b49b60708d30340fb767fd7d2 plus the session patch.
+`cargo test -j 4 -p shards-api --lib a_stop_cancels_a_create_whose_host_never_reads`
+red in kiln r20: `blocked CREATE did not end stopped: Err(Timeout)` (10.08s).
+The stand-in never reads stdin, and the valid request stages half MAX_PAYLOAD
+in a member file. The test observes the real writer mutex held before stopping;
+its failure cleanup kills the owned process and unblocks the writer before the
+assertion. Green r22: same regression 1 passed (0.05s), then
+`cargo test -j 4 -p shards-api --lib image::session::tests` 33 passed (2.37s),
+and `cargo clippy -j 4 -p shards-api --all-targets -- -D warnings` passed (1.22s).
+Same macOS arm64 runner/owned target, stand-in processes and no VM.
+
+CREATE moved into the already shared start operation, after BootStop::hold;
+both fresh and warm callers use it. Registration spans encode/write/start wait,
+and every success/error follows release. Cancellation kills the group without
+acquiring the blocked sender's mutex. Its typed Stopped end overrides the write
+error only after the existing watcher/diagnostic/group-end proof; ordinary send
+failure remains refused. No new cache, manager, production constant or wait.
+The test's resource bound/deadline is test-only. Existing R01-R16 dispositions
+apply; no real guest cleanup or cross-platform pass is inferred.
+
+Owed ROOT: `cargo test -p shards --test api_image
+a_stop_mid_boot_ends_the_run_host_and_every_process_of_its_run` on supported
+HVF/KVM/WHP hosts, extended with a valid large staged CREATE while its reader is
+held; test fresh and warm paths, host/VM/network/share end, slots/layers/templates
+and locks returned. Windows' job branch is compiled by CI, not tested here.
+
+## Confirmed main landing
+
+The ff-push `2c2dcf559 -> 3956d259b` succeeded: runs-01 (978d29f03),
+runs-02 (d3b11258a) and runs-04 (bc0f69b5c) are on main. In addition to the
+merged gates above, b6e302bf4 and 3956d259b passed
+`cargo check -j 4 -p shards-vmm -p shards -p shards-api --tests` (r19/r21,
+13.53s/16.38s). Each merge signature was made by gits; fixing/status signatures
+were checked with one gpgsig. ROOT's kiln inbox rejected the distinct landing
+receipt with 429 backpressure; no accepted model delivery is inferred.
