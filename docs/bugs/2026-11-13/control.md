@@ -34,6 +34,8 @@ There is also an ordering hazard in this same completion path: `api_run.rs:3844�
 
 **Catching test:** Gate the pump, have a controlled host emit two distinct output records, `OUTPUT_END`, and `ENDED`, wait until the answer reader has accepted them and closed `to_host`, then release the pump. Require the read-to-end bytes to equal the concatenation of A and B, exactly once. Also gate the capture thread so `ENDED` precedes its last host-side output and verify no premature EOF. Existing empty-output-at-run-end coverage (`a_run_ended_before_its_first_credit_still_has_its_outputs`) cannot catch this.
 
+**Status (2026-11-13):** fixed in cf2764c6e (red `image::session::tests::output_taken_before_the_runs_end_reaches_its_owner_whole` and `output_said_after_the_runs_end_reaches_its_owner_before_its_end`, d7b62bd7d; adas-mac-studio-3.local macOS arm64: the owner read A alone, and nothing, before; A then B, and the record said after the run's end, after; both guards' mutations red; shards-api clippy clean). Real-VM managed_output and api_image lanes remain ROOT's; see [evidence](../../research/measurements/control-01-v1/README.md).
+
 ### control-02 — P1 / high — aborting a pending socket lane leaves its workers and frees its admission
 
 **Location:** `crates/remote/src/control/unix.rs:573–577`; related `:186–203`, `:533–539`, `crates/shards/src/api_run.rs:3943–3962`, `crates/shards/src/warm.rs:2379`, `crates/shards/src/workload.rs:1585–1592`, `crates/init/src/lanes.rs:69–74,111–114`.
@@ -68,7 +70,7 @@ There is also an ordering hazard in this same completion path: `api_run.rs:3844�
 
 **Catching test:** Hold a pipe's input writer open, arrange a downward writer that fails on response bytes, and require `copy_both` to return Err and join its helper before the input writer is closed. Add the symmetric input-read-error case.
 
-**Status (2026-11-13):** fixed in 0a15e5da97dfc038bbb46b40549cbdf1a4c70e3c (red `mcp::tests::a_bridge_output_failure_does_not_wait_for_its_idle_input`, dee36cb5f8fd70e2e90551ec66b9aa1938dfd60b). adacachy2 Linux x86_64: red Timeout while stdin remained open; green 6 MCP tests, 5 engine tests, 6 lane tests, shards-init clippy clean. The shared relay now supports separate nonblocking stdio ends, with no copy thread to retain. Symmetric input-error coverage passed. [Evidence](../../research/measurements/control-fixes-v1/README.md).
+**Status (2026-11-13):** fixed in f7d83f73a (inithex-03's overlapping fix, preserved when merging main; red `mcp::tests::a_bridge_output_failure_does_not_wait_for_its_idle_input` at dee36cb5f8fd70e2e90551ec66b9aa1938dfd60b). This lane reproduced the same Timeout with live stdin, then found the landed descriptor-owned fix during the required main merge. The independent shared-relay candidate was superseded before landing. Retained upstream guards cover stdout failure, peer end and normal half-close; this lane adds symmetric input-error coverage. [Evidence](../../research/measurements/control-fixes-v1/README.md), [landed fix evidence](../../research/measurements/inithex-fixes/README.md).
 
 ### control-04 — P3 / medium — an idle stdin feeder survives member/run termination
 

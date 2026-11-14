@@ -463,78 +463,11 @@ struct Direction {
     source: Leg,
 }
 
-/// A relay peer is either a duplex socket, or a bridge's separate stdio descriptors.
-/// Pipe descriptors must already be nonblocking; sockets use MSG_DONTWAIT per operation.
-#[derive(Clone, Copy)]
-enum Endpoint<'a> {
-    Socket(BorrowedFd<'a>),
-    Stdio {
-        input: BorrowedFd<'a>,
-        output: BorrowedFd<'a>,
-    },
-}
-
-impl<'a> Endpoint<'a> {
-    fn input(self) -> BorrowedFd<'a> {
-        match self {
-            Self::Socket(fd) | Self::Stdio { input: fd, .. } => fd,
-        }
-    }
-    fn output(self) -> BorrowedFd<'a> {
-        match self {
-            Self::Socket(fd) | Self::Stdio { output: fd, .. } => fd,
-        }
-    }
-    fn read(self, bytes: &mut [u8]) -> io::Result<usize> {
-        // SAFETY: the borrowed descriptor and writable slice remain live through the call.
-        count(unsafe {
-            match self {
-                Self::Socket(fd) => libc::recv(
-                    fd.as_raw_fd(),
-                    bytes.as_mut_ptr().cast(),
-                    bytes.len(),
-                    libc::MSG_DONTWAIT,
-                ),
-                Self::Stdio { input, .. } => {
-                    libc::read(input.as_raw_fd(), bytes.as_mut_ptr().cast(), bytes.len())
-                }
-            }
-        })
-    }
-    fn write(self, bytes: &[u8]) -> io::Result<usize> {
-        // SAFETY: the borrowed descriptor and readable slice remain live through the call.
-        // The Rust bridge process ignores SIGPIPE, so a closed stdio pipe returns EPIPE.
-        count(unsafe {
-            match self {
-                Self::Socket(fd) => libc::send(
-                    fd.as_raw_fd(),
-                    bytes.as_ptr().cast(),
-                    bytes.len(),
-                    libc::MSG_DONTWAIT | libc::MSG_NOSIGNAL,
-                ),
-                Self::Stdio { output, .. } => {
-                    libc::write(output.as_raw_fd(), bytes.as_ptr().cast(), bytes.len())
-                }
-            }
-        })
-    }
-    fn shutdown(self, how: libc::c_int) -> io::Result<usize> {
-        match self {
-            Self::Socket(fd) => {
-                // SAFETY: shutdown(2) of the live borrowed socket, which never blocks.
-                count(unsafe { libc::shutdown(fd.as_raw_fd(), how) } as isize)
-            }
-            // The stdio owner closes its output as the bridge returns; a pipe has no shutdown.
-            Self::Stdio { .. } => Ok(0),
-        }
-    }
-}
-
 impl Direction {
     fn turn(
         &mut self,
-        source: Endpoint<'_>,
-        destination: Endpoint<'_>,
+        source: BorrowedFd<'_>,
+        destination: BorrowedFd<'_>,
         progress: &mut Progress,
         deadline: &Control<'_>,
         end_policy: EndPolicy,
@@ -549,11 +482,21 @@ impl Direction {
             let bytes = self.bytes.get(self.sent..end).ok_or(Fault::Bounds)?;
             match attempt(
                 deadline,
-                destination.output().as_raw_fd(),
+                destination.as_raw_fd(),
                 libc::POLLOUT,
                 target,
                 Operation::Write,
-                || destination.write(bytes),
+                || {
+                    // SAFETY: live borrowed socket; bytes is readable for len.
+                    count(unsafe {
+                        libc::send(
+                            destination.as_raw_fd(),
+                            bytes.as_ptr().cast(),
+                            bytes.len(),
+                            libc::MSG_DONTWAIT | libc::MSG_NOSIGNAL,
+                        )
+                    })
+                },
             )? {
                 Attempt::WouldBlock => {
                     increment(&mut progress.would_block, 1)?;
@@ -585,11 +528,14 @@ impl Direction {
             };
             match attempt(
                 deadline,
-                destination.output().as_raw_fd(),
+                destination.as_raw_fd(),
                 libc::POLLOUT,
                 target,
                 Operation::Shutdown,
-                || destination.shutdown(how),
+                || {
+                    // SAFETY: shutdown of this owned flow's borrowed socket.
+                    count(unsafe { libc::shutdown(destination.as_raw_fd(), how) } as isize)
+                },
             )? {
                 Attempt::Ready(_) => {
                     progress.half = Half::WriteClosed(cause);
@@ -617,11 +563,21 @@ impl Direction {
         };
         match attempt(
             deadline,
-            source.input().as_raw_fd(),
+            source.as_raw_fd(),
             libc::POLLIN,
             self.source,
             Operation::Read,
-            || source.read(bytes),
+            || {
+                // SAFETY: writable slice and live borrowed socket, no blocking call.
+                count(unsafe {
+                    libc::recv(
+                        source.as_raw_fd(),
+                        bytes.as_mut_ptr().cast(),
+                        bytes.len(),
+                        libc::MSG_DONTWAIT,
+                    )
+                })
+            },
         )? {
             Attempt::WouldBlock => increment(&mut progress.would_block, 1)?,
             Attempt::Ready(0) => {
@@ -689,12 +645,6 @@ pub(crate) fn wait(
             revents: 0,
         },
     ];
-    wait_fds(deadline, &mut fds, &[Leg::Client, Leg::Backend, Leg::Client])
-}
-
-fn wait_fds(deadline: &Control<'_>, fds: &mut [libc::pollfd], legs: &[Leg]) -> Result<(), Fault> {
-    let first = fds.first().ok_or(Fault::Bounds)?;
-    let (client, client_events) = (first.fd, first.events);
     let result = deadline
         .io(client, client_events, || {
             let timeout = match deadline {
@@ -724,7 +674,7 @@ fn wait_fds(deadline: &Control<'_>, fds: &mut [libc::pollfd], legs: &[Leg]) -> R
         Deadline::cancellation_event(fds.last().map_or(0, |fd| fd.revents)).map_err(control)?;
     }
     result.map_err(|error| native(Leg::Client, Operation::Wait, error))?;
-    for (fd, &leg) in fds.iter().zip(legs) {
+    for (fd, leg) in fds.iter().zip([Leg::Client, Leg::Backend]) {
         if fd.revents & libc::POLLNVAL != 0 {
             return Err(native(
                 leg,
@@ -778,43 +728,6 @@ pub(crate) fn pump(
     end: EndPolicy,
     report: &mut Report,
 ) -> Result<Termination, Fault> {
-    pump_endpoints(
-        streams.map(Endpoint::Socket),
-        slots,
-        limits,
-        deadline,
-        end,
-        report,
-    )
-}
-
-/// MCP's stdio bridge uses the same state machine without blocking copy workers.
-/// Its pipe descriptors are nonblocking; a read or write failure returns immediately.
-pub(crate) fn pump_stdio(
-    input: BorrowedFd<'_>,
-    output: BorrowedFd<'_>,
-    socket: BorrowedFd<'_>,
-    slots: Slots,
-    report: &mut Report,
-) -> Result<Termination, Fault> {
-    pump_endpoints(
-        [Endpoint::Stdio { input, output }, Endpoint::Socket(socket)],
-        slots,
-        [ByteLimit::PeerEnd; 2],
-        Control::ProcessOwned,
-        EndPolicy::Independent,
-        report,
-    )
-}
-
-fn pump_endpoints(
-    streams: [Endpoint<'_>; 2],
-    slots: Slots,
-    limits: [ByteLimit; 2],
-    deadline: Control<'_>,
-    end: EndPolicy,
-    report: &mut Report,
-) -> Result<Termination, Fault> {
     if let Control::Until(d) = deadline
         && d.cancel.is_none()
     {
@@ -841,9 +754,9 @@ fn pump_endpoints(
             && reading
             && report.to_backend.half == Half::Draining(SourceEnd::Eof)
             && (report.to_client.half == Half::Reading || report.to_client.pending != 0)
-            && matches!(client, Endpoint::Socket(fd) if hung_up(fd))
+            && hung_up(client)
         {
-            cut(backend.output())?;
+            cut(backend)?;
             report.to_backend.half = Half::WriteClosed(SourceEnd::Eof);
             return Ok(Termination::ClientCut);
         }
@@ -868,54 +781,23 @@ fn pump_endpoints(
         if up_changed || down_changed {
             continue;
         }
-        let reading = |p: &Progress| {
-            if p.half == Half::Reading && p.pending == 0 {
+        let interest = |read: &Progress, write: &Progress| {
+            (if read.half == Half::Reading && read.pending == 0 {
                 libc::POLLIN
             } else {
                 0
-            }
-        };
-        let writing = |p: &Progress| {
-            if p.pending != 0 || matches!(p.half, Half::Draining(_)) {
+            }) | (if write.pending != 0 || matches!(write.half, Half::Draining(_)) {
                 libc::POLLOUT
             } else {
                 0
-            }
+            })
         };
-        if let (Endpoint::Socket(client), Endpoint::Socket(backend)) = (client, backend) {
-            wait(
-                &deadline,
-                client.as_raw_fd(),
-                reading(&report.to_backend) | writing(&report.to_client),
-                backend.as_raw_fd(),
-                reading(&report.to_client) | writing(&report.to_backend),
-            )?;
-            continue;
-        }
-        let cancel = match deadline {
-            Control::Until(d) => d.cancel.ok_or(Fault::Control(io::ErrorKind::InvalidInput))?,
-            Control::ProcessOwned => -1,
-        };
-        let poll = |fd: BorrowedFd<'_>, events| libc::pollfd {
-            fd: if events == 0 { -1 } else { fd.as_raw_fd() },
-            events,
-            revents: 0,
-        };
-        let mut fds = [
-            poll(client.input(), reading(&report.to_backend)),
-            poll(client.output(), writing(&report.to_client)),
-            poll(backend.input(), reading(&report.to_client)),
-            poll(backend.output(), writing(&report.to_backend)),
-            libc::pollfd {
-                fd: cancel,
-                events: libc::POLLIN,
-                revents: 0,
-            },
-        ];
-        wait_fds(
+        wait(
             &deadline,
-            &mut fds,
-            &[Leg::Client, Leg::Client, Leg::Backend, Leg::Backend, Leg::Client],
+            client.as_raw_fd(),
+            interest(&report.to_backend, &report.to_client),
+            backend.as_raw_fd(),
+            interest(&report.to_client, &report.to_backend),
         )?;
     }
 }

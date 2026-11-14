@@ -17758,6 +17758,9 @@ revision before comparing a changed API/implementation.
 
 ### M430. Devices plugged into a running microVM: what each step costs, and what a bus of slots costs a boot (D214)
 
+- **Correctness follow-up, 2026-11-13 (devices-02, D154).** A full-span IOMMU mapping overflow was reproduced by a focused unit test (red 1 failed; green 11 IOMMU tests passed, VMM clippy clean) on adas-mac-studio-3.local, macOS arm64. See `measurements/device-fixes/README.md` for revisions and Kiln runs. These unit results do not revalidate M430's timings or hardware MSI behavior.
+
+
 - **Question.** What does a disk plugged into a running microVM cost, from the host's call to
   its guest's first read of it, and its unplug, from the guest's remove to the host's? And
   what does a PCI bus of empty slots, which a machine must have to be plugged into, cost its
@@ -23767,10 +23770,18 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
 
 - **Control-03 follow-up (2026-11-13).** The MCP stdio bridge's downward BrokenPipe
   joined a thread blocked on open idle stdin (red dee36cb5f: Timeout). Its stdio is now
-  an endpoint of the shared native relay; first error returns with no blocking worker.
-  On adacachy2 Linux x86_64, 0a15e5da9 passed 6 MCP, 5 engine and 6 lane tests plus
-  shards-init clippy. Both input/output error directions and ordinary half-close are
-  covered; [commands, source and remaining VM proof](measurements/control-fixes-v1/README.md).
+  owned descriptor loop as landed by inithex-03 (f7d83f73a), whose fix arrived on main
+  before this lane landed; that production implementation was preserved at merge.
+  This lane's candidate at 0a15e5da9 had passed 6 MCP/5 engine/6 lane tests and clippy
+  on adacachy2, but was superseded before landing. The merged guard adds the symmetric
+  input-failure case to inithex-03's tests; [commands, source and remaining VM proof](measurements/control-fixes-v1/README.md).
+- **Control-01 follow-up (2026-11-13).** An orchestrator's session ended a member channel's
+  pipe at its first credit refused by the run's end, records already taken left queued, and
+  at the run's end itself, while its host may still send output after it. Red at d7b62bd7d
+  (the owner read the first of two records, and nothing of one said after the end), green at
+  cf2764c6e, each guard's mutation red, on adas-mac-studio-3.local macOS 26.2 arm64; D240
+  says the pump's ends; [commands and R01–R16 account](measurements/control-01-v1/README.md).
+  Real-VM managed_output and api_image lanes remain ROOT's.
 
 ### M560. CI's musl test job: its build and its tests as steps of their own, each limit derived (M420, M547)
 
@@ -24027,3 +24038,12 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   clippy -D warnings for shards-vm-process on macOS, x86_64-unknown-linux-gnu,
   aarch64-unknown-linux-musl (zig) and x86_64-pc-windows-msvc (xwin). R11, R15: no VM run here;
   the api_image and managed_output KVM loop is ROOT's. R16: the fetched logs (116 MB) removed.
+
+### M564. MCP bridge termination with the harness stdin writer retained (D254)
+
+Linux x86_64, adacachy2, 2026-11-13: real-pipe unit regressions at e74696f22
+failed peer-end and stdout-error completion while stdin remained open; the old
+copy test passed (1 pass, 2 failures). At f7d83f73a all 7 MCP tests and shards-init
+all-target clippy passed. Normal socket half-close still delivers later stdin.
+This is functional evidence, not a performance measurement or real-VM result.
+[Commands, output excerpts, policy and owed coverage](measurements/inithex-fixes/README.md).

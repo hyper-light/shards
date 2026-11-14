@@ -15851,6 +15851,14 @@ Docker on Linux does, which refuses several of them for want of a VM.
 
 ### D154. KVM on arm64, and a host's PCI function passed through (VFIO)
 
+**Review devices-02 (2026-11-13).** An IOMMU MAP has an inclusive end
+(virtio 1.3 §5.13.6.6), including `u64::MAX`. Translation bounds the
+remaining inclusive span by the nonempty request before adding the final
+byte, so a full-space MMIO mapping cannot overflow to a zero-length part.
+No timeout, cache, allocation limit or platform-specific path is added.
+Red/green evidence: `docs/research/measurements/device-fixes/README.md`.
+
+
 D13 planned KVM on arm64 Linux hosts, and none ran a VM: the KVM backend was x86_64's.
 D153's test path for VFIO is a guest given the test function, passing it to a guest of
 its own, on an arm64 Mac (D132): shards' VM process inside that guest is an arm64 Linux
@@ -26779,6 +26787,17 @@ and no exec, attach or terminal (the plan's steps 5, 6 and 7).
   come. Before, init aborted every member's pipes as the command ended, and the daemon ended
   the capture at the run's DONE, and agents' reports were cut mid-line (PM M543, "Lost at
   the run's end").
+  An orchestrator's session (shards-api's `session.rs`, `pump`) gives an owner's pipe its end
+  only once every record it took of that channel is written and no more can come: the
+  channel's own end (`OUTPUT_END`), or the end of its run host's answers. The run's end is
+  neither: its host says it as its VM goes, while its capture's reader may still be sending
+  what the VM left, and a credit that cannot go (the host's channel closed by the run's end or
+  by `stop`) ends the pump's credits, never its writes. Before, a pump ended its pipe at the
+  run's end and at its first refused credit, records already taken left behind
+  (docs/bugs/2026-11-13/control.md, control-01; red:
+  `output_taken_before_the_runs_end_reaches_its_owner_whole`,
+  `output_said_after_the_runs_end_reaches_its_owner_before_its_end`). No literal is added: both
+  ends are the protocol's own events.
 - *Every member's log, within the run's one cap* (goal 58's step 7, slice 3; ROOT's ruling and the
   person's decision, 2026-11-13). The log is the run's: every member's output is kept, owned or not.
   - *Kept whoever reads it.* A drained member's records are kept as the daemon takes them (above);
@@ -29284,6 +29303,12 @@ one form all nine take, and no other.
    preamble naming the member; the VM process hands each to its run host unprompted
    (`LANE_ACCEPTED`). Nothing of it is an address: the member's network grants and its
    default deny are untouched.
+   The stdio bridge owns stdin, stdout and the socket in one nonblocking poll loop
+   (inithex-03). Its explicit halves read, drain and close: a normal socket half-close
+   closes stdout once drained while stdin remains usable; a peer gone or I/O failure
+   ends without joining a blocked stdin thread. PIPE_BUF bounds each pipe write;
+   readiness events are its only wait, no runtime deadline or polling interval.
+   [Red/green pipe tests and alternatives](../research/measurements/inithex-fixes/README.md).
 2. *On the link: one lane per connection, an exec's in all but its start.* The controller asks
    with a lane whose first frame is `Mcp`, the run, its generation and the member, as an exec's
    ask names them. The endpoint numbers it and hands its host the ask with two streams, step
@@ -29353,16 +29378,6 @@ and a run naming a member its image starts no program for.
   `/proc/self/exe`, read only, nosuid, nodev, runnable; `bridge_mount`). Run by that name, as no
   PID 1, the binary is the bridge: its stdin to the socket and the socket to its stdout, its
   stdin's end the socket's half-close, done once both ways have ended.
-- *The bridge's failure and waits* (control-03). Its separate stdin/stdout ends use the
-  existing native relay's typed endpoint, nonblocking read/write and readiness wait;
-  sockets keep their original two-descriptor poll shape. Either direction's first I/O
-  error returns, without joining a worker blocked on the other source. Orderly EOF still
-  half-closes only its destination, and both directions must end for success. Storage is
-  the relay's existing vsock-packet slots, with their kernel-source bound (no timer/retry).
-  Tokio 1.48.0's `copy_bidirectional` is the established equivalent: EOF shuts down that
-  writer; an I/O error returns immediately. This reuses the existing relay rather than
-  adding an async runtime or a second pump. The bug's blocked worker and both error
-  directions are covered in [the red/green record](../research/measurements/control-fixes-v1/README.md).
 - *The relay.* Each connection to the socket, on a thread of its own, dials port 1031, says
   `HELLO` with the run's token and then the member's declared index, and carries the bytes each
   way, each way's end that way's half-close (`native_relay::pump`, `EndPolicy::Independent`).

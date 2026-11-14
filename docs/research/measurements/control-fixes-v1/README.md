@@ -99,3 +99,13 @@ removed after landing. No guard-removal mutation beyond retained red source was 
 ROOT owes the real-VM MCP restart/fault/cleanup scenario in control-03 and
 `cargo test -p shards --test api_image an_orchestrators_members_are_signaled_and_their_mcp_connections_reached_on_its_endpoint`
 on its supported hypervisors. No bridge process/fd count in a real VM was measured here.
+
+### Main-merge resolution for control-03
+
+The required fresh-main merge found inithex-03 had independently landed the same first-error
+fix in f7d83f73a. Its production implementation and descriptor ownership were preserved;
+this lane's shared-relay candidate (c02114a2d/0a15e5da9) was removed from the final tree,
+not substituted for another lane's code. Candidate green results above describe the
+unlanded candidate only. Upstream proof is retained at ../inithex-fixes/README.md.
+The merge keeps an additional real-directory-read-error regression proving that idle
+socket output cannot delay an input error. Final merged checks are recorded below.
