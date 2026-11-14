@@ -129,6 +129,9 @@ fn mcp_endpoint(url: &str) -> Option<(String, u16)> {
     if after > 0 && host.len() != after {
         return None;
     }
+    // RFC 1034 §3.1: the terminal root dot is absent from DNS query_name,
+    // as in the build's agentfile::mcp_endpoint reader.
+    let host = host.strip_suffix('.').unwrap_or(host);
     (!host.is_empty() && port > 0).then(|| (host.to_ascii_lowercase(), port))
 }
 
