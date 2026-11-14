@@ -147,10 +147,10 @@ fn lists() {
         // SAFETY: rusage is plain C data, for which all zeroes is a value.
         let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
         // SAFETY: getrusage(2) into a local.
-        assert_eq!(
-            unsafe { libc::getrusage(libc::RUSAGE_CHILDREN, &raw mut usage) },
-            0
-        );
+        let rc = unsafe { libc::getrusage(libc::RUSAGE_CHILDREN, &raw mut usage) };
+        assert_eq!(rc, 0);
+        // time_t and suseconds_t are i64 on Linux, suseconds_t i32 on macOS.
+        #[allow(clippy::useless_conversion)]
         let us = |t: libc::timeval| i64::from(t.tv_sec) * 1_000_000 + i64::from(t.tv_usec);
         (
             usage.ru_minflt + usage.ru_majflt,
@@ -188,7 +188,7 @@ fn a_party_look_lists_processes_without_starting_one() {
     let said = String::from_utf8_lossy(&out.stdout);
     let counts: Vec<i64> = said
         .lines()
-        .find_map(|line| line.strip_prefix("listed "))
+        .find_map(|line| line.split("listed ").nth(1))
         .unwrap_or_default()
         .split_whitespace()
         .filter_map(|n| n.parse().ok())
