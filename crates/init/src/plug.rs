@@ -30,10 +30,132 @@ pub const BUILD: &str = "/sys/fs/cgroup/build";
 /// What the memory to plug is asked for in: Linux's memory block with 4 KiB pages
 /// (shards_vmm's `virtio::mem::ALIGN`), which its driver adds memory in.
 const ALIGN: u64 = 128 << 20;
-/// What the kernel needs beside the build that its cgroup is not charged for, and what
-/// the build may pass its `memory.high` by before the kernel's slowing catches it
-/// (PM M193), on top of the page structures of the next memory plugged ([`reserve`]).
-const SLACK: u64 = 64 << 20;
+/// How far the kernel lets a cgroup's charges pass its `memory.high` before it reclaims
+/// at once (D133, memory-11): a task's charges count past the hold until they come to more
+/// than a batch, `MEMCG_CHARGE_BATCH`'s 64 pages, so a task passes it by two charges at
+/// most, each of a batch or of the folio it charges where that is larger (mm/memcontrol.c
+/// `try_charge_memcg`, `memcg_nr_pages_over_high > MEMCG_CHARGE_BATCH`, Linux 7.2-rc4);
+/// one such task on each CPU online. Its largest folio is a PMD's where the kernel has
+/// THP (`hpage_pmd_size`, which the pinned kernel's config has), else 2^8 pages
+/// (include/linux/pagemap.h `PREFERRED_MAX_PAGECACHE_ORDER`), never past
+/// `MAX_XAS_ORDER`'s 2^11 pages.
+fn overshoot() -> u64 {
+    overshoot_of(online_cpus(), page_size(), number(PMD_SIZE))
+}
+
+/// Where the kernel says its PMD's size, which its THP folios are at most.
+const PMD_SIZE: &str = "/sys/kernel/mm/transparent_hugepage/hpage_pmd_size";
+
+/// [`overshoot`] of `cpus` CPUs with pages of `page` bytes and THP folios of at most `pmd`
+/// bytes: where it is unread, a PMD's as its page table has it (a page of 8-byte entries,
+/// each a page), the larger of the two folios without THP and with it, as unread is not
+/// none.
+fn overshoot_of(cpus: u64, page: u64, pmd: Option<u64>) -> u64 {
+    const CHARGE_BATCH: u64 = 64;
+    const MAX_XAS_ORDER: u32 = 11;
+    let page = page.max(1);
+    let pmd = pmd.unwrap_or_else(|| {
+        let order = (page / 8).max(1).ilog2().min(MAX_XAS_ORDER);
+        page.checked_shl(order).unwrap_or(u64::MAX)
+    });
+    let folio = pmd.min(page.checked_shl(MAX_XAS_ORDER).unwrap_or(u64::MAX));
+    CHARGE_BATCH
+        .saturating_mul(page)
+        .max(folio)
+        .saturating_mul(2)
+        .saturating_mul(cpus.max(1))
+}
+
+/// The CPUs online in this guest, one at least.
+fn online_cpus() -> u64 {
+    // SAFETY: sysconf(3) reads a value of the running kernel's.
+    u64::try_from(unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) }).map_or(1, |c| c.max(1))
+}
+
+/// What the kernel holds beside a held cgroup and charges it none of, as the grower reads it
+/// at a wake: its memory less what is free and what the cgroup holds, and what is plugged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Reading {
+    uncharged: u64,
+    plugged: u64,
+}
+
+/// [`Reading`] of `cgroup` in a guest booted with `boot`: none where a file is unread.
+fn reading(cgroup: &str, boot: u64) -> Option<Reading> {
+    let current = number(&format!("{cgroup}/memory.current"))?;
+    let (total, free) = memory().ok()?;
+    Some(Reading {
+        uncharged: total.saturating_sub(free).saturating_sub(current),
+        plugged: total.saturating_sub(boot),
+    })
+}
+
+/// What the kernel adds beside a held cgroup and charges it none of, learned by its grower
+/// at each wake (D133, memory-11): the most it rose between two wakes, less the page
+/// structures of what was plugged between them (a 64th, which [`reserve`] counts apart).
+/// Its cold start, before any rise is seen, is what the kernel holds beside the cgroup as it
+/// is held: its use so far standing for what it adds (Gott, Nature 363, 1993, D215's `w`).
+/// A wake whose files are unread keeps what it had, never none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Uncharged {
+    most: u64,
+    last: Option<Reading>,
+}
+
+impl Uncharged {
+    /// Learning from `most`, the cold start or what was learned before, the last reading
+    /// `last`.
+    fn begun(most: u64, last: Option<Reading>) -> Uncharged {
+        Uncharged { most, last }
+    }
+
+    /// A wake that read `now`: what it has learned so far.
+    fn woke(&mut self, now: Option<Reading>) -> u64 {
+        if let Some(now) = now {
+            if let Some(last) = self.last {
+                let memmap = now.plugged.saturating_sub(last.plugged) / 64;
+                let rose = now
+                    .uncharged
+                    .saturating_sub(last.uncharged)
+                    .saturating_sub(memmap);
+                self.most = self.most.max(rose);
+            }
+            self.last = Some(now);
+        }
+        self.most
+    }
+}
+
+/// Says what the kernel adds beside a held cgroup, as far as learned ([`Uncharged`]), to
+/// every process that shares [`CAP`]'s page.
+fn publish_uncharged(bytes: u64) {
+    if let Some(s) = CAP.get() {
+        s.uncharged.store(bytes, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// What the kernel keeps beside a held cgroup's `memory.high` past its page structures and
+/// its CPUs' lists ([`reserve`], D133, memory-11): what a cgroup's charges pass its hold by
+/// ([`overshoot`]) and what the kernel adds beside it uncharged ([`Uncharged`]), as its grower
+/// learned it, else, where none shares it, what the kernel holds beside `cgroup` now.
+fn slack(cgroup: &str, boot: u64) -> io::Result<u64> {
+    let learned = CAP
+        .get()
+        .map(|s| s.uncharged.load(std::sync::atomic::Ordering::SeqCst))
+        .filter(|&u| u != UNLEARNED);
+    let uncharged = match learned {
+        Some(u) => u,
+        None => {
+            reading(cgroup, boot)
+                .ok_or_else(|| err(format!("{cgroup}: what its kernel holds beside it is unread")))?
+                .uncharged
+        }
+    };
+    Ok(overshoot().saturating_add(uncharged))
+}
+
+/// [`Shared::uncharged`] before any hold published it.
+const UNLEARNED: u64 = u64::MAX;
 /// At boot, before any snapshot: a guest reports the memory it holds free to its microVM
 /// (D151) only where its kernel treats what a pass of reporting holds as free memory
 /// (`page_reporting.held`, resources/kernel/patches/0006). One that does not counts up to
@@ -312,6 +434,25 @@ fn scaled(v: u64, to: u64, from: u64) -> u64 {
 }
 
 impl Plug {
+    /// Begins what the kernel adds beside its cgroup uncharged ([`Uncharged`]) with what it
+    /// holds beside it as it is held, where nothing was learned before (a template's
+    /// restores keep what its grower learned).
+    fn learn_uncharged_cold(&self) -> io::Result<()> {
+        let unlearned = CAP
+            .get()
+            .is_some_and(|s| s.uncharged.load(std::sync::atomic::Ordering::SeqCst) == UNLEARNED);
+        if unlearned {
+            let at_hold = reading(self.cgroup, self.boot).ok_or_else(|| {
+                err(format!(
+                    "{}: what its kernel holds beside it is unread",
+                    self.cgroup
+                ))
+            })?;
+            publish_uncharged(at_hold.uncharged);
+        }
+        Ok(())
+    }
+
     /// MemTotal with all of it plugged: each page plugged is the kernel's, its page
     /// structures taken from what it has.
     pub fn full(&self) -> u64 {
@@ -431,6 +572,7 @@ impl Plug {
             let _ = PEAK.set(peak);
         }
         begin_period(mem_total().map_or(0, |total| staying(self.boot, total)));
+        self.learn_uncharged_cold()?;
         set_high(self.cgroup, high(self.cgroup, self.most, 0)?)?;
         let events = watch_events(self.cgroup)?;
         let mut fds = [0; 2];
@@ -480,6 +622,7 @@ impl Plug {
             let _ = PEAK.set(peak);
         }
         begin_period(mem_total().map_or(0, |total| staying(self.boot, total)));
+        self.learn_uncharged_cold()?;
         set_high(self.cgroup, high(self.cgroup, self.most, 0)?)?;
         let events = watch_events(self.cgroup)?;
         // SAFETY: fork(2) of PID 1 before it starts any thread: the child runs on a copy
@@ -519,6 +662,9 @@ static CAP: std::sync::OnceLock<&'static Shared> = std::sync::OnceLock::new();
 struct Shared {
     cap: std::sync::atomic::AtomicU64,
     period_plugged: std::sync::atomic::AtomicU64,
+    /// What the kernel adds beside the held cgroup uncharged, as its grower has learned it
+    /// ([`Uncharged`]): [`UNLEARNED`] before its hold.
+    uncharged: std::sync::atomic::AtomicU64,
 }
 
 /// Makes [`CAP`], none yet: by PID 1 as it starts, before it forks anything, a grower or a
@@ -550,6 +696,9 @@ pub fn make_cap() -> io::Result<()> {
     // lives as long as the process, and every process forked from it shares it.
     let shared = unsafe { &*page.cast::<Shared>() };
     shared.cap.store(u64::MAX, std::sync::atomic::Ordering::SeqCst);
+    shared
+        .uncharged
+        .store(UNLEARNED, std::sync::atomic::Ordering::SeqCst);
     let _ = CAP.set(shared);
     Ok(())
 }
@@ -655,9 +804,7 @@ fn reclaimed(short: bool, was: u64, now: u64) -> bool {
 /// 7763s, and three reads in 144 took over twice their CPU's time with none, the slowest
 /// 2.77 times; with it, 1 and 687 times, the slowest 1.12 times (PM M321).
 pub(crate) fn working_room() -> u64 {
-    // SAFETY: sysconf(3) reads a value of the running kernel's.
-    let cpus = u64::try_from(unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) }).map_or(1, |c| c.max(1));
-    working_room_of(cpus, page_size())
+    working_room_of(online_cpus(), page_size())
 }
 
 /// [`working_room`] of a guest with `cpus` CPUs online and pages of `page` bytes.
@@ -673,7 +820,7 @@ fn working_room_of(cpus: u64, page: u64) -> u64 {
 
 /// The most a run's microVM may have plugged within what its host's budget leaves it
 /// ([`CAP`]): what lets its run hold its cap beside what its kernel holds now and its
-/// [`SLACK`], with the page structures of what is plugged, a 64th of it, which the kernel
+/// [`slack`], with the page structures of what is plugged, a 64th of it, which the kernel
 /// takes from its own memory, in whole blocks; `most` with no budget. Its grower doubling
 /// what it asked for past this, as a give-back's hold below the cap reached it, plugged its
 /// 16 GiB, whose page structures alone took 256 MiB of a 384 MiB budget (PM M309).
@@ -688,13 +835,17 @@ fn most_within(boot: u64, most: u64, cgroup: &str) -> u64 {
     let Ok((total, free)) = memory() else {
         return most;
     };
+    let Ok(slack) = slack(cgroup, boot) else {
+        return most;
+    };
     let kernel = total.saturating_sub(free).saturating_sub(used);
-    plug_for(boot, most, cap, kernel)
+    plug_for(boot, most, cap, kernel.saturating_add(slack))
 }
 
-/// [`most_within`] of a run held at `cap` bytes, its kernel holding `kernel` beside it.
-fn plug_for(boot: u64, most: u64, cap: u64, kernel: u64) -> u64 {
-    let want = cap.saturating_add(kernel).saturating_add(SLACK);
+/// [`most_within`] of a run held at `cap` bytes, its kernel holding `beside` beside it
+/// with its [`slack`].
+fn plug_for(boot: u64, most: u64, cap: u64, beside: u64) -> u64 {
+    let want = cap.saturating_add(beside);
     want.saturating_add(want / 63)
         .saturating_sub(boot)
         .checked_next_multiple_of(ALIGN)
@@ -1029,14 +1180,14 @@ pub fn mount_cgroups() -> io::Result<()> {
     Ok(())
 }
 
-/// What the kernel keeps beside the build's `memory.high`: [`SLACK`]; the page structures
+/// What the kernel keeps beside the build's `memory.high`: its `slack` ([`slack`]); the page structures
 /// of the memory plugged next, a 64th of it (a 64-byte `struct page` for each 4 KiB page),
 /// which the kernel takes from what it has before the memory comes online (growth asks for
 /// as much as the builder has, [`grow`], so that is a 64th of what it has, until it has all
 /// it may); and the free pages its CPUs may keep on their own lists, which are neither free
 /// to its readers nor charged to the build ([`PCP_FRACTION`]).
-fn reserve(total: u64, left: u64) -> u64 {
-    SLACK
+fn reserve(total: u64, left: u64, slack: u64) -> u64 {
+    slack
         .saturating_add(total.min(left) / 64)
         .saturating_add(total / PCP_FRACTION)
 }
@@ -1059,6 +1210,11 @@ const PCP_FRACTION: u64 = 8;
 pub fn needed() -> io::Result<(u64, u64)> {
     let peak = number(&format!("{BUILD}/memory.peak"))
         .ok_or_else(|| err(format!("{BUILD}/memory.peak: none to read")))?;
+    let boot = BOOT.get().copied().unwrap_or(0);
+    let kernel = reading(BUILD, boot)
+        .ok_or_else(|| err(format!("{BUILD}: what its kernel holds beside it is unread")))?
+        .uncharged;
+    let beside = kernel.saturating_add(slack(BUILD, boot)?);
     let events = std::fs::read_to_string(format!("{BUILD}/memory.events"))
         .map_err(|e| err(format!("{BUILD}/memory.events: {e}")))?;
     let killed = events
@@ -1066,14 +1222,15 @@ pub fn needed() -> io::Result<(u64, u64)> {
         .find_map(|l| l.strip_prefix("oom_kill "))
         .and_then(|n| n.trim().parse().ok())
         .unwrap_or(0);
-    Ok((needed_for(peak), killed))
+    Ok((needed_for(peak, beside), killed))
 }
 
 /// The least memory in whole blocks whose hold, its [`reserve`] beside it and nothing left
-/// to plug, is at least `peak`: `total − SLACK − total / PCP_FRACTION ≥ peak`.
-fn needed_for(peak: u64) -> u64 {
+/// to plug, is at least `peak`, the kernel holding `beside` uncharged with its [`slack`]:
+/// `total − beside − total / PCP_FRACTION ≥ peak`.
+fn needed_for(peak: u64, beside: u64) -> u64 {
     let total = peak
-        .saturating_add(SLACK)
+        .saturating_add(beside)
         .saturating_mul(PCP_FRACTION)
         .div_ceil(PCP_FRACTION - 1);
     total.div_ceil(ALIGN).saturating_mul(ALIGN)
@@ -1085,14 +1242,16 @@ fn needed_for(peak: u64) -> u64 {
 fn high(cgroup: &str, most: u64, plugged: u64) -> io::Result<u64> {
     let current = number(&format!("{cgroup}/memory.current")).unwrap_or(0);
     let (total, free) = memory()?;
-    let leaving = BOOT.get().map_or(0, |&boot| {
+    let boot = BOOT.get().copied();
+    let leaving = boot.map_or(0, |boot| {
         total.saturating_sub(boot).saturating_sub(staying(boot, total))
     });
+    let slack = slack(cgroup, boot.unwrap_or(0))?;
     Ok(hold_of(
         current,
         free,
         leaving,
-        reserve(total, most.saturating_sub(plugged)),
+        reserve(total, most.saturating_sub(plugged), slack),
     ))
 }
 
@@ -1548,6 +1707,14 @@ fn grow(plug: Plug, events: &OwnedFd, notes: &OwnedFd) -> ! {
     };
     let mut asked = 0u64;
     let mut coming = Coming::default();
+    // What the kernel adds beside the cgroup, learned from what its hold began it with.
+    let mut uncharged = Uncharged::begun(
+        CAP.get()
+            .map(|s| s.uncharged.load(std::sync::atomic::Ordering::SeqCst))
+            .filter(|&u| u != UNLEARNED)
+            .unwrap_or(0),
+        reading(cgroup, plug.boot),
+    );
     let mut buf = [0u8; 4096];
     loop {
         // SAFETY: read(2) into a buffer this process owns; it blocks for the next event.
@@ -1565,6 +1732,7 @@ fn grow(plug: Plug, events: &OwnedFd, notes: &OwnedFd) -> ! {
             // SAFETY: _exit(2) of this child alone.
             unsafe { libc::_exit(1) };
         }
+        publish_uncharged(uncharged.woke(reading(cgroup, plug.boot)));
         let (Some(current), Some(high_now)) = (
             number(&format!("{cgroup}/memory.current")),
             number(&format!("{cgroup}/memory.high")),
@@ -1637,6 +1805,7 @@ mod tests {
     use super::*;
 
     const MIB: u64 = 1 << 20;
+    const GIB: u64 = 1 << 30;
     const PLUG: Plug = Plug {
         boot: 512 * MIB,
         most: 2048 * MIB,
@@ -1645,19 +1814,68 @@ mod tests {
     };
 
     /// What a build needed is the least memory in whole blocks whose hold, with nothing
-    /// left to plug, keeps its peak: a block less holds less.
+    /// left to plug and its kernel holding what it holds beside it, keeps its peak: a block
+    /// less holds less.
     #[test]
     fn what_a_build_needed_is_the_least_memory_that_holds_its_peak() {
-        let hold = |total: u64| total.saturating_sub(reserve(total, 0));
-        for peak in [0, 1, 300 * MIB, 512 * MIB, 1536 * MIB, 34 << 30, 120 << 30] {
-            let need = needed_for(peak);
-            assert_eq!(need % ALIGN, 0, "{peak}");
-            assert!(hold(need) >= peak, "{peak}: {need} holds {}", hold(need));
-            assert!(
-                hold(need - ALIGN) < peak || need == ALIGN,
-                "{peak}: {need} is not the least"
-            );
+        for beside in [0, 64 * MIB, 300 * MIB] {
+            // Signed: a block less may hold less than nothing.
+            let hold = |total: u64| i128::from(total) - i128::from(reserve(total, 0, beside));
+            for peak in [0, 1, 300 * MIB, 512 * MIB, 1536 * MIB, 34 << 30, 120 << 30] {
+                let need = needed_for(peak, beside);
+                assert_eq!(need % ALIGN, 0, "{peak}");
+                assert!(
+                    hold(need) >= i128::from(peak),
+                    "{peak}: {need} holds {}",
+                    hold(need)
+                );
+                assert!(
+                    need <= ALIGN || hold(need - ALIGN) < i128::from(peak),
+                    "{peak}: {need} is not the least"
+                );
+            }
         }
+    }
+
+    /// The slack covers how far the kernel lets a cgroup's charges pass its hold before it
+    /// reclaims at once, two charges of a batch or of its largest folio on each CPU, which
+    /// grows with the CPUs and the folio (memory-11): 64 MiB, the slack it was, fell short of
+    /// it on 32 CPUs with THP's 2 MiB folios, 128 MiB.
+    #[test]
+    fn the_slack_covers_what_the_kernel_charges_past_the_hold_on_every_cpu() {
+        // Without THP read: a PMD's folio as its page table has it, 2 MiB of 4 KiB pages.
+        assert_eq!(overshoot_of(1, 4096, None), 4 * MIB);
+        assert_eq!(overshoot_of(32, 4096, Some(2 * MIB)), 128 * MIB);
+        assert!(overshoot_of(32, 4096, Some(2 * MIB)) > 64 * MIB);
+        // A batch where it is larger than the folio; 16 KiB pages' PMD of 32 MiB; 64 KiB
+        // pages' within MAX_XAS_ORDER, 128 MiB, not their PMD's 512.
+        assert_eq!(overshoot_of(2, 4096, Some(128 << 10)), 2 * 2 * 64 * 4096);
+        assert_eq!(overshoot_of(1, 16 << 10, None), 2 * 32 * MIB);
+        assert_eq!(overshoot_of(1, 64 << 10, Some(512 * MIB)), 2 * 128 * MIB);
+        // No CPU read is one; a reserve holds its slack whole.
+        assert_eq!(overshoot_of(0, 4096, None), overshoot_of(1, 4096, None));
+        let slack = overshoot_of(4, 4096, None) + 90 * MIB;
+        assert_eq!(reserve(GIB, 0, slack) - GIB / 8, slack);
+    }
+
+    /// What the kernel adds beside a held cgroup uncharged starts from what it held as the
+    /// hold was set, and rises to the most it rose between two wakes, less the page structures
+    /// of what was plugged between them; a wake unread keeps it (memory-11).
+    #[test]
+    fn what_the_kernel_adds_uncharged_is_learned_at_each_wake() {
+        let at = |uncharged: u64, plugged: u64| Reading { uncharged, plugged };
+        let mut u = Uncharged::begun(80 * MIB, Some(at(80 * MIB, 0)));
+        // 30 MiB more as 1 GiB came, 16 of it that GiB's page structures: no more than it had.
+        assert_eq!(u.woke(Some(at(110 * MIB, GIB))), 80 * MIB);
+        // 120 MiB more with nothing plugged: it rose by that.
+        assert_eq!(u.woke(Some(at(230 * MIB, GIB))), 120 * MIB);
+        // Unread, or fallen as memory was unplugged: what it had.
+        assert_eq!(u.woke(None), 120 * MIB);
+        assert_eq!(u.woke(Some(at(100 * MIB, 0))), 120 * MIB);
+        // Its first reading only begins it.
+        let mut first = Uncharged::begun(80 * MIB, None);
+        assert_eq!(first.woke(Some(at(500 * MIB, 0))), 80 * MIB);
+        assert_eq!(first.woke(Some(at(590 * MIB, 0))), 90 * MIB);
     }
 
     /// What a look at MemTotal costs a fake builder's clock.
@@ -1747,11 +1965,11 @@ mod tests {
     fn a_microvm_held_to_a_budget_plugs_no_more_than_its_cap_needs() {
         let boot = 256 * MIB;
         let most = 16 << 30;
-        // 96 MiB of room past 200 MiB used, 40 MiB its kernel's: 400 MiB with the slack,
+        // 96 MiB of room past 200 MiB used, 40 MiB its kernel's and 64 its slack: 400 MiB,
         // 406 with its page structures, 150 past boot, two blocks.
-        assert_eq!(plug_for(boot, most, 296 * MIB, 40 * MIB), 2 * ALIGN);
-        assert_eq!(plug_for(boot, most, 100 * MIB, 40 * MIB), 0);
-        assert_eq!(plug_for(boot, 128 * MIB, 4 << 30, 40 * MIB), 128 * MIB);
+        assert_eq!(plug_for(boot, most, 296 * MIB, 104 * MIB), 2 * ALIGN);
+        assert_eq!(plug_for(boot, most, 100 * MIB, 104 * MIB), 0);
+        assert_eq!(plug_for(boot, 128 * MIB, 4 << 30, 104 * MIB), 128 * MIB);
         assert_eq!(plug_for(boot, most, u64::MAX - 1, 0), most);
     }
 
@@ -1814,7 +2032,8 @@ mod tests {
     fn a_hold_counts_out_what_goes_as_it_is_unplugged() {
         let (boot, total, free, current) = (244_293_632u64, 378_511_360u64, 316_907_520u64, 20_647_936u64);
         let (kernel, leaving) = (total - free - current, total - boot);
-        let reserve = reserve(total, u64::MAX);
+        // A slack of 64 MiB, as it had then (memory-11).
+        let reserve = reserve(total, u64::MAX, 64 * MIB);
         // 264,532,352 before the reserve kept an eighth for its CPUs' lists (PM M392).
         assert_eq!(
             hold_of(current, free, 0, reserve),
@@ -1847,12 +2066,16 @@ mod tests {
                 .saturating_sub(uncharged)
                 .saturating_sub(hold_of(at_hold, 0, 0, reserve))
         };
-        let without = SLACK + total / 64;
+        // The slack it had then, 64 MiB (memory-11), with no eighth for the lists.
+        let without = 64 * MIB + total / 64;
         assert!(free_at(without) < 8 * MIB, "{}", free_at(without) / MIB);
+        // Its slack now: what 32 CPUs charge past the hold with THP, and the 85 MiB its
+        // kernel held beside the build as the hold was set.
+        let slack = overshoot_of(32, 4096, Some(2 * MIB)) + 85 * MIB;
         // At least a memory block free, which its driver adds the memory asked for in.
-        assert!(free_at(reserve(total, u64::MAX)) >= ALIGN);
+        assert!(free_at(reserve(total, u64::MAX, slack)) >= ALIGN);
         // An eighth of what it has, past all its lists held as it ran out.
-        assert_eq!(reserve(total, u64::MAX) - without, total / 8);
+        assert_eq!(reserve(total, u64::MAX, slack) - slack - total / 64, total / 8);
         assert!(total / 8 >= 98 * MIB);
     }
 
