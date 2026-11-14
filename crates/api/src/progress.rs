@@ -496,6 +496,8 @@ impl Followed {
 /// What process `pid` had run by its end, read by its watcher before it is reaped: a child
 /// of this process booted and not yet reaped is its alone (`started` none), and one taken back
 /// is its only where it is the one that started at `started`. None where it could not be read.
+/// On Linux it is what it had run by its exit's notice: what its exit runs after, to its last
+/// switch from its CPU, is charged to it later (PM M584).
 #[cfg(unix)]
 pub(crate) fn ran_by_end(pid: u32, started: Option<u64>) -> Option<Duration> {
     match started {
@@ -1887,8 +1889,13 @@ mod tests {
         let mut followed = Followed { pid, started };
         let look = followed.look().unwrap().unwrap();
         assert!(look.ending, "a zombie's look says its end is under way");
-        assert_eq!(ran_by_end(pid, None), Some(look.cpu));
-        assert_eq!(ran_by_end(pid, Some(started)), Some(look.cpu));
+        // Linux tells its exit (waitid, its state `Z`) before its last switch from its CPU,
+        // which charges its clock with what its exit ran after (kernel/exit.c, `do_exit`'s
+        // `exit_notify` before `do_task_dead`): a later read is its own, and no less (PM M584).
+        let by_end = ran_by_end(pid, None).unwrap();
+        assert!(by_end >= look.cpu, "{by_end:?} read after {:?}", look.cpu);
+        let its_own = ran_by_end(pid, Some(started)).unwrap();
+        assert!(its_own >= by_end, "{its_own:?} read after {by_end:?}");
         assert_eq!(ran_by_end(pid, Some(started.wrapping_add(1))), None);
         child.wait().unwrap();
         assert!(followed.look().unwrap().is_none(), "reaped, it has gone");
