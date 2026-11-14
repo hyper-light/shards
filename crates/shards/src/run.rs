@@ -604,6 +604,11 @@ pub fn find_image(
                 Event::Present(d) => say(&format!("{}: Already exists", short(&d.to_string()))),
                 // What the pull waits on (D184).
                 Event::Waiting(notice) => say(notice),
+                // A trouble that ran out, told once, as the pull goes on (D222).
+                Event::RanOut(run_out) => {
+                    crate::daemon::log(run_out);
+                    say(&run_out.to_string());
+                }
                 Event::Manifest(..)
                 | Event::Progress(..)
                 | Event::Building

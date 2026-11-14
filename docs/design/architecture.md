@@ -18409,6 +18409,14 @@ download.
     the answer is asked again at once, overdue (`Error::overdue_by`, typed by the wait that
     ran out: `Overdue::Answer` before its first byte, `Overdue::Silence` after), and a
     download is resumed where it was (fetch.rs).
+  - **A read of bytes already there is no silence** (waits-05, `http::Sock`): a silence is
+    the time a read of the socket waited where the socket had nothing, nothing ready
+    (poll(2) or WSAPoll with no wait) as it began; bytes in the response's buffer, the TLS
+    session or the socket, or the socket's end, are read without one, however long their
+    copies take. Before, every read that brought bytes was timed, a copy of a µs or more
+    taken for a stall of the path's (12 µs on adas-mac-studio.local's loopback, PM M572),
+    which bounded the next real gap, and past a run-out raised the bound by a copy. Each
+    read of the socket while a body is paced costs one poll more.
   - **A wait of nothing is no sample** (`patience::sample`): one shorter than the record
     measures, a µs, waited for nothing, a read that found its bytes already buffered or an
     answer that came with its request's end, and shows no stall of the path's. Taken for
@@ -18479,28 +18487,52 @@ download.
   keeps an idle TCP connection's mapping for (RFC 5382 §5, REQ-5): past it a NAT may drop
   the mapping without a word, and a request on it would wait for an answer that never
   comes. Before, 30 s, containerd's.
-- **A trouble is ridden out within its path's budget**: a passing failure (a 502, 503,
-  504 or 408, RFC 9110 §15.5.9, §15.6.3 to §15.6.5; a timeout, a reset or a cut answer),
-  or a download that brings nothing, is asked again after a random share of how long the
-  trouble has lasted so far (full jitter: the time lost past its end at most what it had
-  lasted, and a crowd's askings not back together), at least what `Retry-After` names
-  (RFC 9110 §10.2.3), with no count: a gateway's many quick failures are ridden out as a
-  timeout's few slow ones, for as long. The budget is the longest trouble the path has
-  passed (`Paths::budget`, PM M558), by the person's rule: "The cold start, and every
-  wait after a run-out, follows the party's liveness and progress. After that the bound is
-  the slowest answer seen." A path that has passed none rides one out while it lasts, as
-  one does whose last trouble ran out, until a trouble passes, whose length is then the
-  bound; a run-out teaches nothing (`Trouble::over`). A wait named past the budget, or a
-  trouble past it, is said as the registry's failure. Before (11-09 to 11-13), twice the
-  longest (a doubling search, Baeza-Yates, Culberson and Rawlins 1993), each give-up
-  taught as a trouble passed, and never less than R2's 100 s (RFC 1122 §4.2.3.5): R2 is
-  how long TCP itself retransmits to a peer that does not answer before it ends the
-  connection, an end the host's own TCP already gives each connection (Linux's
-  `tcp_retries2`, past R2) and the trouble's next asking finds, so a floor of shards' own
-  added none of the protocol's. A trouble of a server that answers its failures (a
-  gateway's 503s) has no protocol bound at all: its path's own longest is the one. A 500, which RFC 9110 §15.6.1
-  does not say passes, is asked again once, and a repeat is the request's own answer.
-  A cancel ends a wait at once.
+- **A trouble is ridden out while it lasts, and runs out, told once, past the longest its
+  path passed** (2026-11-13, #77, PM M572): a passing failure (a 502, 503, 504 or 408, RFC
+  9110 §15.5.9, §15.6.3 to §15.6.5; a timeout, a reset or a cut answer), or a download that
+  brings nothing, is asked again after a random share of how long the trouble has lasted
+  so far (full jitter: the time lost past its end at most what it had lasted, and a crowd's
+  askings not back together), at least what `Retry-After` names (RFC 9110 §10.2.3), with no
+  count: a gateway's many quick failures are ridden out as a timeout's few slow ones, for
+  as long.
+  - **The run-out**: past its path's budget, the longest trouble the path has passed
+    (`Paths::budget`, PM M558), or where `Retry-After` names a wait that would end past it,
+    the trouble runs out (`Trouble`'s `Phase::RanOut`): a typed `http::RunOut` (its server,
+    how long it had lasted, the longest passed), told once through
+    `Registry::saying_waits` (`Notice::RanOut`, a pull's `Event::RanOut`: a line in the
+    daemon's log and one on the CLI's stderr, or the build's plain display, as D184's
+    helper notice is), and no failure. ROOT's ruling, after D180's precedent and the
+    person's R03: "a trouble that outlasts the longest one passed is a typed run-out, told
+    once, and does not fail the pull." From then on it follows liveness, with no window:
+    the registry asked again (a fresh request, or a download resumed from its byte offset),
+    its waits shares of its length as before and as long as `Retry-After` names; once it
+    ends, its whole length is the path's longest (`Trouble::over`, `Paths::passed`), the
+    path's run-out over. A run-out under way is told no more, by any trouble of the path's
+    (`Paths::trouble_ran_out` says whether it began one). A path that has passed none (the
+    cold start), or whose last ran out until one passes, bounds none: its troubles follow
+    liveness from the first.
+  - **What ends it is the far end's word** (`Trouble::gone`, `ErrorKind::Gone`): nothing
+    listening where it is (a connection refused, at once, as before, now typed); a re-ask
+    ended before any answer (a reset, an abort, a connection closed under the request:
+    `Error::is_cut`) while the trouble follows liveness, past its run-out or on a path that
+    bounds none; a name that does not resolve; a typed HTTP refusal; or the answer and
+    silence rules above. A trouble's first failure, and a re-ask within its path's
+    budget, are a trouble's, ridden out: a gateway's cut connections, a pooled connection
+    its server had closed. A server that answers its failures forever (a 503 every time)
+    is ridden out for as long, its waits growing with it, until it answers or the client
+    cancels: its answers are its liveness.
+  - **Before** (11-13, M558): past the budget the trouble was the request's answer (its
+    503, or a cut's error, `stalled` for a download that brought nothing), and a named wait
+    past it was never waited, its failure taught as a trouble passed of its first 503's
+    length (waits-06, `docs/bugs/2026-11-13/waits.md`). Before that (11-09 to 11-13),
+    twice the longest (a doubling search, Baeza-Yates, Culberson and Rawlins 1993), each
+    give-up taught as a trouble passed, and never less than R2's 100 s (RFC 1122
+    §4.2.3.5): R2 is how long TCP itself retransmits to a peer that does not answer before
+    it ends the connection, an end the host's own TCP already gives each connection
+    (Linux's `tcp_retries2`, past R2) and the trouble's next asking finds, so a floor of
+    shards' own added none of the protocol's. No ×2 and no floor now.
+  - A 500, which RFC 9110 §15.6.1 does not say passes, is asked again once, and a repeat
+    is the request's own answer. A cancel ends a wait at once.
 - **Kept in the home, by path**: what each path showed (its slowest answer and slowest
   silence, its connects' and handshakes' estimators, the longest trouble it passed and how
   many) is
@@ -18508,7 +18540,11 @@ download.
   port and this host's address on its route there (D226), with what transfers learn of
   the path; merged into the record as the pull or push lets its client go, under the
   records' lock (D226), and read as a client first asks the path, and again once a
-  connection says its route. Clients that asked one path at once all keep theirs
+  connection says its route, what the client showed before then kept over the route's
+  record as a record keeps it (`Paths::learn`, `Shown::merged`; waits-07: a connect taught
+  before its route was known, as `Client::connect` dials and then says where it left from,
+  kept only that record's slowest answer and silence, its trouble and handshake lost).
+  Clients that asked one path at once all keep theirs
   (`Shown::merged`, three ways: the record as it is now, what the client read, what it
   holds): each slowest is the slower of the record's and each client's, both seen; each
   connect's and handshake's estimator is the one
@@ -18545,7 +18581,10 @@ download.
   | 1 s before any wait, and a pace's least | `patience::FIRST` | RFC 6298 §2.1, §2.4 |
   | ×2 a timeout in a row | `backed_off` | RFC 6298 §5.5 |
   | answers, silences, connects, handshakes each learned | `Wait`, `Paths::timeout`, `Paths::answer`, `Paths::silence` | each over its own times |
-  | budget: the longest trouble passed; none before any, or after a run-out until one passes | `Paths::budget`, `Paths::trouble_ran_out`, `Trouble::wait` | the person's rule (2026-11-13); a run-out teaches nothing; TCP's own R2 ends dead connections already (RFC 1122 §4.2.3.5) |
+  | budget: the longest trouble passed; none before any, or after a run-out until one passes | `Paths::budget`, `Paths::trouble_ran_out`, `Trouble::wait` | the person's rule (2026-11-13); TCP's own R2 ends dead connections already (RFC 1122 §4.2.3.5) |
+  | past the budget, or a `Retry-After` past it: a run-out, told once, ridden out while it lasts, its whole length taught once over | `RunOut`, `Notice::RanOut`, `Phase::RanOut`, `Trouble::over` | ROOT's ruling for #77 (2026-11-13), after D180's precedent: no window, no ×2, no floor |
+  | its end: refused, or a re-ask cut unanswered while it follows liveness | `Trouble::gone`, `ErrorKind::Gone`, `Error::is_cut` | the far end's own word (the ruling); a first failure or one within the budget is a trouble's |
+  | a silence: a socket read that found nothing ready, poll with no wait | `http::Sock`, `readable` | waits-05: readiness, never a time threshold |
   | a random share of the trouble so far | `Trouble` | full jitter, bounded by the trouble's own length |
   | at least `Retry-After` | `Trouble` | RFC 9110 §10.2.3 |
   | 502, 503, 504, 408 pass; a 500 asked once more | `Trouble` | RFC 9110 §15.5.9, §15.6.1, §15.6.3 to §15.6.5 |
@@ -18565,12 +18604,20 @@ download.
   `an_answer_is_cut_only_before_its_first_byte`: a head begun within the slowest and ended
   past it read whole, its time to its first byte learned;
   `a_wait_its_own_time_ended_counts_as_its_timeout`;
-  `a_handshake_or_a_dial_its_time_ends_says_so`); registry.rs (a gateway's 502, 503, 504,
+  `a_handshake_or_a_dial_its_time_ends_says_so`;
+  `a_read_of_bytes_already_there_is_no_silence`, waits-05); patience.rs
+  `a_connect_before_its_route_is_known_keeps_its_routes_record` (waits-07); registry.rs (a gateway's 502, 503, 504,
   408 or cut connections ridden out for as long as they last and no longer than their
-  length again; past the budget the registry's answer; a named wait waited, one past the
-  budget not; a cancel ends a wait; `a_paths_answers_are_waited_for_as_long_as_it_shows`:
+  length again; past the budget a run-out, told once, ridden out to the 200 and its length
+  taught, connections cut past it `Gone`, a named wait waited, one past the budget too
+  (`a_registrys_passing_trouble_is_ridden_out_and_runs_out_past_its_moment`,
+  `a_trouble_past_the_longest_its_path_passed_runs_out_told_once`,
+  `a_troubles_waits_are_shares_of_its_length_and_a_run_out_is_told_once`); a far end gone,
+  refused or cut on every re-ask, cold and past a run-out, fails `Gone`
+  (`a_far_end_that_is_gone_fails_typed`); a cancel ends a wait; `a_paths_answers_are_waited_for_as_long_as_it_shows`:
   a path whose answers come 1.5 s late, with nothing shown asked once, with 0.3 s shown
   cut once past it and that asking waited for, the next within what it learned asked once;
+  a download that brings nothing past its moment run out, told and resumed to its bytes;
   `a_silent_download_is_cut_and_resumed_and_its_silence_learned`: a 1.5 s silence waited
   out where none was shown, cut and resumed where it was past 0.3 s shown, the run-out
   learning nothing and over once the resumed body brought bytes; a blob short of its size
