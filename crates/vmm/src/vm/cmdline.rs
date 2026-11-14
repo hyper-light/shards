@@ -183,7 +183,7 @@ mod tests {
     fn kernel_options_precede_the_first_delimiter_on_every_architecture() {
         let options = ["quiet", "shards_root=/dev/pmem0"];
         for delimiter in ["--", "\"--\""] {
-            let prefix = "console=ttyS0 shards_root=/x\t";
+            let prefix = "console=hvc0 shards_root=/x\t";
             let tail = format!("{delimiter}\tmanaged-network  'x y' \"λ\" \\ -- shards_root=/y\n");
             assert_eq!(
                 with_kernel_options(&format!("{prefix}{tail}"), options),

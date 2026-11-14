@@ -680,7 +680,7 @@ fn a_builders_memory_is_plugged_as_its_build_needs_it() {
         "--memory",
         "2560",
         "--cmdline",
-        "console=ttyS0 panic=-1 shards_test=limits",
+        "console=hvc0 panic=-1 shards_test=limits",
     ]);
     assert_eq!(full.status, Some(0), "{full}");
     let (stepped, booted) = (limits_said(&built.stderr), limits_said(&full.stdout));

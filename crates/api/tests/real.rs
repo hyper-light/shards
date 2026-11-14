@@ -37,7 +37,7 @@ fn specs() -> Option<impl Fn(&str) -> GuestSpec> {
     Some(move |mode: &str| GuestSpec {
         kernel: kernel.clone().into(),
         init: Init::Executable(init.clone().into()),
-        cmdline: format!("console=ttyS0 quiet shards_test={mode}"),
+        cmdline: format!("console=hvc0 quiet shards_test={mode}"),
         vcpus: 1,
         memory_mib: min_memory_mib(std::env::consts::ARCH).max(256),
         gpu: false,

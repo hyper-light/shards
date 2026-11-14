@@ -41,7 +41,7 @@ fn run_test(disks: &Disks, test: &str, extra: &str) -> common::Run {
     let ro_bytes = std::fs::metadata(&disks.ro).unwrap().len();
     let rw_bytes = std::fs::metadata(&disks.rw).unwrap().len();
     let cmdline = format!(
-        "console=ttyS0 quiet panic=-1 shards_test={test} shards_vda_bytes={ro_bytes} shards_vdb_bytes={rw_bytes} {extra}"
+        "console=hvc0 quiet panic=-1 shards_test={test} shards_vda_bytes={ro_bytes} shards_vdb_bytes={rw_bytes} {extra}"
     );
     let ro = format!("{}:ro", disks.ro.display());
     let rw = disks.rw.display().to_string();

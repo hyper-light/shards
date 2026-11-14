@@ -262,7 +262,7 @@ fn a_guest_sees_its_image_layers_stacked() {
         "--pmem".as_ref(),
         image.as_os_str(),
         "--cmdline".as_ref(),
-        "console=ttyS0 quiet shards_test=erofs".as_ref(),
+        "console=hvc0 quiet shards_test=erofs".as_ref(),
     ]);
     assert!(r.stdout.contains("SHARDS-TEST PASS"), "{r}");
     let entries = manifest.lines().count();

@@ -58,9 +58,6 @@ pub mod layout {
     pub const IDENTITY_MAP: u64 = 0xfffb_c000;
     pub const TSS: u64 = 0xfffb_d000;
 
-    /// COM1: ports 0x3F8-0x3FF on GSI 4.
-    pub const COM1: u16 = 0x3f8;
-    pub const GSI_COM1: u32 = 4;
     pub const GSI_VIRTIO: u32 = 5;
     /// The Generic Event Device's, which tells the guest of a new VM generation ID: the
     /// IOAPIC's last pin.
