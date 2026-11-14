@@ -47,6 +47,7 @@ fn os(args: &[std::ffi::OsString]) -> Vec<&std::ffi::OsStr> {
 /// Boots the `vsock` guest, serves its connection to host port 5000, and waits until it
 /// listens: its greeting read as a guest's stream is ([`Following`]), and waited for while
 /// its guest goes on ([`within`]).
+#[track_caller]
 fn boot_echo_guest(dir: &Path) -> (Vm, PathBuf) {
     let sock = dir.join("v.sock");
     let host = UnixListener::bind(dir.join("v.sock_5000")).unwrap();

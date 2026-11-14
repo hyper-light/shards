@@ -112,6 +112,7 @@ impl Home {
         env
     }
 
+    #[track_caller]
     fn shards(&self, command: &[&str], args: &[&str]) -> Run {
         run_shards_env(command, args, &self.env())
     }
@@ -790,6 +791,7 @@ fn a_nested_workloads_sockets_are_lanes_of_its_orchestrators_controller() {
 /// testguest's `nesting ends` with its socket directory granted to an orchestrator's key, dials
 /// the run's endpoint, and gives `case` the run's lanes and the bytes the workload reads to its
 /// cut (testguest's `cut.sock`), more than three of the admitted windows.
+#[track_caller]
 fn over_lanes(home: &str, case: impl FnOnce(&shards_api::control::Sockets, &[u8])) {
     use shards_api::control::{Controller, Identity, SocketAdmission, Subscriptions};
     use shards_api::image::{ControlAsk, ImageShards, ImageSpec, Narrowing, Ready, SocketGrant};

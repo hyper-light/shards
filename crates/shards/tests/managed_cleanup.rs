@@ -17,6 +17,7 @@ use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
+#[track_caller]
 fn call(home: &Path, args: &[&str]) -> Run {
     common::run_shards_env(
         &[],

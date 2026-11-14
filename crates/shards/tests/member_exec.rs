@@ -47,6 +47,7 @@ fn codex() -> MemberName {
 
 /// Builds an image whose harness `codex` is the test guest started with `options`, tagged
 /// `tag` in `home`.
+#[track_caller]
 fn build(home: &TempDir, tag: &str, options: &[&str]) {
     let (image, _) = served();
     let env = [
@@ -178,6 +179,7 @@ fn a_member_starts_with_every_signal_at_its_default() {
 }
 
 /// `shards ARGS` in `home`, with this build's guest.
+#[track_caller]
 fn shards_in(home: &TempDir, args: &[&str]) -> Run {
     let env = [
         ("SHARDS_HOME", home.as_os_str()),

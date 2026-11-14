@@ -91,6 +91,7 @@ impl Drop for Listening {
 
 /// Two homes: a machine whose daemon listens on loopback, the test image pulled there, and a
 /// laptop joined to it as context `gpu`.
+#[track_caller]
 fn joined(name: &str) -> Option<(TempDir, Listening, TempDir, String)> {
     // It says why it skips.
     if cannot_run_vms() {

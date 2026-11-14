@@ -99,6 +99,7 @@ impl Inputs {
         .unwrap();
         record
     }
+    #[track_caller]
     fn boot(&self, name: &str, probe: &[&str]) -> common::Run {
         let identity = self.identity(name);
         let _ = writeln!(std::io::stdout(), "NETWORK_GUEST_IDENTITY {identity}");

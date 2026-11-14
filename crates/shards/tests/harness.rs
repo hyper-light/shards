@@ -55,7 +55,8 @@ fn a_daemons_whole_lines_are_its_words() {
 /// doing what `SHARDS_STAND_IN` says: `exit`, at once; `busy MS`, its CPU busy for MS
 /// milliseconds, then its end; `answer PORT MS`, connected to loopback's PORT, busy for MS
 /// milliseconds, then its answer written there and its end; `idle`, nothing at all until
-/// its stdin closes.
+/// its stdin closes; `pulse N MS`, N rounds of a moment's CPU then MS milliseconds of none,
+/// saying nothing, as a party that works between waits on a peer outside it.
 #[test]
 #[ignore = "a process of its own for the harness's stand-ins, which run it"]
 fn stand_in() {
@@ -78,17 +79,82 @@ fn stand_in() {
         let mut to = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
         busy(ms);
         to.write_all(ANSWER).unwrap();
+    } else if let Some((rounds, ms)) = asked
+        .strip_prefix("pulse ")
+        .and_then(|a| a.split_once(' '))
+        .and_then(|(n, ms)| Some((n.parse::<u32>().ok()?, ms.parse().ok()?)))
+    {
+        for _ in 0..rounds {
+            busy(1);
+            std::thread::sleep(Duration::from_millis(ms));
+        }
     } else if asked == "idle" {
         let _ = std::io::stdin().read(&mut [0u8; 1]);
     }
 }
 
-/// [`stand_in`], doing `what`.
+/// [`stand_in`], doing `what`: `what`'s first word its first argument, a filter that names
+/// no test, so that it is its command's word ([`common::command_words`]) as a subcommand is.
 fn stand_in_doing(what: &str) -> std::process::Command {
     let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
-    cmd.args(["stand_in", "--exact", "--ignored", "--test-threads=1"])
+    let word = what.split_whitespace().next().unwrap_or("exit");
+    cmd.args([word, "stand_in", "--exact", "--ignored", "--test-threads=1"])
         .env("SHARDS_STAND_IN", what);
     cmd
+}
+
+/// A command's words, which key its wait's kind beside its call site, are its program and
+/// its subcommand, never an image, a name, a path or a flag (#77). Do: take the words of
+/// commands as tests run them. Expect: each its subcommand's words alone.
+#[test]
+fn a_commands_words_are_its_subcommands() {
+    let words = |program: &str, args: &[&str]| {
+        let mut cmd = std::process::Command::new(program);
+        cmd.args(args);
+        common::command_words(&cmd)
+    };
+    let shards = if cfg!(windows) {
+        "C:\\t\\shards.exe"
+    } else {
+        "/t/shards"
+    };
+    for (args, said) in [
+        ("run --rm alpine echo", "shards run"),
+        ("run alpine echo hi", "shards run"),
+        ("push localhost:5000/x", "shards push"),
+        ("build -t x .", "shards build"),
+        ("stop daemon", "shards stop daemon"),
+        ("stop web", "shards stop"),
+        ("run vm --kernel k", "shards run vm"),
+        ("image ls", "shards image ls"),
+        ("compose up -d", "shards compose up"),
+        ("buildx build .", "shards buildx build"),
+        ("--version", "shards"),
+        ("rm -f t-1234", "shards rm"),
+        ("inspect t-1234", "shards inspect"),
+    ] {
+        let args: Vec<&str> = args.split_whitespace().collect();
+        assert_eq!(words(shards, &args), said, "{args:?}");
+    }
+    assert_eq!(words("git", &["clone", "https://x/y"]), "git clone");
+    assert_eq!(words("sh", &["-c", "true"]), "sh");
+}
+
+/// One call site's waits on different commands are judged apart: a quick command's answer
+/// never bounds a slow one's (#77, the CI triage at d24ef4cfd: build.rs' `policy_eval_answers`
+/// and `builds_push_what_they_build` ran many commands from one closure, and a W* of
+/// 13.4 ms and 3.49 ms, learned from quick refused commands, judged a real build and a push,
+/// whose parties wait on peers outside them between their work). Do: from one call site run
+/// a stand-in that exits at once, which teaches its kind W*; then one that works a moment
+/// three times, each followed by 200 ms of nothing, a wait on a peer. Expect: the second
+/// waited on to its end, status 0, its quiet past the first's W* no stall of its own kind's.
+#[test]
+fn one_call_sites_commands_are_judged_apart() {
+    for what in ["exit", "pulse 3 200"] {
+        let asked = ["stand-in".to_string(), what.to_string()];
+        let run = common::run_command(stand_in_doing(what), &asked);
+        assert_eq!(run.status, Some(0), "{run}");
+    }
 }
 
 /// A command is waited on while it works: its caller gives its wait no bound, as a wait

@@ -59,6 +59,7 @@ fn docker_host(home: &Path) -> String {
 }
 
 /// A home whose daemon runs, the test image pulled into it.
+#[track_caller]
 fn home(name: &str) -> Option<(TempDir, String)> {
     if cannot_run_vms() {
         return None;
