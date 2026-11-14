@@ -495,7 +495,11 @@ mod storm {
         let rounds = streamer.join().unwrap();
         assert!(line.contains("storm checked"), "{}", vm.seen.join("\n"));
         // Connected, then a byte: the guest waits for it, so it lives until the host has
-        // read its OK.
+        // read its OK. Past it the storm's workers have stopped and its vCPUs wait, whatever
+        // their count: its end is waited on with its VM process's CPU its progress
+        // (`Vm::wait_exit_following`), as its guest's power-off and its process's own end
+        // are work, not a spin (HVF at e6fb55548: a restored 2-vCPU storm's end refused
+        // 93 to 131 ms in, past a W* of 16.5 ms, its CPU read as its liveness alone).
         let told = common::vsock_connect(sock, DONE_PORT)
             .and_then(|mut s| s.write_all(b"\n").map_err(|e| e.to_string()));
         if let Err(e) = told {
@@ -588,7 +592,7 @@ mod storm {
                 .sized(size(cpus));
                 let streamer = stream(sock.clone(), size(cpus), stop.clone(), carried.clone());
                 let rounds = storm_done(&mut copy, &sock, &stop, streamer, &carried);
-                let code = copy.wait_exit_streamed(Some(&carried));
+                let code = copy.wait_exit_following();
                 let what = format!("{cpus} vCPUs, restore {i}");
                 let said = copy.seen.join("\n");
                 assert_eq!(code, Some(0), "{what}: {said}");
@@ -617,7 +621,7 @@ mod storm {
             let mut vm = Vm::spawn(&storm_args(&s, cpus, &sock, "resume")).sized(size(cpus));
             let streamer = stream(sock.clone(), size(cpus), stop.clone(), carried.clone());
             let rounds = storm_done(&mut vm, &sock, &stop, streamer, &carried);
-            let code = vm.wait_exit_streamed(Some(&carried));
+            let code = vm.wait_exit_following();
             let said = vm.seen.join("\n");
             assert_eq!(code, Some(0), "{cpus} vCPUs: {said}");
             assert!(said.contains("SHARDS-TEST PASS"), "{cpus} vCPUs: {said}");
