@@ -10858,6 +10858,112 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     for a second. A judged wait cannot refuse those while their microVM idles, since its CPU
     is progress. They need a decision of their own, not a judge. ROOT owes the real-VM runs of
     the files this part touched.
+- **Part 4: the last test constants, and what a judge cannot refuse** (#77, W6, part A:
+  warm.rs, budget.rs, daemon.rs, containers.rs; 2026-11-13, ROOT's ruling on claims that a
+  thing does not happen within a time). A judged wait cannot refuse "it does not happen
+  within T" while its party idles, since an idle microVM's CPU is progress. So each such
+  claim is an ordering against an observable later event of the test's, or, where no later
+  event exists, a measurement taken out of pass or fail (`common::measured`: n, p50, p90,
+  p99 and max by nearest rank, with the host's name and class and the revision, on the
+  test's output as `MEASURED`). No constant is added.
+  - *warm.rs.* The daemon link's and the client connection's reads at `TIMEOUT` are `told`,
+    a `judged` recv on this test's own VM processes, the warm VM killed (its job's end on
+    Windows) where refused, which ends the read; after the VM's exit its link is read to its
+    end with nothing to wait on, its peer gone. Its stdout's end "within a second": after
+    the exit status, with the VM frozen (SIGSTOP; on Windows already gone), a look that waits
+    for nothing, as nothing can change while it is frozen. After the client hangs up, the
+    VM's let-go has no later event of its own (its client's relay ends there): the end is a
+    `Patience` wait, the VM found still running past it shows the end was the let-go and not
+    the VM's exit, and the let-go's time is told.
+  - *budget.rs* (Linux). The slice's statistics catching up with its counter is a
+    `Patience`. The least room's search set a budget, waited 3 s for the daemon's word and
+    set it again, all within `TIMEOUT`: now a `Patience`, a budget set again once the daemon
+    has answered the one before (a budget set anew is always said, daemon/budget.rs) or once
+    the slice has moved so that the budget it leaves is another.
+  - *daemon.rs.* Waits bounded by `TIMEOUT`, 5 s, 10 s, 30 s, 60 s or 600 s are judged: a
+    client starting its daemon, its end on its signal and its daemon's look at the lock
+    (`Wait` on the client, then on the daemon its log names), the background client's stop,
+    a slot taken by hand (`silent_slot`, a `Patience` over `try_slot`'s single look), the
+    events stream's head (`judged`, the daemon killed where refused), the cost measurement's
+    rounds, a restored home's daemon's end and a killed daemon's runs' ends (`Wait` on each
+    process, its home or daemon gone, its threads said where refused), the followers' ends.
+    Sleeps that stood for an event are that event: "past its idle time" (1.5 s past a 1 s
+    idle) is another daemon of this build with that idle time, started after this one's idle
+    clock began, exiting idle (`an_idle_time_ran`); "waiting and following by now" (500 ms)
+    is the follower's first line; "once its client's going has woken it" (300 ms) is a second
+    due mark, which only the daemon's watch can see; the pool's "the same for 300 ms" is a
+    warm VM listed, a refill being a template's VM new since the run was asked for other than
+    the run's own; the starved daemon's 200 ms with no slot is its own word that it is out;
+    a budget's re-set and a home's remaking after nothing lives that could remake it need no
+    window. "Never" watches end at a later event: the pools within their bound until their
+    daemon's stop returns, within their most until their keep-alive empties them (`sleep(KEEP)`
+    before that wait goes). The starved daemon's "collected while out" is the daemon's log
+    order: its "offering slots again" before its collection's word. Upper bounds on elapsed
+    time with no later event to order are measurements: the stop with its own stop timeout
+    (its `>= 1 s`, the test's `--stop-timeout 1`, stays), a stop with a silent client in hand
+    or a download under way, a client past the cap served once one leaves, `ps` beside the
+    waiters, the refused settings and the daemon that cannot serve, the restored runs of a
+    pool of none, the signal's end, a collection after the lease's end, the starved daemon's
+    CPU a second and the 100 idle followers' (their 30 ms and 100 ms thresholds go). The
+    "sent no request in" round is gone: no such word exists since PM M545, the daemon waiting
+    on a silent client as long as it lives, which also makes the cap test's and the silent
+    stop's "short of the 10 s request deadline" moot.
+  - *containers.rs.* `TIMEOUT` and every bound of 5, 10, 30, 60, 120 and 600 s go. Bounded
+    waits on a state are `Patience`s (the charge of a slice or a delegated cgroup, a leaf after
+    its daemon's stop, the stats table, the group's processes, the host's give-back word, a
+    lost link said, layers kept and given back, the log's segments packed, the swap file gone,
+    the RT governor's thread, the nesting word, the listening sockets, the unified log's and
+    ETW's entries); a process's end is `process_ended`, a `Wait` on it (`stop_run`'s
+    post-mortem, `ended`, a VM past its killed daemon, the M419 and M481 harnesses' caps); a
+    channel's next is `sent` (the joiner's echo, the follower's line, the publisher's loads,
+    the events stream, the Splunk, CloudWatch and Google fakes); a datagram's is `received`, a
+    `Patience`-paced read timeout, each read one datagram whole (UDP answers, the syslog,
+    GELF and journald sockets); a published port's or log server's stream is read through
+    `Following::of_home` (`talk`, the exchange, syslog's, GELF's), fluentd's and TLS's through
+    `Answering`, which writes as `Following` reads; a log server's accept is a `Patience`.
+    Sleeps that stood for an event are the event: the follower's first line (200 ms); the
+    exec that runs after `kill -s TERM` (1 s, the command heard nothing); a group's `cpu.max`
+    read by two of the daemon's passes over it after the change, each marked by the
+    `memory.current` it writes last (`group_read`, for `PRESSURE_WINDOW` times 2 and 3 and
+    the joiner's read's re-reads, whose `reads < 4` goes); the vCPU policy watch until the
+    burn returns (5.5 s for a 5 s burn); "stopped, it restarts no more" (500 ms) a run like it
+    begun after the stop restarting once more than the stopped one had, its waits doubling
+    from the same command's cost (restart.rs). The frozen joiner's "no echo in 500 ms" is
+    one look after two `inspect` answers that follow the write. Upper bounds with no later
+    event are measurements: the `--init` joiner's stop (its 143 shows SIGTERM ended it), the
+    SIGCHLD stop past its own 1 s, `exec -d` answered, the push's and pull's let-go and the
+    stops beside them, the frozen VM process's CPU a second.
+  - Left as they are, being no wait: the poll paces in judged loops; the measurement windows
+    (the cost test's 5 s settle and 10 s idle window, the idle-wakes 3 s window, the starved
+    daemon's 1 s window; containers.rs' 1 s of a host's given CPU, the M370, M180 and M419
+    harnesses' windows and moments); failure-only diagnostics (a mapper's byte read again
+    2 s on, `catch_holder`'s 2 s); a fake registry's paced body and a test's own pacing of
+    words and pauses (`Saying`, the 700 ms pause rounds); a `-t` the test gives; the pools test's own inputs (`SHARDS_POOL_KEEP`'s 15 s, the runs'
+    spacing from a second, doubling); lower bounds from a test's own inputs (a stop past its
+    35 s stop timeout's 30 s).
+  - Red at 68770070f (tests/harness.rs `red_a_judged_read_goes_on_while_its_party_works`,
+    adas-mac-studio.local, macOS arm64, kiln r1328): the old shape of these reads, a read
+    timeout at its test's `TIMEOUT` scaled to 100 ms, cut a stand-in that answers after a
+    second's work 102 ms in (`WouldBlock`). Green at 9046e46fe there:
+    `a_judged_read_goes_on_while_its_party_works`, two rounds through `judged` held to the
+    answer, the second judged on what the first taught; harness.rs 8 passed.
+  - What would falsify it: a warm VM's read refused while its VM process ran; a let-go
+    measured whose VM had ended first; a budget set again before the daemon answered the
+    one before while the slice stood still.
+  - The gaps. A let-go that never comes, a daemon that wakes in every window or never rests,
+    a run that outlives its killed daemon spinning: each holds its wait while its party's CPU
+    shows progress, to its CI job's limit, its account said then, as any cold wait on a hung
+    live party does. Two orderings have no event of the daemon's to stand on, and hold their
+    claim only at one look: the cap test's listing unserved as one in hand leaves (nothing
+    marks it waiting at its list), and a collection due under the store's lease found not yet
+    collected as the lease ends (nothing marks the collector waiting on it); the waiters
+    test's `wait` client has no word of its own, ordered only by its start before the
+    follower's. Left for a decision of ROOT's, as no event marks it: containers.rs'
+    `what_a_microvm_holds_cold_is_given_back_at_its_hosts_word` waits for its microVM idle "once it holds what it booted
+    with and has stopped giving back", two samples 500 ms apart within 4 MiB; the update
+    stress's `STALLED` (5 s) is a copy of init's plug.rs constant. `stats`' frozen microVM
+    under 5 % is a reading of `stats`, not a wait, and stays. ROOT owes the real-VM runs of
+    warm.rs, budget.rs, daemon.rs and containers.rs.
 - **Part 3, the rest (part B)** (#77, W6's last test constants, 2026-11-13; ROOT's ruling on
   claims that a thing does not happen within a time: a judged wait cannot refuse them, as idle
   CPU is progress, so each is an order or a causal claim against a later event that shows, or,

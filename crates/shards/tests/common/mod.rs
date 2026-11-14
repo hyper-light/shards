@@ -2376,6 +2376,41 @@ impl Patience {
     }
 }
 
+/// A claim of speed taken out of a test's pass or fail (D209, #77's ruling: a time that no
+/// later event of the test's can be ordered against is a measurement, not a bound): `times`
+/// told on the test's output as n, p50, p90, p99 and max, by nearest rank, with `what` they
+/// time and this host.
+pub fn measured(what: &str, times: &[Duration]) {
+    let mut times = times.to_vec();
+    times.sort_unstable();
+    let Some(&max) = times.last() else {
+        let _ = writeln!(io::stdout(), "MEASURED {what}: n 0");
+        return;
+    };
+    // The nearest rank: the least time that many of the times are within.
+    let at = |p: usize| times[(times.len() * p).div_ceil(100).max(1) - 1];
+    let revision = Command::new("git")
+        .args(["rev-parse", "--short=12", "HEAD"])
+        .current_dir(workspace())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map_or_else(
+            || "revision unknown".to_string(),
+            |o| String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        );
+    let _ = writeln!(
+        io::stdout(),
+        "MEASURED {what}: n {} p50 {:?} p90 {:?} p99 {:?} max {max:?} (host {} {}, {revision})",
+        times.len(),
+        at(50),
+        at(90),
+        at(99),
+        host_name(),
+        host_class(),
+    );
+}
+
 /// The VM processes `client` is, or started, as far down as its descendants go: shards-vm's
 /// and the GPU's (shards-vm-gpu), from Windows' table of processes or `ps`.
 pub fn vm_processes_under(client: u32) -> Vec<u32> {

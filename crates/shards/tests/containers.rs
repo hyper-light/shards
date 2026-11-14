@@ -21,13 +21,11 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use common::{
-    Patience, Run, TempDir, Told, bridge, cannot_run_vms, fixed_port, guest_init, kernel, noise, registry,
-    run_shards_env, served, served_counting, sha256_digest, test_index,
+    Patience, Run, TempDir, Told, Wait, WaitKind, bridge, cannot_run_vms, fixed_port, guest_init, kernel,
+    noise, registry, run_shards_env, served, served_counting, sha256_digest, test_index,
 };
 #[cfg(unix)]
 use common::{shards, shards_vm};
-
-const TIMEOUT: Duration = Duration::from_secs(60);
 
 /// `shards ARGS` in `home`, whose runs boot the test kernel and init, waited on as long as
 /// it goes on (`common::run_command`): a large `-m` whose guest plugs and touches gigabytes
@@ -45,8 +43,8 @@ fn shards_in(home: &Path, args: &[&str]) -> Run {
 
 /// Stops run `name` of `home`, as a test that needs it stopped does. A stop that hears no
 /// end shows what it said, its VM process's stacks and its daemon's
-/// ([`common::stacks_of`]), and how long its VM process outlived the stop, looked for every
-/// 100 ms for a minute: a VM process that ends late from one that never does. Windows CI
+/// ([`common::stacks_of`]), and how long its VM process outlived the stop, waited for while
+/// it goes on ([`process_ended`]): a VM process that ends late from one that never does. Windows CI
 /// gave up on stops as gigabytes.rs's an_image_of_gigabytes_boots ran beside them (9fdbed51's exec test on
 /// windows-2025, the cp test on windows-2022 in 41277401058), their VM processes running
 /// on 2 s after their kill.
@@ -57,16 +55,10 @@ fn stop_run(home: &Path, name: &str) {
     if stopped.status == Some(0) {
         return;
     }
-    let gave_up = Instant::now();
     let stacks = common::stacks_of(&[("its VM process", vm)], Some(home));
-    let outlived = (vm != 0).then(|| {
-        while gave_up.elapsed() < Duration::from_secs(60) {
-            if !common::alive(i32::try_from(vm).unwrap_or(0)) {
-                return format!("had ended {:?} after the stop gave up", gave_up.elapsed());
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        "ran on a minute after the stop gave up".to_string()
+    let outlived = (vm != 0).then(|| match process_ended(vm, "a VM process past its stop") {
+        Ok(took) => format!("had ended {took:?} after the stop gave up"),
+        Err(refused) => format!("ran on past the stop: {refused}"),
     });
     panic!(
         "{stopped}{stacks}\n--- its VM process {vm}: {}",
@@ -135,21 +127,31 @@ fn start(home: &Path, image: &str, options: &[&str], command: &[&str]) -> Child 
 
 /// How a run's client that should have gone on ended, and what it said where it said it
 /// into `stderr`: a test's home goes with it, failing or not (common::TempDir).
+#[track_caller]
 fn ended(child: &mut Child, stderr: Option<&Path>) -> String {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    // Its end waited for while it goes on (`common::Wait` on it).
+    let mut ending = Wait::begin(
+        WaitKind::at(std::panic::Location::caller()),
+        child.id(),
+        None,
+        "a client's end past its output's",
+    );
     let status = loop {
         match child.try_wait() {
             Ok(Some(s)) => {
+                ending.answered();
                 #[cfg(unix)]
                 let signal = std::os::unix::process::ExitStatusExt::signal(&s);
                 #[cfg(windows)]
                 let signal: Option<i32> = None;
                 break format!("status {:?}, signal {signal:?}", s.code());
             }
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
             Ok(None) => {
-                let _ = child.kill();
-                break "still running 10 s after its output ended".to_string();
+                if let Err(stall) = ending.look(false) {
+                    let _ = child.kill();
+                    break format!("still running past its output's end: {}", ending.refused(&stall));
+                }
+                std::thread::sleep(ending.next_look());
             }
             Err(e) => break format!("its status unknown: {e}"),
         }
@@ -176,6 +178,115 @@ fn exit(child: &mut Child, home: &Path) -> Option<i32> {
             panic!("shards run did not exit, its daemon and microVMs no longer progressing");
         }
         std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// Waits for process `pid` to end while it goes on (`common::Wait` on it and what descends
+/// from it, its kind its caller's call site): how long it took, or, where it stops going on
+/// alive, its wait's account. No process (`pid` 0) has ended.
+#[track_caller]
+fn process_ended(pid: u32, what: &str) -> Result<Duration, String> {
+    let began = Instant::now();
+    if pid == 0 {
+        return Ok(Duration::ZERO);
+    }
+    let mut ending = Wait::begin(WaitKind::at(std::panic::Location::caller()), pid, None, what);
+    while common::alive(i32::try_from(pid).unwrap_or(0)) {
+        if let Err(stall) = ending.look(false) {
+            return Err(ending.refused(&stall));
+        }
+        std::thread::sleep(ending.next_look());
+    }
+    ending.answered();
+    Ok(began.elapsed())
+}
+
+/// What `rx` is sent next, waited for while `home`'s daemon and its microVMs go on
+/// ([`Patience`], its kind its caller's call site): a fake service's request, a reader's line.
+/// Refused, or its sender gone, it fails with what `what` says then.
+#[track_caller]
+fn sent<T>(rx: &std::sync::mpsc::Receiver<T>, home: &Path, what: impl Fn() -> String) -> T {
+    let mut patience = Patience::of(home);
+    loop {
+        match rx.recv_timeout(patience.next_look()) {
+            Ok(got) => {
+                patience.done();
+                return got;
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => panic!("{}: its sender ended", what()),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => assert!(patience.holds(), "{}", what()),
+        }
+    }
+}
+
+/// What a socket of datagrams `recv` reads next, its reads timed by `set` to the next look of
+/// a wait judged while `home`'s daemon and its microVMs go on ([`Patience`], its kind its
+/// caller's call site): `TimedOut` where that wait is refused. Each read is one datagram
+/// whole, so a read cut by its timeout loses nothing.
+#[track_caller]
+fn received<R>(
+    home: &Path,
+    what: &str,
+    set: impl Fn(Option<Duration>) -> std::io::Result<()>,
+    mut recv: impl FnMut() -> std::io::Result<R>,
+) -> std::io::Result<R> {
+    let mut patience = Patience::of(home);
+    loop {
+        let left = patience.next_look();
+        // A look due now looks before it reads again (a timeout of zero is none).
+        if !left.is_zero() {
+            set(Some(left))?;
+            match recv() {
+                Ok(got) => {
+                    patience.done();
+                    return Ok(got);
+                }
+                Err(e)
+                    if !matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock
+                            | std::io::ErrorKind::TimedOut
+                            | std::io::ErrorKind::Interrupted
+                    ) =>
+                {
+                    return Err(e);
+                }
+                Err(_) => {}
+            }
+        }
+        if !patience.holds() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("{what}: nothing came while its daemon went on"),
+            ));
+        }
+    }
+}
+
+/// The event that `group`'s files, as they are now, are its daemon's: two of the daemon's
+/// passes over it begun past this call, each marked by the `memory.current` it writes last
+/// (daemon/groups.rs `hold_group`, which reads the group's files first, one pass at a time),
+/// so that the second began after the first's write. Waited for while the daemon goes on
+/// ([`Patience`]); no multiple of its pressure window stands for it (D209).
+#[track_caller]
+fn group_read(home: &Path, group: &Path) {
+    let current = group.join("memory.current");
+    for _ in 0..2 {
+        let mut patience = Patience::of(home);
+        // Held as it is written, on Windows: removed once it is not.
+        while std::fs::remove_file(&current).is_err() && current.exists() {
+            assert!(patience.holds(), "{} never let go of", current.display());
+            std::thread::sleep(patience.next_look());
+        }
+        while !current.exists() {
+            assert!(
+                patience.holds(),
+                "the daemon never passed over {}",
+                group.display()
+            );
+            std::thread::sleep(patience.next_look());
+        }
+        patience.done();
     }
 }
 
@@ -219,11 +330,12 @@ fn many_published_ports_all_reach_the_guest() {
     assert_eq!(ports.len(), 5, "{listed}");
     for port in ports {
         let mut c = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-        c.set_read_timeout(Some(TIMEOUT)).unwrap();
         c.write_all(b"hello").unwrap();
         c.shutdown(std::net::Shutdown::Write).unwrap();
         let mut got = String::new();
-        c.read_to_string(&mut got).unwrap();
+        common::Following::of_home(&c, &home)
+            .read_to_string(&mut got)
+            .unwrap();
         assert_eq!(got, format!("from {}\nhello", bridge().gateway()), "port {port}");
     }
     assert_eq!(exit(&mut run, &home), Some(0));
@@ -553,24 +665,28 @@ fn a_joiners_own_commands_reach_the_joiner() {
         }
     });
     attached.stdin.as_mut().unwrap().write_all(b"hello\n").unwrap();
-    assert_eq!(read.recv_timeout(TIMEOUT).unwrap(), "hello");
+    assert_eq!(sent(&read, &home, || "the joiner's echo".into()), "hello");
     // Paused alone, its cgroup frozen in the guest as Docker freezes a container's (D119): what is
     // written meanwhile comes back once it goes on, and its provider runs on.
     let paused = shards(&["pause", "joiner"]);
     assert_eq!(paused.status, Some(0), "{paused}");
+    // Written while frozen, then its state asked of the daemon twice: nothing echoed by the
+    // time those later answers come, which a joiner that went on would have echoed within,
+    // its echo a line through its cat (no window of the test's own, D209); then once it
+    // goes on.
+    attached.stdin.as_mut().unwrap().write_all(b"after\n").unwrap();
     let state = |name: &str| shards(&["inspect", "-f", "{{.State.Status}}", name]).stdout;
     assert_eq!(
         (state("joiner"), state("prov")),
         ("paused\n".into(), "running\n".into())
     );
-    attached.stdin.as_mut().unwrap().write_all(b"after\n").unwrap();
-    assert!(
-        read.recv_timeout(Duration::from_millis(500)).is_err(),
-        "a frozen joiner echoed"
-    );
+    assert!(read.try_recv().is_err(), "a frozen joiner echoed");
     let unpaused = shards(&["unpause", "joiner"]);
     assert_eq!(unpaused.status, Some(0), "{unpaused}");
-    assert_eq!(read.recv_timeout(TIMEOUT).unwrap(), "after");
+    assert_eq!(
+        sent(&read, &home, || "the joiner's echo once it went on".into()),
+        "after"
+    );
     let top = shards(&["top", "joiner", "-o", "pid,args"]);
     assert_eq!(top.status, Some(0), "{top}");
     assert!(
@@ -845,11 +961,9 @@ fn a_joiner_under_init_has_a_reaper_of_its_own() {
     assert_eq!(top.stdout.lines().count(), 3, "{top}");
     let stopping = Instant::now();
     stop_run(&home, "joiner");
-    assert!(
-        stopping.elapsed() < Duration::from_secs(5),
-        "{:?}",
-        stopping.elapsed()
-    );
+    // Ended by its SIGTERM, not its stop timeout's SIGKILL, as its code says (143, not 137);
+    // how soon, told (D209).
+    common::measured("a joiner's stop under --init", &[stopping.elapsed()]);
     let code = shards(&["inspect", "-f", "{{.State.ExitCode}}", "joiner"]);
     assert_eq!(code.stdout, "143\n", "{code}");
     assert_eq!(shards(&["stop", "-t", "1", "prov"]).status, Some(0));
@@ -1171,9 +1285,9 @@ fn stats_measures_each_microvm_from_its_guest() {
     // none (0.00%, a gate, 2026-10-19); one asleep, almost nothing, as little as the column
     // shows (0.00%, its two decimals). Measured from each guest, the two stand apart by an
     // order of magnitude, the sleeper's taken as no less than the column's least, in a table
-    // asked for until they do, for a minute at most: what the host gives a second is not
-    // what is tested.
-    let deadline = Instant::now() + Duration::from_secs(60);
+    // asked for until they do, while the daemon and its microVMs go on ([`Patience`]): what
+    // the host gives a second is not what is tested.
+    let mut patience = Patience::of(&home);
     let (stats, spinning, sleeping, held) = loop {
         let stats = shards_in(&home, &["stats", "--no-stream"]);
         assert_eq!(stats.status, Some(0), "{stats}");
@@ -1202,7 +1316,11 @@ fn stats_measures_each_microvm_from_its_guest() {
         );
         let (spinning, held) = row(&stats, "spinner");
         let (sleeping, _) = row(&stats, "sleeper");
-        if spinning > 10.0 * sleeping.max(0.01) || Instant::now() > deadline {
+        if spinning > 10.0 * sleeping.max(0.01) {
+            patience.done();
+            break (stats, spinning, sleeping, held);
+        }
+        if !patience.holds() {
             break (stats, spinning, sleeping, held);
         }
     };
@@ -1423,12 +1541,9 @@ fn a_command_is_pid_1_as_a_containers_is() {
         Some(0)
     );
     assert_eq!(shards(&["kill", "-s", "TERM", "deaf"]).status, Some(0));
-    std::thread::sleep(Duration::from_secs(1));
-    assert_eq!(
-        shards(&["inspect", "-f", "{{.State.Running}}", "deaf"]).stdout,
-        "true\n"
-    );
-    // An exec joins its namespace: the command is PID 1 there.
+    // An exec joins its namespace: the command is PID 1 there. Its success, after the kill,
+    // is the later event that shows the command heard nothing (no window, D209): an exec
+    // runs only in a microVM that runs.
     let exec = shards(&[
         "exec",
         "deaf",
@@ -1440,6 +1555,10 @@ fn a_command_is_pid_1_as_a_containers_is() {
     assert!(
         exec.status == Some(0) && lines.len() == 2 && lines[0] != "1" && lines[1] == "sleep 1000 ",
         "{exec}"
+    );
+    assert_eq!(
+        shards(&["inspect", "-f", "{{.State.Running}}", "deaf"]).stdout,
+        "true\n"
     );
     assert_eq!(shards(&["kill", "deaf"]).status, Some(0));
     assert_eq!(code("deaf"), "137\n");
@@ -2495,12 +2614,17 @@ fn placed_under_slices(home: &Path, image: &str, path: &Run) {
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap()
     };
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    // Waited on while the daemon and its microVMs go on ([`Patience`]); the assertion below
+    // says what each holds where it never catches up.
+    let mut patience = Patience::of(home);
     let (mut own_kib, mut charged) = (own(), slice_anon());
-    while charged < own_kib << 10 && std::time::Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(100));
+    while charged < own_kib << 10 && patience.holds() {
+        std::thread::sleep(patience.next_look());
         own_kib = own();
         charged = slice_anon();
+    }
+    if charged >= own_kib << 10 {
+        patience.done();
     }
     // What each cgroup holds, as a failure says it (gnu x86_64 CI 39273610992: none of it
     // the slice's).
@@ -2794,12 +2918,15 @@ exec "$@" </dev/null
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap()
     };
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut patience = Patience::of(&home);
     let (mut own_kib, mut charged) = (own(), anon());
-    while charged < own_kib << 10 && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(100));
+    while charged < own_kib << 10 && patience.holds() {
+        std::thread::sleep(patience.next_look());
         own_kib = own();
         charged = anon();
+    }
+    if charged >= own_kib << 10 {
+        patience.done();
     }
     assert!(
         own_kib > 0 && charged >= own_kib << 10,
@@ -2823,15 +2950,12 @@ exec "$@" </dev/null
     // The leaf goes with the daemon, which removes it once its processes have ended.
     let stopped = shards(&["stop", "daemon"]);
     assert_eq!(stopped.status, Some(0), "{stopped}");
-    let deadline = Instant::now() + TIMEOUT;
+    let mut patience = Patience::of(&home);
     while leaf_dir.exists() {
-        assert!(
-            Instant::now() < deadline,
-            "{} outlived the daemon",
-            leaf_dir.display()
-        );
-        std::thread::sleep(Duration::from_millis(50));
+        assert!(patience.holds(), "{} outlived the daemon", leaf_dir.display());
+        std::thread::sleep(patience.next_look());
     }
+    patience.done();
     assert!(agents_dir.exists(), "the parent is its user's, not shards'");
 }
 
@@ -3242,10 +3366,10 @@ fn a_groups_microvms_are_held_to_its_cpu_max_together() {
             .collect();
         spun.into_iter().map(|t| t.join().unwrap() as f64 / 1e9).sum()
     });
-    // Its budget `max` again, heard by the daemon within a pressure window while the group
-    // has microVMs.
+    // Its budget `max` again, read by the daemon's passes over the group while it has
+    // microVMs ([`group_read`]).
     std::fs::write(group.join("cpu.max"), "max 100000\n").unwrap();
-    std::thread::sleep(shards_vmm::platform::PRESSURE_WINDOW * 3);
+    group_read(&home, &group);
     let (free, free_wall) = burn();
     eprintln!("the same two under a cpu.max of max: {free} ns of CPU in {free_wall} ns");
     if given >= 2.0 {
@@ -3324,8 +3448,8 @@ fn a_groups_cpu_held_each_second() {
         ("no budget", "max 100000"),
     ] {
         std::fs::write(group.join("cpu.max"), format!("{budget}\n")).unwrap();
-        // Heard by the daemon within a pressure window while the group has microVMs.
-        std::thread::sleep(shards_vmm::platform::PRESSURE_WINDOW * 2);
+        // Read by the daemon's passes over the group while it has microVMs ([`group_read`]).
+        group_read(&home, &group);
         let (each, mean) = std::thread::scope(|s| {
             let burns: Vec<_> = names
                 .iter()
@@ -3407,7 +3531,7 @@ fn a_groups_microvm_is_made_in_its_job_its_network_process_too() {
     };
     // Written each pressure window while the group has a microVM: read until it lists both.
     let file = home.join("groups").join("jobbed").join("cgroup.procs");
-    let deadline = Instant::now() + TIMEOUT;
+    let mut patience = Patience::of(&home);
     let (procs, names) = loop {
         let procs: Vec<u32> = std::fs::read_to_string(&file)
             .unwrap_or_default()
@@ -3416,11 +3540,14 @@ fn a_groups_microvm_is_made_in_its_job_its_network_process_too() {
             .collect();
         let mut names: Vec<String> = procs.iter().map(|p| image_of(*p)).collect();
         names.sort();
-        if (procs.contains(&vm) && names == ["shards-net.exe", "shards-vm.exe"]) || Instant::now() >= deadline
-        {
+        if procs.contains(&vm) && names == ["shards-net.exe", "shards-vm.exe"] {
+            patience.done();
             break (procs, names);
         }
-        std::thread::sleep(Duration::from_millis(200));
+        if !patience.holds() {
+            break (procs, names);
+        }
+        std::thread::sleep(patience.next_look());
     };
     assert!(
         procs.contains(&vm),
@@ -3729,23 +3856,23 @@ fn what_a_joiner_reads_of_its_image_is_given_back_at_its_groups_budget() {
         .trim()
         .replace('\n', ", ")
     };
-    // Its guest holds what its joiner read: past 512 MiB in its VM process's footprint,
-    // read again a few times at most where its guest's kernel took some of it back.
+    // Its guest holds what its joiner read: past 512 MiB in its VM process's footprint, as
+    // the daemon's passes over the group begun after the read write it ([`group_read`]),
+    // read again where its guest's kernel took some of it back, while the daemon and its
+    // microVMs go on ([`Patience`]).
     let mut reads = 0;
+    let mut patience = Patience::of(&home);
     let after_read = loop {
         let read = shards(&["exec", "reader", "/bin/testguest", "read", "/big"]);
         assert!(read.stdout.starts_with("read /big 536870912 "), "{read}");
         reads += 1;
-        // Its group's memory.current is written each pressure window.
-        let written = Instant::now() + shards_vmm::platform::PRESSURE_WINDOW * 2;
-        while current() <= 512 << 20 && Instant::now() < written {
-            std::thread::sleep(Duration::from_millis(50));
-        }
+        group_read(&home, &group);
         if current() > 512 << 20 {
+            patience.done();
             break guest();
         }
         assert!(
-            reads < 4,
+            patience.holds(),
             "its group's memory.current, {idle} idle, never held what its joiner read in {reads} reads ({}): {}:\n{}",
             guest(),
             current(),
@@ -3917,17 +4044,18 @@ fn what_a_microvm_holds_cold_is_given_back_at_its_hosts_word() {
     let before = held();
     let word = Instant::now();
     told.say();
-    let deadline = word + TIMEOUT;
+    let mut patience = Patience::of(&home);
     let gave = loop {
         let given = said()
             .lines()
             .filter_map(|l| l.split_once("the host is short of memory: its microVMs gave back "))
             .find_map(|(_, rest)| rest.split_whitespace().next()?.parse::<u64>().ok());
         if let Some(gave) = given {
+            patience.done();
             break gave;
         }
-        assert!(Instant::now() < deadline, "nothing given back said:\n{}", said());
-        std::thread::sleep(Duration::from_millis(50));
+        assert!(patience.holds(), "nothing given back said:\n{}", said());
+        std::thread::sleep(patience.next_look());
     };
     assert!(
         gave > 0,
@@ -4116,14 +4244,14 @@ fn pause_freezes_a_microvm_until_unpause_or_stop() {
         .trim()
         .parse()
         .unwrap();
+    // What it takes over a second, told (D209: a cost no later event orders is a
+    // measurement, not a bound).
     let before = shards_vmm::platform::process_usage(pid).unwrap().cpu_ns;
-    let t0 = Instant::now();
     std::thread::sleep(Duration::from_secs(1));
     let used = shards_vmm::platform::process_usage(pid).unwrap().cpu_ns - before;
-    let wall = u64::try_from(t0.elapsed().as_nanos()).unwrap();
-    assert!(
-        used < wall / 20,
-        "a frozen microVM's VM process used {used} ns of CPU in {wall} ns"
+    common::measured(
+        "a frozen microVM's VM process, its CPU in a second",
+        &[Duration::from_nanos(used)],
     );
     let ps = shards(&["ps"]);
     assert!(ps.stdout.contains(" (Paused) "), "{ps}");
@@ -4265,17 +4393,20 @@ fn start_lossy(home: &Path, image: &str, options: &[&str]) -> Child {
     child
 }
 
-/// Waits for `home`'s daemon log to say a loss of a workload's control `count` times (D16).
+/// Waits for `home`'s daemon log to say a loss of a workload's control `count` times (D16),
+/// while the daemon and its microVMs go on ([`Patience`], its kind its caller's call site).
+#[track_caller]
 fn lost_said(home: &Path, count: usize) {
     let said = "the guest's signal connection is lost: the guest closed it before its end";
-    let deadline = Instant::now() + TIMEOUT;
+    let mut patience = Patience::of(home);
     loop {
         let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
         if log.matches(said).count() >= count {
+            patience.done();
             return;
         }
-        assert!(Instant::now() < deadline, "no loss said:\n{log}");
-        std::thread::sleep(Duration::from_millis(20));
+        assert!(patience.holds(), "no loss said:\n{log}");
+        std::thread::sleep(patience.next_look());
     }
 }
 
@@ -4334,10 +4465,8 @@ fn a_lost_signal_connection_fails_execs_and_kills_at_once() {
         .parse()
         .unwrap();
     common::kill_now(daemon);
-    let deadline = Instant::now() + TIMEOUT;
-    while common::alive(vm) {
-        assert!(Instant::now() < deadline, "its VM outlived its daemon");
-        std::thread::sleep(Duration::from_millis(20));
+    if let Err(refused) = process_ended(vm.unsigned_abs(), "a VM's end with its killed daemon") {
+        panic!("its VM outlived its daemon: {refused}");
     }
     let _ = gone.kill();
     let _ = gone.wait();
@@ -5306,11 +5435,12 @@ fn a_runs_mac_is_its_own() {
         .parse()
         .unwrap();
     let mut c = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-    c.set_read_timeout(Some(TIMEOUT)).unwrap();
     c.write_all(b"hello").unwrap();
     c.shutdown(std::net::Shutdown::Write).unwrap();
     let mut got = String::new();
-    c.read_to_string(&mut got).unwrap();
+    common::Following::of_home(&c, &home)
+        .read_to_string(&mut got)
+        .unwrap();
     assert_eq!(got, format!("from {}\nhello", bridge().gateway()));
     assert_eq!(exit(&mut served, &home), Some(0));
     // Two of one MAC on a network: each reaches the other through its own network process,
@@ -5825,17 +5955,13 @@ fn a_runs_processes_are_recorded_as_they_start_and_end() {
     });
     let execed = shards(&["exec", "watched", "/bin/testguest", "exit", "4"]);
     assert_eq!(execed.status, Some(4), "{execed}");
-    let deadline = Instant::now() + TIMEOUT;
     let mut seen = Vec::new();
     while !seen
         .iter()
         .any(|l: &String| l.contains(" exit ") && l.ends_with(" code 4"))
     {
-        let left = deadline.saturating_duration_since(Instant::now());
-        match rx.recv_timeout(left) {
-            Ok(line) => seen.push(line),
-            Err(_) => panic!("the exec's exit not followed: {seen:#?}"),
-        }
+        let line = sent(&rx, &home, || format!("the exec's exit not followed: {seen:#?}"));
+        seen.push(line);
     }
     assert!(
         seen.iter()
@@ -6163,11 +6289,12 @@ fn a_stopped_microvms_next_run_goes_on_over_its_kept_file() {
         .to_string();
     let dir = home.join("containers").join(&id);
     let settled = || {
-        let deadline = Instant::now() + TIMEOUT;
+        let mut patience = Patience::of(&home);
         while !(dir.join("layer.ext4").exists() && !dir.join("layer.new").exists()) {
-            assert!(Instant::now() < deadline, "no layer kept in {}", dir.display());
-            std::thread::sleep(Duration::from_millis(20));
+            assert!(patience.holds(), "no layer kept in {}", dir.display());
+            std::thread::sleep(patience.next_look());
         }
+        patience.done();
     };
     // What its guest wrote and freed, given back as each run's layer was kept.
     let given = || -> Vec<u64> {
@@ -6181,15 +6308,12 @@ fn a_stopped_microvms_next_run_goes_on_over_its_kept_file() {
     let kept = dir.join("layer.ext4");
     let same = common::file_identity(&kept);
     for n in 1..=3 {
-        let deadline = Instant::now() + TIMEOUT;
+        let mut patience = Patience::of(&home);
         while given().len() < n {
-            assert!(
-                Instant::now() < deadline,
-                "run {n}: nothing given back: {:?}",
-                given()
-            );
-            std::thread::sleep(Duration::from_millis(20));
+            assert!(patience.holds(), "run {n}: nothing given back: {:?}", given());
+            std::thread::sleep(patience.next_look());
         }
+        patience.done();
         assert!(
             given().iter().all(|&g| g >= big),
             "{:?} bytes given back of {big} freed",
@@ -6230,15 +6354,12 @@ fn a_stopped_microvms_next_run_goes_on_over_its_kept_file() {
         .to_string();
     let small_dir = home.join("containers").join(&id);
     let small_settled = || {
-        let deadline = Instant::now() + TIMEOUT;
+        let mut patience = Patience::of(&home);
         while !(small_dir.join("layer.ext4").exists() && !small_dir.join("layer.new").exists()) {
-            assert!(
-                Instant::now() < deadline,
-                "no layer kept in {}",
-                small_dir.display()
-            );
-            std::thread::sleep(Duration::from_millis(20));
+            assert!(patience.holds(), "no layer kept in {}", small_dir.display());
+            std::thread::sleep(patience.next_look());
         }
+        patience.done();
     };
     small_settled();
     let before = common::file_identity(&small_dir.join("layer.ext4"));
@@ -7628,18 +7749,31 @@ fn logs_keep_what_a_container_wrote() {
     // Under --init, so that it ends of the SIGTERM it does not handle, which as PID 1 it
     // would not hear.
     let mut sleeper = start(&home, &image, &["--name", "follow", "--init"], &["sleep"]);
-    let follower = common::command()
+    let mut follower = common::command()
         .args(["logs", "-f", "follow"])
         .env("SHARDS_HOME", &*home)
         .stdout(Stdio::piped())
         .spawn()
         .unwrap();
-    std::thread::sleep(Duration::from_millis(200));
+    // Following once it has shown the log's line (no window of the test's own, D209), read
+    // as it comes on a thread of its own, so that it never waits on its output.
+    let (lines, read) = std::sync::mpsc::channel();
+    let out = follower.stdout.take().unwrap();
+    let reading = std::thread::spawn(move || {
+        let mut all = String::new();
+        for line in BufReader::new(out).lines().map_while(Result::ok) {
+            all.push_str(&line);
+            all.push('\n');
+            let _ = lines.send(());
+        }
+        all
+    });
+    sent(&read, &home, || "the follower's first line".into());
     stop_run(&home, "follow");
     assert_eq!(exit(&mut sleeper, &home), Some(128 + 15));
-    let followed = follower.wait_with_output().unwrap();
-    assert_eq!(followed.status.code(), Some(0));
-    assert_eq!(String::from_utf8_lossy(&followed.stdout), "ready\n");
+    let status = follower.wait().unwrap();
+    assert_eq!(status.code(), Some(0));
+    assert_eq!(reading.join().unwrap(), "ready\n");
 }
 
 /// `text` without the timing lines SHARDS_TIMING adds.
@@ -7678,15 +7812,16 @@ fn an_exec_joins_a_workload_that_nests_its_cgroups() {
         &["nest"],
     );
     assert_eq!(run.status, Some(0), "{run}");
-    let mut said = String::new();
-    let nested = (0..400).any(|_| {
-        said = shards_in(&home, &["logs", "nester"]).stdout;
-        said.contains("nested") || {
-            std::thread::sleep(Duration::from_millis(25));
-            false
+    let mut patience = Patience::of(&home);
+    loop {
+        let said = shards_in(&home, &["logs", "nester"]).stdout;
+        if said.contains("nested") {
+            patience.done();
+            break;
         }
-    });
-    assert!(nested, "{said}");
+        assert!(patience.holds(), "{said}");
+        std::thread::sleep(patience.next_look());
+    }
     let exec = shards_in(
         &home,
         &["exec", "nester", "/bin/testguest", "slurp", "/proc/self/cgroup"],
@@ -8821,17 +8956,20 @@ fn in_use() -> String {
     shards_cmdline::buildflags::os_error(&std::io::Error::from_raw_os_error(code))
 }
 
-/// What a connection to `at` is first told, and what it is sent back of `sent`.
-fn talk(at: std::net::SocketAddr, sent: &str) -> String {
+/// What a connection to `at`, a run of `home`'s, is first told, and what it is sent back of
+/// `sent`: read as `home`'s daemon and its microVMs go on (`common::Following`, its kind its
+/// caller's call site), its connect bounded by its host's own handshake alone.
+#[track_caller]
+fn talk(home: &Path, at: std::net::SocketAddr, sent: &str) -> String {
     use std::io::{Read as _, Write as _};
     let t = Instant::now();
-    let mut c = std::net::TcpStream::connect_timeout(&at, TIMEOUT)
+    let mut c = std::net::TcpStream::connect(at)
         .unwrap_or_else(|e| panic!("connecting to {at}: {e}, after {:?}", t.elapsed()));
-    c.set_read_timeout(Some(TIMEOUT)).unwrap();
     c.write_all(sent.as_bytes()).unwrap();
     c.shutdown(std::net::Shutdown::Write).unwrap();
     let mut got = String::new();
-    c.read_to_string(&mut got)
+    common::Following::of_home(&c, home)
+        .read_to_string(&mut got)
         .unwrap_or_else(|e| panic!("hearing {at}: {e}, after {:?}, {got:?} come", t.elapsed()));
     got
 }
@@ -8960,7 +9098,7 @@ fn a_run_on_the_hosts_network_is_on_the_hosts_network() {
     ] {
         let (mut child, port) = serving(&home, &image, &["listen", addr, "1"]);
         assert_eq!(
-            talk(loopback(port), "echo"),
+            talk(&home, loopback(port), "echo"),
             format!("from {peer}\necho"),
             "{addr}"
         );
@@ -8969,7 +9107,7 @@ fn a_run_on_the_hosts_network_is_on_the_hosts_network() {
     if std::net::TcpListener::bind("[::1]:0").is_ok() {
         let (mut child, port) = serving(&home, &image, &["listen", "[::1]:0", "1"]);
         let at = std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, port));
-        assert_eq!(talk(at, "six"), "from ::1\nsix");
+        assert_eq!(talk(&home, at, "six"), "from ::1\nsix");
         assert_eq!(exit(&mut child, &home), Some(0));
     }
     // A UDP server's answer, sent as its server ends: at the loopback's, by the relay;
@@ -8982,12 +9120,15 @@ fn a_run_on_the_hosts_network_is_on_the_hosts_network() {
     for (i, (addr, peer)) in answering.iter().cycle().take(12).enumerate() {
         let (mut child, port) = serving(&home, &image, &["udp-serve", addr]);
         let client = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
-        client.set_read_timeout(Some(TIMEOUT)).unwrap();
         client.send_to(b"datagram", loopback(port)).unwrap();
         let mut buf = [0u8; 64];
-        let n = client
-            .recv(&mut buf)
-            .unwrap_or_else(|e| panic!("{i} {addr}: {e}"));
+        let n = received(
+            &home,
+            "a UDP server's answer",
+            |t| client.set_read_timeout(t),
+            || client.recv(&mut buf),
+        )
+        .unwrap_or_else(|e| panic!("{i} {addr}: {e}"));
         assert_eq!(
             String::from_utf8_lossy(&buf[..n]),
             format!("from {peer} datagram"),
@@ -9092,20 +9233,20 @@ fn a_joiner_of_a_container_on_the_hosts_network_is_on_it_too() {
     assert!(said, "the joiner was not told it is on the host's network");
     let loopback = |port| std::net::SocketAddr::from(([127, 0, 0, 1], port));
     let gateway = bridge().gateway();
-    assert_eq!(talk(loopback(theirs), "a"), format!("from {gateway}\na"));
-    assert_eq!(talk(loopback(ours), "b"), format!("from {gateway}\nb"));
+    assert_eq!(talk(&home, loopback(theirs), "a"), format!("from {gateway}\na"));
+    assert_eq!(talk(&home, loopback(ours), "b"), format!("from {gateway}\nb"));
     // The provider's command ends: its port is the host's to bind again at once, while
     // the joiner's server goes on, and a server the joiner starts now is the host's too.
     let killed = shards(&["kill", "hprov"]);
     assert_eq!(killed.status, Some(0), "{killed}");
     let _ = exit(&mut provider, &home);
     drop(std::net::TcpListener::bind(("0.0.0.0", theirs)).expect("the provider's port, free at its end"));
-    assert_eq!(talk(loopback(ours), "c"), format!("from {gateway}\nc"));
+    assert_eq!(talk(&home, loopback(ours), "c"), format!("from {gateway}\nc"));
     let (mut late, port) = ready_on(
         &home,
         &["exec", "hjoin", "/bin/testguest", "listen", "127.0.0.1:0", "1"].map(String::from),
     );
-    assert_eq!(talk(loopback(port), "d"), "from 127.0.0.1\nd");
+    assert_eq!(talk(&home, loopback(port), "d"), "from 127.0.0.1\nd");
     assert_eq!(exit(&mut late, &home), Some(0));
     // The joiner's end: its port the host's to bind again at once.
     let killed = shards(&["kill", "hjoin"]);
@@ -9149,7 +9290,7 @@ fn ports_held_past_their_containers_end() {
     for i in 0..n {
         let name = format!("a{i}");
         let (mut run, port) = serve(&name, "host");
-        let _ = talk(loopback(port), "x");
+        let _ = talk(&home, loopback(port), "x");
         killed(&mut run, &name);
         runs += usize::from(std::net::TcpListener::bind(("0.0.0.0", port)).is_err());
     }
@@ -9157,7 +9298,7 @@ fn ports_held_past_their_containers_end() {
         let (p, j) = (format!("p{i}"), format!("j{i}"));
         let (mut provider, _) = serve(&p, "host");
         let (mut joiner, port) = serve(&j, &format!("container:{p}"));
-        let _ = talk(loopback(port), "x");
+        let _ = talk(&home, loopback(port), "x");
         killed(&mut joiner, &j);
         joiners += usize::from(std::net::TcpListener::bind(("0.0.0.0", port)).is_err());
         killed(&mut provider, &p);
@@ -9559,10 +9700,10 @@ fn stop_sends_a_containers_own_stop_signal() {
     let took = began.elapsed();
     assert_eq!(stopped.status, Some(0), "{stopped}");
     assert_eq!(exit(&mut run, &home), Some(137));
-    assert!(
-        took >= Duration::from_secs(1) && took < Duration::from_secs(5),
-        "{took:?}"
-    );
+    // Killed past its own stop timeout (`--stop-timeout 1`), its SIGCHLD heard by nothing;
+    // how long past it, told (D209).
+    assert!(took >= Duration::from_secs(1), "{took:?}");
+    common::measured("a stop whose signal nothing hears, a 1 s stop timeout", &[took]);
     let refused = run_in(&home, &image, &["--stop-signal", "BOGUS"], &["exit", "0"]);
     assert_eq!(
         (refused.status, refused.stderr.as_str()),
@@ -9675,13 +9816,11 @@ fn exec_runs_commands_in_a_running_microvm() {
     // -d: answered once it starts, its client's output ended then while the command runs
     // on, as `docker exec -d` holds nothing of its client's (before, it was held to the
     // command's end, and this read waited out its 60 s).
+    // Its command sleeps for ever: answered at all, judged as it goes on, is answered once
+    // it starts; how soon, told (D209).
     let detached = Instant::now();
     assert_eq!(exec(&["-d", "ex", "/bin/testguest", "sleep"]).status, Some(0));
-    assert!(
-        detached.elapsed() < Duration::from_secs(10),
-        "{:?}",
-        detached.elapsed()
-    );
+    common::measured("an exec -d answered", &[detached.elapsed()]);
     let refused = |args: &[&str], status: i32, said: &str| {
         let r = exec(args);
         assert_eq!(
@@ -10062,15 +10201,21 @@ fn published_ports_reach_the_guest() {
             .filter_map(|l| l.strip_prefix('p').map(String::from))
             .collect()
     };
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut patience = Patience::of(&home);
     let mut seen = lsof();
     while let Some(o) = &seen
         && holders(o).is_empty()
         && !o.status.success()
-        && std::time::Instant::now() < deadline
+        && patience.holds()
     {
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        std::thread::sleep(patience.next_look());
         seen = lsof();
+    }
+    if seen
+        .as_ref()
+        .is_none_or(|o| !holders(o).is_empty() || o.status.success())
+    {
+        patience.done();
     }
     if let Some(lsof) = seen {
         let log = std::fs::read_to_string(home.join("daemon.log")).unwrap();
@@ -10113,9 +10258,8 @@ fn published_ports_reach_the_guest() {
     // network process's port was refused, WSAENOTCONN, its FIN never sent (jupiter, 3 of
     // 3 runs), where the socket's own sent it (3 of 3).
     let exchange = |at: SocketAddr, payload: Vec<u8>| -> (String, Vec<u8>) {
-        let mut writer = TcpStream::connect_timeout(&at, TIMEOUT).unwrap();
-        let mut c = writer.try_clone().unwrap();
-        c.set_read_timeout(Some(TIMEOUT)).unwrap();
+        let mut writer = TcpStream::connect(at).unwrap();
+        let c = writer.try_clone().unwrap();
         let len = payload.len();
         let t = Instant::now();
         let writing = std::thread::spawn(move || {
@@ -10128,7 +10272,7 @@ fn published_ports_reach_the_guest() {
             (wrote, shut)
         });
         let mut got = Vec::new();
-        let read = c.read_to_end(&mut got);
+        let read = common::Following::of_home(&c, &home).read_to_end(&mut got);
         let wrote = writing.join().unwrap();
         if read.is_err() || wrote.0.is_err() || wrote.1.is_err() {
             panic!(
@@ -10479,12 +10623,17 @@ fn published_udp_ports_carry_datagrams_both_ways() {
     // output), whether the run and its processes live, the daemon's log, and the host's
     // UDP sockets on the port (a lost answer, 2026-10-06 and 2026-10-10, under load).
     let ask = |client: &UdpSocket, to: std::net::SocketAddr, payload: &[u8]| {
-        client.set_read_timeout(Some(TIMEOUT)).unwrap();
         client
             .send_to(payload, to)
             .unwrap_or_else(|e| panic!("sending to {to} from {:?}: {e}", client.local_addr()));
         let mut buf = [0u8; 2048];
-        let (len, from) = common::recv_from(client, &mut buf).unwrap_or_else(|e| {
+        let answer = received(
+            &home,
+            "a guest's answer",
+            |t| client.set_read_timeout(t),
+            || common::recv_from(client, &mut buf),
+        );
+        let (len, from) = answer.unwrap_or_else(|e| {
             let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
             let logs = shards_in(&home, &["logs", "dns"]);
             let listed = shards_in(&home, &["ps", "-a"]);
@@ -11802,14 +11951,18 @@ fn a_push_ends_with_its_client_and_the_daemon() {
             .spawn()
             .unwrap()
     };
-    // Its uploads, the config's and the layer's, let go within 5 s: at once, not when an
-    // upload's 30 s wait for an answer runs out.
+    // Its uploads, the config's and the layer's, let go: waited for while the daemon goes on
+    // ([`Patience`]), as an upload waiting out its answer's time does not; how soon, told
+    // (D209).
     let let_go = |what: &str| {
         let t0 = Instant::now();
+        let mut patience = Patience::of(&home);
         while ended.load(Ordering::SeqCst) < begun.load(Ordering::SeqCst) {
-            assert!(t0.elapsed() < Duration::from_secs(5), "{what}");
-            std::thread::sleep(Duration::from_millis(10));
+            assert!(patience.holds(), "{what}");
+            std::thread::sleep(patience.next_look());
         }
+        patience.done();
+        common::measured(&format!("{what}: let go after"), &[t0.elapsed()]);
     };
     // Its client killed: its uploads' connections end.
     let mut client = push();
@@ -11826,7 +11979,7 @@ fn a_push_ends_with_its_client_and_the_daemon() {
     let t0 = Instant::now();
     let stopped = shards(&["daemon", "stop"]);
     assert_eq!(stopped.status, Some(0), "{stopped}");
-    assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
+    common::measured("a daemon's stop with a push under way", &[t0.elapsed()]);
     let status = client.wait().unwrap();
     assert!(!status.success(), "{status}");
     let_go("the uploads went on past the daemon");
@@ -12064,7 +12217,7 @@ fn a_run_interrupted_as_it_pulls_ends_at_once() {
     common::interrupt(&client);
     let t0 = Instant::now();
     let out = client.wait_with_output().unwrap();
-    assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
+    common::measured("a pull's client's end on its interrupt", &[t0.elapsed()]);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(130), "{stderr}");
     assert_eq!(
@@ -12074,15 +12227,19 @@ fn a_run_interrupted_as_it_pulls_ends_at_once() {
         std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default()
     );
     assert!(out.stdout.is_empty());
-    // Its pull let go: the registry's connections end.
+    // Its pull let go: the registry's connections end, waited for while the daemon goes on
+    // ([`Patience`]); how soon, told (D209).
     let t0 = Instant::now();
+    let mut patience = Patience::of(&home);
     while ended.load(Ordering::SeqCst) < begun.load(Ordering::SeqCst) {
-        assert!(
-            t0.elapsed() < Duration::from_secs(5),
-            "the pull went on without its client"
-        );
-        std::thread::sleep(Duration::from_millis(10));
+        assert!(patience.holds(), "the pull went on without its client");
+        std::thread::sleep(patience.next_look());
     }
+    patience.done();
+    common::measured(
+        "a pull's connections let go after its client's end",
+        &[t0.elapsed()],
+    );
     assert_eq!(shards_in(&home, &["ps", "-aq"]).stdout, "");
     assert_eq!(shards_in(&home, &["images", "-q"]).stdout, "");
 }
@@ -12847,7 +13004,23 @@ fn restart_policies_start_microvms_again() {
     assert!(listed.stdout.starts_with("Restarting (1) "), "{listed}");
     assert_eq!(shards(&["stop", "always"]).stdout, "always\n");
     let count = inspect("always", "{{.RestartCount}}");
-    std::thread::sleep(Duration::from_millis(500));
+    // A run like it begun now, its restarts' clock: each next restart waits twice the last,
+    // the first the restart's own cost (restart.rs), the same command's here; so once it has
+    // restarted once more than the stopped one had, its waits have summed past the stopped
+    // one's next, which was due before then were its stop not for good (no window of the
+    // test's own, D209).
+    let clock = run_in(
+        &home,
+        &image,
+        &["-d", "--name", "clock", "--restart", "always"],
+        &["exit", "1"],
+    );
+    assert_eq!(clock.status, Some(0), "{clock}");
+    let past: u64 = count.parse().unwrap();
+    until("the clock's restarts past the stopped one's", &|| {
+        inspect("clock", "{{.RestartCount}}").parse::<u64>().unwrap_or(0) > past
+    });
+    assert_eq!(shards(&["rm", "-f", "clock"]).status, Some(0));
     assert_eq!(inspect("always", "{{.State.Status}}"), "exited");
     assert_eq!(
         inspect("always", "{{.RestartCount}}"),
@@ -13507,16 +13680,12 @@ fn import_makes_images_of_tarballs() {
         "{}",
         String::from_utf8_lossy(&published.stderr)
     );
-    let (request, microvm) = served
-        .recv_timeout(std::time::Duration::from_secs(60))
-        .unwrap_or_else(|e| {
-            // Its publisher's errors go to the daemon's log alone (local_store.rs).
-            let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
-            let tail: Vec<&str> = log.lines().rev().take(60).collect();
-            panic!(
-                "the import published nothing: {e:?}; the daemon's log's last lines, last first: {tail:#?}"
-            )
-        });
+    let (request, microvm) = crate::sent(&served, &home, || {
+        // Its publisher's errors go to the daemon's log alone (local_store.rs).
+        let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
+        let tail: Vec<&str> = log.lines().rev().take(60).collect();
+        format!("the import published nothing; the daemon's log's last lines, last first: {tail:#?}")
+    });
     drop(socket);
     assert!(request.starts_with("POST /images/load?quiet=1 "), "{request}");
     let artifact = String::from_utf8_lossy(&microvm);
@@ -13815,13 +13984,11 @@ fn created_microvms_are_published_to_the_local_store() {
     let mut loads: Vec<String> = Vec::new();
     let mut published = |name: &str| {
         let wanted = format!("shards.local/{name}");
-        let gave_up = Instant::now() + Duration::from_secs(120);
         while !loads.iter().any(|l| l.contains(&wanted)) {
-            let left = gave_up.saturating_duration_since(Instant::now());
-            let (request, body) = served.recv_timeout(left).unwrap_or_else(|e| {
+            let (request, body) = sent(&served, &home, || {
                 let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
                 let tail: Vec<&str> = log.lines().rev().take(60).collect();
-                panic!("{wanted} was not published: {e:?}; the daemon's log, last first: {tail:#?}")
+                format!("{wanted} was not published; the daemon's log, last first: {tail:#?}")
             });
             assert!(request.starts_with("POST /images/load"), "{request}");
             let artifact = String::from_utf8_lossy(&body).into_owned();
@@ -15399,15 +15566,10 @@ fn stops_beside_a_gigabyte_build() {
                     )
                 },
             );
-            let gave_up = Instant::now();
-            let mut outlived = "ran on a minute after".to_string();
-            while gave_up.elapsed() < Duration::from_secs(60) {
-                if !common::alive(i32::try_from(vm).unwrap_or(0)) {
-                    outlived = format!("had ended {:?} after", gave_up.elapsed());
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(100));
-            }
+            let outlived = match process_ended(vm, "a VM process past its stop") {
+                Ok(took) => format!("had ended {took:?} after"),
+                Err(refused) => format!("ran on past it: {refused}"),
+            };
             lost = Some(format!(
                 "{name}: its stop {ms:.0} ms ({}); its VM process {vm} as it gave up: {usage}; {outlived}",
                 stopped.stderr.trim()
@@ -15512,9 +15674,8 @@ fn stops_beside_a_gigabyte_build() {
             }
             let mut ended: Vec<f64> = Vec::new();
             for &(_, _, vm) in &killed {
-                while common::alive(i32::try_from(vm).unwrap_or(0)) && t0.elapsed() < Duration::from_secs(60)
-                {
-                    std::thread::sleep(Duration::from_millis(10));
+                if let Err(refused) = process_ended(vm, "a VM process killed") {
+                    eprintln!("{refused}");
                 }
                 ended.push(t0.elapsed().as_secs_f64() * 1e3);
             }
@@ -15675,7 +15836,6 @@ fn kills_cost_by_what_the_command_holds() {
         .into_iter()
         .filter(|(shape, _, _)| picked.split(',').any(|p| p == *shape))
         .collect();
-    let timeout = Duration::from_secs(600);
     // What the daemon's log says of kills so far: teardowns followed past a slice, and
     // microVMs killed under them (D217).
     let said = || {
@@ -15746,8 +15906,8 @@ fn kills_cost_by_what_the_command_holds() {
                 most = most.max(gib);
                 let t0 = Instant::now();
                 common::kill_now(vm);
-                while common::alive(vm) && t0.elapsed() < timeout {
-                    std::thread::sleep(Duration::from_micros(200));
+                if let Err(refused) = process_ended(vm.unsigned_abs(), "a VM process killed") {
+                    eprintln!("{refused}");
                 }
                 ended.push(t0.elapsed().as_secs_f64() * 1e3);
                 let _ = exit(&mut run, &home);
@@ -16395,11 +16555,14 @@ fn a_microvms_vcpus_and_governor_wake_at_the_shortest_slice() {
         seen.sort();
         seen
     };
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut patience = Patience::of(&home);
     let mut seen = threads();
-    while host > 1 && !seen.iter().any(|t| t.0 == "hold") && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(50));
+    while host > 1 && !seen.iter().any(|t| t.0 == "hold") && patience.holds() {
+        std::thread::sleep(patience.next_look());
         seen = threads();
+    }
+    if host == 1 || seen.iter().any(|t| t.0 == "hold") {
+        patience.done();
     }
     let vcpus = seen.iter().filter(|t| t.0.starts_with("vcpu")).count();
     assert_eq!(vcpus, host, "{seen:?}");
@@ -16446,51 +16609,57 @@ fn a_microvms_busy_vcpus_are_never_depressed_by_the_real_time_fail_safe() {
         .parse()
         .unwrap();
     // Every 50 ms, each vCPU thread of the VM process: its policy (1 timeshare) and base
-    // priority, as proc_pidinfo says them (PROC_PIDLISTTHREADS, PROC_PIDTHREADINFO).
-    let looking = std::thread::spawn(move || {
-        const PROC_PIDLISTTHREADS: i32 = 6;
-        let size = |n: usize| i32::try_from(n).unwrap();
-        let mut seen = Vec::new();
-        let start = Instant::now();
-        while start.elapsed() < Duration::from_millis(5500) {
-            let mut ids = [0u64; 256];
-            // SAFETY: a buffer of `ids`' size for the process's thread handles.
-            let n = unsafe {
-                libc::proc_pidinfo(
-                    pid,
-                    PROC_PIDLISTTHREADS,
-                    0,
-                    ids.as_mut_ptr().cast(),
-                    size(size_of_val(&ids)),
-                )
-            };
-            for &id in ids.iter().take(usize::try_from(n).unwrap_or(0) / 8) {
-                // SAFETY: zeroed plain data, which proc_pidinfo fills.
-                let mut t: libc::proc_threadinfo = unsafe { std::mem::zeroed() };
-                // SAFETY: a buffer of `t`'s size for the thread's information.
-                let got = unsafe {
+    // priority, as proc_pidinfo says them (PROC_PIDLISTTHREADS, PROC_PIDTHREADINFO), until
+    // the burn has returned, the later event that ends what is looked at (no window of the
+    // test's own, D209).
+    let burn_done = std::sync::atomic::AtomicBool::new(false);
+    let (burned, seen) = std::thread::scope(|scope| {
+        let looking = scope.spawn(|| {
+            const PROC_PIDLISTTHREADS: i32 = 6;
+            let size = |n: usize| i32::try_from(n).unwrap();
+            let mut seen = Vec::new();
+            let start = Instant::now();
+            while !burn_done.load(std::sync::atomic::Ordering::SeqCst) {
+                let mut ids = [0u64; 256];
+                // SAFETY: a buffer of `ids`' size for the process's thread handles.
+                let n = unsafe {
                     libc::proc_pidinfo(
                         pid,
-                        libc::PROC_PIDTHREADINFO,
-                        id,
-                        (&raw mut t).cast(),
-                        size(size_of_val(&t)),
+                        PROC_PIDLISTTHREADS,
+                        0,
+                        ids.as_mut_ptr().cast(),
+                        size(size_of_val(&ids)),
                     )
                 };
-                // SAFETY: a name proc_pidinfo wrote, NUL-terminated within its array.
-                let name = unsafe { std::ffi::CStr::from_ptr(t.pth_name.as_ptr()) }
-                    .to_string_lossy()
-                    .into_owned();
-                if got == size(size_of_val(&t)) && name.starts_with("vcpu") {
-                    seen.push((start.elapsed().as_millis(), name, t.pth_policy, t.pth_priority));
+                for &id in ids.iter().take(usize::try_from(n).unwrap_or(0) / 8) {
+                    // SAFETY: zeroed plain data, which proc_pidinfo fills.
+                    let mut t: libc::proc_threadinfo = unsafe { std::mem::zeroed() };
+                    // SAFETY: a buffer of `t`'s size for the thread's information.
+                    let got = unsafe {
+                        libc::proc_pidinfo(
+                            pid,
+                            libc::PROC_PIDTHREADINFO,
+                            id,
+                            (&raw mut t).cast(),
+                            size(size_of_val(&t)),
+                        )
+                    };
+                    // SAFETY: a name proc_pidinfo wrote, NUL-terminated within its array.
+                    let name = unsafe { std::ffi::CStr::from_ptr(t.pth_name.as_ptr()) }
+                        .to_string_lossy()
+                        .into_owned();
+                    if got == size(size_of_val(&t)) && name.starts_with("vcpu") {
+                        seen.push((start.elapsed().as_millis(), name, t.pth_policy, t.pth_priority));
+                    }
                 }
+                std::thread::sleep(Duration::from_millis(50));
             }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        seen
+            seen
+        });
+        let burned = shards(&["exec", "busy", "/bin/testguest", "burn", "2", "5000"]);
+        burn_done.store(true, std::sync::atomic::Ordering::SeqCst);
+        (burned, looking.join().unwrap())
     });
-    let burned = shards(&["exec", "busy", "/bin/testguest", "burn", "2", "5000"]);
-    let seen = looking.join().unwrap();
     assert!(burned.stdout.ends_with("burned\n"), "{burned}");
     assert!(!seen.is_empty(), "no vCPU thread of VM process {pid} seen");
     let depressed: Vec<_> = seen.iter().filter(|s| s.3 == 0).collect();
@@ -16700,9 +16869,12 @@ fn a_microvm_swaps_and_throttles_as_its_limits_say() {
         .trim()
         .to_string();
     let file = home.join("containers").join(&id).join("swap");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while file.exists() && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(20));
+    let mut patience = Patience::of(&home);
+    while file.exists() && patience.holds() {
+        std::thread::sleep(patience.next_look());
+    }
+    if !file.exists() {
+        patience.done();
     }
     assert!(!file.exists(), "{}", file.display());
     assert_eq!(shards(&["rm", "-f", "kept"]).status, Some(0));
@@ -17125,14 +17297,18 @@ fn a_runs_log_is_compressed_and_queued_as_its_options_say() {
     };
     // Every segment but the newest compressed, by the packer's thread, as they rotate.
     let packed = |dir: &Path| {
-        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut patience = Patience::of(&home);
         loop {
             let names = names(dir);
             let plain = names.iter().filter(|n| !n.ends_with(".zst")).count();
-            if plain == 1 || Instant::now() > deadline {
+            if plain == 1 {
+                patience.done();
                 return names;
             }
-            std::thread::sleep(Duration::from_millis(20));
+            if !patience.holds() {
+                return names;
+            }
+            std::thread::sleep(patience.next_look());
         }
     };
     // 30,000 lines through segments of 64,000 bytes, four kept.
@@ -17300,22 +17476,73 @@ fn a_runs_log_is_compressed_and_queued_as_its_options_say() {
     }
 }
 
-/// `listener`'s first connection, within [`TIMEOUT`]: none where none comes, which a test
-/// then fails on, not waits for ever.
-fn accept_within(listener: &std::net::TcpListener) -> Option<std::net::TcpStream> {
+/// `listener`'s first connection, from `home`'s daemon, waited for while that daemon and its
+/// microVMs go on ([`Patience`], its kind its caller's call site): none where its wait is
+/// refused, which a test then fails on, not waits for ever.
+#[track_caller]
+fn accept_within(listener: &std::net::TcpListener, home: &Path) -> Option<std::net::TcpStream> {
     listener.set_nonblocking(true).unwrap();
-    let deadline = Instant::now() + TIMEOUT;
+    let mut patience = Patience::of(home);
     loop {
         match listener.accept() {
             Ok((conn, _)) => {
                 conn.set_nonblocking(false).unwrap();
+                patience.done();
                 return Some(conn);
             }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(10));
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && patience.holds() => {
+                std::thread::sleep(patience.next_look());
             }
             Err(_) => return None,
         }
+    }
+}
+
+/// A connection a fake service reads as `home`'s daemon sends it (`common::Following`, its
+/// kind its caller's call site) and writes to as it is: one that answers what it reads, as
+/// fluentd acks and a TLS server's handshake do.
+struct Answering<'a, S: common::Timed>
+where
+    &'a S: std::io::Read,
+{
+    read: common::Following<'a, S>,
+    conn: &'a S,
+}
+
+impl<'a, S: common::Timed> Answering<'a, S>
+where
+    &'a S: std::io::Read,
+{
+    #[track_caller]
+    fn of_home(conn: &'a S, home: &Path) -> Answering<'a, S> {
+        Answering {
+            read: common::Following::of_home(conn, home),
+            conn,
+        }
+    }
+}
+
+impl<'a, S: common::Timed> std::io::Read for Answering<'a, S>
+where
+    &'a S: std::io::Read,
+{
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.read.read(buf)
+    }
+}
+
+impl<'a, S: common::Timed> std::io::Write for Answering<'a, S>
+where
+    &'a S: std::io::Read + std::io::Write,
+{
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let mut conn = self.conn;
+        conn.write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        let mut conn = self.conn;
+        conn.flush()
     }
 }
 
@@ -17333,13 +17560,17 @@ fn syslog_parts(parts: &[usize]) {
 
 /// What a syslog server reads on `listener`'s first connection: its lines until `lines`
 /// have come, or all it gets until the connection ends; none where none comes.
-fn syslog_lines(listener: std::net::TcpListener, lines: usize) -> std::thread::JoinHandle<Vec<String>> {
+fn syslog_lines(
+    listener: std::net::TcpListener,
+    lines: usize,
+    home: &Path,
+) -> std::thread::JoinHandle<Vec<String>> {
+    let home = home.to_path_buf();
     std::thread::spawn(move || {
-        let Some(conn) = accept_within(&listener) else {
+        let Some(conn) = accept_within(&listener, &home) else {
             return Vec::new();
         };
-        conn.set_read_timeout(Some(TIMEOUT)).unwrap();
-        let mut read = BufReader::new(conn);
+        let mut read = BufReader::new(common::Following::of_home(&conn, &home));
         let mut got = Vec::new();
         while got.len() < lines {
             let mut line = String::new();
@@ -17393,10 +17624,15 @@ fn a_runs_log_is_sent_to_syslog_as_its_options_say() {
     };
     // UDP, srslog's Unix format and its facility, daemon: info 30, err 27.
     let udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
-    udp.set_read_timeout(Some(TIMEOUT)).unwrap();
     let datagram = |s: &std::net::UdpSocket| {
         let mut b = vec![0u8; 1 << 16];
-        let n = s.recv(&mut b).unwrap();
+        let n = received(
+            &home,
+            "a syslog datagram",
+            |t| s.set_read_timeout(t),
+            || s.recv(&mut b),
+        )
+        .unwrap();
         String::from_utf8(b[..n].to_vec()).unwrap()
     };
     syslog(
@@ -17426,7 +17662,7 @@ fn a_runs_log_is_sent_to_syslog_as_its_options_say() {
     // its time its output's.
     let tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = format!("syslog-address=tcp://{}", tcp.local_addr().unwrap());
-    let reading = syslog_lines(tcp, 2);
+    let reading = syslog_lines(tcp, 2, &home);
     syslog(
         "tcp",
         &[&address, "syslog-format=rfc5424micro", "syslog-facility=local0"],
@@ -17513,12 +17749,14 @@ fn a_runs_log_is_sent_to_syslog_as_its_options_say() {
     );
     let tls = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = tls.local_addr().unwrap().port();
+    let at = home.to_path_buf();
     let reading = std::thread::spawn(move || {
-        let Some(conn) = accept_within(&tls) else {
+        let Some(conn) = accept_within(&tls, &at) else {
             return (String::new(), Err(std::io::ErrorKind::NotConnected));
         };
-        conn.set_read_timeout(Some(TIMEOUT)).unwrap();
-        let mut stream = rustls::StreamOwned::new(rustls::ServerConnection::new(server).unwrap(), conn);
+        let mut session = rustls::ServerConnection::new(server).unwrap();
+        let mut answering = Answering::of_home(&conn, &at);
+        let mut stream = rustls::Stream::new(&mut session, &mut answering);
         let mut got = Vec::new();
         // Its frames, each its length, a space, and its message; then its end: Ok at TLS's
         // close_notify, an error at a reset or an end without it.
@@ -17579,10 +17817,10 @@ fn a_runs_log_is_sent_to_syslog_as_its_options_say() {
         let path = sockets.join("s");
         shards_vmm::platform::winsock().unwrap();
         let unix = shards_vmm::platform::UnixListener::bind(&path).unwrap();
+        let at = home.to_path_buf();
         let reading = std::thread::spawn(move || {
             let (conn, ()) = unix.accept().unwrap();
-            conn.set_read_timeout(Some(TIMEOUT)).unwrap();
-            let mut read = BufReader::new(conn);
+            let mut read = BufReader::new(common::Following::of_home(&conn, &at));
             let (mut lines, mut carried) = (Vec::new(), 0);
             while carried < 40000 {
                 let mut line = String::new();
@@ -17619,7 +17857,6 @@ fn a_runs_log_is_sent_to_syslog_as_its_options_say() {
     let unixgram = std::os::unix::net::UnixDatagram::bind(&gram).unwrap();
     #[cfg(unix)]
     {
-        unixgram.set_read_timeout(Some(TIMEOUT)).unwrap();
         // Room for a part whole: macOS's receive buffer takes no datagram longer (PM M232).
         let room: libc::c_int = 1 << 16;
         // SAFETY: setsockopt(2) of an int from `room` on a socket this test holds.
@@ -17641,7 +17878,13 @@ fn a_runs_log_is_sent_to_syslog_as_its_options_say() {
         let mut parts = Vec::new();
         while parts.iter().sum::<usize>() < 40000 {
             let mut b = vec![0u8; 1 << 16];
-            let n = unixgram.recv(&mut b).unwrap();
+            let n = received(
+                &home,
+                "a syslog part",
+                |t| unixgram.set_read_timeout(t),
+                || unixgram.recv(&mut b),
+            )
+            .unwrap();
             // Within what syslog's receivers take, its newline counted (RFC 5425).
             assert!(n <= 8192, "{n}");
             let m = String::from_utf8(b[..n].to_vec()).unwrap();
@@ -17659,7 +17902,11 @@ fn a_runs_log_is_sent_to_syslog_as_its_options_say() {
         &[&format!("syslog-address=tcp://127.0.0.1:{port}"), "tag=later"],
         &["streams", "out", "err"],
     );
-    let reading = syslog_lines(std::net::TcpListener::bind(("127.0.0.1", port)).unwrap(), 2);
+    let reading = syslog_lines(
+        std::net::TcpListener::bind(("127.0.0.1", port)).unwrap(),
+        2,
+        &home,
+    );
     let got = reading.join().unwrap();
     assert!(
         got.len() == 2 && got[0].ends_with(": err\n") && got[1].ends_with(": out\n"),
@@ -17675,7 +17922,11 @@ fn a_runs_log_is_sent_to_syslog_as_its_options_say() {
     );
     let stopped = without_vms(&home, &["daemon", "stop"]);
     assert_eq!(stopped.status, Some(0), "{stopped}");
-    let reading = syslog_lines(std::net::TcpListener::bind(("127.0.0.1", port)).unwrap(), 2);
+    let reading = syslog_lines(
+        std::net::TcpListener::bind(("127.0.0.1", port)).unwrap(),
+        2,
+        &home,
+    );
     assert_eq!(shards(&["ps", "-a", "-q"]).status, Some(0));
     let got = reading.join().unwrap();
     assert!(
@@ -17827,13 +18078,18 @@ fn a_runs_log_is_sent_to_gelf_as_its_options_say() {
         r
     };
     let udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
-    udp.set_read_timeout(Some(TIMEOUT)).unwrap();
     let address = format!("gelf-address=udp://{}", udp.local_addr().unwrap());
     let receive = |n: usize| {
         let mut datagrams = Vec::new();
         while gelf_messages(&datagrams).len() < n {
             let mut b = vec![0u8; 1 << 16];
-            let got = udp.recv(&mut b).unwrap();
+            let got = received(
+                &home,
+                "a GELF datagram",
+                |t| udp.set_read_timeout(t),
+                || udp.recv(&mut b),
+            )
+            .unwrap();
             b.truncate(got);
             datagrams.push(b);
         }
@@ -17899,10 +18155,10 @@ fn a_runs_log_is_sent_to_gelf_as_its_options_say() {
     // TCP: each message followed by a NUL.
     let tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = format!("gelf-address=tcp://{}", tcp.local_addr().unwrap());
+    let at = home.to_path_buf();
     let reading = std::thread::spawn(move || {
-        let conn = accept_within(&tcp).unwrap();
-        conn.set_read_timeout(Some(TIMEOUT)).unwrap();
-        let mut read = BufReader::new(conn);
+        let conn = accept_within(&tcp, &at).unwrap();
+        let mut read = BufReader::new(common::Following::of_home(&conn, &at));
         let mut got = Vec::new();
         while got.len() < 2 {
             let mut m = Vec::new();
@@ -18064,10 +18320,10 @@ fn a_runs_log_is_sent_to_fluentd_as_its_options_say() {
     // TCP, to the nanosecond, an ack asked for each.
     let tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = format!("fluentd-address={}", tcp.local_addr().unwrap());
+    let at = home.to_path_buf();
     let reading = std::thread::spawn(move || {
-        let mut conn = accept_within(&tcp).unwrap();
-        conn.set_read_timeout(Some(TIMEOUT)).unwrap();
-        fluentd_events(&mut conn, 2)
+        let conn = accept_within(&tcp, &at).unwrap();
+        fluentd_events(&mut Answering::of_home(&conn, &at), 2)
     });
     fluentd(
         "nanos",
@@ -18118,10 +18374,10 @@ fn a_runs_log_is_sent_to_fluentd_as_its_options_say() {
         shards_vmm::platform::winsock().unwrap();
         shards_vmm::platform::UnixListener::bind(&path).unwrap()
     };
+    let at = home.to_path_buf();
     let reading = std::thread::spawn(move || {
-        let (mut conn, _) = unix.accept().unwrap();
-        conn.set_read_timeout(Some(TIMEOUT)).unwrap();
-        fluentd_events(&mut conn, 2)
+        let (conn, _) = unix.accept().unwrap();
+        fluentd_events(&mut Answering::of_home(&conn, &at), 2)
     });
     fluentd(
         "parts",
@@ -18173,7 +18429,11 @@ fn a_runs_log_is_sent_to_fluentd_as_its_options_say() {
 /// memfd, whether that was sealed against every change, as journald takes one from a
 /// sender it cannot vouch for.
 #[cfg(target_os = "linux")]
-fn journal_entry(journal: &std::os::unix::net::UnixDatagram) -> (Vec<(String, String)>, Option<bool>) {
+#[track_caller]
+fn journal_entry(
+    journal: &std::os::unix::net::UnixDatagram,
+    home: &Path,
+) -> (Vec<(String, String)>, Option<bool>) {
     use std::os::fd::{AsRawFd as _, FromRawFd as _};
     use std::os::unix::fs::FileExt as _;
     let mut data = vec![0u8; 1 << 20];
@@ -18188,9 +18448,22 @@ fn journal_entry(journal: &std::os::unix::net::UnixDatagram) -> (Vec<(String, St
     msg.msg_iovlen = 1;
     msg.msg_control = control.as_mut_ptr().cast();
     msg.msg_controllen = std::mem::size_of_val(&control) as _;
-    // SAFETY: recvmsg(2) into the buffers above, on a socket this test holds.
-    let n = unsafe { libc::recvmsg(journal.as_raw_fd(), &mut msg, libc::MSG_CMSG_CLOEXEC) };
-    assert!(n >= 0, "{}", std::io::Error::last_os_error());
+    // Read as `home`'s daemon sends it ([`received`]).
+    let n = received(
+        home,
+        "a journal entry",
+        |t| journal.set_read_timeout(t),
+        || {
+            // SAFETY: recvmsg(2) into the buffers above, on a socket this test holds.
+            let n = unsafe { libc::recvmsg(journal.as_raw_fd(), &mut msg, libc::MSG_CMSG_CLOEXEC) };
+            if n < 0 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(n)
+            }
+        },
+    )
+    .unwrap();
     data.truncate(usize::try_from(n).unwrap());
     let mut sealed = None;
     // SAFETY: the control message recvmsg wrote, read as CMSG_* read one; its descriptor
@@ -18256,7 +18529,6 @@ fn a_runs_log_is_sent_to_journald_as_its_options_say() {
         let sockets = TempDir::new("jd");
         let path = sockets.join("j");
         let journal = std::os::unix::net::UnixDatagram::bind(&path).unwrap();
-        journal.set_read_timeout(Some(TIMEOUT)).unwrap();
         let (image, _) = served();
         let home = TempDir::new("containers-journald");
         let (kernel, init) = (kernel(), guest_init());
@@ -18306,7 +18578,7 @@ fn a_runs_log_is_sent_to_journald_as_its_options_say() {
             &["streams", "out", "err"],
         );
         let short = id.get(..12).unwrap();
-        let mut entries = [journal_entry(&journal), journal_entry(&journal)];
+        let mut entries = [journal_entry(&journal, &home), journal_entry(&journal, &home)];
         entries.sort_by_key(|(fields, _)| field(fields, "MESSAGE"));
         let stamped = shards_in(&home, &["logs", "-t", "streams"]);
         let rfc3339 = &time::format_description::well_known::Rfc3339;
@@ -18345,7 +18617,7 @@ fn a_runs_log_is_sent_to_journald_as_its_options_say() {
 
         // A line of 100,000 bytes in parts of the journal's own LineMax, 48 KiB.
         journald("parts", &[], &["wide", "100000"]);
-        let parts: Vec<_> = (0..3).map(|_| journal_entry(&journal).0).collect();
+        let parts: Vec<_> = (0..3).map(|_| journal_entry(&journal, &home).0).collect();
         let partial = field(&parts[0], "CONTAINER_PARTIAL_ID");
         assert_eq!(partial[0].len(), 64);
         for (i, fields) in parts.iter().enumerate() {
@@ -18389,7 +18661,7 @@ fn a_runs_log_is_sent_to_journald_as_its_options_say() {
             ],
             &["wide", "10"],
         );
-        let (fields, sealed) = journal_entry(&journal);
+        let (fields, sealed) = journal_entry(&journal, &home);
         assert_eq!(sealed, Some(true), "in a memfd, sealed");
         assert_eq!(field(&fields, "MESSAGE"), ["x".repeat(10)]);
         for n in 1..=labels {
@@ -18530,7 +18802,7 @@ fn a_runs_log_is_sent_to_splunk_as_its_options_say() {
     let posted = |want: usize| -> (Vec<HecRequest>, Vec<serde_json::Value>) {
         let (mut posts, mut events) = (Vec::new(), Vec::new());
         while events.len() < want {
-            let request: HecRequest = requests.recv_timeout(TIMEOUT).unwrap();
+            let request: HecRequest = sent(&requests, &home, || "a HEC post".into());
             if request.target == "/services/collector/event/1.0" {
                 events.extend(hec_events(&request.body));
             }
@@ -18598,7 +18870,7 @@ fn a_runs_log_is_sent_to_splunk_as_its_options_say() {
     let mut channels = std::collections::BTreeSet::new();
     let mut lines = 0;
     while lines < 2 || asked.is_empty() {
-        let request: HecRequest = requests.recv_timeout(TIMEOUT).unwrap();
+        let request: HecRequest = sent(&requests, &home, || "a HEC request".into());
         channels.insert(request.fields["x-splunk-request-channel"].clone());
         if request.target.starts_with("/services/collector/ack") {
             asked.push(request.target.clone());
@@ -18872,7 +19144,7 @@ fn a_runs_log_is_sent_to_cloudwatch_logs_as_its_options_say() {
     let put = |stream: &str, want: usize| -> (Vec<CloudWatchRequest>, Vec<serde_json::Value>) {
         let (mut asked, mut events) = (Vec::new(), Vec::new());
         while events.len() < want {
-            let r: CloudWatchRequest = requests.recv_timeout(TIMEOUT).unwrap();
+            let r: CloudWatchRequest = sent(&requests, &home, || "a CloudWatch request".into());
             if r.target == "Logs_20140328.PutLogEvents" && r.body["logStreamName"] == stream {
                 events.extend(r.body["logEvents"].as_array().unwrap().iter().cloned());
             }
@@ -19164,11 +19436,13 @@ fn google(listener: std::net::TcpListener, seen: std::sync::mpsc::Sender<GoogleR
 }
 
 /// The entries of macOS's unified log under subsystem `shards` and `category`, each its type
-/// and its message, as `log show` gives them, waiting up to TIMEOUT for `count`: a run's
-/// lines are sent from the store after it, not as it ends.
+/// and its message, as `log show` gives them, waiting for `count` while `home`'s daemon and
+/// its microVMs go on ([`Patience`], its kind its caller's call site): a run's lines are
+/// sent from the store after it, not as it ends.
 #[cfg(target_os = "macos")]
-fn unified_log(category: &str, count: usize) -> Vec<(String, String)> {
-    let deadline = Instant::now() + TIMEOUT;
+#[track_caller]
+fn unified_log(category: &str, count: usize, home: &Path) -> Vec<(String, String)> {
+    let mut patience = Patience::of(home);
     loop {
         let out = common::client_output(
             std::process::Command::new("/usr/bin/log").args([
@@ -19193,10 +19467,14 @@ fn unified_log(category: &str, count: usize) -> Vec<(String, String)> {
                 )
             })
             .collect();
-        if entries.len() >= count || Instant::now() > deadline {
+        if entries.len() >= count {
+            patience.done();
             return entries;
         }
-        std::thread::sleep(Duration::from_millis(200));
+        if !patience.holds() {
+            return entries;
+        }
+        std::thread::sleep(patience.next_look());
     }
 }
 
@@ -19237,7 +19515,7 @@ fn a_runs_log_is_sent_to_macos_own_log_as_its_options_say() {
             assert_eq!(r.status, Some(0), "{r}");
         };
         ran("oslog", &tag, &["streams", "out", "err"]);
-        let mut got = unified_log(&tag, 2);
+        let mut got = unified_log(&tag, 2, &home);
         got.sort();
         assert_eq!(
             got,
@@ -19246,11 +19524,14 @@ fn a_runs_log_is_sent_to_macos_own_log_as_its_options_say() {
         );
         let wide = format!("{tag}-wide");
         ran("oslog", &wide, &["wide", "3000"]);
-        let parts: Vec<usize> = unified_log(&wide, 3).iter().map(|(_, m)| m.len()).collect();
+        let parts: Vec<usize> = unified_log(&wide, 3, &home)
+            .iter()
+            .map(|(_, m)| m.len())
+            .collect();
         assert_eq!(parts, [1015, 1015, 970]);
         let local = format!("{tag}-syslog");
         ran("syslog", &local, &["streams", "out", "err"]);
-        let mut got = unified_log(&local, 2);
+        let mut got = unified_log(&local, 2, &home);
         got.sort();
         assert_eq!(
             got,
@@ -19374,15 +19655,21 @@ impl EtwSession {
         })
     }
 
-    /// The events' strings come so far, waiting up to TIMEOUT for `count`.
-    fn events(&self, count: usize) -> Vec<String> {
-        let deadline = Instant::now() + TIMEOUT;
+    /// The events' strings come so far, waiting for `count` while `home`'s daemon and its
+    /// microVMs go on ([`Patience`], its kind its caller's call site).
+    #[track_caller]
+    fn events(&self, count: usize, home: &Path) -> Vec<String> {
+        let mut patience = Patience::of(home);
         loop {
             let got = self.events.lock().unwrap().clone();
-            if got.len() >= count || Instant::now() > deadline {
+            if got.len() >= count {
+                patience.done();
                 return got;
             }
-            std::thread::sleep(Duration::from_millis(20));
+            if !patience.holds() {
+                return got;
+            }
+            std::thread::sleep(patience.next_look());
         }
     }
 }
@@ -19446,7 +19733,7 @@ fn a_runs_log_is_sent_to_etw_as_its_options_say() {
             id.trim(),
             image_id.trim()
         );
-        let mut events = session.events(2);
+        let mut events = session.events(2, &home);
         events.sort();
         assert_eq!(
             events,
@@ -19535,7 +19822,7 @@ fn a_runs_log_is_sent_to_cloud_logging_as_its_options_say() {
     let written = |want: usize| -> (Vec<GoogleRequest>, Vec<serde_json::Value>) {
         let (mut asked, mut entries) = (Vec::new(), Vec::new());
         while entries.len() < want {
-            let r: GoogleRequest = requests.recv_timeout(TIMEOUT).unwrap();
+            let r: GoogleRequest = sent(&requests, &home, || "a Google request".into());
             if r.target == "/v2/entries:write" {
                 let body: serde_json::Value = serde_json::from_str(&r.body).unwrap();
                 entries.extend(body["entries"].as_array().unwrap().iter().cloned());
