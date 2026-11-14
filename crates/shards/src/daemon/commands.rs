@@ -37,22 +37,13 @@ use crate::spec::{LOG_STDERR, LOG_STDOUT};
 #[derive(Debug, PartialEq, Eq)]
 enum CopyUserRefusal {
     ContainerGone,
-    /// Its record names no image ID, which every record a release made names (v0.3.0 on):
-    /// its image's user is unknown, and root is not assumed for it.
-    NoImage,
-    ConfigMissing {
-        image: String,
-        manifest: Option<String>,
-    },
+    ConfigMissing { image: String, manifest: Option<String> },
 }
 
 impl CopyUserRefusal {
     fn message(self, container: &str) -> String {
         match self {
             Self::ContainerGone => format!("microVM {container}: its record is no longer there"),
-            Self::NoImage => format!(
-                "microVM {container}: its record names no image, so its user is unknown; copy without -a"
-            ),
             Self::ConfigMissing { image, manifest } => format!(
                 "microVM {container}: image {image}, manifest {manifest:?}: its user config is unavailable"
             ),
@@ -943,8 +934,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
             .get(id)
             .cloned()
             .ok_or(CopyUserRefusal::ContainerGone)?;
-        let image = c.image_id.ok_or(CopyUserRefusal::NoImage)?;
-        let (config, _) = self.image_facts(Some(&image), c.image_manifest.as_deref());
+        let image = c.image_id;
+        let (config, _) = self.image_facts(&image, c.image_manifest.as_deref());
         let config = config.ok_or(CopyUserRefusal::ConfigMissing {
             image,
             manifest: c.image_manifest,
@@ -2780,7 +2771,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                     "id": c.id,
                     "name": c.name,
                     "image": c.image,
-                    "image_id": c.image_id.clone().unwrap_or_default(),
+                    "image_id": c.image_id,
                     "command": command_line(&c.command),
                     "created": i64::try_from(c.created / 1_000_000_000).unwrap_or(0),
                     "ports": ports,
@@ -3201,22 +3192,12 @@ impl Show<'_, '_> {
 #[allow(clippy::unwrap_used)]
 mod tests {
 
-    /// `cp -a` copies as the microVM's user, its run's or else its image's: a record that
-    /// names no image ID is refused (`NoImage`), never copied as root, which an empty user
-    /// is. Red before legacy3, which answered root for it.
+    /// `cp -a` copies as the microVM's user, its run's or else its image's: a microVM whose
+    /// record is gone is refused, never copied as root. One whose record names no image ID
+    /// is never read (`containers::Unread::NoImage`, D179).
     #[test]
-    fn a_copy_as_the_user_of_a_record_with_no_image_is_refused() {
+    fn a_copy_as_the_user_of_a_record_gone_is_refused() {
         let t = super::super::tests::Test::new("cp-user");
-        let id = "c".repeat(64);
-        let record: crate::containers::Container = serde_json::from_value(serde_json::json!({
-            "id": id, "name": "imageless", "image": "alpine", "command": [], "created": 1,
-            "state": crate::containers::State::Exited, "started": null, "finished": null,
-            "exit_code": null, "auto_remove": false,
-        }))
-        .unwrap();
-        assert_eq!(record.image_id, None);
-        super::lock(&t.daemon.containers).adopt(record).unwrap();
-        assert_eq!(t.daemon.container_user(&id), Err(super::CopyUserRefusal::NoImage));
         assert_eq!(
             t.daemon.container_user(&"d".repeat(64)),
             Err(super::CopyUserRefusal::ContainerGone)

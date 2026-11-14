@@ -1112,7 +1112,8 @@ mod tests {
         shards_testdir::program(
             &bin.join("docker-credential-deaf"),
             "#!/bin/sh\nexec 0<&-\necho '{\"ServerURL\":\"x\",\"Username\":\"u\",\"Secret\":\"s\"}'\n",
-        ).unwrap();
+        )
+        .unwrap();
         let dirs = format!("{}:/bin:/usr/bin", bin.display());
         let env = [("PATH", dirs.as_str())];
         let long = "k".repeat(1 << 20);
@@ -1140,7 +1141,6 @@ esac
 "#;
         shards_testdir::program(&dir.join(format!("docker-credential-{name}")), script).unwrap();
     }
-
 
     /// What a context's client sends of its own reads back as it was: a password, an
     /// identity token and a registry's token, Docker Hub's under its index's key; none for a
@@ -1374,7 +1374,8 @@ esac
                 "#!/bin/sh\nIFS= read -r line || true\nprintf '%s %s\\n' \"$1\" \"$line\" >> '{}'\n",
                 log.display()
             ),
-        ).unwrap();
+        )
+        .unwrap();
         std::fs::write(dir.join("config.json"), r#"{"credsStore":"shardstest"}"#).unwrap();
         let mut vars: HashMap<String, String> = HashMap::new();
         vars.insert("DOCKER_CONFIG".into(), dir.to_string_lossy().into_owned());
@@ -1471,14 +1472,16 @@ esac
                 "#!/bin/sh\necho $$ >> '{}'\nexec /bin/sleep 3613\n",
                 pids.display()
             ),
-        ).unwrap();
+        )
+        .unwrap();
         shards_testdir::program(
             &dir.join("docker-credential-parent"),
             &format!(
                 "#!/bin/sh\necho $$ >> '{0}'\n/bin/sleep 3613 &\necho $! >> '{0}'\nwait\n",
                 pids.display()
             ),
-        ).unwrap();
+        )
+        .unwrap();
     }
 
     /// A helper is started as it is found and never waited for unless its answer is read:
@@ -1540,7 +1543,8 @@ esac
         shards_testdir::program(
             &dir.join("docker-credential-marking"),
             &format!("#!/bin/sh\necho asked >> '{}'\n", marks.display()),
-        ).unwrap();
+        )
+        .unwrap();
         std::fs::write(
             dir.join("config.json"),
             r#"{"credsStore":"marking","auths":{"t.example":{"registrytoken":"rt"}}}"#,

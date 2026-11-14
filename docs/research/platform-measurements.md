@@ -24848,7 +24848,6 @@ against 2e00a1043 (whose starts read no bytes) on one template, HVF, KVM and WHP
 - **Decision.** Clear inheritance where a duplicate is made (D215), and give `shards_api`
   callers `&dyn Stream` reads and writes and `into_socket`, so none needs a duplicate.
 
-
 ### M583. A run host's pipes' ends say nothing of its processes': inheritors, Linux's unordered file release, and macOS's waitid taking a stop for an end (D231, D215)
 
 - **Question.** Both of an image run's stops (shards-api `Begun::started`, `Session::stop`)
@@ -24892,3 +24891,82 @@ against 2e00a1043 (whose starts read no bytes) on one template, HVF, KVM and WHP
   (`Child::end_group`), and drain the pipes without waiting for their ends; `status_of`
   takes only an exit as an end, and `Child::wait` never waits holding what a kill takes. A
   test checks a process's end by its ID and start, not by a pipe it held.
+
+### M584. A zombie's CPU clock grows after its exit is told (D215; shards-api's `an_exited_process_is_read_until_it_is_reaped`)
+
+- **Question.** `progress::tests::an_exited_process_is_read_until_it_is_reaped` failed 2 of
+  40 runs of shards-api's library tests on adacachy2 (64 test threads, ROOT's flaky3 lane).
+  It reads a child of `true` that waitid(2) (WEXITED | WNOWAIT) has seen exit, and held each
+  later read of its CPU (`ran_by_end`) equal to the first. Is a zombie's CPU fixed?
+- **Method.** adacachy2: Linux 7.3.3-1-cachyos, x86_64, 32 CPUs; rustc 1.98.1; at
+  b27eeffe5, 2026-11-14.
+  - The test alone, 3,000 times, 32 at once:
+    `seq 1 3000 | nice -n 10 xargs -P 32 -I{} sh -c "$bin --exact progress::tests::an_exited_process_is_read_until_it_is_reaped"`.
+  - A probe in C (docs/research/measurements/api-flakes/zombie-cpu.c): 5,000 times,
+    posix_spawn `true`, waitid it to its exit with WNOWAIT, read its process CPU clock
+    (clock_getcpuclockid(3)) three times, sleep 200 µs, and read it again.
+- **Results.**
+  - Before: 1 of 3,000 failed, `left: Some(287.679µs)`, `right: Some(241.222µs)`
+    (progress.rs:1889). Its old equality put back over the fixed test (the mutation): 1 of
+    3,000, `261.58µs read after 259.386µs`.
+  - The probe, on an idle host: 14 of 5,000 zombies' clocks grew after waitid saw them, by
+    3 to 8 µs. The three reads at once were equal each time; the one after the sleep
+    was more.
+  - Why: Linux tells an exit (kernel/exit.c, `do_exit`'s `exit_notify`, which wakes the
+    parent's waitid and makes the state `Z`) before the task's last switch from its CPU
+    (`do_task_dead`), and the switch charges its clock with what ran in between. A parent
+    woken on the child's CPU preempts it there, and the child finishes its exit later.
+  - After, the test holding each later read no less than the one before: 0 of 3,000, the
+    same load. 0 failures of it in 250 runs of the whole library at 64 threads.
+- **Decision.** No production change: the watcher reads a zombie's CPU once, as what it
+  had run by its exit's notice. `ran_by_end`'s doc and D215 say so, and the test holds the
+  clock monotonic rather than fixed.
+
+### M585. A test's look at a worker thread: one that has answered, and one in the kernel's own wait (D233; shards-api's `a_pid_that_names_another_process_is_never_followed`)
+
+- **Question.** `client::borrowed_tests::no_clock::a_pid_that_names_another_process_is_never_followed`
+  failed 1 of 40 runs of shards-api's library tests on adacachy2 (64 test threads, ROOT's
+  flaky3 lane). Its connect runs on a thread of its own, judged by `while_runs::answer`,
+  which looks at the thread each `kept_wait` (microseconds there) past its deadline and
+  fails the test if the thread is blocked at two looks in a row. Why did it fail?
+- **Method.** adacachy2: Linux 7.3.3-1-cachyos, x86_64, 32 CPUs; rustc 1.98.1; at
+  b27eeffe5, 2026-11-14. The library's tests, `nice -n 10 $bin --test-threads=64` from
+  `crates/api`, in loops of 60 to 300; the test alone, 3,000 times, 32 at once (xargs -P
+  32). The look's failure message was made to name the thread's state and `wchan`
+  (proc(5)) to find where it waited.
+- **Results.**
+  - Before: 3 of 60 runs, then 1 of about 100, failed it. Two ways:
+    - `called Result::unwrap() on an Err value: Os { code: 2 }` (ENOENT), and once
+      `code: 3` (ESRCH), at while_runs.rs:46, the read of `/proc/self/task/<tid>/stat`. The
+      worker answered and ended between the look's timed-out receive and its read: a
+      thread's `/proc` entry goes as it ends. On macOS the same race reads a port name the
+      ended thread let go of, which another port may take.
+    - `blocked in the kernel 122.078µs past its 2.074µs`. Counted again with the state and
+      `wchan` named, at 300 runs: `D do_task_stat` (its read of the identity's
+      `/proc/<pid>/stat`) and `D lock_mm_and_find_vma` (a page fault waiting for the
+      process's memory map, which another test's thread held), each at both looks. A
+      sibling test failed the same way in `D lock_mm_and_find_vma`.
+  - Fixes, in `while_runs`:
+    - The worker thread waits, once it has answered, until its `Worker` is dropped, so
+      every look reads that thread; and a look counts only where no answer had come by its
+      end (it waits too, once it has answered). The unit test
+      `while_runs::tests::a_worker_that_has_answered_is_still_its_thread_at_each_look`
+      looks at an answered worker until it waits: 20 of 20 passed; with the hold dropped
+      (the mutation) 20 of 20 failed, ENOENT 19 times and ESRCH once.
+    - A look counts the thread as waiting only in an interruptible sleep (`S`; Mach's
+      TH_STATE_WAITING): a poll, a read, a futex, which only its event ends, the waits a
+      call that should have answered would make. An uninterruptible one (`D`; Mach's
+      TH_STATE_UNINTERRUPTIBLE) is the kernel's own work, a fault on a memory map another
+      thread holds or a `/proc` read, which ends as that work does: the host's hold, waited
+      on as a run queue is. With `D` counted again (the mutation): the test failed 2 of
+      300 runs, in `D do_task_stat` and `D lock_mm_and_find_vma`.
+  - After: the test 0 of 3,000 (32 at once), 0 in 150 runs of the whole library.
+  - Found beside it, not fixed here: `client::tests::a_report_with_no_clock_is_taken_as_it_comes`
+    fails `waiting for an event 2.3 to 7.0 ms past its 1ms` in `S __x64_sys_poll`, 2 of
+    150 runs after these fixes and 19 of 300 with `D` counted: its take waits in poll for
+    a frame another thread writes, which that thread's own delay under load holds back.
+    `image::session::tests::a_stop_returns_once_its_host_and_every_process_it_started_are_gone`
+    fails "the stop returned while the VM its run host started still ran" (2 of 60, 5 of
+    300, at b27eeffe5, before M583's fix of the stop).
+- **Decision.** No production change: both causes were the test helper's. D233 records
+  the look's rule.

@@ -3893,10 +3893,21 @@ D12's too, derived apart):
   one register, as the guest's driver sizes it. Host input waits for room instead of
   overrunning it, as Firecracker reads stdin only as far as its FIFO has room, so nothing
   typed or pasted is lost: what the guest has not drained waits in the host's own pipe or
-  terminal. A loopback write past the room overruns, as the datasheet's does. A
-  snapshot's receiver restores whole up to the FIFO's 16 bytes, the most it holds in
-  either mode; one that holds more is refused as a malformed state (`DecodeError`, "the
-  console's receiver"), never restored (legacy3, 2026-11-14). Only builds before
+  terminal. A loopback write past the room overruns, as the datasheet's does. A change
+  of mode clears the receiver, FIFO to 16450 and back, and FCR1 clears it only with FCR0
+  set (PC16550D datasheet, National Semiconductor, June 1995, 8.5 FIFO Control
+  Register: "When changing from the FIFO Mode to the 16450 Mode and vice versa, data is
+  automatically cleared from the FIFOs. This bit must be a 1 when other FCR bits are
+  written to or they will not be programmed"; QEMU's hw/char/serial.c flushes on a
+  change of FCR's enable bit too). Before legacy4 (2026-11-14) a reset of FCR0 kept
+  what the FIFO held, so a 16450-mode receiver could hold 16 bytes, which is why legacy3
+  bounded a restore by the FIFO in either mode. A snapshot's receiver now restores whole
+  up to what its mode holds (`rx_capacity`: 16 bytes in FIFO mode, 1 in 16450 mode, the
+  mode read first); one that holds more is refused as a malformed state (`DecodeError`,
+  "the console's receiver"), never restored (legacy3, legacy4). Red/green: serial.rs
+  `a_change_of_mode_clears_the_receiver` (16 bytes kept past FCR0's reset before) and
+  `a_receiver_past_its_modes_depth_is_refused`'s 16450 rows (2 to 16 bytes restored
+  before). Only builds before
   66652aafb (2026-11-09) kept up to 4096 (`RX_CAPACITY`): v0.6.0's and v0.7.0's snapshots
   (formats 24 and 28) among them; every format-29 writer (83b09843a, 2026-11-11, after
   66652aafb) bounded it. Refused, not migrated: a template is a cache the daemon makes
@@ -3906,7 +3917,7 @@ D12's too, derived apart):
   (`forward_stdin`), typed input the guest had not read as it was saved, which no
   rewrite could give back to a 16-byte receiver without dropping it. The reader of the
   older 4096 bytes is gone. Red/green: serial.rs
-  `a_receiver_past_the_fifos_depth_is_refused` (16 restore; 17 and 4096 refused), which
+  `a_receiver_past_its_modes_depth_is_refused` (16 restore; 17 and 4096 refused), which
   restored the 4096 before.
 
 | Literal | Was | Now | Source |
@@ -9146,9 +9157,24 @@ daemon, which has no event to wait for. `UNWATCHED` is gone (runs-11, below).
   - Windows' slots needed none of it: a client takes an instance by opening it, and its end
     ends the instance's reads (M340), so `Slot::wait` is `Gone` already; `probe` is always
     named and `quiet` never held.
-  - A build before takers: a client finds no `N.taker` and no `taking` and names nothing; a
-    daemon of it makes neither. Either way the slot is served as before, its request reaching
-    the daemon to step aside for its client's build.
+  - The take lock is required (legacy4, 2026-11-14). A daemon makes `requests/taking`
+    before its lists, under `.taking.new` renamed into place, and makes it again so as it
+    makes its lists again (`Requests::renew`), so that every list a client opens has one
+    beside it and its name never names nothing. A client that finds a list with none, the
+    list's name still naming the FIFO it opened, is refused typed (`Taken::NoTakeLock`,
+    "a daemon of a shards from before slots' takers named themselves serves this home ...
+    end that daemon's process") and asks nothing; where the list was made again or went
+    since it opened it, it looks again. Its hold is `Taking(File)`: the `Option` whose
+    `None` took a slot with no hold, "a build's before takers named themselves", is gone,
+    as is a client's naming of nothing where a slot has no `N.taker` (`name_taker`'s
+    NotFound, now passed over as a slot removed since its offer, as ENXIO is). No release
+    made either: the lock and the taker came in 65bf5db0d (2026-11-13), which
+    `git tag --contains` names no `v*` for, and v0.7.0's slots have neither; a client and
+    its daemon are one build (D36), and such a daemon was served only to step aside, which
+    the client now refuses, as it does a daemon from before slots
+    (`shards_ipc::PreSlotsDaemon`). Red/green: `a_list_with_no_take_lock_beside_it_is_refused`
+    (the slot was taken unheld before), whose rows also hold the lock's file made before
+    the lists and anew at a renewal.
   Red, each by mutation: the taker's end not followed (the wait never ends), in
   `slots::fifo::tests::a_slot_whose_taker_ends_before_its_request_is_gone`; the lock not
   asked, and names not looked at, in
@@ -10499,7 +10525,9 @@ stores.
   before. A snapshot keeps the heads as it keeps a writable layer's (D190): each alike 2
   MiB block once, beside its memory (`window-heads`, format 25), mapped back after a
   template's save and privately by each restore. A microVM saved in format 24, as shards
-  0.6.0 saves, restores where it has no windows. A window took a 64th of its length of its
+  0.6.0 saves, is rewritten once in the current format as it is first restored where it
+  has no windows, and refused where it has (D176, *A user's snapshot of an older
+  format*). A window took a 64th of its length of its
   guest's free memory, 64.1 MiB for 4 GiB on Fedora, and 72.0 on the Mac with its linear
   map's page tables; with its head, none on Fedora (-0.2 to 0.1 MiB at every length, n 12)
   and those page tables alone on the Mac (8.3 MiB). Fedora's 4 GiB boot reached PID 1 20 ms
@@ -14924,9 +14952,24 @@ its user could not change, and a user nobody recorded was taken for the most pri
 one. No release made such a record: `image_id` came in 993756c9e (2026-10-02), before
 v0.3.0, the first release, and in every release (`git grep 'image_id: ' TAG` for v0.3.0 to v0.7.0)
 the daemon's one record maker writes `Some(prepared.image_id)`, the `None`s in test
-modules alone. So there is nothing to migrate; the refusal stands where no image is named.
-Red/green: commands.rs `a_copy_as_the_user_of_a_record_with_no_image_is_refused`, a record
-read without its `image_id` key, answered root before.
+modules alone. So there is nothing to migrate.
+The image ID is required (legacy4, 2026-11-14): `Container.image_id` is a `String` with no
+`serde(default)`, and a record without it, or with it null (how the `Option` wrote none), is
+refused as the store reads it, typed (`containers::Unread::NoImage`, "its record names no
+image ID, which every record shards makes names"), its microVM never seen and its
+directory left as it is and noted, as an unreadable record's is. Every branch for none is
+gone with the `Option`: `cp -a`'s `CopyUserRefusal::NoImage` (no record it reads can lack
+one), `ps --filter ancestor`'s, `images`' counts and `prune`'s users, `inspect`'s image facts
+and size, the Engine API's `ImageID` and the listing's `image_id` (an empty string for
+none), a move's plan (the same), and a live move's look for its image by reference
+instead (`unwrap_or_else(|| c.image.clone())`). Not one release could need them: the one
+maker writes the image the run resolved (`git grep 'image_id: ' v0.3.0..v0.7.0`: the
+daemon's `Some(prepared.image_id.clone())`, the `None`s in test modules alone), and no
+release assigns the field after (`git grep '.image_id = '` names none in v0.7.0 or now).
+A moved record (D176 part 6) is held to the same, refused as its stream's record is read.
+Red/green: containers.rs `a_record_with_no_image_id_is_refused` (absent and null; both
+read with no image before), and commands.rs `a_copy_as_the_user_of_a_record_gone_is_refused`
+for the refusal that remains.
 The two-platform store regression changes the preference both ways, checks each selected
 User/Env/descriptor and a missing manifest. Real guest/inspect/copy agreement remains
 ROOT's live check in the [runs fix record](../research/measurements/runs-fixes/README.md).
@@ -16224,6 +16267,49 @@ way (FEAT_SSBS one way, FEAT_FPACCOMBINE, FEAT_WFxT and SME's the other). Two Ma
 chip and OS (Hypervisor.framework) are a pair to run it on; a pair of KVM x86_64 hosts needs a second
 whose CPU has every feature of the first's, as /proc/cpuinfo names them, or a tailnet for
 CI's runners.
+
+**A user's snapshot of an older format is rewritten once** (legacy4, 2026-11-14). A
+microVM saved by shards 0.6.0 (format 24) or 0.7.0 (28), or by a build between (25 to 27;
+0.3.0 to 0.5.0 wrote 10), is a user's data that outlives the binary that wrote it: a saved
+run's `snapshots/NAME` (`save vm`, and a stopped one's move), or a directory `shards
+restore DIR` is given (`run --kernel --snapshot-dir`). Its state was read in its own
+format at every restore (`VERSION_WITHOUT_WINDOWS`, 24 to 29, `decode`'s branches each
+time). Now a restore reads the current format alone (`snapshot::decode`, "snapshot format
+N; this shards reads 29, and rewrites a snapshot of it in its own as it first restores
+it"), and the older formats' reader (`decode_body`'s branches) is `snapshot::migrate`'s
+alone: called before anything reads such a snapshot, by the daemon as it resumes one
+(`resumable`) and as it plans its move (`plan`, whose `format` says the current one), and
+by `shards restore DIR` before its VM process starts (not for `--warm` or `--resume`,
+the daemon's). It reads the state whole, writes it in the current format with the same
+generation, backing files and their identities (as taken at the save: a restore still
+checks each file against them), `.state.migrated` beside it, synced, renamed over `state`
+and the generation synced, with the snapshot's writers' lock held, so that a reader finds
+the old state or the new and two first restores rewrite it once; a second finds it
+current (`Migrated::Current`) and writes nothing. The daemon logs a rewrite, the CLI says
+it on stderr. What it fills in is what the old reader gave each restore: 27's runs of
+data none (a restore maps the RAM from the memory file whole), 28's PCI slots none, 29's
+GPU selection none; the memory, swap, layer and window heads files are not touched, as
+their layout did not change. Refused typed and left as it was (`MigrateRefused`): a format
+it has no reader of (`Format`: 10, whose machines and devices were laid out otherwise
+and which no build since 0.6.0 reads, or past the current one); format 24 to 27 of a
+machine with DAX windows (`WindowsLaidOutOtherwise`: before each window had its head
+beside it its guest's page structures were in its memory, D189, which the old reader
+refused too); a body that is not its format's (`Malformed`); and a write that fails
+(`Unwritten`, the old state kept). A console receiver past its mode's depth in the
+devices' state (D12; builds before 66652aafb kept up to 4096 bytes) is not a format's and
+is refused at the restore, after the rewrite, as before. A template is not a user's: it is
+keyed by the format (D25, `run::template`'s key), so this build never looks one of an
+older format up, and one that does not restore is removed and made again; `migrate` is
+never called for one. The encoder writes the current format alone (`encode_as`'s
+`version` is gone); the tests' `encode_older` lays the older formats out as their builds
+did. Red/green: `a_restore_refuses_a_state_of_an_older_format` (each of 24 to 28 read by
+every restore before), `an_older_formats_snapshot_is_migrated_once_then_restores` (each
+of 24 to 28 on disk: refused, rewritten once, restored as saved, a second migration
+writing nothing; no migration existed before), and
+`a_snapshot_no_migration_rewrites_is_refused_typed_and_left` (10, 23, 30, 27 with
+windows, a cut body, no snapshot; 28 with windows rewritten). Owed to ROOT: a real
+0.7.0-format snapshot restored on a VM host, once and again (the command is in legacy4's
+report).
 
 ### D175. Sockets read in poll(2) on macOS, and streams ended one way at a time
 
@@ -27369,6 +27455,15 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
       - ROOT first named `/proc/<pid>/stat`'s utime and stime (fields 14 and 15). Those
         count clock ticks (USER_HZ, 100 a second), in which an answer within two ticks
         shows no CPU at all.
+      - Its last CPU, read once its exit is told (waitid(2), a pidfd readable, its state
+        `Z`), is what it had run by that notice, not by its last instruction: the kernel
+        tells the exit (kernel/exit.c, `do_exit`'s `exit_notify`) before the task's last
+        switch from its CPU (`do_task_dead`), which charges its clock with what ran
+        between. A later read of the same zombie can be more, never less (PM M584: 14 in
+        5,000 `true` children on adacachy2 grew 3 to 8 µs after waitid saw them; the
+        test's two reads differed 46 µs once). The watcher reads it once, and
+        `progress::tests::an_exited_process_is_read_until_it_is_reaped` holds a later read
+        no less than an earlier, never equal.
     - macOS: proc_pid_rusage (RUSAGE_INFO_V0): its threads' user and system times in Mach
       absolute-time units, converted by mach_timebase_info(3).
       - The same call gives its start (a pid given to another process shows) and its exit
@@ -28146,6 +28241,11 @@ API's protocol: its output drained, its end, its connections.
     shows a kqueue with NOTE_EXIT is readable to poll(2) on macOS. Owed (ROOT): Linux and
     Windows runs of these (CI's matrix; the Windows WSAEventSelect wait is compiled and run
     there first), and Hex's own campaign through a real VM's offered streams.
+    `while_runs::answer` fails a test on finding its worker waiting for an event (an
+    interruptible sleep, `S`; Mach's TH_STATE_WAITING) at two looks in a row, never on the
+    kernel's own uninterruptible work (`D`: a fault waiting for a memory map another thread
+    holds, a `/proc` read), and the worker outlives its answer until the look is done with
+    it: a worker that had ended left a look nothing to read (PM M585).
 - *Its VM process* (Hex lead's ask, 2026-11-14: "Give the managed guest's orchestrator the
   confined VM process's identity (pid and start time, as Identity names the host's), so it can
   read that process's memory as the VMM's"; on Windows `reserve_ram` commits the guest's RAM in
