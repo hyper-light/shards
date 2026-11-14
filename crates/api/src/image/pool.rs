@@ -477,6 +477,15 @@ impl<W: Send> ImageGuest for Pooled<W> {
         self.guest.wait_member(member, timeout)
     }
 
+    fn wait_channel(
+        &self,
+        member: &super::MemberName,
+        channel: wire::Channel,
+        timeout: Duration,
+    ) -> Result<Option<super::ChannelEnd>, ImageRefusal> {
+        self.guest.wait_channel(member, channel, timeout)
+    }
+
     fn stats(&self, scope: wire::StatsScope, patience: Duration) -> Result<wire::Stats, ImageRefusal> {
         self.guest.stats(scope, patience)
     }
@@ -662,6 +671,14 @@ mod tests {
             _: &super::super::MemberName,
             _: Duration,
         ) -> Result<Option<super::super::MemberEnd>, ImageRefusal> {
+            none()
+        }
+        fn wait_channel(
+            &self,
+            _: &super::super::MemberName,
+            _: wire::Channel,
+            _: Duration,
+        ) -> Result<Option<super::super::ChannelEnd>, ImageRefusal> {
             none()
         }
         fn stats(&self, _: wire::StatsScope, _: Duration) -> Result<wire::Stats, ImageRefusal> {

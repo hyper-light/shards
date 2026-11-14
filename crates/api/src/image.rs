@@ -291,6 +291,20 @@ pub enum MemberEnd {
     WithRun,
 }
 
+/// How a member's channel ended, as its run's host told it (`OUTPUT_END`, control-01): what
+/// its pipe's EOF alone does not say.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChannelEnd {
+    /// Every writer of it in its guest closed it: all it wrote is in its pipe.
+    Closed,
+    /// Its capture ended before its writers did, with this errno (`ECONNRESET`, 104, where its
+    /// run host's capture reached its end with the channel open): what came after its last
+    /// bytes in its pipe is lost.
+    Aborted(i32),
+    /// Its run's host said all it will without telling it: it ended with its run.
+    WithRun,
+}
+
 /// What can't be done, and why.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImageRefusal {
@@ -484,6 +498,17 @@ pub trait ImageGuest: Send + Sync {
     fn take_input(&self, member: &MemberName) -> Result<std::io::PipeWriter, ImageRefusal>;
     /// The member's end, waiting at most `timeout` (`Duration::MAX`: until it comes).
     fn wait_member(&self, member: &MemberName, timeout: Duration) -> Result<Option<MemberEnd>, ImageRefusal>;
+    /// How member `member`'s `channel` ended, typed, once its run's host told it, after every
+    /// byte of it that host sent: its writers' close, or its capture's abort, which its pipe's
+    /// EOF ([`take_output`](Self::take_output)) does not tell apart; waiting at most `timeout`
+    /// (`Duration::MAX`: until it comes). Kept past the run's end. Refused for a member that
+    /// does not run.
+    fn wait_channel(
+        &self,
+        member: &MemberName,
+        channel: Channel,
+        timeout: Duration,
+    ) -> Result<Option<ChannelEnd>, ImageRefusal>;
     /// The use of the run, of its own command or of a member, as its init reads its cgroup,
     /// waiting at most `patience` (`Duration::MAX`: until it answers or the run ends). The
     /// run's carries what its microVM costs its host beside it ([`Stats::microvm`], D241):

@@ -22,7 +22,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use super::wire::{self, Channel, LeaseRefusal, MemberInfo, Ready, RunEnd, RunEnded, Stats, StatsScope, Unused};
-use super::{ImageGuest, ImageRefusal, ImageSpec, Leased, Lessor, MemberEnd, MemberName, RunLessor};
+use super::{ChannelEnd, ImageGuest, ImageRefusal, ImageSpec, Leased, Lessor, MemberEnd, MemberName, RunLessor};
 
 /// The most of a member channel's bytes the client lets its host send ahead of what the
 /// caller's pipe has taken: one read of the guest's (`run::CHUNK`), the most one of its
@@ -1073,6 +1073,16 @@ fn pump(shared: &Shared, member: u32, channel: Channel, mut writer: io::PipeWrit
     }
 }
 
+/// How member `member`'s `channel` ended, once known: as its host told it, else with its run
+/// once its host's answers are over, which end its pipe as [`pump`] does.
+fn channel_end(s: &State, member: u32, channel: Channel) -> Option<ChannelEnd> {
+    match s.flows.get(&(member, channel)).and_then(|f| f.ended) {
+        Some(wire::StreamEnd::Closed) => Some(ChannelEnd::Closed),
+        Some(wire::StreamEnd::Aborted(errno)) => Some(ChannelEnd::Aborted(errno)),
+        None => s.answered.then_some(ChannelEnd::WithRun),
+    }
+}
+
 /// Moves what the caller writes to member `member`'s stdin to its host, no more at once than
 /// the room the host gave, and its end once the caller closes its pipe; ends with the input,
 /// the run or the host, dropping its pipe's read end so that the caller's writes fail then.
@@ -1841,6 +1851,22 @@ impl ImageGuest for Session {
         }))
     }
 
+    fn wait_channel(
+        &self,
+        member: &MemberName,
+        channel: Channel,
+        timeout: Duration,
+    ) -> Result<Option<ChannelEnd>, ImageRefusal> {
+        let info = self.index(member)?;
+        if !info.runs {
+            return Err(ImageRefusal::Image(format!(
+                "{member:?} is files alone, and runs nothing"
+            )));
+        }
+        let index = info.index;
+        Ok(self.shared.wait(timeout, |s| channel_end(s, index, channel)))
+    }
+
     fn stats(&self, scope: StatsScope, patience: Duration) -> Result<Stats, ImageRefusal> {
         let id = {
             let mut state = lock(&self.shared.state);
@@ -2011,6 +2037,34 @@ mod tests {
 
     /// A session's shared state with no host behind it: its answers taken as its reader
     /// takes them.
+    /// A member's channel's end is read typed as its host told it (control-01): its writers'
+    /// close or its capture's abort, kept past the run's end; one its host's answers ended
+    /// without telling ends with its run; none before either.
+    #[test]
+    fn a_channels_end_is_read_as_its_host_told_it() {
+        let s = shared();
+        let told = |channel, end| wire::OutputEnd {
+            member: 1,
+            channel,
+            end,
+        };
+        assert_eq!(channel_end(&lock(&s.state), 1, Channel::Stdout), None);
+        let closed = told(Channel::Stdout, wire::StreamEnd::Closed).encode();
+        assert_eq!(take(&s, wire::to_client::OUTPUT_END, &closed), Ok(false));
+        let aborted = told(Channel::Stderr, wire::StreamEnd::Aborted(104)).encode();
+        assert_eq!(take(&s, wire::to_client::OUTPUT_END, &aborted), Ok(false));
+        let ended = untold(RunEnd::Exited(0)).encode().unwrap();
+        assert_eq!(take(&s, wire::to_client::ENDED, &ended), Ok(true));
+        let state = lock(&s.state);
+        assert_eq!(channel_end(&state, 1, Channel::Stdout), Some(ChannelEnd::Closed));
+        assert_eq!(channel_end(&state, 1, Channel::Stderr), Some(ChannelEnd::Aborted(104)));
+        assert_eq!(channel_end(&state, 2, Channel::Stdout), None, "its host still answers");
+        drop(state);
+        lock(&s.state).answered = true;
+        assert_eq!(channel_end(&lock(&s.state), 2, Channel::Stdout), Some(ChannelEnd::WithRun));
+        assert_eq!(channel_end(&lock(&s.state), 1, Channel::Stderr), Some(ChannelEnd::Aborted(104)));
+    }
+
     /// `end`, as a host said it with no final use told.
     fn untold(end: RunEnd) -> RunEnded {
         RunEnded::unused(end, Unused::Untold)

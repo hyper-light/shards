@@ -26857,7 +26857,15 @@ and no exec, attach or terminal (the plan's steps 5, 6 and 7).
   after its cleanup; D240's guest-abort allowance stands, the abort said. Before, those bytes and
   the channel's end were dropped (control-01's follow-up; red
   `bytes_held_past_the_room_reach_the_orchestrator_as_the_capture_is_cut`). The typed end
-  reaches the session (`Flow::ended`); `ImageGuest` gives its caller the pipe's EOF alone.
+  reaches the session (`Flow::ended`), and its caller reads it typed
+  (`ImageGuest::wait_channel(member, channel, timeout) -> Option<ChannelEnd>`: `Closed`,
+  `Aborted(errno)`, or `WithRun` where its host's answers ended without it, which ends its pipe
+  as the pump does), kept past the run's end, so that an owner tells its pipe's EOF of a whole
+  channel from a cut one (R04). It waits as `wait_member` does: on the session's one state and
+  its notice, no probe. Before, the pipe's EOF alone (red: none, the method was not there;
+  `image::session::tests::a_channels_end_is_read_as_its_host_told_it` holds it). Why a method
+  of its own rather than with the run's end: a channel ends when its writers do, before its run,
+  and its owner acts on it then, as on a member's end.
 - *Every member's log, within the run's one cap* (goal 58's step 7, slice 3; ROOT's ruling and the
   person's decision, 2026-11-13). The log is the run's: every member's output is kept, owned or not.
   - *Kept whoever reads it.* A drained member's records are kept as the daemon takes them (above);
