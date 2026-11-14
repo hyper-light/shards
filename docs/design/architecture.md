@@ -4095,7 +4095,7 @@ what only the hypervisor knows the size of, the input bounds and that hypervisor
 | `MAX_PATH` (snapshot/mod.rs) | 4096 | `platform::PATH_MOST` | include/uapi/linux/limits.h l. 13; macOS sys/syslimits.h; Win32 "Maximum Path Length Limitation"; RFC 3629 §3 |
 | `MAX_NAME` (snapshot/mod.rs) | 64 | `"g-"` + 32 + 1 + 8 + 1 + 16 hex digits = 60 | `fresh_name`'s format |
 | `MAX_RECORD` (vm/live.rs) | 1 MiB | `DATA_BLOCK` = 2 MiB | D151 |
-| `MAX_STATE` (snapshot/mod.rs) | 64 MiB | `most_state(memory_mib)`: the machine's RAM, read from the state's head (`HEAD`, as far as `memory_mib`) before more of it is read (`platform::read_beneath_by`); a save past it refused | the restore's process maps that RAM for the guest; D176's decoders for each part |
+| `MAX_STATE` (snapshot/mod.rs) | 64 MiB | `most_state(memory_mib)`: the machine's RAM, read from the state's head (`HEAD`, as far as `memory_mib`) before more of it is read (`platform::read_beneath_by`), none past a u64's bytes; and `platform::holdable_known()`, what the reading host can hold now; each refused typed (`StateRefused`, migrate-04); a save past the RAM refused | the restore's process maps that RAM for the guest; D176's decoders for each part; the host's kernel (proc_meminfo(5) MemAvailable; macOS kern.memorystatus_level of sysconf(_SC_PHYS_PAGES); MEMORYSTATUSEX ullAvailPhys) |
 | `MAX_DISKS` (snapshot/mod.rs) | 64 (2 × 64 identities, 64 shares) | `VIRTIO_SLOTS` = the guest architecture's `layout::VIRTIO_MMIO_MAX` (18 on x86-64, 32 on arm64), disks, pmem files and shares together | `vm::virtio_devices` (each a virtio-mmio transport, refused past it); x86-64's free IOAPIC pins 5-22; arm64's SPIs from `SPI_VIRTIO_MMIO` |
 | arch name (snapshot/mod.rs) | 32 bytes | the input's: it is only compared with this build's | `decode_head` |
 | `MAX_TABLES` (fs/proto.rs), `MAX_CONTROL` (fs/mod.rs) | `MAX_STATE`, 64 MiB | `CONTROL - 1` = 2^31 - 1: what one control frame's length word says below its mark | fs/mod.rs `CONTROL`, `read_any_into` |
@@ -4111,6 +4111,32 @@ them. The bytes of the files a guest holds open on a share that no path reaches 
 one part nothing of the machine bounds: a save of a state past its RAM is refused, as one
 past 64 MiB was, and the share's tables travel to and from their server in one control
 frame, as long as its length word says.
+
+**And by the host that reads it (amended 2026-11-14, review finding migrate-04).** The
+head's RAM is the file's own claim: a head forged to u64::MAX MiB saturated `most_state`,
+and a sparse state as long as its sender liked (a move lays a FILE's length with
+`set_len`, daemon/moves.rs) had all of it allocated and zero-filled before its decoder
+refused it. A state is now refused, typed (`snapshot::StateRefused`), from its head and its
+length alone, before its whole is allocated: a RAM of more bytes than a u64 counts
+(`PastAnyMachine`), a length past its machine's RAM (`PastItsMachine`), and a length past
+what the reading host can hold now (`PastHost`): `platform::holdable_known`, what its kernel
+says it has available (Linux's MemAvailable, proc_meminfo(5); macOS's
+kern.memorystatus_level of its memory; Windows' ullAvailPhys), else all its memory
+(sysconf(_SC_PHYS_PAGES), GlobalMemoryStatusEx), the shards daemon's existing `holdable`
+moved to vmm's platform for both processes. That is the bound the file does not say. It is
+read where it runs, at each read, so it has no cold start; a host that says neither is
+refused (`HostMemoryUnknown`), never read past. The confined Linux VM process reads the
+host's memory by sysinfo(2), which glibc's and musl's sysconf ask and its seccomp filter
+now allows (`confine.rs`); /proc/meminfo is past its Landlock rules. Every way in reads by
+it: a move's `relocate` of what it placed, a restore's `read`, `backing_named`, `layout`.
+Held by `a_forged_states_head_has_no_more_allocated_than_the_host_holds` (with each bound
+removed, red) and `a_state_past_its_machines_memory_is_refused`. Owed to ROOT: reads at once
+are each bounded alone (two within the host's available memory may be past it together:
+an admission held across a home's concurrent restores is the design); the probe's cost on
+the restore path (R14: a read of /proc/meminfo in Linux's daemon, a Landlock-refused open
+and a sysinfo(2) in the confined VM process, two sysctls on macOS, one call on Windows); a
+template restored on Linux KVM (its VM process confined), Hypervisor.framework and WHP; and
+the bounded-RSS run of a forged sparse state through a move's import (`tests/moved.rs`).
 
 Held by unit tests (`a_state_is_bounded_by_its_machine`,
 `a_state_past_its_machines_memory_is_refused`, `a_state_past_what_a_machine_has_is_refused`,
