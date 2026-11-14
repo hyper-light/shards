@@ -208,6 +208,10 @@ impl Handle {
     pub fn guest_times(&self) -> super::GuestTimes {
         match self.0 {}
     }
+
+    pub fn whole_guest_times(&self) -> super::GuestTimes {
+        match self.0 {}
+    }
 }
 
 #[derive(Debug)]

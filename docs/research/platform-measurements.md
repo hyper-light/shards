@@ -7660,6 +7660,12 @@ without ACK. At 50716d946, RFC 9293 table 6 and ACK processing refuse it; 20 foc
 TCP tests and shards-net all-targets clippy pass. This is correctness evidence, not
 new performance or platform-parity data. [Commands, output, rules and owed real-VM checks](measurements/network-fixes-v1/README.md).
 
+**network-02 confinement follow-up (2026-11-13).** At 33d5f8af7, adacachy2
+(Linux amd64) ran three focused network confinement tests and clippy for
+shards-net/shards-net-process, all passing. Native arm64 execution is owed;
+removing the arm64 startup omission is not an arm64 measured result. No VM or
+performance campaign ran. [Exact scope/output](measurements/network-fixes-v1/README.md#network-02-native-seccomp-on-both-linux-architectures).
+
 ### M211. The limits a build's `RUN` step starts with
 
 - **Question.** A container's process starts with Docker's limits (`defaults::limits`,
@@ -24161,3 +24167,82 @@ source revisions, light results and ROOT's remaining gates are in
   clippy -D warnings for shards-vm-process (macOS) and shards-init
   (aarch64-unknown-linux-musl); cargo fmt --check clean. R11, R15: no VM run here: api_image's
   three cases on KVM are ROOT's, at a main holding 02a03edf2 and this.
+
+### M567. A confined VM process changed another process's limits: prlimit64 of any pid (D30)
+
+Linux x86_64, adacachy2 (7.3.3-1-cachyos, Landlock ABI 11), 2026-11-13, policy df2acf47,
+role implementer. Review platform-04 (docs/bugs/2026-11-13/platform.md) said the VM
+process's filter allowed prlimit64(2) whatever its pid. Reproduced by
+`confine::tests::a_confined_vm_sets_only_its_own_limits` (shards-vm-process): a confined
+child, under `confine()`'s filter, sets the `RLIMIT_NOFILE` of a disposable process of
+its user's (the test binary waiting on its stdin, never a daemon) to 0 and 0. With the
+rule as it was (`Rule::any(SYS_prlimit64)`, the mutant restoring it), the call returned
+0 and the target's `/proc/PID/limits` went from `Max open files 1048576 1048576` to `0
+0`: red. With the rule allowing pid 0 and the process's own alone, the child reads and
+sets its own limits (both 0), the other's call traps (exit 159, `seccomp refused
+syscall 302`), and the target's limits are unchanged: green. `cargo test -p
+shards-vm-process confine::` 7 of 7 and `cargo clippy -p shards-vm-process
+--all-targets -- -D warnings` clean on that host. No constant. Owed to ROOT: a confined
+VM on KVM (every VM test runs under the filter), x86_64 and arm64 through L1.
+
+### M568. A Landlock layer left the VM process's other threads unconfined, its seal too (D30)
+
+Linux x86_64, adacachy2 (7.3.3-1-cachyos, Landlock ABI 11), 2026-11-13, policy df2acf47,
+role implementer. Review platform-01: landlock_restrict_self(2) with no flags restricts
+the calling thread alone, and the VM process confined itself, and later sealed its
+template, with other threads running. Reproduced by
+`confine::tests::every_thread_of_a_confined_process_is_confined` (shards-vm-process): a
+child with three threads started before its first layer and one between it and its seal
+has each try to read a file outside its paths, then write in the snapshot directory
+before and after the seal. Layered as before (the caller alone, the mutant), the
+threads read it (`siblings read other: ok,ok,ok`) and wrote the sealed directory
+(`sealed siblings write snap: ok,ok,ok,ok`): red. Both ways the layer now reaches every
+thread, TSYNC (v8) and each thread asked (every ABI from v5, run here by forcing it),
+make those `refused` while each may still write its kept directory: green. Mutants:
+TSYNC's flag dropped, red for TSYNC alone; the asking pass dropped, red for it alone.
+`a_thread_that_cannot_be_asked_fails_the_layer`: a thread asleep with every signal
+blocked (as Mesa's) fails an asked layer (`blocks signal` SIGRTMIN + 1 `as it waits`), and TSYNC
+confines it (`deaf read other: false`); with its refusal mutated into "ended", the layer
+said Ok and the thread read the file: red. `cargo test -p shards-vm-process confine::`
+9 of 9 and its clippy clean on that host. The ABI before v8 is unverified on a real
+kernel of that ABI (no host here has one): the asking pass ran on ABI 11. Owed to ROOT:
+VM runs on KVM, a template's seal among them (daemon.rs pool tests), x86_64 and arm64
+through L1, and one on a kernel of ABI 5 to 7.
+
+### M569. A confined VM process dialed its user's sockets, its daemon's Engine API among them (D30)
+
+Linux x86_64, adacachy2 (7.3.3-1-cachyos, Landlock ABI 11), 2026-11-13, policy df2acf47,
+role implementer. Review platform-02: the filter allowed AF_UNIX sockets and connect(2)
+whatever they named, and Landlock's rules before v9 do not govern a connect. Reproduced
+by `confine::tests::a_confined_vm_dials_only_beside_its_vsock_path` (shards-vm-process):
+a child binds two listeners of its user's first, `engine.sock` outside its paths and
+`socks/v_5` beside the vsock path it is given, is confined, dials both, then makes a
+datagram socket. With neither the sockets layer's connect refusal nor Landlock's
+`RESOLVE_UNIX` (the mutant), a VM given no vsock path dialed both (`dial outside: ok`):
+red. Now: no vsock path, both refused with EACCES by the seccomp layer alone and by
+Landlock's v9 rules alone; given one, Landlock lets it dial beside it alone (`dial
+outside: refused 13`, `dial beside: ok`); with the seccomp layer alone it dials both,
+what a kernel before v9 leaves (D30's owed spawner dialing); the datagram socket traps
+(exit 159, `seccomp refused syscall 41`), and without the layer is made. Mutants, each
+red for its own case: the connect refusal dropped; `RESOLVE_UNIX` dropped; the socket
+type rule dropped. `seccomp::layer` (`a_layer_answers_its_rules_and_allows_the_rest`,
+the instruction model over every number and value) and the crate's tests 9 of 9;
+`cargo test -p shards-vm-process confine::` 10 of 10; clippy for both crates clean on
+that host. The layer's cost per syscall is ROOT's to measure (R14): the kernel's cache
+skips every filter for a syscall each allows whatever its arguments
+(`seccomp_cache_check_allow`), and one the first filter checks, ioctl's KVM_RUN among
+them, runs both. Owed to ROOT: VM runs on KVM (a daemon's
+warm VMs, `shards build`'s builder with its vsock ports, the GPU's VM process), x86_64
+and arm64 through L1.
+
+### M570. A Windows VM that stages its snapshots and has no vsock path was granted files after its guest started (platform-03, D30, D141, D196)
+
+Windows 10.0.26200 x86_64 (the Windows 11 guest on adacachy), 2026-11-14: at e889915c4 a VM
+that asked, as `confine` did, for a file to read and a snapshot directory, and no `SEALED`,
+staged and committed a generation, then was granted a sentinel file outside its grants to
+write, and wrote it (`overwritten` where `untouched`). At 1e8c83104 its last ask seals
+(`grant_ask::obtain_sealed`): `grant_answer::windows_tests` 7 of 7, the late GRANT refused and
+the stage and commit still answered; both mutants (no `SEALED`; no broker refusal) fail it.
+Unit-level functional evidence, no real VM: `confine` refuses any process outside an
+AppContainer, and the WHP real-VM tests are owed.
+[Commands, logs, mutants and owed runs](measurements/windows-p0/README.md).

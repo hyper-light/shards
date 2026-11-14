@@ -1,0 +1,17 @@
+== 287dc470 platform-03, memory-01 red: a staging VM with no vsock path is granted more after its guest starts; a WHP DAX range written after one read is made zeros as its file grows 2026-11-14T03:16:36.3450364Z 10.0.26200.0
+== cargo test -p shards --bin shards -- grant_answer::windows_tests exit 101
+test grant_answer::windows_tests::requests_cross_whole_and_bounded ... ok
+test grant_answer::windows_tests::a_sealed_vm_is_granted_nothing_more_and_its_ranges_are_read ... ok
+test grant_answer::windows_tests::a_vms_files_ranges_are_read_for_it ... ok
+test grant_answer::windows_tests::a_vms_vsock_is_bound_and_dialled_for_it ... ok
+test grant_answer::windows_tests::a_vm_that_stages_its_snapshots_is_granted_nothing_more_once_it_starts ... FAILED
+test grant_answer::windows_tests::a_spawner_grants_what_a_vm_asks_for ... ok
+test grant_answer::windows_tests::a_spawner_stages_and_commits_a_vms_snapshots ... ok
+thread 'grant_answer::windows_tests::a_vm_that_stages_its_snapshots_is_granted_nothing_more_once_it_starts' (1796) panicked at crates\shards\src\grant_answer.rs:1053:13:
+assertion `left == right` failed
+  left: [111, 118, 101, 114, 119, 114, 105, 116, 116, 101, 110]
+ right: [117, 110, 116, 111, 117, 99, 104, 101, 100]
+test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 825 filtered out; finished in 0.28s
+error: test failed, to rerun pass `-p shards --bin shards`
+== done 2026-11-14T03:19:32.5950243Z status 1
+

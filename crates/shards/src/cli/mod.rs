@@ -130,6 +130,41 @@ pub(crate) const INTERNAL: [&str; 9] = [
     "api-run",
 ];
 
+/// The words [`dispatch`] runs `args` as, its context's options taken off first (`context::
+/// chosen`): `help CMD…` is `CMD… --help`, and shards' grammar said as the command it runs,
+/// each again until neither changes them, as `dispatch` turns to itself. A turn that comes
+/// back to words it gave already ends there, as `dispatch` would never end.
+pub(crate) fn command_words(args: &[String]) -> Vec<String> {
+    let mut said = args.to_vec();
+    let mut seen = std::collections::HashSet::new();
+    loop {
+        let next = match said.split_first() {
+            Some((help, rest)) if help == "help" && !rest.is_empty() => {
+                let mut asked = rest.to_vec();
+                asked.push("--help".to_string());
+                asked
+            }
+            _ => match shards_cmdline::grammar::rewrite(&said) {
+                Some(rewritten) if rewritten != said => rewritten,
+                _ => return said,
+            },
+        };
+        if !seen.insert(std::mem::replace(&mut said, next)) {
+            return said;
+        }
+    }
+}
+
+/// Whether a command of `words`' is its machine's owner's alone, which no client's command
+/// runs (D180): a context's, a client's or an invitation's own. Judged where it runs, of
+/// the variable the daemon's listener names its client by (`client_grants::CLIENT_VAR`),
+/// whatever words the client sent the daemon.
+fn owners_alone(words: &[&str], client: &str) -> Option<String> {
+    let first = words.first().copied()?;
+    (!client.is_empty() && matches!(first, "context" | "client" | "invitation"))
+        .then(|| format!("{first}: this machine's owner's to run, not client {client}'s"))
+}
+
 fn dispatch(args: Vec<OsString>) -> ExitCode {
     // shards' own grammar, `ACTION THING ...`, said as the command it runs.
     let text: Vec<String> = args
@@ -224,6 +259,9 @@ fn dispatch(args: Vec<OsString>) -> ExitCode {
             return unknown(&shards_cmdline::catalog::unknown(word));
         }
         _ => {}
+    }
+    if let Some(why) = owners_alone(&words, &crate::client_grants::client_here()) {
+        return failed(&why);
     }
     match words.as_slice() {
         // `shards run vm --kernel FILE ...`: a kernel booted directly, in the VM process.
@@ -2300,5 +2338,41 @@ mod said_options {
         assert_eq!(added.first(), Some(&"--console-said"), "{added:?}");
         assert_eq!(added.get(2..), Some(["--said-to", "3"].as_slice()), "{added:?}");
         assert!(super::has_vm_flag(&with, "--said-to"), "{with:?}");
+    }
+}
+
+#[cfg(test)]
+mod owners_alone {
+    /// remote-01: a context's, a client's and an invitation's commands refuse a client's
+    /// command where they run, of the variable the daemon's listener names it by, whatever
+    /// words reached the daemon; this machine's own user runs them.
+    #[test]
+    fn an_owners_command_refuses_a_clients_command_where_it_runs() {
+        for words in [["client", "grant"], ["invitation", "rm"], ["context", "use"]] {
+            assert!(super::owners_alone(&words, "alice").is_some(), "{words:?}");
+            assert!(super::owners_alone(&words, "").is_none(), "{words:?}");
+        }
+        assert!(super::owners_alone(&["ps", "-a"], "alice").is_none());
+    }
+
+    /// The words `dispatch` runs: `help` and shards' grammar said as the command they are,
+    /// as many times as they turn into another.
+    #[test]
+    fn command_words_are_what_dispatch_runs() {
+        let words = |s: &str| s.split(' ').map(str::to_string).collect::<Vec<_>>();
+        assert_eq!(
+            super::command_words(&words("help grant client a --dir /")),
+            words("client grant a --dir / --help")
+        );
+        assert_eq!(
+            super::command_words(&words("remove client a")),
+            words("client rm a")
+        );
+        assert_eq!(super::command_words(&words("list vms")), words("ps"));
+        assert_eq!(
+            super::command_words(&words("help help ps")),
+            words("ps --help --help")
+        );
+        assert_eq!(super::command_words(&words("ps -a")), words("ps -a"));
     }
 }
