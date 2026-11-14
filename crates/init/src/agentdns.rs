@@ -610,6 +610,69 @@ fn relay(listen: &UdpSocket, upstream: &UdpSocket, askers: &RwLock<Vec<Asker>>, 
 mod tests {
     use super::*;
 
+    #[test]
+    fn an_existing_tcp_session_uses_the_members_current_names() {
+        fn table(entries: &[(&str, &str)]) -> shards_dns::Names {
+            let mut names = shards_dns::Names::default();
+            for &(name, ip) in entries {
+                names.add(name, ip.parse().unwrap());
+            }
+            names
+        }
+        fn question(name: &str) -> Vec<u8> {
+            let mut q = vec![0x12, 0x34, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0];
+            q.push(u8::try_from(name.len()).unwrap());
+            q.extend_from_slice(name.as_bytes());
+            q.extend_from_slice(&[0, 0, 1, 0, 1]);
+            q
+        }
+        fn ask(conn: &mut TcpStream, name: &str) -> Vec<u8> {
+            crate::dnsrelay::write_message(conn, &question(name)).unwrap();
+            crate::dnsrelay::read_message(conn).unwrap().unwrap()
+        }
+        let askers = std::sync::Arc::new(RwLock::new(vec![Asker {
+            link: 7,
+            any: false,
+            names: Vec::new(),
+            addrs: vec![Ipv4Addr::LOCALHOST],
+            local: vec![table(&[("departed", "192.0.2.7"), ("keeper", "192.0.2.8")])],
+        }]));
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let at = listener.local_addr().unwrap();
+        let upstream = TcpListener::bind("127.0.0.1:0").unwrap();
+        upstream.set_nonblocking(true).unwrap();
+        let to = upstream.local_addr().unwrap();
+        let current = std::sync::Arc::clone(&askers);
+        // The filtered cargo test process owns this listener thread and its workers.
+        std::thread::spawn(move || serve_tcp(&listener, to, &current));
+        let mut conn = TcpStream::connect(at).unwrap();
+        conn.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        assert_eq!(ask(&mut conn, "departed")[3] & 0x0f, 0);
+        askers.write().unwrap().first_mut().unwrap().local =
+            vec![table(&[("keeper", "192.0.2.8"), ("joined", "192.0.2.9")])];
+        assert_eq!(
+            ask(&mut conn, "departed")[3] & 0x0f,
+            5,
+            "the old TCP session kept a departed member"
+        );
+        let joined = ask(&mut conn, "joined");
+        assert_eq!(
+            shards_dns::a_records(&joined).unwrap().addresses,
+            ["192.0.2.9".parse::<std::net::IpAddr>().unwrap()]
+        );
+        assert_eq!(ask(&mut conn, "keeper")[3] & 0x0f, 0);
+        askers.write().unwrap().clear();
+        crate::dnsrelay::write_message(&mut conn, &question("keeper")).unwrap();
+        assert!(
+            crate::dnsrelay::read_message(&mut conn).unwrap().is_none(),
+            "a revoked asker retained its session"
+        );
+        assert!(
+            upstream.accept().is_err(),
+            "a local or refused name went upstream"
+        );
+    }
+
     /// One asker holding its share of the IDs is refused more, and another still asks; one
     /// answered or let go has room again.
     #[test]
