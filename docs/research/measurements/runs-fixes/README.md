@@ -268,3 +268,39 @@ The runner attempted its ff-push immediately after these gates, using its
 existing GitHub SSH authorization; both were rejected because main had moved.
 No force. These are compile successes, not main landings. The native-owner
 follow-up's fixing commit is 8b2505f42; its source gate was af947732 plus patch.
+
+## runs-07
+
+Red on fc1bb4797fb686bc29529ec8a01beb8d62180c0e plus the regression:
+`cargo test -j 4 -p shards --bin shards concurrent_end_writers_keep_each_others_maxima`
+fails in r38, helper slice None rather than Some(8s). A stable-lock owner has
+read the old record and is about to publish its own slower teardown; a second
+actual Ends instance publishes a helper maximum without waiting, and loses that
+maximum when the lock owner publishes. This exercises the real file operations,
+with two opens of the OS file lock; it is a unit thread race, not a process/VM
+campaign. Its waits and fixture durations are test-only.
+
+Green on c6dd465259158831507ddc2ecac4eaa023236ab0 plus the Ends patch: same
+regression passes (1), `cargo test -j 4 -p shards --bin shards daemon::ends::tests`
+passes 5 (1.03s), and `cargo clippy -j 4 -p shards --all-targets -- -D warnings`
+passes (19.61s), r39 on the same macOS arm64 runner and unit guest fixtures.
+Logs runs07-red.log / runs07-green.log. No real VM or two-process campaign.
+
+One stable file lock spans the reread/merge/write. Existing Locked unlocks
+before close; existing platform write_in supplies unique create-new staging,
+sync and whole rename. Each process keeps its learned maximum before a lock or
+write error and can persist it later. The record's existing parser/cold fallback
+and format are unchanged; this slice does not certify malformed/unreadable-record
+recovery. No new selected constant, cache, poll or OS-specific implementation.
+R01-R16 dispositions above apply. ROOT owes a two-process daemon/API update and
+crash/publication campaign, with continuous complete-record readers and no lost
+maxima: extend/run `cargo test -p shards --bin shards
+daemon::ends::tests::concurrent_end_writers_keep_each_others_maxima` with
+process actors and failpoints on the shared home; the unit race is not that proof.
+
+ROOT landed the prepared runs-05/06 and native-owner follow-up via signed merge
+c6dd46525 of fc1bb4797. ROOT states overlapping drift was documentation only,
+with no repeated focused gate; CI owns that combination. Branch fast-forwarded
+to c6dd46525 preserving the runs-07 regression. Policy hashes are unchanged.
+From ROOT's new instruction, two consecutive lost ff-push races hand the tested
+tip to ROOT, instead of further retry loops.
