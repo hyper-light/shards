@@ -10362,6 +10362,39 @@ kernel says when each comes, so init waits on that and on no clock:
 Owed: init's unit tests on a Linux host (they build for musl here, and run in a guest), and
 hotplug's E2E (tests/hotplug.rs) on KVM, Hypervisor.framework and WHP.
 
+**Amended 2026-11-14 (devices-11, ROOT's decision): a disk file has one writer.** Two
+kernels that each mount one ext4 read-write corrupt it: each journals and allocates
+without the other's knowledge, which ext4's multiple-mount protection exists to refuse
+(Linux Documentation/filesystems/ext4/mmp.rst), and two runs' growths of it take
+different holds of their microVMs' steps (devices-01). So `shards plug disk` claims the
+file it opened, by what the file is, never its path: its device and inode on Unix (POSIX
+`<sys/stat.h>`: `st_dev` and `st_ino` identify a file), on Windows its volume's serial
+number and 128-bit file ID (`GetFileInformationByHandleEx(FileIdInfo)`, FILE_ID_INFO,
+which ReFS's 128-bit IDs need where NTFS's 64-bit index would do). A hard link, a second
+path or a symlink to the file is the same file. The claim is a reader-writer one:
+- A writable plug is refused where any plug, of any run or this one at another path, has
+  the file; a read-only plug where one has it writable. Read-only plugs share it.
+- The refusal is typed (`DiskHeld::Writable`/`ReadOnly`, naming the holder's run and
+  path), and said as `shards: cannot plug into NAME: FILE: microVM ID has its file
+  plugged in writable at PATH`.
+- A claim is taken as the file is opened, before its VM is asked, so two plugs at once
+  cannot both pass; it is given back as the plug fails (as it drops), as it is unplugged,
+  and as its run is found ended at the next claim (the claims of runs that no longer run
+  are let go first, as `plugged` is). Where a failed plug's own unplug fails, other than
+  as its VM saying the device is off its bus, its claim stays until its run ends: its
+  VM may have the file still.
+- A growth opens its disk's file by path again; it is refused where that is not the file
+  plugged in, another put at its path since.
+- The claims are the daemon's, of one `SHARDS_HOME`: another home's daemon, or another
+  program, is not refused by them (an OS lock on the file would reach those; not built).
+  A run's own disks at its start (its writable layer, its template) are the daemon's own
+  files and are not plugged.
+Unit tests and the guard's mutation: `a_disk_file_is_plugged_writable_into_one_run_at_a_time`,
+`a_growth_refuses_a_file_put_in_its_disks_place` (docs/research/measurements/device-fixes/README.md).
+Owed to ROOT: two running microVMs, `shards plug disk A FILE:/d`, then `shards plug disk B
+FILE:/d` (and through a hard link) refused, `FILE:/d:ro` into B refused, then after
+`shards unplug disk A /d`, `:ro` into A and B both plugged.
+
 ### D228. A client's paths are its own; the machine's are its owner's to grant (built)
 
 **The need.** Through a context (D180) a laptop runs microVMs on a GPU or x86_64 machine.

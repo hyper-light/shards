@@ -204,6 +204,8 @@ Added by ROOT, 2026-11-13, outside the original ten-finding review:
 
 **Status (2026-11-13):** assigned to the devices lane by ROOT; implementation pending. The original review counts above describe devices-01 through devices-10 only.
 
+**Status (2026-11-14):** fixed in 14769aead (its code tested as 84fa0a5e5, the same tree; red: the guard's mutation `e9427c934`, the claim check off, fails `a_disk_file_is_plugged_writable_into_one_run_at_a_time`: a second writable claim of the same file through a hard link was given; green 9 daemon devices tests and shards clippy, macOS arm64). D214 amended (one writer, read-only sharing, identity by (dev, inode) / volume serial and FILE_ID_INFO). Owed to ROOT: `cargo test -p shards --test plug` extended with two running microVMs, a writable plug of one file into both refused (and through a hard link), `:ro` into the second refused while the first has it writable, and both `:ro` once it is unplugged; and a Windows unit run of `os::file_id` (jupiter offline).
+
 ## Checked and found sound
 
 - Split virtqueues: sizes/alignment and ring spans checked at construction; direct and indirect descriptor walks bounded by queue size, indirect nesting rejected, each descriptor copied once; available-index jumps bounded and used/event indices use explicit wrapping arithmetic. This does not validate every device consumer, as devices-03 demonstrates.

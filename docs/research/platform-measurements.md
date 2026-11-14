@@ -17849,6 +17849,8 @@ finding open; no new scheduling or host-fairness result is claimed.
 
 ### M430. Devices plugged into a running microVM: what each step costs, and what a bus of slots costs a boot (D214)
 
+Review devices-11 (2026-11-14, D214's amendment): disk files claimed by identity, one writer, read-only shared; 9 daemon devices unit tests and shards clippy green on macOS arm64, the claim check's mutation red. No real VM plug was run. See `measurements/device-fixes/README.md`.
+
 Review devices-07 follow-up (2026-11-14, D156's amendment): a 66-run join chain's /dev/shm owner red (the 64-link walk sized it by run 1's allowance, 0 vs 536870912), green with 4 inspect tests and shards clippy on macOS arm64. See `measurements/device-fixes/README.md`. No real VM mount or new performance measurement was run.
 
 
