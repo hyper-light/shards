@@ -909,66 +909,7 @@ fn record_need(path: &Path, need: u64, short: bool) -> Result<(), String> {
     written
 }
 
-/// The memory this host has available, in bytes: what its kernel says a new program may
-/// have without taking from what runs. Linux's `MemAvailable` ("an estimate of how much
-/// memory is available for starting new applications, without swapping", proc_meminfo(5)).
-#[cfg(target_os = "linux")]
-pub(crate) fn host_available() -> Option<u64> {
-    let text = std::fs::read_to_string("/proc/meminfo").ok()?;
-    let kib: u64 = text
-        .lines()
-        .find_map(|l| l.strip_prefix("MemAvailable:"))?
-        .split_whitespace()
-        .next()?
-        .parse()
-        .ok()?;
-    kib.checked_mul(1024)
-}
-
-/// The memory this host has available, in bytes: macOS's `kern.memorystatus_level`, the
-/// percentage of its pages its pressure thread counts available
-/// (`memorystatus_get_available_page_count`, osfmk/vm/vm_pageout.c `vm_pressure_response`;
-/// the sysctl in bsd/kern/kern_memorystatus.c), of its memory.
-#[cfg(target_os = "macos")]
-pub(crate) fn host_available() -> Option<u64> {
-    let mut level: libc::c_int = 0;
-    let mut len = size_of::<libc::c_int>();
-    // SAFETY: sysctlbyname(3) of a NUL-terminated name into an int of the length given.
-    let rc = unsafe {
-        libc::sysctlbyname(
-            c"kern.memorystatus_level".as_ptr(),
-            (&raw mut level).cast(),
-            &raw mut len,
-            std::ptr::null_mut(),
-            0,
-        )
-    };
-    if rc != 0 || len != size_of::<libc::c_int>() {
-        return None;
-    }
-    let level = u64::try_from(level).ok()?.min(100);
-    Some(host_memory()? / 100 * level)
-}
-
-/// The memory this host has available, in bytes: none known on this Unix.
-#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
-pub(crate) fn host_available() -> Option<u64> {
-    None
-}
-
-/// The memory this host has available, in bytes: `ullAvailPhys` (GlobalMemoryStatusEx),
-/// "the amount of physical memory that can be immediately reused without having to write
-/// its contents to disk first" (MEMORYSTATUSEX).
-#[cfg(windows)]
-pub(crate) fn host_available() -> Option<u64> {
-    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
-    let mut status = MEMORYSTATUSEX {
-        dwLength: size_of::<MEMORYSTATUSEX>() as u32,
-        ..Default::default()
-    };
-    // SAFETY: a structure of its own length for the call to fill.
-    (unsafe { GlobalMemoryStatusEx(&raw mut status) } != 0).then_some(status.ullAvailPhys)
-}
+pub(crate) use shards_vmm::platform::{holdable, host_available, host_memory};
 
 /// `mib` down to whole blocks of what a builder's memory is plugged in (virtio-mem's,
 /// D133), which a VM refuses anything but: half of a host's memory need not be (Windows
@@ -976,39 +917,6 @@ pub(crate) fn host_available() -> Option<u64> {
 fn whole_blocks(mib: u64) -> u64 {
     let block = (shards_vmm::devices::virtio::mem::BLOCK >> 20).max(1);
     mib - mib % block
-}
-
-/// The most a read whose length the reader cannot know before it ends may hold, where what
-/// it guards is the reader's memory: what this host has available now ([`host_available`]),
-/// else its memory ([`host_memory`]); past that it could not be held without taking from
-/// what runs. Unbounded where the host says neither, as dockerd reads a call's JSON.
-pub(crate) fn holdable() -> u64 {
-    host_available().or_else(host_memory).unwrap_or(u64::MAX)
-}
-
-/// The host's physical memory, in bytes.
-#[cfg(unix)]
-pub(crate) fn host_memory() -> Option<u64> {
-    // SAFETY: sysconf(3) with constant arguments.
-    let (pages, size) = unsafe {
-        (
-            libc::sysconf(libc::_SC_PHYS_PAGES),
-            libc::sysconf(libc::_SC_PAGESIZE),
-        )
-    };
-    u64::try_from(pages).ok()?.checked_mul(u64::try_from(size).ok()?)
-}
-
-/// The host's physical memory, in bytes (GlobalMemoryStatusEx).
-#[cfg(windows)]
-pub(crate) fn host_memory() -> Option<u64> {
-    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
-    let mut status = MEMORYSTATUSEX {
-        dwLength: size_of::<MEMORYSTATUSEX>() as u32,
-        ..Default::default()
-    };
-    // SAFETY: a structure of its own length for the call to fill.
-    (unsafe { GlobalMemoryStatusEx(&raw mut status) } != 0).then_some(status.ullTotalPhys)
 }
 
 /// A base image as the build resolved it.
