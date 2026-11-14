@@ -28295,7 +28295,24 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
     listing, refused by `proc_pidinfo` and by a `NOTE_EXIT` watch (ESRCH), and its waitid(2)
     end came 466 µs later. Watched before it is signalled, each process a round ends
     is waited on by its exit word; one still exiting after it (between `NOTE_EXIT` and
-    `SZOMB`), or exiting before the look, is listed until it is a zombie and looked at again. A host that ends as it should has reaped what it started, and its
+    `SZOMB`), or exiting before the look, is listed until it is a zombie and looked at again.
+    Amended 2026-11-14 (stopregress lane): a round's group SIGKILL that fails is refused only
+    where a listed process still runs (`Standing::Running`), never for one exiting
+    (`Standing::Exiting`: macOS `PROC_FLAG_INEXIT`, XNU's `P_LEXIT`, set by `exit1_internal`
+    before `proc_prepareexit`; Linux `PF_EXITING`). XNU's killpg passes over its zombies
+    (`killpg1`'s filter, `p_stat != SZOMB`) and every process past `proc_prepareexit`
+    (`pgrp_iterate`'s `proc_find`), and answers EPERM where it found none to signal
+    (xnu-12377.1.9 kern_sig.c, kern_proc.c): a group of the exited host, a zombie, and a VM
+    process still in its exit's teardown was refused as "a running process it could not
+    signal", and the stop with it (batch 26 at 1f71dea19, HVF api_image.rs:1249,
+    `Os { what: "the stopped run's processes", kind: PermissionDenied }`, 1 of 3 runs). Red
+    as a unit test: `a_groups_end_follows_a_process_already_exiting_to_its_end` (its `dd`
+    killed, seen exiting, then the group ended) fails EPERM with the old rule put back, and
+    passes with this one. A round with nothing to wait on (each listed process past where a
+    watch can be set) yields, then looks again: no word of the kernel's comes of an exiting
+    process's becoming a zombie but the look. Linux's kill(2) of a group reaches an exiting
+    process (its signal handlers stay until `release_task`), so there a failed kill with a
+    process listed is that process's refusal. A host that ends as it should has reaped what it started, and its
     group is empty; one it leaves is ended with it (before, waited on for as long as it
     held the diagnostics). Then its layers are swept, it is reaped, `exited` set, and its
     pipes' readers told (`Gone`, a byte on a pipe of the session's, never its end); each
