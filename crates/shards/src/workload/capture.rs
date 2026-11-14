@@ -1000,7 +1000,16 @@ mod tests {
                     len: 3,
                 },
             ),
-            (vec![0xff; run::HEADER], Refusal::Header([0xff; run::HEADER])),
+            // What init wrote where a failure broke its relay with three bytes of an abort
+            // gone: its end at once after them (init run.rs, the relay's end tests).
+            (
+                [
+                    &run::header(kind::MANAGED_ABORT, 0)[..3],
+                    &run::header(kind::SIGNALS_END, 0),
+                ]
+                .concat(),
+                Refusal::Header([kind::MANAGED_ABORT, 0, 0, kind::SIGNALS_END, 0, 0, 0, 0]),
+            ),
             (
                 [
                     &run::header(kind::MANAGED_ABORT, managed::ABORT_LEN as u32)[..],
