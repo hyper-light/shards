@@ -7697,6 +7697,15 @@ additional installed filter, and the forbidden-syscall termination test passes.
 Both crates pass clippy. Musl and carried-helper VM execution remain unverified.
 No VM or performance campaign ran. [Exact scope/output](measurements/network-fixes-v1/README.md#network-02-native-seccomp-on-both-linux-architectures).
 
+**network-03 DNS authority follow-up (2026-11-13).** M210's finite concurrent
+connections do not bound DNS history. On Mac3 Docker Linux aarch64 / Rust1.98.1,
+5a3d27784's real UDP answer-replacement test fails because A still permits new
+flows after B replaces it. At e2237fb29, current per-name/type answers replace
+history and expire; six initial focused tests pass, then clippy detects the
+retired HashSet import. The cleanup, TTL tests and final merged gate are tracked
+in [the evidence record](measurements/network-fixes-v1/README.md#network-03-dns-authority-lifetime).
+No host-memory/performance or real-VM result is claimed.
+
 ### M211. The limits a build's `RUN` step starts with
 
 - **Question.** A container's process starts with Docker's limits (`defaults::limits`,
