@@ -104,6 +104,8 @@ The replacement `A` exists and the old lock still has a link in `B`. The old dae
 
 **Confidence:** high in ownership and lock conflict; disk exhaustion not exercised. **Fix direction:** release preparation lease after launch/readiness and template settlement, before WARMED or serving the workload. **Test:** after STARTED and separately WARMED, collect unrelated garbage and require completion while the hosts remain alive and workload progress continues. Do not claim a daemon shutdown join deadlock: `daemon.rs:1911` explicitly exits internally without waiting for these scoped threads.
 
+**Status (2026-11-13):** fixed in 4f2384399f497103b054b8362e6d134f2f59618f by releasing the preparation lease after readiness, before warm wait and run serving. The live red/green is owed to ROOT: add/run `cargo test -p shards --test api_image a_live_api_run_and_a_warm_host_do_not_hold_up_collection` with unrelated garbage and live progress witnesses. The source path is unambiguous; api_run's 43 unit tests and shards all-target clippy pass (kiln r24), and are not represented as a live GC reproduction.
+
 ### runs-06 — P2 / medium — Container facts and copy ownership silently use another platform's config
 
 **At head:** `crates/shards/src/daemon/inspect.rs:676`, `:888–909`; `crates/shards/src/daemon/commands.rs:910–919`.
