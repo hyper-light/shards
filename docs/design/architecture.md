@@ -11757,6 +11757,26 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
   snapshot, a whole 4 MiB round in each of three restores), 8,320 s, and the machine that
   goes on 12 MiB (1 MiB before, 8 MiB after and the rest of their round), 7,680 s, each going
   on while its bytes come.
+  - *Amended (2026-11-14): its VM processes' CPU is its progress until its first byte.* A
+    stream's wait before any byte of it (`vsock_connect`'s handshake, `echo`'s, vsock.rs'
+    greeting) has no byte to show for the work its answer takes: the vsock device's and the
+    guest kernel's, and on a busy guest its vCPUs'. Read as liveness from its start, such a
+    wait was bounded by bytes alone, so the first answer of its kind (9 to 12.7 ms on KVM)
+    refused the next one a whole W* later: at a932bc894 on adacachy2 (Linux x86_64, KVM,
+    32 CPUs), snapshot.rs' storm tests failed `telling the guest it may finish` 10.7 ms and
+    15.3 ms into the handshake (W* 9.0 ms and 10.1 ms, "a guest's stream made no progress"),
+    and vsock.rs' greeting 13.6 ms in (W* 12.7 ms), the guest then reading the host's close as
+    `the host said ""`. Why HVF's runs passed is unmeasured; the defect is no host's.
+    `Following` now reads its party's CPU as `Cpu::Progress` until its first byte
+    and as `Cpu::Liveness` from then on, as `Heard::streaming` does its guest's first line:
+    the storm's spin past its start still buys no wait, and a wait that has no byte yet goes
+    on while its microVM works, its refusal still a whole W* in which nothing of it ran. No
+    literal (R03). Red/green: harness.rs
+    `a_streams_wait_follows_its_partys_work_until_its_first_byte` (a busy stand-in for the
+    party, a byte a second in after a 20 ms answer taught its kind), and the three KVM tests.
+    `vsock_handshake` now says a refusal's cause (`no answer after "…": <the wait's
+    account>`) apart from the device's close (`refused after "…"`), which it had folded into
+    one text.
 - **A direct boot's waits follow its guest and its VM process** (every host). boot.rs'
   `a_guest_grows_and_gives_back_its_memory` failed on the arm64 Windows host with no
   `SHARDS-TEST PLUGGED` a minute from the test's start, while its guest, booted in 13 s of

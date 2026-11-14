@@ -5688,7 +5688,13 @@ fn vsock_handshake(
     while line.last() != Some(&b'\n') {
         match r.read(&mut byte) {
             Ok(1) => line.push(byte[0]),
-            _ => return Err(format!("refused after {:?}", String::from_utf8_lossy(&line))),
+            Ok(_) => return Err(format!("refused after {:?}", String::from_utf8_lossy(&line))),
+            Err(e) => {
+                return Err(format!(
+                    "no answer after {:?}: {e}",
+                    String::from_utf8_lossy(&line)
+                ));
+            }
         }
     }
     let text = String::from_utf8_lossy(&line);
@@ -5706,8 +5712,11 @@ fn vsock_handshake(
 /// [`run_command`]'s is ([`Wait`]), its kind its call site, its end (the stream's close) its
 /// answer, and its bytes its progress, whatever its microVM's CPU does (a guest on more vCPUs
 /// than its host's CPUs runs them all for ever): its party is this test's own VM processes,
-/// their CPU their liveness alone ([`Cpu::Liveness`]), a stop or suspension of theirs its
-/// host's hold. Cold, it reads with no timeout, its peer's liveness its own (the VM process
+/// their CPU their progress only until its first byte, while its peer starts it (a
+/// handshake's answer, a guest's greeting: the vsock device and the guest's kernel at work,
+/// with no byte to show for it), and their liveness alone after ([`Cpu::Liveness`]), as a
+/// streaming guest's is past its first line ([`Heard::streaming`]); a stop or suspension of
+/// theirs its host's hold. Cold, it reads with no timeout, its peer's liveness its own (the VM process
 /// that holds the stream's other end closes it as it ends); learned, each read waits until
 /// its judge's look, which refuses a stream that carried nothing over a whole W* past the
 /// look before. What it reads is added to `carried`, where a wait on its guest follows it
@@ -5780,12 +5789,22 @@ where
         home: Option<&Path>,
         site: &'static std::panic::Location<'static>,
     ) -> Following<'a, S> {
-        let mut party = Party::own(home);
-        party.read_cpu(Cpu::Liveness);
         Following {
             stream,
             carried,
-            wait: Wait::on(WaitKind::awaiting(site, STREAM), party, STREAM),
+            wait: Wait::on(WaitKind::awaiting(site, STREAM), Party::own(home), STREAM),
+        }
+    }
+
+    /// It read `n` bytes: `carried` counts them, and from its first its party's CPU is its
+    /// liveness alone.
+    fn took(&mut self, n: usize) {
+        if n == 0 {
+            return;
+        }
+        self.wait.party.read_cpu(Cpu::Liveness);
+        if let Some(c) = self.carried {
+            c.fetch_add(n as u64, Ordering::Relaxed);
         }
     }
 
@@ -5810,9 +5829,7 @@ where
             match read {
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => self.wait.absent(),
                 Ok(n) => {
-                    if let Some(c) = self.carried {
-                        c.fetch_add(n as u64, Ordering::Relaxed);
-                    }
+                    self.took(n);
                     return Ok(n);
                 }
                 Err(e) => return Err(e),
@@ -5837,9 +5854,7 @@ where
                     return Ok(0);
                 }
                 Some(Ok(n)) => {
-                    if let Some(c) = self.carried {
-                        c.fetch_add(n as u64, Ordering::Relaxed);
-                    }
+                    self.took(n);
                     self.wait.look(true).map_err(|stall| {
                         io::Error::new(io::ErrorKind::TimedOut, self.wait.refused(&stall))
                     })?;
