@@ -13,14 +13,25 @@
 //!   `thread_info`). Measured once a process, the first time a governor needs it: it spins two
 //!   of its steps at most.
 //!
-//! Cold, neither is known, and g is the least wait its governor asks for: CFS's own 1 ms
-//! (vm/hold.rs `SOONEST`). A clock that cannot be read leaves its step unknown, typed
-//! ([`Unclocked`]), and g its wake's.
+//! Cold, neither is known, and g is the least wait a governor asks for, [`LEAST_WAIT`]. A
+//! clock that cannot be read leaves its step unknown, typed ([`Unclocked`]), and g its wake's.
+//!
+//! [`period`] is D191's derivation from g, shared by every governor that holds threads to a
+//! share of a CPU: the hold's (vm/hold.rs), a share its rate's, and Windows' priority
+//! governor's (`windows_thread`), one thread's half a CPU.
 
 use std::io;
+use std::num::NonZeroU64;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+
+/// The least a governor waits between reads, and g cold: CFS bandwidth control's own
+/// precision, 1 ms. CFS takes no quota or period below it (kernel/sched/core.c l. 10054,
+/// `min_bw_quota_period_us`), and leaves each CPU that much of its runtime past the quota
+/// (kernel/sched/fair.c l. 7179, `min_cfs_rq_runtime`; Documentation/scheduler/sched-bwc.rst
+/// l. 94-95, 179-186; Linux 1590cf03).
+pub const LEAST_WAIT: Duration = Duration::from_millis(1);
 
 /// What is known of the step: none of either, cold.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -86,6 +97,45 @@ pub fn step() -> Step {
         late: LATE.least(),
         clock: CLOCK.get().and_then(|c| c.as_ref().ok().copied()),
     }
+}
+
+/// g now, for a governor whose least wait is [`LEAST_WAIT`]: [`Step::g`] of what is known.
+pub fn g() -> Duration {
+    step().g(LEAST_WAIT)
+}
+
+/// Why D191 derives no period: vcpus × g over the share outgrows what a `Duration` of
+/// nanoseconds in a u64 holds (585 years), never saturated into a period.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Outgrown {
+    pub vcpus: u64,
+    pub milli: NonZeroU64,
+    pub g: Duration,
+}
+
+impl std::fmt::Display for Outgrown {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} vCPUs held to {} milli-CPU at a step of {:?}: a period past what a u64 of ns holds",
+            self.vcpus, self.milli, self.g
+        )
+    }
+}
+
+/// The period D191 derives for `vcpus` threads held together to `milli` milli-CPU by a
+/// governor that resolves `g`: the shortest in which it resolves their share, vcpus × g over
+/// the share, the share `milli` over `vm::MILLI_PER_CPU` CPUs. A share of every thread's
+/// whole CPU is held over g itself; no share is held over less, as none is below g.
+pub fn period(vcpus: u64, milli: NonZeroU64, g: Duration) -> Result<Duration, Outgrown> {
+    let outgrown = Outgrown { vcpus, milli, g };
+    let ns = g
+        .as_nanos()
+        .checked_mul(u128::from(vcpus))
+        .and_then(|n| n.checked_mul(u128::from(crate::vm::MILLI_PER_CPU)))
+        .ok_or(outgrown)?
+        / u128::from(milli.get());
+    u64::try_from(ns).map(Duration::from_nanos).map_err(|_| outgrown)
 }
 
 /// The step the calling thread's CPU clock counts in, measured the first time any thread of
@@ -163,6 +213,31 @@ mod tests {
         let began = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
         late.waited(asked, began);
         assert_eq!(late.least(), Some(first), "a later, later wake raised the least");
+    }
+
+    /// D191's derived period: vcpus × g over the share, the shortest in which a governor
+    /// resolves it. Four vCPUs held under 625 milli-CPU by GetThreadTimes' 15.625 ms ticks
+    /// (PM M294) take CFS's 100 ms; one thread's half a CPU, 2g; a whole CPU's share of each
+    /// thread's, g; one past what a u64 of ns holds, typed.
+    #[test]
+    fn a_derived_period_resolves_its_share() {
+        let tick = Duration::from_micros(15_625);
+        let milli = |m| NonZeroU64::new(m).unwrap();
+        assert_eq!(period(4, milli(625), tick), Ok(Duration::from_millis(100)));
+        assert_eq!(period(4, milli(500), tick), Ok(Duration::from_millis(125)));
+        assert_eq!(period(1, milli(500), tick), Ok(Duration::from_micros(31_250)));
+        assert_eq!(period(4, milli(4000), LEAST_WAIT), Ok(LEAST_WAIT));
+        assert_eq!(period(1, milli(250), LEAST_WAIT), Ok(Duration::from_millis(4)));
+        let huge = Duration::from_secs(u64::MAX);
+        assert_eq!(
+            period(u64::MAX, milli(1), huge),
+            Err(Outgrown {
+                vcpus: u64::MAX,
+                milli: milli(1),
+                g: huge
+            })
+        );
+        assert!(period(1, milli(1), huge).is_err());
     }
 
     /// A clock's step is its second move: the first may be part of one, as a read can begin

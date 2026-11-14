@@ -627,7 +627,8 @@ fn the_orchestrators_room_holds_its_run_within_it() {
 /// of the time passing, but what a period may overrun and a period's share where the window
 /// and the periods do not line up, and is let go each period; held to its vCPU's whole CPU,
 /// nothing holds it, and the answer says so; told none, its hold is lifted. The period it is
-/// held over is the one its host said as the run started, its build's hold's.
+/// held over is the one its VM said with the rate's answer, D191's for one vCPU at a quarter
+/// CPU: 4g, g its VM process's own and never under the governor's least wait.
 #[test]
 fn the_orchestrators_rate_holds_its_run_to_it() {
     if cannot_run_vms() {
@@ -636,12 +637,16 @@ fn the_orchestrators_rate_holds_its_run_to_it() {
     let home = TempDir::new("api-rate-home");
     build(&home, "api-rate:1", &["spin"], "");
     let guest = booted(&ImageShards::new(), &spec(&home, "api-rate:1")).unwrap();
-    let period = guest.rate_period();
-    assert_eq!(period, shards_vmm::vm::hold_period());
+    assert_eq!(guest.rate_period(), None, "no rate answered yet");
     let quarter = NonZeroU64::new(250).unwrap();
     assert_eq!(
         ask(&*guest, |g| g.rate(Some(quarter), Duration::MAX)).unwrap(),
         Some(quarter)
+    );
+    let period = guest.rate_period().unwrap();
+    assert!(
+        period >= 4 * shards_vmm::platform::granule::LEAST_WAIT,
+        "{period:?}"
     );
     let ran = || {
         let stats = ask(&*guest, |g| g.stats(StatsScope::Run, Duration::MAX)).unwrap();
