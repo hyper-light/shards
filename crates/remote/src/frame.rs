@@ -12,6 +12,15 @@ use crate::Error;
 /// variables are a command line's (Linux's ARG_MAX is 2 MiB, execve(2)), within it.
 pub const MAX_FRAME: usize = 4 << 20;
 
+/// Member execs carry the run protocol's complete spec plus their scope (D238), which
+/// has its own ABI bound. Other frames keep their existing payload admission.
+fn payload_most(tag: Tag) -> usize {
+    match tag {
+        Tag::MemberExec => crate::control::exec::ASK_MOST,
+        _ => MAX_FRAME,
+    }
+}
+
 /// What a frame is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -135,13 +144,17 @@ impl Tag {
 
 /// `payload` framed as `tag`, appended to `out`.
 pub fn put(out: &mut Vec<u8>, tag: Tag, payload: &[u8]) -> Result<(), Error> {
-    if payload.len() > MAX_FRAME {
-        return Err(Error::new(format!(
-            "a {}-byte frame, over {MAX_FRAME}",
-            payload.len()
-        )));
+    let most = payload_most(tag);
+    if payload.len() > most {
+        return Err(Error::new(format!("a {}-byte frame, over {most}", payload.len())));
     }
     let len = u32::try_from(payload.len()).map_err(|_| Error::new("a frame too long"))?;
+    let extra = payload
+        .len()
+        .checked_add(std::mem::size_of::<u8>() + std::mem::size_of::<u32>())
+        .ok_or_else(|| Error::new("a frame too long"))?;
+    out.try_reserve(extra)
+        .map_err(|_| Error::new("no room for a frame"))?;
     out.push(tag as u8);
     out.extend_from_slice(&len.to_be_bytes());
     out.extend_from_slice(payload);
@@ -157,8 +170,9 @@ pub fn peek(buffer: &[u8]) -> Result<Option<(Tag, usize)>, Error> {
     let tag = Tag::of(tag).ok_or_else(|| Error::new(format!("a frame of no kind ({tag})")))?;
     let len =
         usize::try_from(u32::from_be_bytes([a, b, c, d])).map_err(|_| Error::new("a frame too long"))?;
-    if len > MAX_FRAME {
-        return Err(Error::new(format!("a {len}-byte frame, over {MAX_FRAME}")));
+    let most = payload_most(tag);
+    if len > most {
+        return Err(Error::new(format!("a {len}-byte frame, over {most}")));
     }
     Ok(Some((tag, len)))
 }
