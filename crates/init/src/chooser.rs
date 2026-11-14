@@ -221,7 +221,7 @@ struct Member {
     listener: Option<OwnedFd>,
     ask: Option<OwnedFd>,
     told: Option<OwnedFd>,
-    unprivileged: u16,
+    unprivileged: Option<u16>,
 }
 
 struct Serve {
@@ -458,7 +458,7 @@ impl Serve {
                     listener: None,
                     ask: None,
                     told: None,
-                    unprivileged: 1024,
+                    unprivileged: None,
                 });
                 self.members.len() - 1
             }
@@ -471,7 +471,7 @@ impl Serve {
                     Ok((ask, told, unprivileged)) => {
                         m.ask = Some(ask);
                         m.told = Some(told);
-                        m.unprivileged = unprivileged;
+                        m.unprivileged = Some(unprivileged);
                     }
                     // Its sockets cannot be asked of: it is chosen for nothing, and said so.
                     Err(e) => {
@@ -560,7 +560,12 @@ impl Serve {
                 // The domain's own kernel's refusal of a privileged port (inet_bind_sk,
                 // inet_port_requires_bind_service), which this process's capabilities
                 // would not make.
-                if port < m.unprivileged && !binds_service(pid) {
+                // Its namespace not yet read: its own kernel's bind, seen as the namespace
+                // comes (`member` marks a round stale, and `listened` finds the socket).
+                let Some(unprivileged) = m.unprivileged else {
+                    return (None, false);
+                };
+                if port < unprivileged && !binds_service(pid) {
                     return (Some(Err(libc::EACCES)), false);
                 }
                 match hostbind::bind_socket(&sock, ip, port) {
@@ -592,11 +597,20 @@ impl Serve {
         else {
             return;
         };
-        let mut buf = [0u8; 8192];
+        // Each message is taken whole and read not at all: with no buffer, MSG_TRUNC
+        // gives its real length and the kernel discards it (recv(2), netlink's since
+        // Linux 2.6.22), so no message's size is guessed.
         let mut any = false;
         loop {
-            // SAFETY: recv(2) into a buffer of ours, of its length.
-            let n = unsafe { libc::recv(fd, buf.as_mut_ptr().cast(), buf.len(), libc::MSG_DONTWAIT) };
+            // SAFETY: recv(2) of no bytes into no buffer.
+            let n = unsafe {
+                libc::recv(
+                    fd,
+                    std::ptr::null_mut(),
+                    0,
+                    libc::MSG_DONTWAIT | libc::MSG_TRUNC,
+                )
+            };
             if n <= 0 {
                 break;
             }
@@ -661,16 +675,28 @@ impl Serve {
 }
 
 /// In the namespace `netns`, on a thread of its own: a sock_diag socket to ask, one told
-/// of each socket's end, and `ip_unprivileged_port_start`.
+/// of each socket's end, and `ip_unprivileged_port_start`, the namespace's own, or an
+/// error where it cannot be read, never a port guessed (its member then chosen for
+/// nothing, and said so).
 fn in_namespace(netns: &OwnedFd) -> io::Result<(OwnedFd, OwnedFd, u16)> {
     crate::links::in_netns(Some(netns.as_raw_fd()), || {
         let ask = hostbind::diag_socket()?;
         let told = hostbind::destroy_listener()?;
-        let unprivileged = std::fs::read_to_string("/proc/sys/net/ipv4/ip_unprivileged_port_start")
-            .ok()
-            .and_then(|s| s.trim().parse::<u16>().ok())
-            .unwrap_or(1024);
+        let unprivileged = unprivileged_start(&std::fs::read_to_string(
+            "/proc/sys/net/ipv4/ip_unprivileged_port_start",
+        )?)?;
         Ok((ask, told, unprivileged))
+    })
+}
+
+/// `ip_unprivileged_port_start`'s value as its file reads, a port (0 to 65535,
+/// proc_dointvec_minmax's bounds for it, net/ipv4/sysctl_net_ipv4.c); an error otherwise.
+fn unprivileged_start(read: &str) -> io::Result<u16> {
+    read.trim().parse::<u16>().map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("ip_unprivileged_port_start reads {:?}: {e}", read.trim()),
+        )
     })
 }
 
@@ -692,7 +718,7 @@ fn binds_service(pid: libc::pid_t) -> bool {
 fn listened(ask: &OwnedFd, addr: Ipv4Addr, (proto, lo, hi): Egress) -> Vec<u16> {
     // TCP_LISTEN's state bit; every state of UDP's.
     let states: u32 = if proto == 6 { 1 << 10 } else { u32::MAX };
-    let mut buf = vec![0u8; 16 * 1024];
+    let mut buf = Vec::new();
     let mut found = Vec::new();
     for family in [libc::AF_INET, libc::AF_INET6] {
         // nlmsghdr (16), then inet_diag_req_v2: family, protocol, extensions, pad, states,
@@ -710,9 +736,7 @@ fn listened(ask: &OwnedFd, addr: Ipv4Addr, (proto, lo, hi): Egress) -> Vec<u16> 
             break;
         }
         'dump: loop {
-            // SAFETY: recv(2) into a buffer of ours, of its length.
-            let n = unsafe { libc::recv(ask.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len(), 0) };
-            let Some(n) = usize::try_from(n).ok().filter(|&n| n > 0) else {
+            let Some(n) = whole(ask, &mut buf) else {
                 break 'dump;
             };
             let mut msgs = buf.get(..n).unwrap_or_default();
@@ -739,6 +763,30 @@ fn listened(ask: &OwnedFd, addr: Ipv4Addr, (proto, lo, hi): Egress) -> Vec<u16> 
     found.sort_unstable();
     found.dedup();
     found
+}
+
+/// One datagram of netlink socket `sock`, whole, into `buf`, grown to hold it: its real
+/// length first, which recv(2)'s MSG_PEEK | MSG_TRUNC give (netlink's since Linux 2.6.22),
+/// so that no dump's datagram is cut to a buffer of a guessed size. None where there is
+/// none, or it cannot be held.
+fn whole(sock: &OwnedFd, buf: &mut Vec<u8>) -> Option<usize> {
+    // SAFETY: recv(2) of no bytes into no buffer, the datagram left queued.
+    let len = unsafe {
+        libc::recv(
+            sock.as_raw_fd(),
+            std::ptr::null_mut(),
+            0,
+            libc::MSG_PEEK | libc::MSG_TRUNC,
+        )
+    };
+    let len = usize::try_from(len).ok().filter(|&n| n > 0)?;
+    if buf.len() < len {
+        buf.try_reserve(len - buf.len()).ok()?;
+        buf.resize(len, 0);
+    }
+    // SAFETY: recv(2) into a buffer of ours, at least `len` long.
+    let n = unsafe { libc::recv(sock.as_raw_fd(), buf.as_mut_ptr().cast(), len, 0) };
+    usize::try_from(n).ok().filter(|&n| n > 0)
 }
 
 /// The port of `lo..=hi` at which one sock_diag message (an nlmsghdr, then an
@@ -978,6 +1026,38 @@ mod tests {
         choices.choose(1, &[vec![9000, 9001], vec![9001]]);
         let to: Vec<_> = choices.chosen().iter().map(|&(from, to, _, _)| (from, to)).collect();
         assert_eq!(to[1..], [((6, 9000, 9000), web), ((6, 9001, 9001), api)]);
+    }
+
+    /// network-12: what a namespace says of its lowest unprivileged port is taken as it
+    /// says it, and what is no port is an error, never 1024.
+    #[test]
+    fn the_unprivileged_start_is_the_namespaces_own_or_an_error() {
+        assert_eq!(unprivileged_start("1024\n").unwrap(), 1024);
+        assert_eq!(unprivileged_start("0\n").unwrap(), 0);
+        assert_eq!(unprivileged_start("65535").unwrap(), 65535);
+        for bad in ["", "65536", "-1", "port"] {
+            assert_eq!(
+                unprivileged_start(bad).unwrap_err().kind(),
+                io::ErrorKind::InvalidData,
+                "{bad:?}"
+            );
+        }
+    }
+
+    /// network-12: a dump of more sockets than any one buffer of a chosen size holds is
+    /// read whole, each datagram at its own length. Do: listen on 512 loopback ports and
+    /// ask sock_diag who listens. Expect: every one of them found.
+    #[test]
+    fn every_listener_of_a_long_dump_is_found() {
+        let listeners: Vec<std::net::TcpListener> = (0..512)
+            .map(|_| std::net::TcpListener::bind("127.0.0.1:0").unwrap())
+            .collect();
+        let mut ports: Vec<u16> = listeners.iter().map(|l| l.local_addr().unwrap().port()).collect();
+        ports.sort_unstable();
+        let ask = hostbind::diag_socket().unwrap();
+        let found = listened(&ask, Ipv4Addr::LOCALHOST, (6, 1, u16::MAX));
+        let missing: Vec<u16> = ports.iter().copied().filter(|p| found.binary_search(p).is_err()).collect();
+        assert!(missing.is_empty(), "{} of 512 not found: {missing:?}", missing.len());
     }
 
     /// The filter notifies of the native ABI's bind and listen alone.
