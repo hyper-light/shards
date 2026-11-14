@@ -2393,7 +2393,7 @@ fn a_daemon_out_of_descriptors_waits_for_room() {
 fn a_stop_cancels_the_downloads_of_runs_being_prepared() {
     use std::net::TcpListener;
     let silent = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = silent.local_addr().unwrap().port();
+    let port = crate::common::minted_port(silent.local_addr().unwrap().port());
     let accepted = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     {
         let accepted = accepted.clone();

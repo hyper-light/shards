@@ -1570,7 +1570,7 @@ fn run_steps_reach_the_network_unless_it_is_none() {
         return;
     };
     let server = listening_anywhere();
-    let port = server.local_addr().unwrap().port();
+    let port = crate::common::minted_port(server.local_addr().unwrap().port());
     // Serves one connection if one comes before the build is done: the build's end (its
     // word, or its sender dropped as the test fails) ends it, no bound of its own, so that a
     // build that never connects fails the test rather than hangs it.
@@ -1625,7 +1625,7 @@ fn proxied_server(
 ) -> (u16, std::sync::mpsc::Receiver<String>) {
     use std::io::{BufRead as _, Write as _};
     let listener = listening_anywhere();
-    let port = listener.local_addr().unwrap().port();
+    let port = crate::common::minted_port(listener.local_addr().unwrap().port());
     let (said, asked) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         for conn in listener.incoming() {
@@ -3590,7 +3590,7 @@ fn url_server(log: Asked, release: std::sync::mpsc::Receiver<()>) -> u16 {
     use std::io::{BufRead as _, Write as _};
     use std::sync::{Arc, Condvar, Mutex};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
+    let port = crate::common::minted_port(listener.local_addr().unwrap().port());
     let asked_b = Arc::new((Mutex::new(false), Condvar::new()));
     let release = Arc::new(Mutex::new(release));
     std::thread::spawn(move || {
@@ -3676,7 +3676,7 @@ fn url_server(log: Asked, release: std::sync::mpsc::Receiver<()>) -> u16 {
 fn epoch_server() -> u16 {
     use std::io::{BufRead as _, Write as _};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
+    let port = crate::common::minted_port(listener.local_addr().unwrap().port());
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(stream) = stream else { return };
@@ -4486,7 +4486,7 @@ fn git_at(dir: &std::path::Path, date: &str, args: &[&str]) -> String {
 fn git_http_server(root: std::path::PathBuf, accepted: Vec<String>) -> u16 {
     use std::io::{BufRead as _, BufReader, Read as _, Write as _};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
+    let port = crate::common::minted_port(listener.local_addr().unwrap().port());
     std::thread::spawn(move || {
         for conn in listener.incoming().flatten() {
             let root = root.clone();
@@ -4913,7 +4913,7 @@ fn builds_take_remote_contexts() {
     ];
     let fetched = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let wport = listener.local_addr().unwrap().port();
+    let wport = crate::common::minted_port(listener.local_addr().unwrap().port());
     {
         let fetched = fetched.clone();
         std::thread::spawn(move || {
@@ -10272,7 +10272,7 @@ fn agents_reach_past_the_microvm_by_ipv6_what_their_networks_grant() {
     };
     let serve = || {
         let server = std::net::TcpListener::bind("[::]:0").unwrap();
-        let port = server.local_addr().unwrap().port();
+        let port = crate::common::minted_port(server.local_addr().unwrap().port());
         std::thread::spawn(move || for _ in server.incoming() {});
         port
     };
@@ -10282,7 +10282,11 @@ fn agents_reach_past_the_microvm_by_ipv6_what_their_networks_grant() {
     // Bound to the address it is asked at, so its answers come from it on a host of several
     // addresses, as a resolver's must (RFC 5452 §9.1).
     let resolver = std::net::UdpSocket::bind((*host4.ip(), 0)).unwrap();
-    let resolver_at = format!("{}:{}", host4.ip(), resolver.local_addr().unwrap().port());
+    let resolver_at = format!(
+        "{}:{}",
+        host4.ip(),
+        crate::common::minted_port(resolver.local_addr().unwrap().port())
+    );
     std::thread::spawn(move || {
         let mut buf = [0u8; 512];
         while let Ok((n, from)) = common::recv_from(&resolver, &mut buf) {
@@ -10613,7 +10617,7 @@ fn an_engines_member_reaches_no_farther_than_the_command_beside_agents() {
     };
     let host = host.ip();
     let server = listening_anywhere();
-    let granted = server.local_addr().unwrap().port();
+    let granted = crate::common::minted_port(server.local_addr().unwrap().port());
     std::thread::spawn(move || {
         for mut c in server.incoming().flatten() {
             let _ = std::io::Write::write_all(&mut c, b"served\n");
@@ -10622,7 +10626,7 @@ fn an_engines_member_reaches_no_farther_than_the_command_beside_agents() {
     // The host's word to the agent, said once its engine's member serves: what the agent
     // tries of the member waits for it.
     let word_server = listening_anywhere();
-    let word = word_server.local_addr().unwrap().port();
+    let word = crate::common::minted_port(word_server.local_addr().unwrap().port());
     let (say, word_said) = std::sync::mpsc::channel::<()>();
     std::thread::spawn(move || {
         if let Ok((mut c, _)) = word_server.accept() {
@@ -10807,7 +10811,7 @@ fn agents_reach_past_the_microvm_what_their_networks_grant() {
     // until the test ends.
     let serve = || {
         let server = listening_anywhere();
-        let port = server.local_addr().unwrap().port();
+        let port = crate::common::minted_port(server.local_addr().unwrap().port());
         std::thread::spawn(move || for _ in server.incoming() {});
         port
     };
@@ -10816,7 +10820,7 @@ fn agents_reach_past_the_microvm_what_their_networks_grant() {
     // At the address the guest sends to, so that its answers come back from it on a host of
     // several addresses, the flow's own reverse.
     let echo = std::net::UdpSocket::bind((host, 0)).unwrap();
-    let echoed = echo.local_addr().unwrap().port();
+    let echoed = crate::common::minted_port(echo.local_addr().unwrap().port());
     std::thread::spawn(move || {
         let mut buf = [0u8; 64];
         while let Ok((n, from)) = common::recv_from(&echo, &mut buf) {
@@ -10828,7 +10832,10 @@ fn agents_reach_past_the_microvm_what_their_networks_grant() {
     // Bound to the address it is asked at, as a resolver's answers must come from it (RFC
     // 5452 §9.1), on a host of several addresses too.
     let resolver = std::net::UdpSocket::bind((host, 0)).unwrap();
-    let resolver_at = format!("{host}:{}", resolver.local_addr().unwrap().port());
+    let resolver_at = format!(
+        "{host}:{}",
+        crate::common::minted_port(resolver.local_addr().unwrap().port())
+    );
     let address = match host {
         std::net::IpAddr::V4(a) => a.octets(),
         std::net::IpAddr::V6(_) => panic!("an IPv4 host address"),
@@ -11638,7 +11645,7 @@ fn a_remote_mcp_server_is_a_grant_of_that_server_alone() {
     };
     let serve = || {
         let server = listening_anywhere();
-        let port = server.local_addr().unwrap().port();
+        let port = crate::common::minted_port(server.local_addr().unwrap().port());
         std::thread::spawn(move || for _ in server.incoming() {});
         port
     };
@@ -11663,7 +11670,7 @@ fn a_remote_mcp_server_is_a_grant_of_that_server_alone() {
             .find_map(|n| {
                 if n % 2 == 0 {
                     let tcp = std::net::TcpListener::bind((address, 0)).unwrap();
-                    let port = tcp.local_addr().unwrap().port();
+                    let port = crate::common::minted_port(tcp.local_addr().unwrap().port());
                     match std::net::UdpSocket::bind((address, port)) {
                         Ok(udp) => Some((udp, tcp)),
                         Err(e) => {
@@ -11674,7 +11681,7 @@ fn a_remote_mcp_server_is_a_grant_of_that_server_alone() {
                     }
                 } else {
                     let udp = std::net::UdpSocket::bind((address, 0)).unwrap();
-                    let port = udp.local_addr().unwrap().port();
+                    let port = crate::common::minted_port(udp.local_addr().unwrap().port());
                     match std::net::TcpListener::bind((address, port)) {
                         Ok(tcp) => Some((udp, tcp)),
                         Err(e) => {
@@ -11687,7 +11694,7 @@ fn a_remote_mcp_server_is_a_grant_of_that_server_alone() {
             })
             .unwrap_or_else(|| panic!("no port free in both TCP and UDP: {refused:?}"))
     };
-    let resolver_port = resolver.local_addr().unwrap().port();
+    let resolver_port = crate::common::minted_port(resolver.local_addr().unwrap().port());
     let resolver_at = format!("{host}:{resolver_port}");
     let answer = move |q: &[u8]| -> Vec<u8> {
         let mut at = 12;
