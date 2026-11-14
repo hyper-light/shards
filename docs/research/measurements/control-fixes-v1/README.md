@@ -53,3 +53,49 @@ unit reproduction was run here; no claim is made about other pending guest/host 
 | R11 | Guest is Linux on every host; native Linux x86_64 checked; arm64 and real hypervisor legs owed to ROOT/CI, not passed. |
 | R15 | Scoped implementation and light tests only; no agents spawned; signed commits and fresh-main merge before ff landing. |
 | R16 | Owned cold target and remote clone only; remove target after landing; no other agent's data touched. |
+
+## Control-03: MCP bridge first failure
+
+Red dee36cb5f8fd70e2e90551ec66b9aa1938dfd60b, kiln r6 on the same Linux host:
+`cargo test -j 4 -p shards-init a_bridge_output_failure_does_not_wait_for_its_idle_input`
+failed with left Err(Timeout), expected Ok(Err(BrokenPipe)). The test held the actual
+stdin pipe open, closed the stdout reader and sent response bytes over a real Unix pair.
+Only after capturing the failure did it release stdin and join all workers.
+
+Implementation c02114a2d4374de98d6acd32e3e7cce474eceeca replaces the bridge's two
+blocking copies with separate stdio ends in the existing typed native relay. Final source
+0a15e5da97dfc038bbb46b40549cbdf1a4c70e3c adds the symmetric EISDIR input error and
+preserves the original poll shape for two socket endpoints. Its scopes, partial writes,
+backpressure, EOF and faults remain that shared relay's. The bridge owns its stdio ends
+and marks them nonblocking; it has no helper to join. Its process lifetime closes them.
+
+Established alternative: Tokio 1.48.0 `copy_bidirectional` returns at the first I/O error
+and half-closes each writer on its source's EOF (primary source, read 2026-11-13):
+https://github.com/tokio-rs/tokio/blob/tokio-1.48.0/tokio/src/io/util/copy_bidirectional.rs.
+No runtime added: the existing Linux relay already supplies that readiness state machine.
+Its packet slot bound is derived in relay.rs from Linux VIRTIO_VSOCK_MAX_PKT_BUF_SIZE,
+page-rounded on the running guest, with typed allocation/reservation failure and no timer.
+The number of readiness entries follows the endpoint descriptors plus the cancel fd.
+
+Kiln r7 passed 5 MCP/5 engine/6 lane tests but clippy correctly failed an unused Read
+import; r8 ran that same old snapshot after a transient signing-service refusal. Neither
+is claimed a passing gate. The corrected signed snapshot was verified in the carrier
+before r9: `cargo test -j 4 -p shards-init mcp::tests` (6 passed), `cargo test -j 4 -p shards-init engine::tests`
+(5 passed), `cargo test -j 4 -p shards-init lanes::tests` (6 passed),
+`cargo clippy -j 4 -p shards-init --all-targets -- -D warnings` (clean).
+
+R01: existing fallible allocation, checked offsets and typed native errors retained.
+R02/R05/R12: extend the existing relay at the concrete socket/stdio seam; sources and
+alternative above. No new cache or poll interval. R03: existing packet/page bounds only;
+no warm-up or timer, typed failure on cold allocation. R04: Endpoint::Socket/Stdio,
+existing Half/SourceEnd/Fault state machines, first fault returned. R06/R07/R13: no
+parallel copying implementation, unsafe calls document descriptor/slice obligations.
+R08/R14: buffer/CPU costs and performance ratios unmeasured, owed to ROOT. R09/R10:
+real pipe/socket red followed by both-direction error regressions and normal EOF green.
+R11: the bridge/relay are Linux guest code on every host; x86_64 GNU checked, other
+matrix/real-VM legs not run. R15: focused tests only, no agents/VMs. R16: owned target
+removed after landing. No guard-removal mutation beyond retained red source was run.
+
+ROOT owes the real-VM MCP restart/fault/cleanup scenario in control-03 and
+`cargo test -p shards --test api_image an_orchestrators_members_are_signaled_and_their_mcp_connections_reached_on_its_endpoint`
+on its supported hypervisors. No bridge process/fd count in a real VM was measured here.

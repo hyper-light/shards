@@ -29353,6 +29353,16 @@ and a run naming a member its image starts no program for.
   `/proc/self/exe`, read only, nosuid, nodev, runnable; `bridge_mount`). Run by that name, as no
   PID 1, the binary is the bridge: its stdin to the socket and the socket to its stdout, its
   stdin's end the socket's half-close, done once both ways have ended.
+- *The bridge's failure and waits* (control-03). Its separate stdin/stdout ends use the
+  existing native relay's typed endpoint, nonblocking read/write and readiness wait;
+  sockets keep their original two-descriptor poll shape. Either direction's first I/O
+  error returns, without joining a worker blocked on the other source. Orderly EOF still
+  half-closes only its destination, and both directions must end for success. Storage is
+  the relay's existing vsock-packet slots, with their kernel-source bound (no timer/retry).
+  Tokio 1.48.0's `copy_bidirectional` is the established equivalent: EOF shuts down that
+  writer; an I/O error returns immediately. This reuses the existing relay rather than
+  adding an async runtime or a second pump. The bug's blocked worker and both error
+  directions are covered in [the red/green record](../research/measurements/control-fixes-v1/README.md).
 - *The relay.* Each connection to the socket, on a thread of its own, dials port 1031, says
   `HELLO` with the run's token and then the member's declared index, and carries the bytes each
   way, each way's end that way's half-close (`native_relay::pump`, `EndPolicy::Independent`).

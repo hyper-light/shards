@@ -23765,6 +23765,13 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   [commands and R01–R16 account](measurements/control-fixes-v1/README.md). Real-VM
   aborted-lane resource counts remain ROOT's.
 
+- **Control-03 follow-up (2026-11-13).** The MCP stdio bridge's downward BrokenPipe
+  joined a thread blocked on open idle stdin (red dee36cb5f: Timeout). Its stdio is now
+  an endpoint of the shared native relay; first error returns with no blocking worker.
+  On adacachy2 Linux x86_64, 0a15e5da9 passed 6 MCP, 5 engine and 6 lane tests plus
+  shards-init clippy. Both input/output error directions and ordinary half-close are
+  covered; [commands, source and remaining VM proof](measurements/control-fixes-v1/README.md).
+
 ### M560. CI's musl test job: its build and its tests as steps of their own, each limit derived (M420, M547)
 
 - **Question.** In CI run 43513425954 (main 70eba153d) the x86_64-unknown-linux-musl test job

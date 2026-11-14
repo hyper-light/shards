@@ -68,6 +68,8 @@ There is also an ordering hazard in this same completion path: `api_run.rs:3844�
 
 **Catching test:** Hold a pipe's input writer open, arrange a downward writer that fails on response bytes, and require `copy_both` to return Err and join its helper before the input writer is closed. Add the symmetric input-read-error case.
 
+**Status (2026-11-13):** fixed in 0a15e5da97dfc038bbb46b40549cbdf1a4c70e3c (red `mcp::tests::a_bridge_output_failure_does_not_wait_for_its_idle_input`, dee36cb5f8fd70e2e90551ec66b9aa1938dfd60b). adacachy2 Linux x86_64: red Timeout while stdin remained open; green 6 MCP tests, 5 engine tests, 6 lane tests, shards-init clippy clean. The shared relay now supports separate nonblocking stdio ends, with no copy thread to retain. Symmetric input-error coverage passed. [Evidence](../../research/measurements/control-fixes-v1/README.md).
+
 ### control-04 — P3 / medium — an idle stdin feeder survives member/run termination
 
 **Location:** `crates/api/src/image/session.rs:1081`; related `:1772–1799`, `:1286–1303`, `:1942–1957`, `:1973–1983`.
