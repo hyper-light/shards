@@ -628,8 +628,8 @@ impl Handle {
         let fail = |e: std::io::Error| format!("sending its memory: {e}");
         let (layer, swap) = (self.control.layer(), self.control.swap());
         for gpa in written.iter() {
-            if let Some((plugged, at, bytes)) = self.memory.page_at(gpa) {
-                w.record(if plugged { live::PLUGGED } else { live::RAM }, at, bytes)
+            if let Some((plugged, at, bytes)) = self.memory.page_at(gpa).map_err(|e| e.to_string())? {
+                w.record(if plugged { live::PLUGGED } else { live::RAM }, at, &bytes)
                     .map_err(fail)?;
                 continue;
             }

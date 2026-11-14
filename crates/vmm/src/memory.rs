@@ -336,6 +336,9 @@ const DEVICE_PAGE: u64 = 4096;
 
 /// What [`GuestMemory::each_used`] gives each run of used pages to: whether plugged, its
 /// place, and its bytes.
+/// An owned live-move page: plugged, file offset or guest address, and bytes.
+pub type CopiedPage = (bool, u64, [u8; crate::vm::live::PAGE as usize]);
+
 pub type UsedTaker<'a> = dyn FnMut(bool, u64, &[u8]) -> io::Result<()> + 'a;
 
 // SAFETY: the reservations are memory this value owns. The host reaches it only through an
@@ -706,66 +709,84 @@ impl GuestMemory {
     /// is noted for the next round.
     pub fn each_used(&self, take: &mut UsedTaker<'_>) -> io::Result<()> {
         let page = crate::vm::live::PAGE as usize;
-        let mut offset = 0u64;
-        let mut runs = |host: *const u8, len: usize, at: u64, plugged: bool| -> io::Result<()> {
-            let mut start = None;
-            for i in (0..len).step_by(page).chain(std::iter::once(len)) {
-                // SAFETY: the page at `i` lies within the region at `host`, page-aligned.
-                let used = i < len && unsafe { !is_zero(host.add(i), page) };
-                match (start, used) {
-                    (None, true) => start = Some(i),
-                    (Some(first), false) => {
-                        // At most a record's worth at once.
-                        let mut from = first;
-                        while from < i {
-                            let to = i.min(from + crate::vm::live::MAX_RECORD);
-                            // SAFETY: within the region, as above.
-                            let bytes = unsafe { std::slice::from_raw_parts(host.add(from), to - from) };
-                            take(plugged, at + from as u64, bytes)?;
-                            from = to;
+        let mut buffer = vec![0; crate::vm::live::MAX_RECORD];
+        let mut copy = |gpa: u64, len: usize, at: u64, plugged: bool, grain: usize| -> io::Result<()> {
+            for off in (0..len).step_by(grain) {
+                let n = grain.min(len - off);
+                let bytes = buffer.get_mut(..n).ok_or(io::ErrorKind::InvalidInput)?;
+                // The bitmap and its backing stay together only while Access is held.
+                // Network output below consumes owned bytes, after releasing that hold.
+                let copied = {
+                    let access = self.access().map_err(io::Error::other)?;
+                    access.read(gpa + off as u64, bytes)
+                };
+                match copied {
+                    Err(_) if plugged => continue, // Unplugged since the range was found.
+                    Err(e) => return Err(io::Error::other(e)),
+                    Ok(()) => {}
+                }
+                let mut start = None;
+                for (i, used) in bytes
+                    .chunks_exact(page)
+                    .map(|p| p.iter().any(|&b| b != 0))
+                    .chain(std::iter::once(false))
+                    .enumerate()
+                {
+                    match (start, used) {
+                        (None, true) => start = Some(i * page),
+                        (Some(first), false) => {
+                            let run = bytes.get(first..i * page).ok_or(io::ErrorKind::InvalidData)?;
+                            take(plugged, at + off as u64 + first as u64, run)?;
+                            start = None;
                         }
-                        start = None;
+                        _ => {}
                     }
-                    _ => {}
                 }
             }
             Ok(())
         };
+        let mut offset = 0;
         for r in &self.regions {
-            runs(r.host.as_ptr(), r.len, offset, false)?;
+            copy(r.gpa, r.len, offset, false, crate::vm::live::MAX_RECORD)?;
             offset += r.len as u64;
         }
         if let Some(h) = &self.hotplug {
+            let grain = usize::try_from(h.block)
+                .map_err(io::Error::other)?
+                .min(crate::vm::live::MAX_RECORD);
             for (gpa, len) in h.runs(&h.plugged) {
-                let len = usize::try_from(len).map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
-                runs(h.host(gpa), len, gpa, true)?;
+                let len = usize::try_from(len).map_err(io::Error::other)?;
+                copy(gpa, len, gpa, true, grain)?;
             }
         }
         Ok(())
     }
 
-    /// Where a page its guest wrote at `gpa` is, for a live move's round (D176 part 7): in
-    /// its RAM, by its offset in a save's file, or plugged (true), by its address; and its
-    /// bytes, [`PAGE`](crate::vm::live::PAGE) long. None for an address of neither, or of
-    /// memory to plug that is not plugged now.
-    pub fn page_at(&self, gpa: u64) -> Option<(bool, u64, &[u8])> {
+    /// Copies a live move's page into owned bytes under Access. Unplug may withdraw
+    /// its mapping as soon as this returns; the stream writer never borrows that mapping.
+    pub fn page_at(&self, gpa: u64) -> Result<Option<CopiedPage>, Reentered> {
         let page = crate::vm::live::PAGE;
-        let mut offset = 0u64;
+        let access = self.access()?;
+        let mut bytes = [0; crate::vm::live::PAGE as usize];
+        let mut offset = 0;
         for r in &self.regions {
-            if let Some(off) = gpa.checked_sub(r.gpa).filter(|off| off + page <= r.len as u64) {
-                // SAFETY: a page within the region, which this value keeps mapped.
-                let bytes =
-                    unsafe { std::slice::from_raw_parts(r.host.as_ptr().add(off as usize), page as usize) };
-                return Some((false, offset + off, bytes));
+            if let Some(off) = gpa
+                .checked_sub(r.gpa)
+                .filter(|off| off.checked_add(page).is_some_and(|end| end <= r.len as u64))
+            {
+                return Ok(access
+                    .read(gpa, &mut bytes)
+                    .ok()
+                    .map(|()| (false, offset + off, bytes)));
             }
             offset += r.len as u64;
         }
-        self.hotplug.as_ref()?.blocks(gpa, page)?;
-        // Plugged now, its blocks the host's to reach.
-        let host = self.host_ptr(gpa, page as usize).ok()?;
-        // SAFETY: a page of plugged blocks of the reservation, which this value keeps.
-        let bytes = unsafe { std::slice::from_raw_parts(host, page as usize) };
-        Some((true, gpa, bytes))
+        Ok(self
+            .hotplug
+            .as_ref()
+            .and_then(|h| h.blocks(gpa, page))
+            .and_then(|_| access.read(gpa, &mut bytes).ok())
+            .map(|()| (true, gpa, bytes)))
     }
 
     /// Plugs `runs` again, the memory a snapshot's machine had plugged, and reads each back
@@ -1474,14 +1495,20 @@ mod tests {
             access.write_obj(block, 0x5au8).unwrap();
         }
         let mut seen = false;
-        memory.each_used(&mut |plugged, at, bytes| {
-            assert!(plugged);
-            assert_eq!(at, block);
-            memory.access().unwrap().unplug(block, block, |_, _| Ok(())).unwrap();
-            assert_eq!(bytes.first(), Some(&0x5a));
-            seen = true;
-            Ok(())
-        }).unwrap();
+        memory
+            .each_used(&mut |plugged, at, bytes| {
+                assert!(plugged);
+                assert_eq!(at, block);
+                memory
+                    .access()
+                    .unwrap()
+                    .unplug(block, block, |_, _| Ok(()))
+                    .unwrap();
+                assert_eq!(bytes.first(), Some(&0x5a));
+                seen = true;
+                Ok(())
+            })
+            .unwrap();
         assert!(seen);
     }
 
@@ -1494,10 +1521,14 @@ mod tests {
             access.plug(block, block, |_, _, _| Ok(())).unwrap();
             access.write_obj(block, 0x5au8).unwrap();
         }
-        let (plugged, at, bytes) = memory.page_at(block).unwrap();
+        let (plugged, at, bytes) = memory.page_at(block).unwrap().unwrap();
         assert!(plugged);
         assert_eq!(at, block);
-        memory.access().unwrap().unplug(block, block, |_, _| Ok(())).unwrap();
+        memory
+            .access()
+            .unwrap()
+            .unplug(block, block, |_, _| Ok(()))
+            .unwrap();
         assert_eq!(bytes.first(), Some(&0x5a));
     }
 
