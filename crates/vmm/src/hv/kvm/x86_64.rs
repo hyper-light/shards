@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use super::state::{VcpuState, VmState};
 use super::{Error, Kicker, Result, Slots, Thread, call, install_kick_handler, kvm, sys};
-use crate::arch::x86_64::{Boot, Segment, cpuid, layout};
+use crate::arch::x86_64::{Boot, Segment, cpuid, layout, xsave};
 use crate::hv::{Exit, Io};
 use crate::sync::lock;
 
@@ -685,8 +685,23 @@ impl Vcpu {
         // Another CPU than the snapshot's (D176 part 6): one with every feature its guest
         // found is given the guest's CPUID, which the guest goes on believing; one short of
         // any is refused, naming what it lacks.
-        if !same_cpu(&st.cpuid, &self.cpuid) {
+        let other = !same_cpu(&st.cpuid, &self.cpuid);
+        if other {
             cpuid::covers(&self.cpuid, &st.cpuid).map_err(|lacks| Error::Guest(lacks.to_string()))?;
+        }
+        // KVM_SET_XSAVE reads an area of this host's size (KVM_CAP_XSAVE2) laid out as this
+        // host's CPUID leaf 0xD says: one of another size, another host's, is laid into one
+        // of this size by its own host's layout (the guest's CPUID, as KVM offered it there)
+        // and this one's, before anything of this vCPU is set (migrate-07).
+        let laid;
+        let xsave: &[u8] = if st.xsave.len() == self.xsave_size {
+            &st.xsave
+        } else {
+            laid = xsave::lay_into(&st.xsave, &st.cpuid, xcr0(&st.xcrs), &self.cpuid, self.xsave_size)
+                .map_err(Error::Xsave)?;
+            &laid
+        };
+        if other {
             let leaves: Vec<sys::kvm_cpuid_entry2> = st
                 .cpuid
                 .iter()
@@ -703,13 +718,6 @@ impl Vcpu {
                 .collect();
             self.fd.set_cpuid(&leaves).map_err(call("KVM_SET_CPUID2"))?;
             self.cpuid.clone_from(&st.cpuid);
-        }
-        if st.xsave.len() < self.xsave_size {
-            return Err(Error::Guest(format!(
-                "the snapshot's XSAVE area is {} bytes; this CPU's is {}",
-                st.xsave.len(),
-                self.xsave_size
-            )));
         }
         if crate::log::enabled(crate::log::Level::Debug) {
             let deadline = st.msrs.iter().find(|&&(index, _)| index == MSR_IA32_TSC_DEADLINE);
@@ -738,7 +746,7 @@ impl Vcpu {
             size_of::<sys::kvm_sregs>(),
             "KVM_SET_SREGS",
         )?;
-        set(sys::KVM_SET_XSAVE, &st.xsave, sys::XSAVE_SIZE, "KVM_SET_XSAVE")?;
+        set(sys::KVM_SET_XSAVE, xsave, self.xsave_size, "KVM_SET_XSAVE")?;
         set(sys::KVM_SET_XCRS, &st.xcrs, sys::XCRS_SIZE, "KVM_SET_XCRS")?;
         set(
             sys::KVM_SET_DEBUGREGS,
@@ -855,6 +863,29 @@ impl Vcpu {
     }
 }
 
+/// XCR0's value among `xcrs`, a `struct kvm_xcrs` (nr_xcrs, flags, then 16 of xcr,
+/// reserved, value; Linux arch/x86/include/uapi/asm/kvm.h): 0 where it names none, as KVM
+/// writes of a host without XSAVE, whose guest enables nothing XSAVE lays out.
+fn xcr0(xcrs: &[u8]) -> u64 {
+    let word = |at: usize, n: usize| xcrs.get(at..at + n);
+    let count = word(0, 4)
+        .and_then(|b| b.try_into().ok())
+        .map_or(0, u32::from_ne_bytes);
+    (0..count.min(sys::MAX_XCRS))
+        .filter_map(|k| {
+            let at = 8 + 16 * k as usize;
+            let xcr = word(at, 4)
+                .and_then(|b| b.try_into().ok())
+                .map(u32::from_ne_bytes)?;
+            let value = word(at + 8, 8)
+                .and_then(|b| b.try_into().ok())
+                .map(u64::from_ne_bytes)?;
+            (xcr == 0).then_some(value)
+        })
+        .next()
+        .unwrap_or(0)
+}
+
 /// Whether two vCPUs' CPUID tables are one CPU's, as a snapshot asks of the vCPU it is
 /// restored to: every leaf alike but those that describe the caches (leaf 4, 0x8000_0005,
 /// 0x8000_0006 and 0x8000_001D). KVM fills those from the core its ioctl ran on, and on a
@@ -876,6 +907,23 @@ fn same_cpu(a: &[[u32; 7]], b: &[[u32; 7]]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// XCR0 is read from KVM_GET_XCRS's bytes wherever among its XCRs it is, and is 0
+    /// where they name none (migrate-07's layout of a saved XSAVE area).
+    #[test]
+    fn xcr0_is_read_from_a_vcpus_xcrs() {
+        let mut xcrs = vec![0u8; sys::XCRS_SIZE];
+        assert_eq!(xcr0(&xcrs), 0);
+        xcrs[..4].copy_from_slice(&2u32.to_ne_bytes());
+        xcrs[8..12].copy_from_slice(&1u32.to_ne_bytes());
+        xcrs[16..24].copy_from_slice(&7u64.to_ne_bytes());
+        xcrs[24..28].copy_from_slice(&0u32.to_ne_bytes());
+        xcrs[32..40].copy_from_slice(&0x2e7u64.to_ne_bytes());
+        assert_eq!(xcr0(&xcrs), 0x2e7);
+        xcrs[..4].copy_from_slice(&u32::MAX.to_ne_bytes());
+        assert_eq!(xcr0(&xcrs), 0x2e7, "a count past KVM_MAX_XCRS reads no further");
+        assert_eq!(xcr0(&xcrs[..20]), 0, "nor past the bytes");
+    }
 
     /// Two cores of a hybrid host, as KVM described them (PM M258): their caches differ,
     /// and nothing else of what a vCPU is given; a feature that differs is another CPU.

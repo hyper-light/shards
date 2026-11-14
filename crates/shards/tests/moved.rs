@@ -75,6 +75,8 @@ fn machines(name: &str) -> Option<(TempDir, TempDir, Listening, String)> {
             "here",
             "--output",
             invite.to_str().unwrap(),
+            "--valid",
+            "10m",
         ],
     );
     assert_eq!(invited.status, Some(0), "{invited}");

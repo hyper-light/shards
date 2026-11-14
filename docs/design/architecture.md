@@ -1643,6 +1643,21 @@ removes it; `--rm` removes it once it ends.
     never started the run, which goes to another VM; one that answers otherwise, or not
     in time, may have, and is ended and followed like any run, never retried: no run
     starts twice.
+  - **Which VMs a run tries** (runs-11, R03). A run once tried three warm VMs and failed
+    after them whatever stood ready (`HANDOFF_TRIES`, a number picked). Now a VM that
+    surely did not take it gives way to the next only where it had been waiting in its
+    pool before the run asked (`Ready::pooled`, the instant it joined its pool's waiting
+    VMs, before the run's): those are as many as the pools held then, each tried once,
+    however many ended unseen, so the tries are bounded by VMs that exist, not by a count.
+    One started after the run asked (for it, or a refill since) that surely did not take
+    it ends the start, said as `the VM started for the run did not take it: WHY`: a VM
+    made for the run failing so is no sign the next one would not, and starting VMs on
+    against a failure every VM may share has no end of its own. Cold start: an empty
+    pool's first VM is started for the run and is tried once. Unit test
+    `untaken_pooled_vms_give_way_to_each_other_and_a_fresh_one_ends_the_start` (four
+    pooled VMs ended unseen, the fifth serves; one started for the run, ended unseen, ends
+    the start after one ask); with the count of three put back, it fails (the run is
+    refused with a healthy fifth VM ready).
   - A record changed after it went is an error, not nothing to do.
   - **Evidence:** deterministic unit tests that play the warm VMs over socket pairs and
     hold each step (acquisition, TAKEN, STARTED, DONE) while `rm`, `rm -f`, `wait`,
@@ -2970,28 +2985,52 @@ executables, signatures, GPU and crash-debris checks remain owed in the
 **Helper integrity before each start (runs-10).** A helper's directory is named by the
 helpers' digests, but `complete` and the GPU writer took a helper of the right length
 as this build's whatever its bytes: one byte changed (by hand, by a program of the
-user's, on the disk) was started as it was, in every later process. Now each time a
-process is about to start a helper (`helpers::vm`, `net`, `vm_gpu`, and `checked` for
-the path the daemon keeps, from `launch::program`), its bytes are read whole and their
-SHA-256 compared with the digest build.rs embedded beside them; where they differ, or
-the file is gone, the carried bytes are written again whole (staging of the writer's
-own, synced, closed, renamed over it: the bytes build.rs signed on macOS), and a helper
-that cannot be written again (Windows refuses to replace one a running VM process
-holds) is refused, saying its path, its digest and why. A helper `SHARDS_VM_BINARY`
-names, or a carrier's beside its `shards` (D237, signed by the carrier, its bytes not
-those this build carries), is its giver's to answer for and is started as it is.
-`complete` stays the check that a directory was placed whole. No literal: the digest is
-SHA-256 of the carried bytes, the read through std's buffer at std's size. **Cost owed
-(ROOT):** each VM start now reads shards-vm (2.98 MB in this Mac's cache) and each
-networked one shards-net (4.33 MB) through SHA-256; its latency is unmeasured:
-`docs/research/measurements/build-ab/ab.py` between this build and its parent on one
-template, and a cold `shards run --kernel` launch, on HVF, KVM and WHP. A start between
-the check and the exec can still find bytes changed in that window; only an exec of the
-checked descriptor (fexecve, which macOS lacks) would close it. Unit tests (helpers.rs):
-`a_helper_whose_bytes_changed_is_written_again_before_it_starts` (one byte flipped, its
-length kept: written again) and `a_changed_helper_that_cannot_be_written_again_is_refused`;
-with the digest check put back to the length check, the first fails (the flipped bytes
-are returned). [runs-fixes record](../research/measurements/runs-fixes/README.md#runs-10).
+user's, on the disk) was started as it was, in every later process. Now every start of
+a helper this build carries goes through `helpers::program` (launch.rs for the VM
+process, its GPU build included; netproc.rs for the network process; `run --kernel` and
+`restore`'s exec): the file is opened, its version read (`platform::file_identity`: on
+Unix fstat's device, inode, length, write and change times; on Windows FileIdInfo's
+volume and 128-bit file ID, FileStandardInfo's length, FileBasicInfo's write and change
+times), and its bytes read whole through SHA-256 and compared with the digest build.rs
+embedded beside them only where this process has not yet checked that version. A write
+to the file changes its write and change times, and a file renamed over its name is
+another inode or ID, so changed bytes are read again at the next start. Where they
+differ, or the file is gone, the carried bytes are written again whole (staging of the
+writer's own, synced, closed, renamed over it: the bytes build.rs signed on macOS) and
+checked again; a helper that cannot be written again, or written is still not this
+build's, is refused, saying its path, its digest and why.
+
+- **The version cache** (`helpers::CHECKED`): key, the helper's path; value, the version
+  its bytes were last found to be this build's at; one entry a helper, so at most the
+  three this build carries, for the process's life; authority, the file's bytes, read
+  again whenever its version differs. Its benefit, measured: a start's check where the
+  version is known against one that reads the bytes (unit test `a_helper_checks_cost`,
+  [PM M580](../research/platform-measurements.md)). What it cannot see: bytes changed
+  below the file system (a disk's own fault) with no write through it; and on Windows a
+  writer that sets a file's write and change times back by SetFileInformationByHandle,
+  which only this user's own programs can, whose cache it is.
+- **Started as the file checked.** The checked file stays open until its process has
+  started (`helpers::Program`). On Linux the start goes through it, `/proc/PID/fd/N` of
+  the checking process, which the starting process (this one, or its spawner, PM M158,
+  of the same user) opens as the very file checked whatever has been renamed over its
+  name since (proc(5)); its name where /proc is not there. On Windows it is opened
+  sharing only reads (CreateFileW's dwShareMode), so while it is held no other handle
+  writes, renames or deletes it, and CreateProcess, which opens it to read and execute,
+  still may. macOS has no fexecve(2) and its posix_spawn takes a path: there the window
+  between the check and the exec stays, the start by name.
+- A helper `SHARDS_VM_BINARY` names, or a carrier's beside its `shards` (D237, signed by
+  the carrier, its bytes not those this build carries), is its giver's to answer for and
+  is started as it is.
+- No literal: the digest is SHA-256 of the carried bytes; the read goes through std's
+  buffer at std's size.
+- **Tests** (helpers.rs): `a_helper_whose_bytes_changed_is_written_again_before_it_starts`,
+  `a_changed_helper_that_cannot_be_written_again_is_refused`,
+  `a_helper_is_read_again_only_once_its_file_changed` (a known version reads no bytes;
+  a write since, its length kept, is read again and mended),
+  `a_checked_helper_starts_as_the_file_checked` (Linux: the file checked starts though
+  another was renamed over its name; Windows: no rename over a held helper, which still
+  starts; macOS: its name). Mutations: the version left out of the cache's key, and the
+  bytes unread, each fail. [runs-fixes record](../research/measurements/runs-fixes/README.md#runs-10).
 
 shards is one file to install and run, `shards`: every command, the daemon included,
 one CLI.
@@ -4118,6 +4157,26 @@ what only the hypervisor knows the size of, the input bounds and that hypervisor
 - **Sizes by the structure.** KVM's x86-64 structures are each exactly their ioctl's size;
   its XSAVE area at least `struct kvm_xsave`'s and at most what its own CPUID says (leaf
   0DH's ECX, which KVM's KVM_CAP_XSAVE2 says the same of); WHP's APIC state its register page.
+  An XSAVE area of another size than the restoring host's (another host's, D176 part 6) is
+  laid into one of this host's KVM_CAP_XSAVE2 size (amended 2026-11-14, review finding
+  migrate-07): KVM_SET_XSAVE reads that many bytes, and "the offsets of the state save areas
+  in struct kvm_xsave follow the contents of CPUID leaf 0xD on the host" (api.rst §4.43), so
+  `arch::x86_64::xsave::lay_into` keeps the legacy region and header as saved and puts each
+  component the guest enabled (XCR0, from its saved XCRs) or holds (XSTATE_BV) where both
+  hosts' leaf 0xD lay it out alike: the saved vCPU's CPUID, as its own host's KVM offered it,
+  and this host's; the rest is zeros, the initial state XRSTOR gives a component its
+  XSTATE_BV leaves clear (Intel SDM Vol. 1 §13.8.1). A component laid out otherwise or
+  nowhere, a compacted area, one shorter than its header or past either area is refused
+  typed (`XsaveRefused`, `hv::kvm::Error::Xsave`), after the CPU coverage check and before
+  anything of the vCPU is set. Before, an area shorter than this host's was refused: a
+  non-AMX host's 4096 bytes on an AMX host's 11008, under a baseline without AMX. No literal
+  is chosen: the offsets and sizes are the two hosts' CPUID, the header's the SDM's (512 and
+  64 bytes, §13.4.1-13.4.2). Held by `a_smaller_hosts_xsave_area_is_laid_into_a_larger_ones`,
+  `an_xsave_area_laid_out_otherwise_is_refused` and `xcr0_is_read_from_a_vcpus_xcrs`. Owed to
+  ROOT: a move between a non-AMX and an AMX host of one vendor under their common baseline
+  (`SHARDS_MOVE_INVITE=<destination-invitation-file> cargo test -p shards --test moved
+  a_microvm_moved_to_another_host_keeps_its_cpu_image_files_and_connections`), its guest's
+  vector registers checked after.
 - **The hypervisor judges what only it sizes.** A GIC's state on arm64 is its backend's own
   serialization: KVM's and WHP's restores bound theirs (the writes above; WinHvPlatformDefs.h's
   layouts), and Hypervisor.framework refuses a state not its own. WHP's XSAVE area is as long
@@ -4146,7 +4205,7 @@ what only the hypervisor knows the size of, the input bounds and that hypervisor
 | `MAX_PATH` (snapshot/mod.rs) | 4096 | `platform::PATH_MOST` | include/uapi/linux/limits.h l. 13; macOS sys/syslimits.h; Win32 "Maximum Path Length Limitation"; RFC 3629 §3 |
 | `MAX_NAME` (snapshot/mod.rs) | 64 | `"g-"` + 32 + 1 + 8 + 1 + 16 hex digits = 60 | `fresh_name`'s format |
 | `MAX_RECORD` (vm/live.rs) | 1 MiB | `DATA_BLOCK` = 2 MiB | D151 |
-| `MAX_STATE` (snapshot/mod.rs) | 64 MiB | `most_state(memory_mib)`: the machine's RAM, read from the state's head (`HEAD`, as far as `memory_mib`) before more of it is read (`platform::read_beneath_by`); a save past it refused | the restore's process maps that RAM for the guest; D176's decoders for each part |
+| `MAX_STATE` (snapshot/mod.rs) | 64 MiB | `most_state(memory_mib)`: the machine's RAM, read from the state's head (`HEAD`, as far as `memory_mib`) before more of it is read (`platform::read_beneath_by`), none past a u64's bytes; and `platform::holdable_known()`, what the reading host can hold now; each refused typed (`StateRefused`, migrate-04); a save past the RAM refused | the restore's process maps that RAM for the guest; D176's decoders for each part; the host's kernel (proc_meminfo(5) MemAvailable; macOS kern.memorystatus_level of sysconf(_SC_PHYS_PAGES); MEMORYSTATUSEX ullAvailPhys) |
 | `MAX_DISKS` (snapshot/mod.rs) | 64 (2 × 64 identities, 64 shares) | `VIRTIO_SLOTS` = the guest architecture's `layout::VIRTIO_MMIO_MAX` (18 on x86-64, 32 on arm64), disks, pmem files and shares together | `vm::virtio_devices` (each a virtio-mmio transport, refused past it); x86-64's free IOAPIC pins 5-22; arm64's SPIs from `SPI_VIRTIO_MMIO` |
 | arch name (snapshot/mod.rs) | 32 bytes | the input's: it is only compared with this build's | `decode_head` |
 | `MAX_TABLES` (fs/proto.rs), `MAX_CONTROL` (fs/mod.rs) | `MAX_STATE`, 64 MiB | `CONTROL - 1` = 2^31 - 1: what one control frame's length word says below its mark | fs/mod.rs `CONTROL`, `read_any_into` |
@@ -4162,6 +4221,32 @@ them. The bytes of the files a guest holds open on a share that no path reaches 
 one part nothing of the machine bounds: a save of a state past its RAM is refused, as one
 past 64 MiB was, and the share's tables travel to and from their server in one control
 frame, as long as its length word says.
+
+**And by the host that reads it (amended 2026-11-14, review finding migrate-04).** The
+head's RAM is the file's own claim: a head forged to u64::MAX MiB saturated `most_state`,
+and a sparse state as long as its sender liked (a move lays a FILE's length with
+`set_len`, daemon/moves.rs) had all of it allocated and zero-filled before its decoder
+refused it. A state is now refused, typed (`snapshot::StateRefused`), from its head and its
+length alone, before its whole is allocated: a RAM of more bytes than a u64 counts
+(`PastAnyMachine`), a length past its machine's RAM (`PastItsMachine`), and a length past
+what the reading host can hold now (`PastHost`): `platform::holdable_known`, what its kernel
+says it has available (Linux's MemAvailable, proc_meminfo(5); macOS's
+kern.memorystatus_level of its memory; Windows' ullAvailPhys), else all its memory
+(sysconf(_SC_PHYS_PAGES), GlobalMemoryStatusEx), the shards daemon's existing `holdable`
+moved to vmm's platform for both processes. That is the bound the file does not say. It is
+read where it runs, at each read, so it has no cold start; a host that says neither is
+refused (`HostMemoryUnknown`), never read past. The confined Linux VM process reads the
+host's memory by sysinfo(2), which glibc's and musl's sysconf ask and its seccomp filter
+now allows (`confine.rs`); /proc/meminfo is past its Landlock rules. Every way in reads by
+it: a move's `relocate` of what it placed, a restore's `read`, `backing_named`, `layout`.
+Held by `a_forged_states_head_has_no_more_allocated_than_the_host_holds` (with each bound
+removed, red) and `a_state_past_its_machines_memory_is_refused`. Owed to ROOT: reads at once
+are each bounded alone (two within the host's available memory may be past it together:
+an admission held across a home's concurrent restores is the design); the probe's cost on
+the restore path (R14: a read of /proc/meminfo in Linux's daemon, a Landlock-refused open
+and a sysinfo(2) in the confined VM process, two sysctls on macOS, one call on Windows); a
+template restored on Linux KVM (its VM process confined), Hypervisor.framework and WHP; and
+the bounded-RSS run of a forged sparse state through a move's import (`tests/moved.rs`).
 
 Held by unit tests (`a_state_is_bounded_by_its_machine`,
 `a_state_past_its_machines_memory_is_refused`, `a_state_past_what_a_machine_has_is_refused`,
@@ -4446,9 +4531,16 @@ read holds one whole message. The rest keep their values until their learned des
 land, each with its cold start, typed failure and the measurement ROOT owes, in
 [the row-by-row record](../research/measurements/network-fixes-v1/README.md#network-12-the-network-controls-derivations-row-by-row):
 the TCP queues and retransmission (RFC 6298, RFC 1122 R2), window updates (RFC 9293),
-the per-turn budget (deficit round robin), UDP lifetimes (RFC 4787 REQ-5, which the
-30 s unreplied lifetime breaks past port 1023), the backlog, the poller's batch, the
-ring's size, the resolvers' wait and the daemon's bind tries.
+the per-turn budget (deficit round robin), the backlog, the poller's batch, the
+ring's size, the resolvers' wait and the daemon's bind tries. UDP lifetimes (2026-11-14):
+a UDP flow of the network process lives RFC 4787 §4.3 REQ-5's two minutes past its last
+datagram, either way, answered or not (`shards_abi::bounds::UDP_MAPPING_IDLE`), where it
+lived conntrack's 30 s until answered and streaming, which broke REQ-5 for every port past
+1023 (red `a_udp_mapping_outlives_two_minutes_of_quiet_but_none_past`). Each datagram going
+out refreshes it (REQ-6, which MUST) and each coming in (REQ-6a, which MAY: its host socket
+is connected to its one granted peer). REQ-5a's shorter timers for well-known ports and
+REQ-5c's RECOMMENDED five minutes are not taken, with why and the measurement ROOT owes in
+the row-by-row record.
 
 `shards network` makes networks of microVMs as `docker network` makes them of
 containers, with Docker's inputs and words: create, ls, inspect, rm, prune, connect and
@@ -5483,11 +5575,11 @@ where a lost packet stalls every byte behind it. shards speaks QUIC (RFC 9000, 9
   laptop's attached runs with it, is part 5's to measure.
 - **Joining by invitation, as focal's nodes and clients join** (the user's other QUIC
   service, ../focal docs/network-startup.md). On the machine that runs the microVMs,
-  `shards invite client --name NAME --output FILE` writes an invitation to a private file,
-  never to the screen or a log: the daemon's address, its key's SHA-256 and a 256-bit
-  secret. It enrolls one client, and an unused one expires an hour after it was made, as
-  focal's do; `shards list invitations` and `shards remove invitation NAME` show and revoke
-  them. `shards create context NAME --invite-file FILE` connects, checks the daemon's key
+  `shards invite client --name NAME --output FILE --valid DURATION` writes an invitation to a
+  private file, never to the screen or a log: the daemon's address, its key's SHA-256 and a
+  256-bit secret. It enrolls one client, once, within the lifetime its owner gives it, none
+  assumed ("An invitation's lifetime", below); `shards list invitations` and `shards remove
+  invitation NAME` show and revoke them. `shards create context NAME --invite-file FILE` connects, checks the daemon's key
   against the invitation, and proves the secret bound to that TLS session (HMAC-SHA-256 of
   an RFC 8446 §7.5 exporter), so that it is neither replayed nor relayed; the daemon then
   enrolls the client's key under the invitation's name.
@@ -7134,18 +7226,43 @@ move steps' verbs; any other word `of no kind it knows`), a refusal with its com
 each command's end with its status (`client laptop: shards run ended, status 3`). No flag's value,
 argument, variable, path or relay token is logged.
 
-*Values still chosen (remote-08), owed.* `invite::LIFETIME_SECS` (3600 s) and `frame::MAX_FRAME`
-(4 MiB) are not derived. The lifetime is an authority the owner grants: no learning may set or
-lengthen it, so it is the owner's to state (when an invitation is made) or the person's to rule
-that an invitation lasts until its one use; the refusal of a lapsed one stays typed. The frame bound
-is to become each tag's own contract: an Exec request this host's own `sysconf(_SC_ARG_MAX)` read at
-the listener's start (POSIX; on Linux a quarter of RLIMIT_STACK, at least 128 KiB, execve(2)), as a
-request this host cannot exec is refused anyway; on Windows CreateProcess's 32,767-character command
-line and the environment block; stdin, stdout and stderr chunks `server::READ_MOST` (the pipe
-buffers cited there); a join `JOIN_MAX`; a microVM's ID `MADE_MOST`; resizes, signals and controls
-their fixed sizes; `MemberExec` its `ASK_MOST`; and managed records (`managed::RECORD_MOST`) and
-move plans (`daemon::moves::MAX_PLAN`), which now borrow `MAX_FRAME`, bounds of their own contracts.
-A frame past its tag's bound is refused typed before it is buffered. None of it is built yet.
+*An invitation's lifetime (remote-08; decided by the person, 2026-11-14).* The owner states it:
+`shards invite client` takes `--valid DURATION` (Go's durations, `10m`, `2h`, kept in whole seconds,
+rounded up) and refuses, typed (`context::Lifetime::Missing`), to make an invitation without one,
+its text naming the flag; no default is assumed and no learning may set or lengthen it, as it is
+an authority the owner grants. The record keeps `created` and `valid` (`shards invitation record
+2`); one of an earlier shards, made under its fixed hour (the former `invite::LIFETIME_SECS`, gone),
+states none and is lapsed. The machine checks the lifetime at each join. An invitation is single-use
+and revocable until used: its use or revocation takes its record away first (renamed aside, so of
+two joins at once one ends it), then leaves what ended it (`shards invitation ended 1`: `used` or
+`revoked`, its secret gone); a join by it is refused, typed (`context::Uninvited`: unknown, lapsed,
+used, revoked, unproven), the machine's log saying which, its client hearing the one refusal it
+always did, so that no invitation's name or state is told to a stranger. Green
+`context::tests::an_invitations_lifetime_is_given_by_its_owner`,
+`a_join_is_refused_for_what_became_of_its_invitation` (mutants: a default lifetime, a used one
+taken for unknown, both killed; macOS arm64); the E2E's asks (`tests/context.rs`: no `--valid`
+refused, one past its lifetime refused) are ROOT's to run.
+
+*Frame bounds (remote-08), owed.* `frame::MAX_FRAME` (4 MiB) is not derived, and it stays in force
+until each bound that replaces it is. A bound per tag, as first proposed, cannot be one: the tags are
+shared by lanes whose payloads differ. `StdinEnd` carries nothing on a command stream and
+`OFFSET + ERRNO` bytes on a managed input lane (`managed/input.rs`); `Exit` carries a four-byte
+status on a command stream and on an exec lane, `OFFSET + ERRNO` on a managed input lane; `Refused`
+carries UTF-8 words on a command stream and a four-byte code on an exec lane (`control/exec.rs`);
+`Stdout` carries a pipe's read on a command stream and an offset-headed record up to
+`managed::RECORD_MOST` on a managed output lane. An `Exec` request's words go to an exec, bounded by
+the host's `sysconf(_SC_ARG_MAX)` (POSIX; on Linux a quarter of RLIMIT_STACK, execve(2)), but a step's
+go to the daemon itself (a move's plan up to `daemon::moves::MAX_PLAN`, which borrows `MAX_FRAME`),
+so ARG_MAX bounds only the first. The derivation is therefore one per lane: each lane's reader hands
+`frame::peek` its own grammar's bound for each tag it takes (none for a tag it does not), and
+`MAX_FRAME` goes once every lane has one. For the command stream: a client's stdin chunk and a
+command's output are reads of `server::READ_MOST` (the pipe buffers cited there); a join `JOIN_MAX`;
+a microVM's ID `MADE_MOST`; resizes, signals, controls and exits their fixed sizes; a request's words
+the larger of the exec's ARG_MAX and its steps' own bounds, which each step must first have
+(`MAX_PLAN`'s is a move plan's own contract, unmade); refusal words a bound the server holds its
+words to, unmade. The exec, socket and MCP lanes already check their payloads after admission
+(`TOLD_MOST`, `ASK_MOST`, `LOG_ASK`), which become their peeks' bounds. Owed: an R02 decision on
+the step and refusal bounds, then the per-lane peeks (an implementer's slice).
 
 #### A client's authority, judged of what runs and of whom its key is now (remote-01 to 03, 2026-11-13)
 
@@ -7522,10 +7639,11 @@ no part of the microVM's own network design (D59, D61), it is replaced.
   peers reach, with what would declare it (`EXPOSE`, `expose:`, `--expose`), so the gap
   is seen at once rather than as a connection that hangs.
 - **Its own values.** A joiner's link takes the hardware address its kernel gives it,
-  as an agent's does. The proxy keeps a UDP client's mapping as long as the microVM's own
-  connection tracking keeps a UDP flow (`nf_conntrack_udp_timeout`, and
-  `nf_conntrack_udp_timeout_stream` once answered, read from the running guest), so that
-  a published UDP port lasts as the microVM's translated flows do.
+  as an agent's does. The proxy keeps a UDP client's mapping a UDP mapping's two
+  minutes past its last datagram, either way (RFC 4787 REQ-5 and REQ-6,
+  `shards_abi::bounds::UDP_MAPPING_IDLE`), as the network process keeps one (D46). It
+  kept the guest's conntrack timeouts (30 s until answered, then 120 s), which break
+  REQ-5 past port 1023 (network-12, 2026-11-14).
 - **`--network host` is the command's own namespace**, as the client asks: the engine's
   host's network, the command's reach and no more. `none` is a namespace of its own with
   its loopback alone; `container:X` the namespace of X, one of its own joiners.
@@ -7572,9 +7690,10 @@ ports` lists, built; (3e) connect and disconnect of a running member, built.
   `/etc/resolv.conf` the switch's resolver. Init says the membership to the host before
   the joiner starts (`MEMBER`: its network, address and prefix, gateway and the kernel's
   hardware address), which the daemon keeps for inspect while it runs; its end lets the
-  membership go. The proxy relays what is published, its UDP mappings kept as the guest's
-  connection tracking keeps a UDP flow (read in a run of the pinned kernel, arm64,
-  2026-10-17: 30 s, and 120 s once answered), and says a
+  membership go. The proxy relays what is published, its UDP mappings kept RFC 4787 REQ-5's
+  two minutes past their last datagram (above; before 2026-11-14 the guest's conntrack
+  timeouts, read in a run of the pinned kernel, arm64, 2026-10-17: 30 s, and 120 s once
+  answered), and says a
   port it cannot bind in shards' words. `--add-host NAME:host-gateway` is refused: a
   member reaches nothing of the command's.
 - **Found and closed: TCP DNS sessions held their accept's names (network-09,
@@ -8997,6 +9116,17 @@ holds the stable lock while another writer learns a helper end, publishes its ow
 teardown snapshot and releases the lock: both maxima must survive. Existing cold
 liveness behavior and the record's millisecond format are unchanged; no new wait,
 cache, runtime number or platform adapter. See the [runs fix evidence](../research/measurements/runs-fixes/README.md).
+
+**The record read as written** (runs-12). `heard` publishes through `platform::write_in`,
+which on Windows replaces no file (PM M345): each write lands a version, `ends.~N`, and
+removes the plain name. The record was read as the plain name (`fs::read_to_string`), so
+on Windows every reader after the first write found none, and each host's slices were
+lost to the next process. Every reader now opens the newest version (`ends::newest`,
+`platform::open_newest_in`), on Unix the name itself. Unit test
+`each_published_record_is_read_back_by_the_next_process` (three publications, each read
+back by a new process's `Ends`), red on Windows with the plain read put back; Unix has
+no versions, so only Windows can show it red. The E2E reader
+(`a_kills_end_is_kept_as_this_hosts_in_its_home`) reads the newest version too.
 
 **Found.** The audit of what was taken from Docker (docs/audit/2026-10-16_docker-framing.md):
 a microVM whose command outlived its SIGKILL had its VM killed 10 s later and its end given
@@ -19818,6 +19948,11 @@ host's. A microVM has a kernel and a network namespace of its own; shards makes 
 network the host's at the layers a program can tell, TCP and UDP, as Docker Desktop's
 host networking does for its VM's containers (PM M177).
 
+**Relayed UDP flows (network-12, 2026-11-14).** The host network's relay (hostbind.rs)
+kept a relayed UDP flow as Linux conntrack keeps one, 30 s until answered and streaming,
+then 120 s; it now keeps each RFC 4787 REQ-5's two minutes past its last datagram, either
+way (REQ-6), as the network process does (D46, `shards_abi::bounds::UDP_MAPPING_IDLE`).
+
 - **Asked, and said each time.** `--network host` alone gives it; every start of such a
   run says on stderr what it gives (`shards_abi::run::NETWORK_HOST`): its servers' ports
   are the host's, reachable from every network the host is on, and it reaches the host's
@@ -20239,6 +20374,16 @@ receiver for an incoming port" above:
   --test build a_udp_flow_goes_to_its_ports_next_holder -- --exact --nocapture`
   extended to hand the port back to the first holder and to the second again with one
   client socket, each datagram answered by the holder of the moment.
+- **What the chooser reads, at the sizes it comes in (network-12, 2026-11-14).** Its
+  sock_diag dumps were read into 16 KiB and its socket-end notices into 8 KiB, chosen,
+  and a namespace not yet read, or whose `ip_unprivileged_port_start` could not be read,
+  was taken to start at 1024. Each dump datagram is now read whole at its own length,
+  peeked first (recv(2)'s MSG_PEEK | MSG_TRUNC, netlink's since Linux 2.6.22); each
+  notice, never read, is taken with no buffer (MSG_TRUNC); and the unprivileged start is
+  the namespace's own, a namespace whose value cannot be read or is no port refusing its
+  member to the chooser with the error said, a bind before the namespace is read being
+  the member's own kernel's (`every_listener_of_a_long_dump_is_found`,
+  `the_unprivileged_start_is_the_namespaces_own_or_an_error`).
 - **A choice costs a commit, not a grace period (PM M513).** M498 found a contested
   bind(2) and listen(2) each at 16 ms (p50) where an uncontested filtered one took 19 and
   14 µs: the chooser programmed each choice on a netfilter socket of its own and closed
@@ -26769,6 +26914,55 @@ API's protocol: its output drained, its end, its connections.
 - *Connections.* `connect_before(port, deadline)` dials under an absolute deadline, a socket
   completed after it never published; `connect_once_before` dials once, refused at once where
   nothing listens.
+- *A borrowed connect with no clock* (Hex lead's ask, 2026-11-14: Hex's audit fix D-3 and its
+  decision 9, no verdict at a bound). `connect_borrowed(identity, port, patience)` had one
+  finite deadline and no uncensored form: `Duration::MAX` is refused `Bounds` before the dial,
+  and any finite patience closes an `OK` that comes after it. Hex's offered-stream CONNECT
+  (every Windows exec with streams) must, past its own learned W*, wait for its `OK` with no
+  clock. Now `connect_borrowed_before(identity, port, deadline: Option<Instant>)`:
+  - `Some(at)` is `connect_borrowed`'s finite wait to the caller's instant (`Until`), unchanged:
+    each step waits to it, an answer at or past it is refused `Borrowed { Expired }`.
+    `connect_borrowed` stays as it was, Hex's existing calls with it.
+  - `None` has no clock. Its one dial's handshake ends only at the `OK`, however late, at the
+    connection's end (`Borrowed { Channel(..) }`), or at the end of the identity's VM process,
+    refused `Process { failure: Exited }`, typed, whatever the connection said as it ended.
+  - *The watch is the hold the borrowed connect already takes* (`taken::Held::find` on Unix,
+    `borrowed_windows::Held` on Windows, before the dial, by pid and start): a pidfd on Linux,
+    a kqueue with the exit registered (EVFILT_PROC, NOTE_EXIT) on macOS, a process handle with
+    SYNCHRONIZE on Windows, the same objects a taken-back guest's watcher waits on
+    (`Held::exited`). Each holds the process object, not its pid: a pid given to another
+    process since is refused `DifferentStart` before the dial (`Held::found`), and the end the
+    hold sees is the held process's alone.
+  - *How it waits.* Where a step would block, it waits on the socket and the hold together
+    (`stream::Socket::read_watched`, `write_watched`), with no thread and no timer: on Unix one
+    poll(2) of both, a pidfd and a kqueue holding an event each being readable (pidfd_open(2),
+    kqueue(2)); on Windows, where WSAPoll takes sockets alone, the socket's FD_READ or FD_WRITE
+    and FD_CLOSE selected to an event (WSAEventSelect, signalled at once where the condition
+    holds as it is selected) and waited on with the process handle (`shards_ipc::await_any`,
+    WaitForMultipleObjects), the selection let go of after. An owned guest's no-clock connect
+    (`Guest::connect(port, Duration::MAX)`) is woken by its watcher thread's condvar between
+    its dials; a borrowed connect makes one dial, so its one wait is inside the handshake, on
+    the same hold. Its dial waits on nothing new: Unix's connect never waits on its listener,
+    Windows' ends as afunix.sys ends it, and a VM process's end closes the listener.
+  - *Literals and cold start.* None: no timeout, period or bound of ours. poll(2)'s -1 and
+    INFINITE are the OS's own "no timeout"; the caller's deadline is the only clock, and with
+    `None` there is none. Nothing is learned, so there is no cold start.
+  - *Tests (light)*, `client::borrowed_tests::no_clock`: a withheld `OK` closed at a learned
+    patience (`while_runs::until_reached`) and taken, past it, with `None`, the bytes after it
+    the stream's; the identity's process (a child that waits on its stdin) killed and reaped
+    as the connect waits, its peer holding the connection open, refused `Exited`, its answer
+    waited for at the scale of that kill and reap; a pid of another start refused
+    `DifferentStart` before any dial, and a reaped one refused `Process`, neither followed.
+    Run (docs/research/measurements/borrowed-no-clock/run.sh, its log beside it) on
+    adas-mac-studio-3.local, macOS 26 (Darwin 25.2.0) on arm64, rustc 1.98.1, at e960039cc:
+    red, today's behavior through the new signature (`Duration::MAX` refused `Bounds`), all
+    three failed; green, `client::borrowed_tests` 12 passed, 2 ignored; clippy clean. Each
+    guard's removal failed its test: the watch dropped (m1), the connect found blocked past
+    the kill's scale; the hold unchecked at the handshake's end (m2), `Channel(Closed)` for
+    `Exited`; the start comparison dropped (m3), the other start followed. The m1/green pair
+    shows a kqueue with NOTE_EXIT is readable to poll(2) on macOS. Owed (ROOT): Linux and
+    Windows runs of these (CI's matrix; the Windows WSAEventSelect wait is compiled and run
+    there first), and Hex's own campaign through a real VM's offered streams.
 - *The report.* D232's report reaches the client on its private pipe: one complete scoped
   frame by the deadline, anything else uncertainty. On Windows the pipe is a named pipe, as
   Windows' anonymous pipes are (which take no overlapped reads), with a name of the
@@ -29944,7 +30138,8 @@ ruleset, the run's seccomp filter.
   TIOCSWINSZ on it, which the kernel tells the foreground group as SIGWINCH (tty_ioctl(4)).
 
 **Decided and built.**
-- *Joined as crun joins, from init.* Init holds a pidfd of a process of the member's command
+- *Joined as crun joins, from init* (as built first; since confine-10 a command is born of its
+  member's starter instead, below, and init joins it to nothing). Init holds a pidfd of a process of the member's command
   (hotplug.rs `member_process`, the command first, each held before it is checked to be the
   member's still, so a PID taken meanwhile is never entered), enters its PID namespace for its
   next child (setns(2) of the pidfd with `CLONE_NEWPID`, Linux 5.8), and makes that child with
@@ -29983,12 +30178,64 @@ ruleset, the run's seccomp filter.
   its program holds none of it; init's own descriptor of it is close-on-exec, as every
   Landlock ruleset's is. The ruleset made at start fails the member's start, typed as init's
   start's errors are; the step `Confining::Ruleset` is gone.
-- *Its own Landlock domain.* landlock(7) gives a ruleset to the process that enters it and its
-  children, and has no way to join a domain: the command's domain is a sibling of its
-  member's, its ruleset the member's own. So the scopes hold between them: it signals, and reaches
-  abstract Unix sockets of, its own processes alone, and the member's processes its not.
-  Sharing the member's own domain would need a process of the member's to start each
-  command, inside its seccomp filter and its pids.max, and is not built.
+- *Born of its member's starter, in the member's own Landlock domain* (confine-10,
+  2026-11-14, [docs/bugs/2026-11-13/confine.md](../bugs/2026-11-13/confine.md); was: a
+  domain of its own). landlock(7) gives a domain to the process that enters a ruleset and to
+  its children, and has no way to join one: a command that entered the member's ruleset
+  itself, joined and confined from init as above, was a domain beside the member's, and the
+  member's scopes (`LANDLOCK_SCOPE_SIGNAL`, `LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET`, Linux 6.12)
+  held them apart: `docker exec C kill 1`, `pkill`, a supervisor's CLI and an abstract
+  socket's client reached none of the member's processes (reproduced: domains.rs
+  `a_command_run_in_a_member_signals_its_members_processes` at 457d75daa, `kill(2)` EPERM).
+  - *The starter* (init's `starter.rs`). The member's first process, once confined and in
+    its working directory, forks it just before its program runs, so it is everything that
+    process is: its IDs, no capability, `no_new_privs`, its Landlock domain, its seccomp
+    filter, its namespaces and its cgroup. Its parent is the member's namespace init
+    (`CLONE_PARENT`), so the member's program never has it as a child (a program that waits
+    for every child would wait on it), and it ends with the member, as every process of the
+    member's PID namespace does once the reaper exits. It holds one descriptor, its end of a
+    seqpacket channel to init (`starter::STARTER_FD`, next above the ruleset's), which the
+    member's program never has (close-on-exec); its stdio, the launch status and the ruleset
+    it closes. It is not dumpable (`PR_SET_DUMPABLE` 0), so no process of the member's, which
+    has no capability, traces it, reads its memory or takes its descriptors (ptrace(2)
+    `PTRACE_MODE_ATTACH`, pidfd_getfd(2)). It forks each command (`CLONE_PIDFD`), which lays
+    its stdio, makes its session (its terminal's, `TIOCSCTTY`), enters its working directory
+    and finds its program there (`run::exec_found`, the member's own search, confine-04), its
+    failure said on its error channel as every exec's is. Its commands die with it
+    (`PR_SET_PDEATHSIG` SIGKILL, kept across execve under `no_new_privs`).
+  - *Its asks.* A start is one message: the exec's id, whether it has a terminal, and five
+    descriptors, the command's spec (a memfd init writes: its working directory, candidates,
+    arguments and environment, offsets the starter makes pointers of in a private mapping;
+    sized by what it holds, no buffer of a chosen size), its stdio and its error channel. It
+    answers born (the command's PID in its namespace and its pidfd) or not (its fork's errno:
+    `EAGAIN` at `pids.max` is `Refusal::Processes`). It leaves the command's zombie unreaped
+    until init has read its end from `/proc/PID/stat` (proc(5), field 52, `wait4(2)`'s form;
+    init is root, so it is shown) and asked it to reap it, so that no PID is taken again
+    before init has the end it is matched by.
+  - *Init waits on none of it* but in its poll loop (run.rs `MemberExec`: asked, born,
+    running, done): a process of the member's may stop the starter, or the command before
+    it execs, as it may any of its own, which a synchronous wait in init would have let it
+    hold init up by. The exec's start (`STARTED` or its refusal) is said once its error
+    channel closes or reports; its end once its pidfd is readable.
+  - *Typed refusals.* A starter that could not be forked (its fork refused as the member
+    started) or that a process of the member's ended is `Refusal::NoStarter` (wire code 7,
+    `docker exec`'s 126); its commands running then end with it, their end SIGKILL, as the
+    reaper reaps them. A command it could not fork is `Processes` at `pids.max`, `Ended` in a
+    namespace whose first process has gone (ENOMEM), else `Joining(errno)`.
+  - *Costs.* One process of the member's, counted in its `pids.max`, for the member's life;
+    `shards top` shows it (its name `starter`). It is a fork of init's address space as the
+    member's first process was, its pages shared copy-on-write until either writes.
+  - *Alternatives.* Starting from init and entering the member's ruleset: a sibling domain
+    (above). The member's namespace init as starter: init's sealed reaper is outside the
+    member's Landlock domain and seccomp filter, so what it forks is too. The member's first
+    process as the starter's parent: its program would have the starter as a child. Relaying
+    each command's end from the starter: a table of children in a process that may not
+    allocate; the zombie's `/proc/PID/stat` gives it, kept until init asks.
+  - *Owed to ROOT* (real VMs): `cargo test -p shards --profile test-release --test
+    member_exec -- --nocapture`, with an exec that runs `kill -0 1` and `kill -TERM 1` in its
+    member and connects to an abstract socket the member's program listens on, and an exec
+    asked after the member killed its starter (`Refusal::NoStarter`); E2E tests that count a
+    member's processes see its starter.
 - *Refused environment values* (confine-07): validation returns only the typed
   cause (empty name, NUL, reserved name), never the rejected entry. Both Debug and
   Display are value-free, and the existing member refusal wire renders only that

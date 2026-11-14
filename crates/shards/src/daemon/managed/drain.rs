@@ -895,6 +895,61 @@ mod tests {
         assert!(member_logs(&none).unwrap().is_empty());
     }
 
+    /// control-06, refuted: a viewer whose client's stderr is a real pipe that nothing reads
+    /// waits in its write past its run's end, as any writer to a paused reader does (a pager
+    /// the client's output goes to), then shows every line, the run's last ones with them,
+    /// once the reader reads on; and it ends at once, its run long over, when the reader goes.
+    /// What it holds is held by its reader, a process of its client's, and nothing waits on it
+    /// (the daemon's scope is never joined): ending it at the run's end would cut what a
+    /// paused reader is owed (M543's cut reports), and telling stalled from paused would take a
+    /// chosen deadline.
+    #[test]
+    fn a_viewer_past_its_runs_end_lives_as_long_as_its_reader() {
+        use std::io::Read as _;
+        let line = b"a line nobody has read yet, past the pipe's room\n";
+        // 512 KiB of lines, within one of the log's 1 MiB segments and past a Linux pipe's
+        // 64 KiB (pipe(7)), so that the viewer's write waits on its reader before the run ends.
+        let lines = (1 << 19) / line.len() as u64;
+        for read_on in [true, false] {
+            let run = shards_testdir::TempDir::new("drain-pipe").unwrap();
+            let drain = Drain::open(&run, &labels(), &[1], &[], Some(KEEPING), 64).unwrap();
+            let (mut reader, writer) = std::io::pipe().unwrap();
+            let shown = std::thread::scope(|threads| {
+                let drain = &drain;
+                let viewer = threads.spawn(move || {
+                    let mut to = writer;
+                    drain.show(&mut to);
+                });
+                let mut at = 0;
+                for _ in 0..lines {
+                    drain
+                        .keep(&encoded(1, Channel::Stdout, at, Event::Data(line)))
+                        .unwrap();
+                    at += line.len() as u64;
+                }
+                drain.keep(&encoded(1, Channel::Stdout, at, Event::End)).unwrap();
+                drain.keep(&encoded(1, Channel::Stderr, 0, Event::End)).unwrap();
+                // The run's end: nothing more comes.
+                drain.close();
+                let mut shown = Vec::new();
+                if read_on {
+                    // EOF once the viewer has shown it all and let its end go.
+                    reader.read_to_end(&mut shown).unwrap();
+                } else {
+                    drop(reader);
+                }
+                viewer.join().unwrap();
+                shown
+            });
+            if read_on {
+                let text = String::from_utf8(shown).unwrap();
+                let each = format!("[agent main] {}", String::from_utf8_lossy(line));
+                assert_eq!(text.len() as u64, lines * each.len() as u64);
+                assert!(text.lines().all(|l| format!("{l}\n") == each));
+            }
+        }
+    }
+
     /// A viewer whose client has gone stops at once; the drain keeps going.
     #[test]
     fn a_viewer_whose_client_has_gone_stops() {

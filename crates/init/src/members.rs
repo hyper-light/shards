@@ -18,7 +18,7 @@ use std::io::{self, Read as _, Write as _};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd, RawFd};
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use crate::links::{Reach, in_netns, open_ns};
 use crate::netplan::Egress;
@@ -1087,23 +1087,6 @@ pub fn alone() -> Result<(), String> {
     crate::run::loopback_up().map_err(|e| format!("its loopback: {e}"))
 }
 
-/// How long the proxy keeps a UDP client's mapping idle: as long as the microVM's own
-/// connection tracking keeps a UDP flow (`nf_conntrack_udp_timeout` until an answer comes,
-/// `nf_conntrack_udp_timeout_stream` after), read from the running kernel; where it has no
-/// connection tracking, its defaults (net/netfilter/nf_conntrack_proto_udp.c: 30 s, 120 s).
-fn udp_idle() -> (Duration, Duration) {
-    let read = |key: &str, default: u64| {
-        crate::setup::read_sysctl(key)
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok())
-            .map_or(Duration::from_secs(default), Duration::from_secs)
-    };
-    (
-        read("net.netfilter.nf_conntrack_udp_timeout", 30),
-        read("net.netfilter.nf_conntrack_udp_timeout_stream", 120),
-    )
-}
-
 /// Publishes `bindings` from the namespace of `workload`'s process to `target`, a
 /// member's address, in a process of init's own: its PID and the port each binding was
 /// given there, in their order; or why one could not be bound.
@@ -1114,7 +1097,6 @@ pub fn publish(
 ) -> Result<(libc::pid_t, Vec<u16>), String> {
     let theirs =
         open_ns(&format!("/proc/{workload}/ns/net")).map_err(|e| format!("the command's network: {e}"))?;
-    let idle = udp_idle();
     let mut fds = [0 as RawFd; 2];
     // SAFETY: pipe2(2) fills two descriptors.
     if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
@@ -1142,7 +1124,7 @@ pub fn publish(
                 // SAFETY: _exit(2) of the child, which owns nothing to flush.
                 unsafe { libc::_exit(1) }
             }
-            serve(bindings, target, idle, told);
+            serve(bindings, target, told);
             // SAFETY: as above.
             unsafe { libc::_exit(0) }
         }
@@ -1169,7 +1151,7 @@ pub fn publish(
 
 /// The proxy's side: each binding bound, the ports said on `told` (`P` and each a big-endian
 /// u16) or why not (`E` and the reason), then each relayed until the process is killed.
-fn serve(bindings: &[Binding], target: Ipv4Addr, idle: (Duration, Duration), mut told: std::fs::File) {
+fn serve(bindings: &[Binding], target: Ipv4Addr, mut told: std::fs::File) {
     enum Bound {
         Tcp(TcpListener, u16),
         Udp(UdpSocket, u16),
@@ -1214,7 +1196,7 @@ fn serve(bindings: &[Binding], target: Ipv4Addr, idle: (Duration, Duration), mut
                         relay_tcp(listener, SocketAddr::new(IpAddr::V4(target), *port))
                     }
                     Bound::Udp(sock, port) => {
-                        relay_udp(sock, SocketAddr::new(IpAddr::V4(target), *port), idle)
+                        relay_udp(sock, SocketAddr::new(IpAddr::V4(target), *port))
                     }
                 });
         }
@@ -1248,18 +1230,17 @@ fn relay_tcp(listener: &TcpListener, to: SocketAddr) {
     }
 }
 
-/// A UDP client's mapping: its socket to the member, when either side last sent, and
-/// whether the member has answered.
+/// A UDP client's mapping: its socket to the member, and when either side last sent.
 struct Mapping {
     out: UdpSocket,
     last: Instant,
-    answered: bool,
 }
 
 /// Each client's datagrams to `sock` passed on to `to` from a socket of its own, and the
-/// answers back to it, until the mapping has been idle as long as `idle` says: its first
-/// before an answer, its second after.
-fn relay_udp(sock: &UdpSocket, to: SocketAddr, idle: (Duration, Duration)) {
+/// answers back to it, until the mapping has been quiet both ways a UDP mapping's two
+/// minutes (`shards_abi::bounds::UDP_MAPPING_IDLE`, RFC 4787 REQ-5 and REQ-6), as the
+/// network process keeps one.
+fn relay_udp(sock: &UdpSocket, to: SocketAddr) {
     let clients: Mutex<std::collections::HashMap<SocketAddr, Mapping>> =
         Mutex::new(std::collections::HashMap::new());
     let held = || clients.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1287,7 +1268,6 @@ fn relay_udp(sock: &UdpSocket, to: SocketAddr, idle: (Duration, Duration)) {
                 Mapping {
                     out,
                     last: Instant::now(),
-                    answered: false,
                 },
             );
             drop(known);
@@ -1301,8 +1281,7 @@ fn relay_udp(sock: &UdpSocket, to: SocketAddr, idle: (Duration, Duration)) {
                         let wait = {
                             let known = held();
                             let Some(m) = known.get(&from) else { return };
-                            let limit = if m.answered { idle.1 } else { idle.0 };
-                            limit.saturating_sub(m.last.elapsed())
+                            shards_abi::bounds::UDP_MAPPING_IDLE.saturating_sub(m.last.elapsed())
                         };
                         if wait.is_zero() {
                             break;
@@ -1312,7 +1291,6 @@ fn relay_udp(sock: &UdpSocket, to: SocketAddr, idle: (Duration, Duration)) {
                             Ok(n) => {
                                 if let Some(m) = held().get_mut(&from) {
                                     m.last = Instant::now();
-                                    m.answered = true;
                                 }
                                 let _ = sock.send_to(answer.get(..n).unwrap_or_default(), from);
                             }

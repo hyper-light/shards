@@ -66,38 +66,31 @@ const EPHEMERAL: std::ops::RangeInclusive<u16> = 49152..=u16::MAX;
 /// published port leaves the rest of the VM's flows served.
 const BUDGET: usize = 64;
 
-/// How long a UDP flow lives, as Linux conntrack keeps one (nf_conntrack_proto_udp.c,
-/// udp_packet; v6.12): 30 s past its last datagram (nf_conntrack_udp_timeout), or 120 s
-/// (nf_conntrack_udp_timeout_stream) once it has had a reply and is still going 2 s after
-/// its first datagram, a stream. A query and its answer hold a port 30 s, not 120.
-const UDP_UNREPLIED: Duration = Duration::from_secs(30);
-const UDP_STREAM: Duration = Duration::from_secs(120);
-const UDP_STREAM_AFTER: Duration = Duration::from_secs(2);
-
-/// When a UDP flow ends, unless another datagram comes.
+/// When a UDP flow ends, unless another datagram comes: [`UDP_MAPPING_IDLE`] past its last
+/// one, either way (RFC 4787 REQ-5, REQ-6).
+///
+/// [`UDP_MAPPING_IDLE`]: shards_abi::bounds::UDP_MAPPING_IDLE
 #[derive(Debug, Clone, Copy)]
 struct Lifetime {
-    first: Instant,
-    replied: bool,
     until: Instant,
 }
 
 impl Lifetime {
     fn new(now: Instant) -> Lifetime {
-        Lifetime {
-            first: now,
-            replied: false,
-            until: now + UDP_UNREPLIED,
-        }
+        Lifetime { until: Self::past(now) }
     }
 
-    /// A datagram at `now`; a `reply` if it went the other way from the first.
-    fn datagram(&mut self, now: Instant, reply: bool) {
-        self.replied |= reply;
-        let stream = self.replied && now > self.first + UDP_STREAM_AFTER;
-        self.until = now + if stream { UDP_STREAM } else { UDP_UNREPLIED };
+    /// A datagram at `now`, going out or coming in: each refreshes the mapping.
+    fn datagram(&mut self, now: Instant) {
+        self.until = Self::past(now);
+    }
+
+    /// Its end, refreshed at `now`: `now` itself where the clock has no instant that far on.
+    fn past(now: Instant) -> Instant {
+        now.checked_add(shards_abi::bounds::UDP_MAPPING_IDLE).unwrap_or(now)
     }
 }
+
 /// Frames waiting for room in the ring, at most: past this the oldest datagram-like frame
 /// is dropped, as a full NIC queue drops; TCP never adds to it unasked.
 const BACKLOG: usize = 1024;
@@ -1868,7 +1861,7 @@ impl<'r> Stack<'r> {
                 std::collections::hash_map::Entry::Occupied(mut e) => {
                     let f = e.get_mut();
                     f.asked = asked;
-                    f.life.datagram(now, false);
+                    f.life.datagram(now);
                 }
                 std::collections::hash_map::Entry::Vacant(v) => {
                     let life = Lifetime::new(now);
@@ -2379,7 +2372,7 @@ impl<'r> Stack<'r> {
                 && let Some((Listener::Udp(sock), _)) = self.published.get(f.published)
             {
                 let _ = pktinfo::send(sock, u.payload, f.peer, f.asked);
-                f.life.datagram(Instant::now(), true);
+                f.life.datagram(Instant::now());
                 return;
             }
             // On the host's network (D124), the gateway is the host's loopback.
@@ -2440,7 +2433,7 @@ impl<'r> Stack<'r> {
         }
         if let Some(f) = self.udp.get_mut(&key) {
             let _ = f.sock.send(payload);
-            f.life.datagram(Instant::now(), false);
+            f.life.datagram(Instant::now());
         }
     }
 
@@ -2490,7 +2483,7 @@ impl<'r> Stack<'r> {
         if let Some(f) = self.udp.get_mut(&key) {
             for datagram in waiting {
                 let _ = f.sock.send(&datagram);
-                f.life.datagram(Instant::now(), false);
+                f.life.datagram(Instant::now());
             }
         }
     }
@@ -2513,7 +2506,7 @@ impl<'r> Stack<'r> {
             let Ok(n) = f.sock.recv(&mut self.buf) else {
                 return;
             };
-            f.life.datagram(Instant::now(), true);
+            f.life.datagram(Instant::now());
             let got = self.buf.get(..n).unwrap_or_default();
             // A forwarded answer for a name granted to agents: what it resolved to, each
             // address reached at its grant's port from now on.
@@ -4525,23 +4518,47 @@ mod tests {
         assert_eq!(initial_seq(&one, 5, guest, &conn(40_000)), isn.wrapping_add(5));
     }
 
-    /// UDP flows live as conntrack keeps them: 30 s from a datagram, until a reply has
-    /// come and a datagram more than 2 s after the first; 120 s from then.
+    /// RFC 4787 REQ-5 and REQ-6: a mapping lives two minutes past its last datagram, one
+    /// going out or one coming in, answered or not.
     #[test]
-    fn udp_flows_live_as_conntrack_keeps_them() {
+    fn a_udp_mapping_is_refreshed_by_each_datagram_either_way() {
         let t0 = Instant::now();
+        let two_minutes = Duration::from_secs(120);
+        assert_eq!(shards_abi::bounds::UDP_MAPPING_IDLE, two_minutes);
         let mut life = Lifetime::new(t0);
-        assert_eq!(life.until, t0 + UDP_UNREPLIED);
-        // A query answered at once: still 30 s.
-        life.datagram(t0 + Duration::from_millis(5), true);
-        assert_eq!(life.until, t0 + Duration::from_millis(5) + UDP_UNREPLIED);
-        // More one way only, past 2 s: not a stream without a reply.
-        let mut one_way = Lifetime::new(t0);
-        one_way.datagram(t0 + Duration::from_secs(3), false);
-        assert_eq!(one_way.until, t0 + Duration::from_secs(3) + UDP_UNREPLIED);
-        // Replied, and going past 2 s: a stream.
-        life.datagram(t0 + Duration::from_secs(3), false);
-        assert_eq!(life.until, t0 + Duration::from_secs(3) + UDP_STREAM);
+        assert_eq!(life.until, t0 + two_minutes);
+        let out = t0 + Duration::from_secs(90);
+        life.datagram(out);
+        assert_eq!(life.until, out + two_minutes, "going out refreshes it (REQ-6)");
+        let back = out + Duration::from_secs(100);
+        life.datagram(back);
+        assert_eq!(life.until, back + two_minutes, "coming in refreshes it (REQ-6a)");
+    }
+
+    /// RFC 4787 (BCP 127) REQ-5: a UDP mapping MUST NOT end in under two minutes of quiet
+    /// but where its destination port is a well-known one's own application's (REQ-5a).
+    /// Do: open a flow to port 5000 and let it be quiet 119 s, then past 120 s. Expect: held
+    /// at 119 s, gone past 120 s, its socket closed.
+    #[test]
+    fn a_udp_mapping_outlives_two_minutes_of_quiet_but_none_past() {
+        let region = Region::map(shards_netring::memory().unwrap()).unwrap();
+        let (_, pr) = shards_netring::doorbell().unwrap();
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let cfg = Config::on_bridge(Policy::AllowAll, [2, 0, 0, 0, 0, 1], &bridge);
+        let mut stack = stack(cfg, region.producer(1, pr));
+        let to = (IpAddr::from([127, 0, 0, 1]), 5000);
+        let key = (40_000, to.0, to.1);
+        let t0 = Instant::now();
+        stack.flow(key, to, b"one datagram");
+        assert!(stack.udp.contains_key(&key));
+        stack.timers(t0 + Duration::from_secs(119));
+        assert!(
+            stack.udp.contains_key(&key),
+            "a mapping to port 5000 ended inside two minutes of quiet"
+        );
+        stack.timers(Instant::now() + Duration::from_secs(121));
+        assert!(!stack.udp.contains_key(&key), "a mapping outlived its lifetime");
+        assert!(stack.udp_ids.is_empty());
     }
 
     /// A UDP flow's gateway port is one no other flow has, in turn, and none once all are.

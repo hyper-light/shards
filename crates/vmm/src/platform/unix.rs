@@ -1386,6 +1386,32 @@ pub fn version_of(entry: &str) -> &str {
     entry
 }
 
+/// Which file `file` is, and which of its versions: its device and inode, its length, and
+/// its times of last write and of last change (fstat(2)). A write to it changes its write
+/// and change times, and a file renamed over its name is another inode; a change time no
+/// call of a program's can set (utimensat(2) sets the others, and the change time to now).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileIdentity {
+    dev: u64,
+    ino: u64,
+    len: u64,
+    written: (i64, i64),
+    changed: (i64, i64),
+}
+
+/// [`FileIdentity`] of the file `file` holds open.
+pub fn file_identity(file: &File) -> io::Result<FileIdentity> {
+    use std::os::unix::fs::MetadataExt as _;
+    let meta = file.metadata()?;
+    Ok(FileIdentity {
+        dev: meta.dev(),
+        ino: meta.ino(),
+        len: meta.len(),
+        written: (meta.mtime(), meta.mtime_nsec()),
+        changed: (meta.ctime(), meta.ctime_nsec()),
+    })
+}
+
 /// The name `name`'s newest version goes by in the directory `dir` holds open: `name`, as a
 /// write here replaces the file there (windows_files.rs `newest_in`).
 pub fn newest_in(_dir: &File, name: &str) -> io::Result<String> {

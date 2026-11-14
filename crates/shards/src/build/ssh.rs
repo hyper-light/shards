@@ -625,8 +625,7 @@ impl Conn {
             }
         }
         let tcp = tcp.ok_or(last)?;
-        tcp.set_read_timeout(Some(patience))
-            .map_err(|e| format!("{at}: {e}"))?;
+        shards_ipc::timeout_set(tcp.set_read_timeout(Some(patience))).map_err(|e| format!("{at}: {e}"))?;
         tcp.set_nodelay(true).map_err(|e| format!("{at}: {e}"))?;
         let mut conn = Conn {
             tcp,

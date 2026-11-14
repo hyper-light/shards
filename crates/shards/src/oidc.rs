@@ -280,7 +280,7 @@ fn run(program: &str, url: &str) -> Result<(), String> {
 
 /// The request line's target of an HTTP request read from `conn`, its head consumed.
 fn request_target(conn: &mut TcpStream) -> Option<String> {
-    conn.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
+    shards_ipc::timeout_set(conn.set_read_timeout(Some(Duration::from_secs(2)))).ok()?;
     let mut reader = io::BufReader::new(&*conn);
     let mut line = String::new();
     (&mut reader).take(16 << 10).read_line(&mut line).ok()?;

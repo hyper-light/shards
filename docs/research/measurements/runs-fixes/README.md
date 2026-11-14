@@ -410,3 +410,106 @@ plus a real run after flipping one byte of the cached shards-vm and shards-net
 (the run starts; the cache holds the carried bytes again), and on Windows with
 a VM running from the cache (refused with why, never started as it is). The
 check-to-exec window remains (no portable fexecve).
+
+### runs-10, ROOT's follow-up (version-keyed check, held start)
+
+ROOT's ruling, 2026-11-14: keep the guarantee without hashing on every start; verify
+once per file version, hold the checked file through its start, measure. Commits
+8cdbf4a05 and e81b6da82 (clippy), on merge 9840566c2 (main 94c9c7e46).
+`platform::file_identity` (shards-vmm, unix.rs and windows_files.rs) names a version;
+`helpers::program` checks and holds; launch.rs, netproc.rs and `run --kernel`'s exec
+start through it. Linux starts through `/proc/PID/fd/N` (the spawner process, PM M158,
+resolves it as the same user), Windows holds the file sharing only reads, macOS starts
+by name (no fexecve).
+
+Green, three hosts:
+- macOS 26.2 arm64, adas-mac-studio-3 (kiln r1851 at 9840566c, r1863 at e81b6da8):
+  `cargo test -p shards --bin shards helpers::tests` 8 passed (1 ignored, the cost
+  measurement), `launch::tests` 4, `daemon::ends` 6; `cargo clippy -p shards -p
+  shards-vmm --all-targets -- -D warnings` clean at e81b6da8 (r1851 found the unused
+  import and the Linux-only field, fixed by e81b6da8).
+- Linux x86_64, adacachy2, CachyOS 7.3.3 (kiln r1865 at e81b6da8): helpers::tests 8
+  (the held start through /proc/PID/fd ran the checked `true` after `false` was renamed
+  over its name), daemon::ends 6, launch::tests 4, clippy shards + shards-vmm clean.
+- Windows 11 x86_64 (10.0.26200), the container on adacachy (at 9840566c):
+  helpers::tests 7 (no rename over a held helper; the held helper still starts),
+  daemon::ends 5; at e81b6da8 the same, and clippy shards + shards-vmm clean.
+  [runs10b-green.log](runs10b-green.log), [runs10b-red.log](runs10b-red.log).
+
+Red by mutation, macOS (r1863, cache and bytes guards removed together; r1904, the
+cache's key without the version alone): `a_helper_is_read_again_only_once_its_file_changed`
+fails (a byte flipped since the check is started as it is); with the bytes unread,
+`a_helper_whose_bytes_changed_is_written_again_before_it_starts` and
+`a_changed_helper_that_cannot_be_written_again_is_refused` fail too. Cost: PM M580
+(version known 27 µs p50; bytes read 1.26 ms and 1.70 ms p50 for shards-vm's and
+shards-net's sizes).
+
+R05 (the version cache): key the path, value the version last found good, one entry a
+helper (three at most), process lifetime, authority the bytes, invalidated by any
+version change; measured benefit PM M580. Its blind spots (below-file-system faults,
+a Windows writer resetting its times) are in D36. Owed ROOT:
+`env -u SHARDS_HELPERS -u SHARDS_HELPERS_DIR cargo test -p shards --bin shards helpers::tests`
+(carried helpers), real VM starts on HVF, KVM and WHP through the held file (KVM: the
+confined VM process started through /proc/PID/fd by the spawner), a cold
+`shards run --kernel` A/B with `docs/research/measurements/build-ab/ab.py` against
+2e00a1043, and a byte flipped in a cached helper between two runs.
+
+## runs-12
+
+Found by this lane (2026-11-14) while fixing runs-09: runs-07's fix publishes the end
+record through `platform::write_in`, which on Windows lands `ends.~N` and removes the
+plain name, while `Slowest::read` read the plain name. Every other `write_in` reader in
+the tree already opens the newest version (snapshot pointers and working sets,
+`run::Origin`, managed `cap`, grant_answer); disk.rs was fixed with runs-09. Fix
+aca3953c5: `ends::newest` (open_newest_in) for the record and its test readers
+(netproc.rs, daemon.rs, containers.rs's E2E).
+
+Unix has no versions: `each_published_record_is_read_back_by_the_next_process` passes
+with or without the fix there (macOS r1863 mutant, Linux r1865). On Windows 11 x86_64
+(the container on adacachy), with the plain-name read put back, it fails (`after
+1000: left None, right Some(1s)`), and so do runs-07's own three record tests: main's
+Windows unit tests were red for them from 45ae96862. Green there at 9840566c and
+e81b6da8, clippy clean. [runs12-red.log](runs12-red.log), [runs12-green.log](runs12-green.log).
+
+## runs-11
+
+Implemented: `HANDOFF_TRIES` (3 tries) replaced by pool provenance (`Ready::pooled`,
+D-entry at "Which VMs a run tries"), commits 903fba0b5 and 66012636f. Unit test
+`untaken_pooled_vms_give_way_to_each_other_and_a_fresh_one_ends_the_start`; mutation
+puts back a count of three. Green (kiln r1904, macOS arm64, at 66012636):
+`cargo test -p shards --bin shards daemon::tests::` 137 passed, clippy shards +
+shards-vmm clean. Red: with three tries, the run is refused after the third pooled VM
+ended unseen, its healthy fifth never asked for. [runs11-green.log](runs11-green.log),
+[runs11-red.log](runs11-red.log). Windows 11 x86_64 (the container, at 66012636):
+`daemon::tests::untaken_pooled` and `daemon::tests::a_handoff` 1 passed each. Owed ROOT:
+`cargo test -p shards --test daemon` and the pool E2E (`tests/daemon.rs`) on HVF, KVM
+and WHP.
+
+Owed, with designs (no other number substituted; each stays live until built):
+- `TAKE_TIMEOUT` 10 s (daemon.rs; its 15 uses: handoff read/write timeouts, join
+  doors, exec answers, reclaim's slow-exec note, commands' answer wait). Design:
+  explicit delivery states (NeverAttempted, Offered, Acknowledged), readiness and the
+  peer process's end as the events; where a stall must be judged, D215's progress/held
+  observations of the VM process and the host's own slowest successful phase, kept as
+  ends.rs keeps its slices (the repaired shared record); no observation, liveness
+  alone, cancellable by the caller. Typed outcomes: peer gone, caller cancelled,
+  observation unavailable, delivery uncertain (a write error proves no prefix unsent,
+  M527). ROOT's measurement: each phase's latency on a loaded host per platform.
+- `TAKEOVER` 20 s (take_lock). Design: the lock holder's process identity written in
+  the lock's own file as it takes it; a waiting daemon follows that process (end or
+  D215 progress) rather than a clock, and starts only after the lock is let go or the
+  owner is confirmed ended; identity that cannot be established is refused typed. No
+  home is ever taken on elapsed time.
+- `UNWATCHED` 250 ms (the fallback poll where a file watch cannot be made, D185's
+  admission). Design: one shared FileWatch broker per process (M257) installed before
+  readiness; a watch that cannot be made is a typed refusal
+  (HomeWatchUnavailable) at start, or Stopping for a serving daemon, never a poll.
+  Needs ROOT's interface ruling (refuse vs a handle-only mode) before building.
+- `SWEEP` 60 s (daemon/slots.rs). Design: a slot's taker names its process in the
+  slot as it takes it; the maker follows that process's end through the daemon's one
+  process-notification owner and reclaims an unposted slot on the taker's end, never
+  on a clock. Needs a slots protocol change (shards_ipc::slots), so its client side too.
+- `LOG_SEGMENT` 20 MiB (disk.rs). Design per the review: the segment size from the
+  host's own write, compression, flush and reader costs within the user's history and
+  the readers' memory bounds; cold start the file system's allocation granule clamped
+  to the history. ROOT must define the objective and measure it before building.

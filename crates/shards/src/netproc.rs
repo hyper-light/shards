@@ -56,11 +56,11 @@ impl Control {
     }
 
     pub fn set_read_timeout(&self, timeout: Option<std::time::Duration>) -> std::io::Result<()> {
-        self.socket.set_read_timeout(timeout)
+        shards_ipc::timeout_set(self.socket.set_read_timeout(timeout))
     }
 
     pub fn set_write_timeout(&self, timeout: Option<std::time::Duration>) -> std::io::Result<()> {
-        self.socket.set_write_timeout(timeout)
+        shards_ipc::timeout_set(self.socket.set_write_timeout(timeout))
     }
 }
 
@@ -375,7 +375,8 @@ pub fn start(
     let region = shards_netring::memory().map_err(at)?;
     let (vm_sleeps, net_rings) = shards_netring::doorbell().map_err(at)?;
     let (net_sleeps, vm_rings) = shards_netring::doorbell().map_err(at)?;
-    let binary = crate::helpers::net()?;
+    // Checked, and held until it has started (`helpers::program`).
+    let binary = crate::helpers::program(&crate::helpers::net()?)?;
     let (policy, proxy) = policy_args(policy)?;
     let pair = || std::os::unix::net::UnixStream::pair().map_err(|e| format!("a VM's network control: {e}"));
     let (control, theirs) = pair()?;
@@ -446,8 +447,8 @@ pub fn start(
         args.extend::<[&std::ffi::OsStr; 2]>(["--dialer".as_ref(), "8".as_ref()]);
         fds.push((theirs.as_fd(), 8));
     }
-    let child = shards_ipc::spawn_in_group(group, &binary, &args, &fds, false, &env_pairs(&env))
-        .map_err(|e| format!("starting {}: {e}", binary.display()))?;
+    let child = shards_ipc::spawn_in_group(group, &binary.path(), &args, &fds, false, &env_pairs(&env))
+        .map_err(|e| format!("starting {}: {e}", binary.shown()))?;
     Ok((
         child,
         VmSide {
@@ -735,7 +736,7 @@ pub fn start(
     group: Option<&shards_ipc::GroupJob>,
 ) -> Result<NetProcess, String> {
     use std::os::windows::io::AsHandle as _;
-    let binary = crate::helpers::net()?;
+    let binary = crate::helpers::program(&crate::helpers::net()?)?;
     let container = crate::helpers::containers().and_then(|records| {
         shards_ipc::AppContainer::new("net", &records)
             .map_err(|e| format!("a VM network's AppContainer: {e}"))
@@ -767,7 +768,7 @@ pub fn start(
     let err = std::io::stderr();
     let env = child_env();
     let mut child = shards_ipc::spawn_confined(&shards_ipc::Spawn {
-        program: &binary,
+        program: &binary.path(),
         args: &args,
         grants_at: 0,
         given: &[
@@ -794,7 +795,7 @@ pub fn start(
         group,
         graphics: false,
     })
-    .map_err(|e| format!("starting {}: {e}", binary.display()))?;
+    .map_err(|e| format!("starting {}: {e}", binary.shown()))?;
     drop(theirs);
     // An AppContainer reaches no socket by its path, nor the host's own addresses: this
     // process dials them for it, over a link of the two's own, as on macOS (D31).
@@ -1004,7 +1005,7 @@ mod reap_tests {
 
     /// The helper end a home's record keeps, in milliseconds: none where it keeps none.
     fn kept(home: &Path) -> Option<u64> {
-        std::fs::read_to_string(home.join(crate::daemon::ends::RECORD))
+        crate::daemon::ends::newest(&home.join(crate::daemon::ends::RECORD))
             .unwrap_or_default()
             .lines()
             .find_map(|line| line.strip_prefix("helper ")?.parse().ok())

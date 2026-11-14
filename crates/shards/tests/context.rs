@@ -120,7 +120,14 @@ fn joined(name: &str) -> Option<(TempDir, Listening, TempDir, String)> {
     let invite = machine.join("laptop.invite");
     let invited = run_shards_env(
         &["invite", "client"],
-        &["--name", "laptop", "--output", invite.to_str().unwrap()],
+        &[
+            "--name",
+            "laptop",
+            "--output",
+            invite.to_str().unwrap(),
+            "--valid",
+            "10m",
+        ],
         &on_machine,
     );
     assert_eq!(invited.status, Some(0), "{invited}");
@@ -818,7 +825,14 @@ fn a_contexts_engine_is_its_machines() {
     let invite = machine.join("again.invite");
     let invited = run_shards_env(
         &["invite", "client"],
-        &["--name", "again", "--output", invite.to_str().unwrap()],
+        &[
+            "--name",
+            "again",
+            "--output",
+            invite.to_str().unwrap(),
+            "--valid",
+            "10m",
+        ],
         &on_machine,
     );
     assert_eq!(invited.status, Some(0), "{invited}");
@@ -1110,7 +1124,10 @@ fn a_policy_through_a_context_is_the_clients_its_builder_the_machine() {
     let log = std::fs::read_to_string(machine.join("daemon.log")).unwrap();
     assert!(log.contains("client laptop: policy step platform\n"), "{log}");
     assert!(log.contains("client laptop: policy step resolve\n"), "{log}");
-    assert!(log.contains("client laptop: policy step resolve ended, status 0"), "{log}");
+    assert!(
+        log.contains("client laptop: policy step resolve ended, status 0"),
+        "{log}"
+    );
     assert!(!log.contains("client laptop: shards buildx policy"), "{log}");
     assert!(!log.contains(dir.to_str().unwrap()), "{log}");
 }
@@ -1387,7 +1404,14 @@ fn a_context_runs_commands_on_its_machine_whole() {
     let invite = machine.join("laptop.invite");
     let early = run_shards_env(
         &["invite", "client"],
-        &["--name", "laptop", "--output", invite.to_str().unwrap()],
+        &[
+            "--name",
+            "laptop",
+            "--output",
+            invite.to_str().unwrap(),
+            "--valid",
+            "10m",
+        ],
         &on_machine,
     );
     assert_ne!(early.status, Some(0), "{early}");
@@ -1401,7 +1425,14 @@ fn a_context_runs_commands_on_its_machine_whole() {
     assert_eq!(started.status, Some(0), "{started}");
     let invited = run_shards_env(
         &["invite", "client"],
-        &["--name", "laptop", "--output", invite.to_str().unwrap()],
+        &[
+            "--name",
+            "laptop",
+            "--output",
+            invite.to_str().unwrap(),
+            "--valid",
+            "10m",
+        ],
         &on_machine,
     );
     assert_eq!(invited.status, Some(0), "{invited}");
@@ -1448,11 +1479,36 @@ fn a_context_runs_commands_on_its_machine_whole() {
         "{again}"
     );
 
-    // An invitation an hour old enrolls no one.
+    // An invitation is made only with the lifetime its owner gives it: none is assumed.
+    let unstated = run_shards_env(
+        &["invite", "client"],
+        &[
+            "--name",
+            "unstated",
+            "--output",
+            machine.join("unstated.invite").to_str().unwrap(),
+        ],
+        &on_machine,
+    );
+    assert_ne!(unstated.status, Some(0), "{unstated}");
+    assert!(
+        unstated.stderr.contains("flag needed: --valid DURATION"),
+        "{unstated}"
+    );
+    assert!(!machine.join("invitations/unstated").exists());
+
+    // An invitation older than the lifetime its owner gave it enrolls no one.
     let late = machine.join("late.invite");
     let made = run_shards_env(
         &["invite", "client"],
-        &["--name", "late", "--output", late.to_str().unwrap()],
+        &[
+            "--name",
+            "late",
+            "--output",
+            late.to_str().unwrap(),
+            "--valid",
+            "10m",
+        ],
         &on_machine,
     );
     assert_eq!(made.status, Some(0), "{made}");
@@ -1486,7 +1542,14 @@ fn a_context_runs_commands_on_its_machine_whole() {
     let forged = machine.join("forged.invite");
     let made = run_shards_env(
         &["invite", "client"],
-        &["--name", "forged", "--output", forged.to_str().unwrap()],
+        &[
+            "--name",
+            "forged",
+            "--output",
+            forged.to_str().unwrap(),
+            "--valid",
+            "10m",
+        ],
         &on_machine,
     );
     assert_eq!(made.status, Some(0), "{made}");
