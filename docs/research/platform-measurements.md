@@ -81,6 +81,18 @@ Runs-03's blocked CREATE red timed out; after stop registration moved ahead of
 CREATE, the same regression and 33 session tests pass, with API all-target clippy.
 The main landing of runs-01/02/04 is 3956d259b; merged gate revisions and remaining
 live checks are recorded there.
+Runs-05's preparation lease is released after readiness; 43 api_run unit tests
+and shards all-target clippy pass. Its live-VM collection/progress reproduction
+is explicitly owed; unit results are not that proof.
+Runs-06's real two-platform store fixture returned arm64 User for amd64 before
+correction; its regression, 2 inspect tests, 11 command tests and shards all-target
+clippy pass. Live emulated guest/copy agreement remains owed to ROOT.
+The runs-01 follow-up caught and corrected this lane's native nondevice-owner
+regression: uid 0 instead of 1000 before, correct after, with 50 server tests
+and VMM all-target clippy passing. Its exact red/green logs are retained.
+Runs-07's concurrent end-record red lost its helper maximum; after stable-lock
+reread/merge and atomic unique staging, the regression and all 5 end tests pass,
+with shards all-target clippy. Two-process/VM crash publication remains owed.
 
 ### M2. Object lifecycle (`lifecycle`, n=200, µs)
 
@@ -7687,6 +7699,15 @@ on adas-mac-studio-3.local's Docker Desktop (Linux aarch64, Rust 1.98.1):
 additional installed filter, and the forbidden-syscall termination test passes.
 Both crates pass clippy. Musl and carried-helper VM execution remain unverified.
 No VM or performance campaign ran. [Exact scope/output](measurements/network-fixes-v1/README.md#network-02-native-seccomp-on-both-linux-architectures).
+
+**network-03 DNS authority follow-up (2026-11-13).** M210's finite concurrent
+connections do not bound DNS history. On Mac3 Docker Linux aarch64 / Rust1.98.1,
+5a3d27784's real UDP answer-replacement test fails because A still permits new
+flows after B replaces it. At e2237fb29, current per-name/type answers replace
+history and expire; six initial focused tests pass, then clippy detects the
+retired HashSet import. The cleanup, TTL tests and final merged gate are tracked
+in [the evidence record](measurements/network-fixes-v1/README.md#network-03-dns-authority-lifetime).
+No host-memory/performance or real-VM result is claimed.
 
 ### M211. The limits a build's `RUN` step starts with
 
@@ -17808,6 +17829,9 @@ finding open; no new scheduling or host-fairness result is claimed.
 
 ### M430. Devices plugged into a running microVM: what each step costs, and what a bus of slots costs a boot (D214)
 
+Correctness follow-up devices-06 (2026-11-14): 1 VFIO unplug route-ownership red; 2 module tests and VMM clippy green on adacachy2 Linux x86_64. Real VFIO hardware was not used. See `measurements/device-fixes/README.md` for the fixture and limitations.
+
+
 Correctness follow-up devices-05 (2026-11-14): capacity-publication red observed `(2, 0)`; 8 block tests and VMM clippy passed after the shared-lock fix on macOS arm64. See `measurements/device-fixes/README.md`; no M430 performance claim is refreshed.
 
 
@@ -19296,6 +19320,15 @@ Linux x86_64 pure CPU tests: `aes` failed register mapping at ae37abb52 (r7), th
 3 Arm CPU tests and10 x86 CPUID tests passed at f004611b5; shards/shards-vmm all-target
 clippy passed (r8). These are code-path checks, not an Arm VM or performance result.
 [Commands and residual conservative refusals](measurements/migrate/fix-review-2026-11-13.md).
+
+### Migration review hardlink and pre-copy regressions, 2026-11-13 (migrate-05/03, D176)
+
+Unit evidence only: on adacachy2 Linux x86_64, writing imported alias `a` left `b`
+unchanged at `73af9fb62` (one failing test against the landed Beneath extractor).
+After `fd33ec11a`, merge `7720df839` passed 15 migration module tests, 4 guest-file
+helper tests and 5 integrated pre-copy tests from the memory reviewer's migrate03
+fix. This proves the scoped file/ownership paths, not live VM migration, host-pair
+portability or a performance ratio. [Commands, logs and owed VM checks](measurements/migrate/fix-review-2026-11-13.md).
 
 ### M499. What a Hypervisor.framework guest is shown of its host's CPU, and a listener that outlives its runner (D176 part 6)
 
@@ -23770,6 +23803,10 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   and auth tests, 31 passed; `cargo clippy -p shards-registry --all-targets -- -D warnings`
   clean.
 - **Owed.** CI's Linux and Windows. ROOT's: real pulls on every backend.
+- **Amended** (2026-11-13, #77, M572): past the longest is no longer the request's answer
+  but a run-out, told once and ridden out while it lasts; the test above is now
+  `a_trouble_past_the_longest_its_path_passed_runs_out_told_once` (its 1.5 s of 503s ridden
+  to the 200, told once, 1.5 s then the longest).
 - **Rules** (policy df2acf47, role implementer): R01 no panic added; R02, R03 the person's
   rule and RFC 1122 read, the ×2 and the floor gone; R04 `Out` and the trouble's `ran_out`;
   R09, R10 red on main's code, green after; R11 cross-platform code, macOS run; R15, R16
@@ -24114,6 +24151,16 @@ This is correctness evidence, not a VM/performance measurement. Full commands,
 ownership change and ROOT's remaining gates: `measurements/memory-fixes-v1/README.md`.
 
 
+### Remote-04. A network build timestamp panics before set_modified (2026-11-13)
+
+Functional evidence on macOS arm64, Rust 1.98.1: the real synced receiver at
+`c3ad61ab1` panicked on i64::MAX seconds/u32::MAX nanoseconds (`SystemTime` overflow,
+1 failure). Typed fraction/host-range validation before file creation at
+`063a5d339` passed all 9 synced tests and shards all-target clippy. The writer now
+accepts a checked SystemTime. No chosen maximum or platform stub was added.
+[Commands, source revisions, policy, logs and owed Windows/release-listener checks](measurements/remote-fixes-v1/README.md#remote-04-build-file-timestamp-validation).
+No performance or live-VM result is claimed.
+
 ### Remote-05. Private request arguments in the daemon log (2026-11-13)
 
 This is correctness evidence, not a performance measurement. An enrolled fixture's
@@ -24145,6 +24192,7 @@ clippy pass (r8). These are functional unit results, not a real DNS-provider or
 real-VM result. RFC1034 §3.1 supplies the terminal-root-dot normalization rule;
 no chosen runtime value, wait or cache is added.
 [Commands, red output, green excerpts and owed variant](measurements/inithex-fixes/README.md).
+
 
 ### Review memory-03/05: live-copy mapping ownership and terminal map-back loss
 
@@ -24210,6 +24258,15 @@ source revisions, light results and ROOT's remaining gates are in
   clippy -D warnings for shards-vm-process (macOS) and shards-init
   (aarch64-unknown-linux-musl); cargo fmt --check clean. R11, R15: no VM run here: api_image's
   three cases on KVM are ROOT's, at a main holding 02a03edf2 and this.
+
+### Review memory-04: a budget removed while its builder's reply was outstanding
+
+The real socket/production watcher regression at e8b687a9e, macOS arm64, failed
+WouldBlock when looking for the removed-budget ROOM frame (resumed kiln r2).
+The pending-room owner is fixed at 27522e6ca/aef83d2c4; the existing late-answer
+test additionally caught acknowledgment accounting, corrected at 8951ffa2d.
+Commands, unit results and the still-owed real builder/pressure variant:
+[the memory fix record](measurements/memory-fixes-v1/README.md).
 
 ### M567. A confined VM process changed another process's limits: prlimit64 of any pid (D30)
 
@@ -24337,3 +24394,102 @@ and policy check passed on macOS arm64. The tests cover chunked/length refresh
 and revoke bodies, partial arrival, retries and a forwarded code exchange. The
 100 response is RFC 9110 §10.1.1's protocol response, no chosen timer or allowance.
 Commands, red/green excerpts, exact source revisions and unrun work are linked above.
+
+### Review memory-16: duplicate head kinds past a selected cap (D190)
+
+On adas-mac-studio.local, macOS arm64, red 5ede7aecb (resumed r16) saved an equal
+block twice after 65 distinct kinds: Some(65) instead of Some(64). d794c1dd5
+removes the 64-kind comparison cutoff; the input's block count bounds the search.
+The sparse-file/index regression checks actual retained identity and length.
+[Commands, results and unmeasured quadratic comparison cost](measurements/memory-fixes-v1/README.md).
+
+### Review memory-17: the give-back request's exact encoded bound (D133)
+
+adacachy2, Linux 7.3.3-1-cachyos x86_64, native GNU target, rustc 1.98.1:
+red c61cc6b1d (resumed r20) accepted both signed i64 extremes but waited for a
+payload whose ROOM header was longer than either producer can encode.
+5826a9bcf derives the limit from i64::MIN's minus sign and decimal digits.
+[Commands, red/green and unrun host/guest combinations](measurements/memory-fixes-v1/README.md).
+
+### M572. A registry's trouble past the longest its path passed runs out, told once, and the pull follows liveness; buffered reads, named waits and late routes (D222, waits-05, -06, -07)
+
+- **Question.** M558 made a trouble past the longest its path had passed the request's
+  answer: its 503, a cut's error, or `stalled` for a download. ROOT ruled for #77
+  (2026-11-13), after D180's precedent and the person's R03: that is a typed run-out, told
+  once (the daemon's log and a CLI line), and does not fail the pull, which then follows
+  liveness with no window, asking the registry again (a fresh request, or a resume from its
+  byte offset), and learns the longer trouble once it ends; it fails only on evidence the
+  far end is gone or refusing. The waits review (main 9efde7252,
+  `docs/bugs/2026-11-13/waits.md`) adds three findings in the same code: waits-05 (buffered
+  bytes taught as silences), waits-06 (a `Retry-After` past the budget taught as a trouble
+  passed), waits-07 (a connect before the route's record is read drops the record's trouble
+  and handshake). Are they so, and what does the ruling's pull do?
+- **Decision.** `Trouble` is explicit phases (`Calm`, `Riding`, `RanOut`); past the budget,
+  or a named wait past it, `RanOut`: `Paths::trouble_ran_out` marks the path (the first of a
+  run-out tells it, `http::RunOut`, to each watch of `Registry::saying_waits` over its own
+  channel), the waits go on as shares of the trouble's length and at least `Retry-After`,
+  and `Trouble::over` teaches the whole length. `Trouble::gone`: a re-ask refused or cut
+  before any answer while the trouble follows liveness (`RanOut`, or `Riding` on a path
+  that bounds none) is `ErrorKind::Gone`; a refused connection is `Gone` at once. waits-06
+  falls out of the run-out. waits-07: `Paths::learn` merges what the client showed over the
+  record read as a record merges (`Shown::merged`), its base then that record. waits-05:
+  `http::Sock` times a socket read only where poll(2) (WSAPoll on Windows) with no wait
+  found nothing ready, so a body's silence is a wait of the socket's, never a copy.
+- **Red on main's code** (9efde7252 with the new tests alone, adas-mac-studio.local, macOS
+  26 arm64, `CARGO_INCREMENTAL=0`, `-j 4`; `cargo test -p shards-registry`):
+  - waits-06, a 503 naming `Retry-After: 1` on a path that passed 0.3 s: `503` where `200`
+    was due, and the path then `troubles: 2, trouble_us: 300000`, its failure taught as a
+    trouble passed: confirmed.
+  - waits-07, a routed record of a 0.3 s trouble and a 2 s handshake, a 10 ms connect
+    taught before `located`: `budget` `None` where `Some(300ms)` was due: confirmed.
+  - waits-05, a 64 KiB body sent whole and read 16 KiB at a time after its bytes had come:
+    `slowest_silence_us: Some(12)` where none was due: confirmed.
+- **Green** (18b90d4b6, same host): `cargo test -p shards-registry`, 175 passed (the lib's;
+  its doc tests none), the new and changed tests among them:
+  `a_registrys_passing_trouble_is_ridden_out_and_runs_out_past_its_moment`,
+  `a_trouble_past_the_longest_its_path_passed_runs_out_told_once`,
+  `a_troubles_waits_are_shares_of_its_length_and_a_run_out_is_told_once`,
+  `a_far_end_that_is_gone_fails_typed`, `a_download_that_brings_nothing_is_resumed_within_a_moment`,
+  `referrers_that_could_not_be_read_are_no_empty_list` (a gateway's 502 to 504 now ridden
+  out, not read as the API's failure), `a_read_of_bytes_already_there_is_no_silence`,
+  `a_silence_is_a_reads_own_wait_not_its_readers_time` (now none or under 0.3 s),
+  `a_connect_before_its_route_is_known_keeps_its_routes_record`, `a_path_learns_its_waits`
+  (its record's trouble now kept where it showed none); `cargo clippy -p shards-registry -p
+  shards --all-targets -- -D warnings` with `SHARDS_HELPERS=skip`: clean.
+- **Mutations** (each alone over 18b90d4b6's tree, same host): a re-ask past a run-out not
+  the far end's end: `a_far_end_that_is_gone_fails_typed` and the passing-trouble test ridden
+  on past 240 s, stopped (the guard is what ends a gone far end); a named wait past the budget
+  not running the trouble out: the three run-out tests fail, told 0 where 1; the socket's
+  readiness not asked: `Some(3)` silence where none; `learn` back to the slowest alone: both
+  route tests fail, `None` where 200 s and 0.3 s were due.
+- **Costs.** One poll(2) or WSAPoll more per socket read while a body is paced: unmeasured
+  here (R14's, ROOT's). A thread per `saying_waits` to tell run-outs, as the helper's.
+  A server that answers its failures forever is ridden out until it answers or the client
+  cancels: the ruling's liveness, its waits growing with the trouble.
+- **Owed.** CI's Linux and Windows (the WSAPoll twin is compiled there only). ROOT's: the
+  pull E2E rerun (`cargo test -p shards --profile test-release --test images --test
+  api_image --test referrers`, and `--test containers -- pulls a_run_interrupted_as_it_pulls`) and the guest-memory check on x86_64 KVM
+  (`SHARDS_HOME=$(mktemp -d) docs/research/measurements/guest-memory/measure-direct.sh
+  target/release/shards`).
+- **Rules** (policy df2acf47, role implementer): R01 no panic added (poll's failure counted
+  as a wait, as before; locks poison-tolerant); R03 no literal: the budget is the path's
+  own, the run-out the ruling's, readiness a poll with no wait; R04 `Phase`, `RunOut`,
+  `Notice`, `ErrorKind::Gone`; R09, R10 red on main, green after, four mutations killed;
+  R11 Unix and Windows written, macOS run; R15, R16 implementer, its runner target removed
+  after landing.
+
+### M573. A WHP DAX range mapped to be written after one to be read was made zeros as its file grew (memory-01, D189, D197)
+
+Windows 10.0.26200 x86_64 (the Windows 11 guest on adacachy), 2026-11-14: at 4697f1e7b a
+3 MiB file mapped to be read through a handle to read alone, then elsewhere to be written
+through one to write, grew; the window, keeping the first handle, made no PAGE_READWRITE
+section of it (CreateFileMappingW asks GENERIC_READ and GENERIC_WRITE) and placed writable
+zeros over the written range: it read 0 where the file holds 0x5a. A range no section to write
+can be made for was made zeros as it was followed after a cut, its vCPU let run. At 7f0cb8ce9
+the node keeps the handle given to write, the section is made before anything is freed, and a
+mapping that cannot be followed is left as it was or let go of, refused (`fs::Unfollowed`),
+the reply that would tell the guest its size refused: `window::tests` 12 of 12, both mutants
+(the first handle kept; let go of where it should be left) failing them. Unit-level functional
+evidence on real NTFS views, no real VM; a view refused after its section was made is
+unit-unreachable, and the WHP DAX tests are owed.
+[Commands, logs, mutants and owed runs](measurements/windows-p0/README.md).

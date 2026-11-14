@@ -3288,6 +3288,13 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
       the guest makes records its maker, root's too, so it stays its maker's whoever a
       later run's user is: a root run's directory refuses a later run of user 1000 (it does
       not turn into theirs). Before that, a root-made file stays unrecorded, as before.
+    - *Native nodes without owner attributes.* Device nodes retain their root owner
+      (the guest opens its own device number); unrecorded symlinks, and Linux FIFOs and
+      sockets, use init's host-file owner mapping. Classification uses their no-follow
+      stat type, never a failed ordinary-file read. These native kinds' existing lack
+      of guest owner-xattr persistence is an exception, not permission to swallow an
+      ordinary file/directory's metadata error. The runs-01 follow-up regression covers
+      host symlink/FIFO mapping and retains the root-owned-device check.
     - *Owner I/O fails closed* (runs-01, 2026-11-13). An ordinary file or directory whose
       maker cannot be persisted is removed and its creation refused with the host errno.
       Failed reads and malformed records refuse lookup; only a missing record uses the
@@ -6944,6 +6951,17 @@ stranger refused once its verdict is let go, red with each on the driver; and th
 backpressure as before: 8 MiB crossing whole, a command that reads no stdin holding up no
 other).
 
+**Build-file times (remote-04, 2026-11-13).** The separately framed Dockerfile's
+seconds and fractional nanoseconds are untrusted. `synced::receive` validates the
+fraction (no whole second, utimensat(2)'s `tv_nsec`) and uses `SystemTime::checked_add`
+for the receiving host's representable range before creating the file. It retains
+`ReceiveError::Timestamp` and `FileTimeError::{Nanoseconds,Unrepresentable}` until
+the step renders its failure on stderr; no caller parses an error string. Valid
+pre-epoch input keeps the receiver's prior normalization to the epoch. No runtime
+timeout, floor or chosen range is introduced. A network timestamp of i64::MAX
+seconds/u32::MAX nanoseconds previously panicked in `SystemTime` addition on the
+daemon's context-step thread. [Red/green and owed release-listener proof](../research/measurements/remote-fixes-v1/README.md).
+
 #### A client's authority, judged of what runs and of whom its key is now (remote-01 to 03, 2026-11-13)
 
 The adversarial review of D180 (docs/bugs/2026-11-13/remote.md) found three ways a client
@@ -8708,6 +8726,18 @@ policy collected at the next build, which grew nothing. Measured: PM M426's harn
 
 ### D217. A kill waits as long as its microVM goes on ending, by what its host has shown; a freeze, to its end (built)
 
+**Concurrent record writers** (runs-07). A daemon and each API host hold the
+stable `ends.lock` exclusively across reread, maximum merge and publication. The
+existing store `Locked` wrapper unlocks before closing (M244); locking the replaced
+record's inode would not serialize the next reader. Publication uses the existing
+platform `write_in`: a uniquely owned temporary file, synced and renamed whole.
+A failed write retains this process's learned maximum, and its next observation
+can persist that retained maximum even when it is faster. The focused race test
+holds the stable lock while another writer learns a helper end, publishes its own
+teardown snapshot and releases the lock: both maxima must survive. Existing cold
+liveness behavior and the record's millisecond format are unchanged; no new wait,
+cache, runtime number or platform adapter. See the [runs fix evidence](../research/measurements/runs-fixes/README.md).
+
 **Found.** The audit of what was taken from Docker (docs/audit/2026-10-16_docker-framing.md):
 a microVM whose command outlived its SIGKILL had its VM killed 10 s later and its end given
 up 2 s after that (moby daemon/kill.go), a signal that could not be sent waited out 2 s
@@ -8822,6 +8852,21 @@ x86_64 Linux (shards-api) and x86_64 Windows (cargo-xwin, shards-api and shards)
 real-VM kill and stop tests on HVF, KVM and WHP (ROOT's).
 
 ### D188. A host short of memory gets back what its microVMs hold cold of their files (built)
+
+**R03 review memory-06..10 (2026-11-13):** the pressure windows/thresholds,
+fallback cadence, DAX crossover and cached headroom coefficient remain owed to
+ROOT. Their proposed runtime observations, cold starts, typed unavailable states
+and validation commands are in
+`docs/research/measurements/memory-fixes-v1/owed-designs.md`; existing values below
+are not evidence that these policy choices satisfy R03.
+
+**Review memory-04 (2026-11-13):** the builder's giver retains the latest ROOM
+word while a prior GIVE_BACK or ROOM reply is outstanding, including the explicit
+unbudgeted word. It transmits that word as the reply is consumed and coalesces a
+value already in flight, whose acknowledgment remains consumable. Desired room
+and request/reply state have one owner; budget removal cannot disappear behind
+a late answer. Red and light-check evidence: `docs/research/measurements/memory-fixes-v1/README.md`.
+
 
 **Found.** The user's plan, item 4: memory that tracks the working set, reclaimed at the
 host's pressure, not on a timer. A run's guest keeps what its workload reads in its page
@@ -9639,6 +9684,11 @@ stores.
   44.4, 1 MiB close together 74 against 855. Held by
   `a_file_mapped_in_many_ranges_is_looked_at_once` (mutation-checked: 8 looks for 8
   ranges).
+- **A file its window cannot follow is a reply refused** (memory-01, PM M573; D197's slice
+  4 on Windows). Where `reconcile` cannot make a file's ranges what it is (its size unread,
+  its grown pages not mapped), it refuses, typed (`fs::Unfollowed`), and the reply that
+  would tell the guest the file's size is refused it (EIO): its guest never hears a size
+  whose bytes its window does not hold, and the file is followed again at its next request.
 - **Each window's page structures in its head, not its guest's memory** (PM M300). Linux
   describes a window's pages as it probes the device, with page structures (64 bytes for
   each 4 KiB page) it took from guest RAM: a 64th of the window (M269), from a guest that,
@@ -9908,6 +9958,9 @@ template pays it once; what its restores pay is to be measured with mappings.
   blocks).
 
 ### D214. Devices plugged into a running microVM, and its disks grown (built: disks and shared directories through the CLI on Hypervisor.framework, KVM and WHP, WHP's run on CI's Windows runners; host functions in the VMM on KVM, and through the CLI for a run's workload on Linux, both passing nested on arm64 KVM; refused on WHP with Microsoft's documented limit, a function assigned as a VM starts alone)
+
+Review devices-06 (2026-11-14): VFIO hot-unplug disables INTx/MSI/MSI-X and removes their host routes before closing eventfds and removing BAR windows. Slot route owners outlive a function, so descriptor close alone cannot reclaim their GSI records. A Linux unit fixture verifies each removal sees an open eventfd and repeated cleanup removes nothing twice. Hardware/error-path completion remains ROOT's validation; evidence is `docs/research/measurements/device-fixes/README.md`.
+
 
 Review devices-05 (2026-11-14): a file disk publishes capacity and generation under one mutex, held from metadata acquisition through the monotonicity check and both updates. Each capacity/config-generation read takes that same mutex. A guest's split read therefore observes a coherent size or a changed generation; it needs no convention about odd generation values. The focused red/green is retained in `docs/research/measurements/device-fixes/README.md`.
 
@@ -11858,6 +11911,33 @@ took, decided (PM M412):
   guest reads the file's bytes, and zeros past its end, as on Unix.
 - **Followed as the Unix window follows a file**: before the guest hears a size,
   `reconcile` makes each range what the file is then, a grown file's new bytes the guest's.
+- **Never zeros in place of a file's bytes** (memory-01, PM M573). A section to write is made
+  only of a handle "created with the GENERIC_READ and GENERIC_WRITE access rights", one to
+  read of one with GENERIC_READ (Microsoft's CreateFileMappingW, PAGE_READWRITE and
+  PAGE_READONLY), and a share's server opens a mapping to be read alone to read
+  (`SHARED_NEEDS_WRITE`). The window kept a node's first handle: a file mapped to be read
+  and then, elsewhere in the window, to be written grew, no section to write could be made
+  of the handle kept, and `reconcile`, having freed the written range's views, placed
+  writable zeros over its file's bytes, the guest's stores reaching no file. So:
+  - a node keeps the handle given for a mapping to be written over one given to read
+    alone, as the Unix window's node keeps a descriptor opened to write (window.rs
+    `Table::insert`);
+  - a mapping's new section is made before anything of it is let go of, and where none can
+    be made, or its file's size cannot be read, it is left as it was;
+  - where a view cannot be placed once its old ones are freed ("BaseAddress and ViewSize
+    must exactly match those of the placeholder", Microsoft's MapViewOfFile3, so a view
+    replaces only a freed placeholder), its ranges stay placeholders (`Held::LetGo`), as a
+    range let go of for a cut is, a vCPU that reaches one waiting until it is made again or
+    unmapped;
+  - each is refused, typed (`fs::Unfollowed`: its size, its section, a view), and the reply
+    that would tell the guest the file's size is refused it (EIO): the guest never hears a
+    size whose bytes its window does not hold. The request itself was the server's, done:
+    a refused LOOKUP's or CREATE's node and handle stay the server's until the guest's
+    unmount, as for any reply its guest did not take.
+  Held by `a_range_mapped_to_be_written_after_one_to_be_read_stays_its_files` and
+  `a_range_no_view_of_its_file_can_be_made_for_is_refused_never_zeros` (red before,
+  mutation-checked); a view refused after its section was made is unit-unreachable, and
+  unverified.
 - **No cut under a mapping.** NTFS refuses to cut a file short while any section of it is
   held, a view or a handle (ERROR_USER_MAPPED_FILE, M412). So the window keeps views alone,
   each section's handle closed once its views are placed. A guest's own cut (a SETATTR of
@@ -12640,6 +12720,21 @@ destinations as this option grants a network's: one parser for both, which refus
 whose last label is all digits and `localhost`, and takes `host.docker.internal` for the
 host itself, the gateway at that port alone, its loopback there.
 
+**DNS authority lifetime (network-03, 2026-11-13).** The network process replaces the
+current answer for each granted name and A/AAAA question type, instead of accumulating
+addresses. Its next timer includes the earliest DNS expiry; expiry drops the answer's
+address storage. Each answer fits DNS-over-TCP's u16 wire length, and each distinct
+granted name admits at most the two address question types. No chosen cache limit or
+TTL floor is introduced. RFC 2181 §§5.2/5.4/8 define replacement, the shortest received
+TTL and a sign-bit TTL treated as zero. Zero TTL retains no authority for a later flow;
+supporting a zero-TTL transaction across a separate connect request would require an
+explicit transaction identity, which the present guest IP stream does not provide.
+Established TCP flows keep their opening authorization until their normal close;
+expiry/replacement affects new flows. Clock overflow/allocation failure refuses new
+learned authority through the existing policy denial, with io::Error from admission.
+Answer owner/class/CNAME validation remains network-11, a separate pending finding.
+[Unit reproduction and remaining VM checks](../research/measurements/network-fixes-v1/README.md#network-03-dns-authority-lifetime).
+
 **Next.** IPv6 destinations (the network process learns A records alone); a destination
 on a network whose members' images have agents with grants of their own, held apart by
 the address its flows come from; a run's own grant on the default bridge, if one is
@@ -12835,6 +12930,15 @@ the user told).
   `a_microvm_has_the_cpus_its_daemon_may_run_on`).
 
 ### D190. A run's writable layer on its host's disk: ext4 with DAX over pmem (slices 1 to 8 built)
+
+**Review memory-16 (2026-11-13):** saving a head compares a nonzero block with
+every distinct block already retained. The bound is the input's block count;
+there is no selected limit on how many kinds can share. Cold saves start with
+no retained kinds, and existing file errors propagate. This preserves the
+documented “each kept block once” contract after the sixty-fourth kind too.
+Worst-case comparisons are quadratic in input blocks; their cost is unmeasured
+and owed to ROOT. Red/green and scope:
+`docs/research/measurements/memory-fixes-v1/README.md`.
 
 A run's writable layer, the upper directory of its root's overlay, was a tmpfs in its
 microVM's memory (D16, D156): what it wrote was memory, held to its memory limit, and gone
@@ -13307,6 +13411,18 @@ the guest keeps their metadata alone.
   than it was written.
 
 ### D179. Other CPUs' images, emulated in their microVM (parts 1 to 3 built; one platform wherever a command names it)
+
+**Container facts and copy ownership** (runs-06, 2026-11-13). A container's
+`image_manifest` is its selection, even when its index's preferred platform changes.
+Inspect reads that descriptor and its config through the store's existing digest/size
+checks and OCI document/config bounds; ownership-mode copy uses those same facts.
+Only an old record with no selected manifest uses the preference. A recorded selection
+that cannot be read never falls back to another platform: inspect has no image facts,
+and copy refuses with the missing container/config identity. An available config with
+no User keeps OCI's root default; an explicit run user remains authoritative.
+The two-platform store regression changes the preference both ways, checks each selected
+User/Env/descriptor and a missing manifest. Real guest/inspect/copy agreement remains
+ROOT's live check in the [runs fix record](../research/measurements/runs-fixes/README.md).
 
 Images built on an arm64 Mac usually ship to x86_64 hosts, and the other way round, and a
 build for both (`--platform linux/amd64,linux/arm64`, D87) runs each platform's RUN steps.
@@ -13966,7 +14082,7 @@ other's but what the move sends, and what the other takes by content:
   (D197); each its extended attributes under names of its own (Linux's `trusted.` and
   `security.` under `user.shards.`, Windows' as EAs of hexadecimal names). The move reads
   and makes each through the share server's own calls (`server::guest`: `read`, `set`
-  and its makers), its stream (version 2) holding each entry's kind and mode, its device
+  and its makers), its stream (version 3) holding each entry's kind and mode, its device
   number, its owner where one is recorded (none where the host made it, so that it stays
   its share's default owner's, D38), its attributes by the guest's names, and its name as
   the guest's, which a Windows host keeps escaped as WSL escapes it; a directory takes its
@@ -13979,6 +14095,22 @@ other's but what the move sends, and what the other takes by content:
   its path there, whatever device and inode it had here, its guest's open handles and
   working directory in it going on. A bind's host path is the other machine's to share
   at the same place, as a network file system shares it, checked there before the move.
+- **Its regular-file hardlinks** (migrate-05, 2026-11-13). Version 3 adds an entry naming
+  an earlier regular file in volume data. The source's opened file supplies the share
+  server's device/file-id and link count; only multiply-linked volume files retain a
+  first-name record, for one stream, with fallible map/name growth. Both destination
+  names must be allowed volume-data paths. `Beneath::make_hardlink` walks both parents
+  through held directories, rejects a missing or non-regular source (including a
+  symlink), and uses the existing Unix/NT `link_at` seam, never replacing a destination.
+  No metadata or bytes are replayed for an alias: the inode's contents and attributes
+  stay shared. POSIX.1-2024 `linkat` specifies shared identity and flags 0's no-follow
+  behavior; the share server's LINK handler already uses that seam. Readers accept
+  version 2 as before; older readers refuse version 3 before extraction. Version/tag
+  numbers are assigned grammar, path sizes retain the existing PATH_MAX bound, and
+  link count greater than one is the host's alias fact, not a tuning choice. The red
+  test `a_volumes_hardlinks_keep_shared_contents_after_move` failed at `73af9fb62`
+  against the landed migrate-01 extractor. [Decision, tests and remaining platform/VM
+  checks](../research/measurements/migrate/fix-review-2026-11-13.md).
 - **Nothing it sends reaches out of the move's directory** (migrate-01, 2026-11-13). The
   machine moved to puts the stream's entries in a directory of the move's own
   (`private/move-…`), and a name that passes `relative` (no `..`, no root, no empty
@@ -14006,7 +14138,7 @@ other's but what the move sends, and what the other takes by content:
   against, at a volume's `_data` and beside it) and `beneath_goes_through_no_symlink`
   (`server::guest`, every target). Not an
   archive of go-archive's (crates/archive), whose oracle is untouched: the move's stream is
-  its own format (version 2).
+  its own format (version 3; readers also take version 2).
 - **Nor does any name it gives** (migrate-11, 2026-11-13). Beside its stream's entries, a
   move gives names the machine moved to makes paths of its home of: its plan's ID
   (`containers/ID`), its snapshot's (`containers/ID/snapshots/S`, which a live move's rounds
@@ -18106,6 +18238,22 @@ changes.
 
 ### D133. A builder's memory, plugged as its build needs it (virtio-mem)
 
+**Review memory-17 (2026-11-13):** the give-back connection's largest host
+request is ROOM: Giver::tell and tell_first use the canonical decimal `i64`
+encoding, or an empty payload for no budget. GIVE_BACK is empty too. Its exact
+bound is one minus sign plus `floor(log10(abs(i64::MIN))) + 1` decimal digits,
+computed with unsigned_abs and ilog10. No calibration/cold-start guess is needed;
+the fixed integer type bounds the arithmetic on every supported target. A longer
+header follows the existing connection-end path before allocation or payload
+read. Both signed extremes remain accepted. Red/green evidence and platform
+limits: `docs/research/measurements/memory-fixes-v1/README.md`.
+
+**R03 review memory-11..15 (2026-11-13):** reserve slack, pause/read floors,
+retry count, growth/retention ratios and boot floor remain owed to ROOT with
+designs in `docs/research/measurements/memory-fixes-v1/owed-designs.md`.
+Each needs a justified startup rule and typed uncertainty before replacement;
+this review does not approve another chosen number.
+
 A builder may have what its host can give and its home's builds have needed, but the memory
 a guest boots with costs it its page structures as it boots: about 21 MiB and 4 ms per GiB, a
 builder of 64 GiB 1.4 GiB and 434 ms (PM M82). A builder now boots with 512 MiB, and is
@@ -18371,6 +18519,14 @@ download.
     the answer is asked again at once, overdue (`Error::overdue_by`, typed by the wait that
     ran out: `Overdue::Answer` before its first byte, `Overdue::Silence` after), and a
     download is resumed where it was (fetch.rs).
+  - **A read of bytes already there is no silence** (waits-05, `http::Sock`): a silence is
+    the time a read of the socket waited where the socket had nothing, nothing ready
+    (poll(2) or WSAPoll with no wait) as it began; bytes in the response's buffer, the TLS
+    session or the socket, or the socket's end, are read without one, however long their
+    copies take. Before, every read that brought bytes was timed, a copy of a µs or more
+    taken for a stall of the path's (12 µs on adas-mac-studio.local's loopback, PM M572),
+    which bounded the next real gap, and past a run-out raised the bound by a copy. Each
+    read of the socket while a body is paced costs one poll more.
   - **A wait of nothing is no sample** (`patience::sample`): one shorter than the record
     measures, a µs, waited for nothing, a read that found its bytes already buffered or an
     answer that came with its request's end, and shows no stall of the path's. Taken for
@@ -18441,28 +18597,52 @@ download.
   keeps an idle TCP connection's mapping for (RFC 5382 §5, REQ-5): past it a NAT may drop
   the mapping without a word, and a request on it would wait for an answer that never
   comes. Before, 30 s, containerd's.
-- **A trouble is ridden out within its path's budget**: a passing failure (a 502, 503,
-  504 or 408, RFC 9110 §15.5.9, §15.6.3 to §15.6.5; a timeout, a reset or a cut answer),
-  or a download that brings nothing, is asked again after a random share of how long the
-  trouble has lasted so far (full jitter: the time lost past its end at most what it had
-  lasted, and a crowd's askings not back together), at least what `Retry-After` names
-  (RFC 9110 §10.2.3), with no count: a gateway's many quick failures are ridden out as a
-  timeout's few slow ones, for as long. The budget is the longest trouble the path has
-  passed (`Paths::budget`, PM M558), by the person's rule: "The cold start, and every
-  wait after a run-out, follows the party's liveness and progress. After that the bound is
-  the slowest answer seen." A path that has passed none rides one out while it lasts, as
-  one does whose last trouble ran out, until a trouble passes, whose length is then the
-  bound; a run-out teaches nothing (`Trouble::over`). A wait named past the budget, or a
-  trouble past it, is said as the registry's failure. Before (11-09 to 11-13), twice the
-  longest (a doubling search, Baeza-Yates, Culberson and Rawlins 1993), each give-up
-  taught as a trouble passed, and never less than R2's 100 s (RFC 1122 §4.2.3.5): R2 is
-  how long TCP itself retransmits to a peer that does not answer before it ends the
-  connection, an end the host's own TCP already gives each connection (Linux's
-  `tcp_retries2`, past R2) and the trouble's next asking finds, so a floor of shards' own
-  added none of the protocol's. A trouble of a server that answers its failures (a
-  gateway's 503s) has no protocol bound at all: its path's own longest is the one. A 500, which RFC 9110 §15.6.1
-  does not say passes, is asked again once, and a repeat is the request's own answer.
-  A cancel ends a wait at once.
+- **A trouble is ridden out while it lasts, and runs out, told once, past the longest its
+  path passed** (2026-11-13, #77, PM M572): a passing failure (a 502, 503, 504 or 408, RFC
+  9110 §15.5.9, §15.6.3 to §15.6.5; a timeout, a reset or a cut answer), or a download that
+  brings nothing, is asked again after a random share of how long the trouble has lasted
+  so far (full jitter: the time lost past its end at most what it had lasted, and a crowd's
+  askings not back together), at least what `Retry-After` names (RFC 9110 §10.2.3), with no
+  count: a gateway's many quick failures are ridden out as a timeout's few slow ones, for
+  as long.
+  - **The run-out**: past its path's budget, the longest trouble the path has passed
+    (`Paths::budget`, PM M558), or where `Retry-After` names a wait that would end past it,
+    the trouble runs out (`Trouble`'s `Phase::RanOut`): a typed `http::RunOut` (its server,
+    how long it had lasted, the longest passed), told once through
+    `Registry::saying_waits` (`Notice::RanOut`, a pull's `Event::RanOut`: a line in the
+    daemon's log and one on the CLI's stderr, or the build's plain display, as D184's
+    helper notice is), and no failure. ROOT's ruling, after D180's precedent and the
+    person's R03: "a trouble that outlasts the longest one passed is a typed run-out, told
+    once, and does not fail the pull." From then on it follows liveness, with no window:
+    the registry asked again (a fresh request, or a download resumed from its byte offset),
+    its waits shares of its length as before and as long as `Retry-After` names; once it
+    ends, its whole length is the path's longest (`Trouble::over`, `Paths::passed`), the
+    path's run-out over. A run-out under way is told no more, by any trouble of the path's
+    (`Paths::trouble_ran_out` says whether it began one). A path that has passed none (the
+    cold start), or whose last ran out until one passes, bounds none: its troubles follow
+    liveness from the first.
+  - **What ends it is the far end's word** (`Trouble::gone`, `ErrorKind::Gone`): nothing
+    listening where it is (a connection refused, at once, as before, now typed); a re-ask
+    ended before any answer (a reset, an abort, a connection closed under the request:
+    `Error::is_cut`) while the trouble follows liveness, past its run-out or on a path that
+    bounds none; a name that does not resolve; a typed HTTP refusal; or the answer and
+    silence rules above. A trouble's first failure, and a re-ask within its path's
+    budget, are a trouble's, ridden out: a gateway's cut connections, a pooled connection
+    its server had closed. A server that answers its failures forever (a 503 every time)
+    is ridden out for as long, its waits growing with it, until it answers or the client
+    cancels: its answers are its liveness.
+  - **Before** (11-13, M558): past the budget the trouble was the request's answer (its
+    503, or a cut's error, `stalled` for a download that brought nothing), and a named wait
+    past it was never waited, its failure taught as a trouble passed of its first 503's
+    length (waits-06, `docs/bugs/2026-11-13/waits.md`). Before that (11-09 to 11-13),
+    twice the longest (a doubling search, Baeza-Yates, Culberson and Rawlins 1993), each
+    give-up taught as a trouble passed, and never less than R2's 100 s (RFC 1122
+    §4.2.3.5): R2 is how long TCP itself retransmits to a peer that does not answer before
+    it ends the connection, an end the host's own TCP already gives each connection
+    (Linux's `tcp_retries2`, past R2) and the trouble's next asking finds, so a floor of
+    shards' own added none of the protocol's. No ×2 and no floor now.
+  - A 500, which RFC 9110 §15.6.1 does not say passes, is asked again once, and a repeat
+    is the request's own answer. A cancel ends a wait at once.
 - **Kept in the home, by path**: what each path showed (its slowest answer and slowest
   silence, its connects' and handshakes' estimators, the longest trouble it passed and how
   many) is
@@ -18470,7 +18650,11 @@ download.
   port and this host's address on its route there (D226), with what transfers learn of
   the path; merged into the record as the pull or push lets its client go, under the
   records' lock (D226), and read as a client first asks the path, and again once a
-  connection says its route. Clients that asked one path at once all keep theirs
+  connection says its route, what the client showed before then kept over the route's
+  record as a record keeps it (`Paths::learn`, `Shown::merged`; waits-07: a connect taught
+  before its route was known, as `Client::connect` dials and then says where it left from,
+  kept only that record's slowest answer and silence, its trouble and handshake lost).
+  Clients that asked one path at once all keep theirs
   (`Shown::merged`, three ways: the record as it is now, what the client read, what it
   holds): each slowest is the slower of the record's and each client's, both seen; each
   connect's and handshake's estimator is the one
@@ -18507,7 +18691,10 @@ download.
   | 1 s before any wait, and a pace's least | `patience::FIRST` | RFC 6298 §2.1, §2.4 |
   | ×2 a timeout in a row | `backed_off` | RFC 6298 §5.5 |
   | answers, silences, connects, handshakes each learned | `Wait`, `Paths::timeout`, `Paths::answer`, `Paths::silence` | each over its own times |
-  | budget: the longest trouble passed; none before any, or after a run-out until one passes | `Paths::budget`, `Paths::trouble_ran_out`, `Trouble::wait` | the person's rule (2026-11-13); a run-out teaches nothing; TCP's own R2 ends dead connections already (RFC 1122 §4.2.3.5) |
+  | budget: the longest trouble passed; none before any, or after a run-out until one passes | `Paths::budget`, `Paths::trouble_ran_out`, `Trouble::wait` | the person's rule (2026-11-13); TCP's own R2 ends dead connections already (RFC 1122 §4.2.3.5) |
+  | past the budget, or a `Retry-After` past it: a run-out, told once, ridden out while it lasts, its whole length taught once over | `RunOut`, `Notice::RanOut`, `Phase::RanOut`, `Trouble::over` | ROOT's ruling for #77 (2026-11-13), after D180's precedent: no window, no ×2, no floor |
+  | its end: refused, or a re-ask cut unanswered while it follows liveness | `Trouble::gone`, `ErrorKind::Gone`, `Error::is_cut` | the far end's own word (the ruling); a first failure or one within the budget is a trouble's |
+  | a silence: a socket read that found nothing ready, poll with no wait | `http::Sock`, `readable` | waits-05: readiness, never a time threshold |
   | a random share of the trouble so far | `Trouble` | full jitter, bounded by the trouble's own length |
   | at least `Retry-After` | `Trouble` | RFC 9110 §10.2.3 |
   | 502, 503, 504, 408 pass; a 500 asked once more | `Trouble` | RFC 9110 §15.5.9, §15.6.1, §15.6.3 to §15.6.5 |
@@ -18527,12 +18714,20 @@ download.
   `an_answer_is_cut_only_before_its_first_byte`: a head begun within the slowest and ended
   past it read whole, its time to its first byte learned;
   `a_wait_its_own_time_ended_counts_as_its_timeout`;
-  `a_handshake_or_a_dial_its_time_ends_says_so`); registry.rs (a gateway's 502, 503, 504,
+  `a_handshake_or_a_dial_its_time_ends_says_so`;
+  `a_read_of_bytes_already_there_is_no_silence`, waits-05); patience.rs
+  `a_connect_before_its_route_is_known_keeps_its_routes_record` (waits-07); registry.rs (a gateway's 502, 503, 504,
   408 or cut connections ridden out for as long as they last and no longer than their
-  length again; past the budget the registry's answer; a named wait waited, one past the
-  budget not; a cancel ends a wait; `a_paths_answers_are_waited_for_as_long_as_it_shows`:
+  length again; past the budget a run-out, told once, ridden out to the 200 and its length
+  taught, connections cut past it `Gone`, a named wait waited, one past the budget too
+  (`a_registrys_passing_trouble_is_ridden_out_and_runs_out_past_its_moment`,
+  `a_trouble_past_the_longest_its_path_passed_runs_out_told_once`,
+  `a_troubles_waits_are_shares_of_its_length_and_a_run_out_is_told_once`); a far end gone,
+  refused or cut on every re-ask, cold and past a run-out, fails `Gone`
+  (`a_far_end_that_is_gone_fails_typed`); a cancel ends a wait; `a_paths_answers_are_waited_for_as_long_as_it_shows`:
   a path whose answers come 1.5 s late, with nothing shown asked once, with 0.3 s shown
   cut once past it and that asking waited for, the next within what it learned asked once;
+  a download that brings nothing past its moment run out, told and resumed to its bytes;
   `a_silent_download_is_cut_and_resumed_and_its_silence_learned`: a 1.5 s silence waited
   out where none was shown, cut and resumed where it was past 0.3 s shown, the run-out
   learning nothing and over once the resumed body brought bytes; a blob short of its size
@@ -19316,6 +19511,16 @@ the run's directory.
   `an_event_is_as_long_as_its_message_says`; the daemon's segments and rendering.
 
 ### D122. The members an `EXPOSE` is for: one receiver for each incoming port
+
+**Review gaps (network-06/07, 2026-11-13), owed to ROOT.** Whole-range holder
+selection and IPv6 wildcard acceptance have not been validated against split
+listeners or IPV6_V6ONLY in the pinned guest. A port must have its own holder;
+expanding contests also requires excluding the original range from fallback DNAT
+and retaining each mapped destination port. IPv4 selection must parse the kernel's
+`INET_DIAG_SKV6ONLY` attribute; an absent/malformed observation must not be guessed
+dual-stack. The fixed message's IPv6 source alone cannot establish acceptance.
+The proposed live fixtures and failure/ownership requirements are
+[recorded here](../research/measurements/network-fixes-v1/README.md#network-05-07-guest-kernel-and-api-reproductions).
 
 An `EXPOSE … FOR <network>` opened a port of the microVM for every member of the network.
 On a network of one member that is a receiver; on a network of several, a connection
@@ -22098,6 +22303,14 @@ Tested:
 - `several_platforms_make_one_image_of_their_manifests` checks buildx's refusal.
 
 ### D99. IPv6 on a network of microVMs
+
+**API-run parity gap (network-05, 2026-11-13), owed to ROOT.** Unlike the daemon,
+API-run still supplies neither its guest's `uplink6=` nor the network process's
+`NET_ADDRESS` for IPv6 egress. Its IPv4 policy unit results do not prove this path.
+The correction must share the home's ULA derivation and paired programming, with
+NET_ADDRESS acknowledged before frames are served and the same narrowed grants
+and `confine-eth0` preserved. Fresh/restored API IPv6 receipt and default-deny
+witnesses are [owed with an exact fixture](../research/measurements/network-fixes-v1/README.md#network-05-07-guest-kernel-and-api-reproductions).
 
 A network made with `--ipv6` (`shards network create --ipv6`, or a run's `--network` on
 one) gives each microVM an IPv6 address of its IPv6 subnet, as dockerd gives each
@@ -26208,6 +26421,10 @@ named a host (D59 part seven); a run's command had D192's.
   lets the member out on that port (its gate, the switch, init's forward chain); the run's own
   processes (`confine_eth0`) and its engine's members (D181) reach the gateway by TCP at its
   resolver's port alone.
+- *DNS lifetime* (network-03): D192's current answer and received-TTL rules apply to
+  these destinations too. Historical answers grant no later connection; zero-TTL
+  answers retain no cross-transaction authority. Neither expiry nor replacement
+  tears down an already admitted TCP connection.
 - *Refused where it cannot be held* (`agentfile::held`, at build and as the daemon reads the
   normalized Agentfile): the network process holds the whole microVM to the union of its
   members' names on a port, and a member's init lets it out on that port to any address. So
@@ -28075,6 +28292,21 @@ docs/research/s33-veil-creds/STEP3.md).
   and in the body, and its HTTP/2 stream whose value rotates while its response waits, red before
   (the value reached the guest), green after; the mask given no value (`filled_in` not filling it)
   fails both.
+- *Every response from a granted host is masked against every value leased toward it (creds-09,
+  amended 2026-11-13).* A response's mask held the values filled into its own request alone, so a
+  request with no placeholder on a granted host's connection got a response with no mask, and a
+  host returning a value leased to the run before (an endpoint that lists keys) gave it to the
+  guest. Now, as a request goes, its mask takes its own values (creds-03) and every value the run
+  holds leased at that instant of a credential granted toward its host (`held_toward`), each the
+  mask's wiped copy until that response ends; and such a request asks `identity` and offers no
+  WebSocket extension as a filled one does (creds-04), its coded response decoded or refused
+  alike. Its bound is the run's leases toward one host, which the run's grants name. A value whose
+  lease lapsed before the request went is held nowhere in this process, so nothing of it is
+  masked: the lease's end is the run's word that the value is no longer the VM's. Tests:
+  `inject::tests::leaks`' H1 request and H2 stream with no placeholder after a filled one, their
+  responses carrying the value in a field and the body, red before (the value reached the
+  guest), green after; the held values left out of the mask, and the `identity` ask left out,
+  each fail them.
 - *A chunk's size line goes as its size alone (creds-02, amended 2026-11-13).* The mask passes a
   chunked body's framing over, so that an echo split across chunks is found; but the framing's
   bytes still reached the guest, and a chunk's extensions (`chunk-ext`, RFC 9112 §7.1.1: tokens or
@@ -28117,7 +28349,10 @@ docs/research/s33-veil-creds/STEP3.md).
   the image store and the registry's client already link), its decoded bytes masked as any body's,
   and given to the guest as `identity`: on HTTP/1.1 its Content-Encoding, Transfer-Encoding and
   Content-Length lines cut and `Transfer-Encoding: chunked` written, each run the mask lets go one
-  chunk (`chunk`), its end the last chunk and its trailers dropped (RFC 9110 §6.5.1); on HTTP/2
+  chunk (`chunk`), each chunk's size line this side's own and held to `Mask::holds` as creds-02's
+  are, one holding a value breaking the message (creds-12, amended 2026-11-13: red before, a
+  value of hex digits written as a size line, green after; the check removed fails it), its end
+  the last chunk and its trailers dropped (RFC 9110 §6.5.1); on HTTP/2
   its content-encoding and content-length fields cut (RFC 9113 §8.1.1 lets a response name no
   length), its DATA's credit given back to the host's window once its decoding has reached the
   guest, so that the host sends no faster than the guest reads. Bounds (R03): what one turn of the
@@ -28143,7 +28378,13 @@ docs/research/s33-veil-creds/STEP3.md).
   bypassed (the coded bytes chunked as they came), the H2 decoder bypassed, and each of the three
   budget checks removed, each fail their tests. Still residual: a tunnel's own framing (a value
   split across WebSocket frames, or a protocol other than WebSocket after a 101), which the mask
-  reads as bytes; a decoded body's buffers, which grow without being wiped, as rustls's own do.
+  reads as bytes. A decoded body's own buffers (its decoder's output, gzip's sink, zstd's pending
+  octets, the coded run of a turn, the run the mask lets go) grow through `signin::append`, each
+  buffer let go of wiped as it drops (creds-13, amended 2026-11-13); red before (a block let go of
+  while a body decoded held its plaintext, seen by the test binary's allocator, `decode::watch`),
+  green after, and either growth by `extend_from_slice` again fails it. Still residual: the
+  decoders' own windows and buffers (zlib-rs's 32 KiB window, flate2's output buffer, ruzstd's
+  window), let go of unwiped as the decoder drops, as rustls's buffers are.
 - *Audit (f26).* `shards-net: credential <reference> filled in toward <host> at <s>.<ns> (Unix
   time)`, on the network process's stderr (its run host's diagnostics); never the value or the
   placeholder.
@@ -28319,6 +28560,23 @@ pin, read on Linux and never run), as data and pure functions the injector drive
   CLI's refresh (JSON and form) and revocation found, and a refresh of another or a near placeholder passed; the
   minting endpoint read widely; no token or placeholder in `Debug`; a 100 000-deep array read. clippy `-D warnings`
   clean. Each of 14 guards removed in turn fails its test (`scripts/step8-reds.py`).
+- *A token host's informational responses wait for its final one (creds-10, amended 2026-11-13).* A 1xx
+  response went to the guest at once, before the final response's body named its tokens, so a 103
+  (or any 1xx) that repeated a token issued in that final response passed unread. RFC 9110 §15.2 has a
+  proxy forward each 1xx unless it asked for it, and lets a user agent ignore an unexpected one; it sets
+  no deadline, only that they precede the final response. So on a sign-in's token host a 1xx but 100 is
+  held (HTTP/1.1's head in `Ended::interims`, HTTP/2's fields on its stream, together at most `TO_GUEST`
+  octets, past which the message breaks or the stream is refused 502), read with the final response's
+  head and trailers for its tokens (`signin::unechoed`'s places), and sent before it as it came; one
+  that holds a token refuses the response 502, nothing captured. A final response that is not read
+  whole names no token and goes after them at once. A 100 Continue goes at once as its status alone
+  (§15.2.1 gives it no fields; a client may be waiting on it before it sends its body), so that it
+  carries nothing and waits for nothing. Not chosen: holding a 100 too, which stalls a client that
+  waits for it until its own timer. Tests: `inject::tests::leaks`' HTTP/1.1 103 repeating the access
+  token (refused), a benign 103 (sent before the token response) and a 100 with a field repeating it
+  (sent bare), and an HTTP/2 103 repeating the refresh token (refused), red before (a real token
+  reached the guest), green after; HTTP/1.1's and HTTP/2's holds removed, and each's reading of the
+  held responses removed, each fail them.
 - *A token in a token response's head or trailers is refused (creds-01, amended 2026-11-13).* A capture wrote the
   placeholders into the body's token places alone and passed the head (HTTP/1.1's, through `signin::frame`) and an
   HTTP/2 stream's fields and trailers (through `give`) as they came, so a host repeating a token there (a field, a
@@ -29892,6 +30150,13 @@ through it (Hex step 39), so every one of Hex's starts paid a boot.
   Its orchestrator hears which (`ImageGuest::started_from`, `wire::StartedFrom`, image channel
   version 19). The run's per-run secrets, its agent-control key above all (D252), are made
   after its VM is ready, so no template carries them.
+- *The preparation lease ends at readiness* (runs-05). Once launch has completed
+  readiness and template settlement, the VM owns its open rootfs and snapshot files
+  (D26). A warm host lets go of `Prepared::lease` before WARMED and before awaiting
+  CREATE; every served run does so before handoff/STARTED. The lease protects
+  preparation, not an idle spare's or workload's life, so unrelated collection can
+  acquire the store afterward. Its live collection/progress proof is owed to ROOT;
+  unit shaping tests do not prove a running VM's file ownership.
 - *One demand rule.* D26's rule for how many warm VMs a pool keeps (the largest burst within an
   RFC 6298 refill window, within the keep-alive) is `shards_api::demand`, moved from the daemon,
   never copied. The daemon's pools keep theirs by it, and an orchestrator's will too.
@@ -31007,9 +31272,34 @@ whose command exited before kiln deleted it went uncharged (Hex answered `NotRun
   `FinalUse`/`Unused`/`UseBroken` wire tags 0 to 4. No other number.
 - *Cold start.* Nothing learned. A machine that never started reads `guest-unread the
   microVM has not started` beside its process's use.
-- *Managed microVMs* (`ManagedGuest::host_use`): not in this slice. A managed microVM's
-  process is no warm VM, has no link to its owner, and ends its vsock socket with it: its
-  final use needs a path of its own (owed, below).
+- *Managed microVMs* (`ManagedGuest`; the person's filesystem rule: shards' own interfaces
+  are files). A managed VM process has no owner's link and its vsock socket goes with it, so its
+  final use is a file: `<vsock>.used`, beside its vsock socket (`shards_api::final_use_file`), in
+  the directory its launcher made for the guest, which goes with the run (shards-api's own
+  `PrivateDir`, or its launcher's). Written whole, by rename (a temporary beside it, made
+  durable, then renamed over it), before its VM process exits:
+  - The VM process, confined (D30), writes no file: once its machine is down (`supervise`'s
+    `wait_then` free, as the warm VM's) it tells its keeper the use's answer, after its length
+    (a u32, big-endian), on a channel of its own (`--final-use`), which the CLI that becomes it
+    adds where it is booted `--host-managed` with a `--vsock` (final_use.rs).
+  - Unix: the keeper is `shards final-use PATH`, started beside it in its launcher's
+    containment as a managed VM's console recorder is, on a socket pair. It writes the record,
+    then answers one byte; the VM waits for the answer (or the keeper's end) before it goes
+    on to exit. So the record is in place before the VM process, whose end its client
+    watches, ends. Not bounded by a clock: the keeper's work is one local file's write.
+  - Windows: the CLI that waits for its VM keeps it, reading the pipe as it comes (a pipe's
+    buffer may not hold it whole), and joins that before it exits, its client watching the
+    CLI's end.
+  - A VM killed, or one that ended before its machine came down, tells nothing or less than
+    it said it would: no record.
+  - The client: `ManagedGuest::wait_ended(timeout) -> Option<ManagedEnded { end: End,
+    final_use: FinalUse }>`; `host_use` answers `ManagedUsed::Running(ManagedUse)` while it
+    runs and `ManagedUsed::Ended(ManagedEnded)` after, from the same record, read once and
+    kept. No record: `Unused::Killed` where its stop came first, else `Untold`; a record none
+    of the protocol's, `Broken(UseBroken)`, read no further than the longest answer and a
+    byte.
+  - *Literals*: `.used`, the record's name; 4, the length's bytes (a u32, which the longest
+    answer fits); the answer byte 1. `ANSWER_MOST` bounds what is read.
 - *Tested* (light, macOS arm64): vmm `a_machines_whole_guest_time_keeps_each_vcpu_by_its_index`;
   shards `a_final_use_reads_its_whole_guest_then_its_process` (vm_run),
   `a_final_use_reaches_its_owner_on_its_link_as_said` (warm),
@@ -31017,11 +31307,20 @@ whose command exited before kiln deleted it went uncharged (Hex answered `NotRun
   `a_runs_end_reads_back_with_its_final_use` (wire) and
   `a_runs_final_use_comes_with_its_end_and_answers_every_ask_after` (session), with the
   existing end and lease tests over `RunEnded`.
+  Managed: shards `final_use::tests::a_final_use_told_whole_is_recorded_and_nothing_else_is`
+  and `a_managed_vms_record_is_beside_its_socket`; shards-api
+  `a_managed_guests_final_use_is_its_record_once_it_has_ended` and the existing use tests over
+  `ManagedUsed`.
 - *Owed* (ROOT): the real-VM tests on KVM, HVF and WHP, `cargo test --profile test-release -p
   shards --test api_image -- an_images_own_command_ends_its_run_with_its_status
   stop_ends_the_run_at_once` (a command's `exit 3` ends `Exited(3)` with every vCPU's guest
   time by index, none departed, its process's CPU holding them, and `stats` after it refused
-  with that end; a stop's end `Killed`); the managed microVM's final use; Hex's adoption.
+  with that end; a stop's end `Killed`); the managed one's, `cargo test --profile
+  test-release -p shards --test boot -- a_managed_guest_records_its_final_use_as_it_ends
+  a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket` (a spinning managed guest
+  that powers off records its one vCPU's guest time and its process's CPU holding it; one not
+  managed, and one killed, record none; the confined VM process's write to its inherited
+  channel on each OS); Hex's adoption.
 
 ## 4. Start path (≤ 5 ms budget)
 

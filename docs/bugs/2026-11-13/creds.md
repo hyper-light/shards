@@ -216,6 +216,8 @@ Found by the creds P0 lane (implementer, ROOT's lane for creds-01 to 04) while f
 
 **Fix direction:** Mask every response toward a granted host against every value leased to the VM for that host, as long as the lease and its responses in flight live (creds-03's wiped copy), and ask such requests `identity` as filled ones are.
 
+**Status (2026-11-13):** fixed in 8e4571130 (red `inject::tests::leaks::a_response_to_a_request_with_no_fill_is_masked_against_the_values_leased`, `an_h2_response_to_a_stream_with_no_fill_is_masked_against_the_values_leased`)
+
 ### creds-10 — P1 / high — A token host's informational responses go out before its tokens are known
 
 **Location:** `crates/net/src/inject.rs` (H1 `response_head`, H2 `response_block`, informational responses on a sign-in's token host).
@@ -223,6 +225,8 @@ Found by the creds P0 lane (implementer, ROOT's lane for creds-01 to 04) while f
 **Defect:** A 1xx response is passed on at once, before the final response's body names the tokens, so a 1xx (103 Early Hints, say) that repeats a token issued in that final response reaches the guest unread.
 
 **Fix direction:** Hold a token host's 1xx responses until its final response is judged and read them with it against the access, refresh and ID tokens (RFC 9110 §15.2), or strip them to what carries nothing.
+
+**Status (2026-11-13):** fixed in 39b12df9a (red `inject::tests::leaks::a_token_hosts_informational_responses_never_carry_its_tokens_to_the_guest`, `an_h2_token_hosts_informational_response_never_carries_its_tokens_to_the_guest`). Chosen: hold a 1xx but 100 and read it with the final response; a 100 goes as its status alone (RFC 9110 §15.2, §15.2.1).
 
 ### creds-11 — P0 / critical — A tunnel after a 101 is masked as raw bytes
 
@@ -240,6 +244,8 @@ Found by the creds P0 lane (implementer, ROOT's lane for creds-01 to 04) while f
 
 **Fix direction:** Check each size line as creds-02's are.
 
+**Status (2026-11-13):** fixed in 6f8cf1196 (red `inject::tests::leaks::a_decoded_bodys_own_size_line_never_carries_a_value`)
+
 ### creds-13 — P2 — A decoded body's buffers are not wiped as they grow
 
 **Location:** `crates/net/src/decode.rs`, `crates/net/src/inject.rs` (`decoded`, H2 `host_data`).
@@ -247,6 +253,8 @@ Found by the creds P0 lane (implementer, ROOT's lane for creds-01 to 04) while f
 **Defect:** A decoded body's buffers are `Zeroizing`, but they grow by `extend_from_slice`, and each buffer let go of as one grows holds decoded plaintext, unwiped.
 
 **Fix direction:** Grow them as `signin::append` grows a token response: a buffer of twice the size, the old one wiped as it drops.
+
+**Status (2026-11-13):** fixed in 4c51c6ae4 (red `decode::wiped::a_decoded_bodys_buffers_are_wiped_as_they_grow`); the decoders' own windows stay a residual (D242).
 
 ## Checked and found sound
 

@@ -78,6 +78,8 @@ Priorities: **P0 = critical**, **P1 = high**, **P3 = medium**, **P5 = low**; no 
 
 **Status (2026-11-13):** fixed by the memory reviewer as memory-02 in 29196c6b3, integrated here; red `live_copy_keeps_bytes_after_their_block_is_unplugged` / `live_copy_page_keeps_bytes_after_their_block_is_unplugged`, focused green in memory-fixes-v1. No duplicate implementation in this lane. [Fix evidence](../../research/measurements/migrate/fix-review-2026-11-13.md).
 
+**Integration (2026-11-13):** all five `live_copy_` unit tests passed again on migration merge 7720df839, with shards-vmm/shards clippy clean. Real guest unplug during migration remains owed to ROOT; [retained log](../../research/measurements/migrate/livecopy-03-integrated.log).
+
 ### migrate-04 — P1 / high — A forged snapshot header defeats the state allocation bound
 
 **Location:** `crates/vmm/src/snapshot/mod.rs:652-655`; `crates/vmm/src/platform/mod.rs:242-255`.
@@ -115,6 +117,8 @@ Priorities: **P0 = critical**, **P1 = high**, **P3 = medium**, **P5 = low**; no 
 **Fix direction:** Carry per-volume file identity and hardlink records; recreate aliases to an already imported inode using safely rooted operations.
 
 **Regression sketch:** Extend `a_volumes_files_move_as_its_guest_saw_them` with `hard_link(a,b)`, check destination identity/link count, write one alias and read the other. Then exercise open guest handles across a real move.
+
+**Status (2026-11-13):** fixed in fd33ec11a (red `a_volumes_hardlinks_keep_shared_contents_after_move`, committed in 5bf16ecff and rerun against the landed migrate-01 Beneath extractor at 73af9fb62). Version 3 carries regular-file aliases; both names stay under plan-authorized volume data and Beneath traversal. [Red/green and remaining VM/platform checks](../../research/measurements/migrate/fix-review-2026-11-13.md).
 
 ### migrate-06 — P1 / high — vCPU shaping re-enables TSC-deadline outside the configured baseline
 
@@ -225,7 +229,7 @@ Added 2026-11-13 by the migrate fix lane (not one of the review's three lanes): 
 
 **Fix:** Each such name is checked to be one name of its kind (`Named::takes`): an id is `2 × MICROVM_ID_BYTES` lowercase hex digits, as `containers::new_id` makes one; a snapshot's passes `synced::name_alone(_, true)` (Windows' rules, the stricter, on every host, so a name one host takes every host takes); a volume's passes the local driver's `Store::valid` and `name_alone`. Each rule refuses separators, `.`, `..`, roots and drive colons, so no name can be more than one component. A refusal is typed: `Refused::NotAName { name, field: id | snapshot | volume, value }`. `ready` checks the plan first; `import` checks it right after `read_plan`, before the Placer places any entry; `adopt` takes every name it joins (`staged/containers/<id>`, the snapshot directory for `lay_under` and `relocate`, `registry.dir(id)`, both volume paths, each `mounts` volume before `store.data`) through the same `one_name` check; `done` checks its snapshot before anything else. `import` and `done` now answer through `move_step`'s `typed`, and the mover reads `import`'s refusal typed (`cli/moves.rs` `unready`). `server::guest::Beneath` (migrate-01) is not used for these joins: it places entries under a held root but has no rename, and `adopt`'s steps are renames and reads by path; with each name one checked component, every join stays in its directory.
 
-STATUS_PLACEHOLDER
+**Status (2026-11-13):** fixed in e7024593b and 8802770fd (red `daemon::tests::a_moves_names_that_are_no_one_name_are_refused_typed_and_reach_nothing` and `daemon::moves::tests::a_moves_names_are_each_one_name_of_their_kind` with the checks off, which is the code before the fix: `ready` answered status 0 with its needs to a plan whose id is `../x`; adas-mac-studio-3.local macOS 26.2 arm64; green 23 of 23 focused tests (`daemon::moves::`, `daemon::tests::a_move`, `cli::moves::`) and clippy `-p shards --all-targets -D warnings`; mutations red, each alone: `import`'s check before the Placer (an untyped "failed to fill whole buffer"), `ready`'s, `adopt`'s mounts check (an untyped "no snapshot here" after the record was renamed in), `done`'s, the plan's volumes left out of `names_refused`, and each rule: the ID's length, its lowercase hex, a volume's driver rule, a volume's `name_alone`, a snapshot's Windows rules). `adopt`'s joins of the plan's id, snapshot and volumes repeat the up-front check as a second guard, and no test tells one from the other. Real-VM moves (tests/moved.rs) owed to ROOT.
 
 ## Checked and found sound
 

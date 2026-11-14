@@ -23,7 +23,8 @@ went red in kiln r4: injected owner-write EIO was acknowledged 0, expected -5.
 49 tests and `cargo clippy -j 4 -p shards-vmm --all-targets -- -D warnings`
 passed. [Green log](runs-01-green.log). An intermediate module check (r6)
 exposed symlink ELOOP and pinned-unlinked ENOENT regressions; the correction
-keeps native special nodes root-owned and reads pinned metadata through its fd.
+reads pinned metadata through its fd. The native nondevice ownership mapping was
+subsequently corrected by the follow-up below.
 The final module gate includes these preexisting regressions and passes them.
 No guard-removal mutation or live VM was run.
 
@@ -165,3 +166,141 @@ merged gates above, b6e302bf4 and 3956d259b passed
 13.53s/16.38s). Each merge signature was made by gits; fixing/status signatures
 were checked with one gpgsig. ROOT's kiln inbox rejected the distinct landing
 receipt with 429 backpressure; no accepted model delivery is inferred.
+
+## runs-05
+
+Source c1b53393c935599a252d8cc070ed1c4a6f8a30a8 plus the api_run patch.
+The path is unambiguous: Shaped/Plan own Prepared::lease, warm waits for CREATE
+while owning it, and serve retains it through workload end; Store::collect
+exclusively locks the same .lease. The daemon drops its preparation lease once
+its VM has the rootfs. The API now drops it after launch/readiness/template
+settlement, before WARMED/CREATE wait and at serve_launched entry.
+
+No live red was run: the report's exact forbidden effect requires a ready real
+VM and is owed to ROOT under the fix brief. This is a source-proven lifetime
+correction, not a claimed GC/VM reproduction. `cargo test -j 4 -p shards --bin
+shards api_run::tests` passes 43 (kiln r24, 0.04s); `cargo clippy -j 4 -p shards
+--all-targets -- -D warnings` passes (16.99s), on the same Mac arm64 runner and
+owned target, with unit-only /usr/bin/true guest fixtures. The existing template
+settlement and shape tests pass; they do not observe the lease of a live VM.
+
+No new cache, poll, state variant, constant, panic or refusal. Existing lease
+Drop releases its file lock before close (M244). R01-R16 dispositions above
+apply with R09's live GC counterexample and R11's guest ownership explicitly
+unverified. ROOT: extend `cargo test -p shards --test api_image
+an_images_next_run_restores_the_template_its_first_saved` and the warm-pool
+case: retain a ready run and separately a WARMED spare, request collection of
+unrelated garbage, require collection completes while both stay alive and
+workload progress continues, and check template restore still succeeds. Exact
+new regression filter to add/run: `a_live_api_run_and_a_warm_host_do_not_hold_up_collection`.
+
+Runs-03 landed via c1b53393c. Its last merge added only crates/net and docs,
+outside shards-api and its transitive inputs (no dependency on shards-net):
+focused gate was 3956d259b plus its patch; the disjoint c1b53393c was pushed
+without a repeated gate, per ROOT's amended rule.
+
+## runs-06
+
+Red source 46f2f014059b5d70d4b0e3ba1e4c719cc59c8ae2 plus the fact helper
+refactor/test (the selected argument intentionally unused, original preference
+behavior retained). `cargo test -j 4 -p shards --bin shards
+container_facts_keep_the_runs_selected_manifest` fails in r27: User was "1100"
+(arm64) instead of "2200" (selected amd64). The fixture ingests real digest-named
+OCI config/manifest/index blobs into a store; there is no VM or synthetic selector.
+
+Green source aff4005928bd724517734fcf7d438bb4c12a76cb plus the inspect/commands
+patch. Same regression passes (1), `cargo test -j 4 -p shards --bin shards
+daemon::inspect::tests` passes 2, `cargo test -j 4 -p shards --bin shards
+daemon::commands::tests` passes 11; `cargo clippy -j 4 -p shards --all-targets
+-- -D warnings` passes (17.96s), kiln r29 on the same macOS arm64 runner and
+unit guest fixtures. It checks both selected variants after preference changes,
+legacy preference with no selection, and missing selection with no fallback.
+
+Inspect and ownership-mode copy share image_facts, taking the record's immutable
+manifest; explicit run user still wins. Config and descriptor reads reuse the
+store's bounded digest-verifying held(), and only a missing selection field uses
+legacy preference. Copy has typed ContainerGone/ConfigMissing outcomes at its
+existing CLI rendering boundary, and refuses a missing config instead of guessing
+root. A present config without User keeps OCI's root semantics. No new runtime
+number, cache, wait, adapter or platform emulator. R01-R16 dispositions above
+apply; the unit store result is not proof of actual guest extraction ownership.
+
+Owed ROOT: extend/run `cargo test -p shards --test platforms` with one index whose
+arm64 and amd64 configs have distinct User/Env, start both variants, compare guest
+uid/env to container Config/ImageManifestDescriptor, copy with ownership mode,
+and check extracted uid for each after preference changes. Add/run filter
+`a_containers_facts_and_copied_owner_keep_its_selected_platform`. No emulated VM
+or copy execution was run here.
+
+Runs-05 merged compile gates after its api_run unit/clippy gate: 160a2836 (r25,
+14.88s), 46f2f014 (r26, 13.25s), aff40059 (r28, 13.66s), each
+`cargo check -j 4 -p shards --tests`. Pushes rejected while main advanced were
+not forced. Prepared runs-06 while the runs-05 landing retry remained pending.
+
+## runs-01 follow-up: native nondevice owners
+
+A source check found my ENODATA classification had also made native symlinks
+(and Linux FIFOs/sockets) root-owned, though only device nodes have that rule.
+The added `unrecorded_nondevice_nodes_keep_the_runs_user` test reproduces the
+regression on af9477321467f1487cb9a15c8e17f99cc7d1960f plus its test: r34
+returns uid 0 for the unrecorded symlink instead of the run's 1000. It is a
+regression introduced by this lane, not an additional original finding.
+
+The correction classifies only known native kinds as unable to carry owner
+metadata. Devices stay root's; unrecorded nondevices keep init's owner mapping.
+ENODATA from an ordinary file is still an error, not proof of absent metadata.
+Neither lookup nor classification follows a symlink or opens a device driver.
+Guest-created native kinds lacking owner-xattr support retain their existing
+exception; cross-run owner persistence for them is not claimed by the ordinary
+file/directory xattr fix. There is no new production constant, cache or wait.
+
+`cargo test -j 4 -p shards-vmm --lib unrecorded_nondevice_nodes_keep_the_runs_user`
+passes in r35; `cargo test -j 4 -p shards-vmm --lib
+devices::virtio::fs::server::tests` passes 50 (including the EIO/malformed-owner
+regression and root-owned /dev/null), and `cargo clippy -j 4 -p shards-vmm
+--all-targets -- -D warnings` passes (3.04s). Same macOS arm64 runner/target;
+no VM. Logs: runs01-followup-red.log and runs01-followup-green.log. R01-R16
+and live guest/other-platform limits above remain explicit.
+
+Further clean Shards merged compile gates before rejected pushes: 6f20a3f0
+(r32, 10.64s) and af947732 (r33, 13.67s), `cargo check -j 4 -p shards --tests`.
+The runner attempted its ff-push immediately after these gates, using its
+existing GitHub SSH authorization; both were rejected because main had moved.
+No force. These are compile successes, not main landings. The native-owner
+follow-up's fixing commit is 8b2505f42; its source gate was af947732 plus patch.
+
+## runs-07
+
+Red on fc1bb4797fb686bc29529ec8a01beb8d62180c0e plus the regression:
+`cargo test -j 4 -p shards --bin shards concurrent_end_writers_keep_each_others_maxima`
+fails in r38, helper slice None rather than Some(8s). A stable-lock owner has
+read the old record and is about to publish its own slower teardown; a second
+actual Ends instance publishes a helper maximum without waiting, and loses that
+maximum when the lock owner publishes. This exercises the real file operations,
+with two opens of the OS file lock; it is a unit thread race, not a process/VM
+campaign. Its waits and fixture durations are test-only.
+
+Green on c6dd465259158831507ddc2ecac4eaa023236ab0 plus the Ends patch: same
+regression passes (1), `cargo test -j 4 -p shards --bin shards daemon::ends::tests`
+passes 5 (1.03s), and `cargo clippy -j 4 -p shards --all-targets -- -D warnings`
+passes (19.61s), r39 on the same macOS arm64 runner and unit guest fixtures.
+Logs runs07-red.log / runs07-green.log. No real VM or two-process campaign.
+
+One stable file lock spans the reread/merge/write. Existing Locked unlocks
+before close; existing platform write_in supplies unique create-new staging,
+sync and whole rename. Each process keeps its learned maximum before a lock or
+write error and can persist it later. The record's existing parser/cold fallback
+and format are unchanged; this slice does not certify malformed/unreadable-record
+recovery. No new selected constant, cache, poll or OS-specific implementation.
+R01-R16 dispositions above apply. ROOT owes a two-process daemon/API update and
+crash/publication campaign, with continuous complete-record readers and no lost
+maxima: extend/run `cargo test -p shards --bin shards
+daemon::ends::tests::concurrent_end_writers_keep_each_others_maxima` with
+process actors and failpoints on the shared home; the unit race is not that proof.
+
+ROOT landed the prepared runs-05/06 and native-owner follow-up via signed merge
+c6dd46525 of fc1bb4797. ROOT states overlapping drift was documentation only,
+with no repeated focused gate; CI owns that combination. Branch fast-forwarded
+to c6dd46525 preserving the runs-07 regression. Policy hashes are unchanged.
+From ROOT's new instruction, two consecutive lost ff-push races hand the tested
+tip to ROOT, instead of further retry loops.

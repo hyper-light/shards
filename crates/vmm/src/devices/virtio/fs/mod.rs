@@ -38,6 +38,21 @@ pub type MapObject = std::os::fd::OwnedFd;
 #[cfg(windows)]
 pub type MapObject = std::os::windows::io::OwnedHandle;
 
+/// Why a DAX window could not make its ranges of a file what the file is now
+/// (`window::Window::reconcile`): the reply that would tell its guest the file's size is
+/// refused it (EIO), as its window does not hold what that size says (memory-01).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unfollowed {
+    /// Node `node`'s file's size could not be read.
+    Size { node: u64 },
+    /// No section of node `node`'s file could be made, to write too where `writable`: its
+    /// mappings are left as they were.
+    Section { node: u64, writable: bool },
+    /// A view of node `node`'s file could not be placed in its mapping at window offset
+    /// `moffset`, its old views freed: its ranges are let go of until they can be.
+    View { node: u64, moffset: u64 },
+}
+
 use super::limit::Limiter;
 use super::queue::{Chain, Queue};
 use super::worker::Worker;
@@ -959,16 +974,26 @@ fn serve_with(
                 };
                 // The files whose sizes the reply tells the guest are what its window maps
                 // of them before it hears: grown, the file's pages; cut short, zeros.
+                let mut unfollowed = None;
                 if let Some(w) = window.filter(|_| asked) {
-                    w.reconcile(&told(req, reply));
+                    unfollowed = w.reconcile(&told(req, reply)).err();
                     keep_mapped(req, reply, w);
                     rerecord_written(req, reply, w);
                 }
                 // The file let go of is made what it is, the cut made or not.
-                if let Some((w, node)) = cutting {
-                    w.reconcile(&[node]);
+                if let Some((w, node)) = cutting
+                    && let Err(why) = w.reconcile(&[node])
+                {
+                    unfollowed.get_or_insert(why);
                 }
-                asked
+                // A size its window does not hold, refused its guest (memory-01).
+                match unfollowed.and_then(|why| Some((why, proto::unfollowed(req)?))) {
+                    Some((why, refused)) => {
+                        debug!("virtio-fs: {why:?}: its reply refused");
+                        put(reply, refused)
+                    }
+                    None => asked,
+                }
             }
         },
         None => proto::too_long(req).is_some_and(|r| put(reply, r)),

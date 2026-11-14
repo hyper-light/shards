@@ -100,13 +100,70 @@ pub struct Client {
     learning: bool,
     /// What each path it asked has shown.
     paths: Paths,
-    /// How long a trouble is ridden out, where a test says, in place of what its path has
-    /// shown.
+    /// How long a trouble is ridden out before it runs out, where a test says, in place of
+    /// what its path has shown.
     moment: Option<Duration>,
+    /// Its troubles' run-outs, for what watches them to tell (D222).
+    told: Told,
     /// The waits it chose before asking again, in µs, all told: what a test holds its
     /// riding out of a trouble to, apart from its round trips.
     #[cfg(test)]
     paused: std::sync::atomic::AtomicU64,
+}
+
+/// A trouble that outlasted the longest its path had passed (D222): no failure, but
+/// ridden out while it lasts, its far end asked again while it answers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunOut {
+    /// Its server's host and port.
+    pub server: String,
+    /// How long it had lasted as it ran out.
+    pub lasted: Duration,
+    /// The longest trouble its path had passed.
+    pub longest: Duration,
+}
+
+impl std::fmt::Display for RunOut {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}: trouble for {:.1} s, longer than any it has passed ({:.1} s): asking it again while it answers",
+            self.server,
+            self.lasted.as_secs_f64(),
+            self.longest.as_secs_f64()
+        )
+    }
+}
+
+/// What watches a client's run-outs (a pull's `Registry::saying_waits`): each watch its own
+/// channel, told each run-out as it comes, its receiver ended as its watch is let go of; none
+/// kept while nothing watches.
+#[derive(Debug, Default)]
+struct Told {
+    watches: Mutex<Vec<(u64, mpsc::Sender<RunOut>)>>,
+    next: AtomicU64,
+}
+
+impl Told {
+    fn tell(&self, run_out: &RunOut) {
+        let watches = self.watches.lock().unwrap_or_else(PoisonError::into_inner);
+        for (_, watch) in watches.iter() {
+            let _ = watch.send(run_out.clone());
+        }
+    }
+
+    fn watch(&self) -> (u64, mpsc::Receiver<RunOut>) {
+        let (tx, rx) = mpsc::channel();
+        let id = self.next.fetch_add(1, Ordering::Relaxed);
+        let mut watches = self.watches.lock().unwrap_or_else(PoisonError::into_inner);
+        watches.push((id, tx));
+        (id, rx)
+    }
+
+    fn unwatch(&self, id: u64) {
+        let mut watches = self.watches.lock().unwrap_or_else(PoisonError::into_inner);
+        watches.retain(|(each, _)| *each != id);
+    }
 }
 
 /// How long a request waits on its server: to connect, its name's lookup included; for
@@ -447,6 +504,7 @@ impl Client {
             learning: false,
             paths: Paths::default(),
             moment: None,
+            told: Told::default(),
             #[cfg(test)]
             paused: std::sync::atomic::AtomicU64::new(0),
         }
@@ -484,16 +542,34 @@ impl Client {
         self
     }
 
-    /// How long a trouble of `url`'s server is ridden out before it is said as the
-    /// server's failure (registry.rs `Trouble`): as long as its path's troubles say, none
-    /// where they bound nothing.
+    /// How long a trouble of `url`'s server is ridden out before it runs out (registry.rs
+    /// `Trouble`): as long as its path's troubles say, none where they bound nothing.
     pub(crate) fn budget(&self, url: &Url) -> Option<Duration> {
         self.moment.or_else(|| self.paths.budget(&path_of(url)))
     }
 
-    /// A trouble of `url`'s server lasted its path's budget and was given up on.
-    pub(crate) fn trouble_ran_out(&self, url: &Url) {
-        self.paths.trouble_ran_out(&path_of(url));
+    /// A trouble of `url`'s server outlasted its path's budget, `longest`, at `lasted`: the
+    /// run-out told to what watches, where it began one of the path's.
+    pub(crate) fn trouble_ran_out(&self, url: &Url, lasted: Duration, longest: Duration) {
+        let server = path_of(url);
+        if self.paths.trouble_ran_out(&server) {
+            self.told.tell(&RunOut {
+                server,
+                lasted,
+                longest,
+            });
+        }
+    }
+
+    /// The run-outs of this client's troubles from here on, each as it comes, until
+    /// [`unwatch`](Self::unwatch) with the id, which ends the receiver once it has them all.
+    pub(crate) fn watch(&self) -> (u64, mpsc::Receiver<RunOut>) {
+        self.told.watch()
+    }
+
+    /// Lets go of the watch `id`.
+    pub(crate) fn unwatch(&self, id: u64) {
+        self.told.unwatch(id);
     }
 
     /// A trouble of `url`'s server that lasted `lasted` passed.
@@ -519,8 +595,7 @@ impl Client {
         self.paths.keep_in(root);
     }
 
-    /// This client, riding out a registry's trouble for `moment`: tests of a registry
-    /// that stays down, ended within it.
+    /// This client, riding out a registry's trouble for `moment` before it runs out.
     #[cfg(test)]
     pub(crate) fn with_moment(mut self, moment: Duration) -> Client {
         self.moment = Some(moment);
@@ -852,10 +927,8 @@ impl Client {
                 );
                 // A send cut short is the link's failure, not the request's: sent again.
                 let sending = || {
-                    Failure::BeforeResponse(Error::of(
-                        ErrorKind::Transient,
-                        format!("{}: sending: {e}", req.url),
-                    ))
+                    let e = Error::of(ErrorKind::Transient, format!("{}: sending: {e}", req.url));
+                    Failure::BeforeResponse(if left { e.cut() } else { e })
                 };
                 if !left {
                     return Err(sending());
@@ -955,8 +1028,8 @@ impl Client {
         let watch = self.cancel.as_ref().map(|c| c.watch(&tcp));
         let path = path_of(url);
         let mut hop = match (proxy, first.scheme()) {
-            (Some(_), Scheme::Https) => Hop::Tls(Box::new(self.handshake(first, tcp, &path)?)),
-            _ => Hop::Tcp(tcp),
+            (Some(_), Scheme::Https) => Hop::Tls(Box::new(self.handshake(first, Sock::of(tcp), &path)?)),
+            _ => Hop::Tcp(Sock::of(tcp)),
         };
         if let Some(proxy) = proxy
             && url.scheme() == Scheme::Https
@@ -1255,7 +1328,7 @@ fn sending(
             continue;
         }
         #[cfg(target_os = "linux")]
-        if let Stream::Plain(Hop::Tcp(tcp)) = conn.io.get_mut() {
+        if let Stream::Plain(Hop::Tcp(Sock { tcp, .. })) = conn.io.get_mut() {
             if sent == len {
                 return Ok(true);
             }
@@ -1388,6 +1461,39 @@ fn ready(tcp: &TcpStream, d: Option<Duration>) -> io::Result<(bool, bool)> {
             0 => {}
             _ => return Err(io::Error::last_os_error()),
         }
+    }
+}
+
+/// Whether `tcp` has something to read now, or has ended or failed: a read would not wait.
+#[cfg(unix)]
+fn readable(tcp: &TcpStream) -> io::Result<bool> {
+    use std::os::fd::AsRawFd;
+    let mut p = libc::pollfd {
+        fd: tcp.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: poll(2) on one pollfd of ours, waiting for nothing.
+    match unsafe { libc::poll(&mut p, 1, 0) } {
+        n if n >= 0 => Ok(p.revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0),
+        _ => Err(io::Error::last_os_error()),
+    }
+}
+
+/// [`readable`] on Windows: WSAPoll.
+#[cfg(windows)]
+fn readable(tcp: &TcpStream) -> io::Result<bool> {
+    use std::os::windows::io::AsRawSocket;
+    use windows_sys::Win32::Networking::WinSock::{POLLERR, POLLHUP, POLLRDNORM, WSAPOLLFD, WSAPoll};
+    let mut p = WSAPOLLFD {
+        fd: tcp.as_raw_socket() as usize,
+        events: POLLRDNORM,
+        revents: 0,
+    };
+    // SAFETY: WSAPoll on one WSAPOLLFD of ours, waiting for nothing.
+    match unsafe { WSAPoll(&mut p, 1, 0) } {
+        n if n >= 0 => Ok(p.revents & (POLLRDNORM | POLLHUP | POLLERR) != 0),
+        _ => Err(io::Error::last_os_error()),
     }
 }
 
@@ -1649,9 +1755,11 @@ fn dial(
     // was left of it (`connect_timeout`'s own end, which a system wait may make early).
     let ran_out = pending > 0 || last.as_ref().is_none_or(|e| e.kind() == io::ErrorKind::TimedOut);
     let e = match last {
+        // Nothing listens where it is: its far end refuses (D222).
         Some(e) if e.kind() == io::ErrorKind::ConnectionRefused => Error::from(e)
             .context(format!("{}: connecting", url.authority()))
-            .refused(),
+            .refused()
+            .gone(),
         Some(e) => Error::from(e).context(format!("{}: connecting", url.authority())),
         None => Error::of(
             ErrorKind::Transient,
@@ -1776,7 +1884,8 @@ fn read_head(conn: &mut Conn, url: &Url, wait: HeadWait) -> Result<Head, Failure
                 let e = Error::of(
                     ErrorKind::Transient,
                     format!("{url}: the connection closed before a response"),
-                );
+                )
+                .cut();
                 return Err(if first && buf.is_empty() {
                     Failure::BeforeResponse(e)
                 } else {
@@ -1997,16 +2106,26 @@ impl Body<'_> {
     }
 
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let began = Instant::now();
+        let paced = self.paced.is_some();
+        if paced && let Some(conn) = self.conn.as_mut() {
+            conn.io.get_mut().sock().count();
+        }
         let read = self.read_framed(buf);
+        let waited = match self.conn.as_mut() {
+            Some(conn) if paced => conn.io.get_mut().sock().waited(),
+            _ => Duration::ZERO,
+        };
+        self.finish_if_done();
         if let Some(p) = self.paced.as_mut() {
             match &read {
                 Ok(n) if *n > 0 => {
-                    // The silence it ended: how long it waited for its bytes, the gap past
-                    // which its socket's timeout would have cut it, not the reader's own time
-                    // between reads.
-                    let waited = began.elapsed();
-                    p.body.slowest = Some(p.body.slowest.map_or(waited, |s| s.max(waited)));
+                    // The silence it ended: how long its socket waited for its bytes, the gap
+                    // past which its timeout would have cut it; none where they were there, in
+                    // a buffer, the TLS session or the socket (waits-05), and not the reader's
+                    // own time between reads.
+                    if !waited.is_zero() {
+                        p.body.slowest = Some(p.body.slowest.map_or(waited, |s| s.max(waited)));
+                    }
                     p.body.last = Last::Bytes;
                     // After a run-out, one longer than what the path had shown ends it: the
                     // path's slowest now, which bounds the rest (crate::patience
@@ -2066,7 +2185,6 @@ impl Body<'_> {
                 n
             }
         };
-        self.finish_if_done();
         Ok(n)
     }
 }
@@ -2264,8 +2382,78 @@ impl<T: Wire> Write for Tls<T> {
 /// A connection's first hop: TCP to the server or its proxy, or TLS to an https proxy.
 #[derive(Debug)]
 enum Hop {
-    Tcp(TcpStream),
-    Tls(Box<Tls<TcpStream>>),
+    Tcp(Sock),
+    Tls(Box<Tls<Sock>>),
+}
+
+impl Hop {
+    fn sock(&mut self) -> &mut Sock {
+        match self {
+            Hop::Tcp(s) => s,
+            Hop::Tls(s) => &mut s.sock,
+        }
+    }
+}
+
+/// A connection's socket, which counts, while a body's read asks it to, how long its reads
+/// waited for bytes that had not come: a read that finds bytes there, or the end, waited
+/// for none (D222, waits-05). The bytes a TLS session or a buffer already held are read
+/// without it.
+#[derive(Debug)]
+struct Sock {
+    tcp: TcpStream,
+    /// How long its reads have waited since it was asked to count, none while it is not.
+    waited: Option<Duration>,
+}
+
+impl Sock {
+    fn of(tcp: TcpStream) -> Sock {
+        Sock { tcp, waited: None }
+    }
+
+    /// Counts its reads' waits from now, until [`waited`](Self::waited).
+    fn count(&mut self) {
+        self.waited = Some(Duration::ZERO);
+    }
+
+    /// How long its reads waited since [`count`](Self::count), which ends.
+    fn waited(&mut self) -> Duration {
+        self.waited.take().unwrap_or_default()
+    }
+}
+
+impl Read for Sock {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        // Where the socket has bytes, or its end, its read waits for none. One that cannot
+        // be told is counted, as before.
+        match self.waited {
+            Some(_) if !readable(&self.tcp).unwrap_or(false) => {
+                let began = Instant::now();
+                let read = self.tcp.read(buf);
+                if let Some(waited) = self.waited.as_mut() {
+                    *waited = waited.saturating_add(began.elapsed());
+                }
+                read
+            }
+            _ => self.tcp.read(buf),
+        }
+    }
+}
+
+impl Write for Sock {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.tcp.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.tcp.flush()
+    }
+}
+
+impl Wire for Sock {
+    fn tcp(&self) -> &TcpStream {
+        &self.tcp
+    }
 }
 
 /// What TLS runs over, and the socket beneath it, for its timeouts.
@@ -2282,8 +2470,8 @@ impl Wire for TcpStream {
 impl Wire for Hop {
     fn tcp(&self) -> &TcpStream {
         match self {
-            Hop::Tcp(s) => s,
-            Hop::Tls(s) => &s.sock,
+            Hop::Tcp(s) => &s.tcp,
+            Hop::Tls(s) => &s.sock.tcp,
         }
     }
 }
@@ -2324,6 +2512,13 @@ impl Stream {
         match self {
             Stream::Plain(s) => s.tcp(),
             Stream::Tls(s) => s.sock.tcp(),
+        }
+    }
+
+    fn sock(&mut self) -> &mut Sock {
+        match self {
+            Stream::Plain(s) => s.sock(),
+            Stream::Tls(s) => s.sock.sock(),
         }
     }
 }
@@ -2841,7 +3036,7 @@ mod tests {
         }
         let conn = Conn {
             key: Key::of(&at("http", "127.0.0.1", port), None),
-            io: BufReader::new(Stream::Plain(Hop::Tcp(tcp))),
+            io: BufReader::new(Stream::Plain(Hop::Tcp(Sock::of(tcp)))),
             watch: None,
         };
         conn.set_timeout(Some(Duration::from_secs(30))).unwrap();
@@ -3481,8 +3676,70 @@ mod tests {
         }
         assert_eq!(got, body.len());
         drop(response);
-        let slowest = client.shown("127.0.0.1", server.port).slowest_silence_us.unwrap();
-        assert!(slowest < 300_000, "the reader's own time counted: {slowest} µs");
+        let slowest = client.shown("127.0.0.1", server.port).slowest_silence_us;
+        assert!(
+            slowest.is_none_or(|us| us < 300_000),
+            "the reader's own time counted: {slowest:?} µs"
+        );
+    }
+
+    /// A read whose bytes were there as it began, in a buffer, the TLS session or the
+    /// socket, waited for none: a body its server sent whole, each read after its bytes have
+    /// all come, teaches its path no silence at all, however long its copies take; and,
+    /// its path's silences out past a slowest of 1 µs, raises none nor ends the run-out by
+    /// one (waits-05). Before, every read that brought bytes was timed, and a copy of a µs
+    /// or more was taken for a stall of the path's.
+    #[test]
+    fn a_read_of_bytes_already_there_is_no_silence() {
+        let body = vec![7u8; 64 << 10];
+        let mut answer = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len()).into_bytes();
+        answer.extend_from_slice(&body);
+        let read = |client: &Client, port: u16| {
+            let url = at("http", "127.0.0.1", port);
+            let mut response = client
+                .send(&Request {
+                    method: "GET",
+                    url: &url,
+                    headers: &[],
+                    body: &[],
+                    file: None,
+                })
+                .unwrap();
+            let mut chunk = [0u8; 16 << 10];
+            let mut got = 0;
+            loop {
+                // Its bytes all come before each read: on loopback, written at once.
+                std::thread::sleep(Duration::from_millis(50));
+                let n = response.read(&mut chunk).unwrap();
+                if n == 0 {
+                    break;
+                }
+                got += n;
+            }
+            assert_eq!(got, body.len());
+        };
+        let server = serve(None, vec![(answer.clone(), After::Keep)]);
+        let client = plain().learning();
+        read(&client, server.port);
+        let shown = client.shown("127.0.0.1", server.port);
+        assert_eq!(shown.slowest_silence_us, None, "{shown:?}");
+        // Out past 1 µs: none of its reads outlasts it.
+        let server = serve(None, vec![(answer, After::Keep)]);
+        let one = crate::patience::Shown {
+            slowest_silence_us: Some(1),
+            ..crate::patience::Shown::default()
+        };
+        let client = plain().learning().showing("127.0.0.1", server.port, one);
+        client
+            .paths
+            .silence_ran_out(&format!("127.0.0.1:{}", server.port));
+        assert_eq!(
+            client.silence("127.0.0.1", server.port),
+            Bounded::RanOut(Duration::from_micros(1))
+        );
+        read(&client, server.port);
+        let shown = client.shown("127.0.0.1", server.port);
+        assert_eq!(shown.slowest_silence_us, Some(1), "{shown:?}");
     }
 
     /// A connect's or a handshake's wait its own time ended counts as a timeout of its
@@ -3527,7 +3784,7 @@ mod tests {
             let (held, _) = listener.accept().unwrap();
             let _held = (!ends).then_some(held);
             plain()
-                .shake(&url, Hop::Tcp(tcp), Duration::from_millis(50))
+                .shake(&url, Hop::Tcp(Sock::of(tcp)), Duration::from_millis(50))
                 .err()
                 .unwrap()
         };
@@ -3569,7 +3826,7 @@ mod tests {
             let _held = (!ends).then_some(held);
             let mut conn = Conn {
                 key: Key::of(&url, None),
-                io: BufReader::new(Stream::Plain(Hop::Tcp(tcp))),
+                io: BufReader::new(Stream::Plain(Hop::Tcp(Sock::of(tcp)))),
                 watch: None,
             };
             let t0 = Instant::now();

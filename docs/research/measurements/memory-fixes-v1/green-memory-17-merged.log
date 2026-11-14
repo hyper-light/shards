@@ -1,0 +1,48 @@
+From https://github.com/hyper-light/shards
+ * branch              main       -> FETCH_HEAD
+From /home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/fix-memory-linux-carrier-745e9da803/change.bundle
+ * branch              HEAD       -> FETCH_HEAD
+Previous HEAD position was 8a63a5d2 Merge concurrent main for the tested ROOM bound fast-forward
+HEAD is now at bae738bd Merge registry landing while preserving both appended measurement records
+Linux 7.3.3-1-cachyos x86_64 GNU/Linux
+rustc 1.98.1 (48a229cea 2026-09-01)
+   Compiling shards-dns v0.1.0 (/home/adalundhe/g121-tmp/fix-memory-v1-linux/src/crates/dns)
+   Compiling shards-init v0.1.0 (/home/adalundhe/g121-tmp/fix-memory-v1-linux/src/crates/init)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 47.48s
+     Running unittests src/main.rs (/home/adalundhe/g121-tmp/fix-memory-v1-linux/target/debug/deps/shards_init-0839c1075913f5ee)
+
+running 28 tests
+test hotplug::tests::a_domains_process_is_known_by_its_pid_namespace ... ok
+test hotplug::tests::a_domains_plug_lies_strictly_beneath_a_root ... ok
+test hotplug::tests::iommu_is_given_back_as_it_was ... ok
+test hotplug::tests::the_workloads_user_is_its_effective_ids ... ok
+test hotplug::tests::plug_roots_are_top_level_directories_not_inits ... ok
+test plug::tests::a_build_reaches_its_hold_with_memory_free_whatever_its_cpus_keep ... ok
+test plug::tests::a_cgroups_kill_says_its_memory_and_swap ... ok
+test plug::tests::a_grower_held_from_looking_is_not_stalled ... ok
+test plug::tests::a_hold_reports_free_only_what_it_took_back ... ok
+test plug::tests::a_microvm_held_to_a_budget_plugs_no_more_than_its_cap_needs ... ok
+test plug::tests::a_run_grown_lately_is_taken_for_growing_for_the_window ... ok
+test plug::tests::a_run_held_short_keeps_the_room_its_reads_need ... ok
+test plug::tests::a_run_is_held_within_its_budgets_room ... ok
+test plug::tests::a_give_back_room_past_signed_decimal_ends_before_reading_payload ... ok
+test plug::tests::a_give_back_frame_past_its_most_ends_the_connection ... ok
+test plug::tests::a_kill_is_said_in_the_kernels_words ... ok
+test plug::tests::a_give_back_is_answered_with_what_was_given_back ... ok
+test plug::tests::a_run_keeps_its_peak_and_what_it_asked_for ... ok
+test plug::tests::memory_asked_for_comes ... ok
+test plug::tests::a_room_is_answered_with_what_the_build_is_held_within ... ok
+test plug::tests::a_hold_counts_out_what_goes_as_it_is_unplugged ... ok
+test plug::tests::memory_is_read_without_the_kernels_report ... ok
+test plug::tests::a_give_back_room_accepts_both_signed_decimal_extremes ... ok
+test plug::tests::what_a_build_needed_is_the_least_memory_that_holds_its_peak ... ok
+test plug::tests::memory_that_stops_coming_is_asked_for_again ... ok
+test plug::tests::memory_that_never_comes_is_given_up ... ok
+test plug::tests::a_guests_first_memory_is_waited_for_however_long_it_takes ... ok
+test plug::tests::memory_that_comes_slowly_is_waited_for ... ok
+
+test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 255 filtered out; finished in 0.00s
+
+    Checking shards-dns v0.1.0 (/home/adalundhe/g121-tmp/fix-memory-v1-linux/src/crates/dns)
+    Checking shards-init v0.1.0 (/home/adalundhe/g121-tmp/fix-memory-v1-linux/src/crates/init)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 25.28s
