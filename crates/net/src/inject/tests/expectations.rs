@@ -42,7 +42,11 @@ fn creds_08_a_held_post_continues_before_its_body_and_only_once() {
             } else {
                 body
             };
-            cli.guest.writer().write_all(data.as_bytes()).unwrap();
+            let (first, rest) = data.as_bytes().split_at(data.len() / 2);
+            cli.guest.writer().write_all(first).unwrap();
+            cli.settle(&mut credentials, &mut unanswered);
+            assert!(cli.got.is_empty(), "a partial body sent another Continue");
+            cli.guest.writer().write_all(rest).unwrap();
             cli.until(&mut credentials, &mut |c| broker.serve(c), |b| whole(&b.got));
             assert!(cli.got.starts_with(b"HTTP/1.1 200 OK\r\n"));
             assert!(
@@ -53,4 +57,34 @@ fn creds_08_a_held_post_continues_before_its_body_and_only_once() {
             assert_eq!(broker.revoked, usize::from(!refresh));
         }
     }
+}
+
+#[test]
+fn creds_08_a_forwarded_exchange_does_not_repeat_the_answered_expectation() {
+    let root = root("shards test root");
+    let mut credentials = sign_in_credentials(&root, false);
+    let mut broker = Broker::default();
+    let mut cli = Bench::new(
+        guest(credentials.ca.der().to_vec().into(), TOKEN_HOST, None),
+        token_host(&root),
+    );
+    let body = br#"{"grant_type":"authorization_code","code":"fixture"}"#;
+    let head = format!(
+        "POST /v1/oauth/token HTTP/1.1\r\nHost: {TOKEN_HOST}\r\nContent-Type: application/json\r\nExpect: 100-continue\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    );
+    cli.guest.writer().write_all(head.as_bytes()).unwrap();
+    cli.settle(&mut credentials, &mut unanswered);
+    assert_eq!(cli.got, b"HTTP/1.1 100 Continue\r\n\r\n");
+    cli.got.clear();
+    cli.guest.writer().write_all(body).unwrap();
+    cli.until(&mut credentials, &mut |c| broker.serve(c), |b| whole(&b.got));
+    assert!(cli.got.starts_with(b"HTTP/1.1 200 OK\r\n"));
+    assert_eq!(cli.h1().heads.len(), 1);
+    assert!(
+        !String::from_utf8_lossy(&cli.h1().heads[0])
+            .to_ascii_lowercase()
+            .contains("expect:")
+    );
+    assert!(!holds(&cli.got, ISSUED_ACCESS.as_bytes()));
 }
