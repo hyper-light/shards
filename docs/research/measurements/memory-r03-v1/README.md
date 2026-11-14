@@ -2,7 +2,7 @@
 
 Implementer: Claude (takeover of the Codex memory lane), role implementer, policy at
 main 97f404be8 (AGENTS.md f66d304c…, development-rules.md df2acf47…,
-development-evidence.md 61613a24…). PM M574 records the method and results.
+development-evidence.md 61613a24…). PM M579 records the method and results.
 
 - `carrier-run.sh`: applies a patch over the base in a blobless clone kept on the runner
   (`~/g121-tmp/mem-r03`, a cold target there) and runs the focused commands given.

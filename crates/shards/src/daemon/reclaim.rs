@@ -223,12 +223,16 @@ impl<D: Disk> Daemon<D> {
     /// while its VM process `vm` runs (`Wait::WhileRuns`, judged by the give-backs it has
     /// answered before); none where it gave nothing back, and why said.
     pub(super) fn give_back_of(&self, id: &str, vm: u32) -> Option<Gave> {
+        self.give_back_waiting(id, Wait::WhileRuns(vm, &self.answers.reclaim))
+    }
+
+    /// A give-back whose caller observes its own judge's refusal, as a group's word does.
+    pub(super) fn give_back_waiting(&self, id: &str, wait: Wait<'_>) -> Option<Gave> {
         let spec = shards_abi::run::Spec {
             builtin: shards_abi::run::builtin::RECLAIM,
             ..Default::default()
         };
         let asked = Instant::now();
-        let wait = Wait::WhileRuns(vm, &self.answers.reclaim);
         let quiet = self.exec_waiting(id, &spec, None, 64, wait);
         said_if_long(id, "giving back what it holds cold", asked.elapsed());
         match quiet {

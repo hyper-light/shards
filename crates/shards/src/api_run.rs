@@ -870,6 +870,21 @@ fn network(
     Ok(egress)
 }
 
+/// eth0's IPv6 for the run's agents' flows past the microVM (D99), as a daemon's run on the
+/// default bridge has it: where its image's agents have IPv6 and are granted anything past
+/// it, and the run is on the bridge, which gives eth0 none. The home's
+/// (`crate::networks::host_ipv6`), which its init is told (`uplink6=`) and its network
+/// process (`NET_ADDRESS`), which holds the agents to their grants as the request narrows
+/// them; its command is kept to eth0's subnet as ever (`confine-eth0`), of IPv6 too.
+fn past6(
+    agentfile: Option<&crate::agentfile::Agentfile>,
+    run: &shards_ipc::Run,
+    home: &std::path::Path,
+) -> Option<(std::net::Ipv6Addr, std::net::Ipv6Addr)> {
+    (run.network == "bridge" && agentfile.is_some_and(crate::agentfile::Agentfile::egress6))
+        .then(|| crate::networks::host_ipv6(home))
+}
+
 /// Refuses a published port that would widen the run: one the image's Agentfile declares
 /// `AS egress` (a destination, never a listener), and, for a run with no command of its
 /// own, one the image gives no member for ingress (D122).
@@ -2190,6 +2205,7 @@ mod hosted {
     use shards_abi::run::{self as protocol, managed};
     use shards_api::image::wire::{self, Cause, Channel, RunEnd};
     use shards_ipc::Stream;
+    use shards_ipc::device::Refusal;
     use shards_ipc::fd::{AsFd as _, BorrowedFd, OwnedFd};
     use shards_ipc::kind;
 
@@ -2223,6 +2239,9 @@ mod hosted {
         /// The anonymous volumes its `VOLUME`s made, removed as it ends (`--rm`'s).
         made: Vec<String>,
         bridge: Option<shards_net::bridge::Bridge>,
+        /// What its network process is told of its addresses (`NET_ADDRESS`), where its
+        /// agents' flows past the microVM go by IPv6 (`past6`).
+        address: Option<Vec<u8>>,
         /// The in-VM server's device, where its image is an Agentfile's (D60).
         server: Option<PathBuf>,
         /// Its microVM, made as every run's is, and its template (D253).
@@ -2242,6 +2261,8 @@ mod hosted {
         /// The host directories its shares give its guest, canonical: where no save of it is
         /// made (D259).
         reached: Vec<PathBuf>,
+        /// Its GPU report's scope, where its orchestrator asked for one (D233).
+        gpu_report: Option<[u8; 16]>,
     }
 
     pub(super) fn run(
@@ -2346,6 +2367,8 @@ mod hosted {
         credentials: Option<Vec<u8>>,
         sign_ins: Option<Vec<u8>>,
         bridge: Option<shards_net::bridge::Bridge>,
+        /// eth0's IPv6 for its agents' flows past the microVM, where it has any (`past6`).
+        past6: Option<(std::net::Ipv6Addr, std::net::Ipv6Addr)>,
         points: Vec<crate::volumes::MountPoint>,
         opened: crate::volumes::Opened,
         made: Vec<String>,
@@ -2405,6 +2428,7 @@ mod hosted {
         } else {
             None
         };
+        let past6 = super::past6(agentfile.as_ref(), &run, home);
         // Its volumes: each share at its path as `-v` puts it, given where the image's
         // `VOLUME` there is for a member (D109), each other `VOLUME` a volume of the store.
         let store = crate::volumes::Store::new(home);
@@ -2481,6 +2505,7 @@ mod hosted {
             credentials,
             sign_ins,
             bridge,
+            past6,
             points,
             opened,
             made,
@@ -2502,6 +2527,7 @@ mod hosted {
             credentials,
             sign_ins,
             bridge,
+            past6,
             points,
             opened,
             made,
@@ -2566,6 +2592,10 @@ mod hosted {
         // Grants past the microVM: the run's own processes kept to eth0's subnet (D59).
         if agentfile.as_ref().is_some_and(|a| a.grants.past()) {
             setup.push(b"confine-eth0".to_vec());
+        }
+        // Its agents' flows past the microVM by IPv6 (D99): eth0's IPv6 for them alone.
+        if let Some(v6) = past6 {
+            setup.push(crate::networks::uplink6_entry(v6));
         }
         let capture = if active.is_empty() {
             None
@@ -2642,6 +2672,10 @@ mod hosted {
             signing: request.sign_ins.clone(),
             dirs: opened.dirs,
             made,
+            address: bridge
+                .as_ref()
+                .zip(past6)
+                .map(|(bridge, v6)| crate::networks::bridge_address(bridge, v6)),
             bridge,
             server,
             microvm,
@@ -2658,6 +2692,7 @@ mod hosted {
                 .iter()
                 .filter_map(|s| std::fs::canonicalize(&s.host).ok())
                 .collect(),
+            gpu_report: request.gpu_report,
         })
     }
 
@@ -2744,6 +2779,9 @@ mod hosted {
         credentials: bool,
         server: Option<&'a Path>,
         microvm: &'a super::Microvm,
+        /// Its GPU report's scope (D233): a run's, never a warm host's shape's, whose VM starts
+        /// before its run names one.
+        gpu_report: Option<[u8; 16]>,
     }
 
     impl Plan {
@@ -2755,6 +2793,7 @@ mod hosted {
                 credentials: self.credentials.is_some(),
                 server: self.server.as_deref(),
                 microvm: &self.microvm,
+                gpu_report: self.gpu_report,
             }
         }
     }
@@ -2768,6 +2807,7 @@ mod hosted {
                 credentials: self.credentials.is_some(),
                 server: self.server.as_deref(),
                 microvm: &self.microvm,
+                gpu_report: None,
             }
         }
     }
@@ -2776,8 +2816,10 @@ mod hosted {
     /// process, ended where its VM does not start; then its network process, denying all
     /// until its policy comes, and its VM, the way its template says (D253, `super::started`):
     /// restoring it, or booting and saving it, one that does not restore replaced. On Windows
-    /// each is made in a job of this process's that ends them as it ends (D141, D197).
-    fn launch(home: &Path, plan: &Launch<'_>) -> Result<Launched, No> {
+    /// each is made in a job of this process's that ends them as it ends (D141, D197). Where
+    /// it asks for its GPU report (D233), `reported` is what its last VM wrote of it: the
+    /// ready one's, or the one's whose start failed last.
+    fn launch(home: &Path, plan: &Launch<'_>, reported: &mut Option<Vec<u8>>) -> Result<Launched, No> {
         let boot = |e: String| No(Cause::Boot, e);
         // Made before any process of the run's, and held until each is reaped.
         #[cfg(windows)]
@@ -2803,11 +2845,14 @@ mod hosted {
                 ends: &ends,
                 #[cfg(windows)]
                 job: &job,
+                reported: None,
             };
             let template = plan.microvm.template.as_ref().map(|t| t.dir.as_path());
-            super::started(&mut host, super::way_of(template, shards_vmm::snapshot::exists))
+            let started = super::started(&mut host, super::way_of(template, shards_vmm::snapshot::exists));
+            *reported = host.reported.take();
+            started
         });
-        let ((launched, link, _), from, held) = match started {
+        let ((launched, link, _, _), from, held) = match started {
             Ok(started) => started,
             Err(e) => {
                 if let Some(shares) = shares {
@@ -2838,13 +2883,40 @@ mod hosted {
         ends: &'a Ends,
         #[cfg(windows)]
         job: &'a shards_ipc::GroupJob,
+        /// What its last VM wrote of its GPU report (D233), read once that VM was ready or
+        /// ended.
+        reported: Option<Vec<u8>>,
+    }
+
+    /// What a VM wrote of its GPU report (D232, D233), its pipe read to its end, which the VM's
+    /// close of its one writer is (vm_run.rs `write_report`, before its guest runs): at most a
+    /// byte past what a report of `gpus` GPUs holds, so that its orchestrator refuses a longer
+    /// one (`Count`), as a managed launch's client reads its own, with no more of it read.
+    pub(super) fn read_report(from: io::PipeReader, gpus: usize) -> Vec<u8> {
+        let most = shards_abi::gpu::report_bytes(gpus).map_or(0, |bytes| bytes.saturating_add(1));
+        let mut frame = Vec::new();
+        if let Err(e) = from
+            .take(u64::try_from(most).unwrap_or(u64::MAX))
+            .read_to_end(&mut frame)
+        {
+            super::say(format_args!("its VM's GPU report: {e}"));
+        }
+        frame
     }
 
     impl super::Machine for Host<'_> {
-        type Vm = (crate::launch::Launched, Stream, Option<crate::daemon::LayerFile>);
+        /// Its VM, its link, its writable layer's file until it is ready, and its GPU report's
+        /// pipe until it is read (D233).
+        type Vm = (
+            crate::launch::Launched,
+            Stream,
+            Option<crate::daemon::LayerFile>,
+            Option<io::PipeReader>,
+        );
         type Held = shards_vmm::snapshot::Held;
 
         fn launch(&mut self, way: &super::Way) -> Result<Self::Vm, String> {
+            self.reported = None;
             let plan = self.plan;
             let cfg = &plan.microvm.cfg;
             let rootfs = &plan.prepared.rootfs;
@@ -2913,19 +2985,30 @@ mod hosted {
             };
             args.extend(layer.iter().flat_map(crate::daemon::LayerFile::args));
             let argv: Vec<&OsStr> = args.iter().map(OsString::as_os_str).collect();
-            let (launched, link) = crate::launch::run(crate::launch::Plan {
-                args: &argv,
-                vm: self.vm,
-                network,
-                ends: self.ends,
-                #[cfg(unix)]
-                group: None,
-                #[cfg(windows)]
-                group: Some(self.job),
-                #[cfg(target_os = "macos")]
-                grants: crate::launch::Grants::Answered,
-            })?;
-            Ok((launched, link, layer))
+            // Its GPU report's pipe (D233), its write end the VM's alone once it is launched.
+            let (report, reader) = match plan.gpu_report {
+                Some(scope) => {
+                    let (reader, to) = io::pipe().map_err(|e| format!("its GPU report's pipe: {e}"))?;
+                    (Some(crate::launch::Report { scope, to }), Some(reader))
+                }
+                None => (None, None),
+            };
+            let (launched, link) = crate::launch::run_reported(
+                crate::launch::Plan {
+                    args: &argv,
+                    vm: self.vm,
+                    network,
+                    ends: self.ends,
+                    #[cfg(unix)]
+                    group: None,
+                    #[cfg(windows)]
+                    group: Some(self.job),
+                    #[cfg(target_os = "macos")]
+                    grants: crate::launch::Grants::Answered,
+                },
+                report,
+            )?;
+            Ok((launched, link, layer, reader))
         }
 
         fn ready(&mut self, vm: &mut Self::Vm) -> Result<(), String> {
@@ -2937,14 +3020,26 @@ mod hosted {
             };
             // Its writable layer's file is its VM's once it is ready or has failed (D190).
             vm.2 = None;
+            // A ready VM's GPU report was written, and its writer closed, before its guest ran
+            // (D233): read now, at once. One not ready is read once it has ended (`end`).
+            if said.is_ok()
+                && let Some(report) = vm.3.take()
+            {
+                self.reported = Some(read_report(report, self.plan.microvm.cfg.gpu_devices.len()));
+            }
             said
         }
 
         fn end(&mut self, vm: Self::Vm) {
-            let (launched, link, layer) = vm;
+            let (launched, link, layer, report) = vm;
             drop(link);
             launched.end(self.ends);
             drop(layer);
+            // Its GPU report, what it wrote of it before it ended: a refusal its renderer typed,
+            // or none (D232, D233).
+            if let Some(report) = report {
+                self.reported = Some(read_report(report, self.plan.microvm.cfg.gpu_devices.len()));
+            }
         }
 
         fn record(&mut self, dir: &Path) -> Result<(), String> {
@@ -3088,17 +3183,24 @@ mod hosted {
         })
     }
 
-    /// Tells the network process, before the VM has the run, its published ports and its
+    /// Tells the network process, before the VM has the run, its addresses where its agents
+    /// reach past the microVM by IPv6 (`NET_ADDRESS`, D99), its published ports and its
     /// policy, each answered by its own kind in the order asked (daemon/networks.rs
     /// `Asks`); the descriptors kept until answered (M24).
     pub(super) fn tell_net(
         net: &crate::netproc::Control,
+        address: Option<&[u8]>,
         listeners: &[publish::Listener],
         egress: Option<&[u8]>,
         sign_ins: Option<&[u8]>,
         credentials: Option<&[u8]>,
     ) -> Result<Option<Vec<u8>>, String> {
         let mut asked = Vec::new();
+        if let Some(address) = address {
+            crate::netproc::send(net, kind::NET_ADDRESS, address, &[])
+                .map_err(|e| format!("addresses: {e}"))?;
+            asked.push((kind::NET_ADDRESS, "addresses"));
+        }
         for batch in listeners.chunks(shards_ipc::MAX_FDS) {
             let ports: Vec<u8> = batch
                 .iter()
@@ -3228,7 +3330,7 @@ mod hosted {
         roots: &'a [Vec<u8>],
         /// Each device step asked of the VM and not yet answered (`DEVICED`), by its number;
         /// none once the VM's link has closed, as nothing will answer one then.
-        devices: Mutex<Option<Vec<Asked>>>,
+        devices: Mutex<Option<Vec<Asked<Refusal>>>>,
         /// Each guest time asked of the VM and not yet answered (`GUEST_TIMED`), as devices.
         guest_times: Mutex<Option<Vec<Asked>>>,
         /// Each rate told the VM and not yet answered (`RATED`, D247), as devices.
@@ -3239,6 +3341,9 @@ mod hosted {
         next_lane: std::sync::atomic::AtomicU64,
         /// What is plugged into the run's members, by the path it is at.
         plugged: Mutex<HashMap<String, Plugged>>,
+        /// A plug/unplug's ownership turn, held through device and guest completion;
+        /// replies never need this lock. The mounted registry stays readable meanwhile.
+        plug_turn: Mutex<()>,
         /// The pipe the run's share process tells what its host changes on (D235), until
         /// its guest's NOTICE built-in is given it as the run starts; and the streams each
         /// of those built-ins' ends are told on, held while the run is.
@@ -3340,8 +3445,57 @@ mod hosted {
         }
     }
 
-    /// A device step asked of the VM: its number, and who waits for its answer.
-    type Asked = (u64, std::sync::mpsc::Sender<Result<String, String>>);
+    /// An ask of the VM: its number, and who waits for its answer, or why not: its text, or
+    /// a device step's refusal by cause (devices-10).
+    type Asked<E = String> = (u64, std::sync::mpsc::Sender<Result<String, E>>);
+
+    /// What an ask of the VM is refused with, as its answer says it.
+    trait VmRefusal: Sized {
+        /// Its answer after its number.
+        fn read(said: &[u8]) -> Result<String, Self>;
+        /// Its VM's link closed before it answered.
+        fn stopped() -> Self;
+        /// It could not be sent.
+        fn unsent(e: &std::io::Error) -> Self;
+        /// Its VM's refusal, as its asker is told it.
+        fn said(self) -> Self;
+    }
+
+    /// `GUEST_TIMED` and `RATED`: 0 and what it said, or anything else and why not.
+    impl VmRefusal for String {
+        fn read(said: &[u8]) -> Result<String, String> {
+            let text = String::from_utf8_lossy(said.get(1..).unwrap_or_default()).into_owned();
+            match said.first() {
+                Some(0) => Ok(text),
+                _ => Err(text),
+            }
+        }
+        fn stopped() -> String {
+            "its microVM stopped".into()
+        }
+        fn unsent(e: &std::io::Error) -> String {
+            format!("asking its microVM: {e}")
+        }
+        fn said(self) -> String {
+            format!("its microVM: {self}")
+        }
+    }
+
+    /// `DEVICED`, by cause (shards_ipc::device).
+    impl VmRefusal for Refusal {
+        fn read(said: &[u8]) -> Result<String, Refusal> {
+            shards_ipc::device::decode(said)
+        }
+        fn stopped() -> Refusal {
+            Refusal::ConnectionEnded
+        }
+        fn unsent(e: &std::io::Error) -> Refusal {
+            Refusal::Host(format!("asking its microVM: {e}"))
+        }
+        fn said(self) -> Refusal {
+            self
+        }
+    }
 
     /// The VM's answer to a socket lane (`LANE_OPEN`, D251): its payload, and the connection
     /// beside it on Unix.
@@ -3562,8 +3716,19 @@ mod hosted {
             "prepared {}, {} vCPUs, {} MiB; starting its VM",
             plan.prepared.image_id, plan.prepared.size.0, plan.prepared.size.1
         ));
-        let launched = launch(home, &plan.launch())?;
-        serve_launched(answers, input, home, plan, launched)
+        let mut reported = None;
+        let launched = launch(home, &plan.launch(), &mut reported);
+        // Its VM's GPU report (D233), relayed before its start, or before its refusal where its
+        // VM did not start.
+        if let Some(frame) = reported
+            && let Err(e) = answers.send(wire::to_client::GPU_REPORT, &[&frame])
+        {
+            if let Ok(launched) = launched {
+                end(home, Some(launched), &plan.made);
+            }
+            return Err(No(Cause::Boot, format!("its orchestrator: {e}")));
+        }
+        serve_launched(answers, input, home, plan, launched?)
     }
 
     /// A warm run host (D253's pools): its microVM made of `exemplar` and started, and once
@@ -3578,7 +3743,7 @@ mod hosted {
     ) -> Result<(), No> {
         let home = shards_ipc::home().map_err(no(Cause::Boot))?;
         let mut shaped = shape(exemplar, &home)?;
-        let launched = match launch(&home, &shaped.launch()) {
+        let launched = match launch(&home, &shaped.launch(), &mut None) {
             Ok(launched) => launched,
             Err(e) => {
                 end(&home, None, &shaped.made);
@@ -3612,6 +3777,14 @@ mod hosted {
                 return Err(No(
                     Cause::Unfit,
                     "its run asks for another microVM than the one it made ready".into(),
+                ));
+            }
+            // Its VM process started before the run named its GPU report's scope (D233), which
+            // that process frames its report with as its renderer is made.
+            if request.gpu_report.is_some() {
+                return Err(No(
+                    Cause::Unfit,
+                    "its run asks for a GPU report, which a VM started before its run cannot frame".into(),
                 ));
             }
             let ready_by = super::deadline(request.ready_by, std::time::SystemTime::now())?;
@@ -3710,6 +3883,7 @@ mod hosted {
             if let Some((_, control)) = &launched.net {
                 let ca = tell_net(
                     control,
+                    plan.address.as_deref(),
                     &plan.listeners,
                     plan.egress.as_deref(),
                     plan.sign_ins.as_deref(),
@@ -3813,6 +3987,7 @@ mod hosted {
                 lanes: Mutex::new(Some(HashMap::new())),
                 next_lane: std::sync::atomic::AtomicU64::new(0),
                 plugged: Mutex::new(HashMap::new()),
+                plug_turn: Mutex::new(()),
                 notices_due: Mutex::new(due),
                 notices: Mutex::new(Vec::new()),
                 leasing,
@@ -5172,6 +5347,7 @@ mod hosted {
             }
             Err(_) => return Err((R::Request, format!("{}: not a plain absolute path", ask.at))),
         }
+        let _turn = lock(&live.plug_turn);
         if lock(&live.plugged).contains_key(&ask.at) {
             return Err((R::Taken, format!("{} has something plugged in already", ask.at)));
         }
@@ -5198,34 +5374,35 @@ mod hosted {
         let step = [&[shards_ipc::device::SHARE][..], tag.as_bytes()].concat();
         // On Unix its connection, which the share process sends and holds until it is
         // taken (M24); on Windows its stream itself, a duplex pipe made here (D197).
+        let host = |e: String| (R::Host, e);
         #[cfg(unix)]
         let answer = match shards_ipc::recv(&share.door) {
             Ok(Some(ends)) if ends.kind == kind::SHARE_ENDS => match ends.fds.first() {
                 Some(conn) => {
-                    let answer = ask_device(live, &step, &[conn.as_fd()]);
+                    let answer = ask_device(live, &step, &[conn.as_fd()]).map_err(device_refused);
                     let _ = shards_ipc::send(&share.door, kind::TAKEN, &[], &[]);
                     answer
                 }
-                None => Err("its share process sent no connection".into()),
+                None => Err(host("its share process sent no connection".into())),
             },
-            Ok(_) => Err("its share process sent no connection".into()),
-            Err(e) => Err(format!("its share process: {e}")),
+            Ok(_) => Err(host("its share process sent no connection".into())),
+            Err(e) => Err(host(format!("its share process: {e}"))),
         };
         #[cfg(windows)]
         let answer = match share.ends.first() {
-            Some(end) => ask_device(live, &step, &[end.as_fd()]),
-            None => Err("no stream was made for its share".into()),
+            Some(end) => ask_device(live, &step, &[end.as_fd()]).map_err(device_refused),
+            None => Err(host("no stream was made for its share".into())),
         };
         let placed = answer.and_then(|a| {
             a.split_once(' ')
                 .and_then(|(d, addr)| Some((d.parse::<u8>().ok()?, addr.to_string())))
-                .ok_or_else(|| format!("its microVM answered {a:?}"))
+                .ok_or_else(|| (R::Device, format!("its microVM answered {a:?}")))
         });
         let (devfn, address) = match placed {
             Ok(placed) => placed,
             Err(e) => {
                 share.end(&live.ends);
-                return Err((R::Device, e));
+                return Err(e);
             }
         };
         let flag = if ask.read_only { "ro" } else { "rw" };
@@ -5270,6 +5447,7 @@ mod hosted {
         ask: &wire::UnplugAsk,
     ) -> (Result<(), (wire::PlugRefusal, String)>, Option<Shares>) {
         use wire::PlugRefusal as R;
+        let _turn = lock(&live.plug_turn);
         let Some((devfn, address, member)) = lock(&live.plugged)
             .get(&ask.at)
             .map(|p| (p.devfn, p.address.clone(), p.member))
@@ -5284,7 +5462,7 @@ mod hosted {
             return (Err((if busy { R::Busy } else { R::Device }, e)), None);
         }
         if let Err(e) = ask_device(live, &[shards_ipc::device::UNPLUG, devfn], &[]) {
-            return (Err((R::Device, e)), None);
+            return (Err(device_refused(e)), None);
         }
         (Ok(()), lock(&live.plugged).remove(&ask.at).map(|p| p.share))
     }
@@ -5305,9 +5483,19 @@ mod hosted {
         }
     }
 
+    /// A device step's refusal as a plug's (D235): the host's failure its own, the rest
+    /// the microVM's, which could not take it.
+    fn device_refused(refusal: Refusal) -> (wire::PlugRefusal, String) {
+        let cause = match refusal {
+            Refusal::Host(_) => wire::PlugRefusal::Host,
+            _ => wire::PlugRefusal::Device,
+        };
+        (cause, format!("its microVM: {refusal}"))
+    }
+
     /// Asks the VM device step `step` (`DEVICE`), with `fds`, and waits for its answer
     /// (`DEVICED`), as the daemon asks one (daemon/devices.rs `ask_device`).
-    fn ask_device(live: &Live<'_>, step: &[u8], fds: &[BorrowedFd<'_>]) -> Result<String, String> {
+    fn ask_device(live: &Live<'_>, step: &[u8], fds: &[BorrowedFd<'_>]) -> Result<String, Refusal> {
         ask_vm(live, &live.devices, kind::DEVICE, step, fds)
     }
 
@@ -5333,35 +5521,35 @@ mod hosted {
 
     /// Asks the VM `which` with `step` after its number, and `fds`, and waits for its answer
     /// by that number (`answered`), which comes as long as its link is open.
-    fn ask_vm(
+    fn ask_vm<E: VmRefusal>(
         live: &Live<'_>,
-        asks: &Mutex<Option<Vec<Asked>>>,
+        asks: &Mutex<Option<Vec<Asked<E>>>>,
         which: u8,
         step: &[u8],
         fds: &[BorrowedFd<'_>],
-    ) -> Result<String, String> {
+    ) -> Result<String, E> {
         let number = live.next_exec.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let (told, answer) = std::sync::mpsc::channel();
         match lock(asks).as_mut() {
             Some(asked) => asked.push((number, told)),
-            None => return Err("its microVM stopped".into()),
+            None => return Err(E::stopped()),
         }
         let ask = [&number.to_be_bytes()[..], step].concat();
         if let Err(e) = shards_ipc::send(&lock(&live.link), which, &ask, fds) {
             if let Some(asked) = lock(asks).as_mut() {
                 asked.retain(|(n, _)| *n != number);
             }
-            return Err(format!("asking its microVM: {e}"));
+            return Err(E::unsent(&e));
         }
         answer
             .recv()
-            .unwrap_or_else(|_| Err("its microVM stopped".into()))
-            .map_err(|e| format!("its microVM: {e}"))
+            .unwrap_or_else(|_| Err(E::stopped()))
+            .map_err(E::said)
     }
 
     /// The VM's answer to the ask its payload numbers (`DEVICED`, `GUEST_TIMED`): its number,
     /// then 0 and what it said, or anything else and why not; to its asker in `asks`.
-    fn answered(asks: &Mutex<Option<Vec<Asked>>>, payload: &[u8]) {
+    fn answered<E: VmRefusal>(asks: &Mutex<Option<Vec<Asked<E>>>>, payload: &[u8]) {
         let Some((number, said)) = payload.split_first_chunk::<8>() else {
             return;
         };
@@ -5372,11 +5560,7 @@ mod hosted {
         };
         if let Some(i) = asked.iter().position(|(n, _)| *n == number) {
             let (_, told) = asked.swap_remove(i);
-            let text = String::from_utf8_lossy(said.get(1..).unwrap_or_default()).into_owned();
-            let _ = told.send(match said.first() {
-                Some(0) => Ok(text),
-                _ => Err(text),
-            });
+            let _ = told.send(E::read(said));
         }
     }
 
@@ -5384,6 +5568,15 @@ mod hosted {
     #[allow(clippy::unwrap_used)]
     mod tests {
         use super::*;
+
+        /// A lane's ask, its answer waited for as long as it takes (`Duration::MAX`), as a caller
+        /// with no bound of its own waits: what it answered, or why not.
+        macro_rules! answered {
+            ($ask:expr) => {
+                $ask.and_then(|mut ask| ask.wait(std::time::Duration::MAX))
+                    .map(|got| got.expect("Duration::MAX waits until the answer"))
+            };
+        }
 
         /// A run's live state as its host holds it, of no members, its VM's link `link` and its
         /// managed output `capture`, kept in `home`.
@@ -5413,6 +5606,7 @@ mod hosted {
                 lanes: Mutex::new(Some(HashMap::new())),
                 next_lane: std::sync::atomic::AtomicU64::new(0),
                 plugged: Mutex::new(HashMap::new()),
+                plug_turn: Mutex::new(()),
                 notices_due: Mutex::new(None),
                 notices: Mutex::new(Vec::new()),
                 leasing: None,
@@ -5692,22 +5886,25 @@ mod hosted {
                 let Member::Running(MemberControl {
                     mut steering,
                     mut end,
-                }) = execs.member(1).unwrap()
+                }) = answered!(execs.member(1)).unwrap()
                 else {
                     panic!("member 1 runs");
                 };
-                assert_eq!(steering.signal(15), Ok(()));
+                assert_eq!(steering.signal(15, std::time::Duration::MAX), Ok(Some(())));
                 let Member::Running(MemberControl {
                     steering: mut killed,
                     end: mut kill_end,
-                }) = execs.member(2).unwrap()
+                }) = answered!(execs.member(2)).unwrap()
                 else {
                     panic!("member 2 runs");
                 };
-                assert_eq!(killed.signal(9), Ok(()));
+                assert_eq!(killed.signal(9, std::time::Duration::MAX), Ok(Some(())));
                 process.join().unwrap();
                 let size = protocol::Size { rows: 50, cols: 132 };
-                assert_eq!(steering.resize(size), Err(Fault::Unsteered(Unsteered::Terminal)));
+                assert_eq!(
+                    steering.resize(size, std::time::Duration::MAX),
+                    Err(Fault::Unsteered(Unsteered::Terminal))
+                );
                 agent.ends.told(1, protocol::members::End::Signaled(15)).unwrap();
                 agent.ends.told(2, protocol::members::End::Signaled(9)).unwrap();
                 assert_eq!(end.wait(), Ok(shards_remote::control::exec::End::Signaled(15)));
@@ -5716,7 +5913,7 @@ mod hosted {
                     Ok(shards_remote::control::exec::End::Signaled(9))
                 );
                 assert_eq!(
-                    execs.member(0).map(|_| ()),
+                    answered!(execs.member(0)).map(|_| ()),
                     Err(Fault::Unstarted(Unstarted::Refused))
                 );
                 // Its MCP connection, as its VM hands it over.
@@ -5745,7 +5942,7 @@ mod hosted {
                     mut from,
                     mut to,
                     mut end,
-                } = execs.mcp(1).unwrap();
+                } = answered!(execs.mcp(1)).unwrap();
                 assert_eq!(
                     from.next_record().unwrap(),
                     Got::Record {
@@ -5761,15 +5958,18 @@ mod hosted {
                 assert_eq!(from.next_record().unwrap(), Got::Finished);
                 assert_eq!(end.wait(), Ok(0));
                 assert_eq!(
-                    execs.mcp(0).map(|_| ()),
+                    answered!(execs.mcp(0)).map(|_| ()),
                     Err(Fault::Unstarted(Unstarted::Refused))
                 );
                 agent.over();
                 assert_eq!(
-                    execs.member(1).map(|_| ()),
+                    answered!(execs.member(1)).map(|_| ()),
                     Err(Fault::Unstarted(Unstarted::Failed))
                 );
-                assert_eq!(execs.mcp(1).map(|_| ()), Err(Fault::Unstarted(Unstarted::Failed)));
+                assert_eq!(
+                    answered!(execs.mcp(1)).map(|_| ()),
+                    Err(Fault::Unstarted(Unstarted::Failed))
+                );
                 served.revoke.revoke();
                 serving.join().unwrap().unwrap();
                 let _ = driver.join();
@@ -5917,6 +6117,24 @@ mod tests {
 
     fn members() -> Vec<wire::MemberInfo> {
         members_of(&["agent helper".into(), "harness codex".into()], &[1])
+    }
+
+    /// D233: a VM's GPU report is read to its pipe's end, at most a byte past what a report of
+    /// its GPUs holds, so that its orchestrator refuses a longer one (`Count`) with no more of
+    /// it read; none written is none read.
+    #[test]
+    fn a_vms_gpu_report_is_read_to_its_end_within_its_bound() {
+        use std::io::Write as _;
+        let most = shards_abi::gpu::report_bytes(1).unwrap();
+        for (wrote, read) in [(5, 5), (most, most), (most + 10, most + 1), (0, 0)] {
+            let (from, mut to) = std::io::pipe().unwrap();
+            // On a thread of its own: past a pipe's buffer, a write waits for its reader.
+            let writer = std::thread::spawn(move || {
+                let _ = to.write_all(&vec![b'x'; wrote]);
+            });
+            assert_eq!(hosted::read_report(from, 1).len(), read, "{wrote} written");
+            writer.join().unwrap();
+        }
     }
 
     /// D259: a save is its run owner's alone, asked on the run's own channel. Do: read a `SAVE`
@@ -6266,6 +6484,46 @@ mod tests {
         assert_eq!(run.network, "none");
     }
 
+    /// network-05: an orchestrator's run on the default bridge, whose image's agents have IPv6
+    /// and are granted a port past the microVM, as a daemon's run there (D99). Do: shape the
+    /// network of that image run whole, of one without IPv6, and of one granting nothing past.
+    /// Expect: the first's eth0 given the home's IPv6 for its agents, the address a daemon's
+    /// run on the bridge has (`uplink6=`, `NET_ADDRESS`); the others none.
+    #[test]
+    fn an_orchestrated_runs_agents_reach_past_the_microvm_by_ipv6_as_a_daemons_do() {
+        let home = shards_testdir::TempDir::new("api-past6").unwrap();
+        let agentfile = |ipv6: bool, egress: Vec<Vec<u8>>| crate::agentfile::Agentfile {
+            domains: 1,
+            uplink: !egress.is_empty(),
+            ipv6,
+            grants: shards_agentfile::agentfile::Grants {
+                egress,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let whole = request(Vec::new());
+        let six = agentfile(true, vec![b"443/tcp".to_vec()]);
+        let mut run = hosted::as_run(&whole, None);
+        network(Some(&six), &whole, &mut run).ok().unwrap();
+        assert_eq!(run.network, "bridge");
+        let v6 = past6(Some(&six), &run, home.path());
+        assert_eq!(v6, Some(crate::networks::host_ipv6(home.path())));
+        let (guest6, gateway6) = v6.unwrap();
+        assert_eq!(
+            crate::networks::uplink6_entry((guest6, gateway6)),
+            format!("uplink6={guest6}/64,{gateway6}").into_bytes()
+        );
+        let four = agentfile(false, vec![b"443/tcp".to_vec()]);
+        let mut run = hosted::as_run(&whole, None);
+        network(Some(&four), &whole, &mut run).ok().unwrap();
+        assert_eq!(past6(Some(&four), &run, home.path()), None);
+        let nothing = agentfile(true, Vec::new());
+        let mut run = hosted::as_run(&whole, None);
+        network(Some(&nothing), &whole, &mut run).ok().unwrap();
+        assert_eq!(past6(Some(&nothing), &run, home.path()), None);
+    }
+
     /// Labels become members by their declared index; only an active one runs.
     #[test]
     fn members_are_the_images_labels() {
@@ -6298,6 +6556,7 @@ mod tests {
             gpu_devices: Vec::new(),
             sign_ins: Vec::new(),
             upstream_roots: Vec::new(),
+            gpu_report: None,
         }
     }
 
@@ -7980,6 +8239,51 @@ mod tests {
         }
     }
 
+    /// network-05: an orchestrated run whose agents reach past the microVM by IPv6 tells its
+    /// network process eth0's addresses, as a daemon's run on the bridge does, before its
+    /// policy. Do: tell a stand-in network process a bridge run's addresses and policy.
+    /// Expect: NET_ADDRESS first, its payload the bridge's IPv4 and the home's IPv6; then
+    /// NET_POLICY.
+    #[cfg(unix)]
+    #[test]
+    fn an_orchestrated_runs_network_process_is_told_its_ipv6_before_its_policy() {
+        use std::os::unix::net::UnixStream;
+        let home = shards_testdir::TempDir::new("api-addr6").unwrap();
+        let bridge = shards_net::bridge::Bridge::elect(&[]).unwrap();
+        let (guest6, gateway6) = crate::networks::host_ipv6(home.path());
+        let address = crate::networks::bridge_address(&bridge, (guest6, gateway6));
+        let policy = shards_net::encode_policy(
+            &shards_net::Ports::default(),
+            &[("[2001:db8::7]".into(), 443)],
+            false,
+        );
+        let (net, run_host) = UnixStream::pair().unwrap();
+        let told = std::thread::scope(|s| {
+            let network = s.spawn(|| {
+                let mut told = Vec::new();
+                let soon = || Instant::now() + Duration::from_secs(120);
+                while let Ok(Some(m)) = shards_ipc::recv_by(&net, soon()) {
+                    shards_ipc::send(&net, m.kind, &[], &[]).unwrap();
+                    told.push((m.kind, m.payload));
+                }
+                told
+            });
+            let ca = hosted::tell_net(&run_host, Some(&address), &[], Some(&policy), None, None);
+            assert_eq!(ca, Ok(None));
+            drop(run_host);
+            network.join().unwrap()
+        });
+        let kinds: Vec<u8> = told.iter().map(|(k, _)| *k).collect();
+        assert_eq!(kinds, [kind::NET_ADDRESS, kind::NET_POLICY]);
+        let mut want = bridge.guest().octets().to_vec();
+        want.push(bridge.subnet().1);
+        want.extend_from_slice(&bridge.gateway().octets());
+        want.extend_from_slice(&guest6.octets());
+        want.push(64);
+        want.extend_from_slice(&gateway6.octets());
+        assert_eq!(told[0].1, want);
+    }
+
     /// A run whose request grants a sign-in has the grant reach its network process, after its
     /// policy and before its credential grants, whose CA names its hosts and whose trust its
     /// members are given; a run that grants none tells it none (D242, step 8). Do: tell a
@@ -8029,6 +8333,7 @@ mod tests {
                 });
                 let ca = hosted::tell_net(
                     &run_host,
+                    None,
                     &[],
                     Some(&policy),
                     sign_ins.as_deref(),

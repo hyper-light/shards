@@ -37,6 +37,15 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
 
+/// A lane's ask, its answer waited for as long as it takes (`Duration::MAX`), as a caller
+/// with no bound of its own waits: what it answered, or why not.
+macro_rules! answered {
+    ($ask:expr) => {
+        $ask.and_then(|mut ask| ask.wait(std::time::Duration::MAX))
+            .map(|got| got.expect("Duration::MAX waits until the answer"))
+    };
+}
+
 use common::{
     Artifact, Patience, Run, TempDir, ask, booted, cannot_run_vms, guest_init, kernel, run_shards_env, served,
 };
@@ -550,6 +559,7 @@ fn a_deadline_given_through_shards_api_is_met_or_said_passed() {
         gpu_devices: Vec::new(),
         sign_ins: Vec::new(),
         upstream_roots: Vec::new(),
+        gpu_report: None,
     };
     let guest = booted(&ImageShards::new(), &spec(met())).unwrap();
     assert_eq!(
@@ -759,6 +769,7 @@ fn a_nested_workloads_sockets_are_lanes_of_its_orchestrators_controller() {
         gpu_devices: Vec::new(),
         sign_ins: Vec::new(),
         upstream_roots: Vec::new(),
+        gpu_report: None,
     };
     let guest = booted(&ImageShards::new(), &spec).unwrap();
     // READY=1 comes once every socket listens: no lane below races its bind.
@@ -785,7 +796,7 @@ fn a_nested_workloads_sockets_are_lanes_of_its_orchestrators_controller() {
     // Four lanes open at once, as Hex holds a control connection while an exec's three open.
     let open: Vec<_> = names
         .iter()
-        .map(|name| (*name, sockets.connect(name).unwrap()))
+        .map(|name| (*name, answered!(sockets.connect(name)).unwrap()))
         .collect();
     for (i, (name, mut lane)) in open.into_iter().enumerate() {
         let sent: Vec<u8> = (0..=255u8)
@@ -805,17 +816,17 @@ fn a_nested_workloads_sockets_are_lanes_of_its_orchestrators_controller() {
     // The guest's errno: Linux's ENOENT (include/uapi/asm-generic/errno-base.h), whatever the
     // host's.
     assert_eq!(
-        sockets.connect("absent.sock").map(|_| ()),
+        answered!(sockets.connect("absent.sock")).map(|_| ()),
         Err(Fault::Unreached(NonZeroU16::new(2).unwrap()))
     );
     assert_eq!(
-        sockets.connect("../node.sock").map(|_| ()),
+        answered!(sockets.connect("../node.sock")).map(|_| ()),
         Err(Fault::Refused(Reason::Protocol))
     );
     guest.stop().unwrap();
     // The run's end ends its endpoint, and the controller's connection with it, typed: never
     // Silent, which would be its idle timeout's guess rather than the run's end told.
-    let after = sockets.connect("control.sock").map(|_| ());
+    let after = answered!(sockets.connect("control.sock")).map(|_| ());
     assert!(
         matches!(after, Err(Fault::Lost(ended)) if ended != Ended::Silent),
         "{after:?}"
@@ -869,6 +880,7 @@ fn over_lanes(home: &str, case: impl FnOnce(&shards_api::control::Sockets, &[u8]
         gpu_devices: Vec::new(),
         sign_ins: Vec::new(),
         upstream_roots: Vec::new(),
+        gpu_report: None,
     };
     let guest = booted(&ImageShards::new(), &spec).unwrap();
     // READY=1 comes once every socket listens: no lane below races its bind.
@@ -904,7 +916,7 @@ fn over_lanes(home: &str, case: impl FnOnce(&shards_api::control::Sockets, &[u8]
 /// controller's half-close first, so that the workload's close after it ends the lane in order.
 fn told(sockets: &shards_api::control::Sockets, said: &str) -> Vec<u8> {
     use std::io::Read as _;
-    let mut lane = sockets.connect(said).unwrap();
+    let mut lane = answered!(sockets.connect(said)).unwrap();
     lane.shutdown_write().unwrap();
     let mut got = Vec::new();
     lane.read_to_end(&mut got).unwrap();
@@ -925,7 +937,7 @@ fn a_nested_workloads_socket_cut_mid_stream_resets_its_lane_at_the_controller() 
         return;
     }
     over_lanes("nesting-f-cut", |sockets, sent| {
-        let mut lane = sockets.connect("cut.sock").unwrap();
+        let mut lane = answered!(sockets.connect("cut.sock")).unwrap();
         // All the workload reads, and no half-close: the controller's way stays open.
         lane.write_all(sent).unwrap();
         let mut rest = Vec::new();
@@ -968,7 +980,7 @@ fn a_nested_workloads_half_close_ends_its_way_in_order_while_the_controllers_goe
         return;
     }
     over_lanes("nesting-f-half", |sockets, sent| {
-        let mut lane = sockets.connect("half.sock").unwrap();
+        let mut lane = answered!(sockets.connect("half.sock")).unwrap();
         let mut said = Vec::new();
         assert_eq!(
             lane.read_to_end(&mut said).map_err(|e| e.kind()),
@@ -1035,6 +1047,7 @@ fn an_orchestrators_run_binds_its_own_agent_control_endpoint() {
             gpu_devices: Vec::new(),
             sign_ins: Vec::new(),
             upstream_roots: Vec::new(),
+            gpu_report: None,
         };
         booted(&ImageShards::new(), &spec).unwrap()
     };
@@ -1080,7 +1093,7 @@ fn an_orchestrators_run_binds_its_own_agent_control_endpoint() {
 
     first.stop().unwrap();
     let sockets = dialed.sockets.take().expect("socket lanes subscribed");
-    let after = sockets.connect("control.sock").map(|_| ());
+    let after = answered!(sockets.connect("control.sock")).map(|_| ());
     assert!(
         matches!(after, Err(Fault::Lost(ended)) if ended != Ended::Silent),
         "{after:?}"

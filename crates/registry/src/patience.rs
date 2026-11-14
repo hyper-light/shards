@@ -39,6 +39,15 @@ use std::time::{Duration, SystemTime};
 /// The wait before any is measured, and a pace's least: RFC 6298 §2.1 and §2.4.
 pub(crate) const FIRST: Duration = Duration::from_secs(1);
 
+/// How long a dial waits on one address before it starts the next where its path has shown
+/// no connect: RFC 8305's Connection Attempt Delay "in the absence of RTT data" (§8).
+pub(crate) const ATTEMPT_DELAY: Duration = Duration::from_millis(250);
+/// The least and the most a learned Connection Attempt Delay may be: RFC 8305 §5's Minimum
+/// ("required to avoid congestion collapse in the presence of high packet-loss rates") and
+/// Maximum Connection Attempt Delay, as §8 recommends them.
+const ATTEMPT_DELAY_MIN: Duration = Duration::from_millis(100);
+const ATTEMPT_DELAY_MAX: Duration = Duration::from_secs(2);
+
 /// A wait's estimator: RFC 6298 §2's SRTT and RTTVAR, in µs, how many waits it has seen,
 /// and when the last was seen, in µs since the Unix epoch (0 where never, or a record of
 /// before it was kept), by which two clients' estimators of a path are told apart.
@@ -75,6 +84,21 @@ impl Pace {
         }
         let us = self.srtt_us.saturating_add(self.rttvar_us.saturating_mul(4));
         Duration::from_micros(us).max(FIRST)
+    }
+
+    /// How long a dial waits on one address before it starts the next ([`ATTEMPT_DELAY`]
+    /// before any connect is seen): RFC 8305 §5's delay "should correspond to the time when
+    /// the previous attempt is sending its second TCP SYN, based on the TCP's
+    /// retransmission timer [RFC6298]", which this path's connects pace: SRTT + 4·RTTVAR
+    /// (§2.3), within §5's least and most, and with no backoff: it "should only try to
+    /// approximate the time of the first SYN retransmission". RFC 6298 §2.4's 1 s rounding
+    /// is TCP's own guard against retransmitting early, which §5's minimum stands for here.
+    pub(crate) fn attempt_delay(&self) -> Duration {
+        if self.n == 0 {
+            return ATTEMPT_DELAY;
+        }
+        let us = self.srtt_us.saturating_add(self.rttvar_us.saturating_mul(4));
+        Duration::from_micros(us).clamp(ATTEMPT_DELAY_MIN, ATTEMPT_DELAY_MAX)
     }
 
     /// The estimator a record keeps of `kept`, as it holds it now, and `own`, a client's,
@@ -419,6 +443,12 @@ impl Paths {
         })
     }
 
+    /// How long a dial of `key` waits on one address before it starts the next
+    /// ([`Pace::attempt_delay`] of its connects).
+    pub(crate) fn attempt_delay(&self, key: &str) -> Duration {
+        self.with(key, |p| p.shown.connect.attempt_delay())
+    }
+
     /// `key`'s connect or handshake ended after `took`, in time.
     pub(crate) fn waited(&self, key: &str, wait: Wait, took: Duration) {
         self.with(key, |p| {
@@ -690,6 +720,31 @@ mod tests {
             Bounded::Slowest(Duration::from_secs(7)),
             "and the slowest the slower of the two"
         );
+    }
+
+    /// A dial starts a path's next address as its connects would send their second SYN
+    /// (waits-12; RFC 8305 §5, §8): 250 ms before any connect, then SRTT + 4·RTTVAR of
+    /// them, never under 100 ms nor past 2 s. Red with the race a figure of its own, 300 ms
+    /// whatever the path showed.
+    #[test]
+    fn a_dial_starts_its_next_address_as_its_paths_connects_retransmit() {
+        let paths = Paths::default();
+        let ms = Duration::from_millis;
+        assert_eq!(paths.attempt_delay("r:443"), ms(250), "cold: RFC 8305 §8");
+        for (key, took, delay) in [
+            // 10 + 4·5 ms, under the minimum.
+            ("near:443", ms(10), ms(100)),
+            // 150 + 4·75 ms.
+            ("far:443", ms(150), ms(450)),
+            // 1.5 + 4·0.75 s, past the maximum.
+            ("slow:443", ms(1500), ms(2000)),
+        ] {
+            paths.waited(key, Wait::Connect, took);
+            assert_eq!(paths.attempt_delay(key), delay, "{key}");
+        }
+        // A handshake is no connect.
+        paths.waited("tls:443", Wait::Handshake, ms(150));
+        assert_eq!(paths.attempt_delay("tls:443"), ms(250));
     }
 
     /// What a client's paths showed is kept in the home as it lets them go, and the next

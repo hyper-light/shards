@@ -1,6 +1,6 @@
 # Remaining memory policy designs
 
-**2026-11-14:** rows 06, 07, 08, 10, 12 and 13 are implemented (D188, D137, PM M574,
+**2026-11-14:** rows 06, 07, 08, 10, 12 and 13 are implemented (D188, D137, PM M579,
 `docs/research/measurements/memory-r03-v1`); the rest are taken up there too, each row's
 status under its finding in `docs/bugs/2026-11-13/memory.md`.
 

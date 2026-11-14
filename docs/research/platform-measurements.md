@@ -17849,6 +17849,13 @@ finding open; no new scheduling or host-fairness result is claimed.
 
 ### M430. Devices plugged into a running microVM: what each step costs, and what a bus of slots costs a boot (D214)
 
+Review devices-10 (2026-11-14, D214's amendment): device refusals typed across DEVICE/DEVICED; codec red/green, VMM, daemon and clippy green on macOS arm64, Linux x86_64 clippy. No real VM run. See `measurements/device-fixes/README.md`.
+
+Review devices-11 (2026-11-14, D214's amendment): disk files claimed by identity, one writer, read-only shared; 9 daemon devices unit tests and shards clippy green on macOS arm64, the claim check's mutation red. No real VM plug was run. See `measurements/device-fixes/README.md`.
+
+Review devices-07 follow-up (2026-11-14, D156's amendment): a 66-run join chain's /dev/shm owner red (the 64-link walk sized it by run 1's allowance, 0 vs 536870912), green with 4 inspect tests and shards clippy on macOS arm64. See `measurements/device-fixes/README.md`. No real VM mount or new performance measurement was run.
+
+
 Correctness follow-up devices-06 (2026-11-14): 1 VFIO unplug route-ownership red; 2 module tests and VMM clippy green on adacachy2 Linux x86_64. Real VFIO hardware was not used. See `measurements/device-fixes/README.md` for the fixture and limitations.
 
 
@@ -24357,6 +24364,38 @@ the 240 s bound killed it (exit 124); the pidfd dropped from the wait,
 ended unanswered (`left: Err(Timeout)`); the thread-pidfd rule dropped, the asked pass
 trapped under that filter (exit 159).
 
+Amended again 2026-11-13 (ROOT: a GPU run must not fail on ABI < 8 because Mesa's threads
+block signals). Mesa's `u_thread_create` blocks every signal but SIGSYS and SIGSEGV in
+the threads it starts (src/util/u_thread.c lines 53 to 61, mirror/mesa 8c427aae9), and
+the GPU's VM process holds a Vulkan instance from its renderer's start (D201), so such
+threads exist by its seal. The asking signal is SIGSYS now, through the filter's own
+handler (`seccomp::on_sent` for a SIGSYS of SI_TKILL from the process itself; a trap's
+report unchanged). `every_thread_of_a_confined_process_is_confined` starts a thread
+blocking every signal but those two between the first layer and the seal, under the
+filter of an ABI-5 host: with the pass asking by SIGRTMIN + 1 (the code at cc85d760a,
+the test alone new), the seal left it writing the sealed directory (`sealed siblings
+write snap: refused,refused,refused,refused,ok`): red. Asked by SIGSYS, it is refused
+with the others and still writes its kept directory: green. confine:: 11 of 11, the
+filter's tests and clippy for both crates clean on adacachy2. Owed to ROOT: a GPU
+template's save and its run on a kernel of ABI 5 to 7 (no host here has one), and
+tests/gpu.rs on the GPU hosts.
+
+Amended a third time 2026-11-13 (ROOT: a run must not fail because the SigBlk look met
+pthread_create's window, glibc's or musl's). A thread seen blocking the asking signal
+(SIGSYS) is sent it anyway and looked at again, the pass yielding between looks, until it
+unblocks (and answers), ends, or has run since the first look (utime plus stime grown) and
+still blocks: deaf, failed closed. `a_thread_inside_pthread_creates_window_is_asked_once_it_unblocks`
+holds a thread with every signal blocked asleep on an eventfd across the first look, a
+helper releasing it once SIGSYS shows pending for it (after the look), and it then
+unblocks: the layer is Ok and the thread is refused a file outside its paths. Mutant
+"a block is deaf" (the earlier rule): `applied: Err("thread … blocks or ignores signal 31
+…")`, and the thread read the file: red. `a_thread_that_cannot_be_asked_fails_the_layer`
+now has its thread block every signal and run on (spinning): the pass fails closed;
+mutant "a block is waited for as a thread that hears": the pass waited on it until the
+180 s bound killed it (exit 124): red. confine:: 12 of 12 and clippy for both crates clean
+on adacachy2. Owed to ROOT: a kernel of ABI 5 to 7, and a measure of the pass's yields
+while a thread sits in the window.
+
 ### M569. A confined VM process dialed its user's sockets, its daemon's Engine API among them (D30)
 
 Linux x86_64, adacachy2 (7.3.3-1-cachyos, Landlock ABI 11), 2026-11-13, policy df2acf47,
@@ -24382,6 +24421,25 @@ skips every filter for a syscall each allows whatever its arguments
 them, runs both. Owed to ROOT: VM runs on KVM (a daemon's
 warm VMs, `shards build`'s builder with its vsock ports, the GPU's VM process), x86_64
 and arm64 through L1.
+
+Amended 2026-11-13 (ROOT's decision on the gap before ABI v9): a VM process on Linux dials
+nothing itself, as on macOS and Windows. Its seccomp layer refuses every connect(2), on
+every kernel, and Landlock's v9 `RESOLVE_UNIX` is handled and granted nowhere, an extra
+layer. A VM given a vsock path asks its spawner, over `--grants`, for a socket bound there
+and for each host port it dials beside it (`kind::DIAL`, a port). The CLI's broker
+(`shardsd grants`) answers `run vm` and `restore vm` given `--vsock`, and a thread of the
+builder's launch answers the builder. On adacachy2, `a_confined_vm_dials_only_beside_its_vsock_path`
+now has a VM given a vsock path dial a same-user `engine.sock` listener outside its grants,
+and its own vsock directory's `v_5`: both refused (`refused 13`) under the seccomp layer
+alone (a kernel before v9), under Landlock's v9 rules alone, and under both. Before this
+change the seccomp-alone case dialed both (`dial outside: ok`): red. Mutants, each red:
+the layer's connect refusal dropped (`dial outside: ok`), and `RESOLVE_UNIX` dropped (the
+Landlock-alone cases dialed). `grant_answer::linux_tests` (shards), 2 of 2: the broker binds
+the vsock path, dials `v_5` beside it and refuses `v_6`, and refuses a file grant, and any
+grant after the vsock path. confine:: 11 of 11; clippy for shards, shards-vm-process and
+shards-syscall-filter clean on that host and on adas-mac-studio.local (macOS arm64). Owed
+to ROOT: tests/vsock.rs, boot.rs's managed rate test, snapshot.rs's vsock restores and
+tests/build.rs, on KVM x86_64 and arm64 through L1.
 
 ### M570. A Windows VM that stages its snapshots and has no vsock path was granted files after its guest started (platform-03, D30, D141, D196)
 
@@ -24545,7 +24603,112 @@ evidence on real NTFS views, no real VM; a view refused after its section was ma
 unit-unreachable, and the WHP DAX tests are owed.
 [Commands, logs, mutants and owed runs](measurements/windows-p0/README.md).
 
-### M574. Memory control's times learned where it runs: a host's pressure, its repeats and what follows a word (D188, D137; memory-06, 07, 08, 10, 12, 13)
+### M574. A refused FUSE reply retires its unpublished acquisitions (memory-18, D197)
+
+Found by the Windows P0 lane. At abecce1a5 (Codex, kiln r28, macOS arm64), eight
+refused LOOKUPs left 9 nodes/references instead of the root's 1; eight CREATEs also
+left 8 handles and cached descriptors. c37547114 releases only the new handle and
+forgets each new entry before EIO; eddbef457 shares the entry walk with
+reconciliation; fbabcfe6b detaches a share whose cleanup exchange breaks; ee3cf6fe9
+(Claude takeover) keeps the share after a RELEASE the server refuses, still forgetting
+its entry, as Linux does, and holds a node the guest already has to one reference.
+Earlier accepted resources and completed mutations remain. On ee3cf6fe9, a merge of
+main 118d14ccf: `cargo test -p shards-vmm --lib devices::virtio::fs` 88/88 on macOS
+arm64 (adas-mac-studio-3) and 89/89 on Linux x86_64 (adacachy2), the seven memory-18
+tests among them, clippy clean on both; the red (no cleanup) and eight more mutants of
+the guard killed on both hosts. No real VM ran.
+[Sources, red/green, mutants and owed VM/platform work](measurements/memory-fixes-v1/memory-18.md).
+
+### M575. A group member's own exec judge owns its refusal (review waits-01)
+
+At `bb799b90d`, the focused real groups-verdict unit test
+`a_pending_member_word_is_not_a_failed_give_back` failed: a pending word past W*
+was treated as a completed failed pass (Kiln r5, adas-mac-studio.local, macOS arm64).
+At `8168e33f5`, the groups tests (7) and parallel-member test (1) passed and
+`cargo clippy -p shards --all-targets -- -D warnings` passed (r6, same host).
+`Wait::GroupWord` now publishes its own typed refusal before its kill-ack wait;
+the group consumes that outcome instead of running a second wall-clock timer.
+Cold waits remain unbounded by another word's later answer.
+[Commands, logs, policy accounting and owed real-VM checks](measurements/waits-fixes-v1/README.md).
+This is scoped unit red/green evidence, not a real-VM or performance result.
+
+### M576. A word's refusal is its own exec's, a reader's end no take, a zombie no daemon, a kept record one transaction (review waits-01, -04, -08, -11; D183, D185)
+
+Focused unit tests, macOS arm64 (adas-mac-studio-3.local), each red on the commit before its
+fix, at `21f8bee02`, and green on the fixed tip and on its merge with main:
+- waits-01's remainder (D183): `daemon::tests::a_refused_room_is_not_the_next_rounds_verdict`,
+  a member whose room was refused in round 1 and whose give-back was then under way, cold,
+  was counted in round 2 as one that gave nothing: its group past its max, it was OOM-killed
+  before its round-2 word came (red: "asked 4 where an exec was due", kind 4 the kill, 24
+  an exec). Each exec of a word now begins `Waiting`.
+- waits-04 (D185): `slots::fifo::tests::a_readers_end_is_no_take`, a FIFO filled, more than
+  PIPE_BUF left, its reader closed as the wait began: red `[Began, Ended(57.125µs)]`, a take
+  learned from a client that took nothing; now `[Began]` and BrokenPipe. Its twin, a reader
+  draining at each wait, is a take each.
+- waits-08 (D185): `tests::an_unreaped_daemon_does_not_live`, a child exited and left a zombie
+  (waitid `WNOWAIT`), named by its ID and start: red "exited and unreaped, lives"; now neither
+  `Named::lives`, `daemon_lives` nor `exiting`.
+- waits-11 (the tests' waits): `harness.rs::concurrent_keeps_never_shrink_a_kept_record`, a
+  keep of 100 ms tried inside one of 10 ms between its read and its rename: red, it landed
+  (`Some(true)`), and the 10 ms rename over it would shrink W*; now held off, kept after, 100 ms.
+
+Each red is its guard's mutation: the fix's own lines removed. The merged tree also passed
+shards-ipc's lib (66), daemon::groups (7), health (13), reclaim (1), the parallel-member,
+room-footprint and give-back daemon tests, harness `an_answer_already_there_teaches_nothing`,
+and `cargo clippy -p shards-ipc -p shards --all-targets -- -D warnings`.
+`harness.rs::a_wait_is_refused_though_its_own_polls_keep_its_daemon_busy` fails as its
+daemon cannot start under `SHARDS_HELPERS=skip` (exit 1 before it served), at the base
+`97f404be8` too: not these changes'. Linux's `/proc` state read and Windows ran on CI only.
+[Commands and owed runs](measurements/waits-fixes-v1/README.md).
+
+### M577. A dial's next address starts as its path's connects would send their second SYN (review waits-12, D222)
+
+At `5b7e1748b` (the race asked of the path, still RACE's 300 ms),
+`cargo test -p shards-registry --lib patience::tests::a_dial_starts_its_next_address_as_its_paths_connects_retransmit`
+failed: a path that had shown no connect raced at 300 ms, not RFC 8305 §8's 250 ms. At
+`095cbe98e` it passed, with shards-registry's lib tests (176) and `cargo clippy -p
+shards-registry --all-targets -- -D warnings`, macOS arm64 (adas-mac-studio-3.local). Expected
+values, each from RFC 6298 §2.2 on the path's first connect: 10 ms gives 30 ms, held at
+the 100 ms minimum; 150 ms gives 450 ms; 1.5 s gives 4.5 s, held at the 2 s maximum; a
+handshake teaches the race nothing. This is unit evidence, not a dial over a real network.
+
+### M578. Windows' emulator registry, spawn inheritance, slot waits, versioned names and raised CPU sets (platform-05..10, D140, D191, D195, D196)
+
+Taken over from the Codex lane while jupiter was offline; run in the Windows 11 x86_64
+container on adacachy (Windows 10.0.26200.8037, 8 CPUs, NTFS, Rust 1.98.1,
+x86_64-pc-windows-msvc), `cargo test -p <crate> --lib -- <filter>` through
+[run.ps1](measurements/platform-fixes/windows-0510/run.ps1). WHP is not in the container: no
+partition was made, and the WHP tests that need one skipped.
+
+- **Red** at 190b49d9b ([log](measurements/platform-fixes/windows-0510/red-190b49d9b.log)),
+  each new test failing at its finding's assertion, 7 of 7: an unplugged sub-block still
+  reached by the emulator (05); the emulator writing read-only memory (06); a confined
+  spawn's lent stdout left inheritable, and a std child holding a pipe end made inheritable
+  for another (07); a surrogate-named directory unwatched (08); `newest_in(STATE)` missing
+  `state.~1` (09); three raised spinners pinned to one CPU raised for 3 s (10).
+- **Green**: shards-ipc `windows::tests` and `slots::` 44 passed, 1 ignored (a measurement),
+  at 9f95ae7db ([log](measurements/platform-fixes/windows-0510/green-9f95ae7db.log)); shards-vmm
+  `hv::whp::`, `platform::windows_files::`, `platform::windows_thread::` 29 passed, 1 ignored,
+  at f0cd08598 ([log](measurements/platform-fixes/windows-0510/green-vmm-f0cd08598.log)).
+- **Mutations** at f0cd08598, each guard removed alone and its test run
+  ([patches](measurements/platform-fixes/windows-0510/mutations/),
+  [log](measurements/platform-fixes/windows-0510/mutations-f0cd08598.log)): 10 of 10 fail at
+  their assertions: an exact-match unmap and a map without a cut (05), no write check (06),
+  the lent handle made inheritable and an unguarded `spawn_std` (07), a lossy watch name and
+  swallowed watch failures (08), names matched by case and collisions ignored (09), the pool
+  ignored (10).
+- shards-registry `credentials` 12 passed on Windows at 74a405cd, its helpers started through
+  `spawn_std` ([log](measurements/platform-fixes/windows-0510/registry-74a405cd.log)).
+- **Clippy** at 6b40699fa, `-p shards-vmm -p shards-ipc -p shards-registry -p shards-api -p shards
+  --all-targets -- -D warnings`, clean: `cargo xwin clippy` for x86_64-pc-windows-msvc and
+  aarch64-pc-windows-msvc, and `cargo clippy` for aarch64-apple-darwin, on
+  adas-mac-studio.local ([clippy.sh](measurements/platform-fixes/windows-0510/clippy.sh)).
+
+Owed to ROOT, unrun: the real-WHP guest routes of 05 and 06 (D140); 09's sensitivity query's
+cost on a restore (D196); 10's host-wide owner across VM processes, an R02 decision, and its
+jupiter measurement (D191); the 8-target lint, CI and Windows E2E on main.
+
+### M579. Memory control's times learned where it runs: a host's pressure, its repeats and what follows a word (D188, D137; memory-06, 07, 08, 10, 12, 13)
 
 - **Question.** The review of 2026-11-13 (docs/bugs/2026-11-13/memory.md) found fixed
   times and levels in how shards hears its host's memory pressure and paces what follows:

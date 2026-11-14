@@ -132,7 +132,7 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 
 **Status (2026-11-13):** owed to ROOT: `cargo test -p shards moves_live --test moved` and the corresponding pressure/cold-start variants. Unchanged pending a locally derived design; see finding 06 in `docs/research/measurements/memory-fixes-v1/owed-designs.md`.
 
-**Status (2026-11-14):** fixed in 2275e3829 (red, as each guard mutated back to its window: `pressure::saying::a_pressure_is_said_as_it_doubles`, `daemon::budget::tests::a_microvm_held_short_is_told_again_as_telling_it_weighs_against_how_long_it_was_short`, `daemon::groups::tests::the_groups_passes_follow_their_cost_against_how_long_groups_stayed_as_they_are`, `build::give::tests::a_cold_pass_judges_no_ask_and_its_first_answer_teaches_its_patience`, `platform::pressure::tests::a_lasting_pressure_is_said_again_as_its_act_weighs_against_how_long_it_lasted`, init `plug::tests::memory_that_came_within_a_peaks_period_is_kept`). The 2 s stays only as Linux's unprivileged trigger bound; D188, PM M574. Owed to ROOT: `cargo test -p shards moves_live --test moved`, `update_under_pressure_stress` (tests/containers.rs, ignored) for PM M466's rounds, macOS/Windows repeat counts under a raised system pressure.
+**Status (2026-11-14):** fixed in 2275e3829 (red, as each guard mutated back to its window: `pressure::saying::a_pressure_is_said_as_it_doubles`, `daemon::budget::tests::a_microvm_held_short_is_told_again_as_telling_it_weighs_against_how_long_it_was_short`, `daemon::groups::tests::the_groups_passes_follow_their_cost_against_how_long_groups_stayed_as_they_are`, `build::give::tests::a_cold_pass_judges_no_ask_and_its_first_answer_teaches_its_patience`, `platform::pressure::tests::a_lasting_pressure_is_said_again_as_its_act_weighs_against_how_long_it_lasted`, init `plug::tests::memory_that_came_within_a_peaks_period_is_kept`). The 2 s stays only as Linux's unprivileged trigger bound; D188, PM M579. Owed to ROOT: `cargo test -p shards moves_live --test moved`, `update_under_pressure_stress` (tests/containers.rs, ignored) for PM M466's rounds, macOS/Windows repeat counts under a raised system pressure.
 
 ### memory-07 — P3 / medium — PSI's stall threshold and fallback percentage are inherited constants
 
@@ -148,7 +148,7 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 
 **Status (2026-11-13):** owed to ROOT: `cargo test -p shards --test budget` and the corresponding pressure/cold-start variants. Unchanged pending a locally derived design; see finding 07 in `docs/research/measurements/memory-fixes-v1/owed-designs.md`.
 
-**Status (2026-11-14):** fixed in 2275e3829 (red `platform::pressure::tests::a_windows_stall_is_pressure_once_it_costs_what_acting_does` with lmkd's 140 ms put back): the stall is the last give-back's cost (rent or buy), cold the kernel's least threshold; D188, PM M574. Owed to ROOT: `cargo test -p shards --test budget` on a loaded Linux host with cgroup v2 delegation, the trigger's word count and give-backs against lmkd's 140 ms.
+**Status (2026-11-14):** fixed in 2275e3829 (red `platform::pressure::tests::a_windows_stall_is_pressure_once_it_costs_what_acting_does` with lmkd's 140 ms put back): the stall is the last give-back's cost (rent or buy), cold the kernel's least threshold; D188, PM M579. Owed to ROOT: `cargo test -p shards --test budget` on a loaded Linux host with cgroup v2 delegation, the trigger's word count and give-backs against lmkd's 140 ms.
 
 ### memory-08 — P3 / medium — PSI fallback polls at a chosen ten-second interval
 
@@ -164,7 +164,7 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 
 **Status (2026-11-13):** owed to ROOT: `cargo test -p shards --test budget` and the corresponding pressure/cold-start variants. Unchanged pending a locally derived design; see finding 08 in `docs/research/measurements/memory-fixes-v1/owed-designs.md`.
 
-**Status (2026-11-14):** fixed in 2275e3829 (red `platform::pressure::tests::a_psi_files_stall_so_far_is_its_some_total` with avg10 put back): no trigger, the same trigger kept from `some total` read at once and each window; D188, PM M574. Owed to ROOT: the fallback on a kernel before 6.4 (or a refused trigger) with short pressure pulses.
+**Status (2026-11-14):** fixed in 2275e3829 (red `platform::pressure::tests::a_psi_files_stall_so_far_is_its_some_total` with avg10 put back): no trigger, the same trigger kept from `some total` read at once and each window; D188, PM M579. Owed to ROOT: the fallback on a kernel before 6.4 (or a refused trigger) with short pressure pulses.
 
 ### memory-09 — P3 / medium — DAX's minimum file size is a portable fixed benchmark result
 
@@ -194,7 +194,7 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 
 **Status (2026-11-13):** owed to ROOT: `cargo test -p shards --test budget` and the corresponding pressure/cold-start variants. Unchanged pending a locally derived design; see finding 10 in `docs/research/measurements/memory-fixes-v1/owed-designs.md`.
 
-**Status (2026-11-14):** fixed in 2275e3829 (red `devices::virtio::fs::headroom::tests::a_look_is_due_as_its_cost_weighs_against_how_long_its_verdicts_held` with the hundredfold rule put back): D215's pace of the look's cost and how long its verdicts held; D188, PM M574. Owed to ROOT: `cargo test -p shards --test budget a_microvm_held_to_a_budget_reads_through_fuse_at_the_pace_of_reads_held_to_none` and the share's look count and CPU against the hundredfold rule's (R14).
+**Status (2026-11-14):** fixed in 2275e3829 (red `devices::virtio::fs::headroom::tests::a_look_is_due_as_its_cost_weighs_against_how_long_its_verdicts_held` with the hundredfold rule put back): D215's pace of the look's cost and how long its verdicts held; D188, PM M579. Owed to ROOT: `cargo test -p shards --test budget a_microvm_held_to_a_budget_reads_through_fuse_at_the_pace_of_reads_held_to_none` and the share's look count and CPU against the hundredfold rule's (R14).
 
 ### memory-11 — P3 / medium — Builder memory reserve still includes a fixed 64 MiB slack
 
@@ -224,7 +224,7 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 
 **Status (2026-11-13):** owed to ROOT: `cargo test -p shards-init plug::tests::` and the corresponding pressure/cold-start variants. Unchanged pending a locally derived design; see finding 12 in `docs/research/measurements/memory-fixes-v1/owed-designs.md`.
 
-**Status (2026-11-14):** fixed in 2275e3829 (red `build::builder::tests::a_giver_past_its_deadline_looks_at_once` with the 1 ms floor put back, 200 looks over 100 ms; red `plug::tests::the_growers_looks_follow_their_cost_against_the_wait` with a 1 ms pace): grower and oom_said on D215's pace, the reply reader looks at once past its deadline; D137, PM M574. Owed to ROOT: `cargo test -p shards --test build a_builders_memory_is_plugged_as_fast_as_its_jobs_take_it` on HVF and KVM.
+**Status (2026-11-14):** fixed in 2275e3829 (red `build::builder::tests::a_giver_past_its_deadline_looks_at_once` with the 1 ms floor put back, 200 looks over 100 ms; red `plug::tests::the_growers_looks_follow_their_cost_against_the_wait` with a 1 ms pace): grower and oom_said on D215's pace, the reply reader looks at once past its deadline; D137, PM M579. Owed to ROOT: `cargo test -p shards --test build a_builders_memory_is_plugged_as_fast_as_its_jobs_take_it` on HVF and KVM.
 
 ### memory-13 — P3 / medium — Hotplug still gives up after exactly one retry
 
@@ -240,7 +240,7 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 
 **Status (2026-11-13):** owed to ROOT: `cargo test -p shards-init plug::tests::` and the corresponding pressure/cold-start variants. Unchanged pending a locally derived design; see finding 13 in `docs/research/measurements/memory-fixes-v1/owed-designs.md`.
 
-**Status (2026-11-14):** fixed in 2275e3829 (red `plug::tests::memory_that_comes_after_a_third_ask_is_waited_for` with a give-up at the second window put back): asked again each window past W*, no count; ended typed by the driver's own "marking device broken" (`a_driver_that_stopped_for_good_is_given_up`), a refused ask, a lowered request or MemTotal unread; D137, PM M574. Owed to ROOT: a delayed-driver fault live (the device answering BUSY three windows) on a real builder.
+**Status (2026-11-14):** fixed in 2275e3829 (red `plug::tests::memory_that_comes_after_a_third_ask_is_waited_for` with a give-up at the second window put back): asked again each window past W*, no count; ended typed by the driver's own "marking device broken" (`a_driver_that_stopped_for_good_is_given_up`), a refused ask, a lowered request or MemTotal unread; D137, PM M579. Owed to ROOT: a delayed-driver fault live (the device answering BUSY three windows) on a real builder.
 
 ### memory-14 — P3 / medium — Growth and unplug retention use a fixed 2x working-memory multiplier
 
@@ -297,6 +297,20 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 **Confidence:** High policy violation; low operational impact.
 
 **Fix/test direction:** Derive a per-message bound from the wire grammar (empty or the signed-integer textual maximum), and give malformed frames typed refusal semantics. Test exact valid maxima and one byte past each grammar's bound.
+
+### memory-18 — P2 / high — Refused FUSE replies retain their nodes and open handles
+
+**Found by:** the Windows P0 lane, recorded in D197 and assigned by ROOT after memory-01 landed at b2e3b069a (fix 7f0cb8ce9).
+
+**Status (2026-11-14):** fixed in c37547114, eddbef457, fbabcfe6b and ee3cf6fe9 (red `refused_lookups_leave_the_held_count_unchanged` and `refused_creates_leave_the_held_count_unchanged`, abecce1a5: eight refused lookups left nine nodes; eight refused creates also left eight handles and descriptors). Green on ee3cf6fe9 (a merge of main 118d14ccf) on macOS arm64 and Linux x86_64, nine guard mutants killed; a RELEASE the server refuses keeps the share and still forgets its entry. Owed to ROOT: Windows `cargo test -p shards-vmm --lib devices::virtio::fs`, and the real-VM runs in `docs/research/measurements/memory-fixes-v1/memory-18.md`.
+
+**Location:** `crates/vmm/src/devices/virtio/fs/mod.rs`, the window-reconciliation refusal after `Slot::ask_into`; `server.rs` lookup/handle ownership.
+
+**Defect:** A successful LOOKUP or CREATE has already increased the server's lookup count and, for CREATE, taken a handle/descriptor. The device can replace its success with EIO when its window cannot follow the file. The guest never receives the new identity, so it cannot issue the matching FORGET or RELEASE. Repeating such refusals retains nodes, references and descriptors until unmount, worsening resource pressure.
+
+**Red test:** `refused_lookups_leave_the_held_count_unchanged` and `refused_creates_leave_the_held_count_unchanged` at abecce1a5 run real framed requests through Slot and Server, then invoke the device's extracted EIO replacement. Compare held nodes, lookup references, handles, cached descriptors and pins before and after a loop. The replacement is the production path; the unit test does not cause an actual Windows/Unix mapping failure.
+
+**Fix direction:** Retire exactly the acquisitions in an unpublished successful reply through the existing FUSE FORGET/RELEASE operations. Preserve references and handles from earlier accepted replies, and preserve the filesystem effects of completed mutations. Amend D197's until-unmount limitation.
 
 ## Checked and found sound
 

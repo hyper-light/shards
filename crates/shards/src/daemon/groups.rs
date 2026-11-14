@@ -284,24 +284,22 @@ impl Ask {
     }
 }
 
-/// A member's word under way (R04), on a thread of its own: what it says now and since when,
-/// which the groups' thread judges from outside by the record of its kind of answer
-/// (`Record::stalled`), and what is asked of it once that has ended.
+/// A member's word under way (R04): its exec's own judge's state, and the next ask. Only
+/// that judge can refuse it, and its refusal stands for that exec alone: each exec of the
+/// word begins `Waiting` (its room told, then a give-back). The groups thread consumes it.
 #[cfg(any(target_os = "macos", windows))]
 #[derive(Debug)]
 struct Word {
-    saying: Saying,
-    since: Instant,
+    state: WordState,
     next: Option<Ask>,
 }
 
-/// What a member's word says: its room told (`ROOM`), or what it holds cold asked back for a
-/// round (`RECLAIM`).
+/// The authoritative exec judge's outcome for a word still under way.
 #[cfg(any(target_os = "macos", windows))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Saying {
-    Room,
-    GiveBack(u64),
+#[derive(Debug)]
+enum WordState {
+    Waiting,
+    Refused(super::health::Cut),
 }
 
 /// The pace of the groups' passes (D188, R03; it was a pressure window): D215's
@@ -355,7 +353,7 @@ struct Hold {
 
 /// A group's round of give-backs (R04): opened at a pass that finds it short of its budget,
 /// each of its members then asked once, by VM process; done once each has answered, ended,
-/// or run past the slowest answer of its kind seen with none, and judged then.
+/// or its own exec judge refused it, and judged then.
 #[cfg(any(target_os = "macos", windows))]
 #[derive(Debug)]
 struct Round {
@@ -371,8 +369,7 @@ enum Given {
     Asked,
     /// Answered: what it gave back.
     Gave(Gave),
-    /// Nothing: its answer refused or cut, its run ended, or its word past the slowest answer
-    /// of its kind seen with none.
+    /// Nothing: its answer refused or cut, or its run ended.
     Nothing,
 }
 
@@ -583,8 +580,7 @@ impl<D: Disk> Daemon<D> {
     /// and every pressure window while a group has any, its files read again then, so that
     /// a budget written is heard within one. It asks its members and hears their answers,
     /// and waits on none of them, each member's words its own ([`speak`](Self::speak)):
-    /// between its passes it wakes as one answers, and as a round's member runs past the
-    /// slowest answer of its kind seen with none.
+    /// between its passes it wakes as one answers or its own exec judge refuses it.
     fn hold_groups<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>) {
         let mut members: HashMap<String, Vec<Member>> = HashMap::new();
         let mut holds: HashMap<String, Hold> = HashMap::new();
@@ -592,7 +588,7 @@ impl<D: Disk> Daemon<D> {
         let mut passed: Option<Instant> = None;
         let mut paced = Paced::default();
         loop {
-            let look = self.next_look(&members, &holds, passed, paced);
+            let look = self.next_look(&members, passed, paced);
             let woke = {
                 let mut woke = lock(&self.groups.woke);
                 if woke.quiet() {
@@ -657,35 +653,19 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// When the groups' thread looks next, while a group has members: its next pass, or the
-    /// first moment before it that a round's member runs past the slowest answer of its kind
-    /// seen with none (R05: a deadline of what this daemon has learned, never a probe).
+    /// The next resource-accounting pass, on its pace ([`Paced`]). Word outcomes wake the
+    /// thread independently; no second timer judges a member behind its authoritative exec
+    /// judge.
     fn next_look(
         &self,
         members: &HashMap<String, Vec<Member>>,
-        holds: &HashMap<String, Hold>,
         passed: Option<Instant>,
         paced: Paced,
     ) -> Option<Instant> {
         if members.is_empty() {
             return None;
         }
-        let pass = passed.map_or_else(Instant::now, |p| paced.next(p));
-        let words = lock(&self.groups.words);
-        let due = holds
-            .values()
-            .filter_map(|h| h.round.as_ref())
-            .flat_map(|r| r.of.iter())
-            .filter(|(_, given)| matches!(given, Given::Asked))
-            .filter_map(|(pid, _)| {
-                let word = words.get(pid)?;
-                let shards_api::Seen::Learned { slowest, .. } = self.record_of(word.saying).seen() else {
-                    return None;
-                };
-                word.since.checked_add(slowest)
-            })
-            .min();
-        Some(due.map_or(pass, |due| due.min(pass)))
+        Some(passed.map_or_else(Instant::now, |p| paced.next(p)))
     }
 
     /// A pass over group `name` and its microVMs `members` (D183, slice 3): its files read
@@ -798,7 +778,7 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// Judges group `name`'s round of give-backs once it is done (D183, slice 3): a member
-    /// whose word has run past the slowest answer of its kind seen with none gave nothing;
+    /// whose own word judge refused it gave nothing;
     /// and past its `memory.max`, with nothing given back, the one of its microVMs that
     /// holds the most is stopped, its record marked OOM-killed, as a cgroup's OOM killer
     /// takes its largest (mm/oom_kill.c, `oom_badness`).
@@ -806,9 +786,8 @@ impl<D: Disk> Daemon<D> {
         let Some(round) = hold.round.as_mut() else {
             return;
         };
-        let now = Instant::now();
         for (pid, given) in &mut round.of {
-            if matches!(given, Given::Asked) && self.overdue(*pid, now) {
+            if matches!(given, Given::Asked) && self.word_refusal(*pid).is_some() {
                 *given = Given::Nothing;
             }
         }
@@ -864,8 +843,7 @@ impl<D: Disk> Daemon<D> {
             words.insert(
                 m.pid,
                 Word {
-                    saying: Saying::Room,
-                    since: Instant::now(),
+                    state: WordState::Waiting,
                     next: None,
                 },
             );
@@ -896,10 +874,14 @@ impl<D: Disk> Daemon<D> {
         loop {
             self.tell_group_room(&m.id, m.pid, ask.room);
             if let Some(round) = ask.give {
-                self.saying(m.pid, Saying::GiveBack(round));
+                // Its room's exec has ended: a refusal of it is no verdict on the give-back
+                // that follows, which its own judge judges, nor on a round opened after it.
+                self.word_begins(m.pid);
                 let vm = self.own_run(&m.id);
                 self.give_after(&vm);
-                let gave = self.give_back_of(&m.id, m.pid);
+                let refused = |cut: &super::health::Cut| self.refuse_word(m.pid, cut);
+                let wait = super::health::Wait::GroupWord(m.pid, &self.answers.reclaim, &refused);
+                let gave = self.give_back_waiting(&m.id, wait);
                 self.given_back(&vm);
                 self.heard(Answered {
                     pid: m.pid,
@@ -911,8 +893,7 @@ impl<D: Disk> Daemon<D> {
                 let mut words = lock(&self.groups.words);
                 let next = words.get_mut(&m.pid).and_then(|word| {
                     let next = word.next.take()?;
-                    word.saying = Saying::Room;
-                    word.since = Instant::now();
+                    word.state = WordState::Waiting;
                     Some(next)
                 });
                 if next.is_none() {
@@ -928,11 +909,18 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// Member `pid`'s word says `saying` from now.
-    fn saying(&self, pid: u32, saying: Saying) {
+    /// Member `pid`'s word begins an exec of its own: no refusal stands for it yet.
+    fn word_begins(&self, pid: u32) {
         if let Some(word) = lock(&self.groups.words).get_mut(&pid) {
-            word.saying = saying;
-            word.since = Instant::now();
+            word.state = WordState::Waiting;
+        }
+    }
+
+    /// The active word's exec judge refused it. Publish under the group's wake mutex
+    /// through spoke(), so a refusal between its check and wait cannot lose its wake.
+    fn refuse_word(&self, pid: u32, cut: &super::health::Cut) {
+        if let Some(word) = lock(&self.groups.words).get_mut(&pid) {
+            word.state = WordState::Refused(cut.clone());
         }
         self.spoke();
     }
@@ -949,22 +937,10 @@ impl<D: Disk> Daemon<D> {
         self.groups.wake.notify_one();
     }
 
-    /// Whether member `pid`'s word has run past the slowest answer of its kind seen with none
-    /// by `now`, judged from outside by D215's record (`Record::stalled`): never while its
-    /// kind has had no answer, whose wait follows its microVM's liveness alone, nor with no
-    /// word under way, its answer on its way.
-    fn overdue(&self, pid: u32, now: Instant) -> bool {
-        let words = lock(&self.groups.words);
-        words
-            .get(&pid)
-            .is_some_and(|word| self.record_of(word.saying).stalled(word.since, now).is_some())
-    }
-
-    /// The record of the kind of answer `saying` waits on (D215).
-    fn record_of(&self, saying: Saying) -> &shards_api::Record {
-        match saying {
-            Saying::Room => &self.answers.room,
-            Saying::GiveBack(_) => &self.answers.reclaim,
+    fn word_refusal(&self, pid: u32) -> Option<super::health::Cut> {
+        match &lock(&self.groups.words).get(&pid)?.state {
+            WordState::Waiting => None,
+            WordState::Refused(cut) => Some(cut.clone()),
         }
     }
 
@@ -1029,12 +1005,13 @@ impl<D: Disk> Daemon<D> {
             argv,
             ..Default::default()
         };
+        let refused = |cut: &super::health::Cut| self.refuse_word(pid, cut);
         match self.exec_waiting(
             id,
             &spec,
             None,
             1 << 12,
-            super::health::Wait::WhileRuns(pid, &self.answers.room),
+            super::health::Wait::GroupWord(pid, &self.answers.room, &refused),
         ) {
             Ok(q) if q.status == Some(0) && q.cut.is_none() => {
                 let said = String::from_utf8_lossy(&q.output);
@@ -1078,6 +1055,61 @@ mod tests {
         assert_eq!(paced.next(at), at + Duration::from_nanos(316_227_766));
         paced.unchanged_since = Some(at);
         assert_eq!(paced.next(at), at, "a change found: the next at once");
+    }
+
+    /// A pending word's own exec wait owns its progress and host holds. Elapsed wall time
+    /// alone cannot finish its group's round, including while it waits behind host reclaim.
+    #[cfg(any(target_os = "macos", windows))]
+    #[test]
+    fn a_pending_member_word_is_not_a_failed_give_back() {
+        let t = super::super::tests::Test::new("group-pending");
+        let slowest = std::time::Duration::from_millis(1);
+        t.daemon.answers.room.teach(slowest, slowest);
+        let pid = std::process::id();
+        lock(&t.daemon.groups.words).insert(
+            pid,
+            Word {
+                state: WordState::Waiting,
+                next: None,
+            },
+        );
+        let mut hold = Hold {
+            round: Some(Round {
+                id: 1,
+                of: [(pid, Given::Asked)].into(),
+            }),
+            ..Hold::default()
+        };
+        std::thread::sleep(slowest * 2);
+        t.daemon.judge_round("pending", &[], &mut hold);
+        assert!(
+            hold.round.is_some(),
+            "a pending word was treated as a completed failed pass"
+        );
+        hold.answered(Answered {
+            pid,
+            round: 1,
+            gave: Some(Gave {
+                freed: 1,
+                unplugging: 0,
+            }),
+        });
+        t.daemon.judge_round("pending", &[], &mut hold);
+        assert!(hold.round.is_none(), "a completed give-back was not judged");
+        hold.round = Some(Round {
+            id: 2,
+            of: [(pid, Given::Asked)].into(),
+        });
+        let now = Instant::now();
+        let cut = super::super::health::Cut::Stalled(
+            t.daemon.answers.room.stalled(now - slowest * 2, now).unwrap(),
+        );
+        t.daemon.refuse_word(pid, &cut);
+        t.daemon.judge_round("pending", &[], &mut hold);
+        assert!(
+            hold.round.is_none(),
+            "an authoritative refusal did not finish the round"
+        );
     }
 
     #[test]

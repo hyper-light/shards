@@ -1,0 +1,14 @@
+diff --git a/crates/ipc/src/slots/named.rs b/crates/ipc/src/slots/named.rs
+index f42bb6a5e..4174f595a 100644
+--- a/crates/ipc/src/slots/named.rs
++++ b/crates/ipc/src/slots/named.rs
+@@ -774,8 +774,7 @@ fn watch(dir: &Path) -> io::Result<Option<Change>> {
+     }
+     let e = io::Error::last_os_error();
+     match code(&e) {
+-        Some(ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND) => Ok(None),
+-        _ => Err(e),
++        _ => Ok(None),
+     }
+ }
+ 

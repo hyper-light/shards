@@ -369,6 +369,9 @@ impl<H: Hosts> Pooling<H> {
 
     /// The run `request` of `spec`: on a warm host of its pool where one is ready and takes
     /// it, else on a host of its own; its pool told of it, and of its end as its guest drops.
+    /// A run that asks for its GPU report (D233) is no pool's: a warm host's VM process starts
+    /// before its run names the report's scope, which that process frames its report with as
+    /// its renderer is made, so the run gets a host of its own and its pool hears nothing.
     pub(super) fn boot(
         &self,
         spec: &ImageSpec,
@@ -376,6 +379,9 @@ impl<H: Hosts> Pooling<H> {
         patience: Duration,
         stop: &BootStop,
     ) -> Result<Box<dyn ImageGuest>, ImageRefusal> {
+        if request.gpu_report.is_some() {
+            return self.hosts.fresh(spec, request, patience, stop);
+        }
         let host = HostOf::of(spec);
         let exemplar = request.exemplar();
         let key = Key {
@@ -562,6 +568,10 @@ impl<W: Send> ImageGuest for Pooled<W> {
     fn keep_diagnostics(&self, to: std::fs::File) -> Result<(), ImageRefusal> {
         self.guest.keep_diagnostics(to)
     }
+
+    fn take_gpu_report(&self, patience: Duration) -> Result<crate::physical::GpuReport, ImageRefusal> {
+        self.guest.take_gpu_report(patience)
+    }
 }
 
 #[cfg(test)]
@@ -747,6 +757,9 @@ mod tests {
         fn keep_diagnostics(&self, _: std::fs::File) -> Result<(), ImageRefusal> {
             none()
         }
+        fn take_gpu_report(&self, _: Duration) -> Result<crate::physical::GpuReport, ImageRefusal> {
+            none()
+        }
     }
 
     impl Hosts for Hosted {
@@ -831,6 +844,7 @@ mod tests {
             gpu_devices: Vec::new(),
             sign_ins: Vec::new(),
             upstream_roots: Vec::new(),
+            gpu_report: None,
         }
     }
 
@@ -851,6 +865,7 @@ mod tests {
             gpu_devices: Vec::new(),
             sign_ins: Vec::new(),
             upstream_roots: Vec::new(),
+            gpu_report: None,
         }
     }
 
@@ -982,6 +997,42 @@ mod tests {
         assert_eq!(hosted.log().warm, 1, "a pool whose run goes on keeps its host");
         drop(run);
         hosted.until("its warm host ended past its keep-alive", |l| l.warm == 0);
+        drop(pools);
+    }
+
+    /// D233 through D253's pools: a run that asks for its GPU report gets a host of its own and
+    /// starts no warm one, as a warm host's VM starts before its run names the report's scope;
+    /// the same run asking none is pooled as every run is.
+    #[test]
+    fn a_run_asking_its_gpu_report_gets_a_host_of_its_own_and_no_pool() {
+        let hosted = Hosted::default();
+        let pools = Pooling::new(hosted.clone(), 4, KEEP_TEST).unwrap();
+        let gpus = vec![crate::PhysicalGpu::MetalRegistry(7)];
+        let scoped = wire::Request {
+            gpu_devices: gpus.clone(),
+            gpu_report: Some([3; 16]),
+            ..request(1, None)
+        };
+        let run = pools.boot(&spec(), &scoped, PATIENCE, &BootStop::new()).unwrap();
+        let other = pools.boot(&spec(), &scoped, PATIENCE, &BootStop::new()).unwrap();
+        assert_eq!(hosted.log().fresh, 2);
+        drop((run, other));
+        assert_eq!(
+            hosted.log().begun,
+            0,
+            "no warm host for a run that asks its report"
+        );
+        let unscoped = wire::Request {
+            gpu_devices: gpus,
+            ..request(1, None)
+        };
+        let pooled = pools
+            .boot(&spec(), &unscoped, PATIENCE, &BootStop::new())
+            .unwrap();
+        hosted.until("the unscoped run's pool warms a host", |l| {
+            l.fresh == 3 && l.begun == 1
+        });
+        drop(pooled);
         drop(pools);
     }
 

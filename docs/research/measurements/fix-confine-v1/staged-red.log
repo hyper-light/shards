@@ -1,0 +1,58 @@
+From /home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/confine-a611b634aa/source.bundle
+ * branch              p/fix-confine-v1 -> FETCH_HEAD
+HEAD is now at dcbec0e9 confine-03 red: exercise staging through the member mount plan
+   Compiling autocfg v1.5.1
+   Compiling libc v0.2.189
+   Compiling memchr v2.8.3
+   Compiling regex-syntax v0.8.11
+   Compiling num-traits v0.2.19
+   Compiling aho-corasick v1.1.5
+   Compiling shards-abi v0.1.0 (/home/adalundhe/g121-tmp/fix-confine-v1/source/crates/abi)
+   Compiling num-integer v0.1.47
+   Compiling num-bigint v0.4.8
+   Compiling shards-template v0.1.0 (/home/adalundhe/g121-tmp/fix-confine-v1/source/crates/template)
+   Compiling regex-automata v0.4.18
+   Compiling shards-testdir v0.1.0 (/home/adalundhe/g121-tmp/fix-confine-v1/source/crates/testdir)
+   Compiling shards-archive v0.1.0 (/home/adalundhe/g121-tmp/fix-confine-v1/source/crates/archive)
+   Compiling shards-erofs v0.1.0 (/home/adalundhe/g121-tmp/fix-confine-v1/source/crates/erofs)
+   Compiling shards-user v0.1.0 (/home/adalundhe/g121-tmp/fix-confine-v1/source/crates/user)
+   Compiling shards-dns v0.1.0 (/home/adalundhe/g121-tmp/fix-confine-v1/source/crates/dns)
+   Compiling regex v1.13.1
+   Compiling shards-cmdline v0.1.0 (/home/adalundhe/g121-tmp/fix-confine-v1/source/crates/cmdline)
+   Compiling shards-devcgroup v0.1.0 (/home/adalundhe/g121-tmp/fix-confine-v1/source/crates/devcgroup)
+   Compiling shards-init v0.1.0 (/home/adalundhe/g121-tmp/fix-confine-v1/source/crates/init)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.63s
+     Running unittests src/main.rs (/home/adalundhe/g121-tmp/fix-confine-v1/target/x86_64-unknown-linux-musl/debug/deps/shards_init-c8e65a6b116a2bb8)
+
+running 13 tests
+
+thread 'staged::tests::a_read_only_cover_refuses_staging_before_any_write' (2238906) panicked at crates/init/src/staged.rs:393:9:
+assertion failed: files("/home/h", &points, own(), 0, &setup).is_err()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'staged::tests::a_staged_file_uses_its_visible_nested_mount' (2238907) panicked at crates/init/src/staged.rs:365:59:
+called `Result::unwrap()` on an `Err` value: Os { code: 2, kind: NotFound, message: "No such file or directory" }
+test staged::tests::a_members_arguments_are_read_again_in_the_guest ... ok
+test staged::tests::a_working_directory_is_read_again_in_the_guest ... ok
+test staged::tests::files_need_a_home ... ok
+test staged::tests::staging_into_no_running_member_is_refused ... ok
+test staged::tests::the_domains_label_is_never_staged ... ok
+test staged::tests::staged_variables_replace_by_key ... ok
+test staged::tests::a_file_from_before_is_replaced_and_one_staged_twice_refused ... ok
+test staged::tests::a_volume_home_is_opened_where_files_are_staged ... ok
+test staged::tests::a_home_beneath_its_mount_is_made_and_holds_its_files ... ok
+test staged::tests::a_read_only_cover_refuses_staging_before_any_write ... FAILED
+test staged::tests::files_are_written_beneath_the_home ... ok
+test staged::tests::a_staged_file_uses_its_visible_nested_mount ... FAILED
+test staged::tests::links_in_the_way_are_not_followed ... ok
+
+failures:
+
+failures:
+    staged::tests::a_read_only_cover_refuses_staging_before_any_write
+    staged::tests::a_staged_file_uses_its_visible_nested_mount
+
+test result: FAILED. 11 passed; 2 failed; 0 ignored; 0 measured; 262 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards-init --bin shards-init`
+

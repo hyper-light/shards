@@ -110,6 +110,8 @@ mod windows_thread;
 mod pressure;
 pub use pressure::{MemoryPressure, PressureWatches};
 
+pub mod granule;
+
 mod granted;
 #[cfg(windows)]
 pub use granted::input_file_id;
