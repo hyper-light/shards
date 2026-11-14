@@ -7096,6 +7096,57 @@ timeout, floor or chosen range is introduced. A network timestamp of i64::MAX
 seconds/u32::MAX nanoseconds previously panicked in `SystemTime` addition on the
 daemon's context-step thread. [Red/green and owed release-listener proof](../research/measurements/remote-fixes-v1/README.md).
 
+#### Heard, relayed and logged (remote-05 follow-up, remote-06, remote-07, 2026-11-14)
+
+*Heard is authenticated (remote-06).* `Liveness::heard` advances only when what a connection
+has taken from its peer grew across an event (`net::received`): every frame hyper-quic e0613f52
+records after AEAD and its duplicate check (`drops_authenticated`, then `frame_rx.record`), PADDING
+excepted, and CRYPTO counted by the new handshake data it carries (`handshake_progress`), never by
+its number. hyper-quic takes a server connection's first packet without putting its number in the
+Initial space's dedup window (`handle_first_packet` skips `drops_authenticated`), so a replay of a
+client's first Initial is taken again and its CRYPTO frames recounted, though RFC 9000 §12.3 has a
+receiver discard a packet whose number it has processed; counting CRYPTO by new data alone makes the
+replay no progress and no liveness. A datagram routed by its connection ID alone, a forged tag and a
+replay hear nothing; ACK-only packets are heard. Saturated counters and PADDING-only packets
+under-count, which can only let a holder go sooner, never invent liveness. The accept path's own
+heard is unchanged. The upstream fix (the first packet's number into its dedup window) is owed to
+hyper-raft, ROOT routing it; the pin stays. The contended-handshake tests' holders answer with PINGs
+their real client `Connection` seals in new packets (RFC 9000 §13.3, RFC 9002 §6.2.4) each initial
+RTT, reading only what each test advances, and acknowledging nothing until a test advances them, so
+that their server stays cold (no RTT sample, RFC 9002 §5.1); the 7-PTO, 4 s/8 s and 2.5 s
+expectations stand. The test fixture's window (`HAND_WINDOW`) and cadence (`ANSWER_EVERY`) are the
+tests' own, derived in their comments; no production value changed.
+
+*A relay is had before its command starts (remote-07).* Every fallible step of relaying a
+command (a driver waker's descriptor for each thread, each thread) runs on the start worker before
+`Host::start` (`server::Relay::ready`); one that fails starts nothing, refused. The threads wait for
+their parts on channels of one place each; once the command has started the driver hands them over
+(`Relay::relay`), which cannot fail, so the one wait that reaps the command always has its thread
+however its stream ends, and a start the driver cannot hear (its channel full or gone) is hung up
+and reaped, where it was only hung up. A relay costs one more thread than before for a command that
+tells nothing it made (its `made` thread ends at once, its part never sent): its cost is unmeasured
+and owed to ROOT's profiling (R14).
+
+*What the log says (remote-05 follow-up).* A client's command is logged by its path alone
+(`daemon::remote::named`, from cmdline's own table: `client laptop: shards run`), a step by its
+kind where it is one of its protocol's (`policy step resolve`, `context step build`, the copy and
+move steps' verbs; any other word `of no kind it knows`), a refusal with its command's path, and
+each command's end with its status (`client laptop: shards run ended, status 3`). No flag's value,
+argument, variable, path or relay token is logged.
+
+*Values still chosen (remote-08), owed.* `invite::LIFETIME_SECS` (3600 s) and `frame::MAX_FRAME`
+(4 MiB) are not derived. The lifetime is an authority the owner grants: no learning may set or
+lengthen it, so it is the owner's to state (when an invitation is made) or the person's to rule
+that an invitation lasts until its one use; the refusal of a lapsed one stays typed. The frame bound
+is to become each tag's own contract: an Exec request this host's own `sysconf(_SC_ARG_MAX)` read at
+the listener's start (POSIX; on Linux a quarter of RLIMIT_STACK, at least 128 KiB, execve(2)), as a
+request this host cannot exec is refused anyway; on Windows CreateProcess's 32,767-character command
+line and the environment block; stdin, stdout and stderr chunks `server::READ_MOST` (the pipe
+buffers cited there); a join `JOIN_MAX`; a microVM's ID `MADE_MOST`; resizes, signals and controls
+their fixed sizes; `MemberExec` its `ASK_MOST`; and managed records (`managed::RECORD_MOST`) and
+move plans (`daemon::moves::MAX_PLAN`), which now borrow `MAX_FRAME`, bounds of their own contracts.
+A frame past its tag's bound is refused typed before it is buffered. None of it is built yet.
+
 #### A client's authority, judged of what runs and of whom its key is now (remote-01 to 03, 2026-11-13)
 
 The adversarial review of D180 (docs/bugs/2026-11-13/remote.md) found three ways a client

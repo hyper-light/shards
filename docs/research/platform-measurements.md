@@ -24707,3 +24707,28 @@ partition was made, and the WHP tests that need one skipped.
 Owed to ROOT, unrun: the real-WHP guest routes of 05 and 06 (D140); 09's sensitivity query's
 cost on a restore (D196); 10's host-wide owner across VM processes, an R02 decision, and its
 jupiter measurement (D191); the 8-target lint, CI and Windows E2E on main.
+
+### M579. macOS refuses SO_RCVTIMEO on a socket whose peer closed; hyper-quic recounts a replayed first Initial (D180, remote-06)
+
+*SO_RCVTIMEO after a close.* On macOS 26.2 (adas-mac-studio.local, arm64), `setsockopt(SO_RCVTIMEO)`
+on a Unix stream socket whose peer wrote six bytes and closed returned EINVAL, as XNU's
+`sosetoptlock` refuses options on a socket with SS_CANTRCVMORE and SS_CANTSENDMORE both set; on one
+whose peer only shut its write side it was taken; on one shut both ways by its own side, EINVAL. A
+read after the refusal returned the six bytes whole, then its end. Method: a standalone program over
+`UnixStream::pair` (each case in turn), built with rustc and run once. This was ROOT's k16
+`a_contexts_engine_is_its_machines` failure at 994e7715d (context.rs:711, `Os { code: 22 }`): the
+tests' `common::Following` set the timeout before each judged read, so an Engine API relay that
+answered and closed before the next read failed it. Such a read waits for nothing; `common::timed`
+takes the refusal for no timeout needed. `shards_api::client` sets read timeouts before its reads
+too; whether its paths meet a closed peer first is unchecked (owed, ROOT).
+
+*A replayed first Initial.* `net::tests::replayed_and_unauthenticated_datagrams_do_not_advance_liveness`
+(a real `Driver` taking a hand-driven client's first datagram, then the same datagram 1 ms later)
+heard the replay on Codex's frame-total rule: hyper-quic e0613f52's `handle_first_packet` calls
+`on_packet_authenticated` and `process_decrypted_packet` without `drops_authenticated`, so the first
+packet's number never enters its space's dedup window and the replay's CRYPTO frame is recorded
+again (read from the source; the counters themselves were not printed for a replay). Its first
+packet took the handshake's progress to 1141, which three PINGs after it left unchanged. With
+CRYPTO counted by new handshake data, the replay hears nothing (macOS arm64,
+adas-mac-studio-3.local).
+
