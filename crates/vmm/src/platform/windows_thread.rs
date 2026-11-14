@@ -393,6 +393,84 @@ mod tests {
         assert_eq!(looks, 4);
     }
 
+    /// The highest CPU this process may run on, as a mask of it alone.
+    fn last_cpu() -> usize {
+        use windows_sys::Win32::System::Threading::GetProcessAffinityMask;
+        let (mut process, mut system) = (0usize, 0usize);
+        // SAFETY: this process's pseudo-handle, and two words for the masks.
+        let ok = unsafe { GetProcessAffinityMask(GetCurrentProcess(), &raw mut process, &raw mut system) };
+        assert_ne!(ok, 0, "{}", io::Error::last_os_error());
+        assert_ne!(process, 0);
+        1 << (usize::BITS - 1 - process.leading_zeros())
+    }
+
+    /// Pins the calling thread to the CPUs `mask` names.
+    fn pin(mask: usize) {
+        use windows_sys::Win32::System::Threading::SetThreadAffinityMask;
+        // SAFETY: the calling thread's pseudo-handle.
+        assert_ne!(unsafe { SetThreadAffinityMask(GetCurrentThread(), mask) }, 0);
+    }
+
+    /// Do: raise three threads pinned to one CPU, each spinning, beside a thread at normal
+    /// priority pinned there and spinning too, for 3 s. Expect each raised thread seen back
+    /// at normal, and the normal one to have run: three raised threads each took a third of
+    /// the CPU, under the half each is credited, so all three kept their credit and the CPU,
+    /// which a thread of normal priority, a host's, then had only as Windows rescues a thread
+    /// it has kept from running for seconds (platform-10).
+    #[test]
+    fn raised_threads_sharing_a_cpu_take_no_more_than_half_of_it() {
+        const RAISED_THREADS: usize = 3;
+        let cpu = last_cpu();
+        let (ids, said) = mpsc::channel();
+        let spinning = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let raised: Vec<_> = (0..RAISED_THREADS)
+            .map(|_| {
+                let (ids, spinning) = (ids.clone(), spinning.clone());
+                std::thread::spawn(move || {
+                    pin(cpu);
+                    let watch = raise_current().unwrap().unwrap();
+                    // SAFETY: no preconditions.
+                    ids.send(unsafe { GetCurrentThreadId() }).unwrap();
+                    while spinning.load(std::sync::atomic::Ordering::Relaxed) {
+                        std::hint::spin_loop();
+                    }
+                    drop(watch);
+                })
+            })
+            .collect();
+        drop(ids);
+        let ids: Vec<u32> = said.iter().take(RAISED_THREADS).collect();
+        let normal = {
+            let spinning = spinning.clone();
+            std::thread::spawn(move || {
+                pin(cpu);
+                let clock = ThreadClock::current().unwrap();
+                while spinning.load(std::sync::atomic::Ordering::Relaxed) {
+                    std::hint::spin_loop();
+                }
+                clock.read().unwrap()
+            })
+        };
+        let mut lowered = [false; RAISED_THREADS];
+        let until = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < until {
+            for (seen, id) in lowered.iter_mut().zip(&ids) {
+                *seen |= priority_of(*id) == THREAD_PRIORITY_NORMAL;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        spinning.store(false, std::sync::atomic::Ordering::Relaxed);
+        let host_ran = normal.join().unwrap();
+        for thread in raised {
+            thread.join().unwrap();
+        }
+        assert_eq!(
+            lowered, [true; RAISED_THREADS],
+            "raised throughout; the normal thread ran {host_ran} ns"
+        );
+        assert!(host_ran > 0, "the normal thread never ran");
+    }
+
     /// A thread its program set at another priority is left at it.
     #[test]
     fn a_thread_set_otherwise_is_left_as_it_is() {
