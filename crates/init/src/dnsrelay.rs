@@ -160,3 +160,70 @@ pub(crate) fn write_message(s: &mut TcpStream, msg: &[u8]) -> io::Result<()> {
     out.extend_from_slice(msg);
     s.write_all(&out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_open_tcp_client_and_a_lost_udp_query_leave_other_clients_progress() {
+        let gateway = UdpSocket::bind("127.0.0.1:0").unwrap();
+        gateway.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        let to = gateway.local_addr().unwrap();
+        let mut names = shards_dns::Names::default();
+        names.add("peer", "192.0.2.7".parse().unwrap());
+        let mut q = vec![0x12, 0x34, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0];
+        q.extend_from_slice(b"\x04peer\0\0\x01\0\x01");
+        let expected = names.answer(&q).unwrap();
+        let upstream = std::thread::spawn(move || {
+            for _ in 0..6 {
+                let mut buf = [0; 65535];
+                let (n, from) = gateway.recv_from(&mut buf).unwrap();
+                let query = &buf[..n];
+                if shards_dns::query_name(query).as_deref() == Some("lost") {
+                    continue;
+                }
+                gateway.send_to(&names.answer(query).unwrap(), from).unwrap();
+            }
+        });
+        let udp = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let tcp = TcpListener::bind("127.0.0.1:0").unwrap();
+        let (udp_at, tcp_at) = (udp.local_addr().unwrap(), tcp.local_addr().unwrap());
+        // The cargo test process owns this relay thread and all sockets; no VM or
+        // external daemon survives that process, including the baseline assertion.
+        std::thread::spawn(move || relay(&udp, &tcp, to));
+        let mut first = TcpStream::connect(tcp_at).unwrap();
+        first.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        write_message(&mut first, &q).unwrap();
+        assert_eq!(read_message(&mut first).unwrap(), Some(expected.clone()));
+
+        let lost = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let mut lost_q = q.clone();
+        lost_q[12..18].copy_from_slice(b"\x04lost\0");
+        lost.send_to(&lost_q, udp_at).unwrap();
+        let other = UdpSocket::bind("127.0.0.1:0").unwrap();
+        other.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        let mut buf = [0; 65535];
+        other.send_to(&q, udp_at).unwrap();
+        let answer = other.recv(&mut buf);
+        assert!(
+            answer.is_ok(),
+            "an open TCP client blocked another client's UDP query: {answer:?}"
+        );
+        assert_eq!(&buf[..answer.unwrap()], &expected);
+
+        let mut second = TcpStream::connect(tcp_at).unwrap();
+        second.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        write_message(&mut second, &q).unwrap();
+        assert_eq!(read_message(&mut second).unwrap(), Some(expected.clone()));
+        // An incomplete length prefix keeps the first connection open too.
+        first.write_all(&[0]).unwrap();
+        other.send_to(&q, udp_at).unwrap();
+        let n = other.recv(&mut buf).unwrap();
+        assert_eq!(&buf[..n], &expected);
+        write_message(&mut second, &q).unwrap();
+        assert_eq!(read_message(&mut second).unwrap(), Some(expected));
+        drop((first, second, lost, other));
+        upstream.join().unwrap();
+    }
+}
