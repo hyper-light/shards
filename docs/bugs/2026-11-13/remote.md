@@ -108,6 +108,8 @@ Ranking requested by Ada: **P0 critical, P1 high, P3 medium, P5 low**; unused in
 
 **Test:** synthetic inherited env, env-file, exec env and build-arg markers must reach their intended operation and remain absent from captured daemon.log, including refusal paths.
 
+**Status (2026-11-13):** fixed in 68b43042c111dbd7696e16fa5b8020993de9d274 (red `daemon::remote::tests::remote_requests_never_log_argument_values`; 0 passed/1 failed before, 5 module tests passed after; shards all-target clippy passed, macOS arm64). [Evidence](../../research/measurements/remote-fixes-v1/README.md). Real context/guest validation remains owed to ROOT.
+
 ### remote-06 — P3 / medium — Unauthenticated datagrams count as peer progress
 
 **Location:** `crates/remote/src/net.rs:1683`; consumers `:704`, `:774`.

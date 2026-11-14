@@ -24012,3 +24012,16 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   clippy -D warnings for shards-vm-process on macOS, x86_64-unknown-linux-gnu,
   aarch64-unknown-linux-musl (zig) and x86_64-pc-windows-msvc (xwin). R11, R15: no VM run here;
   the api_image and managed_output KVM loop is ROOT's. R16: the fetched logs (116 MB) removed.
+
+
+### Remote-05. Private request arguments in the daemon log (2026-11-13)
+
+This is correctness evidence, not a performance measurement. An enrolled fixture's
+refused request put its synthetic private argument in captured daemon stderr at
+`144818a4a` (1 regression failed); omitting raw argument/relay-token values at
+`68b43042c` passed all 5 remote module unit tests and shards all-target clippy on
+macOS arm64, Rust 1.98.1. Existing client/operation diagnostics remain. No new
+constant, cache, wait or platform branch. Exact commands, source revisions, logs,
+policy receipt and outstanding live-context checks are in
+[the evidence record](measurements/remote-fixes-v1/README.md). Guest execution and
+cross-machine/Windows checks are owed to ROOT; no performance claim is made.
