@@ -15802,8 +15802,12 @@ other's but what the move sends, and what the other takes by content:
   volume of its name here already; a bind's host path absent; a port it publishes that this
   machine cannot bind. Where the microVM runs, before it is saved: a run with a managed
   scope (`Refused::Managed`), which a restore does not take yet: a cold move's save would
-  leave it stopped here, its resume refused too. A plan of an earlier build
-  names no hypervisor, and is taken as before. Held by
+  leave it stopped here, its resume refused too. Every field of `Plan` is in every plan
+  (no `serde` defaults): one that lacks any, or holds one of another kind, is another
+  build's, refused typed (`moves::plan_of`): `Refused::OlderInit` where its init's contract
+  is not this machine's or unsaid, else `Refused::OtherPlan { name, saved_by, why }`. Held by
+  `a_plan_missing_any_field_is_refused_typed` (moves.rs, red while the fields an earlier
+  build's plans lacked defaulted, legacy5), and by
   `a_microvm_of_another_hypervisor_is_refused_before_anything_moves` and
   `a_refusal_is_typed_on_the_wire_and_says_what_it_said` (moves.rs),
   `a_move_of_another_hypervisors_microvm_is_refused_typed` and
@@ -16304,7 +16308,9 @@ refused there before anything moves: a move's plan, saved or live, carries the s
 made it and its init's contract (`Plan::saved_by`, `Plan::init`, this build's: its guest
 runs under this daemon, or its snapshot was found resumable), and the `ready` step on the
 machine moved to refuses one of another contract, or a plan that names none, an earlier
-daemon's, first (`moves::Refused::OlderInit`, as JSON to the mover beside its words).
+daemon's, first (`moves::Refused::OlderInit`, as JSON to the mover beside its words), and
+a plan of its contract that is not of this build's shape next (`Refused::OtherPlan`): no
+field of a plan defaults (legacy5).
 The Engine API's `POST /containers/{id}/start?checkpoint=` reaches the same `resumable`
 and answers its refusal as moby answers a failed start (500, the words as its message). Refused typed (`ResumeRefused`):
 `OlderInit { saved_by, init_abi, ours }`, a saver whose init announced another contract or
@@ -16318,7 +16324,7 @@ them); `Newer { format }`; and `Unreadable`. The order: the check comes first, a
 legacy4's rewrite, as every state the rewrite took (24 to 29) is one whose init this build
 cannot confirm before it runs, and every released one's (0.6.0's, 0.7.0's) is another's
 (crates/abi changed 124 times after v0.7.0): a rewritten snapshot would only be refused
-later, at its init's first message (vm_run's check after the guest dials again), so
+later, at its init's first message, so
 `snapshot::migrate`, `Migrated`, `MigrateRefused`, `.state.migrated` and the older formats'
 reader (`decode_body`'s branches, the tests' `encode_older`) are deleted. A restore reads
 format 30 alone. Its volumes and image are not the snapshot's: `rm vm` and a fresh `run`
@@ -16332,6 +16338,22 @@ refused; a cut saver unreadable), `resumable_refuses_another_init_and_leaves_the
 contract and one of an earlier daemon refused naming their saver, typed on the wire);
 red before this, where no state recorded a saver. Owed to ROOT: v0.7.0's release binary's
 `save vm m`, then this build's `restore vm m` printing the refusal and exiting 1.
+
+The checks after a guest dials (legacy5). The VM process checked a resumed guest's init
+contract once its connections came back (vm_run.rs), with words of its own; it is deleted,
+as no resume reaches it: a VM process is told to resume (its request's `tokens`) only by
+its daemon (`restore vm`, `start --checkpoint`), after `resumable` read the state's saver, and the contract its
+restored control page announces is the saver's own (both `Control::guest_abi` as the cut
+is taken: the device state's `abi` and `Snapshot::init`). The workload's check
+(workload.rs `serve`, before any command is sent) stays, as a cold boot reaches it: a
+guest's init that `SHARDS_INIT` or `shards configure guest --init` names (D28) may be
+another build's, which no check before its boot reads. It is typed: `workload::OtherInit
+{ spoken, ours }` ("this microVM's shards-init (contract …) cannot run in this shards
+(contract …): boot the shards-init this shards carries"), worded as
+`ResumeRefused::OlderInit`, which it does not share: a cold boot has no saver to name, and
+the run's error path is words from there on (`serve`'s `String`, the run's 125). Held by
+`a_guest_init_of_another_contract_is_refused_typed` (workload.rs). Owed to ROOT: a cold
+`SHARDS_INIT=<another build's shards-init> shards run alpine true` failing 125 with it.
 
 ### D175. Sockets read in poll(2) on macOS, and streams ended one way at a time
 
@@ -32162,8 +32184,7 @@ refusing typed. `arch::cpu` names a CPU per architecture:
   (`Plan::cpu_identity`: the leaves of `cpuid::IDENTITY`, which WHP's restore compares, as
   the machine's VM process reads them from a partition's vCPU), and the machine moved to
   refuses another before anything moves (`Refused::CpuIdentity`), where it was refused only
-  at the restore, after the whole stream. A plan of an earlier build names none, and its
-  CPU is found at the restore as before. WHP on arm64 tells a guest its ID registers, as
+  at the restore, after the whole stream. WHP on arm64 tells a guest its ID registers, as
   KVM and Hypervisor.framework do (`whp_arm64`'s `cpu_id`).
 
 **A baseline on WHP x86-64: researched, not built.** WHP has the means: its
@@ -32190,8 +32211,8 @@ ID registers say so; an instruction a program runs regardless is not stopped.
 0 and each feature leaf once), derived from it. The meet has no threshold.
 
 **Cold start.** A home with no `cpu-baseline` tells none: each guest is told its host's own
-CPU, as before, and `configure cpu --none` takes one away. A plan of an earlier build carries
-none (serde default) and is taken as before. A baseline written before a register joined
+CPU, as before, and `configure cpu --none` takes one away. A plan that carries no baseline
+field is another build's, refused at `ready` (D176, `Refused::OtherPlan`). A baseline written before a register joined
 `FEATURES` names no leaf for it: `within` leaves that leaf the host's, and `covers` checks
 only what the baseline names.
 
