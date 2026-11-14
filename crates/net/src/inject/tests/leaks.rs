@@ -936,3 +936,138 @@ fn an_h2_token_hosts_informational_response_never_carries_its_tokens_to_the_gues
         "a refused response's tokens were captured"
     );
 }
+
+/// A WebSocket frame as a server sends it (RFC 6455 §5.2): unmasked.
+fn ws(fin: bool, opcode: u8, payload: &[u8]) -> Vec<u8> {
+    let mut f = vec![u8::from(fin) << 7 | opcode];
+    match payload.len() {
+        n if n < 126 => f.push(n as u8),
+        n if n < 1 << 16 => {
+            f.push(126);
+            f.extend_from_slice(&(n as u16).to_be_bytes());
+        }
+        n => {
+            f.push(127);
+            f.extend_from_slice(&(n as u64).to_be_bytes());
+        }
+    }
+    f.extend_from_slice(payload);
+    f
+}
+
+/// A server's frames as the guest reads them: each frame's opcode and payload, and the messages
+/// its data frames make reassembled (§5.4); whether they parsed to their end.
+type WsRead = (Vec<(u8, Vec<u8>)>, Vec<Vec<u8>>, bool);
+
+fn ws_read(mut b: &[u8]) -> WsRead {
+    let (mut frames, mut messages, mut message) = (Vec::new(), Vec::new(), Vec::new());
+    while b.len() >= 2 {
+        let (fin, opcode, len7) = (b[0] & 0x80 != 0, b[0] & 0x0f, (b[1] & 0x7f) as usize);
+        let (len, at) = match len7 {
+            126 => (u16::from_be_bytes([b[2], b[3]]) as usize, 4),
+            127 => (u64::from_be_bytes(b[2..10].try_into().unwrap()) as usize, 10),
+            n => (n, 2),
+        };
+        if b.len() < at + len {
+            return (frames, messages, false);
+        }
+        let payload = b[at..at + len].to_vec();
+        if opcode < 8 {
+            message.extend_from_slice(&payload);
+            if fin {
+                messages.push(std::mem::take(&mut message));
+            }
+        }
+        frames.push((opcode, payload));
+        b = &b[at + len..];
+    }
+    (frames, messages, b.is_empty())
+}
+
+const UPGRADE: &str = "Connection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n";
+const SWITCHED: &[u8] = b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n";
+
+/// Do: a granted host's filled WebSocket upgrade, taken; the host echoes the value in a text
+/// message split across three fragments, a ping between two of them, then a close frame whose
+/// reason is the value. Expect (creds-11): the value in no frame's bytes the guest read and in no
+/// message it reassembles, the message's echo masked with the placeholder's bytes, the ping as
+/// it came, the close's reason masked; every frame still whole.
+#[test]
+fn a_websockets_echo_split_across_its_frames_is_masked() {
+    let root = root("shards test root");
+    let mut credentials = credentials(&root);
+    let mut bench = h1_sent(&mut credentials, &root, UPGRADE);
+    bench.answer(SWITCHED);
+    bench.until(&mut credentials, &mut unanswered, |b| {
+        b.got.ends_with(b"\r\n\r\n")
+    });
+    bench.got.clear();
+    let text = [b"{\"echo\":\"", VALUE, b"\"}"].concat();
+    let (a, rest) = text.split_at(15);
+    let (b, c) = rest.split_at(12);
+    let frames = [
+        ws(false, 0x1, a),
+        ws(false, 0x0, b),
+        ws(true, 0x9, b"ping"),
+        ws(true, 0x0, c),
+        ws(true, 0x8, &[&[0x03, 0xe8][..], VALUE].concat()),
+    ]
+    .concat();
+    bench.answer(&frames);
+    bench.until(&mut credentials, &mut unanswered, |b| {
+        ws_read(&b.got).0.len() == 5
+    });
+    let (read, messages, whole) = ws_read(&bench.got);
+    assert!(whole, "{}", lossy(&bench.got));
+    assert!(
+        !holds(&bench.got, VALUE) && messages.iter().all(|m| !holds(m, VALUE)),
+        "the value reached the guest: {messages:?}"
+    );
+    let masked = [b"{\"echo\":\"", &echo_mask()[..], b"\"}"].concat();
+    assert_eq!(messages, [masked]);
+    assert_eq!(read[2], (0x9, b"ping".to_vec()));
+    assert_eq!(read[4], (0x8, [&[0x03, 0xe8][..], &echo_mask()[..]].concat()));
+}
+
+/// Do: as above, the host sending a frame with a reserved bit set (an extension never taken),
+/// and, on another connection, a masked frame (RFC 6455 §5.1). Expect: the flow broken, the
+/// frame's payload never reaching the guest.
+#[test]
+fn a_websocket_frame_its_reader_does_not_take_breaks_the_tunnel() {
+    let root = root("shards test root");
+    for frame in [
+        [&[0xc1, 4][..], b"\x1b\x00\x00\x00"].concat(),
+        // Masked, its payload none: its masking key would read as a frame of its own.
+        vec![0x81, 0x80, 0x81, 0x02, b'o', b'k'],
+    ] {
+        let mut credentials = credentials(&root);
+        let mut bench = h1_sent(&mut credentials, &root, UPGRADE);
+        bench.may_reset = true;
+        bench.answer(SWITCHED);
+        bench.until(&mut credentials, &mut unanswered, |b| {
+            b.got.ends_with(b"\r\n\r\n")
+        });
+        bench.got.clear();
+        bench.answer(&frame);
+        bench.settle(&mut credentials, &mut unanswered);
+        assert!(bench.reset, "{frame:?}: the tunnel went on");
+        assert!(bench.got.is_empty(), "{frame:?}: {}", lossy(&bench.got));
+    }
+}
+
+/// Do: a granted host's filled upgrade to another protocol than WebSocket's, taken. Expect
+/// (creds-11): the 101 refused 502, nothing of the tunnel reaching the guest.
+#[test]
+fn a_filled_upgrade_to_a_protocol_this_side_does_not_read_is_refused() {
+    let root = root("shards test root");
+    let mut credentials = credentials(&root);
+    let mut bench = h1_sent(
+        &mut credentials,
+        &root,
+        "Connection: Upgrade\r\nUpgrade: tls/1.3\r\n",
+    );
+    bench.answer(b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: tls/1.3\r\n\r\nsk-");
+    bench.until(&mut credentials, &mut unanswered, |b| b.closed);
+    assert!(bench.got.starts_with(b"HTTP/1.1 502 "), "{}", lossy(&bench.got));
+    assert!(!holds(&bench.got, b"101"), "{}", lossy(&bench.got));
+}
