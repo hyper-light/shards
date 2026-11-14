@@ -2490,6 +2490,12 @@ stack inside the VMM, is superseded by it.
     each new connection's queue 2.9%; as built, none measurable. A host connect the
     process itself could not make (descriptors, ports, buffers) is said, beside the reset
     the guest hears.
+- **Native Linux filter (network-02, 2026-11-13).** The network helper requests
+  seccomp on arm64 as on amd64 before serving frames; the shared compiler checks
+  the native AUDIT_ARCH and libc supplies native syscall identities. epoll_wait
+  is x86_64's legacy entry; both use epoll_pwait. No compat ABI is admitted.
+  Focused amd64 checks pass; native arm64 execution and carried-helper smoke
+  remain owed to ROOT, not inferred from amd64's result. [Evidence](../research/measurements/network-fixes-v1/README.md#network-02-native-seccomp-on-both-linux-architectures).
 - **Receive-sequence validation (network-01, 2026-11-13).** Before an established
   segment's ACK or FIN changes a connection, its original sequence must overlap the
   advertised receive window (RFC 9293 §3.10.7.4, table 6); ACK is required, and a FIN

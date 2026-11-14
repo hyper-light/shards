@@ -7660,6 +7660,12 @@ without ACK. At 50716d946, RFC 9293 table 6 and ACK processing refuse it; 20 foc
 TCP tests and shards-net all-targets clippy pass. This is correctness evidence, not
 new performance or platform-parity data. [Commands, output, rules and owed real-VM checks](measurements/network-fixes-v1/README.md).
 
+**network-02 confinement follow-up (2026-11-13).** At 33d5f8af7, adacachy2
+(Linux amd64) ran three focused network confinement tests and clippy for
+shards-net/shards-net-process, all passing. Native arm64 execution is owed;
+removing the arm64 startup omission is not an arm64 measured result. No VM or
+performance campaign ran. [Exact scope/output](measurements/network-fixes-v1/README.md#network-02-native-seccomp-on-both-linux-architectures).
+
 ### M211. The limits a build's `RUN` step starts with
 
 - **Question.** A container's process starts with Docker's limits (`defaults::limits`,
