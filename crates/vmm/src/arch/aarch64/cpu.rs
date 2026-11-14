@@ -264,3 +264,36 @@ mod tests {
         assert!(decode("zz=1").is_err());
     }
 }
+
+/// The ID register containing an OS-named feature. Baseline readiness may ignore the
+/// name only when the guest baseline names that register; unknown names stay checked.
+pub fn feature_register(feature: &str) -> Option<u16> {
+    Some(match feature {
+        "FEAT_CSV2" | "FEAT_CSV3" | "FEAT_DIT" | "FEAT_FP16" => 0xc020,
+        "FEAT_SSBS" | "FEAT_BTI" => 0xc021,
+        "FEAT_CRC32" | "FEAT_FlagM" | "FEAT_FlagM2" | "FEAT_FHM" | "FEAT_DotProd" | "FEAT_SHA3"
+        | "FEAT_RDM" | "FEAT_LSE" | "FEAT_SHA256" | "FEAT_SHA512" | "FEAT_SHA1" | "FEAT_AES"
+        | "FEAT_PMULL" => 0xc030,
+        "FEAT_SPECRES" | "FEAT_SPECRES2" | "FEAT_SB" | "FEAT_FRINTTS" | "FEAT_PACIMP" | "FEAT_LRCPC"
+        | "FEAT_LRCPC2" | "FEAT_FCMA" | "FEAT_JSCVT" | "FEAT_PAuth" | "FEAT_PAuth2" | "FEAT_FPAC"
+        | "FEAT_FPACCOMBINE" | "FEAT_DPB" | "FEAT_DPB2" | "FEAT_BF16" | "FEAT_EBF16" | "FEAT_I8MM" => 0xc031,
+        "FEAT_WFxT" | "FEAT_RPRES" | "FEAT_CSSC" | "FEAT_HBC" => 0xc032,
+        "FEAT_ECV" => 0xc038,
+        "FEAT_AFP" => 0xc039,
+        "FEAT_LSE2" => 0xc03a,
+        _ => return None,
+    })
+}
+
+
+#[cfg(test)]
+mod feature_name_tests {
+    #[test]
+    fn linux_arm64_feature_names_follow_their_baseline_registers() {
+        for name in ["aes", "pmull", "sha1", "sha2", "crc32", "atomics"] {
+            assert_eq!(super::feature_register(name), Some(0xc030), "{name}");
+        }
+        assert_eq!(super::feature_register("FEAT_AES"), Some(0xc030));
+        assert_eq!(super::feature_register("unknown_future_feature"), None);
+    }
+}
