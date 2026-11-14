@@ -3893,10 +3893,21 @@ D12's too, derived apart):
   one register, as the guest's driver sizes it. Host input waits for room instead of
   overrunning it, as Firecracker reads stdin only as far as its FIFO has room, so nothing
   typed or pasted is lost: what the guest has not drained waits in the host's own pipe or
-  terminal. A loopback write past the room overruns, as the datasheet's does. A
-  snapshot's receiver restores whole up to the FIFO's 16 bytes, the most it holds in
-  either mode; one that holds more is refused as a malformed state (`DecodeError`, "the
-  console's receiver"), never restored (legacy3, 2026-11-14). Only builds before
+  terminal. A loopback write past the room overruns, as the datasheet's does. A change
+  of mode clears the receiver, FIFO to 16450 and back, and FCR1 clears it only with FCR0
+  set (PC16550D datasheet, National Semiconductor, June 1995, 8.5 FIFO Control
+  Register: "When changing from the FIFO Mode to the 16450 Mode and vice versa, data is
+  automatically cleared from the FIFOs. This bit must be a 1 when other FCR bits are
+  written to or they will not be programmed"; QEMU's hw/char/serial.c flushes on a
+  change of FCR's enable bit too). Before legacy4 (2026-11-14) a reset of FCR0 kept
+  what the FIFO held, so a 16450-mode receiver could hold 16 bytes, which is why legacy3
+  bounded a restore by the FIFO in either mode. A snapshot's receiver now restores whole
+  up to what its mode holds (`rx_capacity`: 16 bytes in FIFO mode, 1 in 16450 mode, the
+  mode read first); one that holds more is refused as a malformed state (`DecodeError`,
+  "the console's receiver"), never restored (legacy3, legacy4). Red/green: serial.rs
+  `a_change_of_mode_clears_the_receiver` (16 bytes kept past FCR0's reset before) and
+  `a_receiver_past_its_modes_depth_is_refused`'s 16450 rows (2 to 16 bytes restored
+  before). Only builds before
   66652aafb (2026-11-09) kept up to 4096 (`RX_CAPACITY`): v0.6.0's and v0.7.0's snapshots
   (formats 24 and 28) among them; every format-29 writer (83b09843a, 2026-11-11, after
   66652aafb) bounded it. Refused, not migrated: a template is a cache the daemon makes
@@ -3906,7 +3917,7 @@ D12's too, derived apart):
   (`forward_stdin`), typed input the guest had not read as it was saved, which no
   rewrite could give back to a 16-byte receiver without dropping it. The reader of the
   older 4096 bytes is gone. Red/green: serial.rs
-  `a_receiver_past_the_fifos_depth_is_refused` (16 restore; 17 and 4096 refused), which
+  `a_receiver_past_its_modes_depth_is_refused` (16 restore; 17 and 4096 refused), which
   restored the 4096 before.
 
 | Literal | Was | Now | Source |
