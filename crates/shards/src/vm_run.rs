@@ -2108,14 +2108,9 @@ fn serve_workload(
         let to_guest = &TO_GUEST;
         let warm = matches!(command, Command::Warm(..));
         // A warm VM's owner hears what its machine used in all once it is down (D260's final
-        // use), on a handle of the link of its own: the run's goes with its workload.
-        let final_link = match &command {
-            Command::Warm(link, _) => link
-                .try_clone()
-                .inspect_err(|e| report(format_args!("its final use's link: {e}")))
-                .ok(),
-            Command::Given { .. } => None,
-        };
+        // use), on a handle of the link of its own, which the VM keeps as it takes its run
+        // (`warm::receive`): the run's goes with its workload. A VM that took none tells none.
+        static FINAL_LINK: std::sync::OnceLock<crate::warm::Link> = std::sync::OnceLock::new();
         if let Command::Given { interactive, .. } = &command {
             // SAFETY: isatty(3) on this process's stdin.
             let reads_terminal = *interactive && std::io::IsTerminal::is_terminal(&std::io::stdin());
@@ -2265,6 +2260,7 @@ fn serve_workload(
                                 to_guest,
                                 &|| moved().inspect_err(|e| report(e)),
                                 resumed,
+                                &FINAL_LINK,
                             )
                             .inspect_err(|e| report(e))?;
                             layer_stays.store(
@@ -2467,7 +2463,7 @@ fn serve_workload(
         // process lets go of its memory: what it used in all, read then, is its whole.
         let reason = running.wait_then(|| {
             crate::warm::tell_kept();
-            if let Some(link) = &final_link {
+            if let Some(link) = FINAL_LINK.get() {
                 crate::warm::final_use(link, &final_use_of(whole_guest_times));
             }
         });

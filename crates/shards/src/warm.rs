@@ -463,12 +463,16 @@ fn reserve_descriptors(daemon: &UnixStream) -> Result<(), String> {
 }
 
 /// A run its microVM was restored from a save of (`resumed`, D176) is asked for as any
-/// other, its request bringing the save's tokens in place of a command.
+/// other, its request bringing the save's tokens in place of a command. `took` gets a handle
+/// of `link` as the VM tells its daemon TAKEN, and only then: a VM that took no run tells no
+/// final use ([`final_use`]), so that its daemon or run host reads its end, not a message,
+/// where TAKEN would be.
 pub fn receive(
     link: &Link,
     to: &'static ToGuest,
     may_take: &dyn Fn() -> Result<(), String>,
     resumed: bool,
+    took: &std::sync::OnceLock<Link>,
 ) -> Result<Request, String> {
     let daemon = &link.daemon;
     // The relays' threads start while the VM is idle, so that none starts on a request's
@@ -594,6 +598,14 @@ pub fn receive(
     // What must hold for this VM to take a run, checked while the daemon may still give
     // it to another.
     may_take()?;
+    // Made before TAKEN, so that nothing fails between the VM taking the run and its final
+    // use's link being there; a VM that cannot clone it serves the run, telling no final use.
+    let final_link = link
+        .try_clone()
+        .inspect_err(|e| {
+            let _ = writeln!(io::stderr(), "shards: its final use's link: {e}");
+        })
+        .ok();
     // TAKEN before anything of the client's is touched or anything starts: a VM that ends
     // without it never started the run, which the daemon may then hand to another VM
     // (daemon.rs, hand_over). A daemon gone by now has no copies left to close, and hands
@@ -606,6 +618,9 @@ pub fn receive(
         )
     {
         return Err(format!("telling the daemon the request is taken: {e}"));
+    }
+    if let Some(final_link) = final_link {
+        let _ = took.set(final_link);
     }
     // Its windows' files watched by the daemon from their first mapping on (D189), a
     // restored run's among them, which its shares map again as they are given.
@@ -2225,8 +2240,9 @@ pub fn tell_kept() {
 }
 
 /// Tells its owner what the machine used in all (`FINAL_USE`, D260's final use): `used`, a
-/// use's answer as `shards_abi::rate::used` writes it. Its owner reads it until the link
-/// closes, which it does as this process ends.
+/// use's answer as `shards_abi::rate::used` writes it, on the link [`receive`] kept as the VM
+/// took its run. Its owner reads it until the link closes, which it does as this process
+/// ends.
 pub fn final_use(link: &Link, used: &str) {
     if let Err(e) = to_daemon(&link.daemon, kind::FINAL_USE, used.as_bytes(), &[]) {
         let _ = writeln!(io::stderr(), "shards: telling its final use: {e}");
@@ -2651,9 +2667,10 @@ mod tests {
         ] {
             let (ours, daemon) = UnixStream::pair().unwrap();
             let link = Link::new(ours);
+            let took = std::sync::OnceLock::new();
             let fds = vec![file.as_fd(); given];
             let refused = std::thread::scope(|s| {
-                let receiving = s.spawn(|| receive(&link, &TO_GUEST, &|| Ok(()), false));
+                let receiving = s.spawn(|| receive(&link, &TO_GUEST, &|| Ok(()), false, &took));
                 assert_eq!(shards_ipc::recv(&daemon).unwrap().unwrap().kind, kind::READY);
                 let mut payload = Vec::new();
                 // Its log's first segment, and memory to plug: none (D148).
@@ -2669,9 +2686,17 @@ mod tests {
                 receiving.join().unwrap().err()
             });
             assert_eq!(refused.as_deref(), Some(said));
-            // Nothing taken.
+            // Nothing taken, and no final use's link kept: the VM's end is all its daemon
+            // reads where TAKEN would be.
+            assert!(took.get().is_none(), "a final use's link for a run not taken");
             daemon.set_nonblocking(true).unwrap();
             assert!(shards_ipc::recv(&daemon).is_err_and(|e| e.kind() == io::ErrorKind::WouldBlock));
+            drop(link);
+            daemon.set_nonblocking(false).unwrap();
+            assert!(
+                shards_ipc::recv(&daemon).unwrap().is_none(),
+                "the link held past the VM's end"
+            );
         }
     }
 
