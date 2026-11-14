@@ -35,6 +35,53 @@ Earlier carrier attempts failed before tests because the sparse checkout omitted
 the injector A/B module and HPACK's included RFC fixture; these are setup failures,
 not reds. Sparse checkout now includes both and the repository's clippy.toml.
 
+## creds-05: the pending ask owns the time budget
+
+Fix `a52f4518c`: the network process records the first ask's monotonic Instant and
+anchors the returned remaining lifetime there. Retries keep that Instant. If the
+budget is spent at delivery, or its end cannot be represented, the valid response
+resumes its callers with typed `Lapsed`, retaining no copy of its value. Held leases
+now always have a finite representable end; there is no overflow-to-run-lifetime
+fallback. Two regressions cover wholly delayed answers and partial delay/retries.
+
+Proof: let A be the network ask time, S the SDK's settle time and E the lessor's
+expiry. The SDK returns B = E - S; causality gives A <= S. The network's cutoff
+A + B <= E regardless of delivery delay. No wire timestamp, wall-clock alignment,
+clock-origin conversion, fixed allowance or learned cold-start estimate is needed.
+The first request measures its own full wait, including cold broker startup.
+
+This deliberately spends broker work as well as transport time. A slow broker's
+returned lease can therefore be refused early; this is conservative uncertainty,
+not renewed authority. The run-host ledger can still answer `Live` until its later
+bookkeeping expiry, which is an existing typed refusal and sends no provider request.
+ROOT should exercise renewal at that boundary in its real relay campaign.
+
+Alternatives considered: retaining receipt-time starts extends authority by an
+unbounded scheduling delay (the red); serializing opaque std::time::Instant is
+not a portable wire contract; absolute wall time permits clock adjustments to
+extend an outstanding budget; a new shared monotonic-epoch/versioned wire would
+expand SDK/Hex compatibility scope. The final consumer can instead reduce its
+authorization conservatively without changing that wire. The measured acquisition
+time debit is also the lease-validity technique described in the Redis primary
+[distributed-lock documentation](https://redis.io/docs/latest/develop/clients/patterns/distributed-locks/);
+this uses only that timing principle, not its quorum algorithm or drift constants.
+Primary page retrieved 2026-11-13; runtime lifetime remains the broker's input.
+
+Green merged source `950c1a0fe146f1e2eba0f1a7f1b489c1e87ab8b0`, kiln r21:
+`cargo test -p shards-net lease::`: **14 passed, 0 failed, 0 ignored**;
+`cargo clippy -p shards-net --all-targets -- -D warnings`: passed.
+Runner log: `~/g121-tmp/fix-creds-v1-05-06-green.log`.
+
+```text
+test lease::tests::creds_05_a_delayed_answer_cannot_restart_the_lessors_lease ... ok
+test lease::tests::creds_05_retries_and_delivery_spend_the_original_ask_budget ... ok
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 150 filtered out
+Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.27s
+```
+
+The optional protocol-versioning question became unnecessary when this narrower
+final-consumer design was found; no external wire change is made.
+
 ## creds-06: unique live flow waiters
 
 Fix `1b21eb21a403024baae2a7b815b8b1f5ac987255`. An existing refusal-routing test

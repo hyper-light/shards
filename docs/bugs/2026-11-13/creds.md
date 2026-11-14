@@ -133,6 +133,8 @@ D242 **explicitly lists compressed response/WebSocket echoes as residuals** (`ar
 
 **Confidence:** High for the deadline extension; no scheduling/backpressure reproduction run.
 
+**Status (2026-11-13):** fixed in a52f4518c (red `lease::tests::creds_05_a_delayed_answer_cannot_restart_the_lessors_lease` at 6eb3ad718). The injector conservatively spends the full first-ask wait from the broker's returned life; spent/unrepresentable budgets are typed `Lapsed` before a value is retained. Merged lease tests: 14 passed; shards-net all-target clippy passed on macOS arm64. Early refusal and renewal-boundary limits are explicit in `docs/research/measurements/creds-fixes-v1/README.md`.
+
 ### creds-06 — P1 / high — Repeated retries of one pending lease accumulate unbounded duplicate waiters
 
 **Location:** `crates/net/src/lease.rs:219`; supporting `crates/net/src/inject.rs:2839`, `:3555`.
