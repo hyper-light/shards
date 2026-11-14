@@ -164,6 +164,8 @@ Ranking: P0 critical; P1 high security/resource priority; P2 high correctness pr
 
 **Catching test:** keep one TCP DNS session open, then resolve a local peer from a second UDP and TCP client; both must progress before the first session closes. Repeat while the first client drips a partial length-prefixed message and while an upstream UDP answer is withheld.
 
+**Status (2026-11-13):** fixed in 74ea2d725 (red `dnsrelay::tests::an_open_tcp_client_and_a_lost_udp_query_leave_other_clients_progress` at 7aa3c4a34). TCP clients own independent workers; shared UDP ID tracking waits for readiness/deadline, with protocol-bounded IDs and FD-derived worker admission. Four focused relay/agentdns tests and init clippy passed on merged 4b7e93f10, Linux arm64 GNU. Thread memory-envelope and real-VM/fault coverage remain ROOT's; inherited WAIT remains network-12. Evidence: `docs/research/measurements/network-fixes-v1/README.md#network-08-independent-dns-relay-clients`.
+
 ### network-09 — P3 / medium: existing DNS TCP sessions retain obsolete per-member names
 
 **Location:** `crates/init/src/agentdns.rs:465`, `:483`, `:509`; `crates/init/src/members.rs:426`. Dynamic member/name paths are active at head; stale clone predates the base.

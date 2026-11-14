@@ -9318,6 +9318,14 @@ Correctness follow-up devices-04 (2026-11-14): focused reset red/green and limit
     cause is the host's cores waking from idle for each paced ask, which busy cores do
     not, and it was not isolated here.
 
+**network-08 concurrency follow-up (2026-11-13).** M247's serial local UDP timings
+do not establish concurrent-client progress. On Mac3 Docker Linux aarch64 /
+Rust1.98.1, 7aa3c4a34's socket red fails when a held TCP session blocks another
+UDP client. With 74ea2d725, merged at4b7e93f10, two relay and two agentdns tests
+plus init clippy pass, including partial TCP input and a withheld UDP answer.
+No new latency, memory, fault or VM campaign is claimed.
+[Commands, logs, design and owed runs](measurements/network-fixes-v1/README.md#network-08-independent-dns-relay-clients).
+
 ### M248. A process placed in a slice of the user's service manager: what it costs, and where its memory is charged (D183)
 
 **2026-11-13 cleanup correction (platform-12):** this placement measurement does not
