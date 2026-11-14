@@ -26,6 +26,11 @@ rustls = { version = "0.23.45", default-features = false, features = ["std", "aw
 shards-verify = { path = "../verify" }
 # HTTP/1.1 heads read where they lie (RFC 9112), as the registry's client reads them.
 httparse = "1.10.1"
+# A coded response to a request with a value filled in, decoded so that its echoes are masked
+# (D242, creds-04): gzip and deflate by flate2 over zlib-rs, zstd by ruzstd, as the image store
+# and the registry's client decode layers.
+flate2 = { version = "1", default-features = false, features = ["zlib-rs", "runtime_detection"] }
+ruzstd = "0.9"
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
@@ -45,5 +50,3 @@ windows-sys = { workspace = true, features = [
 shards-testdir = { path = "../testdir" }
 # A test's root written as PEM, where a test names it in SSL_CERT_FILE (D242).
 rcgen = { version = "0.14.10", default-features = false, features = ["aws_lc_rs", "pem"] }
-# The gzip-coded arm of the injector's measurement (#74 step 10 part B), as the image crate codes layers.
-flate2 = { version = "1", default-features = false, features = ["zlib-rs", "runtime_detection"] }
