@@ -117,9 +117,10 @@ fn run_steps_run_in_a_confined_builder_and_their_changes_are_built() {
     );
 }
 
-/// A builder boots with little memory and is given more as its build needs it (D133), on
-/// Windows as tests/build.rs's test of the name has it on Unix: a step of a builder that may
-/// have 2,560 MiB, which boots with 512 MiB, allocates and touches three times that, and
+/// A builder boots with what its home learned its guest needs and is given more as its
+/// build needs it (D133, memory-15), on Windows as tests/build.rs's test of the name has it
+/// on Unix: in a home whose first build has ended, a step of a builder that may have 2,560
+/// MiB, which boots with less than 1,536 MiB, allocates and touches 1,536 MiB, and
 /// succeeds. (On jupiter, one that may have 4 GiB touched 3 GiB too.)
 #[test]
 fn a_builders_memory_is_plugged_as_its_build_needs_it() {
@@ -135,6 +136,8 @@ fn a_builders_memory_is_plugged_as_its_build_needs_it() {
         init_env,
         ("SHARDS_BUILD_MEMORY", "2560".as_ref()),
     ];
+    let boot = warm(&home, &image, &env);
+    assert!(boot < 1536 << 20, "its guest learned to boot with {boot} bytes");
     let ctx = context(
         "bw-plug-ctx",
         &format!("FROM {image}\nUSER root\nRUN [\"/bin/testguest\", \"alloc\", \"1536\"]\n"),
@@ -145,8 +148,22 @@ fn a_builders_memory_is_plugged_as_its_build_needs_it() {
     assert!(built.stderr.contains("allocated 1536"), "{shown}");
 }
 
+/// A home's first build, whose builder boots with all it may have and teaches the home what
+/// its guest needs to boot, which the home's next builders boot with (D133, memory-15):
+/// what it learned, in bytes.
+fn warm(home: &TempDir, image: &str, env: &[(&str, &std::ffi::OsStr)]) -> u64 {
+    let first = context(
+        &format!("{}-first", home.file_name().unwrap().to_string_lossy()),
+        &format!("FROM {image}\nRUN [\"/bin/testguest\", \"report\"]\n"),
+    );
+    let warmed = run_shards_env(&["build"], &["--progress=plain", first.to_str().unwrap()], env);
+    assert_eq!(warmed.status, Some(0), "{warmed}");
+    common::learned_boot(home).unwrap_or_else(|| panic!("no boot learned: {warmed}"))
+}
+
 /// A build whose jobs take its builder's memory all at once, as compilers do, over a
-/// gigabyte of its layers, has it plugged in time: tests/build.rs's on Unix (PM M392).
+/// gigabyte of its layers, has it plugged in time: tests/build.rs's on Unix (PM M392), in a
+/// home whose first build has ended (memory-15).
 #[test]
 fn a_builders_memory_is_plugged_as_fast_as_its_jobs_take_it() {
     if cannot_run_vms() {
@@ -161,6 +178,8 @@ fn a_builders_memory_is_plugged_as_fast_as_its_jobs_take_it() {
         init_env,
         ("SHARDS_BUILD_MEMORY", "8192".as_ref()),
     ];
+    let boot = warm(&home, &image, &env);
+    assert!(boot < 4096 << 20, "its guest learned to boot with {boot} bytes");
     // A job on a quarter of its builder's vCPUs, one for each of its host's CPUs, as 8
     // compilers on 32 (build::builder_cpus), over a gigabyte written to a tmpfs first.
     let jobs = (std::thread::available_parallelism().map_or(1, std::num::NonZero::get) / 4).max(1);

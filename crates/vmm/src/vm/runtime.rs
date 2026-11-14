@@ -679,6 +679,7 @@ impl Handle {
             config: &parts.config,
             join: parts.join,
             swap: self.control.swap().map(|w| &**w),
+            init: self.control.guest_abi(),
         };
         if !sh.snapshot.wait_parked(&|| sh.exiting()) {
             return Err("the microVM has stopped".into());
@@ -833,7 +834,7 @@ impl Handle {
     /// The whole lines of the last bytes its guest wrote to its console, as many as it was
     /// told to keep ([`Config::said`]), and whether that was all it said: a kernel's panic
     /// says there why it resets its machine (`panic=-1`).
-    pub fn console_said(&self) -> crate::devices::serial::Said {
+    pub fn console_said(&self) -> crate::devices::said::Said {
         self.serial.said()
     }
 
@@ -1805,6 +1806,7 @@ impl Coordinator {
             config: &self.config,
             join: self.join,
             swap: self.control.swap().map(|w| &**w),
+            init: self.control.guest_abi(),
         }
     }
 
@@ -1945,6 +1947,8 @@ struct Cut<'a> {
     join: Option<&'static Join>,
     /// Its swap window (D159), where it has one.
     swap: Option<&'a pmem::SwapWindow>,
+    /// The contract its guest's init announced, which its snapshot records (D176).
+    init: Option<u64>,
 }
 
 impl Cut<'_> {
@@ -1989,6 +1993,7 @@ impl Cut<'_> {
             data: None,
             arch,
             devices: w.into_bytes(),
+            init: self.init,
         }))
     }
 
@@ -2100,6 +2105,7 @@ mod tests {
             data: None,
             arch: Vec::new(),
             devices: Vec::new(),
+            init: None,
         };
         assert_eq!(pmem::ALIGN, 2 << 20);
         assert_eq!(guest_pages(&snap), ((16 + 4 + 4) << 20) / machine::PAGE);

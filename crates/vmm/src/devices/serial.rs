@@ -9,8 +9,7 @@ use std::collections::VecDeque;
 use std::io::Write;
 use std::sync::{Arc, Condvar, Mutex};
 
-pub use shards_abi::bounds::ConsoleReport;
-
+use super::said::{Kept, Said};
 use super::{Interrupt, MmioDevice};
 use crate::snapshot::codec::{self, Reader, Writer};
 use crate::sync::{lock, wait};
@@ -78,23 +77,9 @@ struct State {
     /// snapshot's to.
     rx: VecDeque<u8>,
     out: Box<dyn Write + Send>,
-    /// The console's last bytes, at most [`keep`](State::keep).
-    said: VecDeque<u8>,
-    /// How many of its last bytes are kept: what its spawner learned its kernel's failure
-    /// reports need (`shards_abi::bounds::console_said`, D12), none where none is quoted.
-    keep: usize,
-    /// Whether bytes said were lost past [`keep`](State::keep), and whether the last lost
-    /// ended a line, so that the first kept is a line's first.
-    lost: Option<bool>,
+    /// The console's last bytes, as many as its spawner learned it needs (D12).
+    kept: Kept,
     level: bool,
-}
-
-/// What a console said last ([`Serial::said`]): its whole lines, and whether they are all
-/// it said or its first were lost past what it kept.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Said {
-    pub lines: Vec<u8>,
-    pub report: ConsoleReport,
 }
 
 pub struct Serial {
@@ -136,9 +121,7 @@ impl Serial {
                 overrun: false,
                 rx: VecDeque::new(),
                 out,
-                said: VecDeque::new(),
-                keep,
-                lost: None,
+                kept: Kept::new(keep),
                 level: false,
             }),
             room: Condvar::new(),
@@ -150,22 +133,7 @@ impl Serial {
     /// what it said last, as a kernel writes why it panics there. A report whole where it
     /// kept every byte said; else cut at what it keeps, a line it lost the start of dropped.
     pub fn said(&self) -> Said {
-        let s = lock(&self.state);
-        let mut lines: Vec<u8> = s.said.iter().copied().collect();
-        let report = match s.lost {
-            None => ConsoleReport::Whole(lines.len()),
-            Some(at_line_end) => {
-                if !at_line_end {
-                    let cut = lines
-                        .iter()
-                        .position(|&b| b == b'\n')
-                        .map_or(lines.len(), |at| at.saturating_add(1));
-                    lines.drain(..cut);
-                }
-                ConsoleReport::Cut(s.keep)
-            }
-        };
-        Said { lines, report }
+        lock(&self.state).kept.said()
     }
 
     /// Gives host input to the guest, waiting while its receiver has no room: as a line
@@ -289,13 +257,7 @@ impl MmioDevice for Serial {
                 } else {
                     // Console output is best effort: a closed stdout must not stop the guest.
                     let _ = s.out.write_all(&[v]).and_then(|()| s.out.flush());
-                    if s.said.len() >= s.keep {
-                        let lost = s.said.pop_front().unwrap_or(v);
-                        s.lost = Some(lost == b'\n');
-                    }
-                    if s.keep > 0 {
-                        s.said.push_back(v);
-                    }
+                    s.kept.push(&[v]);
                 }
                 // Transmission is instantaneous, so THR is empty again at once.
                 s.thri_pending = true;
@@ -382,6 +344,7 @@ impl MmioDevice for Serial {
 #[allow(clippy::indexing_slicing, clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::devices::said::ConsoleReport;
     use std::sync::atomic::{AtomicBool, Ordering};
 
     #[derive(Default)]
