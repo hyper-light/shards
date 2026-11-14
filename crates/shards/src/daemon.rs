@@ -10513,7 +10513,7 @@ mod tests {
 
     /// What a test's disk lets through as its test ends, failing or not, so that no
     /// daemon thread waits on it past its test ([`Ending`]).
-    trait Opens {
+    pub(super) trait Opens {
         fn open(&self) {}
     }
 
@@ -13382,8 +13382,7 @@ mod tests {
     /// group's verdict (D183, slice 3): each member is told its room and asked to give back
     /// on a thread of its own, its wait judged as D215's judge judges one, and the groups'
     /// thread waits on none. One of group one never answers the room it is told before the
-    /// daemon has seen any answered, which a wait follows while its VM process lives; beside
-    /// it are one that answers and group two's. Each group past its memory.max with nothing
+    /// room's kind is learned; beside it are one that answers and group two's. Each group past its memory.max with nothing
     /// given back, each group's largest is stopped, OOM-killed: the one that never answered
     /// once its word has run past the slowest room answered. Red with a groups' thread that
     /// told one member after another and so waited on it while it lived.
@@ -13392,6 +13391,9 @@ mod tests {
     fn a_member_that_never_answers_holds_up_no_other_member_or_group() {
         let t = Test::new("group-words");
         t.run(|t| {
+            // A cold word deliberately has no stall bound. This fixture tests a word
+            // whose own exec judge can refuse it, not an outside clock ending a cold wait.
+            t.daemon.answers.room.teach(Duration::from_millis(20), Duration::ZERO);
             let mib = |n: u64| n << 20;
             for (group, max) in [("one", mib(1000)), ("two", mib(200))] {
                 let dir = groups::made(&t.daemon.home, group).unwrap();
@@ -13401,7 +13403,7 @@ mod tests {
             }
             t.t.daemon.start_groups(t.threads);
             let (stuck, _stuck_run, stuck_vm, _) = running_under(t, "stuck", "one", mib(600));
-            // Its room, told before any was answered: never answered.
+            // Its room: never answered, and refused by its own exec judge.
             let held = heard_whole(&stuck_vm);
             assert_eq!(held.kind, kind::EXEC_RUN);
             let (_, _answers_run, answers_vm, _) = running_under(t, "answers", "one", mib(500));
