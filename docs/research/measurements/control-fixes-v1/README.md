@@ -366,3 +366,32 @@ Conflict-free merge e51d7eea577b5343c6749030abab5226764e49ed adds main6a52ef516
 runner using its existing SSH identity was refused because main had advanced.
 [Check/push log](logs/r24-contention-check-push.log). No authentication failure
 or credential transfer occurred. Focused green remains R22, init check R19.
+
+## Landing and cleanup
+
+**Landed main:** f8e5948bc30a3a26390d3fb9b365c370f2a85075. It merges
+6df152edc (a net dependency update) without conflicts. R25's four-crate warm
+Mac `cargo check --tests` passed, then its immediate SSH ff push advanced main
+6df152edc..f8e5948bc. [Successful check and push](logs/r25-landed-check.log).
+No extra tests or clippy are claimed at this later merge: full host focused
+green is R22 at30d6080e9; native focused green R13 at4ce3d80a4, native init
+check R19 at41a972609. Init inputs are unchanged in the later host-only merges.
+All later checks followed ROOT's 05:10Z contention amendment; any conflicts
+were documentation only and triggered the explicitly recorded focused reruns.
+
+- control-02 fixed/landed (3c28b68a7, landing b8da5eca3); exact full-backlog red/green above.
+- control-03 upstream fixed f7d83f73a; this landing adds its symmetric input-error guard, retaining upstream production.
+- control-04 fixed/landed (151642d8c completes the cancellation adapter; actual thread-exit witness4ce3d80a4).
+- control-05 fixed/landed76ace2f18 (bounded cumulative counters and legacy migration).
+- control-06 owed ROOT's live stalled attached-client witness and native adapter design.
+- control-07 fixed/landed431571292 (tag-derived spec framing bound).
+- control-08 owed with producer-notification/typed refusal design; picked fallback unchanged.
+
+Own first-parent commits from the pinned fix base through this landing:47,
+each with exactly one gpgsig header. Final evidence commits use the same signer.
+Linux targets were removed by R13/R17/R19 after their commands completed.
+R26 on Mac Studio removed only $HOME/g121-tmp/control-target, verified it absent,
+exit0; df reports118GiB available. Owned clones and all sources/logs are retained.
+No cargo, daemon or VM of this lane remains active. No outside-area review was
+started. ROOT's VM/fd/allocation/profile/platform/policy gates remain exactly
+as listed above; neither an owned target's removal nor a unit green passes them.
