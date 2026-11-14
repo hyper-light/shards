@@ -1129,10 +1129,21 @@ fn instead(args: &[OsString]) -> ExitCode {
         Ok(program) => program,
         Err(e) => return failed(&e),
     };
-    match shards_ipc::spawn_std(std::process::Command::new(program.path()).args(args))
-        .and_then(|mut child| child.wait())
-    {
-        Ok(status) => ExitCode::from(status.code().and_then(|c| u8::try_from(c).ok()).unwrap_or(1)),
+    // This process's standard handles alone, those it has (shards_ipc's spawn, D248); in a job
+    // nested under this process's, from which it breaks away from none, as std's child stayed.
+    use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
+    let (stdin, stdout, stderr) = (std::io::stdin(), std::io::stdout(), std::io::stderr());
+    let fds: Vec<_> = [
+        (stdin.as_handle(), 0),
+        (stdout.as_handle(), 1),
+        (stderr.as_handle(), 2),
+    ]
+    .into_iter()
+    .filter(|(handle, _)| !handle.as_raw_handle().is_null())
+    .collect();
+    let args: Vec<&std::ffi::OsStr> = args.iter().map(OsString::as_os_str).collect();
+    match shards_ipc::spawn_grouped(program.path(), &args, &fds, &[]).and_then(|child| child.wait()) {
+        Ok(status) => ExitCode::from(u8::try_from(status).unwrap_or(1)),
         Err(e) => failed(&format!("{}: {e}", bin.display())),
     }
 }

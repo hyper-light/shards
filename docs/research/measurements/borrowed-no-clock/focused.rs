@@ -3,6 +3,7 @@
 //! identity's VM process, while the connection stays open, is refused typed; a pid that names
 //! another process is never followed. Real-VM runs belong to ROOT.
 use super::*;
+use std::process::{Child, Command, Stdio};
 
 /// A process for an identity to name, alive until it is killed: this test binary, running
 /// [`holds_until_killed`], which waits on its stdin, held open here.

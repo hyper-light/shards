@@ -2419,23 +2419,38 @@ mod windows;
 #[cfg(windows)]
 pub use windows::*;
 
-/// Starts `command` by std's Command: every child shards starts so, whatever it then waits
-/// for (`spawn` then `wait` or `wait_with_output`, never `status` or `output`, which hold the
-/// spawn for the child's life). On Windows, where std's child inherits every handle this
-/// process holds inheritable (CreateProcessW, bInheritHandles TRUE, Rust's
-/// library/std/src/sys/process/windows.rs), it waits for each of shards' own spawns that holds
-/// one inheritable for its child alone ([`windows::spawn_std`]).
-#[cfg(windows)]
-pub fn spawn_std(command: &mut std::process::Command) -> std::io::Result<std::process::Child> {
-    windows::spawn_std(command)
+/// `program` as std's spawn finds one: itself where it names a directory; else the first file
+/// of that name in a directory of `path` (this process's `PATH` where `None`; on Windows `.exe`
+/// added to a name with no extension, as CreateProcessW adds it); else refused, not found.
+/// Never one in the current directory, where std's spawn never looks for a name alone either:
+/// posix_spawn(2), which [`spawn`] is, would take that name as relative to it, and
+/// CreateProcessW looks there before `PATH` (D248). A directory of `PATH` that is empty, which
+/// exec(3) reads as the current one, is skipped, as std's Windows spawn skips it.
+pub fn on_path(program: &Path, path: Option<&std::ffi::OsStr>) -> std::io::Result<PathBuf> {
+    if !program.parent().is_some_and(|dir| dir.as_os_str().is_empty()) {
+        return Ok(program.to_path_buf());
+    }
+    let name = if cfg!(windows) && program.extension().is_none() {
+        program.with_extension("exe")
+    } else {
+        program.to_path_buf()
+    };
+    let ours = std::env::var_os("PATH");
+    path.or(ours.as_deref())
+        .and_then(|path| {
+            std::env::split_paths(path)
+                .filter(|dir| !dir.as_os_str().is_empty())
+                .map(|dir| dir.join(&name))
+                .find(|candidate| candidate.is_file())
+        })
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "in no directory of PATH"))
 }
 
-/// Starts `command` by std's Command (Windows' twin above): a descriptor std's children
-/// inherit is one made without close-on-exec, which no shards spawn makes for its child
-/// (`unix::spawn` hands each one by dup2 in the child alone).
-#[cfg(not(windows))]
-pub fn spawn_std(command: &mut std::process::Command) -> std::io::Result<std::process::Child> {
-    command.spawn()
+/// The null device, open to read and write: a child's standard stream that is to be none,
+/// given to it as [`spawn`] gives every descriptor, by name.
+pub fn null() -> std::io::Result<std::fs::File> {
+    let device = if cfg!(windows) { "NUL" } else { "/dev/null" };
+    std::fs::File::options().read(true).write(true).open(device)
 }
 
 /// A caller's ordinary pipe writer paired with a cancellable reader. Ending a clone
@@ -2660,6 +2675,33 @@ pub fn timeout_set(set: std::io::Result<()>) -> std::io::Result<()> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
+    /// A program named alone is found in a directory of `PATH` alone, never the current one
+    /// (D248): names on no directory of `PATH`, one of them a file in the current directory,
+    /// refused as not found; one named with its directory as it is; a shell named alone found
+    /// in a directory of `PATH`, and in the `PATH` given in place of this process's.
+    #[test]
+    fn a_program_named_alone_is_found_on_path_alone() {
+        use super::{Path, on_path};
+        assert!(Path::new("Cargo.toml").is_file());
+        for alone in ["Cargo.toml", "shards-ipc-no-such-program"] {
+            let found = on_path(Path::new(alone), None).map_err(|e| e.kind());
+            assert_eq!(found, Err(std::io::ErrorKind::NotFound), "{alone}");
+        }
+        let named = Path::new("target").join("shards");
+        assert_eq!(on_path(&named, None).unwrap(), named);
+        let shell = Path::new(if cfg!(windows) { "cmd" } else { "sh" });
+        let found = on_path(shell, None).unwrap();
+        let path = std::env::var_os("PATH").unwrap();
+        assert!(
+            std::env::split_paths(&path).any(|dir| found.parent() == Some(dir.as_path())),
+            "{found:?}"
+        );
+        let dir = found.parent().unwrap().as_os_str();
+        assert_eq!(on_path(shell, Some(dir)).unwrap(), found);
+        let none = on_path(shell, Some(std::ffi::OsStr::new(""))).map_err(|e| e.kind());
+        assert_eq!(none, Err(std::io::ErrorKind::NotFound));
+    }
+
     /// A timeout set after its peer wrote its answer and closed (PM M579): macOS refuses the
     /// option itself (EINVAL), which `timeout_set` takes for none needed, and the answer is
     /// read whole, then its end, at once. Red where the refusal is the caller's error: a fully

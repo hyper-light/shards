@@ -626,7 +626,7 @@ fn start_host(program: &Path, args: &[&OsStr], env: &[(OsString, OsString)]) -> 
         })
         .collect::<Result<Vec<(&str, &OsStr)>, ImageRefusal>>()?;
     let boot = |e: io::Error| ImageRefusal::Boot(format!("{}: {e}", program.display()));
-    let found = on_path(program).map_err(boot)?;
+    let found = shards_ipc::on_path(program, None).map_err(boot)?;
     let (child_in, to_host) = io::pipe().map_err(os("the run host's pipes"))?;
     let (from_host, child_out) = io::pipe().map_err(os("the run host's pipes"))?;
     let (said, child_err) = io::pipe().map_err(os("the run host's pipes"))?;
@@ -665,32 +665,6 @@ fn start_host(program: &Path, args: &[&OsStr], env: &[(OsString, OsString)]) -> 
         from_host,
         said,
     })
-}
-
-/// `program` as std's spawn finds one: itself where it names a directory; else the first file
-/// of that name in a directory of this process's `PATH` (on Windows `.exe` added to a name
-/// with no extension, as CreateProcessW adds it); else refused, not found. Never one in the
-/// current directory, where std's spawn never looks for a name alone either: posix_spawn(2)
-/// would take that name as relative to it, and CreateProcessW looks there before `PATH`
-/// (D248). A directory of `PATH` that is empty, which exec(3) reads as the current one, is
-/// skipped, as std's Windows spawn skips it.
-fn on_path(program: &Path) -> io::Result<PathBuf> {
-    if !program.parent().is_some_and(|dir| dir.as_os_str().is_empty()) {
-        return Ok(program.to_path_buf());
-    }
-    let name = if cfg!(windows) && program.extension().is_none() {
-        program.with_extension("exe")
-    } else {
-        program.to_path_buf()
-    };
-    std::env::var_os("PATH")
-        .and_then(|path| {
-            std::env::split_paths(&path)
-                .filter(|dir| !dir.as_os_str().is_empty())
-                .map(|dir| dir.join(&name))
-                .find(|candidate| candidate.is_file())
-        })
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "in no directory of PATH"))
 }
 
 /// Kills the host at once, and every process it started, unless it is reaped: on Unix its
@@ -2984,28 +2958,6 @@ mod tests {
                 })
             ));
         }
-    }
-
-    /// Do find programs named alone that no directory of `PATH` holds, one of them in the
-    /// current directory (the crate's, where cargo runs its tests). Expect: each refused as
-    /// not found, none taken from the current directory, where posix_spawn(2) would take it
-    /// and CreateProcessW would look before `PATH`. Do find one named with its directory, and
-    /// a shell named alone. Expect: the first as it is, the second in a directory of `PATH`.
-    #[test]
-    fn a_program_named_alone_is_found_on_path_alone() {
-        assert!(Path::new("Cargo.toml").is_file());
-        for alone in ["Cargo.toml", "shards-api-no-such-program"] {
-            let found = on_path(Path::new(alone)).map_err(|e| e.kind());
-            assert_eq!(found, Err(io::ErrorKind::NotFound), "{alone}");
-        }
-        let named = Path::new("target").join("shards");
-        assert_eq!(on_path(&named).unwrap(), named);
-        let shell = on_path(Path::new(if cfg!(windows) { "cmd" } else { "sh" })).unwrap();
-        let path = std::env::var_os("PATH").unwrap();
-        assert!(
-            std::env::split_paths(&path).any(|dir| shell.parent() == Some(dir.as_path())),
-            "{shell:?}"
-        );
     }
 
     /// A refusal comes back typed by its cause, its host's words unchanged: the nesting

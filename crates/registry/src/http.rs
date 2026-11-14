@@ -210,26 +210,13 @@ struct Cancelling {
     helpers: Mutex<(u64, HashMap<u64, Helper>)>,
 }
 
-/// A credential helper as a cancel ends it: the process group it leads.
-#[cfg(unix)]
+/// A credential helper as a cancel ends it: the process group it leads (on Windows the job
+/// it is made in).
 pub(crate) type Helper = Arc<shards_ipc::Child>;
-/// A credential helper as a cancel ends it: its process, by a handle of its own.
-#[cfg(windows)]
-pub(crate) type Helper = std::os::windows::io::OwnedHandle;
 
 /// Ends `helper` at once, whatever its threads wait in.
 fn end_helper(helper: &Helper) {
-    #[cfg(unix)]
-    let _ = helper.kill_group(libc::SIGKILL);
-    #[cfg(windows)]
-    {
-        use std::os::windows::io::AsRawHandle as _;
-        // SAFETY: TerminateProcess on the handle `helper` holds open: of a process that has
-        // ended, it fails and ends nothing.
-        unsafe {
-            windows_sys::Win32::System::Threading::TerminateProcess(helper.as_raw_handle(), 1);
-        }
-    }
+    let _ = helper.kill_group(shards_ipc::signal::SIGKILL);
 }
 
 impl Cancel {
