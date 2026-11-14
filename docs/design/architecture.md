@@ -27114,7 +27114,11 @@ runs refused `a_run_host_that_ends_before_its_run_starts_leaves_no_layer` and 10
 report's boot (`an_image_boot_takes_its_vms_gpu_report_as_a_managed_launch_does`) so. A write
 that meets the peer's end is that end (EPIPE, ECONNRESET; M527): `Begun::send` follows it into
 the wait, which types it as every other host's end, its words and exit with it. Every other
-error of the write is still `Os`. GREEN_PLACEHOLDER
+error of the write is still `Os`. At a018a07be (this, with the GPU stand-in's frames said once
+its request comes) 0 of 40 such runs refused either; ETXTBSY, 5 of 40 at main 6f3cd4428, was 0
+of 40 from b12325ce2 on (D209's note). One failure of another cause stays, reported to ROOT:
+`a_stop_returns_once_its_host_and_every_process_it_started_are_gone`, "the stop returned while
+the VM its run host started still ran", 1 of 40.
 
 **What would falsify it.** A run host costing more per microVM than the daemon per run (then
 one host per orchestrator); an orchestrator needing to link the VMM; credentials a member
