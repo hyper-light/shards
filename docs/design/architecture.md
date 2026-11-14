@@ -12701,6 +12701,17 @@ harness test).
     refused at its look past its first poll ... 115.439625ms in ... its record W*
     27.602875ms". Under a busy `yes` per core: the whole harness binary 3 of 3 (30 passed,
     3 ignored each), the three tests above 6 of 6.
+- *A test's own VM processes leaked to every party.* At the merge of main ff437eddd, harness.rs
+  `a_tests_own_vm_processes_are_known_by_their_ids` (5ee39c0ab) registered a busy stand-in
+  as one of the test process's own VM processes (`common::OwnVm`), which every
+  `Party::own` in the binary follows: run beside it, the two poll tests above were not
+  refused, "its last progress process 89935 ran", that stand-in, 3 of 3 runs of the whole
+  binary on adas-mac-studio-3.local. It now runs in a stand-in of its own, as `serving` and
+  `spinner` do: the whole binary 3 of 3 green, and 3 of 3 under a busy `yes` per core (32
+  passed, 3 ignored each); clippy of shards and shards-api (`--all-targets -D warnings`)
+  clean there, and of 37ecff8e1's tree on adacachy2 (Linux x86_64, `SHARDS_HELPERS=skip`).
+  Owed (ROOT): Windows (the servers' QueryThreadCycleTime reading) is unbuilt here; CI's
+  matrix builds it.
 - *Not reproduced: two moved.rs refusals* (ROOT, HVF, adas-mac-studio.local, main
   8d1c89a05, one run of `--test moved -- --test-threads=1`, 14 of 16):
   - moved.rs:62:19 `a_cpu_baseline_is_all_its_guest_finds_and_goes_with_it`: "shards run

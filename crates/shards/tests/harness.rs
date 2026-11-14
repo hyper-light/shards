@@ -61,7 +61,8 @@ fn a_daemons_whole_lines_are_its_words() {
 /// give-back ([`falls`]); `leaves MS`, a stand-in `pulse 1 MS` started on its stdout and
 /// stderr, "holder PID" said there, and its own end, the holder left holding them; `stages`
 /// and `spinner`, a machine's waits in a process of their own ([`stages`], [`spinner`]);
-/// `serving`, a wait on a server thread of its own process ([`serving`]).
+/// `serving`, a wait on a server thread of its own process ([`serving`]); `own-vms`, waits
+/// on VM processes of its own ([`own_vms`]).
 #[test]
 #[ignore = "a process of its own for the harness's stand-ins, which run it"]
 fn stand_in() {
@@ -109,6 +110,8 @@ fn stand_in() {
         spinner();
     } else if asked == "serving" {
         serving();
+    } else if asked == "own-vms" {
+        own_vms();
     } else if let Some(ms) = asked.strip_prefix("leaves ") {
         #[allow(
             clippy::zombie_processes,
@@ -1265,10 +1268,23 @@ fn cold_following(
 /// VM process started through its descriptor was named `5`, so a stream's party had none and
 /// its wait was refused while its VM process worked. Do: a stand-in, named as this test binary
 /// is, one of this test's own VM processes, busy for 100 ms and then for a second; wait for
-/// each one's end from one call site, its kind cold before the first. Expect: each wait holds
-/// until it ends, the second's past the W* the first taught.
+/// each one's end from one call site, its kind cold before the first; all in a stand-in,
+/// whose process nothing else runs in: a test's own VM processes are its process's, and a
+/// busy one here was every other test's party's progress (D209 Part 8: harness.rs' two poll
+/// tests not refused, "its last progress process 89935 ran", that stand-in's ID, 3 of 3 runs
+/// of the binary on adas-mac-studio-3.local). Expect: each wait holds until it ends, the
+/// second's past the W* the first taught.
 #[test]
 fn a_tests_own_vm_processes_are_known_by_their_ids() {
+    let run = common::run_command(
+        stand_in_doing("own-vms"),
+        &["stand-in".to_string(), "own-vms".to_string()],
+    );
+    assert_eq!(run.status, Some(0), "{run}");
+}
+
+/// [`a_tests_own_vm_processes_are_known_by_their_ids`]'s stand-in.
+fn own_vms() {
     for (round, busy) in [Duration::from_millis(100), Duration::from_secs(1)]
         .into_iter()
         .enumerate()
