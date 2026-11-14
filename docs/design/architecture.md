@@ -14100,6 +14100,13 @@ page by page as each came; resumed there; and stopped here once it runs there.
   A returned page is also owned. Red/green and outstanding VM validation:
   `docs/research/measurements/memory-fixes-v1/README.md`.
 
+- **Host-reader lifetime and lost mappings** (reviews memory-03/05): save and
+  precopy own one typed reader guard; teardown waits until it is dropped, including
+  errors. Mapped-file reads hold the same owner as release and APFS mapping
+  withdrawal. A scan resumes only intact mappings; loss is a terminal VM error.
+  Focused red tests and remaining live fault-injection gates are recorded in
+  `docs/research/measurements/memory-fixes-v1/README.md`.
+
 - **When the rounds stop**, never by the clock, whatever the link's rate. A round sends what
   was written as the round before it went, so its bytes over that round's time are the
   guest's rate of writing, and the round before's bytes over the same time the link's: the

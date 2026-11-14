@@ -38,3 +38,32 @@ ROOT owes real VM validation (not run):
 plus a pressure/unplug concurrent live-move campaign. The filter selects both existing live-move tests.
 Merged tree `2e8135afb`: r8 repeats the same 2/2 and 25/25 tests plus clippy successfully.
 Retained logs: `red-memory-02-page.log` (r5), `green-memory-02.log` (r8).
+
+## memory-03 and memory-05 (live-copy ownership cluster)
+
+Resume policy receipt: implementer memory-02..17, current-main `9068a72cd`;
+AGENTS/rules/evidence/CLAUDE hashes unchanged from the receipt above. The fix brief's
+landing-under-contention update permits pushing a disjoint main merge without
+retesting unchanged crate inputs. No child agents were started for implementation.
+
+memory-03 red at `bebc160ab`, previous-session kiln r13, same macOS arm64 host:
+`cargo test -p shards-vmm a_live_layer_read_waits_for_the_mapping_owner --lib`
+failed `a read completed while release still owned the mapping: Ok(Ok(()))`.
+`e5e2ef793` holds Shared.file across mapping reads and uses typed Save/Precopy
+host-reader guards, releasing on errors as well as success. Teardown waits for
+either reader; save/precopy cannot overlap. A retained VM Arc drops before that
+guard releases. The existing mapping/flush owner is reused, with no new timing knob.
+
+memory-05 red at `5185919b8`, previous-session kiln r14:
+`cargo test -p shards-vmm a_live_copy_whose_mapping_was_lost --lib` failed
+`a live copy resumed after losing its layer mapping`. This exercises the actual
+post-scan continuation, extracted unchanged before fixing it; it does not inject
+an actual APFS mmap failure. Fix `fb58160ac` distinguishes Mapped, Failed (intact
+mapping), and Lost. Only the first two resume; Lost stops with the kept error.
+Actual APFS/hypervisor fault injection and stop during blocked network output
+remain ROOT's, as does cross-OS lifecycle validation. No claim that teardown
+cancels a blocked stream write is made by this unit evidence.
+
+Before memory-05's fix, r14 passed pmem's 10 tests and the new lifecycle-guard test;
+its final lost-mapping regression failed as expected. Focused combined green is
+recorded below, after the latest main merge.

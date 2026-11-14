@@ -74,6 +74,8 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 
 **Test sketch:** Gate a read after its released check, stop the VM, then resume the read. Require teardown to wait or copying to return a typed stopped error before unmapping. Observe actual mapping release and VM destruction order; repeat for run swap as well as layer mappings.
 
+**Status (2026-11-13):** fixed in e5e2ef793 (red `a_live_layer_read_waits_for_the_mapping_owner`, r13). Teardown also waits for typed save/precopy reader ownership. Actual stop-during-stream VM coverage is owed to ROOT; see `docs/research/measurements/memory-fixes-v1/README.md`.
+
 ### memory-04 — P2 / high — Removing a builder's budget can permanently leave its old guest cap installed
 
 **Location:** `crates/shards/src/build/give.rs:334`; dropped send `crates/shards/src/build/builder.rs:199`.
@@ -109,6 +111,8 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 **Fix direction:** Inspect mapping-loss state while paused, stop on irreversible loss, and resume only a recoverable failure whose mappings are intact. Share the ordinary save's terminal-outcome handling.
 
 **Test sketch:** Inject map_file_shared_at failure, then stage-2 mapper failure, during initial precopy extent discovery. Assert no resume occurs after lost=true and the VM reports a terminal error with cleanup, rather than continuing.
+
+**Status (2026-11-13):** fixed in fb58160ac (red `a_live_copy_whose_mapping_was_lost_stops_instead_of_resuming`, r14). Unit continuation proof; actual APFS/map-back fault injection is owed to ROOT. Evidence: `docs/research/measurements/memory-fixes-v1/README.md`.
 
 ### memory-06 — P3 / medium — A fixed two-second policy still controls pressure, budget retries, and recent-growth protection
 

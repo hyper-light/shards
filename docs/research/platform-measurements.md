@@ -24078,3 +24078,13 @@ clippy pass (r8). These are functional unit results, not a real DNS-provider or
 real-VM result. RFC1034 §3.1 supplies the terminal-root-dot normalization rule;
 no chosen runtime value, wait or cache is added.
 [Commands, red output, green excerpts and owed variant](measurements/inithex-fixes/README.md).
+
+### Review memory-03/05: live-copy mapping ownership and terminal map-back loss
+
+On macOS arm64, the real Shared read completed while its release mutex was held
+at bebc160ab (r13, failed assertion); e5e2ef793 serializes it with release and
+keeps teardown behind the active reader. At 5185919b8 the live-copy continuation
+resumed after a Lost scan outcome (r14, failed assertion); fb58160ac stops instead.
+The latter is a unit continuation, not injected APFS/hypervisor failure. Commands,
+source revisions, light results and ROOT's remaining gates are in
+[the memory fix evidence](measurements/memory-fixes-v1/README.md).
