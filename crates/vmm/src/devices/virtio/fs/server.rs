@@ -4118,6 +4118,38 @@ mod tests {
         let _ = std::fs::remove_dir_all(&p);
     }
 
+    /// Native inotify admission can fail although stat/lookup succeeds. The guest
+    /// must receive that failure rather than a directory with a silently absent watch.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_failed_host_watch_admission_refuses_lookup() {
+        use std::os::unix::fs::PermissionsExt as _;
+        // This test runs as the runner's ordinary user: root bypasses MAY_READ.
+        // SAFETY: geteuid reads this process's effective uid.
+        assert_ne!(
+            unsafe { libc::geteuid() },
+            0,
+            "run the watch admission test as an unprivileged user"
+        );
+        let (p, s) = dir();
+        let child = p.join("no-read");
+        std::fs::create_dir(&child).unwrap();
+        std::fs::set_permissions(&child, std::fs::Permissions::from_mode(0o111)).unwrap();
+        let (tx, _rx) = std::sync::mpsc::channel();
+        s.watch_dirs(1, tx).unwrap();
+        let (error, _) = answer(&s, &req(op::LOOKUP, ROOT, 0, &name("no-read")));
+        assert_eq!(error, -libc::EACCES);
+        assert!(
+            !s.holds_dir(b"no-read"),
+            "failed lookup retained a guest reference"
+        );
+        std::fs::set_permissions(&child, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (error, _) = answer(&s, &req(op::LOOKUP, ROOT, 0, &name("no-read")));
+        assert_eq!(error, 0, "admission recovers when the native cause clears");
+        assert!(s.holds_dir(b"no-read"));
+        let _ = std::fs::remove_dir_all(&p);
+    }
+
     /// On Linux, its host's changes in the directories the guest holds come as inotify
     /// events of the process's one instance, each of the path within the share it names
     /// (D235); a directory the guest forgot is watched no more.
