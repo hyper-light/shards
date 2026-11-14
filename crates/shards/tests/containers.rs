@@ -7812,10 +7812,9 @@ fn an_exec_joins_a_workload_that_nests_its_cgroups() {
         &["nest"],
     );
     assert_eq!(run.status, Some(0), "{run}");
-    let mut said = String::new();
     let mut patience = Patience::of(&home);
     loop {
-        said = shards_in(&home, &["logs", "nester"]).stdout;
+        let said = shards_in(&home, &["logs", "nester"]).stdout;
         if said.contains("nested") {
             patience.done();
             break;
@@ -13681,7 +13680,7 @@ fn import_makes_images_of_tarballs() {
         "{}",
         String::from_utf8_lossy(&published.stderr)
     );
-    let (request, microvm) = sent(&served, &home, || {
+    let (request, microvm) = crate::sent(&served, &home, || {
         // Its publisher's errors go to the daemon's log alone (local_store.rs).
         let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
         let tail: Vec<&str> = log.lines().rev().take(60).collect();
