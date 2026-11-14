@@ -72,6 +72,8 @@ There is also an ordering hazard in this same completion path: `api_run.rs:3844�
 
 **Catching test:** Hold a pipe's input writer open, arrange a downward writer that fails on response bytes, and require `copy_both` to return Err and join its helper before the input writer is closed. Add the symmetric input-read-error case.
 
+**Status (2026-11-13):** fixed in f7d83f73a (inithex-03's overlapping fix, preserved when merging main; red `mcp::tests::a_bridge_output_failure_does_not_wait_for_its_idle_input` at dee36cb5f8fd70e2e90551ec66b9aa1938dfd60b). This lane reproduced the same Timeout with live stdin, then found the landed descriptor-owned fix during the required main merge. The independent shared-relay candidate was superseded before landing. Retained upstream guards cover stdout failure, peer end and normal half-close; this lane adds symmetric input-error coverage. [Evidence](../../research/measurements/control-fixes-v1/README.md), [landed fix evidence](../../research/measurements/inithex-fixes/README.md).
+
 ### control-04 — P3 / medium — an idle stdin feeder survives member/run termination
 
 **Location:** `crates/api/src/image/session.rs:1081`; related `:1772–1799`, `:1286–1303`, `:1942–1957`, `:1973–1983`.
@@ -87,6 +89,8 @@ There is also an ordering hazard in this same completion path: `api_run.rs:3844�
 **Fix direction:** Own a cancellation-capable feeder with the session/member lifecycle and wake the actual pipe read when that lifecycle ends.
 
 **Catching test:** Synchronize at entry to the idle read, end the member and then stop/drop the session while keeping its writer open. Require the reader/helper to be gone, subsequent writes to fail, and retained descriptors/shared state to return.
+
+**Status (2026-11-13):** fixed in 151642d8c16229969aa3826efc75aec29a432760 (red `image::session::tests::an_ended_members_idle_input_releases_its_feeder`, a39889e30: Timeout with the writer held open). The session now ends a cancellation-capable IPC reader on input/run/host end and drop. macOS arm64: 32 session tests and API/IPC clippy passed; the held writer refuses later bytes. Windows has its native overlapped-reader/synchronous-writer adapter; execution there remains unverified. [Evidence](../../research/measurements/control-fixes-v1/README.md).
 
 ### control-05 — P3 / medium — cap-loss metadata grows forever and log opens load it whole before charging
 
@@ -104,6 +108,8 @@ There is also an ordering hazard in this same completion path: `api_run.rs:3844�
 
 **Catching test:** Produce many cap evictions while keeping tiny segment retention; verify metadata storage and log-open allocations do not grow with total lifetime eviction count, including an open refused for budget.
 
+**Status (2026-11-13):** fixed in 76ace2f1842bd9c056d745532be8b5622269d18c (red `daemon::managed::cap::tests::a_caps_loss_record_is_bounded_by_its_totals_not_its_history`, 738e3212d, failed with lifetime history still on disk). A durable cumulative record replaces history; legacy reads use fixed format-derived buffers and migrate on the next loss. macOS arm64: all 5 cap tests and shards clippy passed. Windows version reclamation under held readers and allocation profiling remain unverified. [Evidence](../../research/measurements/control-fixes-v1/README.md).
+
 ### control-06 — P3 / medium — a stalled attached viewer retains a daemon thread after the run ends
 
 **Location:** `crates/shards/src/daemon/managed/drain.rs:595`; related `:472–492`, `crates/shards/src/daemon/managed.rs:2036–2038`, `crates/shards/src/daemon.rs:4220–4223`.
@@ -119,6 +125,8 @@ There is also an ordering hazard in this same completion path: `api_run.rs:3844�
 **Fix direction:** Use a cancellable output write tied to viewer/run lifetime without backpressuring capture/log retention.
 
 **Catching test:** Keep a real attached stderr pipe reader open and unread until its viewer blocks. Stop/remove the run without releasing the pipe; require the viewer and its run-owned descriptors to return.
+
+**Status (2026-11-13):** owed to ROOT: live stalled-client reproduction and viewer cleanup, extending `cargo test -p shards --test managed_output supplied_owner_output_keeps_bytes_ack_cancel_and_neighbor_progress_independent -- --exact --nocapture` with an attached stderr reader held unread through stop/removal and a viewer-thread/fd return witness. That existing fixture alone does not test the claimed retention. No valid red was run here, so no blind fix or refutation is claimed. A cancellation-aware output adapter is required if confirmed; changing O_NONBLOCK on a cloned File also changes other users of its open-file description. [Design and exact missing witness](../../research/measurements/control-fixes-v1/README.md).
 
 ### control-07 — P3 / medium — exec lanes reject valid specs above the unrelated 4 MiB frame bound
 
@@ -136,6 +144,8 @@ There is also an ordering hazard in this same completion path: `api_run.rs:3844�
 
 **Catching test:** Construct the spec above, assert `4 MiB < encoded length < MAX_PAYLOAD`, and require `Ask::frame`/`Ask::decode` round-trip plus endpoint admission. Add a real guest case with the appropriate stack limit.
 
+**Status (2026-11-13):** fixed in 431571292dd9438de364a2ca1cf10f14badcb8df (red `control::exec::tests::an_exec_ask_uses_its_run_spec_bound_beyond_an_ordinary_frame`, 6db1979d6). macOS arm64: red rejected 4,587,877-byte frame at 4 MiB; green 10 exec tests, 2 frame tests, shards-remote clippy. The larger bound applies only to MemberExec; other tags and one-past-ABI-bound are refused. [Evidence](../../research/measurements/control-fixes-v1/README.md).
+
 ### control-08 — P5 / low — log-follow fallback adopts an explicitly arbitrary polling interval
 
 **Location:** `crates/shards/src/daemon/managed/log_lanes.rs:287`; value `crates/shards/src/daemon.rs:252`.
@@ -151,6 +161,8 @@ There is also an ordering hazard in this same completion path: `api_run.rs:3844�
 **Fix direction:** Prefer a resource-return/watch-availability notification and make any required fallback behavior learned/data-derived, including cold start; retain its derivation/evidence.
 
 **Catching test/evidence:** Force watch creation failure and observe the selected wait and cancellation behavior; verify the replacement follows its measured/derived method rather than a hardcoded duration. ROOT must measure idle/load/cold-start behavior.
+
+**Status (2026-11-13):** owed with design to ROOT under the fix brief: replace the unwatched-log periodic probe with a producer notification covering append/rotation/end/cancel, or return a typed watch-unavailable refusal when no notification source can be established. No replacement interval was invented. ROOT must first add a watch-creation fault hook and a real log-follow cancellation witness to `cargo test -p shards --test managed_output log_lanes_read_a_runs_command_and_each_agents_log_at_its_place_and_go_on_from_a_cursor -- --nocapture` (log-lane fixture); this command alone does not inject that failure. No runtime red or timing result is claimed here. [Design, cold start and remaining work](../../research/measurements/control-fixes-v1/README.md).
 
 ## Checked and found sound
 

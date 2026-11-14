@@ -74,6 +74,8 @@ Ranking: P0 critical; P1 high security/resource priority; P2 high correctness pr
 
 **Status (2026-11-13):** fixed in e2237fb29 (red `tests::dns_answers_replace_the_names_previous_authority` at 5a3d27784, real connected UDP learning path). Current per-name/type answers replace history and expire at their received TTL; zero-TTL answers retain no later-connect authority. Focused initial tests passed; final merged-source gate and the explicit zero-TTL compatibility limitation are recorded in `docs/research/measurements/network-fixes-v1/README.md#network-03-dns-authority-lifetime`. ROOT owes VM/resource runs; network-11 remains separate.
 
+**Native macOS follow-up (2026-11-13):** at main6389b6e09 the test's immediate nonblocking receive can precede loopback readability, failing first-answer admission before exercising replacement. Reproduced natively on Mac3 in test-release; 68968478b makes the test wait for the actual poller token before dispatch, as production already does. Authority code is unchanged. Commands and final gates: `docs/research/measurements/network-fixes-v1/README.md#network-03-native-macos-readiness-regression`.
+
 ### network-04 — P1 / high: UDP holder changes can reuse a still-live conntrack zone and restore an old destination
 
 **Location:** `crates/init/src/chooser.rs:465`; `crates/init/src/links.rs:1561`. New chooser behavior in the review range.
@@ -108,6 +110,8 @@ Ranking: P0 critical; P1 high security/resource priority; P2 high correctness pr
 
 **Catching test:** launch the D99 IPv6-only MCP fixture through the orchestrator API, fresh and restored. Require granted reach plus refusal of an ungranted address/port, and confirm the command cannot use its agent's egress grant.
 
+**Status (2026-11-13):** owed to ROOT: `cargo test -p shards --test api_image a_published_ingress_port_reaches_its_member -- --exact --nocapture`, extended with the IPv6-only granted/denied destination fixture from `build::agents_reach_past_the_microvm_by_ipv6_what_their_networks_grant`, fresh and restored. The existing ingress-only test does not reproduce missing IPv6 egress. Paired setup/control fix requirements are recorded in `docs/research/measurements/network-fixes-v1/README.md#network-05-07-guest-kernel-and-api-reproductions`; no VM result or blind implementation is claimed.
+
 ### network-06 — P2 / high: one listener captures every port in a contested range
 
 **Location:** `crates/init/src/chooser.rs:440`, `:477`; `crates/init/src/netplan.rs:759`; `crates/init/src/links.rs:1589`. New in the review range.
@@ -124,6 +128,8 @@ Ranking: P0 critical; P1 high security/resource priority; P2 high correctness pr
 
 **Catching test:** publish both ports with web/api's split listeners under one exposure range; each port must return its own member's payload. Repeat with UDP and with one listener closing while the other remains.
 
+**Status (2026-11-13):** owed to ROOT: `cargo test -p shards --test build a_port_comes_in_to_the_member_listening_on_it -- --exact --nocapture`, extended to one unmapped 7000–7001 exposure range with split listeners, TCP and UDP. Existing single-port holder tests do not reproduce a split range. Per-port partition, mapped-target and nft-programming requirements are recorded in `docs/research/measurements/network-fixes-v1/README.md#network-05-07-guest-kernel-and-api-reproductions`.
+
 ### network-07 — P2 / high: an IPv6-only listener can win an IPv4 published port
 
 **Location:** `crates/init/src/chooser.rs:623`; `:534`; `crates/init/src/links.rs:1590`. New in the review range.
@@ -139,6 +145,8 @@ Ranking: P0 critical; P1 high security/resource priority; P2 high correctness pr
 **Fix direction:** use actual IPv4 acceptance when selecting a holder, including V6ONLY for IPv6 sockets, and exclude an IPv6-only socket from an IPv4 contest.
 
 **Catching test:** two candidates as above, publish from an IPv4 client, require api's payload; then change web to a dual-stack socket and exercise the intended first-listener rule.
+
+**Status (2026-11-13):** owed to ROOT: `cargo test -p shards --test build a_port_comes_in_to_the_member_listening_on_it -- --exact --nocapture`, extended with `[::]:7000` V6ONLY=1 versus an IPv4 listener and actual IPv4 receipt, then dual-stack. Linux v6.12 supplies `INET_DIAG_SKV6ONLY` beyond the fixed `inet_diag_msg`; the current parser ignores it. Kernel attribute/version/refusal design is recorded in `docs/research/measurements/network-fixes-v1/README.md#network-05-07-guest-kernel-and-api-reproductions`. No live kernel/VM confirmation is claimed.
 
 ### network-08 — P2 / high: a persistent TCP DNS client monopolizes 127.0.0.11 for the whole VM
 

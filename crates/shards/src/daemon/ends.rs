@@ -59,7 +59,7 @@ pub(crate) struct Ends {
 }
 
 /// The slowest end of each kind heard.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Slowest {
     teardown: Duration,
     exit: Duration,
@@ -132,22 +132,31 @@ impl Ends {
     /// or the new. A record that cannot be written leaves this process's own, and says why.
     pub(crate) fn heard(&self, kind: End, took: Duration) -> Result<(), String> {
         let mut slowest = lock(&self.slowest);
-        *slowest = slowest.with(Slowest::read(&self.path));
         let was = slowest.of(kind);
-        if took <= *was {
+        *was = (*was).max(took);
+        let fail = |e| format!("keeping this host's ends in {}: {e}", self.path.display());
+        // Every process rereads and merges under this stable lock, not the replaced
+        // record's inode. Locked releases flock before close (M244).
+        let _writing =
+            shards_image::store::Locked::exclusive(&self.path.with_extension("lock")).map_err(fail)?;
+        let recorded = Slowest::read(&self.path);
+        *slowest = slowest.with(recorded);
+        if *slowest == recorded {
             return Ok(());
         }
-        *was = took;
         let text = format!(
             "teardown {}\nexit {}\nhelper {}\n",
             slowest.teardown.as_millis(),
             slowest.exit.as_millis(),
             slowest.helper.as_millis()
         );
-        let new = self.path.with_extension("new");
-        std::fs::write(&new, text)
-            .and_then(|()| std::fs::rename(&new, &self.path))
-            .map_err(|e| format!("keeping this host's ends in {}: {e}", self.path.display()))
+        let home = self
+            .path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let dir = shards_vmm::platform::open_dir(home).map_err(fail)?;
+        shards_vmm::platform::write_in(&dir, RECORD, text.as_bytes()).map_err(fail)
     }
 }
 
@@ -195,6 +204,35 @@ impl Followed {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Another writer owns the stable record lock and is about to publish a slower
+    /// teardown. A helper's update must wait, reread it, and preserve both maxima.
+    #[test]
+    fn concurrent_end_writers_keep_each_others_maxima() {
+        let home = shards_testdir::TempDir::new("ends-race").unwrap();
+        std::fs::write(home.join(RECORD), "teardown 1000\nexit 0\nhelper 0\n").unwrap();
+        let owned = shards_image::store::Locked::exclusive(&home.join("ends.lock")).unwrap();
+        let ends = Ends::kept_in(&home);
+        let (send, completed) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                send.send(ends.heard(End::Helper, Duration::from_secs(8)))
+                    .unwrap()
+            });
+            let early = completed.recv_timeout(Duration::from_secs(1));
+            // The lock owner publishes the snapshot it read before the other writer
+            // began. A writer that ignores its lock loses its helper observation here.
+            std::fs::write(home.join(RECORD), "teardown 9000\nexit 0\nhelper 0\n").unwrap();
+            drop(owned);
+            early
+                .or_else(|_| completed.recv_timeout(Duration::from_secs(10)))
+                .unwrap()
+                .unwrap();
+        });
+        let kept = Ends::kept_in(&home);
+        assert_eq!(kept.slice(End::Teardown), Some(Duration::from_secs(9)));
+        assert_eq!(kept.slice(End::Helper), Some(Duration::from_secs(8)));
+    }
 
     /// A home with no record gives no end a slice: each is followed by its process's
     /// liveness alone, as the person's rule has a cold wait (red with `LEAST_SLICE`, 10 s of

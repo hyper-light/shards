@@ -306,3 +306,147 @@ passed 2 authority tests, 1 grant-port test, 2 answer/TTL tests, 2 TCP DNS tests
 (7 total), and both touched crates' clippy, overall exit0.
 [Full output](green03-merged.log). Policy checker and diff whitespace check passed
 locally; no local build/test ran. This is the focused tested merge for contention.
+
+Network-03 landed at `4ce420fd2d5b78c56da35634d25eff798acf81da`, ff-pushed
+from c6dd46525. Focused tests/clippy remain on 309dd3ead; contention merges
+e0c788174 and 4ce420fd2 changed net injector inputs and each passed warm native
+ARM `cargo check -p shards-net -p shards-dns --tests`, r22/r23, exit0
+([first](check03-e0c78817.log), [landing](check03-landing.log)). No conflict
+occurred. No force push. This slice's owned target cleanup is recorded next.
+
+## network-05-07: guest-kernel and API reproductions
+
+**Owed to ROOT, not fixed/refuted/live-confirmed.** The report's proposed reds
+require actual guest eth0/route programming or distinct member namespaces with
+kernel socket diagnostics and nft DNAT. Fix/common briefs reserve these VM runs
+to ROOT. Source-only observations, synthetic diagnostic byte strings and seeing
+an omitted NET_ADDRESS are not claimed as IPv6 receipt/holder reproductions.
+Current source at main 4ce420fd2 still has the reviewed paths. No new tuning value,
+guest kernel patch, speculative broad refactor or passing VM result is introduced.
+
+### network-05
+
+Starting command:
+`cargo test -p shards --test api_image a_published_ingress_port_reaches_its_member -- --exact --nocapture`.
+Extend its actual ImageShards/Hex launch with build.rs's
+`agents_reach_past_the_microvm_by_ipv6_what_their_networks_grant` IPv6-only
+upstream fixture. Run fresh and restored; require the granted IPv6 address/port,
+refuse its ungranted address/port, and witness the command cannot borrow agents'
+egress. The current ingress fixture alone is not the red.
+
+Design: share the home's engine-ID-derived ULA /48 and reserved last /64 from
+`daemon/networks.rs::{ula_base,host_ipv6}` with API-run. One physical uplink value
+must drive both guest `uplink6=guest/64,gateway` and network-process NET_ADDRESS,
+including bridge IPv4 identity. API plan must keep it through fresh/template and
+restored launch, and tell_net must await its matching acknowledgement before the
+run starts. Keep existing narrowed NET_POLICY, publication and credential ordering;
+keep `confine-eth0` and member gates. Do not silently enable IPv6 for every command
+or substitute a chosen address prefix. Changes to home-ID creation need typed
+failure and concurrent first-writer handling, not a second independently chosen ID.
+ROOT owes the paired-state unit fixture plus real guest route/receipt red before
+claiming this design implemented.
+
+### network-06
+
+Starting command:
+`cargo test -p shards --test build a_port_comes_in_to_the_member_listening_on_it -- --exact --nocapture`.
+Extend to one unmapped 7000–7001 EXPOSE, web only7000 and api only7001, then close
+one listener. Repeat TCP/UDP; observe each actual member payload. Existing
+single-port ownership cannot establish this failure.
+
+Design: partition each contested exposure at individual protocol-port identities,
+preserving unmapped and explicitly mapped destinations. Share allocation is bounded
+by u16 port space times admitted candidates, not a chosen cache size; checked/fallible
+allocation must refuse the image/start rather than partially install. Selection and
+holder generation are per port. `links::program_chosen` must not interpret a newly
+split unmapped port as a range mapping to the old low endpoint. Its fallback ingress
+rules must exclude all contested intervals, not only original exact tuples. A missing
+holder drops that port. Holder close/rejoin must leave the other port alone. Kernel
+programming remains one atomic batch; network-04's zone-retirement gap stays separate.
+ROOT owes actual nft rules and TCP/UDP receipt witnesses, including range boundaries.
+
+### network-07
+
+Use the same build command, with web `[::]:7000` IPV6_V6ONLY=1 first, api IPv4
+wildcard second and an IPv4 client; require api receipt. Then make web dual-stack
+and exercise the intended first-listener rule for TCP and UDP. Keep the original
+member socket ownership and guest kernel version in evidence.
+
+Primary sources inspected: Linux v6.12
+[`inet_diag.c`](https://github.com/torvalds/linux/blob/v6.12/net/ipv4/inet_diag.c)
+and [`inet_diag.h`](https://github.com/torvalds/linux/blob/v6.12/include/uapi/linux/inet_diag.h).
+`INET_DIAG_SKV6ONLY` is an attribute after fixed inet_diag_msg, beyond the request's
+8-bit idiag_ext range; do not invent a request-bit value or read fixed source bytes
+as the option. Parse aligned netlink attributes with checked bounds, validate the
+one-byte value and family, and refuse unknown/missing acceptance rather than guessing
+false. Verify the pinned guest's emitted attributes for TCP/UDP and non-admin
+observability before selecting an implementation. Preserve dual-stack and mapped
+IPv4 behavior only where kernel evidence establishes it. ROOT owes that R02/live
+version proof and explicit typed observation/refusal handling.
+
+R09/R10 decisive reds remain unrun as required by the role boundary; R02/R04/R05
+state/resource/compatibility requirements above are designs, not compliance results.
+D99/D122 and finding statuses retain these gaps. No platform or performance result
+is inferred from this documentation. Network-03 target cleanup r24 exited0; all
+owned ARM test containers are --rm, and no run remains active.
+
+## network-03: native macOS readiness regression
+
+ROOT reported two failures on macOS arm64 at main6389b6e09, first-address admission
+at lib.rs4076, before the replacement assertion. Urgent follow-up takes priority;
+network08 is held unlanded on p/fix-network-v1 at74ea2d725, and its green run r26
+failed GitHub DNS before any cargo. This fix is isolated on
+p/fix-network-03-macos-v1, based91cba0180. Full policy/brief readback was repeated;
+policy hashes above unchanged, implementer role, owned net test and these records.
+The amended brief now stops self-landing after two lost ff-push races.
+
+Native red: Mac3 (adas-mac-studio-3.local), Darwin arm64, Rust1.98.1, own cold
+~/g121-tmp/network-dns03-macos-v1/target, incremental0/jobs4. At exact main
+6389b6e09671c7a89288fbb2224b1648b5e4dd16, Kiln r27:
+`cargo test -p shards-net --profile test-release --lib dns_answers_replace_the_names_previous_authority`
+failed first-answer admission, exit101 ([raw output](mac03-red.log)). This is
+not the historical replacement red: no first answer had yet been processed.
+Earlier Linux arm64 GNU runs passed this test in the test profile; they did not
+establish macOS behavior or an optimized-profile platform comparison.
+
+Hypotheses: an immediate nonblocking receive can precede loopback delivery;
+otherwise parser/admission or registration would still fail after readiness. The
+production dispatcher already waits for the UDP token to be readable before
+calling on_udp. The test called on_udp immediately after send_to, which is no
+readiness witness. [POSIX sendto](https://pubs.opengroup.org/onlinepubs/9699919799/functions/sendto.html)
+does not promise message delivery from successful output. No XNU implementation
+mechanism is assumed from the failure alone.
+
+Fix68968478b waits on the actual stack poller, dispatching only its readable UDP
+token, for each answer, with the existing test's five-second failure bound. There
+is no sleep or platform cfg, and both new-flow admission and stale-address denial
+assertions remain. Production code and DNS authority semantics are unchanged.
+No public interface, cache, production constant, state machine or architecture
+is added. Native green, mutation and merged-source outcomes follow below.
+
+R01/R04/R06/R07/R13: test-only assertions and the same readiness transition as the
+real dispatcher; bounded failure if the token never arrives. R02/R03/R05/R12:
+existing cross-platform poller and POSIX socket contract, no production policy
+choice or copied platform workaround. R09/R10: exact native red and retained
+revision/commands, pending green below. R11: native macOS check required explicitly
+by ROOT; no skipped platform reported passed. R08/R14: no performance/resource
+claim. R15/R16: one permitted Mac, no local cargo/delegation/VM runs; owned target
+cleanup after landing. ROOT inbox rejected urgent status with429backpressure,
+so delivery is not claimed. r28 was not dispatched before Kiln server timeout;
+read-only r29 found old6389 source and no own cargo, so it is no test verdict.
+
+Native merged gate, r30: exact merge18e5e2aa85ae583ccbc9cbcbe75ecbc1b9e91eb2
+(main02d3fe33b), Darwin25.2.0 arm64 / Rust1.98.1. Restoring historical-answer
+retention with the corrected readiness test fails at its intended final assertion
+`the replaced DNS answer still grants a new flow` (test-release, exit101).
+The harness requires that message/status and restores the source before continuing.
+It therefore rejects an unrelated first-answer or compile failure as mutation proof.
+The restored source passes 2 DNS authority tests and 1 grant-port test in
+test-release, then shards-net all-targets clippy, overall exit0.
+[Raw mutation/green output](mac03-mutation-green.log),
+[exact owned-clone harness](native-mac03-guard.sh).
+There is no diff in net/lib.rs or dns/lib.rs between6389 and the fix branch's91cba
+main base; the correction changes only test synchronization in those files.
+Thus the native failure was the test's missing readiness transition; no production
+DNS change is needed. An optimized Linux/native-macOS equivalence claim is not made:
+the earlier Linux pass used the test profile. No additional broad suite ran.

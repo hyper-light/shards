@@ -259,7 +259,7 @@ fn name_there(
     }
 }
 
-/// Why the other machine's `ready` step does not take a move: its refusal, typed
+/// Why the other machine's `ready` or `import` step does not take a move: its refusal, typed
 /// (daemon/moves.rs `Refused`), or, from a daemon of an earlier build or a step that failed,
 /// its words.
 fn unready(step: &str, answer: &There) -> String {
@@ -641,7 +641,7 @@ fn moved(home: &Path, name: &str, to: &str, live: bool, ask: &Ask<'_>) -> Result
                 // Each breaks the other's stream: both said.
                 (Err(e), Err(t)) => Err(format!("{e}; its import: {t}")),
                 (Err(e), _) | (_, Err(e)) => Err(e),
-                (_, Ok(t)) => Err(format!("{to}: {}", said("its import", &t))),
+                (_, Ok(t)) => Err(format!("{to}: {}", unready("its import", &t))),
             }
         })
     })();

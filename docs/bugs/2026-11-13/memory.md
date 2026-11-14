@@ -36,6 +36,8 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 
 **Test sketch:** Extend Windows window tests with READ then WRITE ranges of the same node using distinct RO/RW handles. Grow the file, reconcile, assert the old data at window offset `2 MiB + 4096` remains `0x5a`, write `0xa5` there, flush, and assert the host file contains `0xa5`. The existing file-window test supplies RW handles for every map and misses this interleaving.
 
+**Status (2026-11-14):** fixed in 7f0cb8ce9 (red `devices::virtio::fs::window::tests::a_range_mapped_to_be_written_after_one_to_be_read_stays_its_files` and `a_range_no_view_of_its_file_can_be_made_for_is_refused_never_zeros`, 4697f1e7b: zeros read where the file holds 0x5a on Windows 10.0.26200 x86_64; PM M573, `docs/research/measurements/windows-p0/`).
+
 ### memory-02 — P1 / high — Live copying races virtio-mem unplug and reads inaccessible memory
 
 **Location:** `crates/vmm/src/memory.rs:739–741` and `:765–768`; caller `crates/vmm/src/vm/runtime.rs:549`.
@@ -271,6 +273,8 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 **Fix/test direction:** Deduplicate by content identity (with equality confirmation), or derive a bounded method from measured resource cost. Construct the 66-block input and assert the last two identical contents have the same kept index. Do not turn this sketch into an unconditional heavy test on the shared Mac.
 
 ### memory-17 — P5 / low — The builder give-back parser's 4096-byte frame cap is not derived from its protocol
+
+**Status (2026-11-13):** fixed in 5826a9bcf (red `a_give_back_room_past_signed_decimal_ends_before_reading_payload` at c61cc6b1d). The bound is the longest canonical signed `i64` decimal request; signed extremes stay accepted. Evidence: `docs/research/measurements/memory-fixes-v1/README.md`.
 
 **Location:** `crates/init/src/plug.rs:877`, enforced at `:900`.
 
