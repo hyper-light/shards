@@ -5,9 +5,9 @@
 
 use std::ffi::OsString;
 use std::io;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use shards_vmm::platform::{MemoryPressure, PRESSURE_WINDOW, PressureWatches};
+use shards_vmm::platform::{MemoryPressure, PressureWatches};
 
 /// What tells its listener its host is short of memory: its kernel, or the pipe a variable
 /// names, by its path.
@@ -40,6 +40,24 @@ impl Pressure {
         }
     }
 
+    /// Its listener's act on the last word took `took`: what its kernel's source learns a
+    /// pressure, and its pace, from (`platform::MemoryPressure::acted`); nothing for a pipe.
+    pub fn acted(&mut self, took: Duration) {
+        if let Pressure::Kernel(pressure) = self {
+            pressure.acted(took);
+        }
+    }
+
+    /// The most a pressure that goes on waits between its words now, as its kernel's source
+    /// says it (`platform::MemoryPressure::repeat`); none for a pipe, whose lines are each
+    /// a pressure of their own, or a source not raised.
+    pub fn repeat(&self) -> Option<Duration> {
+        match self {
+            Pressure::Kernel(pressure) => pressure.repeat(),
+            Pressure::Told(..) => None,
+        }
+    }
+
     /// Waits for the next word that its host is short of memory.
     pub fn wait(&mut self) -> io::Result<()> {
         match self {
@@ -62,32 +80,38 @@ impl Pressure {
 
 /// When what microVMs or builders gave back under a pressure is said (D188), without a fixed
 /// while: as the pressure begins, then each time it has gone on as long again as it had when
-/// last said (one [`PRESSURE_WINDOW`] at the least), so that a pressure that goes on for a
-/// time `t` is said about log2(t / window) times, its lines farther apart the longer it goes
-/// on (a doubling, as a search past what is known: Baeza-Yates, Culberson and Rawlins,
-/// "Searching in the plane", Inf. Comput. 106(2), 1993). A pressure that goes on is heard
-/// once a window (its trigger's, or its host's repeat: `platform::pressure`), so a word that
-/// comes after a whole window without one begins another, said at once.
+/// last said (one repeat at the least), so that a pressure that goes on for a time `t` is
+/// said about log2(t / repeat) times, its lines farther apart the longer it goes on (a
+/// doubling, as a search past what is known: Baeza-Yates, Culberson and Rawlins, "Searching
+/// in the plane", Inf. Comput. 106(2), 1993). A pressure that goes on is heard at most a
+/// repeat apart, its source's own ([`Pressure::repeat`]: a trigger's window, or macOS's and
+/// Windows' pace as they say it), so a word that comes two repeats after the last, a whole
+/// repeat having passed with none, begins another, said at once; a source with no repeat (a
+/// told pipe's line, a source not raised) has each word begin one.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Saying {
-    /// When the pressure under way began, its last word, and when it was last said.
+    /// When the pressure under way began, its last word, when it was last said, and the
+    /// repeat its source said as its last word came.
     began: Option<Instant>,
     last: Option<Instant>,
     said: Option<Instant>,
+    repeat: Option<Duration>,
 }
 
 impl Saying {
-    /// A word of pressure heard at `now`.
-    pub fn heard(&mut self, now: Instant) {
-        let quiet = PRESSURE_WINDOW.saturating_mul(2);
-        if self
-            .last
-            .is_none_or(|last| now.saturating_duration_since(last) > quiet)
-        {
+    /// A word of pressure heard at `now`, its source saying words of a pressure that goes on
+    /// come at most `repeat` apart.
+    pub fn heard(&mut self, now: Instant, repeat: Option<Duration>) {
+        let goes_on = match (self.last, self.repeat) {
+            (Some(last), Some(was)) => now.saturating_duration_since(last) <= was.saturating_mul(2),
+            _ => false,
+        };
+        if !goes_on {
             self.began = Some(now);
             self.said = None;
         }
         self.last = Some(now);
+        self.repeat = repeat;
     }
 
     /// Whether it is due to be said at `now`: never said in this pressure, or it has gone on
@@ -96,7 +120,9 @@ impl Saying {
         let (Some(began), Some(said)) = (self.began, self.said) else {
             return true;
         };
-        let gone_on = said.saturating_duration_since(began).max(PRESSURE_WINDOW);
+        let gone_on = said
+            .saturating_duration_since(began)
+            .max(self.repeat.unwrap_or_default());
         now.saturating_duration_since(said) >= gone_on
     }
 
@@ -113,30 +139,38 @@ mod saying {
 
     use super::*;
 
-    /// A pressure that goes on is said as it begins, then at one window, two, four and eight
-    /// into it; one heard again after a window without a word begins again, said at once.
+    /// A pressure that goes on is said as it begins, then at one repeat, two, four and eight
+    /// into it; one heard again two repeats after a word begins again, said at once; and a
+    /// source with no repeat has each word begin a pressure.
     #[test]
     fn a_pressure_is_said_as_it_doubles() {
-        let w = PRESSURE_WINDOW;
+        let w = Duration::from_millis(700);
         let t0 = Instant::now();
         let mut s = Saying::default();
         let mut said = Vec::new();
         for n in 0..=16u32 {
             let now = t0 + w * n;
-            s.heard(now);
+            s.heard(now, Some(w));
             if s.due(now) {
                 s.said(now);
                 said.push(n);
             }
         }
         assert_eq!(said, [0, 1, 2, 4, 8, 16]);
-        // Three windows without a word: the next begins another pressure.
+        // Three repeats without a word: the next begins another pressure.
         let again = t0 + w * 19;
-        s.heard(again);
+        s.heard(again, Some(w));
         assert!(s.due(again));
         s.said(again);
         assert!(!s.due(again + w / 2));
         assert!(s.due(again + w + Duration::from_millis(1)));
+        // A pipe's words, no repeat: each its own pressure, said at once.
+        let mut told = Saying::default();
+        told.heard(t0, None);
+        told.said(t0);
+        let next = t0 + Duration::from_millis(1);
+        told.heard(next, None);
+        assert!(told.due(next));
     }
 }
 

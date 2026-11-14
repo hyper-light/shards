@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 #[cfg(any(target_os = "macos", windows))]
 use std::sync::{Condvar, Mutex, PoisonError};
 #[cfg(any(target_os = "macos", windows))]
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[cfg(any(target_os = "macos", windows))]
 use super::reclaim::Gave;
@@ -302,6 +302,41 @@ enum WordState {
     Refused(super::health::Cut),
 }
 
+/// The pace of the groups' passes (D188, R03; it was a pressure window): D215's
+/// `sqrt(2 c w)` (`shards_abi::pace`) after the last, `c` that pass's own time and `w` how
+/// long its groups had gone unchanged as it was made, a change what a pass looks for: a
+/// member come or gone, a group's budget written, or a group fallen short of it or within
+/// it again, which no notification says on macOS or Windows. A pass that finds one restarts
+/// `w`, so passes come close together while groups change and spread out while they stay
+/// as they are. The first pass is made at once.
+#[cfg(any(target_os = "macos", windows))]
+#[derive(Debug, Clone, Copy, Default)]
+struct Paced {
+    /// What the last pass took, and since when its groups had been unchanged then.
+    took: Duration,
+    unchanged_since: Option<Instant>,
+}
+
+#[cfg(any(target_os = "macos", windows))]
+impl Paced {
+    /// A pass begun `at` has ended, `changed` whether it found a change.
+    fn passed(&mut self, at: Instant, changed: bool) {
+        self.took = at.elapsed();
+        if changed || self.unchanged_since.is_none() {
+            self.unchanged_since = Some(at);
+        }
+    }
+
+    /// When the pass after one made `at` is due.
+    fn next(&self, at: Instant) -> Instant {
+        let unchanged = self
+            .unchanged_since
+            .map_or(Duration::ZERO, |since| at.saturating_duration_since(since));
+        at.checked_add(shards_abi::pace::pause(self.took, unchanged, Duration::MAX))
+            .unwrap_or(at)
+    }
+}
+
 /// What the groups' thread keeps of a group between its passes (R04): whether it was said
 /// short of its budget, its round of give-backs under way, and the members told a room, who
 /// are told it has none once its budget has none.
@@ -311,6 +346,9 @@ struct Hold {
     short: bool,
     round: Option<Round>,
     told: HashSet<u32>,
+    /// Its budget as its last pass read it: one written since is a change its passes
+    /// look for ([`Daemon::next_look`]).
+    budget: Option<Budget>,
 }
 
 /// A group's round of give-backs (R04): opened at a pass that finds it short of its budget,
@@ -548,8 +586,9 @@ impl<D: Disk> Daemon<D> {
         let mut holds: HashMap<String, Hold> = HashMap::new();
         let mut rounds = 0u64;
         let mut passed: Option<Instant> = None;
+        let mut paced = Paced::default();
         loop {
-            let look = self.next_look(&members, passed);
+            let look = self.next_look(&members, passed, paced);
             let woke = {
                 let mut woke = lock(&self.groups.woke);
                 if woke.quiet() {
@@ -593,31 +632,40 @@ impl<D: Disk> Daemon<D> {
             }
             members.retain(|_, list| !list.is_empty());
             holds.retain(|name, _| members.contains_key(name));
-            let pass = moved || passed.is_none_or(|p| p.elapsed() >= shards_vmm::platform::PRESSURE_WINDOW);
+            let now = Instant::now();
+            let pass = moved || passed.is_none_or(|p| now >= paced.next(p));
             if pass {
-                passed = Some(Instant::now());
+                passed = Some(now);
             }
+            let mut changed = moved;
             for (name, list) in &members {
                 let hold = holds.entry(name.clone()).or_default();
                 if pass {
+                    let was = (hold.short, hold.budget);
                     self.hold_group(threads, name, list, hold, &mut rounds);
+                    changed |= (hold.short, hold.budget) != was;
                 }
                 self.judge_round(name, list, hold);
+            }
+            if pass {
+                paced.passed(now, changed);
             }
         }
     }
 
-    /// The next resource-accounting pass. Word outcomes wake the thread independently;
-    /// no second timer judges a member behind its authoritative exec judge.
-    fn next_look(&self, members: &HashMap<String, Vec<Member>>, passed: Option<Instant>) -> Option<Instant> {
+    /// The next resource-accounting pass, on its pace ([`Paced`]). Word outcomes wake the
+    /// thread independently; no second timer judges a member behind its authoritative exec
+    /// judge.
+    fn next_look(
+        &self,
+        members: &HashMap<String, Vec<Member>>,
+        passed: Option<Instant>,
+        paced: Paced,
+    ) -> Option<Instant> {
         if members.is_empty() {
             return None;
         }
-        Some(
-            passed
-                .and_then(|p| p.checked_add(shards_vmm::platform::PRESSURE_WINDOW))
-                .unwrap_or_else(Instant::now),
-        )
+        Some(passed.map_or_else(Instant::now, |p| paced.next(p)))
     }
 
     /// A pass over group `name` and its microVMs `members` (D183, slice 3): its files read
@@ -643,6 +691,7 @@ impl<D: Disk> Daemon<D> {
                 return;
             }
         };
+        hold.budget = Some(budget);
         // Its microVMs' CPU budget its `cpu.max`, as the file now says it, and on Windows its
         // job's memory limit its `memory.max`.
         self.budget_group_cpu(name, budget.cpu);
@@ -987,6 +1036,26 @@ impl<D: Disk> Daemon<D> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The groups' passes come on D215's pace: the first at once; one that found nothing
+    /// changed for 10 s, taking 5 ms, next due 316 ms on (a pressure window would have been 2
+    /// s whatever a pass cost); one that found a change, due again at once.
+    #[cfg(any(target_os = "macos", windows))]
+    #[test]
+    fn the_groups_passes_follow_their_cost_against_how_long_groups_stayed_as_they_are() {
+        let t0 = Instant::now();
+        let mut paced = Paced::default();
+        assert_eq!(paced.next(t0), t0, "no pass yet: at once");
+        paced.passed(t0, true);
+        let at = t0 + Duration::from_secs(10);
+        paced = Paced {
+            took: Duration::from_millis(5),
+            ..paced
+        };
+        assert_eq!(paced.next(at), at + Duration::from_nanos(316_227_766));
+        paced.unchanged_since = Some(at);
+        assert_eq!(paced.next(at), at, "a change found: the next at once");
+    }
 
     /// A pending word's own exec wait owns its progress and host holds. Elapsed wall time
     /// alone cannot finish its group's round, including while it waits behind host reclaim.

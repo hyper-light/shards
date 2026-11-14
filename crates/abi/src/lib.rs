@@ -68,17 +68,13 @@ pub const fn gateway_mac(gateway: [u8; 4]) -> [u8; 6] {
 /// 14.3 through 4 MiB (r433; docs/research/measurements/vsock-window-v1).
 pub const VSOCK_WINDOW: u32 = 4 << 20;
 
-/// The window its host's memory pressure is measured over (D188; `vmm` platform/pressure.rs,
-/// its PSI trigger's and its other hosts' repeat): a guest that grew less than this ago is
-/// taken for one growing, whatever its host says meanwhile (init plug.rs, PM M466).
-pub const PRESSURE_WINDOW_US: u64 = 2_000_000;
-
 pub mod bounds;
 pub mod build;
 pub mod changes;
 pub mod emulate;
 pub mod gpu;
 pub mod guest_time;
+pub mod pace;
 pub mod rate;
 pub mod ring;
 pub mod run;

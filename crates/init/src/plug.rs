@@ -108,9 +108,13 @@ impl Coming {
     }
 }
 
-/// The grower's pace between its looks at MemTotal: no wait, a look's pace. A pause that
-/// runs past it is its guest's or its host's hold of the grower, which no window counts.
-const PAUSE: Duration = Duration::from_millis(1);
+/// The pause between looks for something nothing says (D215's pace, `shards_abi::pace`):
+/// `sqrt(2 c w)` of a look's own cost `c` and the time waited so far `w`, the first look at
+/// once (R03, memory-12; it was a millisecond). A pause that runs past it is its guest's or
+/// its host's hold of the looker, which no window counts.
+fn pace(look: Duration, waited: Duration) -> Duration {
+    shards_abi::pace::pause(look, waited, Duration::MAX)
+}
 /// inotify's cost of a watch and epoll's of an item in this kernel, in bytes
 /// (`INOTIFY_WATCH_COST`, `EP_ITEM_COST`): what makes their limits 1:28.17 at every size
 /// the pinned kernel was measured at, 4, 16 and 64 GiB (PM M193).
@@ -426,6 +430,7 @@ impl Plug {
         {
             let _ = PEAK.set(peak);
         }
+        begin_period(mem_total().map_or(0, |total| staying(self.boot, total)));
         set_high(self.cgroup, high(self.cgroup, self.most, 0)?)?;
         let events = watch_events(self.cgroup)?;
         let mut fds = [0; 2];
@@ -474,6 +479,7 @@ impl Plug {
         {
             let _ = PEAK.set(peak);
         }
+        begin_period(mem_total().map_or(0, |total| staying(self.boot, total)));
         set_high(self.cgroup, high(self.cgroup, self.most, 0)?)?;
         let events = watch_events(self.cgroup)?;
         // SAFETY: fork(2) of PID 1 before it starts any thread: the child runs on a copy
@@ -506,13 +512,13 @@ impl Plug {
 /// its restores resume with none.
 static CAP: std::sync::OnceLock<&'static Shared> = std::sync::OnceLock::new();
 
-/// What init, its grower and its builtins' forks share in [`CAP`]'s page: the cap, and when
-/// the grower last asked for memory or had memory come ([`grew_lately`]).
+/// What init, its grower and its builtins' forks share in [`CAP`]'s page: the cap, and what
+/// stayed plugged as the run's peak began to be counted afresh ([`begin_period`]).
 #[repr(C)]
 #[derive(Debug)]
 struct Shared {
     cap: std::sync::atomic::AtomicU64,
-    grown_at: std::sync::atomic::AtomicU64,
+    period_plugged: std::sync::atomic::AtomicU64,
 }
 
 /// Makes [`CAP`], none yet: by PID 1 as it starts, before it forks anything, a grower or a
@@ -554,50 +560,28 @@ pub(crate) fn cap() -> u64 {
         .map_or(u64::MAX, |s| s.cap.load(std::sync::atomic::Ordering::SeqCst))
 }
 
-/// Now, in nanoseconds since boot; a value [`grew_within`] reads against.
-fn now_ns() -> u64 {
-    let mut t = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    // SAFETY: clock_gettime(2) into a timespec of ours.
-    unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &raw mut t) };
-    u64::try_from(t.tv_sec)
-        .unwrap_or(0)
-        .saturating_mul(1_000_000_000)
-        .saturating_add(u64::try_from(t.tv_nsec).unwrap_or(0))
-}
-
-/// Marks that the grower asked for memory, or had memory come ([`Grows::ask`],
-/// [`Grows::raise`]): the run grows.
-fn mark_growth() {
-    if let Some(s) = CAP.get() {
-        s.grown_at.store(now_ns(), std::sync::atomic::Ordering::SeqCst);
-    }
-}
-
-/// Whether the run's grower asked for memory, or had memory come, within the window its
-/// host's pressure is measured over ([`shards_abi::PRESSURE_WINDOW_US`]): memory plugged
-/// so lately is what its run grows into, not what it holds cold. A give-back that took it
-/// for cold, counting what it keeps from what the run had reached so far where the grower
-/// asks for twice as much, took back what the grower had just plugged for a run raised to
-/// more (`update -m`, D149) and held it at what it would have after, pass after pass of a
-/// host that stays short of memory, 128 MiB plugged and unplugged in turn, until its guest
-/// ran out of memory and killed what grew (PM M466). The window, not the pass before: a
-/// host's words come as fast as its watches do. False where nothing is shared.
-fn grew_lately() -> bool {
-    CAP.get().is_some_and(|s| {
-        grew_within(
-            s.grown_at.load(std::sync::atomic::Ordering::SeqCst),
-            now_ns(),
-            shards_abi::PRESSURE_WINDOW_US.saturating_mul(1000),
-        )
+/// Begins a period of the run's peak with `stays` bytes plugged past its boot, the period
+/// before having begun with what this returns: none where nothing is shared. Each give-back
+/// begins one as it reads the peak afresh ([`peak_since`]), and its hold began the first.
+fn begin_period(stays: u64) -> u64 {
+    CAP.get().map_or(0, |s| {
+        s.period_plugged.swap(stays, std::sync::atomic::Ordering::SeqCst)
     })
 }
 
-/// Whether `grown_at` is within `window` of `now`, nanoseconds; none is 0.
-fn grew_within(grown_at: u64, now: u64, window: u64) -> bool {
-    grown_at != 0 && now.saturating_sub(grown_at) < window
+/// Whether memory came within a period of the run's peak that began with `began_with` bytes
+/// plugged and ends with `stays` (D188, PM M466; R03, memory-06): memory plugged within it
+/// was not there for the whole of the period its peak counts, so its going unused is no
+/// sign of its being cold, and a give-back keeps all the run has. Only memory there for a
+/// whole period, from one give-back to the next, and unused through it, is cold. It was a
+/// mark of the grower's within a pressure window (2 s): the period is now the host's own
+/// cadence of give-backs, whatever it is. A give-back that took the block the grower had
+/// just plugged for a run raised to more (`update -m`, D149) as its allocation was yet to
+/// touch it, counting what it keeps from what the run had reached so far, held it at what it
+/// would have after, pass after pass of a host that stays short of memory, 128 MiB plugged
+/// and unplugged in turn, until its guest ran out of memory and killed what grew.
+fn came_within(began_with: u64, stays: u64) -> bool {
+    stays > began_with
 }
 
 /// The run's `memory.high` as its grower holds it ([`Plug::hold_run`]), what it uses and
@@ -819,16 +803,18 @@ pub fn shrink_run(cgroup: &str) -> io::Result<u64> {
     let asked = control_read64(control::HOTPLUG_REQUEST).unwrap_or(plugged);
     let used = number(&format!("{cgroup}/memory.current"))
         .ok_or_else(|| err(format!("{cgroup}/memory.current unread")))?;
-    // A run that grew lately keeps all it has, its peak counted on from then: what was
-    // plugged lately is what it grows into (PM M466).
-    if grew_lately() {
+    // Of what stays: what a give-back before asked its driver to unplug goes already. Its
+    // peak read afresh begins a period; memory that came within the one before is what the
+    // run grows into, all of it kept (PM M466).
+    let stays = staying(boot, total);
+    let peak = peak_since(used);
+    if came_within(begin_period(stays), stays) {
         return Ok(0);
     }
-    // Of what stays: what a give-back before asked its driver to unplug goes already.
-    let stays = staying(boot, total);
-    let Some(keep) = to_keep(boot, most, stays, asked, used, peak_since(used)) else {
+    let Some(keep) = to_keep(boot, most, stays, asked, used, peak) else {
         return Ok(0);
     };
+    begin_period(keep);
     // The free memory that goes with it counted out of the hold now, before it goes, as
     // every hold counts out what goes already ([`high`]).
     set_high(
@@ -1219,13 +1205,23 @@ fn kernel_said(most: usize) -> Vec<String> {
     said.into()
 }
 
-/// How memory asked for came.
+/// How memory asked for came, or why it is no longer waited for (R04): each but `All` with
+/// what of it came, in bytes.
 #[derive(Debug, PartialEq, Eq)]
 enum Came {
     /// All of it.
     All,
-    /// Not all, though asked for twice: what of it came, in bytes.
-    Stalled(u64),
+    /// Its driver says it plugs no more: the kernel's "marking device broken", which its
+    /// driver says as it stops for good (drivers/virtio/virtio_mem.c `virtio_mem_run_wq`,
+    /// an error it has no retry for), never of one it tries again on its timer.
+    Broken(u64),
+    /// The ask itself failed: its device's control page refused it.
+    Refused(u64),
+    /// What its device is asked for fell below it, lowered by another (its host, or a
+    /// give-back): no longer this grower's to wait for.
+    Superseded(u64),
+    /// MemTotal could not be read.
+    Unread(u64),
 }
 
 /// What growing the builder's memory acts on: the guest's memory, the host's device, the
@@ -1239,12 +1235,16 @@ trait Grows {
     /// `plugged` bytes are online: the build's `memory.high` raised to match.
     fn raise(&mut self, plugged: u64);
     fn say(&mut self, what: &str);
+    /// What its device is asked for now (`HOTPLUG_REQUEST`).
+    fn request(&mut self) -> io::Result<u64>;
+    /// Lets the build run on what the builder has: its `memory.high` lifted (D137).
+    fn lift(&mut self);
     /// The kernel's last words of its virtio-mem driver.
     fn kernel_said(&mut self) -> Vec<String>;
     /// How long since `from` began, from [`Grows::now`].
     fn now(&mut self) -> Duration;
-    /// Waits [`PAUSE`] before looking again.
-    fn pause(&mut self);
+    /// Waits `d` before looking again.
+    fn pause(&mut self, d: Duration);
     /// What its guest's blocks have taught so far.
     fn coming(&mut self) -> &mut Coming;
 }
@@ -1263,12 +1263,10 @@ impl Grows for Builder<'_> {
     }
 
     fn ask(&mut self, bytes: u64) -> io::Result<()> {
-        mark_growth();
         control_write64(control::HOTPLUG_REQUEST, bytes)
     }
 
     fn raise(&mut self, plugged: u64) {
-        mark_growth();
         let cgroup = self.plug.cgroup;
         if let Err(e) = high(cgroup, self.plug.most, plugged).and_then(|h| set_high(cgroup, h)) {
             say(self.notes, self.plug.whose, &e.to_string());
@@ -1279,6 +1277,16 @@ impl Grows for Builder<'_> {
         say(self.notes, self.plug.whose, what);
     }
 
+    fn request(&mut self) -> io::Result<u64> {
+        control_read64(control::HOTPLUG_REQUEST)
+    }
+
+    fn lift(&mut self) {
+        if let Err(e) = set_high(self.plug.cgroup, u64::MAX) {
+            say(self.notes, self.plug.whose, &e.to_string());
+        }
+    }
+
     fn kernel_said(&mut self) -> Vec<String> {
         kernel_said(3)
     }
@@ -1287,8 +1295,8 @@ impl Grows for Builder<'_> {
         self.began.elapsed()
     }
 
-    fn pause(&mut self) {
-        std::thread::sleep(PAUSE);
+    fn pause(&mut self, d: Duration) {
+        std::thread::sleep(d);
     }
 
     fn coming(&mut self) -> &mut Coming {
@@ -1296,60 +1304,91 @@ impl Grows for Builder<'_> {
     }
 }
 
+/// Whether the kernel's words of its virtio-mem driver say it stopped for good.
+fn broken(said: &[String]) -> bool {
+    said.iter().any(|l| l.contains("marking device broken"))
+}
+
 /// Asks for `asked` bytes past what the builder booted with, and raises the build's
-/// `memory.high` as they come online, each block teaching [`Coming`]. Past the slowest seen
-/// in this guest with no block come, the grower's own time alone counted (each pause at
-/// most [`PAUSE`]: one its guest or its host held longer is their hold, not the driver's
-/// stall), asks again, which tells the driver again; past it again, stops. A guest's first
+/// `memory.high` as they come online, each block teaching [`Coming`]. It looks at MemTotal
+/// on D215's pace ([`pace`]: a look's own cost against the wait since the ask or the block
+/// before), each pause counted at most as long as its pace (one its guest or its host held
+/// longer is their hold, not the driver's). Past the slowest a block took in this guest with
+/// none come, the grower's own time alone counted, it asks again, which tells the driver
+/// again, which then tries what it could not plug at once, not at its retry timer's 50 s
+/// and more (D137); and lets the build run on what it has meanwhile, as one that waits past
+/// any block this guest has seen holds it for what may not come (D137). It asks again each
+/// such window, no count of tries (R03, memory-13): a driver that retries on its timer is
+/// one that may still plug it, and memory that comes holds the build again as it grows.
+/// It stops for its driver's own word that it plugs no more ([`Came::Broken`]), an ask
+/// refused, a request lowered by another, or MemTotal unread, each typed. A guest's first
 /// plug, none seen yet, waits on its driver for as long as it takes, as D215's cold wait
-/// follows its party: the driver tries again on its own timer (D137).
+/// follows its party: the driver tries again on its own timer (D137), and its word that it
+/// stopped is looked for at each look meanwhile.
 fn come(plug: Plug, asked: u64, g: &mut impl Grows) -> Came {
     let want = plug.boot.saturating_add(asked);
     let Ok(start) = g.total() else {
-        return Came::Stalled(0);
+        return Came::Unread(0);
     };
     let (mut last, mut since, mut still) = (start, g.now(), Duration::ZERO);
-    let mut again = false;
+    let mut lifted = false;
     if let Err(e) = g.ask(asked) {
         g.say(&format!("asking for {asked} bytes: {e}"));
-        return Came::Stalled(start.saturating_sub(plug.boot));
+        return Came::Refused(start.saturating_sub(plug.boot));
     }
-    while let Ok(now) = g.total() {
+    loop {
+        let looked = g.now();
+        let Ok(now) = g.total() else {
+            return Came::Unread(last.saturating_sub(plug.boot));
+        };
+        let came = now.saturating_sub(plug.boot);
         if now > last {
             let took = g.now().saturating_sub(since);
             g.coming().came(took);
             (last, since, still) = (now, g.now(), Duration::ZERO);
-            g.raise(now.saturating_sub(plug.boot));
+            g.raise(came);
+            lifted = false;
         }
         if now >= want {
             return Came::All;
         }
-        if let Some(slowest) = g.coming().slowest.filter(|&s| still >= s) {
-            if again {
-                break;
-            }
-            let came = now.saturating_sub(plug.boot);
-            let kernel = g.kernel_said();
-            g.say(&format!(
-                "{asked} bytes asked for, {came} came, none for {still:?}, past the slowest a block took here ({slowest:?}); asking again{}{}",
-                if kernel.is_empty() {
-                    ""
-                } else {
-                    "; the kernel said: "
-                },
-                kernel.join("; ")
-            ));
-            if let Err(e) = g.ask(asked) {
-                g.say(&format!("asking for {asked} bytes again: {e}"));
-                break;
-            }
-            (again, since, still) = (true, g.now(), Duration::ZERO);
+        if g.request().is_ok_and(|r| r < asked) {
+            return Came::Superseded(came);
         }
+        let slowest = g.coming().slowest;
+        if slowest.is_none_or(|s| still >= s) {
+            let kernel = g.kernel_said();
+            if broken(&kernel) {
+                g.say(&format!(
+                    "{asked} bytes asked for, {came} came; the kernel said: {}",
+                    kernel.join("; ")
+                ));
+                return Came::Broken(came);
+            }
+            if let Some(slowest) = slowest {
+                g.say(&format!(
+                    "{asked} bytes asked for, {came} came, none for {still:?}, past the slowest a block took here ({slowest:?}); asking again{}{}{}",
+                    if lifted { "" } else { ", the build running on what it has meanwhile" },
+                    if kernel.is_empty() { "" } else { "; the kernel said: " },
+                    kernel.join("; ")
+                ));
+                if !lifted {
+                    g.lift();
+                    lifted = true;
+                }
+                if let Err(e) = g.ask(asked) {
+                    g.say(&format!("asking for {asked} bytes again: {e}"));
+                    return Came::Refused(came);
+                }
+                (since, still) = (g.now(), Duration::ZERO);
+            }
+        }
+        let look = g.now().saturating_sub(looked);
+        let pause = pace(look, g.now().saturating_sub(since));
         let before = g.now();
-        g.pause();
-        still = still.saturating_add(g.now().saturating_sub(before).min(PAUSE));
+        g.pause(pause);
+        still = still.saturating_add(g.now().saturating_sub(before).min(pause));
     }
-    Came::Stalled(last.saturating_sub(plug.boot))
 }
 
 /// How many of `cgroup`'s processes the kernel has ended for want of memory, by any of its
@@ -1373,14 +1412,16 @@ pub(crate) fn oom_kills(cgroup: &str) -> u64 {
 /// counted is said: where that is not said yet, it is read again until it is (D137, D209
 /// Part 4: no clock). A guest whose log cannot be read at all says nothing at once.
 pub(crate) fn oom_said() -> Vec<String> {
+    let began = Instant::now();
     loop {
+        let looked = Instant::now();
         let Some(said) = oom_report() else {
             return Vec::new();
         };
         if said.iter().any(|l| ended(l)) {
             return said;
         }
-        std::thread::sleep(PAUSE);
+        std::thread::sleep(pace(looked.elapsed(), began.elapsed()));
     }
 }
 
@@ -1574,12 +1615,14 @@ fn grow(plug: Plug, events: &OwnedFd, notes: &OwnedFd) -> ! {
         match come(plug, asked, &mut builder) {
             Came::All if asked >= plug.most => lift(),
             Came::All => {}
-            Came::Stalled(came) => {
+            // Asked for less by another since: its growth is that one's now.
+            Came::Superseded(_) => {}
+            Came::Broken(came) | Came::Refused(came) | Came::Unread(came) => {
                 say(
                     notes,
                     plug.whose,
                     &format!(
-                        "{asked} bytes asked for, {came} came, though asked for twice: what it holds now runs on what it has, {} bytes",
+                        "{asked} bytes asked for, {came} came, and no more will: what it holds now runs on what it has, {} bytes",
                         mem_total().unwrap_or(total)
                     ),
                 );
@@ -1617,6 +1660,9 @@ mod tests {
         }
     }
 
+    /// What a look at MemTotal costs a fake builder's clock.
+    const LOOK: Duration = Duration::from_micros(10);
+
     /// A builder whose memory is what `comes` makes of the requests so far and the time.
     struct Fake<F> {
         comes: F,
@@ -1625,18 +1671,34 @@ mod tests {
         said: Vec<String>,
         clock: Duration,
         coming: Coming,
-        /// A pause its host or its guest holds past [`PAUSE`]: the first at or after the
+        /// A pause its host or its guest holds past its pace: the first at or after the
         /// first time, for the second.
         held: Option<(Duration, Duration)>,
+        /// The kernel's words of its driver; what its device is asked for, where another
+        /// lowered it; whether asks past the first are refused; how many lifts.
+        kernel: Vec<String>,
+        lowered: Option<u64>,
+        refuses_again: bool,
+        lifts: u32,
     }
 
     impl<F: FnMut(&[u64], Duration) -> u64> Grows for Fake<F> {
         fn total(&mut self) -> io::Result<u64> {
+            self.clock += LOOK;
             Ok((self.comes)(&self.asks, self.clock))
         }
         fn ask(&mut self, bytes: u64) -> io::Result<()> {
+            if self.refuses_again && !self.asks.is_empty() {
+                return Err(io::Error::other("the control page refused it"));
+            }
             self.asks.push(bytes);
             Ok(())
+        }
+        fn request(&mut self) -> io::Result<u64> {
+            Ok(self.lowered.or(self.asks.last().copied()).unwrap_or(0))
+        }
+        fn lift(&mut self) {
+            self.lifts += 1;
         }
         fn raise(&mut self, plugged: u64) {
             self.raised.push(plugged);
@@ -1645,13 +1707,13 @@ mod tests {
             self.said.push(what.to_string());
         }
         fn kernel_said(&mut self) -> Vec<String> {
-            vec!["virtio_mem virtio5: adding memory failed: -12".into()]
+            self.kernel.clone()
         }
         fn now(&mut self) -> Duration {
             self.clock
         }
-        fn pause(&mut self) {
-            self.clock += PAUSE;
+        fn pause(&mut self, d: Duration) {
+            self.clock += d;
             if let Some((_, held)) = self.held.filter(|&(at, _)| self.clock >= at) {
                 self.clock += held;
                 self.held = None;
@@ -1671,6 +1733,10 @@ mod tests {
             clock: Duration::ZERO,
             coming: Coming::default(),
             held: None,
+            kernel: vec!["virtio_mem virtio5: adding memory failed: -12".into()],
+            lowered: None,
+            refuses_again: false,
+            lifts: 0,
         }
     }
 
@@ -1724,16 +1790,19 @@ mod tests {
         assert!(!reclaimed(false, u64::MAX, u64::MAX), "no budget");
     }
 
-    /// A run whose grower asked for memory, or had memory come, within the host's pressure
-    /// window keeps all it has; one quiet for the window, or never grown, is asked as any
-    /// other (PM M466).
+    /// Memory that came within a period of the run's peak keeps all it has, however soon
+    /// after it came the give-back is; a period that ends with no more than it began with,
+    /// or less (an unplug), is asked as any other (PM M466). No window: a give-back a
+    /// microsecond or an hour after the block came keeps it alike.
     #[test]
-    fn a_run_grown_lately_is_taken_for_growing_for_the_window() {
-        const WINDOW: u64 = shards_abi::PRESSURE_WINDOW_US * 1000;
-        assert!(!grew_within(0, 5 * WINDOW, WINDOW), "never grown");
-        assert!(grew_within(WINDOW, WINDOW, WINDOW), "just now");
-        assert!(grew_within(WINDOW, 2 * WINDOW - 1, WINDOW), "within");
-        assert!(!grew_within(WINDOW, 2 * WINDOW, WINDOW), "past it");
+    fn memory_that_came_within_a_peaks_period_is_kept() {
+        assert!(came_within(0, ALIGN), "a block come since its hold");
+        assert!(
+            came_within(2 * ALIGN, 3 * ALIGN),
+            "a block come since the last give-back"
+        );
+        assert!(!came_within(3 * ALIGN, 3 * ALIGN), "there the whole period");
+        assert!(!came_within(3 * ALIGN, ALIGN), "unplugged within it");
     }
 
     /// A hold counts out what its device has been asked to unplug, free or not, so that the
@@ -1942,7 +2011,8 @@ mod tests {
     }
 
     /// Memory that comes slowly, a block every four seconds, is never stalled, and teaches
-    /// its guest's grower that a block may take four seconds.
+    /// its guest's grower that a block may take four seconds, seen within a look's pace of
+    /// its coming.
     #[test]
     fn memory_that_comes_slowly_is_waited_for() {
         let mut g = fake(|asks: &[u64], t: Duration| {
@@ -1951,12 +2021,29 @@ mod tests {
         assert_eq!(come(PLUG, 512 * MIB, &mut g), Came::All);
         assert_eq!(g.asks, [512 * MIB]);
         assert_eq!(g.raised, [128 * MIB, 256 * MIB, 384 * MIB, 512 * MIB]);
-        assert_eq!(g.coming.slowest, Some(Duration::from_secs(4)));
+        let slowest = g.coming.slowest.unwrap();
+        let four = Duration::from_secs(4);
+        assert!(
+            slowest >= four && slowest <= four + 2 * pace(LOOK, four) + 4 * LOOK,
+            "{slowest:?}"
+        );
+        assert_eq!(g.lifts, 0);
+    }
+
+    /// The grower's looks follow D215's pace, a look's cost against the wait so far, not a
+    /// millisecond: a look of 10 µs 4 s into a wait pauses 8.9 ms, and at once into it none.
+    #[test]
+    fn the_growers_looks_follow_their_cost_against_the_wait() {
+        assert_eq!(
+            pace(LOOK, Duration::from_secs(4)),
+            Duration::from_nanos(8_944_271)
+        );
+        assert_eq!(pace(LOOK, Duration::ZERO), Duration::ZERO);
     }
 
     /// A grower its host or its guest held from looking is not stalled for it: learned that a
-    /// block takes 100 ms, held 10 s 50 ms into its wait on one that comes 10.08 s in, 80 ms
-    /// of its own time, it asks once.
+    /// block takes 100 ms, held 10 s 50 ms into its wait on one that comes 10.08 s in, under
+    /// 100 ms of its own time (the hold counted as one pace), it asks once.
     #[test]
     fn a_grower_held_from_looking_is_not_stalled() {
         let mut g = fake(|asks: &[u64], t: Duration| {
@@ -1987,38 +2074,72 @@ mod tests {
     }
 
     /// Memory that stops coming past the slowest a block took in its guest (here 2 s) is
-    /// asked for again, saying so with the kernel's words, which tells the driver again; it
-    /// comes then, and is waited for.
+    /// asked for again, saying so with the kernel's words, which tells the driver again, and
+    /// the build runs on what it has meanwhile; it comes then, and is waited for.
     #[test]
     fn memory_that_stops_coming_is_asked_for_again() {
         let mut g = fake(|asks: &[u64], _| PLUG.boot + if asks.len() > 1 { 512 * MIB } else { 0 });
         g.coming.came(Duration::from_secs(2));
         assert_eq!(come(PLUG, 512 * MIB, &mut g), Came::All);
         assert_eq!(g.asks, [512 * MIB, 512 * MIB]);
-        assert_eq!(
-            g.said,
-            [
-                "536870912 bytes asked for, 0 came, none for 2s, past the slowest a block took here (2s); asking again; the kernel said: virtio_mem virtio5: adding memory failed: -12"
-            ]
+        assert_eq!(g.lifts, 1);
+        assert_eq!(g.said.len(), 1, "{:?}", g.said);
+        assert!(
+            g.said[0].starts_with("536870912 bytes asked for, 0 came, none for ")
+                && g.said[0].ends_with(
+                "past the slowest a block took here (2s); asking again, the build running on what it has meanwhile; the kernel said: virtio_mem virtio5: adding memory failed: -12"
+            ),
+            "{:?}",
+            g.said
         );
     }
 
-    /// Memory that does not come though asked for twice is given up, with what came of it,
-    /// once nothing came past the slowest a block took in its guest twice, and no sooner;
-    /// the block that came taught it nothing slower.
+    /// A driver that plugs on the third window past the slowest a block took, after three
+    /// asks again, is waited for to the end, not given up for a count of tries (memory-13):
+    /// asked again each window, the build let run once, its hold raised again as it comes.
     #[test]
-    fn memory_that_never_comes_is_given_up() {
+    fn memory_that_comes_after_a_third_ask_is_waited_for() {
+        let slowest = Duration::from_secs(2);
+        let mut g = fake(|asks: &[u64], _| PLUG.boot + if asks.len() > 3 { 512 * MIB } else { 0 });
+        g.coming.came(slowest);
+        assert_eq!(come(PLUG, 512 * MIB, &mut g), Came::All);
+        assert_eq!(g.asks.len(), 4);
+        assert_eq!(g.lifts, 1, "let run once, as it first waited past the slowest");
+        assert_eq!(g.raised, [512 * MIB]);
+        assert!(g.clock >= 3 * slowest, "{:?}", g.clock);
+    }
+
+    /// A driver that says it stopped for good ("marking device broken") is given up at
+    /// once, with what came, never asked again: told apart from one that is still trying
+    /// by its own words, not by time.
+    #[test]
+    fn a_driver_that_stopped_for_good_is_given_up() {
         let slowest = Duration::from_secs(2);
         let mut g = fake(|asks: &[u64], _| PLUG.boot + if asks.is_empty() { 0 } else { 256 * MIB });
         g.coming.came(slowest);
-        assert_eq!(come(PLUG, 512 * MIB, &mut g), Came::Stalled(256 * MIB));
-        assert_eq!(g.asks.len(), 2);
-        assert!(
-            g.clock >= 2 * slowest && g.clock < 2 * slowest + Duration::from_millis(10),
-            "{:?}",
-            g.clock
-        );
+        g.kernel = vec!["virtio_mem virtio5: unknown error, marking device broken: -22".into()];
+        assert_eq!(come(PLUG, 512 * MIB, &mut g), Came::Broken(256 * MIB));
+        assert_eq!(g.asks.len(), 1);
+        assert!(g.clock >= slowest && g.clock < 2 * slowest, "{:?}", g.clock);
         assert_eq!(g.coming.slowest, Some(slowest));
+        // In a guest's first plug, none seen yet, its word is looked for at each look.
+        let mut g = fake(|_: &[u64], _| PLUG.boot);
+        g.kernel = vec!["virtio_mem virtio5: unknown error, marking device broken: -22".into()];
+        assert_eq!(come(PLUG, 512 * MIB, &mut g), Came::Broken(0));
+    }
+
+    /// An ask again that its control page refuses ends the wait, typed; a request another
+    /// lowered below the ask is no longer this grower's to wait for.
+    #[test]
+    fn a_refused_ask_and_a_lowered_request_end_the_wait() {
+        let slowest = Duration::from_secs(2);
+        let mut g = fake(|_: &[u64], _| PLUG.boot);
+        g.coming.came(slowest);
+        g.refuses_again = true;
+        assert_eq!(come(PLUG, 512 * MIB, &mut g), Came::Refused(0));
+        let mut g = fake(|_: &[u64], _| PLUG.boot + 128 * MIB);
+        g.lowered = Some(128 * MIB);
+        assert_eq!(come(PLUG, 512 * MIB, &mut g), Came::Superseded(128 * MIB));
     }
 
     /// The give-back connection's two ends: the host's, and the answerer's as init holds it.
