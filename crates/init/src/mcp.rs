@@ -12,7 +12,7 @@
 //! its host's way is open the connection's cut, as a lane's (D251). The member never
 //! holds the token: what it says reaches its host as its own, never as another member's.
 
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
@@ -228,6 +228,7 @@ fn copy_both(input: impl AsFd, output: impl AsFd, socket: &UnixStream) -> io::Re
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
+    use std::io::Read;
 
     /// D254: a run's ask is its members' bridges and its token, together: members named with
     /// no token are refused, a token alone gives no member one, a member named twice refuses
@@ -346,5 +347,28 @@ mod tests {
         drop(held_input);
         bridge.join().unwrap();
         assert_eq!(result, Ok(Err(io::ErrorKind::BrokenPipe)));
+    }
+
+    #[test]
+    fn a_bridge_input_failure_does_not_wait_for_its_idle_socket() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let dir = shards_testdir::TempDir::new("bridge-read").unwrap();
+        let input = std::fs::File::open(dir.path()).unwrap();
+        let (_held_output, output) = io::pipe().unwrap();
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let (tx, rx) = mpsc::channel();
+        let bridge = std::thread::spawn(move || {
+            tx.send(copy_both(input, output, &ours).map_err(|e| e.raw_os_error()))
+                .unwrap();
+        });
+        let result = rx.recv_timeout(Duration::from_secs(1));
+        // Release the old blocking socket copy if this guard regresses.
+        if result.is_err() {
+            theirs.shutdown(std::net::Shutdown::Write).unwrap();
+        }
+        bridge.join().unwrap();
+        assert_eq!(result, Ok(Err(Some(libc::EISDIR))));
     }
 }

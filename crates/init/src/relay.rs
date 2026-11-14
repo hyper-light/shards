@@ -882,6 +882,16 @@ fn pump_endpoints(
                 0
             }
         };
+        if let (Endpoint::Socket(client), Endpoint::Socket(backend)) = (client, backend) {
+            wait(
+                &deadline,
+                client.as_raw_fd(),
+                reading(&report.to_backend) | writing(&report.to_client),
+                backend.as_raw_fd(),
+                reading(&report.to_client) | writing(&report.to_backend),
+            )?;
+            continue;
+        }
         let cancel = match deadline {
             Control::Until(d) => d.cancel.ok_or(Fault::Control(io::ErrorKind::InvalidInput))?,
             Control::ProcessOwned => -1,
