@@ -495,11 +495,23 @@ mod tests {
     fn a_holds_derived_period_resolves_its_share() {
         let tick = Duration::from_micros(15_625);
         let milli = |m| NonZeroU64::new(m).unwrap();
-        assert_eq!(derived_period(4, milli(625), tick), Some(Duration::from_millis(100)));
-        assert_eq!(derived_period(4, milli(500), tick), Some(Duration::from_millis(125)));
+        assert_eq!(
+            derived_period(4, milli(625), tick),
+            Some(Duration::from_millis(100))
+        );
+        assert_eq!(
+            derived_period(4, milli(500), tick),
+            Some(Duration::from_millis(125))
+        );
         assert_eq!(derived_period(4, milli(4000), SOONEST), Some(SOONEST));
-        assert_eq!(derived_period(1, milli(250), SOONEST), Some(Duration::from_millis(4)));
-        assert_eq!(derived_period(u64::MAX, milli(1), Duration::from_secs(u64::MAX)), None);
+        assert_eq!(
+            derived_period(1, milli(250), SOONEST),
+            Some(Duration::from_millis(4))
+        );
+        assert_eq!(
+            derived_period(u64::MAX, milli(1), Duration::from_secs(u64::MAX)),
+            None
+        );
     }
 
     /// A machine is busy next period where its use grows to its share as its last two

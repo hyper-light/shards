@@ -325,8 +325,12 @@ impl Host for Machine {
         if exhausts {
             *EXHAUSTED.lock().unwrap() = Some(Exhausted::now());
         }
+        // Windows sets no descriptor limit a command could run out of: the ask is refused, as
+        // a start the daemon cannot make is.
         #[cfg(windows)]
-        assert!(!exhausts, "no descriptor limit on Windows");
+        if exhausts {
+            return Err(Error::new("no descriptor limit on Windows"));
+        }
         let go = exhausts.then(|| args.get(1).cloned()).flatten();
         let (exited, hung) = (self.seen.clone(), self.seen.clone());
         let hung_what = what.clone();

@@ -28,8 +28,6 @@ mod emulate;
 mod engine;
 #[cfg(target_os = "linux")]
 mod enter;
-#[cfg(target_os = "linux")]
-mod starter;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod frames;
 #[cfg(target_os = "linux")]
@@ -94,6 +92,8 @@ mod run;
 mod setup;
 #[cfg(target_os = "linux")]
 mod staged;
+#[cfg(target_os = "linux")]
+mod starter;
 #[cfg(target_os = "linux")]
 mod swap;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
