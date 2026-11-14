@@ -26767,6 +26767,34 @@ Not run: these on Linux and Windows (Linux's CPU clock reader, Windows' process 
 Windows report test; CI's matrix); boot.rs's real-VM tests on HVF, KVM x86_64, KVM arm64 (L1)
 and WHP (ROOT's); scripts/lint.
 
+**A stream shared without an inheritable duplicate (2026-11-14, Hex's audit D-5).** On
+Windows `Stream::try_clone` returned an inheritable socket. Its duplicate is
+WSADuplicateSocketW's protocol info made a socket by WSASocketW (`shards_afunix`), which
+keeps no WSA_FLAG_NO_HANDLE_INHERIT for it, so a child another thread starts with std's
+`Command` (which inherits every inheritable handle) took the connection. Reproduced before
+the fix (PM M582): a stream's clone, a stream shared with its own process and a listener's
+clone were inheritable, the originals not. Two changes:
+- **No duplicate is needed.** `&dyn Stream` reads and writes (`Read` and `Write` for
+  `&(dyn Stream + '_)`), as std's `&TcpStream` does, through the trait's
+  `read_shared`/`write_shared`, the same polled waits as `read`/`write`. One thread reads
+  while another writes, sharing one handle. `Stream::into_socket(self: Box<Self>) ->
+  shards_api::OwnedSocket` (`OwnedFd` on Unix, `OwnedSocket` on Windows) hands the socket
+  over, left non-blocking, its timeouts gone with the value.
+- **No duplicate is inheritable.** `shards_afunix`'s socket made from protocol info clears
+  HANDLE_FLAG_INHERIT (SetHandleInformation) as it is made: a socket is a handle, whose
+  inheritance WSASocketW's documentation reads with GetHandleInformation, and std cleared
+  its sockets' this way before Windows had the flag. This covers `try_clone`, `from_shared`
+  and a listener's `try_clone`; a failure is the clone's error. So `try_clone` stays, with
+  its documentation saying so.
+
+Tested on the Windows 11 container on adacachy (10.0.26200, x86_64, rustc 1.99.1):
+- `shards_afunix` `tests::no_socket_and_no_duplicate_of_one_is_inheritable`: red before the
+  fix, green after (PM M582).
+- `shards_api` `stream::tests::two_threads_share_a_stream_through_a_reference`: one thread
+  reads and another writes through `&dyn Stream`, and on Windows the socket and a clone's
+  are not inheritable (GetHandleInformation).
+- `stream::tests::a_streams_socket_is_handed_over`: the socket taken carries both ways.
+
 **What would falsify it.** A conforming client that needs to link the VMM. A VM process that
 ran no CPU for a whole W* of its kind and would still have answered: a working guest
 refused.

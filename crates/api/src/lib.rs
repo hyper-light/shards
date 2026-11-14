@@ -708,9 +708,27 @@ impl std::error::Error for Refusal {
 /// a socket's own receive timeout, which leaves a Winsock connection indeterminate (PM M207);
 /// and a read on macOS waits in poll(2), which sees a peer's half-close that a waiting
 /// read can sleep through (PM M236).
+///
+/// Two threads share one stream without a second handle: `&dyn Stream` reads and writes, as
+/// std's `&TcpStream` does ([`read_shared`](Stream::read_shared)). One that owns it can take its
+/// socket ([`into_socket`](Stream::into_socket)).
 pub trait Stream: Read + Write + Send + Sync {
-    /// Another handle to the same connection.
+    /// Another handle to the same connection. Not inheritable by a child process, as no
+    /// socket of a stream is: on Windows a duplicate socket would be, WSASocketW keeping no
+    /// WSA_FLAG_NO_HANDLE_INHERIT for it, so its inheritance is cleared as it is made (PM
+    /// M582). A second thread needs none: it reads and writes through `&dyn Stream`.
     fn try_clone(&self) -> io::Result<Box<dyn Stream>>;
+    /// A read through a shared reference, waiting as [`Read::read`] does: what `&dyn Stream`'s
+    /// `Read` does, so one thread reads while another writes, with no second handle.
+    fn read_shared(&self, buf: &mut [u8]) -> io::Result<usize>;
+    /// A write through a shared reference, waiting as [`Write::write`] does: what
+    /// `&dyn Stream`'s `Write` does.
+    fn write_shared(&self, buf: &[u8]) -> io::Result<usize>;
+    /// The connection's socket, owned by its caller from here: a Unix stream socket's
+    /// descriptor, close-on-exec; on Windows shards' AF_UNIX socket, not inheritable. It is
+    /// left non-blocking, as every stream's is (its timeouts were this value's own polls, and
+    /// go with it), still shared by any clone.
+    fn into_socket(self: Box<Self>) -> OwnedSocket;
     /// The OS handle under it, for a caller that waits in its own event loop (epoll, kqueue,
     /// IOCP) rather than in a read: readable when a read won't wait, writable when a write
     /// won't, both once the connection has ended. Borrowed: it stays the stream's, open for as
@@ -747,6 +765,28 @@ pub trait Stream: Read + Write + Send + Sync {
 pub type Handle<'a> = std::os::fd::BorrowedFd<'a>;
 #[cfg(windows)]
 pub type Handle<'a> = std::os::windows::io::BorrowedSocket<'a>;
+
+/// The OS handle under a [`Stream`], owned ([`Stream::into_socket`]).
+#[cfg(unix)]
+pub type OwnedSocket = std::os::fd::OwnedFd;
+#[cfg(windows)]
+pub type OwnedSocket = std::os::windows::io::OwnedSocket;
+
+impl Read for &(dyn Stream + '_) {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.read_shared(buf)
+    }
+}
+
+impl Write for &(dyn Stream + '_) {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.write_shared(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
 
 /// What boots guests.
 pub trait Guests: Send + Sync {
