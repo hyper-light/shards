@@ -132,13 +132,21 @@ pub fn phase(name: &str) {
     }
     // vmmap's summary of the process as the phases SHARDS_VMMAP names end (macOS).
     if std::env::var("SHARDS_VMMAP").is_ok_and(|v| v.split(',').any(|p| p == name)) {
+        // Its summary straight to this process's stderr, its errors to none; by shards_ipc's
+        // spawn, as every child shards starts (D248).
+        use std::os::fd::AsFd as _;
         let pid = std::process::id().to_string();
-        if let Ok(out) = std::process::Command::new("vmmap")
-            .args(["--summary", &pid])
-            .output()
-        {
-            let _ = writeln!(std::io::stderr(), "vmmap-at {name}");
-            let _ = std::io::stderr().write_all(&out.stdout);
+        let stderr = std::io::stderr();
+        let _ = writeln!(stderr.lock(), "vmmap-at {name}");
+        if let (Ok(vmmap), Ok(null)) = (
+            shards_ipc::on_path(std::path::Path::new("vmmap"), None),
+            crate::os::null(),
+        ) {
+            let args = ["--summary".as_ref(), pid.as_ref()];
+            let fds = [(null.as_fd(), 0), (stderr.as_fd(), 1), (null.as_fd(), 2)];
+            if let Ok(child) = shards_ipc::spawn(&vmmap, &args, &fds, false) {
+                let _ = child.wait();
+            }
         }
     }
     PEAK.store(live, Ordering::Relaxed);

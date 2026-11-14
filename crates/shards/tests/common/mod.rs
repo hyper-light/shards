@@ -1995,7 +1995,11 @@ pub fn client_output(cmd: &mut Command, home: Option<&Path>) -> std::process::Ou
         if status.is_none()
             && let Some(st) = child.try_wait().unwrap()
         {
-            wait.answered();
+            if st.success() {
+                wait.answered();
+            } else {
+                wait.unserved();
+            }
             status = Some(st);
         }
         let output = more(&out, &mut out_got) | more(&err, &mut err_got);
@@ -2750,13 +2754,21 @@ fn run_ending(
         }
     };
     let mut wait = Wait::begin(kind, child.id(), home.as_deref(), &asked.join(" "));
+    // Its answer, its client's end, is missing as it begins: its client started just now,
+    // so an end its first check finds before any look is its party's answer, which teaches
+    // its kind, never one there before it.
+    wait.absent();
     let mut status = None;
     loop {
         if status.is_none()
             && let Some(st) = child.try_wait().unwrap()
         {
-            // Its client's own end: its kind's answer.
-            wait.answered();
+            // Its client's own end: its kind's answer, taught where it served.
+            if st.success() {
+                wait.answered();
+            } else {
+                wait.unserved();
+            }
             status = Some(st);
         }
         let output = came(&out, &mut out_got) | came(&err, &mut err_got);
@@ -2998,7 +3010,8 @@ pub fn guest_text(text: &str) -> String {
 /// party ran at meanwhile, a refusal's diagnosis and never its bound. None on a host until
 /// its first answer there; then kept under `target/judge-records`, by the host and the call
 /// site, so that a later run on the host begins from what it learned (ROOT, 2026-11-13: a
-/// record learned on the host is data, not a seed), and taught again by each answer. The
+/// record learned on the host is data, not a seed), and taught again by each answer: a
+/// command's by each served one alone ([`Wait::unserved`], [`SERVED`]). The
 /// person's ruling of 2026-11-13 holds each of them: "No record seeds. The cold start, and
 /// every wait after a run-out, follows the party's liveness and progress. After that the
 /// bound is the slowest answer seen. No ×2."
@@ -3095,15 +3108,25 @@ impl WaitKind {
 
     /// Teaches its record what this host kept of it: R*'s own answer, then W*'s with work no
     /// rate is below, so that each comes back as it was kept. Nothing where nothing whole is
-    /// kept.
+    /// kept, and, for a command's kind, nothing that does not say it is of served answers
+    /// alone ([`SERVED`]).
     fn learn_kept(&self) {
         let kept = std::fs::read_to_string(&self.file).unwrap_or_default();
-        let ns: Vec<u64> = kept.split_whitespace().filter_map(|n| n.parse().ok()).collect();
-        if let [slowest, cpu, over] = ns[..] {
+        let mut words = kept.split_whitespace();
+        if self.command() && words.next() != Some(SERVED) {
+            return;
+        }
+        let ns: Option<Vec<u64>> = words.map(|n| n.parse().ok()).collect();
+        if let Some(&[slowest, cpu, over]) = ns.as_deref() {
             self.record
                 .teach(Duration::from_nanos(over), Duration::from_nanos(cpu));
             self.record.teach(Duration::from_nanos(slowest), Duration::MAX);
         }
+    }
+
+    /// Whether it is a command's kind, taught by its served answers alone ([`Wait::unserved`]).
+    fn command(&self) -> bool {
+        !self.line.is_empty()
     }
 
     /// A kind of its own whose record is kept at `file`: two of them stand for two
@@ -3184,13 +3207,25 @@ impl WaitKind {
             KEEPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         let temporary = dir.join(temporary);
+        let tag = if self.command() {
+            format!("{SERVED} ")
+        } else {
+            String::new()
+        };
         std::fs::write(
             &temporary,
-            format!("{} {} {}\n", ns(slowest), ns(least.cpu), ns(least.over)),
+            format!("{tag}{} {} {}\n", ns(slowest), ns(least.cpu), ns(least.over)),
         )?;
         std::fs::rename(&temporary, &self.file)
     }
 }
+
+/// The first word of a command's kept record ([`WaitKind::keep`]): its W* and R* are of
+/// served answers alone ([`Wait::unserved`]). A record kept without it, before a refusal
+/// taught nothing, may hold a refusal's answer (adacachy2's `shards run` record of
+/// containers.rs' `a_logs_history_is_what_its_user_set`, W* 5.4 ms), and is read as none:
+/// its kind cold until its next served answer rewrites it.
+const SERVED: &str = "served";
 
 /// What a [`Patience`] awaits, and keys its kind by ([`WaitKind::awaiting`]).
 pub const STATE: &str = "a state its party comes to";
@@ -3838,8 +3873,9 @@ fn servers_ran() -> (u64, bool) {
     (ran, runnable)
 }
 
-/// A serving thread as its OS lets another thread of its process read it, and what it was
-/// last read to have run: a read that fails counts that, so the total never falls.
+/// A thread of this process as its OS lets another thread of its process read it, and what
+/// it was last read to have run: a read that fails counts that, so the total never falls. A
+/// serving thread ([`Server`]), or a judged call's own ([`judging`]).
 struct ServerThread {
     #[cfg(target_os = "linux")]
     tid: libc::pid_t,
@@ -4114,7 +4150,24 @@ impl Wait {
     /// missing first ([`Stage::Awaited`]). What it reads after is judged anew
     /// ([`Stage::Answered`]).
     pub fn answered(&mut self) {
-        if self.stage == Stage::Awaited {
+        self.ended(true);
+    }
+
+    /// Its command's client ended unserved, by a status other than 0 or a signal: its
+    /// answer, which teaches its kind nothing. A command's words and line are its kind, and
+    /// only a served answer says it did their work: one refused stops short of it, at a
+    /// check before or along it, in what may be a fraction of the work's time (ROOT's batch
+    /// 22, KVM, f385b8dac: containers.rs' `shards run --rm --pull never IMAGE exit 0`,
+    /// refused in 5.4 ms for a settings file that did not read, taught its line W* 5.4 ms,
+    /// which refused the same line's real run, a microVM's boot, 300 ms in). What it reads
+    /// after is judged anew, as after any answer.
+    pub fn unserved(&mut self) {
+        self.ended(false);
+    }
+
+    /// Its answer came, taught to its kind where `teaches` and it was found missing first.
+    fn ended(&mut self, teaches: bool) {
+        if teaches && self.stage == Stage::Awaited {
             self.judge.answered(self.work);
             self.kind.keep();
         }
@@ -4122,6 +4175,19 @@ impl Wait {
             self.stage = Stage::Answered;
             self.judge = shards_api::Judge::begin(&self.kind.record);
             (self.progressed, self.held) = (None, None);
+        }
+    }
+
+    /// What its call's own thread did since it was read before ([`judging`]): progress where
+    /// it ran, its host's hold where it ran nothing yet was runnable.
+    fn call_looked(&mut self, ran: bool, runnable: bool) {
+        if ran {
+            self.last = (Instant::now(), "its call's own thread ran".into());
+            self.progressed
+                .get_or_insert_with(|| "its call's own thread ran".into());
+        } else if runnable {
+            self.held
+                .get_or_insert_with(|| "its host held its call's own thread from running".into());
         }
     }
 
@@ -5591,7 +5657,15 @@ pub fn judged_there<T: Send>(
 }
 
 /// [`judged`]'s wait, its looks saying its answer missing where `stage` is
-/// [`Stage::Awaited`], and never where it is [`Stage::Begun`].
+/// [`Stage::Awaited`], and never where it is [`Stage::Begun`]. `call` runs on a thread of
+/// this process, shards-api's client, whose work (a spec's checks, an image's reads, a
+/// request's writes) no process this test started shows: that thread is its party's member
+/// too ([`ServerThread`]: its own CPU clock), so a call that works on it is progress and one
+/// idle there is not (ROOT's batch 22, f385b8dac: api_image.rs' `refused` calls, a refusal in
+/// 206 µs on HVF and one in 28.6 ms on KVM at 0 ns of the started processes' CPU, taught
+/// their call sites a W* that refused the next call as it worked). The thread names itself
+/// as it starts and is let go of before it returns, under one lock, so its clock is read
+/// only while it lives.
 fn judging<T: Send>(
     mut wait: Wait,
     stage: Stage,
@@ -5599,10 +5673,15 @@ fn judging<T: Send>(
     stop: impl FnOnce(),
     call: impl FnOnce() -> T + Send,
 ) -> Result<T, String> {
+    let calling: std::sync::Mutex<Option<ServerThread>> = std::sync::Mutex::new(None);
+    let thread = || calling.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     std::thread::scope(|scope| {
         let (tx, rx) = std::sync::mpsc::channel();
         let worker = scope.spawn(move || {
-            let _ = tx.send(call());
+            *thread() = Some(ServerThread::this());
+            let answer = call();
+            *thread() = None;
+            let _ = tx.send(answer);
         });
         let refused = loop {
             match rx.recv_timeout(wait.next_look()) {
@@ -5616,6 +5695,10 @@ fn judging<T: Send>(
                     Ok(()) => return Err(format!("{asked}: ended with no answer")),
                 },
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            }
+            if let Some(thread) = thread().as_mut() {
+                let before = thread.last;
+                wait.call_looked(thread.ran() > before, thread.runnable());
             }
             let looked = if stage == Stage::Awaited {
                 wait.look(false)
@@ -5983,6 +6066,12 @@ impl<'a> Heard<'a> {
     /// What it waited for came: its kind's answer.
     pub fn answered(&mut self) {
         self.wait.answered();
+    }
+
+    /// Its caller found what it waits for missing ([`Wait::absent`]): a party's end it
+    /// started just now, which no check finds there before it.
+    pub fn absent(&mut self) {
+        self.wait.absent();
     }
 
     /// What its kind has learned on this host.

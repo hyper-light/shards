@@ -5,6 +5,7 @@
 //! nothing is lost or held by the device. A snapshot keeps its queues alone.
 
 use std::io::Write;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
 use super::queue::{Chain, Queue, QueueError};
@@ -59,6 +60,8 @@ pub struct Port {
     receive: Mutex<Receive>,
     /// Signalled as the guest posts receive buffers, or the receive queue comes or goes.
     posted: Condvar,
+    /// Whether its guest's kernel said it panicked (`devices::pvpanic`).
+    panicked: AtomicBool,
 }
 
 impl std::fmt::Debug for Port {
@@ -71,6 +74,21 @@ impl Port {
     /// The whole lines of the last bytes its guest wrote to the console, as many as it keeps.
     pub fn said(&self) -> Said {
         lock(&self.out).kept.said()
+    }
+
+    /// How many of its last bytes it keeps to quote.
+    pub fn keep(&self) -> usize {
+        lock(&self.out).kept.keep()
+    }
+
+    /// Whether its guest's kernel said it panicked, through its machine's pvpanic device.
+    pub fn panicked(&self) -> bool {
+        self.panicked.load(Ordering::Acquire)
+    }
+
+    /// Sets whether its guest's kernel panicked; whether it had already said so.
+    pub(crate) fn tell_panicked(&self, panicked: bool) -> bool {
+        self.panicked.swap(panicked, Ordering::AcqRel)
     }
 
     /// Gives host input to the guest, in the buffers it posted, waiting while it has posted
@@ -189,6 +207,7 @@ impl Console {
             }),
             receive: Mutex::new(Receive::default()),
             posted: Condvar::new(),
+            panicked: AtomicBool::new(false),
         });
         let console = Console {
             port: port.clone(),

@@ -11881,6 +11881,33 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     `one_call_sites_commands_are_judged_apart` (a stand-in that exits, then one that works a
     moment three times between 200 ms of nothing, from one call site: red at f9bdaeda5,
     refused in its first quiet window) and `a_commands_words_are_its_subcommands`.
+  - *Only a served answer teaches a command's kind* (2026-11-14, ROOT's batch 22 at
+    f385b8dac, lane judgecli). Words and line keep apart a call site's commands that say
+    different things, but one line can be refused or served by its home's state alone:
+    containers.rs' `a_logs_history_is_what_its_user_set` runs `shards run --rm --pull never
+    IMAGE exit 0` twice from its `shards` closure (call site 8499:34), first refused in
+    5.4 ms for a settings file its user broke by hand (`disk:2:`), then, the file reset,
+    served by a microVM's boot. On KVM (adacachy2, linux-x86_64-32) the refusal taught the
+    cold line's record `5435520 0 5435520` (kept at 12:03:03.143, every record of that call
+    site this run's own), and the served run, `Created` in its home 300 ms in, was refused
+    at a look that found a 6.06 ms gap ("its last progress process 2352022 ran 13.8 ms ago;
+    its record W* 5.43552ms, R* 0ns"), a host shared with another lane's harness units. A
+    refusal stops at a check before or along its words' work, so its time says nothing of
+    that work's gaps; a status of 0 is the one outcome that says the work was done, and a
+    nonzero status from served work (a run whose command exited so) teaches nothing either:
+    its kind stays cold, judged by its party's liveness, which is safe. So `run_command`'s
+    and `client_output`'s waits call `Wait::unserved` at a client's end of any other status
+    or a signal, which ends the wait unjudged from there and keeps nothing. A command's
+    kept record begins with the word `served`; one without it, kept before this rule, may
+    hold a refusal's answer and is read as none, its kind cold until its next served answer
+    rewrites it (`common::SERVED`): no number changed (R03). Its R* of 0 ns is no reader's:
+    a command's party CPU is summed at its wait's looks, the first of which finds the
+    client anew (`Found::Based`, no delta), and a client that ends and is reaped before the
+    next look is never read again; R* stays a refusal's diagnosis alone. Held by harness.rs'
+    `a_commands_refusal_teaches_its_kind_nothing` (one line from one call site, its record
+    removed: a stand-in refusing at once, status 1, then working three times between 200 ms
+    of nothing). Waits on no command (`judged`, a guest's, `Patience`) have no status and
+    still learn from each answer.
   - *A party's I/O is not read: its CPU already shows every byte it moves* (#77, measured).
     Asked whether a party blocked on a peer outside it (Docker Hub, a test's registry
     thread) moves data a look misses, `docs/research/measurements/judge-io/io_vs_cpu.py`
@@ -12236,6 +12263,29 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     at its test's bound scaled to 100 ms, cut a call on a stand-in busy for a second. Green:
     `a_judged_call_goes_on_while_its_party_works`, two rounds held to the stand-in's end
     through `judged`, the second judged on what the first taught.
+  - *A `judged` call's own thread is its party's member* (2026-11-14, ROOT's batch 22 at
+    f385b8dac, lane judgecli). `judged` runs its call on a thread of the test process:
+    shards-api's client, whose spec checks, image reads and requests no started process
+    shows. Two call sites of api_image.rs' `refused` closures learned W* from a refusal
+    answered at 0 ns of the started processes' CPU and refused the next call as it worked
+    on its own thread: `a_members_arguments_follow_its_images_command_in_order` (1384:40,
+    HVF, W* 206.625 µs, its next call building two arguments of half `MAX_PAYLOAD` each)
+    and `what_the_image_does_not_grant_is_refused_before_boot` (278:40, KVM, adacachy2's
+    record `28637460 0 28637460`, refused 31.3 ms in, "its last progress its start").
+    `judging`'s worker names itself as it starts (`ServerThread::this`, the serving
+    threads' reader: Linux its own CPU clock, `make_thread_cpuclock`'s; macOS
+    `thread_info(THREAD_BASIC_INFO)` of its `pthread_mach_thread_np` port; Windows
+    `QueryThreadCycleTime` of its `OpenThread` handle) and is let go of before it returns,
+    under one lock, so its clock is read only while it lives. Each look of the waiter's
+    reads it: grown, its call progressed; not grown and runnable, its host held it; else
+    nothing of it. So a call working in-process is progress and one idle there is not. A
+    first try, `Beside` (the process's CPU past its waiter's), held on Linux but not on
+    macOS, where a spinning thread's work did not show within 450 µs windows (adas-mac-
+    studio.local, "made no progress for 485.125µs, past ... (434.75µs) ... this process's
+    threads beside its waiter ran 2.25ms ago"). No number changed (R03). Held by
+    harness.rs' `a_judged_calls_own_work_is_its_progress` (an idle started stand-in; from
+    one call site, its record removed, a call that answers at once, one busy 200 ms on its
+    thread, one asleep there 1 s).
   - What would falsify it: a `judged` call refused while what this test started ran. Or a
     `client_output` refused while its client or its home's daemon worked. Or a host's hold
     (ETXTBSY, a killed daemon's descriptors, a scanner's handle) cut.
@@ -13522,6 +13572,8 @@ retain those obligations; no Windows check or quota replacement is claimed compl
   API client's boot, the Windows VM-binary handoff), holds it to write while std makes its
   child. A new production std spawn must go through `spawn_std`; nothing enforces it but
   review (a workspace `disallowed-methods` would also hold every test's spawns). No literal.
+  **Superseded 2026-11-14 (control-04, D248):** no production std spawn remains on any OS;
+  `spawn_std` and `INHERITING` are deleted, and each child's handle list names its own alone.
 - **08** (6ff8f51f4; red 10bf97ed7). A waiting client watches its list's directory by its
   own name (its OsStr encoded as UTF-16, not through `to_string_lossy`), says no list only
   where the directory is absent (ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND) and refuses any
@@ -15787,8 +15839,8 @@ other's but what the move sends, and what the other takes by content:
   the daemon's own `key` step).
 - **Refused before anything moves, by what refuses it** (R04). The machine moved to answers
   `ready` with a `Refused` (daemon/moves.rs) as JSON on stdout, beside its words on
-  stderr, which a mover of an earlier build prints as before; this build's mover reads it
-  typed (cli/moves.rs `unready`). It is one of: another architecture; another hypervisor
+  stderr, as any step's failure says them; the mover reads it typed (cli/moves.rs
+  `unready`). It is one of: another architecture; another hypervisor
   (`Plan::hypervisor`, `hv::BACKEND`), whose own a snapshot's vCPUs, interrupt controller
   and devices are (KVM's x86-64 state is not WHP's, nor Hypervisor.framework's arm64 state
   KVM's), which a snapshot's head, naming its architecture alone, does not tell apart;
@@ -15800,8 +15852,12 @@ other's but what the move sends, and what the other takes by content:
   volume of its name here already; a bind's host path absent; a port it publishes that this
   machine cannot bind. Where the microVM runs, before it is saved: a run with a managed
   scope (`Refused::Managed`), which a restore does not take yet: a cold move's save would
-  leave it stopped here, its resume refused too. A plan of an earlier build
-  names no hypervisor, and is taken as before. Held by
+  leave it stopped here, its resume refused too. Every field of `Plan` is in every plan
+  (no `serde` defaults): one that lacks any, or holds one of another kind, is another
+  build's, refused typed (`moves::plan_of`): `Refused::OlderInit` where its init's contract
+  is not this machine's or unsaid, else `Refused::OtherPlan { name, saved_by, why }`. Held by
+  `a_plan_missing_any_field_is_refused_typed` (moves.rs, red while the fields an earlier
+  build's plans lacked defaulted, legacy5), and by
   `a_microvm_of_another_hypervisor_is_refused_before_anything_moves` and
   `a_refusal_is_typed_on_the_wire_and_says_what_it_said` (moves.rs),
   `a_move_of_another_hypervisors_microvm_is_refused_typed` and
@@ -16008,11 +16064,16 @@ peer", each going on here as it should. What changed for them:
   waited for, compressing having taken the packer longer than reading it, a level down, to
   none, as on a link faster than the compressor, where it stays, no wait of the packer's
   there covering a level's cost. Nothing is measured but the stream's own waits and its
-  compressing. The machine moved to says it unpacks it (`Needs::unpacks`, `zstd`)
-  and is then asked `import --packed zstd`; one of an earlier build says nothing and is sent
-  the stream as it is, as before; held by `a_packed_stream_reads_back_as_it_was`,
-  `the_level_follows_who_waits` and `a_stream_is_packed_only_for_a_daemon_that_unpacks_it`
-  (packing.rs).
+  compressing. Every move's stream is packed: the machine moved to says it unpacks it
+  (`Needs::unpacks`, `zstd`, a field every answer has) and is then asked `import --packed
+  zstd`, which `import` requires. An answer without it, or one that does not unpack zstd, is
+  another build's daemon's, refused typed before anything moves (cli/moves.rs `needs_of`,
+  `OtherDaemon`); the send-as-it-is fallback for an earlier daemon, and `import`'s
+  unpacked stream, are deleted (legacy5, the no-legacy rule). Likewise the move's `key` step,
+  which every daemon of this build answers: one that fails is said ("NAME runs on CONTEXT,
+  and its key there could not be read"), never taken as no key. Held by
+  `a_packed_stream_reads_back_as_it_was`, `the_level_follows_who_waits` (packing.rs) and
+  `a_needs_missing_unpacks_is_refused_typed` (cli/moves.rs).
 - **Each move says what it sent and what the link did**, where `SHARDS_MOVE_TIMES` is set
   (`move: stream R bytes, sent W bytes, P of F frames as zstd; link A bytes acknowledged in
   T us, X B/s, rtt, packets lost, longest silence S us`), a failed move's too; two-hosts.sh
@@ -16292,7 +16353,8 @@ person's decision, "refuse it clearly". A save records who saved it, after its s
 head (format 30): the shards version (`snapshot::SAVED_BY`, crates/shards/Cargo.toml's,
 which vmm's build.rs passes as `SHARDS_VERSION`, as the VM process that saves is a
 package of its own) and the contract its init announced on the control page
-(`Snapshot::init`, from `Control::guest_abi` as the cut is taken; 0 where none). Every
+(`Snapshot::init`, from `Control::guest_abi` as the cut is taken; none where its guest
+runs no shards-init, which format 33 records as such, below). Every
 resume asks `snapshot::resumable(dir)` before anything restores the snapshot or its guest
 runs: the daemon's `resumable` (`restore vm`, `start --checkpoint`), a move's `plan` (the
 saved and live moves' first step on the machine moved from), and `shards restore DIR`
@@ -16302,11 +16364,13 @@ refused there before anything moves: a move's plan, saved or live, carries the s
 made it and its init's contract (`Plan::saved_by`, `Plan::init`, this build's: its guest
 runs under this daemon, or its snapshot was found resumable), and the `ready` step on the
 machine moved to refuses one of another contract, or a plan that names none, an earlier
-daemon's, first (`moves::Refused::OlderInit`, as JSON to the mover beside its words).
+daemon's, first (`moves::Refused::OlderInit`, as JSON to the mover beside its words), and
+a plan of its contract that is not of this build's shape next (`Refused::OtherPlan`): no
+field of a plan defaults (legacy5).
 The Engine API's `POST /containers/{id}/start?checkpoint=` reaches the same `resumable`
 and answers its refusal as moby answers a failed start (500, the words as its message). Refused typed (`ResumeRefused`):
-`OlderInit { saved_by, init_abi, ours }`, a saver whose init announced another contract or
-none ("this microVM was saved by shards 0.7.0, whose shards-init (contract …) cannot
+`OlderInit { saved_by, init_abi, ours }`, a saver whose shards-init announced another
+contract ("this microVM was saved by shards 0.7.0, whose shards-init (contract …) cannot
 continue in this shards (contract …): start it again from its image; its volumes are
 kept, its memory's state is not"); `Unrecorded { format }`, a state of a format before 30,
 whose saver is unrecorded and whose init's contract is in its device state, which is laid
@@ -16316,20 +16380,66 @@ them); `Newer { format }`; and `Unreadable`. The order: the check comes first, a
 legacy4's rewrite, as every state the rewrite took (24 to 29) is one whose init this build
 cannot confirm before it runs, and every released one's (0.6.0's, 0.7.0's) is another's
 (crates/abi changed 124 times after v0.7.0): a rewritten snapshot would only be refused
-later, at its init's first message (vm_run's check after the guest dials again), so
+later, at its init's first message, so
 `snapshot::migrate`, `Migrated`, `MigrateRefused`, `.state.migrated` and the older formats'
 reader (`decode_body`'s branches, the tests' `encode_older`) are deleted. A restore reads
 format 30 alone. Its volumes and image are not the snapshot's: `rm vm` and a fresh `run`
 keep them. The CLI user sees the refusal on stderr and exit status 1, as `docker start`'s
 failed start (the daemon's `refuse`, and `failed` for `shards restore DIR`). Red/green:
 `a_resume_refuses_a_saved_init_of_another_contract_naming_its_saver` (this build's init
-resumes; another's and none refused naming `SAVED_BY`; 28 refused naming 0.7.0; past 30
+resumes, and so does a guest that runs none; another's refused naming `SAVED_BY`; 28 refused naming 0.7.0; past 30
 refused; a cut saver unreadable), `resumable_refuses_another_init_and_leaves_the_snapshot`
 (on disk: resumed, refused typed, the state left byte for byte, no snapshot unreadable) and
 `a_guest_whose_init_is_another_builds_is_refused_before_anything_moves` (a plan of another
 contract and one of an earlier daemon refused naming their saver, typed on the wire);
 red before this, where no state recorded a saver. Owed to ROOT: v0.7.0's release binary's
 `save vm m`, then this build's `restore vm m` printing the refusal and exiting 1.
+
+A guest that runs no shards-init (initzero, 2026-11-14). Formats 30 to 32 wrote the saver's
+init as a u64, 0 where the control page held none (`Control::guest_abi`), and `resumable`
+refused every state whose u64 was not this build's contract, so a save of a guest whose
+init is not shards-init (the test guest, `shards run --kernel … --init` of the user's own, a
+`--snapshot-dir` template of one) was refused as "saved by shards …, whose shards-init
+(contract 0000000000000000) cannot continue" by the very build that saved it: the HVF
+`snapshot.rs` storm test `restores_of_a_busy_machine_lose_no_interrupt_and_repeat_no_write`
+red 3 of 3 at main 490ddff78. Such a guest has no init contract a restore could break: its
+own init is in its memory, and nothing of shards speaks to it but the machine, which the
+format and machine checks hold. A save of format 33 or later is only ever written by a
+build whose shards-init announces its contract, so in it "none announced" says only that
+the guest runs no shards-init; format 33 records that as itself rather than as contract 0
+(R04): a flag, then the contract only where there is one (`decode_init`), and `resumable`
+refuses `OlderInit` only for a contract that is not this build's. The bytes change, so the
+format does (33); a state of 30 to 32 has only its saver's version read, and is refused
+`OlderMachine` as before, its init's record never parsed (no legacy reader). The workload's
+`OtherInit` is unchanged, and still refuses a guest that announced none: it is asked only
+once a guest has dialed the run's port and is to be sent a command in shards-init's
+protocol, which a guest of the user's own init never dials, and one that dials it without
+announcing a contract speaks a protocol it has not said it speaks. A move's plan names
+this build's contract for every microVM (`Plan::init`, `u64`), so a custom-init guest's
+move is not refused at `ready`; a saved move's plan asks `resumable` of its save on the
+machine moved from (`Daemon::plan`), which now passes it. That plan's `init` still says
+this build's contract for a guest that runs none: owed, an `Option` taken from the save
+(`resumable` returning its saver's init) and, for a live move, from the running VM
+process's `Control::guest_abi`. Red/green: `a_resume_refuses_a_saved_init_of_another_contract_naming_its_saver` and
+`resumable_refuses_another_init_and_leaves_the_snapshot` resume a save whose guest announced
+none, red with format 32's record put back. Owed to ROOT: the storm test on HVF past its
+restore.
+
+The checks after a guest dials (legacy5). The VM process checked a resumed guest's init
+contract once its connections came back (vm_run.rs), with words of its own; it is deleted,
+as no resume reaches it: a VM process is told to resume (its request's `tokens`) only by
+its daemon (`restore vm`, `start --checkpoint`), after `resumable` read the state's saver, and the contract its
+restored control page announces is the saver's own (both `Control::guest_abi` as the cut
+is taken: the device state's `abi` and `Snapshot::init`). The workload's check
+(workload.rs `serve`, before any command is sent) stays, as a cold boot reaches it: a
+guest's init that `SHARDS_INIT` or `shards configure guest --init` names (D28) may be
+another build's, which no check before its boot reads. It is typed: `workload::OtherInit
+{ spoken, ours }` ("this microVM's shards-init (contract …) cannot run in this shards
+(contract …): boot the shards-init this shards carries"), worded as
+`ResumeRefused::OlderInit`, which it does not share: a cold boot has no saver to name, and
+the run's error path is words from there on (`serve`'s `String`, the run's 125). Held by
+`a_guest_init_of_another_contract_is_refused_typed` (workload.rs). Owed to ROOT: a cold
+`SHARDS_INIT=<another build's shards-init> shards run alpine true` failing 125 with it.
 
 ### D175. Sockets read in poll(2) on macOS, and streams ended one way at a time
 
@@ -27558,7 +27668,18 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
       left, never cold (the answer just taught it, or it was learned), and a look that finds
       its party gone finds it still, as no process of it that could write runs. Main kept
       the client's own judge, which a cold kind never judges, so that a silent holder's
-      liveness held its test for ever. The drain teaches nothing.
+      liveness held its test for ever. The drain teaches nothing. A command's wait finds
+      its answer missing as it begins (`run_ending`'s `Wait::absent`), as its client
+      started just then: an end its first check finds before any look (the client quicker
+      than its waiter's thread's first turn) is an answer, never one already there
+      (`Stage::Begun`), which taught nothing and left the drain's kind cold, judging nothing
+      until its holder's end (2026-11-14: adacachy2 at f385b8dac, 7 of 30 whole-binary
+      runs; `a_commands_end_found_before_its_first_look_teaches_its_kind`, whose client
+      has ended as its spawn returns, red there). So does each harness.rs wait that
+      teaches its kind by a quick stand-in's end (`Wait::absent`, `Heard::absent`):
+      `a_runs_stop_grace_is_its_daemons_and_not_refused` ("its kind learned nothing of an
+      answer") and `a_streaming_guests_cpu_is_its_liveness_and_its_stop_its_hosts_hold`
+      (never refused, its kind cold) failed so on adacachy2 with its 32 cores busy.
     - *A party is what was found of it until it ends* (waits-09, waits-10). A process once
       found is followed until it has gone or ended, wherever it is listed since: a daemon's
       microVMs as they end after it (a daemon stop's party), a client's children reparented
@@ -28438,7 +28559,10 @@ API's protocol: its output drained, its end, its connections.
     interruptible sleep, `S`; Mach's TH_STATE_WAITING) at two looks in a row, never on the
     kernel's own uninterruptible work (`D`: a fault waiting for a memory map another thread
     holds, a `/proc` read), and the worker outlives its answer until the look is done with
-    it: a worker that had ended left a look nothing to read (PM M585).
+    it: a worker that had ended left a look nothing to read (PM M585). A take that waits for
+    its writer's close is judged from that close as the kernel says it (POLLHUP on a read end
+    of the test's own, Linux), never from the test's drop of its end: a copy another test's
+    fork made of it held the pipe open up to 29 ms longer (PM M587).
 - *Its VM process* (Hex lead's ask, 2026-11-14: "Give the managed guest's orchestrator the
   confined VM process's identity (pid and start time, as Identity names the host's), so it can
   read that process's memory as the VMM's"; on Windows `reserve_ram` commits the guest's RAM in
@@ -32179,8 +32303,7 @@ refusing typed. `arch::cpu` names a CPU per architecture:
   (`Plan::cpu_identity`: the leaves of `cpuid::IDENTITY`, which WHP's restore compares, as
   the machine's VM process reads them from a partition's vCPU), and the machine moved to
   refuses another before anything moves (`Refused::CpuIdentity`), where it was refused only
-  at the restore, after the whole stream. A plan of an earlier build names none, and its
-  CPU is found at the restore as before. WHP on arm64 tells a guest its ID registers, as
+  at the restore, after the whole stream. WHP on arm64 tells a guest its ID registers, as
   KVM and Hypervisor.framework do (`whp_arm64`'s `cpu_id`).
 
 **A baseline on WHP x86-64: researched, not built.** WHP has the means: its
@@ -32207,8 +32330,8 @@ ID registers say so; an instruction a program runs regardless is not stopped.
 0 and each feature leaf once), derived from it. The meet has no threshold.
 
 **Cold start.** A home with no `cpu-baseline` tells none: each guest is told its host's own
-CPU, as before, and `configure cpu --none` takes one away. A plan of an earlier build carries
-none (serde default) and is taken as before. A baseline written before a register joined
+CPU, as before, and `configure cpu --none` takes one away. A plan that carries no baseline
+field is another build's, refused at `ready` (D176, `Refused::OtherPlan`). A baseline written before a register joined
 `FEATURES` names no leaf for it: `within` leaves that leaf the host's, and `covers` checks
 only what the baseline names.
 
@@ -32534,6 +32657,47 @@ api_image` on HVF and WHP; Hex's image_real on macOS and Windows once Hex vendor
 
 **What would falsify it.** A run host that holds a descriptor or handle of its orchestrator's
 it was not given (then `shards_ipc::spawn` leaks to every child shards starts, D26).
+
+**2026-11-14, every child (control-04).** D248 held for the run host alone. The flaky3 lane
+found the same leak in every other production std spawn (docs/bugs/2026-11-13/control.md,
+control-04, 7e452a9fe): on macOS std's `new_pair` (rust-src
+`library/std/src/sys/net/connection/socket/unix.rs`) makes a socketpair and then marks it
+close-on-exec, and its `Command::spawn` sets no `POSIX_SPAWN_CLOEXEC_DEFAULT`, so a child std
+starts in that instant keeps what another thread is making (7,473 inherited writers in 20 s of
+8-thread stress). In one SDK process run B's `shards` held run A's input pair or output pipe,
+so A's member stdin never saw EOF, or A's drain never ended.
+- *Decided* (ROOT, option (a)): every production child is started by `shards_ipc`'s spawn,
+  on every OS, with cfg twins where Windows needs them: the SDK's `shards` (shards-api
+  `client.rs` `spawn_shards`, its watcher on `shards_ipc::Child`'s `ended`, `wait` and
+  `kill`), the registry's credential helpers (one `Talk` on every OS; a cancel's helper in a
+  job of its own on Windows, `spawn_grouped`), the SBOM scan (`agent.rs`), the Windows
+  VM-binary handoff (`cli/mod.rs` `instead`), the browser opener (`oidc.rs`), AWS's
+  `credential_process` on Windows (`spawn_in_raw`, cmd.exe's `/C` text kept as it is, as
+  std's `raw_arg` passed it) and `SHARDS_VMMAP`'s vmmap (`alloc_count.rs`). `on_path` moved to
+  shards-ipc, a `PATH` of the caller's own allowed (the credential helper's). Unix
+  `instead` stays an exec(2): it replaces this process, and keeps no descriptor not
+  already its own.
+- *Deleted* (no legacy paths): `shards_ipc::spawn_std` and Windows' `INHERITING` lock, which
+  only it needed (D195's platform-07), with its test. Linux's std uses pipe2 and
+  SOCK_CLOEXEC and was not exposed; it takes the one path all the same.
+- *Literals.* None in production. The test's 4 making threads and 64 children are a test's
+  load, not a runtime value: with std's spawn back, 14 to 26 of the 64 children held a
+  socket in each of six runs, so a run where none holds one is not a miss by chance.
+- *Test* (unit, macOS arm64): `client::tests::a_started_shards_holds_no_socket_another_thread_was_making`:
+  4 threads make and drop `shards_ipc::input_pair`s while `spawn_shards` starts this test
+  binary 64 times as a child that reports, from /dev/fd, every socket it holds. On
+  adas-mac-studio-3.local (macOS arm64, rustc 1.98.1), `cargo test -p shards-api --lib
+  <that test> -- --exact`: red, std's `Command` back in `spawn_shards` (the carrier's
+  `mutate.py`), 19, 18 and 14 of 64 children held 1 to 6 sockets each at 85a2727a1, and 26,
+  24 and 23 at f25955697; green, none in any of three runs at f25955697. Beside it: `client::tests` (46), `image::session` (41), the registry's
+  `credentials` (20) and shards-ipc's tests (78) pass; clippy, `-D warnings`, for shards-ipc,
+  shards-api, shards-registry and shards: clean on macOS; on Windows x86_64 (cargo xwin,
+  adas-mac-studio.local) clean for the first three, and shards' one error main's own
+  (`daemon/health.rs`'s fields unread on Windows, runs-11), none of this change's.
+- *Owed* (ROOT): `cargo test -p shards --profile test-release --test api_image` and an SDK
+  run of several images in one process on HVF and WHP; the Windows unit
+  `a_raw_command_line_keeps_its_quotes` and the registry's credential tests on Windows (CI's
+  Windows legs).
 
 ### D249. An orchestrator's run whose command never started ends failed, in its VM's words (built; real-VM validation owed)
 
@@ -34377,6 +34541,117 @@ whose command exited before kiln deleted it went uncharged (Hex answered `NotRun
   that powers off records its one vCPU's guest time and its process's CPU holding it; one not
   managed, and one killed, record none; the confined VM process's write to its inherited
   channel on each OS); Hex's adoption.
+
+### D261. The guest's console is virtio-console (hvc0); the 16550 UART is gone; a panic before it is told by pvpanic and read from the printk ring (built; real-VM runs owed)
+
+**Asked.** The person, 2026-11-14, on the emulated NS16550A (`devices/serial.rs`): "serial
+queues strike me as poor design, we can and should do better." Approved direction: virtio-console
+over virtio-mmio replaces the 16550 everywhere; the early-boot answer is pvpanic plus a
+post-mortem read of the printk ring through VMCOREINFO, not a debug port.
+
+**Decision.**
+- **The console is virtio-console** (VIRTIO 1.3 §5.3; `devices/virtio/console.rs`): one port,
+  no MULTIPORT, receiveq 0 and transmitq 1, the first virtio device on both architectures, so
+  KVM, HVF and WHP on x86-64 and arm64 share it (R12). Every command line says `console=hvc0`;
+  `earlycon` went with the UART it named.
+  - Output: a buffer per notification, written out on the device's worker, never on the
+    vCPU's thread. A UART traps every byte: printk before a tty opens costs an LSR poll and
+    a THR write per byte (Linux 8250_port.c `serial8250_console_write`, `wait_for_xmitr`).
+  - Input: into the buffers the guest posts, waiting while it has posted none, so nothing
+    is lost or held by the device. A paused console takes none.
+  - A snapshot keeps its queues alone.
+  - D12's report (`devices/said.rs`) moved over unchanged.
+- **Deleted, no dual path:** `serial.rs`, COM1 (its port 0x3f8, GSI 4, ACPI `PNP0501` and the
+  now-unused `aml::io`), arm64's UART node, `stdout-path` and `layout::UART`/`SPI_UART`, and
+  `serial::INPUT_AT_ONCE`.
+- **Snapshots.** Format 31 is the machine without the UART. A user's snapshot of format 30
+  holds a guest whose 8250 driver is bound to the deleted COM1/UART, so it is refused, not
+  migrated: `ResumeRefused::OlderMachine { format, saved_by }`, the same type and message as
+  olderinit's causes (D176), naming the shards that saved it. Format 32 adds pvpanic, so 31
+  is refused the same way. Templates are remade, keyed by the format (D25).
+  - The person's ruling (via ROOT): a migration that leaves a guest polling a dead port is a
+    hidden degraded state. Its cost would have been 2 frame times per byte, `wait_for_lsr`,
+    about 2 ms at the 9600 baud of divisor 12.
+- **pvpanic** (QEMU docs/specs/pvpanic.rst; `devices/pvpanic.rs`): one register taking
+  PANICKED (include/uapi/misc/pvpanic.h), written by the kernel's first panic notifier
+  (pvpanic.c, `.priority = INT_MAX`) before `panic=-1` resets.
+  - x86-64: found by ACPI `QEMU0001`, in the first page past the virtio-mmio windows.
+  - arm64: found by a `qemu,pvpanic-mmio` node (Documentation/devicetree/bindings/misc/
+    pvpanic-mmio.txt), at `GIC_REDIST_MAX_END`.
+  - It tells the console's port; `Handle::panicked`.
+  - The guest kernel gains `CONFIG_PVPANIC=y` and `CONFIG_PVPANIC_MMIO=y` (resources/kernel/
+    shards.config).
+- **The printk ring after a stop** (`printk.rs`). hvc0 registers only as its driver probes
+  (device_initcall), and then replays the ring (hvc_console.c `hvc_check_console`,
+  CON_PRINTBUFFER). A kernel that stops earlier said why to its ring alone, so where the
+  console carried nothing, `Handle::console_said` reads the ring's last lines from guest
+  memory under D12's bound.
+  - VMCOREINFO (CONFIG_VMCORE_INFO=y in both base configs) is a page filled at subsys_initcall
+    (kernel/vmcore_info.c l. 140-253), before any virtio probe.
+  - It names `prb`, every ring offset (printk.c `log_buf_vmcoreinfo_setup`, l. 980-1036) and
+    the address translation: x86-64 `phys_base` and `pgtable_l5_enabled`; arm64
+    `kimage_voffset`, `PHYS_OFFSET` and `VA_BITS`.
+  - The page is found by its first line `OSRELEASE=` at a page start. No channel hands it
+    over here; QEMU's is fw_cfg, which shards has none of.
+  - The ring is walked as `prb_read_valid`/`get_data` walk it.
+  - The refusal is typed: `printk::Unread`.
+  - Covered: panics from subsys_initcall on, which includes everything before hvc0.
+- **No KASLR in shards' boots**, checked for this:
+  - x86-64 boots `vmlinux` uncompressed (arch/x86_64/boot.rs), its zero page's loadflags
+    LOADED_HIGH alone (l. 287). `KASLR_FLAG` is set only by the bzImage decompressor (Linux
+    arch/x86/boot/compressed/kaslr.c l. 875) and read by `kaslr_enabled()` (asm/setup.h
+    l. 85-88), so the direct map is at its unrandomized base.
+  - arm64's base config has RANDOMIZE_BASE unset.
+  - So `printk_rb_static` is at its link address on both.
+
+**Alternatives rejected.**
+- A write-only debug port (x86's 0xe9 debugcon): mainline x86 early_printk has no 0xe9
+  target, so it needs a kernel patch. arm64 has no port I/O and no write-only earlycon
+  (EARLYCON_DECLARE lists UARTs and JTAG DCC). It would be x86-only (R11/R12) and still a
+  per-byte-exit device kept for early boot.
+- Keeping the UART for early boot only: the legacy path the person ruled out.
+
+**Literals (R03).** Each is a cited bound; none is learned, so none has a cold start.
+
+| Literal | Value | Source |
+|---|---|---|
+| `RECEIVE_SIZE` | 1 | Linux virtio_console.c `fill_queue` (l. 1290-1311): page-sized buffers until the ring is full; the rest of the host's input waits in the host |
+| `TRANSMIT_SIZE` | 1 | `put_chars`/`__send_to_port` (l. 596-640, 1118-1123): one buffer outstanding, spun on until used |
+| `INPUT_AT_ONCE` | 4 KiB | one receive buffer, a guest page (x86-64's only size; arm64 `CONFIG_ARM64_4K_PAGES=y`) |
+| `pvpanic::PANICKED` | 1 | include/uapi/misc/pvpanic.h |
+| x86 `PVPANIC` | 0xc000_4000 | derived: the first page past `VIRTIO_MMIO + VIRTIO_MMIO_MAX * STRIDE` |
+| arm64 `PVPANIC` | 0x0900_0000 | `GIC_REDIST_MAX_END`, the first device page past the redistributors |
+| printk `PAGE` | 4 KiB | `VMCOREINFO_BYTES` = PAGE_SIZE |
+| `X86_START_KERNEL_MAP`, `X86_PAGE_OFFSET_L4/L5` | 0xffffffff80000000, 0xffff888000000000, 0xff11000000000000 | arch/x86/include/asm/page_64_types.h; no KASLR, above |
+| `STATE_SHIFT`, `ID_MASK`, `COMMITTED`, `FINALIZED`, `EMPTY_LINE` | 62, !(3<<62), 1, 2, 0x3 | kernel/printk/printk_ringbuffer.h l. 121-153 |
+
+Every ring length is bounded by the guest's RAM (`within_ram`); a larger one is
+`Unread::PastRam`.
+
+**Evidence.**
+- Phase 1 design: ROOT's record of 2026-11-14.
+- Cost: PM M588 (`docs/research/measurements/console-cost/`).
+- Unit tests:
+  - devices::virtio::console: output written and kept; input waits for posted buffers and
+    loses nothing; a paused console holds input. A mutant that drops the wait goes red.
+  - devices::said; devices::pvpanic: only PANICKED is a panic, red for a kdump event.
+  - snapshot: OlderMachine for 30, red when let through.
+  - printk: x86-64 and arm64 maps, a wrapped block, an empty line, data-less and reserved
+    records left out, a ring past RAM, a missing number. A mutant without the wrapped-block
+    rule goes red.
+  - The x86 DSDT and the arm64 devicetree contract.
+- Hosts: macOS arm64 and Linux x86-64.
+
+**Owed (coordinator).**
+- The whole real-VM E2E, since every test command line moved to hvc0.
+- The Firecracker comparison: its guests keep `console=ttyS0`, Firecracker's own console
+  being a 16550 (src/vmm/src/devices/legacy/serial.rs), both quiet.
+- The A/B at n=20 on HVF and KVM (M588).
+- `initcalls.py`: how early hvc0 and VMCOREINFO come.
+- The pinned kernel's release with PVPANIC.
+- A real panic before hvc0 (pvpanic told, its ring's lines quoted) on HVF, KVM x86-64/arm64
+  and WHP.
+- A ring read from a real pinned kernel's memory.
 
 ## 4. Start path (≤ 5 ms budget)
 

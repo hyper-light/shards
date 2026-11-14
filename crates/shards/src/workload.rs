@@ -664,6 +664,42 @@ fn with_sink<T>(
     })
 }
 
+/// A guest whose init announced another contract than this build's, or none (`spoken`): a
+/// shards-init of another build, booted cold where a run names one (`SHARDS_INIT`, a guest
+/// `shards configure guest --init` recorded, D28), which could misread the run, so it is sent
+/// none (D176). A resumed guest's init was checked before its restore (`snapshot::resumable`,
+/// `ResumeRefused::OlderInit`), whose words these follow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OtherInit {
+    pub spoken: Option<u64>,
+    pub ours: u64,
+}
+
+impl OtherInit {
+    /// Refused where `spoken`, the guest's init's announced contract, is not `ours`.
+    fn check(spoken: Option<u64>, ours: u64) -> Result<(), OtherInit> {
+        match spoken == Some(ours) {
+            true => Ok(()),
+            false => Err(OtherInit { spoken, ours }),
+        }
+    }
+}
+
+impl std::fmt::Display for OtherInit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("this microVM's shards-init (")?;
+        match self.spoken {
+            Some(spoken) => write!(f, "contract {spoken:016x}")?,
+            None => f.write_str("no contract announced")?,
+        }
+        write!(
+            f,
+            ") cannot run in this shards (contract {:016x}): boot the shards-init this shards carries",
+            self.ours
+        )
+    }
+}
+
 /// Serves the guest: sends the command, relays stdio, and returns how the workload ended.
 /// Signals go through `to`, on the connection the guest makes to `signals`. The command
 /// goes only to a guest whose init announced this build's contract, `guest_abi`
@@ -744,15 +780,7 @@ pub fn serve(
     };
     let resuming = resumed_signals.is_some();
     let _ = timing.request_us.set(shards_vmm::log::uptime_us());
-    let abi = guest_abi();
-    if abi != Some(shards_abi::IDENTITY) {
-        let spoken = abi.map_or_else(|| "none".to_string(), |abi| format!("{abi:016x}"));
-        return Err(format!(
-            "the microVM's shards-init speaks another shards' protocol ({spoken}, where this \
-             shards speaks {:016x}): boot the shards-init built with this shards",
-            shards_abi::IDENTITY
-        ));
-    }
+    OtherInit::check(guest_abi(), shards_abi::IDENTITY).map_err(|e| e.to_string())?;
     let capture_control = match capture {
         Some(capture) => {
             if resuming {
@@ -2628,6 +2656,33 @@ mod tests {
     use crate::log_writer::{log_head, write_parts};
     use crate::segments::{log_segment, new_segment};
     use crate::spec::{INDEX_LINE, INDEX_STDERR};
+
+    /// A guest's init of another contract, or one that announced none, is refused typed before
+    /// any command is sent to it; this build's is served.
+    #[test]
+    fn a_guest_init_of_another_contract_is_refused_typed() {
+        let ours = shards_abi::IDENTITY;
+        assert_eq!(OtherInit::check(Some(ours), ours), Ok(()));
+        let other = OtherInit::check(Some(ours ^ 1), ours).unwrap_err();
+        assert_eq!(
+            other,
+            OtherInit {
+                spoken: Some(ours ^ 1),
+                ours
+            }
+        );
+        assert_eq!(
+            other.to_string(),
+            format!(
+                "this microVM's shards-init (contract {:016x}) cannot run in this shards (contract \
+                 {ours:016x}): boot the shards-init this shards carries",
+                ours ^ 1
+            )
+        );
+        let none = OtherInit::check(None, ours).unwrap_err();
+        assert_eq!(none, OtherInit { spoken: None, ours });
+        assert!(none.to_string().contains("(no contract announced)"), "{none}");
+    }
 
     /// The exec port's tests one at a time, each with a port of its own.
     fn exec_port_test() -> (

@@ -58,8 +58,7 @@ fn taken(rx: &std::sync::mpsc::Receiver<Vec<u8>>) -> Vec<u8> {
 #[derive(serde::Deserialize)]
 struct Plan {
     name: String,
-    #[serde(default)]
-    image: Option<String>,
+    image: String,
     image_id: String,
     snapshot: String,
     files: Vec<PlanFile>,
@@ -72,13 +71,47 @@ struct PlanFile {
 }
 
 /// What the other machine lacks (daemon/moves.rs `Needs`), and the packings of the move's
-/// stream it unpacks: none, from a daemon of an earlier build.
-#[derive(serde::Deserialize)]
+/// stream it unpacks.
+#[derive(Debug, PartialEq, Eq, serde::Deserialize)]
 struct Needs {
     image: bool,
     files: Vec<String>,
-    #[serde(default)]
     unpacks: Vec<String>,
+}
+
+/// Why the other machine's answer to `ready` is refused: its daemon is another build's, whose
+/// answer is not of this build's shape, or does not unpack the stream as every mover of this
+/// build packs it ([`crate::packing::CODEC`]).
+#[derive(Debug, PartialEq, Eq)]
+enum OtherDaemon {
+    Unread { why: String },
+    Unpacks { unpacks: Vec<String> },
+}
+
+impl std::fmt::Display for OtherDaemon {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OtherDaemon::Unread { why } => write!(f, "its daemon answers as another shards' does ({why})")?,
+            OtherDaemon::Unpacks { unpacks } => write!(
+                f,
+                "its daemon does not unpack a move's stream packed as {} (it unpacks {unpacks:?})",
+                crate::packing::CODEC
+            )?,
+        }
+        f.write_str(": move it between machines of one shards")
+    }
+}
+
+/// The other machine's answer to `ready`, as this build's daemon answers it.
+fn needs_of(answer: &[u8]) -> Result<Needs, OtherDaemon> {
+    let needs: Needs =
+        serde_json::from_slice(answer).map_err(|e| OtherDaemon::Unread { why: e.to_string() })?;
+    if !needs.unpacks.iter().any(|c| c == crate::packing::CODEC) {
+        return Err(OtherDaemon::Unpacks {
+            unpacks: needs.unpacks,
+        });
+    }
+    Ok(needs)
 }
 
 /// `shards move vm NAME CONTEXT`, its local steps asked through `ask`.
@@ -260,8 +293,7 @@ fn name_there(
 }
 
 /// Why the other machine's `ready` or `import` step does not take a move: its refusal, typed
-/// (daemon/moves.rs `Refused`), or, from a daemon of an earlier build or a step that failed,
-/// its words.
+/// (daemon/moves.rs `Refused`), or, from a step that failed, its words.
 fn unready(step: &str, answer: &There) -> String {
     match serde_json::from_slice::<crate::daemon::Refused>(&answer.1) {
         Ok(refused) => refused.to_string(),
@@ -525,7 +557,7 @@ fn moved(home: &Path, name: &str, to: &str, live: bool, ask: &Ask<'_>) -> Result
         if answer.0 != 0 {
             return Err(format!("{to} cannot take it: {}", unready(phase, &answer)));
         }
-        serde_json::from_slice(&answer.1).map_err(|e| format!("{to}'s answer: {e}"))
+        needs_of(&answer.1).map_err(|e| format!("{to} cannot take it: {e}"))
     };
     let mut needs = match ready("its check") {
         Ok(needs) => needs,
@@ -562,7 +594,7 @@ fn moved(home: &Path, name: &str, to: &str, live: bool, ask: &Ask<'_>) -> Result
             return Err(resume_here(format!("its image: {e}")));
         }
         // Saved by its digest, it is loaded with no name: given the one it has here.
-        if let Some(named) = plan.image.as_deref().filter(|n| !n.is_empty())
+        if let Some(named) = Some(plan.image.as_str()).filter(|n| !n.is_empty())
             && let Err(e) = name_there(&mut |argv| there(step(argv), None), &plan.image_id, named)
         {
             return Err(resume_here(format!("its image's name, {named}: {e}")));
@@ -592,23 +624,16 @@ fn moved(home: &Path, name: &str, to: &str, live: bool, ask: &Ask<'_>) -> Result
     // first, then its last save, which holds it here until that one has it.
     let checked: Vec<String> = plan.files.iter().map(|f| f.rel.clone()).collect();
     let mut said_here = Vec::new();
-    // Packed for the link where the other machine unpacks it (crate::packing).
-    let packs = crate::packing::taken(&needs.unpacks);
     let mut tallies = None;
     let mut seen = Seen::default();
     let import_began = Instant::now();
     let imported = (|| -> Result<(), String> {
         let (reader, writer) = std::io::pipe().map_err(|e| e.to_string())?;
-        let mut import = step(&[mv, "import"]);
-        let stdin: Box<dyn Read + Send> = if packs {
-            import.extend(["--packed".to_string(), crate::packing::CODEC.to_string()]);
-            let (packing, told) =
-                crate::packing::pack(reader).map_err(|e| format!("packing its stream: {e}"))?;
-            tallies = Some(told);
-            Box::new(packing)
-        } else {
-            Box::new(reader)
-        };
+        // Packed for the link (crate::packing), as the other machine said it unpacks.
+        let import = step(&[mv, "import", "--packed", crate::packing::CODEC]);
+        let (packing, told) = crate::packing::pack(reader).map_err(|e| format!("packing its stream: {e}"))?;
+        tallies = Some(told);
+        let stdin: Box<dyn Read + Send> = Box::new(packing);
         let mut export = step(&[mv, if live { "live" } else { "export" }, name, &plan.snapshot]);
         if live {
             for rel in &needs.files {
@@ -695,12 +720,14 @@ fn moved(home: &Path, name: &str, to: &str, live: bool, ask: &Ask<'_>) -> Result
         }
     }
     times.step("resumed there");
-    // Its run's key there, made after its restore, and the one it replaced: none from a
-    // daemon of an earlier build, which has no such step.
-    let keys = match there(step(&[mv, "key", name]), None) {
-        Ok((0, out, _)) => serde_json::from_slice::<Keys>(&out).unwrap_or_default(),
-        _ => Keys::default(),
-    };
+    // Its run's key there, made after its restore, and the one it replaced: a step every
+    // daemon of this build answers; one that fails leaves the move done, said as such.
+    let keys = there(step(&[mv, "key", name]), None)
+        .and_then(|answer| match answer.0 {
+            0 => serde_json::from_slice::<Keys>(&answer.1).map_err(|e| e.to_string()),
+            _ => Err(said("its key", &answer)),
+        })
+        .map_err(|e| format!("{name} runs on {to}, and its key there could not be read: {e}"))?;
     // How long it ran nowhere, as this machine's clock says: from its last save asked,
     // which held it here, to its restore there said done.
     if times.on
@@ -755,6 +782,42 @@ mod tests {
 
     fn unanswered() -> Asked {
         Err("there: the connection to 192.0.2.1:3000 ended: timed out".into())
+    }
+
+    /// The other machine's `ready` answer as this build's daemon gives it (daemon/moves.rs
+    /// `Needs`) is taken; one with no `unpacks`, an earlier build's, or one that does not
+    /// unpack zstd, is refused typed, never sent the stream unpacked. Red while `unpacks`
+    /// defaulted to none and such a daemon was sent the stream as it is.
+    #[test]
+    fn a_needs_missing_unpacks_is_refused_typed() {
+        let ours = br#"{"image":true,"files":["images/x.erofs"],"unpacks":["zstd"]}"#;
+        assert_eq!(
+            needs_of(ours),
+            Ok(Needs {
+                image: true,
+                files: vec!["images/x.erofs".into()],
+                unpacks: vec!["zstd".into()],
+            })
+        );
+        let earlier = br#"{"image":false,"files":[]}"#;
+        let refused = needs_of(earlier).unwrap_err();
+        assert!(
+            matches!(&refused, OtherDaemon::Unread { why } if why.contains("missing field `unpacks`")),
+            "{refused:?}"
+        );
+        assert!(
+            refused
+                .to_string()
+                .ends_with(": move it between machines of one shards"),
+            "{refused}"
+        );
+        let other = br#"{"image":false,"files":[],"unpacks":["lz4"]}"#;
+        assert_eq!(
+            needs_of(other),
+            Err(OtherDaemon::Unpacks {
+                unpacks: vec!["lz4".into()]
+            })
+        );
     }
 
     /// A moved image is named there as it is here, where nothing there has the name; a name

@@ -419,6 +419,13 @@ pub fn build_fdt(m: &Machine<'_>) -> Result<Vec<u8>, FdtError> {
     f.prop_str("method", if m.el2 { "smc" } else { "hvc" });
     f.end_node();
 
+    // drivers/misc/pvpanic/pvpanic-mmio.c's `of_match`; QEMU's devicetree binding names
+    // no interrupt (Documentation/devicetree/bindings/misc/pvpanic-mmio.txt).
+    f.begin_node(&format!("pvpanic@{:x}", layout::PVPANIC));
+    f.prop_str("compatible", "qemu,pvpanic-mmio");
+    f.prop_u64s("reg", &[layout::PVPANIC, 0x1000]);
+    f.end_node();
+
     f.begin_node(&format!("rtc@{:x}", layout::RTC));
     f.prop_strs("compatible", &["arm,pl031", "arm,primecell"]);
     f.prop_u64s("reg", &[layout::RTC, 0x1000]);

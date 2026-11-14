@@ -90,16 +90,12 @@ pub(crate) struct Plan {
     pub format: u32,
     /// The shards it was saved by (`snapshot::SAVED_BY`), and the contract its guest's init
     /// speaks (`shards_abi::IDENTITY`): a machine whose shards speaks another refuses it
-    /// before anything moves (D176). None from a daemon of an earlier build, which is
-    /// refused as another's.
-    #[serde(default)]
-    pub saved_by: Option<String>,
-    #[serde(default)]
-    pub init: Option<u64>,
+    /// before anything moves (D176).
+    pub saved_by: String,
+    pub init: u64,
     /// The hypervisor it ran on (`hv::BACKEND`), whose own its snapshot's vCPUs, interrupt
-    /// controller and devices are: none from a daemon of an earlier build, which said none.
-    #[serde(default)]
-    pub hypervisor: Option<String>,
+    /// controller and devices are.
+    pub hypervisor: String,
     /// The snapshot it moves as.
     pub snapshot: String,
     /// This machine's home, resolved: what each file's name in the move is relative to.
@@ -113,37 +109,31 @@ pub(crate) struct Plan {
     pub binds: Vec<String>,
     /// This machine's CPU's features, as its OS names them ([`host_cpu`]): the other's must
     /// have each, as its guest may have found and used any.
-    #[serde(default)]
     pub cpu: Vec<String>,
     /// Whether its run boots the guest its home stores, no kernel given: the pinned
     /// kernel, which a restore of it prepares its run's request with (run::prepare).
-    #[serde(default)]
     pub guest: bool,
     /// The CPU baseline its guest was told (D176 part 6), as `arch::cpu` names it (ID
     /// registers by encoding; CPUID's feature leaves): a machine whose hypervisor shows
     /// every field or bit of it takes it, whatever more the machine it ran on has. Empty
     /// where it was told none, its host's own CPU.
-    #[serde(default)]
     pub baseline: shards_vmm::arch::cpu::Id,
     /// The CPU its snapshot was saved on, where its hypervisor restores a snapshot only on
     /// that CPU (WHP: `cpuid::IDENTITY`'s leaves, D245), for the machine moved to to check
-    /// before anything moves. Empty elsewhere, and from a daemon of an earlier build.
-    #[serde(default)]
+    /// before anything moves. Empty elsewhere.
     pub cpu_identity: shards_vmm::arch::cpu::Id,
     /// The ports its run publishes on its machine's addresses, as its run asked for them
     /// (`run -p`), which its restore binds again as a start does, and the network whose host
     /// address a binding that names none takes: for the machine moved to to check before
-    /// anything moves. None where it bound no host port, and from a daemon of an earlier
-    /// build.
-    #[serde(default)]
+    /// anything moves. None where it bound no host port.
     pub published: Vec<Published>,
-    #[serde(default)]
     pub network: String,
     /// The SHA-256 of its run's own key where it ran (D238, plan step 11), as its managed
     /// metadata names it, in lowercase hex: the key the move replaces, as its run makes a key
-    /// of its own where it lands (D176 part 6). None where its run has none, and from a
-    /// daemon of an earlier build.
-    #[serde(default)]
+    /// of its own where it lands (D176 part 6). None where its run has none; present in every
+    /// plan, as each field is: a plan that lacks one is another build's, refused at `ready`
+    /// ([`plan_of`]).
+    #[serde(deserialize_with = "Option::deserialize")]
     pub key: Option<String>,
 }
 
@@ -341,21 +331,20 @@ pub(crate) struct Backing {
 
 /// What a machine lacks to take a [`Plan`]: its image, which the client loads there, and the
 /// files the export is to send; and the packings of a move's stream it unpacks
-/// (`crate::packing`), none where a daemon of an earlier build answers, which is sent the
-/// stream as it is.
+/// (`crate::packing`), [`crate::packing::CODEC`], which the mover refuses an answer without
+/// (cli/moves.rs `needs_of`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Needs {
     pub image: bool,
     pub files: Vec<String>,
-    #[serde(default)]
     pub unpacks: Vec<String>,
 }
 
 /// Why a move is refused before anything of its microVM moves (the `ready` step's answer on
 /// the machine moved to, the `save` or `plan` step's where it runs), or a lease asked under
 /// the key a move replaced (the `key` step's): as JSON on stdout beside its words on
-/// stderr, so that the mover matches what was refused (cli/moves.rs `unready`) and a client
-/// of an earlier build still reads why.
+/// stderr, so that the mover matches what was refused (cli/moves.rs `unready`), and the
+/// step fails in words as any step's failure does.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "refused", rename_all = "kebab-case")]
 pub(crate) enum Refused {
@@ -374,13 +363,21 @@ pub(crate) enum Refused {
     },
     /// It was saved in a snapshot format this build does not read.
     Format { name: String, format: u32, here: u32 },
-    /// Its guest's init speaks the contract `init` of the shards `saved_by` (none from a
-    /// daemon of an earlier build, which said neither), where this machine's speaks `here`.
+    /// Its guest's init speaks the contract `init` of the shards `saved_by` (none where its
+    /// plan names neither, another build's), where this machine's speaks `here`.
     OlderInit {
         name: String,
         saved_by: Option<String>,
         init: Option<u64>,
         here: u64,
+    },
+    /// Its plan, which names this machine's init contract, is not of this build's shape (a
+    /// field missing or of another kind): another build's, which this one reads none of.
+    /// `name` and `saved_by` as far as the plan says them, and why it does not read.
+    OtherPlan {
+        name: Option<String>,
+        saved_by: Option<String>,
+        why: String,
     },
     /// This machine's hypervisor shows a guest less of each of these fields than the CPU
     /// baseline its guest was told.
@@ -647,6 +644,16 @@ impl std::fmt::Display for Refused {
                     |init| format!("contract {init:016x}")
                 )
             ),
+            Refused::OtherPlan { name, saved_by, why } => write!(
+                f,
+                "{} was saved by {}, whose plan of its move this machine's shards does not read \
+                 ({why}): move it between machines of one shards, or start it again there from \
+                 its image",
+                name.as_deref().unwrap_or("the microVM"),
+                saved_by
+                    .as_deref()
+                    .map_or_else(|| "another shards".to_string(), |by| format!("shards {by}")),
+            ),
             Refused::Cpu { name, short } => {
                 // Said as each architecture's `covers` says it: a baseline's shorts are one
                 // architecture's.
@@ -760,22 +767,47 @@ impl std::fmt::Display for Refused {
     }
 }
 
-/// What a plan says of the machine its microVM ran on that refuses it on one whose guests
-/// are of `arch`, whose VMs `hypervisor` drives and whose shards reads snapshot `format`,
-/// before anything else is asked of it: a guest of another architecture, a machine of
-/// another hypervisor, a snapshot of another format. A plan of an earlier build names no
-/// hypervisor, and is taken as before, its restore refusing a state of another one.
-/// Why the machine moved to, whose shards-init speaks `here`, refuses a plan's guest: an
-/// init of another contract, or a plan that names none (D176).
-fn init_refused(plan: &Plan, here: u64) -> Option<Refused> {
-    (plan.init != Some(here)).then(|| Refused::OlderInit {
-        name: plan.name.clone(),
-        saved_by: plan.saved_by.clone(),
-        init: plan.init,
-        here,
+/// The hypervisor this machine's microVMs run on, which a plan names: none where this build
+/// drives no VMs, which has no microVM to move.
+fn this_hypervisor() -> Result<&'static str, String> {
+    shards_vmm::hv::BACKEND.ok_or_else(|| "this machine runs no microVMs".to_string())
+}
+
+/// Who saved a plan, as any build's plan names it, read before the plan itself, so that a plan
+/// of another build is refused by what it is (D176) rather than read as this build's.
+#[derive(Default, Deserialize)]
+struct Origin {
+    name: Option<String>,
+    saved_by: Option<String>,
+    init: Option<u64>,
+}
+
+/// The plan `json`, on the machine moved to, whose shards-init speaks `here`: refused where its
+/// init speaks another contract or it names none ([`Refused::OlderInit`]), or where it is not
+/// of this build's shape ([`Refused::OtherPlan`]), each field of [`Plan`] being in every plan.
+fn plan_of(json: &str, here: u64) -> Result<Plan, Refused> {
+    let origin: Origin = serde_json::from_str(json).unwrap_or_default();
+    if origin.init != Some(here)
+        && let Some(name) = &origin.name
+    {
+        return Err(Refused::OlderInit {
+            name: name.clone(),
+            saved_by: origin.saved_by,
+            init: origin.init,
+            here,
+        });
+    }
+    serde_json::from_str(json).map_err(|e| Refused::OtherPlan {
+        name: origin.name,
+        saved_by: origin.saved_by,
+        why: e.to_string(),
     })
 }
 
+/// What a plan says of the machine its microVM ran on that refuses it on one whose guests
+/// are of `arch`, whose VMs `hypervisor` drives and whose shards reads snapshot `format`,
+/// before anything else is asked of it: a guest of another architecture, a machine of
+/// another hypervisor, a snapshot of another format.
 fn platform_refused(plan: &Plan, arch: &str, hypervisor: Option<&str>, format: u32) -> Option<Refused> {
     let name = plan.name.clone();
     if plan.arch != arch {
@@ -785,12 +817,10 @@ fn platform_refused(plan: &Plan, arch: &str, hypervisor: Option<&str>, format: u
             here: arch.to_string(),
         });
     }
-    if let Some(theirs) = plan.hypervisor.as_deref()
-        && Some(theirs) != hypervisor
-    {
+    if Some(plan.hypervisor.as_str()) != hypervisor {
         return Some(Refused::Hypervisor {
             name,
-            hypervisor: theirs.to_string(),
+            hypervisor: plan.hypervisor.clone(),
             here: hypervisor.map(str::to_string),
         });
     }
@@ -1439,7 +1469,7 @@ impl<D: Disk> Daemon<D> {
     /// (remote.rs): `args` after [`shards_ipc::MOVE_STEP`].
     pub(super) fn move_step(&self, args: &[String], asker: &Asker, reply: &Reply<'_>) -> u8 {
         // A refusal goes typed on stdout, for the mover to match, and in words on stderr, as
-        // any step's failure does, for a client of an earlier build.
+        // any step's failure does.
         let typed = |done: Result<String, Unready>| match done {
             Ok(said) => Ok(said),
             Err(Unready::Failed(e)) => Err(e),
@@ -1523,6 +1553,7 @@ impl<D: Disk> Daemon<D> {
             .cloned()
             .ok_or_else(|| format!("no container {id}"))?;
         let home = std::fs::canonicalize(&self.home).map_err(|e| format!("{}: {e}", self.home.display()))?;
+        let hypervisor = this_hypervisor()?;
         let mut files = Vec::new();
         let cancel = shards_registry::http::Cancel::new();
         let image = c.image_id.clone();
@@ -1577,9 +1608,9 @@ impl<D: Disk> Daemon<D> {
             format: shards_vmm::snapshot::FORMAT,
             // Its guest's init is this build's: it runs under this daemon, or its snapshot
             // was found resumable here.
-            saved_by: Some(shards_vmm::snapshot::SAVED_BY.to_string()),
-            init: Some(shards_abi::IDENTITY),
-            hypervisor: shards_vmm::hv::BACKEND.map(str::to_string),
+            saved_by: shards_vmm::snapshot::SAVED_BY.to_string(),
+            init: shards_abi::IDENTITY,
+            hypervisor: hypervisor.to_string(),
             snapshot,
             home: home.to_string_lossy().into_owned(),
             files,
@@ -1773,6 +1804,7 @@ impl<D: Disk> Daemon<D> {
             .cloned()
             .ok_or_else(|| format!("no container {id}"))?;
         let home = std::fs::canonicalize(&self.home).map_err(|e| format!("{}: {e}", self.home.display()))?;
+        let hypervisor = this_hypervisor()?;
         let dir = lock(&self.containers).dir(id).join(SNAPSHOTS).join(snapshot);
         // A snapshot no build resumes is not moved: one whose init is another build's
         // (D176).
@@ -1820,9 +1852,9 @@ impl<D: Disk> Daemon<D> {
             format: shards_vmm::snapshot::FORMAT,
             // Its guest's init is this build's: it runs under this daemon, or its snapshot
             // was found resumable here.
-            saved_by: Some(shards_vmm::snapshot::SAVED_BY.to_string()),
-            init: Some(shards_abi::IDENTITY),
-            hypervisor: shards_vmm::hv::BACKEND.map(str::to_string),
+            saved_by: shards_vmm::snapshot::SAVED_BY.to_string(),
+            init: shards_abi::IDENTITY,
+            hypervisor: hypervisor.to_string(),
             snapshot: snapshot.to_string(),
             home: home.to_string_lossy().into_owned(),
             files,
@@ -1841,7 +1873,7 @@ impl<D: Disk> Daemon<D> {
     /// The CPU a snapshot saved here may be restored on alone, for a plan to carry (D245):
     /// this machine's, where its hypervisor restores a snapshot only on the CPU it was taken
     /// on (WHP on x86-64); none elsewhere. Where its VM process cannot say, none: the machine moved to
-    /// then finds another CPU at the restore, as with a plan of an earlier build.
+    /// then finds another CPU at the restore.
     fn exact_cpu(&self) -> shards_vmm::arch::cpu::Id {
         if !restores_on_its_own_cpu_alone() {
             return Default::default();
@@ -1998,12 +2030,9 @@ impl<D: Disk> Daemon<D> {
     /// what it lacks, as JSON: its image where it has none and none could be pulled, and the
     /// files its snapshot restores against that it has none of, or another of.
     fn move_ready(&self, plan: &str, asker: &Asker, reply: &Reply<'_>) -> Result<String, Unready> {
-        let plan: Plan = serde_json::from_str(plan).map_err(|e| format!("the move's plan: {e}"))?;
+        let plan = plan_of(plan, shards_abi::IDENTITY)?;
         let name = || plan.name.clone();
         if let Some(refused) = names_refused(&plan) {
-            return Err(refused.into());
-        }
-        if let Some(refused) = init_refused(&plan, shards_abi::IDENTITY) {
             return Err(refused.into());
         }
         if let Some(refused) = platform_refused(
@@ -2190,16 +2219,22 @@ impl<D: Disk> Daemon<D> {
         Ok(String::new())
     }
 
-    /// `import [--packed zstd]`: a move's stream read from the client's descriptor, unpacked
-    /// where it was packed (`crate::packing`), its files put in place, its snapshot made to
+    /// `import --packed zstd`: a move's stream read from the client's descriptor, packed as
+    /// every mover of this build packs it (`crate::packing`), its files put in place, its snapshot made to
     /// restore against this machine's files, and the microVM made here, stopped as saved. Its
     /// name, once it is.
     fn move_import(&self, args: &[String], asker: &Asker) -> Result<String, Unready> {
-        let packed = match args {
-            [] => false,
-            [flag, codec] if flag == "--packed" && codec == crate::packing::CODEC => true,
-            other => return Err(format!("import: {other:?}").into()),
-        };
+        match args {
+            [flag, codec] if flag == "--packed" && codec == crate::packing::CODEC => {}
+            other => {
+                return Err(format!(
+                    "import: {other:?}: a move's stream is packed as {} (--packed {})",
+                    crate::packing::CODEC,
+                    crate::packing::CODEC
+                )
+                .into());
+            }
+        }
         let input = asker
             .files
             .first()
@@ -2207,11 +2242,7 @@ impl<D: Disk> Daemon<D> {
             .try_clone()
             .map_err(|e| e.to_string())?;
         let read = io::BufReader::with_capacity(CHUNK, File::from(input));
-        let mut input: Box<dyn Read> = if packed {
-            Box::new(crate::packing::Unpacked::new(read))
-        } else {
-            Box::new(read)
-        };
+        let mut input = crate::packing::Unpacked::new(read);
         let staging = self.private_staging()?;
         // A live move's rounds first, where it is one (D176 part 7): what its memory, layer
         // and swap held, kept to be laid under its last save's.
@@ -2596,6 +2627,7 @@ mod tests {
     use super::*;
 
     fn plan() -> Plan {
+        let hypervisor = shards_vmm::hv::BACKEND.unwrap_or("none");
         Plan {
             id: "a".repeat(64),
             name: "web".into(),
@@ -2605,9 +2637,9 @@ mod tests {
             format: shards_vmm::snapshot::FORMAT,
             // Its guest's init is this build's: it runs under this daemon, or its snapshot
             // was found resumable here.
-            saved_by: Some(shards_vmm::snapshot::SAVED_BY.to_string()),
-            init: Some(shards_abi::IDENTITY),
-            hypervisor: shards_vmm::hv::BACKEND.map(str::to_string),
+            saved_by: shards_vmm::snapshot::SAVED_BY.to_string(),
+            init: shards_abi::IDENTITY,
+            hypervisor: hypervisor.to_string(),
             snapshot: "s1".into(),
             home: "/h".into(),
             files: vec![Backing {
@@ -2630,14 +2662,14 @@ mod tests {
 
     /// A machine whose shards-init speaks another contract refuses a moved guest's, naming
     /// the shards it was saved by, before anything moves; so does one of a plan that names
-    /// none, a daemon of an earlier build's. Red before the plan carried them, where only a
-    /// differing snapshot format refused it, and an init of another build with this format
-    /// was taken.
+    /// none, another build's. Red before the plan carried them, where only a differing
+    /// snapshot format refused it, and an init of another build with this format was taken.
     #[test]
     fn a_guest_whose_init_is_another_builds_is_refused_before_anything_moves() {
         let here = shards_abi::IDENTITY;
-        assert_eq!(init_refused(&plan(), here), None);
-        let refused = init_refused(&plan(), here ^ 1).unwrap();
+        let json = serde_json::to_string(&plan()).unwrap();
+        assert_eq!(plan_of(&json, here), Ok(plan()));
+        let refused = plan_of(&json, here ^ 1).unwrap_err();
         assert_eq!(
             refused,
             Refused::OlderInit {
@@ -2659,8 +2691,7 @@ mod tests {
         let fields = earlier.as_object_mut().unwrap();
         fields.remove("saved_by");
         fields.remove("init");
-        let earlier: Plan = serde_json::from_value(earlier).unwrap();
-        let refused = init_refused(&earlier, here).unwrap();
+        let refused = plan_of(&earlier.to_string(), here).unwrap_err();
         assert!(matches!(
             refused,
             Refused::OlderInit {
@@ -2677,15 +2708,61 @@ mod tests {
         assert_eq!(wire, refused);
     }
 
+    /// Every field of a plan is in every plan this build makes: one that lacks any, of an init
+    /// of this build's contract, is another build's, refused typed at `ready` naming what it
+    /// says of itself, and never read with a field taken as a default (the no-legacy rule).
+    /// Red while the fields an earlier build's plans lacked defaulted (`#[serde(default)]`).
+    #[test]
+    fn a_plan_missing_any_field_is_refused_typed() {
+        let here = shards_abi::IDENTITY;
+        let whole = serde_json::to_value(plan()).unwrap();
+        for field in whole.as_object().unwrap().keys() {
+            let mut lacking = whole.clone();
+            lacking.as_object_mut().unwrap().remove(field);
+            let refused = plan_of(&lacking.to_string(), here).unwrap_err();
+            match field.as_str() {
+                // Its contract unsaid: its init is refused first, as another build's.
+                "init" => assert!(
+                    matches!(&refused, Refused::OlderInit { init: None, .. }),
+                    "{field}: {refused:?}"
+                ),
+                // Its name unsaid: refused as the microVM.
+                "name" => assert!(
+                    matches!(&refused, Refused::OtherPlan { name: None, why, .. }
+                        if why.contains("missing field `name`")),
+                    "{field}: {refused:?}"
+                ),
+                _ => assert!(
+                    matches!(&refused, Refused::OtherPlan { name: Some(name), why, .. }
+                        if name == "web" && why.contains(&format!("missing field `{field}`"))),
+                    "{field}: {refused:?}"
+                ),
+            }
+            let wire: Refused = serde_json::from_str(&serde_json::to_string(&refused).unwrap()).unwrap();
+            assert_eq!(wire, refused);
+        }
+        let not_a_plan = plan_of("[]", here).unwrap_err();
+        assert!(
+            matches!(
+                &not_a_plan,
+                Refused::OtherPlan {
+                    name: None,
+                    saved_by: None,
+                    ..
+                }
+            ),
+            "{not_a_plan:?}"
+        );
+    }
+
     /// A microVM of another architecture, hypervisor or snapshot format is refused, each by
     /// what differs, before anything else of it is asked: the architecture first, as a
-    /// machine of another has another hypervisor's VMs too. A plan of an earlier build names
-    /// no hypervisor, and is taken as before.
+    /// machine of another has another hypervisor's VMs too.
     #[test]
     fn a_microvm_of_another_hypervisor_is_refused_before_anything_moves() {
         let (arch, format) = (std::env::consts::ARCH, shards_vmm::snapshot::FORMAT);
         let mut kvm = plan();
-        kvm.hypervisor = Some("kvm".into());
+        kvm.hypervisor = "kvm".into();
         assert_eq!(platform_refused(&kvm, arch, Some("kvm"), format), None);
         let refused = platform_refused(&kvm, arch, Some("hvf"), format);
         assert_eq!(
@@ -2707,11 +2784,6 @@ mod tests {
             platform_refused(&kvm, arch, None, format),
             Some(Refused::Hypervisor { here: None, .. })
         ));
-        let earlier = Plan {
-            hypervisor: None,
-            ..plan()
-        };
-        assert_eq!(platform_refused(&earlier, arch, Some("hvf"), format), None);
         let other = if arch == "x86_64" { "aarch64" } else { "x86_64" };
         assert!(matches!(
             platform_refused(&kvm, other, Some("hvf"), format),
@@ -2728,9 +2800,7 @@ mod tests {
     }
 
     /// A machine whose hypervisor restores a snapshot only on the CPU it was taken on (WHP)
-    /// refuses a microVM saved on another, by name, and takes one saved on its own; a plan of
-    /// an earlier build, which names no CPU, reads back naming none, which no machine checks
-    /// before its restore (D245).
+    /// refuses a microVM saved on another, by name, and takes one saved on its own (D245).
     #[test]
     fn a_microvm_saved_on_another_cpu_is_refused_where_a_restore_takes_only_its_own() {
         let (here, other) = (
@@ -2746,16 +2816,12 @@ mod tests {
             identity_refused("web", &here, &here[..0]),
             Some(Refused::CpuIdentity { name: "web".into() })
         );
-        let mut earlier = serde_json::to_value(plan()).unwrap();
-        earlier.as_object_mut().unwrap().remove("cpu_identity");
-        let earlier: Plan = serde_json::from_value(earlier).unwrap();
-        assert!(earlier.cpu_identity.is_empty());
     }
 
     /// A moved run's key (D176 part 6, D238): its run's own key is the `vm` line of its managed
     /// metadata, none for a run without one or with none written right; a lease asked under
     /// the key its move replaced is refused typed with its key here, and one under any other
-    /// key is no move's to refuse; a plan of an earlier build names none.
+    /// key is no move's to refuse.
     #[test]
     fn a_lease_under_the_key_a_move_replaced_is_refused_and_the_run_names_its_own() {
         let dir = shards_testdir::TempDir::new("mv-key").unwrap();
@@ -2792,11 +2858,6 @@ mod tests {
         );
         assert_eq!(key_refused("web", &new, Some(&old), Some(&new)), None);
         assert_eq!(key_refused("web", &old, None, Some(&new)), None);
-
-        let mut earlier = serde_json::to_value(plan()).unwrap();
-        earlier.as_object_mut().unwrap().remove("key");
-        let earlier: Plan = serde_json::from_value(earlier).unwrap();
-        assert_eq!(earlier.key, None);
     }
 
     /// A refusal goes as JSON, tagged by what refused it, and reads back as it went; its
@@ -2820,6 +2881,16 @@ mod tests {
                     here: 29,
                 },
                 "web was saved in snapshot format 28, and this machine's shards reads 29",
+            ),
+            (
+                Refused::OtherPlan {
+                    name: Some("web".into()),
+                    saved_by: Some("0.7.0".into()),
+                    why: "missing field `hypervisor`".into(),
+                },
+                "web was saved by shards 0.7.0, whose plan of its move this machine's shards does \
+                 not read (missing field `hypervisor`): move it between machines of one shards, \
+                 or start it again there from its image",
             ),
             (
                 Refused::Cpu {
