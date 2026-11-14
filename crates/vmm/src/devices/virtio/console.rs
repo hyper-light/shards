@@ -8,8 +8,7 @@ use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
-use super::queue::{Chain, Queue, QueueError};
-use super::worker::Worker;
+use super::queue::{Chain, Queue, QueueError, Round, serve_round};
 use super::{Activation, DeviceInterrupt, QueueState, VirtioDevice, feature};
 use crate::devices::said::{Kept, Said};
 use crate::memory::GuestMemory;
@@ -180,11 +179,17 @@ fn deliver(r: &mut Receive, bytes: &[u8]) -> Result<usize, QueueError> {
 
 pub struct Console {
     port: Arc<Port>,
-    /// What the transmit worker needs besides its queue, from activation until reset.
+    /// What serving its queues needs besides them, from activation until reset.
     context: Option<(Arc<GuestMemory>, Arc<DeviceInterrupt>)>,
-    worker: Option<Worker>,
+    /// The transmit queue while it is served: on the notifying vCPU's thread, in its exit.
+    /// Linux's console spins with interrupts off until the device has used each buffer
+    /// (virtio_console.c `__send_to_port`, l. 611-636), so the guest waits for the device
+    /// either way; a device thread only added its wake-up to every buffer, and a boot log
+    /// replayed 16 bytes at a time (hvc_console.c `N_OUTBUF`) did not reach the host before
+    /// a panic 49 ms in stopped the CPU sending it, holding the port's lock (D261).
+    transmit: Mutex<Option<Queue>>,
     /// The transmit queue while paused.
-    transmit: Option<Queue>,
+    transmit_paused: Option<Queue>,
     /// The receive queue while paused.
     receive: Option<Queue>,
 }
@@ -212,32 +217,42 @@ impl Console {
         let console = Console {
             port: port.clone(),
             context: None,
-            worker: None,
-            transmit: None,
+            transmit: Mutex::new(None),
+            transmit_paused: None,
             receive: None,
         };
         (console, port)
     }
 
-    /// Starts the transmit worker on `queue`; if it cannot, the queue waits paused.
-    fn start(&mut self, queue: Queue) -> Result<(), String> {
-        let Some((memory, interrupt)) = self.context.clone() else {
-            self.transmit = Some(queue);
-            return Err("virtio-console started before activation".into());
+    /// Writes out every buffer the guest has sent, until the queue is empty and its
+    /// notifications re-armed. A malformed ring needs reset (virtio 1.3 §2.1.2): the queue
+    /// is dropped until the driver sets the device up anew.
+    fn serve_transmit(&self) {
+        let Some((memory, interrupt)) = &self.context else {
+            return;
         };
-        let (port, mem) = (self.port.clone(), memory.clone());
-        let answering = move |chain: &Chain| {
-            port.transmit(chain, &mem);
+        let mut transmit = lock(&self.transmit);
+        let Some(queue) = transmit.as_mut() else {
+            return;
+        };
+        let never = AtomicBool::new(false);
+        let mut answer = |chain: &Chain| {
+            self.port.transmit(chain, memory);
             0
         };
-        match Worker::start("virtio-console", queue, memory, interrupt, answering) {
-            Ok(worker) => {
-                self.worker = Some(worker);
-                Ok(())
-            }
-            Err((e, queue)) => {
-                self.transmit = Some(queue);
-                Err(e)
+        loop {
+            match serve_round(queue, memory, interrupt, &never, &mut answer) {
+                Ok(Round::Idle) => return,
+                Ok(Round::More) => {}
+                Err(e) => {
+                    if interrupt.fail() {
+                        warn!("virtio-console: {e}; device needs reset");
+                    } else {
+                        debug!("virtio-console: {e}; device needs reset");
+                    }
+                    *transmit = None;
+                    return;
+                }
             }
         }
     }
@@ -299,33 +314,29 @@ impl VirtioDevice for Console {
         let receive = queues.remove(RECEIVEQ);
         self.context = Some((memory, interrupt));
         self.serve_input(receive);
-        // An activation that fails leaves its queue: the driver sets the device up anew.
-        self.start(transmit).inspect_err(|_| self.transmit = None)
+        *lock(&self.transmit) = Some(transmit);
+        // What the guest sent before activation, or while a snapshot paused it.
+        self.serve_transmit();
+        Ok(())
     }
 
-    /// Host input waits for receive buffers; output is written out on the device's worker,
-    /// never on the notifying vCPU's thread.
+    /// Host input waits for receive buffers; output is written out here, in the notifying
+    /// vCPU's exit, as the guest spins until it is ([`Console::transmit`]).
     fn notify(&self, queue: u16) {
         match usize::from(queue) {
             RECEIVEQ => {
                 let _held = lock(&self.port.receive);
                 self.port.posted.notify_all();
             }
-            TRANSMITQ => {
-                if let Some(w) = &self.worker {
-                    w.notify();
-                }
-            }
+            TRANSMITQ => self.serve_transmit(),
             _ => {}
         }
     }
 
     fn reset(&mut self) {
-        if let Some(w) = self.worker.take() {
-            w.stop();
-        }
         self.take_input();
-        self.transmit = None;
+        *lock(&self.transmit) = None;
+        self.transmit_paused = None;
         self.receive = None;
         self.context = None;
     }
@@ -333,13 +344,13 @@ impl VirtioDevice for Console {
     /// Output stops after the buffer it is writing out, input after the one it is filling;
     /// each queue's progress, receive then transmit.
     fn pause(&mut self) -> Vec<QueueState> {
-        if let Some(queue) = self.worker.take().and_then(Worker::stop) {
-            self.transmit = Some(queue);
+        if let Some(queue) = lock(&self.transmit).take() {
+            self.transmit_paused = Some(queue);
         }
         if let Some(queue) = self.take_input() {
             self.receive = Some(queue);
         }
-        match (&self.receive, &self.transmit) {
+        match (&self.receive, &self.transmit_paused) {
             (Some(r), Some(t)) => vec![r.state(), t.state()],
             _ => Vec::new(),
         }
@@ -349,18 +360,16 @@ impl VirtioDevice for Console {
         if let Some(queue) = self.receive.take() {
             self.serve_input(queue);
         }
-        match self.transmit.take() {
-            Some(queue) => self.start(queue),
-            None => Ok(()),
+        if let Some(queue) = self.transmit_paused.take() {
+            *lock(&self.transmit) = Some(queue);
+            self.serve_transmit();
         }
+        Ok(())
     }
 }
 
 impl Drop for Console {
     fn drop(&mut self) {
-        if let Some(w) = self.worker.take() {
-            w.stop();
-        }
         self.take_input();
     }
 }
@@ -464,15 +473,17 @@ mod tests {
         (console, port, mem, sink)
     }
 
-    /// A buffer the guest sends is written out whole, its notification its one exit, and
-    /// kept to quote in whole lines (D12); the device used it, so the guest's spin ends.
+    /// A buffer the guest sends is written out whole, within its notification's exit, and
+    /// kept to quote in whole lines (D12); the device used it before the exit returns, so
+    /// the guest's spin ends at once.
     #[test]
     fn a_buffer_sent_is_written_out_and_kept() {
         let (console, port, mem, sink) = active(1000);
         let text = b"[    0.000000] Linux version 6.18.48\nKernel panic - not syncing\n";
         publish(&mem, 1, text, text.len() as u32, false);
         console.notify(1);
-        until("the buffer used", || used_of(&mem, 1).0 == 1);
+        // Used before the notifying exit returns: the guest spins until it is.
+        assert_eq!(used_of(&mem, 1).0, 1, "used within the notify");
         assert_eq!(*sink.0.lock().unwrap(), text);
         assert_eq!(port.said().lines, text);
     }
