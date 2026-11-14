@@ -257,6 +257,10 @@ pub fn confine() -> Result<(), String> {
         0,
         &[shards_vmm::platform::uffd::FLAGS as u32],
     ));
+    // A seccomp layer over this filter ([`sockets`]). Unprivileged, a filter installs only
+    // under no_new_privs, and takes syscalls away alone (seccomp(2): every filter a thread
+    // has runs, and the most restrictive answer wins).
+    rules.push(Rule::with(libc::SYS_seccomp, 0, &[libc::SECCOMP_SET_MODE_FILTER]));
     rules.push(Rule::with(libc::SYS_socket, 0, &[libc::AF_UNIX as u32]));
     rules.push(Rule::with(libc::SYS_socketpair, 0, &[libc::AF_UNIX as u32]));
     // Naming threads; and no_new_privs, which Landlock needs set and which only takes
@@ -295,6 +299,50 @@ pub fn confine() -> Result<(), String> {
 #[cfg(not(target_os = "linux"))]
 pub fn confine() -> Result<(), String> {
     Ok(())
+}
+
+/// Narrows this process's Unix sockets to what `paths` lets it dial, on every thread: a
+/// seccomp layer over [`confine`]'s filter (`seccomp::layer`), which every kernel with
+/// seccomp's TSYNC has (Linux 3.17), installed as the process learns its paths, beside
+/// [`landlock`], whose ABI v9 alone governs which socket files a connect reaches
+/// (`RESOLVE_UNIX`).
+///
+/// - A socket is a stream or a sequenced-packet one, of either's flags: one of the
+///   datagram type could send to any socket file it names (sendto(2), sendmsg(2) with an
+///   address; net/unix/af_unix.c, `unix_dgram_sendmsg`), where a stream refuses an address
+///   (`unix_stream_sendmsg`, EOPNOTSUPP or EISCONN) and a sequenced-packet socket ignores
+///   it (`unix_seqpacket_sendmsg`). A VM process makes no datagram socket: Rust's own and
+///   the vsock muxer's sockets are streams, the GPU's renderer's sequenced packets
+///   (virgl.rs).
+/// - A VM given no directory to dial in dials nothing: connect(2) fails with EACCES, as
+///   Landlock would refuse it (Documentation/userspace-api/landlock.rst,
+///   `LANDLOCK_ACCESS_FS_RESOLVE_UNIX`), on every kernel. A daemon's VMs are given none
+///   (`--warm` takes no `--vsock`): their host ports are served in their process, and
+///   nothing of their user's, its daemon's Engine API among them, can be dialed.
+#[cfg(target_os = "linux")]
+pub fn sockets(paths: &Paths) -> Result<(), String> {
+    use shards_vmm::platform::seccomp::{self, Rule};
+    let types = [libc::SOCK_STREAM, libc::SOCK_SEQPACKET]
+        .into_iter()
+        .flat_map(|t| {
+            [
+                t,
+                t | libc::SOCK_CLOEXEC,
+                t | libc::SOCK_NONBLOCK,
+                t | libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK,
+            ]
+            .map(|t| t as u32)
+        });
+    let types: Vec<u32> = types.collect();
+    let mut rules = vec![
+        Rule::with(libc::SYS_socket, 1, &types),
+        Rule::with(libc::SYS_socketpair, 1, &types),
+    ];
+    if paths.sockets_under.is_empty() {
+        rules.push(Rule::fails(libc::SYS_connect, libc::EACCES as u16));
+    }
+    let layer = seccomp::layer(&rules)?;
+    seccomp::install(&layer, true).map_err(|e| format!("installing the sockets' seccomp layer: {e}"))
 }
 
 /// The ioctl types of the GPU drivers' devices (include/uapi/asm-generic/ioctl.h, bits 8
@@ -530,7 +578,8 @@ pub struct Paths {
 /// macOS (D30). Every filesystem access Landlock's ABI v5 knows is handled, and only
 /// `paths` are allowed, with `/dev/kvm`, `/dev/null`, this process's `/proc` entry and the
 /// kernel's transparent huge page settings. TCP is refused, and where the ABI knows them
-/// (v6), signals to other processes and abstract Unix sockets outside this one.
+/// (v6), signals to other processes and abstract Unix sockets outside this one, and (v9)
+/// connections to socket files but beneath `paths.sockets_under`.
 ///
 /// A layer restricts the thread that makes it and the threads it starts after, not the
 /// ones already running (landlock_restrict_self(2)); a VM process has some by then (its
@@ -588,6 +637,9 @@ fn ruleset(paths: &Paths) -> Result<(std::os::fd::OwnedFd, i64), String> {
     const REFER: u64 = 1 << 13;
     const TRUNCATE: u64 = 1 << 14;
     const IOCTL_DEV: u64 = 1 << 15;
+    const RESOLVE_UNIX: u64 = 1 << 16;
+    /// The first ABI whose rules govern connections to socket files (`RESOLVE_UNIX`).
+    const RESOLVE_UNIX_ABI: i64 = 9;
     const NET_BIND_TCP: u64 = 1 << 0;
     const NET_CONNECT_TCP: u64 = 1 << 1;
     const SCOPE_ABSTRACT_UNIX_SOCKET: u64 = 1 << 0;
@@ -630,9 +682,12 @@ fn ruleset(paths: &Paths) -> Result<(std::os::fd::OwnedFd, i64), String> {
         ));
     }
     // Every filesystem right v5 knows: v1's, EXECUTE through MAKE_SYM, then REFER (v2),
-    // TRUNCATE (v3) and IOCTL_DEV (v5); v6 and v7 add none. All of them are handled, so all
-    // are enforced: nothing asked for is left to a kernel that cannot.
-    let fs = ((1u64 << 13) - 1) | REFER | TRUNCATE | IOCTL_DEV;
+    // TRUNCATE (v3) and IOCTL_DEV (v5); v6 to v8 add none; and RESOLVE_UNIX where the
+    // kernel has it (v9). All of them are handled, so all are enforced: nothing asked for
+    // is left to a kernel that cannot. Where it has not, [`sockets`] refuses a VM given no
+    // directory of sockets every connect.
+    let resolve_unix = if abi >= RESOLVE_UNIX_ABI { RESOLVE_UNIX } else { 0 };
+    let fs = ((1u64 << 13) - 1) | REFER | TRUNCATE | IOCTL_DEV | resolve_unix;
     let attr = RulesetAttr {
         handled_access_fs: fs,
         handled_access_net: NET_BIND_TCP | NET_CONNECT_TCP,
@@ -693,8 +748,8 @@ fn ruleset(paths: &Paths) -> Result<(std::os::fd::OwnedFd, i64), String> {
     let read_dir = READ_FILE | READ_DIR;
     let write = READ_FILE | WRITE_FILE | TRUNCATE;
     let write_dir = read_dir | WRITE_FILE | TRUNCATE | REMOVE_DIR | REMOVE_FILE | MAKE_DIR | MAKE_REG;
-    // A socket bound, and removed once done; dialling one is not Landlock's to govern.
-    let sockets_dir = MAKE_SOCK | REMOVE_FILE;
+    // A socket bound, and removed once done; and dialled, where the ABI governs it.
+    let sockets_dir = MAKE_SOCK | REMOVE_FILE | resolve_unix;
     // The host's own files, where it has them: a host without /dev/kvm runs no VM, which
     // the KVM backend says itself, and a kernel built without transparent huge pages has
     // no settings for them. Nothing absent can be reached, rule or not.
@@ -1702,6 +1757,118 @@ mod tests {
                 said.contains("applied: Ok(())\ndeaf read other: false"),
                 "{said}\n{err}"
             );
+        }
+    }
+
+    /// In a child process (`SOCKETS_CHILD` names its directory, `SOCKETS_LAYERS` what
+    /// confines it): two listeners its user made before, one beside the vsock path it is
+    /// given and one elsewhere; it is confined, then dials each, and makes a datagram
+    /// socket last, which its filter refuses by ending it.
+    fn sockets_child(dir: &str, layers: &str) -> ! {
+        use std::io::Write as _;
+        let dir = std::path::PathBuf::from(dir);
+        let paths = Paths {
+            sockets_under: if layers.contains("socks") {
+                vec![dir.join("socks")]
+            } else {
+                Vec::new()
+            },
+            ..Paths::default()
+        };
+        let _outside = std::os::unix::net::UnixListener::bind(dir.join("engine.sock")).unwrap();
+        let _beside = std::os::unix::net::UnixListener::bind(dir.join("socks").join("v_5")).unwrap();
+        let mut out = format!("filter: {:?}\n", confine());
+        if layers.contains("seccomp") {
+            out.push_str(&format!("seccomp: {:?}\n", sockets(&paths)));
+        }
+        if layers.contains("landlock") {
+            out.push_str(&format!("landlock: {:?}\n", landlock(&paths)));
+        }
+        let dial = |at: std::path::PathBuf| match std::os::unix::net::UnixStream::connect(at) {
+            Ok(_) => "ok".to_string(),
+            Err(e) => format!("refused {}", e.raw_os_error().unwrap_or(0)),
+        };
+        out.push_str(&format!("dial outside: {}\n", dial(dir.join("engine.sock"))));
+        out.push_str(&format!("dial beside: {}\n", dial(dir.join("socks").join("v_5"))));
+        let _ = std::io::stdout().write_all(out.as_bytes());
+        let _ = std::io::stdout().flush();
+        // SAFETY: socket(2) with integer arguments.
+        let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_DGRAM, 0) };
+        let _ = std::io::stdout().write_all(format!("datagram: {fd}\n").as_bytes());
+        end(0)
+    }
+
+    /// A VM given no directory of sockets dials none, its user's daemon's Engine API among
+    /// them: refused by its seccomp layer on every kernel, and by Landlock's v9 too; one
+    /// given a vsock path dials beside it alone where Landlock's ABI governs dials (v9); a
+    /// datagram socket, which could send to any, is never made (platform-02).
+    #[test]
+    fn a_confined_vm_dials_only_beside_its_vsock_path() {
+        if let (Ok(dir), Ok(layers)) = (std::env::var("SOCKETS_CHILD"), std::env::var("SOCKETS_LAYERS")) {
+            sockets_child(&dir, &layers);
+        }
+        let abi = {
+            // SAFETY: landlock_create_ruleset(2) asking only the ABI's version.
+            unsafe {
+                libc::syscall(
+                    libc::SYS_landlock_create_ruleset,
+                    std::ptr::null::<u8>(),
+                    0usize,
+                    1u32,
+                )
+            }
+        };
+        let refused = format!("refused {}", libc::EACCES);
+        let unix_rules = abi >= 9;
+        let mut cases = vec![
+            // The seccomp layer alone: no directory, no dial; a datagram socket ends it.
+            ("seccomp", Some(refused.as_str()), Some(refused.as_str()), true),
+            ("seccomp socks", Some("ok"), Some("ok"), true),
+            // Everything, as a VM is confined.
+            (
+                "seccomp landlock",
+                Some(refused.as_str()),
+                Some(refused.as_str()),
+                true,
+            ),
+            (
+                "seccomp landlock socks",
+                if unix_rules { Some(refused.as_str()) } else { None },
+                Some("ok"),
+                true,
+            ),
+        ];
+        if unix_rules {
+            // Landlock's rules alone (v9).
+            cases.push(("landlock", Some(refused.as_str()), Some(refused.as_str()), false));
+            cases.push(("landlock socks", Some(refused.as_str()), Some("ok"), false));
+        }
+        let test = "confine::tests::a_confined_vm_dials_only_beside_its_vsock_path";
+        for (layers, outside, beside, datagram_refused) in cases {
+            let dir_guard = shards_testdir::TempDir::new("socks").unwrap();
+            let dir = dir_guard.join("s");
+            std::fs::create_dir_all(dir.join("socks")).unwrap();
+            let (code, said, err) = child_of(
+                test,
+                &[
+                    ("SOCKETS_CHILD", dir.to_str().unwrap()),
+                    ("SOCKETS_LAYERS", layers),
+                ],
+            );
+            let why = format!("{layers}: {said}\n{err}");
+            assert!(!said.contains("Err("), "{why}");
+            if let Some(outside) = outside {
+                assert!(said.contains(&format!("dial outside: {outside}\n")), "{why}");
+            }
+            if let Some(beside) = beside {
+                assert!(said.contains(&format!("dial beside: {beside}\n")), "{why}");
+            }
+            if datagram_refused {
+                assert_eq!(code, Some(shards_vmm::platform::seccomp::REFUSED), "{why}");
+                assert!(err.contains(&format!("syscall {}", libc::SYS_socket)), "{why}");
+            } else {
+                assert_eq!(code, Some(0), "{why}");
+            }
         }
     }
 

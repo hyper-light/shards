@@ -24053,3 +24053,29 @@ said Ok and the thread read the file: red. `cargo test -p shards-vm-process conf
 kernel of that ABI (no host here has one): the asking pass ran on ABI 11. Owed to ROOT:
 VM runs on KVM, a template's seal among them (daemon.rs pool tests), x86_64 and arm64
 through L1, and one on a kernel of ABI 5 to 7.
+
+### M569. A confined VM process dialed its user's sockets, its daemon's Engine API among them (D30)
+
+Linux x86_64, adacachy2 (7.3.3-1-cachyos, Landlock ABI 11), 2026-11-13, policy df2acf47,
+role implementer. Review platform-02: the filter allowed AF_UNIX sockets and connect(2)
+whatever they named, and Landlock's rules before v9 do not govern a connect. Reproduced
+by `confine::tests::a_confined_vm_dials_only_beside_its_vsock_path` (shards-vm-process):
+a child binds two listeners of its user's first, `engine.sock` outside its paths and
+`socks/v_5` beside the vsock path it is given, is confined, dials both, then makes a
+datagram socket. With neither the sockets layer's connect refusal nor Landlock's
+`RESOLVE_UNIX` (the mutant), a VM given no vsock path dialed both (`dial outside: ok`):
+red. Now: no vsock path, both refused with EACCES by the seccomp layer alone and by
+Landlock's v9 rules alone; given one, Landlock lets it dial beside it alone (`dial
+outside: refused 13`, `dial beside: ok`); with the seccomp layer alone it dials both,
+what a kernel before v9 leaves (D30's owed spawner dialing); the datagram socket traps
+(exit 159, `seccomp refused syscall 41`), and without the layer is made. Mutants, each
+red for its own case: the connect refusal dropped; `RESOLVE_UNIX` dropped; the socket
+type rule dropped. `seccomp::layer` (`a_layer_answers_its_rules_and_allows_the_rest`,
+the instruction model over every number and value) and the crate's tests 9 of 9;
+`cargo test -p shards-vm-process confine::` 10 of 10; clippy for both crates clean on
+that host. The layer's cost per syscall is ROOT's to measure (R14): the kernel's cache
+skips every filter for a syscall each allows whatever its arguments
+(`seccomp_cache_check_allow`), and one the first filter checks, ioctl's KVM_RUN among
+them, runs both. Owed to ROOT: VM runs on KVM (a daemon's
+warm VMs, `shards build`'s builder with its vsock ports, the GPU's VM process), x86_64
+and arm64 through L1.

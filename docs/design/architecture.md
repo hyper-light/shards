@@ -2203,10 +2203,27 @@ audit's "Security and test coverage").
     its spawner's among them, are its user's to change, a hard limit irreversibly [man:
     getrlimit(2); kernel/sys.c, `check_prlimit_permission`], and Landlock has no hook on
     them (review platform-04, [PM M567]).
+  - A layer over the filter as the process confines itself (`confine.rs`, `sockets`;
+    `seccomp::layer`, which allows the syscalls it does not name, for the filter under it
+    to decide), on every thread (TSYNC, Linux 3.17), every kernel's: a socket is a stream
+    or a sequenced-packet one, as every socket a VM process makes is, since a datagram
+    socket can send to any socket file it names [net/unix/af_unix.c,
+    `unix_dgram_sendmsg`]; and a VM given no vsock path, as every VM a daemon runs is
+    (`--warm` takes none), fails every connect(2) with EACCES, as Landlock refuses one: its
+    user's sockets, its daemon's Engine API among them, cannot be dialed (review
+    platform-02, [PM M569]). The filter allows seccomp(2)'s `SET_MODE_FILTER` for the
+    layer: unprivileged, under no_new_privs, a filter only takes syscalls away.
 - **Linux: Landlock, failing closed** (`confine.rs`, `landlock`), applied just before the
   VM starts (rootless-security.md R3; [Documentation/userspace-api/landlock.rst]).
   - Every filesystem right Landlock's ABI v5 knows is handled, TCP bind and connect are
-    refused, and on ABI v6 signals and abstract Unix sockets outside the process are too.
+    refused, and on ABI v6 signals and abstract Unix sockets outside the process are too,
+    and on v9 connections to socket files (`RESOLVE_UNIX`) but beneath the directory of a
+    vsock path it was given, where the vsock muxer dials a guest's host ports
+    (`<path>_<port>`) [PM M569].
+  - Before v9 a VM given a vsock path (`shards build`'s builder, `run vm --kernel
+    --vsock`) can still dial any socket file its user can: no primitive of older kernels
+    scopes a connect by its path within the process. The closed way for those is its
+    spawner dialing for it, as on macOS and Windows (`platform::set_dialer`); owed.
     Allowed: its kernel, initrd, init, pmem and disks, a restore's snapshot and the files it
     records, the snapshot directory it saves, sockets made
     only beside a vsock path it was given (`--vsock`), `/dev/null`, its own `/proc` entry, and `/dev/kvm` and the
@@ -2256,8 +2273,8 @@ audit's "Security and test coverage").
     maintainer asks that the version be read from the kernel, never from its release
     (firecracker-microvm/firecracker#5771).
   - Still to do, per R3: a user and mount namespace with `pivot_root` into an empty
-    tmpfs, `CLONE_INTO_CGROUP`, rlimits; UDP (ABI v10) and pathname Unix socket (ABI v9)
-    rules where the kernel has them; and the jail's cost on the start path (R4 Q1).
+    tmpfs, `CLONE_INTO_CGROUP`, rlimits; UDP (ABI v10) rules where the kernel has them;
+    and the jail's cost on the start path (R4 Q1).
 - **macOS: App Sandbox, replacing the Seatbelt profile** (docs/research/
   macos-confinement.md, [PM M67]). The profile was applied with `sandbox_init`, which the
   SDK marks deprecated and no longer supported [sandbox.h:7,45]; shards uses no deprecated

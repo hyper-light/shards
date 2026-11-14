@@ -3315,8 +3315,9 @@ fn confine(paths: &crate::confine::Paths) -> Result<(), String> {
             Ok(())
         }
     });
+    // Its sockets narrowed to what its paths let it dial, then Landlock, on every thread.
     #[cfg(target_os = "linux")]
-    return crate::confine::landlock(paths);
+    return crate::confine::sockets(paths).and_then(|()| crate::confine::landlock(paths));
     // As on macOS; and once its partition is set up, before anything of its guest's is
     // read, this process forbids itself dynamic code (D141, PM M202). Its snapshots its
     // spawner stages, over the link (D196), which stays open for them.
