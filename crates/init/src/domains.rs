@@ -4012,6 +4012,87 @@ mod tests {
         assert_eq!(said, "member refused (13); command refused (13)");
     }
 
+    /// The member's first process for a test of what a command run in it reaches: confined
+    /// as member `c`, it holds until it is killed, as its program would; `before`, run in it
+    /// once it is confined, before it says it is ready. Its PID; none where it could not be
+    /// confined.
+    fn a_confined_member(c: &Confinement, before: impl FnOnce()) -> Option<libc::pid_t> {
+        let mut fds = [0 as RawFd; 2];
+        // SAFETY: pipe2(2) into a two-element array.
+        assert_eq!(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) }, 0);
+        // SAFETY: both descriptors were just made, and are owned here alone.
+        let (r, w) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+        // SAFETY: fork(2) of a process of one thread (as_root_of_own_mounts's child); the
+        // child never returns.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork: {}", io::Error::last_os_error());
+        if pid == 0 {
+            // SAFETY: a process of one thread, which holds or exits.
+            unsafe {
+                if rules(c, c.ruleset.as_raw_fd())
+                    .and_then(|()| confine(c, c.ruleset.as_raw_fd()))
+                    .is_err()
+                {
+                    libc::_exit(1);
+                }
+                before();
+                libc::write(w.as_raw_fd(), b"r".as_ptr().cast(), 1);
+                loop {
+                    libc::pause();
+                }
+            }
+        }
+        drop(w);
+        let mut ready = [0u8; 1];
+        // SAFETY: read(2) into a one-byte buffer of ours.
+        let n = unsafe { libc::read(r.as_raw_fd(), ready.as_mut_ptr().cast(), 1) };
+        if n != 1 {
+            // SAFETY: waitpid(2) of this process's own child, which has exited.
+            unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0) };
+            return None;
+        }
+        Some(pid)
+    }
+
+    /// confine-10 (docs/bugs/2026-11-13/confine.md): a command run in a member signals the
+    /// member's own processes, as `docker exec C kill 1`, `pkill` and a supervisor's CLI do,
+    /// and as the member's processes signal one another. A command that entered the
+    /// member's ruleset itself, as enter.rs had it, is a Landlock domain beside the member's,
+    /// which the member's signal scope holds apart (landlock(7), `LANDLOCK_SCOPE_SIGNAL`).
+    /// Run as root of IDs past its own (`unshare --map-auto --map-root-user`), where uid 1000
+    /// is another's; else a SKIP.
+    #[test]
+    fn a_command_run_in_a_member_signals_its_members_processes() {
+        let said = as_root_of_own_mounts(|| {
+            let c = member_confinement(1000, Vec::new(), "/");
+            let Some(member) = a_confined_member(&c, || {}) else {
+                return "SKIP: confining the member".into();
+            };
+            let command = in_child(|| {
+                // SAFETY: a process of one thread, which exits next.
+                if let Err(step) = unsafe { confine(&c, c.ruleset.as_raw_fd()) } {
+                    return format!("SKIP: confining: {step:?}: {}", io::Error::last_os_error());
+                }
+                // SAFETY: kill(2) of signal 0, which asks only whether it may.
+                match unsafe { libc::kill(member, 0) } {
+                    0 => "signalled".into(),
+                    _ => format!(
+                        "refused ({})",
+                        io::Error::last_os_error().raw_os_error().unwrap_or(0)
+                    ),
+                }
+            });
+            // SAFETY: kill(2) and waitpid(2) of this process's own child.
+            unsafe {
+                libc::kill(member, libc::SIGKILL);
+                libc::waitpid(member, std::ptr::null_mut(), 0);
+            }
+            command
+        });
+        let Some(said) = said else { return };
+        assert_eq!(said, "signalled");
+    }
+
     /// confine-02 (docs/bugs/2026-11-13/confine.md): a member starts in its working
     /// directory only where it could enter it itself. Its artifact's `work` leads to
     /// `private/work`, which is open, beneath `private`, root's alone (0700); a member that
