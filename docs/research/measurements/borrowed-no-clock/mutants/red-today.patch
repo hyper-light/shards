@@ -1,0 +1,18 @@
+diff --git a/crates/api/src/client.rs b/crates/api/src/client.rs
+index 14806ab54..eb9827432 100644
+--- a/crates/api/src/client.rs
++++ b/crates/api/src/client.rs
+@@ -1575,11 +1575,8 @@ pub fn connect_borrowed_before(
+     port: u32,
+     deadline: Option<Instant>,
+ ) -> Result<Box<dyn Stream>, Refusal> {
+-    borrowed(
+-        identity,
+-        port,
+-        deadline.map_or(HandshakeWait::Unbounded, HandshakeWait::Until),
+-    )
++    let patience = deadline.map_or(Duration::MAX, |at| at.saturating_duration_since(Instant::now()));
++    connect_borrowed(identity, port, patience)
+ }
+ 
+ /// A borrowed connect's one dial, its handshake waiting as `wait` says, `Unbounded` waiting

@@ -1,0 +1,16 @@
+diff --git a/crates/api/src/client.rs b/crates/api/src/client.rs
+index 14806ab54..b2115e1e5 100644
+--- a/crates/api/src/client.rs
++++ b/crates/api/src/client.rs
+@@ -1602,11 +1602,6 @@ fn borrowed(identity: &Identity, port: u32, wait: HandshakeWait<'_>) -> Result<B
+     let mut cost = Duration::ZERO;
+     let stream = handshake_until(&identity.vsock, port, wait, &mut cost).map_err(|cause| {
+         // With no clock, the held process's end is the refusal, whatever the channel said of it.
+-        if matches!(wait, HandshakeWait::Watched(_))
+-            && let Err(failure) = held.check()
+-        {
+-            return process_failure(failure);
+-        }
+         refused(match cause {
+             HandshakeError::Io {
+                 kind: io::ErrorKind::OutOfMemory,
