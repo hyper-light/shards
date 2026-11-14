@@ -60,7 +60,8 @@ fn a_daemons_whole_lines_are_its_words() {
 
 /// The stand-in a test's wait follows here: this test binary run again for this test alone,
 /// doing what `SHARDS_STAND_IN` says: `exit`, at once; `busy MS`, its CPU busy for MS
-/// milliseconds, then its end; `answer PORT MS`, connected to loopback's PORT, busy for MS
+/// milliseconds, then its end; `go MS`, the same once a byte (its go) or its end comes on
+/// its stdin; `answer PORT MS`, connected to loopback's PORT, busy for MS
 /// milliseconds, then its answer written there and its end; `fetch PORT`, a request
 /// written to loopback's PORT, its answer read to the connection's end; `idle`, nothing at all until
 /// its stdin closes; `pulse N MS`, N rounds of a moment's CPU then MS milliseconds of none,
@@ -87,6 +88,9 @@ fn stand_in() {
         .and_then(|a| a.split_once(' '))
         .and_then(|(port, ms)| Some((port.parse::<u16>().ok()?, ms.parse().ok()?)));
     if let Some(ms) = asked.strip_prefix("busy ").and_then(|ms| ms.parse().ok()) {
+        busy(ms);
+    } else if let Some(ms) = asked.strip_prefix("go ").and_then(|ms| ms.parse().ok()) {
+        let _ = std::io::stdin().read(&mut [0u8; 1]);
         busy(ms);
     } else if let Some((port, ms)) = answer {
         let mut to = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
@@ -578,15 +582,19 @@ fn a_patient_wait_goes_on_while_its_party_works() {
     let home = TempDir::new("patient");
     let busy = Duration::from_secs(1);
     for round in 0..2 {
-        // Begun before its spawn: the stand-in's busy clock starts as it runs, which can
-        // be before spawn returns here (CI run 43530570785: "it ended 998.689681ms in").
-        let began = Instant::now();
-        let mut daemon = stand_in_doing(&format!("busy {}", busy.as_millis()))
+        // Its busy second begins on its go, sent once its wait has begun, so that the answer
+        // its end gives, timed from that begin, is never less than its work: a busy second
+        // begun as it ran, before its spawn returned, taught 993.99 ms under load
+        // (adacachy2 at 9dd326609), as runs-11's health test's answer did (490ddff78).
+        let mut daemon = stand_in_doing(&format!("go {}", busy.as_millis()))
+            .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
             .spawn()
             .unwrap();
         name_daemon(&home, daemon.id());
         let mut patience = Patience::of(&home);
+        let began = Instant::now();
+        daemon.stdin.take().unwrap().write_all(b"\n").unwrap();
         while daemon.try_wait().unwrap().is_none() {
             if !patience.holds() {
                 let _ = daemon.kill();
