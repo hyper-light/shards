@@ -24717,6 +24717,10 @@ what its run stages. Two names keep init's rules:
   gives one, else Docker's: the image's replaces Docker's default, as in a container, and a
   member's own program is still found before the system's (part one). Its program is found on
   the `PATH` it runs with, a staged one included, where it was found on `run.env`'s alone.
+  Confine-04: init prepares candidate strings with ordinary exec's PATH composer,
+  but the member's child searches only after its mounts, confinement and cwd are
+  established. Empty components mean cwd; relative components remain relative to
+  that cwd. No executable availability/access decision is made in init's view.
 - **`HOME`**: never the image's. One value for every member is private to none, which a
   member's `HOME` must be (step 7's acceptance), and the system it would name is read-only to
   a domain. A member's `HOME` is its scratch unless its own `run.env`, or its run, names one.
@@ -25810,6 +25814,14 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
   in neither are refused, as it would never read them. Before, the files went to the
   scratch whatever `HOME` said, and a harness whose `HOME` was a volume never read them
   (reproduced, docs/research/measurements/s7-home-workdir).
+- *Nested HOME mounts* (confine-03, 2026-11-13): staging receives the complete
+  member mount plan, including read-only covers and declared/image-resolved names.
+  Each final HOME-relative target selects its deepest visible mount. All destinations
+  are checked before writing; a read-only cover or a target equal to a mountpoint is a
+  typed refusal, rendered at the existing setup-error boundary. Byte components are
+  preserved, and the backing-directory walk still follows no symlinks. No writable
+  ancestor can receive files hidden behind a nested mount. Red/green evidence and
+  remaining real-guest validation: [fix-confine-v1](../research/measurements/fix-confine-v1/README.md).
 - *A member's working directory* (2026-11-12, kiln plan 01a1cd8e862e7169a074db3d5fa33f3d,
   step 7): `MemberSpec::workdir`, the project path it works in, carried in the request's
   version 4 and staged as `member-workdir=<index>\0<path>`, one for a member. It is absolute
@@ -26234,6 +26246,13 @@ image lacks could never become a writable mount point in a running member.
   (open_tree, mount_setattr clearing `MOUNT_ATTR_RDONLY`), the root found as the domain's
   own walk finds it and no symlink followed beneath it (openat2 `RESOLVE_NO_SYMLINKS`,
   `RESOLVE_NO_XDEV`), so that nothing is made outside it.
+- *Ownership through completion* (confine-05): daemon plug/unplug/grow operations
+  hold the existing run request turn through device, guest and registry completion.
+  API-run holds a per-run plug/unplug turn, separate from its readable mounted map;
+  device replies take neither turn. A second same-path plug sees the completed
+  owner's `Taken` state; an unplug cannot remove ownership from a pending plug.
+  Real guest concurrent regressions are authored in plug.rs and api_image.rs; ROOT
+  owns their execution and resource-return observations.
 - *The daemon's:* `shards plug volume --for NAME MICROVM SOURCE:PATH[:ro]`, NAME an agent or
   harness as an Agentfile's `FOR` names one, which runs a command; `unplug volume` by its
   path, as D214's.
@@ -26331,6 +26350,9 @@ virtio 1.3 §5.11's `VIRTIO_FS_F_NOTIFICATION` unused), and what a FUSE server n
     up and let go of as it forgets it (server.rs `watch_dir`, `unwatch_dir`), all of the
     process's one instance (`platform::watch_named`; PM M257): what the guest never looked
     at is watched nothing of, and a watch is one of its user's (`max_user_watches`).
+    Confine-08: a native watch admission error refuses the directory's LOOKUP with
+    its native errno before any guest reference is published or counted. A later
+    lookup retries admission; no failed directory is silently retained as watched.
   - *macOS:* one FSEvents stream of its shares' roots (shards-apple `fsevents`, CoreServices
     bound when first used), file events, the changes the process itself makes for the guest
     left out (`IgnoreSelf`), told at once (latency 0, `NoDefer`).
@@ -29216,6 +29238,10 @@ ruleset, the run's seccomp filter.
   abstract Unix sockets of, its own processes alone, and the member's processes its not.
   Sharing the member's own domain would need a process of the member's to start each
   command, inside its seccomp filter and its pids.max, and is not built.
+- *Refused environment values* (confine-07): validation returns only the typed
+  cause (empty name, NUL, reserved name), never the rejected entry. Both Debug and
+  Display are value-free, and the existing member refusal wire renders only that
+  safe cause and member identity. A malformed credential is not copied into errors.
 - *Its program, environment and directory.* Its environment is the member's as it started,
   the exec's variables over it as moby lays an exec's over its container's
   (daemon/container/env.go, ReplaceOrAppendEnvValues: a name alone unsets one); none may name

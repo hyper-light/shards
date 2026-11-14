@@ -2545,7 +2545,15 @@ fn lookup(s: &mut State, parent: u64, name: &CStr) -> Result<(u64, Stat, Owner),
     let at = (volume, k.0, k.1);
     // The root, and a volume's, keep their names.
     let rooted = |s: &State, id: u64| id == ROOT || s.volumes.contains_key(&id);
-    let id = match s.by_key.get(&at).copied().filter(|id| s.nodes.contains_key(id)) {
+    let previous = s.by_key.get(&at).copied().filter(|id| s.nodes.contains_key(id));
+    let id = previous.unwrap_or_else(|| fresh_node(s));
+    // Admit the native watch before publishing/counting the guest reference. A
+    // failed LOOKUP must retain neither a node nor a silently unwatched directory.
+    #[cfg(target_os = "linux")]
+    if is_dir(&st) {
+        watch_dir(s, id, dir, name)?;
+    }
+    let id = match previous {
         Some(id) => {
             let fixed = rooted(s, id);
             if let Some(n) = s.nodes.get_mut(&id) {
@@ -2570,7 +2578,6 @@ fn lookup(s: &mut State, parent: u64, name: &CStr) -> Result<(u64, Stat, Owner),
             id
         }
         None => {
-            let id = fresh_node(s);
             s.nodes.insert(
                 id,
                 Node {
@@ -2587,10 +2594,6 @@ fn lookup(s: &mut State, parent: u64, name: &CStr) -> Result<(u64, Stat, Owner),
             id
         }
     };
-    #[cfg(target_os = "linux")]
-    if is_dir(&st) {
-        watch_dir(s, id, dir, name);
-    }
     let owner = node_owner(s, id, Some(&st))?;
     Ok((id, st, owner))
 }
@@ -2615,25 +2618,24 @@ fn path_of(s: &State, node: u64) -> Option<Vec<u8>> {
 }
 
 /// Watches directory node `id`, `name` in the directory `dir` holds, where its share's
-/// notices are told and it is not watched already (D235); one that cannot be watched (the
-/// user's watches all taken) is not, and the guest is told nothing of it.
+/// notices are told and it is not watched already (D235). Native admission failure
+/// refuses the guest lookup, preserving its errno and permitting a later retry.
 #[cfg(target_os = "linux")]
-fn watch_dir(s: &mut State, id: u64, dir: host::Raw, name: &CStr) {
+fn watch_dir(s: &mut State, id: u64, dir: host::Raw, name: &CStr) -> Result<(), Errno> {
     let Some(w) = s.watching.as_mut() else {
-        return;
+        return Ok(());
     };
     if w.of_node.contains_key(&id) {
-        return;
+        return Ok(());
     }
     let mut path = format!("/proc/self/fd/{dir}/").into_bytes();
     path.extend_from_slice(name.to_bytes());
-    let Ok(path) = CString::new(path) else {
-        return;
-    };
-    if let Ok(watched) = crate::platform::watch_named(&path, WATCHED, w.number, &w.sink) {
-        w.of_node.insert(id, watched);
-        w.nodes_of.entry(watched).or_default().push(id);
-    }
+    let path = CString::new(path).map_err(|_| EINVAL)?;
+    let watched = crate::platform::watch_named(&path, WATCHED, w.number, &w.sink)
+        .map_err(|e| e.raw_os_error().unwrap_or(EIO))?;
+    w.of_node.insert(id, watched);
+    w.nodes_of.entry(watched).or_default().push(id);
+    Ok(())
 }
 
 /// Directory node `id`'s watch let go of, the guest having forgotten it (D235).
@@ -4229,6 +4231,35 @@ mod tests {
         assert!(!s.holds_dir(b"link"));
         assert!(s.handle(&req(op::FORGET, d, 0, &1u64.to_le_bytes())).is_none());
         assert!(!s.holds_dir(b"d"));
+        let _ = std::fs::remove_dir_all(&p);
+    }
+
+    /// Native inotify admission can fail although stat/lookup succeeds. The guest
+    /// must receive that failure rather than a directory with a silently absent watch.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_failed_host_watch_admission_refuses_lookup() {
+        use std::os::unix::fs::PermissionsExt as _;
+        // This test runs as the runner's ordinary user: root bypasses MAY_READ.
+        // SAFETY: geteuid reads this process's effective uid.
+        let uid = unsafe { libc::geteuid() };
+        assert_ne!(uid, 0, "run the watch admission test as an unprivileged user");
+        let (p, s) = dir();
+        let child = p.join("no-read");
+        std::fs::create_dir(&child).unwrap();
+        std::fs::set_permissions(&child, std::fs::Permissions::from_mode(0o111)).unwrap();
+        let (tx, _rx) = std::sync::mpsc::channel();
+        s.watch_dirs(1, tx).unwrap();
+        let (error, _) = answer(&s, &req(op::LOOKUP, ROOT, 0, &name("no-read")));
+        assert_eq!(error, -libc::EACCES);
+        assert!(
+            !s.holds_dir(b"no-read"),
+            "failed lookup retained a guest reference"
+        );
+        std::fs::set_permissions(&child, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (error, _) = answer(&s, &req(op::LOOKUP, ROOT, 0, &name("no-read")));
+        assert_eq!(error, 0, "admission recovers when the native cause clears");
+        assert!(s.holds_dir(b"no-read"));
         let _ = std::fs::remove_dir_all(&p);
     }
 
