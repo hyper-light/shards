@@ -202,6 +202,8 @@ Some(Lease::Asked { waiting, .. }) => {
 
 **Confidence:** High for the stalled transition; no real-client timeout observation. Not the excluded chunked request bug.
 
+**Status (2026-11-13):** fixed in 49e4c2967 (red `inject::tests::expectations::creds_08_a_held_post_continues_before_its_body_and_only_once` at 021d13e20; scoped by 888dcb884). Continue is emitted once before a held body is awaited, and its answered Expect field is removed if the body is forwarded. Merged 62bfef2e5: 46 injector tests passed, 2 ignored; shards-net all-target clippy and policy check passed on macOS arm64. Partial bodies, chunked/length framing, refresh/revoke isolation and forwarded exchanges are covered in `docs/research/measurements/creds-fixes-v1/README.md`.
+
 ## Checked and found sound
 
 These are source-inspection conclusions, not passing runtime results.

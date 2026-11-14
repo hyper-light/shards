@@ -165,6 +165,81 @@ against `74426d1ad` had no shards-net/dependency/Cargo inputs. It was pushed at 
 under ROOT's amended landing-under-contention rule. No focused results are claimed
 for those unrelated crates.
 
+## creds-08: Continue precedes a held body
+
+Red source `021d13e20`, resumed-run r6:
+`cargo test -p shards-net creds_08 -- --nocapture`: **0 passed, 1 failed**.
+The real guest TLS/injector/token-host bench sent headers only and got `[]`,
+where `HTTP/1.1 100 Continue` was required before sending its body. Runner log:
+`~/g121-tmp/fix-creds-v1-08-red.log`.
+
+Fix `49e4c2967` (unrelated formatting restored by `888dcb884`): a held H1
+sign-in POST has an explicit Unrequested/Waiting/Sent expectation state. Before
+waiting for body bytes, the gateway sends its local Continue and changes Waiting
+to Sent. Repeated turns and body fragments cannot send it twice. If the complete
+body is an exchange passed to the token host, its already-answered Expect field
+is removed before forwarding. Refresh/revocation classification and response
+capture still use the landed Claude chunked-body and leak guards.
+
+This is origin behavior for the gateway per [RFC 9110 §10.1.1](https://www.rfc-editor.org/rfc/rfc9110.html#section-10.1.1),
+which requires an immediate provisional or final response before awaiting content.
+The only added wire literal is that specified 100 response, not a chosen deadline.
+There is no retry timer, wait allowance, cache or learning cold start. A local write
+error uses the existing typed refusal path. Merely forwarding headers first would
+violate refresh/revocation classification; rejecting every expectation would
+unnecessarily refuse supported requests. The supported expectation is answered
+locally once; this is not a broader redesign of unknown Expect extensions.
+
+The regression covers refresh and revocation, Content-Length and chunked framing,
+mixed-case expectation value, repeated readiness turns, partial body arrival, and
+the absence of any provider request. A second regression covers an exchanged code
+forwarded with no answered Expect field, its response still captured with no real
+token in guest plaintext. Tests are fixtures, not real provider sign-ins or VMs.
+
+Initial green `888dcb884`, resumed-run r7:
+`cargo test -p shards-net inject::`: **45 passed, 0 failed, 2 ignored**;
+`cargo clippy -p shards-net --all-targets -- -D warnings`: passed.
+The ignored tests were not run. Runner log: `~/g121-tmp/fix-creds-v1-08-green.log`.
+With partial-body/forwarding coverage (`3638a2f04`), merged source
+`62bfef2e5c3931ecc47b9de7c0c3d894c05e3633`, resumed-run r8:
+`cargo test -p shards-net inject::`: **46 passed, 0 failed, 2 ignored**;
+`cargo clippy -p shards-net --all-targets -- -D warnings`: passed.
+`python3 scripts/check-development-policy`: passed at that source in r9.
+Runner log: `~/g121-tmp/fix-creds-v1-08-merged.log`.
+
+```text
+red 021d13e20:
+assertion `left == right` failed: the body has not been sent
+  left: []
+ right: [72, 84, 84, 80, 47, 49, 46, 49, 32, 49, 48, 48, 32, 67, 111, 110, 116, 105, 110, 117, 101, 13, 10, 13, 10]
+test result: FAILED. 0 passed; 1 failed; 0 ignored
+
+merged 62bfef2e5:
+test inject::tests::expectations::creds_08_a_held_post_continues_before_its_body_and_only_once ... ok
+test inject::tests::expectations::creds_08_a_forwarded_exchange_does_not_repeat_the_answered_expectation ... ok
+test result: ok. 46 passed; 0 failed; 2 ignored; 0 measured; 127 filtered out
+Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.15s
+Development policy checks passed; evidence/coordinator review is still required.
+```
+
+creds-07 landed at `b6c76d45c`; its final disjoint merge changed only API/docs,
+with no shards-net inputs beyond the tested `09ffbfd32`.
+
+ROOT's additional real-VM coverage for creds-07/08 is the existing
+`cargo test -p shards --profile test-release --test api_image an_h2_sign_in_gives_the_harness_placeholders_and_its_refresh_is_answered_outside`
+fixture, plus a new HTTP/1.1 variant with a guest
+that waits for 100 before sending a refresh/revoke body, then captures an exchanged
+code. The exact unit command already runnable is
+`cargo test -p shards-net inject::tests::expectations::`.
+Neither this VM variant nor a real provider sign-in was run by the implementer.
+
+After that focused green, main's P0 decoding change landed. Conflict-free merge
+`ddbe3c5485f99653c31c6c482c8d5fd715a7ba86` retains the same Expect transition;
+under ROOT's amended landing rule, `cargo check -p shards-net --tests` passed on
+the warm Mac target (resumed-run r10, `~/g121-tmp/fix-creds-v1-08-overlap-check.log`).
+The overlapping merge was compile-checked, not reported as a repeat of the
+46-test focused result at `62bfef2e5`.
+
 ## Policy accounting and coordinator work
 
 R01/R04/R06/R07/R13: checked ranges, no new production panic, explicit Asked/Held

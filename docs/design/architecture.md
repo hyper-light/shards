@@ -13935,6 +13935,34 @@ other's but what the move sends, and what the other takes by content:
   its path there, whatever device and inode it had here, its guest's open handles and
   working directory in it going on. A bind's host path is the other machine's to share
   at the same place, as a network file system shares it, checked there before the move.
+- **Nothing it sends reaches out of the move's directory** (migrate-01, 2026-11-13). The
+  machine moved to puts the stream's entries in a directory of the move's own
+  (`private/move-…`), and a name that passes `relative` (no `..`, no root, no empty
+  component) is not yet one that stays there: a link the stream made earlier is a way out.
+  Until this, the placer joined each name to that directory and made it by path
+  (`create_dir_all`, `open`, the share server's makers from the parent's path), every
+  component followed: `LINK volumes/data/_data/out -> /some/dir` and then `FILE
+  volumes/data/_data/out/new-file` made `new-file` in `/some/dir`, as the daemon's user
+  (`a_streams_symlinks_never_lead_out_of_its_directory`, red at 9efde7252). Now each entry
+  is reached from the move's directory held open, a component at a time, never through a
+  symlink (`server::guest::Beneath`: openat(2) with `O_DIRECTORY | O_NOFOLLOW`, as the share
+  server's own `open_beneath` walks, each component checked a directory once open; on
+  Windows NtCreateFile relative to its parent's handle with FILE_OPEN_REPARSE_POINT, which
+  opens a junction as itself, refused as no directory), made there by its name and never over
+  anything there (`O_CREAT | O_EXCL`), and given its metadata there. A symlink is data, made
+  as its guest made it and never followed; what a stream names below one, or below a file, is
+  refused, by an absolute or a relative target. And a symlink is taken only where a guest
+  makes one, in a volume's files (`volumes/V/_data/…`, `holds_links`): shards makes none in a
+  microVM's own directory or at the files its snapshot restores against, and the move's later
+  steps (`adopt`: its record, `key-replaced` and request written, the files sent moved into
+  `backing/`, a live move's rounds laid under its last save) reach those by their paths, where
+  a link the stream put there would be followed. Held by that test (moves.rs, absolute and
+  relative links, a file, directory, node and link below each, the outside left empty, and a
+  link refused in the microVM's directory, at `key-replaced`, at a file its snapshot restores
+  against, at a volume's `_data` and beside it) and `beneath_goes_through_no_symlink`
+  (`server::guest`, every target). Not an
+  archive of go-archive's (crates/archive), whose oracle is untouched: the move's stream is
+  its own format (version 2).
 - **Its CPU.** A restore on another CPU than its snapshot's is no longer refused where that
   CPU has every feature its guest found: the guest is told the CPU it found, each of its
   vCPUs given its snapshot's ID registers (HVF, KVM on arm64) or CPUID (KVM on x86_64),
@@ -14411,7 +14439,19 @@ page by page as each came; resumed there; and stopped here once it runs there.
     written. Each bit is a host page, given the loop as the 4 KiB units it sends.
   - On Hypervisor.framework, its writable memory taken away for writing at stage 2
     (`hv_vm_protect`) and each page given back whole as its guest writes it, noted, the
-    working-set recorder's mechanism (D25).
+    working-set recorder's mechanism (D25), with which it shares the one stage 2: what a page
+    of each region has until its guest faults on it is the two's together (`Watch::rest`),
+    nothing while a working set is recorded, all but its writes while the move watches them,
+    else all of it, put back as either starts or ends, under both locks (the recording's,
+    then the watch's, as each fault takes them). Until 2026-11-13 a recording's end gave the
+    guest all its memory back whatever watched it (migrate-02): a warm run's recording, ended
+    by its timer (D25) as a live move's rounds ran, left every page writable unwatched, its
+    writes in no round and not in the last save, the restored guest finding the bytes it had
+    before; and a watch begun within a recording gave the guest reads of pages the recorder
+    had taken away. Held on the framework by `vcpu_and_gic_state_round_trip_through_a_fresh_vcpu`
+    (hv::hvf, the crate's one test with a VM): a guest's read within a recording the watch
+    began in is recorded, and a page it writes after a recording ended, the watch begun
+    within it or it within the watch, is `written` each time (red at 9efde7252: none was).
   - On WHP, its dirty page tracking (`WHvCapabilityCodeFeatures`' DirtyPageTracking): each
     writable range the partition maps mapped again in place with
     `WHvMapGpaRangeFlagTrackDirtyPages` as the watch begins, as WHvMapGpaRange "replaces
@@ -28228,7 +28268,12 @@ record docs/research/s33-veil-creds/STEP8.md).
 - *Question 1: who calls the provider.* The orchestrator's broker alone (kiln's `Turn`, step 5), for every run of the
   sign-in: the injector never sends a refresh on. It reads a POST to the sign-in's token path whole (its body within the
   connection's window) and, where it carries the sign-in's refresh placeholder (`signin::ask`), asks its run host
-  (`NET_SIGN_IN`, kind 105) and parks the request (`Request::Refreshing`); every flow of the run that asks the
+  (`NET_SIGN_IN`, kind 105) and parks the request (`Request::Refreshing`). For a held
+  HTTP/1.1 POST with `Expect: 100-continue`, the gateway emits Continue before waiting
+  for the body, once (Unrequested/Waiting/Sent, creds-08; RFC 9110 §10.1.1), for
+  Content-Length and chunked bodies alike. Its answered Expect field is cut if the
+  body is later forwarded as an exchange. No timer or chosen wait is added; evidence:
+  docs/research/measurements/creds-fixes-v1/README.md. Every flow of the run that asks the
   sign-in's refresh meanwhile joins that one ask (`SignIns::refresh`), and the broker's `Turn` makes it one across
   runs. Refused: the network process refreshing on its own, which would need the refresh token in it and would let two
   runs rotate one sign-in's tokens out from under each other (RFC 6749 §6, f47).
