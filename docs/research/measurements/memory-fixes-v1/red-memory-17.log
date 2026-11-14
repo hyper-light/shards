@@ -1,0 +1,50 @@
+From https://github.com/hyper-light/shards
+ * branch              main       -> FETCH_HEAD
+   f7a3edfb..bfd2cca4  main       -> origin/main
+From /home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/fix-memory-linux-carrier-745e9da803/change.bundle
+ * branch              HEAD       -> FETCH_HEAD
+HEAD is now at c61cc6b1 test: bound give-back ROOM frames by signed decimal encoding (memory-17)
+Linux 7.3.3-1-cachyos x86_64 GNU/Linux
+rustc 1.98.1 (48a229cea 2026-09-01)
+   Compiling autocfg v1.5.1
+   Compiling num-traits v0.2.19
+   Compiling memchr v2.8.3
+   Compiling libc v0.2.189
+   Compiling aho-corasick v1.1.5
+   Compiling regex-syntax v0.8.11
+   Compiling regex-automata v0.4.18
+   Compiling num-integer v0.1.47
+   Compiling shards-abi v0.1.0 (/home/adalundhe/g121-tmp/fix-memory-v1-linux/src/crates/abi)
+   Compiling num-bigint v0.4.8
+   Compiling regex v1.13.1
+   Compiling shards-template v0.1.0 (/home/adalundhe/g121-tmp/fix-memory-v1-linux/src/crates/template)
+   Compiling shards-cmdline v0.1.0 (/home/adalundhe/g121-tmp/fix-memory-v1-linux/src/crates/cmdline)
+   Compiling shards-archive v0.1.0 (/home/adalundhe/g121-tmp/fix-memory-v1-linux/src/crates/archive)
+   Compiling shards-testdir v0.1.0 (/home/adalundhe/g121-tmp/fix-memory-v1-linux/src/crates/testdir)
+   Compiling shards-dns v0.1.0 (/home/adalundhe/g121-tmp/fix-memory-v1-linux/src/crates/dns)
+   Compiling shards-devcgroup v0.1.0 (/home/adalundhe/g121-tmp/fix-memory-v1-linux/src/crates/devcgroup)
+   Compiling shards-erofs v0.1.0 (/home/adalundhe/g121-tmp/fix-memory-v1-linux/src/crates/erofs)
+   Compiling shards-user v0.1.0 (/home/adalundhe/g121-tmp/fix-memory-v1-linux/src/crates/user)
+   Compiling shards-init v0.1.0 (/home/adalundhe/g121-tmp/fix-memory-v1-linux/src/crates/init)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 18.38s
+     Running unittests src/main.rs (/home/adalundhe/g121-tmp/fix-memory-v1-linux/target/debug/deps/shards_init-0839c1075913f5ee)
+
+running 2 tests
+test plug::tests::a_give_back_room_accepts_both_signed_decimal_extremes ... ok
+test plug::tests::a_give_back_room_past_signed_decimal_ends_before_reading_payload ... FAILED
+
+failures:
+
+---- plug::tests::a_give_back_room_past_signed_decimal_ends_before_reading_payload stdout ----
+
+thread 'plug::tests::a_give_back_room_past_signed_decimal_ends_before_reading_payload' (1727579) panicked at crates/init/src/plug.rs:2139:18:
+an impossible ROOM length kept the answerer waiting for its payload: Timeout
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    plug::tests::a_give_back_room_past_signed_decimal_ends_before_reading_payload
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 281 filtered out; finished in 1.00s
+
+error: test failed, to rerun pass `-p shards-init --bin shards-init`

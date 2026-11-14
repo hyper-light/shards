@@ -274,6 +274,8 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 
 ### memory-17 — P5 / low — The builder give-back parser's 4096-byte frame cap is not derived from its protocol
 
+**Status (2026-11-13):** fixed in 5826a9bcf (red `a_give_back_room_past_signed_decimal_ends_before_reading_payload` at c61cc6b1d). The bound is the longest canonical signed `i64` decimal request; signed extremes stay accepted. Evidence: `docs/research/measurements/memory-fixes-v1/README.md`.
+
 **Location:** `crates/init/src/plug.rs:877`, enforced at `:900`.
 
 **Defect:** GIVE_FRAME chooses a 4096-byte allocation/refusal boundary although this protocol carries an empty request or a signed integer.
