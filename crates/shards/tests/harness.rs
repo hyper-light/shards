@@ -1647,6 +1647,12 @@ fn a_streams_wait_follows_its_partys_work_until_its_first_byte() {
             let stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
             let began = Instant::now();
             let (mut following, kind) = home_stream(&stream, &home);
+            // The first round teaches its kind its answer, `taught` in: a read begun later
+            // than its byte found it there as it began, which teaches nothing (waits-03),
+            // as one did on adacachy2 with the whole binary running ("Cold").
+            if round == 0 {
+                kind.record().teach(taught, Duration::ZERO);
+            }
             let mut got = Vec::new();
             let read = following.read_to_end(&mut got).map(|_| got);
             drop(end);
