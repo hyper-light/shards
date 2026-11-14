@@ -178,7 +178,7 @@ Ranking requested by Ada: **P0 critical, P1 high, P3 medium, P5 low**; unused in
 
 **Test/evidence:** retain boundary tests for authorized expiry and admitted payload size, plus the policy/measurement record deriving each boundary. Merely asserting the current literal is not evidence of its derivation.
 
-**Status (2026-11-14):** owed to ROOT and the person: not implemented in this landing; the design, with what it needs, is in D180's "Values still chosen (remote-08)". The invitation's lifetime is an authority the owner grants, so no learned value may set or lengthen it: the person decides whether an invitation states its lifetime when made (`shards make invitation NAME` gaining one) or stays usable once until used. The frame bound becomes each tag's own contract.
+**Status (2026-11-14):** the invitation's lifetime fixed in 30645fa69 by the person's ruling (2026-11-14: the owner states it, `--valid DURATION`, no default; single-use, revocable until used): made without it, refused typed; checked at the machine; a used or revoked one refused typed (green `context::tests::an_invitations_lifetime_is_given_by_its_owner`, `a_join_is_refused_for_what_became_of_its_invitation`; two mutants killed; macOS arm64; D180, "An invitation's lifetime"). The frame bound's per-tag contracts are owed (D180, "Frame bounds"); `MAX_FRAME` stays in force until then. ROOT's E2E: `cargo test -p shards --profile test-release --test context a_context_runs_commands_on_its_machine_whole` and `--test moved`.
 
 ### remote-09 — P0 / critical — A build step's path-valued flags name this machine's files
 

@@ -5483,11 +5483,11 @@ where a lost packet stalls every byte behind it. shards speaks QUIC (RFC 9000, 9
   laptop's attached runs with it, is part 5's to measure.
 - **Joining by invitation, as focal's nodes and clients join** (the user's other QUIC
   service, ../focal docs/network-startup.md). On the machine that runs the microVMs,
-  `shards invite client --name NAME --output FILE` writes an invitation to a private file,
-  never to the screen or a log: the daemon's address, its key's SHA-256 and a 256-bit
-  secret. It enrolls one client, and an unused one expires an hour after it was made, as
-  focal's do; `shards list invitations` and `shards remove invitation NAME` show and revoke
-  them. `shards create context NAME --invite-file FILE` connects, checks the daemon's key
+  `shards invite client --name NAME --output FILE --valid DURATION` writes an invitation to a
+  private file, never to the screen or a log: the daemon's address, its key's SHA-256 and a
+  256-bit secret. It enrolls one client, once, within the lifetime its owner gives it, none
+  assumed ("An invitation's lifetime", below); `shards list invitations` and `shards remove
+  invitation NAME` show and revoke them. `shards create context NAME --invite-file FILE` connects, checks the daemon's key
   against the invitation, and proves the secret bound to that TLS session (HMAC-SHA-256 of
   an RFC 8446 §7.5 exporter), so that it is neither replayed nor relayed; the daemon then
   enrolls the client's key under the invitation's name.
@@ -7134,10 +7134,24 @@ move steps' verbs; any other word `of no kind it knows`), a refusal with its com
 each command's end with its status (`client laptop: shards run ended, status 3`). No flag's value,
 argument, variable, path or relay token is logged.
 
-*Values still chosen (remote-08), owed.* `invite::LIFETIME_SECS` (3600 s) and `frame::MAX_FRAME`
-(4 MiB) are not derived. The lifetime is an authority the owner grants: no learning may set or
-lengthen it, so it is the owner's to state (when an invitation is made) or the person's to rule
-that an invitation lasts until its one use; the refusal of a lapsed one stays typed. The frame bound
+*An invitation's lifetime (remote-08; decided by the person, 2026-11-14).* The owner states it:
+`shards invite client` takes `--valid DURATION` (Go's durations, `10m`, `2h`, kept in whole seconds,
+rounded up) and refuses, typed (`context::Lifetime::Missing`), to make an invitation without one,
+its text naming the flag; no default is assumed and no learning may set or lengthen it, as it is
+an authority the owner grants. The record keeps `created` and `valid` (`shards invitation record
+2`); one of an earlier shards, made under its fixed hour (the former `invite::LIFETIME_SECS`, gone),
+states none and is lapsed. The machine checks the lifetime at each join. An invitation is single-use
+and revocable until used: its use or revocation takes its record away first (renamed aside, so of
+two joins at once one ends it), then leaves what ended it (`shards invitation ended 1`: `used` or
+`revoked`, its secret gone); a join by it is refused, typed (`context::Uninvited`: unknown, lapsed,
+used, revoked, unproven), the machine's log saying which, its client hearing the one refusal it
+always did, so that no invitation's name or state is told to a stranger. Green
+`context::tests::an_invitations_lifetime_is_given_by_its_owner`,
+`a_join_is_refused_for_what_became_of_its_invitation` (mutants: a default lifetime, a used one
+taken for unknown, both killed; macOS arm64); the E2E's asks (`tests/context.rs`: no `--valid`
+refused, one past its lifetime refused) are ROOT's to run.
+
+*Frame bounds (remote-08), owed.* `frame::MAX_FRAME` (4 MiB) is not derived. The frame bound
 is to become each tag's own contract: an Exec request this host's own `sysconf(_SC_ARG_MAX)` read at
 the listener's start (POSIX; on Linux a quarter of RLIMIT_STACK, at least 128 KiB, execve(2)), as a
 request this host cannot exec is refused anyway; on Windows CreateProcess's 32,767-character command
