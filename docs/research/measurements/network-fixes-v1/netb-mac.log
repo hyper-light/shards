@@ -43,3 +43,9 @@ cargo test -p shards-dns: test result: ok. 12 passed; 0 failed (incl. only_the_a
 cargo test -p shards-net --lib -- <part B filters> wire::: test result: ok. 10 passed; 0 failed; 180 filtered out
 cargo test -p shards-netring -- tests::: test result: ok. 5 passed; 0 failed; 1 ignored (frames_cost, a measurement)
 cargo clippy -p shards-dns -p shards-net -p shards-netring --all-targets -- -D warnings: Finished, exit 0
+# kiln run r1839, tree ac812e11c (merge of main 04f590670 + part B incl. 41e40fe0a), green:
+cargo test -p shards-dns: test result: ok. 12 passed; 0 failed
+cargo test -p shards-net --lib -- tcp:: wire:: ring:: peer <part B filters> dns_: test result: ok. 38 passed; 0 failed; 153 filtered out
+  (incl. tcp::tests::the_window_scale_offered_is_the_least_that_says_the_whole_queue, every tcp:: test, tests::link_local_addresses_reach_their_peers_alone)
+cargo test -p shards-netring -- tests::: test result: ok. 5 passed; 0 failed; 1 ignored
+cargo clippy -p shards-dns -p shards-net -p shards-netring --all-targets -- -D warnings: exit 0

@@ -4425,6 +4425,21 @@ timing and worker memory-envelope validation remain owed under network-12/R14.
 Four functional unit tests and init clippy pass on Linux arm64 GNU; real guest,
 fault and resource coverage remain ROOT's. [Evidence and exact remaining runs](../research/measurements/network-fixes-v1/README.md#network-08-independent-dns-relay-clients).
 
+**The network controls' derivations (network-12, 2026-11-13).** Six of the review's
+fixed controls now rest on a cited or derived basis: IPv6 extension headers are walked to
+the packet's end (RFC 8200 §4.1, hop-by-hop first alone), not to a chosen eight; the
+gateway's TTL and hop limit are the Assigned Numbers default (RFC 1700, RFC 1122
+§3.2.1.7, RFC 4861 §6.3.2), named; a queue's page size is the OS's or a typed error; a
+ring's shared memory on macOS takes the next free name however many are taken; the
+window scale offered is the least that says the whole queue (RFC 7323 §2.3); a peer's
+read holds one whole message. The rest keep their values until their learned designs
+land, each with its cold start, typed failure and the measurement ROOT owes, in
+[the row-by-row record](../research/measurements/network-fixes-v1/README.md#network-12-the-network-controls-derivations-row-by-row):
+the TCP queues and retransmission (RFC 6298, RFC 1122 R2), window updates (RFC 9293),
+the per-turn budget (deficit round robin), UDP lifetimes (RFC 4787 REQ-5, which the
+30 s unreplied lifetime breaks past port 1023), the backlog, the poller's batch, the
+ring's size, the resolvers' wait and the daemon's bind tries.
+
 `shards network` makes networks of microVMs as `docker network` makes them of
 containers, with Docker's inputs and words: create, ls, inspect, rm, prune, connect and
 disconnect, as docker/cli parses them (held byte for byte to docker/cli by
