@@ -24027,3 +24027,12 @@ Unit evidence only, not a performance measurement: on adacachy2 Linux x86_64, a 
 excluding TSC-deadline still exposed ECX24 before the fix (Kiln r2, one failing test).
 After a09a09f0c, 10 CPUID module tests and shards-vmm clippy passed (r3). The mixed-host
 VM move remains unrun. [Exact commands, revisions and limits](measurements/migrate/fix-review-2026-11-13.md).
+
+### M564. MCP bridge termination with the harness stdin writer retained (D254)
+
+Linux x86_64, adacachy2, 2026-11-13: real-pipe unit regressions at e74696f22
+failed peer-end and stdout-error completion while stdin remained open; the old
+copy test passed (1 pass, 2 failures). At f7d83f73a all 7 MCP tests and shards-init
+all-target clippy passed. Normal socket half-close still delivers later stdin.
+This is functional evidence, not a performance measurement or real-VM result.
+[Commands, output excerpts, policy and owed coverage](measurements/inithex-fixes/README.md).
