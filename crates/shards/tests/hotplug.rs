@@ -22,12 +22,21 @@ const MIB: u64 = 1 << 20;
 const SALT: u64 = 0x5107;
 
 /// Waits for the guest's console to say `line`, and gives what it said before it since the
-/// last time it was asked: the step's answer. While its console says something new
-/// (`common::Heard::console`, its kind its call site: its vCPUs are threads of this process,
-/// whose CPU time is its other tests' and this poll's too).
+/// last time it was asked: the step's answer. While its console says something new or this
+/// process's threads beside this one run (`common::Heard::console`: its vCPUs, its devices
+/// and the host's work for them are threads of this process).
 #[track_caller]
 fn until(handle: &Handle, line: &str) -> String {
-    let mut heard = common::Heard::console();
+    until_asked(handle, "", line)
+}
+
+/// [`until`], `asked` what its guest was asked for `line`: its wait's kind its call site's,
+/// `asked`'s and `line`'s, so that each kind of step is judged by its own answers, never a
+/// quicker step's (#77, ROOT's KVM run c33: `WAIT 2`, a rescan and a disk's first read,
+/// refused 1.09 ms into its quiet by the W* of `WAIT 1`, a grow).
+#[track_caller]
+fn until_asked(handle: &Handle, asked: &str, line: &str) -> String {
+    let mut heard = common::Heard::console(&format!("{asked} => {line}"));
     let mut before = handle.console_said();
     loop {
         let console = handle.console_said();
@@ -125,7 +134,7 @@ fn devices_are_plugged_into_a_running_microvm_and_its_disks_grow() {
         until(handle, &format!("SHARDS-PLUG WAIT {step}"));
         handle.console_input(format!("{what}\n").as_bytes());
         step += 1;
-        until(handle, &format!("SHARDS-PLUG WAIT {step}"))
+        until_asked(handle, &what, &format!("SHARDS-PLUG WAIT {step}"))
     };
 
     // The disk it was made with, grown as it runs, once its driver has it: its driver told.
@@ -345,7 +354,7 @@ fn a_hosts_function_is_plugged_into_a_running_microvm() {
         until(handle, &format!("SHARDS-PLUG WAIT {step}"));
         handle.console_input(format!("{what}\n").as_bytes());
         step += 1;
-        until(handle, &format!("SHARDS-PLUG WAIT {step}"))
+        until_asked(handle, &what, &format!("SHARDS-PLUG WAIT {step}"))
     };
     // SHARDS_PLUG_ROUNDS times (twice where unset), each step timed as the disk's are.
     let rounds: usize = std::env::var("SHARDS_PLUG_ROUNDS")
