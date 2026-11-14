@@ -11920,6 +11920,23 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     10.5 ms in, its stand-in still for 3.72 ms past a kept W* of 2.10 ms. `cold_kind` and
     `cold_heard` remove the kept record before the kind's first wait in the process, as
     `cold_patience` does; `a_stopped_…` asserts its teaching wait is not judged.
+  - *A test begins its waits once its daemon has settled its clients' slots* (2026-11-14,
+    judgecli; ROOT's choice of the test's premise over the judge). `a_wait_is_refused_though_its_own_polls_outlast_w_star`
+    was not refused at its look past its first poll on HVF (2 of 4 whole-binary runs), its
+    account "its last progress its daemon N ran": the `shards ps` that started its daemon
+    took a request slot, which the daemon replaces and removes after the client has gone
+    (slots.rs `make_slots`, PM M255), and on a busy host that work landed in the judged
+    window, the party's real progress. Measured on adas-mac-studio.local: a settled daemon
+    ran nothing (`sample`: its 8 threads blocked in 1599 of 1599 samples over 2 s; 0 ns of
+    CPU for 1 to 3 s after `ps` returned, 3 of 3 starts, quiet), and with 14 or 28 busy loops
+    started before it, 65 to 73 µs of CPU 5.3 to 5.9 ms after `ps` returned in 2 of 6 starts.
+    The judge stays as it is: a daemon's run after a client of the waiter's own is real
+    work, and discounting it would refuse waits on a daemon working after a detached client.
+    `common::settled(home)` waits, as a `Patience` (no clock; the daemon's work its
+    progress), until each list (`shards_ipc::slots::FREE`, `FREE_STREAMS`) holds `OFFERED`
+    records unread (FIONREAD of a reader of its own, as `Requests::waiting` counts them) and
+    `requests/` names no slot past them; the test calls it before its waits. Unread on
+    Windows, whose slots are pipe instances no listing shows.
   - *A party's I/O is not read: its CPU already shows every byte it moves* (#77, measured).
     Asked whether a party blocked on a peer outside it (Docker Hub, a test's registry
     thread) moves data a look misses, `docs/research/measurements/judge-io/io_vs_cpu.py`
@@ -12321,6 +12338,23 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     host in the same binary counts as progress, as `Own`'s VM processes do. context.rs'
     reads follow the laptop's daemon, not the machine it relays to. A cold `said_by` on a
     hung daemon holds the failure it adds to until its CI job's limit, as any cold wait does.
+    A start-up wait on host system services, such as secinitd or the bookmark agent, is not
+    tied to the run; unconfirmed, no account kept (the runsignal lane's 2 of 20 pre-ready
+    `Heard::running` refusals, under its mutant; the grants broker is the VM's child, already
+    of its party).
+  - *A machine's party reads each thread beside its waiter, and a runnable one that ran
+    nothing is its host's hold* (2026-11-14, judgecli). `a_machines_host_work_is_its_progress`
+    was refused on HVF in 2 of 3 whole-binary runs under 14 busy loops started before it
+    (vsockfix's 30 of 30 on KVM never ran HVF under load). `Beside` read macOS's process CPU
+    past its waiter's (proc_pid_rusage), which did not show a thread spinning beside the
+    waiter within sub-millisecond windows (judgecli's slice 2, "made no progress for
+    485.125µs, past ... (434.75µs) ... this process's threads beside its waiter ran 2.25ms
+    ago"), and on neither OS told a spinning thread its busy host kept from a CPU from a
+    still one. macOS now reads each other thread's own times (task_threads,
+    thread_info(THREAD_BASIC_INFO), as `ServerThread` reads one), as Linux reads each
+    thread's CPU clock; and a look whose other threads ran nothing while one of them was
+    runnable (Linux state `R`, macOS `TH_STATE_RUNNING`) is `Ran::Held`, the host's hold.
+    No number changed (R03).
   - Owed: the waits in the rest of the E2E files, the next part: containers.rs, daemon.rs,
     build.rs' own `TIMEOUT`, managed_output.rs and its parts, managed_cleanup.rs, moved.rs,
     warm.rs, budget.rs, slates_fs.rs and build_windows.rs. Some of them assert that a thing
@@ -14217,6 +14251,12 @@ online derivation. [Held findings and cold-start/admission design owed](../resea
 record the unavailable Windows checks, normal-priority cold state, measured clock/cost
 inputs and still-unresolved cross-process budget owner. No scheduler change or new
 performance claim is made by that design record.
+
+**2026-11-14, the governor's own CPU is not charged to the rate** (PM M590). A rate holds the
+guest's vCPUs, as `shards_abi::rate` says. The governor thread that holds them is shards' own
+cost: on KVM at a quarter of one vCPU it ran 0.247–0.401% of wall (n=8, 2 s windows, no load
+of ours and 16 busy loops on 32 CPUs), and nothing while unheld. Tests of a rate bound the vCPUs'
+guest time, read in its hypervisor's step, never their VM process's CPU.
 
 **2026-11-14, platform-10 fixed within a process; across processes owed; 11 open** (9f95ae7db,
 f0cd08598; red 190b49d9b; PM M578). The Windows governor also keeps a pool for each set of
@@ -34746,6 +34786,39 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
     l. 85-88), so the direct map is at its unrandomized base.
   - arm64's base config has RANDOMIZE_BASE unset.
   - So `printk_rb_static` is at its link address on both.
+
+**Found after S2 (boot.rs on KVM and HVF), and fixed.**
+- **Lost boot log.** With `console=hvc0` the console lost every line before virtio_console
+  probed. `init_port_console` registered hvc0 through `hvc_alloc` (CON_PRINTBUFFER, the
+  backlog flushed at once by register_console's own message) before the port was on the list
+  `put_chars` finds it on. Every write returned -EPIPE and `hvc_console_print` discarded it.
+  - It is an upstream bug since 38edf58d73c2 (2010).
+  - Fixed by kernel patch 0015, which puts the port on the list first; its header carries the
+    upstream commit text. Pinned in kernel-6.18.48-7f8c931141dd with PVPANIC.
+  - Red at 4da2f78f4 on the old kernel: boots_the_hosts_maximum_vcpu_count,
+    boots_to_root_mount_without_a_root_device and brings_up_every_vcpu.
+- **Output served in the exit.** With the backlog replayed, the transmit worker's wake-up per
+  16-byte printk chunk (hvc_console.c `N_OUTBUF`) let only 250 bytes out before a no-root
+  panic 49 ms in. The panic's flush then deadlocked on the port lock held by the CPU stopped
+  mid-send. The transmit queue is now served in the notifying vCPU's exit, as the 16550's
+  register writes were; Linux spins with interrupts off until each buffer is used, so the
+  guest waits for the device either way.
+  - A unit test holds that a buffer is used before notify returns.
+- **What a blocked host output holds.**
+  - A write to a stdout that blocks (a terminal paused, a full pipe nobody reads) stalls the
+    vCPU in its exit, holding this device's transport lock (`virtio::mmio`'s state, held
+    across `notify`). Exactly as the 16550's write held its own lock in the PIO exit.
+  - Another vCPU's access to the console device, and a pause or snapshot of it, wait for that
+    write. Other devices and vCPUs do not.
+  - Daemon, builder and managed runs write to a sink (`Console::Discard`), which never blocks.
+    Only `run --kernel` with its console on a terminal can.
+  - Not built yet: a host-side writer with a bounded buffer would let pause land while stdout
+    blocks.
+- **Kernels shards does not build** (`shards configure guest`, D28) keep upstream's lost
+  backlog until the fix reaches them. A version-agnostic layer is designed, not built: at the
+  first transmit after a fresh activation, the VMM would emit the ring's records older than the
+  first one sent, read through `printk.rs`. Its limits: VMCOREINFO has no record levels, so
+  `quiet` cannot be honoured; the boundary is matched by timestamp; it is skipped on restores.
 
 **Alternatives rejected.**
 - A write-only debug port (x86's 0xe9 debugcon): mainline x86 early_printk has no 0xe9

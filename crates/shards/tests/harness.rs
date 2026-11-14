@@ -1135,6 +1135,8 @@ fn a_wait_is_refused_though_its_own_polls_outlast_w_star() {
         String::from_utf8_lossy(&started.stderr)
     );
     let _served = Served(&env);
+    // The `ps` that started it took a slot, which its daemon replaces after it has gone.
+    common::settled(&home);
     let mut taught = outlasted(&home);
     let _ = taught.holds();
     taught.done();
