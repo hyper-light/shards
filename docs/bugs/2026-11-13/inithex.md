@@ -126,6 +126,8 @@ down.and(up)
 
 ### inithex-04 — P3 / medium — accepted absolute-FQDN MCP grant never matches DNS
 
+**Status (2026-11-13):** fixed in 79019fa55 (red `mcp_absolute_name_matches_its_dns_question` in shards-agentfile and shards-init; [evidence](../../research/measurements/inithex-fixes/README.md)).
+
 **Location at head:** `crates/agentfile/src/agentfile.rs:1487`; twin `crates/init/src/netplan.rs:132`.
 
 **Defect:** Remote MCP URLs preserve a hostname's terminal root dot while DNS permission and address-learning checks compare the dotless wire name, so an accepted grant cannot be used.
