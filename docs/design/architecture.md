@@ -26805,6 +26805,18 @@ and no exec, attach or terminal (the plan's steps 5, 6 and 7).
   `output_taken_before_the_runs_end_reaches_its_owner_whole`,
   `output_said_after_the_runs_end_reaches_its_owner_before_its_end`). No literal is added: both
   ends are the protocol's own events.
+  The run host (`api_run.rs` `records`) ends cut every channel its orchestrator gave room to or
+  was told of that has no end once its VM's capture is over, at its end or at a frame cut short:
+  what it held past the orchestrator's room goes first, as a record's own end sends it (a
+  record's bytes past the room it was granted for: from a guest that keeps its credit, at most
+  the 3 bytes by which `grant`'s least, an errno's record, passes a room of less), then `OUTPUT_END`
+  `Aborted(104)`, ECONNRESET's Linux number (include/uapi/asm-generic/errno.h), a guest's errno
+  as init's own aborts are, the stream it came on having ended under it. So nothing the host took
+  of the guest is lost, and the owner's pipe ends with the capture, not with the host's exit
+  after its cleanup; D240's guest-abort allowance stands, the abort said. Before, those bytes and
+  the channel's end were dropped (control-01's follow-up; red
+  `bytes_held_past_the_room_reach_the_orchestrator_as_the_capture_is_cut`). The typed end
+  reaches the session (`Flow::ended`); `ImageGuest` gives its caller the pipe's EOF alone.
 - *Every member's log, within the run's one cap* (goal 58's step 7, slice 3; ROOT's ruling and the
   person's decision, 2026-11-13). The log is the run's: every member's output is kept, owned or not.
   - *Kept whoever reads it.* A drained member's records are kept as the daemon takes them (above);

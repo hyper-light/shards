@@ -3391,6 +3391,47 @@ mod hosted {
             Ok(())
         }
 
+        /// Ends `key`'s channel `end`: what waits of it goes first, its room or not, as no
+        /// credit after its end could let it go: at most one record's, as `grant` grants the
+        /// guest none while anything waits.
+        fn end_channel(&self, flows: &mut Flows, key: (u32, Channel), end: wire::StreamEnd) -> io::Result<()> {
+            flows.ended.insert(key, true);
+            let rest = flows.waiting.remove(&key).unwrap_or_default();
+            if !rest.is_empty() {
+                self.answers.send(
+                    wire::to_client::OUTPUT,
+                    &[&wire::Output::head(key.0, key.1), &rest],
+                )?;
+            }
+            let end = wire::OutputEnd {
+                member: key.0,
+                channel: key.1,
+                end,
+            };
+            self.answers.send(wire::to_client::OUTPUT_END, &[&end.encode()])
+        }
+
+        /// Its VM's capture over, ends cut every channel its orchestrator was told of or gave
+        /// room to that has no end (control-01's follow-up): nothing more of it can come, so
+        /// what this host holds of it goes, and its end says it was cut, `Aborted(CUT)`,
+        /// rather than its orchestrator waiting for this process's exit to learn it ended.
+        fn cut(&self) -> io::Result<()> {
+            let mut flows = lock(&self.flows);
+            let known: std::collections::HashSet<(u32, Channel)> = flows
+                .room
+                .keys()
+                .chain(flows.granted.keys())
+                .chain(flows.waiting.keys())
+                .copied()
+                .collect();
+            for key in known {
+                if !flows.ended.get(&key).copied().unwrap_or(false) {
+                    self.end_channel(&mut flows, key, wire::StreamEnd::Aborted(CUT))?;
+                }
+            }
+            Ok(())
+        }
+
         /// Sends what waits of `key`'s channel within the orchestrator's room.
         fn flush(&self, flows: &mut Flows, key: (u32, Channel)) -> io::Result<()> {
             let room = flows.room.entry(key).or_insert(0);
@@ -3409,6 +3450,11 @@ mod hosted {
             Ok(())
         }
     }
+
+    /// The errno a channel cut by its VM's capture's end is aborted with: ECONNRESET's Linux
+    /// number (include/uapi/asm-generic/errno.h), as the stream it came on ended under it; a
+    /// guest's errno, as init's own aborts are, whatever this host's own numbers.
+    const CUT: i32 = 104;
 
     fn kind_credit() -> u8 {
         protocol::kind::MANAGED_CREDIT
@@ -4714,9 +4760,14 @@ mod hosted {
     /// in its header or malformed, a record it cannot hold or read) or cannot send its
     /// orchestrator what it has, the run fails in those words: its asks' end
     /// ([`super::AsksEnd`]), and `vm`, its VM, killed for it, so that no run waits for its
-    /// `STOP` on a failure its host saw (D258).
+    /// `STOP` on a failure its host saw (D258). However its reads end, every channel without
+    /// an end is then ended cut (`Live::cut`), what this host held of it first.
     fn records(live: &Live<'_>, capture: Stream, vm: &shards_ipc::Child) {
-        if let Err(why) = read_records(live, capture) {
+        let read = read_records(live, capture);
+        let cut = live
+            .cut()
+            .map_err(|e| format!("its answers to its orchestrator: {e}"));
+        if let Err(why) = read.and(cut) {
             super::say(format_args!("its asks ended: {why}"));
             lock(&live.asks_end).get_or_insert(super::AsksEnd::Failed(why));
             let _ = vm.kill(shards_ipc::signal::SIGKILL);
@@ -4755,26 +4806,9 @@ mod hosted {
                     flows.waiting.entry(key).or_default().extend_from_slice(bytes);
                     live.flush(&mut flows, key)
                 }
-                managed::Event::End | managed::Event::Aborted(_) => {
-                    flows.ended.insert(key, true);
-                    // What waits of it goes first, as its room allows; the rest with its end.
-                    let rest = flows.waiting.remove(&key).unwrap_or_default();
-                    let mut sent = Ok(());
-                    if !rest.is_empty() {
-                        sent = live.answers.send(
-                            wire::to_client::OUTPUT,
-                            &[&wire::Output::head(key.0, key.1), &rest],
-                        );
-                    }
-                    let end = wire::OutputEnd {
-                        member: key.0,
-                        channel: key.1,
-                        end: match parsed.event {
-                            managed::Event::Aborted(errno) => wire::StreamEnd::Aborted(errno),
-                            _ => wire::StreamEnd::Closed,
-                        },
-                    };
-                    sent.and_then(|()| live.answers.send(wire::to_client::OUTPUT_END, &[&end.encode()]))
+                managed::Event::End => live.end_channel(&mut flows, key, wire::StreamEnd::Closed),
+                managed::Event::Aborted(errno) => {
+                    live.end_channel(&mut flows, key, wire::StreamEnd::Aborted(errno))
                 }
             };
             sent.map_err(|e| format!("its answers to its orchestrator: {e}"))?;
