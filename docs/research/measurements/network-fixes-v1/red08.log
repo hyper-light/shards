@@ -1,0 +1,53 @@
+From https://github.com/hyper-light/shards
+ * branch              p/fix-network-v1 -> FETCH_HEAD
+   4ce420fd..7aa3c4a3  p/fix-network-v1 -> origin/p/fix-network-v1
+Previous HEAD position was 4ce420fd Merge current main before network-03 retry
+HEAD is now at 7aa3c4a3 network-08: reproduce DNS relay starvation by an open TCP client
+Linux 6.12.65-linuxkit aarch64
+rustc 1.98.1 (48a229cea 2026-09-01)
+ Downloading crates ...
+  Downloaded regex v1.13.1
+  Downloaded aho-corasick v1.1.5
+  Downloaded regex-syntax v0.8.11
+  Downloaded regex-automata v0.4.18
+   Compiling autocfg v1.5.1
+   Compiling memchr v2.8.3
+   Compiling libc v0.2.189
+   Compiling regex-syntax v0.8.11
+   Compiling num-traits v0.2.19
+   Compiling aho-corasick v1.1.5
+   Compiling num-integer v0.1.47
+   Compiling shards-abi v0.1.0 (/src/crates/abi)
+   Compiling regex-automata v0.4.18
+   Compiling num-bigint v0.4.8
+   Compiling shards-template v0.1.0 (/src/crates/template)
+   Compiling shards-testdir v0.1.0 (/src/crates/testdir)
+   Compiling shards-archive v0.1.0 (/src/crates/archive)
+   Compiling shards-user v0.1.0 (/src/crates/user)
+   Compiling regex v1.13.1
+   Compiling shards-devcgroup v0.1.0 (/src/crates/devcgroup)
+   Compiling shards-cmdline v0.1.0 (/src/crates/cmdline)
+   Compiling shards-dns v0.1.0 (/src/crates/dns)
+   Compiling shards-erofs v0.1.0 (/src/crates/erofs)
+   Compiling shards-init v0.1.0 (/src/crates/init)
+    Finished `test` profile [unoptimized] target(s) in 6.88s
+     Running unittests src/main.rs (/target/debug/deps/shards_init-9c7504c0e8b6ec1f)
+
+running 1 test
+test dnsrelay::tests::an_open_tcp_client_and_a_lost_udp_query_leave_other_clients_progress ... FAILED
+
+failures:
+
+---- dnsrelay::tests::an_open_tcp_client_and_a_lost_udp_query_leave_other_clients_progress stdout ----
+
+thread 'dnsrelay::tests::an_open_tcp_client_and_a_lost_udp_query_leave_other_clients_progress' (413) panicked at crates/init/src/dnsrelay.rs:209:9:
+an open TCP client blocked another client's UDP query: Err(Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    dnsrelay::tests::an_open_tcp_client_and_a_lost_udp_query_leave_other_clients_progress
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 281 filtered out; finished in 1.05s
+
+error: test failed, to rerun pass `-p shards-init --bin shards-init`

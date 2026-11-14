@@ -4316,6 +4316,18 @@ without bound.
 
 ### Networks of microVMs (D46)
 
+**Relay progress correction (network-08, 2026-11-13).** A persistent TCP client's
+lifetime no longer owns 127.0.0.11's UDP/accept loop. Each TCP worker owns its
+client and upstream sockets; observed descriptor capacity admits it, counting
+three possible sockets through every return/spawn failure. Both guest resolvers
+share one in-flight DNS-ID owner, bounded by the complete 16-bit ID space and
+current per-asker share. Responses/expiry release ownership; allocation/clock/full
+refusals admit no untracked query. Waits use readiness or the earliest deadline,
+including agentdns's former periodic expiry probe. The inherited five-second
+timing and worker memory-envelope validation remain owed under network-12/R14.
+Four functional unit tests and init clippy pass on Linux arm64 GNU; real guest,
+fault and resource coverage remain ROOT's. [Evidence and exact remaining runs](../research/measurements/network-fixes-v1/README.md#network-08-independent-dns-relay-clients).
+
 `shards network` makes networks of microVMs as `docker network` makes them of
 containers, with Docker's inputs and words: create, ls, inspect, rm, prune, connect and
 disconnect, as docker/cli parses them (held byte for byte to docker/cli by
