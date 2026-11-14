@@ -34,6 +34,8 @@ Ranking requested by Ada: **P0 critical, P1 high, P3 medium, P5 low**; unused in
 
 **Test:** live disposable enrolled client sends all three prefixes and the sync carrier; each receives typed refusal, grants/context files remain unchanged, and a different configured daemon sees no request. Removing a guard must produce the forbidden grant/routing effect.
 
+**Status (2026-11-13):** fixed in cbcbc0ad1 (red `daemon::remote::tests::red_remote01_an_owners_command_behind_a_prefix` at 9efde7252; green `a_client_may_not_run_an_owners_command_behind_a_prefix`, `cli::owners_alone::*`). A context's choice is refused outright, owner commands are judged on `cli::command_words` (dispatch's own words), a build step's words must be a build's, and the child refuses `context`/`client`/`invitation` for any client (D180, "A client's authority"). Still open from this finding: a build step's path-naming words (`--output dest=`, `--file`, `--iidfile`, `--metadata-file`, `--cache-to/--cache-from` local, `--build-context`, `--policy filename=`, `--secret src=`, `--ssh`) are not yet held to the copy, so a crafted `\0sync build` can still name this machine's paths (source-proven, not yet reproduced).
+
 ### remote-02 — P0 / critical — Windows drive-relative Dockerfile names escape the copy
 
 **Location:** `crates/shards/src/synced.rs:613`, `:627`, `:690`.
@@ -51,6 +53,8 @@ Ranking requested by Ada: **P0 critical, P1 high, P3 medium, P5 low**; unused in
 **Fix direction:** require one host-valid Normal path component, reject drive/root/prefix/ADS/reserved aliases, and open relative to the intended directory with reparse protections; use the existing LX-name representation if Linux colon-containing names must be retained.
 
 **Test:** on Windows, valid authenticated build framing with `C:context`, alternate prefixes/ADS names and an ordinary control filename; assert refusal happens before any outside file is opened and home markers remain byte-for-byte unchanged.
+
+**Status (2026-11-13):** fixed in bbab70a66 (red `synced::tests::red_remote02_a_drive_relative_name_escapes_the_copy` at 9efde7252 on the Windows 11 guest, x86_64-pc-windows-msvc; green `a_build_files_name_is_one_files_as_the_machine_reads_it`, `a_drive_relative_build_file_is_refused_and_written_nowhere`). `synced::name_alone` applies the Win32 naming rules (drive prefix and ADS colon, reserved characters, trailing dot/space, device names) before any file is opened.
 
 ### remote-03 — P0 / critical — Removal does not revoke existing Engine authority or cached enrollment identities
 
@@ -71,6 +75,8 @@ Ranking requested by Ada: **P0 critical, P1 high, P3 medium, P5 low**; unused in
 **Fix direction:** carry authenticated key plus enrollment generation into all remote/Engine operations, revalidate on each operation, invalidate removed generations' channels, and define ongoing-operation behavior explicitly.
 
 **Test:** retain HTTP keep-alive through removal and issue fresh inspect/kill; assert no document or side effect. Separately retain native K1 across remove/re-enroll K2 under the same name; K1's fresh Exec must be refused while K2 works.
+
+**Status (2026-11-13):** fixed in 059831a0b (red `tests/loopback.rs` `red_remote03_an_old_keys_connection_runs_a_new_command` at 9efde7252; green `a_removed_clients_held_connection_runs_nothing_more`, `a_removed_clients_connection_closes_as_the_daemon_is_told`, `context::tests::a_proved_client_is_enrolled_while_its_record_holds_its_key`). Every Exec rechecks the key the connection proved, a watch of `clients/` closes revoked connections at once (code `REVOKED`), and Engine API calls are rechecked against the record per call. The real-daemon E2E of scenario A (an Engine keep-alive held through `remove client`) is ROOT's.
 
 ### remote-04 — P1 / high — An untrusted build timestamp aborts the daemon
 
@@ -107,6 +113,8 @@ Ranking requested by Ada: **P0 critical, P1 high, P3 medium, P5 low**; unused in
 **Fix direction:** log operation identity and safe metadata rather than raw argv; apply consistent redaction to every success/refusal/step branch.
 
 **Test:** synthetic inherited env, env-file, exec env and build-arg markers must reach their intended operation and remain absent from captured daemon.log, including refusal paths.
+
+**Status (2026-11-13):** fixed in 68b43042c111dbd7696e16fa5b8020993de9d274 (red `daemon::remote::tests::remote_requests_never_log_argument_values`; 0 passed/1 failed before, 5 module tests passed after; shards all-target clippy passed, macOS arm64). [Evidence](../../research/measurements/remote-fixes-v1/README.md). Real context/guest validation remains owed to ROOT.
 
 ### remote-06 — P3 / medium — Unauthenticated datagrams count as peer progress
 

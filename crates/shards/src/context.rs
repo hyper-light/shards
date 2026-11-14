@@ -905,32 +905,37 @@ pub(crate) fn chosen(home: &Path, args: &mut Vec<OsString>) -> Result<Chosen, St
     chosen_in(home, args, &|name| std::env::var(name).ok())
 }
 
+/// The context `args`' own options choose, the last of them counting, and how many words
+/// at their front they are: what [`chosen`] takes off before the command. A client's
+/// command the daemon judges by the words that follow them (daemon/remote.rs, `judge`).
+pub(crate) fn choice<A: AsRef<std::ffi::OsStr>>(args: &[A]) -> Result<(Option<String>, usize), String> {
+    let mut given = None;
+    let mut taken = 0;
+    loop {
+        let word = |i: usize| args.get(i).and_then(|a| a.as_ref().to_str());
+        match word(taken) {
+            Some("--context" | "-c") => {
+                let name = word(taken.saturating_add(1)).ok_or("flag needs an argument: --context")?;
+                given = Some(name.to_string());
+                taken = taken.saturating_add(2);
+            }
+            Some(flag) if flag.starts_with("--context=") => {
+                given = Some(flag.trim_start_matches("--context=").to_string());
+                taken = taken.saturating_add(1);
+            }
+            _ => return Ok((given, taken)),
+        }
+    }
+}
+
 /// [`chosen`], `env` this process's environment.
 fn chosen_in(
     home: &Path,
     args: &mut Vec<OsString>,
     env: &dyn Fn(&str) -> Option<String>,
 ) -> Result<Chosen, String> {
-    let mut given = None;
-    loop {
-        let first = args.first().and_then(|a| a.to_str()).map(str::to_string);
-        match first.as_deref() {
-            Some("--context" | "-c") => {
-                let name = args
-                    .get(1)
-                    .and_then(|a| a.to_str())
-                    .ok_or("flag needs an argument: --context")?
-                    .to_string();
-                args.drain(..2);
-                given = Some(name);
-            }
-            Some(flag) if flag.starts_with("--context=") => {
-                given = Some(flag.trim_start_matches("--context=").to_string());
-                args.remove(0);
-            }
-            _ => break,
-        }
-    }
+    let (given, taken) = choice(args)?;
+    args.drain(..taken.min(args.len()));
     let env = |name: &str| env(name).filter(|v| !v.is_empty());
     let name = match given {
         Some(name) => name,
@@ -3562,6 +3567,25 @@ pub(crate) fn clients(home: &Path) -> Vec<Client> {
     out
 }
 
+/// A client as its connection proved it (remote-03): the name the daemon judged its key
+/// enrolled under, and that key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Proved {
+    pub name: String,
+    pub key: Vec<u8>,
+}
+
+impl Proved {
+    /// Whether `home` enrolls it still: its name's record, of the key it proved. Read for
+    /// each operation, as its record is the one account of whom the home enrolls, which a
+    /// removal (`remove client`) or a client made again under the name changes.
+    pub(crate) fn enrolled(&self, home: &Path) -> bool {
+        invite::valid_name(&self.name)
+            && read_client(&home.join("clients").join(&self.name))
+                .is_some_and(|c| c.name == self.name && c.key == self.key)
+    }
+}
+
 /// Enrolls `key` as client `name`: the daemon's, as a client joins.
 pub(crate) fn enroll(home: &Path, name: &str, key: &[u8]) -> Result<(), String> {
     let text = format!(
@@ -4247,6 +4271,32 @@ mod tests {
     /// A command shards starts by a word a user types too, `HERE` in its environment, runs
     /// here, where its home's current context, or its starter's `DOCKER_CONTEXT`, names
     /// another machine's.
+    /// remote-03: a client as its connection proved it is enrolled while its name's record
+    /// holds its key: not once it is removed, nor once its name is another key's.
+    #[test]
+    fn a_proved_client_is_enrolled_while_its_record_holds_its_key() {
+        let home = shards_testdir::TempDir::new("ctx-proved").unwrap();
+        let (one, other) = (vec![1u8; 44], vec![2u8; 44]);
+        let proved = |key: &[u8]| Proved {
+            name: "laptop".into(),
+            key: key.to_vec(),
+        };
+        assert!(!proved(&one).enrolled(&home));
+        enroll(&home, "laptop", &one).unwrap();
+        assert!(proved(&one).enrolled(&home));
+        assert!(!proved(&other).enrolled(&home));
+        std::fs::remove_file(home.join("clients").join("laptop")).unwrap();
+        assert!(!proved(&one).enrolled(&home));
+        enroll(&home, "laptop", &other).unwrap();
+        assert!(!proved(&one).enrolled(&home));
+        assert!(proved(&other).enrolled(&home));
+        let elsewhere = Proved {
+            name: "../laptop".into(),
+            key: other.clone(),
+        };
+        assert!(!elsewhere.enrolled(&home));
+    }
+
     #[test]
     fn here_holds_a_child_to_this_machine() {
         let home = shards_testdir::TempDir::new("ctx-here").unwrap();
