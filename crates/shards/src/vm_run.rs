@@ -1107,6 +1107,12 @@ fn use_answer(
     )
 }
 
+/// What this machine used in all (D260's final use), as a use's answer says it: its vCPUs'
+/// whole guest time, read by `guest` once they have stopped, then this process's own use.
+fn final_use(guest: impl FnOnce() -> Result<shards_vmm::vm::GuestTimes, String>) -> String {
+    use_answer(guest, || shards_vmm::platform::process_usage(std::process::id()))
+}
+
 /// What a rate's ask holds: what `hold` held the vCPUs to, none where it lets them be, and
 /// the hold's `period` in nanoseconds; or why not. A period no u64 counts in nanoseconds
 /// holds nothing, as no client could hear it.
@@ -1130,6 +1136,15 @@ fn rate_answer(
 /// less theirs.
 pub fn guest_times() -> Result<shards_vmm::vm::GuestTimes, String> {
     Ok(RUNNING.get().ok_or("the microVM has not started")?.guest_times())
+}
+
+/// What each of this VM's vCPUs ran of its guest in all, by index, those gone among them
+/// (`Handle::whole_guest_times`): its whole once its machine is down.
+pub fn whole_guest_times() -> Result<shards_vmm::vm::GuestTimes, String> {
+    Ok(RUNNING
+        .get()
+        .ok_or("the microVM has not started")?
+        .whole_guest_times())
 }
 
 /// This VM paused where it is, every vCPU held out of its guest (`frozen`), or let go on
@@ -1980,6 +1995,15 @@ fn serve_workload(
         static TIMING: workload::Timing = workload::Timing::new();
         let to_guest = &TO_GUEST;
         let warm = matches!(command, Command::Warm(..));
+        // A warm VM's owner hears what its machine used in all once it is down (D260's final
+        // use), on a handle of the link of its own: the run's goes with its workload.
+        let final_link = match &command {
+            Command::Warm(link, _) => link
+                .try_clone()
+                .inspect_err(|e| report(format_args!("its final use's link: {e}")))
+                .ok(),
+            Command::Given { .. } => None,
+        };
         if let Command::Given { interactive, .. } = &command {
             // SAFETY: isatty(3) on this process's stdin.
             let reads_terminal = *interactive && std::io::IsTerminal::is_terminal(&std::io::stdin());
@@ -2327,7 +2351,14 @@ fn serve_workload(
             handle.stop();
             return failed(format!("workload thread: {e}"));
         }
-        let reason = running.wait_then(crate::warm::tell_kept);
+        // Once every vCPU has stopped, past its guest's last instruction, and before this
+        // process lets go of its memory: what it used in all, read then, is its whole.
+        let reason = running.wait_then(|| {
+            crate::warm::tell_kept();
+            if let Some(link) = &final_link {
+                crate::warm::final_use(link, &final_use(whole_guest_times));
+            }
+        });
         // Its joiners (D119), which the guest ended with its workload, tell the daemon how
         // each ended before this process goes, as the relay has had 5 s to (below).
         crate::warm::await_joiners(std::time::Duration::from_secs(5));
@@ -3549,6 +3580,41 @@ mod rate_tests {
             read.host.unwrap_err().starts_with("its VM process: "),
             "{refused}"
         );
+    }
+
+    /// A VM's final use (D260) is its vCPUs' whole guest time, read first, then this
+    /// process's own use, read after it: never less CPU than a reading before the final one.
+    #[test]
+    fn a_final_use_reads_its_whole_guest_then_its_process() {
+        let times = shards_vmm::vm::GuestTimes {
+            vcpus: vec![
+                shards_vmm::vm::VcpuTime {
+                    index: 0,
+                    guest_ns: 7,
+                    unread: None,
+                },
+                shards_vmm::vm::VcpuTime {
+                    index: 3,
+                    guest_ns: 11,
+                    unread: Some(shards_abi::guest_time::Unread::Gone),
+                },
+            ],
+            departed_ns: 0,
+        };
+        let before = shards_vmm::platform::process_usage(std::process::id()).unwrap();
+        let read = std::cell::Cell::new(false);
+        let answer = super::final_use(|| {
+            read.set(true);
+            Ok(times.clone())
+        });
+        assert!(read.get());
+        let used = shards_abi::rate::read_used(answer.as_bytes()).unwrap();
+        assert_eq!(used.guest, Ok(times));
+        assert!(used.host.unwrap().cpu_ns >= before.cpu_ns, "{answer}");
+        let unstarted = super::final_use(|| Err("the microVM has not started".into()));
+        let used = shards_abi::rate::read_used(unstarted.as_bytes()).unwrap();
+        assert_eq!(used.guest, Err("the microVM has not started"));
+        assert!(used.host.is_ok(), "{unstarted}");
     }
 }
 

@@ -92,6 +92,8 @@ assert!(matches!(held_apart(Some(&image), &narrowing),
 
 ROOT's live twin should let a resolve/dial a controlled provider, attempt b's direct-IP dial, and observe refusal; removing the effective-reach guard must expose that exact forbidden connection.
 
+**Status (2026-11-13):** fixed in a0c5fa9ea (red `a_port_grant_reaches_every_name_the_image_grants_on_it`, crates/agentfile/tests/agentfile.rs: b reached nothing at the base; and `a_member_granted_a_names_port_is_held_to_that_name`, crates/shards/src/api_run.rs: the finding's request accepted at the base, refused as a widening naming b after). Confirmed in unit form, not live; D236 and D246 amended, ROOT's live twin owed (D246).
+
 ### inithex-03 — P1 / high — failed MCP bridge waits forever for open harness stdin
 
 **Status (2026-11-13):** fixed in f7d83f73a (red `bridge_peer_end_releases_open_stdin`, `bridge_output_failure_releases_open_stdin`; Linux x86_64 r2/r4; [evidence](../../research/measurements/inithex-fixes/README.md)).
