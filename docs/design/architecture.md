@@ -7243,26 +7243,36 @@ always did, so that no invitation's name or state is told to a stranger. Green
 taken for unknown, both killed; macOS arm64); the E2E's asks (`tests/context.rs`: no `--valid`
 refused, one past its lifetime refused) are ROOT's to run.
 
-*Frame bounds (remote-08), owed.* `frame::MAX_FRAME` (4 MiB) is not derived, and it stays in force
-until each bound that replaces it is. A bound per tag, as first proposed, cannot be one: the tags are
-shared by lanes whose payloads differ. `StdinEnd` carries nothing on a command stream and
-`OFFSET + ERRNO` bytes on a managed input lane (`managed/input.rs`); `Exit` carries a four-byte
-status on a command stream and on an exec lane, `OFFSET + ERRNO` on a managed input lane; `Refused`
-carries UTF-8 words on a command stream and a four-byte code on an exec lane (`control/exec.rs`);
-`Stdout` carries a pipe's read on a command stream and an offset-headed record up to
-`managed::RECORD_MOST` on a managed output lane. An `Exec` request's words go to an exec, bounded by
-the host's `sysconf(_SC_ARG_MAX)` (POSIX; on Linux a quarter of RLIMIT_STACK, execve(2)), but a step's
-go to the daemon itself (a move's plan up to `daemon::moves::MAX_PLAN`, which borrows `MAX_FRAME`),
-so ARG_MAX bounds only the first. The derivation is therefore one per lane: each lane's reader hands
-`frame::peek` its own grammar's bound for each tag it takes (none for a tag it does not), and
-`MAX_FRAME` goes once every lane has one. For the command stream: a client's stdin chunk and a
-command's output are reads of `server::READ_MOST` (the pipe buffers cited there); a join `JOIN_MAX`;
-a microVM's ID `MADE_MOST`; resizes, signals, controls and exits their fixed sizes; a request's words
-the larger of the exec's ARG_MAX and its steps' own bounds, which each step must first have
-(`MAX_PLAN`'s is a move plan's own contract, unmade); refusal words a bound the server holds its
-words to, unmade. The exec, socket and MCP lanes already check their payloads after admission
-(`TOLD_MOST`, `ASK_MOST`, `LOG_ASK`), which become their peeks' bounds. Owed: an R02 decision on
-the step and refusal bounds, then the per-lane peeks (an implementer's slice).
+*Frame bounds (remote-08), decided by ROOT and built, 2026-11-14.* `frame::MAX_FRAME`, a 4 MiB bound
+of every frame that no grammar derived, is gone. A bound per tag cannot be one, the tags being shared
+by lanes whose payloads differ (`StdinEnd` carries nothing on a command stream and `OFFSET + ERRNO`
+on a managed input lane; `Exit` four bytes on a command stream and an exec lane and `OFFSET + ERRNO`
+on a managed input lane; `Refused` words on a command stream and a four-byte code on an exec lane;
+`Stdout` a pipe's read on a command stream and an offset-headed record on a managed output lane), so
+the bound is the lane's. `frame::peek` reads a frame's kind and its length as the wire says them;
+each lane's reader holds the frame to what it takes of its kind (`frame::Takes`, `frame::Most`,
+`frame::admit`, `frame::take`), judged from the header before a byte of the payload is waited for,
+and refused typed (`frame::Unframed`: no kind, a kind the lane takes none of, past its bound, a host
+that says nothing of its memory). Each bound is its grammar's where one is: a command stream's
+client (`server::client_takes`) sends a join of `invite::JOIN_MAX`, stdin in a client's reads
+(`server::READ_MOST`, the pipe buffers cited there), its control stream's number (8 bytes), a size
+and a signal (4 bytes each); its daemon (`client::daemon_takes`) sends output in its pipe's reads
+(`READ_MOST`), an exit status (4 bytes) and the microVM it made (`MADE_MOST`). Where the grammar
+gives none, a request's words (an exec's, held again by the machine's own ARG_MAX, past which its
+execve refuses them with E2BIG, or a step's, a move's plan or a build's) and a refusal's or a cut's
+words, the bound is what the reading host can hold now (`shards_ipc::holdable_known`: its available
+memory, else its memory), the rule a snapshot's state is read by (D176, migrate-04); `host_memory`
+moved from the VMM's platform to `shards-ipc` for both. A move's plan read from its stream
+(`daemon::moves::plan_most`) is held to the same, which it carried there as the `ready` step's
+request. `managed::RECORD_MOST` is the largest record a managed lane carries, a log lane's output
+record of one part of the guest's capture: `run::MAX_PAYLOAD`, the run protocol's part, plus
+`control::exec::LOG_OUTPUT_HEAD`. The control lanes already held every frame to its exact length or
+its lane's credit before taking it (`control::lane`, `exec::steer`, `exec::told`, `unix::read_answer`,
+`managed::input`, `input::said`, the driver's output records), and do. Tests:
+`frame::tests::a_lane_takes_its_own_kinds_to_its_own_bounds`, and loopback's
+`a_clients_stdin_past_a_read_is_refused_from_its_header` (a chunk of `READ_MOST + 1` refused from its
+header; with `Stdin` admitted up to the host's memory, as under the old bound, the daemon waits for
+its bytes and the test is refused by its judged wait).
 
 #### A client's authority, judged of what runs and of whom its key is now (remote-01 to 03, 2026-11-13)
 
@@ -19501,7 +19511,7 @@ progress; D222's estimators).
 | `KEEP` (shards-api demand.rs tests) | 600 s | kept, a test's input | past the test's longest step |
 | `BODY_MOST` (daemon/engine.rs) | 8 MiB | `build::holdable()` | moby v28.5.1 api/server/httputils ReadJSON (unbounded) |
 | `MAX_PATH` (daemon/moves.rs) | 4096 | cited | Linux 6.18 include/uapi/linux/limits.h l. 13 |
-| `MAX_PLAN` (daemon/moves.rs) | 16 MiB | `shards_remote::frame::MAX_FRAME` | the `ready` step's request frame (cli/moves.rs) |
+| `MAX_PLAN` (daemon/moves.rs), now `plan_most` | 16 MiB | what the host can hold now (`shards_ipc::holdable_known`, remote-08) | the `ready` step's request frame (cli/moves.rs), held to the same (D180 *Frame bounds*) |
 | `MAX_XATTRS` (daemon/moves.rs) | 65536 | `XATTR_LIST_MAX / 6` = 10922 | limits.h l. 17; xattr.h l. 33 (`os2.`); listxattr(2) |
 | `MAX_XATTR` (daemon/moves.rs) | 64 KiB | cited | limits.h l. 16 (and the name's 255, l. 15) |
 | `EMPTIED` (daemon/parents.rs) | 10 s | D215's judge on its record (`EMPTIED`, learned): cold, while the leaf's processes live; past W*, a look each W* (ROOT's (3) slice 4) | the leaf's processes' CPU (`shards_api::Watch`); it was `platform::IDLE_VM_CPU`, `progressed` (PM M357) |
@@ -27719,7 +27729,7 @@ has taken the pinned key, as many at once as the endpoint's stream limit allows;
   announced (the run's metadata `capacity`) is where its records start, not their bound: the
   endpoint grows a stream's record as the daemon's learner asks (`managed::Producer::admit`,
   QUIC's window as it was), so a lane reads a record up to the managed wire's own bound, one
-  frame's (`managed::RECORD_MOST`, `frame::MAX_FRAME` less the record's offset), its buffer
+  frame's (`managed::RECORD_MOST`, `run::MAX_PAYLOAD` plus a log record's head, remote-08), its buffer
   reserved at the admitted record and grown, fallibly, to what comes; one past that bound
   breaks the protocol. A lane that held the first admission as its bound closed the connection
   `Protocol` once an owned output's record grew (ROOT's KVM run of `log_lanes`, 2026-11-13;

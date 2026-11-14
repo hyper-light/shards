@@ -180,6 +180,8 @@ Ranking requested by Ada: **P0 critical, P1 high, P3 medium, P5 low**; unused in
 
 **Status (2026-11-14):** the invitation's lifetime fixed in 30645fa69 by the person's ruling (2026-11-14: the owner states it, `--valid DURATION`, no default; single-use, revocable until used): made without it, refused typed; checked at the machine; a used or revoked one refused typed (green `context::tests::an_invitations_lifetime_is_given_by_its_owner`, `a_join_is_refused_for_what_became_of_its_invitation`; two mutants killed; macOS arm64; D180, "An invitation's lifetime"). The frame bound is owed (D180, "Frame bounds"): a bound per tag cannot be one, as lanes share tags with different payloads (`StdinEnd`, `Exit`, `Refused`, `Stdout`), so it is one per lane, each reader's peek given its grammar's bound, after an R02 decision on the step and refusal bounds; `MAX_FRAME` stays in force until then. ROOT's E2E: `cargo test -p shards --profile test-release --test context a_context_runs_commands_on_its_machine_whole` and `--test moved`.
 
+**Status (2026-11-14), part 2:** fixed by ROOT (D180 *Frame bounds*): `frame::MAX_FRAME` is gone; each lane holds its frames to its grammar's bound, else to what the reading host can hold now (`shards_ipc::holdable_known`); `managed::RECORD_MOST` = `run::MAX_PAYLOAD` + `LOG_OUTPUT_HEAD`; a move's plan to the host's memory. Red: loopback `a_clients_stdin_past_a_read_is_refused_from_its_header` under the old bound (mutant: `Stdin` admitted up to the host's memory).
+
 ### remote-09 — P0 / critical — A build step's path-valued flags name this machine's files
 
 Found by the remote-P0 lane (implementer), 2026-11-13, while fixing remote-01; reported to ROOT, who ranked it P0.
