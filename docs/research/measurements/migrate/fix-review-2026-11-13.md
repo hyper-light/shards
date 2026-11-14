@@ -194,3 +194,59 @@ untracked patch. It remains intentionally red: importer alias loss is unfixed.
 No production Placer/Writer change is included. ROOT's corrected instruction holds
 that implementation until the P0 owner's extractor fix is actually on remote main.
 This local held slice must not land by itself; its test becomes green with05's fix.
+
+## migrate05: preserve regular-file aliases through Beneath
+
+POLICY_READ on resume: implementer, branch `p/fix-migrate-v1`, revision `73af9fb62`,
+rules SHA-256 `df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3`.
+Owned paths: migration stream Writer/parser/Placer and share guest-file helpers;
+adopt/import belongs to the migrate11 P0 lane and is untouched.
+
+ROOT verified migrate01's `b282ba757` on remote main. This branch merged remote
+`f7a3edfbc` at `a6a4dbc6b`, then adapted only the red fixture's constructor at
+`73af9fb62`. Its red ran on adacachy2 Linux x86_64: the same alias test failed with
+`b` reading `before` after writing `after` through `a` (one test, exit 101).
+Log: `~/g121-tmp/fix-migrate-v1/hardlink-red-beneath.log`; prior committed red is
+`5bf16ecff`. The symptom survives the landed confinement fix.
+
+Decision: stream version 3 adds tag 6, `Hardlink { rel, target }`, naming an already
+created regular file. Readers retain version 2 compatibility; older readers reject
+version 3 before extraction. Both names use the existing PATH_MAX-derived wire
+bound and the plan's volume-data authority. No new runtime tuning value is added:
+3/6 are assigned format/version tags, four path fields are the volume grammar,
+and link-count greater than one means the host reports another inode name.
+
+Primary source: POSIX.1-2024
+<https://pubs.opengroup.org/onlinepubs/9799919799/functions/linkat.html> specifies
+shared file identity and `linkat` flags 0's no-follow behavior. Established local
+implementations are the virtio-fs LINK handlers and existing shared `link_at`
+Unix/NT adapters (`crates/ntfs/src/lib.rs`); reuse them through `Beneath` rather
+than add a host-specific extractor. Independent file copies lose identity, as the
+red demonstrates. A numeric inode wire registry adds a second lifetime/lookup
+protocol; an earlier in-root path already supplies the required reference.
+
+The writer identifies the opened source with the server's device/file-id and link
+count. It retains only multiply-linked volume files for the lifetime of one stream;
+map and saved-name growth are fallible, keyed by authoritative host identity. This
+is required alias state, not a performance cache. Cold start is empty, and any
+export error discards it. It assumes the existing move contract's quiesced source;
+concurrent external host edits remain outside this scoped unit proof.
+
+Import checks both names against the plan and volume-data scope, then traverses
+both parents using held Beneath directories. Missing/forward sources, non-regular
+sources (including symlinks), linked parents and existing destinations refuse via
+typed IO error kinds, rendered at the existing string presentation boundary. It
+creates an alias without resetting metadata or replaying bytes, so the first
+file's sparse contents and inode metadata remain shared. No new wait or polling
+is introduced, and no second extractor is added. The P0 Beneath traversal and
+adopt/import lines remain intact.
+
+R01/R03/R04/R05/R06/R07/R12/R13: checked new wire-name conversion, fallible alias
+state growth, explicit Hardlink entry/refusal and one shared filesystem seam.
+Existing broader parser allocations are not claimed repaired by this slice.
+R02/R09/R10: source/alternatives and exact live red above; green results follow.
+R08/R14: no speed/allocation/fault ratio claimed; coordinator measurements owed.
+R11: Linux x86_64 unit coverage only; Windows/macOS and real guest alias behavior
+remain unverified. R15: scoped light tests only, signed commits and fresh remote
+main merge before landing. R16: task-owned target only, removed after landing;
+logs and source retained. Remaining checks and exact green revisions follow.

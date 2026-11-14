@@ -137,6 +137,17 @@ pub fn read_link(path: &Path) -> io::Result<Vec<u8>> {
     readlink_at(dir.raw(), &name).map_err(io_error)
 }
 
+/// The opened regular file's host identity, only where another name shares it.
+/// Both Unix and NT supply the share server's device/file-id and link count.
+pub fn hardlink_identity(file: &std::fs::File) -> io::Result<Option<(u64, u64)>> {
+    #[cfg(unix)]
+    let raw = std::os::fd::AsRawFd::as_raw_fd(file);
+    #[cfg(windows)]
+    let raw = std::os::windows::io::AsRawHandle::as_raw_handle(file);
+    let st = stat_fd(raw).map_err(io_error)?;
+    Ok((st.nlink > 1 && mode_of(&st) & S_IFMT == S_IFREG).then_some((st.dev, st.ino)))
+}
+
 /// A directory at `path`, as the server makes the guest's (MKDIR): on Windows
 /// case-sensitive, as WSL makes its own. Its owner's alone until [`set`] gives it its mode,
 /// once all it holds is in it. One there already is kept.
@@ -328,6 +339,19 @@ impl Beneath {
         make_link_in(self.at(dir.as_ref()), &name, target)
     }
 
+    /// Another name of an existing regular file. Both parent walks stay beneath this
+    /// root, and link_at never follows the source's final component (POSIX linkat,
+    /// flags 0; NT FILE_OPEN_REPARSE_POINT). No stream entry replaces an existing name.
+    pub fn make_hardlink(&self, rel: &[&OsStr], target: &[&OsStr]) -> io::Result<()> {
+        let (source_dir, name) = self.place(target, false)?;
+        let source = self.at(source_dir.as_ref());
+        if mode_of(&stat_at(source, &name).map_err(io_error)?) & S_IFMT != S_IFREG {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        let (dest, new_name) = self.place(rel, true)?;
+        link_at(source, &name, self.at(dest.as_ref()), &new_name).map_err(io_error)
+    }
+
     /// A FIFO, socket or device node at `rel` ([`make_node`]).
     pub fn make_node(&self, rel: &[&OsStr], meta: &Meta) -> io::Result<()> {
         let (dir, name) = self.place(rel, true)?;
@@ -506,5 +530,39 @@ mod tests {
         assert_eq!(std::fs::read_dir(&away).unwrap().count(), 0);
         assert_eq!(std::fs::read_dir(held.join("a").join("b")).unwrap().count(), 0);
         assert_eq!(read_link(&held.join("a").join("out")).unwrap(), b"../../away");
+    }
+
+    #[test]
+    fn beneath_hardlinks_share_a_file_without_following_links() {
+        let rel = |p: &str| p.split('/').map(OsString::from).collect::<Vec<_>>();
+        let root = shards_testdir::TempDir::new("guest-hardlink").unwrap();
+        let held = Beneath::open(&root).unwrap();
+        let a = rel("a/file");
+        let a: Vec<_> = a.iter().map(OsString::as_os_str).collect();
+        let file = held.make_file(&a).unwrap();
+        assert_eq!(hardlink_identity(&file).unwrap(), None);
+        held.make_hardlink(&[OsStr::new("alias")], &a).unwrap();
+        assert!(hardlink_identity(&file).unwrap().is_some());
+        std::fs::write(root.join("alias"), b"changed").unwrap();
+        assert_eq!(std::fs::read(root.join("a/file")).unwrap(), b"changed");
+        assert!(held.make_hardlink(&a, &a).is_err(), "overwrote an existing file");
+        held.make_link(&[OsStr::new("link")], b"a/file").unwrap();
+        let bad = [OsStr::new("bad")];
+        assert!(held.make_hardlink(&bad, &[OsStr::new("missing")]).is_err());
+        for target in ["a", "link"] {
+            let error = held.make_hardlink(&bad, &[OsStr::new(target)]).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        }
+        held.make_link(&[OsStr::new("parent")], b"a").unwrap();
+        assert!(
+            held.make_hardlink(&bad, &[OsStr::new("parent"), OsStr::new("file")])
+                .is_err()
+        );
+        assert!(
+            held.make_hardlink(&[OsStr::new("parent"), OsStr::new("bad")], &a)
+                .is_err()
+        );
+        assert!(!root.join("bad").exists());
+        assert!(!root.join("a/bad").exists());
     }
 }
