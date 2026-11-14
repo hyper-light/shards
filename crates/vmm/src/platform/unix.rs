@@ -2691,8 +2691,12 @@ pub fn launched(pid: u32) -> Option<bool> {
 
 /// [`Usage`] of process `pid`, as the kernel keeps it: macOS's proc_pidinfo
 /// (PROC_PIDTASKINFO), its times in Mach absolute-time units converted by the timebase,
-/// and proc_pid_rusage (RUSAGE_INFO_V2); Linux's /proc/PID/stat (utime, stime, in clock
-/// ticks, and its faults), /proc/PID/statm (resident pages) and /proc/PID/status (`RssAnon`).
+/// and proc_pid_rusage (RUSAGE_INFO_V2); Linux's CPU-time clock of the process
+/// ([`cpu_clock_ns`], in ns), /proc/PID/stat (its faults), /proc/PID/statm (resident pages)
+/// and /proc/PID/status (`RssAnon`). Not /proc's utime and stime: each is its share of the
+/// same runtime cut down to a clock tick (fs/proc/array.c `do_task_stat`, `nsec_to_clock_t`),
+/// so their sum fell up to two ticks short of the time its threads' own clocks had read
+/// (#77: 3.85 s beside a vCPU's 3.87 s).
 pub fn process_usage(pid: u32) -> io::Result<Usage> {
     #[cfg(target_os = "macos")]
     {
@@ -2734,16 +2738,11 @@ pub fn process_usage(pid: u32) -> io::Result<Usage> {
         // Fields after the command, which may hold spaces, in parentheses.
         let rest = stat.rsplit_once(')').map(|(_, r)| r).unwrap_or_default();
         let fields: Vec<&str> = rest.split_whitespace().collect();
-        let tick = |i: usize| fields.get(i).and_then(|f| f.parse::<u64>().ok()).unwrap_or(0);
-        // utime and stime are the stat line's 14th and 15th fields: 12th and 13th after
-        // the command.
-        let ticks = tick(11).saturating_add(tick(12));
+        let count = |i: usize| fields.get(i).and_then(|f| f.parse::<u64>().ok()).unwrap_or(0);
         // minflt and majflt, the 10th and 12th.
-        let faults = tick(7).saturating_add(tick(9));
-        // SAFETY: sysconf(3) reads a constant.
-        let hz = u64::try_from(unsafe { libc::sysconf(libc::_SC_CLK_TCK) })
-            .unwrap_or(100)
-            .max(1);
+        let faults = count(7).saturating_add(count(9));
+        let pid = libc::pid_t::try_from(pid).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+        let cpu_ns = cpu_clock_ns(pid, CpuClockOf::Process)?;
         let statm = std::fs::read_to_string(format!("/proc/{pid}/statm"))?;
         let pages: u64 = statm
             .split_whitespace()
@@ -2759,10 +2758,54 @@ pub fn process_usage(pid: u32) -> io::Result<Usage> {
         Ok(Usage {
             resident: pages.saturating_mul(page_size()? as u64),
             footprint: anon_kib.saturating_mul(1024),
-            cpu_ns: ticks.saturating_mul(1_000_000_000 / hz),
+            cpu_ns,
             faults,
         })
     }
+}
+
+/// Whose CPU-time clock [`cpu_clock_ns`] reads.
+#[cfg(not(target_os = "macos"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CpuClockOf {
+    /// A process's, its every thread's runtime, those gone too (kernel/sched/cputime.c
+    /// `thread_group_cputime`), of any process this one can name.
+    Process,
+    /// A thread's, of this process alone (kernel/time/posix-cpu-timers.c `lookup_task`).
+    Thread,
+}
+
+/// The nanoseconds of CPU time process or thread `id` has had, as the scheduler counts its
+/// runtime (kernel/sched/core.c `task_sched_runtime`, which first adds what a running task
+/// has run since its last update). Its clock is named as glibc's `clock_getcpuclockid` and
+/// `pthread_getcpuclockid` and musl's name it, by the kernel's encoding of a CPU clock
+/// (include/linux/posix-timers_types.h: the ID's complement above three bits, bit 2 a
+/// thread's, `CPUCLOCK_SCHED` = 2 below it), without the `clock_getres` both libraries
+/// check it with, which the VM process's seccomp filter does not allow.
+#[cfg(not(target_os = "macos"))]
+fn cpu_clock_ns(id: libc::pid_t, of: CpuClockOf) -> io::Result<u64> {
+    const SCHED: libc::clockid_t = 2;
+    const THREAD: libc::clockid_t = 4;
+    let kind = match of {
+        CpuClockOf::Process => SCHED,
+        CpuClockOf::Thread => THREAD | SCHED,
+    };
+    let clock = (!id)
+        .checked_mul(8)
+        .map(|high| high | kind)
+        .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+    let mut t = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: a clock ID, which the kernel refuses (EINVAL) where it names no task it lets
+    // this process read, and a timespec to write.
+    if unsafe { libc::clock_gettime(clock, &raw mut t) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let secs = u64::try_from(t.tv_sec).map_err(io::Error::other)?;
+    let nanos = u64::try_from(t.tv_nsec).map_err(io::Error::other)?;
+    Ok(secs.saturating_mul(1_000_000_000).saturating_add(nanos))
 }
 
 /// Nanoseconds of `ticks` of mach_absolute_time(3)'s clock, by its timebase
@@ -2801,6 +2844,11 @@ pub fn mach_ns(ticks: u128) -> u64 {
 /// says it in clock ticks (fs/proc/array.c, `do_task_stat`: field 43, `nsec_to_clock_t(gtime)`),
 /// sysconf's _SC_CLK_TCK a second: USER_HZ, 100, so 10 ms steps. Its file is opened and read
 /// each time, one page at most: nothing is held between reads.
+///
+/// A tick charged whole may hold more than the thread ran: such a count read 3.87 s of a
+/// thread whose process had run 3.85 s (#77). A thread's time in its guest is part of its
+/// runtime, so what this says is never more than the thread's own CPU-time clock, read after
+/// its stat ([`guest_within`]): its process's clock, read later, then holds it.
 #[cfg(target_os = "linux")]
 pub fn thread_guest_ns(tid: libc::pid_t) -> io::Result<u64> {
     use std::io::Read as _;
@@ -2826,9 +2874,18 @@ pub fn thread_guest_ns(tid: libc::pid_t) -> io::Result<u64> {
     // SAFETY: sysconf(3) reads a constant.
     let hz = u64::try_from(unsafe { libc::sysconf(libc::_SC_CLK_TCK) })
         .ok()
-        .filter(|&hz| hz != 0)
+        .and_then(std::num::NonZeroU64::new)
         .ok_or_else(|| io::Error::other("this host says no clock tick rate"))?;
-    Ok(u64::try_from(u128::from(ticks) * 1_000_000_000 / u128::from(hz)).unwrap_or(u64::MAX))
+    let ran = cpu_clock_ns(tid, CpuClockOf::Thread)?;
+    Ok(guest_within(ticks, hz, ran))
+}
+
+/// `ticks` of guest time at `hz` a second, in nanoseconds, never more than the `ran`
+/// nanoseconds its thread has run in all ([`thread_guest_ns`]).
+#[cfg(any(target_os = "linux", test))]
+fn guest_within(ticks: u64, hz: std::num::NonZeroU64, ran: u64) -> u64 {
+    let ns = u128::from(ticks).saturating_mul(1_000_000_000) / u128::from(hz.get());
+    u64::try_from(ns).unwrap_or(u64::MAX).min(ran)
 }
 
 /// Room for a thread's /proc stat line, read whole in one read: a page, the buffer seq_file
@@ -2974,9 +3031,8 @@ mod usage_tests {
     fn a_process_is_measured_as_it_runs() {
         let me = std::process::id();
         let before = process_usage(me).unwrap();
-        // CPU time, spent here until it shows (10 s at most): Linux counts it in clock
-        // ticks (proc(5), `utime`), so work shorter than one may not; the work is opaque to
-        // the optimizer, which would otherwise fold the loop away.
+        // CPU time, spent here until it shows (10 s at most); the work is opaque to the
+        // optimizer, which would otherwise fold the loop away.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         let mut after = process_usage(me).unwrap();
         let mut x = 0u64;
@@ -3026,6 +3082,55 @@ mod usage_tests {
             None,
             "short, and not text"
         );
+    }
+
+    /// A count of whole ticks says no more than its thread ran: #77's 387 ticks of a thread
+    /// that had run 3.85 s say 3.85 s; under that, the ticks' own time.
+    #[test]
+    fn guest_time_is_never_more_than_its_thread_ran() {
+        let hz = |n| std::num::NonZeroU64::new(n).unwrap();
+        assert_eq!(guest_within(387, hz(100), 3_850_000_000), 3_850_000_000);
+        assert_eq!(guest_within(385, hz(100), 3_870_000_001), 3_850_000_000);
+        assert_eq!(guest_within(u64::MAX, hz(1), u64::MAX), u64::MAX, "saturates");
+    }
+
+    /// The process's CPU time is its clock's, to the nanosecond: between two readings of
+    /// its own CPU-time clock, where /proc's ticks fell short of the first by up to two.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_processs_cpu_time_is_its_clocks() {
+        let clock = || {
+            let mut t = libc::timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            };
+            // SAFETY: this process's CPU-time clock, and a timespec to write.
+            assert_eq!(
+                unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, &raw mut t) },
+                0
+            );
+            u64::try_from(t.tv_sec).unwrap() * 1_000_000_000 + u64::try_from(t.tv_nsec).unwrap()
+        };
+        let before = clock();
+        let read = process_usage(std::process::id()).unwrap().cpu_ns;
+        let after = clock();
+        assert!(before <= read && read <= after, "{before} <= {read} <= {after}");
+    }
+
+    /// A thread's CPU-time clock read by its ID is the one its pthread names, from any thread
+    /// of the process; a thread of no process here has none.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_threads_cpu_time_is_read_by_its_id() {
+        let own = ThreadClock::current().unwrap();
+        // SAFETY: gettid(2) has no preconditions.
+        let tid = unsafe { libc::gettid() };
+        let before = own.read().unwrap();
+        let read = cpu_clock_ns(tid, CpuClockOf::Thread).unwrap();
+        let after = own.read().unwrap();
+        assert!(before <= read && read <= after, "{before} <= {read} <= {after}");
+        // pid 1 is a process of its own, never a thread of this one.
+        assert!(cpu_clock_ns(1, CpuClockOf::Thread).is_err());
     }
 
     /// A thread that has run no guest has none, read from another thread; and its own line is

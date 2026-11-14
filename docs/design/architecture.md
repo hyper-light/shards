@@ -30127,6 +30127,47 @@ process as guest.
 process CPU is less than its vCPUs' guest time read before it. A vCPU's guest time that falls
 between samples. A machine not booted `--host-managed` that answers a use.
 
+**Amended (#77): the process's CPU holds its vCPUs' guest time on Linux by its sources.**
+ROOT's KVM run of the real-VM test (adacachy2, Linux x86_64, c120c8a95) read `host` 3.85 s
+after `vcpu` 3.87 s (boot.rs, its process-holds-guest assertion): both whole 10 ms steps.
+- *Why.* Both counts were /proc's. The process's `utime` and `stime` are its runtime
+  (`sum_exec_runtime`, ns) split by `cputime_adjust` and each cut down to a clock tick
+  (fs/proc/array.c `do_task_stat`, `nsec_to_clock_t`): up to two ticks short. A vCPU thread's
+  `gtime` is charged a whole scheduler tick as each lands in its guest (kernel/sched/cputime.c
+  `account_guest_time`), which can hold more than the thread ran, and is never adjusted.
+- *Process CPU* (`platform::process_usage`, Linux): the process's CPU-time clock,
+  `clock_gettime` of the kernel's process clock of its pid (`thread_group_cputime`: every
+  thread's runtime, those gone too, and a running one's time since its last update), in ns.
+  The clock ID is the kernel's encoding (include/linux/posix-timers_types.h), as glibc's and
+  musl's `clock_getcpuclockid` make it, without the `clock_getres` they check it with, which
+  the VM process's seccomp filter does not allow (`clock_gettime` it does). Every
+  `process_usage` caller (the daemon's stats and restart's watch, the progress reports) reads
+  ns now, where it read ticks.
+- *Guest time* (`platform::thread_guest_ns`, KVM): the stat's ticks, then the vCPU thread's own
+  CPU-time clock (bit 2 of the encoding, a thread of this process), and the less of the two.
+  A thread's time in its guest is part of its runtime, so this removes only what the whole-tick
+  charge made up. The thread's clock commits its running time into its process's group
+  counters (`task_sched_runtime` calls `update_curr`), so a process clock read later holds it,
+  posix CPU timers armed or not; a departed vCPU's last value stays within the process's clock,
+  which keeps a gone thread's runtime. So: process CPU ≥ Σ thread runtime ≥ Σ guest time, by
+  the kernel's accounting, and `vmm_ns` saturates at none for no real sample.
+- *macOS* already held it: `pti_total_user + pti_total_system` and `hv_vcpu_get_exec_time` are
+  both Mach absolute time (41.67 ns), the vCPU's within its thread's. *Windows*: the WHP
+  counter is 100 ns of the VP's run time, `GetProcessTimes` the process's kernel and user time;
+  whether Windows charges those by clock interval, and so can say less than the VP's counter,
+  is unreproduced (no WHP run of the test yet, R09): left as is, ROOT's WHP run tells.
+- *Literals.* 2 and 4, the encoding's `CPUCLOCK_SCHED` and thread bit, and 8, its three low
+  bits: the kernel's ABI, which both C libraries build in. 1 000 000 000, ns a second. No
+  other number; no tolerance. The wire form is unchanged (no version).
+- *Cold start.* None learned: a vCPU that has not run reads 0 of each. An ID the kernel does
+  not let this process read is an error, typed as the stat's (`Unread::ThreadStat`).
+- *Tested* (light, Linux x86_64 adacachy2): vmm `guest_time_is_never_more_than_its_thread_ran`
+  (red before: 3.87 s of 3.85 s), `a_processs_cpu_time_is_its_clocks` (red before: /proc's
+  ticks short of the clock read before them), `a_threads_cpu_time_is_read_by_its_id`, and the
+  existing usage and stat tests.
+- *Owed* (ROOT): the real-VM test on KVM, HVF and WHP, `cargo test --profile test-release -p
+  shards --test boot a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket`.
+
 ## 4. Start path (≤ 5 ms budget)
 
 The target: a user's `shards run IMAGE COMMAND` to its command executing in its microVM
