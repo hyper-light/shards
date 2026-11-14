@@ -98,6 +98,8 @@ The staging branch keeps the link open without sending `SEALED`. The broker's `s
 
 **Catching test:** start a disposable snapshot-capable, no-vsock confined actor; after initial setup send GRANT Write for an ungranted sentinel. Require refusal and no change, while a valid STAGE/COMMIT still succeeds.
 
+**Status (2026-11-14):** fixed in 1e8c83104 (red `grant_answer::windows_tests::a_vm_that_stages_its_snapshots_is_granted_nothing_more_once_it_starts`, e889915c4: the sentinel overwritten on Windows 10.0.26200 x86_64; PM M570, `docs/research/measurements/windows-p0/`).
+
 ### platform-04 — Unfiltered prlimit64 changes other host processes' hard limits
 
 **Location:** `crates/shards/src/confine.rs:86`.

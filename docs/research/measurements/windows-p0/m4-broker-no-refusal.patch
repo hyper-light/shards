@@ -1,0 +1,14 @@
+diff --git a/crates/shards/src/grant_answer.rs b/crates/shards/src/grant_answer.rs
+index adf1ae9bc..d2373f51d 100644
+--- a/crates/shards/src/grant_answer.rs
++++ b/crates/shards/src/grant_answer.rs
+@@ -604,9 +604,6 @@ pub fn serve(link: &crate::grant::Link, to: &dyn Recipient) -> Result<(), String
+             (kind::GRANT, Some(wanted)) => wanted,
+             _ => return Err("a VM sent a malformed request for access".into()),
+         };
+-        if started {
+-            return refuse("a VM asked for access after it started".into());
+-        }
+         started = wanted.iter().any(|(access, _)| *access == Access::Listen);
+         for (access, path) in wanted {
+             let payload = match handed(access, &path) {
