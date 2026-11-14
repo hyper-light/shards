@@ -343,6 +343,17 @@ struct Conn {
     quic: Connection,
     connected: bool,
     liveness: Liveness,
+    received: u64,
+}
+
+impl Conn {
+    fn heard_authenticated(&mut self, now: Instant) {
+        let total = received(&self.quic.stats().frame_rx);
+        if total > self.received {
+            self.liveness.heard(now);
+        }
+        self.received = total;
+    }
 }
 
 /// When a connection was last heard from, and how its waits stand (the person's ruling,
@@ -945,6 +956,7 @@ impl Io<'_> {
             self.next,
             Conn {
                 handle,
+                received: received(&quic.stats().frame_rx),
                 quic,
                 connected: false,
                 liveness,
@@ -1659,6 +1671,7 @@ impl<H: Handler> Driver<H> {
                             &mut self.next,
                             Conn {
                                 handle,
+                                received: received(&quic.stats().frame_rx),
                                 quic,
                                 connected: false,
                                 liveness,
@@ -1680,8 +1693,8 @@ impl<H: Handler> Driver<H> {
             Some(DatagramEvent::ConnectionEvent(handle, event)) => {
                 if let Some(key) = self.key_of(handle) {
                     if let Some(conn) = self.conns.get_mut(&key) {
-                        conn.liveness.heard(now);
                         conn.quic.handle_event(event, self.endpoint.configs_mut());
+                        conn.heard_authenticated(now);
                     }
                     self.pump(now, key);
                     return Ok(Some(key));
@@ -1906,6 +1919,7 @@ impl<H: Handler> Driver<H> {
             while let Some(event) = conn.quic.poll_endpoint_events() {
                 if let Some(event) = self.endpoint.handle_event(conn.handle, event) {
                     conn.quic.handle_event(event, self.endpoint.configs_mut());
+                    conn.heard_authenticated(now);
                 }
             }
             while let Some(event) = conn.quic.poll() {
@@ -2225,6 +2239,21 @@ fn eliciting(f: &hyper_quic::FrameStats) -> u64 {
         f.ack_frequency,
         f.immediate_ack,
         u64::from(f.handshake_done),
+    ]
+    .into_iter()
+    .fold(0u64, u64::saturating_add)
+}
+
+/// At e0613f52 hyper-quic records these frames only after AEAD and duplicate rejection
+/// (connection/mod.rs `on_decrypted_packet`, `process_payload`). ACK-only packets count.
+/// PADDING-only packets and saturated counters under-count; neither can invent liveness.
+fn received(f: &hyper_quic::FrameStats) -> u64 {
+    [
+        eliciting(f),
+        f.acks,
+        f.connection_close,
+        f.fec_source,
+        f.fec_repair,
     ]
     .into_iter()
     .fold(0u64, u64::saturating_add)
@@ -3193,16 +3222,10 @@ mod tests {
         newcomer.send(Command::Handler(Ask::Vanish)).unwrap();
     }
 
-    /// A bounded endpoint's one place, held by a handshake in flight (a client whose server's
-    /// flight never reached it): a handshake holding a place is judged as any holder is (ROOT's
-    /// ruling on #72's handshakes). While its client answers each newcomer's ask, it keeps its
-    /// place, over three of the probe timeouts its endpoint has before any RTT sample (RFC 9002
-    /// §6.2.2: the initial RTT's 333 ms, 999 ms; the client acknowledges nothing, so none comes);
-    /// once its client is silent, a newcomer takes its place, as that handshake goes unheard past
-    /// its probe timeout since the newcomer asked. Red with only established holders asked: the
-    /// newcomer refused at every attempt.
+    /// A repeated Initial is not an answer to a newcomer's PING: its packet number was already
+    /// accepted, so it supplies neither authenticated progress nor a fresh liveness event.
     #[test]
-    fn a_handshake_unheard_past_its_probe_timeout_gives_its_place_and_one_heard_keeps_it() {
+    fn a_replayed_handshake_does_not_keep_a_vanished_holders_place() {
         let server = crate::identity::Identity::generate().unwrap();
         let config = |of: &crate::identity::Identity| {
             crate::tls::client(of, server.fingerprint(), crate::tls::Known::Never).unwrap()
@@ -3256,29 +3279,13 @@ mod tests {
                 matches!(h, Heard::Lost(..) | Heard::Connected(_))
             })
         };
-        // Heard after each ask: it keeps its place.
-        let answering = Instant::now() + Duration::from_secs(3);
-        let mut attempts = 0;
-        while Instant::now() < answering {
-            attempts += 1;
-            let refused = attempt();
-            assert!(
-                matches!(refused, Heard::Lost(..)),
-                "attempt {attempts}: a handshake heard after the ask gave its place: {refused:?}"
-            );
-            socket.send_to(&first, address).unwrap();
-        }
-        assert!(
-            at_endpoint.try_recv().is_err(),
-            "the endpoint let a handshake go that answered"
-        );
-
-        // Silent: the next newcomer takes its place.
+        // Even a continuous replay cannot retain this vanished handshake's place.
         let patience = Duration::from_secs(20);
         let until = Instant::now() + patience;
         let mut attempts = 0;
         loop {
             attempts += 1;
+            socket.send_to(&first, address).unwrap();
             match attempt() {
                 Heard::Connected(_) => break,
                 refused => assert!(
@@ -3309,6 +3316,66 @@ mod tests {
         quic: Connection,
         to: SocketAddr,
         first: Vec<u8>,
+    }
+
+    #[test]
+    fn replayed_and_unauthenticated_datagrams_do_not_advance_liveness() {
+        let server = crate::identity::Identity::generate().unwrap();
+        let client = crate::identity::Identity::generate().unwrap();
+        let (heard, _) = mpsc::channel();
+        let (mut driver, _) = Driver::bind(
+            "127.0.0.1:0".parse().unwrap(),
+            Some(crate::tls::server(&server).unwrap()),
+            Party {
+                heard,
+                vanished: false,
+                vanish_at_connect: false,
+            },
+            crate::tls::Known::Never,
+        )
+        .unwrap();
+        let mut hand = Hand::connect(
+            driver.local().unwrap(),
+            crate::tls::client(&client, server.fingerprint(), crate::tls::Known::Never).unwrap(),
+        );
+        let now = Instant::now();
+        let from = hand.socket.local_addr().unwrap();
+        let key = driver
+            .receive(now, from, BytesMut::from(hand.first.as_slice()))
+            .unwrap()
+            .unwrap();
+        let before = driver.conns.get(&key).unwrap().liveness.last_heard();
+        assert_eq!(before, Some(now), "accept records the first flight");
+        driver
+            .receive(now + ms(1), from, BytesMut::from(hand.first.as_slice()))
+            .unwrap();
+        assert_eq!(
+            driver.conns.get(&key).unwrap().liveness.last_heard(),
+            before,
+            "a replay is no progress"
+        );
+        let mut forged = hand.first.clone();
+        *forged.last_mut().unwrap() ^= 1;
+        driver
+            .receive(now + ms(2), from, BytesMut::from(forged.as_slice()))
+            .unwrap();
+        assert_eq!(
+            driver.conns.get(&key).unwrap().liveness.last_heard(),
+            before,
+            "a forged tag is no progress"
+        );
+        driver.transmit(now + ms(3)).unwrap();
+        let (initial, rest) = hand.read(ms(1));
+        assert!(!initial.is_empty() || !rest.is_empty(), "the real client answers");
+        for packet in initial.into_iter().chain(rest) {
+            driver
+                .receive(now + ms(4), from, BytesMut::from(packet.as_slice()))
+                .unwrap();
+        }
+        assert!(
+            driver.conns.get(&key).unwrap().liveness.last_heard() > before,
+            "an authenticated nonduplicate handshake answer advances liveness"
+        );
     }
 
     impl Hand {
