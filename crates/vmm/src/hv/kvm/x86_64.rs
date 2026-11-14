@@ -162,10 +162,12 @@ impl Vm {
         fd.create_irqchip().map_err(call("KVM_CREATE_IRQCHIP"))?;
         let mut cpuid = template(kvm)?;
         cpuid::within(&mut cpuid, &config.baseline);
-        let tsc_deadline = kvm
-            .check_extension(sys::CAP_TSC_DEADLINE_TIMER)
-            .map_err(call("KVM_CHECK_EXTENSION"))?
-            > 0;
+        let tsc_deadline = cpuid::deadline_timer(
+            kvm.check_extension(sys::CAP_TSC_DEADLINE_TIMER)
+                .map_err(call("KVM_CHECK_EXTENSION"))?
+                > 0,
+            &config.baseline,
+        );
         let msrs = kvm.msr_index_list().map_err(call("KVM_GET_MSR_INDEX_LIST"))?;
         let xsave2 = fd
             .check_extension(sys::CAP_XSAVE2)

@@ -2340,7 +2340,7 @@ impl Patience {
 
     fn on(party: Party, site: &'static std::panic::Location<'static>) -> Patience {
         Patience {
-            wait: Wait::on(WaitKind::at(site), party, "a state its party comes to"),
+            wait: Wait::on(WaitKind::awaiting(site, STATE), party, STATE),
             state: Patient::Holds,
         }
     }
@@ -2595,10 +2595,27 @@ pub fn processes() -> Vec<(u32, u32, String)> {
 /// client's liveness alone; once its kind has an answer, it is looked at each W* past its
 /// start, and the test fails, `asked` naming the command, at a look that finds its party
 /// made no progress at all since the look before, its host not holding it (the person's
-/// ruling of 2026-11-13, D209).
+/// ruling of 2026-11-13, D209). Run as its thread unwinds a test's failure (a cleanup's
+/// `Drop`), a refusal is said on stderr and comes back as a run of no status, its account
+/// its stderr: a panic there would abort the whole test binary, every other test of it
+/// with it (#77: one of context.rs' did).
 #[track_caller]
 pub fn run_command(cmd: Command, asked: &[String]) -> Run {
-    run_ending(cmd, asked, None, Leftovers::Ended).unwrap_or_else(|ended| panic!("{}", ended.said))
+    let start = Instant::now();
+    match run_ending(cmd, asked, None, Leftovers::Ended) {
+        Ok(run) => run,
+        Err(ended) if std::thread::panicking() => {
+            let _ = writeln!(io::stderr(), "{} (as its test unwound)", ended.said);
+            Run {
+                status: None,
+                signal: None,
+                stdout: String::new(),
+                stderr: ended.said,
+                elapsed: start.elapsed(),
+            }
+        }
+        Err(ended) => panic!("{}", ended.said),
+    }
 }
 
 /// What a run ended at its end or its stall leaves of the processes under it ([`end_run`]).
@@ -2926,6 +2943,15 @@ impl WaitKind {
         WaitKind::of(site, "", "")
     }
 
+    /// The kind of `site` waiting for `awaited` ([`STATE`], [`PROGRESS`], [`STREAM`]): kept
+    /// apart from its call site's other waits, as a `#[track_caller]` helper's waits share
+    /// their caller's site (#77: managed_lifecycle.rs' `challenge_healthy`, whose
+    /// `published` state, there before its wait began, taught its stream's wait a W* of
+    /// 3.527 µs).
+    pub fn awaiting(site: &'static std::panic::Location<'static>, awaited: &str) -> &'static WaitKind {
+        WaitKind::of(site, awaited, "")
+    }
+
     /// The kind of `site` waiting on the command whose words are `words` ([`command_words`])
     /// and whose whole line is `line` ([`keyed_line`]), kept apart from its call site's
     /// other commands'. Its record is kept beside the call site's own
@@ -2947,39 +2973,45 @@ impl WaitKind {
                 line.to_string(),
             ))
             .or_insert_with(|| {
-                let mut name = format!("{}-{}-{}", site.file(), site.line(), site.column());
-                if !words.is_empty() {
-                    name.push('-');
-                    name.push_str(words);
-                }
-                if !line.is_empty() {
-                    let hash = sha2::Sha256::digest(line.as_bytes());
-                    name.push('-');
-                    name.extend(hash.iter().take(8).map(|b| format!("{b:02x}")));
-                }
-                let name: String = name
-                    .chars()
-                    .map(|c| {
-                        if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
-                            c
-                        } else {
-                            '_'
-                        }
-                    })
-                    .collect();
                 let kind: &'static WaitKind = Box::leak(Box::new(WaitKind {
                     site,
                     words: words.to_string(),
                     line: line.to_string(),
                     record: shards_api::Record::new(),
-                    file: workspace()
-                        .join("target/judge-records")
-                        .join(host_class())
-                        .join(name),
+                    file: WaitKind::kept_at(site, words, line),
                 }));
                 kind.learn_kept();
                 kind
             })
+    }
+
+    /// Where this host keeps the record of [`of`](Self::of)'s kind: a test of a cold kind's
+    /// waits removes it before that kind's first wait in its process.
+    pub fn kept_at(site: &std::panic::Location<'_>, words: &str, line: &str) -> PathBuf {
+        let mut name = format!("{}-{}-{}", site.file(), site.line(), site.column());
+        if !words.is_empty() {
+            name.push('-');
+            name.push_str(words);
+        }
+        if !line.is_empty() {
+            let hash = sha2::Sha256::digest(line.as_bytes());
+            name.push('-');
+            name.extend(hash.iter().take(8).map(|b| format!("{b:02x}")));
+        }
+        let name: String = name
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        workspace()
+            .join("target/judge-records")
+            .join(host_class())
+            .join(name)
     }
 
     /// What its waits have taught it.
@@ -3027,6 +3059,13 @@ impl WaitKind {
     }
 }
 
+/// What a [`Patience`] awaits, and keys its kind by ([`WaitKind::awaiting`]).
+pub const STATE: &str = "a state its party comes to";
+/// What a [`Heard`] awaits.
+pub const PROGRESS: &str = "its guest's progress";
+/// What a [`Following`] awaits.
+pub const STREAM: &str = "a guest's stream";
+
 /// This host, as the records of its waits are kept for it ([`WaitKind`]): its OS, its
 /// architecture and its logical CPUs, which tell two machines' own target directories apart
 /// and which every runner of one CI image shares, whose cached target a CI cache restores.
@@ -3050,6 +3089,8 @@ pub struct Party {
     said: Option<Said>,
     watched: std::collections::BTreeMap<u32, shards_api::Watch>,
     cpu: Cpu,
+    /// Whether it has been looked at: its first look has nothing before it.
+    looked: bool,
 }
 
 /// Whose processes a [`Party`]'s are, besides its home's daemon and what descends from it.
@@ -3094,6 +3135,8 @@ pub struct Looked {
     pub what: String,
     /// The CPU its processes ran since the look before.
     pub cpu: Duration,
+    /// The coarsest resolution of the counters it read (`shards_api::Watch::resolution`).
+    pub resolution: Duration,
     /// Its home's daemon ran ([`Cpu::Progress`]), said apart from `found`: the work of its
     /// waiter's own clients where its waiter asked the daemon meanwhile ([`Wait::look`]).
     pub daemon_ran: Option<String>,
@@ -3128,6 +3171,7 @@ impl Party {
             said: home.map(Said::of),
             watched: std::collections::BTreeMap::new(),
             cpu: Cpu::Progress,
+            looked: false,
         }
     }
 
@@ -3136,15 +3180,12 @@ impl Party {
         self.cpu = cpu;
     }
 
-    /// Its home's daemon now, as its pid file says.
+    /// Its home's daemon now, as its pid file names it by its ID and its start
+    /// (`shards_ipc::Named`, D185): none where the process with that ID is not the one that
+    /// started then, a crashed daemon's ID reused (#77 waits-09).
     fn daemon(&self) -> Option<u32> {
-        let home = self.home.as_ref()?;
-        std::fs::read_to_string(home.join("daemon.pid"))
-            .ok()?
-            .split_ascii_whitespace()
-            .next()?
-            .parse()
-            .ok()
+        let named = shards_ipc::Named::read(&self.home.as_ref()?.join(shards_ipc::PID))?;
+        named.lives().then_some(named.pid)
     }
 
     /// The processes it is now: its client (or this test's own VM processes) and its
@@ -3195,38 +3236,67 @@ impl Party {
     /// 2026-11-13); else still; and gone where no process of it runs and its daemon said
     /// nothing, its liveness ended. A process found anew is judged from the look after. A
     /// machine of this process's is never gone: its liveness is its caller's. Its daemon's own
-    /// run is said apart ([`Looked::daemon_ran`]), its waiter's to weigh.
+    /// run is said apart ([`Looked::daemon_ran`]), its waiter's to weigh. A look that found
+    /// nothing else, being its first or one that found a process of it anew, is based
+    /// (`Found::Based`): it has nothing before it to show stillness by (#77). A process once
+    /// found is of it until it has gone or ended, wherever it is listed since: a daemon's
+    /// microVMs as they end after it, a client's children it leaves as it exits (#77
+    /// waits-10). One found ended (exited, not reaped: `shards_api::Watch::ended`) is not
+    /// live, and its end is progress once, at the look that first finds it under way, never
+    /// again (#77 waits-09: a zombie's every look says its end under way).
     pub fn look(&mut self) -> Looked {
         use shards_api::Found;
         let members = self.members();
         let daemon = self.daemon();
-        self.watched.retain(|pid, _| members.contains(pid));
         let mut looked = Looked {
             found: Found::Still,
             what: String::new(),
             cpu: Duration::ZERO,
+            resolution: Duration::ZERO,
             daemon_ran: None,
         };
+        let mut based = !std::mem::replace(&mut self.looked, true);
         if self.said.as_mut().is_some_and(Said::said) {
             looked.found = Found::Progressed;
             looked.what = "its daemon said something".into();
         }
         // Whether a process of it was found live: one found anew, or one still to be read.
         let mut live = false;
+        let mut found_anew = Vec::new();
         for pid in members {
-            let Some(watch) = self.watched.get_mut(&pid) else {
-                let watch = shards_api::Followed::of_pid(pid)
-                    .ok()
-                    .flatten()
-                    .and_then(|followed| shards_api::Watch::of(followed).ok().flatten());
-                if let Some(watch) = watch {
-                    self.watched.insert(pid, watch);
-                    live = true;
-                }
+            if self.watched.contains_key(&pid) {
+                continue;
+            }
+            let watch = shards_api::Followed::of_pid(pid)
+                .ok()
+                .flatten()
+                .and_then(|followed| shards_api::Watch::of(followed).ok().flatten());
+            // Its daemon named again once read: the ID its file names is still the process
+            // that started then, so the one read is it.
+            let Some(watch) =
+                watch.filter(|w| !w.ended() && (daemon != Some(pid) || self.daemon() == daemon))
+            else {
                 continue;
             };
+            looked.resolution = looked.resolution.max(watch.resolution());
+            self.watched.insert(pid, watch);
+            found_anew.push(pid);
+            live = true;
+            based = true;
+        }
+        let mut gone = Vec::new();
+        for (&pid, watch) in &mut self.watched {
+            if found_anew.contains(&pid) {
+                continue;
+            }
+            looked.resolution = looked.resolution.max(watch.resolution());
             let before = watch.cpu();
+            let was_ended = watch.ended();
             let found = watch.look();
+            if matches!(found, Ok(Found::Gone)) || (was_ended && watch.ended()) {
+                gone.push(pid);
+                continue;
+            }
             looked.cpu = looked.cpu.saturating_add(watch.cpu().saturating_sub(before));
             live |= matches!(found, Ok(Found::Progressed | Found::Held | Found::Still));
             match (found, self.cpu) {
@@ -3248,9 +3318,15 @@ impl Party {
                 _ => {}
             }
         }
+        for pid in gone {
+            self.watched.remove(&pid);
+        }
         if !live && looked.found == Found::Still && !matches!(self.members, Members::Machine) {
             looked.found = Found::Gone;
             looked.what = "none of it runs".into();
+        } else if based && looked.found == Found::Still {
+            looked.found = Found::Based;
+            looked.what = "its first look at a process of it".into();
         }
         looked
     }
@@ -3309,6 +3385,25 @@ pub struct Wait {
     polls: u64,
     daemon_ran: Option<String>,
     live: Live,
+    stage: Stage,
+}
+
+/// Where a [`Wait`] is, by what its caller has found of its answer.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Stage {
+    /// Its answer not yet found missing: one found now was there as it began, which it
+    /// waited on no party for, and teaches nothing (#77 waits-03, as D185's and D209's
+    /// answers already there teach nothing).
+    Begun,
+    /// Its answer found missing ([`Wait::look`], [`Wait::absent`]): it waits on its party,
+    /// and its answer teaches its kind.
+    Awaited,
+    /// Answered ([`Wait::answered`]): what it still reads (a command's streams another
+    /// process holds open past its end) is judged by its kind's record as that answer left
+    /// it, from the answer on, a look that finds its party gone finding it still: no process
+    /// of it that could write runs (#77 waits-10: a cold wait kept past its client's end
+    /// followed a silent holder's liveness for ever). It teaches nothing more.
+    Answered,
 }
 
 thread_local! {
@@ -3358,19 +3453,50 @@ impl Wait {
             polls,
             daemon_ran: None,
             live: Live::new(),
+            stage: Stage::Begun,
         }
     }
 
     /// Its answer came (its client's own end, the line or the state it waited for): its
-    /// kind's answer, which teaches its record, kept on this host.
+    /// kind's answer, which teaches its record, kept on this host, where it was found
+    /// missing first ([`Stage::Awaited`]). What it reads after is judged anew
+    /// ([`Stage::Answered`]).
     pub fn answered(&mut self) {
-        self.judge.answered(self.work);
-        self.kind.keep();
+        if self.stage == Stage::Awaited {
+            self.judge.answered(self.work);
+            self.kind.keep();
+        }
+        if self.stage != Stage::Answered {
+            self.stage = Stage::Answered;
+            self.judge = shards_api::Judge::begin(&self.kind.record);
+            (self.progressed, self.held) = (None, None);
+        }
+    }
+
+    /// Its caller found its answer missing: it waits on its party from here.
+    pub fn absent(&mut self) {
+        if self.stage == Stage::Begun {
+            self.stage = Stage::Awaited;
+        }
+    }
+
+    /// Whether its caller has found its answer missing.
+    pub fn awaited(&self) -> bool {
+        self.stage != Stage::Begun
     }
 
     /// Looks at its party where a look is due, `output` whether its command printed since
-    /// the call before: refused where its judge refuses it.
+    /// the call before: refused where its judge refuses it. A caller looks only once it has
+    /// found its answer missing, which a look says ([`absent`](Self::absent)): one that may
+    /// find it there as it begins checks first ([`Following`]'s read, engine.rs' `Patient`).
     pub fn look(&mut self, output: bool) -> Result<(), shards_api::Stall> {
+        self.absent();
+        self.looked(output)
+    }
+
+    /// [`look`](Self::look), its answer not said missing: for a wait whose caller knows its
+    /// answer is there already ([`judged_there`]).
+    fn looked(&mut self, output: bool) -> Result<(), shards_api::Stall> {
         use shards_api::Found;
         let now = Instant::now();
         if output {
@@ -3381,7 +3507,15 @@ impl Wait {
         if now < self.next && due.is_none_or(|due| now < due) {
             return Ok(());
         }
-        let looked = self.party.look();
+        let mut looked = self.party.look();
+        if self.stage == Stage::Answered && looked.found == Found::Gone {
+            looked.found = Found::Still;
+        }
+        let span = shards_api::Span {
+            began: now,
+            ended: Instant::now(),
+            resolution: looked.resolution,
+        };
         self.work = self.work.saturating_add(looked.cpu);
         if self.daemon_ran.is_none() {
             self.daemon_ran = looked.daemon_ran;
@@ -3397,7 +3531,7 @@ impl Wait {
                 self.holding = Some(looked.what.clone());
                 self.held.get_or_insert(looked.what);
             }
-            Found::Still | Found::Gone => {}
+            Found::Still | Found::Gone | Found::Based => {}
         }
         let mut judged = Ok(());
         if due.is_some_and(|due| now >= due) {
@@ -3414,13 +3548,19 @@ impl Wait {
                 self.progressed.get_or_insert(ran);
             }
             self.polls = polls;
-            judged = self.judge.found(if self.progressed.take().is_some() {
+            let found = if self.progressed.take().is_some() {
                 Found::Progressed
             } else if self.held.take().is_some() {
                 Found::Held
+            } else if looked.found == Found::Based {
+                Found::Based
             } else {
                 Found::Still
-            });
+            };
+            judged = self.judge.found_over(found, span);
+        } else if looked.found == Found::Based {
+            // Its evidence begins at this look's end, due or not: a based look refuses nothing.
+            judged = self.judge.found_over(Found::Based, span);
         }
         self.live.set(self.account());
         let left = self
@@ -4710,7 +4850,35 @@ pub fn judged<T: Send>(
     stop: impl FnOnce(),
     call: impl FnOnce() -> T + Send,
 ) -> Result<T, String> {
-    let mut wait = Wait::on(WaitKind::at(std::panic::Location::caller()), party, asked);
+    let wait = Wait::on(WaitKind::at(std::panic::Location::caller()), party, asked);
+    judging(wait, Stage::Awaited, asked, stop, call)
+}
+
+/// [`judged`], of a call whose caller knows its answer is there already (what a member that
+/// has ended said, read to its end): judged as [`judged`] is, should it stall, its answer
+/// teaching its kind nothing, as it waited on no party (#77 waits-03: api_image.rs' reads of
+/// an ended member's channel taught their kind a W* of 21 ms over which its party ran no CPU
+/// at all, R* 0 ns, which refused a read that waited on an outside sign-in's round trip).
+#[track_caller]
+pub fn judged_there<T: Send>(
+    party: Party,
+    asked: &str,
+    stop: impl FnOnce(),
+    call: impl FnOnce() -> T + Send,
+) -> Result<T, String> {
+    let wait = Wait::on(WaitKind::at(std::panic::Location::caller()), party, asked);
+    judging(wait, Stage::Begun, asked, stop, call)
+}
+
+/// [`judged`]'s wait, its looks saying its answer missing where `stage` is
+/// [`Stage::Awaited`], and never where it is [`Stage::Begun`].
+fn judging<T: Send>(
+    mut wait: Wait,
+    stage: Stage,
+    asked: &str,
+    stop: impl FnOnce(),
+    call: impl FnOnce() -> T + Send,
+) -> Result<T, String> {
     std::thread::scope(|scope| {
         let (tx, rx) = std::sync::mpsc::channel();
         let worker = scope.spawn(move || {
@@ -4729,7 +4897,12 @@ pub fn judged<T: Send>(
                 },
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             }
-            if let Err(stall) = wait.look(false) {
+            let looked = if stage == Stage::Awaited {
+                wait.look(false)
+            } else {
+                wait.looked(false)
+            };
+            if let Err(stall) = looked {
                 break wait.refused(&stall);
             }
         };
@@ -4861,8 +5034,18 @@ impl Vm {
         self.wait_lines(texts, heard)
     }
 
-    /// Waits for a line containing any of `texts` while `heard` holds its wait.
+    /// Waits for a line containing any of `texts` while `heard` holds its wait. The lines
+    /// already come are read first: one of them is no answer it waited for, and teaches
+    /// nothing (#77 waits-03).
     fn wait_lines(&mut self, texts: &[&str], mut heard: Heard<'_>) -> String {
+        while let Ok(line) = self.lines.try_recv() {
+            let found = texts.iter().any(|t| line.contains(t));
+            self.hear(line.clone(), &mut heard);
+            if found {
+                return line;
+            }
+        }
+        heard.wait.absent();
         loop {
             match self.lines.recv_timeout(heard.next_look()) {
                 Ok(line) => {
@@ -4989,7 +5172,7 @@ impl<'a> Heard<'a> {
         streamed: Option<&'a AtomicU64>,
     ) -> Heard<'a> {
         Heard {
-            wait: Wait::on(WaitKind::at(site), party, "its guest's progress"),
+            wait: Wait::on(WaitKind::awaiting(site, PROGRESS), party, PROGRESS),
             guest,
             bytes: streamed.map_or(0, |s| s.load(Ordering::Relaxed)),
             streamed,
@@ -5175,17 +5358,24 @@ pub struct Following<'a, S: Timed = shards_vmm::platform::UnixStream> {
 /// TCP stream to a port its daemon publishes.
 pub trait Timed {
     fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()>;
+    fn set_nonblocking(&self, on: bool) -> io::Result<()>;
 }
 
 impl Timed for shards_vmm::platform::UnixStream {
     fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
         shards_vmm::platform::UnixStream::set_read_timeout(self, timeout)
     }
+    fn set_nonblocking(&self, on: bool) -> io::Result<()> {
+        shards_vmm::platform::UnixStream::set_nonblocking(self, on)
+    }
 }
 
 impl Timed for std::net::TcpStream {
     fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
         std::net::TcpStream::set_read_timeout(self, timeout)
+    }
+    fn set_nonblocking(&self, on: bool) -> io::Result<()> {
+        std::net::TcpStream::set_nonblocking(self, on)
     }
 }
 
@@ -5217,7 +5407,7 @@ where
         Following {
             stream,
             carried,
-            wait: Wait::on(WaitKind::at(site), party, "a guest's stream"),
+            wait: Wait::on(WaitKind::awaiting(site, STREAM), party, STREAM),
         }
     }
 
@@ -5232,6 +5422,24 @@ where
     &'a S: Read,
 {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        // Until a read finds nothing there yet, what it reads was there as its wait began:
+        // read without waiting, its end then no answer it waited for (#77 waits-03).
+        if !self.wait.awaited() {
+            let mut stream = self.stream;
+            stream.set_nonblocking(true)?;
+            let read = stream.read(buf);
+            stream.set_nonblocking(false)?;
+            match read {
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => self.wait.absent(),
+                Ok(n) => {
+                    if let Some(c) = self.carried {
+                        c.fetch_add(n as u64, Ordering::Relaxed);
+                    }
+                    return Ok(n);
+                }
+                Err(e) => return Err(e),
+            }
+        }
         loop {
             let left = self.wait.next_look();
             // A judged wait's look due now looks before it reads again.

@@ -38,6 +38,23 @@ impl Key {
 pub struct Ca {
     issuer: Issuer<'static, KeyPair>,
     der: Vec<u8>,
+    hosts: Vec<String>,
+}
+
+/// A leaf refused before signing, or the certificate operation that failed.
+#[derive(Debug)]
+pub enum LeafError {
+    Ungranted,
+    Certificate(String),
+}
+
+impl std::fmt::Display for LeafError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ungranted => f.write_str("the run's CA signs only exact granted hosts"),
+            Self::Certificate(why) => f.write_str(why),
+        }
+    }
 }
 
 impl std::fmt::Debug for Ca {
@@ -102,6 +119,7 @@ impl Ca {
         Ok(Ca {
             der: cert.der().to_vec(),
             issuer: Issuer::new(params, key.0),
+            hosts: hosts.iter().map(|h| h.to_string()).collect(),
         })
     }
 
@@ -112,13 +130,17 @@ impl Ca {
 
     /// A leaf for the server `name`, signed by the CA with a key of its own, as the injector
     /// answers a guest's TLS to a granted host: its certificate and its PKCS #8 key, DER.
-    /// One for a name the CA's constraints do not admit is signed, and no client takes it.
-    pub fn leaf(&self, name: &str) -> Result<(Vec<u8>, Vec<u8>), String> {
-        let err = |e: rcgen::Error| format!("a leaf for {name}: {e}");
+    /// DNS name constraints include descendants (RFC 5280 §4.2.1.10), so exact grant
+    /// membership must be checked here, before creating a key or signing anything.
+    pub fn leaf(&self, name: &str) -> Result<(Vec<u8>, Vec<u8>), LeafError> {
+        if !self.hosts.iter().any(|host| host.eq_ignore_ascii_case(name)) {
+            return Err(LeafError::Ungranted);
+        }
+        let err = |e: rcgen::Error| LeafError::Certificate(format!("a leaf for {name}: {e}"));
         let mut params = CertificateParams::new(vec![name.to_string()]).map_err(err)?;
         params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
-        validity(&mut params)?;
-        let key = Key::generate()?;
+        validity(&mut params).map_err(LeafError::Certificate)?;
+        let key = Key::generate().map_err(LeafError::Certificate)?;
         let cert = params.signed_by(&key.0, &self.issuer).map_err(err)?;
         Ok((cert.der().to_vec(), key.0.serialize_der()))
     }
@@ -160,8 +182,15 @@ mod tests {
             assert!(verifies(&ca, &leaf(&ca, host), host), "{host}'s leaf was refused");
         }
         for host in ["evil.example", "anthropic.com", "chatgpt.com.evil.example"] {
+            assert!(matches!(ca.leaf(host), Err(LeafError::Ungranted)));
+            // Exercise the certificate constraints independently of the signing guard.
+            let mut params = CertificateParams::new(vec![host.to_string()]).unwrap();
+            params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+            validity(&mut params).unwrap();
+            let key = Key::generate().unwrap();
+            let cert = params.signed_by(&key.0, &ca.issuer).unwrap();
             assert!(
-                !verifies(&ca, &leaf(&ca, host), host),
+                !verifies(&ca, cert.der(), host),
                 "{host}'s leaf held, though no grant names it"
             );
         }
@@ -185,5 +214,16 @@ mod tests {
     #[test]
     fn no_host_no_ca() {
         assert!(Ca::new(Key::generate().unwrap(), &[]).is_err());
+    }
+    #[test]
+    fn creds_07_ungranted_descendants_and_addresses_are_not_signed() {
+        let ca = Ca::new(Key::generate().unwrap(), &["api.example.test"]).unwrap();
+        for name in ["child.api.example.test", "elsewhere.test", "127.0.0.1", "::1"] {
+            assert!(
+                matches!(ca.leaf(name), Err(LeafError::Ungranted)),
+                "an ungranted name was signed: {name}"
+            );
+        }
+        assert!(ca.leaf("API.EXAMPLE.TEST").is_ok());
     }
 }
