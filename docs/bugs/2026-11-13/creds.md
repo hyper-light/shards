@@ -216,6 +216,8 @@ Found by the creds P0 lane (implementer, ROOT's lane for creds-01 to 04) while f
 
 **Fix direction:** Mask every response toward a granted host against every value leased to the VM for that host, as long as the lease and its responses in flight live (creds-03's wiped copy), and ask such requests `identity` as filled ones are.
 
+**Status (2026-11-13):** fixed in 8e4571130 (red `inject::tests::leaks::a_response_to_a_request_with_no_fill_is_masked_against_the_values_leased`, `an_h2_response_to_a_stream_with_no_fill_is_masked_against_the_values_leased`)
+
 ### creds-10 — P1 / high — A token host's informational responses go out before its tokens are known
 
 **Location:** `crates/net/src/inject.rs` (H1 `response_head`, H2 `response_block`, informational responses on a sign-in's token host).
