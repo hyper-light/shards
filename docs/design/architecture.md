@@ -34797,6 +34797,14 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
     upstream commit text. Pinned in kernel-6.18.48-7f8c931141dd with PVPANIC.
   - Red at 4da2f78f4 on the old kernel: boots_the_hosts_maximum_vcpu_count,
     boots_to_root_mount_without_a_root_device and brings_up_every_vcpu.
+- **The patch's first version hung guests of two or more vCPUs** (KVM at 549b2752f, boot.rs
+  1/3; pinned kernel-6.18.48-7f8c931141dd, reverted to 54fba99afaee in cd3b0b1e6). With the
+  flush now reaching the device, `out_intr` on another CPU ran in the window where the port
+  was on `pdrvdata.consoles` but not yet on its device's ports list: `find_port_by_vq` found
+  nothing, and `flush_bufs` freed the used buffer `__send_to_port` was spinning on with
+  `outvq_lock` held. Patch 0015 now also puts the port on the ports list before its console
+  is set up, as a multiport device's already is (virtio_console.c `out_intr`, `flush_bufs`,
+  `add_port`).
 - **Output served in the exit.** With the backlog replayed, the transmit worker's wake-up per
   16-byte printk chunk (hvc_console.c `N_OUTBUF`) let only 250 bytes out before a no-root
   panic 49 ms in. The panic's flush then deadlocked on the port lock held by the CPU stopped
