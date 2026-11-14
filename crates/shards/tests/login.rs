@@ -187,7 +187,7 @@ fn a_credential_helper_that_never_answers_holds_only_what_needs_its_answer() {
     std::fs::write(config.join("config.json"), r#"{"credsStore":"stuck"}"#).unwrap();
     // Its pid recorded beside it, then a wait for ever, its input never read.
     let stuck = no_helpers(&home).join(format!("docker-credential-stuck{}", std::env::consts::EXE_SUFFIX));
-    common::program_copy(shards_testdir::helper().unwrap(), &stuck);
+    shards_testdir::program_copy(shards_testdir::helper().unwrap(), &stuck).unwrap();
     let recorded = stuck.with_extension("pids");
     // Each wait here is judged as the tests' waits are (`common::Wait`, `Patience`), its kind
     // its call site: a client held on a helper that never answers makes no progress, and is

@@ -8678,18 +8678,35 @@ descriptors.
   what the daemon writes, what it reads); a run's, an exec's and an attach's, its stdin
   filled into `in`, and `out` and `err` shown as they come, unbuffered, all of them before
   it ends; a detached run's none. Its signals and resizes go on its slot's `say` beside its
-  request (`slots::Sender`, each message written whole). A daemon of an older build, which
-  offers no slots, is still reached on its socket, so that it steps aside for this one's.
+  request (`slots::Sender`, each message written whole). A daemon of a build from before
+  slots (v0.5.0's), which offers none, is never asked: see *No `daemon.sock`*.
 - On macOS every read of a FIFO waits first in select(2) (M253 part 3): the slots', the
   client's copies, and `shards_ipc::read` of a FIFO, a run's stdin in its VM among them;
   all but a client's wait on its list for a slot (M262, below).
 
 - **No `daemon.sock`** (slice 4). The daemon makes its lists as soon as it holds the
   home's lock, so that a client that finds them waits on them for its slot rather than
-  start a second daemon; an older build's socket left there goes. A home is served while
+  start a second daemon. A home is served while
   its list `free` has a reader, the daemon's own (`slots::served`): a starting daemon
-  waiting for the lock (`take_lock`) and a context's look at its machine ask that, or
-  whether an older build's socket answers. `daemon stop` asks through a slot and waits for
+  waiting for the lock (`take_lock`) and a context's look at its machine ask that.
+  *No path to a pre-slots daemon* (legacy-audit, 2026-11-14; runs-11 found it): the client
+  asked a daemon of a build from before slots (v0.5.0, the last release with
+  `daemon.sock`) on that socket, its run's, command's and stop's requests sent there, so
+  that it stepped aside, and `take_lock` took its socket's answer for a served home. All of
+  it is gone (`Asked::Socket`, `Says::Socket`, `stop_socket`, `shards_ipc::SOCKET`, the
+  run client's socket-peer reading of an end): a client and its daemon are one build
+  (D36), and a daemon of another build is stopped through its slots by the rule above,
+  which a pre-slots one cannot hear. Where one still serves a home (its socket takes a
+  connection, closed unasked), the client's ask and stop and a starting daemon's
+  `take_lock` refuse, typed (`shards_ipc::PreSlotsDaemon`, `no_pre_slots_daemon`),
+  saying to end that daemon's process, rather than wait on a holder that offers no slot. Unix
+  only: no daemon ran on Windows before slots. The Engine API's `engine.sock` (D170),
+  Docker's clients' socket, is not this and stays. Tests: the client's
+  `a_runs_signals_go_on_its_connection_from_its_request` now on a real slot's sender;
+  E2E stand-ins for a daemon that never answers (`an_interrupted_save_leaves_nothing_behind`,
+  `a_client_waiting_for_its_daemon_ends_on_sigterm`) hold the home's lock on every OS, as
+  Windows' did, where Unix's listened at `daemon.sock` (owed to ROOT: both E2E).
+  `daemon stop` asks through a slot and waits for
   the daemon to let go of its home (*A stop's wait*, below); the
   requests a daemon puts to itself for a context's steps go through slots of its own home
   (`cli::ask_here`), which start no daemon. The default context's endpoint is the Engine
@@ -8798,8 +8815,8 @@ descriptors.
   times); and on real VMs by
   `a_stop_while_another_stops_its_daemon_waits_for_its_home_let_go_of` (tests/daemon.rs).
 - **A request asked again** (2026-11-13, R03). A run's, an exec's and an attach's client
-  (`serve`) and a command's (`container`, `ask`, `ask_here`) asked again after a RESTART,
-  or a socket an older build shut unread, within `RESTARTS` (`slots::OFFERED` + 2 = 4): a
+  (`serve`) and a command's (`container`, `ask`, `ask_here`) asked again after a RESTART
+  (or, until legacy-audit, a socket a pre-slots build shut unread), within `RESTARTS` (`slots::OFFERED` + 2 = 4): a
   count derived in its comment alone, for one takeover's RESTARTs (the step-aside
   request's, each slot the closing daemon had offered of the kind asked, an older build's
   socket), and in no D-entry. No count bounds it now. The client reads `daemon.pid`
@@ -8837,7 +8854,8 @@ descriptors.
   (`EXIT`, `END`, `RESTART`), and the client says so as the microVM's stop; a slot that ends
   with no last word at all is its daemon's end, and the client says "the daemon ended before
   the command did". A command's client (`END`) reads any early end as its daemon's already;
-  a socket's peer (a daemon of a build from before slots) is the run's VM. Held by
+  no other peer is read (a pre-slots daemon's socket, whose peer was the run's VM, is gone,
+  legacy-audit). Held by
   `a_side_that_ends_without_its_last_word_says_so` and
   `a_runs_client_tells_its_daemons_end_from_its_microvms`, each red with its guard removed,
   on Linux, macOS and Windows; live on WHP, a daemon ended mid-run said so and a VM ended
@@ -9189,12 +9207,11 @@ configurable".
   is no cache, which a change could find stale; a change takes at the next run or build,
   whether the daemon runs or not.
 - **A log's history** is the most of the disk a run's log takes, records' framing
-  included (13 bytes a record), as written: equal segments of at most 20 MiB, two at
-  least, so that it holds at most its history and, once its oldest segment has gone, its
-  history less a segment at least (half of it below 40 MiB; for the default 1 GiB, 52
-  segments of 20,648,881 bytes, 51/52 of it). Whole 20 MiB segments enough to hold it
-  would hold up to 1,040 MiB where 1 GiB was asked, and a history in one segment would
-  keep nothing just after each rotation. A run's own `--log-opt max-size` and
+  included (13 bytes a record), as written: equal segments, two at least, so that it holds
+  at most its history and, once its oldest segment has gone, its history less two segments
+  at least (one gone, and what a whole number of segments leaves). A history in one segment
+  would keep nothing just after each rotation. The segments' size is derived (runs-11,
+  below; it was 20 MiB, Docker's `local` driver's, copied). A run's own `--log-opt max-size` and
   `max-file` still bound its log (D161), and the daemon's environment
   (`SHARDS_LOG_MAX_SIZE`, `SHARDS_LOG_MAX_FILE`), where it is set, wins over the file.
 - **The build cache's bounds.** A share is that much of the disk's bytes, exactly, 0% none,
@@ -9224,6 +9241,56 @@ configurable".
   owned staging removed, the base's transaction, both fail (the later snapshot drops
   `log-history`; another writer's `.disk.new` is published).
   [runs-fixes record](../research/measurements/runs-fixes/README.md#runs-09).
+- **A segment's size, derived (runs-11 `LOG_SEGMENT`, 2026-11-14).** ROOT's objective: a
+  reader resuming from a cursor reads at most one segment to find its place, while rotation
+  keeps a run's log cap whole; the size from the cap and the file system's allocation unit.
+  A cursor (`Pos`: its segment's number, its record's, its byte) names its segment, which a
+  reader opens by name and enters by its index (8 bytes a record) and, packed, its seek
+  table's one frame (D162); `--since` reads from the newest segment that begins no later
+  than it, that one whole (D187): either way one segment is the most a resuming reader reads
+  to find its place, so its cost grows with the size `S`. So does what a rotation takes from
+  the cap: one segment. Each segment also costs its own making and going, whatever its size:
+  a warm VM's `LOG_SEGMENT` ask, two files made, two removed, a pack, and a name every reader
+  lists (`LogFile::segments`): `H / S` of them for a history `H`. Counted in the file
+  system's own unit `U` (an allocation unit read or written each per-segment step, one per
+  unit of a segment), `H / S + S / U` is least at `S = √(H · U)` (its derivative
+  `−H / S² + 1 / U` is zero there), taken in whole units, since each file takes whole units
+  of its disk, at least one unit and at most `H / 2`, the two segments a cap needs; then
+  `H / S` segments, whole, so that they hold no more than `H` (`disk::log_retention`). `U`
+  is the home's (`platform::allocation_unit`: statvfs(3)'s `f_frsize`, "file system fragment
+  size"; Windows' sectors per cluster times bytes per sector, GetDiskFreeSpaceW), read as
+  each run starts, beside the settings; a unit that cannot be read refuses the run, typed as
+  the settings' own failures are. Its cold start, where no unit is known (a log's flags read
+  without a log written, `--log-driver none`'s run head, the record of processes when the
+  settings fail, the events' journal whose home's unit is unread): the cap's two halves, the
+  bound the cap alone sets. 1 GiB on 4 KiB units: 512 segments of 2 MiB (was 52 of
+  20,648,881 bytes); on 64 KiB clusters, 128 of 8 MiB; 64 KiB on 4 KiB, 4 of 16 KiB (was 2
+  of 32 KiB). The events' journal (D187) keeps its history so too.
+- **Every run's log held to its bound in bytes at each rotation (runs-11, ROOT's ruling).** A
+  writer's retention lets go of one segment a rotation, `seq − files` (segments.rs): a log
+  continued under segments of another size (one a daemon of 20 MiB segments began) or a
+  smaller `--log-history` kept the segments it held past its new bound, until as many
+  rotations had passed them, or for ever below `seq − files`. Now, as the daemon makes a
+  run's next segment (files.rs), the run's logs are held to their bound by D240's rule
+  (`managed/cap.rs` `hold`): a run whose members' logs are kept, all together within its one
+  cap, as before; any other, its command's log alone within `size × files` bytes of output,
+  its oldest let go first, never its newest, each loss in its `log.capped` (which `logs`
+  says), as D240's are. One rule for every run, and no migration: a home's logs from before
+  are held as any log is. Each hold weighs every segment from what the log records (its
+  index's time, its log's length, a packed one's seek table), an open and a read each: O(files)
+  a rotation, files at most `H / U` (`H / S` with `S ≥ U`); 512 for the default on 4 KiB
+  units. In steady state, segments of the log's own size within its own count, it lets go
+  of nothing. Red: `disk::tests::settings_read_back_and_come_to_their_amounts`, by mutation
+  putting back 20 MiB segments; `daemon::tests::a_runs_log_is_held_to_its_bound_whatever_its_segments`
+  by mutation holding runs without members' logs by their count alone (three segments of 64
+  bytes kept past a 128-byte bound). The cost model's weighting (a per-segment step and a
+  unit's read alike) is the model's; owed to ROOT: `logs -f` resume latency and rotation
+  cost against segment size, sizes from one allocation unit to the cap's half, n, p50, p90,
+  p99 and max per size, on APFS, ext4 or btrfs, and NTFS, by a harness under
+  `docs/research/measurements/`, which confirms the balance or gives the weights their
+  measured ratio; and
+  `cargo test -p shards --profile test-release --test containers a_logs_history_is_what_its_user_set`
+  (its segments now the derivation's) on HVF, KVM and WHP.
 - **A file that does not read**, edited by hand: a run is refused, saying the file and its
   line; a build's collection collects nothing and says so at every build (`WARNING: the
   build cache was not collected: ...`), the build itself done; `--reset` mends it.
@@ -9264,7 +9331,8 @@ happened before, where Docker's daemon, which runs on, says its last 256.
   as the listener came, then heard. A segment that ends in a line cut short, by a crash
   mid-write, is let be and the next begun past it; a line that does not read is passed by.
 - **Its history is a log's** (D186): `configure disk --events-history SIZE`, at most that
-  many bytes of the newest events, in equal segments of at most 20 MiB, two at least, the
+  many bytes of the newest events, in equal segments, two at least, their size a log's
+  (D186's runs-11 derivation, from the history and the home's allocation unit), the
   oldest removed as the newest begins; by default a log's 1 GiB, the user's call for a log
   (2026-10-18), the home's events being the home's log. The setting is read as each
   segment begins, so a change takes at the next.
@@ -12027,6 +12095,19 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     `until_unserved` (the kernel closing a killed daemon's descriptors) had 10 s.
     `Oplocked::new` (Defender's handle on a fresh copy) had its caller's `TIMEOUT`. Each now
     tries until the host is done, paced by `shards_api::pause`.
+    - *2026-11-14: `spawn`'s retry is gone, its cause removed.* A test's program written by
+      a descriptor of the test process itself is held open for write by every child another
+      test thread forks before that child execs, and an exec of it meanwhile is ETXTBSY
+      (execve(2)): Hex's Linux gate (adacachy2, parallel tests) failed shards-api's
+      `a_run_host_that_ends_before_its_run_starts_leaves_no_layer` with `Text file busy`, its
+      stand-in host written by `std::fs::write`. Every program a test runs is now written by a
+      process of its own, through one helper, `shards_testdir::program` (sh's `cat` and
+      `chmod`), or copied by `shards_testdir::program_copy` (cp): shards-api's stand-ins
+      (session.rs, client.rs, tests/sim.rs), the E2E copies of `shards` (`common::place`,
+      daemon.rs' rebuilt binary, containers.rs' `Gated`), init's and the daemon's test
+      scripts, and the registry's credential helpers, whose own copies of that writer
+      (`common::program`, `program_copy`, credentials.rs' `program`, auth.rs' `helper`'s) and
+      install(1) are gone. No exec meets ETXTBSY, so nothing waits one out.
   - *The call sites.* The terminals' exit waits and Windows' modes are a `Wait` on the
     shell's party (terminal.rs, terminal_windows.rs). vsock.rs' 60 s `TIMEOUT` and its 20 s
     read are `Following` reads, its greeting a `within`. confined.rs' record wait and its
@@ -14662,8 +14743,10 @@ the guest keeps their metadata alone.
 `image_manifest` is its selection, even when its index's preferred platform changes.
 Inspect reads that descriptor and its config through the store's existing digest/size
 checks and OCI document/config bounds; ownership-mode copy uses those same facts.
-Only an old record with no selected manifest uses the preference. A recorded selection
-that cannot be read never falls back to another platform: inspect has no image facts,
+A record with no selected manifest (made before shards kept it, 2026-11-03) has no
+image facts, as one whose recorded selection cannot be read: neither falls back to the
+reference's preference, another platform's facts where it changed (legacy-audit,
+2026-11-14: the preference read for such a record before it): inspect has no image facts,
 and copy refuses with the missing container/config identity. An available config with
 no User keeps OCI's root default; an explicit run user remains authoritative.
 The two-platform store regression changes the preference both ways, checks each selected
@@ -15351,7 +15434,9 @@ other's but what the move sends, and what the other takes by content:
   No metadata or bytes are replayed for an alias: the inode's contents and attributes
   stay shared. POSIX.1-2024 `linkat` specifies shared identity and flags 0's no-follow
   behavior; the share server's LINK handler already uses that seam. Readers accept
-  version 2 as before; older readers refuse version 3 before extraction. Version/tag
+  version 3 alone, as both ends of a move are one build's (D36): version 2's stream, read
+  before beside it, is refused like any other version before extraction (legacy-audit,
+  2026-11-14: `a_volumes_files_move_as_its_guest_saw_them` refuses versions 1, 2 and 4). Version/tag
   numbers are assigned grammar, path sizes retain the existing PATH_MAX bound, and
   link count greater than one is the host's alias fact, not a tuning choice. The red
   test `a_volumes_hardlinks_keep_shared_contents_after_move` failed at `73af9fb62`
@@ -19656,8 +19741,13 @@ it notes what its guest needs then (`plug::note_startup`, `startup`): the least 
 hold leaves the first growth's working room (`working_room`) beside what its kernel uses and
 the reserve (memory-11's slack, its uncharged term cold, so its use again; at most a 64th for
 what may still be plugged; the CPUs' lists' eighth), `t ≥ (2·used + overshoot + working)·64/55`;
-and says it with MemTotal as it booted in `NEEDED` (`NEED KILLED START TOTAL`; an older init's
-two words still read). The host learns from it what that guest needs to boot
+and says it with MemTotal as it booted in `NEEDED` (`NEED KILLED START TOTAL`, all four or
+none: an init whose start was not noted says why instead, and its build's needs go unrecorded).
+The host reads the four words alone (`builder::said_needed`): the init it carries is of its own
+build (D36), so the two words an init before memory-15 said, or any other form, are refused
+typed (`builder::Unsaid`) and leave the home's record as it was, never read as a need with no
+boot (legacy-audit, 2026-11-14: red/green `a_builders_needed_is_four_words_or_refused`, the
+two-word form parsed before it). The host learns from it what that guest needs to boot
 (`build::boot_need`): past MemTotal, what the kernel took at boot is its image and its page
 structures, a 64th of what it booted with, allocated from memblock and never in MemTotal; the
 first stays as it was, the second is counted for the memory booted with, so the least `b`
@@ -27562,6 +27652,21 @@ launches are one, `crate::launch` (launch.rs), each caller's descriptors and wor
 old layout by unit tests at the seam; its real-VM runs on every backend and R14's cold start
 before and after are owed to ROOT: docs/research/measurements/vm-launch-seam-v1/README.md.
 
+**A request that meets the host's end (2026-11-14, flaky3).** A host that exits before it
+takes its request (`CREATE`, or a warm host's `WARM`) was refused by whichever came first: the
+request's write meeting its end, `Os { "the run host's request", BrokenPipe }`, or the wait
+seeing it gone, `Host("it exited before its run started…")` with its words. On Linux with
+parallel tests (adacachy2, 64 test threads, 40 runs of shards-api's lib tests at 85421bddb) 11
+runs refused `a_run_host_that_ends_before_its_run_starts_leaves_no_layer` and 10 the GPU
+report's boot (`an_image_boot_takes_its_vms_gpu_report_as_a_managed_launch_does`) so. A write
+that meets the peer's end is that end (EPIPE, ECONNRESET; M527): `Begun::send` follows it into
+the wait, which types it as every other host's end, its words and exit with it. Every other
+error of the write is still `Os`. At a018a07be (this, with the GPU stand-in's frames said once
+its request comes) 0 of 40 such runs refused either; ETXTBSY, 5 of 40 at main 6f3cd4428, was 0
+of 40 from b12325ce2 on (D209's note). One failure of another cause stays, reported to ROOT:
+`a_stop_returns_once_its_host_and_every_process_it_started_are_gone`, "the stop returned while
+the VM its run host started still ran", 1 of 40.
+
 **What would falsify it.** A run host costing more per microVM than the daemon per run (then
 one host per orchestrator); an orchestrator needing to link the VMM; credentials a member
 must not read (then plan P10's opaque broker).
@@ -27825,7 +27930,10 @@ API's protocol: its output drained, its end, its connections.
     the record is in place before the VM process runs. A record that cannot be written ends the
     suspended child (its Job's last handle drops) and fails the launch, so no managed VM runs
     unnamed. Not a wire: a file of one fixed line, read by the API that names its path, so no
-    version; a `shards` from before writes none, answered `Unrecorded`.
+    version. No record is `Unrecorded` for one reason alone: its `shards` has not started the
+    VM process yet; a `shards` that writes none is not one this API launches (legacy-audit,
+    2026-11-14: the "older shards" reading of a missing record is gone; no branch takes it
+    as normal, and `Unrecorded` stays typed).
   - *Typed answers* (R04): `Refusal::Ended` once the guest has ended; `Refusal::Process` with
     `Exited` or `DifferentStart { observed }` where the named process has gone or its pid is
     another's (each answer is checked against the OS as it is given: `taken::Held::find` on
@@ -27870,35 +27978,64 @@ API's protocol: its output drained, its end, its connections.
   - `Until::At(instant)` is the old finite budget, unchanged: a take that reaches it is
     `GpuProbe(Pending)`, an instant already past refused `Pending` at once.
   - `Until::Released` has no clock. A take (`ManagedGuest::take_gpu_report(Duration::MAX)`)
-    waits until the report's writer closes after its frame, or until its VM process ends as
-    its native receipt says (`TerminalScope::Released`, which the guest's watcher already
-    waits on, as every managed wait follows its VM process, D215): refused
-    `GpuProbe(GpuProbeError::Ended)`, typed, a new variant, where it ended with no complete
-    frame (its writer still open elsewhere, or the frame torn), or with the receipt's own
-    refusal where the watcher's observation failed (an end not proven is not said as one). A
-    finite `patience` still caps the take, and the end answers a finite take too, where it
-    used to wait out its deadline. A take begun after the watcher let the pipe go answers
-    `Ended` too, where it said `Unavailable`. A writer closed with nothing is `Unreported`,
-    as before.
+    waits until the report's writer closes after its frame, or until its VM process ends, as
+    its kernel says (*How it waits*): refused `GpuProbe(GpuProbeError::Ended)`, typed, a new
+    variant, where it ended with no complete frame (its writer still open elsewhere, or the
+    frame torn). A finite `patience` still caps the take, and the end answers a finite take
+    too, where it used to wait out its deadline. A take begun after the watcher let the pipe
+    go answers `Ended` too, where it said `Unavailable`. A writer closed with nothing is
+    `Unreported`, as before.
   - `GpuReportRequest::until()` replaces `deadline()`: a native launcher that bounded its
     own launch by the report's instant (Hex's macOS remote launch, `until.min(deadline)`)
     takes `until().instant()`, none for `Released`.
-  - *How it waits.* The watcher, as its wait on the receipt returns, records how it ended
-    (`ReportWatch`: `Unasked`, `Watching(Ending)`, `Ended(Result)`) and tells the take,
-    before the report's cleanup, which waits for the take to let the report go. Unix: a
-    second private pipe (close-on-exec), whose one writer the watcher drops; the take polls
-    the report pipe and the end pipe's read end together (one poll(2), -1 with no deadline),
-    and on the end's POLLHUP reads the report pipe once more, so a frame its writer closed
-    before the end is still the frame. Windows: a private manual-reset event the watcher
-    sets; the pending overlapped read waits on its own event and that one together
-    (WaitForMultipleObjects, INFINITE with no deadline), checks the read once more without
-    waiting, and cancels it as the deadline path does, its cells kept until the watcher's
-    cleanup completes it. No thread, timer or poll period of ours.
+  - *How it waits* (amended 2026-11-14: the person called the first form, below, "a tad
+    dangerous"). The take waits on the VM process itself, an object its kernel signals as it
+    exits, beside the report's pipe: no step of ours stands between the end and the take.
+    `boot_managed` holds the VM process by its pid and start as the launch returns
+    (`physical::report::Vm::of`, the holds `connect_borrowed_before` and `vm_process` already
+    make): a pidfd (pidfd_open(2), readable at exit) on Linux, a kqueue with
+    EVFILT_PROC/NOTE_EXIT registered on macOS, a handle with SYNCHRONIZE (OpenProcess) on
+    Windows, each held from before its start is read, so a pid given to another process
+    since is that process's start, never followed. On Linux and macOS the VM process is the
+    receipt's `Identity`, the launched `shards` become it in place (exec). On Windows the
+    launched `shards` is its keeper: it starts the VM process as its child, names it in
+    `<vsock>.vm` while it is still suspended (`vm_process_file`, 1f26a6d1e), and exits after
+    it, but a keeper killed first leaves its VM process running, still holding the report's
+    writer. So on Windows the take holds the VM process the record names (`Vm::Held`); where
+    the record is not written yet it holds the keeper, held before the record is read
+    (`Vm::Unnamed`), and as the keeper's end is seen it reads the record again: the VM
+    process named is held in its place and the wait goes on; none named, its keeper gone, no
+    VM process of its ran (one started suspended ends with its Job's last handle), `Ended`.
+    The record is read again as a take begins too. (The first landing of this amendment,
+    b22f890bf, held the keeper alone on Windows, a premature `Ended` where it ended first;
+    ROOT found it.) A process found exited, its pid another start's, or (Unix) no process's
+    (ESRCH: ended and reaped) is `Vm::Ended`: the take reads the pipe once and answers. Any other failure to hold it refuses the boot,
+    `Refusal::Process` with its cause, the launch stopped, as an identity that cannot be read
+    is. The pipe is a `report::Opened` until it follows that process (`follow`), a
+    `Receiver` after: a take of a report that follows nothing cannot be written. Unix: one
+    poll(2) of the report pipe and the held descriptor (-1 with no deadline); the descriptor
+    readable, the report pipe is read once more, so a frame its writer closed before the end
+    is still the frame. Windows: the pending overlapped read waits on its own event and the
+    process handle together (WaitForMultipleObjects, INFINITE with no deadline), checks the
+    read once more without waiting, and cancels it as the deadline path does, its cells kept
+    until the watcher's cleanup completes it. The watcher still follows the receipt alone
+    (D215); it tells the take nothing. A take holds the report, so the watcher's cleanup
+    waits for it, which ends no later than the process does; an observation of the receipt
+    that failed is said as the guest's managed end before that cleanup, so the guest's waits
+    learn it while a take still waits on a VM process that may live. No thread, timer or poll
+    period of ours.
+  - *The first form, gone.* The watcher told the take: on Unix by dropping the one writer
+    of a private end pipe the take polled, on Windows by SetEvent of a private manual-reset
+    event. A SetEvent that failed (none documented for an owned event of full access) left
+    a take with no clock unwoken for good, and the take's end was only as sure as the
+    receipt's observation and the watcher's step after it. Both, and `ReportWatch`
+    (`Unasked`, `Watching(Ending)`, `Ended(Result)`) with them, were deleted in the same
+    landing; no path tells a take anything. A take whose VM process is alive answers no
+    observation failure of the receipt's: an end not proven is not said as one, and the
+    process's own end comes from its kernel.
   - *Literals and cold start.* None: -1 and INFINITE are the OSes' own "no timeout", the
-    create's instant and the caller's patience the only clocks. Nothing learned, no cold
-    start. Uncertainty: on Windows a SetEvent that failed (no documented failure for an owned
-    event of full access) leaves a take with no clock unwoken; the watcher records it as the
-    guest's managed end.
+    create's instant and the caller's patience the only clocks; ESRCH is pidfd_open(2)'s and
+    kevent(2)'s documented "no such process". Nothing learned, no cold start.
   - *Wire.* API only: the deadline never crossed a wire. The report frame, the image channel
     (version 30) and `ImageSpec::gpu_report` are unchanged.
   - *Tests (light)*, shards-api: `client::tests::a_report_with_no_clock_is_refused_ended_as_its_vm_process_ends`
@@ -27916,6 +28053,32 @@ API's protocol: its output drained, its end, its connections.
     no-clock tests green; restored, `-- managed` 14 passed. Owed (ROOT): the Windows reader's
     end wait and these tests, run first on CI's Windows legs; Hex's own managed GPU create with
     `Until::Released` on a real VM.
+  - *Tests of the amendment (light)*, shards-api. The stand-in VM process is a real process
+    now, a child of the test binary's (`client::tests::waiter`), its pid and start the
+    stand-in receipt's identity: `a_report_with_no_clock_is_refused_ended_as_its_vm_process_ends`
+    (it exits as its stdin ends, reaped; `Ended`, no answer before), `a_report_with_no_clock_is_taken_as_it_comes`
+    (unchanged but for the process), and the new
+    `a_report_with_no_clock_wakes_as_its_vm_process_is_killed`: the process killed outright
+    (`Child::kill`: SIGKILL, TerminateProcess) while a take with `Until::Released` and
+    `Duration::MAX` waits, its receipt saying nothing (`terminal()` none) before the take
+    answers `Ended`; each answer judged by `while_runs::answer` (failed where the take is found
+    blocked in the kernel at two looks a millisecond apart), no production timeout. D232's
+    report tests follow this test process itself (`report::tests::followed`). Red, the first
+    form with the watcher's signal removed (the end pipe's writer never dropped, as a failed
+    SetEvent leaves the event; the kill test ported, the receipt saying `Released`): both
+    no-clock end tests failed "blocked in the kernel 11.18 ms / 15.46 ms past its 1ms", the
+    take never woken. Green, this form: `cargo test -p shards-api --lib -- report managed` 30
+    passed on adas-mac-studio.local (macOS arm64; adas-mac-studio-3.local was at 0 of 14
+    cores idle) and on adacachy2 (Linux x86_64); the held descriptor left out of the poll
+    (`poll(.., 1, ..)`), both end tests failed "blocked in the kernel" and the as-it-comes
+    test passed; restored, green. `cargo clippy -p shards-api --all-targets -- -D warnings`
+    clean on both, and `cargo xwin clippy` of it for x86_64-pc-windows-msvc clean. Windows'
+    keeper: `client::tests::a_report_with_no_clock_outlives_its_vm_processs_keeper` (Windows
+    only): the receipt's identity a stand-in keeper that names a stand-in VM process in its
+    record after the take began, then exits first; the VM process writes its report after,
+    and the take returns it, where the keeper's hold answered `Ended`. Compiled and linted
+    for Windows only (`cargo xwin clippy`). Owed (ROOT): the Windows reader's process-handle
+    wait, the keeper's re-read and these tests on a Windows host (CI's Windows legs first).
 - *Through an orchestrator's run* (Hex lead's ask, Hex goal 39; D231's run host). Hex publishes
   no GPU box's VM Live without its VM process's own renderer report, checked host-side; an
   image run gave none (`/run/shards/gpus` is what init was asked, not what the renderer
@@ -29560,9 +29723,13 @@ and no exec, attach or terminal (the plan's steps 5, 6 and 7).
     its rotations, by a segment at most, which is the bound's one segment.
   - *Each owner's loss.* Each segment the cap lets go is its owner's record, `log.capped` beside its
     log: cumulative segment and byte counts, durably replaced by the existing platform
-    atomic-write seam. A legacy segment/bytes history is streamed through fixed format-derived
-    buffers and replaced on the next loss; no log-open allocation follows lifetime history.
-    Windows readers select the newest version. `logs` says, on stderr, before what is kept,
+    atomic-write seam: one line, `sum SEGMENTS BYTES`, read to a byte past its longest (46
+    bytes: "sum ", two u64s' decimal digits, a space, a newline); anything else is refused
+    (InvalidData). The per-loss `SEGMENT BYTES` lines control-05 replaced are not read: they were
+    written on main from 5ca8129ec to 76ace2f18 (2026-11-13, ten hours) and are in no release
+    (`git tag --contains 5ca8129ec`: none), so no user's home holds one (legacy-audit,
+    2026-11-14: red/green `a_caps_loss_record_is_its_sum_line_or_refused`, the old lines summed
+    before it). Windows readers select the newest version. `logs` says, on stderr, before what is kept,
     how much of each log's older output went to the run's one log cap; a log lane says it as
     `Rotated { oldest }` (D238). A segment its own retention let go meanwhile is no loss of the cap's.
   - *Compressed as the run's.* A member's segments rotated as they fill are compressed on the
@@ -31205,6 +31372,17 @@ ruleset, the run's seccomp filter.
     :2568), so the first cut sent a closed descriptor as a refusal's, its sendmsg failed
     EBADF, and the exec waited for ever where `Processes` was due (confine-11, reproduced at
     `with_starter`'s mutant: init's end polled with nothing queued, `pids.events` `max 1`).
+    init's other `CLONE_PIDFD` forks take the number only from a child born (audit,
+    2026-11-14): `start`'s clone3 of a member's first process writes it into its
+    `managed::Launch`, a bare `RawFd` that no `Drop` closes, made an `OwnedFd` only by
+    `Launch::parent`, called past `pid < 0`'s return; the test fixture `managed::tests::Child`
+    asserts `pid > 0` before it owns one; and shards-server's sandbox helper
+    (`crates/server/src/sandbox.rs`) answers a refused worker `-1` and owns its number only
+    past `pid < 0`. Nothing in crates/shards, vmm or ipc forks with `CLONE_PIDFD`.
+    `domains::tests::a_first_process_refused_at_pids_max_closes_nothing_at_its_pidfd_number`
+    holds the first: start's clone3 into a cgroup of `pids.max` 0 is refused EAGAIN with the
+    number written, another descriptor takes it, and it outlives the `Launch` (Linux 7.3.3
+    x86_64; red, `open: false`, with the slot a type that closes itself).
   - *Costs* (confine-11, 2026-11-14, [docs/bugs/2026-11-13/confine.md](../bugs/2026-11-13/confine.md)).
     One process of the member's for the member's life, a fork of init's address space as the
     member's first process was, its pages shared copy-on-write until either writes.
@@ -31323,7 +31501,8 @@ SHARDS_TEST_CGROUP in a delegated scope
 `a_command_past_what_its_member_declared_is_refused` (`with_starter` mutated to the declared
 count: the first `not born: NotBorn { errno: 11 }`, the second `not asked: Gone`, its member
 of one process left no starter; before the starter's pidfd fix the first waited for ever),
-and `a_member_whose_starter_went_is_held_to_what_it_declared`. Real VMs, ROOT's
+`a_member_whose_starter_went_is_held_to_what_it_declared` and
+`a_first_process_refused_at_pids_max_closes_nothing_at_its_pidfd_number`. Real VMs, ROOT's
 (`cargo test -p shards --profile test-release --test member_exec`):
 `a_command_run_in_a_member_is_confined_as_the_member_is` (uid, PID namespace, name, caps and
 `no_new_privs`, signals, Landlock on files and TCP, seccomp, cgroup and network, another

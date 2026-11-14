@@ -982,7 +982,7 @@ fn needs_path(home: &Path) -> PathBuf {
 /// and what its guest was learned to need to boot (`boot`: its identity and bytes), to the
 /// record at `path`, under the record's lock, so that builds ending together each count;
 /// unlocked before it closes (PM M244).
-fn record_need(path: &Path, need: u64, short: bool, boot: Option<(&str, u64)>) -> Result<(), String> {
+fn record_need(path: &Path, need: u64, short: bool, boot: (&str, u64)) -> Result<(), String> {
     use std::io::{Read as _, Seek as _, Write as _};
     let said = |e: std::io::Error| format!("{}: {e}", path.display());
     let mut file = std::fs::File::options()
@@ -1003,9 +1003,7 @@ fn record_need(path: &Path, need: u64, short: bool, boot: Option<(&str, u64)>) -
                 short: had.short || short,
                 boots: had.boots.clone(),
             };
-            if let Some((identity, bytes)) = boot {
-                now.learned(identity, bytes);
-            }
+            now.learned(boot.0, boot.1);
             if now == had && !text.is_empty() {
                 return Ok(());
             }
@@ -6615,20 +6613,20 @@ mod memory_tests {
         let dir = shards_testdir::TempDir::new("needs").unwrap();
         let path = super::needs_path(&dir);
         assert_eq!(Needed::read(&path), Needed::default());
-        super::record_need(&path, 3 * GIB, false, Some(("a", 400 * MIB))).unwrap();
-        super::record_need(&path, GIB, false, Some(("a", 300 * MIB))).unwrap();
-        super::record_need(&path, GIB, false, Some(("b", 500 * MIB))).unwrap();
+        super::record_need(&path, 3 * GIB, false, ("a", 400 * MIB)).unwrap();
+        super::record_need(&path, GIB, false, ("a", 300 * MIB)).unwrap();
+        super::record_need(&path, GIB, false, ("b", 500 * MIB)).unwrap();
         let read = Needed::read(&path);
         assert_eq!((read.most, read.short), (3 * GIB, false));
         assert_eq!(read.boot_for("a"), Some(400 * MIB));
         assert_eq!(read.boot_for("b"), Some(500 * MIB));
         assert_eq!(read.boot_for("c"), None);
-        super::record_need(&path, 2 * GIB, true, None).unwrap();
-        super::record_need(&path, 5 * GIB, false, None).unwrap();
+        super::record_need(&path, 2 * GIB, true, ("a", 100 * MIB)).unwrap();
+        super::record_need(&path, 5 * GIB, false, ("b", 200 * MIB)).unwrap();
         let read = Needed::read(&path);
         assert_eq!((read.most, read.short), (5 * GIB, true));
         assert_eq!(read.boot_for("a"), Some(400 * MIB));
-        // A record of before memory-15, its guests' boots none.
+        // A record that names no guest's boot learns none.
         assert_eq!(Needed::parse("needed 7\nshort no\n"), needed(7, false));
         std::fs::write(&path, "garbled").unwrap();
         assert_eq!(Needed::read(&path), Needed::default());
@@ -6637,7 +6635,7 @@ mod memory_tests {
         std::thread::scope(|s| {
             for i in 1..=8u64 {
                 let path = &path;
-                s.spawn(move || super::record_need(path, i * GIB, false, Some(("a", i))).unwrap());
+                s.spawn(move || super::record_need(path, i * GIB, false, ("a", i)).unwrap());
             }
         });
         assert_eq!(Needed::read(&path).most, 8 * GIB);
