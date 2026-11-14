@@ -63,6 +63,21 @@ In-kernel GIC:
 | SPIs | INTID 32–1019 (988) |
 | EL1 virtual timer | PPI INTID 27 |
 
+### Runs review fixes: focused validation (2026-11-13)
+
+The [runs fix record](measurements/runs-fixes/README.md) retains source-specific
+red/green unit tests on adas-mac-studio.local (macOS arm64). These are functional
+checks, not real-VM validation or performance measurements. The runs-01 fault
+case returned success instead of EIO before correction; the corrected case and
+49 share-server tests pass, and shards-vmm all-target clippy passes on that host.
+Other host/guest checks remain owed to ROOT as the record names them.
+The same record retains runs-02's actual overwritten-marker unit red and green
+rename/cleanup + stopping-lock checks and shards all-target clippy on that Mac;
+its real-daemon/VM counterpart remains unrun.
+Runs-04's exited-after-WARMED stand-in failed as not safely retryable before the
+change; afterward the regression, 5 pool tests and 30 session tests pass, with
+shards-api all-target clippy. Actual VM death during handoff remains ROOT's check.
+
 ### M2. Object lifecycle (`lifecycle`, n=200, µs)
 
 | Operation | p50 | p99 |
@@ -24246,3 +24261,22 @@ the stage and commit still answered; both mutants (no `SEALED`; no broker refusa
 Unit-level functional evidence, no real VM: `confine` refuses any process outside an
 AppContainer, and the WHP real-VM tests are owed.
 [Commands, logs, mutants and owed runs](measurements/windows-p0/README.md).
+
+### M571. Pending credential leases own their time budget and live waiters (D242, creds-05/06)
+
+2026-11-13, adas-mac-studio.local, Darwin arm64; implementer light checks only.
+Red 6eb3ad718: `cargo test -p shards-net creds_ -- --nocapture` reproduces duplicate
+waiters `[1, 1, 2, 1, 2, 2]` where two distinct flows should resume once each.
+Fix 1b21eb21a deduplicates pending flow tokens and removes pending/resumed tokens
+on flow release. The outstanding broker ask remains identifiable for a late answer.
+Merged 16ebc78cf: `cargo test -p shards-net lease::`, 12 passed; shards-net all-target
+clippy and development-policy check passed. Exact commands, setup failures, retained
+output and unrun work: [record](measurements/creds-fixes-v1/README.md).
+No performance, allocation, exhaustion or real-VM result is claimed; ROOT owns those.
+
+creds-05: a52f4518c anchors returned remaining life at the first ask, conservatively
+spending broker work and all relay time, including cold starts. Spent or unrepresentable
+budgets resume as typed Lapsed without retaining a value; retries cannot reset the clock.
+Red at 6eb3ad718; merged 950c1a0fe, 14 lease tests and shards-net all-target clippy pass
+on the same Mac. The linked record includes the causality proof, alternatives and the
+early-refusal/renewal-boundary limitation. No wire timestamp or chosen grace is added.

@@ -41,6 +41,8 @@ A later uid-1000 run sees the same bind. `node_owner` uses `.ok().flatten() ... 
 
 **Confidence:** high in the source path and permissions consequence; live fault behavior unverified. **Fix direction:** propagate persistence errors and undo creation; distinguish absent metadata from failed reads and malformed records, allowing the fallback only for actual absence. **Test:** force owner-xattr persistence failure on an ordinary bind file and require explicit failure and no orphan; separately fault reads of a root-owned 0600 record and verify uid 1000 cannot read it. Observe actual guest permissions and cleanup.
 
+**Status (2026-11-13):** fixed in 978d29f03d6084ec91d6d3010bd15b4e62c1302b (red `owner_metadata_failures_refuse_creation_and_lookup`, kiln r4); green regression +49 server tests and shards-vmm all-target clippy on macOS arm64 (r7). Evidence: `docs/research/measurements/runs-fixes/README.md`; real-VM fault/permissions validation owed to ROOT.
+
 ### runs-02 — P1 / high — A renamed daemon home can make its daemon mutate another home's state
 
 **At head:** `crates/shards/src/daemon.rs:2477`; effects at `:2267`, `:2287–2292`; request path retention at `crates/ipc/src/slots/fifo.rs:275`.
@@ -59,6 +61,8 @@ The replacement `A` exists and the old lock still has a link in `B`. The old dae
 **Evidence:** CLAUDE.md's per-`SHARDS_HOME` daemon contract and D185's ownership of request slots. `home_id` is compared only in `removed_here` (`:2483–2486`), guarding final recursive removal, not serving or these writes; file-watch wakeups do not add the comparison. The underlying existence-only guard is inherited from base; the range preserves it and adds absolute-path lifecycle effects.
 
 **Confidence:** high for the Unix counterexample; no Windows rename claim. **Fix direction:** retain directory identity/handles, operate relative to the owned directory, and detect replacement before absolute-path work; cleanup must target the old directory rather than its reused pathname. **Test:** rename `A→B`, recreate/start `A`, stop the old daemon through B's Engine socket, and verify A's PID, request lists, stopping files and continuing query responses remain owned by the new daemon.
+
+**Status (2026-11-13):** fixed in d3b11258a (red `renamed_home_cleanup_keeps_replacement_files`, resumed kiln r5; green regression including old-home remainder removal + stopping-lock check, shards all-target clippy r12 on macOS arm64). Prepared on `p/fix-runs-v1`; main landing pending the recorded ff-push coordination. Real-daemon/VM validation remains owed to ROOT as `docs/research/measurements/runs-fixes/README.md` specifies.
 
 ### runs-03 — P1 / high — BootStop cannot cancel a boot blocked sending its initial request
 
@@ -83,6 +87,8 @@ The replacement `A` exists and the old lock still has a link in `B`. The old dae
 **Evidence:** goal #3's no-dead-warm-VM contract; D253 adopts the daemon's warm-pool behavior. The daemon separately removes dead waiting VMs (`daemon/follow.rs:452–463`) and distinguishes surely untaken from uncertain handoffs (`daemon.rs:4499–4514`). The new API pool has only Take/Warmed/Ended/Stop events and no ready-host death event. Its test named `a_warm_host_that_does_not_fit_or_start...` exercises Unfit and failure before readiness, not death after WARMED.
 
 **Confidence:** high; no live host kill performed. **Fix direction:** evict ready hosts on terminal state and retain typed definitely-untaken versus possibly-started failure semantics across CREATE. Retry only the definitely-untaken case; do not retry an uncertain run and risk duplicate execution. **Test:** hold a warmed host in the pool, kill and reap it before the next boot, then require the next request to run exactly once on a healthy replacement. Also kill during handoff and assert typed uncertainty rather than an unsafe replay.
+
+**Status (2026-11-13):** fixed in bc0f69b5c3e4d3471236b2d2b13cbd1bcdc4246d (red `a_dead_warm_host_is_definitely_untaken`, kiln r13; green r14/r18). Replacement is limited to definitely pre-CREATE dead spares; uncertain handoffs remain non-replayed failures. Prepared on this branch; main landing and the real-VM fault scenario remain pending.
 
 ### runs-05 — P1 / high — Long-lived API runs and warm hosts block all image-store collection
 
