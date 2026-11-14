@@ -1255,14 +1255,6 @@ fn rewrite(head: &[u8], edits: &[(Range<usize>, &[u8])]) -> Zeroizing<Vec<u8>> {
     out
 }
 
-/// A value to mask in a response, and the placeholder its bytes are masked with.
-struct Masked<'a> {
-    value: &'a [u8],
-    placeholder: &'a [u8],
-    /// KMP's failure function of `value`.
-    table: Vec<usize>,
-}
-
 /// KMP's failure function of `v` (Knuth, Morris and Pratt 1977): for each of its prefixes, the
 /// length of its longest proper prefix that is also its suffix.
 pub(crate) fn failure(v: &[u8]) -> Vec<usize> {
@@ -1291,18 +1283,54 @@ pub(crate) fn step(v: &[u8], table: &[usize], mut m: usize, b: u8) -> usize {
     if v.get(m) == Some(&b) { m + 1 } else { 0 }
 }
 
+/// The values just filled into a request toward `host`, each with its credential's reference:
+/// audited once each (f26), and given to `mask` as they went, for its response (creds-03).
+fn filled_in(mask: &mut Mask, sent: &[(&str, &[u8])], host: &str, grants: &[crate::Grant], audit: &mut Vec<Audit>) {
+    mask.clear();
+    let at = SystemTime::now();
+    for (i, &(reference, value)) in sent.iter().enumerate() {
+        if sent.iter().take(i).any(|&(r, _)| r == reference) {
+            continue;
+        }
+        audit.push(Audit {
+            host: host.to_string(),
+            reference: reference.to_string(),
+            what: Did::Filled,
+            at,
+        });
+        let placeholder = grants
+            .iter()
+            .find(|g| g.reference == reference)
+            .map_or(&b""[..], |g| g.placeholder.as_bytes());
+        mask.fill(value, placeholder);
+    }
+}
+
+/// A value filled into the request under way, as it went (creds-03): held for its response's
+/// mask, whatever becomes of its lease, until that response ends; wiped as it drops.
+struct Filled {
+    value: Zeroizing<Vec<u8>>,
+    /// Its placeholder's bytes, which an echo of it is masked with.
+    placeholder: Vec<u8>,
+    /// KMP's failure function of `value`.
+    table: Vec<usize>,
+    /// How much of `value` the data so far ends with.
+    matched: usize,
+}
+
 /// A response's echoes of the values filled into its request, replaced as they come back (f16)
 /// by as many bytes of the value's placeholder, cycled: the whole placeholder where the value is
 /// as long or longer, a part of it where shorter. No length changes, so a response's framing
 /// stays as it came and none is recomputed (RFC 9112 §6.3, f43). A value is sought in a
 /// response's head and data alone, a chunked body's framing passed over, so that an echo split
 /// across chunks is found. The bytes from where a value may still begin wait until it completes
-/// or fails; the rest goes on at once, and a message's end lets everything go.
+/// or fails; the rest goes on at once, and a message's end lets everything go. Each value is the
+/// mask's own copy of what went, taken as it was filled in (creds-03): a lease that lapses or a
+/// value rotated outside while its response comes leaves its echo masked.
 #[derive(Default)]
 struct Mask {
-    /// The credentials filled into the request under way, each with how much of its value the
-    /// data so far ends with.
-    filled: Vec<(String, usize)>,
+    /// The values filled into the request under way.
+    filled: Vec<Filled>,
     /// Bytes not yet let go of, from the stream's byte `base`.
     queue: Zeroizing<Vec<u8>>,
     base: usize,
@@ -1311,49 +1339,31 @@ struct Mask {
 }
 
 impl Mask {
-    /// Each value filled into the request under way, and its placeholder, as its run holds
-    /// them: a value whose lease has ended is not held, and nothing is masked of it.
-    fn values<'r>(&self, run: &'r Run<'_>) -> Vec<Option<Masked<'r>>> {
-        self.filled
-            .iter()
-            .map(|(reference, _)| {
-                let value = run.credentials.leases.held(reference, run.now)?;
-                let placeholder = run
-                    .credentials
-                    .grants
-                    .iter()
-                    .find(|g| &g.reference == reference)?
-                    .placeholder
-                    .as_bytes();
-                Some(Masked {
-                    value,
-                    placeholder,
-                    table: failure(value),
-                })
-            })
-            .collect()
+    /// `value`, as it was filled into the request under way, masked with `placeholder`'s bytes in
+    /// its response from now on: once, however many places it was filled into.
+    fn fill(&mut self, value: &[u8], placeholder: &[u8]) {
+        if value.is_empty() || self.filled.iter().any(|f| f.value.as_slice() == value) {
+            return;
+        }
+        self.filled.push(Filled {
+            value: Zeroizing::new(value.to_vec()),
+            placeholder: placeholder.to_vec(),
+            table: failure(value),
+            matched: 0,
+        });
+    }
+
+    /// The values masked no more: the response they were filled in for has ended.
+    fn clear(&mut self) {
+        self.filled.clear();
     }
 
     /// `bytes` of a response, data an echo may lie in or its framing, on their way to `out`.
-    fn push(
-        &mut self,
-        bytes: &[u8],
-        data: bool,
-        run: &Run<'_>,
-        out: &mut dyn FnMut(&[u8]) -> io::Result<()>,
-    ) -> io::Result<()> {
+    fn push(&mut self, bytes: &[u8], data: bool, out: &mut dyn FnMut(&[u8]) -> io::Result<()>) -> io::Result<()> {
         if self.filled.is_empty() && self.queue.is_empty() {
             return out(bytes);
         }
-        let values = self.values(run);
-        let longest = values.iter().flatten().map(|m| m.value.len()).max().unwrap_or(0);
-        if longest == 0 {
-            // No value is held to seek: what waited for one goes on.
-            for (_, m) in &mut self.filled {
-                *m = 0;
-            }
-            self.at.clear();
-        }
+        let longest = self.filled.iter().map(|f| f.value.len()).max().unwrap_or(0);
         for &b in bytes {
             let pos = self.base + self.queue.len();
             self.queue.push(b);
@@ -1365,34 +1375,29 @@ impl Mask {
                 self.at.pop_front();
             }
             let mut whole = None;
-            for ((_, m), masked) in self.filled.iter_mut().zip(&values) {
-                let Some(v) = masked else {
-                    *m = 0;
-                    continue;
-                };
-                *m = step(v.value, &v.table, *m, b);
-                if *m == v.value.len() {
-                    whole = Some(v);
+            for (i, f) in self.filled.iter_mut().enumerate() {
+                f.matched = step(&f.value, &f.table, f.matched, b);
+                if f.matched == f.value.len() {
+                    whole = Some(i);
                 }
             }
-            if let Some(v) = whole {
-                let len = v.value.len();
-                let from = self.at.len().saturating_sub(len);
+            if let Some(f) = whole.and_then(|i| self.filled.get(i)) {
+                let from = self.at.len().saturating_sub(f.value.len());
                 for (i, &p) in self.at.iter().skip(from).enumerate() {
-                    let mask = v
+                    let mask = f
                         .placeholder
-                        .get(i.checked_rem(v.placeholder.len()).unwrap_or(0))
+                        .get(i.checked_rem(f.placeholder.len()).unwrap_or(0))
                         .copied();
                     if let Some(byte) = self.queue.get_mut(p.wrapping_sub(self.base)) {
                         *byte = mask.unwrap_or(b'*');
                     }
                 }
-                for (_, m) in &mut self.filled {
-                    *m = 0;
+                for f in &mut self.filled {
+                    f.matched = 0;
                 }
             }
         }
-        let held = self.filled.iter().map(|(_, m)| *m).max().unwrap_or(0);
+        let held = self.filled.iter().map(|f| f.matched).max().unwrap_or(0);
         let upto = if held == 0 {
             self.queue.len()
         } else {
@@ -1420,8 +1425,8 @@ impl Mask {
     fn end_message(&mut self, out: &mut dyn FnMut(&[u8]) -> io::Result<()>) -> io::Result<()> {
         let n = self.queue.len();
         self.release(n, out)?;
-        for (_, m) in &mut self.filled {
-            *m = 0;
+        for f in &mut self.filled {
+            f.matched = 0;
         }
         self.at.clear();
         Ok(())
@@ -2120,12 +2125,14 @@ impl Ended {
             .iter()
             .map(|(r, v)| (r.clone(), v.as_slice()))
             .collect();
+        let mut sent: Vec<(&str, &[u8])> = Vec::new();
         for (range, reference) in &parked.fills {
             let value = leases.held(reference, run.now).ok_or_else(|| Refusal::Unleased {
                 reference: reference.clone(),
                 why: lease::Refusal::Lapsed,
             })?;
             edits.push((range.clone(), value));
+            sent.push((reference, value));
         }
         let head = rewrite(&parked.head, &edits);
         self.host
@@ -2133,19 +2140,13 @@ impl Ended {
             .write_all(&head)
             .map_err(|e| Refusal::Upstream(e.to_string()))?;
         drop(head);
-        let at = SystemTime::now();
-        self.mask.filled.clear();
-        for (_, reference) in &parked.fills {
-            if !self.mask.filled.iter().any(|(r, _)| r == reference) {
-                run.audit.push(Audit {
-                    host: parked.host.clone(),
-                    reference: reference.clone(),
-                    what: Did::Filled,
-                    at,
-                });
-                self.mask.filled.push((reference.clone(), 0));
-            }
-        }
+        filled_in(
+            &mut self.mask,
+            &sent,
+            &parked.host,
+            &run.credentials.grants,
+            &mut run.audit,
+        );
         self.owed = Some(parked.owed);
         self.answered = false;
         self.request = match parked.body {
@@ -2178,13 +2179,13 @@ impl Ended {
                     buf.extend_from_slice(bytes.get(..take).unwrap_or_default());
                     bytes = bytes.get(take..).unwrap_or_default();
                     let head = std::mem::take(buf);
-                    self.response_head(head, run)?;
+                    self.response_head(head)?;
                 }
                 Response::Body(framing) => {
                     let Ended { mask, guest, .. } = self;
                     let mut piece = |p: Piece<'_>| match p {
-                        Piece::Data(b) => mask.push(b, true, run, &mut |b| guest.writer().write_all(b)),
-                        Piece::Frame(b) => mask.push(b, false, run, &mut |b| guest.writer().write_all(b)),
+                        Piece::Data(b) => mask.push(b, true, &mut |b| guest.writer().write_all(b)),
+                        Piece::Frame(b) => mask.push(b, false, &mut |b| guest.writer().write_all(b)),
                     };
                     let (taken, ended) = walk(framing, bytes, crate::tcp::TO_GUEST, &mut piece)?;
                     bytes = bytes.get(taken..).unwrap_or_default();
@@ -2197,7 +2198,7 @@ impl Ended {
                 }
                 Response::Tunnel => {
                     let Ended { mask, guest, .. } = self;
-                    mask.push(bytes, true, run, &mut |b| guest.writer().write_all(b))
+                    mask.push(bytes, true, &mut |b| guest.writer().write_all(b))
                         .map_err(queued)?;
                     return Ok(());
                 }
@@ -2296,7 +2297,7 @@ impl Ended {
 
     /// A response's head, whole: passed on, hop-by-hop fields cut and echoes masked, and what
     /// follows it read as its status and framing say.
-    fn response_head(&mut self, head: Vec<u8>, run: &Run<'_>) -> Result<(), Broken> {
+    fn response_head(&mut self, head: Vec<u8>) -> Result<(), Broken> {
         let lines = head.iter().filter(|&&b| b == b'\n').count();
         let mut read = vec![httparse::EMPTY_HEADER; lines];
         let mut response = httparse::Response::new(&mut read);
@@ -2336,7 +2337,7 @@ impl Ended {
         }
         let Ended { mask, guest, .. } = self;
         let mut out = |b: &[u8]| guest.writer().write_all(b);
-        mask.push(&passed, true, run, &mut out)
+        mask.push(&passed, true, &mut out)
             .and_then(|()| mask.end_message(&mut out))
             .map_err(|_| Broken("its bytes could not be queued"))?;
         self.answered = true;
@@ -2360,7 +2361,7 @@ impl Ended {
     /// masked no more, and the next request may come.
     fn exchange_ended(&mut self) {
         self.owed = None;
-        self.mask.filled.clear();
+        self.mask.clear();
         if matches!(self.request, Request::Sent) {
             self.request = Request::Head;
         }
@@ -2557,9 +2558,9 @@ fn ping(head: http2::Head, payload: &[u8], out: &mut Vec<u8>) -> Result<(), http
 }
 
 /// `value`, a field's, its echoes of the values `mask` masks replaced.
-fn masked(mask: &mut Mask, value: &[u8], run: &Run<'_>) -> Zeroizing<Vec<u8>> {
+fn masked(mask: &mut Mask, value: &[u8]) -> Zeroizing<Vec<u8>> {
     let mut out = Zeroizing::new(Vec::with_capacity(value.len()));
-    let _ = mask.push(value, true, run, &mut |b| {
+    let _ = mask.push(value, true, &mut |b| {
         out.extend_from_slice(b);
         Ok(())
     });
@@ -3650,19 +3651,19 @@ impl H2 {
         );
         drop(block);
         self.next_host = id.saturating_add(2);
-        let at = SystemTime::now();
-        s.mask.filled.clear();
-        for fill in &go.fills {
-            if !s.mask.filled.iter().any(|(r, _)| r == &fill.reference) {
-                run.audit.push(Audit {
-                    host: go.host.clone(),
-                    reference: fill.reference.clone(),
-                    what: Did::Filled,
-                    at,
-                });
-                s.mask.filled.push((fill.reference.clone(), 0));
-            }
-        }
+        // Each value just encoded, as `encode` read it of the same leases at the same instant.
+        let sent: Vec<(&str, &[u8])> = go
+            .fills
+            .iter()
+            .filter_map(|f| Some((f.reference.as_str(), leases.held(&f.reference, run.now)?)))
+            .collect();
+        filled_in(
+            &mut s.mask,
+            &sent,
+            &go.host,
+            &run.credentials.grants,
+            &mut run.audit,
+        );
         s.up = Upward::Sent {
             id,
             state: if end {
@@ -3864,7 +3865,7 @@ impl H2 {
             });
         }
         for f in &mut fields {
-            f.value = masked(&mut s.mask, &f.value, run);
+            f.value = masked(&mut s.mask, &f.value);
         }
         if trailers {
             s.down_last = Some(Last::Trailers(fields));
@@ -3981,7 +3982,7 @@ impl H2 {
                 down_data.extend_from_slice(b);
                 Ok(())
             };
-            let _ = mask.push(data, true, run, &mut out);
+            let _ = mask.push(data, true, &mut out);
             if end {
                 let _ = mask.end_message(&mut out);
                 *down_last = Some(Last::End);
@@ -4198,6 +4199,8 @@ pub(crate) mod tests {
         /// As Claude Code's token endpoint (`TOKEN_URL`), once its body is whole: a code's
         /// exchange with the issued tokens, anything else 400.
         Token,
+        /// Never: each request kept, the test writing the answer (`Bench::answer`).
+        Quiet,
     }
 
     /// An HTTPS server speaking HTTP/1.1, stepped in the bench's own turns: the injector's TLS
@@ -5127,27 +5130,13 @@ pub(crate) mod tests {
     /// value's beginning waits only while it may be one, and a message's end lets it go.
     #[test]
     fn an_echo_is_masked_across_pieces_and_framing() {
-        let root = root("shards test root");
-        let mut credentials = credentials(&root);
-        assert!(matches!(
-            credentials.leases.ask(CLAUDE, 7, Instant::now()),
-            lease::Asked::Waiting
-        ));
-        lease_all(&mut credentials);
-        let run = Run {
-            credentials: &mut credentials,
-            waiter: 7,
-            now: Instant::now(),
-            audit: Vec::new(),
-            refused: Vec::new(),
-        };
         let mut mask = Mask::default();
-        mask.filled.push((CLAUDE.into(), 0));
+        mask.fill(VALUE, PLACEHOLDER.as_bytes());
         let mut out = Vec::new();
         let (a, b) = VALUE.split_at(10);
         let (b, c) = b.split_at(5);
         let mut push = |bytes: &[u8], data: bool, out: &mut Vec<u8>| {
-            mask.push(bytes, data, &run, &mut |o| {
+            mask.push(bytes, data, &mut |o| {
                 out.extend_from_slice(o);
                 Ok(())
             })
@@ -7213,4 +7202,7 @@ pub(crate) mod tests {
         assert_eq!(bench.host().told, []);
         assert!(!bench.closed);
     }
+
+    /// creds-01..04 (docs/bugs/2026-11-13/creds.md): a value never reaching the guest past the mask.
+    mod leaks;
 }
