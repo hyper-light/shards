@@ -240,6 +240,7 @@ pub const RUN_VALUED: &[&str] = &[
     "--disk",
     "--env",
     "-e",
+    "--final-use",
     "--grants",
     "--gpu-device",
     "--gpu-report",

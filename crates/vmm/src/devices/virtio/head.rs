@@ -691,9 +691,6 @@ struct MappedBack {
 pub(crate) const HEAD_BLOCK: usize = ALIGN as usize;
 /// A kept head's first bytes (D190).
 const HEAD_MAGIC: [u8; 8] = *b"SHRDHEAD";
-/// The most blocks a kept head's index compares each block with before it keeps it as one
-/// more: a head's alike blocks are a few kinds.
-const HEAD_KINDS: usize = 64;
 /// What a kept block writes of itself, or leaves a hole: the pages of the file systems a
 /// snapshot lies on, 4 KiB (APFS, ext4, Btrfs, tmpfs on 4 KiB pages).
 const KEPT_PAGE: usize = 4096;
@@ -742,11 +739,9 @@ pub(crate) fn save_head(
             index.push(u32::MAX);
             continue;
         }
-        // Compared with the first kinds kept alone: past them, each block is kept as it is.
         // SAFETY: as above, for both blocks.
         let alike = kept
             .iter()
-            .take(HEAD_KINDS)
             .position(|&k| unsafe { words_equal(block(i), block(k), HEAD_BLOCK) });
         let n = match alike {
             Some(n) => n,
@@ -911,6 +906,31 @@ mod tests {
             .create_new(true)
             .open(dir.join(name))
             .unwrap()
+    }
+
+    #[test]
+    fn a_heads_duplicate_after_the_sixty_fourth_kind_is_kept_once() {
+        let dir = shards_testdir::TempDir::new("head-kinds").unwrap();
+        let head = Head::new(66 * HEAD_BLOCK).unwrap();
+        // Only one word per block is resident; the remaining pages stay zeros.
+        for block in 0..66 {
+            let value = if block == 65 { 65 } else { block + 1 };
+            // SAFETY: a word in this private head, with no guest or concurrent accessor.
+            unsafe {
+                head.host()
+                    .as_ptr()
+                    .add(block * HEAD_BLOCK)
+                    .cast::<u64>()
+                    .write(value as u64)
+            };
+        }
+        let kept = file(&dir, "saved");
+        let index = save_head(&kept, head.host(), head.len(), None).unwrap();
+        assert_eq!(
+            index[65], index[64],
+            "an equal block past the chosen kind cap was stored twice"
+        );
+        assert_eq!(kept.metadata().unwrap().len(), 66 * HEAD_BLOCK as u64);
     }
 
     /// A window's head makes its device whole sections, the fewest whose page structures,

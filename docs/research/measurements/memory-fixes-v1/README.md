@@ -79,3 +79,77 @@ Landing check: main through `5d805549d` changes no tested VMM input from
 `9068a72cd` (crate, ABI, IPC, netring, apple, afunix, ntfs, Cargo.lock/Toml).
 The `8fea5f396` test result therefore covers this disjoint merge per ROOT's
 2026-11-14 landing-under-contention instruction.
+
+## memory-04
+
+Red at `e8b687a9e`, resumed-session kiln r2, same macOS arm64 host:
+`cargo test -p shards a_budget_removed_during_an_ask_is_delivered_after_its_answer --bin shards`
+failed with WouldBlock: `budget removal was lost behind the pending answer`.
+This uses real socket frames and the actual budget_written/late/Giver code.
+The test covers a pending GIVE_BACK and a pending ROOM reply.
+
+Fix `27522e6ca`, typed pending state `aef83d2c4`, acknowledgment correction
+`8951ffa2d`: keep the latest desired room (including None) while another reply is
+out, send it once that reply arrives, and coalesce a value already in flight.
+The existing late-answer regression caught deferred acknowledgment accounting
+at aef83d2c4 (9/10 passed, r4); 8951ffa2d permits the caller to consume that
+already transmitted room's acknowledgment. No production policy literal added.
+
+Only this unit-test build uses SHARDS_HELPERS=skip and /usr/bin/true as carried
+init/server fixture files to avoid nested guest builds. No tested IPC/budget
+logic is replaced. Neither a guest nor any helper is executed by these tests.
+These fixture settings provide no evidence about VM behavior.
+ROOT owes `cargo test -p shards --test build a_build_held_short_of_memory_has_its_builder_give_back`
+with a budget removed during a delayed give-back and delayed ROOM acknowledgment.
+
+Green at `5d822e8fe`, resumed r9, macOS arm64: give::tests:: 10/10, a_giver_ 2/2,
+and `cargo clippy -p shards --all-targets -- -D warnings` clean. Retained output
+is `green-memory-04.log`; the real-VM budget removal variant remains owed.
+
+Earlier merged greens `cdd29b68b` (r7) and `cb483406e` (r8) passed the same gates.
+ROOT's amended contention instruction (2026-11-14 05:10Z) allows a later input-changing
+merge to use `cargo check -p shards --tests` after this focused green; a conflict still
+requires focused tests. Resume policy read at main `a33644dbe`, role implementer,
+same policy hashes. Findings 06..15 remain [owed with designs](owed-designs.md),
+including cold starts, typed unavailable states and exact ROOT validation commands.
+
+Later input-changing merge `2389f0afb` (main `a33644dbe`): resumed r10 passed
+`cargo check -p shards --tests` on the same warm Mac target. Retained output:
+`check-memory-04.log`. No conflicts were resolved in this merge.
+
+Memory-04 landed `e2744a6fb`. Later input-changing merges `2eaa81b9c`,
+`3626722b6`, `e4997bad6`, and `e2744a6fb` each passed the same compile check
+(resumed r11/r13/r14/r15); output is `check-memory-04-contention.log`.
+The intervening `a6d0eb29b` changed only net-process and documentation, disjoint
+from these inputs under SHARDS_HELPERS=skip; no check was run there. All merges
+were automatic, signed, and never forced. ROOT notification was refused by its
+full inbox (429 backpressure, pending 4, authority 3); delivery is not claimed.
+
+## memory-16
+
+Red `5ede7aecb`, resumed r16, same macOS arm64 host/toolchain:
+`cargo test -p shards-vmm a_heads_duplicate_after_the_sixty_fourth_kind_is_kept_once --lib`
+failed with indices Some(65) and Some(64). The real sparse head has 65 distinct
+nonzero blocks followed by a duplicate of the last; `red-memory-16.log` retains it.
+Fix `d794c1dd5` removes HEAD_KINDS and its iterator cutoff. Each nonzero block is
+compared with every retained kind, as the existing save contract requires.
+
+The bound is the actual input block count, with an empty retained set at cold
+start. Existing I/O errors and checked index conversions remain unchanged.
+A content-hash index could reduce comparisons, but requires broader design and
+cost evidence; this slice removes the unjustified bound at the existing seam.
+Worst-case comparisons are quadratic; ROOT owes their CPU/fault/retention
+measurement on representative and all-distinct heads. No speed claim is made.
+
+R01/R03/R04: no production arithmetic, state, refusal, allocation or literal is
+added; existing error paths remain. R02/R05/R06/R07/R12/R13: reuse the current
+algorithm and scoped retained-block vector, whose authority is this paused head
+and lifetime this save; no new cache/poller/platform implementation. R09/R10:
+the unit regression above is the retained red. R08/R11/R14/R15: performance,
+other supported targets and real VMs remain ROOT's. R16: the existing single
+remote compiler/owned target is reused, with no local build/test.
+
+Green at `3b8ec2938` (main `e2744a6fb` included), resumed r17, same Mac:
+`cargo test -p shards-vmm devices::virtio::head::tests:: --lib` passed 9, with
+1 measurement test ignored; VMM all-target clippy passed. `green-memory-16.log`
+retains output. ROOT still owes real head snapshot/restore and cost measurements.

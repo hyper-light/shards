@@ -31,6 +31,7 @@ mod grant;
 #[cfg(any(target_os = "macos", windows))]
 mod grant_answer;
 // The VM's half, which the daemon's tests answer.
+mod final_use;
 #[cfg(all(test, any(target_os = "macos", windows)))]
 mod grant_ask;
 mod guest;
@@ -97,6 +98,9 @@ pub(crate) fn shardsd(args: Vec<std::ffi::OsString>) -> ExitCode {
         // for people to run.
         #[cfg(unix)]
         Some("console-said") => said::recorder(args),
+        // the keeper of a managed VM's final use (D260): not for people to run.
+        #[cfg(unix)]
+        Some("final-use") => final_use::keeper(args),
         // the writer of a restore's working set (`shards restore` on Linux): not for people to run.
         #[cfg(target_os = "linux")]
         Some("working-set") => working_set::keeper(),

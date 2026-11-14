@@ -1,0 +1,28 @@
+From /Users/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/fix-memory-carrier-5596c6ba47/change.bundle
+ * branch                HEAD       -> FETCH_HEAD
+Previous HEAD position was e2744a6fb Merge main after the current credential compile check
+HEAD is now at 5ede7aecb test: retain duplicate head blocks past the chosen kind cap (memory-16)
+   Compiling shards-vmm v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/vmm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 10.87s
+     Running unittests src/lib.rs (/Users/adalundhe/g121-tmp/fix-memory-v1/target/debug/deps/shards_vmm-645a41c49a1f33e2)
+
+running 1 test
+test devices::virtio::head::tests::a_heads_duplicate_after_the_sixty_fourth_kind_is_kept_once ... FAILED
+
+failures:
+
+---- devices::virtio::head::tests::a_heads_duplicate_after_the_sixty_fourth_kind_is_kept_once stdout ----
+
+thread 'devices::virtio::head::tests::a_heads_duplicate_after_the_sixty_fourth_kind_is_kept_once' (54253001) panicked at crates/vmm/src/devices/virtio/head.rs:934:9:
+assertion `left == right` failed: an equal block past the chosen kind cap was stored twice
+  left: Some(65)
+ right: Some(64)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    devices::virtio::head::tests::a_heads_duplicate_after_the_sixty_fourth_kind_is_kept_once
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 504 filtered out; finished in 0.18s
+
+error: test failed, to rerun pass `-p shards-vmm --lib`

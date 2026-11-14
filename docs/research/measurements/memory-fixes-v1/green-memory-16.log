@@ -1,0 +1,24 @@
+From /Users/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/fix-memory-carrier-5596c6ba47/change.bundle
+ * branch                HEAD       -> FETCH_HEAD
+Previous HEAD position was 5ede7aecb test: retain duplicate head blocks past the chosen kind cap (memory-16)
+HEAD is now at 3b8ec2938 Record head comparison derivation and preceding landing checks
+   Compiling shards-vmm v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/vmm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 10.44s
+     Running unittests src/lib.rs (/Users/adalundhe/g121-tmp/fix-memory-v1/target/debug/deps/shards_vmm-645a41c49a1f33e2)
+
+running 10 tests
+test devices::virtio::head::tests::a_heads_save_costs ... ignored
+test devices::virtio::head::tests::a_windows_head_makes_its_device_whole_sections_it_holds_the_page_structures_of ... ok
+test devices::virtio::head::tests::placed_window_heads_give_up_only_the_blocks_their_map_back_changes ... ok
+test devices::virtio::head::tests::placed_window_heads_are_taken_from_their_guest_while_they_are_mapped_back ... ok
+test devices::virtio::head::tests::a_head_mapped_back_gives_back_its_blocks_of_zeros ... ok
+test devices::virtio::head::tests::a_heads_blocks_from_its_copy_are_saved_whole_and_zeroed_ones_mapped_back_fresh ... ok
+test devices::virtio::head::tests::a_kept_blocks_pages_of_zeros_are_holes_in_its_copy ... ok
+test devices::virtio::head::tests::a_heads_save_reads_no_block_its_guest_never_touched ... ok
+test devices::virtio::head::tests::windows_heads_are_parts_of_one_head_kept_whole ... ok
+test devices::virtio::head::tests::a_heads_duplicate_after_the_sixty_fourth_kind_is_kept_once ... ok
+
+test result: ok. 9 passed; 0 failed; 1 ignored; 0 measured; 495 filtered out; finished in 0.19s
+
+    Checking shards-vmm v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/vmm)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.04s

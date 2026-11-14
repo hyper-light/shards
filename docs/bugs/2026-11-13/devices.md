@@ -107,6 +107,8 @@ Priority mapping for the user's requested notification: **P0 critical; P1 high; 
 
 **Catching test:** barriers around capacity publication and generation update, with the guest's generation/low/high/generation sequence arranged as above; assert it retries or reads a coherent capacity. Separately race cloned `DiskSize` growers and assert capacity never decreases.
 
+**Status (2026-11-14):** fixed in a8628ac21 (red `capacity_and_generation_are_published_together`: observed `(2, 0)`; green 8 block tests and VMM clippy, macOS arm64). Capacity and generation now change under one mutex that all capacity/config-generation reads take. No odd-generation retry convention is assumed.
+
 ### devices-06 — P2 / medium — VFIO hot-unplug retains MSI routes
 
 **Location:** `crates/vmm/src/devices/pci/vfio.rs:2114`.
@@ -122,6 +124,8 @@ Priority mapping for the user's requested notification: **P0 critical; P1 high; 
 **Fix direction:** quiesce and explicitly unroute all interrupt modes while their descriptors remain valid, then remove DMA/BAR mappings and the device file; propagate cleanup failures with a defined retained/refused state.
 
 **Catching test:** enable MSI/MSI-X, clear bus mastering only, unplug and replug repeatedly. Assert the route inventory returns to baseline each time, including FD-number reuse and masked-vector cases.
+
+**Status (2026-11-14):** fixed in e06c9bc9f (red `unplug_releases_interrupt_routes_before_closing_eventfds`, revision 57673d129: 0 routes removed, expected 3; green 2 VFIO module tests and VMM clippy on Linux x86_64, 9a4be9126). Actual hardware IRQ disabling/route inventory remains owed to ROOT with `cargo test -p shards --test hotplug a_hosts_function_is_plugged_into_a_running_microvm` on the assigned nested VFIO fixture, extended to leave MSI enabled before clear-master-only removal.
 
 ### devices-07 — P2 / medium — Deep joins size /dev/shm from the wrong VM
 

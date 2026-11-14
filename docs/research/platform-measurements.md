@@ -7681,9 +7681,12 @@ new performance or platform-parity data. [Commands, output, rules and owed real-
 
 **network-02 confinement follow-up (2026-11-13).** At 33d5f8af7, adacachy2
 (Linux amd64) ran three focused network confinement tests and clippy for
-shards-net/shards-net-process, all passing. Native arm64 execution is owed;
-removing the arm64 startup omission is not an arm64 measured result. No VM or
-performance campaign ran. [Exact scope/output](measurements/network-fixes-v1/README.md#network-02-native-seccomp-on-both-linux-architectures).
+shards-net/shards-net-process, all passing. Subsequent native ARM GNU evidence
+on adas-mac-studio-3.local's Docker Desktop (Linux aarch64, Rust 1.98.1):
+46e739f13's startup test failed with Seccomp=0; at 53e89b2b8 it passes with one
+additional installed filter, and the forbidden-syscall termination test passes.
+Both crates pass clippy. Musl and carried-helper VM execution remain unverified.
+No VM or performance campaign ran. [Exact scope/output](measurements/network-fixes-v1/README.md#network-02-native-seccomp-on-both-linux-architectures).
 
 ### M211. The limits a build's `RUN` step starts with
 
@@ -17805,6 +17808,12 @@ finding open; no new scheduling or host-fairness result is claimed.
 
 ### M430. Devices plugged into a running microVM: what each step costs, and what a bus of slots costs a boot (D214)
 
+Correctness follow-up devices-06 (2026-11-14): 1 VFIO unplug route-ownership red; 2 module tests and VMM clippy green on adacachy2 Linux x86_64. Real VFIO hardware was not used. See `measurements/device-fixes/README.md` for the fixture and limitations.
+
+
+Correctness follow-up devices-05 (2026-11-14): capacity-publication red observed `(2, 0)`; 8 block tests and VMM clippy passed after the shared-lock fix on macOS arm64. See `measurements/device-fixes/README.md`; no M430 performance claim is refreshed.
+
+
 - **Correctness follow-up, devices-03 (2026-11-13, D154).** Response-span validation red: 1 failed; green: 13 IOMMU tests and VMM clippy passed on macOS arm64. Allocation-pressure/RSS and hardware runs remain owed to ROOT. Revisions, commands and scope: `measurements/device-fixes/README.md`. No performance result is inferred.
 
 
@@ -24219,6 +24228,15 @@ source revisions, light results and ROOT's remaining gates are in
   (aarch64-unknown-linux-musl); cargo fmt --check clean. R11, R15: no VM run here: api_image's
   three cases on KVM are ROOT's, at a main holding 02a03edf2 and this.
 
+### Review memory-04: a budget removed while its builder's reply was outstanding
+
+The real socket/production watcher regression at e8b687a9e, macOS arm64, failed
+WouldBlock when looking for the removed-budget ROOM frame (resumed kiln r2).
+The pending-room owner is fixed at 27522e6ca/aef83d2c4; the existing late-answer
+test additionally caught acknowledgment accounting, corrected at 8951ffa2d.
+Commands, unit results and the still-owed real builder/pressure variant:
+[the memory fix record](measurements/memory-fixes-v1/README.md).
+
 ### M567. A confined VM process changed another process's limits: prlimit64 of any pid (D30)
 
 Linux x86_64, adacachy2 (7.3.3-1-cachyos, Landlock ABI 11), 2026-11-13, policy df2acf47,
@@ -24361,3 +24379,11 @@ checks). Windows physical old-version reclamation, fd/heap profiles and real-VM
 lifecycle propagation are owed, not passed. Control-06 needs a real stalled attached
 client red; control-08 remains owed with notification design, no substituted timer.
 [Commands, raw logs, designs and R01–R16 gaps](measurements/control-fixes-v1/README.md).
+
+### Review memory-16: duplicate head kinds past a selected cap (D190)
+
+On adas-mac-studio.local, macOS arm64, red 5ede7aecb (resumed r16) saved an equal
+block twice after 65 distinct kinds: Some(65) instead of Some(64). d794c1dd5
+removes the 64-kind comparison cutoff; the input's block count bounds the search.
+The sparse-file/index regression checks actual retained identity and length.
+[Commands, results and unmeasured quadratic comparison cost](measurements/memory-fixes-v1/README.md).

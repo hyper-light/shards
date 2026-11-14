@@ -34,7 +34,7 @@ Ranking requested by Ada: **P0 critical, P1 high, P3 medium, P5 low**; unused in
 
 **Test:** live disposable enrolled client sends all three prefixes and the sync carrier; each receives typed refusal, grants/context files remain unchanged, and a different configured daemon sees no request. Removing a guard must produce the forbidden grant/routing effect.
 
-**Status (2026-11-13):** fixed in cbcbc0ad1 (red `daemon::remote::tests::red_remote01_an_owners_command_behind_a_prefix` at 9efde7252; green `a_client_may_not_run_an_owners_command_behind_a_prefix`, `cli::owners_alone::*`). A context's choice is refused outright, owner commands are judged on `cli::command_words` (dispatch's own words), a build step's words must be a build's, and the child refuses `context`/`client`/`invitation` for any client (D180, "A client's authority"). Still open from this finding: a build step's path-naming words (`--output dest=`, `--file`, `--iidfile`, `--metadata-file`, `--cache-to/--cache-from` local, `--build-context`, `--policy filename=`, `--secret src=`, `--ssh`) are not yet held to the copy, so a crafted `\0sync build` can still name this machine's paths (source-proven, not yet reproduced).
+**Status (2026-11-13):** fixed in cbcbc0ad1 (red `daemon::remote::tests::red_remote01_an_owners_command_behind_a_prefix` at 9efde7252; green `a_client_may_not_run_an_owners_command_behind_a_prefix`, `cli::owners_alone::*`). A context's choice is refused outright, owner commands are judged on `cli::command_words` (dispatch's own words), a build step's words must be a build's, and the child refuses `context`/`client`/`invitation` for any client (D180, "A client's authority"). The build step's path-naming words this left open are remote-09, below.
 
 ### remote-02 — P0 / critical — Windows drive-relative Dockerfile names escape the copy
 
@@ -169,6 +169,20 @@ Ranking requested by Ada: **P0 critical, P1 high, P3 medium, P5 low**; unused in
 **Fix direction:** make invitation expiry an explicit owner-authorized security policy (never lengthen authority via learning); derive frame admission from the actual wire/operation/resource contract and document cold-start/adversarial behavior. Establish any exceptional invariant with primary evidence rather than a borrowed value.
 
 **Test/evidence:** retain boundary tests for authorized expiry and admitted payload size, plus the policy/measurement record deriving each boundary. Merely asserting the current literal is not evidence of its derivation.
+
+### remote-09 — P0 / critical — A build step's path-valued flags name this machine's files
+
+Found by the remote-P0 lane (implementer), 2026-11-13, while fixing remote-01; reported to ROOT, who ranked it P0.
+
+**Location:** `crates/shards/src/daemon/remote.rs` `sync_step` ("build"); `crates/shards/src/synced.rs` `placed`; `crates/shards/src/build/mod.rs` `build`; `crates/shards/src/agent.rs` `command`.
+
+**Defect:** A `\0sync build KEY WORDS…` step runs the client's WORDS as a build on this machine. remote-01's fix requires them to be a build's, but their path-valued flags were not held to the client's copies. `placed` rewrites markers (`\0out/`, `\0tree/`…) and passes every other value through. The build child ran with SHARDS_CLIENT set but did not consult it for paths. So `--output=type=local,dest=/any/dir`, `--iidfile`, `--metadata-file` and `--cache-to type=local,dest=` wrote this machine's files. `--file`, `--cache-from type=local,src=`, `--build-context NAME=PATH`, `--policy filename=`, `--secret src=` and `--ssh ID=PATH` read them, and `--secret type=env` or `--ssh default` read the daemon's own secrets or agent.
+
+**Evidence:** red `daemon::remote::tests::red_remote09_a_build_steps_output_names_this_machines_path` at a729003e9. `build_words` accepted `build --output=type=local,dest=/outside \0context`, and `placed` left the destination `/outside`, outside the client's copies, for the build's local exporter to write.
+
+**Fix direction:** every path-valued value of buildx's build grammar is resolved against the step's copies and must stay inside them, by the rules of `placed` and `name_alone` (Windows forms included), refused typed before any file is received. The build child refuses the same whenever SHARDS_CLIENT is set.
+
+**Status (2026-11-13):** fixed in 5ac001f91 (red `daemon::remote::tests::red_remote09_a_build_steps_output_names_this_machines_path` at a729003e9; green `synced::tests::a_clients_build_names_no_path_but_its_copies`, `a_placed_build_names_nothing_outside_its_copies`, `a_build_run_for_a_client_refuses_this_machines_paths`, `daemon::remote::tests::a_build_step_naming_this_machines_path_is_refused_before_its_files`, `context::tests::what_a_client_sends_of_a_build_is_held_to_its_copies`; 8 guard mutations killed, macOS arm64). Every path-valued build flag must be its copy's marker form before any file is received, and the build child, whenever SHARDS_CLIENT is set, refuses any placed path outside `HOME/synced/CLIENT` (D180, "A build step names no path but its client's copies"). The real-daemon E2E is ROOT's.
 
 ## Checked and found sound
 
