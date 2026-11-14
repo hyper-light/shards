@@ -12254,6 +12254,16 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
       scripts, and the registry's credential helpers, whose own copies of that writer
       (`common::program`, `program_copy`, credentials.rs' `program`, auth.rs' `helper`'s) and
       install(1) are gone. No exec meets ETXTBSY, so nothing waits one out.
+    - *2026-11-14: the writer is a forked child, not sh or cp.* boot.rs'
+      `snapshot_tests_pass_on_a_kvm_host_of_this_architecture` runs the E2E binaries in an
+      arm64 Linux guest whose `PATH` is an empty `/e2e/bin`, with no /bin/sh: every test there
+      failed in `common::place` with `NotFound` from spawning `cp` (HVF, Adas-Mac-Studio-3,
+      main 1f71dea19). `program` and `program_copy` now fork a child that opens, writes or
+      copies, `fchmod`s 0755 and exits with its errno, calling only async-signal-safe
+      functions (POSIX `fork()`); no program is run, so a host needs no tools for a test to
+      write one. The test process never holds the file's write descriptor, as before.
+      `programs_are_written_where_no_tools_are` (testdir) writes and copies with `PATH` an
+      empty directory: red `NotFound` on cp, green on the child.
   - *The call sites.* The terminals' exit waits and Windows' modes are a `Wait` on the
     shell's party (terminal.rs, terminal_windows.rs). vsock.rs' 60 s `TIMEOUT` and its 20 s
     read are `Following` reads, its greeting a `within`. confined.rs' record wait and its
