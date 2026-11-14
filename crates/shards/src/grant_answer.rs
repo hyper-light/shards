@@ -1029,7 +1029,7 @@ mod windows_tests {
     /// still staged and committed for it.
     #[test]
     fn a_vm_that_stages_its_snapshots_is_granted_nothing_more_once_it_starts() {
-        use crate::grant_ask::{commit, stage};
+        use crate::grant_ask::{commit, obtain_sealed, stage};
         let dir = shards_testdir::TempDir::new("staged").unwrap();
         let (kernel, snapshot, sentinel) = (dir.join("kernel"), dir.join("snapshot"), dir.join("sentinel"));
         std::fs::write(&kernel, b"k").unwrap();
@@ -1037,7 +1037,7 @@ mod windows_tests {
         let (spawner, vm) = link();
         std::thread::scope(|scope| {
             let serving = scope.spawn(|| serve(&spawner, &Here));
-            obtain(
+            obtain_sealed(
                 &vm,
                 &[(Access::Read, kernel.clone()), (Access::MakeDir, snapshot.clone())],
             )

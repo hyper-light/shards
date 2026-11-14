@@ -307,6 +307,18 @@ pub fn obtain(link: &crate::grant::Link, wanted: &[Wanted]) -> Result<(), String
     Ok(())
 }
 
+/// [`obtain`] for `wanted`, the last grants this VM asks for, then its grants sealed
+/// (`kind::SEALED`), before its guest starts, whatever it was granted: a guest that takes
+/// the VM's process over may ask its spawner for nothing more, only for its dials, its files'
+/// ranges and its snapshots (D30, D196; platform-03, where a VM that staged its snapshots
+/// and had no vsock path left them open).
+#[cfg(windows)]
+pub fn obtain_sealed(link: &crate::grant::Link, wanted: &[Wanted]) -> Result<(), String> {
+    obtain(link, wanted)?;
+    shards_ipc::write_message(&link.to, shards_ipc::kind::SEALED, &[])
+        .map_err(|e| format!("sealing its grants: {e}"))
+}
+
 /// A file the spawner duplicated into this process, and the path it found it at: the
 /// handle's value there (a little-endian u64), then the path ([`crate::grant::path_bytes`]).
 #[cfg(windows)]

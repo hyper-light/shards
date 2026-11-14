@@ -3147,6 +3147,22 @@ fn ask(wanted: &[crate::grant::Wanted]) -> Result<(), String> {
 /// anything but `shards`, starts no VM.
 #[cfg(windows)]
 fn ask(wanted: &[crate::grant::Wanted]) -> Result<(), String> {
+    asked(wanted, crate::grant_ask::obtain)
+}
+
+/// [`ask`] for the last grants this VM asks for, its grants sealed after them, before its
+/// guest starts (`grant_ask::obtain_sealed`).
+#[cfg(windows)]
+fn ask_sealed(wanted: &[crate::grant::Wanted]) -> Result<(), String> {
+    asked(wanted, crate::grant_ask::obtain_sealed)
+}
+
+/// `wanted` asked of this VM's spawner by `obtain`, in an AppContainer alone.
+#[cfg(windows)]
+fn asked(
+    wanted: &[crate::grant::Wanted],
+    obtain: fn(&crate::grant::Link, &[crate::grant::Wanted]) -> Result<(), String>,
+) -> Result<(), String> {
     if !shards_ipc::in_app_container() {
         return Err(
             "shards-vm is not in an AppContainer, which confines every VM on Windows: start it with \
@@ -3158,7 +3174,7 @@ fn ask(wanted: &[crate::grant::Wanted]) -> Result<(), String> {
     let link = grants.as_ref().ok_or(
         "nothing was granted to this VM: start it with `shards run vm --kernel`, which grants it its files",
     )?;
-    crate::grant_ask::obtain(link, wanted)
+    obtain(link, wanted)
 }
 
 /// `paths` as the VM asks for them: files it reads read-only, files it writes read-write,
@@ -3184,7 +3200,14 @@ fn granted(paths: &crate::confine::Paths) -> Result<(), String> {
         .chain(paths.write_under.iter().map(|p| (Access::MakeDir, p.clone())))
         .chain(paths.vsock.iter().map(|p| (Access::Listen, p.clone())))
         .collect();
-    ask(&wanted)
+    // The last it asks for: on macOS its link closes after unless it dials (`confine`); on
+    // Windows it stays, for its dials, its files' ranges and its snapshots (D196), and its
+    // grants are sealed.
+    #[cfg(target_os = "macos")]
+    let last = ask;
+    #[cfg(windows)]
+    let last = ask_sealed;
+    last(&wanted)
 }
 
 /// Has the spawner dial, beside `vsock`, every host port the guest connects to: App
@@ -3317,13 +3340,13 @@ fn confine(paths: &crate::confine::Paths) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     return crate::confine::landlock(paths);
     // As on macOS; and once its partition is set up, before anything of its guest's is
-    // read, this process forbids itself dynamic code (D141, PM M202). Its snapshots its
-    // spawner stages, over the link (D196), which stays open for them.
+    // read, this process forbids itself dynamic code (D141, PM M202). Its grants are sealed
+    // as they are granted (`ask_sealed`), and the link stays for what its spawner does for
+    // it after: its dials, its files' ranges and its snapshots (D196).
     #[cfg(windows)]
     {
         shards_vmm::hv::forbid_dynamic_code_once_set_up();
         granted(paths)?;
-        let stages = !paths.write_under.is_empty();
         // Its spawner stages its snapshots and reads its files' ranges for it, as long as
         // the link stays: it may make no FSCTL (D141), and a restore copies a template's
         // writable layer by its ranges (D196), as any save of it copies its layer and swap
@@ -3333,17 +3356,7 @@ fn confine(paths: &crate::confine::Paths) -> Result<(), String> {
         shards_vmm::platform::set_stager(Box::new(SpawnerStages))?;
         match &paths.vsock {
             Some(vsock) => dial_through_spawner(vsock),
-            None if stages => Ok(()),
-            // Nothing more asked of the spawner but ranges, which it answers on the link it
-            // keeps: no grant after (`SEALED`).
-            None => {
-                let grants = GRANTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                match grants.as_ref() {
-                    Some(link) => shards_ipc::write_message(&link.to, shards_ipc::kind::SEALED, &[])
-                        .map_err(|e| format!("sealing its grants: {e}")),
-                    None => Ok(()),
-                }
-            }
+            None => Ok(()),
         }
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
