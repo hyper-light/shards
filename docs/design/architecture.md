@@ -2249,7 +2249,7 @@ audit's "Security and test coverage").
     caller's new domain atomically. On every ABI from v5, the primitive every kernel it
     runs on has, each thread is asked in turn: a real-time signal (`SIGRTMIN + 1`, past
     the vCPUs' kick), whose handler makes the restriction in the thread it interrupts and
-    answers through a futex, as glibc's setxid broadcast makes setuid(2) every thread's,
+    answers on an eventfd, as glibc's setxid broadcast makes setuid(2) every thread's,
     until a listing of `/proc/self/task` names no thread not settled. A thread is settled
     by its answer, or by being gone or exiting (`PF_EXITING`: it runs no more user code,
     and drops a signal sent to it alone). A thread started after its creator answered is
@@ -2257,19 +2257,23 @@ audit's "Security and test coverage").
     restarts what it interrupts where the kernel restarts it (`SA_RESTART`), and the VM
     process's waits go on past EINTR, as past the vCPUs' kicks; a vCPU's KVM_RUN ends as a
     kick's does, and runs again.
-    - No constant: an answer wakes its wait, which looks at the thread as it ends, first
-      after as long as the caller's own restriction took (the cold start), then as long
-      as the last answer took, twice as long each time one is still awaited (saturating),
-      at least the monotonic clock's resolution. A short wait only looks sooner.
-    - A thread asleep with the signal blocked (`S`, its `SigBlk`) at two looks in turn,
-      the second after a wait as long as all before it, waits with it blocked: Mesa's
-      threads block every signal for their lives (u_thread_create). It cannot be asked,
-      and the layer fails, closed: a seal's failure hands its run to another VM
-      (daemon.rs, `hand_over`). glibc's pthread_create blocks every signal for a moment,
-      which one look may meet.
+    - Whether a thread can answer is read, not guessed: one that blocks the signal, or a
+      process that ignores it (`/proc/self/task/TID/status`, `SigBlk` and `SigIgn`),
+      cannot, and the layer fails at once, closed, typed (`asked::Unasked::Deaf`): a
+      seal's failure hands its run to another VM (daemon.rs, `hand_over`). glibc's
+      pthread_create blocks every signal for a moment, which a look may meet; that run
+      fails closed too.
+    - Any other thread is waited for as long as it lives, with no timeout and no
+      constant: its answer (an eventfd its handler writes) or its end (its thread pidfd,
+      pidfd_open(2) `PIDFD_THREAD`, Linux 6.9, older than the v5 a VM needs, which polls
+      readable as it exits) wakes the wait. A thread that entered its exit as it was asked
+      never answers, and ends. Where the ABI asks each thread (before v8), the filter
+      allows a pidfd of any thread (`pidfd_open` with `PIDFD_THREAD`, its rule beside the
+      one for its own pid: `seccomp` rules on two arguments add up): that says whether a
+      host thread lives, and nothing else a VM process may use (no pidfd_send_signal,
+      pidfd_getfd, setns or waitid) [PM M568].
     - Unverified limits: a thread id reused within one pass would need the kernel's ids
-      to wrap as it runs; a thread that blocks the signal and runs without sleeping is
-      waited for.
+      to wrap as it runs.
   - Its own `/proc` entry stays looked up for its life, a descriptor of it held from the
     first layer on (PM M305): procfs makes a new inode for `/proc/PID` each time its dentry
     is made afresh (fs/proc/base.c, `proc_pid_lookup`), a live process's unused dentry goes
@@ -2571,8 +2575,12 @@ stack inside the VMM, is superseded by it.
   seccomp on arm64 as on amd64 before serving frames; the shared compiler checks
   the native AUDIT_ARCH and libc supplies native syscall identities. epoll_wait
   is x86_64's legacy entry; both use epoll_pwait. No compat ABI is admitted.
-  Focused amd64 checks pass; native arm64 execution and carried-helper smoke
-  remain owed to ROOT, not inferred from amd64's result. [Evidence](../research/measurements/network-fixes-v1/README.md#network-02-native-seccomp-on-both-linux-architectures).
+  Focused amd64 checks pass. Native arm64 GNU unit tests at 53e89b2b8 observe
+  an additional installed filter at the startup boundary and termination on a
+  forbidden syscall; both network crates pass clippy. The compiler is shared
+  with the VM process, including platform-01/02/04 at a729003e9; the initial
+  allowlist uses `compile`, while the VM's later restrictions use `seccomp::layer`.
+  Musl and carried-helper VM smoke remain owed to ROOT/CI. [Evidence](../research/measurements/network-fixes-v1/README.md#network-02-native-seccomp-on-both-linux-architectures).
 - **Receive-sequence validation (network-01, 2026-11-13).** Before an established
   segment's ACK or FIN changes a connection, its original sequence must overlap the
   advertised receive window (RFC 9293 §3.10.7.4, table 6); ACK is required, and a FIN

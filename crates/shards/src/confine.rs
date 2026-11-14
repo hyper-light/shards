@@ -16,6 +16,12 @@
 
 #[cfg(target_os = "linux")]
 pub fn confine() -> Result<(), String> {
+    confine_as(landlock_abi())
+}
+
+/// [`confine`], on a kernel whose Landlock ABI is `abi`.
+#[cfg(target_os = "linux")]
+fn confine_as(abi: i64) -> Result<(), String> {
     use shards_vmm::platform::seccomp::{self, Rule};
 
     #[cfg(target_arch = "x86_64")]
@@ -250,6 +256,14 @@ pub fn confine() -> Result<(), String> {
     // A pidfd of this process alone: what a run's client waits on for its VM process's end
     // where the VM holds a host's devices (warm.rs, `finish`).
     rules.push(Rule::with(libc::SYS_pidfd_open, 0, &[pid as u32]));
+    // A thread's pidfd (PIDFD_THREAD, include/uapi/linux/pidfd.h: O_EXCL), whose end wakes
+    // a Landlock layer's wait for its answer where the kernel's ABI asks each thread
+    // (`asked`), before v8: so its rules allow a pidfd of any thread on its host, which
+    // says whether that thread lives, and nothing else a VM process may use (it may make
+    // no pidfd_send_signal(2), pidfd_getfd(2), setns(2) or waitid(2)).
+    if abi < TSYNC_ABI {
+        rules.push(Rule::with(libc::SYS_pidfd_open, 1, &[libc::O_EXCL as u32]));
+    }
     // That userfaultfd, of user faults alone (UFFD_USER_MODE_ONLY), which takes no
     // privilege.
     rules.push(Rule::with(
@@ -805,6 +819,21 @@ fn ruleset(paths: &Paths) -> Result<(std::os::fd::OwnedFd, i64), String> {
     Ok((ruleset, abi))
 }
 
+/// The kernel's Landlock ABI, as it says it (landlock_create_ruleset(2),
+/// LANDLOCK_CREATE_RULESET_VERSION); below 0 where it has none.
+#[cfg(target_os = "linux")]
+fn landlock_abi() -> i64 {
+    // SAFETY: landlock_create_ruleset(2) with no attribute asks only the ABI's version.
+    unsafe {
+        libc::syscall(
+            libc::SYS_landlock_create_ruleset,
+            std::ptr::null::<u8>(),
+            0usize,
+            1u32,
+        )
+    }
+}
+
 /// The first Landlock ABI that restricts every thread of a process at once
 /// (`LANDLOCK_RESTRICT_SELF_TSYNC`, include/uapi/linux/landlock.h).
 #[cfg(target_os = "linux")]
@@ -832,7 +861,7 @@ fn every_thread(ruleset: &std::os::fd::OwnedFd, reach: Reach) -> Result<(), Stri
     use std::os::fd::AsRawFd;
     match reach {
         Reach::AtOnce => restrict(ruleset.as_raw_fd(), RESTRICT_SELF_TSYNC).map_err(|e| e.to_string()),
-        Reach::Asked => asked::every_thread(ruleset.as_raw_fd()),
+        Reach::Asked => asked::every_thread(ruleset.as_raw_fd()).map_err(|e| e.to_string()),
     }
 }
 
@@ -850,7 +879,7 @@ fn restrict(ruleset: std::os::fd::RawFd, flags: u32) -> std::io::Result<()> {
 
 /// Every thread of this process asked, one at a time, to restrict itself with a ruleset:
 /// by a signal whose handler makes landlock_restrict_self(2) in the thread it interrupts,
-/// and answers through a futex.
+/// and answers on an eventfd.
 ///
 /// - The calling thread is restricted first. Then, until a listing of the process's threads
 ///   (`/proc/self/task`, which its own `/proc` rule lets it read) names none not settled,
@@ -858,32 +887,27 @@ fn restrict(ruleset: std::os::fd::RawFd, flags: u32) -> std::io::Result<()> {
 ///   restricted (landlock_restrict_self(2): "and its future children"), and one started
 ///   before is named by the next listing, as its creator was by this one: when a listing
 ///   names no thread not settled, none is left unrestricted.
-/// - A thread is settled once it answered, or once it is gone or exiting
-///   (`/proc/self/task/TID/stat`'s flags, PF_EXITING, include/linux/sched.h): one that
-///   entered its exit runs no more of this process's code, and never takes a signal sent
-///   to it alone (kernel/signal.c, `exit_signals`), so its answer is not awaited.
-/// - The wait for an answer is woken by it. Only a thread that never takes the signal
-///   leaves it unwoken, so the asked thread is looked at as each wait ends: the first wait
-///   as long as the calling thread's own restriction took (the cold start), each after an
-///   answer as long as that answer took, each while one is awaited twice the last
-///   (saturating), at least the monotonic clock's resolution. What it costs is a look at a
-///   thread that is slow to answer; a too short wait only looks sooner.
-/// - A thread asleep (`S`, an interruptible wait) with the signal blocked
-///   (`/proc/self/task/TID/status`, SigBlk) at two looks in turn, the second after a wait as
-///   long as every one before it, waits with it blocked, and only what it waits for wakes
-///   it: it cannot be asked, and the layer fails, closed. Mesa's threads block every signal
-///   for their lives (u_thread_create). glibc's pthread_create blocks every signal for a
-///   moment around its clone, and may wait for a lock then; its thread takes the signal as
-///   it unblocks it.
+/// - Whether a thread can answer is read, not guessed: a thread that blocks the signal, or
+///   a process that ignores it (`/proc/self/task/TID/status`, SigBlk and SigIgn), cannot,
+///   and the layer fails at once, closed ([`Unasked::Deaf`]). One gone or exiting
+///   (`stat`'s flags, PF_EXITING, include/linux/sched.h) is settled: it runs no more of
+///   this process's code, and drops a signal sent to it alone (kernel/signal.c,
+///   `exit_signals`).
+/// - Any other is waited for as long as it lives, with no timeout: its answer, or its end,
+///   which its thread pidfd says (pidfd_open(2), PIDFD_THREAD, Linux 6.9, older than the
+///   Landlock ABI v5 a VM needs), wakes the wait. A thread that entered its exit as it was
+///   asked never answers, and ends.
 /// - A thread id is settled once: one reused by a new thread within one pass would need
 ///   the kernel's thread ids to wrap (pid_max) while the pass runs.
 #[cfg(target_os = "linux")]
 mod asked {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
-    use std::time::{Duration, Instant};
 
     /// The ruleset the asked thread restricts itself with.
     static RULESET: AtomicI32 = AtomicI32::new(-1);
+    /// The eventfd its handler answers on.
+    static ANSWERS: AtomicI32 = AtomicI32::new(-1);
     /// The thread asked: the only one the handler acts in, once.
     static ASKED: AtomicI32 = AtomicI32::new(0);
     /// Its answer: [`UNANSWERED`], then [`RESTRICTED`] or [`FAILED`] plus the error.
@@ -894,35 +918,75 @@ mod asked {
     /// One pass at a time: its statics are one pass's.
     static PASS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    /// Why a pass left a thread unrestricted, and so failed.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub(super) enum Unasked {
+        /// It blocks the signal, or the process ignores it: it cannot answer.
+        Deaf { tid: i32, signal: libc::c_int },
+        /// Its restriction failed with this error.
+        Refused { tid: i32, errno: i32 },
+        /// What the pass needed of the kernel failed.
+        System { what: &'static str, error: String },
+    }
+
+    impl std::fmt::Display for Unasked {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                Unasked::Deaf { tid, signal } => write!(
+                    f,
+                    "thread {tid} blocks or ignores signal {signal}: it cannot be asked to restrict itself"
+                ),
+                Unasked::Refused { tid, errno } => {
+                    write!(f, "thread {tid}: {}", std::io::Error::from_raw_os_error(*errno))
+                }
+                Unasked::System { what, error } => write!(f, "{what}: {error}"),
+            }
+        }
+    }
+
+    fn system(what: &'static str) -> impl Fn(std::io::Error) -> Unasked {
+        move |e| Unasked::System {
+            what,
+            error: e.to_string(),
+        }
+    }
+
     /// The signal that asks: the real-time signal after the vCPUs' kick (vmm hv/kvm,
     /// SIGRTMIN), which nothing else in a VM process takes or blocks.
-    fn signal() -> libc::c_int {
+    pub(super) fn signal() -> libc::c_int {
         libc::SIGRTMIN() + 1
     }
 
-    /// An asked thread, as `/proc/self/task/TID` shows it.
+    /// A thread, as `/proc/self/task/TID` shows it.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum Seen {
         /// Gone, or exiting: settled.
         Ended,
-        /// Asleep with the signal blocked: it cannot be asked.
+        /// It blocks the signal, or the process ignores it: it cannot answer.
         Deaf,
-        /// Live, to be waited for.
-        Live,
+        /// It takes the signal: asked, and waited for.
+        Hears,
     }
 
     /// What asking a thread came to.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum Asked {
-        /// It restricted itself, in this long.
-        Restricted(Duration),
+        Restricted,
         /// It ended before it could.
+        Ended,
+    }
+
+    /// What ended a wait for an answer.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(super) enum Woken {
+        Answered,
+        /// The thread waited for ended.
         Ended,
     }
 
     /// The handler: in the asked thread alone, for a signal this process sent it, the
     /// restriction and its answer; errno kept for the code it interrupted. Async-signal-safe:
-    /// atomics, prctl(2), landlock_restrict_self(2), futex(2).
+    /// atomics, prctl(2), landlock_restrict_self(2), write(2).
     extern "C" fn restrict_here(_: libc::c_int, info: *mut libc::siginfo_t, _: *mut libc::c_void) {
         // SAFETY: __errno_location(3) is this thread's errno, and getpid(2) and gettid(2)
         // have no preconditions; the kernel passes an SA_SIGINFO handler its siginfo.
@@ -947,13 +1011,13 @@ mod asked {
                 None => FAILED.saturating_add(libc::EPERM.unsigned_abs()),
             };
             ANSWER.store(answer, Ordering::SeqCst);
-            // SAFETY: futex(2) waking a waiter on a word of ours.
+            let one = 1u64;
+            // SAFETY: write(2) of eight bytes of ours to the pass's eventfd.
             unsafe {
-                libc::syscall(
-                    libc::SYS_futex,
-                    ANSWER.as_ptr(),
-                    libc::FUTEX_WAKE | libc::FUTEX_PRIVATE_FLAG,
-                    1,
+                libc::write(
+                    ANSWERS.load(Ordering::SeqCst),
+                    (&raw const one).cast(),
+                    std::mem::size_of::<u64>(),
                 )
             };
         }
@@ -964,7 +1028,7 @@ mod asked {
     /// Installs [`restrict_here`] for [`signal`], once: restarting what it interrupts where
     /// the kernel restarts it (SA_RESTART); every wait a VM process makes that it does not
     /// goes on past EINTR, as it does past the vCPUs' kicks.
-    fn install() -> Result<(), String> {
+    fn install() -> Result<(), Unasked> {
         static INSTALLED: std::sync::OnceLock<Result<(), String>> = std::sync::OnceLock::new();
         INSTALLED
             .get_or_init(|| {
@@ -977,24 +1041,25 @@ mod asked {
                     action.sa_flags = libc::SA_SIGINFO | libc::SA_RESTART;
                     libc::sigemptyset(&mut action.sa_mask);
                     if libc::sigaction(signal(), &action, std::ptr::null_mut()) != 0 {
-                        return Err(format!(
-                            "its signal's handler: {}",
-                            std::io::Error::last_os_error()
-                        ));
+                        return Err(std::io::Error::last_os_error().to_string());
                     }
                 }
                 Ok(())
             })
             .clone()
+            .map_err(|error| Unasked::System {
+                what: "the asking signal's handler",
+                error,
+            })
     }
 
     /// The process's threads, by id.
-    fn threads() -> Result<Vec<i32>, String> {
-        let at = |e: std::io::Error| format!("/proc/self/task: {e}");
+    fn threads() -> Result<Vec<i32>, Unasked> {
+        let at = system("/proc/self/task");
         let mut found = Vec::new();
-        for entry in std::fs::read_dir("/proc/self/task").map_err(at)? {
+        for entry in std::fs::read_dir("/proc/self/task").map_err(&at)? {
             if let Some(tid) = entry
-                .map_err(at)?
+                .map_err(&at)?
                 .file_name()
                 .to_str()
                 .and_then(|n| n.parse().ok())
@@ -1006,7 +1071,7 @@ mod asked {
     }
 
     /// Thread `tid` as its `/proc` entry shows it: see [`Seen`].
-    fn seen(tid: i32) -> Result<Seen, String> {
+    fn seen(tid: i32) -> Result<Seen, Unasked> {
         /// PF_EXITING (include/linux/sched.h).
         const EXITING: u64 = 0x4;
         let read = |file: &str| match std::fs::read_to_string(format!("/proc/self/task/{tid}/{file}")) {
@@ -1014,157 +1079,162 @@ mod asked {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound || e.raw_os_error() == Some(libc::ESRCH) => {
                 Ok(None)
             }
-            Err(e) => Err(format!("/proc/self/task/{tid}/{file}: {e}")),
+            Err(e) => Err(Unasked::System {
+                what: "a thread's /proc entry",
+                error: format!("{tid}/{file}: {e}"),
+            }),
+        };
+        let unread = |what: &str| Unasked::System {
+            what: "a thread's /proc entry",
+            error: format!("{tid}: no {what}"),
         };
         let Some(stat) = read("stat")? else {
             return Ok(Seen::Ended);
         };
         // Its fields after the name, whose parentheses close last (proc_pid_stat(5)):
         // the state, then the parent, group, session, terminal, its group, and the flags.
-        let fields: Vec<&str> = stat
+        let flags = stat
             .rsplit_once(')')
-            .map(|(_, rest)| rest.split_whitespace().collect())
-            .unwrap_or_default();
-        let (state, flags) = match (fields.first(), fields.get(6).and_then(|f| f.parse::<u64>().ok())) {
-            (Some(state), Some(flags)) => (*state, flags),
-            _ => {
-                return Err(format!(
-                    "/proc/self/task/{tid}/stat: no state and flags in {stat:?}"
-                ));
-            }
-        };
+            .and_then(|(_, rest)| rest.split_whitespace().nth(6))
+            .and_then(|f| f.parse::<u64>().ok())
+            .ok_or_else(|| unread("flags"))?;
         if flags & EXITING != 0 {
             return Ok(Seen::Ended);
-        }
-        // Asleep, where only what it waits for wakes it: a signal it blocks cannot.
-        if state != "S" {
-            return Ok(Seen::Live);
         }
         let Some(status) = read("status")? else {
             return Ok(Seen::Ended);
         };
-        let blocked = status
-            .lines()
-            .find_map(|l| l.strip_prefix("SigBlk:"))
-            .and_then(|b| u64::from_str_radix(b.trim(), 16).ok())
-            .ok_or_else(|| format!("/proc/self/task/{tid}/status: no SigBlk"))?;
+        let mask = |name: &str| {
+            status
+                .lines()
+                .find_map(|l| l.strip_prefix(name))
+                .and_then(|m| u64::from_str_radix(m.trim(), 16).ok())
+                .ok_or_else(|| unread(name))
+        };
         let bit = u32::try_from(signal() - 1)
             .ok()
             .and_then(|b| 1u64.checked_shl(b))
             .unwrap_or(0);
-        Ok(if blocked & bit != 0 {
-            Seen::Deaf
-        } else {
-            Seen::Live
-        })
+        let deaf = (mask("SigBlk:")? | mask("SigIgn:")?) & bit != 0;
+        Ok(if deaf { Seen::Deaf } else { Seen::Hears })
     }
 
-    /// The monotonic clock's resolution: the shortest wait worth asking for.
-    fn resolution() -> Duration {
-        let mut res = libc::timespec {
-            tv_sec: 0,
-            tv_nsec: 0,
-        };
-        // SAFETY: clock_getres(2) writing into a timespec of ours.
-        let ok = unsafe { libc::clock_getres(libc::CLOCK_MONOTONIC, &mut res) } == 0;
-        let nanos = u32::try_from(res.tv_nsec).ok().filter(|_| ok && res.tv_sec == 0);
-        Duration::from_nanos(u64::from(nanos.unwrap_or(1).max(1)))
+    /// Waits, with no timeout, until `answers` has an answer or `thread`, a thread's pidfd,
+    /// says it ended.
+    pub(super) fn wait(answers: &OwnedFd, thread: &OwnedFd) -> Result<Woken, Unasked> {
+        loop {
+            let mut polled = [answers.as_raw_fd(), thread.as_raw_fd()].map(|fd| libc::pollfd {
+                fd,
+                events: libc::POLLIN,
+                revents: 0,
+            });
+            // SAFETY: ppoll(2) on two pollfds of descriptors held open, with no timeout and
+            // no mask.
+            let n = unsafe { libc::ppoll(polled.as_mut_ptr(), 2, std::ptr::null(), std::ptr::null()) };
+            if n < 0 {
+                let e = std::io::Error::last_os_error();
+                if e.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(system("waiting for an answer")(e));
+            }
+            let [answered, ended] = polled;
+            if answered.revents != 0 {
+                let mut count = 0u64;
+                // SAFETY: read(2) of an eventfd's eight-byte count into a u64 of ours.
+                unsafe {
+                    libc::read(
+                        answers.as_raw_fd(),
+                        (&raw mut count).cast(),
+                        std::mem::size_of::<u64>(),
+                    )
+                };
+                return Ok(Woken::Answered);
+            }
+            if ended.revents != 0 {
+                return Ok(Woken::Ended);
+            }
+        }
     }
 
-    /// Waits until [`ANSWER`] is no longer `was`, or for `at_most`.
-    fn wait(was: u32, at_most: Duration) {
-        let ts = libc::timespec {
-            tv_sec: libc::time_t::try_from(at_most.as_secs()).unwrap_or(libc::time_t::MAX),
-            tv_nsec: libc::c_long::from(at_most.subsec_nanos()),
-        };
-        // SAFETY: futex(2) waiting on a word of ours, with a relative timeout of ours.
-        unsafe {
-            libc::syscall(
-                libc::SYS_futex,
-                ANSWER.as_ptr(),
-                libc::FUTEX_WAIT | libc::FUTEX_PRIVATE_FLAG,
-                was,
-                &raw const ts,
-            )
-        };
+    /// Thread `tid`'s pidfd, or none where it is gone.
+    pub(super) fn pidfd(tid: i32) -> Result<Option<OwnedFd>, Unasked> {
+        // SAFETY: pidfd_open(2) of a thread (PIDFD_THREAD, include/uapi/linux/pidfd.h:
+        // O_EXCL).
+        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, tid, libc::O_EXCL) };
+        if fd < 0 {
+            let e = std::io::Error::last_os_error();
+            return match e.raw_os_error() {
+                Some(libc::ESRCH) => Ok(None),
+                _ => Err(system("a thread's pidfd")(e)),
+            };
+        }
+        // SAFETY: a fresh descriptor nothing else owns.
+        Ok(Some(unsafe { OwnedFd::from_raw_fd(fd as i32) }))
     }
 
-    /// Asks thread `tid` of process `pid` to restrict itself, the first wait `first` long.
-    fn ask(pid: i32, tid: i32, first: Duration, least: Duration) -> Result<Asked, String> {
+    /// Asks thread `tid` of process `pid` to restrict itself, answering on `answers`.
+    fn ask(pid: i32, tid: i32, answers: &OwnedFd) -> Result<Asked, Unasked> {
+        match seen(tid)? {
+            Seen::Ended => return Ok(Asked::Ended),
+            Seen::Deaf => {
+                return Err(Unasked::Deaf {
+                    tid,
+                    signal: signal(),
+                });
+            }
+            Seen::Hears => {}
+        }
+        let Some(thread) = pidfd(tid)? else {
+            return Ok(Asked::Ended);
+        };
         ANSWER.store(UNANSWERED, Ordering::SeqCst);
         ASKED.store(tid, Ordering::SeqCst);
-        let sent = Instant::now();
         // SAFETY: tgkill(2) to a thread of this process.
         if unsafe { libc::syscall(libc::SYS_tgkill, pid, tid, signal()) } != 0 {
             let e = std::io::Error::last_os_error();
             ASKED.store(0, Ordering::SeqCst);
             return match e.raw_os_error() {
                 Some(libc::ESRCH) => Ok(Asked::Ended),
-                _ => Err(format!("asking thread {tid}: {e}")),
+                _ => Err(system("asking a thread")(e)),
             };
         }
-        let mut wait_for = first.max(least);
-        let mut deaf_before = false;
-        loop {
-            wait(UNANSWERED, wait_for);
-            match ANSWER.load(Ordering::SeqCst) {
-                UNANSWERED => {}
-                RESTRICTED => return Ok(Asked::Restricted(sent.elapsed())),
-                failed => {
-                    let errno = i32::try_from(failed.saturating_sub(FAILED)).unwrap_or(0);
-                    return Err(format!(
-                        "thread {tid}: {}",
-                        std::io::Error::from_raw_os_error(errno)
-                    ));
-                }
-            }
-            let now = seen(tid)?;
-            // Deaf at one look may be a moment's: glibc's pthread_create blocks every
-            // signal around its clone, and can wait for a lock then. Deaf again after a
-            // wait as long as all before it, it waits so.
-            let settled = match now {
-                Seen::Live => false,
-                Seen::Deaf => std::mem::replace(&mut deaf_before, true),
-                Seen::Ended => true,
-            };
-            deaf_before &= now == Seen::Deaf;
-            // Taken back, unless its handler took it as this looked.
-            if !settled
-                || ASKED
-                    .compare_exchange(tid, 0, Ordering::SeqCst, Ordering::SeqCst)
-                    .is_err()
-            {
-                wait_for = wait_for.saturating_mul(2);
-                continue;
-            }
-            return match now {
-                Seen::Deaf => Err(format!(
-                    "thread {tid} blocks signal {} as it waits: it cannot be asked to restrict itself",
-                    signal()
-                )),
-                _ => Ok(Asked::Ended),
-            };
+        let woken = wait(answers, &thread)?;
+        ASKED.store(0, Ordering::SeqCst);
+        match (woken, ANSWER.load(Ordering::SeqCst)) {
+            (_, RESTRICTED) => Ok(Asked::Restricted),
+            (Woken::Ended, UNANSWERED) => Ok(Asked::Ended),
+            (_, failed) => Err(Unasked::Refused {
+                tid,
+                errno: i32::try_from(failed.saturating_sub(FAILED)).unwrap_or(0),
+            }),
         }
     }
 
     /// Restricts every thread of this process with `ruleset`.
-    pub(super) fn every_thread(ruleset: std::os::fd::RawFd) -> Result<(), String> {
+    pub(super) fn every_thread(ruleset: std::os::fd::RawFd) -> Result<(), Unasked> {
         let _pass = PASS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         install()?;
+        // SAFETY: eventfd(2) with no flags but close-on-exec.
+        let answers = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC) };
+        if answers < 0 {
+            return Err(system("the answers' eventfd")(std::io::Error::last_os_error()));
+        }
+        // SAFETY: a fresh descriptor nothing else owns.
+        let answers = unsafe { OwnedFd::from_raw_fd(answers) };
         // SAFETY: getpid(2) and gettid(2) have no preconditions.
         let (pid, me) = unsafe { (libc::getpid(), libc::syscall(libc::SYS_gettid) as i32) };
-        let started = Instant::now();
-        super::restrict(ruleset, 0).map_err(|e| e.to_string())?;
-        let took = started.elapsed();
+        super::restrict(ruleset, 0).map_err(system("landlock_restrict_self"))?;
         RULESET.store(ruleset, Ordering::SeqCst);
-        let passed = settle(pid, me, took, resolution());
+        ANSWERS.store(answers.as_raw_fd(), Ordering::SeqCst);
+        let passed = settle(pid, me, &answers);
+        ANSWERS.store(-1, Ordering::SeqCst);
         RULESET.store(-1, Ordering::SeqCst);
         passed
     }
 
-    /// Asks every thread but `me` in turn until a listing names none not settled, the
-    /// first wait `took` long.
-    fn settle(pid: i32, me: i32, mut took: Duration, least: Duration) -> Result<(), String> {
+    /// Asks every thread but `me` in turn until a listing names none not settled.
+    fn settle(pid: i32, me: i32, answers: &OwnedFd) -> Result<(), Unasked> {
         let mut settled = vec![me];
         loop {
             let left: Vec<i32> = threads()?.into_iter().filter(|t| !settled.contains(t)).collect();
@@ -1172,9 +1242,7 @@ mod asked {
                 return Ok(());
             }
             for tid in left {
-                if let Asked::Restricted(answered_in) = ask(pid, tid, took, least)? {
-                    took = answered_in;
-                }
+                ask(pid, tid, answers)?;
                 settled.push(tid);
             }
         }
@@ -1553,6 +1621,7 @@ mod tests {
                     libc::sigfillset(&mut all);
                     libc::pthread_sigmask(libc::SIG_BLOCK, &all, std::ptr::null_mut());
                 }
+                let _ = tell.send(true);
             }
             for what in asked {
                 let could = match what {
@@ -1602,6 +1671,10 @@ mod tests {
             }
         };
         let mut siblings: Vec<_> = (0..3).map(|_| sibling(dir.clone(), false)).collect();
+        // Under the filter of a host whose ABI asks each thread (v5), as a VM there is.
+        if reach == "asked" {
+            confine_as(5).unwrap();
+        }
         let mut out = format!("first: {:?}\n", apply(&first));
         let tries = |siblings: &[(
             std::sync::mpsc::Sender<&'static str>,
@@ -1650,8 +1723,8 @@ mod tests {
             ..Paths::default()
         };
         let (ask, told) = sibling(dir.clone(), true);
-        // Asleep in its receive, the signal blocked.
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        // Its signals blocked.
+        told.recv().unwrap();
         // SAFETY: prctl(2) with integer arguments.
         unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
         let applied = match reach {
@@ -1744,7 +1817,7 @@ mod tests {
         );
         assert_eq!(code, Some(0), "{said}\n{err}");
         assert!(
-            said.contains("applied: Err(") && said.contains("blocks signal"),
+            said.contains("applied: Err(") && said.contains("blocks or ignores signal"),
             "{said}\n{err}"
         );
         if abi >= TSYNC_ABI {
@@ -1869,6 +1942,52 @@ mod tests {
             } else {
                 assert_eq!(code, Some(0), "{why}");
             }
+        }
+    }
+
+    /// The wait for a thread's answer ends with its answer, or with its end where it ends
+    /// unanswered (its thread pidfd): it has no timeout, and never outwaits a thread.
+    #[test]
+    fn a_wait_for_an_answer_ends_with_the_answer_or_the_thread() {
+        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+        let eventfd = || {
+            // SAFETY: eventfd(2), close-on-exec; a fresh descriptor owned once.
+            unsafe { OwnedFd::from_raw_fd(libc::eventfd(0, libc::EFD_CLOEXEC)) }
+        };
+        for answered in [false, true] {
+            let (go, gone) = std::sync::mpsc::channel::<()>();
+            let (said, tid) = std::sync::mpsc::channel();
+            let thread = std::thread::spawn(move || {
+                // SAFETY: gettid(2).
+                said.send(unsafe { libc::syscall(libc::SYS_gettid) } as i32)
+                    .unwrap();
+                let _ = gone.recv();
+            });
+            let tid = tid.recv().unwrap();
+            let pidfd = asked::pidfd(tid).unwrap().unwrap();
+            let answers = eventfd();
+            let (woke, woken) = std::sync::mpsc::channel();
+            let waiting = {
+                let answers = answers.try_clone().unwrap();
+                std::thread::spawn(move || woke.send(asked::wait(&answers, &pidfd)).unwrap())
+            };
+            if answered {
+                let one = 1u64;
+                // SAFETY: write(2) of eight bytes of ours to the eventfd.
+                unsafe { libc::write(answers.as_raw_fd(), (&raw const one).cast(), 8) };
+            } else {
+                go.send(()).unwrap();
+            }
+            let got = woken.recv_timeout(std::time::Duration::from_secs(60));
+            let want = if answered {
+                asked::Woken::Answered
+            } else {
+                asked::Woken::Ended
+            };
+            assert_eq!(got, Ok(Ok(want)), "answered: {answered}");
+            drop(go);
+            thread.join().unwrap();
+            waiting.join().unwrap();
         }
     }
 
