@@ -20933,6 +20933,15 @@ refusing; `an_answer_is_long_past_its_kinds_slowest_before_it` by mutation resto
 `docs/research/measurements/macos-sched/launchd-run.sh` on HVF, and on KVM), n, p50, p90, p99
 and max, and the judged send's per-send cost against 95a057045 (`build-ab/ab.py`).
 
+`TAKE_TIMEOUT` deleted, 2026-11-14, once slice (b) landed (2b53dfc8c: `send_judged` and
+`health::Judged` on Windows too): `RunSocket` and `guest_timed` are one body for every OS, and
+no wait of the daemon's on a VM is bounded by a picked time. The test that waited it out
+(`metrics_whose_microvm_runs_nothing_are_ended`) waits its kind's slowest, the daemon's own W*,
+before its own judge takes over, as the give-back's test does. Owed to ROOT: the Windows run of
+`daemon::tests::a_run_socket` and `daemon::commands::tests::a_vm_slow_to_answer` (Unix-gated:
+their sleeps and pipes' one-message window, pipe.rs `MESSAGE_FRAME`) and the WHP latency of each
+send and `GUEST_TIME`.
+
 ### The `crates/shards` figures of the picked-constants audit (2026-11-09): each from its source
 
 **Found.** The audit of 2026-11-09 (docs/audit/2026-11-09_picked-constants.md, "crates/shards")

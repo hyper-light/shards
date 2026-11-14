@@ -219,12 +219,6 @@ fn open_layer(at: &Path) -> std::io::Result<std::fs::File> {
     .open(at)
 }
 
-/// How long a warm VM may take to say it has taken a run: it does so right after it
-/// receives one. On Unix every wait it bounded is judged (runs-11 `TAKE_TIMEOUT`); Windows'
-/// are slice (b)'s, owed.
-#[cfg(any(windows, test))]
-const TAKE_TIMEOUT: Duration = Duration::from_secs(10);
-
 /// The home's empty directory, every join share's root (D119): its server makes nothing in
 /// it, and shows nothing of it.
 const JOIN_ROOT: &str = "join-root";
@@ -5494,7 +5488,7 @@ impl<D: Disk> Daemon<D> {
     /// from the request's read to the keep of what changed, as moby holds a container's lock
     /// across an update and a network connect (daemon/update.go, ConnectToNetwork), so that no
     /// client keeps a request another changed after it read it. An update holds it across its
-    /// exec into the VM, which `TAKE_TIMEOUT` bounds.
+    /// sends to the VM, each waiting while the VM's process goes on (D215's judge, `RunSocket`).
     fn request_turn(&self, id: &str) -> RequestTurn<'_> {
         let mut changing = lock(&self.changing);
         while changing.contains(id) {
@@ -7904,7 +7898,7 @@ impl<D: Disk> Daemon<D> {
         // Its other end the provider's VM's once handed: what the daemon sends on it, the
         // joiner's run among it, takes its handles there, duplicated into the VM's process
         // as its link's are. A pair's own queue kept them in this one on Windows, and the
-        // VM waited for them past the daemon's patience (TAKE_TIMEOUT).
+        // VM waited for them past the daemon's patience (then `TAKE_TIMEOUT`'s 10 s; runs-11).
         #[cfg(windows)]
         ours.gives_to(
             vm.giver()
