@@ -72,7 +72,7 @@ Priorities: **P0 = critical**, **P1 = high**, **P3 = medium**, **P5 = low**; no 
 
 **Regression sketch:** In a disposable child, synchronize after plugged-run enumeration, unplug a later block, then resume scanning. Require source survival and either a consistent migration or typed refusal. Repeat against `page_at` and with a guest issuing real virtio-mem requests.
 
-**Status (2026-11-13):** owned by the memory reviewer as memory-02; no duplicate implementation in this lane. [Fix evidence](../../research/measurements/migrate/fix-review-2026-11-13.md).
+**Status (2026-11-13):** fixed by the memory reviewer as memory-02 in 29196c6b3, integrated here; red `live_copy_keeps_bytes_after_their_block_is_unplugged` / `live_copy_page_keeps_bytes_after_their_block_is_unplugged`, focused green in memory-fixes-v1. No duplicate implementation in this lane. [Fix evidence](../../research/measurements/migrate/fix-review-2026-11-13.md).
 
 ### migrate-04 — P1 / high — A forged snapshot header defeats the state allocation bound
 

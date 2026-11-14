@@ -146,3 +146,30 @@ Post-merge receipts: r4 and r6 reran migrate06's10 CPUID tests plus clippy succe
 on their then-merged trees; policy r5 passed. Earlier ff pushes were rejected as main
 advanced, so no landing is inferred from those checks. The final landing SHA and its
 new post-merge result must be retained in ROOT's receipt.
+
+## Resumed landing receipt
+
+ROOT's corrected handoff supersedes its earlier P0 handoff. The unlanded P0 tip
+`21c66fd3e` was briefly merged locally, never pushed, then the merge was removed
+with `git reset --keep 09338f18d` at ROOT's explicit instruction. That reset preserved
+the owned untracked hardlink regression fixture. The CPU landing must not contain
+`21c66fd3e` unless its owner independently lands it on the verified remote main.
+Remote authority is `git ls-remote origin refs/heads/main`, not the shared tracking ref.
+
+- Focused merged tests at `8eb8767d6` (original run r10): 3 Arm CPU tests and 10 x86
+  CPUID tests passed; policy check passed. Both crates' clippy passed at `f746ce4c3`
+  (original r9), and at the earlier green fix `f004611b5` (r8).
+- Resumed check r2, `09338f18d`: `cargo check -p shards-vmm -p shards --tests`
+  passed on adacachy2 Linux x86_64, warm target, no VM run. This tree integrates the
+  memory lane's `29196c6b3` owned-copy fix; migrate03 is not implemented twice.
+- Subsequent main merges follow ROOT's amended fix brief: check overlapping crate
+  inputs on the warm target; rerun focused tests after any conflict; disjoint merges
+  do not pretend to be separately tested.
+
+Migrate05 remains held for the P0 extractor owner's actual remote-main landing.
+The archive regression already failed at `8eb8767d6` plus the retained patch (original
+r11): after importing hardlinked a/b, writing `after` through a left b reading `before`.
+Command: `cargo test -p shards a_volumes_hardlinks_keep_shared_contents_after_move --bin shards`.
+This is a real file/archive unit failure, not a VM test. The test will be committed into
+that slice once the P0 extractor seam lands; no production extractor change is included
+in this CPU landing. ROOT accepted migrate04/07/09/10 as owed with the designs above.
