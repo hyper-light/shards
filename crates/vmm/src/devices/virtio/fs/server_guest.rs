@@ -142,9 +142,13 @@ pub fn read_link(path: &Path) -> io::Result<Vec<u8>> {
 /// once all it holds is in it. One there already is kept.
 pub fn make_dir(path: &Path) -> io::Result<()> {
     let (dir, name) = place(path)?;
-    match mkdir_at(dir.raw(), &name, 0o700) {
+    make_dir_in(dir.raw(), &name)
+}
+
+fn make_dir_in(dir: host::Raw, name: &CStr) -> io::Result<()> {
+    match mkdir_at(dir, name, 0o700) {
         Ok(()) => Ok(()),
-        Err(EEXIST) if stat_at(dir.raw(), &name).is_ok_and(|st| mode_of(&st) & S_IFMT == S_IFDIR) => Ok(()),
+        Err(EEXIST) if stat_at(dir, name).is_ok_and(|st| mode_of(&st) & S_IFMT == S_IFDIR) => Ok(()),
         Err(e) => Err(io_error(e)),
     }
 }
@@ -153,8 +157,12 @@ pub fn make_dir(path: &Path) -> io::Result<()> {
 /// Windows WSL's, which an unelevated process makes.
 pub fn make_link(path: &Path, target: &[u8]) -> io::Result<()> {
     let (dir, name) = place(path)?;
+    make_link_in(dir.raw(), &name, target)
+}
+
+fn make_link_in(dir: host::Raw, name: &CStr, target: &[u8]) -> io::Result<()> {
     let target = CString::new(target).map_err(|_| io_error(EINVAL))?;
-    symlink_at(&target, dir.raw(), &name).map_err(io_error)
+    symlink_at(&target, dir, name).map_err(io_error)
 }
 
 /// A FIFO, socket or device node at `path` of `meta`'s kind and number, as the server makes
@@ -162,27 +170,26 @@ pub fn make_link(path: &Path, target: &[u8]) -> io::Result<()> {
 /// makes one only for a privileged process, an empty file of mode 0600, which [`set`]
 /// records the guest's kind and number beside (D38).
 pub fn make_node(path: &Path, meta: &Meta) -> io::Result<()> {
+    let (dir, name) = place(path)?;
+    make_node_in(dir.raw(), &name, meta)
+}
+
+fn make_node_in(dir: host::Raw, name: &CStr, meta: &Meta) -> io::Result<()> {
     let kind = meta.mode & S_IFMT;
     if !matches!(kind, S_IFIFO | S_IFSOCK | S_IFCHR | S_IFBLK) {
         return Err(io_error(EINVAL));
     }
-    let (dir, name) = place(path)?;
     let perm = meta.mode & 0o7777;
     let on_host = if matches!(kind, S_IFCHR | S_IFBLK) {
         perm
     } else {
         host_perm(perm, false)
     };
-    match mknod_at(dir.raw(), &name, kind | on_host, meta.rdev) {
+    match mknod_at(dir, name, kind | on_host, meta.rdev) {
         Ok(()) => Ok(()),
-        Err(EPERM) => open_at(
-            dir.raw(),
-            &name,
-            host::O_CREAT | host::O_EXCL | host::O_WRONLY,
-            0o600,
-        )
-        .map(drop)
-        .map_err(io_error),
+        Err(EPERM) => open_at(dir, name, host::O_CREAT | host::O_EXCL | host::O_WRONLY, 0o600)
+            .map(drop)
+            .map_err(io_error),
         Err(e) => Err(io_error(e)),
     }
 }
@@ -197,7 +204,12 @@ pub fn make_node(path: &Path, meta: &Meta) -> io::Result<()> {
 /// one a guest makes.
 pub fn set(path: &Path, meta: &Meta) -> io::Result<()> {
     let (dir, name) = place(path)?;
-    let st = stat_at(dir.raw(), &name).map_err(io_error)?;
+    set_in(dir.raw(), &name, meta, &path.display())
+}
+
+/// [`set`] of `name` in `dir`, `shown` as its errors name it.
+fn set_in(dir: host::Raw, name: &CStr, meta: &Meta, shown: &dyn std::fmt::Display) -> io::Result<()> {
+    let st = stat_at(dir, name).map_err(io_error)?;
     let host_kind = mode_of(&st) & S_IFMT;
     let kind = meta.mode & S_IFMT;
     let perm = meta.mode & 0o7777;
@@ -209,7 +221,7 @@ pub fn set(path: &Path, meta: &Meta) -> io::Result<()> {
         Err(EPERM | EOPNOTSUPP) if !must => Ok(false),
         Err(e) => Err(io_error(e)),
     };
-    let fd = attributes_of(dir.raw(), &name, host_kind)?;
+    let fd = attributes_of(dir, name, host_kind)?;
     let mut recorded = false;
     if let Some(fd) = &fd {
         for (guest, value) in &meta.xattrs {
@@ -240,8 +252,7 @@ pub fn set(path: &Path, meta: &Meta) -> io::Result<()> {
     }
     if emulated && !recorded {
         return Err(io::Error::other(format!(
-            "{}: the host keeps no record of a node of kind {kind:o}",
-            path.display()
+            "{shown}: the host keeps no record of a node of kind {kind:o}"
         )));
     }
     if host_kind == S_IFLNK {
@@ -256,7 +267,112 @@ pub fn set(path: &Path, meta: &Meta) -> io::Result<()> {
     } else {
         perm
     };
-    chmod_at(dir.raw(), &name, host).map_err(io_error)
+    chmod_at(dir, name, host).map_err(io_error)
+}
+
+/// A directory held open, beneath which a move puts what another machine's stream holds
+/// (D176 part 6): each entry's directories reached from it a component at a time, as the
+/// server reaches a guest's, none of them through a symlink or a reparse point (O_NOFOLLOW;
+/// NT's FILE_OPEN_REPARSE_POINT), each checked a directory once opened; and each entry made
+/// in its own directory by its name, never over anything there, and given what its guest
+/// saw there. A symlink an earlier entry made is data, never a way to anywhere: what a
+/// stream names below one is refused (ELOOP, ENOTDIR). Names are a host's components, as
+/// [`host_name`] gives them.
+#[derive(Debug)]
+pub struct Beneath(host::Owned);
+
+impl Beneath {
+    /// The directory at `root`, held.
+    pub fn open(root: &Path) -> io::Result<Beneath> {
+        open_dir(root).map(Beneath).map_err(io_error)
+    }
+
+    /// The directory that holds `rel`'s last component, reached from this one, each one not
+    /// there made where `make`; and that component as the server names it.
+    fn place(&self, rel: &[&OsStr], make: bool) -> io::Result<(Option<host::Owned>, CString)> {
+        let Some((last, dirs)) = rel.split_last() else {
+            return Err(io_error(EINVAL));
+        };
+        let mut held: Option<host::Owned> = None;
+        for part in dirs {
+            let at = self.at(held.as_ref());
+            let name = guest_name_of(part).map_err(io_error)?;
+            held = Some(step(at, &name, make).map_err(|e| match e {
+                ELOOP | ENOTDIR => io::Error::new(
+                    io::ErrorKind::NotADirectory,
+                    format!(
+                        "{} is no directory of its own (a symlink, never followed here, or a file)",
+                        Path::new(part).display()
+                    ),
+                ),
+                e => io_error(e),
+            })?);
+        }
+        Ok((held, guest_name_of(last).map_err(io_error)?))
+    }
+
+    /// `held`, or this directory where `place` reached none below it.
+    fn at(&self, held: Option<&host::Owned>) -> host::Raw {
+        held.map_or(self.0.raw(), host::AsRaw::raw)
+    }
+
+    /// A directory at `rel` ([`make_dir`]).
+    pub fn make_dir(&self, rel: &[&OsStr]) -> io::Result<()> {
+        let (dir, name) = self.place(rel, true)?;
+        make_dir_in(self.at(dir.as_ref()), &name)
+    }
+
+    /// A symlink at `rel` holding `target` ([`make_link`]), never followed here.
+    pub fn make_link(&self, rel: &[&OsStr], target: &[u8]) -> io::Result<()> {
+        let (dir, name) = self.place(rel, true)?;
+        make_link_in(self.at(dir.as_ref()), &name, target)
+    }
+
+    /// A FIFO, socket or device node at `rel` ([`make_node`]).
+    pub fn make_node(&self, rel: &[&OsStr], meta: &Meta) -> io::Result<()> {
+        let (dir, name) = self.place(rel, true)?;
+        make_node_in(self.at(dir.as_ref()), &name, meta)
+    }
+
+    /// A regular file at `rel`, new, its owner's alone (mode 0600), open to read and write.
+    pub fn make_file(&self, rel: &[&OsStr]) -> io::Result<std::fs::File> {
+        let (dir, name) = self.place(rel, true)?;
+        let flags = host::O_RDWR | host::O_CREAT | host::O_EXCL | host::O_NOFOLLOW;
+        let fd = open_at(self.at(dir.as_ref()), &name, flags, 0o600).map_err(io_error)?;
+        Ok(std::fs::File::from(fd))
+    }
+
+    /// `meta` given to the file at `rel` ([`set`]), its directories all there already.
+    pub fn set(&self, rel: &[&OsStr], meta: &Meta) -> io::Result<()> {
+        let (dir, name) = self.place(rel, false)?;
+        let shown = std::path::PathBuf::from_iter(rel);
+        set_in(self.at(dir.as_ref()), &name, meta, &shown.display())
+    }
+}
+
+/// The directory `name` in `dir`, made where it is not there and `make` (as
+/// `create_dir_all` makes one, the process's umask its mode's), never followed if a
+/// symlink, and refused if what opens is no directory (a reparse point NT opens as itself).
+fn step(dir: host::Raw, name: &CStr, make: bool) -> Result<host::Owned, Errno> {
+    let open = || {
+        open_at(
+            dir,
+            name,
+            host::O_RDONLY | host::O_DIRECTORY | host::O_NOFOLLOW,
+            0,
+        )
+    };
+    let fd = match open() {
+        Err(ENOENT) if make => match mkdir_at(dir, name, 0o777) {
+            Ok(()) | Err(EEXIST) => open()?,
+            Err(e) => return Err(e),
+        },
+        opened => opened?,
+    };
+    if mode_of(&stat_fd(fd.raw())?) & S_IFMT != S_IFDIR {
+        return Err(ENOTDIR);
+    }
+    Ok(fd)
 }
 
 #[cfg(test)]
@@ -342,5 +458,53 @@ mod tests {
         .unwrap();
         assert_eq!(read_link(&link).unwrap(), b"f");
         assert_eq!(read(&link).unwrap().mode & S_IFMT, S_IFLNK);
+    }
+
+    /// [`Beneath`] makes each entry below its root through directories alone, those
+    /// missing on the way made: a symlink is made and kept as data, and nothing named below
+    /// it, or below a file, is made, whether the link leads out of the root or not; a file
+    /// is never made over one there.
+    #[test]
+    fn beneath_goes_through_no_symlink() {
+        fn rel(path: &str) -> Vec<&OsStr> {
+            path.split('/').map(OsStr::new).collect()
+        }
+        let root = shards_testdir::TempDir::new("guest-beneath").unwrap();
+        let (held, away) = (root.join("held"), root.join("away"));
+        std::fs::create_dir(&held).unwrap();
+        std::fs::create_dir(&away).unwrap();
+        let b = Beneath::open(&held).unwrap();
+        b.make_dir(&rel("a/b")).unwrap();
+        assert!(held.join("a").join("b").is_dir());
+        b.make_link(&rel("a/out"), b"../../away").unwrap();
+        b.make_link(&rel("a/in"), b"b").unwrap();
+        let link = Meta {
+            mode: S_IFLNK | 0o777,
+            ..Meta::default()
+        };
+        b.set(&rel("a/out"), &link).unwrap();
+        drop(b.make_file(&rel("a/f")).unwrap());
+        assert!(b.make_file(&rel("a/f")).is_err(), "made over a file there");
+        let fifo = Meta {
+            mode: S_IFIFO | 0o600,
+            ..Meta::default()
+        };
+        for below in ["a/out", "a/in", "a/f"] {
+            let (f, d, l, p) = (
+                format!("{below}/f"),
+                format!("{below}/d/e"),
+                format!("{below}/l"),
+                format!("{below}/p"),
+            );
+            let refused = b.make_file(&rel(&f)).unwrap_err();
+            assert_eq!(refused.kind(), io::ErrorKind::NotADirectory, "{below}: {refused}");
+            assert!(b.make_dir(&rel(&d)).is_err(), "{below}");
+            assert!(b.make_link(&rel(&l), b"/").is_err(), "{below}");
+            assert!(b.make_node(&rel(&p), &fifo).is_err(), "{below}");
+            assert!(b.set(&rel(&f), &link).is_err(), "{below}");
+        }
+        assert_eq!(std::fs::read_dir(&away).unwrap().count(), 0);
+        assert_eq!(std::fs::read_dir(held.join("a").join("b")).unwrap().count(), 0);
+        assert_eq!(read_link(&held.join("a").join("out")).unwrap(), b"../../away");
     }
 }

@@ -684,6 +684,7 @@ pub struct Block {
     /// What a worker needs besides its queue, from activation until reset.
     context: Option<(Arc<GuestMemory>, Arc<DeviceInterrupt>)>,
     worker: Option<Worker>,
+    stopping: Arc<AtomicBool>,
     /// The queue while paused.
     paused: Option<Queue>,
     /// Its microVM's I/O limits (D178), and whether this device holds them paused.
@@ -761,6 +762,7 @@ impl Block {
             backend: Arc::new(backend),
             context: None,
             worker: None,
+            stopping: Arc::new(AtomicBool::new(false)),
             paused: None,
             limit: None,
             holds_limit: false,
@@ -775,7 +777,9 @@ impl Block {
             return Err("virtio-blk started before activation".into());
         };
         let (backend, mem, limit) = (self.backend.clone(), memory.clone(), self.limit);
-        let answer = move |chain: &Chain| handle(chain, &mem, &backend, limit);
+        self.stopping.store(false, Ordering::Release);
+        let stopping = self.stopping.clone();
+        let answer = move |chain: &Chain| handle(chain, &mem, &backend, limit, &stopping);
         match Worker::start("virtio-blk", queue, memory, interrupt, answer) {
             Ok(worker) => {
                 self.worker = Some(worker);
@@ -790,7 +794,11 @@ impl Block {
 
     /// Stops the worker after the request it is executing; returns its queue.
     fn stop(&mut self) -> Option<Queue> {
-        self.worker.take()?.stop()
+        let worker = self.worker.take()?;
+        if let Some(limit) = self.limit {
+            limit.cancel(&self.stopping);
+        }
+        worker.stop()
     }
 
     /// The device's interrupt, given at activation and taken at reset: who tells the
@@ -935,7 +943,13 @@ impl Drop for Block {
 }
 
 /// Executes one request; returns the bytes written into the driver's buffers.
-fn handle(chain: &Chain, mem: &GuestMemory, backend: &Backend, limit: Option<&Limiter>) -> u32 {
+fn handle(
+    chain: &Chain,
+    mem: &GuestMemory,
+    backend: &Backend,
+    limit: Option<&Limiter>,
+    stopping: &AtomicBool,
+) -> u32 {
     // The status byte is the last byte of the last writable descriptor.
     let Some(last) = chain.writable().last().copied() else {
         debug!("virtio-blk: request without a status byte");
@@ -947,7 +961,7 @@ fn handle(chain: &Chain, mem: &GuestMemory, backend: &Backend, limit: Option<&Li
     let Some(status_at) = last.addr.checked_add(u64::from(last.len) - 1) else {
         return 0;
     };
-    let (status, data_written) = match execute(chain, last, mem, backend, limit) {
+    let (status, data_written) = match execute(chain, last, mem, backend, limit, stopping) {
         Ok(n) => (S_OK, n),
         Err(status) => (status, 0),
     };
@@ -965,6 +979,7 @@ fn execute(
     mem: &GuestMemory,
     backend: &Backend,
     limit: Option<&Limiter>,
+    stopping: &AtomicBool,
 ) -> Result<u32, u8> {
     let mut header = [0u8; 16];
     let body = gather_header(chain, &mem.access().map_err(|_| S_IOERR)?, &mut header)?;
@@ -979,7 +994,25 @@ fn execute(
         && matches!(kind, T_IN | T_OUT)
     {
         let data = if kind == T_IN { &out } else { &body };
-        limit.take(data.iter().map(|d| u64::from(d.len)).sum());
+        if kind == T_OUT && backend.read_only {
+            return Err(S_IOERR);
+        }
+        // Validate the claimed work before charging it: malformed spans must not
+        // accumulate years of debt without moving a byte.
+        let total: u64 = data.iter().map(|d| u64::from(d.len)).sum();
+        let end = sector
+            .checked_mul(SECTOR)
+            .and_then(|start| start.checked_add(total))
+            .ok_or(S_IOERR)?;
+        if end > backend.capacity().saturating_mul(SECTOR) {
+            return Err(S_IOERR);
+        }
+        for d in data {
+            mem.io_ptr(d.addr, d.len as usize).map_err(|_| S_IOERR)?;
+        }
+        if !limit.take_until(total, stopping) {
+            return Err(S_IOERR);
+        }
     }
     match kind {
         T_IN => transfer(&out, sector, mem, backend, Direction::Read),
@@ -1199,6 +1232,87 @@ mod tests {
         assert!(b.worker.is_some() && b.paused.is_none());
         drop(b);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn reset_cancels_only_its_own_limiter_wait() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        static LIMIT: Limiter = Limiter::new();
+        LIMIT.set(1, 0);
+        LIMIT.take(3600);
+        let dir = shards_testdir::TempDir::new("reset-limit").unwrap();
+        std::fs::write(dir.join("disk"), [0; 512]).unwrap();
+        let mut block = Block::open(&dir.join("disk"), false, "reset")
+            .unwrap()
+            .with_limit(Some(&LIMIT));
+        let base = 0x8000_0000;
+        let page = platform::page_size().unwrap();
+        let memory = Arc::new(GuestMemory::anonymous(&[(base, 4 * page)]).unwrap());
+        let cfg = QueueConfig {
+            size: 8,
+            desc: base,
+            avail: base + page as u64,
+            used: base + 2 * page as u64,
+            ready: true,
+        };
+        let irq = Arc::new(DeviceInterrupt::new(Arc::new(Line)));
+        // One valid read request: header, sector, status, in separate descriptors.
+        let data = base + 3 * page as u64;
+        let a = memory.access().unwrap();
+        a.write(data, &[0u8; 16]).unwrap();
+        for (i, (addr, len, flags, next)) in [
+            (data, 16u32, 1u16, 1u16),
+            (data + 16, 512, 3, 2),
+            (data + 528, 1, 2, 0),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let at = base + i as u64 * 16;
+            a.write_obj(at, addr).unwrap();
+            a.write_obj(at + 8, len).unwrap();
+            a.write_obj(at + 12, flags).unwrap();
+            a.write_obj(at + 14, next).unwrap();
+        }
+        a.write_obj(cfg.avail + 4, 0u16).unwrap();
+        a.write_obj(cfg.avail + 2, 1u16).unwrap();
+        drop(a);
+        block
+            .activate(Activation {
+                memory: memory.clone(),
+                queues: vec![Queue::new(cfg, 8, &memory, feature::VERSION_1).unwrap()],
+                interrupt: irq,
+                features: feature::VERSION_1,
+                restored: false,
+            })
+            .unwrap();
+        LIMIT.wait_for_waiter();
+        let (send, receive) = mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            block.reset();
+            send.send(()).unwrap();
+        });
+        let completed = receive.recv_timeout(Duration::from_secs(1)).is_ok();
+        if !completed {
+            LIMIT.pause();
+        }
+        thread.join().unwrap();
+        if !completed {
+            LIMIT.resume();
+        }
+        assert!(completed, "reset joined a worker still waiting on I/O debt");
+        // An unrelated device still owes its debt: reset must not pause the shared limiter.
+        let (send, receive) = mpsc::channel();
+        let other = std::thread::spawn(move || {
+            LIMIT.take(1);
+            send.send(()).unwrap();
+        });
+        LIMIT.wait_for_waiter();
+        assert!(receive.try_recv().is_err());
+        LIMIT.pause();
+        other.join().unwrap();
+        LIMIT.resume();
     }
 
     /// A join disk (D119): of no capacity until an image is given a range; each range from

@@ -119,7 +119,9 @@ D242 **explicitly lists compressed response/WebSocket echoes as residuals** (`ar
 
 **Confidence:** High for source behavior; no decompression/live-provider test run.
 
-**Status (2026-11-13):** fixed in c767cea93 (red `inject::tests::leaks::a_coded_echo_never_reaches_the_guest`, `a_transfer_coded_echo_never_reaches_the_guest`, `an_h2_coded_echo_never_reaches_the_guest`). Decision: refuse, not decode (D242's *Coded responses are refused*): filled requests ask `identity` and offer no WebSocket extension; a coded response to one is refused 502 (`Refusal::Unmaskable`). Residual: a tunnel's own framing after a 101 (a value split across WebSocket frames).
+**Status (2026-11-13):** fixed in c767cea93 (red `inject::tests::leaks::a_coded_echo_never_reaches_the_guest`, `a_transfer_coded_echo_never_reaches_the_guest`, `an_h2_coded_echo_never_reaches_the_guest`). Filled requests ask `identity` and offer no WebSocket extension. Residual: a tunnel's own framing after a 101 (a value split across WebSocket frames).
+
+**Status (2026-11-13, refined):** coded responses to filled requests decoded (gzip, deflate, zstd), masked and sent as identity in 18e36b097 (red `inject::tests::leaks::a_coded_echo_reaches_the_guest_decoded_and_masked`, `an_h2_coded_echo_reaches_the_guest_decoded_and_masked`); br, unknown or stacked codings stay 502 `Unmaskable(Coded)`.
 
 ### creds-05 — P1 / high — Lease duration restarts at each delivery hop, authorizing use after the lessor's deadline
 
@@ -136,6 +138,8 @@ D242 **explicitly lists compressed response/WebSocket echoes as residuals** (`ar
 **Regression sketch:** Obtain a lease ending at `t0 + 1s`, encode its answer at `t0`, and deliver it at `t0 + 2s` using injected Instants through the actual relay. Assert `held(reference, late_now)` is `None` and a pending request sends no upstream head. Current source creates a new live lease instead.
 
 **Confidence:** High for the deadline extension; no scheduling/backpressure reproduction run.
+
+**Status (2026-11-13):** fixed in a52f4518c (red `lease::tests::creds_05_a_delayed_answer_cannot_restart_the_lessors_lease` at 6eb3ad718). The injector conservatively spends the full first-ask wait from the broker's returned life; spent/unrepresentable budgets are typed `Lapsed` before a value is retained. Merged lease tests: 14 passed; shards-net all-target clippy passed on macOS arm64. Early refusal and renewal-boundary limits are explicit in `docs/research/measurements/creds-fixes-v1/README.md`.
 
 ### creds-06 — P1 / high — Repeated retries of one pending lease accumulate unbounded duplicate waiters
 
@@ -162,6 +166,8 @@ Some(Lease::Asked { waiting, .. }) => {
 
 **Confidence:** High for linear retained growth; exhaustion limits and runtime measurements unverified.
 
+**Status (2026-11-13):** fixed in 1b21eb21a403024baae2a7b815b8b1f5ac987255 (red `lease::tests::creds_06_a_pending_lease_resumes_each_flow_once` at 6eb3ad718). Merged-tree lease tests: 12 passed; shards-net all-target clippy and policy check passed on macOS arm64. See `docs/research/measurements/creds-fixes-v1/README.md` for revisions, retained output and coordinator work.
+
 ### creds-07 — P3 / medium — The CA's constraints authorize descendants outside exact host grants
 
 **Location:** `crates/net/src/ca.rs:93`, `:116`.
@@ -178,6 +184,8 @@ Some(Lease::Asked { waiting, .. }) => {
 
 **Confidence:** High for the scope gap under RFC semantics; actual TLS verifier execution unrun. Medium reflects the existing outer exact-SNI guard.
 
+**Status (2026-11-13):** fixed in 09ffbfd32 (red `ca::tests::creds_07_ungranted_descendants_and_addresses_are_not_signed` at 6eb3ad718). The signer rejects ungranted descendants and addresses as typed `LeafError::Ungranted` before key generation/signing; 4 CA tests and shards-net all-target clippy passed on macOS arm64. Certificate DNS constraints remain subtrees, and the exact-host signing guard enforces the narrower grant.
+
 ### creds-08 — P3 / medium — A sign-in POST with Expect: 100-continue stalls before its headers can reach the origin
 
 **Location:** `crates/net/src/inject.rs:1874`, `:2032`.
@@ -193,6 +201,52 @@ Some(Lease::Asked { waiting, .. }) => {
 **Regression sketch:** Supply the headers alone to the token-host H1 bench; require a provisional or final response before supplying body bytes. Then send the body and check that refresh/revoke still stays outside the provider connection.
 
 **Confidence:** High for the stalled transition; no real-client timeout observation. Not the excluded chunked request bug.
+
+**Status (2026-11-13):** fixed in 49e4c2967 (red `inject::tests::expectations::creds_08_a_held_post_continues_before_its_body_and_only_once` at 021d13e20; scoped by 888dcb884). Continue is emitted once before a held body is awaited, and its answered Expect field is removed if the body is forwarded. Merged 62bfef2e5: 46 injector tests passed, 2 ignored; shards-net all-target clippy and policy check passed on macOS arm64. Partial bodies, chunked/length framing, refresh/revoke isolation and forwarded exchanges are covered in `docs/research/measurements/creds-fixes-v1/README.md`.
+
+## Findings of the creds P0 lane (2026-11-13)
+
+Found by the creds P0 lane (implementer, ROOT's lane for creds-01 to 04) while fixing creds-01 to 04, from the injector's source; each is confirmed by a red unit test before its fix, below.
+
+### creds-09 — P0 / critical — A response to a request with no fill is not masked
+
+**Location:** `crates/net/src/inject.rs` (`filled_in`, `Mask`, H1 `go`, H2 `go`).
+
+**Defect:** A response's mask holds the values filled into its own request alone. On a connection to a granted host, a request that carries no placeholder gets a response with no mask, so a host that returns a value leased to the VM earlier (an endpoint listing keys, a session echo) gives it to the guest whole.
+
+**Fix direction:** Mask every response toward a granted host against every value leased to the VM for that host, as long as the lease and its responses in flight live (creds-03's wiped copy), and ask such requests `identity` as filled ones are.
+
+### creds-10 — P1 / high — A token host's informational responses go out before its tokens are known
+
+**Location:** `crates/net/src/inject.rs` (H1 `response_head`, H2 `response_block`, informational responses on a sign-in's token host).
+
+**Defect:** A 1xx response is passed on at once, before the final response's body names the tokens, so a 1xx (103 Early Hints, say) that repeats a token issued in that final response reaches the guest unread.
+
+**Fix direction:** Hold a token host's 1xx responses until its final response is judged and read them with it against the access, refresh and ID tokens (RFC 9110 §15.2), or strip them to what carries nothing.
+
+### creds-11 — P0 / critical — A tunnel after a 101 is masked as raw bytes
+
+**Location:** `crates/net/src/inject.rs` (`Response::Tunnel`).
+
+**Defect:** After a 101 the host's bytes are masked as one raw stream, so a value split across WebSocket frames (RFC 6455 §5.4 fragmentation, or a frame header between its parts), or carried by any other protocol after the upgrade, reaches the guest.
+
+**Fix direction:** Parse a granted host's WebSocket frames and mask their payloads across frame boundaries, extensions already refused; refuse, typed, an upgrade to a protocol this side does not parse.
+
+### creds-12 — P3 / medium — A decoded response's own chunk-size lines are not checked
+
+**Location:** `crates/net/src/inject.rs` (`chunk`).
+
+**Defect:** A decoded HTTP/1.1 response is chunked anew; its size lines are this side's, but they are written without `Mask::size`'s check, so a value of hex digits as long as a released run could appear as one.
+
+**Fix direction:** Check each size line as creds-02's are.
+
+### creds-13 — P2 — A decoded body's buffers are not wiped as they grow
+
+**Location:** `crates/net/src/decode.rs`, `crates/net/src/inject.rs` (`decoded`, H2 `host_data`).
+
+**Defect:** A decoded body's buffers are `Zeroizing`, but they grow by `extend_from_slice`, and each buffer let go of as one grows holds decoded plaintext, unwiped.
+
+**Fix direction:** Grow them as `signin::append` grows a token response: a buffer of twice the size, the old one wiped as it drops.
 
 ## Checked and found sound
 

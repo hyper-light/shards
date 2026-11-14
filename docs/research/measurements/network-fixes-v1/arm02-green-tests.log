@@ -1,0 +1,94 @@
+From /Users/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/g121-network-carrier-caf4862a82/arm02.bundle
+   46e739f1..53e89b2b  p/fix-network-v1 -> carrier/network
+Previous HEAD position was 46e739f1 network-02 red: release the child on parent pipe close
+HEAD is now at 53e89b2b network-02: require native seccomp installation before serving on every Linux arch
+Linux aarch64
+rustc 1.98.1 (48a229cea 2026-09-01)
+53e89b2b8843eb39dd2fc00b732d525aeca256c6
+    Updating git repository `https://github.com/hyper-light/hyper-raft`
+   Compiling libc v0.2.189
+   Compiling shards-abi v0.1.0 (/src/crates/abi)
+   Compiling httparse v1.10.1
+   Compiling shards-net-process v0.1.0 (/src/crates/net-process)
+   Compiling jobserver v0.1.35
+   Compiling shards-syscall-filter v0.1.0 (/src/crates/syscall-filter)
+   Compiling shards-ipc v0.1.0 (/src/crates/ipc)
+   Compiling cc v1.5.1
+   Compiling shards-netring v0.1.0 (/src/crates/netring)
+   Compiling cmake v0.1.58
+   Compiling aws-lc-sys v0.45.0 (/src/vendor/aws-lc-sys)
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CARGO_ENCODED_RUSTFLAGS': ''
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=universal
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/target/debug/build/aws-lc-sys-4f74894467df8c75/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/target/debug/build/aws-lc-sys-4f74894467df8c75/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/target/debug/build/aws-lc-sys-4f74894467df8c75/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' succeeded - Ok(["/target/debug/build/aws-lc-sys-4f74894467df8c75/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/target/debug/build/aws-lc-sys-4f74894467df8c75/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+   Compiling aws-lc-rs v1.18.1 (/src/vendor/aws-lc-rs)
+   Compiling rustls v0.23.46
+   Compiling rustls-webpki v0.103.16
+   Compiling rcgen v0.14.10
+   Compiling rustls-platform-verifier v0.7.1
+   Compiling shards-verify v0.1.0 (/src/crates/verify)
+   Compiling shards-net v0.1.0 (/src/crates/net)
+    Finished `test` profile [unoptimized] target(s) in 36.64s
+     Running unittests src/main.rs (/target/debug/deps/shards_net-86c0f870d115ce8d)
+
+running 1 test
+test tests::startup_installs_a_native_seccomp_filter ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+ Downloading crates ...
+  Downloaded pem v4.0.0
+  Downloaded crc32fast v1.5.2
+  Downloaded base64 v0.23.1
+  Downloaded flate2 v1.1.10
+  Downloaded zlib-rs v0.6.8
+   Compiling aws-lc-sys v0.45.0 (/src/vendor/aws-lc-sys)
+   Compiling base64 v0.23.1
+   Compiling shards-abi v0.1.0 (/src/crates/abi)
+   Compiling zlib-rs v0.6.8
+   Compiling pem v4.0.0
+   Compiling shards-testdir v0.1.0 (/src/crates/testdir)
+   Compiling shards-ipc v0.1.0 (/src/crates/ipc)
+   Compiling flate2 v1.1.10
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CARGO_ENCODED_RUSTFLAGS': ''
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=universal
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/target/debug/build/aws-lc-sys-4f74894467df8c75/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/target/debug/build/aws-lc-sys-4f74894467df8c75/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/target/debug/build/aws-lc-sys-4f74894467df8c75/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' succeeded - Ok(["/target/debug/build/aws-lc-sys-4f74894467df8c75/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/target/debug/build/aws-lc-sys-4f74894467df8c75/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+   Compiling aws-lc-rs v1.18.1 (/src/vendor/aws-lc-rs)
+   Compiling rustls v0.23.46
+   Compiling rustls-webpki v0.103.16
+   Compiling rcgen v0.14.10
+   Compiling rustls-platform-verifier v0.7.1
+   Compiling shards-verify v0.1.0 (/src/crates/verify)
+   Compiling shards-net v0.1.0 (/src/crates/net)
+    Finished `test` profile [unoptimized] target(s) in 25.84s
+     Running unittests src/lib.rs (/target/debug/deps/shards_net-05dc1b1002b1bcbc)
+
+running 1 test
+test confine::tests::the_filter_ends_a_process_that_makes_what_none_makes ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 169 filtered out; finished in 0.00s
+
+info: downloading component clippy
+info: rolling back changes
+error: component download failed for clippy-aarch64-unknown-linux-gnu: partially downloaded file was kept for resumption, please try again: could not download file from 'https://static.rust-lang.org/dist/2026-09-03/clippy-1.98.1-aarch64-unknown-linux-gnu.tar.xz' to '/usr/local/rustup/downloads/396e17c0a669399823d0e59073686a4e5f50b2d41f062f1d3afc9210f9d3553d.partial': error downloading file: error sending request for url (https://static.rust-lang.org/dist/2026-09-03/clippy-1.98.1-aarch64-unknown-linux-gnu.tar.xz): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
