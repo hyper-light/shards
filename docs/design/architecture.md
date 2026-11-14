@@ -2253,9 +2253,10 @@ audit's "Security and test coverage").
     a thread compromised among them reaches through a sibling what the layer took away.
     Where the ABI has `LANDLOCK_RESTRICT_SELF_TSYNC` (v8), one call gives every thread the
     caller's new domain atomically. On every ABI from v5, the primitive every kernel it
-    runs on has, each thread is asked in turn: a real-time signal (`SIGRTMIN + 1`, past
-    the vCPUs' kick), whose handler makes the restriction in the thread it interrupts and
-    answers on an eventfd, as glibc's setxid broadcast makes setuid(2) every thread's,
+    runs on has, each thread is asked in turn: SIGSYS, sent by tgkill(2), whose handler
+    (the filter's own, `seccomp::name_refusals`, which runs `seccomp::on_sent`'s hook for
+    a SIGSYS of `si_code` SI_TKILL from its own process, and reports a trap's, SYS_SECCOMP)
+    makes the restriction in the thread it interrupts and answers on an eventfd, as glibc's setxid broadcast makes setuid(2) every thread's,
     until a listing of `/proc/self/task` names no thread not settled. A thread is settled
     by its answer, or by being gone or exiting (`PF_EXITING`: it runs no more user code,
     and drops a signal sent to it alone). A thread started after its creator answered is
@@ -2269,6 +2270,14 @@ audit's "Security and test coverage").
       seal's failure hands its run to another VM (daemon.rs, `hand_over`). glibc's
       pthread_create blocks every signal for a moment, which a look may meet; that run
       fails closed too.
+    - SIGSYS, because every thread of a filtered process takes it (blocked, a trap ends
+      the process unreported) and Mesa's threads, which block every other signal for
+      their lives, leave it and SIGSEGV unblocked (src/util/u_thread.c, `u_thread_create`,
+      at mirror/mesa 8c427aae9): a GPU's VM process has those threads by its seal, from
+      its renderer's start (its held Vulkan instance, D201), before any snapshot. Asked by a
+      real-time signal, such a thread could not answer, and a GPU template's seal failed on
+      every kernel before v8 [PM M568]. Ordering the seal before the renderer's threads
+      cannot be: a template's guest runs with its GPU before it is saved.
     - Any other thread is waited for as long as it lives, with no timeout and no
       constant: its answer (an eventfd its handler writes) or its end (its thread pidfd,
       pidfd_open(2) `PIDFD_THREAD`, Linux 6.9, older than the v5 a VM needs, which polls

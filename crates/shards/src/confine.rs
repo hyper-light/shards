@@ -949,10 +949,14 @@ mod asked {
         }
     }
 
-    /// The signal that asks: the real-time signal after the vCPUs' kick (vmm hv/kvm,
-    /// SIGRTMIN), which nothing else in a VM process takes or blocks.
+    /// The signal that asks: SIGSYS, the one every thread of a filtered process takes, as
+    /// its filter's trap is reported by it (`seccomp::name_refusals`), and the one Mesa's
+    /// threads, which block every other for their lives, leave unblocked
+    /// (src/util/u_thread.c, `u_thread_create`, at mirror/mesa 8c427aae9): a GPU's VM
+    /// process has those threads by its seal. A SIGSYS this process sends one of its own
+    /// threads (SI_TKILL) runs [`restrict_here`] there (`seccomp::on_sent`).
     pub(super) fn signal() -> libc::c_int {
-        libc::SIGRTMIN() + 1
+        libc::SIGSYS
     }
 
     /// A thread, as `/proc/self/task/TID` shows it.
@@ -982,23 +986,17 @@ mod asked {
         Ended,
     }
 
-    /// The handler: in the asked thread alone, for a signal this process sent it, the
-    /// restriction and its answer; errno kept for the code it interrupted. Async-signal-safe:
-    /// atomics, prctl(2), landlock_restrict_self(2), write(2).
-    extern "C" fn restrict_here(_: libc::c_int, info: *mut libc::siginfo_t, _: *mut libc::c_void) {
-        // SAFETY: __errno_location(3) is this thread's errno, and getpid(2) and gettid(2)
-        // have no preconditions; the kernel passes an SA_SIGINFO handler its siginfo.
-        let (errno, ours, me) = unsafe {
-            let errno = *libc::__errno_location();
-            let ours = info
-                .as_ref()
-                .is_some_and(|i| i.si_code == libc::SI_TKILL && i.si_pid() == libc::getpid());
-            (errno, ours, libc::syscall(libc::SYS_gettid) as i32)
-        };
-        if ours
-            && ASKED
-                .compare_exchange(me, 0, Ordering::SeqCst, Ordering::SeqCst)
-                .is_ok()
+    /// What a SIGSYS this process sent a thread of its own runs there
+    /// (`seccomp::on_sent`): in the asked thread alone, the restriction and its answer;
+    /// errno kept for the code it interrupted. Async-signal-safe: atomics, prctl(2),
+    /// landlock_restrict_self(2), write(2).
+    extern "C" fn restrict_here() {
+        // SAFETY: __errno_location(3) is this thread's errno, and gettid(2) has no
+        // preconditions.
+        let (errno, me) = unsafe { (*libc::__errno_location(), libc::syscall(libc::SYS_gettid) as i32) };
+        if ASKED
+            .compare_exchange(me, 0, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
         {
             // SAFETY: prctl(2) with integer arguments: no_new_privs, which
             // landlock_restrict_self(2) needs of the thread, and which only takes privilege away.
@@ -1023,32 +1021,14 @@ mod asked {
         unsafe { *libc::__errno_location() = errno };
     }
 
-    /// Installs [`restrict_here`] for [`signal`], once: restarting what it interrupts where
-    /// the kernel restarts it (SA_RESTART); every wait a VM process makes that it does not
-    /// goes on past EINTR, as it does past the vCPUs' kicks.
+    /// Has a SIGSYS this process sends run [`restrict_here`], its refusals' report
+    /// installed for it where it is not yet: restarting what it interrupts where the kernel
+    /// restarts it (SA_RESTART); every wait a VM process makes that it does not goes on
+    /// past EINTR, as it does past the vCPUs' kicks.
     fn install() -> Result<(), Unasked> {
-        static INSTALLED: std::sync::OnceLock<Result<(), String>> = std::sync::OnceLock::new();
-        INSTALLED
-            .get_or_init(|| {
-                // SAFETY: an all-zero sigaction is a valid value to fill; sigaction(2) from it.
-                unsafe {
-                    let mut action: libc::sigaction = std::mem::zeroed();
-                    let handler: extern "C" fn(libc::c_int, *mut libc::siginfo_t, *mut libc::c_void) =
-                        restrict_here;
-                    action.sa_sigaction = handler as libc::sighandler_t;
-                    action.sa_flags = libc::SA_SIGINFO | libc::SA_RESTART;
-                    libc::sigemptyset(&mut action.sa_mask);
-                    if libc::sigaction(signal(), &action, std::ptr::null_mut()) != 0 {
-                        return Err(std::io::Error::last_os_error().to_string());
-                    }
-                }
-                Ok(())
-            })
-            .clone()
-            .map_err(|error| Unasked::System {
-                what: "the asking signal's handler",
-                error,
-            })
+        shards_vmm::platform::seccomp::name_refusals().map_err(system("SIGSYS's handler"))?;
+        shards_vmm::platform::seccomp::on_sent(restrict_here);
+        Ok(())
     }
 
     /// The process's threads, by id.
@@ -1607,12 +1587,21 @@ mod tests {
         }
     }
 
+    /// The signals a test's thread blocks for its life.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Blocks {
+        Nothing,
+        /// Every one but SIGSYS and SIGSEGV, as Mesa's threads (src/util/u_thread.c).
+        AsMesa,
+        Everything,
+    }
+
     /// A thread started before its process is confined, which on each word it is sent
     /// tries what it names and says whether it could. `deaf` blocks every signal first, as
     /// Mesa's threads do (u_thread_create).
     fn sibling(
         dir: std::path::PathBuf,
-        deaf: bool,
+        blocks: Blocks,
     ) -> (
         std::sync::mpsc::Sender<&'static str>,
         std::sync::mpsc::Receiver<bool>,
@@ -1620,12 +1609,16 @@ mod tests {
         let (ask, asked) = std::sync::mpsc::channel::<&'static str>();
         let (tell, told) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            if deaf {
+            if blocks != Blocks::Nothing {
                 // SAFETY: sigset operations on a local set; pthread_sigmask on this thread.
                 unsafe {
-                    let mut all: libc::sigset_t = std::mem::zeroed();
-                    libc::sigfillset(&mut all);
-                    libc::pthread_sigmask(libc::SIG_BLOCK, &all, std::ptr::null_mut());
+                    let mut set: libc::sigset_t = std::mem::zeroed();
+                    libc::sigfillset(&mut set);
+                    if blocks == Blocks::AsMesa {
+                        libc::sigdelset(&mut set, libc::SIGSYS);
+                        libc::sigdelset(&mut set, libc::SIGSEGV);
+                    }
+                    libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
                 }
                 let _ = tell.send(true);
             }
@@ -1676,7 +1669,7 @@ mod tests {
                 _ => landlock(paths),
             }
         };
-        let mut siblings: Vec<_> = (0..3).map(|_| sibling(dir.clone(), false)).collect();
+        let mut siblings: Vec<_> = (0..3).map(|_| sibling(dir.clone(), Blocks::Nothing)).collect();
         // Under the filter of a host whose ABI asks each thread (v5), as a VM there is.
         if reach == "asked" {
             confine_as(5).unwrap();
@@ -1700,7 +1693,12 @@ mod tests {
             "siblings read other: {}\n",
             tries(&siblings, "read other")
         ));
-        siblings.push(sibling(dir.clone(), false));
+        siblings.push(sibling(dir.clone(), Blocks::Nothing));
+        // And one as Mesa's start, before the seal: every signal blocked but SIGSYS and
+        // SIGSEGV (u_thread_create), as a GPU's VM process has.
+        let (ask, told) = sibling(dir.clone(), Blocks::AsMesa);
+        told.recv().unwrap();
+        siblings.push((ask, told));
         out.push_str(&format!(
             "siblings write snap: {}\n",
             tries(&siblings, "write snap")
@@ -1728,7 +1726,7 @@ mod tests {
             read: vec![dir.join("granted")],
             ..Paths::default()
         };
-        let (ask, told) = sibling(dir.clone(), true);
+        let (ask, told) = sibling(dir.clone(), Blocks::Everything);
         // Its signals blocked.
         told.recv().unwrap();
         // SAFETY: prctl(2) with integer arguments.
@@ -1783,10 +1781,10 @@ mod tests {
             for line in [
                 "first: Ok(())",
                 "siblings read other: refused,refused,refused\n",
-                "siblings write snap: ok,ok,ok,ok\n",
+                "siblings write snap: ok,ok,ok,ok,ok\n",
                 "sealed: Ok(())",
-                "sealed siblings write snap: refused,refused,refused,refused\n",
-                "sealed siblings write out: ok,ok,ok,ok\n",
+                "sealed siblings write snap: refused,refused,refused,refused,refused\n",
+                "sealed siblings write out: ok,ok,ok,ok,ok\n",
             ] {
                 assert!(said.contains(line), "{reach}: {line}\n{said}\n{err}");
             }

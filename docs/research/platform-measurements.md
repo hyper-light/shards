@@ -24349,6 +24349,22 @@ the 240 s bound killed it (exit 124); the pidfd dropped from the wait,
 ended unanswered (`left: Err(Timeout)`); the thread-pidfd rule dropped, the asked pass
 trapped under that filter (exit 159).
 
+Amended again 2026-11-13 (ROOT: a GPU run must not fail on ABI < 8 because Mesa's threads
+block signals). Mesa's `u_thread_create` blocks every signal but SIGSYS and SIGSEGV in
+the threads it starts (src/util/u_thread.c lines 53 to 61, mirror/mesa 8c427aae9), and
+the GPU's VM process holds a Vulkan instance from its renderer's start (D201), so such
+threads exist by its seal. The asking signal is SIGSYS now, through the filter's own
+handler (`seccomp::on_sent` for a SIGSYS of SI_TKILL from the process itself; a trap's
+report unchanged). `every_thread_of_a_confined_process_is_confined` starts a thread
+blocking every signal but those two between the first layer and the seal, under the
+filter of an ABI-5 host: with the pass asking by SIGRTMIN + 1 (the code at cc85d760a,
+the test alone new), the seal left it writing the sealed directory (`sealed siblings
+write snap: refused,refused,refused,refused,ok`): red. Asked by SIGSYS, it is refused
+with the others and still writes its kept directory: green. confine:: 11 of 11, the
+filter's tests and clippy for both crates clean on adacachy2. Owed to ROOT: a GPU
+template's save and its run on a kernel of ABI 5 to 7 (no host here has one), and
+tests/gpu.rs on the GPU hosts.
+
 ### M569. A confined VM process dialed its user's sockets, its daemon's Engine API among them (D30)
 
 Linux x86_64, adacachy2 (7.3.3-1-cachyos, Landlock ABI 11), 2026-11-13, policy df2acf47,
