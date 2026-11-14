@@ -2287,6 +2287,20 @@ audit's "Security and test coverage").
     `--vsock PATH`, a socket its spawner binds there, and each host port its guest
     connects to dialled for it, each shared with it as Winsock documents
     (WSADuplicateSocketW) [PM M203].
+  - Its grants sealed with its last ask, before its guest starts, whatever it was granted
+    (`grant_ask::obtain_sealed`, platform-03, PM M566). Its spawner's answers bypass the
+    AppContainer: a handle it duplicates in "refers to the same object as the original
+    handle" and, with DUPLICATE_SAME_ACCESS, "has the same access as the source handle"
+    (Microsoft's DuplicateHandle), where the AppContainer alone "cannot access resources
+    beyond what is granted to the AppContainer" (Microsoft's AppContainer isolation). So a
+    grant after the guest starts is a guest that took the VM's process over reaching any
+    file its user may: a VM that staged its snapshots and had no vsock path kept its link
+    open without `SEALED`, and its spawner answered a GRANT to write a file outside its
+    grants. Every VM now says `SEALED` after its last grants; its spawner refuses every
+    GRANT after and still answers its dials, its files' ranges and its snapshots' stages
+    and commits, which it handles before it looks at whether the VM started. Held by
+    `a_vm_that_stages_its_snapshots_is_granted_nothing_more_once_it_starts` (red before,
+    mutation-checked).
   - In a Job that ends it as its spawner ends, even killed (the spawner holds the Job's
     only handle; 0.7-1.1 ms later [PM M201]), and lets it start no process, as the
     child-process policy it is made with does.
@@ -11698,7 +11712,11 @@ its saved file); the order of the restore is OpenVMM's, Microsoft's own VMM over
   saved.rs still ran windows-2025 out. Every VM now keeps the link and says `SEALED` once
   granted what it starts with: its spawner refuses every grant after, as after a vsock
   path's listen, and answers its ranges for its life (a save's copy then 1.5 MB, 107 MiB of
-  the disk). Held by `a_sealed_vm_is_granted_nothing_more_and_its_ranges_are_read`.
+  the disk). Held by `a_sealed_vm_is_granted_nothing_more_and_its_ranges_are_read`. Until
+  platform-03 (PM M566) a VM that staged its snapshots and had no vsock path said no
+  `SEALED`, and was granted whatever it asked after its guest started; its last ask now
+  seals (`grant_ask::obtain_sealed`), its stages and commits still answered
+  (`a_vm_that_stages_its_snapshots_is_granted_nothing_more_once_it_starts`).
 - **One partition a process.** WHP maps no memory into a second partition of a process while
   another lives (STATUS_VID_PARTITION_ALREADY_EXISTS, until the first is deleted, M345). A VM
   process holds one; the partition that reads the host's vCPU limit is deleted before it.
@@ -17129,8 +17147,9 @@ was built on [PM M200-M203]:
   no interrupt), and gives the console's Ctrl+C and Ctrl+Break to its guest as SIGINT;
   the spawner takes both and waits on, where ignoring Ctrl+C alone (a null handler) left a
   process group's Ctrl+Break to end it (run.rs `signals_reach_the_command`, CI's
-  windows-2022 and windows-2025, 2026-10-28). Nothing more is granted once its vsock path
-  is, and without one the link closes.
+  windows-2022 and windows-2025, 2026-10-28). Nothing more is granted once it has its
+  last grants: its link stays, sealed, for its dials, ranges and snapshots (D196, and D30's
+  Windows twin since platform-03).
 - **A Job and Windows' mitigations**, given as the process is made, suspended, its handles
   duplicated into it and their values told it through a pipe, its one inherited handle:
   none is made inheritable where another child could take it [PM M201]. Dynamic code it

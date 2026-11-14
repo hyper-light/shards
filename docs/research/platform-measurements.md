@@ -24012,3 +24012,15 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   clippy -D warnings for shards-vm-process on macOS, x86_64-unknown-linux-gnu,
   aarch64-unknown-linux-musl (zig) and x86_64-pc-windows-msvc (xwin). R11, R15: no VM run here;
   the api_image and managed_output KVM loop is ROOT's. R16: the fetched logs (116 MB) removed.
+
+### M566. A Windows VM that stages its snapshots and has no vsock path was granted files after its guest started (platform-03, D30, D141, D196)
+
+Windows 10.0.26200 x86_64 (the Windows 11 guest on adacachy), 2026-11-14: at e889915c4 a VM
+that asked, as `confine` did, for a file to read and a snapshot directory, and no `SEALED`,
+staged and committed a generation, then was granted a sentinel file outside its grants to
+write, and wrote it (`overwritten` where `untouched`). At 1e8c83104 its last ask seals
+(`grant_ask::obtain_sealed`): `grant_answer::windows_tests` 7 of 7, the late GRANT refused and
+the stage and commit still answered; both mutants (no `SEALED`; no broker refusal) fail it.
+Unit-level functional evidence, no real VM: `confine` refuses any process outside an
+AppContainer, and the WHP real-VM tests are owed.
+[Commands, logs, mutants and owed runs](measurements/windows-p0/README.md).
