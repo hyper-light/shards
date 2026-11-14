@@ -7501,6 +7501,18 @@ seen. No ×2."
 
 ### D183. `--cgroup-parent`: a microVM's processes under a slice of the user's service manager (slices 1, 2 and 3 built)
 
+**2026-11-13, platform-12:** a delegated leaf's cleanup now arms the existing shared
+`platform::FileWatch` on `cgroup.events` before reading its state. Linux v6.18's
+[`kernfs_notify_workfn`](https://github.com/torvalds/linux/blob/v6.18/fs/kernfs/file.c#L912)
+emits FS_MODIFY for kernel-originated changes, which the watch receives as IN_MODIFY.
+The watch is cleared before each read: a change before the read is in that read, one
+after it remains pending. Removal is also watched on the directory. The only timed
+wait is D215's next learned judge deadline; a cold record has no timer. Watch/open/wait
+errors remain `io::Error` refusals. This removes the chosen 10 ms read loop without
+adding a per-leaf thread or inotify instance. Direct POLLPRI was considered; the existing
+FileWatch handles ordinary-file fixtures and kernel notification through one owned
+interface. [Evidence and remaining real-cgroup validation](../research/measurements/platform-fixes/platform12.md).
+
 Decided by the user on 2026-10-14 ("so long as they apply appropriately to microvms").
 
 - **The microVM need.** A host running many microVMs needs to cap and account groups of
@@ -11870,6 +11882,11 @@ M421); `platform::windows` `a_file_kept_cached_is_a_view_of_all_of_it_until_it_d
 
 ### D195. The daemon and its client on Windows: request slots of named pipes (built)
 
+**2026-11-13, platform-07/08/11 remain open:** handle inheritance, notification-error
+waiter lifecycle and chosen pipe quotas require jupiter red/green checks and an online
+capacity/admission design. [Commands and held design](../research/measurements/platform-fixes/held.md)
+retain those obligations; no Windows check or quota replacement is claimed completed.
+
 **Why.** Every feature on every host (the user, 2026-10-27; docs/audit/2026-10-27_platform-parity.md
 row 1): on Windows `shards` had no daemon, so no `run IMAGE` and none of the commands of its
 microVMs, images, volumes and networks. D185's slots are FIFOs in the home, their
@@ -12419,6 +12436,13 @@ the address its flows come from; a run's own grant on the default bridge, if one
 asked for beside a network's.
 
 ### D191. A run's microVM has every CPU of its host, its workload the CPUs its limits give it (slices 1 and 2 built, its contended start and hold mended, Windows' too)
+
+**2026-11-13, platform-10/11 remain open:** per-thread Windows credit does not prove
+aggregate host fairness, and benchmark-derived production periods are not the required
+online derivation. [Held findings and cold-start/admission design owed](../research/measurements/platform-fixes/held.md)
+record the unavailable Windows checks, normal-priority cold state, measured clock/cost
+inputs and still-unresolved cross-process budget owner. No scheduler change or new
+performance claim is made by that design record.
 
 The user's plan, item 3 (2026-10-18): a run's `--cpus` as elastic as its memory (D148),
 every microVM given the host's CPUs, init bringing the run's online and `update --cpus`
@@ -14120,6 +14144,20 @@ pre-copy no longer pays (`live::Stop`); then it saved as a save saves it, held, 
 vCPUs parked and devices quiet, what its guest wrote of those three since the last round
 sent as the rounds' last, in their stream, which the other machine lays over the rounds
 page by page as each came; resumed there; and stopped here once it runs there.
+
+- **Host copies survive unplug** (review memory-02, 2026-11-13): a live RAM
+  record is copied under GuestMemory::Access into owned bytes, no larger than the
+  existing wire record limit or a hotplug block. The hold ends before stream
+  output; unplug may then withdraw the mapping without invalidating output bytes.
+  A returned page is also owned. Red/green and outstanding VM validation:
+  `docs/research/measurements/memory-fixes-v1/README.md`.
+
+- **Host-reader lifetime and lost mappings** (reviews memory-03/05): save and
+  precopy own one typed reader guard; teardown waits until it is dropped, including
+  errors. Mapped-file reads hold the same owner as release and APFS mapping
+  withdrawal. A scan resumes only intact mappings; loss is a terminal VM error.
+  Focused red tests and remaining live fault-injection gates are recorded in
+  `docs/research/measurements/memory-fixes-v1/README.md`.
 
 - **When the rounds stop**, never by the clock, whatever the link's rate. A round sends what
   was written as the round before it went, so its bytes over that round's time are the
