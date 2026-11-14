@@ -241,13 +241,65 @@ const TAKEOVER: Duration = Duration::from_secs(20);
 /// `defaultStopTimeout` (moby v28.5.1 container/container_unix.go l. 26, read at
 /// container/container.go l. 601).
 const STOP_GRACE: Duration = Duration::from_secs(10);
-/// How often what could not watch a file it follows (its watch not made: Linux gives a user
-/// 128 inotify instances, shared with every program they run, PM M257) looks at it instead:
-/// the listener at its home, `logs -f`, a process's events, a log driver's copier. A figure
-/// picked, owed its replacement (docs/design/architecture.md, D185's admission). A listener
-/// out of descriptors no longer looks on a clock: it refuses the client it cannot take
-/// (`refuse_api`), and is woken as descriptors are let go of.
-const UNWATCHED: Duration = Duration::from_millis(250);
+/// What could not be watched: a follower's refusal, where the watch of what it follows
+/// could not be made (runs-11). The listener at its home, `logs -f`, a process's events and
+/// a log driver's shipper each refuse with it rather than look on a clock: none of them has
+/// a bound a look's interval could be derived from, and a follower that looked every so
+/// often would show late what a watched one shows at once. A watch needs nothing a follower
+/// may wait for: a descriptor (two on macOS, kqueue(2) and its directory's), and on Linux a
+/// watch of the process's one inotify instance (`max_user_watches`), or an instance of its
+/// own where the process could not make that (`max_user_instances`, inotify(7); PM M257).
+#[derive(Debug)]
+pub(crate) struct WatchRefused(io::Error);
+
+impl std::fmt::Display for WatchRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "its watch could not be made, so it is not followed: {}",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for WatchRefused {}
+
+impl From<WatchRefused> for io::Error {
+    fn from(refused: WatchRefused) -> io::Error {
+        io::Error::new(refused.0.kind(), refused)
+    }
+}
+
+/// A watch of the directory `dir` holds open, for what follows it, or why none could be made:
+/// [`WatchRefused`], for its follower to refuse with.
+pub(crate) fn watch(dir: &File) -> Result<FileWatch, WatchRefused> {
+    // A test makes a directory's watch fail by the name UNWATCHABLE in it: its user's
+    // instances or descriptors spent, without spending the test process's.
+    #[cfg(test)]
+    if shards_vmm::platform::open_in(dir, tests::UNWATCHABLE).is_ok() {
+        return Err(WatchRefused(io::Error::other("a test's directory, unwatchable")));
+    }
+    FileWatch::new(dir).map_err(WatchRefused)
+}
+
+/// The listener's watches ([`Daemon::listen`]): of the home, whose removal it must see, of its
+/// images, where a pull leaves a collection due (pull.rs, `collect_due`), and of the contexts
+/// this home joined (relay.rs), each made before the daemon says it serves. A daemon one of
+/// them cannot be made for does not start ([`WatchRefused`]), its starter told as of any other
+/// start it cannot make.
+fn home_watches(home: &Path) -> Result<[FileWatch; 3], String> {
+    let watched = |dir: &Path| {
+        shards_vmm::platform::create_private_dir(dir)
+            .and_then(|()| shards_vmm::platform::open_dir(dir))
+            .map_err(|e| format!("{}: {e}", dir.display()))
+            .and_then(|d| watch(&d).map_err(|e| format!("{}: {e}", dir.display())))
+    };
+    Ok([
+        watched(home)?,
+        watched(&home.join("images"))?,
+        watched(&home.join("contexts"))?,
+    ])
+}
 /// The threads the daemon keeps besides its clients': its listener, and the followers',
 /// the completer's, the files', the recorder's, the collector's, the refiller's, the
 /// health checks' and the memory pressure watcher's (D188); and the system's, the dispatch
@@ -1912,6 +1964,9 @@ fn serve(ready: Option<File>, listen: Option<std::net::SocketAddr>) -> Result<()
         daemon.home.join(shards_ipc::slots::DIR).display(),
         descriptors.map_or_else(|| "an unknown number of".to_string(), |n| n.to_string())
     ));
+    // The listener's watches, before it says it serves: a daemon that could not see its
+    // home's removal, a pull's collection or its contexts is not started (runs-11).
+    let watches = home_watches(&daemon.home)?;
     // Other machines' clients (D180), before it says it serves: an address it cannot bind
     // is its starter's to hear.
     if let Some(at) = listen {
@@ -1940,7 +1995,7 @@ fn serve(ready: Option<File>, listen: Option<std::net::SocketAddr>) -> Result<()
         daemon.start_groups(threads);
         daemon.restart_at_start(threads);
         daemon.serve_slots(threads, requests);
-        daemon.listen(threads, api);
+        daemon.listen(threads, api, &watches);
     });
     Ok(())
 }
@@ -2345,27 +2400,12 @@ impl<D: Disk> Daemon<D> {
     /// (no slot offered, the Engine API's socket gone), so that no client arrives after,
     /// serves any that already did, and exits. Its own clients come through its slots
     /// (slots.rs); here, the Engine API's, the contexts' relays, and its duties.
-    fn listen<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, mut api: Option<ApiListener>) {
-        // The home, whose removal the listener must see, and its images,
-        // where a pull leaves a collection due (pull.rs, `collect_due`). Where a watch
-        // cannot be made, the listener looks again every UNWATCHED.
-        let watch = |dir: &Path| match shards_vmm::platform::open_dir(dir).and_then(|d| FileWatch::new(&d)) {
-            Ok(w) => Some(w),
-            Err(e) => {
-                log(format!("watching {}: {e}", dir.display()));
-                None
-            }
-        };
-        let images = self.home.join("images");
-        // The contexts this home joined, whose engines it serves (relay.rs) as each comes
-        // and goes.
-        let contexts = self.home.join("contexts");
-        for dir in [&images, &contexts] {
-            if let Err(e) = shards_vmm::platform::create_private_dir(dir) {
-                log(format!("{}: {e}", dir.display()));
-            }
-        }
-        let watches = [watch(&self.home), watch(&images), watch(&contexts)];
+    fn listen<'s, 'e>(
+        &'s self,
+        threads: &'s Threads<'s, 'e>,
+        mut api: Option<ApiListener>,
+        watches: &[FileWatch; 3],
+    ) {
         // The slots' maker looked at its lists as it began, before the home was watched: a
         // removal between that look and the watch, which a client its first slots served
         // may make, is seen by one more look, now that the home is watched.
@@ -2396,7 +2436,7 @@ impl<D: Disk> Daemon<D> {
                 self.close_relays(threads, &mut relays, &mut spare);
                 true
             } else {
-                self.relay_contexts(&mut relays, contexts_changed || watches[2].is_none());
+                self.relay_contexts(&mut relays, contexts_changed);
                 accepting && self.relay_waiting(threads, &relays, &mut spare)
             };
             // The Engine API's clients, each served on a thread of its own as long as it
@@ -2458,13 +2498,8 @@ impl<D: Disk> Daemon<D> {
                 self.exit();
             }
             // A listener it could not take a client from, out of descriptors, waits for a wake
-            // as they are let go of; a home it could not watch is looked at again.
-            let looking = watches.iter().any(Option::is_none);
-            let timeout = if looking {
-                Some(UNWATCHED.min(self.next_duty(quiet).unwrap_or(UNWATCHED)))
-            } else {
-                self.next_duty(quiet)
-            };
+            // as they are let go of.
+            let timeout = self.next_duty(quiet);
             // A slot's client given until then to go on, and a microVM a client waits on
             // looked at again.
             let timeout = timeout
@@ -2476,14 +2511,13 @@ impl<D: Disk> Daemon<D> {
             (home_changed, contexts_changed) = self.wait_for_work(
                 api.as_ref().filter(|_| api_ready),
                 relays_ready.then_some(&relays),
-                &watches,
+                watches,
                 timeout,
             );
             // The slots' lists may have gone with a name of the home (a removal of the home
             // takes `requests/`), or a daemon waiting for the lock finds none and says so
-            // by a name it makes there (`take_lock`): the maker looks. Where the home's
-            // watch could not be made, it looks at each of the listener's looks.
-            if home_changed || watches[0].is_none() {
+            // by a name it makes there (`take_lock`): the maker looks.
+            if home_changed {
                 self.tell_slots(slots::Event::Look);
             }
         }
@@ -2609,7 +2643,7 @@ impl<D: Disk> Daemon<D> {
         &self,
         api: Option<&ApiListener>,
         relays: Option<&relay::Relays>,
-        watches: &[Option<FileWatch>; 3],
+        watches: &[FileWatch; 3],
         timeout: Option<Duration>,
     ) -> (bool, bool) {
         let pollfd = |fd: RawFd| libc::pollfd {
@@ -2617,12 +2651,11 @@ impl<D: Disk> Daemon<D> {
             events: libc::POLLIN,
             revents: 0,
         };
-        let watched = |w: &Option<FileWatch>| w.as_ref().map_or(-1, |w| w.fd().as_raw_fd());
         let mut polled: Vec<libc::pollfd> = [
             self.listener_wake.fd(),
-            watched(&watches[0]),
-            watched(&watches[1]),
-            watched(&watches[2]),
+            watches[0].fd().as_raw_fd(),
+            watches[1].fd().as_raw_fd(),
+            watches[2].fd().as_raw_fd(),
             api.map_or(-1, AsRawFd::as_raw_fd),
         ]
         .into_iter()
@@ -2657,7 +2690,7 @@ impl<D: Disk> Daemon<D> {
         &self,
         api: Option<&ApiListener>,
         relays: Option<&relay::Relays>,
-        watches: &[Option<FileWatch>; 3],
+        watches: &[FileWatch; 3],
         timeout: Option<Duration>,
     ) -> (bool, bool) {
         use std::os::windows::io::AsRawHandle as _;
@@ -2665,7 +2698,7 @@ impl<D: Disk> Daemon<D> {
         use windows_sys::Win32::System::Threading::{INFINITE, WaitForMultipleObjects, WaitForSingleObject};
         let _ = relays;
         let waited: Vec<_> = std::iter::once(self.listener_wake.event().raw())
-            .chain(watches.iter().flatten().map(|w| w.fd().as_raw_handle()))
+            .chain(watches.iter().map(|w| w.fd().as_raw_handle()))
             .chain(api.map(ApiListener::event))
             .collect();
         // Rounded up: a wait of 0 ms would return at once, and spin.
@@ -2682,19 +2715,17 @@ impl<D: Disk> Daemon<D> {
         }
         // SAFETY: an event a watch of this daemon's holds, not waited for.
         let set = |w: &FileWatch| unsafe { WaitForSingleObject(w.fd().as_raw_handle(), 0) } == WAIT_OBJECT_0;
-        self.clear_watches(watches, |i| {
-            watches.get(i).and_then(Option::as_ref).is_some_and(set)
-        })
+        self.clear_watches(watches, |i| watches.get(i).is_some_and(set))
     }
 
     /// Clears each of `watches` that `ready` says saw a change, by its place among them:
     /// whether the home's (the first) did, and the contexts' (the third). Each is asked
     /// once, before any is cleared: on Windows `ready` reads a watch's event, which its
     /// clearing resets.
-    fn clear_watches(&self, watches: &[Option<FileWatch>; 3], ready: impl Fn(usize) -> bool) -> (bool, bool) {
+    fn clear_watches(&self, watches: &[FileWatch; 3], ready: impl Fn(usize) -> bool) -> (bool, bool) {
         let fired = [ready(0), ready(1), ready(2)];
         for (watch, fired) in watches.iter().zip(fired) {
-            if fired && let Some(watch) = watch {
+            if fired {
                 watch.clear();
             }
         }
@@ -13144,6 +13175,135 @@ mod tests {
             drop(theirs);
             assert_eq!(joined(asking), 1, "undelivered logs answered as delivered");
         });
+    }
+
+    /// A directory name a test's watches of fail at ([`watch`]): its user's descriptors or
+    /// inotify watches spent, without spending this process's.
+    pub(super) const UNWATCHABLE: &str = "unwatchable";
+
+    /// Makes microVM `id`'s directory, its log's and its record of processes', one no watch
+    /// can be made for.
+    fn unwatchable(t: &Test, id: &str) -> PathBuf {
+        let dir = lock(&t.daemon.containers).dir(id);
+        std::fs::write(dir.join(UNWATCHABLE), b"").unwrap();
+        dir
+    }
+
+    /// Does `ask` on a thread of its own while running microVM `id`'s run (`vm`) goes on,
+    /// until it has answered or follows the run (its end waited for); then ends the run, and
+    /// gives what `ask` gave and whether it had answered before the run's end.
+    fn asked_while_running<'s, T: Send>(
+        t: &In<'s, '_, Real>,
+        id: &str,
+        vm: &UnixStream,
+        starting: Starting<'s>,
+        ask: impl FnOnce() -> T + Send,
+    ) -> (T, bool) {
+        let answered = AtomicBool::new(false);
+        let (got, before_end) = std::thread::scope(|s| {
+            let asking = s.spawn(|| {
+                let got = ask();
+                answered.store(true, Ordering::SeqCst);
+                got
+            });
+            t.until("an answer, or a follow of the run", |d| {
+                answered.load(Ordering::SeqCst) || lock(&d.waiters).contains_key(id)
+            });
+            let before_end = answered.load(Ordering::SeqCst);
+            say(vm, kind::DONE, &[0]);
+            (asking.join().unwrap(), before_end)
+        });
+        joined(starting.run).unwrap();
+        (got, before_end)
+    }
+
+    /// `logs -f` of a log no watch can be made for is refused at once, typed, before any of
+    /// it is shown, and so is `watch processes`; neither reads on a clock while its run runs
+    /// (runs-11; before, each looked again every UNWATCHED, 250 ms, picked, until its run
+    /// ended, and said nothing of it).
+    #[test]
+    fn a_follow_no_watch_can_be_made_for_is_refused_before_anything_is_shown() {
+        let t = Test::new("unwatched");
+        t.run(|t| {
+            for args in [
+                &["logs", "-f", "logged"][..],
+                &["watch", "processes", "processed"],
+            ] {
+                let (id, starting, vm) = running(t, args[2]);
+                write_log(t, &id, &[(LOG_STDOUT, 1_000, b"out\n".to_vec())]);
+                unwatchable(t, &id);
+                let ((status, out, err), before_end) =
+                    asked_while_running(t, &id, &vm, starting, || ask_bytes(&t.daemon, args));
+                let err = String::from_utf8(err).unwrap();
+                assert!(before_end, "{args:?} followed its run unwatched: {err}");
+                assert_eq!(status, 1, "{args:?}: {err}");
+                assert!(
+                    out.is_empty(),
+                    "{args:?} showed {:?}",
+                    String::from_utf8_lossy(&out)
+                );
+                assert!(err.contains("its watch could not be made"), "{args:?}: {err}");
+                assert!(
+                    !lock(&t.daemon.waiters).contains_key(&id),
+                    "{args:?}: its waiter kept"
+                );
+            }
+        });
+    }
+
+    /// A log driver's shipper whose log no watch can be made for ends with [`WatchRefused`] as
+    /// it begins to follow, its waiter forgotten, rather than read on a clock while its run
+    /// runs (runs-11).
+    #[test]
+    fn a_shipper_no_watch_can_be_made_for_ends_typed() {
+        struct Taking;
+        impl ship::Driver for Taking {
+            fn send(&mut self, _: &ship::Message<'_>, _: &ship::Wait<'_>) -> io::Result<()> {
+                Ok(())
+            }
+            fn part(&self) -> usize {
+                1 << 10
+            }
+        }
+        let t = Test::new("unwatched-ship");
+        t.run(|t| {
+            let (id, starting, vm) = running(t, "racer");
+            write_log(t, &id, &[(LOG_STDOUT, 1_000, b"out\n".to_vec())]);
+            let dir = unwatchable(t, &id);
+            let (_stop, stopped) = UnixStream::pair().unwrap();
+            // Its run ended once it has answered or follows: one that followed it ends Ok.
+            let (shipped, _) = asked_while_running(t, &id, &vm, starting, || {
+                t.daemon.ship(&id, &dir, &mut Taking, true, &stopped)
+            });
+            let Err(e) = shipped else {
+                panic!("a shipper followed its log unwatched");
+            };
+            assert!(
+                e.get_ref()
+                    .is_some_and(|e| e.downcast_ref::<WatchRefused>().is_some()),
+                "not refused as unwatched: {e}"
+            );
+            assert!(!lock(&t.daemon.waiters).contains_key(&id), "its waiter kept");
+        });
+    }
+
+    /// A daemon that cannot watch its home, its images or its contexts is not started: it
+    /// says which, rather than its listener look at them on a clock (runs-11).
+    #[test]
+    fn a_daemon_that_cannot_watch_its_home_is_not_started() {
+        let home = shards_testdir::TempDir::new("home-watches").unwrap();
+        assert!(home_watches(&home).is_ok());
+        for dir in [home.to_path_buf(), home.join("images"), home.join("contexts")] {
+            std::fs::write(dir.join(UNWATCHABLE), b"").unwrap();
+            let Err(refused) = home_watches(&home) else {
+                panic!("a home watched in part");
+            };
+            assert!(
+                refused.starts_with(&format!("{}: its watch could not be made", dir.display())),
+                "{refused}"
+            );
+            std::fs::remove_file(dir.join(UNWATCHABLE)).unwrap();
+        }
     }
 
     /// `shards read logs` shows a run's members' kept lines (D240), each after its member's
