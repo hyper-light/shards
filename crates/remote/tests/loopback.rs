@@ -1680,7 +1680,8 @@ fn a_client_that_finishes_its_stream_ends_its_commands_input() {
 
 /// A client's frame is held to what its lane takes of its kind (remote-08): a chunk of stdin
 /// past a client's read (`server::READ_MOST`) is refused from its header, before a byte of it
-/// is waited for, where the old 4 MiB bound of every frame waited for all of it.
+/// is waited for, where the old 4 MiB bound of every frame waited for all of it. Its command
+/// had started, so the stream ends cut, as a command that may have run does (D176 part 6).
 #[test]
 fn a_clients_stdin_past_a_read_is_refused_from_its_header() {
     let daemon_id = leak(Identity::generate().unwrap());
@@ -1700,10 +1701,7 @@ fn a_clients_stdin_past_a_read_is_refused_from_its_header() {
         server::READ_MOST + 1,
         server::READ_MOST
     );
-    assert_eq!(
-        raw.next(),
-        Heard::Frame(stream, Tag::Refused, refused.into_bytes())
-    );
+    assert_eq!(raw.next(), Heard::Frame(stream, Tag::Cut, refused.into_bytes()));
 }
 
 /// A client the machine has not enrolled is refused by its frame's header: neither a
