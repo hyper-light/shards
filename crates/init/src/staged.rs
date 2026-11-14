@@ -74,6 +74,8 @@ pub enum Mount<'a> {
 #[derive(Debug, Clone, Copy)]
 pub struct MountPoint<'a> {
     pub path: &'a str,
+    /// Where the image resolves this mountpoint before any member mounts cover it.
+    pub canonical: &'a str,
     pub mount: Mount<'a>,
     pub read_only: bool,
 }
@@ -173,18 +175,36 @@ fn destination<'p, 'm>(
     if parts.contains(&&b".."[..]) {
         return Err(DestinationRefused::Outside);
     }
+    let components = |path: &'m str| {
+        path.as_bytes()
+            .split(|&b| b == b'/')
+            .filter(|p| !p.is_empty() && *p != b".")
+            .collect::<Vec<_>>()
+    };
+    // Resolve image aliases only up to the first mount crossed. An outer volume
+    // hides the image's symlinks below it; those names must stay in that volume.
+    let (first, alias_depth) = mounts
+        .iter()
+        .filter_map(|point| {
+            let names = components(point.path);
+            parts.starts_with(&names).then_some((point, names.len()))
+        })
+        .min_by_key(|(_, depth)| *depth)
+        .ok_or(DestinationRefused::Outside)?;
+    let prefix = components(first.canonical);
+    let suffix = parts.get(alias_depth..).ok_or(DestinationRefused::Outside)?;
+    let canonical: Vec<_> = prefix.iter().chain(suffix).copied().collect();
     let (point, depth) = mounts
         .iter()
         .filter_map(|point| {
-            let names: Vec<_> = point
-                .path
-                .as_bytes()
-                .split(|&b| b == b'/')
-                .filter(|p| !p.is_empty() && *p != b".")
-                .collect();
-            parts.starts_with(&names).then_some((point, names.len()))
+            let names = components(point.canonical);
+            canonical.starts_with(&names).then_some((point, names.len()))
         })
         .max_by_key(|(_, depth)| *depth)
+        .ok_or(DestinationRefused::Outside)?;
+    let depth = depth
+        .checked_sub(prefix.len())
+        .and_then(|n| alias_depth.checked_add(n))
         .ok_or(DestinationRefused::Outside)?;
     if point.read_only {
         return Err(DestinationRefused::ReadOnly);
@@ -394,6 +414,7 @@ mod tests {
             &home,
             &[MountPoint {
                 path: "/home",
+                canonical: "/home",
                 mount: Mount::Held(at.as_fd()),
                 read_only: false,
             }],
@@ -413,11 +434,13 @@ mod tests {
         let points = [
             MountPoint {
                 path: "/home/h",
+                canonical: "/home/h",
                 mount: Mount::Held(a.as_fd()),
                 read_only: false,
             },
             MountPoint {
                 path: "/home/h/.config",
+                canonical: "/home/h/.config",
                 mount: Mount::Held(b.as_fd()),
                 read_only: false,
             },
@@ -432,6 +455,49 @@ mod tests {
     }
 
     #[test]
+    fn image_aliases_are_resolved_only_before_entering_the_outer_mount() {
+        let outer = shards_testdir::TempDir::new("staged-alias-outer").unwrap();
+        let inner = shards_testdir::TempDir::new("staged-alias-inner").unwrap();
+        let a = std::fs::File::open(outer.path()).unwrap();
+        let b = std::fs::File::open(inner.path()).unwrap();
+        let points = [
+            MountPoint {
+                path: "/alias/h",
+                canonical: "/actual/h",
+                mount: Mount::Held(a.as_fd()),
+                read_only: false,
+            },
+            MountPoint {
+                path: "/actual/h/.config",
+                canonical: "/actual/h/.config",
+                mount: Mount::Held(b.as_fd()),
+                read_only: false,
+            },
+        ];
+        let setup = vec![members::file(0, 0o600, b".config/auth", b"public-sentinel").unwrap()];
+        files("/alias/h", &points, own(), 0, &setup).unwrap();
+        assert_eq!(
+            std::fs::read(inner.path().join("auth")).unwrap(),
+            b"public-sentinel"
+        );
+        assert!(!outer.path().join(".config/auth").exists());
+        // An image symlink hidden by the outer mount does not redirect staging.
+        let points = [
+            points[0],
+            MountPoint {
+                path: "/alias/h/.config",
+                canonical: "/elsewhere",
+                ..points[1]
+            },
+        ];
+        files("/alias/h", &points, own(), 0, &setup).unwrap();
+        assert_eq!(
+            std::fs::read(outer.path().join(".config/auth")).unwrap(),
+            b"public-sentinel"
+        );
+    }
+
+    #[test]
     fn a_read_only_cover_refuses_staging_before_any_write() {
         let outer = shards_testdir::TempDir::new("staged-rw").unwrap();
         let inner = shards_testdir::TempDir::new("staged-ro").unwrap();
@@ -440,11 +506,13 @@ mod tests {
         let points = [
             MountPoint {
                 path: "/home/h",
+                canonical: "/home/h",
                 mount: Mount::Held(a.as_fd()),
                 read_only: false,
             },
             MountPoint {
                 path: "/home/h/.config",
+                canonical: "/home/h/.config",
                 mount: Mount::Held(b.as_fd()),
                 read_only: true,
             },
@@ -460,6 +528,7 @@ mod tests {
             points[0],
             MountPoint {
                 path: "/home/h",
+                canonical: "/home/h",
                 ..points[1]
             },
         ];
@@ -577,6 +646,7 @@ mod tests {
                 "/home/h",
                 &[MountPoint {
                     path: "/home",
+                    canonical: "/home",
                     mount: Mount::At(at),
                     read_only: false,
                 }],

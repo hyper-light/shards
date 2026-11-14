@@ -2074,6 +2074,7 @@ pub fn start(
         if let Some(s) = &scratch {
             mounts.push(crate::staged::MountPoint {
                 path: "/tmp",
+                canonical: "/tmp",
                 mount: crate::staged::Mount::Held(s.as_fd()),
                 read_only: false,
             });
@@ -2082,6 +2083,7 @@ pub fn start(
             for path in [real.as_str(), sh.dest.as_str()] {
                 mounts.push(crate::staged::MountPoint {
                     path,
+                    canonical: real.as_str(),
                     mount: crate::staged::Mount::At(at.as_str()),
                     read_only: sh.ro,
                 });

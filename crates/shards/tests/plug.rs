@@ -131,7 +131,8 @@ fn devices_are_plugged_into_a_run_and_its_disk_grows() {
     assert_eq!(
         results.iter().filter(|r| r.status == Some(0)).count(),
         1,
-        "{results:?}"
+        "statuses/errors: {:?}",
+        results.iter().map(|r| (r.status, &r.stderr)).collect::<Vec<_>>()
     );
     shards(&["unplug"], &["volume", "plugged", "/contended"]);
     assert!(inside(&["slurp", "/contended/from-host"]).contains("errno 2"));
