@@ -1,0 +1,45 @@
+# network-05 focused run, kiln r1790 on adas-mac-studio-2.local (Darwin 25.2.0 arm64, rustc 1.98.1),
+# carrier /tmp/g121-shot/carrier-neta (run.sh MODE=script SCRIPT=api05.sh), cold CARGO_TARGET_DIR
+# ~/g121-tmp/neta-mac2/target, SHARDS_HELPERS=skip, placeholder SHARDS_INIT_BINARY/SHARDS_SERVER_BINARY.
+# Source: main 97f404be8 + bundle of p/fix-network-a-v1. Commits as run and as landed (cherry-picked onto main
+# 3825defaa, crates/shards/src/api_run.rs and networks.rs identical): red 57d1d1637 = 99f71406c, green 4abae8d3d = d5153796b.
+# cargo test -p shards --profile test-release --bin shards -- an_orchestrated_runs a_homes_first_engine_id \
+#   a_run_keeping_nothing_past a_run_whose_request_grants_a_sign_in ipv6
+Darwin 25.2.0 arm64
+rustc 1.98.1 (48a229cea 2026-09-01)
+=== red 57d1d1637
+test daemon::publish::tests::a_host_without_ipv6_publishes_at_ipv4_alone ... ok
+test daemon::publish::tests::a_picked_port_taken_at_ipv6_is_picked_again ... ok
+test api_run::tests::a_run_keeping_nothing_past_the_microvm_has_its_members_network_and_no_policy ... ok
+test daemon::publish::tests::ipv6_listeners_take_no_ipv4 ... ok
+test api_run::tests::a_run_whose_request_grants_a_sign_in_tells_its_network_process_and_one_that_grants_none_tells_none ... ok
+test api_run::tests::an_orchestrated_runs_agents_reach_past_the_microvm_by_ipv6_as_a_daemons_do ... FAILED
+test daemon::tests::a_homes_first_engine_id_is_one_however_many_ask_at_once ... ok
+thread 'api_run::tests::an_orchestrated_runs_agents_reach_past_the_microvm_by_ipv6_as_a_daemons_do' (15904361) panicked at crates/shards/src/api_run.rs:6304:9:
+test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 916 filtered out; finished in 1.16s
+red exit 101
+=== green 4abae8d3d
+test daemon::publish::tests::ipv6_listeners_take_no_ipv4 ... ok
+test api_run::tests::a_run_keeping_nothing_past_the_microvm_has_its_members_network_and_no_policy ... ok
+test daemon::publish::tests::a_picked_port_taken_at_ipv6_is_picked_again ... ok
+test daemon::publish::tests::a_host_without_ipv6_publishes_at_ipv4_alone ... ok
+test api_run::tests::a_run_whose_request_grants_a_sign_in_tells_its_network_process_and_one_that_grants_none_tells_none ... ok
+test api_run::tests::an_orchestrated_runs_agents_reach_past_the_microvm_by_ipv6_as_a_daemons_do ... ok
+test api_run::tests::an_orchestrated_runs_network_process_is_told_its_ipv6_before_its_policy ... ok
+test daemon::tests::a_homes_first_engine_id_is_one_however_many_ask_at_once ... ok
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 916 filtered out; finished in 1.16s
+green exit 0
+=== clippy (this run): failed on the daemon's engine_id wrapper left without a caller (fixed in 33729b520);
+#   the carrier's sparse checkout also lacked docs/research/measurements' harness sources. Rerun on the landed tip below.
+=== mutation m1: past6 gives none (.filter(|_| false))
+test api_run::tests::an_orchestrated_runs_network_process_is_told_its_ipv6_before_its_policy ... ok
+test api_run::tests::an_orchestrated_runs_agents_reach_past_the_microvm_by_ipv6_as_a_daemons_do ... FAILED
+thread 'api_run::tests::an_orchestrated_runs_agents_reach_past_the_microvm_by_ipv6_as_a_daemons_do' (15924027) panicked at crates/shards/src/api_run.rs:6332:9:
+test result: FAILED. 7 passed; 1 failed; 0 ignored; 0 measured; 916 filtered out; finished in 1.13s
+m1 exit 101
+=== mutation m2: NET_ADDRESS never sent
+test api_run::tests::an_orchestrated_runs_agents_reach_past_the_microvm_by_ipv6_as_a_daemons_do ... ok
+test api_run::tests::an_orchestrated_runs_network_process_is_told_its_ipv6_before_its_policy ... FAILED
+thread 'api_run::tests::an_orchestrated_runs_network_process_is_told_its_ipv6_before_its_policy' (15930214) panicked at crates/shards/src/api_run.rs:8095:9:
+test result: FAILED. 7 passed; 1 failed; 0 ignored; 0 measured; 916 filtered out; finished in 1.14s
+m2 exit 101

@@ -36,7 +36,7 @@ use std::time::{Duration, Instant};
 use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, ClientConnection};
 
-use crate::patience::{Bounded, Last, Paths, Silenced, Wait, path_of};
+use crate::patience::{ATTEMPT_DELAY, Bounded, Last, Paths, Silenced, Wait, path_of};
 use crate::proxy::{Proxies, Proxy};
 use crate::registries::Registries;
 use crate::url::{Scheme, Url};
@@ -45,7 +45,6 @@ use crate::{Error, ErrorKind, Overdue};
 /// How long a client that does not learn its waits (not a registry's) takes to connect:
 /// Go's dialer's, as containerd's transport gives it.
 const CONNECT: Duration = Duration::from_secs(30);
-const RACE: Duration = Duration::from_millis(300);
 /// How long a client that does not learn its waits gives a TLS handshake: Go's
 /// transport's `TLSHandshakeTimeout`, as containerd's gives it.
 const HANDSHAKE: Duration = Duration::from_secs(10);
@@ -1061,12 +1060,19 @@ impl Client {
         reach: Option<fn(std::net::IpAddr) -> bool>,
     ) -> Result<TcpStream, Error> {
         if !self.learning {
-            return dial(first, self.cancel.as_ref(), reach, self.patience.connect);
+            return dial(
+                first,
+                self.cancel.as_ref(),
+                reach,
+                self.patience.connect,
+                ATTEMPT_DELAY,
+            );
         }
         let path = path_of(url);
         let within = self.paths.timeout(&path, Wait::Connect);
+        let race = self.paths.attempt_delay(&path);
         let began = Instant::now();
-        let dialled = dial(first, self.cancel.as_ref(), reach, within);
+        let dialled = dial(first, self.cancel.as_ref(), reach, within, race);
         self.learned(&path, Wait::Connect, began, dialled.as_ref().map(drop));
         dialled
     }
@@ -1668,8 +1674,8 @@ fn unreachable(url: &Url) -> Error {
     ))
 }
 
-/// Races interleaved addresses, starting the next after RACE or a failure
-/// (RFC 8305 §5). Cancellation ends the caller; pending attempts end themselves. A dial its
+/// Races interleaved addresses, starting the next after `race`, its path's Connection
+/// Attempt Delay ([`Paths::attempt_delay`]), or a failure (RFC 8305 §5). Cancellation ends the caller; pending attempts end themselves. A dial its
 /// time ends is said so ([`Error::timed_out`]): its name's lookup, an attempt's connect
 /// stopped at what was left of it, or attempts still pending as it passed.
 fn dial(
@@ -1677,6 +1683,7 @@ fn dial(
     cancel: Option<&Cancel>,
     reach: Option<fn(std::net::IpAddr) -> bool>,
     within: Duration,
+    race: Duration,
 ) -> Result<TcpStream, Error> {
     // The name's lookup is within the dial's time, as Go's Dialer counts it.
     let deadline = after(within);
@@ -1733,7 +1740,7 @@ fn dial(
                 continue;
             }
         }
-        let next_attempt = after(RACE).min(deadline);
+        let next_attempt = after(race).min(deadline);
         while Instant::now() < next_attempt {
             let before = pending;
             if let Some(stream) = wait(&mut pending, &mut last, next_attempt)? {
@@ -2931,6 +2938,7 @@ mod tests {
                         Some(&asked_cancel),
                         None,
                         Duration::from_secs(3),
+                        ATTEMPT_DELAY,
                     )
                     .map(|_| ())
                 };
@@ -3792,7 +3800,14 @@ mod tests {
         assert!(silent.is_timed_out(), "{silent}");
         let ended = shaken(true);
         assert!(!ended.is_timed_out(), "{ended}");
-        let named = dial(&at("http", "localhost", 5000), None, None, Duration::ZERO).unwrap_err();
+        let named = dial(
+            &at("http", "localhost", 5000),
+            None,
+            None,
+            Duration::ZERO,
+            ATTEMPT_DELAY,
+        )
+        .unwrap_err();
         assert!(named.is_timed_out(), "{named}");
         let free = TcpListener::bind("127.0.0.1:0").unwrap();
         let closed = free.local_addr().unwrap().port();
@@ -3802,6 +3817,7 @@ mod tests {
             None,
             None,
             Duration::from_secs(10),
+            ATTEMPT_DELAY,
         )
         .unwrap_err();
         assert!(!refused.is_timed_out(), "{refused}");

@@ -1071,17 +1071,18 @@ fn run_process(command: &str, env: &[(String, std::ffi::OsString)]) -> Result<Ve
     use std::io::Read as _;
     use std::os::windows::process::CommandExt as _;
     let said = |e: &dyn std::fmt::Display| format!("credential_process: {e}");
-    let mut child = std::process::Command::new("cmd.exe")
-        .arg("/C")
-        // Keep the configured shell text's quotes: cmd.exe does not use CRT escaping.
-        .raw_arg(format!("\"{command}\""))
-        .env_clear()
-        .envs(env.iter().map(|(k, v)| (k, v)))
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::inherit())
-        .spawn()
-        .map_err(|e| said(&e))?;
+    let mut child = shards_ipc::spawn_std(
+        std::process::Command::new("cmd.exe")
+            .arg("/C")
+            // Keep the configured shell text's quotes: cmd.exe does not use CRT escaping.
+            .raw_arg(format!("\"{command}\""))
+            .env_clear()
+            .envs(env.iter().map(|(k, v)| (k, v)))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::inherit()),
+    )
+    .map_err(|e| said(&e))?;
     let stdout = child.stdout.take();
     let mut ended = |why: String| {
         let _ = child.kill();

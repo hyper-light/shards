@@ -768,7 +768,8 @@ Registries are reached with a small blocking HTTP/1.1 client on rustls and httpa
     request (RFC 9110 §15.5.9). The second rule is Go's too, and it keeps responses from
     desynchronizing.
 - **Connections as containerd's transport keeps them** (`core/remotes/docker/registry.go`):
-  - 30 s to connect, racing addresses 300 ms apart (RFC 8305);
+  - 30 s to connect, racing addresses (RFC 8305), each next one started as its path's
+    connects would send their second SYN (D222, review waits-12);
   - 10 s for the TLS handshake, 30 s for the response head;
   - at most 10 idle connections, each kept for 30 s.
   - A GET or HEAD that fails on a reused connection before its response is resent on a
@@ -12288,6 +12289,19 @@ and bind tests on its CI runners. 4 (built): shards' own shares' DAX windows on 
 
 ### D196. Snapshots of WHP microVMs: a partition saved and restored (built)
 
+**2026-11-14, platform-09 fixed** (6057451cf, 2f88e39b6; red 9c1632a7f; PM M578). A name's
+versions (`write_in`, `newest_in`, `remove_in`) are the entries its directory takes for
+`name.~N`: ignoring case (CompareStringOrdinal, Windows' ordinal file-name comparison),
+unless the directory is case-sensitive (FILE_CASE_SENSITIVE_INFO,
+FILE_CS_FLAG_CASE_SENSITIVE_DIR); a file system or Windows that keeps no per-directory
+sensitivity (FAT; before Windows 10 1803) refuses the question and tells no names apart by
+case. And `land` moves its next version past each one a rename found taken
+(`next_version`), so a write ends at the first free name even where the file system takes
+for the name an entry the comparison does not (a volume's own $UpCase table, older than the
+system's). No literal. Owed to ROOT (R14): the cost of the directory's sensitivity query
+each read adds to a restore's `newest_in`, on jupiter, `benches/restore.rs` before and after,
+n=100 interleaved.
+
 **Why.** Every feature on every host (the user, 2026-10-27; docs/audit/2026-10-27_platform-parity.md
 row 2a): a microVM on Windows took no snapshot (D140), so `run --kernel --snapshot-dir`, `shards
 restore` and everything built on them, templates (D25) and warm pools (D26), were Unix's alone.
@@ -12497,6 +12511,25 @@ M421); `platform::windows` `a_file_kept_cached_is_a_view_of_all_of_it_until_it_d
 waiter lifecycle and chosen pipe quotas require jupiter red/green checks and an online
 capacity/admission design. [Commands and held design](../research/measurements/platform-fixes/held.md)
 retain those obligations; no Windows check or quota replacement is claimed completed.
+
+**2026-11-14, platform-07 and 08 fixed; 11 open** (PM M578, Windows 11 x86_64 unit tests).
+- **07** (7905b3c03; red 5260eea78). A confined spawn gives its child copies of the standard
+  handles it is lent, inheritable for its handle list alone, as `spawn_env` did; the caller's
+  handles are left as lent. A child of std's Command inherits every inheritable handle of
+  this process (CreateProcessW bInheritHandles TRUE, Rust library/std/src/sys/process/windows.rs;
+  std's CREATE_PROCESS_LOCK is private and `CommandExt::inherit_handles` unstable, issue
+  146407), so each shards spawn holds `INHERITING` to read from its first inheritable handle
+  until it has closed them, and `shards_ipc::spawn_std`, through which every production std
+  spawn on Windows now goes (the registry's and AWS's credential helpers, the SBOM scan, the
+  API client's boot, the Windows VM-binary handoff), holds it to write while std makes its
+  child. A new production std spawn must go through `spawn_std`; nothing enforces it but
+  review (a workspace `disallowed-methods` would also hold every test's spawns). No literal.
+- **08** (6ff8f51f4; red 10bf97ed7). A waiting client watches its list's directory by its
+  own name (its OsStr encoded as UTF-16, not through `to_string_lossy`), says no list only
+  where the directory is absent (ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND) and refuses any
+  other failed watch; its watch is made before its WaitNamedPipe thread, so a call starts one
+  thread at most and leaves one only where the daemon named its lists anew. No literal.
+- **11** stays open (held.md).
 
 **Why.** Every feature on every host (the user, 2026-10-27; docs/audit/2026-10-27_platform-parity.md
 row 1): on Windows `shards` had no daemon, so no `run IMAGE` and none of the commands of its
@@ -13085,6 +13118,31 @@ online derivation. [Held findings and cold-start/admission design owed](../resea
 record the unavailable Windows checks, normal-priority cold state, measured clock/cost
 inputs and still-unresolved cross-process budget owner. No scheduler change or new
 performance claim is made by that design record.
+
+**2026-11-14, platform-10 fixed within a process; across processes owed; 11 open** (9f95ae7db,
+f0cd08598; red 190b49d9b; PM M578). The Windows governor also keeps a pool for each set of
+CPUs its raised threads may run on (GetThreadGroupAffinity: a processor group and a mask,
+read at every look): credited half of each of those CPUs' time, charged what its threads ran
+raised, kept to half a period of each and none; a thread is raised only while its own credit
+and its set's pool both have some. Values: the half is the existing fair-share derivation (a
+raised thread beside one busy host thread), now of each CPU; the count of CPUs is the
+thread's own affinity, learned at each look, never assumed; the cap is half a `PERIOD` of
+each CPU, as a thread's own is (PERIOD itself is platform-11's, open). Cold start: a set's
+pool starts full, as a thread's credit does, so a burst of raised threads takes half a period
+of each CPU at most before the first look. Failure: a thread whose affinity cannot be read as
+it is raised is refused (`raise_current` errs, the thread stays at its priority); one unread
+at a later look keeps the set last read. Tested by unit
+(`platform::windows_thread::tests::raised_threads_sharing_a_cpu_take_no_more_than_half_of_it`,
+three raised spinners pinned to one CPU beside a normal one, and `a_pool_is_half_of_its_cpus_time`).
+Pools are per process: another VM process's raised threads draw on pools of their own. Owed
+to ROOT, an R02 decision before any code: the host-wide owner (each VM process is in an
+AppContainer of its own, `shards.vm.<pid>.<n>`, so no named object is shared; candidates are
+a section the spawner creates once per user session and hands every VM process with its
+grants, or the daemon's hold governing every VM's raised threads), then on jupiter: two and
+four 1-vCPU microVMs of a daemon held to one CPU (started under an affinity mask of one,
+`start /affinity 1`, whose microVMs get its mask's CPUs, D191) with a busy guest each, beside a normal-priority host spinner on that CPU, and 2x the host's CPUs of busy
+vCPUs across unheld microVMs; the host spinner's CPU time over 60 s, each vCPU's priority
+changes, n=20 a side, before and after, through `cpu-elastic/phases.py`.
 
 The user's plan, item 3 (2026-10-18): a run's `--cpus` as elastic as its memory (D148),
 every microVM given the host's CPUs, init bringing the run's online and `update --cpus`
@@ -18032,6 +18090,23 @@ at once, refusals.
 
 ### D140. microVMs on Windows hosts: the WHP backend
 
+**2026-11-14, platform-05/06 fixed** (3fb6b0c07; red d18cc5040, PM M578). Windows'
+instruction emulator (`Vcpu::emulate`, for the string instructions shards' decoder refuses)
+reaches guest memory through `hv::whp::Ram`: disjoint ranges, a map cutting what it replaces
+before it is recorded (WHvMapGpaRange "replaces any previous mappings"), an unmap cutting its
+part out of a larger range (a virtio-mem block unplugged, whose memory the host then
+decommits), a DAX range mapped unrecorded cutting what it replaces; each access made under
+the registry's lock, which an unmap takes before it returns, so none is under way as the
+memory goes. A write reaches memory only where its range is mapped writable; the emulator's
+write to read-only memory (read-only virtio-pmem, a PAGE_READONLY view) goes to the devices,
+as the guest's own write there exits to them, and as KVM gives a write to a KVM_MEM_READONLY
+slot to its VMM (Documentation/virt/kvm/api.rst). No literal is added. Tested by unit
+(`hv::whp::tests::the_emulator_reaches_no_memory_unmapped_or_replaced`,
+`the_emulator_writes_no_memory_the_guest_may_only_read`, Windows 11 x86_64). Owed to ROOT:
+the real-WHP routes, which no test yet drives: a guest's REP MOVSB across a virtio-mem block
+unplugged from a larger range, and its REP STOSB into read-only pmem, each on jupiter's WHP
+(x86_64), the bytes unchanged and the VM process alive.
+
 AGENTFILE_ARCH.md §11 row 975 (`RUN` on Windows hosts) starts here: shards' VMM drives the
 Windows Hypervisor Platform on x86_64 Windows, as it drives KVM and Hypervisor.framework
 (D13), and a Windows host boots shards' guests. Its VM process's confinement (D141), its
@@ -19131,8 +19206,50 @@ record red/green, independent notification mutations, cleanup, resource samples 
 all R01–R16 gaps. In particular, cancellation does not terminate libc resolution;
 aggregate abandoned-worker admission, large shared-Condvar fanout, six remaining
 platform/runtime checks and measured leading implementation comparisons remain
-open. The existing 300 ms RACE is an upstream default still requiring separate
-R03 derivation; preserving its protocol purpose does not justify its value.
+open. The 300 ms RACE (Go's `Dialer.FallbackDelay`) is gone (review waits-12, PM M577):
+a dial starts its next address after its path's Connection Attempt Delay
+(`Paths::attempt_delay`). RFC 8305 §5: it "should correspond to the time when the previous
+attempt is sending its second TCP SYN, based on the TCP's retransmission timer [RFC6298]",
+and "should only try to approximate the time of the first SYN retransmission". The path's
+connects are paced by RFC 6298's estimator already (`Pace`, `Wait::Connect`), so it is
+SRTT + 4·RTTVAR of them, with no backoff and without §2.4's 1 s rounding (TCP's own guard
+against retransmitting early, which §5's minimum stands for here), within §5's Minimum and
+Maximum Connection Attempt Delay (100 ms, "required to avoid congestion collapse in the
+presence of high packet-loss rates", and 2 s, §8). Its cold start, a path that has shown
+no connect, and a client that learns no waits: §8's 250 ms "in the absence of RTT data".
+A connect's sample includes its name's lookup (`Wait::Connect`), which can only lengthen
+it, so a learned delay errs toward a later start, never an earlier one. Red
+`patience::tests::a_dial_starts_its_next_address_as_its_paths_connects_retransmit`
+(300 ms whatever the path showed). Owed to ROOT: a dial on a host whose IPv6 route
+black-holes, the race's learned start, beside a cold one's.
+
+#### The chosen waits left (review waits-12, 2026-11-14): each one's design
+
+Review waits-12 listed the figures below. The race is derived above. Each of the others
+needs a notification, a learned record or a resource-derived bound, as shown. None is
+implemented yet: each needs a daemon, VM, guest or registry run to show it, which is
+ROOT's. STOP_GRACE (an input's meaning), RFC 6298's estimator and QUIC's RFC 9002 cold RTT
+were excluded by the review.
+
+| Literal (file) | Now | Design | Owed: proof |
+|---|---|---|---|
+| `TAKE_TIMEOUT` 10 s (daemon.rs: run-socket writes, link and door handoffs, the connect/take exchange) | picked | Each is a write to, or an answer from, a VM whose party is its VM process. Each waits as D215's judge waits (`health::Wait::WhileRuns`), on a record of its own kind (`Answers::take`, `::link`, `::door`): cold while its process lives, then the slowest seen, extended by progress and host holds. | a judged-write helper beside `exec_waiting`; red: a played VM whose reader is held runnable past 10 s, alive, keeps its handoff; ROOT: `cargo test -p shards --profile test-release --test daemon` on a loaded host |
+| `TAKEOVER` 20 s (daemon.rs `take_lock`) | picked | The lock's holder is the process `daemon.pid` names, written before any slot is offered. Wait while it lives (`Named::lives`, zombies now excluded, waits-08), judged by its record of a start, lock to first slot (`Answers::serve`). A holder that has written no `daemon.pid` yet is followed through its lock file's holder alone, cold. | red: a holder that lives and is slow to offer is waited for past 20 s, and one that died is not |
+| 10 ms poll (daemon.rs `take_lock`) | picked | Events, not looks: a blocking `File::lock` on a helper thread; a `platform::FileWatch` of the home (`requests/` lists, `daemon.stopping`); and the holder's exit (kqueue `EVFILT_PROC`/`NOTE_EXIT`, a pidfd, its process handle). | a unit test counting looks: one per event |
+| `HANDOFF_TRIES` 3 (daemon.rs `start_run`) | picked | Try each warm VM its pool held ready when the run began, then one booted for it. A VM booted for the run that also fails is a failure of the run, not of a VM: it ends typed, naming the last cause. The bound is the pool's own count. | `claim` to say whether a VM was ready or booted; red: four played warm VMs, three ending before `TAKEN`, the fourth takes the run |
+| 1 s, 10 ms polls (daemon.rs `with_its_process`) | picked | Wait on the VM process's exit event without reaping it (waitid `WNOWAIT`, kqueue, its handle), judged by D215 on a record of link-close-to-exit: cold while it lives and progresses. | red: a process that ends 1.5 s after its link closes still has its status said |
+| `UNWATCHED` 250 ms (daemon.rs) | picked (D185's admission) | The followers whose writer is the daemon (`logs -f`, events, the copiers) wait on that writer's own notification: one owner, a condvar, no file watch. Only files written by another process keep a watch. When that watch cannot be made (no inotify instance), wait for an instance to be let go of, as the listener waits for descriptors (`have_room`). | red: `logs -f` with no inotify instance follows each line without a clock |
+| 1 ms poll (cli/client.rs `ask_slot`) | picked | The client started the daemon, so it holds its child: wait on that child's exit and a `FileWatch` of `requests/` for the first list. The daemon's own `daemon.pid` covers one started by another client. | red: a counted-look test, a started daemon that offers slots late |
+| 250 ms (ipc slots/fifo.rs, macOS list with no process watch) | picked (D185) | select(2) sees a FIFO writer's end on macOS (M253's finding), so wait on the list's read end for it: no clock. | macOS unit test, the list's writer ended with no pid |
+| `SWEEP` 60 s (daemon/slots.rs) | picked | A client names itself (`this_process`) in its slot as it takes it, and the daemon follows that process's exit (one process watch per taken slot, released at its request): an abandoned slot goes as its taker ends, with no sweep. | red: a taker killed before its request; its slot re-offered at its exit |
+| 60 s log window (daemon/slots.rs `said_at_most`) | picked, policy | Say each episode, at reaching the most and as clients in hand go below it, with how many waited and how long. A log line per episode is bounded by the log's own rotation (D163). | a unit test of the transitions |
+| 5 s (vm_run.rs, joiners' end reports, `warm::await_joiners`) | picked | Wait while each joiner's process lives, judged by D215 on a record of joiner end reports: cold, its liveness. | red: a joiner that reports at 6 s keeps its holder |
+| 5 s (vm_run.rs, the relay's outcome after the VM's end) | picked | The relay ends with its VM's sockets, so join its thread (its own end) and send it nothing to wait on. | red: a relay slow to drain past 5 s still has its outcome said |
+| `ANY_PORT_TRIES` 8 (init hostbind.rs) | picked | Hold each host port that collides in the guest until the bind succeeds, so each try gets a port it has not had. The tries then end with success or the host's own refusal, its ephemeral range spent (pigeonhole: the guest holds finitely many ports). No count. | Linux guest test: the first nine host choices taken in the guest; ROOT's real-VM run |
+| `THROTTLED` [50..800] ms, its 800 ms floor, `WINDOW_MOST` 60 s (registry.rs) | picked (PM M112, one ECR run) | A declared wait (Retry-After, RFC 9110 §10.2.3, or a window) is followed whole: it is the server's statement, ended only by the user's cancel. With none declared, retry after the path's own answer pace (its RFC 6298 estimator of answers), doubling each 429 (§5.5), within the path's learned trouble budget (D222's run-out rules for the rest). | red: a 61 s window that clears at 2 s; ROOT: Docker Hub's real 429s, their windows recorded |
+| `CONNECT` 30 s, `HANDSHAKE` 10 s (registry http.rs, clients that learn no waits) | Go's, containerd's | Every client learns: those that keep no record still pace by RFC 6298 in memory (§2.1's 1 s first, §5.5's doubling), as a learning client's cold path does. | list each non-learning client's caller; red: a fresh client's second connect paced by its first |
+| `HEAD` 30 s (a non-lookup request), `STALL` 30 s (request writes) | Go's, containerd's | A non-lookup request's answer is followed by its connection's liveness and its path's record for that method (`slowest_answer_us` by safe/unsafe). A request's write is a send-side silence, learned like the body's read silences, readiness-checked (waits-05's `Sock`). | red: a POST answered at 31 s is kept |
+
 
 ### The `crates/shards` figures of the picked-constants audit (2026-11-09): each from its source
 
@@ -22697,13 +22814,25 @@ Tested:
 
 ### D99. IPv6 on a network of microVMs
 
-**API-run parity gap (network-05, 2026-11-13), owed to ROOT.** Unlike the daemon,
-API-run still supplies neither its guest's `uplink6=` nor the network process's
-`NET_ADDRESS` for IPv6 egress. Its IPv4 policy unit results do not prove this path.
-The correction must share the home's ULA derivation and paired programming, with
-NET_ADDRESS acknowledged before frames are served and the same narrowed grants
-and `confine-eth0` preserved. Fresh/restored API IPv6 receipt and default-deny
-witnesses are [owed with an exact fixture](../research/measurements/network-fixes-v1/README.md#network-05-07-guest-kernel-and-api-reproductions).
+**An orchestrator's run as a daemon's (network-05, 2026-11-14).** API-run supplied
+neither its guest's `uplink6=` nor its network process's `NET_ADDRESS`, so an image's
+agents with IPv6 and a grant past the microVM had no IPv6 there when run by an
+orchestrator. Both now share one derivation, `crate::networks::host_ipv6` (the home's
+engine ID's ULA /48, its last /64, `::2` and `::1`, moved from the daemon with
+`engine_id` and `ula_base`), and its two programs, `uplink6_entry` and
+`bridge_address`. api_run's `past6` gives it where the run is on the bridge and its
+image's agents have IPv6 and are granted anything past it (`Agentfile::egress6`), as
+the daemon's start does; its plan pushes `uplink6=` beside `confine-eth0`, and
+`tell_net` sends `NET_ADDRESS` first and waits for its answer before the published
+ports and the policy as the request narrows it. Unit red/green and mutations (macOS
+arm64): `api_run::tests::{an_orchestrated_runs_agents_reach_past_the_microvm_by_ipv6_as_a_daemons_do,
+an_orchestrated_runs_network_process_is_told_its_ipv6_before_its_policy}`
+([log](../research/measurements/network-fixes-v1/api05-red-green.log)). Owed to ROOT:
+`cargo test -p shards --test api_image a_published_ingress_port_reaches_its_member --
+--exact --nocapture` extended with build.rs's
+`agents_reach_past_the_microvm_by_ipv6_what_their_networks_grant` IPv6-only fixture,
+fresh and restored: the granted IPv6 address and port reached, an ungranted one
+refused, and the command unable to use its agents' grant.
 
 A network made with `--ipv6` (`shards network create --ipv6`, or a run's `--network` on
 one) gives each microVM an IPv6 address of its IPv6 subnet, as dockerd gives each
@@ -25071,6 +25200,10 @@ what its run stages. Two names keep init's rules:
   gives one, else Docker's: the image's replaces Docker's default, as in a container, and a
   member's own program is still found before the system's (part one). Its program is found on
   the `PATH` it runs with, a staged one included, where it was found on `run.env`'s alone.
+  Confine-04: init prepares candidate strings with ordinary exec's PATH composer,
+  but the member's child searches only after its mounts, confinement and cwd are
+  established. Empty components mean cwd; relative components remain relative to
+  that cwd. No executable availability/access decision is made in init's view.
 - **`HOME`**: never the image's. One value for every member is private to none, which a
   member's `HOME` must be (step 7's acceptance), and the system it would name is read-only to
   a domain. A member's `HOME` is its scratch unless its own `run.env`, or its run, names one.
@@ -26164,6 +26297,14 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
   in neither are refused, as it would never read them. Before, the files went to the
   scratch whatever `HOME` said, and a harness whose `HOME` was a volume never read them
   (reproduced, docs/research/measurements/s7-home-workdir).
+- *Nested HOME mounts* (confine-03, 2026-11-13): staging receives the complete
+  member mount plan, including read-only covers and declared/image-resolved names.
+  Each final HOME-relative target selects its deepest visible mount. All destinations
+  are checked before writing; a read-only cover or a target equal to a mountpoint is a
+  typed refusal, rendered at the existing setup-error boundary. Byte components are
+  preserved, and the backing-directory walk still follows no symlinks. No writable
+  ancestor can receive files hidden behind a nested mount. Red/green evidence and
+  remaining real-guest validation: [fix-confine-v1](../research/measurements/fix-confine-v1/README.md).
 - *A member's working directory* (2026-11-12, kiln plan 01a1cd8e862e7169a074db3d5fa33f3d,
   step 7): `MemberSpec::workdir`, the project path it works in, carried in the request's
   version 4 and staged as `member-workdir=<index>\0<path>`, one for a member. It is absolute
@@ -26481,7 +26622,7 @@ goal 52 (each test red on the code as it was, green after, red again with its gu
 - refusals typed across the VM process's boundary (*Refusals* above).
 Owed to ROOT: the figure's derivation above, and the real-GPU runs.
 
-### D233. A client that contains its own VM processes launches them through its native owner (built; real-VM validation owed)
+### D233. A client that contains its own VM processes launches them through its native owner (built; an orchestrator's run's report too; real-VM validation owed)
 
 **Why.** shards-api's client spawns the VM process (D215). A client that must contain every
 process it starts, in a cgroup or a Job object (Hex's node, for its accounting and its
@@ -26523,6 +26664,51 @@ API's protocol: its output drained, its end, its connections.
   client process's own, its nonce and counter as its socket directories have: a scope
   names a frame, not a channel, and a pipe named for its scope refused every other report
   of that scope while its one instance lived, ERROR_PIPE_BUSY (PM M533).
+- *Through an orchestrator's run* (Hex lead's ask, Hex goal 39; D231's run host). Hex publishes
+  no GPU box's VM Live without its VM process's own renderer report, checked host-side; an
+  image run gave none (`/run/shards/gpus` is what init was asked, not what the renderer
+  found). Now:
+  - `ImageSpec::gpu_report: Option<[u8; 16]>` names the report's scope, refused as
+    `with_gpu_report` refuses one (`ImageRefusal::GpuProbe`: zero `Scope`, no `gpu_devices`
+    `Empty`), before any run host starts and again as the channel reads it
+    (`WireError::Gpu`). Image channel version 29: `Request::gpu_report`, appended last.
+  - The run host gives its VM process the report pipe as a managed launch's client gives its
+    own: `--gpu-report` and `--gpu-report-scope` (launch.rs `run_reported`, the write end at
+    descriptor 9 on Unix, the one after the release, and by the name `gpu-report` on Windows,
+    the VM's alone once launched). A warm boot and a warm restore take them now, as a direct
+    boot did (vm_run.rs `report_target`): its spawner names the scope before it launches it.
+    A restore's renderer rejoins its snapshot's selection with the writer given
+    (`shards_vmm::vm::restore_reported`, format 29's selection), refused `Empty` for a
+    snapshot of none; so a GPU run restored from its template reports as one booted does.
+  - The run host reads the report to its pipe's end, at most a byte past what a report of its
+    GPUs holds (`report_bytes(n) + 1`, the managed reader's bound): a ready VM's at once, its
+    one writer closed before its guest ran (`write_report`), which its READY follows; one that
+    ended unready after it is reaped. Only the last launch's counts (a template that does
+    not restore is booted again, D253). It relays the frame as written, `GPU_REPORT` (to-client
+    kind 39), before `STARTED`, or before `REFUSED` where the VM did not start.
+  - shards-api holds it typed (session.rs `Report`: Unasked, Awaited, Relayed, Taken): a
+    relay unasked or twice breaks the channel; a start without one asked is refused
+    `ImageRefusal::Host`. `ImageGuest::take_gpu_report(patience)` reads it with the managed
+    launch's own reader (`physical::report::read`, which `Receiver::take` now calls: `Count`,
+    `Syntax`, `Unreported`, `Refused`, the frame's scope and selection), once (`ReportTaken`
+    after, the first take spending it whatever it came to), within the boot's patience and the
+    caller's (`Pending` past either); `Unavailable` for a run that asked none. A boot whose VM
+    its renderer refused is refused `ImageRefusal::GpuProbe(Refused(..))`, typed, in place of
+    the host's words.
+  - A run that asks for its report is no warm pool's (`ImagePools`): a warm host's VM starts
+    before its run names the scope, which the VM frames its report with as its renderer is
+    made. It boots on a host of its own, its pool told nothing; a warm host handed one
+    anyway refuses it `Unfit`. Its template still restores it (D253).
+  - *Literals.* Descriptor 9: the next after the run's release (`VM_RELEASE_FD`), a layout,
+    no tuned figure; the bound is D232's (`report_bytes`). Every wait is the caller's
+    patience or the boot's.
+  - *Evidence.* Unit and stand-in-host tests in shards-api (wire, image, session's
+    `an_image_boot_takes_its_vms_gpu_report_as_a_managed_launch_does`, pool), shards
+    (launch's handing, api-run's bounded read) and shards-vm-process (the warm flags), each
+    guard's removal failing its test (the evidence record in the landing report). Owed to
+    ROOT: real GPU runs through `ImageShards` on Linux (Venus, NVIDIA/AMD), macOS (Metal)
+    and Windows (WHP, a LUID matched against DXGI's), a boot and a template restore each, and
+    the gpu-feature VM process's build of `restore_reported` (scripts/gpu-libs).
 
 **Literals.** None new beyond D232's but SHA-256's 64-byte block (FIPS 180-4 §5.1.1), what an
 image is read in where its file system names no preferred size; every wait is the caller's
@@ -26594,6 +26780,13 @@ image lacks could never become a writable mount point in a running member.
   (open_tree, mount_setattr clearing `MOUNT_ATTR_RDONLY`), the root found as the domain's
   own walk finds it and no symlink followed beneath it (openat2 `RESOLVE_NO_SYMLINKS`,
   `RESOLVE_NO_XDEV`), so that nothing is made outside it.
+- *Ownership through completion* (confine-05): daemon plug/unplug/grow operations
+  hold the existing run request turn through device, guest and registry completion.
+  API-run holds a per-run plug/unplug turn, separate from its readable mounted map;
+  device replies take neither turn. A second same-path plug sees the completed
+  owner's `Taken` state; an unplug cannot remove ownership from a pending plug.
+  Real guest concurrent regressions are authored in plug.rs and api_image.rs; ROOT
+  owns their execution and resource-return observations.
 - *The daemon's:* `shards plug volume --for NAME MICROVM SOURCE:PATH[:ro]`, NAME an agent or
   harness as an Agentfile's `FOR` names one, which runs a command; `unplug volume` by its
   path, as D214's.
@@ -26691,6 +26884,9 @@ virtio 1.3 §5.11's `VIRTIO_FS_F_NOTIFICATION` unused), and what a FUSE server n
     up and let go of as it forgets it (server.rs `watch_dir`, `unwatch_dir`), all of the
     process's one instance (`platform::watch_named`; PM M257): what the guest never looked
     at is watched nothing of, and a watch is one of its user's (`max_user_watches`).
+    Confine-08: a native watch admission error refuses the directory's LOOKUP with
+    its native errno before any guest reference is published or counted. A later
+    lookup retries admission; no failed directory is silently retained as watched.
   - *macOS:* one FSEvents stream of its shares' roots (shards-apple `fsevents`, CoreServices
     bound when first used), file events, the changes the process itself makes for the guest
     left out (`IgnoreSelf`), told at once (latency 0, `NoDefer`).
@@ -26698,9 +26894,32 @@ virtio 1.3 §5.11's `VIRTIO_FS_F_NOTIFICATION` unused), and what a FUSE server n
     most it takes over a network (its documentation's).
   - Where the whole tree is watched (macOS, Windows), a change is told only where the guest
     holds its directory (`Server::holds_dir`). Each path waits once however often it
-    changes, at most 16384 (Linux's default `max_queued_events`, past which a guest's own
-    watcher would hear only that it lost events); past them, its nearest waiting directory
-    or its share's root stands for it, once a share.
+    changes.
+  - *Lost changes* (confine-06, confine-09, 2026-11-14; was: at most 16384 waiting, Linux's
+    default `max_queued_events`, past which a path's nearest waiting directory or its share's
+    root stood for it). A host's watcher can say only that changes beneath a place were not
+    each said: inotify's `IN_Q_OVERFLOW` (inotify(7)), ReadDirectoryChangesW's empty answer
+    (its buffer overflowed, MSDN), FSEvents' `MustScanSubDirs` (which it sets on events the
+    kernel or the stream dropped, FSEvents.h). Each is typed (`notices::Change::Beneath`)
+    and told, as its changes are taken, by every node the guest holds at that place or
+    beneath it (`Server::held_beneath`). Touching a directory wakes no watch of a file in it
+    (an inotify watch is of its inode, not recursive), so the root alone, which was all that
+    was told, left a guest's watch of a nested file asleep. Every watch the guest has holds
+    its inode (inotify_user.c `inotify_new_watch`), and a FUSE inode is its server's node
+    until the guest forgets it, so telling every node held wakes every watch there.
+  - *What waits is bounded by what the guest holds* (R03): a share's changes, each told by
+    its path, are no more than the nodes its guest holds as each is told (`Server::held`,
+    its node table's size, the root's always among them, so never below one). Past them,
+    telling each path costs more than telling every node held, which wakes every watch the
+    guest has, so the share's changes are told as lost beneath its root; a share's places
+    lost are as bounded, past them its root standing for them. No number of the host's
+    enters: a guest that holds a whole tree (a recursive watcher looks up each directory and
+    file) waits for as many paths as it holds; one that holds its root alone, for one, and a
+    loss then touches the root, all it can watch. Cold start: the share's root alone, one.
+    Uncertainty: a name the guest holds no node of is told past the bound only by its
+    directory's own change, as inotify's own overflow tells it nothing more; a watch of the
+    directory is still woken. Failure: a share with no server (none for its place) is told
+    nothing of what it lost, as none of its nodes is held.
   - *Told on a pipe straight to the guest:* records `TAG\0PATH\0` (`shards_abi::run::
     notice`), TAG the share's virtio-fs tag (`shards share --notices TAGS`), from the share
     process to the stdin of the guest's `NOTICE` built-in, which the daemon and `shards
@@ -26731,7 +26950,8 @@ virtio 1.3 §5.11's `VIRTIO_FS_F_NOTIFICATION` unused), and what a FUSE server n
 - *Verified* (light tests, the change's own): unit, server.rs
   `a_notice_changes_nothing_on_the_host`, `a_name_found_by_another_case_is_trusted_for_no_time`,
   `a_directory_is_held_while_the_guest_knows_it`, `the_hosts_changes_where_the_guest_looks_are_noticed`
-  (Linux); notices.rs `changes_are_told_once_and_within_bounds`,
+  (Linux), `lost_events_wake_a_file_the_guest_holds` (Linux); notices.rs `changes_are_told_once`,
+  `lost_changes_are_told_by_every_node_the_guest_holds_beneath`,
   `the_hosts_changes_are_told_where_the_guest_looks` (each host's watcher, a change made by
   another process); shards-abi's records; init's `notices_are_told_whole_across_reads`;
   shards-apple's `a_change_beneath_is_told_by_its_path`; share.rs's flags. Real VMs, tests/plug.rs
@@ -29658,6 +29878,10 @@ ruleset, the run's seccomp filter.
   abstract Unix sockets of, its own processes alone, and the member's processes its not.
   Sharing the member's own domain would need a process of the member's to start each
   command, inside its seccomp filter and its pids.max, and is not built.
+- *Refused environment values* (confine-07): validation returns only the typed
+  cause (empty name, NUL, reserved name), never the rejected entry. Both Debug and
+  Display are value-free, and the existing member refusal wire renders only that
+  safe cause and member identity. A malformed credential is not copied into errors.
 - *Its program, environment and directory.* Its environment is the member's as it started,
   the exec's variables over it as moby lays an exec's over its container's
   (daemon/container/env.go, ReplaceOrAppendEnvValues: a name alone unsets one); none may name
