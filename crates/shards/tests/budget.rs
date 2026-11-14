@@ -19,8 +19,6 @@ use common::{
 };
 use shards_vmm::devices::virtio::fs::headroom::reads_room;
 
-const TIMEOUT: Duration = Duration::from_secs(60);
-
 /// The file every phase reads, a gigabyte, and its reader's block, a MiB (as large as a
 /// share's largest request).
 const GIB: u64 = 1 << 30;
@@ -331,7 +329,7 @@ fn a_microvm_held_to_a_budget_reads_through_fuse_at_the_pace_of_reads_held_to_no
             .unwrap_or(0)
     };
     let short_now = || {
-        let deadline = Instant::now() + TIMEOUT;
+        let mut patience = Patience::of(&home);
         let (current, stat) = loop {
             let current: u64 = std::fs::read_to_string(cgroup.join("memory.current"))
                 .unwrap()
@@ -340,13 +338,14 @@ fn a_microvm_held_to_a_budget_reads_through_fuse_at_the_pace_of_reads_held_to_no
                 .unwrap();
             let stat = std::fs::read_to_string(cgroup.join("memory.stat")).unwrap();
             if stat_of(&stat, "anon") + stat_of(&stat, "file") <= current {
+                patience.done();
                 break (current, stat);
             }
             assert!(
-                Instant::now() < deadline,
+                patience.holds(),
                 "{slice}'s statistics still count more than it holds ({current} bytes):\n{stat}"
             );
-            std::thread::sleep(Duration::from_millis(100));
+            std::thread::sleep(patience.next_look());
         };
         let mapped = stat_of(&stat, "file_mapped");
         let unmapped = stat_of(&stat, "file")
@@ -366,23 +365,35 @@ fn a_microvm_held_to_a_budget_reads_through_fuse_at_the_pace_of_reads_held_to_no
     // kernel takes back more of the slice as its budget falls than its statistics said it
     // keeps beside what its processes map, and the daemon counts the room the slice has
     // after (22 MiB under 229 MiB in budget E2E 40148135044's h, 1 of 608 runs). A budget
-    // that leaves none is said at once.
-    let (mut asked, mut short): (Vec<u64>, u64) = (Vec::new(), 0);
-    let deadline = Instant::now() + TIMEOUT;
+    // that leaves none is said at once. Set again once the daemon has answered the budget
+    // before (a budget set anew is always said: its microVM held within it, short of it, or
+    // with room again, daemon/budget.rs), or once the slice has moved so that the budget it
+    // leaves is another; waited for while the daemon and its microVMs go on ([`Patience`]).
+    let (mut asked, mut short): (Vec<u64>, Option<u64>) = (Vec::new(), None);
+    let answered = |since: usize| {
+        said()
+            .get(since..)
+            .is_some_and(|l| l.contains(&format!("container {id}: its microVM")))
+    };
+    let mut since = 0;
+    let mut patience = Patience::of(&home);
     while !held_least() {
         assert!(
-            Instant::now() < deadline,
+            patience.holds(),
             "no microVM said to be held within the least room a run goes on in, under budgets of {asked:?} MiB\nthe daemon's log:\n{}",
             said()
         );
-        short = short_now();
-        budget(&short.to_string());
-        asked.push(short >> 20);
-        let set = Instant::now();
-        while !held_least() && set.elapsed() < Duration::from_secs(3) {
-            std::thread::sleep(Duration::from_millis(20));
+        let now = short_now();
+        if short != Some(now) || answered(since) {
+            since = said().len();
+            budget(&now.to_string());
+            asked.push(now >> 20);
+            short = Some(now);
         }
+        std::thread::sleep(patience.next_look());
     }
+    patience.done();
+    let short = short.unwrap_or_default();
     let held_short: Vec<u64> = (0..3)
         .map(|_| {
             judged(

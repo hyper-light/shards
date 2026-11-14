@@ -5040,10 +5040,10 @@ impl Workload {
             // with it, which the run's end says.
             if !exited && MEMBER_ENDS.load(std::sync::atomic::Ordering::Relaxed) {
                 for d in self.domains.iter_mut().filter(|d| !d.end_told) {
-                    if let Some(status) = d.lifecycle.ended_status() {
+                    if let Some(end) = d.lifecycle.ended_status() {
                         let ended = run::members::Ended {
                             member: d.member,
-                            status,
+                            end,
                         }
                         .encode();
                         to_host.extend(&[&run::header(kind::MEMBER_ENDED, ended.len() as u32), &ended]);
@@ -5447,11 +5447,11 @@ impl Workload {
                         // in /proc to say whose they are (procevents).
                         keep_processes(&mut self.procs, &mut to_host);
                         let main = self.pid;
-                        reap(&self.sigchld, |pid, code| {
+                        reap(&self.sigchld, |pid, end| {
                             if let Some(d) =
                                 self.domains.iter_mut().find(|d| d.lifecycle.awaiting_status(pid))
                             {
-                                match d.lifecycle.reaped(code) {
+                                match d.lifecycle.reaped(end) {
                                     Ok(update) => apply_lifecycle(d, update),
                                     Err(fault) => {
                                         fatal = Some(setup_failed(format!(
@@ -5467,7 +5467,7 @@ impl Workload {
                             }
                             if pid == main {
                                 let _ = crate::linux::control_write(control::MARKER, marker::WORKLOAD_EXITED);
-                                status = Some(code);
+                                status = Some(end.status());
                                 // Its readiness ends with it (D234): nothing moves it after.
                                 if let Some(r) = self.readiness.as_mut() {
                                     r.exited();
@@ -5524,7 +5524,7 @@ impl Workload {
                                     unsafe { libc::kill(-1, libc::SIGKILL) };
                                 }
                             } else if let Some(e) = execs.iter_mut().find(|e| e.pid == pid) {
-                                e.status = Some(code);
+                                e.status = Some(end.status());
                                 // What it published goes with it (D181).
                                 if let Some(proxy) = e.proxy.take() {
                                     // SAFETY: kill(2) of init's own child, reaped as it ends.
@@ -5564,7 +5564,7 @@ impl Workload {
                                 // connection goes, so that the host hears its end rather
                                 // than waiting on the rest.
                                 e.save = Save::Done;
-                                if code != 0 {
+                                if end != run::members::End::Exited(0) {
                                     e.link = Link::Gone;
                                 } else if let Some(conn) = e.link.conn() {
                                     set_nonblocking(conn.as_raw_fd(), true);
@@ -6211,7 +6211,7 @@ fn frame_processes(records: &[u8], to_host: &mut Outbox) {
     }
 }
 
-fn reap(sigchld: &OwnedFd, mut exited: impl FnMut(libc::pid_t, u32)) {
+fn reap(sigchld: &OwnedFd, mut exited: impl FnMut(libc::pid_t, run::members::End)) {
     let mut info = [0u8; std::mem::size_of::<libc::signalfd_siginfo>()];
     while read(sigchld.as_raw_fd(), &mut info).is_ok_and(|n| n > 0) {}
     loop {
@@ -6221,14 +6221,7 @@ fn reap(sigchld: &OwnedFd, mut exited: impl FnMut(libc::pid_t, u32)) {
         if pid <= 0 {
             return;
         }
-        exited(
-            pid,
-            if libc::WIFSIGNALED(st) {
-                128 + libc::WTERMSIG(st) as u32
-            } else {
-                libc::WEXITSTATUS(st) as u32
-            },
-        );
+        exited(pid, crate::managed::ended(st));
     }
 }
 

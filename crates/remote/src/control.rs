@@ -2646,7 +2646,10 @@ mod tests {
                 assert_eq!(from.next_record().unwrap(), Got::Finished);
                 assert_eq!(end.wait(), Ok(0));
             }
-            assert!(matches!(execs.member(5), Ok(crate::control::Member::Ended(7))));
+            assert!(matches!(
+                execs.member(5),
+                Ok(crate::control::Member::Ended(exec::End::Exited(7)))
+            ));
             host.join().unwrap();
             let mut live = Live::dial(&kiln, vm.fingerprint(), address);
             for (lane, (frame, why)) in [
@@ -2835,8 +2838,10 @@ mod tests {
         /// resize each reach its host and are answered, a refusal typed; a signal no guest has
         /// is refused before it is sent; its end reaches its end's handle while its steering
         /// waits on nothing, and its steering refuses every steer from then on, `Ended`; a
-        /// member that ended before is said so with its status; one its host serves none of,
-        /// typed; and one the endpoint serves no stream of is refused, `Scope`.
+        /// member that ended before is said so with its status; an end by a signal is told
+        /// typed, `Signaled`, where `exit 143` stays `Exited(143)`, as it comes and before its
+        /// lane asked; one its host serves none of, typed; and one the endpoint serves no
+        /// stream of is refused, `Scope`.
         #[test]
         fn the_controller_controls_a_member_its_state_steering_and_end() {
             let (vm, kiln) = (Identity::generate().unwrap(), Identity::generate().unwrap());
@@ -2874,6 +2879,11 @@ mod tests {
                 );
                 let ended = members.recv_timeout(PATIENCE).unwrap();
                 ended.replies.tell(exec::Reply::Exited(0));
+                let termed = members.recv_timeout(PATIENCE).unwrap();
+                termed.replies.tell(exec::Reply::Running);
+                termed.replies.tell(exec::Reply::Signaled(15));
+                let killed = members.recv_timeout(PATIENCE).unwrap();
+                killed.replies.tell(exec::Reply::Signaled(9));
                 let unserved = members.recv_timeout(PATIENCE).unwrap();
                 unserved
                     .replies
@@ -2896,14 +2906,26 @@ mod tests {
                 steering.resize(size),
                 Err(Fault::Unsteered(exec::Unsteered::Terminal))
             );
-            assert_eq!(end.wait(), Ok(143));
-            assert_eq!(end.wait(), Ok(143));
+            assert_eq!(end.wait(), Ok(exec::End::Exited(143)));
+            assert_eq!(end.wait(), Ok(exec::End::Exited(143)));
             assert_eq!(steering.signal(9), Err(Fault::Unsteered(exec::Unsteered::Ended)));
             assert_eq!(
                 steering.resize(size),
                 Err(Fault::Unsteered(exec::Unsteered::Ended))
             );
-            assert!(matches!(execs.member(0), Ok(crate::control::Member::Ended(0))));
+            assert!(matches!(
+                execs.member(0),
+                Ok(crate::control::Member::Ended(exec::End::Exited(0)))
+            ));
+            let crate::control::Member::Running(mut termed) = execs.member(0).unwrap() else {
+                panic!("member 0 runs");
+            };
+            assert_eq!(termed.end.wait(), Ok(exec::End::Signaled(15)));
+            assert_eq!(exec::End::Signaled(15).status(), 143);
+            assert!(matches!(
+                execs.member(0),
+                Ok(crate::control::Member::Ended(exec::End::Signaled(9)))
+            ));
             assert_eq!(
                 execs.member(0).map(|_| ()),
                 Err(Fault::Unstarted(exec::Unstarted::Failed))

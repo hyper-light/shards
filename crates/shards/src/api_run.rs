@@ -370,7 +370,7 @@ fn relayed(which: u8, payload: &[u8]) -> Option<(u8, Vec<u8>)> {
             let e = shards_abi::run::members::Ended::decode(payload)?;
             let ended = wire::MemberEnded {
                 member: e.member,
-                status: e.status,
+                end: e.end,
             };
             Some((wire::to_client::MEMBER_ENDED, ended.encode()))
         }
@@ -4269,7 +4269,7 @@ mod hosted {
                 if m.kind == kind::MEMBER_ENDED
                     && let Some(agent) = &live.agent
                     && let Some(ended) = protocol::members::Ended::decode(&m.payload)
-                    && let Err(e) = agent.ends.told(ended.member, ended.status)
+                    && let Err(e) = agent.ends.told(ended.member, ended.end)
                 {
                     super::say(format_args!("a member's end its guest told: {e}"));
                 }
@@ -5541,10 +5541,13 @@ mod hosted {
                 process.join().unwrap();
                 let size = protocol::Size { rows: 50, cols: 132 };
                 assert_eq!(steering.resize(size), Err(Fault::Unsteered(Unsteered::Terminal)));
-                agent.ends.told(1, 143).unwrap();
-                agent.ends.told(2, 137).unwrap();
-                assert_eq!(end.wait(), Ok(143));
-                assert_eq!(kill_end.wait(), Ok(137));
+                agent.ends.told(1, protocol::members::End::Signaled(15)).unwrap();
+                agent.ends.told(2, protocol::members::End::Signaled(9)).unwrap();
+                assert_eq!(end.wait(), Ok(shards_remote::control::exec::End::Signaled(15)));
+                assert_eq!(
+                    kill_end.wait(),
+                    Ok(shards_remote::control::exec::End::Signaled(9))
+                );
                 assert_eq!(
                     execs.member(0).map(|_| ()),
                     Err(Fault::Unstarted(Unstarted::Refused))
@@ -6902,22 +6905,18 @@ mod tests {
         for malformed in [&[0u8; 9][..], &[1, 0, 0, 0, 0, 0, 0, 0, 1], &[2; 8], &[]] {
             assert_eq!(relayed(kind::WORKLOAD_READY, malformed), None, "{malformed:?}");
         }
-        let ended = shards_abi::run::members::Ended {
-            member: 1,
-            status: 137,
+        for end in [
+            shards_abi::run::members::End::Exited(143),
+            shards_abi::run::members::End::Signaled(15),
+        ] {
+            let ended = shards_abi::run::members::Ended { member: 1, end }.encode();
+            let (answer, payload) = relayed(kind::MEMBER_ENDED, &ended).unwrap();
+            assert_eq!(answer, wire::to_client::MEMBER_ENDED);
+            assert_eq!(
+                wire::MemberEnded::decode(&payload),
+                Ok(wire::MemberEnded { member: 1, end })
+            );
         }
-        .encode();
-        assert_eq!(
-            relayed(kind::MEMBER_ENDED, &ended),
-            Some((
-                wire::to_client::MEMBER_ENDED,
-                wire::MemberEnded {
-                    member: 1,
-                    status: 137
-                }
-                .encode()
-            ))
-        );
         for other in [kind::READY, kind::PROCESS, kind::DONE] {
             assert_eq!(relayed(other, &[1; 9]), None);
         }

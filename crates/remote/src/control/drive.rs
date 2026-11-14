@@ -39,7 +39,7 @@ use shards_abi::run::managed::{Channel, InputEnd};
 use shards_abi::run::{Size, Spec};
 
 use super::exec::{
-    self, Limits, LogAsk, LogChannels, LogCursor, LogRecord, LogSource, Steer, Told, Unlogged, Unsteered,
+    self, End, Limits, LogAsk, LogChannels, LogCursor, LogRecord, LogSource, Steer, Told, Unlogged, Unsteered,
 };
 use super::unix;
 use super::{
@@ -124,8 +124,8 @@ enum Heard {
     Fault(Fault),
     /// An exec started: its stdio's handles.
     Started(Box<Started>),
-    /// An exec ended, with this status; or a member.
-    Exit(i32),
+    /// An exec ended, with this status (always [`End::Exited`]); or a member, typed.
+    Exit(End),
     /// A member's lane: the member runs, its lane numbered so for its handle's asks.
     Running(u64),
     /// A member's lane: its last steer taken, or why not.
@@ -470,7 +470,7 @@ impl Execs {
         })));
         let lane = match heard.recv() {
             Ok(Heard::Running(lane)) => lane,
-            Ok(Heard::Exit(status)) => return Ok(Member::Ended(status)),
+            Ok(Heard::Exit(end)) => return Ok(Member::Ended(end)),
             Ok(Heard::Fault(fault)) => return Err(fault),
             Ok(_) | Err(_) => return Err(gone()),
         };
@@ -641,12 +641,12 @@ pub struct Exec {
     pub control: ExecControl,
 }
 
-/// A member, as its lane first says: running, its control; or ended, with its status (its
-/// command's, or 128 plus the signal that ended it), before its lane asked.
+/// A member, as its lane first says: running, its control; or ended, how ([`End`]: its
+/// command's exit, or the signal that killed it), before its lane asked.
 #[derive(Debug)]
 pub enum Member {
     Running(MemberControl),
-    Ended(i32),
+    Ended(End),
 }
 
 /// A running member's lane, as two handles that need not wait on each other: its steering and
@@ -711,18 +711,18 @@ impl MemberSteering {
 #[derive(Debug)]
 pub struct MemberEnd {
     heard: mpsc::Receiver<Heard>,
-    exit: Option<Result<i32, Fault>>,
+    exit: Option<Result<End, Fault>>,
 }
 
 impl MemberEnd {
-    /// Waits for the member to end: its status, its command's or 128 plus the signal that
-    /// ended it (D231's `MEMBER_ENDED`), once its whole population has.
-    pub fn wait(&mut self) -> Result<i32, Fault> {
+    /// Waits for the member to end (D231's `MEMBER_ENDED`), once its whole population has: its
+    /// command's exit, or the signal that killed it ([`End`]).
+    pub fn wait(&mut self) -> Result<End, Fault> {
         if let Some(exit) = self.exit {
             return exit;
         }
         let exit = match self.heard.recv() {
-            Ok(Heard::Exit(status)) => Ok(status),
+            Ok(Heard::Exit(end)) => Ok(end),
             Ok(Heard::Fault(fault)) => Err(fault),
             Ok(_) | Err(_) => Err(gone()),
         };
@@ -771,7 +771,7 @@ impl ExecControl {
             return exit;
         }
         let exit = match self.heard.recv() {
-            Ok(Heard::Exit(status)) => Ok(status),
+            Ok(Heard::Exit(end)) => Ok(end.status()),
             Ok(Heard::Fault(fault)) => Err(fault),
             Ok(_) | Err(_) => Err(gone()),
         };
@@ -1790,8 +1790,8 @@ impl Lane {
         }
         if let Some(end) = &self.end {
             match heard {
-                Heard::Exit(status) => {
-                    let _ = end.send(Heard::Exit(status));
+                Heard::Exit(ended) => {
+                    let _ = end.send(Heard::Exit(ended));
                 }
                 Heard::Fault(fault) => {
                     let _ = end.send(Heard::Fault(fault));
@@ -2052,7 +2052,7 @@ fn frame_of(bytes: &[u8], carries: Carries, heard: bool) -> Result<Option<(Came,
                 Ok(Some((Came::Heard(Heard::Fault(Fault::Unlogged(why))), n)))
             }
             Some((Told::Exit(status), n)) if started.is_some() => {
-                Ok(Some((Came::Heard(Heard::Exit(status)), n)))
+                Ok(Some((Came::Heard(Heard::Exit(End::Exited(status))), n)))
             }
             Some(_) => Err(Broken::Protocol),
         },
@@ -2073,7 +2073,10 @@ fn frame_of(bytes: &[u8], carries: Carries, heard: bool) -> Result<Option<(Came,
                 Ok(Some((Came::Heard(Heard::Fault(Fault::Unstarted(why))), n)))
             }
             Some((Told::Exit(status), n)) if running || !heard => {
-                Ok(Some((Came::Heard(Heard::Exit(status)), n)))
+                Ok(Some((Came::Heard(Heard::Exit(End::Exited(status))), n)))
+            }
+            Some((Told::Signaled(signal), n)) if running || !heard => {
+                Ok(Some((Came::Heard(Heard::Exit(End::Signaled(signal))), n)))
             }
             Some((Told::Steered(answer), n)) if running && asked => {
                 Ok(Some((Came::Heard(Heard::Steered(answer)), n)))

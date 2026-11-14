@@ -11,13 +11,19 @@
 //!   bytes both ways, each way's end its half-close.
 //! - **Its members' own lanes** (D238). [`Execs::member`] gives a member's [`Member`]: its
 //!   [`MemberSteering`] signals its command, each signal answered (or refused, typed
-//!   [`Unsteered`]), and its [`MemberEnd`] gives how it ended (its status, or 128 plus the
-//!   signal that ended it). [`exec_admissions`] is what [`Subscriptions::execs`] names.
+//!   [`Unsteered`]), and its [`MemberEnd`] gives how it ended, typed ([`exec::End`]: its exit's
+//!   status, or the signal that killed it). [`exec_admissions`] is what
+//!   [`Subscriptions::execs`] names.
+//! - **Its members' MCP connections** (D254). [`Execs::mcp`] gives the next connection a
+//!   member's harness makes to its MCP bridge, a [`McpConnection`]: the harness's bytes, as
+//!   records ([`Output`], [`Got`]); the controller's to it ([`Input`]); and its end
+//!   ([`ExecControl`]).
 
 pub use shards_remote::control::exec::{Admissions, Unstarted, Unsteered};
 pub use shards_remote::control::{
-    Controller, Dialed, Ended, Execs, Fault, Hangup, Link, Linked, Member, MemberControl, MemberEnd,
-    MemberSteering, Socket, SocketAdmission, SocketReader, SocketWriter, Sockets, Subscriptions, exec,
+    Controller, Dialed, Ended, ExecControl, Execs, Fault, Got, Hangup, Input, Link, Linked, McpConnection,
+    Member, MemberControl, MemberEnd, MemberSteering, Output, Socket, SocketAdmission, SocketReader,
+    SocketWriter, Sockets, Subscriptions, exec,
 };
 pub use shards_remote::identity::{Fingerprint, Identity};
 pub use shards_remote::managed::Reason;
