@@ -27945,28 +27945,50 @@ docs/research/s33-veil-creds/STEP3.md).
   `inject::tests::leaks::a_chunked_token_responses_trailers_are_no_part_of_its_body` (a trailer
   field, and none), red before (502), green after; trailers given as data again fails it,
   `chunked_bodies_are_read_strictly` and `a_chunked_refresh_and_revocation_are_answered_outside`.
-- *Coded responses are refused (creds-04, amended 2026-11-13).* The mask reads a response's bytes
-  as they come, so an echo inside a body coded gzip, br, deflate, zstd or any other content coding
-  (RFC 9110 §8.4), or a transfer coding (RFC 9112 §7), or a WebSocket message compressed by
-  permessage-deflate (RFC 7692), passed unmasked and decoded to the value in the guest: once a
-  recorded residual, a leak. Decoding, masking and coding again was refused: a decoder of every
-  coding in the network process (zstd and br beside gzip), its output bounded only by a ratio no
-  spec gives, and a coded body whose length changes. So a request with a value filled in asks its
-  response as its sender writes it: its Accept-Encoding lines cut and `Accept-Encoding: identity`
-  added (`uncoded`; HTTP/2's `ask_identity`), as no field means any coding is acceptable (§12.5.3),
-  and its WebSocket extension offer cut (RFC 6455 §9.1: a server takes none not offered). A final
-  or 101 response to it whose content coding is not `identity`, whose transfer coding is not
-  `chunked` (one a guest's TE asked included), or that takes a WebSocket extension, is refused
-  before any of it goes: `Refusal::Unmaskable(Unmaskable::Coded | Extended)`, 502 on HTTP/1.1
-  (the connection closing) and on its HTTP/2 stream alone (`maskable`), as §12.5.3 lets a server
-  code a response anyway. A request with no value filled in asks and gets what it likes. The cost
-  is that an injected exchange's body travels uncoded between the network process and its host.
-  Tests: `inject::tests::leaks`' gzip echo over HTTP/1.1 as a content coding and as a transfer
-  coding and over HTTP/2, red before (the coded echo reached the guest and decoded to the value),
-  green after, and a filled WebSocket upgrade whose host takes permessage-deflate anyway; each of
-  the two response checks and the two request rewrites removed fails them. Still residual: a
-  tunnel's own framing (a value split across WebSocket frames, or a protocol other than WebSocket
-  after a 101), which the mask reads as bytes.
+- *A coded response to a filled request is decoded, masked and sent as identity (creds-04,
+  amended 2026-11-13, twice).* The mask reads a response's bytes as they come, so an echo inside a
+  body coded gzip, br, deflate, zstd or any other content coding (RFC 9110 §8.4), or a transfer
+  coding (RFC 9112 §7), or a WebSocket message compressed by permessage-deflate (RFC 7692), passed
+  unmasked and decoded to the value in the guest: once a recorded residual, a leak. So a request
+  with a value filled in asks its response as its sender writes it: its Accept-Encoding lines cut
+  and `Accept-Encoding: identity` added (`uncoded`; HTTP/2's `ask_identity`), as no field means
+  any coding is acceptable (§12.5.3), and its WebSocket extension offer cut (RFC 6455 §9.1: a
+  server takes none not offered). A server may code its response anyway (§12.5.3), and CDNs do;
+  the first form of this fix refused every such response 502, which broke a harness behind one
+  (ROOT's zero-breaks ask). Now a response to a filled request with a body naming one coding this
+  side decodes is decoded in the network process (`decode::Decoder`: gzip, `x-gzip` and deflate,
+  zlib-wrapped or raw as some servers send it, by flate2 over zlib-rs; zstd by ruzstd, read a
+  frame header and a block at a time so that its decoder never meets a part of one; the decoders
+  the image store and the registry's client already link), its decoded bytes masked as any body's,
+  and given to the guest as `identity`: on HTTP/1.1 its Content-Encoding, Transfer-Encoding and
+  Content-Length lines cut and `Transfer-Encoding: chunked` written, each run the mask lets go one
+  chunk (`chunk`), its end the last chunk and its trailers dropped (RFC 9110 §6.5.1); on HTTP/2
+  its content-encoding and content-length fields cut (RFC 9113 §8.1.1 lets a response name no
+  length), its DATA's credit given back to the host's window once its decoding has reached the
+  guest, so that the host sends no faster than the guest reads. Bounds (R03): what one turn of the
+  host's bytes decodes to is at most `TO_GUEST`, what the connection already holds toward the
+  guest (on HTTP/2, a stream's DATA held for the guest and its decoding together), and past it
+  the message breaks (`Undecodable::PastBudget`): a decoding ratio no spec bounds is never held;
+  a zstd window past RFC 9659 §3's 8 MiB, or a frame that needs a dictionary, is refused
+  (`Unsupported`); a zstd block past RFC 8878 §3.1.1.2.3's 128 KiB is corrupt; a stream that is
+  no stream of its coding (`Corrupt`), or that ends before its coding's end, gzip's CRC and length
+  checked (`Truncated`), breaks the message, never a truncated body that looks whole. Refused 502
+  before any of it goes, `Refusal::Unmaskable(Coded)`: a coding no decoder here reads (br: no
+  vetted decoder in the workspace; `compress`; any unknown name), more than one coding, or a
+  decodable one toward a guest that spoke HTTP/1.0, which no chunked body reaches; and
+  `Unmaskable(Extended)`, a 101 that takes a WebSocket extension anyway. A response with no body
+  (HEAD's, 204, 304) passes as it came. A request with no value filled in asks and gets what it
+  likes. Not chosen: buffering a coded body whole to recompute its Content-Length, which holds a
+  streamed response (server-sent events) until its end. Tests (macOS arm64,
+  adas-mac-studio-3.local): `inject::tests::leaks`' coded echo over HTTP/1.1 as gzip and zstd
+  framed by length, `x-gzip` and `gzip, chunked` chunked, and over HTTP/2 as gzip, each red
+  against 3a87f3b39's injector (refused 502) and green after: decoded, every echo masked, no
+  coding field; br and gzip twice refused 502; `decode::tests`: each coding whole and a byte at a
+  time, truncated, past its budget, and a zstd window of 16 MiB refused. Mutations: the H1 decoder
+  bypassed (the coded bytes chunked as they came), the H2 decoder bypassed, and each of the three
+  budget checks removed, each fail their tests. Still residual: a tunnel's own framing (a value
+  split across WebSocket frames, or a protocol other than WebSocket after a 101), which the mask
+  reads as bytes; a decoded body's buffers, which grow without being wiped, as rustls's own do.
 - *Audit (f26).* `shards-net: credential <reference> filled in toward <host> at <s>.<ns> (Unix
   time)`, on the network process's stderr (its run host's diagnostics); never the value or the
   placeholder.
