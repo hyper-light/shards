@@ -28175,8 +28175,9 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
 - *The run's own command* is the orchestrator's, or `builtin::ATTEND`: the standby holds,
   the members start.
 - *Its end* (`RunEnd`): `Exited` with the status its own command or `ATTEND`'s holder ended
-  with; a command that never started, `Failed` in its VM's words (D249); a run its VM could
-  not serve, `Failed` in its words (D258).
+  with; a command that never started, or a run its init failed after it started, `Failed` in
+  init's words (D249, amended 2026-11-14); a run its VM could not serve, `Failed` in its words
+  (D258).
 
 **Literals.** None new: `run::MAX_PAYLOAD`, `run::TOKEN`, the permission mask `0o777`,
 `docker run`'s `128 + signal`; every wait is on a fact.
@@ -32652,7 +32653,58 @@ expected); as built, passed.
 and `cargo test -p shards --profile test-release --test api_image` on a KVM host.
 
 **What would falsify it.** A run whose command started ending `Failed` for its `DONE`, or one
-whose command never started ending `Exited`.
+whose command never started ending `Exited`. (Superseded by the amendment below: a started run
+whose `DONE` carries init's words ends `Failed`.)
+
+**Amended (2026-11-14): a started run whose init fails ends `Failed` in init's words.** The
+person's decision, verbatim "typed failure!". Init can fail a run after it said `STARTED`: its
+relay (init run.rs, `workload.relay`) returns a `Failure`, and init sends `SYSTEM_ERR` with its
+words and `EXIT` 125. The VM process keeps the words as `not_run` (workload.rs `relay_frames`),
+and warm.rs `finish` keeps dockerd's code for them (`start_failed`, 128 here). The run host
+read that as `Exited(128)`, which reads as the command's own exit. 5231d8279 (apiend128) fixed
+one such cause, init's capture EOF race. Typing the failure stops this hiding any other.
+- *`DONE`* carries the code the microVM keeps, then init's own words (warm.rs `done`, both
+  `finish` and `joined_finish`), no longer dockerd's text for them. Each reader renders them at
+  its own boundary:
+  - the daemon (daemon.rs `run_ended`) says them as dockerd does
+    (`start_failed(words).0`), for a command that never started, as before;
+  - the run host (`api_run::run_end`) types them.
+  The Docker CLI and Engine API answers are unchanged: the container's `ExitCode` stays 128 and
+  `docker run` still exits 125, 126 or 127 as Docker defines.
+- *`run_end`*: a `DONE` with words is `Failed`, its guest having said `STARTED` or not:
+  - not started: `"its command never started (status N): WORDS"`, as before, now with init's
+    unamended words;
+  - started: `"its init failed after its command started: WORDS"`.
+  A `DONE` of a status alone is `Exited(status)`. The branch that typed a started run's words
+  as `Exited(status)` is deleted. There is one path.
+- *API change for Hex* (shards-api `RunEnded.end`, the image channel's `ENDED`). There is no wire
+  or VERSION change: `RunEnd::Failed(String)` already exists. A run whose command started and
+  whose guest's init then failed it now ends `RunEnd::Failed("its init failed after its command
+  started: …")` where it ended `RunEnd::Exited(128)`. An orchestrator matching `Exited(128)` as
+  that failure matches `Failed` instead; an `Exited` status is now only ever a command's (or
+  `ATTEND`'s holder's) own.
+
+*Literals.* None new.
+
+*Tests* (unit, one macOS arm64 host, adas-mac-studio-3.local):
+- `api_run::tests::an_init_that_fails_a_started_run_ends_it_failed_in_inits_words`: through
+  `run_end` and `Told::end`.
+- `api_run::tests::a_command_that_never_started_ends_its_run_failed_saying_why`: unchanged
+  but for its started-with-words case, which moved to the test above.
+- `warm::tests::a_runs_done_carries_inits_own_words` (shards-vm-process): words that dockerd
+  amends are carried as init said them.
+
+*Results*: adas-mac-studio-3.local (Darwin arm64, rustc 1.99.1), `SHARDS_HELPERS=skip`.
+- `cargo test -p shards --bin shards -- api_run::` at 331cdf2a4: 55 passed, 0 failed.
+- `cargo test -p shards-vm-process -- warm::tests::a_runs_done_carries_inits_own_words`: passed.
+- `cargo clippy -p shards -p shards-api -p shards-vm-process --all-targets -- -D warnings`:
+  clean.
+- Red: with the old guard put back (`if !started && !words.is_empty()`), the new test failed,
+  `left: Exited(128)`, `right: Failed("its init failed after its command started: …")`.
+
+*Evidence owed* (ROOT, real VMs): a run whose init fails after `STARTED`, through
+`cargo test -p shards --profile test-release --test api_image` on HVF and KVM, and Hex's
+image_real once Hex vendors this.
 
 ### D250. An orchestrator's run keeps the network its image links its members to, letting nothing past that the request does not keep (built; real-VM validation owed)
 
