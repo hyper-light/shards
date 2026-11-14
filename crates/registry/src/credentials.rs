@@ -621,9 +621,8 @@ impl Talk {
         if let Some(path) = env("PATH") {
             command.env("PATH", path);
         }
-        let mut child = command
-            .spawn()
-            .map_err(|e| Error::new(format!("running {program}: {e}")))?;
+        let mut child =
+            shards_ipc::spawn_std(&mut command).map_err(|e| Error::new(format!("running {program}: {e}")))?;
         let watched = match cancel {
             Some(cancel) => {
                 use std::os::windows::io::AsHandle as _;
