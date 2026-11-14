@@ -101,3 +101,7 @@ logic is replaced. Neither a guest nor any helper is executed by these tests.
 These fixture settings provide no evidence about VM behavior.
 ROOT owes `cargo test -p shards --test build a_build_held_short_of_memory_has_its_builder_give_back`
 with a budget removed during a delayed give-back and delayed ROOM acknowledgment.
+
+Green at `cdd29b68b`, resumed r7, macOS arm64: give::tests:: 10/10, a_giver_ 2/2,
+and `cargo clippy -p shards --all-targets -- -D warnings` clean. Retained output
+is `green-memory-04.log`; the real-VM budget removal variant remains owed.
