@@ -140,6 +140,8 @@ let (config, manifest) = self.image_facts(c.image_id.as_deref());
 
 **Confidence:** high in lost/non-atomic record; resulting premature escalation unrun. **Fix direction:** stable interprocess lock covering reread/merge/publication, plus uniquely owned staging files; explicitly unlock before closing (M244). **Test:** barrier two real writers after stale reads, order their publications, and require every maximum to survive; force the truncation/rename interleaving while readers verify complete records.
 
+**Status (2026-11-13):** fixed in 45ae96862a934b8dabee70b5405cd8e0444f1f13 (red `concurrent_end_writers_keep_each_others_maxima`, r38; green regression +5 end tests and shards all-target clippy r39). Logs `docs/research/measurements/runs-fixes/runs07-{red,green}.log`. Stable-lock reread/merge and unique atomic staging preserve both writers' maxima. Two-process/VM crash publication remains owed to ROOT as the fix record specifies.
+
 ### runs-08 — P2 / medium — Concurrent first GPU launches can publish an incomplete helper
 
 **At head:** `crates/shards/src/helpers.rs:102–107`. **Inherited at base; still present.**
@@ -211,3 +213,6 @@ R01–R16 evidence disposition: R01/R04/R05/R06/R07/R13 were inspected only in t
 ## Delivery status
 
 Attempted explicit delivery to ROOT / main Shards kiln agent `01a148884a4770fdaf0111f3f792a248`, verified listed as Shards at the g121 worktree. Full-report steer and shorter queued-summary delivery, each retried with its original immutable key/content, were rejected with HTTP 429: `{"code":"backpressure","pending":3,"authority":2}`. No acceptance receipt was returned. The report is retained here; do not infer model receipt from these attempts.
+
+Main landing update (2026-11-13): ROOT confirms runs-05, runs-06 and the runs-01
+native-owner follow-up landed through signed c6dd46525 (merge of fc1bb4797).
