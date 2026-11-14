@@ -19,11 +19,11 @@ use common::{
     Party, Patience, TempDir, ask, booted, cannot_run_vms, guest_init, kernel, run_shards_env, served,
 };
 use shards_api::image::{
-    BootStop, Captured, Channel, Cli, CredentialGrant, ImageGuest, ImagePools, ImageRefusal, ImageShards,
-    ImageShare, ImageSpec, Images as _, Keep, LeaseRefusal, Leased, Lessor, MemberEnd, MemberFile,
-    MemberKind, MemberName, MemberReach, MemberSpec, Narrowing, PlugRefusal, Proto, Publish, RunEnd,
-    RunLessor, SaveRefusal, Secret, SignInGrant, SignInRefusal, SignInTokens, StartedFrom, StatsScope,
-    UpstreamRoot,
+    BootStop, Captured, Channel, Cli, CredentialGrant, FinalUse, ImageGuest, ImagePools, ImageRefusal,
+    ImageShards, ImageShare, ImageSpec, Images as _, Keep, LeaseRefusal, Leased, Lessor, MemberEnd,
+    MemberFile, MemberKind, MemberName, MemberReach, MemberSpec, Narrowing, PlugRefusal, Proto, Publish,
+    RunEnd, RunEnded, RunLessor, SaveRefusal, Secret, SignInGrant, SignInRefusal, SignInTokens, StartedFrom,
+    StatsScope, Unused, UpstreamRoot,
 };
 
 /// The variables a test's run host is given: its home, this build's guest, and the tests'
@@ -231,7 +231,9 @@ fn staged_credentials_reach_the_harness_and_its_output_and_end_come_back() {
     assert!(found.is_empty(), "the secret is in {found:?}");
     guest.stop().unwrap();
     assert_eq!(
-        ask(&*guest, |g| g.wait_for(Duration::MAX)).unwrap(),
+        ask(&*guest, |g| g.wait_for(Duration::MAX))
+            .unwrap()
+            .map(|e| e.end),
         Some(RunEnd::Stopped)
     );
 }
@@ -505,7 +507,9 @@ fn a_project_is_plugged_into_the_running_harness() {
     ));
     guest.stop().unwrap();
     assert_eq!(
-        ask(&*guest, |g| g.wait_for(Duration::MAX)).unwrap(),
+        ask(&*guest, |g| g.wait_for(Duration::MAX))
+            .unwrap()
+            .map(|e| e.end),
         Some(RunEnd::Stopped)
     );
 }
@@ -544,7 +548,9 @@ fn stats_read_the_run_and_a_member() {
     assert!(ask(&*guest, |g| g.stats(StatsScope::Member(9), Duration::MAX)).is_err());
     guest.stop().unwrap();
     assert_eq!(
-        ask(&*guest, |g| g.wait_for(Duration::MAX)).unwrap(),
+        ask(&*guest, |g| g.wait_for(Duration::MAX))
+            .unwrap()
+            .map(|e| e.end),
         Some(RunEnd::Stopped)
     );
 }
@@ -576,7 +582,9 @@ fn the_orchestrators_room_holds_its_run_within_it() {
     assert_eq!(ask(&*guest, |g| g.room(None, Duration::MAX)).unwrap(), None);
     guest.stop().unwrap();
     assert_eq!(
-        ask(&*guest, |g| g.wait_for(Duration::MAX)).unwrap(),
+        ask(&*guest, |g| g.wait_for(Duration::MAX))
+            .unwrap()
+            .map(|e| e.end),
         Some(RunEnd::Stopped)
     );
 }
@@ -628,7 +636,9 @@ fn the_orchestrators_rate_holds_its_run_to_it() {
     assert_eq!(ask(&*guest, |g| g.rate(None, Duration::MAX)).unwrap(), None);
     guest.stop().unwrap();
     assert_eq!(
-        ask(&*guest, |g| g.wait_for(Duration::MAX)).unwrap(),
+        ask(&*guest, |g| g.wait_for(Duration::MAX))
+            .unwrap()
+            .map(|e| e.end),
         Some(RunEnd::Stopped)
     );
 }
@@ -699,7 +709,10 @@ fn build_example(home: &TempDir, tag: &str) {
 /// run of the example harness image with a command of its own, keeping nothing the image
 /// grants past the microVM (D250) and holding its members apart with no reach (D246), ends
 /// with its command's status, as `shards run` of the same command does; a command that never
-/// started ends the run failed in its guest's words (D249), which the assertion says.
+/// started ends the run failed in its guest's words (D249), which the assertion says. Its end
+/// carries what its microVM used in all (D260's final use), read once its machine was down:
+/// each vCPU's guest time by its index, none departed apart from them, and its VM process's
+/// CPU time, which holds theirs; its stats after the end are refused with that end.
 #[test]
 fn an_images_own_command_ends_its_run_with_its_status() {
     if cannot_run_vms() {
@@ -717,9 +730,22 @@ fn an_images_own_command_ends_its_run_with_its_status() {
         members: Some(Vec::new()),
     };
     let guest = booted(&ImageShards::new(), &s).unwrap();
+    let ended = ask(&*guest, |g| g.wait_for(Duration::MAX)).unwrap().unwrap();
+    assert_eq!(ended.end, RunEnd::Exited(3), "{ended:?}");
+    let FinalUse::Read(used) = &ended.final_use else {
+        panic!("no final use with its end: {ended:?}");
+    };
+    let times = used.guest.as_ref().unwrap();
+    let host = used.host.as_ref().unwrap();
+    let indices: Vec<u32> = times.vcpus.iter().map(|v| v.index).collect();
+    assert_eq!(indices, (0..s.vcpus).collect::<Vec<_>>(), "{used:?}");
+    assert_eq!(times.departed_ns, 0, "{used:?}");
+    assert!(times.vcpus[0].guest_ns > 0, "its boot vCPU ran nothing: {used:?}");
+    assert!(host.cpu_ns >= times.total_ns(), "{used:?}");
+    assert_eq!(used.vmm_ns(), Some(host.cpu_ns - times.total_ns()));
     assert_eq!(
-        ask(&*guest, |g| g.wait_for(Duration::MAX)).unwrap(),
-        Some(RunEnd::Exited(3))
+        guest.stats(StatsScope::Run, Duration::ZERO),
+        Err(ImageRefusal::Ended(ended.clone()))
     );
 }
 
@@ -753,7 +779,9 @@ fn an_images_next_run_restores_the_template_its_first_saved() {
         let guest = booted(&ImageShards::new(), s).unwrap();
         let from = guest.started_from();
         assert_eq!(
-            ask(&*guest, |g| g.wait_for(Duration::MAX)).unwrap(),
+            ask(&*guest, |g| g.wait_for(Duration::MAX))
+                .unwrap()
+                .map(|e| e.end),
             Some(RunEnd::Exited(3))
         );
         from
@@ -808,7 +836,9 @@ fn an_images_next_run_takes_a_warm_host_of_its_pool() {
         let guest = booted(&pools, s).unwrap();
         let from = guest.started_from();
         assert_eq!(
-            ask(&*guest, |g| g.wait_for(Duration::MAX)).unwrap(),
+            ask(&*guest, |g| g.wait_for(Duration::MAX))
+                .unwrap()
+                .map(|e| e.end),
             Some(RunEnd::Exited(3))
         );
         from
@@ -844,7 +874,11 @@ fn stop_ends_the_run_at_once() {
     let guest = booted(&ImageShards::new(), &spec(&home, "api-stop:1")).unwrap();
     assert_eq!(guest.wait_member(&codex(), Duration::ZERO).unwrap(), None);
     guest.stop().unwrap();
-    assert_eq!(guest.wait_for(Duration::ZERO).unwrap(), Some(RunEnd::Stopped));
+    // Killed at once: what its microVM used went with it, typed, never a zero (D260).
+    assert_eq!(
+        guest.wait_for(Duration::ZERO).unwrap(),
+        Some(RunEnded::unused(RunEnd::Stopped, Unused::Killed))
+    );
     assert_eq!(
         guest.wait_member(&codex(), Duration::ZERO).unwrap(),
         Some(MemberEnd::WithRun)
@@ -1099,7 +1133,13 @@ fn a_stop_mid_boot_ends_the_run_host_and_every_process_of_its_run() {
         panic!("the home's layers name {hosts:?} running");
     };
     assert!(run.len() > 1, "its run host {host} ran no VM process: {run:?}");
-    assert_eq!(booted, Err(ImageRefusal::Ended(RunEnd::Stopped)));
+    assert_eq!(
+        booted,
+        Err(ImageRefusal::Ended(RunEnded::unused(
+            RunEnd::Stopped,
+            Unused::NotStarted
+        )))
+    );
     let left = still_running(&run, Some(host));
     assert!(left.is_empty(), "left running of its run {run:?}: {left:?}");
     let named = records();
@@ -1222,7 +1262,9 @@ fn a_members_arguments_follow_its_images_command_in_order() {
     assert_ended(&*guest, MemberEnd::Exited(0));
     guest.stop().unwrap();
     assert_eq!(
-        ask(&*guest, |g| g.wait_for(Duration::MAX)).unwrap(),
+        ask(&*guest, |g| g.wait_for(Duration::MAX))
+            .unwrap()
+            .map(|e| e.end),
         Some(RunEnd::Stopped)
     );
     let refused = |s: ImageSpec| match booted(&ImageShards::new(), &s) {
@@ -1390,7 +1432,9 @@ fn an_orchestrators_members_are_signaled_and_their_mcp_connections_reached_on_it
     );
     guest.stop().unwrap();
     assert_eq!(
-        ask(&*guest, |g| g.wait_for(Duration::MAX)).unwrap(),
+        ask(&*guest, |g| g.wait_for(Duration::MAX))
+            .unwrap()
+            .map(|e| e.end),
         Some(RunEnd::Stopped)
     );
     let _ = driver.join().unwrap();
@@ -2079,7 +2123,7 @@ fn answers(guest: &dyn ImageGuest) -> Vec<String> {
 fn stop_releasing(guest: &dyn ImageGuest, lessor: &TestLessor) {
     guest.stop().unwrap();
     assert_eq!(
-        ask(guest, |g| g.wait_for(Duration::MAX)).unwrap(),
+        ask(guest, |g| g.wait_for(Duration::MAX)).unwrap().map(|e| e.end),
         Some(RunEnd::Stopped)
     );
     assert_eq!(
