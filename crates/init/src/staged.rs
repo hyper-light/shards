@@ -69,13 +69,13 @@ pub enum Mount<'a> {
     At(&'a str),
 }
 
-/// Where a member's home lies as it starts (domains.rs `home_in`): a mount init holds for
-/// it, its scratch or a writable volume given it, and the home's components beneath that,
-/// which may not be there yet.
-#[derive(Debug)]
-pub struct Home<'a> {
+/// A mount in the member's visible filesystem, including read-only covers and
+/// image-resolved aliases. `mount` is init's backing directory, not a guest pathname.
+#[derive(Debug, Clone, Copy)]
+pub struct MountPoint<'a> {
+    pub path: &'a str,
     pub mount: Mount<'a>,
-    pub beneath: Vec<&'a str>,
+    pub read_only: bool,
 }
 
 /// Writes the files staged for `member` beneath its home, `home`, each owned by `owner`
@@ -86,7 +86,8 @@ pub struct Home<'a> {
 /// where the member has no home it may write: a member given files then is refused, as it
 /// would never read them.
 pub fn files(
-    home: Result<Home<'_>, String>,
+    home: &str,
+    mounts: &[MountPoint<'_>],
     owner: (u32, u32),
     member: u32,
     setup: &[Vec<u8>],
@@ -95,7 +96,12 @@ pub fn files(
     if staged.is_empty() {
         return Ok(());
     }
-    let home = home.map_err(|why| format!("files are staged for member {member}, whose {why}"))?;
+    let writable: Vec<_> = mounts.iter().filter(|p| !p.read_only).collect();
+    let points: Vec<_> = writable.iter().map(|p| p.path).collect();
+    let (index, beneath) = crate::domains::home_in(home, &points).ok_or_else(|| {
+        format!("files are staged for member {member}, whose HOME is no place it may write")
+    })?;
+    let mount = writable.get(index).ok_or("the home mount is missing")?.mount;
     let mut paths = std::collections::BTreeSet::new();
     if let Some(f) = staged.iter().find(|f| !paths.insert(f.path)) {
         return Err(format!(
@@ -104,7 +110,7 @@ pub fn files(
         ));
     }
     let held;
-    let mount = match home.mount {
+    let mount = match mount {
         Mount::Held(fd) => fd,
         Mount::At(at) => {
             held = std::fs::File::open(at).map_err(|e| format!("its volume at {at}: {e}"))?;
@@ -112,7 +118,7 @@ pub fn files(
         }
     };
     for f in staged {
-        write(mount, &home.beneath, owner, &f).map_err(|e| {
+        write(mount, &beneath, owner, &f).map_err(|e| {
             format!(
                 "staging {} into member {member}: {e}",
                 String::from_utf8_lossy(f.path)
@@ -319,12 +325,82 @@ mod tests {
         assert!(check(&argued, |m| m == 4).unwrap_err().contains("member 5"));
     }
 
-    /// The home as a test holds it: the directory `at`, the components `beneath` it.
-    fn home_at<'a>(at: &'a std::fs::File, beneath: &[&'a str]) -> Result<Home<'a>, String> {
-        Ok(Home {
-            mount: Mount::Held(at.as_fd()),
-            beneath: beneath.to_vec(),
-        })
+    fn files_at(at: &std::fs::File, beneath: &[&str], member: u32, setup: &[Vec<u8>]) -> Result<(), String> {
+        let home = format!("/home/{}", beneath.join("/"));
+        files(
+            &home,
+            &[MountPoint {
+                path: "/home",
+                mount: Mount::Held(at.as_fd()),
+                read_only: false,
+            }],
+            own(),
+            member,
+            setup,
+        )
+    }
+
+    #[test]
+    fn a_staged_file_uses_its_visible_nested_mount() {
+        let outer = shards_testdir::TempDir::new("staged-outer").unwrap();
+        let inner = shards_testdir::TempDir::new("staged-inner").unwrap();
+        std::fs::create_dir(outer.path().join(".config")).unwrap();
+        let a = std::fs::File::open(outer.path()).unwrap();
+        let b = std::fs::File::open(inner.path()).unwrap();
+        let points = [
+            MountPoint {
+                path: "/home/h",
+                mount: Mount::Held(a.as_fd()),
+                read_only: false,
+            },
+            MountPoint {
+                path: "/home/h/.config",
+                mount: Mount::Held(b.as_fd()),
+                read_only: false,
+            },
+        ];
+        let setup = vec![members::file(0, 0o600, b".config/auth.json", b"public-sentinel").unwrap()];
+        files("/home/h", &points, own(), 0, &setup).unwrap();
+        assert_eq!(
+            std::fs::read(inner.path().join("auth.json")).unwrap(),
+            b"public-sentinel"
+        );
+        assert!(!outer.path().join(".config/auth.json").exists());
+    }
+
+    #[test]
+    fn a_read_only_cover_refuses_staging_before_any_write() {
+        let outer = shards_testdir::TempDir::new("staged-rw").unwrap();
+        let inner = shards_testdir::TempDir::new("staged-ro").unwrap();
+        let a = std::fs::File::open(outer.path()).unwrap();
+        let b = std::fs::File::open(inner.path()).unwrap();
+        let points = [
+            MountPoint {
+                path: "/home/h",
+                mount: Mount::Held(a.as_fd()),
+                read_only: false,
+            },
+            MountPoint {
+                path: "/home/h/.config",
+                mount: Mount::Held(b.as_fd()),
+                read_only: true,
+            },
+        ];
+        let setup = vec![
+            members::file(0, 0o600, b"first", b"first").unwrap(),
+            members::file(0, 0o600, b".config/auth.json", b"public-sentinel").unwrap(),
+        ];
+        assert!(files("/home/h", &points, own(), 0, &setup).is_err());
+        assert_eq!(std::fs::read_dir(outer.path()).unwrap().count(), 0);
+        assert_eq!(std::fs::read_dir(inner.path()).unwrap().count(), 0);
+        let points = [
+            points[0],
+            MountPoint {
+                path: "/home/h",
+                ..points[1]
+            },
+        ];
+        assert!(files("/home/h", &points, own(), 0, &setup).is_err());
     }
 
     fn mode(p: &std::path::Path) -> u32 {
@@ -342,7 +418,7 @@ mod tests {
             members::file(0, 0o755, b"bin/run", b"#!/bin/sh\n").unwrap(),
             members::file(1, 0o600, b"other", b"x").unwrap(),
         ];
-        files(home_at(&home, &[]), own(), 0, &setup).unwrap();
+        files_at(&home, &[], 0, &setup).unwrap();
         let auth = dir.path().join(".codex/auth.json");
         assert_eq!(std::fs::read(&auth).unwrap(), b"{\"k\":\"v\"}");
         assert_eq!(mode(&auth), 0o600);
@@ -359,7 +435,7 @@ mod tests {
         let dir = shards_testdir::TempDir::new("staged-beneath").unwrap();
         let mount = std::fs::File::open(dir.path()).unwrap();
         let setup = vec![members::file(2, 0o600, b".claude/.credentials.json", b"{}").unwrap()];
-        files(home_at(&mount, &["home", "claude"]), own(), 2, &setup).unwrap();
+        files_at(&mount, &["home", "claude"], 2, &setup).unwrap();
         let home = dir.path().join("home/claude");
         assert_eq!(
             std::fs::read(home.join(".claude/.credentials.json")).unwrap(),
@@ -386,7 +462,7 @@ mod tests {
         )
         .unwrap();
         let setup = vec![members::file(0, 0o600, b".codex/auth.json", b"new").unwrap()];
-        files(home_at(&home, &[]), own(), 0, &setup).unwrap();
+        files_at(&home, &[], 0, &setup).unwrap();
         assert_eq!(
             std::fs::read(dir.path().join(".codex/auth.json")).unwrap(),
             b"new"
@@ -398,7 +474,7 @@ mod tests {
             members::file(0, 0o600, b".codex/auth.json", b"again").unwrap(),
             members::file(0, 0o600, b".codex/auth.json", b"and again").unwrap(),
         ];
-        let e = files(home_at(&home, &[]), own(), 0, &twice).unwrap_err();
+        let e = files_at(&home, &[], 0, &twice).unwrap_err();
         assert!(e.contains("staged twice"), "{e}");
         assert_eq!(
             std::fs::read(dir.path().join(".codex/auth.json")).unwrap(),
@@ -417,11 +493,11 @@ mod tests {
         std::os::unix::fs::symlink(outside.path().join("f"), dir.path().join("f")).unwrap();
         let home = std::fs::File::open(dir.path()).unwrap();
         let through = vec![members::file(0, 0o600, b"d/x", b"x").unwrap()];
-        assert!(files(home_at(&home, &[]), own(), 0, &through).is_err());
+        assert!(files_at(&home, &[], 0, &through).is_err());
         let beneath = vec![members::file(0, 0o600, b"x", b"x").unwrap()];
-        assert!(files(home_at(&home, &["d"]), own(), 0, &beneath).is_err());
+        assert!(files_at(&home, &["d"], 0, &beneath).is_err());
         let over = vec![members::file(0, 0o600, b"f", b"x").unwrap()];
-        files(home_at(&home, &[]), own(), 0, &over).unwrap();
+        files_at(&home, &[], 0, &over).unwrap();
         assert!(std::fs::symlink_metadata(dir.path().join("f")).unwrap().is_file());
         assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
     }
@@ -433,22 +509,25 @@ mod tests {
         let dir = shards_testdir::TempDir::new("staged-volume").unwrap();
         let at = dir.path().to_str().unwrap();
         let setup = vec![members::file(0, 0o600, b".x", b"x").unwrap()];
-        let home = |at| {
-            Ok(Home {
-                mount: Mount::At(at),
-                beneath: vec!["h"],
-            })
+        let stage = |at, member| {
+            files(
+                "/home/h",
+                &[MountPoint {
+                    path: "/home",
+                    mount: Mount::At(at),
+                    read_only: false,
+                }],
+                own(),
+                member,
+                &setup,
+            )
         };
-        files(home(at), own(), 0, &setup).unwrap();
+        stage(at, 0).unwrap();
         assert_eq!(std::fs::read(dir.path().join("h/.x")).unwrap(), b"x");
         let gone = dir.path().join("gone");
         let gone = gone.to_str().unwrap();
-        assert!(
-            files(home(gone), own(), 0, &setup)
-                .unwrap_err()
-                .contains("its volume at")
-        );
-        assert!(files(home(gone), own(), 1, &setup).is_ok());
+        assert!(stage(gone, 0).unwrap_err().contains("its volume at"));
+        assert!(stage(gone, 1).is_ok());
     }
 
     /// Files with no home the member may write are refused, saying why; none staged needs
@@ -456,12 +535,12 @@ mod tests {
     #[test]
     fn files_need_a_home() {
         let setup = vec![members::file(0, 0o600, b"a", b"x").unwrap()];
-        let none = || Err("HOME is no place it may write".to_string());
-        let e = files(none(), own(), 0, &setup).unwrap_err();
+        let none = || files("/nowhere", &[], own(), 0, &setup);
+        let e = none().unwrap_err();
         assert!(
             e.contains("files are staged for member 0, whose HOME is no place it may write"),
             "{e}"
         );
-        assert!(files(none(), own(), 1, &setup).is_ok());
+        assert!(files("/nowhere", &[], own(), 1, &setup).is_ok());
     }
 }

@@ -674,7 +674,7 @@ fn command_line<'a>(program: &'a CStr, d: &'a Domain, args: &'a [CString]) -> Ve
 /// declared and as it lies in the image): the deepest that is `home` or holds it, by its
 /// place in `points`, and `home`'s components beneath it. None where none does, or where
 /// `home` is no absolute path that stays where it says (`..`).
-fn home_in<'h>(home: &'h str, points: &[&str]) -> Option<(usize, Vec<&'h str>)> {
+pub(crate) fn home_in<'h>(home: &'h str, points: &[&str]) -> Option<(usize, Vec<&'h str>)> {
     let comps: Vec<&str> = home
         .strip_prefix('/')?
         .split('/')
@@ -2103,34 +2103,27 @@ pub fn start(
             .find_map(|e| e.to_bytes().strip_prefix(b"HOME="))
             .map(String::from_utf8_lossy)
             .unwrap_or_default();
-        // What it may write as it starts, each where it sees it: its scratch, at /tmp, and
-        // each writable volume given it, at its mount point as declared and as it lies in
-        // the image, with init's own mount of it.
-        let mut writable: Vec<(&str, crate::staged::Mount<'_>)> = Vec::new();
+        // Include read-only covers: staged files must land in the mount visible at
+        // their final path, not behind it in an ancestor's backing directory.
+        let mut mounts = Vec::new();
         if let Some(s) = &scratch {
-            writable.push(("/tmp", crate::staged::Mount::Held(s.as_fd())));
-        }
-        for (sh, at, real) in staged
-            .iter()
-            .filter(|(sh, _, _)| !sh.ro && given_volume(d, &sh.dest))
-        {
-            writable.extend([
-                (real.as_str(), crate::staged::Mount::At(at.as_str())),
-                (sh.dest.as_str(), crate::staged::Mount::At(at.as_str())),
-            ]);
-        }
-        let points: Vec<&str> = writable.iter().map(|(p, _)| *p).collect();
-        let place = home_in(&home, &points)
-            .and_then(|(i, beneath)| {
-                Some(crate::staged::Home {
-                    mount: writable.get(i)?.1,
-                    beneath,
-                })
-            })
-            .ok_or_else(|| {
-                format!("HOME, {home:?}, lies in neither its scratch nor a writable volume given it")
+            mounts.push(crate::staged::MountPoint {
+                path: "/tmp",
+                mount: crate::staged::Mount::Held(s.as_fd()),
+                read_only: false,
             });
-        crate::staged::files(place, (d.id, d.id), member, setup).map_err(|e| format!("{}: {e}", d.label))?;
+        }
+        for (sh, at, real) in staged.iter().filter(|(sh, _, _)| given_volume(d, &sh.dest)) {
+            for path in [real.as_str(), sh.dest.as_str()] {
+                mounts.push(crate::staged::MountPoint {
+                    path,
+                    mount: crate::staged::Mount::At(at.as_str()),
+                    read_only: sh.ro,
+                });
+            }
+        }
+        crate::staged::files(&home, &mounts, (d.id, d.id), member, setup)
+            .map_err(|e| format!("{}: {e}", d.label))?;
         let dir = server.start(
             i,
             d,
