@@ -19,6 +19,20 @@ pub const fn connections(limit: u64, held: u64, per: u64) -> usize {
     }
 }
 
+/// How long a UDP mapping lives without a datagram either way: two minutes, RFC 4787 (BCP
+/// 127) §4.3 REQ-5's least, "A NAT UDP mapping timer MUST NOT expire in less than two
+/// minutes, unless REQ-5a applies", for a mapping answered or not. REQ-5a's shorter
+/// timers, for a well-known destination port's own registered application, are not
+/// taken: a stub resolver's queries for one name's A and AAAA share one socket (glibc's
+/// res_send without `single-request`), so no answer ends a port 53 mapping either.
+/// REQ-5c's RECOMMENDED default of five minutes or more is not taken either: each
+/// mapping holds a host socket for its life, and the floor is what REQ-5 requires; the
+/// descriptor and memory cost of each is ROOT's measurement (D46, network-12). Every
+/// datagram refreshes it, the guest's going out (REQ-6, which MUST) and its answers
+/// coming in (REQ-6a, which MAY: every such socket is connected to its one granted peer,
+/// so no other sender can hold it open).
+pub const UDP_MAPPING_IDLE: core::time::Duration = core::time::Duration::from_secs(120);
+
 /// The buffer a kernel's panic formats its message into, `vpanic`'s `static char buf[1024]`
 /// (Linux 6.18.48, shards' pinned kernel, kernel/panic.c l. 431).
 pub const PANIC_MESSAGE: usize = 1024;
