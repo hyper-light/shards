@@ -94,6 +94,11 @@ Runs-07's concurrent end-record red lost its helper maximum; after stable-lock
 reread/merge and atomic unique staging, the regression and all 5 end tests pass,
 with shards all-target clippy. Two-process/VM crash publication remains owed.
 
+Runs-08's forced two-writer red published empty helper bytes; the publication
+regression, helper module check and shards all-target clippy pass after correction.
+Two carried-helper cases return early under skip; actual carried executables,
+signatures, crash and GPU runs remain owed in the linked record.
+
 ### M2. Object lifecycle (`lifecycle`, n=200, µs)
 
 | Operation | p50 | p99 |

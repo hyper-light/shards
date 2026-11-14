@@ -304,3 +304,40 @@ with no repeated focused gate; CI owns that combination. Branch fast-forwarded
 to c6dd46525 preserving the runs-07 regression. Policy hashes are unchanged.
 From ROOT's new instruction, two consecutive lost ff-push races hand the tested
 tip to ROOT, instead of further retry loops.
+
+## runs-08
+
+Fix d720debff92c7a3eda0022799bf1085a641b9cfa. Red source ecb3da49 plus the
+extracted write_gpu routine/test, retaining PID-only staging/pre-unlink:
+`cargo test -j 4 -p shards --bin shards concurrent_gpu_writers_publish_their_own_complete_files`
+fails r42, final bytes [] instead of the complete fixture. Two real scoped
+writers pause at create/publication and force the reported interleaving; all
+paused actors are released before assertions. No GPU or VM.
+
+Green source a68fc0ce4 plus the helper patch: same regression 1 passed,
+`cargo test -j 4 -p shards --bin shards helpers::tests` reports 4 passed,
+and `cargo clippy -j 4 -p shards --all-targets -- -D warnings` passes (18.77s),
+r44 on the same macOS arm64 runner and unit guest fixtures. Two existing carried
+placement/collection cases return early with SHARDS_HELPERS=skip. The new race
+uses nonempty fixture bytes through the real GPU publication routine; beside
+path checking also runs. Logs runs08-red.log / runs08-green.log.
+
+Create-new identity names (PID, actual clock nanoseconds, sequence) prove staging
+ownership; no shared pre-unlink. A closed synced file is renamed, with only its
+own staging removed on error. Zero/one index a sequence, u64 wrap/collision is a
+typed I/O refusal, never ownership. No new deadline, retry bound, cache or OS
+adapter. D36 cites execve's writable-executable refusal; no loader race was run.
+Crash debris may remain until build-cache collection: no leak-free or power-loss
+claim. Existing R01-R16 dispositions apply.
+
+ROOT owes real carried material/executable/signature tests:
+`env -u SHARDS_HELPERS -u SHARDS_HELPERS_DIR -u SHARDS_INIT_BINARY -u SHARDS_SERVER_BINARY cargo test -p shards --bin shards helpers::tests`,
+and a bounded actual GPU/helper publication and mid-write crash campaign on
+supported hosts. These builds/campaigns exceed the lane's light-test scope.
+
+ROOT landed runs-07 via signed 02d3fe33b, merging a68fc0ce4; own-file overlap
+was documentation only, with no repeated focused gate. Branch fast-forwarded
+to 02d3fe33b before committing runs-08, preserving its tested helper patch.
+Policy hashes unchanged. Runs-07's two lost races each had clean merged
+`cargo check -p shards --tests` at ecb3da49/a68fc0ce4. The tip went through the
+authorized local peer socket after kiln again rejected its receipt (429).

@@ -2929,6 +2929,19 @@ rather than a container on the build host's kernel.
 
 ### One binary (D36)
 
+**GPU publication (runs-08).** Each lazy GPU writer creates its own staging
+file with create_new, using PID, clock nanoseconds and a process sequence as
+identity discriminators (platform write_in's scheme). A collision or sequence
+wrap refuses creation; it never unlinks another writer's file. Zero/one are
+sequence initialization/increment, not selected operational limits. It writes,
+syncs and closes the writable handle before renaming that same file into place:
+Linux can reject a writable executable with ETXTBSY
+([execve(2)](https://man7.org/linux/man-pages/man2/execve.2.html)). Ordinary errors
+remove only the owned staging path. The two-writer regression formerly observed
+empty final bytes; both writers now publish complete closed files. Real carried
+executables, signatures, GPU and crash-debris checks remain owed in the
+[runs record](../research/measurements/runs-fixes/README.md).
+
 shards is one file to install and run, `shards`: every command, the daemon included,
 one CLI.
 
