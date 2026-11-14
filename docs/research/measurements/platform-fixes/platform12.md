@@ -73,6 +73,14 @@ request were reduced to two, keeping nice 10 and 17 GiB admission. No guard was 
 commit initially failed signing with `Resource temporarily unavailable (os error 35)`;
 signing remains required and was not disabled.
 
+Further main updates were merged and tested before additional fast-forward attempts:
+`93a5cab9d9086fc8fd210914acc0ae47de670b0f` (main 8e19ecd6d) passed regression,
+module and clippy on r10; `eaec7d8ace886526d546b2a0bfb6473c6464d8b4` (main 60245cefb)
+passed all six parents module tests on r11. [Additional merged checks](platform12-landing-checks.log).
+The r11 rerun is the brief's focused post-merge gate, including the regression; it does
+not rerun unrelated tests or claim the earlier clippy checked another lane's later code.
+Four non-fast-forward push rejections were respected; no force push was attempted.
+
 ## R01–R16 accounting
 
 - R01/R04/R06/R07/R13: existing empty/absent/error outcomes retained; fallible operations
