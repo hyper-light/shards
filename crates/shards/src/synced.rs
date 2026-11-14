@@ -675,6 +675,246 @@ pub(crate) fn name_alone(name: &str, windows: bool) -> Result<(), NotAName> {
     Ok(())
 }
 
+/// The forms of a `--build-context NAME=VALUE` that name no directory of the machine's (a
+/// URL, a Git remote, an image, another stage), which a client's shards sends as they are
+/// (context.rs, `named_here`); any other value is a path.
+pub(crate) const ELSEWHERE: [&str; 7] = [
+    "http://",
+    "https://",
+    "git://",
+    "github.com/",
+    "git@",
+    "docker-image://",
+    "target:",
+];
+
+/// A path a build's words name, by the flag that names it (`PATH` its context's argument).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Named {
+    pub flag: &'static str,
+    pub path: String,
+}
+
+/// Why a client's build's words may not run on the machine (remote-09): judged before any of
+/// its files come, and again where the build runs for a client (`build::build`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NotHeld {
+    /// A flag's path that is no part of the client's copies: as it came, no marker of its
+    /// copy's (`\0out/NAME`, `\0tree/KEY`...); placed, no path inside them.
+    Outside(&'static str),
+    /// A flag's form that reads the machine's own rather than a path: a secret of its
+    /// environment (`type=env`, or no `src`), an SSH agent of its own (`--ssh default`).
+    Machines(&'static str),
+    /// Words a build reads as no build.
+    Unread,
+}
+
+impl std::fmt::Display for NotHeld {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NotHeld::Outside(flag) => write!(
+                f,
+                "--{flag}: a client's build names paths of its own copies on this machine alone"
+            ),
+            NotHeld::Machines(flag) => write!(
+                f,
+                "--{flag}: a client's build reads no secret or agent of this machine's, only those its shards sends"
+            ),
+            NotHeld::Unread => f.write_str("a client's build step's words are no build's"),
+        }
+    }
+}
+
+/// Every path a build's `words` name, each with its flag: its context, its build file, each
+/// output's and cache's directory or file, each named context's and OCI layout's directory,
+/// each secret's file and SSH agent's socket or key, and each policy's file. buildx v0.37.1's
+/// path-typed values (`commands.rs` BUILD: `--file`, `--iidfile`, `--metadata-file`,
+/// `--output`, `--cache-from`, `--cache-to`, `--build-context`, `--secret`, `--ssh`,
+/// `--policy`); its other flags name no path. A secret or an agent of no path is the machine's.
+/// An agent's, a harness's or an MCP server's build names its directory alone.
+pub(crate) fn named_paths(words: &[String]) -> Result<Vec<Named>, NotHeld> {
+    let said = crate::cli::command_words(words);
+    let refs: Vec<&str> = said.iter().map(String::as_str).collect();
+    if let ["agent" | "harness" | "mcp", "build", rest @ ..] = refs.as_slice() {
+        let kind = crate::agent::kind_of(refs.first().copied().unwrap_or_default()).ok_or(NotHeld::Unread)?;
+        let rest: Vec<String> = rest.iter().map(|w| (*w).to_string()).collect();
+        let args = crate::agent::build_args(kind, &rest).map_err(|_| NotHeld::Unread)?;
+        return Ok(vec![Named {
+            flag: "PATH",
+            path: args.dir.to_string_lossy().into_owned(),
+        }]);
+    }
+    let n = shards_cmdline::commands::build(&refs).ok_or(NotHeld::Unread)?;
+    let rest = said.get(n..).unwrap_or_default();
+    let shards_cmdline::flags::Outcome::Run(parsed) = shards_cmdline::flags::parse(
+        &shards_cmdline::commands::BUILD,
+        "shards buildx build",
+        rest,
+        &shards_cmdline::buildflags::validate,
+    ) else {
+        return Err(NotHeld::Unread);
+    };
+    use shards_cmdline::buildflags;
+    let mut named = Vec::new();
+    let mut path = |flag: &'static str, path: &str| {
+        named.push(Named {
+            flag,
+            path: path.to_string(),
+        })
+    };
+    for arg in &parsed.args {
+        path("PATH", arg);
+    }
+    for flag in ["file", "iidfile", "metadata-file"] {
+        if !parsed.string(flag).is_empty() {
+            path(flag, parsed.string(flag));
+        }
+    }
+    for e in buildflags::parse_exports(parsed.many("output")).map_err(|_| NotHeld::Unread)? {
+        if !e.dest.is_empty() && e.dest != "-" {
+            path("output", &e.dest);
+        }
+    }
+    for flag in ["cache-from", "cache-to"] {
+        for e in buildflags::cache_entries(parsed.many(flag), &|_| None).map_err(|_| NotHeld::Unread)? {
+            for field in ["src", "dest"] {
+                if let Some(p) = e.attrs.get(field) {
+                    path(flag, p);
+                }
+            }
+        }
+    }
+    for value in parsed.many("build-context") {
+        let (_, v) = value.split_once('=').ok_or(NotHeld::Unread)?;
+        if ELSEWHERE.iter().any(|p| v.starts_with(p)) {
+            continue;
+        }
+        match crate::build::parse_oci_layout(v).map_err(|_| NotHeld::Unread)? {
+            Some(layout) => path("build-context", &layout.path),
+            None => path("build-context", v),
+        }
+    }
+    for secret in buildflags::parse_secrets(parsed.many("secret")).map_err(|_| NotHeld::Unread)? {
+        if !secret.env.is_empty() || secret.file.is_empty() {
+            return Err(NotHeld::Machines("secret"));
+        }
+        path("secret", &secret.file);
+    }
+    for ssh in buildflags::parse_ssh(parsed.many("ssh")) {
+        if ssh.paths.is_empty() {
+            return Err(NotHeld::Machines("ssh"));
+        }
+        for p in &ssh.paths {
+            path("ssh", p);
+        }
+    }
+    for policy in buildflags::parse_policies(parsed.many("policy")).map_err(|_| NotHeld::Unread)? {
+        for file in &policy.files {
+            path("policy", file);
+        }
+    }
+    Ok(named)
+}
+
+/// Whether `path` is a name within a context, as a policy's file is read within it (buildx's
+/// os.Root of the context): relative, each of its parts, split at `/`, one file's name as
+/// this machine's paths read one ([`name_alone`]).
+fn in_context(path: &str) -> bool {
+    path.split('/')
+        .all(|part| name_alone(part, cfg!(windows)).is_ok())
+}
+
+/// Whether a client's build's `words`, as its shards sends them, name no path but its copies'
+/// on this machine (remote-09): its context [`CONTEXT`]; its build file one of [`DOCKERFILE`]'s;
+/// each file or directory it writes one of [`OUT`]'s; each tree it reads a [`TREE`]'s copy;
+/// each secret one of the `secrets` it sends ([`SECRET`]); each agent one of its own
+/// ([`AGENT_SOCKET`]); each policy's file a name within its context. Judged before any of
+/// its files come; anything else is refused.
+pub(crate) fn held_to_copies(words: &[String], secrets: usize) -> Result<(), NotHeld> {
+    let name = |marker: &str, path: &str| {
+        path.strip_prefix(marker)
+            .is_some_and(|n| name_alone(n, cfg!(windows)).is_ok())
+    };
+    for Named { flag, path } in named_paths(words)? {
+        let held = match flag {
+            "PATH" => path == CONTEXT,
+            "file" => name(DOCKERFILE, &path),
+            "iidfile" | "metadata-file" | "output" | "cache-to" => name(OUT, &path),
+            "cache-from" | "build-context" => path
+                .strip_prefix(TREE)
+                .is_some_and(|key| copy_of_key(Path::new(""), key).is_ok()),
+            "secret" => path
+                .strip_prefix(SECRET)
+                .and_then(|n| {
+                    n.parse::<usize>()
+                        .ok()
+                        .filter(|_| n.bytes().all(|b| b.is_ascii_digit()))
+                })
+                .is_some_and(|n| n < secrets),
+            "ssh" => name(AGENT_SOCKET, &path),
+            "policy" => in_context(&path),
+            _ => false,
+        };
+        if !held {
+            return Err(NotHeld::Outside(flag));
+        }
+    }
+    Ok(())
+}
+
+/// Whether a build's `words`, run for a client of this machine's (`client_grants::CLIENT_VAR`),
+/// name no path but within `copies`, the client's copies here, once [`placed`] (remote-09):
+/// each a path beneath them, no part of it `..` or a prefix, as Windows' paths read one too; a
+/// secret's or an agent's a descriptor the build was given (`/dev/fd/N`); a policy's file a
+/// name within its context.
+pub(crate) fn held_within(words: &[String], copies: &Path) -> Result<(), NotHeld> {
+    let given = |path: &str| {
+        path.strip_prefix("/dev/fd/")
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+    };
+    let beneath = |path: &str| {
+        Path::new(path).strip_prefix(copies).is_ok_and(|rest| {
+            rest.components().all(|c| match c {
+                std::path::Component::Normal(n) => {
+                    n.to_str().is_some_and(|n| name_alone(n, cfg!(windows)).is_ok())
+                }
+                _ => false,
+            })
+        })
+    };
+    for Named { flag, path } in named_paths(words)? {
+        let held = match flag {
+            "secret" | "ssh" => given(&path),
+            "policy" => in_context(&path),
+            _ => beneath(&path),
+        };
+        if !held {
+            return Err(NotHeld::Outside(flag));
+        }
+    }
+    Ok(())
+}
+
+/// Why this process's build may not run, where it runs for a client of this machine's
+/// (`client_grants::CLIENT_VAR`, remote-09): `words`, the build's command, naming a path
+/// outside the client's copies here ([`held_within`]). None for this machine's own user's.
+pub(crate) fn refused_for_client(words: &[String]) -> Option<String> {
+    let client = crate::client_grants::client_here();
+    if client.is_empty() {
+        return None;
+    }
+    if !shards_remote::invite::valid_name(&client) {
+        return Some(format!("{client:?}: no client's name"));
+    }
+    let home = match shards_ipc::home() {
+        Ok(home) => home,
+        Err(e) => return Some(e),
+    };
+    held_within(words, &home.join("synced").join(&client))
+        .err()
+        .map(|why| why.to_string())
+}
+
 /// Reads what [`send`] wrote, on the machine: the build file's directory written whole into
 /// `dockerfile`, made afresh, then the layer applied over `context`. Names are a file's
 /// alone, no path. Returns the bytes the layer's files held.
@@ -936,6 +1176,223 @@ pub(crate) fn receive_tree(input: &mut dyn Read, context: &Path) -> Result<i64, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// remote-09: a client's build step names no path of this machine's but its copies', as
+    /// its shards sends them, every path-typed value of buildx's build judged; and what reads
+    /// the machine's own secrets or agent is refused. What its shards sends passes
+    /// (context.rs, `what_a_client_sends_of_a_build_is_held_to_its_copies`).
+    #[test]
+    fn a_clients_build_names_no_path_but_its_copies() {
+        let key = "ab".repeat(32);
+        let sent = |s: &str| {
+            s.replace("KEY", &key)
+                .split(' ')
+                .map(|w| w.replace("NUL", "\0"))
+                .collect::<Vec<String>>()
+        };
+        let held = |s: &str, secrets: usize| held_to_copies(&sent(s), secrets);
+        for ok in [
+            "build --file=NULdockerfile/Dockerfile NULcontext",
+            "buildx build --output=type=tar,dest=NULout/0 --iidfile=NULout/iidfile --metadata-file=NULout/metadata NULcontext",
+            "build --cache-to=type=local,dest=NULout/cache-0 --cache-from=type=local,src=NULtree/KEY NULcontext",
+            "build --cache-from=user/app:cache --cache-to=type=inline -o type=registry,name=r/i NULcontext",
+            "build --build-context=a=NULtree/KEY --build-context=b=oci-layout://NULtree/KEY:v1 --build-context=c=docker-image://alpine NULcontext",
+            "build --secret=id=tok,src=NULsecret/0 --ssh=default=NULagent/default NULcontext",
+            "build --policy=filename=policy/p.rego --output=- NULcontext",
+            "agent build NULcontext -t a",
+        ] {
+            assert_eq!(held(ok, 1), Ok(()), "{ok}");
+        }
+        for (refused, why) in [
+            (
+                "build --output=type=local,dest=/outside NULcontext",
+                NotHeld::Outside("output"),
+            ),
+            ("build -o /outside NULcontext", NotHeld::Outside("output")),
+            (
+                "build --output=type=tar,dest=NULout/../x NULcontext",
+                NotHeld::Outside("output"),
+            ),
+            (
+                "build --output=type=oci,dest=NULout/0/../../x NULcontext",
+                NotHeld::Outside("output"),
+            ),
+            ("build --iidfile=/tmp/id NULcontext", NotHeld::Outside("iidfile")),
+            (
+                "build --metadata-file=NULout/a/b NULcontext",
+                NotHeld::Outside("metadata-file"),
+            ),
+            ("build --file=/etc/passwd NULcontext", NotHeld::Outside("file")),
+            (
+                "build --file=NULdockerfile/../../identity NULcontext",
+                NotHeld::Outside("file"),
+            ),
+            (
+                "build --cache-to=type=local,dest=/var/cache NULcontext",
+                NotHeld::Outside("cache-to"),
+            ),
+            (
+                "build --cache-to=type=local,src=NULtree/KEY NULcontext",
+                NotHeld::Outside("cache-to"),
+            ),
+            (
+                "build --cache-from=type=local,src=/home NULcontext",
+                NotHeld::Outside("cache-from"),
+            ),
+            (
+                "build --cache-from=type=local,src=NULtree/short NULcontext",
+                NotHeld::Outside("cache-from"),
+            ),
+            (
+                "build --build-context=a=/etc NULcontext",
+                NotHeld::Outside("build-context"),
+            ),
+            (
+                "build --build-context=a=oci-layout:///srv/layout NULcontext",
+                NotHeld::Outside("build-context"),
+            ),
+            (
+                "build --secret=id=a,src=/etc/shadow NULcontext",
+                NotHeld::Outside("secret"),
+            ),
+            (
+                "build --secret=id=a,src=NULsecret/1 NULcontext",
+                NotHeld::Outside("secret"),
+            ),
+            (
+                "build --secret=id=a,src=NULsecret/+0 NULcontext",
+                NotHeld::Outside("secret"),
+            ),
+            (
+                "build --secret=id=a,env=HOME NULcontext",
+                NotHeld::Machines("secret"),
+            ),
+            ("build --secret=id=HOME NULcontext", NotHeld::Machines("secret")),
+            ("build --ssh=default NULcontext", NotHeld::Machines("ssh")),
+            (
+                "build --ssh=default=/run/agent.sock NULcontext",
+                NotHeld::Outside("ssh"),
+            ),
+            (
+                "build --policy=filename=/etc/p.rego NULcontext",
+                NotHeld::Outside("policy"),
+            ),
+            (
+                "build --policy=filename=../p.rego NULcontext",
+                NotHeld::Outside("policy"),
+            ),
+            ("build /srv/context", NotHeld::Outside("PATH")),
+            ("build NULtree/KEY", NotHeld::Outside("PATH")),
+            ("agent build /srv/agent -t a", NotHeld::Outside("PATH")),
+            ("run alpine", NotHeld::Unread),
+        ] {
+            assert_eq!(held(refused, 1), Err(why), "{refused}");
+        }
+        // As Windows reads a name: a drive's prefix or a stream names another file there.
+        let windows = [
+            "build --iidfile=NULout/C:identity NULcontext",
+            "build --file=NULdockerfile/Dockerfile:stream NULcontext",
+            "build --policy=filename=C:p.rego NULcontext",
+        ];
+        for words in windows {
+            assert_eq!(held(words, 1).is_err(), cfg!(windows), "{words}");
+        }
+    }
+
+    /// remote-09: a build, an image's or an artifact's, that runs for a client of this
+    /// machine's (`SHARDS_CLIENT`) refuses a path outside the client's copies before it reads
+    /// or writes anything; run in a process of its own, whose environment names the client.
+    #[test]
+    fn a_build_run_for_a_client_refuses_this_machines_paths() {
+        const CHILD: &str = "SHARDS_TEST_HELD_FOR_CLIENT";
+        if std::env::var_os(CHILD).is_some() {
+            // Its context its copy's, here none: only its output is outside.
+            let copy = shards_ipc::home()
+                .unwrap()
+                .join("synced")
+                .join("alice")
+                .join("ab".repeat(32));
+            let _ = crate::build::build(
+                [
+                    std::ffi::OsString::from("--output=type=local,dest=/outside"),
+                    copy.join("context").into_os_string(),
+                ]
+                .into_iter(),
+            );
+            let _ = crate::agent::command(
+                "agent",
+                ["build", "/srv/agent", "-t", "a"]
+                    .into_iter()
+                    .map(std::ffi::OsString::from),
+            );
+            return;
+        }
+        let home = shards_testdir::TempDir::new("held-child").unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "synced::tests::a_build_run_for_a_client_refuses_this_machines_paths",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env(crate::client_grants::CLIENT_VAR, "alice")
+            .env("SHARDS_HOME", home.path())
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "child failed: {:?}", output.status);
+        let said = String::from_utf8_lossy(&output.stderr);
+        assert!(said.contains(&NotHeld::Outside("output").to_string()), "{said}");
+        assert!(said.contains(&NotHeld::Outside("PATH").to_string()), "{said}");
+    }
+
+    /// remote-09, where the build runs for a client: each path its words name, once placed,
+    /// is beneath the client's copies, none of its parts `..`; a secret's or an agent's a
+    /// descriptor it was given.
+    #[test]
+    fn a_placed_build_names_nothing_outside_its_copies() {
+        let dir = shards_testdir::TempDir::new("held").unwrap();
+        let copies = dir.join("synced").join("alice");
+        let copy = copies.join("ab".repeat(32));
+        let agents = BTreeMap::from([("default".to_string(), PathBuf::from("/dev/fd/5"))]);
+        let places = Places {
+            context: &copy.join("context"),
+            dockerfile: &copy.join("dockerfile"),
+            out: &copy.join("out"),
+            copies: &copies,
+            agents: &agents,
+        };
+        let placed = |s: &str| {
+            s.split(' ')
+                .map(|w| placed(&w.replace("NUL", "\0"), &places).into_string().unwrap())
+                .collect::<Vec<String>>()
+        };
+        let sent = "build --file=NULdockerfile/Dockerfile --output=type=tar,dest=NULout/0 --secret=id=a,src=NULsecret/0 --ssh=default=NULagent/default --policy=filename=p.rego NULcontext";
+        assert_eq!(held_within(&placed(sent), &copies), Ok(()));
+        let artifact = "agent build NULcontext -t a";
+        assert_eq!(held_within(&placed(artifact), &copies), Ok(()));
+        let outside = dir.join("identity");
+        let outside = outside.to_str().unwrap();
+        for (words, flag) in [
+            (
+                format!("build --output=type=local,dest={outside} NULcontext"),
+                "output",
+            ),
+            (
+                "build --iidfile=NULout/../../../identity NULcontext".to_string(),
+                "iidfile",
+            ),
+            (format!("build --file={outside} NULcontext"), "file"),
+            (format!("build --secret=id=a,src={outside} NULcontext"), "secret"),
+            (format!("build {outside}"), "PATH"),
+            (format!("agent build {outside} -t a"), "PATH"),
+        ] {
+            assert_eq!(
+                held_within(&placed(&words), &copies),
+                Err(NotHeld::Outside(flag)),
+                "{words}"
+            );
+        }
+    }
 
     /// remote-02: a build file's name a client sends is one file's of the copy as this
     /// machine's paths read it. On Windows a drive's prefix, a stream, a device's name, a
