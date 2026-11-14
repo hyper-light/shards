@@ -27400,7 +27400,11 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
       (`Stage::Begun`), which taught nothing and left the drain's kind cold, judging nothing
       until its holder's end (2026-11-14: adacachy2 at f385b8dac, 7 of 30 whole-binary
       runs; `a_commands_end_found_before_its_first_look_teaches_its_kind`, whose client
-      has ended as its spawn returns, red there).
+      has ended as its spawn returns, red there). So does each harness.rs wait that
+      teaches its kind by a quick stand-in's end (`Wait::absent`, `Heard::absent`):
+      `a_runs_stop_grace_is_its_daemons_and_not_refused` ("its kind learned nothing of an
+      answer") and `a_streaming_guests_cpu_is_its_liveness_and_its_stop_its_hosts_hold`
+      (never refused, its kind cold) failed so on adacachy2 with its 32 cores busy.
     - *A party is what was found of it until it ends* (waits-09, waits-10). A process once
       found is followed until it has gone or ended, wherever it is listed since: a daemon's
       microVMs as they end after it (a daemon stop's party), a client's children reparented

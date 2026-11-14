@@ -5945,6 +5945,12 @@ impl<'a> Heard<'a> {
         self.wait.answered();
     }
 
+    /// Its caller found what it waits for missing ([`Wait::absent`]): a party's end it
+    /// started just now, which no check finds there before it.
+    pub fn absent(&mut self) {
+        self.wait.absent();
+    }
+
     /// What its kind has learned on this host.
     pub fn seen(&self) -> shards_api::Seen {
         self.wait.kind.record().seen()

@@ -390,6 +390,7 @@ fn a_stopped_process_is_its_hosts_hold_and_not_refused() {
         .spawn()
         .unwrap();
     let mut taught = common::Wait::begin(kind, quick.id(), None, "a quick stand-in");
+    taught.absent();
     while quick.try_wait().unwrap().is_none() {
         taught.look(false).unwrap();
     }
@@ -450,6 +451,7 @@ fn serving() {
         .spawn()
         .unwrap();
     let mut taught = common::Wait::begin(kind, quick.id(), None, "a quick stand-in");
+    taught.absent();
     while quick.try_wait().unwrap().is_none() {
         taught.look(false).unwrap();
     }
@@ -513,6 +515,7 @@ fn a_runs_stop_grace_is_its_daemons_and_not_refused() {
         .spawn()
         .unwrap();
     let mut taught = common::Wait::begin(kind, quick.id(), None, "a quick stand-in");
+    taught.absent();
     while quick.try_wait().unwrap().is_none() {
         taught.look(false).unwrap();
     }
@@ -664,6 +667,7 @@ fn a_streaming_guests_cpu_is_its_liveness_and_its_stop_its_hosts_hold() {
         .spawn()
         .unwrap();
     let mut taught = streaming(quick.id());
+    taught.absent();
     while quick.try_wait().unwrap().is_none() {
         taught.look(true).unwrap();
     }
@@ -1179,6 +1183,7 @@ fn a_first_look_past_w_star_judges_nothing() {
         .spawn()
         .unwrap();
     let mut taught = common::Wait::begin(kind, quick.id(), None, "a quick stand-in");
+    taught.absent();
     while quick.try_wait().unwrap().is_none() {
         taught.look(false).unwrap();
     }
