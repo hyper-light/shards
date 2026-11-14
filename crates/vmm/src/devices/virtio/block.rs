@@ -8,7 +8,7 @@
 
 use std::fs::File;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use super::limit::Limiter;
@@ -58,9 +58,7 @@ enum Store {
     /// grew to as the machine ran ([`DiskSize::grow`]).
     File {
         file: File,
-        capacity: AtomicU64,
-        /// How many times it grew: what its configuration changed by on its own.
-        grown: AtomicU32,
+        size: Mutex<FileSize>,
         /// The device's interrupt while the driver has it, to say the capacity grew, as a
         /// join disk's ([`Join`]).
         interrupt: Mutex<Option<Arc<DeviceInterrupt>>>,
@@ -69,11 +67,19 @@ enum Store {
     Join(&'static Join),
 }
 
+/// Capacity and generation are one publication. Every configuration access and
+/// grow holds this mutex; a split guest read detects growth through generation.
+#[derive(Debug)]
+struct FileSize {
+    sectors: u64,
+    generation: u32,
+}
+
 impl Backend {
     /// The disk's capacity in sectors, as the driver reads it now.
     fn capacity(&self) -> u64 {
         match &self.store {
-            Store::File { capacity, .. } => capacity.load(Ordering::Acquire),
+            Store::File { size, .. } => size.lock().unwrap_or_else(PoisonError::into_inner).sectors,
             Store::Join(join) => join.capacity(),
         }
     }
@@ -99,20 +105,20 @@ impl DiskSize {
     pub fn grow(&self) -> Result<u64, String> {
         let Store::File {
             file,
-            capacity,
-            grown,
+            size,
             interrupt,
         } = &self.0.store
         else {
             return Err("a join disk grows as it is given files".into());
         };
+        let mut size = size.lock().unwrap_or_else(PoisonError::into_inner);
         let bytes = file.metadata().map_err(|e| format!("its file: {e}"))?.len();
         if bytes % SECTOR != 0 {
             return Err(format!(
                 "its file of {bytes} bytes: not whole sectors of {SECTOR}"
             ));
         }
-        let now = capacity.load(Ordering::Acquire);
+        let now = size.sectors;
         let sectors = bytes / SECTOR;
         if sectors < now {
             return Err(format!(
@@ -121,14 +127,14 @@ impl DiskSize {
             ));
         }
         if sectors > now {
-            capacity.store(sectors, Ordering::Release);
+            size.sectors = sectors;
             #[cfg(test)]
             GROW_PUBLISHED.with(|hook| {
                 if let Some(hook) = hook.borrow_mut().take() {
                     hook();
                 }
             });
-            grown.fetch_add(1, Ordering::AcqRel);
+            size.generation = size.generation.wrapping_add(1);
             if let Some(interrupt) = interrupt.lock().unwrap_or_else(PoisonError::into_inner).as_ref() {
                 interrupt.config_change();
             }
@@ -730,8 +736,10 @@ impl Block {
         Ok(Block::of(Backend {
             store: Store::File {
                 file,
-                capacity: AtomicU64::new(bytes / SECTOR),
-                grown: AtomicU32::new(0),
+                size: Mutex::new(FileSize {
+                    sectors: bytes / SECTOR,
+                    generation: 0,
+                }),
                 interrupt: Mutex::new(None),
             },
             read_only,
@@ -875,7 +883,7 @@ impl VirtioDevice for Block {
     /// accesses sees whether it grew between them.
     fn config_generation(&self) -> u32 {
         match &self.backend.store {
-            Store::File { grown, .. } => grown.load(Ordering::Acquire),
+            Store::File { size, .. } => size.lock().unwrap_or_else(PoisonError::into_inner).generation,
             Store::Join(_) => 0,
         }
     }
