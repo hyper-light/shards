@@ -368,7 +368,7 @@ mod storm {
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::time::Duration;
 
-    use super::common::{self, Vm, echo};
+    use super::common::{self, Vm, echo_of};
     use super::{RO_BYTES, Scratch, cannot_run_vms, cannot_snapshot, kernel, test_guest};
 
     /// The writable disk of a storm: 256 records of 4 KiB.
@@ -428,8 +428,17 @@ mod storm {
 
     type Rounds = Vec<Result<(), String>>;
 
-    /// Streams rounds of 4 MiB through the echo of the VM at `sock` until `stop`, from when
-    /// it answers, counting what comes back in `carried`; returns each round's result.
+    /// A storm's size, which keys its waits' kinds beside their call sites (`Vm::sized`,
+    /// `common::echo_of`): a storm of 64 vCPUs runs slower than one of 2 on the same host,
+    /// and is judged by what storms of its own size taught (HVF at ddb88cd47: a 64-vCPU
+    /// storm's stream refused past the W* 2-vCPU storms taught).
+    fn size(cpus: u32) -> String {
+        format!("{cpus} vCPUs")
+    }
+
+    /// Streams rounds of 4 MiB through the echo of the VM at `sock`, a guest of `size`
+    /// ([`size`]), until `stop`, from when it answers, counting what comes back in
+    /// `carried`; returns each round's result.
     ///
     /// No wall clock bounds a storm: each round's reads are a wait judged by its kind's
     /// slowest round seen ([`common::Following`]), and each wait on its guest by its next new
@@ -444,6 +453,7 @@ mod storm {
     /// rest of the round they end in, in 7,680 s (2 h 8 min).
     fn stream(
         sock: PathBuf,
+        size: String,
         stop: Arc<AtomicBool>,
         carried: Arc<AtomicU64>,
     ) -> std::thread::JoinHandle<Rounds> {
@@ -456,7 +466,7 @@ mod storm {
                     continue;
                 }
                 salt += 1;
-                let round = echo(&sock, ECHO_PORT, salt, 4 << 20, Some(&carried));
+                let round = echo_of(&sock, ECHO_PORT, salt, 4 << 20, Some(&carried), &size);
                 if round.is_err() {
                     std::thread::sleep(Duration::from_millis(5));
                 }
@@ -552,8 +562,8 @@ mod storm {
             let sock = s.0.join("v.sock");
             let stop = Arc::new(AtomicBool::new(false));
             let carried = Arc::new(AtomicU64::new(0));
-            let mut original = Vm::spawn(&storm_args(&s, cpus, &sock, "stop"));
-            let streamer = stream(sock.clone(), stop.clone(), carried.clone());
+            let mut original = Vm::spawn(&storm_args(&s, cpus, &sock, "stop")).sized(size(cpus));
+            let streamer = stream(sock.clone(), size(cpus), stop.clone(), carried.clone());
             let code = original.wait_exit_streamed(Some(&carried));
             // Its stream breaks where it stopped, at the snapshot.
             stop.store(true, Ordering::Relaxed);
@@ -574,8 +584,9 @@ mod storm {
                     s.snapshot().as_os_str(),
                     "--vsock".as_ref(),
                     sock.as_os_str(),
-                ]);
-                let streamer = stream(sock.clone(), stop.clone(), carried.clone());
+                ])
+                .sized(size(cpus));
+                let streamer = stream(sock.clone(), size(cpus), stop.clone(), carried.clone());
                 let rounds = storm_done(&mut copy, &sock, &stop, streamer, &carried);
                 let code = copy.wait_exit_streamed(Some(&carried));
                 let what = format!("{cpus} vCPUs, restore {i}");
@@ -603,8 +614,8 @@ mod storm {
             let sock = s.0.join("v.sock");
             let stop = Arc::new(AtomicBool::new(false));
             let carried = Arc::new(AtomicU64::new(0));
-            let mut vm = Vm::spawn(&storm_args(&s, cpus, &sock, "resume"));
-            let streamer = stream(sock.clone(), stop.clone(), carried.clone());
+            let mut vm = Vm::spawn(&storm_args(&s, cpus, &sock, "resume")).sized(size(cpus));
+            let streamer = stream(sock.clone(), size(cpus), stop.clone(), carried.clone());
             let rounds = storm_done(&mut vm, &sock, &stop, streamer, &carried);
             let code = vm.wait_exit_streamed(Some(&carried));
             let said = vm.seen.join("\n");

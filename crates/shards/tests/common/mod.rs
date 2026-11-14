@@ -5823,6 +5823,8 @@ pub struct Vm {
     pub seen: Vec<String>,
     /// Every line it has printed, read or not: what a test that stalls says.
     log: Log,
+    /// Its guest's size (its vCPUs), which keys its streamed waits' kinds ([`Vm::sized`]).
+    size: String,
 }
 
 /// Lines a process printed, as they came.
@@ -6040,7 +6042,16 @@ impl Vm {
             lines,
             seen: Vec::new(),
             log,
+            size: String::new(),
         }
+    }
+
+    /// Its guest's size (its vCPUs, say), which keys its streamed waits' kinds beside their
+    /// call sites ([`Heard::streaming_sized`]): one site's waits on guests of different sizes
+    /// are kinds apart.
+    pub fn sized(mut self, size: String) -> Vm {
+        self.size = size;
+        self
     }
 
     /// Every line it has printed so far, and those to come.
@@ -6083,7 +6094,7 @@ impl Vm {
     /// host has CPUs, which show CPU time for ever.
     #[track_caller]
     pub fn wait_for_any_streamed(&mut self, texts: &[&str], streamed: Option<&AtomicU64>) -> String {
-        let heard = Heard::streaming(self.child.id(), streamed);
+        let heard = Heard::streaming_sized(self.child.id(), streamed, &self.size);
         self.wait_lines(texts, heard)
     }
 
@@ -6155,7 +6166,7 @@ impl Vm {
     /// waited on while it gets on with it.
     #[track_caller]
     pub fn wait_exit_streamed(&mut self, streamed: Option<&AtomicU64>) -> Option<i32> {
-        let heard = Heard::streaming(self.child.id(), streamed);
+        let heard = Heard::streaming_sized(self.child.id(), streamed, &self.size);
         self.wait_end(heard)
     }
 
@@ -6233,6 +6244,15 @@ impl<'a> Heard<'a> {
         } else {
             WaitKind::of(site, PROGRESS, &guest_text(awaited))
         };
+        Heard::keyed(kind, party, guest, streamed)
+    }
+
+    fn keyed(
+        kind: &'static WaitKind,
+        party: Party,
+        guest: Guest,
+        streamed: Option<&'a AtomicU64>,
+    ) -> Heard<'a> {
         Heard {
             wait: Wait::on(kind, party, PROGRESS),
             guest,
@@ -6246,13 +6266,17 @@ impl<'a> Heard<'a> {
     /// time counted only before its first line, and `streamed`'s bytes as it carries them.
     #[track_caller]
     pub fn streaming(vm: u32, streamed: Option<&'a AtomicU64>) -> Heard<'a> {
-        Heard::with(
-            std::panic::Location::caller(),
-            Party::client(vm, None),
-            Guest::Streaming,
-            streamed,
-            "",
-        )
+        Heard::streaming_sized(vm, streamed, "")
+    }
+
+    /// [`streaming`](Self::streaming), its guest of size `size` (its vCPUs), which keys its
+    /// kind beside its call site: one site's waits on guests of different sizes are kinds
+    /// apart, so that a 64-vCPU storm is not judged by a 2-vCPU one's W* (HVF at ddb88cd47:
+    /// "still running" refused at a W* of 49.9 ms and of 753 ms learned of smaller storms).
+    #[track_caller]
+    pub fn streaming_sized(vm: u32, streamed: Option<&'a AtomicU64>, size: &str) -> Heard<'a> {
+        let kind = WaitKind::of(std::panic::Location::caller(), PROGRESS, size);
+        Heard::keyed(kind, Party::client(vm, None), Guest::Streaming, streamed)
     }
 
     /// The guest of the VM process `vm` is or started (`run --kernel`, `restore`), its CPU
@@ -6546,10 +6570,29 @@ where
         home: Option<&Path>,
         site: &'static std::panic::Location<'static>,
     ) -> Following<'a, S> {
+        Following::keyed(stream, carried, home, WaitKind::awaiting(site, STREAM))
+    }
+
+    /// Reads of `stream` from now on, from a guest of size `size` (its vCPUs), which keys
+    /// its kind beside its call site: one site's streams from guests of different sizes are
+    /// kinds apart, so that a 64-vCPU storm's stream is not judged by a 2-vCPU one's W*
+    /// (HVF at ddb88cd47: "64 vCPUs: stream 6", refused 35 s past a W* of 17.6 s).
+    #[track_caller]
+    pub fn sized(stream: &'a S, carried: Option<&'a AtomicU64>, size: &str) -> Following<'a, S> {
+        let kind = WaitKind::of(std::panic::Location::caller(), STREAM, size);
+        Following::keyed(stream, carried, None, kind)
+    }
+
+    fn keyed(
+        stream: &'a S,
+        carried: Option<&'a AtomicU64>,
+        home: Option<&Path>,
+        kind: &'static WaitKind,
+    ) -> Following<'a, S> {
         Following {
             stream,
             carried,
-            wait: Wait::on(WaitKind::awaiting(site, STREAM), Party::own(home), STREAM),
+            wait: Wait::on(kind, Party::own(home), STREAM),
         }
     }
 
@@ -6650,9 +6693,23 @@ pub fn echo(
     len: usize,
     carried: Option<&AtomicU64>,
 ) -> Result<(), String> {
+    echo_of(sock, port, salt, len, carried, "")
+}
+
+/// [`echo`] through the echo of a guest of size `size` (its vCPUs), which keys its stream's
+/// kind ([`Following::sized`]).
+#[track_caller]
+pub fn echo_of(
+    sock: &Path,
+    port: u32,
+    salt: u64,
+    len: usize,
+    carried: Option<&AtomicU64>,
+    size: &str,
+) -> Result<(), String> {
     let s =
         shards_vmm::platform::UnixStream::connect(sock).map_err(|e| format!("{}: {e}", sock.display()))?;
-    let mut r = Following::of(&s, carried);
+    let mut r = Following::sized(&s, carried, size);
     vsock_handshake(&s, &mut r, port)?;
     let mut w = s.try_clone().map_err(|e| e.to_string())?;
     let writer = std::thread::spawn(move || -> Result<(), String> {
