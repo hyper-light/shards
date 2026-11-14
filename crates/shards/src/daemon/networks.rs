@@ -425,39 +425,21 @@ fn names_table(network: &Network, members: &[Member], asker: &str) -> Vec<u8> {
 }
 
 impl<D: Disk> Daemon<D> {
-    /// The ULA pool dockerd derives from its host's ID: fd00::/8 with the ID's hash's 40
-    /// bits, a /48.
+    /// The ULA pool dockerd derives from its host's ID (`crate::networks::ula_base`).
     fn ula_base(&self) -> u128 {
-        use sha2::Digest as _;
-        let hash = sha2::Sha256::digest(self.engine_id().as_bytes());
-        let gid = u64::from_be_bytes(hash.get(..8).and_then(|b| b.try_into().ok()).unwrap_or([0; 8]))
-            & ((1u64 << 40) - 1);
-        (0xfd00u128 << 112) | (u128::from(gid) << 80)
+        crate::networks::ula_base(&self.home)
     }
 
-    /// A run on the host's network's IPv6 address and its gateway's (D124): in the pool's
-    /// last /64, which no user network is given, `::2` and `::1`, each run's link to its
-    /// network process its own. What it sends past its loopback is the host's by them.
-    /// Also eth0's IPv6 for an image's agents' flows past the microVM on a network without
-    /// IPv6 (D99).
+    /// A run on the host's network's IPv6 address and its gateway's, and eth0's IPv6 for an
+    /// image's agents' flows past the microVM on a network without it
+    /// (`crate::networks::host_ipv6`, D99, D124).
     pub(super) fn host_ipv6(&self) -> (Ipv6Addr, Ipv6Addr) {
-        let subnet = self.ula_base() | (0xffff << 64);
-        (Ipv6Addr::from(subnet | 2), Ipv6Addr::from(subnet | 1))
+        crate::networks::host_ipv6(&self.home)
     }
 
-    /// The home's engine ID, made once: what dockerd derives its IPv6 ULA pool from. Callers
-    /// that make a home's first at once each take the one it keeps (`keep_first`).
+    /// The home's engine ID, made once (`crate::networks::engine_id`).
     pub(super) fn engine_id(&self) -> String {
-        let path = self.home.join("networks").join("engine-id");
-        if let Ok(id) = std::fs::read_to_string(&path) {
-            return id.trim().to_string();
-        }
-        let id = new_id().unwrap_or_default();
-        let _ = crate::networks::make_dir(&self.home.join("networks"));
-        match super::keep_first(&path, id.as_bytes()) {
-            Ok(false) => std::fs::read_to_string(&path).map_or(id, |kept| kept.trim().to_string()),
-            Ok(true) | Err(_) => id,
-        }
+        crate::networks::engine_id(&self.home)
     }
 
     /// The networks: dockerd's predefined ones, made here the first time they are

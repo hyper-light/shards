@@ -870,6 +870,17 @@ fn network(
     Ok(egress)
 }
 
+/// eth0's IPv6 for the run's agents' flows past the microVM (D99, network-05). Today an
+/// orchestrator's run gives it none.
+fn past6(
+    agentfile: Option<&crate::agentfile::Agentfile>,
+    run: &shards_ipc::Run,
+    home: &std::path::Path,
+) -> Option<(std::net::Ipv6Addr, std::net::Ipv6Addr)> {
+    let _ = (agentfile, run, home);
+    None
+}
+
 /// Refuses a published port that would widen the run: one the image's Agentfile declares
 /// `AS egress` (a destination, never a listener), and, for a run with no command of its
 /// own, one the image gives no member for ingress (D122).
@@ -6279,6 +6290,46 @@ mod tests {
         let mut run = hosted::as_run(&whole, None);
         assert!(matches!(network(Some(&plain), &whole, &mut run), Ok(None)));
         assert_eq!(run.network, "none");
+    }
+
+    /// network-05: an orchestrator's run on the default bridge, whose image's agents have IPv6
+    /// and are granted a port past the microVM, as a daemon's run there (D99). Do: shape the
+    /// network of that image run whole, of one without IPv6, and of one granting nothing past.
+    /// Expect: the first's eth0 given the home's IPv6 for its agents, the address a daemon's
+    /// run on the bridge has (`uplink6=`, `NET_ADDRESS`); the others none.
+    #[test]
+    fn an_orchestrated_runs_agents_reach_past_the_microvm_by_ipv6_as_a_daemons_do() {
+        let home = shards_testdir::TempDir::new("api-past6").unwrap();
+        let agentfile = |ipv6: bool, egress: Vec<Vec<u8>>| crate::agentfile::Agentfile {
+            domains: 1,
+            uplink: !egress.is_empty(),
+            ipv6,
+            grants: shards_agentfile::agentfile::Grants {
+                egress,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let whole = request(Vec::new());
+        let six = agentfile(true, vec![b"443/tcp".to_vec()]);
+        let mut run = hosted::as_run(&whole, None);
+        network(Some(&six), &whole, &mut run).ok().unwrap();
+        assert_eq!(run.network, "bridge");
+        let v6 = past6(Some(&six), &run, home.path());
+        assert_eq!(v6, Some(crate::networks::host_ipv6(home.path())));
+        let (guest6, gateway6) = v6.unwrap();
+        assert_eq!(
+            crate::networks::uplink6_entry((guest6, gateway6)),
+            format!("uplink6={guest6}/64,{gateway6}").into_bytes()
+        );
+        let four = agentfile(false, vec![b"443/tcp".to_vec()]);
+        let mut run = hosted::as_run(&whole, None);
+        network(Some(&four), &whole, &mut run).ok().unwrap();
+        assert_eq!(past6(Some(&four), &run, home.path()), None);
+        let nothing = agentfile(true, Vec::new());
+        let mut run = hosted::as_run(&whole, None);
+        network(Some(&nothing), &whole, &mut run).ok().unwrap();
+        assert_eq!(past6(Some(&nothing), &run, home.path()), None);
     }
 
     /// Labels become members by their declared index; only an active one runs.

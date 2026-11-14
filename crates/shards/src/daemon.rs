@@ -3863,11 +3863,10 @@ impl<D: Disk> Daemon<D> {
                     .is_some_and(crate::agentfile::Agentfile::egress6)
                     && !network_setup.iter().any(|e| e.starts_with(b"address6="))
                 {
-                    let (guest6, gateway6) = self.host_ipv6();
                     prepared
                         .spec
                         .setup
-                        .push(format!("uplink6={guest6}/64,{gateway6}").into_bytes());
+                        .push(crate::networks::uplink6_entry(self.host_ipv6()));
                 }
                 // On the host's network (D124): the host's hosts file, and eth0's IPv6, by
                 // which what it sends past its loopback is the host's.
@@ -5665,13 +5664,7 @@ impl<D: Disk> Daemon<D> {
         if (keep.egress.as_deref() == Some(&shards_net::HOST_POLICY[..]) || on_bridge)
             && let Some(bridge) = self.bridge
         {
-            let (guest6, gateway6) = self.host_ipv6();
-            let mut address = bridge.guest().octets().to_vec();
-            address.push(bridge.subnet().1);
-            address.extend_from_slice(&bridge.gateway().octets());
-            address.extend_from_slice(&guest6.octets());
-            address.push(64);
-            address.extend_from_slice(&gateway6.octets());
+            let address = crate::networks::bridge_address(&bridge, self.host_ipv6());
             asks.ask("addresses", kind::NET_ADDRESS, &address, &[])?;
         }
         for batch in keep.published.chunks(shards_ipc::MAX_FDS) {
@@ -9076,7 +9069,7 @@ fn keep_whole(path: &Path, bytes: &[u8]) -> io::Result<()> {
 /// own there first (link(2)'s EEXIST, CreateHardLinkW's ERROR_ALREADY_EXISTS), so callers
 /// making a home's first record at once each take the one kept, never their own beside it.
 /// `Ok(true)` where these bytes are the record, `Ok(false)` where another's are.
-fn keep_first(path: &Path, bytes: &[u8]) -> io::Result<bool> {
+pub(crate) fn keep_first(path: &Path, bytes: &[u8]) -> io::Result<bool> {
     let new = beside(path);
     let kept = std::fs::write(&new, bytes).and_then(|()| std::fs::hard_link(&new, path));
     let _ = std::fs::remove_file(&new);
