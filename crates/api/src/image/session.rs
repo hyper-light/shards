@@ -2141,12 +2141,27 @@ impl ImageGuest for Session {
             kill(&self.host);
         }
         // The run's end comes as its VM goes, which the host kills at once; or the host is
-        // gone. The host's own exit after (its cleanup) is the watcher's to reap.
+        // gone. Its stdin closed then is its cue to reap what it started and exit.
         self.shared.wait(Duration::MAX, |s| s.end_seen().map(|_| ()));
         lock(&self.shared.to_host).take();
         lock(&self.shared.state).stopped();
         lock(&self.shared.state).close_inputs();
         self.shared.changed.notify_all();
+        // Released, as a boot's stop returns (D231): followed to its end, never timed (D215,
+        // D217), the host exited and reaped by its watcher, its answers ended, and its
+        // diagnostics, which the VM, network and share processes it started hold as their
+        // stderr, closed by every one of them. The run's channels end before that (api-run
+        // cuts each as its VM's capture ends), so no channel's end says it.
+        self.shared
+            .wait(Duration::MAX, |s| (s.gone() && s.said_all).then_some(()));
+        // On Windows a process closes its handles, its diagnostics' among them, as it exits,
+        // before its handle is signalled: every process of the host's group followed to its
+        // end too, as a boot's stop follows them.
+        #[cfg(windows)]
+        self.host.end_group().map_err(|e| ImageRefusal::Os {
+            what: "the stopped run's processes",
+            kind: e.kind(),
+        })?;
         Ok(())
     }
 
@@ -4231,6 +4246,108 @@ mod tests {
             "after {took:?}"
         );
         assert!(took < BOOT_BOUND, "the stop took {took:?}");
+    }
+
+    /// Do run through a stand-in host that starts the run, starts a VM of its own holding its
+    /// diagnostics (as the VM, network and share processes hold its stderr), says the run's
+    /// end once it is asked to stop, and exits as its stdin closes, its VM left running until
+    /// the test lets it go; stop the run, and let the VM go only once the host is gone.
+    /// Expect: the stop returns `Ok` only after the VM has gone too, the host's diagnostics
+    /// closed by every process that held them, as a boot's stop returns (D231), and the run's
+    /// end the host's word. Red where the stop returned as the end was told.
+    #[cfg(unix)]
+    #[test]
+    fn a_stop_returns_once_its_host_and_every_process_it_started_are_gone() {
+        use std::io::BufRead as _;
+        let dir = shards_testdir::TempDir::new("rstop").unwrap();
+        let (host_seen, vm_seen, vm_gate) =
+            (dir.path().join("h"), dir.path().join("v"), dir.path().join("g"));
+        for path in [&host_seen, &vm_seen, &vm_gate] {
+            fifo(path);
+        }
+        let spec = stand_in_spec(
+            &dir.path().join("host"),
+            vec![
+                ("HOST_SEEN".into(), host_seen.clone().into()),
+                ("VM_SEEN".into(), vm_seen.clone().into()),
+                ("VM_GATE".into(), vm_gate.clone().into()),
+            ],
+        );
+        let request = super::super::request(&spec).unwrap();
+        // The host reads its request and the first byte after it: its stop's.
+        let asked = wire::frame(wire::to_host::CREATE, &request.encode().unwrap())
+            .unwrap()
+            .len()
+            + 1;
+        let octal = |kind, payload: &[u8]| -> String {
+            wire::frame(kind, payload)
+                .unwrap()
+                .iter()
+                .map(|b| format!("\\{b:03o}"))
+                .collect()
+        };
+        let started = wire::Started {
+            members: Vec::new(),
+            published: Vec::new(),
+            control: None,
+            rate_period: Duration::from_millis(100),
+            from: wire::StartedFrom::Booted,
+        }
+        .encode()
+        .unwrap();
+        let ended = untold(RunEnd::Exited(0)).encode().unwrap();
+        stand_in(
+            dir.path(),
+            &format!(
+                "#!/bin/sh\n\
+                 printf '{}'\n\
+                 exec 3>\"$HOST_SEEN\"\n\
+                 (read _ <\"$VM_GATE\") >\"$VM_SEEN\" 3>&- &\n\
+                 echo \"$!\" >&3\n\
+                 head -c {asked} >/dev/null\n\
+                 printf '{}'\n\
+                 exec cat >/dev/null\n",
+                octal(wire::to_client::STARTED, &started),
+                octal(wire::to_client::ENDED, &ended),
+            ),
+        );
+        let session = Session::start(&spec, &request, BOOT_BOUND, &super::super::BootStop::new()).unwrap();
+        // Each open waits for its other end: the host, its VM, then the VM's gate, each held.
+        let host_end = std::fs::File::open(&host_seen).unwrap();
+        let mut said = String::new();
+        io::BufReader::new(&host_end).read_line(&mut said).unwrap();
+        let mut leftover = Leftover(Some(said.trim().parse().unwrap()));
+        let vm_end = std::fs::File::open(&vm_seen).unwrap();
+        let gate = std::fs::OpenOptions::new().write(true).open(&vm_gate).unwrap();
+        let ends = |f: std::fs::File| io::PipeReader::from(std::os::fd::OwnedFd::from(f));
+        let (host_end, vm_end) = (ends(host_end), ends(vm_end));
+        let shared = session.shared.clone();
+        std::thread::scope(|s| {
+            let stopping = s.spawn(|| {
+                let stopped = session.stop();
+                (stopped, writers_gone(&vm_end))
+            });
+            let host_gone = shared.wait(BOOT_BOUND, |s| s.gone().then_some(())).is_some();
+            let vm_held = !lock(&shared.state).said_all;
+            drop(gate);
+            let (stopped, vm_gone) = stopping.join().unwrap();
+            if vm_gone {
+                leftover.0 = None;
+            }
+            assert!(host_gone, "the run host outlived its stop's end");
+            assert!(vm_held, "the stand-in VM never held its host's diagnostics");
+            assert_eq!(stopped, Ok(()));
+            assert!(
+                vm_gone,
+                "the stop returned while the VM its run host started still ran"
+            );
+        });
+        assert!(writers_gone(&host_end), "the run host outlived its stop");
+        assert!(lock(&shared.state).said_all);
+        assert_eq!(
+            session.wait_for(Duration::ZERO),
+            Ok(Some(untold(RunEnd::Exited(0))))
+        );
     }
 
     /// What this test binary is, started with this variable: the stand-in run host of a

@@ -620,9 +620,11 @@ pub trait ImageGuest: Send + Sync {
     fn save(&self, to: &std::path::Path, patience: Duration) -> Result<(), ImageRefusal>;
     /// Ends it at once: its VM's process is killed, and [`wait_for`](Self::wait_for) then
     /// returns [`RunEnd::Stopped`], or the end the run had come to before: its command's, or
-    /// its host's failure, in its words, as `wait_for` saw it. Never refused, as a VM left
-    /// running is a leak. Returns once the run's end is told, its VM gone; its host then
-    /// reaps what it started and exits on its own.
+    /// its host's failure, in its words, as `wait_for` saw it. Returns released, as a boot's
+    /// stop does (D231): its end told, its run host exited and reaped, and every process the
+    /// host started (its VM, network and share processes) gone, their diagnostics closed.
+    /// Refused only where those processes cannot be followed to their end
+    /// ([`ImageRefusal::Os`], on Windows), never `Ok` before they are gone.
     fn stop(&self) -> Result<(), ImageRefusal>;
     /// Its end, once it has come, waiting at most `timeout` (`Duration::MAX`: until it
     /// comes), and what its microVM used in all ([`RunEnded::final_use`], D260): read by its
