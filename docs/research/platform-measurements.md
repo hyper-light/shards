@@ -8882,6 +8882,9 @@ performance campaign ran. [Exact scope/output](measurements/network-fixes-v1/REA
 
 ### M240. A microVM's I/O limits, from its guest's writes (D178)
 
+Correctness follow-up devices-04 (2026-11-14): focused reset red/green and limiter tests, macOS arm64; 7 block and 4 limiter tests green with VMM clippy. See `measurements/device-fixes/README.md`. This is cancellation evidence, not a new throughput or hardware-VM measurement.
+
+
 - **Question.** Does a microVM whose VMM paces its volume's writes at `--io-maxbandwidth`
   write at that rate, never above it, on a quiet host and on a loaded one; and what does
   the limiter cost a write it does not hold back?

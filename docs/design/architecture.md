@@ -13516,6 +13516,9 @@ stays; a load of the other alone from an archive of both, run emulated.
 
 ### D178. A microVM's I/O limits, kept outside it
 
+Review devices-04 (2026-11-14): a block device's stop cancels its own limiter wait under the limiter mutex before joining its worker. This neither pauses other devices nor erases debt; reset cannot lift the shared limit. Its owned token is cleared for a new worker only after the old worker joined. Malformed descriptor work is checked before charging bytes. Source/test evidence: `docs/research/measurements/device-fixes/README.md`; no fixed production timeout is introduced.
+
+
 `--io-maxbandwidth BYTES` and `--io-maxiops N`, on `shards run vm` and `create` and in the
 Engine API's `HostConfig.IOMaximumBandwidth` and `IOMaximumIOps`, are the most bytes and
 requests a second of a microVM's I/O to the host's storage: its volumes (virtio-fs) and its
