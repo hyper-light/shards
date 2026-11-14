@@ -916,6 +916,61 @@ pub(crate) fn refused_for_client(words: &[String]) -> Option<String> {
 }
 
 /// Reads what [`send`] wrote, on the machine: the build file's directory written whole into
+/// A build-file timestamp stays typed until the command renders its refusal on stderr.
+#[derive(Debug)]
+pub(crate) enum ReceiveError {
+    Timestamp { name: String, cause: FileTimeError },
+    Context(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FileTimeError {
+    Nanoseconds(u32),
+    Unrepresentable { seconds: i64, nanoseconds: u32 },
+}
+
+impl std::fmt::Display for ReceiveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Context(why) => f.write_str(why),
+            Self::Timestamp { name, cause } => write!(f, "{name:?}: invalid build-file time: {cause}"),
+        }
+    }
+}
+
+impl std::fmt::Display for FileTimeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Nanoseconds(n) => write!(f, "{n} nanoseconds is not a fraction of a second"),
+            Self::Unrepresentable { seconds, nanoseconds } => {
+                write!(
+                    f,
+                    "{seconds} seconds and {nanoseconds} nanoseconds is outside this host's time range"
+                )
+            }
+        }
+    }
+}
+
+impl From<String> for ReceiveError {
+    fn from(why: String) -> Self {
+        Self::Context(why)
+    }
+}
+
+/// The wire's fractional nanoseconds contain no whole second (utimensat(2), tv_nsec).
+/// SystemTime's checked operation supplies the receiving host's range, including Windows'.
+fn file_time((seconds, nanoseconds): (i64, u32)) -> Result<std::time::SystemTime, FileTimeError> {
+    if std::time::Duration::from_nanos(u64::from(nanoseconds)).as_secs() != 0 {
+        return Err(FileTimeError::Nanoseconds(nanoseconds));
+    }
+    // Preserve the receiver's existing normalization of pre-epoch times.
+    let secs = u64::try_from(seconds).unwrap_or(0);
+    std::time::UNIX_EPOCH
+        .checked_add(std::time::Duration::new(secs, nanoseconds))
+        .ok_or(FileTimeError::Unrepresentable { seconds, nanoseconds })
+}
+
 /// `dockerfile`, made afresh, then the layer applied over `context`. Names are a file's
 /// alone, no path. Returns the bytes the layer's files held.
 pub(crate) fn receive(
@@ -923,13 +978,13 @@ pub(crate) fn receive(
     dockerfile: &Path,
     context: &Path,
     named: usize,
-) -> Result<(i64, Vec<(String, shards_cmdline::buildflags::SecretBytes)>), String> {
+) -> Result<(i64, Vec<(String, shards_cmdline::buildflags::SecretBytes)>), ReceiveError> {
     let mut magic = vec![0u8; MAGIC.len()];
     input
         .read_exact(&mut magic)
         .map_err(|e| format!("reading the build file: {e}"))?;
     if magic != MAGIC {
-        return Err("not a context of a shards client's".into());
+        return Err("not a context of a shards client's".to_string().into());
     }
     let count = u32::from_be_bytes(read_array(input)?);
     if dockerfile.exists() {
@@ -947,10 +1002,14 @@ pub(crate) fn receive(
             i64::from_be_bytes(read_array(input)?),
             u32::from_be_bytes(read_array(input)?),
         );
+        let mtime = file_time(mtime).map_err(|cause| ReceiveError::Timestamp {
+            name: name.clone(),
+            cause,
+        })?;
         let size = u64::from_be_bytes(read_array(input)?);
         total = total.saturating_add(size);
         if total > DOCKERFILE_MAX {
-            return Err(format!("a build file's directory past {DOCKERFILE_MAX} bytes"));
+            return Err(format!("a build file's directory past {DOCKERFILE_MAX} bytes").into());
         }
         let bytes = read_vec(input, size)?;
         write_file(&dockerfile.join(&name), mode, mtime, &bytes)?;
@@ -958,7 +1017,7 @@ pub(crate) fn receive(
     // The secrets, in memory alone: no file of the machine's holds one.
     let count = u32::from_be_bytes(read_array(input)?);
     if usize::try_from(count).map_or(true, |count| count > named) {
-        return Err(format!("{count} secrets, where the build names {named}"));
+        return Err(format!("{count} secrets, where the build names {named}").into());
     }
     let mut secrets = Vec::new();
     for _ in 0..count {
@@ -968,9 +1027,9 @@ pub(crate) fn receive(
         let size = u64::from_be_bytes(read_array(input)?);
         total = total.saturating_add(size);
         if size > SECRET_MAX || total > DOCKERFILE_MAX {
-            return Err(format!(
-                "{id}: a secret past {SECRET_MAX} bytes, or secrets past {DOCKERFILE_MAX}"
-            ));
+            return Err(
+                format!("{id}: a secret past {SECRET_MAX} bytes, or secrets past {DOCKERFILE_MAX}").into(),
+            );
         }
         secrets.push((id, read_secret(input, size)?));
     }
@@ -1014,7 +1073,7 @@ fn read_secret(input: &mut dyn Read, n: u64) -> Result<shards_cmdline::buildflag
 }
 
 /// `bytes` as the file `path`, of `mode`'s permissions and time `mtime`.
-fn write_file(path: &Path, mode: u32, mtime: (i64, u32), bytes: &[u8]) -> Result<(), String> {
+fn write_file(path: &Path, mode: u32, mtime: std::time::SystemTime, bytes: &[u8]) -> Result<(), String> {
     let at = |e: io::Error| format!("{}: {e}", path.display());
     let mut file = std::fs::File::create(path).map_err(at)?;
     file.write_all(bytes).map_err(at)?;
@@ -1026,9 +1085,7 @@ fn write_file(path: &Path, mode: u32, mtime: (i64, u32), bytes: &[u8]) -> Result
     }
     #[cfg(not(unix))]
     let _ = mode;
-    let secs = u64::try_from(mtime.0).unwrap_or(0);
-    file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::new(secs, mtime.1))
-        .map_err(at)
+    file.set_modified(mtime).map_err(at)
 }
 
 /// The variable a client names its own paths in, for what a command of its copy prints:
@@ -1176,6 +1233,51 @@ pub(crate) fn receive_tree(input: &mut dyn Read, context: &Path) -> Result<i64, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn malformed_build_file_time_is_refused_before_the_file_is_created() {
+        let dir = shards_testdir::TempDir::new("remote-time").unwrap();
+        let (dockerfile, context) = (dir.join("dockerfile"), dir.join("context"));
+        let name = b"Dockerfile";
+        let mut input = MAGIC.to_vec();
+        input.extend_from_slice(&1u32.to_be_bytes());
+        input.extend_from_slice(&(name.len() as u32).to_be_bytes());
+        input.extend_from_slice(name);
+        input.extend_from_slice(&0o644u32.to_be_bytes());
+        input.extend_from_slice(&i64::MAX.to_be_bytes());
+        input.extend_from_slice(&u32::MAX.to_be_bytes());
+        input.extend_from_slice(&0u64.to_be_bytes());
+        assert!(matches!(
+            receive(&mut input.as_slice(), &dockerfile, &context, 0),
+            Err(ReceiveError::Timestamp {
+                cause: FileTimeError::Nanoseconds(u32::MAX),
+                ..
+            })
+        ));
+        assert!(!dockerfile.join("Dockerfile").exists());
+    }
+
+    #[test]
+    fn build_file_time_checks_the_fraction_and_the_receiving_hosts_range() {
+        assert_eq!(file_time((0, 0)), Ok(std::time::UNIX_EPOCH));
+        assert_eq!(
+            file_time((0, 999_999_999)),
+            Ok(std::time::UNIX_EPOCH + std::time::Duration::from_nanos(999_999_999))
+        );
+        assert_eq!(
+            file_time((0, 1_000_000_000)),
+            Err(FileTimeError::Nanoseconds(1_000_000_000))
+        );
+        // Windows' FILETIME range is smaller than POSIX's signed seconds range.
+        #[cfg(windows)]
+        assert_eq!(
+            file_time((i64::MAX, 0)),
+            Err(FileTimeError::Unrepresentable {
+                seconds: i64::MAX,
+                nanoseconds: 0
+            })
+        );
+    }
 
     /// remote-09: a client's build step names no path of this machine's but its copies', as
     /// its shards sends them, every path-typed value of buildx's build judged; and what reads
@@ -1473,7 +1575,10 @@ mod tests {
         let was = escaped.exists();
         let _ = std::fs::remove_file(&escaped);
         assert!(!was, "{name}: written at {escaped:?}, outside {dockerfile:?}");
-        assert!(refused.contains(&NotAName::Colon.to_string()), "{refused}");
+        assert!(
+            refused.to_string().contains(&NotAName::Colon.to_string()),
+            "{refused}"
+        );
     }
 
     /// A time a Windows machine's NTFS kept, to 100 ns, is the client's time it was cut from,
@@ -1743,7 +1848,7 @@ mod tests {
         assert_eq!(got, [("tok", &b"one"[..]), ("var", &b"two"[..])]);
         let refused = receive(&mut &sent[..], &dockerfile, &context, 1).unwrap_err();
         assert!(
-            refused.contains("2 secrets, where the build names 1"),
+            refused.to_string().contains("2 secrets, where the build names 1"),
             "{refused}"
         );
     }

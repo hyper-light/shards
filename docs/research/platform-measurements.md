@@ -24155,6 +24155,16 @@ This is correctness evidence, not a VM/performance measurement. Full commands,
 ownership change and ROOT's remaining gates: `measurements/memory-fixes-v1/README.md`.
 
 
+### Remote-04. A network build timestamp panics before set_modified (2026-11-13)
+
+Functional evidence on macOS arm64, Rust 1.98.1: the real synced receiver at
+`c3ad61ab1` panicked on i64::MAX seconds/u32::MAX nanoseconds (`SystemTime` overflow,
+1 failure). Typed fraction/host-range validation before file creation at
+`063a5d339` passed all 9 synced tests and shards all-target clippy. The writer now
+accepts a checked SystemTime. No chosen maximum or platform stub was added.
+[Commands, source revisions, policy, logs and owed Windows/release-listener checks](measurements/remote-fixes-v1/README.md#remote-04-build-file-timestamp-validation).
+No performance or live-VM result is claimed.
+
 ### Remote-05. Private request arguments in the daemon log (2026-11-13)
 
 This is correctness evidence, not a performance measurement. An enrolled fixture's
@@ -24194,6 +24204,8 @@ failed the ordinary 4 MiB bound, red at 6db1979d6. At 431571292 the ABI spec bou
 scope applies at encoding and parsing for that tag alone: 10 control-exec tests and 2
 frame tests passed; shards-remote clippy clean. No large-argv VM run or performance
 measurement is claimed. [Commands and policy account](measurements/control-fixes-v1/README.md).
+
+
 ### Review memory-03/05: live-copy mapping ownership and terminal map-back loss
 
 On macOS arm64, the real Shared read completed while its release mutex was held
@@ -24493,3 +24505,19 @@ payload whose ROOM header was longer than either producer can encode.
   `Notice`, `ErrorKind::Gone`; R09, R10 red on main, green after, four mutations killed;
   R11 Unix and Windows written, macOS run; R15, R16 implementer, its runner target removed
   after landing.
+
+### M573. A WHP DAX range mapped to be written after one to be read was made zeros as its file grew (memory-01, D189, D197)
+
+Windows 10.0.26200 x86_64 (the Windows 11 guest on adacachy), 2026-11-14: at 4697f1e7b a
+3 MiB file mapped to be read through a handle to read alone, then elsewhere to be written
+through one to write, grew; the window, keeping the first handle, made no PAGE_READWRITE
+section of it (CreateFileMappingW asks GENERIC_READ and GENERIC_WRITE) and placed writable
+zeros over the written range: it read 0 where the file holds 0x5a. A range no section to write
+can be made for was made zeros as it was followed after a cut, its vCPU let run. At 7f0cb8ce9
+the node keeps the handle given to write, the section is made before anything is freed, and a
+mapping that cannot be followed is left as it was or let go of, refused (`fs::Unfollowed`),
+the reply that would tell the guest its size refused: `window::tests` 12 of 12, both mutants
+(the first handle kept; let go of where it should be left) failing them. Unit-level functional
+evidence on real NTFS views, no real VM; a view refused after its section was made is
+unit-unreachable, and the WHP DAX tests are owed.
+[Commands, logs, mutants and owed runs](measurements/windows-p0/README.md).

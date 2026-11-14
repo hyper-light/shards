@@ -6951,6 +6951,17 @@ stranger refused once its verdict is let go, red with each on the driver; and th
 backpressure as before: 8 MiB crossing whole, a command that reads no stdin holding up no
 other).
 
+**Build-file times (remote-04, 2026-11-13).** The separately framed Dockerfile's
+seconds and fractional nanoseconds are untrusted. `synced::receive` validates the
+fraction (no whole second, utimensat(2)'s `tv_nsec`) and uses `SystemTime::checked_add`
+for the receiving host's representable range before creating the file. It retains
+`ReceiveError::Timestamp` and `FileTimeError::{Nanoseconds,Unrepresentable}` until
+the step renders its failure on stderr; no caller parses an error string. Valid
+pre-epoch input keeps the receiver's prior normalization to the epoch. No runtime
+timeout, floor or chosen range is introduced. A network timestamp of i64::MAX
+seconds/u32::MAX nanoseconds previously panicked in `SystemTime` addition on the
+daemon's context-step thread. [Red/green and owed release-listener proof](../research/measurements/remote-fixes-v1/README.md).
+
 #### A client's authority, judged of what runs and of whom its key is now (remote-01 to 03, 2026-11-13)
 
 The adversarial review of D180 (docs/bugs/2026-11-13/remote.md) found three ways a client
@@ -9671,6 +9682,11 @@ stores.
   44.4, 1 MiB close together 74 against 855. Held by
   `a_file_mapped_in_many_ranges_is_looked_at_once` (mutation-checked: 8 looks for 8
   ranges).
+- **A file its window cannot follow is a reply refused** (memory-01, PM M573; D197's slice
+  4 on Windows). Where `reconcile` cannot make a file's ranges what it is (its size unread,
+  its grown pages not mapped), it refuses, typed (`fs::Unfollowed`), and the reply that
+  would tell the guest the file's size is refused it (EIO): its guest never hears a size
+  whose bytes its window does not hold, and the file is followed again at its next request.
 - **Each window's page structures in its head, not its guest's memory** (PM M300). Linux
   describes a window's pages as it probes the device, with page structures (64 bytes for
   each 4 KiB page) it took from guest RAM: a 64th of the window (M269), from a guest that,
@@ -11893,6 +11909,33 @@ took, decided (PM M412):
   guest reads the file's bytes, and zeros past its end, as on Unix.
 - **Followed as the Unix window follows a file**: before the guest hears a size,
   `reconcile` makes each range what the file is then, a grown file's new bytes the guest's.
+- **Never zeros in place of a file's bytes** (memory-01, PM M573). A section to write is made
+  only of a handle "created with the GENERIC_READ and GENERIC_WRITE access rights", one to
+  read of one with GENERIC_READ (Microsoft's CreateFileMappingW, PAGE_READWRITE and
+  PAGE_READONLY), and a share's server opens a mapping to be read alone to read
+  (`SHARED_NEEDS_WRITE`). The window kept a node's first handle: a file mapped to be read
+  and then, elsewhere in the window, to be written grew, no section to write could be made
+  of the handle kept, and `reconcile`, having freed the written range's views, placed
+  writable zeros over its file's bytes, the guest's stores reaching no file. So:
+  - a node keeps the handle given for a mapping to be written over one given to read
+    alone, as the Unix window's node keeps a descriptor opened to write (window.rs
+    `Table::insert`);
+  - a mapping's new section is made before anything of it is let go of, and where none can
+    be made, or its file's size cannot be read, it is left as it was;
+  - where a view cannot be placed once its old ones are freed ("BaseAddress and ViewSize
+    must exactly match those of the placeholder", Microsoft's MapViewOfFile3, so a view
+    replaces only a freed placeholder), its ranges stay placeholders (`Held::LetGo`), as a
+    range let go of for a cut is, a vCPU that reaches one waiting until it is made again or
+    unmapped;
+  - each is refused, typed (`fs::Unfollowed`: its size, its section, a view), and the reply
+    that would tell the guest the file's size is refused it (EIO): the guest never hears a
+    size whose bytes its window does not hold. The request itself was the server's, done:
+    a refused LOOKUP's or CREATE's node and handle stay the server's until the guest's
+    unmount, as for any reply its guest did not take.
+  Held by `a_range_mapped_to_be_written_after_one_to_be_read_stays_its_files` and
+  `a_range_no_view_of_its_file_can_be_made_for_is_refused_never_zeros` (red before,
+  mutation-checked); a view refused after its section was made is unit-unreachable, and
+  unverified.
 - **No cut under a mapping.** NTFS refuses to cut a file short while any section of it is
   held, a view or a handle (ERROR_USER_MAPPED_FILE, M412). So the window keeps views alone,
   each section's handle closed once its views are placed. A guest's own cut (a SETATTR of
@@ -28507,6 +28550,23 @@ pin, read on Linux and never run), as data and pure functions the injector drive
   CLI's refresh (JSON and form) and revocation found, and a refresh of another or a near placeholder passed; the
   minting endpoint read widely; no token or placeholder in `Debug`; a 100 000-deep array read. clippy `-D warnings`
   clean. Each of 14 guards removed in turn fails its test (`scripts/step8-reds.py`).
+- *A token host's informational responses wait for its final one (creds-10, amended 2026-11-13).* A 1xx
+  response went to the guest at once, before the final response's body named its tokens, so a 103
+  (or any 1xx) that repeated a token issued in that final response passed unread. RFC 9110 §15.2 has a
+  proxy forward each 1xx unless it asked for it, and lets a user agent ignore an unexpected one; it sets
+  no deadline, only that they precede the final response. So on a sign-in's token host a 1xx but 100 is
+  held (HTTP/1.1's head in `Ended::interims`, HTTP/2's fields on its stream, together at most `TO_GUEST`
+  octets, past which the message breaks or the stream is refused 502), read with the final response's
+  head and trailers for its tokens (`signin::unechoed`'s places), and sent before it as it came; one
+  that holds a token refuses the response 502, nothing captured. A final response that is not read
+  whole names no token and goes after them at once. A 100 Continue goes at once as its status alone
+  (§15.2.1 gives it no fields; a client may be waiting on it before it sends its body), so that it
+  carries nothing and waits for nothing. Not chosen: holding a 100 too, which stalls a client that
+  waits for it until its own timer. Tests: `inject::tests::leaks`' HTTP/1.1 103 repeating the access
+  token (refused), a benign 103 (sent before the token response) and a 100 with a field repeating it
+  (sent bare), and an HTTP/2 103 repeating the refresh token (refused), red before (a real token
+  reached the guest), green after; HTTP/1.1's and HTTP/2's holds removed, and each's reading of the
+  held responses removed, each fail them.
 - *A token in a token response's head or trailers is refused (creds-01, amended 2026-11-13).* A capture wrote the
   placeholders into the body's token places alone and passed the head (HTTP/1.1's, through `signin::frame`) and an
   HTTP/2 stream's fields and trailers (through `give`) as they came, so a host repeating a token there (a field, a
