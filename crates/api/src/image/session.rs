@@ -820,16 +820,28 @@ impl Begun {
         self.send(wire::to_host::CREATE, request)
     }
 
-    /// Sends the host `request`, as a run's (`create`) or a warm host's exemplar (`WARM`).
+    /// Sends the host `request`, as a run's (`create`) or a warm host's exemplar (`WARM`). A
+    /// send that meets the host's end (EPIPE or ECONNRESET: it exited, or closed its stdin,
+    /// before it took the request; or a stop took its channel) is that end, followed as the
+    /// end: the wait after it says why, the host's own words and exit, typed as every other
+    /// host's end is ("it exited before its run started"). Refused here, it was an `Os`
+    /// refusal or a host's word by which of the two came first (Linux, parallel tests:
+    /// `a_run_host_that_ends_before_its_run_starts_leaves_no_layer` and the GPU report's boot
+    /// refused `Os { BrokenPipe }`; D231's note).
     pub(super) fn send(&self, kind: u8, request: &wire::Request) -> Result<(), ImageRefusal> {
         let payload = request.encode().map_err(|e| ImageRefusal::Spec {
             what: "the spec",
             why: e.to_string(),
         })?;
-        self.shared.send(kind, &payload).map_err(|e| ImageRefusal::Os {
-            what: "the run host's request",
-            kind: e.kind(),
-        })
+        match self.shared.send(kind, &payload) {
+            Err(e) if !matches!(e.kind(), io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset) => {
+                Err(ImageRefusal::Os {
+                    what: "the run host's request",
+                    kind: e.kind(),
+                })
+            }
+            _ => Ok(()),
+        }
     }
 
     /// Waits for a warm host's microVM to be ready (`WARMED`, D253's pools): how it started;

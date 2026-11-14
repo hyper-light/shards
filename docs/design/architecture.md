@@ -27105,6 +27105,17 @@ launches are one, `crate::launch` (launch.rs), each caller's descriptors and wor
 old layout by unit tests at the seam; its real-VM runs on every backend and R14's cold start
 before and after are owed to ROOT: docs/research/measurements/vm-launch-seam-v1/README.md.
 
+**A request that meets the host's end (2026-11-14, flaky3).** A host that exits before it
+takes its request (`CREATE`, or a warm host's `WARM`) was refused by whichever came first: the
+request's write meeting its end, `Os { "the run host's request", BrokenPipe }`, or the wait
+seeing it gone, `Host("it exited before its run started…")` with its words. On Linux with
+parallel tests (adacachy2, 64 test threads, 40 runs of shards-api's lib tests at 85421bddb) 11
+runs refused `a_run_host_that_ends_before_its_run_starts_leaves_no_layer` and 10 the GPU
+report's boot (`an_image_boot_takes_its_vms_gpu_report_as_a_managed_launch_does`) so. A write
+that meets the peer's end is that end (EPIPE, ECONNRESET; M527): `Begun::send` follows it into
+the wait, which types it as every other host's end, its words and exit with it. Every other
+error of the write is still `Os`. GREEN_PLACEHOLDER
+
 **What would falsify it.** A run host costing more per microVM than the daemon per run (then
 one host per orchestrator); an orchestrator needing to link the VMM; credentials a member
 must not read (then plan P10's opaque broker).
