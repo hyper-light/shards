@@ -3869,7 +3869,9 @@ mod tests {
     /// only search permission of each directory on the way (path_resolution(7)): the file
     /// `a/b/c/file` beneath it is opened and read, as a bind mount reads it. Nothing more of
     /// it is had: its listing is refused, as its host refuses it, and so is a change of its
-    /// mode, which the server never makes of a directory it may not read. Root reads every
+    /// mode, which the server never makes of a directory it may not read. On Linux its
+    /// share is watched, as a running microVM's are (D235), and the directory, which inotify
+    /// watches for none who may not read it, is walked through unwatched. Root reads every
     /// directory, so as root this is a SKIP.
     #[cfg(unix)]
     #[test]
@@ -3880,6 +3882,12 @@ mod tests {
             return;
         }
         let (root, s) = dir();
+        #[cfg(target_os = "linux")]
+        let _events = {
+            let (tx, rx) = std::sync::mpsc::channel();
+            s.watch_dirs(1, tx).unwrap();
+            rx
+        };
         std::fs::create_dir_all(root.join("a/b/c")).unwrap();
         std::fs::write(root.join("a/b/c/file"), "reached").unwrap();
         let mode = |m| {

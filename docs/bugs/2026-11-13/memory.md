@@ -300,6 +300,20 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 
 **Fix direction:** Retire exactly the acquisitions in an unpublished successful reply through the existing FUSE FORGET/RELEASE operations. Preserve references and handles from earlier accepted replies, and preserve the filesystem effects of completed mutations. Amend D197's until-unmount limitation.
 
+### memory-19 — P2 / high — An exec-only host directory cannot be walked through
+
+**Author:** ROOT, assigned 2026-11-14 (parity with Docker's bind mounts).
+
+**Status (2026-11-14):** fixed in @FIX@ (red `an_exec_only_directory_is_walked_through_and_never_listed` at ba3e0fc31, macOS arm64: the walk `a/b/c/file` refused `Err(-13)`). @GREEN@ Owed to ROOT (real VMs): a `-v` share holding `a/b/c/file` with `a/b` mode 0111 on the host, read in the guest as the run's user (`cat /share/a/b/c/file` prints it; `ls /share/a/b` refused, Permission denied; `chmod 755 /share/a/b` refused), on Hypervisor.framework, KVM and WHP.
+
+**Location:** `crates/vmm/src/devices/virtio/fs/server.rs`, `dir_fd` (each directory opened to be read) and `node_owner`'s path through it; `server_unix.rs` `open_beneath`; `docs/design/architecture.md` D38.
+
+**Defect:** A LOOKUP of a host directory the share process may search but not read (mode 0111, exec-only) is refused EACCES: `node_owner` reaches the directory's descriptor through `dir_fd`, which opens it `O_RDONLY | O_DIRECTORY`, which its mode refuses its owner. Every name beneath it is refused with it. The guest cannot walk through an exec-only host directory to a file it may open, which a Docker bind mount allows: the kernel asks only search permission of a directory a walk passes through (path_resolution(7)).
+
+**Fix direction (ROOT):** LOOKUP of an exec-only directory succeeds for traversal, as the kernel's own permission model would, without granting a listing (READDIR still refused) and without widening anything else.
+
+**Red test:** a share with `a/b(0111)/c/file`: the file opened and read through `a/b/c/file`, and listing `a/b` refused.
+
 ## Checked and found sound
 
 These are static checks, not passing runtime results.
