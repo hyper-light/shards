@@ -203,11 +203,12 @@ impl Giver {
 
     /// Tells the builder the room its build's budget leaves it, `room` bytes past what it
     /// uses, none for no budget. While another ask is out, keep the latest word and
-    /// send it as that answer arrives. Whether this word went immediately.
+    /// send it as that answer arrives. Whether this word is now awaiting its reply.
     pub fn tell(&mut self, room: Option<i64>) -> Result<bool, String> {
         if self.out == Some(GiveRequest::Room(room)) {
             self.pending_room = RoomUpdate::NoChange;
-            return Ok(false);
+            // Already transmitted: the caller may consume its acknowledgment now.
+            return Ok(true);
         }
         if self.out.is_some() {
             self.pending_room = RoomUpdate::Tell(room);
