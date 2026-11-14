@@ -24,6 +24,8 @@ pub fn main() {
             "work" => work(),
             "spin" => spin(),
             "kmsg" => kmsg(),
+            // What its console costs (docs/research/measurements/console-cost).
+            "console" => console_cost(),
             "beat" => beat(),
             "vsock" => vsock(),
             // The vsock path's measurements (docs/research/measurements/vsock-path-v1).
@@ -1509,6 +1511,34 @@ fn kmsg() -> Result<(), String> {
     }
     // SAFETY: closing our own descriptor.
     unsafe { libc::close(fd) };
+    Ok(())
+}
+
+/// Writes `shards_console_kib` KiB to its console as 64-byte lines (63 printable bytes and
+/// a newline, so a KiB is 16 of them and the host counts what came whole), then waits for
+/// the console to have sent them (`tcdrain`), and reports how long that took on the guest's
+/// clock. What it costs whichever console the kernel was given (`console=ttyS0`, `hvc0`):
+/// docs/research/measurements/console-cost.
+fn console_cost() -> Result<(), String> {
+    let kib = env_u64("shards_console_kib")?;
+    let lines = kib.checked_mul(16).ok_or("shards_console_kib is too large")?;
+    let mut line = [0u8; 64];
+    let mut out = io::stdout().lock();
+    let began = monotonic_ns();
+    for n in 0..lines {
+        for (i, b) in line.iter_mut().enumerate() {
+            *b = b'!' + ((n as usize).wrapping_add(i) % 94) as u8;
+        }
+        if let Some(end) = line.last_mut() {
+            *end = b'\n';
+        }
+        out.write_all(&line).map_err(|e| format!("writing to the console: {e}"))?;
+    }
+    out.flush().map_err(|e| format!("flushing the console: {e}"))?;
+    // SAFETY: waits on our own stdout's descriptor.
+    unsafe { libc::tcdrain(1) };
+    let took = monotonic_ns().saturating_sub(began);
+    let _ = writeln!(out, "SHARDS-CONSOLE kib={kib} ns={took}");
     Ok(())
 }
 
