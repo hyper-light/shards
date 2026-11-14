@@ -104,6 +104,14 @@ impl Held {
         }
     }
 
+    /// What its end is waited on through beside a socket (`stream::Socket::read_watched`):
+    /// its pidfd (Linux) or its kqueue (macOS), each readable once it has exited. Waiting
+    /// there takes nothing from it: [`check`](Held::check) still sees the end.
+    #[cfg(unix)]
+    pub(crate) fn exit(&self) -> std::os::fd::BorrowedFd<'_> {
+        self.os.exit()
+    }
+
     /// Kills it (SIGKILL): on Linux through its pidfd, which no process given its pid since
     /// receives; on macOS, which has none, by its pid, which its caller sends only while its
     /// exit has not been seen; on Windows through its handle (TerminateProcess).
@@ -249,6 +257,10 @@ mod linux {
     pub(super) struct Held(OwnedFd);
 
     impl Held {
+        pub(super) fn exit(&self) -> std::os::fd::BorrowedFd<'_> {
+            std::os::fd::AsFd::as_fd(&self.0)
+        }
+
         pub(super) fn started(&self, pid: u32) -> Result<u64, ProcessFailure> {
             started(pid)
         }
@@ -330,6 +342,10 @@ mod macos {
     pub(super) struct Held(OwnedFd);
 
     impl Held {
+        pub(super) fn exit(&self) -> std::os::fd::BorrowedFd<'_> {
+            std::os::fd::AsFd::as_fd(&self.0)
+        }
+
         pub(super) fn started(&self, pid: u32) -> Result<u64, ProcessFailure> {
             started(pid)
         }

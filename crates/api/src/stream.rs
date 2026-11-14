@@ -79,6 +79,49 @@ pub(crate) fn connect_until(path: &Path, deadline: Option<Instant>) -> io::Resul
     Socket::new(inner)
 }
 
+/// What a [`Socket::read_watched`] or [`Socket::write_watched`] waits on beside its socket:
+/// a process held for its end (`taken::Held::exit`: Linux's pidfd, macOS's kqueue with its
+/// exit registered; on Windows the process's handle), which is readable, or signalled, once
+/// the process has exited.
+#[cfg(unix)]
+pub(crate) type Exit<'a> = std::os::fd::BorrowedFd<'a>;
+#[cfg(windows)]
+pub(crate) type Exit<'a> = std::os::windows::io::BorrowedHandle<'a>;
+
+impl Socket {
+    /// A read with no clock that ends at what comes, at the socket's end, or at the end of
+    /// the process `exit` holds: `None` then.
+    pub(crate) fn read_watched(&self, buf: &mut [u8], exit: Exit<'_>) -> io::Result<Option<usize>> {
+        self.watched(waits::READ, exit, || self.read_nowait(buf))
+    }
+
+    /// A write with no clock that ends where the socket takes bytes, at its end, or at the
+    /// end of the process `exit` holds: `None` then.
+    pub(crate) fn write_watched(&self, buf: &[u8], exit: Exit<'_>) -> io::Result<Option<usize>> {
+        self.watched(waits::WRITE, exit, || self.write_nowait(buf))
+    }
+
+    /// Does `op` as far as it goes now and, where it would block, waits for the socket and
+    /// for `exit` together, with no clock: `None` once `exit`'s process has ended.
+    fn watched<T>(
+        &self,
+        which: usize,
+        exit: Exit<'_>,
+        mut op: impl FnMut() -> io::Result<T>,
+    ) -> io::Result<Option<T>> {
+        loop {
+            match op() {
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                done => return done.map(Some),
+            }
+            if self.ready_or_exited(which, exit)? {
+                return Ok(None);
+            }
+        }
+    }
+}
+
 pub(crate) fn connect_nowait(path: &Path) -> io::Result<Socket> {
     #[cfg(unix)]
     let inner = unix::connect(path)?;
@@ -297,6 +340,43 @@ mod unix {
         }
     }
 
+    impl Socket {
+        /// Waits in poll(2), with no clock, for it to be readable (`READ`) or writable, or to
+        /// have ended, and for `exit` to be readable, as a pidfd (pidfd_open(2)) and a kqueue
+        /// holding an event (kqueue(2)) are once their process has exited: whether `exit` is.
+        /// An interrupted poll is neither, and its caller asks again.
+        pub(super) fn ready_or_exited(&self, which: usize, exit: super::Exit<'_>) -> io::Result<bool> {
+            let mut fds = [
+                libc::pollfd {
+                    fd: self.inner.as_raw_fd(),
+                    events: if which == READ {
+                        libc::POLLIN
+                    } else {
+                        libc::POLLOUT
+                    },
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: exit.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+            ];
+            // SAFETY: poll(2) of two pollfds of ours, of a socket this value holds open and a
+            // descriptor `exit` borrows, with no timeout.
+            let n = unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) };
+            if n < 0 {
+                let e = io::Error::last_os_error();
+                if e.kind() != io::ErrorKind::Interrupted {
+                    return Err(e);
+                }
+                return Ok(false);
+            }
+            let [_, exited] = fds;
+            Ok(exited.revents != 0)
+        }
+    }
+
     /// Sets SO_NOSIGPIPE on `s` (setsockopt(2); the macOS SDK's `sys/socket.h`: "No SIGPIPE
     /// on EPIPE"), so that a write to a gone peer fails EPIPE.
     #[cfg(target_vendor = "apple")]
@@ -376,6 +456,33 @@ impl Socket {
     /// writable, or to have ended.
     fn poll_ready(&self, which: usize, ms: i32) -> io::Result<()> {
         self.inner.ready_within(which == waits::WRITE, ms).map(drop)
+    }
+
+    /// Waits, with no clock, for it to be readable (`READ`) or writable, or to have ended,
+    /// and for the process `exit` to be signalled, as it is once it has exited: whether it
+    /// is. WSAPoll takes sockets alone, so the socket's readiness is an event
+    /// (WSAEventSelect, FD_READ or FD_WRITE, and FD_CLOSE: signalled at once where the
+    /// condition holds as it is selected), waited on with the process
+    /// (`shards_ipc::await_any`, WaitForMultipleObjects), and let go of after, the socket left
+    /// non-blocking, as `new` made it.
+    fn ready_or_exited(&self, which: usize, exit: Exit<'_>) -> io::Result<bool> {
+        use std::os::windows::io::AsHandle as _;
+        use windows_sys::Win32::Networking::WinSock::{
+            FD_CLOSE, FD_READ, FD_WRITE, WSAEVENT, WSAEventSelect,
+        };
+        let wanted = if which == waits::WRITE { FD_WRITE } else { FD_READ };
+        let wanted = i32::try_from(wanted | FD_CLOSE).map_err(io::Error::other)?;
+        let event = shards_ipc::Event::new()?;
+        // SAFETY: the socket this value holds, and an event of ours, which outlives the
+        // selection: it is let go of below.
+        if unsafe { WSAEventSelect(self.inner.raw(), event.raw() as WSAEVENT, wanted) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let waited = shards_ipc::await_any(&[], &[event.as_handle(), exit], None);
+        // SAFETY: as above: no event of the socket's is set from here on.
+        unsafe { WSAEventSelect(self.inner.raw(), 0, 0) };
+        let (_, signalled) = waited?;
+        Ok(signalled.get(1).copied().unwrap_or(false))
     }
 }
 
