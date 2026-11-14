@@ -45,7 +45,9 @@ pub fn vm() -> Result<PathBuf, String> {
 #[derive(Debug)]
 pub struct Program {
     path: PathBuf,
-    /// The file checked, open.
+    /// The file checked, open until it has started: on Linux what it starts through, on
+    /// Windows what keeps others from writing, renaming or deleting it ([`Program::path`]).
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     held: Option<fs::File>,
 }
 

@@ -9,7 +9,7 @@
 //! Whatever was started is ended where a later step fails.
 
 use std::ffi::{OsStr, OsString};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 #[cfg(unix)]
 use std::os::fd::{AsFd as _, BorrowedFd, RawFd};
