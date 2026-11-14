@@ -250,3 +250,42 @@ R11: Linux x86_64 unit coverage only; Windows/macOS and real guest alias behavio
 remain unverified. R15: scoped light tests only, signed commits and fresh remote
 main merge before landing. R16: task-owned target only, removed after landing;
 logs and source retained. Remaining checks and exact green revisions follow.
+
+### Green module and integrated migrate03 checks
+
+Source merge `7720df8391bd9da2e3e5d4511cf243a2db4db7ae` includes fix `fd33ec11a`
+and verified remote main `fde2f60fd`. adacachy2 Linux x86_64, one cargo at a time,
+`CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=4`, nice10, task-owned target;
+`SHARDS_HELPERS=skip SHARDS_INIT_BINARY=/bin/true SHARDS_SERVER_BINARY=/bin/true`
+avoid building embedded helper binaries for these pure unit tests.
+
+- `cargo test -p shards daemon::moves::tests --bin shards`: **15 passed**, including
+  the alias red, unchanged migrate01 confinement guards, forward/missing hardlink
+  sources, forbidden backing/metadata scope and oversized hardlink names.
+  Log `~/g121-tmp/fix-migrate-v1/hardlink-green-moves.log`.
+- `cargo test -p shards-vmm devices::virtio::fs::server::guest::tests --lib`:
+  **4 passed**, including alias identity and non-following source/destination paths.
+  Log `~/g121-tmp/fix-migrate-v1/hardlink-green-guest.log`.
+- `cargo test -p shards-vmm live_copy_ --lib`: **5 passed**. This validates the
+  integrated memory reviewer's migrate03 fix (`29196c6b3`) without a duplicate fix:
+  pages survive unplug, mapping loss refuses resume, intact mappings recover after
+  scan errors, and the live-copy guard excludes save/teardown. These are pure tests,
+  not live guest unplug or migration. Log `~/g121-tmp/fix-migrate-v1/livecopy-03-integrated.log`.
+
+`cargo clippy -p shards-vmm -p shards --all-targets -- -D warnings` passed on that
+same merge (exit 0, 1m26s). `scripts/check-development-policy` passed too. Runner
+Linux 7.3.3-1-cachyos x86_64, glibc 2.44, rustc 1.98.1 (48a229cea).
+Raw red/green/clippy/policy logs are retained beside this record:
+`hardlink-red-beneath.log`, `hardlink-green-moves.log`, `hardlink-green-guest.log`,
+`livecopy-03-integrated.log`, `hardlink-clippy.log`, `hardlink-policy.log`.
+Final main merge/landing and task-owned target cleanup follow.
+No additional mutation campaign ran; the committed pre-fix unit revision is the
+reproducible feature-removal control, as the fix brief prescribes.
+
+Owed to ROOT: `SHARDS_MOVE_INVITE=<destination-invitation> cargo test -p shards
+--test moved a_volumes_guest_owners_move_with_it` on the supported host pairs,
+extended to check guest hardlink aliases/open handles; the existing test alone
+does not exercise hardlinks. Also run a real live move with a guest concurrently
+issuing virtio-mem unplug and verify either consistent completion or typed refusal,
+with source survival and no stale destination pages. No such VM test or resource
+measurement was run by this implementer.

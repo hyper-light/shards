@@ -19297,6 +19297,15 @@ Linux x86_64 pure CPU tests: `aes` failed register mapping at ae37abb52 (r7), th
 clippy passed (r8). These are code-path checks, not an Arm VM or performance result.
 [Commands and residual conservative refusals](measurements/migrate/fix-review-2026-11-13.md).
 
+### Migration review hardlink and pre-copy regressions, 2026-11-13 (migrate-05/03, D176)
+
+Unit evidence only: on adacachy2 Linux x86_64, writing imported alias `a` left `b`
+unchanged at `73af9fb62` (one failing test against the landed Beneath extractor).
+After `fd33ec11a`, merge `7720df839` passed 15 migration module tests, 4 guest-file
+helper tests and 5 integrated pre-copy tests from the memory reviewer's migrate03
+fix. This proves the scoped file/ownership paths, not live VM migration, host-pair
+portability or a performance ratio. [Commands, logs and owed VM checks](measurements/migrate/fix-review-2026-11-13.md).
+
 ### M499. What a Hypervisor.framework guest is shown of its host's CPU, and a listener that outlives its runner (D176 part 6)
 
 - **Question.** A move between Macs is checked by the features macOS names
