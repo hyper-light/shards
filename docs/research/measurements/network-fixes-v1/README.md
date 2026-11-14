@@ -299,3 +299,10 @@ Extend with rotating TTL0/TTL1 UDP and TCP answers and fixed live socket count,
 witness expired/replaced IP refusal, valid current IP success, established TCP
 continuity and host memory returning after expiry. These heavy VM/resource and
 adversarial runs were not executed here.
+
+Merged-source green: `309dd3ead659eed817f81183fc9fd73686e551c5`, includes main
+31e51b4b2. Kiln r21, same Linux arm64 GNU runner/toolchain: `native-dns03.sh green`
+passed 2 authority tests, 1 grant-port test, 2 answer/TTL tests, 2 TCP DNS tests
+(7 total), and both touched crates' clippy, overall exit0.
+[Full output](green03-merged.log). Policy checker and diff whitespace check passed
+locally; no local build/test ran. This is the focused tested merge for contention.
