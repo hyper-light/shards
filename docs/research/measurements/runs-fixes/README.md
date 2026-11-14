@@ -197,3 +197,41 @@ Runs-03 landed via c1b53393c. Its last merge added only crates/net and docs,
 outside shards-api and its transitive inputs (no dependency on shards-net):
 focused gate was 3956d259b plus its patch; the disjoint c1b53393c was pushed
 without a repeated gate, per ROOT's amended rule.
+
+## runs-06
+
+Red source 46f2f014059b5d70d4b0e3ba1e4c719cc59c8ae2 plus the fact helper
+refactor/test (the selected argument intentionally unused, original preference
+behavior retained). `cargo test -j 4 -p shards --bin shards
+container_facts_keep_the_runs_selected_manifest` fails in r27: User was "1100"
+(arm64) instead of "2200" (selected amd64). The fixture ingests real digest-named
+OCI config/manifest/index blobs into a store; there is no VM or synthetic selector.
+
+Green source aff4005928bd724517734fcf7d438bb4c12a76cb plus the inspect/commands
+patch. Same regression passes (1), `cargo test -j 4 -p shards --bin shards
+daemon::inspect::tests` passes 2, `cargo test -j 4 -p shards --bin shards
+daemon::commands::tests` passes 11; `cargo clippy -j 4 -p shards --all-targets
+-- -D warnings` passes (17.96s), kiln r29 on the same macOS arm64 runner and
+unit guest fixtures. It checks both selected variants after preference changes,
+legacy preference with no selection, and missing selection with no fallback.
+
+Inspect and ownership-mode copy share image_facts, taking the record's immutable
+manifest; explicit run user still wins. Config and descriptor reads reuse the
+store's bounded digest-verifying held(), and only a missing selection field uses
+legacy preference. Copy has typed ContainerGone/ConfigMissing outcomes at its
+existing CLI rendering boundary, and refuses a missing config instead of guessing
+root. A present config without User keeps OCI's root semantics. No new runtime
+number, cache, wait, adapter or platform emulator. R01-R16 dispositions above
+apply; the unit store result is not proof of actual guest extraction ownership.
+
+Owed ROOT: extend/run `cargo test -p shards --test platforms` with one index whose
+arm64 and amd64 configs have distinct User/Env, start both variants, compare guest
+uid/env to container Config/ImageManifestDescriptor, copy with ownership mode,
+and check extracted uid for each after preference changes. Add/run filter
+`a_containers_facts_and_copied_owner_keep_its_selected_platform`. No emulated VM
+or copy execution was run here.
+
+Runs-05 merged compile gates after its api_run unit/clippy gate: 160a2836 (r25,
+14.88s), 46f2f014 (r26, 13.25s), aff40059 (r28, 13.66s), each
+`cargo check -j 4 -p shards --tests`. Pushes rejected while main advanced were
+not forced. Prepared runs-06 while the runs-05 landing retry remained pending.

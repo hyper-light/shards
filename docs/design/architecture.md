@@ -13264,6 +13264,18 @@ the guest keeps their metadata alone.
 
 ### D179. Other CPUs' images, emulated in their microVM (parts 1 to 3 built; one platform wherever a command names it)
 
+**Container facts and copy ownership** (runs-06, 2026-11-13). A container's
+`image_manifest` is its selection, even when its index's preferred platform changes.
+Inspect reads that descriptor and its config through the store's existing digest/size
+checks and OCI document/config bounds; ownership-mode copy uses those same facts.
+Only an old record with no selected manifest uses the preference. A recorded selection
+that cannot be read never falls back to another platform: inspect has no image facts,
+and copy refuses with the missing container/config identity. An available config with
+no User keeps OCI's root default; an explicit run user remains authoritative.
+The two-platform store regression changes the preference both ways, checks each selected
+User/Env/descriptor and a missing manifest. Real guest/inspect/copy agreement remains
+ROOT's live check in the [runs fix record](../research/measurements/runs-fixes/README.md).
+
 Images built on an arm64 Mac usually ship to x86_64 hosts, and the other way round, and a
 build for both (`--platform linux/amd64,linux/arm64`, D87) runs each platform's RUN steps.
 shards refused a step for a platform its microVMs do not run: "shards runs steps for

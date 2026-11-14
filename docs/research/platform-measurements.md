@@ -84,6 +84,9 @@ live checks are recorded there.
 Runs-05's preparation lease is released after readiness; 43 api_run unit tests
 and shards all-target clippy pass. Its live-VM collection/progress reproduction
 is explicitly owed; unit results are not that proof.
+Runs-06's real two-platform store fixture returned arm64 User for amd64 before
+correction; its regression, 2 inspect tests, 11 command tests and shards all-target
+clippy pass. Live emulated guest/copy agreement remains owed to ROOT.
 
 ### M2. Object lifecycle (`lifecycle`, n=200, µs)
 
