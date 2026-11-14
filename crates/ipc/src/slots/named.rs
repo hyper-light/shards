@@ -67,6 +67,7 @@ fn stream_instance(name: &str) -> io::Result<File> {
         CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
     };
     let attributes = pipe::attributes()?;
+    let quota = pipe::system_quota()?;
     let wide = pipe::wide(name);
     // SAFETY: a NUL-terminated name, attributes that live through the call.
     let raw = unsafe {
@@ -75,8 +76,10 @@ fn stream_instance(name: &str) -> io::Result<File> {
             PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
             1,
-            pipe::BUFFER,
-            pipe::BUFFER,
+            // A client's own bytes, its stdin, stdout or stderr: no frame of shards', the
+            // system's default buffer.
+            quota,
+            quota,
             0,
             &raw const attributes,
         )
@@ -124,7 +127,7 @@ fn lists(dir: &Path) -> io::Result<([String; 2], [Keeper; 2])> {
     let made = [FREE, FREE_STREAMS].map(|file| -> io::Result<(String, Keeper)> {
         let name = format!("{prefix}-{file}");
         let wide = pipe::wide(&name);
-        let server = pipe::instance(&wide, true, false, pipe::LINE_BUFFER, false)?;
+        let server = pipe::instance(&wide, true, false, crate::Window::System, false)?;
         let client = pipe::open(&wide, true)?;
         if !pipe::connected(server.as_raw_handle(), &[])? {
             return Err(io::Error::other("a list's own instance did not connect"));
@@ -225,7 +228,7 @@ impl Requests {
             .checked_add(1)
             .ok_or_else(|| io::Error::other("slot numbers"))?;
         let name = self.names.get(list(streams)).ok_or(io::ErrorKind::InvalidInput)?;
-        let instance = pipe::instance(&pipe::wide(name), false, false, pipe::LINE_BUFFER, false)?;
+        let instance = pipe::instance(&pipe::wide(name), false, false, crate::Window::System, false)?;
         let kept = instance.try_clone()?;
         let streams = if streams {
             Some([
@@ -1359,7 +1362,7 @@ mod tests {
             &pipe::wide(&stream_name(&list, requests.next, "in")),
             false,
             false,
-            pipe::BUFFER,
+            crate::Window::System,
             false,
         )
         .unwrap();

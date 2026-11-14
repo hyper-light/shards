@@ -532,15 +532,18 @@ unsafe fn start(id: i32, tty: bool, fds: [RawFd; FDS]) {
             libc::munmap(base, len);
         }
         let id = id.to_ne_bytes();
-        let (kind, word) = match i32::try_from(pid) {
-            Ok(pid) if pid > 0 => (BORN, pid),
-            _ => (NOT_BORN, errno),
+        // The pidfd is the command's only where it was born: a fork the kernel refuses past
+        // the pidfd's making, at `pids.max` among them (kernel/fork.c `copy_process`,
+        // `cgroup_can_fork` after `put_user(pidfd, ...)`), has written its number and let
+        // it go, so that sending it failed EBADF and init was never answered (confine-11).
+        let (kind, word, fds): (u8, i32, &[RawFd]) = match i32::try_from(pid) {
+            Ok(pid) if pid > 0 => (BORN, pid, &[pidfd]),
+            _ => (NOT_BORN, errno, &[]),
         };
         let w = word.to_ne_bytes();
         let message = [kind, id[0], id[1], id[2], id[3], w[0], w[1], w[2], w[3]];
-        let fds: &[RawFd] = if pidfd >= 0 { &[pidfd] } else { &[] };
         let _ = send(STARTER_FD, &message, fds);
-        if pidfd >= 0 {
+        if kind == BORN {
             libc::close(pidfd);
         }
     }

@@ -8964,7 +8964,7 @@ process.
     once, and one it cannot pends until the client has taken enough (npfs above; Wine's
     `reselect_write_queue` completes a pending write once the reader's unread bytes fit its
     buffer). So an answer is written in parts no larger than its line's outbound quota
-    (GetNamedPipeInfo's out buffer size, `LINE_BUFFER`), each waiting on the client for no
+    (GetNamedPipeInfo's out buffer size, the system's, `Window::System`, platform-11), each waiting on the client for no
     more than a quota's worth of its reading: a part that finishes at once teaches nothing,
     and one that pends is a take, from its pend (`ERROR_IO_PENDING`, `pipe::write_telling`)
     to its completion (ROOT, 2026-11-13), where the pipe is connected still as it finishes
@@ -13240,6 +13240,27 @@ retain those obligations; no Windows check or quota replacement is claimed compl
   thread at most and leaves one only where the daemon named its lists anew. No literal.
 - **11** stays open (held.md).
 
+**2026-11-14, every random byte from ProcessPrng, not BCryptGenRandom** (Hex's ask; its
+`hex_exe_imports_only_what_nanoserver_carries` failed on bcrypt.dll, which Windows Nano
+Server does not carry). Pipe and slot names (`random_hex`), the VMM's `fill_random` and the
+network process's `entropy` all take `shards_ipc::fill_random`, which calls ProcessPrng,
+bcryptprimitives.dll's per-process generator (windows-sys 0.61.2's
+`Win32_Security_Cryptography`, now shards-ipc's feature alone). It is the source Rust's std
+fills its own randomness from (rust-lang/rust 1.98.1, library/std/src/sys/random/windows.rs,
+bound raw-dylib in sys/pal/windows/c.rs) and AWS-LC seeds from on desktop Windows
+(crypto/rand_extra/windows.c); Microsoft documents it as always returning TRUE
+(https://learn.microsoft.com/en-us/windows/win32/seccng/processprng). The names stay the
+system CSPRNG's, never time or a hasher's seed, so no squatter can guess one and make it
+first. A FALSE is `RandomFailed`, typed, and no name is made. Every BCryptGenRandom call is
+gone, no fallback kept. No literal.
+Shown on Windows 11 x86_64 (the adacachy guest, MSVC 14.44, Rust 1.98.1, 2026-11-14): at
+main 8d1c89a05 the shards-ipc and shards-vmm unit-test binaries import
+`bcrypt.dll!BCryptGenRandom` (`dumpbin /imports`); at b1c7235ec neither imports bcrypt.dll, only
+`bcryptprimitives.dll!ProcessPrng`; `random_names_are_distinct_hex_of_their_length` (4,096
+16-byte names, all distinct lowercase hex) and the VMM's `random_bytes_differ_between_calls`
+pass, and clippy -D warnings of shards-ipc, -net and -vmm is clean. `shards.exe`'s own
+imports are not yet checked (ROOT's).
+
 **Why.** Every feature on every host (the user, 2026-10-27; docs/audit/2026-10-27_platform-parity.md
 row 1): on Windows `shards` had no daemon, so no `run IMAGE` and none of the commands of its
 microVMs, images, volumes and networks. D185's slots are FIFOs in the home, their
@@ -13892,10 +13913,49 @@ sleeps teaching g their lateness (`granule::LATE`). On a host whose GetThreadTim
   M495's start latency (`cpu-elastic/phases.py` against `winnone.patch`, n 100 a side) at 2g
   beside 100 ms.
 - Still owed with platform-11's design (`docs/research/measurements/platform-fixes/held.md`):
-  the Windows pipes' `BUFFER` and `LINE_BUFFER` quotas, whose derivation needs each caller's
-  wire window (a message of `MAX_PAYLOAD` is 6 MiB, past either, so neither is a frame bound),
-  and macOS's 0.5 / 1 ms time-constraint pair (a guest timer's deadline or a measured batch
+  macOS's 0.5 / 1 ms time-constraint pair (a guest timer's deadline or a measured batch
   cost). No number replaced another.
+
+**The Windows pipes' quotas: each its caller's window (platform-11, 2026-11-14).** `BUFFER`
+(1 MiB, M340's throughput) and `LINE_BUFFER` (64 KiB, a Linux FIFO's) are gone, with no
+fallback: each pipe is made with its caller's window (`shards_ipc::Window`), its quota each
+way (CreateNamedPipeW's `nOutBufferSize` and `nInBufferSize`).
+- *A caller whose protocol writes frames of a bound asks for its longest*, so that a writer
+  writes one whole without waiting on its reader mid-frame (CreateNamedPipeW, Remarks: a
+  write past the quota "will block until the data is read from the pipe"):
+  - a [`Stream`] pair's, a message: its 6-byte header, `MAX_PAYLOAD` (a run's request, its
+    head and spec, `RunHead::LEN` + `run::MAX_PAYLOAD`) and a u64 for each of `MAX_FDS`
+    handles (`pipe::MESSAGE_FRAME`);
+  - a share's stream (D197, `shards_ipc::byte_pair`, through `os::share_pipe`, the daemon's,
+    an image run's, a CLI's and a remote client's shares): its length word and `fs::MAX_FRAME`
+    (`fs::STREAM_FRAME`), a control frame of the VM process's own (a share's tables) longer
+    and rarer, waiting on its reader past it;
+  - an input pair (`input_pair`), its caller's room, as before (`run::CHUNK`).
+- *A caller whose flow has no frame of its own asks for the system's* (`Window::System`): a
+  slot's line and its list (D185: on Unix a pipe, holding the kernel's default; an answer
+  past it waits on its client, as M261 decided), a slot's streams (a client's stdin, stdout,
+  stderr), a pair of bytes written in messages (`plain_pair`, a member's streams) and a
+  Docker client's pipe (`Listener`, HTTP). CreateNamedPipeW documents no default for a size
+  of zero, so its quota is the one CreatePipe's `nSize` of zero is given ("the system uses
+  the default buffer size"; anonymous pipes "are implemented using a named pipe"), read once
+  a process from an anonymous pipe made so (`pipe::system_quota`, GetNamedPipeInfo).
+- *Cold start*: none to learn; a frame is a protocol bound, and the system's quota is read
+  the first time a pipe of it is made (one CreatePipe and its two handles closed).
+- *Failure, typed*: a frame of no bytes or past a DWORD is refused (`WindowRefusal`, as
+  `io::ErrorKind::InvalidInput`); a system quota that cannot be read refuses the pipe
+  (`io::Error`, each time asked). The quota is advisory ("the system default, the system
+  minimum or maximum, or the specified size rounded up", CreateNamedPipeW): a reserve below
+  a frame is not refused, as a write past it waits on its reader rather than fails, so the
+  frame still arrives whole, only waited on; refusing would refuse every pipe on a host whose
+  maximum is lower.
+- Held: ipc `window::tests::a_pipes_quota_is_its_callers_window` (all hosts; red with a
+  frame asked for as a constant) and, on Windows, `pipe::tests::a_pipes_quota_is_its_callers_window_as_made`
+  (a Stream pair's quota holds its longest message, a 16-byte frame's does not, the system's
+  is CreatePipe's). Linted for x86_64-pc-windows-msvc; their Windows run is owed to ROOT:
+  `cargo test -p shards-ipc --lib pipe` and `cargo test -p shards-ipc --lib slots` on
+  windows-2025 (CI) and jupiter, then daemon.rs' `a_request_past_a_sockets_buffer_is_served`
+  and `a_stopping_daemon_waits_for_no_client_that_reads_nothing` (a 123 KiB answer past the
+  system's quota), and PM M340's throughput run (`docs/research/measurements/windows-pipe`, `cargo run --release` there on jupiter) at each new quota beside 1 MiB and 64 KiB.
 
 The user's plan, item 3 (2026-10-18): a run's `--cpus` as elastic as its memory (D148),
 every microVM given the host's CPUs, init bringing the run's online and `update --cpus`
@@ -31100,10 +31160,48 @@ ruleset, the run's seccomp filter.
     started) or that a process of the member's ended is `Refusal::NoStarter` (wire code 7,
     `docker exec`'s 126); its commands running then end with it, their end SIGKILL, as the
     reaper reaps them. A command it could not fork is `Processes` at `pids.max`, `Ended` in a
-    namespace whose first process has gone (ENOMEM), else `Joining(errno)`.
-  - *Costs.* One process of the member's, counted in its `pids.max`, for the member's life;
-    `shards top` shows it (its name `starter`). It is a fork of init's address space as the
+    namespace whose first process has gone (ENOMEM), else `Joining(errno)`. The starter
+    sends a pidfd only with a command born: the kernel writes a `CLONE_PIDFD` number before
+    it charges the fork to `pids.max` and lets it go as it refuses it (kernel/fork.c
+    `copy_process`, Linux 7.2-rc4 :2335 `put_user(pidfd, ...)`, :2394 `cgroup_can_fork`,
+    :2568), so the first cut sent a closed descriptor as a refusal's, its sendmsg failed
+    EBADF, and the exec waited for ever where `Processes` was due (confine-11, reproduced at
+    `with_starter`'s mutant: init's end polled with nothing queued, `pids.events` `max 1`).
+  - *Costs* (confine-11, 2026-11-14, [docs/bugs/2026-11-13/confine.md](../bugs/2026-11-13/confine.md)).
+    One process of the member's for the member's life, a fork of init's address space as the
     member's first process was, its pages shared copy-on-write until either writes.
+    - *Its own processes number what it declared.* The starter is one task of the member's
+      cgroup, which the pids controller counts as every task (cgroup-v2.rst, "PID"), and it
+      cannot be elsewhere: what it forks is born in its cgroup, and a process of no
+      capability cannot put a child into another (clone3 `CLONE_INTO_CGROUP` asks write
+      access to the target's `cgroup.procs`), so a starter outside the member's cgroup would
+      start commands outside its `pids.max`, `memory.max` and freezing. So `start` commits
+      the member's `pids.max` as what it declares and its starter's one task
+      (`STARTER_TASKS`, `with_starter`; an overflow refuses the member's start), as a
+      container's processes number its `--pids-limit` under runc, whose exec helper is gone
+      once its command runs. Counted against what it declared, a member of `processes: 1`
+      had no starter (its fork EAGAIN) and every command run in it was refused `NoStarter`,
+      and one of two had a command refused at its first. Once its starter has gone
+      (`Started::starter_gone`, as init reads its channel's end) its `pids.max` is what it
+      declared again, so that a member that ended its starter and reaped it (`__WALL`) is
+      given no process more; one that leaves its starter's zombie unreaped holds one less,
+      its own doing. A write that fails is said on init's console and leaves the one task.
+    - *`top` leaves it out*, with init's standby forks, by the file it runs: every process
+      of init's own program, known by the device and inode of its `/proc/PID/exe`
+      (procs.rs `image`), never by a name. It was left out by the path that link reads,
+      which is a program's path in its own mounts (d_path(9) from a root its mounts do not
+      reach), so a member whose image had its program where init's is, as an image's
+      `/init` is, was left out of `top` as init's own fork (red
+      `a_members_program_at_inits_path_is_listed` at 6f3cd4428, `listed: []`). The
+      starter's name, `starter`, which any member's program could take, decides nothing. A
+      process of the member's can run no copy of init's file: it is outside the member's
+      root, and the processes that run it there, the starter and a command born of it before
+      it execs, are not dumpable, so their `/proc/PID/exe` is refused it.
+    - *The member's own `/proc` shows it*: it is a process of the member's PID namespace, as
+      it must be to bear commands there, so a command that counts that namespace's
+      processes counts it (member_exec's `confined pid=4 procs=4`), where runc's `runc init`
+      shows only while an exec starts. A member may signal it, and ends what it runs then
+      (above).
   - *Alternatives.* Starting from init and entering the member's ruleset: a sibling domain
     (above). The member's namespace init as starter: init's sealed reaper is outside the
     member's Landlock domain and seccomp filter, so what it forks is too. The member's first
@@ -31114,7 +31212,10 @@ ruleset, the run's seccomp filter.
     member_exec -- --nocapture`, with an exec that runs `kill -0 1` and `kill -TERM 1` in its
     member and connects to an abstract socket the member's program listens on, and an exec
     asked after the member killed its starter (`Refusal::NoStarter`); E2E tests that count a
-    member's processes see its starter.
+    member's processes see its starter. confine-11's: `shards top vm` of a run whose member
+    runs lists the member's program and not its starter, and `shards exec vm --for MEMBER`
+    of a member that declares `processes: 2` runs one command and refuses a second held open
+    beside it (`Refusal::Processes`, status 126).
 - *Refused environment values* (confine-07): validation returns only the typed
   cause (empty name, NUL, reserved name), never the rejected entry. Both Debug and
   Display are value-free, and the existing member refusal wire renders only that
@@ -31175,7 +31276,16 @@ request with its member (ipc); `exec --help`'s Shards options (cmdline). On a Li
 with Landlock, as root of IDs past the test's own (`unshare --map-auto --map-root-user`):
 `domains::tests::a_command_run_in_a_member_gains_no_landlock_right_its_member_lacks`
 (confine-01's member and its command, through `rules` and `confine`, on Linux 7.3.3
-x86_64: red before, `member refused (13); command written`). Real VMs, ROOT's
+x86_64: red before, `member refused (13); command written`). confine-11's, Linux 7.3.3
+x86_64 (adacachy2): `a_members_top_lists_its_own_processes_alone` (the starter alive, left
+out; green before, as main's path compare matched it too),
+`a_members_program_at_inits_path_is_listed` (red at 6f3cd4428: `listed: []`), and with
+SHARDS_TEST_CGROUP in a delegated scope
+`a_member_runs_as_many_processes_as_it_declares_its_starter_apart` and
+`a_command_past_what_its_member_declared_is_refused` (`with_starter` mutated to the declared
+count: the first `not born: NotBorn { errno: 11 }`, the second `not asked: Gone`, its member
+of one process left no starter; before the starter's pidfd fix the first waited for ever),
+and `a_member_whose_starter_went_is_held_to_what_it_declared`. Real VMs, ROOT's
 (`cargo test -p shards --profile test-release --test member_exec`):
 `a_command_run_in_a_member_is_confined_as_the_member_is` (uid, PID namespace, name, caps and
 `no_new_privs`, signals, Landlock on files and TCP, seccomp, cgroup and network, another
