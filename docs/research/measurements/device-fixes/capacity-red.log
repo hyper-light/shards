@@ -1,0 +1,24 @@
+From /Users/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/devices-carrier-5a6c0d1d02/devices.bundle
+ * branch                p/fix-devices-v1 -> FETCH_HEAD
+HEAD is now at 91dfe52ad test(vmm): reproduce torn disk capacity publication
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.15s
+     Running unittests src/lib.rs (/Users/adalundhe/g121-tmp/fix-devices/target/debug/deps/shards_vmm-645a41c49a1f33e2)
+
+running 1 test
+test devices::virtio::block::tests::capacity_and_generation_are_published_together ... FAILED
+
+failures:
+
+---- devices::virtio::block::tests::capacity_and_generation_are_published_together stdout ----
+
+thread 'devices::virtio::block::tests::capacity_and_generation_are_published_together' (16789508) panicked at crates/vmm/src/devices/virtio/block.rs:1708:9:
+configuration exposed a partially published growth: Ok((2, 0))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    devices::virtio::block::tests::capacity_and_generation_are_published_together
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 502 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p shards-vmm --lib`
