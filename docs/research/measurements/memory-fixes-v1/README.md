@@ -102,6 +102,13 @@ These fixture settings provide no evidence about VM behavior.
 ROOT owes `cargo test -p shards --test build a_build_held_short_of_memory_has_its_builder_give_back`
 with a budget removed during a delayed give-back and delayed ROOM acknowledgment.
 
-Green at `cdd29b68b`, resumed r7, macOS arm64: give::tests:: 10/10, a_giver_ 2/2,
+Green at `5d822e8fe`, resumed r9, macOS arm64: give::tests:: 10/10, a_giver_ 2/2,
 and `cargo clippy -p shards --all-targets -- -D warnings` clean. Retained output
 is `green-memory-04.log`; the real-VM budget removal variant remains owed.
+
+Earlier merged greens `cdd29b68b` (r7) and `cb483406e` (r8) passed the same gates.
+ROOT's amended contention instruction (2026-11-14 05:10Z) allows a later input-changing
+merge to use `cargo check -p shards --tests` after this focused green; a conflict still
+requires focused tests. Resume policy read at main `a33644dbe`, role implementer,
+same policy hashes. Findings 06..15 remain [owed with designs](owed-designs.md),
+including cold starts, typed unavailable states and exact ROOT validation commands.

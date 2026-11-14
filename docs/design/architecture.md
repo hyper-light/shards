@@ -8782,6 +8782,13 @@ real-VM kill and stop tests on HVF, KVM and WHP (ROOT's).
 
 ### D188. A host short of memory gets back what its microVMs hold cold of their files (built)
 
+**R03 review memory-06..10 (2026-11-13):** the pressure windows/thresholds,
+fallback cadence, DAX crossover and cached headroom coefficient remain owed to
+ROOT. Their proposed runtime observations, cold starts, typed unavailable states
+and validation commands are in
+`docs/research/measurements/memory-fixes-v1/owed-designs.md`; existing values below
+are not evidence that these policy choices satisfy R03.
+
 **Review memory-04 (2026-11-13):** the builder's giver retains the latest ROOM
 word while a prior GIVE_BACK or ROOM reply is outstanding, including the explicit
 unbudgeted word. It transmits that word as the reply is consumed and coalesces a
@@ -18000,6 +18007,12 @@ changes.
   where BuildKit's names its source's snapshot as its parent (D114).
 
 ### D133. A builder's memory, plugged as its build needs it (virtio-mem)
+
+**R03 review memory-11..15 (2026-11-13):** reserve slack, pause/read floors,
+retry count, growth/retention ratios and boot floor remain owed to ROOT with
+designs in `docs/research/measurements/memory-fixes-v1/owed-designs.md`.
+Each needs a justified startup rule and typed uncertainty before replacement;
+this review does not approve another chosen number.
 
 A builder may have what its host can give and its home's builds have needed, but the memory
 a guest boots with costs it its page structures as it boots: about 21 MiB and 4 ms per GiB, a
