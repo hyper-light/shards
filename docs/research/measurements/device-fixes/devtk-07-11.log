@@ -1,0 +1,37 @@
+# kiln run r1768, adas-mac-studio-3.local (Darwin arm64), 2026-11-14, carrier /tmp/g121-shot/devtk-carrier
+# env: CARGO_INCREMENTAL=0 SHARDS_HELPERS=skip SHARDS_INIT_BINARY=/usr/bin/true SHARDS_SERVER_BINARY=/usr/bin/true
+6ea0a8463 test(devices): reproduce shared-memory owner traversal truncation
+=== cargo test -p shards --bin shards shm_owner_follows_every_join -j 8
+test daemon::inspect::tests::shm_owner_follows_every_join_to_the_vm_budget ... FAILED
+panicked at crates/shards/src/daemon/inspect.rs:1351:9:
+assertion `left == right` failed
+  left: 0
+ right: 536870912
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 922 filtered out
+84fa0a5e5 devices-11: a disk file is plugged writable into one run at a time, by its identity
+=== cargo test -p shards --bin shards daemon::inspect::tests -j 8
+test daemon::inspect::tests::shm_owner_refuses_cycles_and_missing_records ... ok
+test daemon::inspect::tests::shm_owner_follows_every_join_to_the_vm_budget ... ok
+test daemon::inspect::tests::json_indents_as_go_indents_it ... ok
+test daemon::inspect::tests::container_facts_keep_the_runs_selected_manifest ... ok
+test result: ok. 4 passed; 0 failed
+=== cargo test -p shards --bin shards daemon::devices::tests -j 8
+test daemon::devices::tests::a_spec_is_split_at_its_path ... ok
+test daemon::devices::tests::sizes_read_in_bytes_or_binary_units ... ok
+test daemon::devices::tests::a_member_is_found_by_its_name ... ok
+test daemon::devices::tests::a_growth_refuses_a_file_put_in_its_disks_place ... ok
+test daemon::devices::tests::device_steps_of_one_microvm_wait_for_each_other ... ok
+test daemon::devices::tests::a_functions_node_and_rules_are_read ... ok
+test daemon::devices::tests::a_disk_file_is_plugged_writable_into_one_run_at_a_time ... ok
+test daemon::devices::tests::growths_of_one_disk_never_shorten_its_file ... ok
+test daemon::devices::tests::a_disk_grown_smaller_is_refused_and_keeps_its_bytes ... ok
+test result: ok. 9 passed; 0 failed
+=== cargo clippy -p shards --all-targets -j 8 -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 17.94s
+=== exit 0
+e9427c934 mutation: devices-11 claim check off (find(|c| c.writable && writable && false))
+=== cargo test -p shards --bin shards a_disk_file_is_plugged_writable -j 8
+test daemon::devices::tests::a_disk_file_is_plugged_writable_into_one_run_at_a_time ... FAILED
+panicked at crates/shards/src/daemon/devices.rs:1372:64:
+called `Result::unwrap_err()` on an `Ok` value: Claimed { ... [DiskClaim { run: "a", path: "/data", writable: true }, DiskClaim { run: "b", path: "/data", writable: true }] ... }
+test result: FAILED. 0 passed; 1 failed
