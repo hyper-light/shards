@@ -703,7 +703,11 @@ fn a_builders_memory_is_plugged_as_its_build_needs_it() {
             ));
         }
     }
-    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    assert!(
+        wrong.is_empty(),
+        "{}\n{shown}\n--- booted with all of it\n{full}",
+        wrong.join("\n")
+    );
 
     let ctx = context(
         "build-plug-over-ctx",

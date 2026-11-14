@@ -19503,6 +19503,26 @@ KVM arm64 (L1) and WHP, at 4 and 32 vCPUs, n ≥ 20 each with p50/p90/p99/max, f
 cold start and the learned boot; and `cargo test -p shards --test build
 a_builders_memory_is_plugged_as_its_build_needs_it` across cold homes.
 
+**The builder-memory tests' shape since memory-15 (2026-11-14).** A home's first builder
+boots with its ceiling and plugs nothing, so a test of plugging that builds once in a new
+home tests the cold start instead (`a_builders_memory_is_plugged_as_its_build_needs_it`
+failed on HVF at b70a73d42 at its limits assertion: init raises a step's limits to a guest's
+booted with all it may have only where it has memory to plug, `Plug::raise_limits`; a cold
+builder's are its kernel's own). Each test of plugging (tests/build.rs `a_builders_steps_see_the_memory_it_may_have`,
+`a_builders_memory_is_plugged_as_its_build_needs_it`,
+`a_builders_memory_is_plugged_as_fast_as_its_jobs_take_it`, and build_windows.rs' twins)
+first builds once in its home, which learns its guest's boot (`common::learned_boot` reads
+the `boot` line), and holds that boot under what the measured step touches, so that the
+step's memory must be plugged; the step's kernel says what it may still plug
+(`vm.pluggable_kbytes`, D149), more than none before and less after. The give-back tests'
+first build, which fills their cache, warms their homes as it is. The cold start has a test
+of its own, `a_builders_memory_in_a_new_home_is_all_it_may_have`: a new home's builder's VM
+process is given its ceiling as both `--memory` and `--memory-max`, its kernel has nothing to
+plug, it gives back its files' cold pages at its build's word (D188), its VM process's
+footprint falling with them, and the home then holds a learned boot under the ceiling, its
+next builder having memory to plug. No test-only knob: the record a first build writes is
+the warm state, as a user's home reaches it.
+
 **R03 review memory-11..15 (2026-11-13):** reserve slack, pause/read floors,
 retry count, growth/retention ratios and boot floor remain owed to ROOT with
 designs in `docs/research/measurements/memory-fixes-v1/owed-designs.md`.
