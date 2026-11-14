@@ -1,0 +1,64 @@
+From /home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/carrier-inithex-fde8b64dae/inithex.bundle
+ * branch              HEAD       -> FETCH_HEAD
+Previous HEAD position was b1415ace Retain inithex-03 merged-tree light checks from r5
+HEAD is now at 8e8e1c43 test: reproduce absolute-FQDN MCP grants disagreeing with DNS
+   Compiling serde_derive v1.0.229
+   Compiling zlib-rs v0.6.8
+   Compiling serde v1.0.229
+   Compiling flate2 v1.1.10
+   Compiling shards-image v0.1.0 (/home/adalundhe/g121-tmp/fix-inithex-v1/source/crates/image)
+   Compiling shards-agentfile v0.1.0 (/home/adalundhe/g121-tmp/fix-inithex-v1/source/crates/agentfile)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.09s
+     Running unittests src/lib.rs (/home/adalundhe/g121-tmp/fix-inithex-v1/target/debug/deps/shards_agentfile-88293388ce9fbee2)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 43 filtered out; finished in 0.00s
+
+     Running tests/agentfile.rs (/home/adalundhe/g121-tmp/fix-inithex-v1/target/debug/deps/agentfile-9b2ba670202fdb3e)
+
+running 1 test
+test mcp_absolute_name_matches_its_dns_question ... FAILED
+
+failures:
+
+---- mcp_absolute_name_matches_its_dns_question stdout ----
+
+thread 'mcp_absolute_name_matches_its_dns_question' (2929805) panicked at crates/agentfile/tests/agentfile.rs:1338:9:
+assertion `left == right` failed: the grant must match its DNS question: https://MCP.example./sse
+  left: [109, 99, 112, 46, 101, 120, 97, 109, 112, 108, 101, 46]
+ right: [109, 99, 112, 46, 101, 120, 97, 109, 112, 108, 101]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    mcp_absolute_name_matches_its_dns_question
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 38 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards-agentfile --test agentfile`
+   Compiling shards-init v0.1.0 (/home/adalundhe/g121-tmp/fix-inithex-v1/source/crates/init)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.44s
+     Running unittests src/main.rs (/home/adalundhe/g121-tmp/fix-inithex-v1/target/debug/deps/shards_init-0839c1075913f5ee)
+
+running 1 test
+test netplan::tests::mcp_absolute_name_matches_its_dns_question ... FAILED
+
+failures:
+
+---- netplan::tests::mcp_absolute_name_matches_its_dns_question stdout ----
+
+thread 'netplan::tests::mcp_absolute_name_matches_its_dns_question' (2937063) panicked at crates/init/src/netplan.rs:979:9:
+assertion `left == right` failed
+  left: [("mcp.example.", 443)]
+ right: [("mcp.example", 443)]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    netplan::tests::mcp_absolute_name_matches_its_dns_question
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 277 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards-init --bin shards-init`
+
