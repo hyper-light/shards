@@ -27691,6 +27691,68 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
     `end_group`), and the real-VM proof on HVF, KVM and WHP, `api_image`'s
     `stop_ends_the_run_at_once` with no VM, network or share process of the run left once
     `stop` returns.
+- *A stop is followed by its host's group, never by its pipes' ends* (2026-11-14, ROOT's
+  bootstop-hang lane; amends both stops above and below). Both stops waited for
+  `gone() && said_all`: the host exited and reaped, and its answers' and diagnostics' pipes
+  ended, the diagnostics' end standing for "every process the host started has gone". A
+  pipe's end is no such word, three ways, each seen:
+  - *Any holder holds it back.* std's `io::pipe` on macOS is pipe(2) then `FD_CLOEXEC`
+    (Darwin has no pipe2), so a child any thread of the orchestrator spawns in that instant
+    with inheritance (std's `Command`, an embedder's own, as Hex's are) holds the host's
+    answers or diagnostics for its whole life, and the stop waited as long, with no word of
+    why. `a_stop_returns_though_a_process_outside_its_hosts_group_holds_its_pipes` holds a
+    write end in a process outside the host's group (the test binary, `setsid` in an
+    `.init_array`/`__mod_init_func` constructor): the old stop hung (red: killed at 60 s
+    on adacachy2, Linux x86_64, `2e302aa28` = the new test over the old code); green
+    since.
+  - *Linux releases an exiting process's files in no set order.* `exit_files` queues each
+    file's last release as task work, and kernel/task_work.c runs it LIFO ("there is no
+    ordering guarantee"); `exit_notify`, which a pidfd waits on, comes after. So the VM's
+    stderr could end while it still held another file, not yet exited: the old
+    `a_stop_returns_once_its_host_and_every_process_it_started_are_gone` saw "the stop
+    returned while the VM its run host started still ran" in 7 of 800 runs (adacachy2, 32
+    at once, base 9c35a4ff2; PM M583), 0 of 800 with the group followed.
+  - *macOS's waitid(2) takes a stop for an end* (PM M442, M583). A host stopped (SIGSTOP)
+    while its watcher waited in `Child::ended` was taken as ended; the watcher then reaped
+    it in a wait4(2) that waited, holding `Child`'s `reaped` lock and the session's state
+    lock, so the boot's stop, `kill_group`, waited on that lock and never sent SIGKILL: a
+    deadlock (sampled on adas-mac-studio-3 with the host held stopped 11 s). Two-sided now:
+    `status_of` takes only `CLD_EXITED`, `CLD_KILLED` or `CLD_DUMPED` as an end, waiting
+    on the kernel's exit word (`exit_watch`: kqueue `NOTE_EXIT`, pidfd) at a stop and asking
+    again; and `Child::wait` reaps without waiting (WNOHANG) once the end is said, the lock
+    let go of to wait again, so no kill ever waits on a reaper.
+  - *What it waits on now.* The host's exit watcher (`watch`), once the host has exited and
+    before it is reaped (its pid, the group's ID, held), ends its group and follows every
+    process of it to its exit: `Child::end_group`, the Unix twin of Windows' (above). Each
+    round sends the group SIGKILL, lists its processes that have not exited (Linux `/proc`
+    `stat`: group, state not `Z`/`X`; macOS `proc_listpids(PROC_PGRP_ONLY)`, then
+    `proc_pidinfo` group and not `SZOMB`), and waits on each one's exit word, its end
+    watched before it is seen still the group's so a reused pid is never waited on, until
+    a round lists none. A host that ends as it should has reaped what it started, and its
+    group is empty; one it leaves is ended with it (before, waited on for as long as it
+    held the diagnostics). Then its layers are swept, it is reaped, `exited` set, and its
+    pipes' readers told (`Gone`, a byte on a pipe of the session's, never its end); each
+    reader (`UntilGone`) reads to its pipe's end or, once told, to what the pipe holds,
+    which no process of the run can add to. `gone() && said_all` is the same condition,
+    reachable without any pipe's end. A group that cannot be followed is the stop's typed
+    refusal, `Os` ("the stopped run's processes"), never `Ok`/`Stopped` early
+    (`State::unfollowed`). The Windows-only `end_group` calls in both stops are gone: the
+    watcher's is every platform's. No literal; every wait is on a process SIGKILL has begun
+    to end (D215, D217).
+  - *The tests' boots follow their host* (D215). flaky3's 38-minute hang (sample21,
+    adas-mac-studio-3): the stop-mid-boot test sat in open(2) of a FIFO after its boot had
+    returned, refused at the tests' `BOOT_BOUND` ("the run did not start within 10s", as
+    three other tests were in that run under load), having killed the host before it opened
+    the FIFO's write end. `BOOT_BOUND` and the tests' "took < bound" asserts are gone (R03):
+    each stand-in boot waits `Duration::MAX` on its host's facts; each FIFO's read end is
+    opened at once beside a write end held by the party the test follows (`watched`), so a
+    read ends with that party; a VM's end is checked by its ID and start (`Named::lives`),
+    as macOS showed a pipe a process held ending microseconds after its `NOTE_EXIT`.
+  - *Owed* (ROOT): on Windows the readers still read to their pipes' end (no select(2) of
+    an anonymous pipe; `end_group` already follows the job, and std's pipes there are not
+    inheritable, but shards' spawns mark a child's ends inheritable while they create it,
+    which `INHERITING` guards against shards' own std spawns and not an embedder's); the real-VM stop tests (`api_image`) on HVF, KVM and WHP; profiling of the
+    exit watcher's `/proc` walk per run end on a host of many processes (R14).
 - *A stop for a boot under way* (2026-11-13, kiln plan 01a1cd8e862e7169a074db3d5fa33f3d,
   step 17, for Hex's delete of a microVM still booting): `Images::boot_stoppable(spec,
   patience, &BootStop)`, a default trait method, so that every `Images` keeps compiling (its
@@ -27763,7 +27825,7 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
     (JOBOBJECT_ASSOCIATE_COMPLETION_PORT), so neither closes it.
   - *Tested* (unit, stand-in run hosts, `image::session`'s tests): one that starts a VM of its
     own that never looks at its host and never says its run started, stopped mid-boot,
-    returns `Ended(Stopped)` well within its bound, its host and that VM gone; one never
+    returns `Ended(Stopped)`, its host and that VM gone (no bound since 2026-11-14, above); one never
     answering is refused as before (`Boot`, not started within its patience); one stopped
     first ends `Stopped`. Red on 83db267f2 (each boot waited out its bound, the VM outlived
     it), green with the stop. The Windows stand-in
