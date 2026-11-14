@@ -5807,6 +5807,15 @@ where
         }
     }
 
+    /// A read of what is there now, waiting for nothing: WouldBlock where nothing is.
+    fn read_now(&self, buf: &mut [u8]) -> io::Result<usize> {
+        let mut stream = self.stream;
+        stream.set_nonblocking(true)?;
+        let read = stream.read(buf);
+        stream.set_nonblocking(false)?;
+        read
+    }
+
     /// It read `n` bytes: `carried` counts them, and from its first its party's CPU is its
     /// liveness alone.
     fn took(&mut self, n: usize) {
@@ -5833,11 +5842,7 @@ where
         // Until a read finds nothing there yet, what it reads was there as its wait began:
         // read without waiting, its end then no answer it waited for (#77 waits-03).
         if !self.wait.awaited() {
-            let mut stream = self.stream;
-            stream.set_nonblocking(true)?;
-            let read = stream.read(buf);
-            stream.set_nonblocking(false)?;
-            match read {
+            match self.read_now(buf) {
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => self.wait.absent(),
                 Ok(n) => {
                     self.took(n);
@@ -5848,23 +5853,26 @@ where
         }
         loop {
             let left = self.wait.next_look();
-            // A judged wait's look due now looks before it reads again.
+            // Every look comes after a read, without waiting where the look is due now: an
+            // answer there is read, never judged missing. A look that costs more than the
+            // judge's W* leaves none to wait (`pause` at most what is left), and a loop of
+            // looks with no read between them refused answers that had come (KVM at
+            // cf13e49e6: each look's `ps` 16 to 25 ms against a W* of 8 ms; a guest's close
+            // there 128 ms unread, its VM process idle waiting on the host's next word).
             let read = if left.is_zero() {
-                None
+                self.read_now(buf)
             } else {
                 let mut stream = self.stream;
-                Some(
-                    stream
-                        .set_read_timeout(self.wait.judged().then_some(left))
-                        .and_then(|()| stream.read(buf)),
-                )
+                stream
+                    .set_read_timeout(self.wait.judged().then_some(left))
+                    .and_then(|()| stream.read(buf))
             };
             match read {
-                Some(Ok(0)) => {
+                Ok(0) => {
                     self.wait.answered();
                     return Ok(0);
                 }
-                Some(Ok(n)) => {
+                Ok(n) => {
                     self.took(n);
                     self.wait.look(true).map_err(|stall| {
                         io::Error::new(io::ErrorKind::TimedOut, self.wait.refused(&stall))
@@ -5872,7 +5880,7 @@ where
                     return Ok(n);
                 }
                 // A timeout says WouldBlock through SO_RCVTIMEO, TimedOut on Windows.
-                Some(Err(e))
+                Err(e)
                     if !matches!(
                         e.kind(),
                         io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut | io::ErrorKind::Interrupted
@@ -5880,7 +5888,7 @@ where
                 {
                     return Err(e);
                 }
-                None | Some(Err(_)) => {}
+                Err(_) => {}
             }
             self.wait
                 .look(false)
