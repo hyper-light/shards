@@ -16381,19 +16381,19 @@ mod tests {
             });
             let m = heard_whole(&vm);
             assert_eq!((m.kind, m.fds.len()), (kind::SEGMENT, 2));
+            // Its loss is recorded once the segment has gone: both are waited for.
+            let capped = || managed::capped(&shards_vmm::platform::open_dir(&dir).unwrap()).unwrap();
+            t.until("the log was not held to its bound", |_| capped().segments > 0);
+            let capped = capped();
+            assert_eq!((capped.segments, capped.bytes), (1, 64));
             let first = crate::segments::log_segment(1);
-            t.until("the log was not held to its bound", |_| {
-                !dir.join(&first.1).exists()
-            });
-            assert!(!dir.join(&first.0).exists());
+            assert!(!dir.join(&first.0).exists() && !dir.join(&first.1).exists());
             for seq in 2..=4 {
                 assert!(
                     dir.join(crate::segments::log_segment(seq).1).exists(),
                     "segment {seq}"
                 );
             }
-            let capped = managed::capped(&std::fs::File::open(&dir).unwrap()).unwrap();
-            assert_eq!((capped.segments, capped.bytes), (1, 64));
         });
     }
 
