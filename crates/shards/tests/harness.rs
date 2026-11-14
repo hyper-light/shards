@@ -54,12 +54,14 @@ fn a_daemons_whole_lines_are_its_words() {
 /// The stand-in a test's wait follows here: this test binary run again for this test alone,
 /// doing what `SHARDS_STAND_IN` says: `exit`, at once; `busy MS`, its CPU busy for MS
 /// milliseconds, then its end; `answer PORT MS`, connected to loopback's PORT, busy for MS
-/// milliseconds, then its answer written there and its end; `idle`, nothing at all until
+/// milliseconds, then its answer written there and its end; `fetch PORT`, a request
+/// written to loopback's PORT, its answer read to the connection's end; `idle`, nothing at all until
 /// its stdin closes; `pulse N MS`, N rounds of a moment's CPU then MS milliseconds of none,
 /// saying nothing, as a party that works between waits on a peer outside it; `falls MS`, a
 /// give-back ([`falls`]); `leaves MS`, a stand-in `pulse 1 MS` started on its stdout and
 /// stderr, "holder PID" said there, and its own end, the holder left holding them; `stages`
-/// and `spinner`, a machine's waits in a process of their own ([`stages`], [`spinner`]).
+/// and `spinner`, a machine's waits in a process of their own ([`stages`], [`spinner`]);
+/// `serving`, a wait on a server thread of its own process ([`serving`]).
 #[test]
 #[ignore = "a process of its own for the harness's stand-ins, which run it"]
 fn stand_in() {
@@ -82,6 +84,12 @@ fn stand_in() {
         let mut to = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
         busy(ms);
         to.write_all(ANSWER).unwrap();
+    } else if let Some(port) = asked.strip_prefix("fetch ").and_then(|p| p.parse::<u16>().ok()) {
+        let mut from = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        from.write_all(b"GET\n").unwrap();
+        let mut got = Vec::new();
+        from.read_to_end(&mut got).unwrap();
+        assert_eq!(got, ANSWER);
     } else if let Some((rounds, ms)) = asked
         .strip_prefix("pulse ")
         .and_then(|a| a.split_once(' '))
@@ -99,6 +107,8 @@ fn stand_in() {
         stages();
     } else if asked == "spinner" {
         spinner();
+    } else if asked == "serving" {
+        serving();
     } else if let Some(ms) = asked.strip_prefix("leaves ") {
         #[allow(
             clippy::zombie_processes,
@@ -333,6 +343,78 @@ fn a_stopped_process_is_its_hosts_hold_and_not_refused() {
     }
     let _ = stopped.kill();
     let _ = stopped.wait();
+}
+
+/// A command waiting on this test process's own registry is held while the registry works
+/// for it (D209 Part 8): its serving threads are the test process's, which no party's
+/// members by parent include, so a pull or build from `common::served()`'s registry waited
+/// on work no party counted. Red so (a mutation that leaves the serving threads uncounted):
+/// refused once its client sat idle a whole W*. Do: teach a kind its W* by a quick
+/// stand-in's end; then judge a stand-in that asks a server thread of this process, followed
+/// as the registry's are (`common::Server`), which works 3 W* of CPU before it answers; all
+/// in a stand-in, whose process nothing else runs in, so that its server's work is no other
+/// test's progress. Expect: never refused; the asking stand-in's own end, with the answer.
+#[test]
+fn a_wait_on_this_processs_server_goes_on_while_it_serves() {
+    let run = common::run_command(
+        stand_in_doing("serving"),
+        &["stand-in".to_string(), "serving".to_string()],
+    );
+    assert_eq!(run.status, Some(0), "{run}");
+}
+
+/// [`a_wait_on_this_processs_server_goes_on_while_it_serves`]'s stand-in.
+fn serving() {
+    let kind = common::WaitKind::at(std::panic::Location::caller());
+    let mut quick = stand_in_doing("exit")
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut taught = common::Wait::begin(kind, quick.id(), None, "a quick stand-in");
+    while quick.try_wait().unwrap().is_none() {
+        taught.look(false).unwrap();
+    }
+    taught.answered();
+    let shards_api::Seen::Learned { slowest, .. } = kind.record().seen() else {
+        panic!("its kind learned nothing of an answer");
+    };
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let work = slowest.saturating_mul(3);
+    let server = std::thread::spawn(move || {
+        use std::io::Read as _;
+        let (mut asked, _) = listener.accept().unwrap();
+        let _serving = common::Server::begin();
+        asked.read_exact(&mut [0u8; 4]).unwrap();
+        let began = Instant::now();
+        let mut spun = 0u64;
+        while began.elapsed() < work {
+            spun = std::hint::black_box(spun.wrapping_add(1));
+        }
+        asked.write_all(ANSWER).unwrap();
+    });
+    let mut client = stand_in_doing(&format!("fetch {port}"))
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut wait = common::Wait::begin(kind, client.id(), None, "a stand-in asking this process");
+    let began = Instant::now();
+    let status = loop {
+        if let Some(status) = client.try_wait().unwrap() {
+            break status;
+        }
+        if let Err(stall) = wait.look(false) {
+            let _ = client.kill();
+            panic!(
+                "refused {:?} into its server's {work:?} of work: {}",
+                began.elapsed(),
+                wait.refused(&stall)
+            );
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    server.join().unwrap();
+    assert!(status.success(), "{status}");
 }
 
 /// A run's stop grace, which its home's daemon keeps (`shards_ipc::GRACE`), is the daemon's

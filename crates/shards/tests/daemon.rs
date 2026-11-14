@@ -3086,7 +3086,7 @@ fn what_a_moved_tag_named_is_collected() {
     if cannot_run_vms() || cannot_pool() {
         return;
     }
-    let (port, _, serving) = registry_of(std::sync::Arc::new(std::sync::Mutex::new(test_image())));
+    let (port, _, serving) = registry_of(common::Served::new(test_image()));
     let image = format!("127.0.0.1:{port}/test/image:v1");
     let home = home_with("daemon-collect");
     let env = [("SHARDS_HOME", home.as_os_str())];
@@ -3124,7 +3124,7 @@ fn what_a_moved_tag_named_is_collected() {
 
     let old = run_shards_env(&["images"], &["-q", "--no-trunc", image.as_str()], &env);
     let old = old.stdout.trim().to_string();
-    *serving.lock().unwrap() = test_image_with(Some(b"moved"));
+    serving.set(test_image_with(Some(b"moved")));
     let pulled = run_shards_env(&["pull"], &[image.as_str()], &env);
     assert_eq!(pulled.status, Some(0), "{}", pulled.stderr);
     // Dangling, it is kept, its template too.

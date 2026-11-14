@@ -12463,6 +12463,72 @@ CPU in 17.694042ms".
   Owed (ROOT): that command looped on HVF until a refusal, its whole account kept (the
   "--- its wait" block, stdout/stderr and its process dump).
 
+**Part 8: this process's servers are every party's; a waiter's own polls are no hold**
+(#77 follow-ups, 2026-11-14; ROOT's brief from Part 7's two candidates and a load-sensitive
+harness test).
+- *A party gap: the test registry's threads.* `common::served()`'s registry
+  (`registry_serving_at`) answers on threads of the test process. A judged command's party
+  is its client, its home's daemon and their descendants by parent, never the test process,
+  so a pull or build from that registry waited on work no party counted: a registry thread
+  working for a request, its client and daemon blocked on the socket, was a still party.
+  - *The fix.* Each connection's thread is followed as a server (`common::Server`, made by
+    the thread itself, dropped as it ends), and every party's look counts what the
+    process's servers ran since the look before as its progress, and one runnable that ran
+    nothing as its host's hold (`Party::look`, under `Cpu::Progress` alone, as `Beside`
+    counts a machine's threads). Each server is read where it runs, by its own counter, as
+    its OS keeps one for another thread to read: Linux its CPU clock
+    (`make_thread_cpuclock`, as `Beside`'s other threads) and its `/proc/self/task/<tid>/stat`
+    state `R`; macOS `thread_info(THREAD_BASIC_INFO)` of its Mach port
+    (pthread_mach_thread_np(3)), user plus system time and `TH_STATE_RUNNING` (running or
+    waiting for a CPU, mach/thread_info.h); Windows QueryThreadCycleTime of a handle it opens
+    for itself (cycles, exact; no state read, so no hold seen there). A server's last
+    reading is kept as it ends, so the total never falls. No literal: any growth of a
+    counter is a run, as D215's look counts any CPU at all.
+  - *Its limit.* The servers are the process's, not one party's: a binary whose tests pull
+    from registries at once has each pull's serving the other waits' progress, a stall
+    shown only once the serving ends, as `Beside` says of two machines.
+  - *The registry's own cost.* Each request cloned the whole image (manifest and every
+    blob) under one `Mutex` and hashed every blob to find the one asked for, so a request
+    waited on the others' clones and on CPU proportional to the image. The image is now an
+    `Arc` taken under its lock and let go of at once (`common::Served`, `set` to replace it),
+    each blob's digest computed once as it is set, and a body written from the shared bytes,
+    its head first with `TCP_NODELAY` so the head is not held for the client's delayed ACK
+    (RFC 896, RFC 1122 4.2.3.2). Its cost before and after is unmeasured (R14, ROOT's).
+  - *Held by* tests/harness.rs `a_wait_on_this_processs_server_goes_on_while_it_serves` (in
+    a stand-in, whose process nothing else runs in: a kind taught W* by a quick stand-in's
+    end, then a stand-in that asks a `Server` thread of its process, which works 3 W* of CPU
+    before it answers), on adas-mac-studio-3.local (macOS arm64, kiln r224, the tree of
+    commit 37ecff8e1, test-release): green; red with the servers left uncounted (`Party::
+    look` reading none), "refused 95.909834ms into its server's 114.523251ms of work: a
+    stand-in asking this process made no progress for 57.591376ms, past the slowest answer
+    of its kind seen on this host (38.174417ms), 78.591334ms into its wait".
+- *Not reproduced: two moved.rs refusals* (ROOT, HVF, adas-mac-studio.local, main
+  8d1c89a05, one run of `--test moved -- --test-threads=1`, 14 of 16):
+  - moved.rs:62:19 `a_cpu_baseline_is_all_its_guest_finds_and_goes_with_it`: "shards run
+    daemon --detached --listen 127.0.0.1:0 made no progress for 258.80546ms, past the
+    slowest answer of its kind seen on this host (139.745917ms), 287.551833ms into its
+    wait".
+  - moved.rs:410:15 `a_microvm_moved_saved_keeps_its_cpu_image_files_and_connections`:
+    "shards run -d --init --pull never --name mover 127.0.0.1:64972/test/image:v1 counter
+    20 made no progress for 149.459707ms, past the slowest answer of its kind seen on this
+    host (88.809208ms), 269.855625ms into its wait".
+  Their accounts were not kept. From the code: `run daemon --detached` spawns the daemon as
+  its client's own child (daemon.rs `detach`, one posix_spawn with setsid) and waits on its
+  ready pipe, so while the client lives the daemon is of its party by parent; and :410's
+  run is `--pull never`, pulling nothing from the test registry. Run again at main
+  b4a018090 on the same host, `SHARDS_REQUIRE_VMS=1 cargo test -p shards --profile
+  test-release --test moved -- --test-threads=1`, 10 times (kiln r151, outputs in
+  adas-mac-studio.local:~/g121-tmp/jp-runs): 9 of 10 green, neither refusal; run 2 failed
+  once elsewhere, moved.rs:652:20 (`a_moved_microvms_published_port_answers_there`, the
+  restored guest's first answer, Part 7's own kind): "a guest's stream made no progress for
+  21.490209ms, past the slowest answer of its kind seen on this host (20.331ms),
+  71.553208ms into its wait ... (this test's own VM processes, its CPU its liveness alone,
+  daemon 60782 of …/ports-t-12) ... its last progress its daemon said something
+  64.252916ms ago; its host not holding it; its record W* 20.331ms, R* 0ns of CPU in
+  20.331ms". That kind's party is its words alone (`Cpu::Liveness`), so a restored guest's
+  first answer slower than the slowest seen of it is refused while its VM process faults its
+  memory back: open, ROOT's.
+
 ### D207. A Windows host's bind sources: its drives' paths (built)
 
 **Why.** The daemon read `-v` as moby's parser for Linux reads it (linux_parser.go), splitting
