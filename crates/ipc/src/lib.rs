@@ -2426,6 +2426,8 @@ pub const MAX_FDS: usize = run_fds::CLIENT
 
 mod host_memory;
 pub use host_memory::{holdable, holdable_known, host_available, host_memory};
+mod window;
+pub use window::{Window, WindowRefusal};
 pub mod slots;
 #[cfg(unix)]
 mod spawner;
@@ -2439,8 +2441,8 @@ pub use unix::*;
 mod pipe;
 #[cfg(windows)]
 pub use pipe::{
-    Arriving, Event, ExitWatch, Listener, Message, Pipe, Poller, Stream, await_any, await_streams, byte_pair,
-    end, hung_up, input_pair, readable_raw, recv, recv_by, send,
+    Arriving, Event, ExitWatch, Listener, Message, Pipe, Poller, RandomFailed, Stream, await_any,
+    await_streams, byte_pair, end, fill_random, hung_up, input_pair, readable_raw, recv, recv_by, send,
 };
 #[cfg(windows)]
 mod windows;

@@ -1,5 +1,6 @@
-//! One private report, consumed under the original operation deadline. The same
-//! Shared owner retains its channel through native observation and cancellation.
+//! One private report, consumed under the original operation's budget: its deadline, or none
+//! but its VM process's end, which the guest's watcher tells a waiting take ([`Ending`]). The
+//! same Shared owner retains its channel through native observation and cancellation.
 
 use std::io;
 use std::time::{Duration, Instant};
@@ -10,9 +11,13 @@ use crate::{GpuProbeError, Refusal};
 #[cfg(unix)]
 mod unix;
 #[cfg(unix)]
+pub(crate) use unix::Ending;
+#[cfg(unix)]
 use unix::Reader;
 #[cfg(windows)]
 mod windows;
+#[cfg(windows)]
+pub(crate) use windows::Ending;
 #[cfg(windows)]
 use windows::Reader;
 
@@ -20,7 +25,7 @@ use windows::Reader;
 pub(crate) struct Request {
     pub scope: [u8; 16],
     pub selected: Vec<PhysicalGpu>,
-    pub deadline: Instant,
+    pub until: crate::Until,
 }
 
 impl Request {
@@ -33,9 +38,18 @@ impl Request {
         Ok(Self {
             scope: request.scope(),
             selected,
-            deadline: request.deadline(),
+            until: request.until(),
         })
     }
+}
+
+/// What a reader's wait for its frame came to: the frame, its writer closed after it; or its
+/// VM process's end, told by the guest's watcher ([`Ending`]), before the writer closed, or
+/// after its watcher let the pipe go.
+#[derive(Debug)]
+pub(super) enum Read<'a> {
+    Frame(&'a [u8]),
+    Ended,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -62,7 +76,7 @@ struct Clock {
 impl Clock {
     fn expired(
         &self,
-        deadline: Instant,
+        deadline: Option<Instant>,
         #[cfg_attr(
             not(test),
             expect(unused_variables, reason = "only a test chooses the recheck that expires")
@@ -73,7 +87,7 @@ impl Clock {
         if self.expire_at == Some(recheck) {
             return true;
         }
-        Instant::now() >= deadline
+        deadline.is_some_and(|deadline| Instant::now() >= deadline)
     }
 }
 
@@ -126,7 +140,9 @@ pub(super) fn buffer(bytes: usize) -> Result<Vec<u8>, Refusal> {
 }
 
 impl Receiver {
-    pub fn new(request: Request) -> Result<(Self, io::PipeWriter), Refusal> {
+    /// The receiver, its writer for the VM process, and the [`Ending`] its guest's watcher tells
+    /// a waiting take with as the VM process's end is seen.
+    pub fn new(request: Request) -> Result<(Self, io::PipeWriter, Ending), Refusal> {
         if request.scope == [0; 16] {
             return Err(Refusal::GpuProbe(GpuProbeError::Scope));
         }
@@ -134,7 +150,11 @@ impl Receiver {
         if request.selected.is_empty() {
             return Err(Refusal::GpuProbe(GpuProbeError::Empty));
         }
-        if Instant::now() >= request.deadline {
+        if request
+            .until
+            .instant()
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
             return Err(pending());
         }
         // The extra byte distinguishes an overlong frame before parsing or
@@ -143,7 +163,7 @@ impl Receiver {
             .map_err(Refusal::GpuProbe)?
             .checked_add(1)
             .ok_or(Refusal::GpuProbe(GpuProbeError::Count))?;
-        let (reader, writer) = Reader::new(bytes)?;
+        let (reader, writer, ending) = Reader::new(bytes)?;
         Ok((
             Self {
                 request,
@@ -152,22 +172,35 @@ impl Receiver {
                 clock: Clock::default(),
             },
             writer,
+            ending,
         ))
     }
 
-    pub fn take(&mut self, patience: Duration) -> Result<GpuReport, Refusal> {
+    /// The report, once, by the earlier of the create's deadline and `patience` from now
+    /// (`Duration::MAX`, or one past the clock's range: none of the caller's). With neither, it
+    /// waits until its writer closes or its VM process's end is told: then `ended()`, what the
+    /// guest's watcher saw.
+    pub fn take(
+        &mut self,
+        patience: Duration,
+        ended: impl FnOnce() -> Refusal,
+    ) -> Result<GpuReport, Refusal> {
         if matches!(self.transfer, Transfer::Taken) {
             return Err(Refusal::GpuProbe(GpuProbeError::ReportTaken));
         }
         self.transfer = Transfer::Taken;
         let now = Instant::now();
-        let deadline = now
-            .checked_add(patience)
-            .map_or(self.request.deadline, |caller| caller.min(self.request.deadline));
-        if now >= deadline {
+        let deadline = match (now.checked_add(patience), self.request.until.instant()) {
+            (Some(caller), Some(create)) => Some(caller.min(create)),
+            (caller, create) => caller.or(create),
+        };
+        if deadline.is_some_and(|deadline| now >= deadline) {
             return Err(pending());
         }
-        let bytes = self.reader.frame(deadline)?;
+        let bytes = match self.reader.frame(deadline)? {
+            Read::Frame(bytes) => bytes,
+            Read::Ended => return Err(ended()),
+        };
         if self.clock.expired(deadline, Recheck::Frame) {
             return Err(pending());
         }
@@ -200,13 +233,18 @@ mod tests {
     use crate::physical::{GpuProbe, ResolvedGpu};
     use std::io::Write as _;
 
+    /// The end of a VM process no test here tells.
+    fn untold() -> Refusal {
+        panic!("no VM process's end is told")
+    }
+
     fn fixture() -> (Request, GpuReport) {
         let selected = PhysicalGpu::MetalRegistry(7);
         let scope = [3; 16];
         let request = Request {
             scope,
             selected: vec![selected],
-            deadline: Instant::now().checked_add(Duration::from_secs(1)).unwrap(),
+            until: crate::Until::At(Instant::now().checked_add(Duration::from_secs(1)).unwrap()),
         };
         let report = GpuReport {
             scope,
@@ -231,12 +269,12 @@ mod tests {
     fn private_report_transfers_exactly_once_after_writer_eof() {
         let (request, expected) = fixture();
         let text = expected.encode().unwrap();
-        let (mut receiver, mut writer) = Receiver::new(request).unwrap();
+        let (mut receiver, mut writer, _ending) = Receiver::new(request).unwrap();
         writer.write_all(text.as_bytes()).unwrap();
         drop(writer);
-        assert_eq!(receiver.take(Duration::from_secs(1)).unwrap(), expected);
+        assert_eq!(receiver.take(Duration::from_secs(1), untold).unwrap(), expected);
         assert!(matches!(
-            receiver.take(Duration::ZERO),
+            receiver.take(Duration::ZERO, untold),
             Err(Refusal::GpuProbe(GpuProbeError::ReportTaken))
         ));
         receiver.finish().unwrap();
@@ -249,17 +287,17 @@ mod tests {
     #[test]
     fn reports_of_one_scope_at_once_each_transfer_their_own_frame() {
         let (request, expected) = fixture();
-        let (earlier, lingering) = Receiver::new(request).unwrap();
+        let (earlier, lingering, _ending) = Receiver::new(request).unwrap();
         drop(earlier);
         let mut reports = Vec::new();
         for _ in 0..2 {
-            let (receiver, mut writer) = Receiver::new(fixture().0).unwrap();
+            let (receiver, mut writer, _ending) = Receiver::new(fixture().0).unwrap();
             writer.write_all(expected.encode().unwrap().as_bytes()).unwrap();
             drop(writer);
             reports.push(receiver);
         }
         for receiver in &mut reports {
-            assert_eq!(receiver.take(Duration::from_secs(1)).unwrap(), expected);
+            assert_eq!(receiver.take(Duration::from_secs(1), untold).unwrap(), expected);
             receiver.finish().unwrap();
         }
         drop(lingering);
@@ -275,10 +313,10 @@ mod tests {
             vec![b'x'; super::super::report_bytes(1).unwrap() + 1],
         ] {
             let (request, _) = fixture();
-            let (mut receiver, mut writer) = Receiver::new(request).unwrap();
+            let (mut receiver, mut writer, _ending) = Receiver::new(request).unwrap();
             writer.write_all(&bytes).unwrap();
             drop(writer);
-            assert!(receiver.take(Duration::from_secs(1)).is_err());
+            assert!(receiver.take(Duration::from_secs(1), untold).is_err());
             receiver.finish().unwrap();
         }
     }
@@ -289,7 +327,7 @@ mod tests {
     fn a_refused_or_unwritten_report_is_said_as_such() {
         use crate::physical::{GpuRefusal, JoinError};
         let (request, _) = fixture();
-        let (mut receiver, mut writer) = Receiver::new(request).unwrap();
+        let (mut receiver, mut writer, _ending) = Receiver::new(request).unwrap();
         let frame = format!(
             "shards-vmm-gpu 1 {}\nshards-gpu-refusal 1\njoin missing\n",
             "03".repeat(16)
@@ -297,17 +335,17 @@ mod tests {
         writer.write_all(frame.as_bytes()).unwrap();
         drop(writer);
         assert_eq!(
-            receiver.take(Duration::from_secs(1)),
+            receiver.take(Duration::from_secs(1), untold),
             Err(Refusal::GpuProbe(GpuProbeError::Refused(GpuRefusal::Join(
                 JoinError::Missing
             ))))
         );
         receiver.finish().unwrap();
         let (request, _) = fixture();
-        let (mut receiver, writer) = Receiver::new(request).unwrap();
+        let (mut receiver, writer, _ending) = Receiver::new(request).unwrap();
         drop(writer);
         assert_eq!(
-            receiver.take(Duration::from_secs(1)),
+            receiver.take(Duration::from_secs(1), untold),
             Err(Refusal::GpuProbe(GpuProbeError::Unreported))
         );
         receiver.finish().unwrap();
@@ -317,11 +355,11 @@ mod tests {
     /// alone. The writer's EOF precedes the take, so the read itself never waits.
     fn take_expiring_at(late: Option<Recheck>) -> Result<GpuReport, Refusal> {
         let (request, expected) = fixture();
-        let (mut receiver, mut writer) = Receiver::new(request).unwrap();
+        let (mut receiver, mut writer, _ending) = Receiver::new(request).unwrap();
         receiver.clock.expire_at = late;
         writer.write_all(expected.encode().unwrap().as_bytes()).unwrap();
         drop(writer);
-        let taken = receiver.take(Duration::from_secs(1));
+        let taken = receiver.take(Duration::from_secs(1), untold);
         receiver.finish().unwrap();
         taken
     }
@@ -358,14 +396,14 @@ mod tests {
     #[test]
     fn private_report_expired_caller_budget_does_not_wait_or_retry() {
         let (request, _) = fixture();
-        let (mut receiver, writer) = Receiver::new(request).unwrap();
+        let (mut receiver, writer, _ending) = Receiver::new(request).unwrap();
         assert!(matches!(
-            receiver.take(Duration::ZERO),
+            receiver.take(Duration::ZERO, untold),
             Err(Refusal::GpuProbe(GpuProbeError::Pending))
         ));
         receiver.finish().unwrap();
         assert!(matches!(
-            receiver.take(Duration::from_secs(1)),
+            receiver.take(Duration::from_secs(1), untold),
             Err(Refusal::GpuProbe(GpuProbeError::ReportTaken))
         ));
         drop(writer);

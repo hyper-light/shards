@@ -228,10 +228,6 @@ const JOIN_ROOT: &str = "join-root";
 /// The home's private directory, 0700: a build's ID file, and what a share process keeps of
 /// a restored guest's files that no path reaches (D176).
 pub(crate) const PRIVATE: &str = "tmp";
-/// How long a daemon waits for the lock of one that neither listens nor ends its runs
-/// (shards_ipc::exiting): one started at the same moment, which listens as soon as it
-/// has the lock. One ending its runs is waited for as long as it takes.
-const TAKEOVER: Duration = Duration::from_secs(20);
 /// How long a command made with no stop timeout of its own is given to end after its stop
 /// signal, before SIGKILL: by `stop`, `restart` and the daemon's own stop alike. The
 /// input's meaning, not a figure of shards': a Compose file's `stop_grace_period` left out
@@ -1935,6 +1931,8 @@ fn serve(ready: Option<File>, listen: Option<std::net::SocketAddr>) -> Result<()
         // Another daemon serves this home.
         return Ok(());
     };
+    // From here to its slots' lists is its start as a daemon waiting for the lock sees it.
+    let locked = Instant::now();
     // By its ID and its start, which a process given its ID once it has gone does not share
     // (shards_ipc::Named): a client waits for a slot while this daemon lives.
     let pid_file = home.join(shards_ipc::PID);
@@ -1961,6 +1959,10 @@ fn serve(ready: Option<File>, listen: Option<std::net::SocketAddr>) -> Result<()
     // where one that found none would start another daemon to wait for this one's lock.
     let requests = shards_ipc::slots::Requests::open(&home)
         .map_err(|e| format!("{}: {e}", home.join(shards_ipc::slots::DIR).display()))?;
+    // The home's slowest start, which a daemon waiting for its lock is judged by (TAKEOVER).
+    if let Err(e) = ends::Ends::kept_in(&home).heard(ends::End::Start, locked.elapsed()) {
+        log(e);
+    }
     // The Engine API's (D170), beside it: one that cannot be made is said, and the daemon
     // serves its CLI without it.
     let _ = std::fs::remove_file(engine::SOCKET);
@@ -2175,10 +2177,16 @@ fn readable_fd(fd: RawFd) -> bool {
 }
 
 /// The home's lock, or `None` if another daemon serves the home. One that finds no
-/// daemon serving waits a while for the lock: the last daemon may be exiting. The lock is
-/// its file's (`File::try_lock`): flock(2) on Unix, LockFileEx on Windows, each exclusive
-/// and refused at once where another holds it. Refused where a daemon of a build from
-/// before slots holds it ([`shards_ipc::PreSlotsDaemon`]).
+/// daemon serving waits for the lock while its holder lives (runs-11 TAKEOVER): a daemon
+/// started at the same moment, which serves as soon as it has made its slots' lists, or one
+/// ending its runs (shards_ipc::exiting), as long as that takes. The lock is its file's
+/// (`File::try_lock`): flock(2) on Unix, LockFileEx on Windows, each exclusive, refused at
+/// once where another holds it, and let go of by the OS as its holder ends, so that a lock
+/// held is a holder that lives. No home is taken, and no wait given up, on a clock: a
+/// starting holder that runs nothing at all for a whole slice past the slowest start this
+/// host has shown is refused typed ([`HolderStalled`]), and before the host has shown one,
+/// followed by its lock alone. Refused where a daemon of a build from before slots holds it
+/// ([`shards_ipc::PreSlotsDaemon`]).
 fn take_lock(home: &Path) -> Result<Option<File>, String> {
     let path = home.join("daemon.lock");
     let file = crate::os::owner_only(
@@ -2189,7 +2197,8 @@ fn take_lock(home: &Path) -> Result<Option<File>, String> {
     )
     .open(&path)
     .map_err(|e| format!("{}: {e}", path.display()))?;
-    let mut deadline = Instant::now() + TAKEOVER;
+    let ends = ends::Ends::kept_in(home);
+    let mut judged = None;
     let mut said = false;
     loop {
         match file.try_lock() {
@@ -2217,13 +2226,76 @@ fn take_lock(home: &Path) -> Result<Option<File>, String> {
                 let _ = std::fs::remove_file(&name);
             }
         }
-        if shards_ipc::exiting(home) {
-            deadline = Instant::now() + TAKEOVER;
-        } else if Instant::now() >= deadline {
-            return Ok(None);
+        // One ending its runs is no start to judge: its runs' stop timeouts bound it.
+        match ends.slice(ends::End::Start) {
+            Some(slice) if !shards_ipc::exiting(home) => {
+                judge_holder(home, slice, &mut judged).map_err(|stalled| stalled.to_string())?;
+            }
+            _ => judged = None,
         }
         slept(Duration::from_millis(10));
     }
+}
+
+/// A daemon that holds its home's lock and has not served yet, as one waiting for the lock
+/// follows it: the process the home's `daemon.pid` names, which it writes as it takes the
+/// lock, before it makes its slots' lists (`serve`).
+#[derive(Debug)]
+struct Judged {
+    holder: shards_ipc::Named,
+    /// When it is next looked at: none past what an `Instant` holds.
+    due: Option<Instant>,
+    followed: ends::Followed,
+}
+
+/// Why a daemon waiting for its home's lock waits no longer (runs-11 TAKEOVER): the daemon
+/// that holds it has made no slots' lists, and ran nothing, freed nothing and was held by
+/// its host from nothing (`ends::Followed::goes_on`, D215's readers) for a whole `slice`,
+/// the slowest start this host has shown (`ends::End::Start`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct HolderStalled {
+    holder: shards_ipc::Named,
+    slice: Duration,
+}
+
+impl std::fmt::Display for HolderStalled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the daemon {} that holds this home has not served, and went on with nothing for \
+             {:?}, the slowest start this host has shown",
+            self.holder.pid, self.slice
+        )
+    }
+}
+
+/// Follows the lock's holder by D215's judge, a slice of `slice` at a time from when it is
+/// first seen named: on while it goes on, [`HolderStalled`] once it has not for a slice. A
+/// holder the home names no living process for is between its lock and its name: followed
+/// by its lock alone, and judged anew once named.
+fn judge_holder(home: &Path, slice: Duration, judged: &mut Option<Judged>) -> Result<(), HolderStalled> {
+    let Some(holder) = shards_ipc::Named::read(&home.join(shards_ipc::PID)).filter(shards_ipc::Named::lives)
+    else {
+        *judged = None;
+        return Ok(());
+    };
+    let now = Instant::now();
+    let judged = match judged {
+        Some(judged) if judged.holder == holder => judged,
+        _ => judged.insert(Judged {
+            holder,
+            due: now.checked_add(slice),
+            followed: ends::Followed::of(Some(holder.pid)),
+        }),
+    };
+    if judged.due.is_none_or(|due| now < due) {
+        return Ok(());
+    }
+    if judged.followed.goes_on().is_none() {
+        return Err(HolderStalled { holder, slice });
+    }
+    judged.due = now.checked_add(slice);
+    Ok(())
 }
 
 impl<D: Disk> Daemon<D> {
@@ -5040,7 +5112,7 @@ impl<D: Disk> Daemon<D> {
         };
         let streams = served
             .iter()
-            .map(|_| shards_ipc::byte_pair())
+            .map(|_| crate::os::share_pipe())
             .collect::<io::Result<Vec<_>>>()
             .map_err(|e| format!("a share's stream: {e}"))?;
         let mut args: Vec<&OsStr> = vec![OsStr::new("share")];
@@ -7930,7 +8002,7 @@ impl<D: Disk> Daemon<D> {
     ) -> Result<JoinDoor, String> {
         let failed = |e: io::Error| format!("its microVM's join share: {e}");
         let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
-        let (served, vms) = shards_ipc::byte_pair().map_err(failed)?;
+        let (served, vms) = crate::os::share_pipe().map_err(failed)?;
         let (door, theirs) = UnixStream::pair().map_err(failed)?;
         let theirs = theirs.share().map_err(failed)?;
         let at = self.home.join(JOIN_ROOT);
@@ -11722,6 +11794,90 @@ mod tests {
             say(&vm, kind::DONE, &[0]);
             joined(starting.run).unwrap();
         });
+    }
+
+    /// The home's lock held as a daemon holds it, by a file of its own: let go of as it drops.
+    fn held_lock(home: &Path) -> File {
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(home.join("daemon.lock"))
+            .unwrap();
+        file.try_lock().unwrap();
+        file
+    }
+
+    /// `take_lock` on a thread of its own, its result sent once it returns.
+    fn taking_lock<'s>(
+        s: &'s std::thread::Scope<'s, '_>,
+        home: &'s Path,
+    ) -> std::sync::mpsc::Receiver<Result<Option<File>, String>> {
+        let (send, taken) = std::sync::mpsc::channel();
+        s.spawn(move || send.send(take_lock(home)).unwrap());
+        taken
+    }
+
+    /// A daemon waiting for its home's lock waits while its holder lives, however long, and
+    /// takes the home as soon as it is let go (runs-11 TAKEOVER). Red before: it stepped
+    /// aside after 20 s (`TAKEOVER`, picked), as if another served, while the holder had
+    /// still not served. A home with no start recorded follows its holder by its lock alone.
+    #[test]
+    fn a_daemon_waits_for_its_homes_lock_while_its_holder_lives() {
+        let home = shards_testdir::TempDir::new("takeover").unwrap();
+        let held = held_lock(&home);
+        std::fs::write(home.join(shards_ipc::PID), shards_ipc::this_process().unwrap()).unwrap();
+        std::thread::scope(|s| {
+            let taken = taking_lock(s, &home);
+            // Past the 20 s it gave up after.
+            let early = taken.recv_timeout(Duration::from_secs(21));
+            assert!(
+                early.is_err(),
+                "it stopped waiting for a holder that lives: {early:?}"
+            );
+            drop(held);
+            let file = taken.recv_timeout(Duration::from_secs(10)).unwrap().unwrap();
+            assert!(file.is_some(), "the home was not taken once its lock was let go");
+        });
+    }
+
+    /// Once the host has shown a start (`ends::End::Start`), a starting holder is followed
+    /// by D215's judge a slice of it at a time: waited for while it goes on (here this
+    /// process, which runs), and refused typed once it has run nothing for a whole slice (a
+    /// sleep named as the holder), never sooner than a slice from when it was first seen.
+    #[cfg(unix)]
+    #[test]
+    fn a_starting_holder_that_goes_on_with_nothing_for_the_hosts_slowest_start_is_refused() {
+        let home = shards_testdir::TempDir::new("takeover-judged").unwrap();
+        let slice = Duration::from_millis(200);
+        ends::Ends::kept_in(&home).heard(ends::End::Start, slice).unwrap();
+        let held = held_lock(&home);
+        std::fs::write(home.join(shards_ipc::PID), shards_ipc::this_process().unwrap()).unwrap();
+        let sleep = sleeper(600);
+        std::thread::scope(|s| {
+            let taken = taking_lock(s, &home);
+            let busy = Instant::now();
+            while busy.elapsed() < slice * 5 {
+                std::hint::black_box(busy.elapsed());
+            }
+            assert!(taken.try_recv().is_err(), "a holder that runs was not waited for");
+            let pid = sleep.id();
+            let named = format!("{pid} {}\n", shards_ipc::started(pid).unwrap());
+            std::fs::write(home.join(shards_ipc::PID), named).unwrap();
+            let seen = Instant::now();
+            let refused = taken.recv_timeout(Duration::from_secs(10));
+            let waited = seen.elapsed();
+            // Let go of, so that a waiter that did not stop takes it and ends.
+            drop(held);
+            let refused = refused.expect("a stalled holder was waited for on").unwrap_err();
+            assert!(waited >= slice, "refused within a slice: {waited:?}");
+            assert!(
+                refused.contains(&format!("the daemon {pid} that holds this home has not served")),
+                "{refused}"
+            );
+        });
+        let _ = sleep.kill(shards_ipc::signal::SIGKILL);
+        let _ = sleep.wait();
     }
 
     /// A renamed home's daemon must never remove a replacement home's request offers.

@@ -1230,7 +1230,7 @@ fn bind_step(client: &str, token: &str) -> Result<Running, Error> {
 #[cfg(windows)]
 fn bind_step(client: &str, token: &str) -> Result<Running, Error> {
     let made = |e: std::io::Error| Error::new(format!("a stream for the client's directory: {e}"));
-    let (vm, ours) = shards_ipc::byte_pair().map_err(made)?;
+    let (vm, ours) = crate::os::share_pipe().map_err(made)?;
     let reading =
         shards_vmm::platform::PipeStream::from_handle(ours.try_clone().map_err(made)?).map_err(made)?;
     let writing = shards_vmm::platform::PipeStream::from_handle(ours).map_err(made)?;

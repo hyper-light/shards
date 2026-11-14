@@ -6,7 +6,6 @@ use std::ptr::NonNull;
 
 use windows_sys::Win32::Foundation::CloseHandle;
 use windows_sys::Win32::Foundation::ERROR_HANDLE_EOF;
-use windows_sys::Win32::Security::Cryptography::{BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom};
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_FLAG_BACKUP_SEMANTICS, FlushFileBuffers, GetDiskFreeSpaceExW, ReadFile, WriteFile,
 };
@@ -1096,22 +1095,9 @@ pub unsafe fn map_file_readonly(_file: &File, _len: usize, _at: NonNull<u8>) -> 
 /// None: this never touches memory.
 pub unsafe fn clean_dcache(_ptr: *const u8, _len: usize) {}
 
+/// Fills `buf` from the system's generator, ProcessPrng (shards-ipc's, D195).
 pub fn fill_random(buf: &mut [u8]) -> io::Result<()> {
-    for chunk in buf.chunks_mut(u32::MAX as usize) {
-        // SAFETY: writes `chunk.len()` (≤ u32::MAX) bytes into `chunk`.
-        let status = unsafe {
-            BCryptGenRandom(
-                std::ptr::null_mut(),
-                chunk.as_mut_ptr(),
-                chunk.len() as u32,
-                BCRYPT_USE_SYSTEM_PREFERRED_RNG,
-            )
-        };
-        if status != 0 {
-            return Err(io::Error::other(format!("BCryptGenRandom: NTSTATUS {status:#x}")));
-        }
-    }
-    Ok(())
+    Ok(shards_ipc::fill_random(buf)?)
 }
 
 /// This Windows' product type as its kernel says it, RtlGetVersion's wProductType (winnt.h's
