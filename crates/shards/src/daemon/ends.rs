@@ -75,11 +75,12 @@ impl Slowest {
         }
     }
 
-    /// The record at `path` as it is now: none of a kind it holds no line of, or that is
-    /// not there or not read.
+    /// The record at `path` as it is now, its newest version (platform `write_in`, which on
+    /// Windows lands `ends.~N` beside it and removes the plain name): none of a kind it
+    /// holds no line of, or that is not there or not read.
     fn read(path: &Path) -> Slowest {
         let mut slowest = Slowest::default();
-        for line in std::fs::read_to_string(path).unwrap_or_default().lines() {
+        for line in newest(path).unwrap_or_default().lines() {
             let (name, ms) = line.split_once(' ').unwrap_or((line, ""));
             let Ok(ms) = ms.trim().parse::<u64>() else {
                 continue;
@@ -103,6 +104,23 @@ impl Slowest {
             helper: self.helper.max(other.helper),
         }
     }
+}
+
+/// The text of the newest version of the file at `path` (runs-12): what a write there
+/// through `platform::write_in` made, on every platform.
+pub(crate) fn newest(path: &Path) -> Option<String> {
+    let name = path.file_name()?.to_str()?;
+    let dir = home_of(path);
+    let dir = shards_vmm::platform::open_dir(dir).ok()?;
+    let file = shards_vmm::platform::open_newest_in(&dir, name).ok()?;
+    std::io::read_to_string(file).ok()
+}
+
+/// The directory `path`, a home's record, is in.
+fn home_of(path: &Path) -> &Path {
+    path.parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."))
 }
 
 impl Ends {
@@ -150,12 +168,7 @@ impl Ends {
             slowest.exit.as_millis(),
             slowest.helper.as_millis()
         );
-        let home = self
-            .path
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(Path::new("."));
-        let dir = shards_vmm::platform::open_dir(home).map_err(fail)?;
+        let dir = shards_vmm::platform::open_dir(home_of(&self.path)).map_err(fail)?;
         shards_vmm::platform::write_in(&dir, RECORD, text.as_bytes()).map_err(fail)
     }
 }
@@ -205,6 +218,40 @@ impl Followed {
 mod tests {
     use super::*;
 
+    /// The record as a later process reads it: its newest version.
+    fn recorded(home: &Path) -> String {
+        newest(&home.join(RECORD)).unwrap()
+    }
+
+    /// Writes `text` as the record, as `heard` publishes one (platform `write_in`).
+    fn publish(home: &Path, text: &str) {
+        let dir = shards_vmm::platform::open_dir(home).unwrap();
+        shards_vmm::platform::write_in(&dir, RECORD, text.as_bytes()).unwrap();
+    }
+
+    /// A record published as `heard` publishes it is read back by the next process, over
+    /// and over: on Windows each publication is a new version beside the name, which a
+    /// read of the plain name never finds (runs-12).
+    #[test]
+    fn each_published_record_is_read_back_by_the_next_process() {
+        let home = shards_testdir::TempDir::new("ends-versions").unwrap();
+        for (ms, kept) in [(1_000u64, 1_000u64), (3_000, 3_000), (2_000, 3_000)] {
+            Ends::kept_in(&home)
+                .heard(End::Teardown, Duration::from_millis(ms))
+                .unwrap();
+            assert_eq!(
+                Ends::kept_in(&home).slice(End::Teardown),
+                Some(Duration::from_millis(kept)),
+                "after {ms}"
+            );
+        }
+        publish(&home, "teardown 5000\nexit 0\nhelper 0\n");
+        assert_eq!(
+            Ends::kept_in(&home).slice(End::Teardown),
+            Some(Duration::from_secs(5))
+        );
+    }
+
     /// Another writer owns the stable record lock and is about to publish a slower
     /// teardown. A helper's update must wait, reread it, and preserve both maxima.
     #[test]
@@ -222,7 +269,7 @@ mod tests {
             let early = completed.recv_timeout(Duration::from_secs(1));
             // The lock owner publishes the snapshot it read before the other writer
             // began. A writer that ignores its lock loses its helper observation here.
-            std::fs::write(home.join(RECORD), "teardown 9000\nexit 0\nhelper 0\n").unwrap();
+            publish(&home, "teardown 9000\nexit 0\nhelper 0\n");
             drop(owned);
             early
                 .or_else(|_| completed.recv_timeout(Duration::from_secs(10)))
@@ -252,16 +299,13 @@ mod tests {
         ends.heard(End::Teardown, Duration::from_millis(12_000)).unwrap();
         ends.heard(End::Exit, Duration::from_millis(1_400)).unwrap();
         assert_eq!(ends.slice(End::Teardown), Some(Duration::from_millis(19_383)));
-        assert_eq!(
-            std::fs::read_to_string(home.join(RECORD)).unwrap(),
-            "teardown 19383\nexit 1400\nhelper 0\n"
-        );
+        assert_eq!(recorded(&home), "teardown 19383\nexit 1400\nhelper 0\n");
         let next = Ends::kept_in(&home);
         assert_eq!(next.slice(End::Teardown), Some(Duration::from_millis(19_383)));
         assert_eq!(next.slice(End::Exit), Some(Duration::from_millis(1_400)));
         assert_eq!(next.slice(End::Helper), None);
         // A record it cannot read is no record.
-        std::fs::write(home.join(RECORD), "teardown many\n").unwrap();
+        publish(&home, "teardown many\n");
         assert_eq!(Ends::kept_in(&home).slice(End::Teardown), None);
     }
 
@@ -277,10 +321,7 @@ mod tests {
         host.heard(End::Helper, Duration::from_millis(12_500)).unwrap();
         daemon.heard(End::Exit, Duration::from_millis(11_000)).unwrap();
         assert_eq!(daemon.slice(End::Helper), Some(Duration::from_millis(12_500)));
-        assert_eq!(
-            std::fs::read_to_string(home.join(RECORD)).unwrap(),
-            "teardown 0\nexit 11000\nhelper 12500\n"
-        );
+        assert_eq!(recorded(&home), "teardown 0\nexit 11000\nhelper 12500\n");
         let gone = shards_testdir::TempDir::new("ends-gone").unwrap();
         let lost = Ends::kept_in(&gone.join("no-such-home"));
         let said = lost.heard(End::Helper, Duration::from_secs(11)).unwrap_err();

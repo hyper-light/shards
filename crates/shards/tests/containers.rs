@@ -15784,7 +15784,10 @@ fn a_kills_end_is_kept_as_this_hosts_in_its_home() {
     let killed = shards_in(&home, &["kill", "e1"]);
     assert_eq!(killed.status, Some(0), "{killed}");
     let _ = exit(&mut run, &home);
-    let record = std::fs::read_to_string(home.join("ends")).unwrap();
+    // Its newest version: on Windows each write lands `ends.~N` beside the name (runs-12).
+    let dir = shards_vmm::platform::open_dir(&home).unwrap();
+    let record =
+        std::io::read_to_string(shards_vmm::platform::open_newest_in(&dir, "ends").unwrap()).unwrap();
     let ms: u64 = record
         .lines()
         .find_map(|l| l.strip_prefix("teardown "))
