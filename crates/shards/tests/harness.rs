@@ -1114,6 +1114,64 @@ fn cold_following(
     )
 }
 
+/// A guest's stream (`common::Following`) reads before each look, never judging an answer
+/// that has come missing: red at cf13e49e6 on KVM (adacachy2), where a look's `ps` took 16
+/// to 25 ms against a learned W* of 8 ms, `pause` left no time to read between looks, and
+/// vsock.rs' bad handshake, whose close came at once, was refused 128 ms later unread, its
+/// VM process idle waiting on the host. Do: a stream with nothing at its first read and its
+/// answer, one byte and its end, at every read after; its kind taught a W* of a nanosecond,
+/// its party none (no VM process of this test's own). Expect: the byte and the end read.
+#[test]
+fn a_streams_answer_that_has_come_is_read_before_a_look_judges_it() {
+    let stream = Arriving::default();
+    let mut read = Vec::new();
+    let got = std::io::Read::read_to_end(&mut quick_following(&stream), &mut read);
+    assert!(got.is_ok(), "an answer that had come refused: {got:?}");
+    assert_eq!(read, b"x");
+}
+
+/// A stream whose first read finds nothing, and whose reads after find `x`, then its end.
+#[derive(Default)]
+struct Arriving {
+    reads: std::cell::Cell<u32>,
+}
+
+impl common::Timed for Arriving {
+    fn set_read_timeout(&self, _: Option<Duration>) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn set_nonblocking(&self, _: bool) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl std::io::Read for &Arriving {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.reads.get();
+        self.reads.set(n + 1);
+        match (n, buf.first_mut()) {
+            (0, _) => Err(std::io::ErrorKind::WouldBlock.into()),
+            (1, Some(b)) => {
+                *b = b'x';
+                Ok(1)
+            }
+            _ => Ok(0),
+        }
+    }
+}
+
+/// [`common::Following::of`] at its caller's site, that kind made cold and then taught an
+/// answer a nanosecond long, so that every look past its first is due.
+#[track_caller]
+fn quick_following(stream: &Arriving) -> common::Following<'_, Arriving> {
+    let site = std::panic::Location::caller();
+    let _ = std::fs::remove_file(common::WaitKind::kept_at(site, common::STREAM, ""));
+    common::WaitKind::awaiting(site, common::STREAM)
+        .record()
+        .teach(Duration::from_nanos(1), Duration::ZERO);
+    common::Following::of(stream, None)
+}
+
 /// A test's own VM processes (`Party::own`: `Patience::own`, `Patience::of`, a guest's
 /// stream) are those its starts named (`common::OwnVm`), by their IDs, whatever their names:
 /// red at a932bc894 on adacachy2, where they were found by the name `shards-vm` and a Linux
