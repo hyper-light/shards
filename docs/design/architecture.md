@@ -28446,7 +28446,13 @@ API's protocol: its output drained, its end, its connections.
     it: a worker that had ended left a look nothing to read (PM M585). A take that waits for
     its writer's close is judged from that close as the kernel says it (POLLHUP on a read end
     of the test's own, Linux), never from the test's drop of its end: a copy another test's
-    fork made of it held the pipe open up to 29 ms longer (PM M587).
+    fork made of it held the pipe open up to 29 ms longer (PM M587). On Linux a look does not
+    count a wait for a lock another thread holds, glibc's contended low-level lock
+    (`futex(word, FUTEX_WAIT, 2)`, as malloc's arenas wait): its holder's run is the host's,
+    as `D` is; a wait for an event (a poll, a read, std's and glibc's condition and park waits,
+    FUTEX_WAIT_BITSET, std's `Mutex` among them) still counts. Such a lock names no holder, so
+    a deadlock through one is not refused by the look: it surfaces as whatever bounds the run
+    (PM M589).
 - *Its VM process* (Hex lead's ask, 2026-11-14: "Give the managed guest's orchestrator the
   confined VM process's identity (pid and start time, as Identity names the host's), so it can
   read that process's memory as the VMM's"; on Windows `reserve_ram` commits the guest's RAM in
