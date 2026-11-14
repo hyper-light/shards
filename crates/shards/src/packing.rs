@@ -21,9 +21,10 @@
 //!
 //! The stream: [`MAGIC`], then frames, each its kind ([`RAW`] or [`ZSTD`]), its length as it
 //! was and as sent, little-endian `u32`s, and its bytes; it ends where its carrier does, at a
-//! frame's end, the move's own stream holding its end within it. The machine moved to says it
-//! takes it ([`CODEC`] among what its `ready` answers it unpacks), and is sent it only then: a
-//! daemon of an earlier build is sent the stream as it is.
+//! frame's end, the move's own stream holding its end within it. Every move's stream is packed:
+//! the machine moved to says it takes it ([`CODEC`] among what its `ready` answers it unpacks),
+//! and a daemon whose answer does not is another build's, refused before anything moves
+//! (cli/moves.rs `needs_of`).
 
 use std::io::{self, Read};
 use std::sync::mpsc;
@@ -92,12 +93,6 @@ impl Pace {
             }
         }
     }
-}
-
-/// Whether the machine moved to, by what its `ready` says it unpacks, is sent the stream
-/// packed: by its [`CODEC`].
-pub(crate) fn taken(unpacks: &[String]) -> bool {
-    unpacks.iter().any(|c| c == CODEC)
 }
 
 /// What a packed stream carried so far, as its packer counts it: its bytes as they were and as
@@ -481,16 +476,5 @@ mod tests {
         // Ahead and waited on both (a link that varies): the wait on it counts first.
         input.after(ms(5), read, Some(ms(100)), true);
         assert_eq!(input.level, 1);
-    }
-
-    /// A machine moved to is sent the stream packed only where its `ready` says it unpacks
-    /// zstd: a daemon of an earlier build, whose answer names nothing it unpacks, is sent it
-    /// as it is.
-    #[test]
-    fn a_stream_is_packed_only_for_a_daemon_that_unpacks_it() {
-        assert!(taken(&["zstd".to_string()]));
-        assert!(taken(&["lz4".to_string(), "zstd".to_string()]));
-        assert!(!taken(&[]));
-        assert!(!taken(&["lz4".to_string()]));
     }
 }
