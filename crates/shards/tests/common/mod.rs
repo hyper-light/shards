@@ -440,14 +440,14 @@ pub fn kvm_kernel() -> Option<&'static Path> {
         let pinned = match ARCH {
             _ if cfg!(windows) => return None,
             "aarch64" => Artifact {
-                name: "Image-6.18.48-aarch64-kvm-7f8c931141dd",
-                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-7f8c931141dd/Image-6.18.48-aarch64-kvm",
-                sha256: "b53e264ed81d17eba6a6d19a7b8fd44b5dc64b919f3b1ea438d94cb1b5e443ed",
+                name: "Image-6.18.48-aarch64-kvm-836568f8ad2c",
+                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-836568f8ad2c/Image-6.18.48-aarch64-kvm",
+                sha256: "ff68fc5ede1ef64f9f8c9323c9429dcfbec065e579aa98a4028bb8a269b55d08",
             },
             "x86_64" => Artifact {
-                name: "vmlinux-6.18.48-x86_64-kvm-7f8c931141dd",
-                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-7f8c931141dd/vmlinux-6.18.48-x86_64-kvm",
-                sha256: "11492824539dcd5414b298fb91d90deb621d54a1a063f7b180c4c7ba0cd735a7",
+                name: "vmlinux-6.18.48-x86_64-kvm-836568f8ad2c",
+                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-836568f8ad2c/vmlinux-6.18.48-x86_64-kvm",
+                sha256: "759273d6df9d6b3800ab1ba8a792be8c3bf8f956d5a72d7ea850b831bc6ecf76",
             },
             _ => return None,
         };
@@ -5823,6 +5823,8 @@ pub struct Vm {
     pub seen: Vec<String>,
     /// Every line it has printed, read or not: what a test that stalls says.
     log: Log,
+    /// Its guest's size (its vCPUs), which keys its streamed waits' kinds ([`Vm::sized`]).
+    size: String,
 }
 
 /// Lines a process printed, as they came.
@@ -6040,7 +6042,16 @@ impl Vm {
             lines,
             seen: Vec::new(),
             log,
+            size: String::new(),
         }
+    }
+
+    /// Its guest's size (its vCPUs, say), which keys its streamed waits' kinds beside their
+    /// call sites ([`Heard::streaming_sized`]): one site's waits on guests of different sizes
+    /// are kinds apart.
+    pub fn sized(mut self, size: String) -> Vm {
+        self.size = size;
+        self
     }
 
     /// Every line it has printed so far, and those to come.
@@ -6083,7 +6094,7 @@ impl Vm {
     /// host has CPUs, which show CPU time for ever.
     #[track_caller]
     pub fn wait_for_any_streamed(&mut self, texts: &[&str], streamed: Option<&AtomicU64>) -> String {
-        let heard = Heard::streaming(self.child.id(), streamed);
+        let heard = Heard::streaming_sized(self.child.id(), streamed, &self.size);
         self.wait_lines(texts, heard)
     }
 
@@ -6155,7 +6166,7 @@ impl Vm {
     /// waited on while it gets on with it.
     #[track_caller]
     pub fn wait_exit_streamed(&mut self, streamed: Option<&AtomicU64>) -> Option<i32> {
-        let heard = Heard::streaming(self.child.id(), streamed);
+        let heard = Heard::streaming_sized(self.child.id(), streamed, &self.size);
         self.wait_end(heard)
     }
 
@@ -6233,6 +6244,15 @@ impl<'a> Heard<'a> {
         } else {
             WaitKind::of(site, PROGRESS, &guest_text(awaited))
         };
+        Heard::keyed(kind, party, guest, streamed)
+    }
+
+    fn keyed(
+        kind: &'static WaitKind,
+        party: Party,
+        guest: Guest,
+        streamed: Option<&'a AtomicU64>,
+    ) -> Heard<'a> {
         Heard {
             wait: Wait::on(kind, party, PROGRESS),
             guest,
@@ -6246,13 +6266,17 @@ impl<'a> Heard<'a> {
     /// time counted only before its first line, and `streamed`'s bytes as it carries them.
     #[track_caller]
     pub fn streaming(vm: u32, streamed: Option<&'a AtomicU64>) -> Heard<'a> {
-        Heard::with(
-            std::panic::Location::caller(),
-            Party::client(vm, None),
-            Guest::Streaming,
-            streamed,
-            "",
-        )
+        Heard::streaming_sized(vm, streamed, "")
+    }
+
+    /// [`streaming`](Self::streaming), its guest of size `size` (its vCPUs), which keys its
+    /// kind beside its call site: one site's waits on guests of different sizes are kinds
+    /// apart, so that a 64-vCPU storm is not judged by a 2-vCPU one's W* (HVF at ddb88cd47:
+    /// "still running" refused at a W* of 49.9 ms and of 753 ms learned of smaller storms).
+    #[track_caller]
+    pub fn streaming_sized(vm: u32, streamed: Option<&'a AtomicU64>, size: &str) -> Heard<'a> {
+        let kind = WaitKind::of(std::panic::Location::caller(), PROGRESS, size);
+        Heard::keyed(kind, Party::client(vm, None), Guest::Streaming, streamed)
     }
 
     /// The guest of the VM process `vm` is or started (`run --kernel`, `restore`), its CPU
@@ -6440,7 +6464,44 @@ pub struct Following<'a, S: Timed = shards_vmm::platform::UnixStream> {
 /// TCP stream to a port its daemon publishes.
 pub trait Timed {
     fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()>;
-    fn set_nonblocking(&self, on: bool) -> io::Result<()>;
+    /// A read of what is there now, waiting for nothing (WouldBlock where nothing is), that
+    /// leaves its descriptor's mode as it was. A non-blocking mode is its open socket's,
+    /// which every clone of it shares: `echo`'s writer, writing through one while a read
+    /// had set it, was refused (EAGAIN) as its peer stopped reading and ended, and the
+    /// stream stood still for good (HVF at f385b8dac, storm through its snapshot, D209).
+    fn read_now(&self, buf: &mut [u8]) -> io::Result<usize>;
+}
+
+/// [`Timed::read_now`] of socket `fd`: recv(2) with `MSG_DONTWAIT`, this call's alone.
+#[cfg(unix)]
+fn recv_now(fd: std::os::fd::RawFd, buf: &mut [u8]) -> io::Result<usize> {
+    // SAFETY: recv(2) into `buf`, of its length, from a socket its caller holds open.
+    let n = unsafe { libc::recv(fd, buf.as_mut_ptr().cast(), buf.len(), libc::MSG_DONTWAIT) };
+    usize::try_from(n).map_err(|_| io::Error::last_os_error())
+}
+
+/// [`Timed::read_now`] of socket `socket` on Windows, which has no `MSG_DONTWAIT`: as many
+/// bytes as are there (ioctlsocket `FIONREAD`), read by `read`, which cannot wait for them;
+/// WouldBlock where none are, its end among them, which the timed read after finds.
+#[cfg(windows)]
+fn recv_now(
+    socket: std::os::windows::io::BorrowedSocket<'_>,
+    buf: &mut [u8],
+    read: impl FnOnce(&mut [u8]) -> io::Result<usize>,
+) -> io::Result<usize> {
+    use std::os::windows::io::AsRawSocket as _;
+    use windows_sys::Win32::Networking::WinSock::{FIONREAD, SOCKET, ioctlsocket};
+    let mut there: u32 = 0;
+    // SAFETY: FIONREAD's count into a local, of a socket its caller holds open.
+    if unsafe { ioctlsocket(socket.as_raw_socket() as SOCKET, FIONREAD, &raw mut there) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let there = usize::try_from(there).unwrap_or(usize::MAX);
+    if there == 0 {
+        return Err(io::ErrorKind::WouldBlock.into());
+    }
+    let len = buf.len().min(there);
+    read(buf.get_mut(..len).unwrap_or_default())
 }
 
 /// A read timeout set, or none needed: macOS refuses SO_RCVTIMEO with EINVAL on a socket both
@@ -6460,8 +6521,14 @@ impl Timed for shards_vmm::platform::UnixStream {
     fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
         timed(shards_vmm::platform::UnixStream::set_read_timeout(self, timeout))
     }
-    fn set_nonblocking(&self, on: bool) -> io::Result<()> {
-        shards_vmm::platform::UnixStream::set_nonblocking(self, on)
+    fn read_now(&self, buf: &mut [u8]) -> io::Result<usize> {
+        #[cfg(unix)]
+        return recv_now(std::os::fd::AsRawFd::as_raw_fd(self), buf);
+        #[cfg(windows)]
+        return recv_now(std::os::windows::io::AsSocket::as_socket(self), buf, |b| {
+            let mut s = self;
+            s.read(b)
+        });
     }
 }
 
@@ -6469,8 +6536,14 @@ impl Timed for std::net::TcpStream {
     fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
         timed(std::net::TcpStream::set_read_timeout(self, timeout))
     }
-    fn set_nonblocking(&self, on: bool) -> io::Result<()> {
-        std::net::TcpStream::set_nonblocking(self, on)
+    fn read_now(&self, buf: &mut [u8]) -> io::Result<usize> {
+        #[cfg(unix)]
+        return recv_now(std::os::fd::AsRawFd::as_raw_fd(self), buf);
+        #[cfg(windows)]
+        return recv_now(std::os::windows::io::AsSocket::as_socket(self), buf, |b| {
+            let mut s = self;
+            s.read(b)
+        });
     }
 }
 
@@ -6497,20 +6570,35 @@ where
         home: Option<&Path>,
         site: &'static std::panic::Location<'static>,
     ) -> Following<'a, S> {
+        Following::keyed(stream, carried, home, WaitKind::awaiting(site, STREAM))
+    }
+
+    /// Reads of `stream` from now on, from a guest of size `size` (its vCPUs), which keys
+    /// its kind beside its call site: one site's streams from guests of different sizes are
+    /// kinds apart, so that a 64-vCPU storm's stream is not judged by a 2-vCPU one's W*
+    /// (HVF at ddb88cd47: "64 vCPUs: stream 6", refused 35 s past a W* of 17.6 s).
+    #[track_caller]
+    pub fn sized(stream: &'a S, carried: Option<&'a AtomicU64>, size: &str) -> Following<'a, S> {
+        let kind = WaitKind::of(std::panic::Location::caller(), STREAM, size);
+        Following::keyed(stream, carried, None, kind)
+    }
+
+    fn keyed(
+        stream: &'a S,
+        carried: Option<&'a AtomicU64>,
+        home: Option<&Path>,
+        kind: &'static WaitKind,
+    ) -> Following<'a, S> {
         Following {
             stream,
             carried,
-            wait: Wait::on(WaitKind::awaiting(site, STREAM), Party::own(home), STREAM),
+            wait: Wait::on(kind, Party::own(home), STREAM),
         }
     }
 
     /// A read of what is there now, waiting for nothing: WouldBlock where nothing is.
     fn read_now(&self, buf: &mut [u8]) -> io::Result<usize> {
-        let mut stream = self.stream;
-        stream.set_nonblocking(true)?;
-        let read = stream.read(buf);
-        stream.set_nonblocking(false)?;
-        read
+        self.stream.read_now(buf)
     }
 
     /// It read `n` bytes: `carried` counts them, and from its first its party's CPU is its
@@ -6605,9 +6693,23 @@ pub fn echo(
     len: usize,
     carried: Option<&AtomicU64>,
 ) -> Result<(), String> {
+    echo_of(sock, port, salt, len, carried, "")
+}
+
+/// [`echo`] through the echo of a guest of size `size` (its vCPUs), which keys its stream's
+/// kind ([`Following::sized`]).
+#[track_caller]
+pub fn echo_of(
+    sock: &Path,
+    port: u32,
+    salt: u64,
+    len: usize,
+    carried: Option<&AtomicU64>,
+    size: &str,
+) -> Result<(), String> {
     let s =
         shards_vmm::platform::UnixStream::connect(sock).map_err(|e| format!("{}: {e}", sock.display()))?;
-    let mut r = Following::of(&s, carried);
+    let mut r = Following::sized(&s, carried, size);
     vsock_handshake(&s, &mut r, port)?;
     let mut w = s.try_clone().map_err(|e| e.to_string())?;
     let writer = std::thread::spawn(move || -> Result<(), String> {

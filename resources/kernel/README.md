@@ -110,8 +110,10 @@ shards builds its own guest kernel. Firecracker's CI kernel lacks EROFS, which i
   - `0015`: a guest whose console is virtio-console (`console=hvc0`) lost every line its
     kernel printed before the console's driver probed. `hvc_alloc()` registers the console
     and flushes the log to it before the port is on the list `put_chars()` finds it on, so
-    the flush went nowhere. The port goes on the list first (D261; upstream's
-    `Fixes: 38edf58d73c2`, its text in the patch).
+    the flush went nowhere. The port goes on the list first, and on its device's ports list
+    before its console is set up: otherwise the flush's used-buffer interrupt on another CPU
+    found no port and freed the buffer the sender spun on, which hung guests of two or more
+    vCPUs (D261; upstream's `Fixes: 38edf58d73c2`, its text in the patch).
 - **The toolchain:** `builder.env` pins a Debian image by its multi-architecture index
   digest, and installs its compiler, linker and tools from Debian's snapshot archive at a
   fixed time. So every build of the same inputs gets the same toolchain, and a new

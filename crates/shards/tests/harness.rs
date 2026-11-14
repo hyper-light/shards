@@ -831,7 +831,7 @@ fn judged_end(party: &mut std::process::Child) -> Result<std::process::ExitStatu
 /// `common::booted`, whose shards-api client checks a spec on the call's thread; a refusal
 /// answered in 206 µs on HVF, and one of 28.6 ms on KVM, both at 0 ns of the started
 /// processes' CPU, taught their call site a W* that refused the next call 206 µs and 31 ms
-/// in as it worked). Do: a started stand-in idle throughout, the party's live process; from
+/// in as it worked). Do: a stand-in idle throughout, the party's one live process; from
 /// one call site, its kind's kept record removed, a call that answers at once, then one busy
 /// for 200 ms on its own thread, then one asleep there for 1 s, past the W* the busy one
 /// taught. Expect: the first two
@@ -839,13 +839,13 @@ fn judged_end(party: &mut std::process::Child) -> Result<std::process::ExitStatu
 #[test]
 fn a_judged_calls_own_work_is_its_progress() {
     #[track_caller]
-    fn work(ms: u64, sleep: bool, forget: bool) -> Result<(), String> {
+    fn work(party: u32, ms: u64, sleep: bool, forget: bool) -> Result<(), String> {
         if forget {
             let site = std::panic::Location::caller();
             let _ = std::fs::remove_file(common::WaitKind::kept_at(site, "", ""));
         }
         common::judged(
-            common::Party::started(None),
+            common::Party::client(party, None),
             "a call's own work",
             || {},
             || {
@@ -861,12 +861,16 @@ fn a_judged_calls_own_work_is_its_progress() {
             },
         )
     }
-    let call = |ms: u64, sleep: bool, forget: bool| work(ms, sleep, forget);
     let mut idle = stand_in_doing("idle")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .spawn()
         .unwrap();
+    // Its party the idle stand-in alone, not every process this binary started: the tests
+    // beside it run their own (4 of 4 whole binaries on HVF, run with libtest's threads,
+    // "a call idle on its own thread not refused" while they worked).
+    let party = idle.id();
+    let call = |ms: u64, sleep: bool, forget: bool| work(party, ms, sleep, forget);
     let quick = call(0, false, true);
     let busy = call(200, false, false);
     let idle_call = call(1000, true, false);
@@ -1500,8 +1504,9 @@ impl common::Timed for Arriving {
     fn set_read_timeout(&self, _: Option<Duration>) -> std::io::Result<()> {
         Ok(())
     }
-    fn set_nonblocking(&self, _: bool) -> std::io::Result<()> {
-        Ok(())
+    fn read_now(&self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let mut stream = self;
+        std::io::Read::read(&mut stream, buf)
     }
 }
 
@@ -1642,6 +1647,12 @@ fn a_streams_wait_follows_its_partys_work_until_its_first_byte() {
             let stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
             let began = Instant::now();
             let (mut following, kind) = home_stream(&stream, &home);
+            // The first round teaches its kind its answer, `taught` in: a read begun later
+            // than its byte found it there as it began, which teaches nothing (waits-03),
+            // as one did on adacachy2 with the whole binary running ("Cold").
+            if round == 0 {
+                kind.record().teach(taught, Duration::ZERO);
+            }
             let mut got = Vec::new();
             let read = following.read_to_end(&mut got).map(|_| got);
             drop(end);

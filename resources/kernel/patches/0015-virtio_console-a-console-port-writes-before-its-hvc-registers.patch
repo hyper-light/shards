@@ -13,15 +13,29 @@ returns -EPIPE, and hvc_console_print() throws away what it was given on
 any error but -EAGAIN. Output resumed with the next record.
 
 Put the port on pdrvdata.consoles before hvc_alloc(), and take it off
-again if hvc_alloc() fails. Its vtermno is set and its virtqueues are
-ready by then (add_port() sets them, and virtcons_probe() sets
-DRIVER_OK, before init_port_console()), so the flush reaches the host;
+again if hvc_alloc() fails.
+
+That flush now reaches the device, and so add_port() must also put the
+port on its device's ports list first. A device without multiport sets
+its console up in add_port() before the port is on that list; while
+put_chars() spins with interrupts off for its buffer (__send_to_port()),
+the used-buffer interrupt taken on another CPU runs out_intr(), which
+finds no port by its queue (find_port_by_vq()) and frees every used
+buffer (flush_bufs()), the one the sender waits for among them, and the
+sender spins forever holding outvq_lock: guests of two or more vCPUs
+hung in boot.rs's tests at the first version of this patch. A multiport
+device's port is on the list before its console is set up
+(handle_control_message()), so the list goes first here too, and the
+port comes off it again if the console fails.
+
+Its vtermno is set and its virtqueues are ready by then (add_port() sets
+them, and virtcons_probe() sets DRIVER_OK, before init_port_console());
 is_console_port() still says no until hvc_alloc() has returned, which is
 what the resize and removal paths look at.
 
 For upstream (to send as it stands):
 
-  Subject: [PATCH] virtio_console: add a console port to the consoles list before hvc_alloc()
+  Subject: [PATCH] virtio_console: make a console port reachable before hvc_alloc()
 
   init_port_console() calls hvc_alloc() before it adds the port to
   pdrvdata.consoles. hvc_alloc() registers the hvc console through
@@ -33,10 +47,14 @@ For upstream (to send as it stands):
   error but -EAGAIN. A guest booted with console=hvc0 so loses every
   message before the driver probes.
 
-  Add the port to the list before hvc_alloc(), and remove it again if
-  hvc_alloc() fails. Its vtermno is set, its virtqueues are set up by
-  add_port(), and virtcons_probe() has set DRIVER_OK by then.
-  is_console_port() stays false until hvc_alloc() returns.
+  Add the port to pdrvdata.consoles before hvc_alloc(), and remove it
+  again if hvc_alloc() fails. Since the flush then reaches the device,
+  add_port() must also add the port to portdev->ports before it sets up
+  the console, as the multiport path already does: otherwise out_intr()
+  on another CPU finds no port for the queue and flush_bufs() reclaims
+  the buffer __send_to_port() is spinning on with outvq_lock held, and
+  that CPU never returns. Remove the port from the list again if the
+  console fails.
 
   Fixes: 38edf58d73c2 ("virtio: console: don't assume a single console port.")
   Cc: stable@vger.kernel.org
@@ -44,7 +62,7 @@ For upstream (to send as it stands):
 diff --git a/drivers/char/virtio_console.c b/drivers/char/virtio_console.c
 --- a/drivers/char/virtio_console.c
 +++ b/drivers/char/virtio_console.c
-@@ -1217,18 +1217,26 @@ static int init_port_console(struct port *port)
+@@ -1217,18 +1217,26 @@
  		return ret;
  
  	port->cons.vtermno = ret;
@@ -74,3 +92,40 @@ diff --git a/drivers/char/virtio_console.c b/drivers/char/virtio_console.c
  	port->guest_connected = true;
  
  	/* Notify host of port being opened */
+@@ -1390,6 +1398,16 @@
+ 		dev_err(port->dev, "Error allocating inbufs\n");
+ 		goto free_device;
+ 	}
++
++	/*
++	 * On the ports list before a console is set up on it, as a multiport
++	 * device's port is: setting one up writes the log to it at once, and
++	 * out_intr() on another CPU must find the port, or it frees the
++	 * buffer put_chars() is waiting for (flush_bufs()).
++	 */
++	spin_lock_irq(&portdev->ports_lock);
++	list_add_tail(&port->list, &port->portdev->ports);
++	spin_unlock_irq(&portdev->ports_lock);
+ 
+ 	if (is_rproc_serial(port->portdev->vdev))
+ 		/*
+@@ -1404,14 +1422,14 @@
+ 		 * this has to be a console port.
+ 		 */
+ 		err = init_port_console(port);
+-		if (err)
++		if (err) {
++			spin_lock_irq(&portdev->ports_lock);
++			list_del(&port->list);
++			spin_unlock_irq(&portdev->ports_lock);
+ 			goto free_inbufs;
++		}
+ 	}
+ 
+-	spin_lock_irq(&portdev->ports_lock);
+-	list_add_tail(&port->list, &port->portdev->ports);
+-	spin_unlock_irq(&portdev->ports_lock);
+-
+ 	/*
+ 	 * Tell the Host we're set so that it can send us various
+ 	 * configuration parameters for this port (eg, port name,
