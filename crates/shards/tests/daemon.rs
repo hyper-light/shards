@@ -2320,13 +2320,19 @@ fn a_daemon_out_of_descriptors_waits_for_room() {
     // it has yet to see the end of (the `ps` that started it), or one that takes a slot as it
     // runs out, gives it room for more first (CI 41eab0d5: 270 µs after). Waited on while it
     // goes on ([`Patience`]).
-    let fill = |silent: &mut Vec<Silent>| {
+    // Where in its log it said it ran out, as judged: the window starts there, so that room
+    // it found between that look and the window's start is room found (KVM: said before a
+    // window read from the log's length, its collection, with room, taken for one without).
+    let fill = |silent: &mut Vec<Silent>| -> usize {
         let mut patience = Patience::of(&home);
-        loop {
+        let from = loop {
             match try_slot(&home) {
                 Taken::Slot(client) => silent.push(client),
-                Taken::Busy | Taken::Gone if out(&said()) => break,
                 Taken::Busy | Taken::Gone => {
+                    let log = said();
+                    if out(&log) {
+                        break log.rfind(OUT).unwrap_or_default();
+                    }
                     assert!(
                         patience.holds(),
                         "the daemon never ran out of descriptors, {} clients in; its log:\n{}",
@@ -2336,8 +2342,9 @@ fn a_daemon_out_of_descriptors_waits_for_room() {
                     std::thread::sleep(patience.next_look());
                 }
             }
-        }
+        };
         patience.done();
+        from
     };
     // Its clients each take a slot it offers and say nothing past their first byte. On macOS
     // a wait past what one select(2) takes failed every slot at once, so that the daemon
@@ -2345,9 +2352,8 @@ fn a_daemon_out_of_descriptors_waits_for_room() {
     // found meanwhile was its last take's own, the stop pipe of the slot taken, which a
     // busy daemon came to after this test stopped taking slots (PM M334): that slot is
     // taken, and the window run again.
-    fill(&mut silent);
+    let mut from = fill(&mut silent);
     let last_window = loop {
-        let from = said().len();
         // Its CPU over a second's window as it waits for room, told: what it costs, which no
         // later event orders (D209).
         let before = cpu_time(daemon);
@@ -2367,7 +2373,7 @@ fn a_daemon_out_of_descriptors_waits_for_room() {
             break from;
         }
         eprintln!("the daemon found room as its window went; its slot taken");
-        fill(&mut silent);
+        from = fill(&mut silent);
     };
     // Let go: the daemon has room, says so, and only then collects what was left, as its log
     // orders it (no window after the mark stands for its wait, D209).
