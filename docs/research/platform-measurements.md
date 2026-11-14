@@ -23788,6 +23788,9 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   cf2764c6e, each guard's mutation red, on adas-mac-studio-3.local macOS 26.2 arm64; D240
   says the pump's ends; [commands and R01–R16 account](measurements/control-01-v1/README.md).
   Real-VM managed_output and api_image lanes remain ROOT's.
+  Follow-up: the run host now ends cut, `Aborted(104)`, each channel its VM's capture left
+  without an end, what it held past the owner's room first (red 53faf0804, green 347d16312,
+  two mutations red, same host).
 
 ### M560. CI's musl test job: its build and its tests as steps of their own, each limit derived (M420, M547)
 
