@@ -2219,26 +2219,32 @@ audit's "Security and test coverage").
     to decide), on every thread (TSYNC, Linux 3.17), every kernel's: a socket is a stream
     or a sequenced-packet one, as every socket a VM process makes is, since a datagram
     socket can send to any socket file it names [net/unix/af_unix.c,
-    `unix_dgram_sendmsg`]; and a VM given no vsock path, as every VM a daemon runs is
-    (`--warm` takes none), fails every connect(2) with EACCES, as Landlock refuses one: its
-    user's sockets, its daemon's Engine API among them, cannot be dialed (review
+    `unix_dgram_sendmsg`]; and every connect(2) fails with EACCES, as Landlock refuses one:
+    its user's sockets, its daemon's Engine API among them, cannot be dialed (review
     platform-02, [PM M569]). The filter allows seccomp(2)'s `SET_MODE_FILTER` for the
     layer: unprivileged, under no_new_privs, a filter only takes syscalls away.
+  - A VM process dials nothing itself, on Linux as on macOS and Windows: a daemon's VMs
+    are given no vsock path (`--warm` takes none), their host ports served in their
+    process; one given one (`shards build`'s builder, `run vm --kernel --vsock`, `restore vm
+    --vsock`) asks its spawner on its grants socket (`--grants FD`; `grant_ask::listen_at`)
+    for a socket bound at that path, which Landlock lets it make nowhere, and has its
+    spawner dial the host ports beside it (`kind::DIAL`, a port, never a path;
+    `platform::set_dialer`). The spawner keeps each descriptor it sends until the VM's next
+    word (`TAKEN`), as on macOS, where XNU's collector flushes one in flight (M24). Its spawners on Linux:
+    the CLI's broker, `shardsd grants`, started by `run vm` and `restore vm` where a vsock
+    path is given (cli `dial_broker`), and the builder's launch, on a thread of its own
+    (launch.rs); the broker grants a VM on Linux nothing else, its files being Landlock's,
+    and nothing after its vsock path (grant_answer.rs `answer`).
 - **Linux: Landlock, failing closed** (`confine.rs`, `landlock`), applied just before the
   VM starts (rootless-security.md R3; [Documentation/userspace-api/landlock.rst]).
   - Every filesystem right Landlock's ABI v5 knows is handled, TCP bind and connect are
     refused, and on ABI v6 signals and abstract Unix sockets outside the process are too,
-    and on v9 connections to socket files (`RESOLVE_UNIX`) but beneath the directory of a
-    vsock path it was given, where the vsock muxer dials a guest's host ports
-    (`<path>_<port>`) [PM M569].
-  - Before v9 a VM given a vsock path (`shards build`'s builder, `run vm --kernel
-    --vsock`) can still dial any socket file its user can: no primitive of older kernels
-    scopes a connect by its path within the process. The closed way for those is its
-    spawner dialing for it, as on macOS and Windows (`platform::set_dialer`); owed.
+    and on v9 every connection to a socket file (`RESOLVE_UNIX`, granted nowhere), an
+    extra layer beside the filter's refusal [PM M569].
     Allowed: its kernel, initrd, init, pmem and disks, a restore's snapshot and the files it
-    records, the snapshot directory it saves, sockets made
-    only beside a vsock path it was given (`--vsock`), `/dev/null`, its own `/proc` entry, and `/dev/kvm` and the
-    huge page settings where the host has them. No directory may take a file from another
+    records, the snapshot directory it saves, the removal of the socket its spawner bound
+    at a vsock path it was given (`--vsock`), `/dev/null`, its own `/proc` entry, and
+    `/dev/kvm` and the huge page settings where the host has them. No directory may take a file from another
     (`REFER`). Rules hold inodes: a template keeps its rule when the daemon renames it.
   - Every layer reaches every thread (review platform-01, [PM M568]). A layer restricts
     the thread that makes it and the threads it starts after

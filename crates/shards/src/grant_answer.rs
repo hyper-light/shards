@@ -1,6 +1,8 @@
 //! A spawner's half of a VM's grants (`grant`): it answers what the VM asks for with
 //! descriptors, and with bookmarks for the directories it writes in (macOS); with handles
-//! and sockets it puts in the VM's process (Windows).
+//! and sockets it puts in the VM's process (Windows). On Linux, whose VM Landlock confines
+//! to its files, a VM given a vsock path asks for that alone, and for the connections it
+//! dials beside it (D30).
 
 use std::path::{Path, PathBuf};
 
@@ -76,14 +78,32 @@ pub fn bookmark(path: &Path) -> Result<Vec<u8>, String> {
     shards_apple::bookmark::bookmark(path)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 /// What is granted for `path` as `access`: a file opened for it, a directory's bookmark,
-/// nothing, where a file to read if it is there is not, or a socket bound there.
+/// nothing, where a file to read if it is there is not (macOS), or a socket bound there.
 enum Answer {
+    #[cfg(target_os = "macos")]
     File(std::fs::File),
+    #[cfg(target_os = "macos")]
     Bookmark(Vec<u8>),
+    #[cfg(target_os = "macos")]
     Absent,
     Bound(std::os::fd::OwnedFd),
+}
+
+#[cfg(target_os = "linux")]
+/// What is granted on Linux: a socket bound at a VM's vsock path, which Landlock lets it
+/// make nowhere; its files are its Landlock rules' (D30).
+fn answer(access: Access, path: &Path, _template: Option<&Path>) -> Result<Answer, String> {
+    match access {
+        Access::Listen => listen(path)
+            .map(Answer::Bound)
+            .map_err(|e| format!("{}: {e}", path.display())),
+        _ => Err(format!(
+            "{}: a VM on Linux is granted its vsock path alone, its files by Landlock",
+            path.display()
+        )),
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -175,7 +195,7 @@ fn answer(access: Access, path: &Path, template: Option<&Path>) -> Result<Answer
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 /// A socket bound at `path` for a VM's vsock device, not yet listening: the VM listens
 /// on it once its device is up. Until then a client is refused, as it is where the VM
 /// binds the socket itself: listening at once would queue every attempt made while the
@@ -198,7 +218,7 @@ fn listen(path: &Path) -> std::io::Result<std::os::fd::OwnedFd> {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 /// A Unix stream socket bound at `path`, close-on-exec.
 fn bind(path: &Path) -> std::io::Result<std::os::fd::OwnedFd> {
     use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
@@ -235,7 +255,7 @@ fn bind(path: &Path) -> std::io::Result<std::os::fd::OwnedFd> {
     Ok(socket)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 /// A connection to vsock host port `port` beside `listening`, the vsock path the VM was
 /// granted: the only sockets it may have dialled for it.
 fn dial(listening: Option<&Path>, port: u32) -> Result<std::os::unix::net::UnixStream, String> {
@@ -246,7 +266,7 @@ fn dial(listening: Option<&Path>, port: u32) -> Result<std::os::unix::net::UnixS
         .map_err(|e| format!("{}: {e}", Path::new(&target).display()))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 /// Answers the VM on `link` as it asks, until it closes it: a bookmark for each path it
 /// names, making the directories it writes in first. A path that cannot be granted ends
 /// the answers with why.
@@ -254,7 +274,7 @@ pub fn serve(link: &std::os::unix::net::UnixStream, template: Option<&Path>) -> 
     serve_waiting(link, template, &mut |_| Ok(()))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 /// [`serve`], calling `wait` with how many messages the VM has sent before each wait for
 /// its next: a caller's watch on a VM that goes quiet (the daemon's, `grant`), which ends
 /// the answers with why where it gives the VM up.
@@ -317,12 +337,15 @@ pub fn serve_waiting(
         started = wanted.iter().any(|(access, _)| *access == Access::Listen);
         for (access, path) in wanted {
             let sent = match answer(access, &path, template) {
+                #[cfg(target_os = "macos")]
                 Ok(Answer::File(file)) => {
                     let sent = shards_ipc::send(link, kind::GRANTED, &[], &[file.as_fd()]);
                     held.push(file.into());
                     sent
                 }
+                #[cfg(target_os = "macos")]
                 Ok(Answer::Bookmark(b)) => shards_ipc::send(link, kind::GRANTED, &b, &[]),
+                #[cfg(target_os = "macos")]
                 Ok(Answer::Absent) => shards_ipc::send(link, kind::GRANTED, &[], &[]),
                 Ok(Answer::Bound(socket)) => {
                     if listening.is_some() {
@@ -345,7 +368,7 @@ pub fn serve_waiting(
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 /// `shardsd grants`: the VM's broker (`shards run vm --kernel`, `shards restore vm`), which the CLI starts before it becomes the VM.
 /// Answers the VM on descriptor 3 until it has all it needs and closes it, then exits. What
 /// it could not grant, the VM is told and says.
@@ -1039,7 +1062,10 @@ mod windows_tests {
             let serving = scope.spawn(|| serve(&spawner, &Here));
             obtain_sealed(
                 &vm,
-                &[(Access::Read, kernel.clone()), (Access::MakeDir, snapshot.clone())],
+                &[
+                    (Access::Read, kernel.clone()),
+                    (Access::MakeDir, snapshot.clone()),
+                ],
             )
             .unwrap();
             let (name, files) = stage(&vm, &snapshot, shards_vmm::platform::Kept::default()).unwrap();
@@ -1418,5 +1444,53 @@ mod tests {
             let _ = serving.join();
         });
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+#[allow(clippy::unwrap_used)]
+mod linux_tests {
+    use std::os::unix::fs::FileTypeExt as _;
+    use std::os::unix::net::{UnixListener, UnixStream};
+
+    /// A VM on Linux is granted its vsock path alone, a socket its spawner binds there, and
+    /// has its spawner dial the host ports beside it and nothing else: it names a port, not
+    /// a path (D30, platform-02). Anything else it asks for ends the answers.
+    #[test]
+    fn a_vm_on_linux_is_bound_its_vsock_path_and_dialed_beside_it_alone() {
+        let dir = shards_testdir::TempDir::new("dials").unwrap();
+        let vsock = dir.join("v");
+        let host = UnixListener::bind(dir.join("v_5")).unwrap();
+        let (vm, spawner) = UnixStream::pair().unwrap();
+        let answering = std::thread::spawn(move || super::serve(&spawner, None));
+        crate::grant_ask::listen_at(&vm, &vsock).unwrap();
+        assert!(std::fs::symlink_metadata(&vsock).unwrap().file_type().is_socket());
+        let mut dialed = crate::grant_ask::dial(&vm, 5).unwrap();
+        let (mut accepted, _) = host.accept().unwrap();
+        std::io::Write::write_all(&mut dialed, b"x").unwrap();
+        let mut got = [0u8; 1];
+        std::io::Read::read_exact(&mut accepted, &mut got).unwrap();
+        assert_eq!(&got, b"x");
+        let none = crate::grant_ask::dial(&vm, 6).unwrap_err();
+        assert_eq!(none.kind(), std::io::ErrorKind::ConnectionRefused, "{none}");
+        // Its files are Landlock's: a grant of one, and any after its vsock path, ends it.
+        let asked = crate::grant_ask::encode(&[(crate::grant::Access::Read, "/etc/passwd".into())]).unwrap();
+        shards_ipc::send(&vm, shards_ipc::kind::GRANT, &asked, &[]).unwrap();
+        let answer = shards_ipc::recv(&vm).unwrap().unwrap();
+        assert_eq!(answer.kind, shards_ipc::kind::ERR);
+        assert!(answering.join().unwrap().is_err());
+    }
+
+    /// A Linux VM's first ask is refused where it is not its vsock path.
+    #[test]
+    fn a_vm_on_linux_is_granted_no_file() {
+        let (vm, spawner) = UnixStream::pair().unwrap();
+        let answering = std::thread::spawn(move || super::serve(&spawner, None));
+        let asked = crate::grant_ask::encode(&[(crate::grant::Access::Write, "/tmp/x".into())]).unwrap();
+        shards_ipc::send(&vm, shards_ipc::kind::GRANT, &asked, &[]).unwrap();
+        let answer = shards_ipc::recv(&vm).unwrap().unwrap();
+        assert_eq!(answer.kind, shards_ipc::kind::ERR);
+        assert!(String::from_utf8_lossy(&answer.payload).contains("vsock path alone"));
+        assert!(answering.join().unwrap().is_err());
     }
 }

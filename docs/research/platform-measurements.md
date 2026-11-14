@@ -24285,6 +24285,25 @@ them, runs both. Owed to ROOT: VM runs on KVM (a daemon's
 warm VMs, `shards build`'s builder with its vsock ports, the GPU's VM process), x86_64
 and arm64 through L1.
 
+Amended 2026-11-13 (ROOT's decision on the gap before ABI v9): a VM process on Linux dials
+nothing itself, as on macOS and Windows. Its seccomp layer refuses every connect(2), on
+every kernel, and Landlock's v9 `RESOLVE_UNIX` is handled and granted nowhere, an extra
+layer. A VM given a vsock path asks its spawner, over `--grants`, for a socket bound there
+and for each host port it dials beside it (`kind::DIAL`, a port). The CLI's broker
+(`shardsd grants`) answers `run vm` and `restore vm` given `--vsock`, and a thread of the
+builder's launch answers the builder. On adacachy2, `a_confined_vm_dials_only_beside_its_vsock_path`
+now has a VM given a vsock path dial a same-user `engine.sock` listener outside its grants,
+and its own vsock directory's `v_5`: both refused (`refused 13`) under the seccomp layer
+alone (a kernel before v9), under Landlock's v9 rules alone, and under both. Before this
+change the seccomp-alone case dialed both (`dial outside: ok`): red. Mutants, each red:
+the layer's connect refusal dropped (`dial outside: ok`), and `RESOLVE_UNIX` dropped (the
+Landlock-alone cases dialed). `grant_answer::linux_tests` (shards), 2 of 2: the broker binds
+the vsock path, dials `v_5` beside it and refuses `v_6`, and refuses a file grant, and any
+grant after the vsock path. confine:: 11 of 11; clippy for shards, shards-vm-process and
+shards-syscall-filter clean on that host and on adas-mac-studio.local (macOS arm64). Owed
+to ROOT: tests/vsock.rs, boot.rs's managed rate test, snapshot.rs's vsock restores and
+tests/build.rs, on KVM x86_64 and arm64 through L1.
+
 ### M570. A Windows VM that stages its snapshots and has no vsock path was granted files after its guest started (platform-03, D30, D141, D196)
 
 Windows 10.0.26200 x86_64 (the Windows 11 guest on adacachy), 2026-11-14: at e889915c4 a VM
