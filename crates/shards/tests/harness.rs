@@ -1130,11 +1130,13 @@ fn cold_following(
 fn a_streams_wait_follows_its_partys_work_until_its_first_byte() {
     use std::io::Read as _;
     let home = TempDir::new("starts");
-    let mut daemon = stand_in_doing("busy 600000")
-        .stdout(std::process::Stdio::null())
-        .spawn()
-        .unwrap();
-    std::fs::write(home.join("daemon.pid"), format!("{}\n", daemon.id())).unwrap();
+    let daemon = Ended(
+        stand_in_doing("busy 600000")
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    std::fs::write(home.join("daemon.pid"), format!("{}\n", daemon.0.id())).unwrap();
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
     let taught = Duration::from_millis(20);
@@ -1184,8 +1186,16 @@ fn a_streams_wait_follows_its_partys_work_until_its_first_byte() {
             );
         }
     }
-    let _ = daemon.kill();
-    let _ = daemon.wait();
+}
+
+/// A stand-in ended as it drops, the test's end or its failure.
+struct Ended(std::process::Child);
+
+impl Drop for Ended {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
 }
 
 /// [`common::Following::of_home`] at its caller's site, that kind made cold as
