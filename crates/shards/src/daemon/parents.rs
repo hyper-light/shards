@@ -479,6 +479,50 @@ mod delegated {
 mod tests {
     use super::*;
 
+    /// An unchanged cold leaf schedules no periodic reads while it waits for its first
+    /// emptying. inotify observes actual accesses, independently of the wait implementation.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_cold_leaf_waits_for_changes_without_periodic_reads() {
+        use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
+        use std::os::unix::ffi::OsStrExt as _;
+        use std::time::Duration;
+
+        let leaf = shards_testdir::TempDir::new("leaf-notify").unwrap();
+        let events = leaf.join("cgroup.events");
+        let procs = leaf.join("cgroup.procs");
+        std::fs::write(&events, "populated 1\n").unwrap();
+        std::fs::write(&procs, format!("{}\n", std::process::id())).unwrap();
+        // SAFETY: a fresh inotify descriptor with no inherited authority.
+        let raw = unsafe { libc::inotify_init1(libc::IN_CLOEXEC) };
+        assert!(raw >= 0);
+        // SAFETY: the fresh descriptor is owned here alone.
+        let observed = unsafe { OwnedFd::from_raw_fd(raw) };
+        let name = std::ffi::CString::new(events.as_os_str().as_bytes()).unwrap();
+        // SAFETY: a live descriptor and a NUL-terminated path held through the call.
+        assert!(unsafe { libc::inotify_add_watch(raw, name.as_ptr(), libc::IN_ACCESS) } >= 0);
+        let record = shards_api::Record::new();
+        std::thread::scope(|scope| {
+            let waiting = scope.spawn(|| emptied(&events, &procs, &record));
+            let mut first = [0u8; size_of::<libc::inotify_event>()];
+            // SAFETY: a valid buffer on a blocking descriptor; the leaf's first read wakes it.
+            assert!(unsafe { libc::read(raw, first.as_mut_ptr().cast(), first.len()) } > 0);
+            let mut next = libc::pollfd {
+                fd: observed.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // Test observation window only: the production wait must have no timer before
+            // its record's first sample.
+            let over = Duration::from_millis(250);
+            // SAFETY: one pollfd whose descriptor remains owned through the call.
+            let repeated = unsafe { libc::poll(&raw mut next, 1, over.as_millis() as i32) };
+            std::fs::write(&events, "populated 0\n").unwrap();
+            assert!(waiting.join().unwrap().unwrap());
+            assert_eq!(repeated, 0, "the unchanged leaf was read again before a change");
+        });
+    }
+
     /// A leaf's emptying past the daemon's end is waited for while its processes go on with
     /// their end, and teaches the record (D215's judge): a stand-in leaf whose process runs a
     /// CPU, emptied 1.5 s on, is waited for and learned; past a learned W*, one whose process
