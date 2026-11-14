@@ -20,6 +20,7 @@ Usage: cost.py SHARDS KERNEL TESTGUEST [--n 20] [--kib 1024] [--ways ttyS0[=SHAR
 
 import argparse
 import os
+import signal
 import re
 import resource
 import shutil
@@ -62,9 +63,21 @@ def boot(way, kib):
     cpu = (after.ru_utime - before.ru_utime) + (after.ru_stime - before.ru_stime)
     said = re.search(rb"SHARDS-CONSOLE kib=(\d+) ns=(\d+)", p.stdout)
     if not said or int(said.group(1)) != kib:
-        sys.exit(f"{way} {kib} KiB: no report; exit {p.returncode}\n"
-                 f"{p.stdout[-2000:].decode(errors='replace')}\n"
-                 f"{p.stderr[-2000:].decode(errors='replace')}")
+        # A boot that fails is counted, with why, and the run goes on. This harness sets no
+        # timeout and kills nothing: a negative code is a signal from outside it (the OOM
+        # killer, a sweep of the host's runner, a user).
+        if stat:
+            os.unlink(stat)
+        if p.returncode < 0:
+            try:
+                name = signal.Signals(-p.returncode).name
+            except ValueError:
+                name = f"signal {-p.returncode}"
+            why = f"killed by {name}, not by this harness"
+        else:
+            why = f"exit {p.returncode}"
+        tail = p.stderr[-600:].decode(errors="replace").strip().replace("\n", " | ")
+        return {"failed": f"{why}; stderr tail: {tail or '(none)'}", "wall": wall}
     whole = sum(1 for line in p.stdout.split(b"\n") if LINE.match(line))
     exits = None
     if stat:
@@ -88,10 +101,17 @@ def summary(values, unit, fmt="{:.2f}"):
 
 
 rows = {w: [] for w in ways}
+failures = {w: [] for w in ways}
 for i in range(args.n):
     for way in ways:
         base = boot(way, 0)
         full = boot(way, args.kib)
+        failed = [(k, b["failed"]) for k, b in ((0, base), (args.kib, full)) if "failed" in b]
+        if failed:
+            for kib, why in failed:
+                failures[way].append(f"round {i}, {kib} KiB: {why}")
+                print(f"round {i} {way}: {kib} KiB boot failed: {why}", flush=True)
+            continue
         rows[way].append((base, full))
         print(f"round {i} {way}: guest {full['guest_ns'] / 1e6:.2f} ms, cpu "
               f"{(full['cpu'] - base['cpu']) * 1e3:.1f} ms, exits "
@@ -113,3 +133,5 @@ for way in ways:
     print(f"{way}: host CPU {summary(cpu, 'us/KiB')}")
     print(f"{way}: exits {summary(exits, 'per KiB')}")
     print(f"{way}: lines lost {lost} of {kib * 16 * len(r)}")
+    print(f"{way}: boots failed {len(failures[way])} of {2 * args.n}"
+          + "".join(f"\n  {f}" for f in failures[way]))

@@ -46,6 +46,9 @@ pub mod layout {
     pub const VIRTIO_MMIO_STRIDE: u64 = 0x200;
     /// GSIs 5-22 are free IOAPIC pins: at most 18 virtio devices.
     pub const VIRTIO_MMIO_MAX: u64 = 18;
+    /// The pvpanic device's register (devices/pvpanic.rs): the first page past the
+    /// virtio-mmio transports.
+    pub const PVPANIC: u64 = (VIRTIO_MMIO + VIRTIO_MMIO_MAX * VIRTIO_MMIO_STRIDE).next_multiple_of(0x1000);
     /// The IOAPIC (KVM's in-kernel one, the VMM's own on WHP) and the LAPIC.
     /// A PCI bus's 32-bit memory window, where its functions' BARs are placed, and its
     /// ECAM window above it, bus 0 alone (D153), in the MMIO gap.

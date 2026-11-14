@@ -838,6 +838,11 @@ impl Handle {
         self.console.said()
     }
 
+    /// Whether its guest's kernel said it panicked (pvpanic): what a reset alone does not say.
+    pub fn panicked(&self) -> bool {
+        self.console.panicked()
+    }
+
     /// Whether the VM is recording a working set ([`SnapshotPolicy::working_set`]).
     pub fn recording(&self) -> bool {
         lock(&self.shared.recording).is_some()

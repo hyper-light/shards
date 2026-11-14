@@ -580,6 +580,11 @@ fn assemble(
         control.on_mac(net.mac);
     }
     bus.mmio.insert(layout::CONTROL, 0x1000, control.clone())?;
+    bus.mmio.insert(
+        layout::PVPANIC,
+        0x1000,
+        Arc::new(crate::devices::pvpanic::PvPanic::new(console.clone())),
+    )?;
 
     let power = Arc::new(Power::default());
     bus.pio
