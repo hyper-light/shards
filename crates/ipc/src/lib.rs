@@ -2461,8 +2461,13 @@ mod pipe;
 pub use pipe::{
     Arriving, Event, ExitWatch, Listener, Message, Pipe, Poller, RandomFailed, Stream, await_any,
     await_streams, byte_pair, end, fill_random, hung_up, input_pair, output_pair, readable_raw, recv,
-    recv_by, send,
+    recv_by, recv_judged, send, send_judged,
 };
+
+/// When a judged wait (`send_judged`, `recv_judged`) next asks its judge, and whether it goes
+/// on: asked as the wait begins and each time the time it named passes with its stream not
+/// ready; `Ok(None)` waits on the stream's readiness alone, an error ends the wait with it.
+pub type Judge<'a> = dyn FnMut() -> std::io::Result<Option<std::time::Instant>> + 'a;
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]

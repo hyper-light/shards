@@ -51,8 +51,9 @@ impl Worker {
     /// ends. A thread running, waiting for a CPU or stopped (as a pacer stops a run's
     /// processes) is not; nor is one in the kernel's own uninterruptible wait (`D`, Mach's
     /// TH_STATE_UNINTERRUPTIBLE), as a page fault waits for its process's memory map that
-    /// another thread holds (`lock_mm_and_find_vma`), which ends as that work does (PM M585).
-    /// On Linux it says where, its `wchan`.
+    /// another thread holds (`lock_mm_and_find_vma`), which ends as that work does (PM M585);
+    /// nor, on Linux, one waiting for a lock another thread holds ([`held_lock`]). On Linux it
+    /// says where, its `wchan` and its call.
     fn waiting(&self) -> Option<String> {
         #[cfg(target_os = "linux")]
         {
@@ -60,7 +61,15 @@ impl Worker {
             let stat = std::fs::read_to_string(format!("{task}/stat")).unwrap();
             // The state follows the command, which is in parentheses and may hold any byte.
             let state = stat.rfind(')').and_then(|i| stat.get(i + 2..i + 3)).unwrap();
-            (state == "S").then(|| std::fs::read_to_string(format!("{task}/wchan")).unwrap_or_default())
+            if state != "S" {
+                return None;
+            }
+            let call = std::fs::read_to_string(format!("{task}/syscall")).unwrap_or_default();
+            if held_lock(&call) {
+                return None;
+            }
+            let wchan = std::fs::read_to_string(format!("{task}/wchan")).unwrap_or_default();
+            Some(format!("{wchan}: {}", call.trim()))
         }
         #[cfg(target_os = "macos")]
         {
@@ -83,6 +92,27 @@ impl Worker {
         #[cfg(windows)]
         None
     }
+}
+
+/// Whether a thread's call, as `/proc/<pid>/task/<tid>/syscall` says it (proc(5): the call's
+/// number and arguments, in hex), waits for a lock another thread holds: glibc's low-level
+/// lock contended, `futex(word, FUTEX_WAIT, 2)`, 2 being its word's "locked, with waiters"
+/// (glibc nptl/lowlevellock.c `__lll_lock_wait`), as malloc's arenas and stdio's locks wait.
+/// Its holder runs, waits for a CPU or is stopped: the host's hold, as `D` is, never a wait
+/// for an event; condition variables and parks (glibc's and std's) wait FUTEX_WAIT_BITSET,
+/// which this is not, and so does std's own `Mutex` (std/src/sys/pal/unix/futex.rs), which
+/// stays counted. Such a lock names no holder to look at, so a deadlock through one is not
+/// refused here: it surfaces as whatever bounds the run (PM M589).
+#[cfg(target_os = "linux")]
+fn held_lock(call: &str) -> bool {
+    let mut words = call.split_whitespace();
+    let number = words.next().and_then(|n| n.parse::<libc::c_long>().ok());
+    let mut args = words.map(|a| u64::from_str_radix(a.trim_start_matches("0x"), 16).ok());
+    let (_word, op, value) = (args.next(), args.next().flatten(), args.next().flatten());
+    let flags = u64::try_from(libc::FUTEX_PRIVATE_FLAG | libc::FUTEX_CLOCK_REALTIME).unwrap();
+    number == Some(libc::SYS_futex)
+        && op.map(|op| op & !flags) == u64::try_from(libc::FUTEX_WAIT).ok()
+        && value == Some(2)
 }
 
 /// Runs `work` on a thread of its own: the thread, as [`answer`] looks at it, and its answer.
@@ -207,6 +237,31 @@ pub(crate) fn until_reached<T>(mut attempt: impl FnMut(Duration) -> Reached<T>) 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod tests {
     use super::on_a_thread;
+
+    /// glibc's contended low-level lock is a hold; a condition's or a park's wait, a poll and a
+    /// running thread are not (PM M589's calls, read on adacachy2).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_wait_for_a_held_lock_is_told_from_a_wait_for_an_event() {
+        let futex = libc::SYS_futex;
+        assert!(super::held_lock(&format!(
+            "{futex} 0x7f42cc000030 0x80 0x2 0x0 0x8 0x150 0x7f426e1ef298 0x7f42f36a9699"
+        )));
+        assert!(super::held_lock(&format!(
+            "{futex} 0x7f2273a3eb00 0x0 0x2 0x0 0x0 0x0 0x1 0x2"
+        )));
+        assert!(!super::held_lock(&format!(
+            "{futex} 0x55ef1a182bd0 0x89 0x2 0x0 0x0 0xffffffff 0x1 0x2"
+        )));
+        assert!(!super::held_lock(&format!(
+            "{futex} 0x55ef1a182bd0 0x80 0x1 0x0 0x0 0x0 0x1 0x2"
+        )));
+        assert!(!super::held_lock(&format!(
+            "{} 0x5 0x1 0xffffffff 0x0 0x0 0x0 0x1 0x2",
+            libc::SYS_ppoll
+        )));
+        assert!(!super::held_lock("running"));
+    }
 
     /// A worker that has answered is still its own thread at a look: it waits to be let go of,
     /// where one that had ended would leave a look nothing to read (PM M585).

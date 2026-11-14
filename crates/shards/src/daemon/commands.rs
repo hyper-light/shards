@@ -3195,7 +3195,6 @@ impl Show<'_, '_> {
 /// first answer, until it answers or its run ends (its inbox's end); then refused typed
 /// ([`super::health::Stalled`]) where its process ran no CPU over a whole W* of the slowest
 /// answer seen. Its answer teaches the record.
-#[cfg(unix)]
 fn guest_timed(
     answer: &std::sync::mpsc::Receiver<Result<shards_vmm::vm::GuestTimes, String>>,
     vm: u32,
@@ -3223,27 +3222,6 @@ fn guest_timed(
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return Err("its microVM stopped".into()),
         }
-    }
-}
-
-/// [`guest_timed`] on Windows: its judged twin is runs-11 `TAKE_TIMEOUT`'s slice (b), owed; until
-/// then its answer is waited for at most `TAKE_TIMEOUT`.
-#[cfg(windows)]
-fn guest_timed(
-    answer: &std::sync::mpsc::Receiver<Result<shards_vmm::vm::GuestTimes, String>>,
-    _vm: u32,
-    _record: &shards_api::Record,
-) -> Result<Result<shards_vmm::vm::GuestTimes, String>, String> {
-    use std::sync::mpsc::RecvTimeoutError;
-    match super::timed(Some(super::TAKE_TIMEOUT), || {
-        answer.recv_timeout(super::TAKE_TIMEOUT)
-    }) {
-        Ok(said) => Ok(said),
-        Err(RecvTimeoutError::Timeout) => Err(format!(
-            "its microVM did not answer in {} s",
-            super::TAKE_TIMEOUT.as_secs()
-        )),
-        Err(RecvTimeoutError::Disconnected) => Err("its microVM stopped".into()),
     }
 }
 
