@@ -9802,6 +9802,34 @@ share made ahead), and a disk's capacity was fixed when its file was opened.
   grow its disk, and init grows its ext4 online once the kernel reads the new size
   (EXT4_IOC_RESIZE_FS, as resize2fs grows a mounted one). What a run has plugged in is the
   daemon's to know while it runs, and goes with its microVM.
+- **A microVM's device steps one at a time, so a disk only ever grows** (devices-01,
+  docs/bugs/2026-11-13/devices.md). Each client's command is served on a thread of its
+  own, and `grow` read its file's length, refused less, then set it, apart: two growths
+  of one 64 MiB disk, to 128 and 256 MiB, could both read 64 MiB, the larger set 256 MiB
+  and have its guest's ext4 grown and written past 128 MiB, and the smaller then set
+  128 MiB, cutting those sectors from under the mounted file system; the VM's own refusal
+  of a file that shrank came after the bytes were gone. Now every device step of a
+  running microVM (`plug`, `unplug`, `grow`, a function's included) holds it
+  (`devices::Steps`, a set of the microVMs one is under way in and a condition variable
+  its end wakes the waiting with: no polling, no deadline) from its first read of what
+  is plugged to its guest's last answer, as each step's reading depends on the last's
+  answers (a slot's `devfn` taken back by an unplug and given to the next plug among
+  them). So a disk's file is read and set by one growth at a time, only ever longer,
+  ending at the largest asked; the VM is asked `GROW`, which takes its file's length as
+  its capacity, only once the file has the length asked; and a size less than its file
+  has, in whole 512-byte sectors (virtio 1.3 §5.2.4's unit), is refused typed
+  (`NotGrown::Smaller`, asked and had), changing nothing, its VM and guest not asked.
+  Steps of different microVMs do not wait for each other. No literal is added: the hold
+  has no bound or timeout, its waits end as the step under way ends, and a step that
+  fails or panics lets it go as it drops. Not covered: one file plugged writable into two
+  microVMs at once, whose growths their two holds do not order (two kernels mounting
+  one ext4 writable corrupt it before any growth does: ext4 is no cluster file system,
+  and its multiple mount protection exists to refuse that mount, Linux
+  Documentation/filesystems/ext4/mmp.rst); plug does not refuse that yet. Verified by
+  `growths_of_one_disk_never_shorten_its_file` (the smaller growth paused between its
+  read and its set, the larger asked meanwhile, its guest's write past 128 MiB kept) and
+  `a_disk_grown_smaller_is_refused_and_keeps_its_bytes`, red with the hold removed (the
+  file left at 128 MiB) and with the refusal removed (the file shortened, the VM asked).
 - **Every run's microVM has four slots, and its template keeps them** (`SHARDS_PCI_SLOTS`,
   0 for none). Snapshot format 28 records a machine's slots (`MachineConfig::pci_slots`);
   an empty bus saves as nothing and a restore makes it again; a machine with a device

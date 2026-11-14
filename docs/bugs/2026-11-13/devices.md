@@ -35,6 +35,8 @@ Priority mapping for the user's requested notification: **P0 critical; P1 high; 
 
 **Catching test:** pause A immediately after metadata acquisition, complete B, write a sentinel above 128 MiB, resume A, and assert both file length and sentinel survive. Also verify A is refused or resolves to the current larger size.
 
+**Status (2026-11-13):** fixed in 74c757e1f (red `daemon::devices::tests::growths_of_one_disk_never_shorten_its_file`: with the fix's hold removed, the 128 MiB growth paused between its read and its set left the file at 134217728 bytes after the 256 MiB growth and its guest's write; green with it, on adas-mac-studio-3.local, macOS arm64; the refusal's mutant red in `a_disk_grown_smaller_is_refused_and_keeps_its_bytes`). D214 amended.
+
 ### devices-02 — P1 / high — A full-span IOMMU mapping makes translation loop until allocation failure
 
 **Location:** `crates/vmm/src/devices/virtio/iommu.rs:508`.
