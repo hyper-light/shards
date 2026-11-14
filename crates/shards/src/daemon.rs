@@ -364,7 +364,7 @@ fn fail(message: &str) -> ExitCode {
 /// A message in the daemon's log: its line written whole, in one write, so that a reader
 /// never finds part of it, nor another thread's line within it (stderr writes each piece
 /// of a formatted line as it comes).
-fn log(message: impl std::fmt::Display) {
+pub(crate) fn log(message: impl std::fmt::Display) {
     #[cfg(test)]
     LOGGED.fetch_add(1, Ordering::Relaxed);
     let line = format!("shards daemon {}: {message}\n", std::process::id());

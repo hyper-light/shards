@@ -30,7 +30,7 @@ use shards_image::store::{Limits, Ranged, Store};
 use crate::climb::{Climb, Window, cores};
 use crate::links::Learned;
 use crate::pull::Event;
-use crate::registry::{CHUNK, Registry, Trouble, not_fetched, short, stalled};
+use crate::registry::{CHUNK, Registry, Trouble, not_fetched, short};
 use crate::url::Url;
 use crate::{Error, ErrorKind};
 
@@ -499,11 +499,10 @@ impl<'a> Flows<'a> {
                 }
             }
             drop(response);
-            // It brought nothing: asked again while that lasts its path's budget (D222).
-            match self.registry.ride(&mut trouble, url, asked) {
-                Some(wait) => self.registry.pause(wait)?,
-                None => return Err(stalled(&layer.digest, trouble.lasted())),
-            }
+            // It brought nothing: asked again while that lasts, its re-asks ending it where
+            // the far end is gone (D222).
+            let wait = self.registry.ride(&mut trouble, url, asked);
+            self.registry.pause(wait)?;
         }
         drop(held);
         if layer.open.fetch_sub(1, Ordering::AcqRel) == 1 {

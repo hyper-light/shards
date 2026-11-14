@@ -714,7 +714,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 request.network = "host".into();
             }
         }
-        let (config, manifest) = self.image_facts(c.image_id.as_deref());
+        let (config, manifest) = self.image_facts(c.image_id.as_deref(), c.image_manifest.as_deref());
         // The run's inbox is locked after `runs` is let go: a run's end holds its inbox
         // while it takes `runs` (take_messages, run_ended).
         let tracked = match super::lock(&self.runs).get(&c.id) {
@@ -924,47 +924,67 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         (rw, rw.saturating_add(i64::try_from(image).unwrap_or(i64::MAX)))
     }
 
-    /// Image `id`'s config (its `config`), and the descriptor of its manifest for this
-    /// platform, as Go encodes one: from its index where it has one.
-    fn image_facts(&self, id: Option<&str>) -> (Option<serde_json::Value>, Option<serde_json::Value>) {
-        let Some(id) = id else {
-            return (None, None);
-        };
+    /// The config and descriptor of this container's recorded image manifest.
+    pub(super) fn image_facts(
+        &self,
+        id: Option<&str>,
+        chosen: Option<&str>,
+    ) -> (Option<serde_json::Value>, Option<serde_json::Value>) {
+        let Some(id) = id else { return (None, None) };
         let Ok(Some(store)) = self.store() else {
             return (None, None);
         };
-        let Some(image) = store
-            .images()
-            .ok()
-            .and_then(|l| l.into_iter().find(|i| i.id.to_string() == id))
-        else {
-            return (None, None);
-        };
-        // Its config as clients read it (D112), a DockerOCIImageConfig, written as
-        // json.Marshal writes one: each field once, by its own name.
-        let config = image
-            .config
-            .as_deref()
-            .and_then(|b| Config::from_json(b).ok())
-            .and_then(|c| serde_json::from_str::<serde_json::Value>(&c.config.to_json()).ok());
-        let ours = image.manifest.to_string();
-        let manifest = if image.target.digest == ours {
-            serde_json::to_value(&image.target).ok()
-        } else {
-            std::fs::read(store.blob_path(&image.id))
-                .ok()
-                .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-                .and_then(|index| {
-                    index
-                        .get("manifests")?
-                        .as_array()?
-                        .iter()
-                        .find(|m| m.get("digest").and_then(serde_json::Value::as_str) == Some(&ours))
-                        .cloned()
-                })
-        };
-        (config, manifest)
+        image_facts_in(&store, id, chosen)
     }
+}
+
+fn image_facts_in(
+    store: &shards_image::store::Store,
+    id: &str,
+    chosen: Option<&str>,
+) -> (Option<serde_json::Value>, Option<serde_json::Value>) {
+    use shards_image::oci::{self, Document};
+    use shards_image::store::Held;
+    let Some(image) = store
+        .images()
+        .ok()
+        .and_then(|l| l.into_iter().find(|i| i.id.to_string() == id))
+    else {
+        return (None, None);
+    };
+    // Old records have no selected manifest. Only those use the reference's preference.
+    let preferred = image.manifest.to_string();
+    let ours = chosen.unwrap_or(&preferred);
+    let descriptor = if image.target.digest == ours {
+        Some(image.target)
+    } else {
+        (|| {
+            let Held::Whole(bytes) = store.held(&image.target, oci::MAX_MANIFEST).ok()? else {
+                return None;
+            };
+            let Document::Index(index) = oci::parse_document(&bytes, &image.target.media_type).ok()? else {
+                return None;
+            };
+            index.manifests.into_iter().find(|m| m.digest == ours)
+        })()
+    };
+    let Some(descriptor) = descriptor else {
+        return (None, None);
+    };
+    let config = (|| {
+        let Held::Whole(bytes) = store.held(&descriptor, oci::MAX_MANIFEST).ok()? else {
+            return None;
+        };
+        let Document::Manifest(manifest) = oci::parse_document(&bytes, &descriptor.media_type).ok()? else {
+            return None;
+        };
+        let Held::Whole(bytes) = store.held(manifest.image_config(), oci::MAX_CONFIG).ok()? else {
+            return None;
+        };
+        let config = Config::from_json(&bytes).ok()?;
+        serde_json::from_str::<serde_json::Value>(&config.config.to_json()).ok()
+    })();
+    (config, serde_json::to_value(descriptor).ok())
 }
 
 /// The object types `inspect --type` names (docker/cli system/inspect.go, allTypes).
@@ -1296,6 +1316,85 @@ mod tests {
         );
         assert!(
             matches!(shm_owner("a".into(),run,|_,_| Err(ShmOwnerRefused::Missing("b".into()))), Err(ShmOwnerRefused::Missing(id)) if id == "b")
+        );
+    }
+
+    #[test]
+    fn container_facts_keep_the_runs_selected_manifest() {
+        use sha2::Digest as _;
+        use shards_image::oci::{self, Descriptor};
+        use shards_image::reference::{Algorithm, Digest};
+        use shards_image::store::Store;
+        let home = shards_testdir::TempDir::new("facts").unwrap();
+        let store = Store::open(&home).unwrap();
+        let put = |media: &str, value: serde_json::Value| {
+            let bytes = serde_json::to_vec(&value).unwrap();
+            let digest = Digest::from_hash(Algorithm::Sha256, &sha2::Sha256::digest(&bytes));
+            store
+                .ingest(&digest, bytes.len() as u64, &mut bytes.as_slice())
+                .unwrap();
+            Descriptor {
+                media_type: media.into(),
+                digest: digest.to_string(),
+                size: bytes.len() as i64,
+                platform: None,
+                annotations: Default::default(),
+            }
+        };
+        let variant = |arch: &str, user: &str| {
+            let config = put(
+                "application/vnd.oci.image.config.v1+json",
+                serde_json::json!({
+                    "architecture": arch, "os": "linux",
+                    "config": { "User": user, "Env": [format!("PLATFORM={arch}")] },
+                    "rootfs": { "type": "layers", "diff_ids": [] }
+                }),
+            );
+            let mut manifest = put(
+                oci::media::OCI_MANIFEST,
+                serde_json::json!({
+                    "schemaVersion": 2, "mediaType": oci::media::OCI_MANIFEST,
+                    "config": config, "layers": []
+                }),
+            );
+            manifest.platform = Some(oci::Platform {
+                os: "linux".into(),
+                architecture: arch.into(),
+                ..Default::default()
+            });
+            manifest
+        };
+        let arm = variant("arm64", "1100");
+        let amd = variant("amd64", "2200");
+        let index = put(
+            oci::media::OCI_INDEX,
+            serde_json::json!({
+                "schemaVersion": 2, "mediaType": oci::media::OCI_INDEX,
+                "manifests": [arm, amd]
+            }),
+        );
+        let id = index.digest().unwrap();
+        for preferred in [&arm, &amd] {
+            store
+                .tag("docker.io/library/facts:latest", preferred, &id, &[])
+                .unwrap();
+            for (selected, user, arch) in [(&arm, "1100", "arm64"), (&amd, "2200", "amd64")] {
+                let (config, descriptor) = image_facts_in(&store, &id.to_string(), Some(&selected.digest));
+                let config = config.unwrap();
+                assert_eq!(config["User"], user);
+                assert_eq!(config["Env"][0], format!("PLATFORM={arch}"));
+                assert_eq!(descriptor.unwrap()["digest"], selected.digest);
+            }
+            let (old, _) = image_facts_in(&store, &id.to_string(), None);
+            assert_eq!(
+                old.unwrap()["User"],
+                if preferred == &arm { "1100" } else { "2200" }
+            );
+        }
+        let missing = Digest::from_hash(Algorithm::Sha256, &sha2::Sha256::digest(b"missing"));
+        assert_eq!(
+            image_facts_in(&store, &id.to_string(), Some(&missing.to_string())),
+            (None, None)
         );
     }
 

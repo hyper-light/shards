@@ -1,0 +1,181 @@
+From https://github.com/hyper-light/shards
+ * branch              p/fix-network-v1 -> FETCH_HEAD
+   5a3d2778..e2237fb2  p/fix-network-v1 -> origin/p/fix-network-v1
+Previous HEAD position was 5a3d2778 network-03: reproduce authority retained after a DNS answer changes
+HEAD is now at e2237fb2 network-03: replace and expire learned DNS authority at its source TTL
+Linux 6.12.65-linuxkit aarch64
+rustc 1.98.1 (48a229cea 2026-09-01)
+   Compiling libc v0.2.189
+   Compiling shards-abi v0.1.0 (/src/crates/abi)
+   Compiling httparse v1.10.1
+   Compiling shards-dns v0.1.0 (/src/crates/dns)
+   Compiling jobserver v0.1.35
+   Compiling shards-syscall-filter v0.1.0 (/src/crates/syscall-filter)
+   Compiling shards-ipc v0.1.0 (/src/crates/ipc)
+   Compiling cc v1.5.1
+   Compiling shards-netring v0.1.0 (/src/crates/netring)
+   Compiling shards-testdir v0.1.0 (/src/crates/testdir)
+   Compiling cmake v0.1.58
+   Compiling aws-lc-sys v0.45.0 (/src/vendor/aws-lc-sys)
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CARGO_ENCODED_RUSTFLAGS': ''
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=universal
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/target/debug/build/aws-lc-sys-4f74894467df8c75/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/target/debug/build/aws-lc-sys-4f74894467df8c75/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/target/debug/build/aws-lc-sys-4f74894467df8c75/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' succeeded - Ok(["/target/debug/build/aws-lc-sys-4f74894467df8c75/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/target/debug/build/aws-lc-sys-4f74894467df8c75/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+   Compiling aws-lc-rs v1.18.1 (/src/vendor/aws-lc-rs)
+   Compiling rustls v0.23.46
+   Compiling rustls-webpki v0.103.16
+   Compiling rcgen v0.14.10
+   Compiling rustls-platform-verifier v0.7.1
+   Compiling shards-verify v0.1.0 (/src/crates/verify)
+   Compiling shards-net v0.1.0 (/src/crates/net)
+warning: unused import: `HashSet`
+  --> crates/net/src/lib.rs:34:45
+   |
+34 | use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
+   |                                             ^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `shards-net` (lib test) generated 1 warning (run `cargo fix --lib -p shards-net --tests` to apply 1 suggestion)
+    Finished `test` profile [unoptimized] target(s) in 16.79s
+     Running unittests src/lib.rs (/target/debug/deps/shards_net-6fb1df034324ab7e)
+
+running 2 tests
+test tests::dns_authority_expires_without_retaining_answer_history ... ok
+test tests::dns_answers_replace_the_names_previous_authority ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 179 filtered out; finished in 0.00s
+
+   Compiling aws-lc-sys v0.45.0 (/src/vendor/aws-lc-sys)
+   Compiling shards-abi v0.1.0 (/src/crates/abi)
+   Compiling shards-dns v0.1.0 (/src/crates/dns)
+   Compiling shards-ipc v0.1.0 (/src/crates/ipc)
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CARGO_ENCODED_RUSTFLAGS': ''
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=universal
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/target/debug/build/aws-lc-sys-4f74894467df8c75/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/target/debug/build/aws-lc-sys-4f74894467df8c75/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/target/debug/build/aws-lc-sys-4f74894467df8c75/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' succeeded - Ok(["/target/debug/build/aws-lc-sys-4f74894467df8c75/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/target/debug/build/aws-lc-sys-4f74894467df8c75/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+   Compiling aws-lc-rs v1.18.1 (/src/vendor/aws-lc-rs)
+   Compiling rustls v0.23.46
+   Compiling rustls-webpki v0.103.16
+   Compiling rcgen v0.14.10
+   Compiling rustls-platform-verifier v0.7.1
+   Compiling shards-verify v0.1.0 (/src/crates/verify)
+   Compiling shards-net v0.1.0 (/src/crates/net)
+warning: unused import: `HashSet`
+  --> crates/net/src/lib.rs:34:45
+   |
+34 | use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
+   |                                             ^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `shards-net` (lib test) generated 1 warning (run `cargo fix --lib -p shards-net --tests` to apply 1 suggestion)
+    Finished `test` profile [unoptimized] target(s) in 15.80s
+     Running unittests src/lib.rs (/target/debug/deps/shards_net-6fb1df034324ab7e)
+
+running 1 test
+test tests::ports_reach_their_ports_alone ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 180 filtered out; finished in 0.00s
+
+   Compiling shards-dns v0.1.0 (/src/crates/dns)
+    Finished `test` profile [unoptimized] target(s) in 0.31s
+     Running unittests src/lib.rs (/target/debug/deps/shards_dns-12ff7eb82e31d73a)
+
+running 1 test
+test tests::a_responses_addresses_are_read ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+
+    Finished `test` profile [unoptimized] target(s) in 0.09s
+     Running unittests src/lib.rs (/target/debug/deps/shards_dns-12ff7eb82e31d73a)
+
+running 2 tests
+test tests::tcp_questions_go_on_whole_and_only_as_granted ... ok
+test tests::tcp_refusals_wait_for_an_answer_to_end_and_answers_are_learned ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s
+
+info: downloading component clippy
+    Checking zeroize v1.9.0
+   Compiling shards-abi v0.1.0 (/src/crates/abi)
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CARGO_ENCODED_RUSTFLAGS': ''
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=universal
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/target/debug/build/aws-lc-sys-4f74894467df8c75/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/target/debug/build/aws-lc-sys-4f74894467df8c75/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/target/debug/build/aws-lc-sys-4f74894467df8c75/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' succeeded - Ok(["/target/debug/build/aws-lc-sys-4f74894467df8c75/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/target/debug/build/aws-lc-sys-4f74894467df8c75/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+    Checking aws-lc-sys v0.45.0 (/src/vendor/aws-lc-sys)
+    Checking rustls-pki-types v1.15.1
+    Checking libc v0.2.189
+    Checking aws-lc-rs v1.18.1 (/src/vendor/aws-lc-rs)
+    Checking untrusted v0.9.0
+    Checking once_cell v1.21.4
+    Checking rustls-webpki v0.103.16
+    Checking openssl-probe v0.2.1
+    Checking num-conv v0.2.2
+    Checking time-core v0.1.9
+    Checking powerfmt v0.2.0
+    Checking deranged v0.5.8
+    Checking subtle v2.6.1
+    Checking rustls v0.23.46
+    Checking time v0.3.55
+    Checking rustls-native-certs v0.8.4
+    Checking log v0.4.34
+    Checking base64 v0.23.1
+    Checking pem v4.0.0
+    Checking yasna v0.6.0
+    Checking rustls-platform-verifier v0.7.1
+    Checking twox-hash v2.1.4
+    Checking zlib-rs v0.6.8
+    Checking shards-ipc v0.1.0 (/src/crates/ipc)
+    Checking ruzstd v0.9.1
+    Checking flate2 v1.1.10
+    Checking shards-verify v0.1.0 (/src/crates/verify)
+    Checking rcgen v0.14.10
+    Checking shards-netring v0.1.0 (/src/crates/netring)
+    Checking shards-syscall-filter v0.1.0 (/src/crates/syscall-filter)
+    Checking shards-testdir v0.1.0 (/src/crates/testdir)
+    Checking httparse v1.10.1
+    Checking shards-dns v0.1.0 (/src/crates/dns)
+    Checking shards-net v0.1.0 (/src/crates/net)
+error: unused import: `HashSet`
+  --> crates/net/src/lib.rs:34:45
+   |
+34 | use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
+   |                                             ^^^^^^^
+   |
+   = note: `-D unused-imports` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(unused_imports)]`
+
+error: could not compile `shards-net` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `shards-net` (lib test) due to 1 previous error

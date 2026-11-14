@@ -3577,7 +3577,7 @@ mod hosted {
         mut input: super::Input,
     ) -> Result<(), No> {
         let home = shards_ipc::home().map_err(no(Cause::Boot))?;
-        let shaped = shape(exemplar, &home)?;
+        let mut shaped = shape(exemplar, &home)?;
         let launched = match launch(&home, &shaped.launch()) {
             Ok(launched) => launched,
             Err(e) => {
@@ -3585,6 +3585,9 @@ mod hosted {
                 return Err(e);
             }
         };
+        // The ready VM holds its rootfs and settled template files itself (D26).
+        // An idle spare must not keep unrelated collection waiting for its CREATE.
+        drop(shaped.prepared.lease.take());
         super::say(format_args!(
             "warm, its VM process {} ready ({:?})",
             launched.vm.id(),
@@ -3688,9 +3691,11 @@ mod hosted {
         answers: &Answers,
         input: super::Input,
         home: &Path,
-        plan: Plan,
+        mut plan: Plan,
         mut launched: Launched,
     ) -> Result<(), No> {
+        // Readiness and template settlement ended the preparation lease's work.
+        drop(plan.prepared.lease.take());
         let boot = |e: String| No(Cause::Boot, e);
         super::say(format_args!(
             "its VM process {} is ready ({:?})",
