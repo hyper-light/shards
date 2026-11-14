@@ -92,20 +92,81 @@ pub fn vm_gpu() -> Result<PathBuf, String> {
         }
     }
     let dir = dir()?;
-    let name = format!("shards-vm-gpu{}", std::env::consts::EXE_SUFFIX);
-    let path = dir.join(&name);
-    let len = carried::SHARDS_VM_GPU.len() as u64;
-    if fs::metadata(&path).is_ok_and(|m| m.len() == len) {
+    write_gpu(
+        &dir,
+        &format!("shards-vm-gpu{}", std::env::consts::EXE_SUFFIX),
+        carried::SHARDS_VM_GPU,
+    )
+}
+
+fn write_gpu(dir: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
+    let path = dir.join(name);
+    if fs::metadata(&path).is_ok_and(|m| m.len() == bytes.len() as u64) {
         return Ok(path);
     }
-    // Written beside it, synced, then moved into place whole, as the others are.
-    let temp = dir.join(format!(".{name}.{}", std::process::id()));
-    let _ = fs::remove_file(&temp);
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    // As write_in's staging names: identity fields discriminate writers; create_new
+    // proves ownership. Even counter wrap or a collision never unlinks another file.
+    let temp = dir.join(format!(
+        ".{name}.{}.{nanos:x}.{:x}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
     let mut file = executable(&temp).map_err(|e| at(&temp, e))?;
-    file.write_all(carried::SHARDS_VM_GPU).map_err(|e| at(&temp, e))?;
-    file.sync_all().map_err(|e| at(&temp, e))?;
-    fs::rename(&temp, &path).map_err(|e| at(&path, e))?;
+    #[cfg(test)]
+    pause_gpu(GpuStage::Created);
+    let written = file
+        .write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(|e| at(&temp, e));
+    // A published executable has no writable handle left (exec can otherwise fail
+    // ETXTBSY). Another caller may start it as soon as rename makes it visible.
+    drop(file);
+    let placed = written.and_then(|()| {
+        #[cfg(test)]
+        pause_gpu(GpuStage::Publish);
+        fs::rename(&temp, &path).map_err(|e| at(&path, e))
+    });
+    if placed.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    placed?;
     Ok(path)
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GpuStage {
+    Created,
+    Publish,
+}
+
+#[cfg(test)]
+type GpuPause = (
+    GpuStage,
+    std::sync::mpsc::Sender<()>,
+    std::sync::mpsc::Receiver<()>,
+);
+
+#[cfg(test)]
+std::thread_local! {
+    static GPU_PAUSE: std::cell::RefCell<Option<GpuPause>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+fn pause_gpu(stage: GpuStage) {
+    GPU_PAUSE.with(|pause| {
+        if pause.borrow().as_ref().is_some_and(|p| p.0 == stage) {
+            let (_, ready, resume) = pause.borrow_mut().take().unwrap();
+            ready.send(()).unwrap();
+            resume.recv().unwrap();
+        }
+    });
 }
 
 /// What this build carries: each helper's name, bytes and SHA-256.
@@ -427,6 +488,47 @@ pub(crate) fn cache() -> Result<PathBuf, String> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn concurrent_gpu_writers_publish_their_own_complete_files() {
+        use std::sync::mpsc::channel;
+        use std::time::Duration;
+        let dir = shards_testdir::TempDir::new("gpupub").unwrap();
+        let dir = dir.path();
+        let bytes = b"the complete helper bytes";
+        let bound = Duration::from_secs(10);
+        let (a_ready, a_seen) = channel();
+        let (a_resume, a_wait) = channel();
+        let (a_done, a_result) = channel();
+        let (b_ready, b_seen) = channel();
+        let (b_resume, b_wait) = channel();
+        let (b_done, b_result) = channel();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                GPU_PAUSE.with(|p| *p.borrow_mut() = Some((GpuStage::Publish, a_ready, a_wait)));
+                a_done.send(write_gpu(dir, "gpu", bytes)).unwrap();
+            });
+            a_seen.recv_timeout(bound).unwrap();
+            scope.spawn(|| {
+                GPU_PAUSE.with(|p| *p.borrow_mut() = Some((GpuStage::Created, b_ready, b_wait)));
+                b_done.send(write_gpu(dir, "gpu", bytes)).unwrap();
+            });
+            let created = b_seen.recv_timeout(bound);
+            a_resume.send(()).unwrap();
+            let first = a_result.recv_timeout(bound);
+            let observed = first.as_ref().ok().and_then(|r| r.as_ref().ok()).map(fs::read);
+            // Release every paused actor before asserting, including the red's failures.
+            let _ = b_resume.send(());
+            let second = b_result.recv_timeout(bound);
+            assert!(
+                created.is_ok(),
+                "the second writer never created its staging file"
+            );
+            assert_eq!(observed.unwrap().unwrap(), bytes);
+            assert!(first.unwrap().is_ok());
+            assert!(second.unwrap().is_ok());
+        });
+    }
 
     fn names(root: &Path) -> Vec<String> {
         let mut names: Vec<_> = fs::read_dir(root)
