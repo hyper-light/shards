@@ -49,6 +49,8 @@ enum Refused {
     NotABuild,
     /// Words that would have this machine's files read or written for the client (D228).
     Files(String),
+    /// A build step's path of this machine's, not of the client's copies (remote-09).
+    NotHeld(crate::synced::NotHeld),
 }
 
 impl std::fmt::Display for Refused {
@@ -60,6 +62,7 @@ impl std::fmt::Display for Refused {
             Refused::Owners(word) => write!(f, "{word}: this machine's owner's to run, not a client's"),
             Refused::NotABuild => f.write_str("a build step's words are a build's alone"),
             Refused::Files(why) => f.write_str(why),
+            Refused::NotHeld(why) => write!(f, "{why}"),
         }
     }
 }
@@ -725,7 +728,10 @@ impl Machine {
         // The command a build step runs, the client's words: a build's, judged before any of
         // its files come.
         if step == "build" {
-            build_words(args.get(3..).unwrap_or_default())?;
+            let words = args.get(3..).unwrap_or_default();
+            build_words(words)?;
+            let secrets = words.iter().filter(|a| a.contains(crate::synced::SECRET)).count();
+            crate::synced::held_to_copies(words, secrets).map_err(Refused::NotHeld)?;
         }
         let copy = crate::synced::copy_of(&self.home, client, &key).map_err(Error::new)?;
         let copies = self.home.join("synced").join(client);
@@ -1832,6 +1838,45 @@ fn changed(watch: &shards_vmm::platform::FileWatch) -> std::io::Result<()> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// remote-09: a build step naming a path of this machine's is refused, typed, before any
+    /// of its files come, and before its copy is made.
+    #[test]
+    fn a_build_step_naming_this_machines_path_is_refused_before_its_files() {
+        let home = shards_testdir::TempDir::new("remote-held").unwrap();
+        let identity = identity::Identity::generate().unwrap();
+        crate::context::enroll(home.path(), "alice", identity.spki()).unwrap();
+        let machine = Machine {
+            home: home.path().to_path_buf(),
+            exe: home.path().join("unused"),
+            agents: Arc::default(),
+        };
+        let key = "ab".repeat(32);
+        let outside = home.path().join("outside");
+        let output = format!("--output=type=local,dest={}", outside.display());
+        let request = Request {
+            args: [
+                crate::synced::SYNC_STEP,
+                "build",
+                &key,
+                "build",
+                &output,
+                crate::synced::CONTEXT,
+            ]
+            .into_iter()
+            .map(|word| word.as_bytes().to_vec())
+            .collect(),
+            env: Vec::new(),
+            terminal: None,
+        };
+        let refused = machine.start("alice", request).err().unwrap();
+        assert_eq!(
+            refused.to_string(),
+            Refused::NotHeld(crate::synced::NotHeld::Outside("output")).to_string()
+        );
+        assert!(!home.path().join("synced").exists(), "a copy was made");
+        assert!(!outside.exists());
+    }
 
     #[test]
     fn remote_requests_never_log_argument_values() {
