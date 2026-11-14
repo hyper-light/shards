@@ -20663,7 +20663,7 @@ were excluded by the review.
 
 | Literal (file) | Now | Design | Owed: proof |
 |---|---|---|---|
-| `TAKE_TIMEOUT` 10 s (daemon.rs: run-socket writes, link and door handoffs, the connect/take exchange) | the run's handoff judged on Unix (runs-11 slice (a), below); Windows' twin (b) and the other sites (c) still picked | Each is a write to, or an answer from, a VM whose party is its VM process. Each waits as D215's judge waits (`health::Wait::WhileRuns`), on a record of its own kind (`Answers::take`, `::link`, `::door`): cold while its process lives, then the slowest seen, extended by progress and host holds. | a judged-write helper beside `exec_waiting`; red: a played VM whose reader is held runnable past 10 s, alive, keeps its handoff; ROOT: `cargo test -p shards --profile test-release --test daemon` on a loaded host |
+| `TAKE_TIMEOUT` 10 s (daemon.rs: run-socket writes, link and door handoffs, the connect/take exchange) | judged on Unix: the run's handoff (runs-11 slice (a), below) and a joiner's link and volumes to its join share (slice (c1)); still picked: Windows' twins (b), the run socket's writes, commands' answer wait and reclaim's note (c2) | Each is a write to, or an answer from, a VM whose party is its VM process. Each waits as D215's judge waits (`health::Wait::WhileRuns`), on a record of its own kind (`Answers::take`, `::link`, `::door`): cold while its process lives, then the slowest seen, extended by progress and host holds. | a judged-write helper beside `exec_waiting`; red: a played VM whose reader is held runnable past 10 s, alive, keeps its handoff; ROOT: `cargo test -p shards --profile test-release --test daemon` on a loaded host |
 | `TAKEOVER` 20 s (daemon.rs `take_lock`) | gone (runs-11, D185): waited for while the lock is held, judged once named by the home's slowest start | The lock's holder is the process `daemon.pid` names, written before any slot is offered. Wait while it lives (`Named::lives`, zombies now excluded, waits-08), judged by its record of a start, lock to first slot (`Answers::serve`). A holder that has written no `daemon.pid` yet is followed through its lock file's holder alone, cold. | red: a holder that lives and is slow to offer is waited for past 20 s, and one that died is not |
 | 10 ms poll (daemon.rs `take_lock`) | picked | Events, not looks: a blocking `File::lock` on a helper thread; a `platform::FileWatch` of the home (`requests/` lists, `daemon.stopping`); and the holder's exit (kqueue `EVFILT_PROC`/`NOTE_EXIT`, a pidfd, its process handle). | a unit test counting looks: one per event |
 | `HANDOFF_TRIES` 3 (daemon.rs `start_run`) | picked | Try each warm VM its pool held ready when the run began, then one booted for it. A VM booted for the run that also fails is a failure of the run, not of a VM: it ends typed, naming the last cause. The bound is the pool's own count. | `claim` to say whether a VM was ready or booted; red: four played warm VMs, three ending before `TAKEN`, the fourth takes the run |
@@ -20717,6 +20717,20 @@ send and receive, judged), and the other `TAKE_TIMEOUT` sites, each with its kin
 ROOT, each phase's latency on a loaded host per platform (`cargo test -p shards --profile
 test-release --test daemon` through `docs/research/measurements/macos-sched/launchd-run.sh` on
 HVF, and on KVM and WHP), n, p50, p90, p99 and max.
+
+Slice (c1), 2026-11-14: a joiner's volumes on Unix (`give_join_volumes`, D119). The daemon's
+send of a joiner's link on its provider's join share's door (`JOIN_LINK`), and each volume on
+that link to the share's `TAKEN` (`give_join_volume`), waited at most `TAKE_TIMEOUT` (socket
+timeouts on the link and the door). Their party is the share's process, whose ID the door now
+keeps (`JoinDoor`): each is judged as the handoff is, by D215 on that process, by its own
+kind's record (`Answers::door`, the link's send; `Answers::link`, a volume sent to its
+`TAKEN`), cold on readiness and the process's end alone, `Stalled` typed; a door whose send
+ended so is let go of, and the next joiner's starts another share, as before. Their timeouts
+are deleted. Red: `a_join_share_slow_to_take_a_volume_while_it_runs_keeps_it` (the share
+answering at 10.5 s, its process busy) by mutation restoring the 10 s read timeout;
+`a_join_share_that_runs_nothing_fails_the_volume` (a sleep as its process) by mutation
+never refusing. Owed to ROOT: a joiner's start with volumes on a loaded host
+(`cargo test -p shards --profile test-release --test daemon`, its join tests) on HVF and KVM.
 
 ### The `crates/shards` figures of the picked-constants audit (2026-11-09): each from its source
 
