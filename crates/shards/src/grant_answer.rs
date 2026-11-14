@@ -1022,6 +1022,42 @@ mod windows_tests {
         });
     }
 
+    /// A VM that stages its snapshots and has no vsock path (platform-03) asks for its
+    /// grants as `confine` does, its last grant asked for, a directory to stage in among them,
+    /// before its guest starts: what a guest that took the VM's process over asks after is
+    /// refused, a file to write outside its grants left as it was, while its snapshots are
+    /// still staged and committed for it.
+    #[test]
+    fn a_vm_that_stages_its_snapshots_is_granted_nothing_more_once_it_starts() {
+        use crate::grant_ask::{commit, stage};
+        let dir = shards_testdir::TempDir::new("staged").unwrap();
+        let (kernel, snapshot, sentinel) = (dir.join("kernel"), dir.join("snapshot"), dir.join("sentinel"));
+        std::fs::write(&kernel, b"k").unwrap();
+        std::fs::write(&sentinel, b"untouched").unwrap();
+        let (spawner, vm) = link();
+        std::thread::scope(|scope| {
+            let serving = scope.spawn(|| serve(&spawner, &Here));
+            obtain(
+                &vm,
+                &[(Access::Read, kernel.clone()), (Access::MakeDir, snapshot.clone())],
+            )
+            .unwrap();
+            let (name, files) = stage(&vm, &snapshot, shards_vmm::platform::Kept::default()).unwrap();
+            drop(files);
+            commit(&vm, &name).unwrap();
+            let late = obtain(&vm, &[(Access::Write, sentinel.clone())]);
+            if late.is_ok() {
+                let _ = shards_vmm::platform::open_input(&sentinel, true)
+                    .and_then(|mut f| f.write_all(b"overwritten"));
+            }
+            assert_eq!(std::fs::read(&sentinel).unwrap(), b"untouched");
+            let late = late.unwrap_err();
+            assert!(late.contains("after it started"), "{late}");
+            drop(vm);
+            assert!(serving.join().unwrap().is_err(), "the refusal ended its answers");
+        });
+    }
+
     /// A VM's vsock path is bound for it, replacing a socket an earlier VM left there that
     /// nothing answers on; its dials reach `<path>_<port>` and nothing else; a dial before
     /// any vsock path is granted, and a second vsock path, are refused; a VM that has
