@@ -177,11 +177,15 @@ impl Journal {
     /// The history the home's settings give, a log's where they do not read (said where
     /// a run's start reads them: D186).
     fn retention_now(&self) -> crate::spec::LogRetention {
+        let unit = self
+            .home
+            .as_ref()
+            .and_then(|h| shards_vmm::platform::allocation_unit(h).ok());
         self.home
             .as_ref()
             .and_then(|h| crate::disk::read(h).ok())
             .unwrap_or_default()
-            .events_retention()
+            .events_retention(unit)
     }
 
     /// Where it ends now.

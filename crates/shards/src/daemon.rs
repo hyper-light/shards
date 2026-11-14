@@ -979,8 +979,8 @@ struct Keep<'a> {
     /// The way its kept layer was taken, where it could go either, what it held, and when
     /// it was chosen: recorded as its command starts ([`layers::Restarts`]).
     layer_way: Option<LayerWay>,
-    /// How many segments its log keeps (D161): its own, else the daemon's.
-    log_files: u64,
+    /// How its log keeps its output (D161): its own, else the daemon's.
+    log_kept: LogRetention,
     /// Its log's rotated segments are compressed (D162).
     log_compress: bool,
     /// A visit to a stopped microVM's files (visit.rs): no start, no end, no state of
@@ -1090,8 +1090,8 @@ struct Inbox {
     /// the daemon made.
     container: PathBuf,
     segment: u64,
-    /// How many segments its log keeps (D161).
-    log_files: u64,
+    /// How its log keeps its output (D161): its segments, and their bound (runs-11).
+    log_kept: LogRetention,
     /// Its log's rotated segments are compressed (D162).
     log_compress: bool,
     /// Exec clients' connections handed to the VM and not yet taken, by number: held
@@ -1685,8 +1685,10 @@ fn count(name: &str, default: u64) -> Result<u64, String> {
 }
 
 /// How much of a microVM's output its log keeps unless a setting says otherwise: its
-/// newest 1 GiB (the user's call, 2026-10-18; `shards configure disk`, D186).
-pub(crate) const DEFAULT_LOGS: LogRetention = crate::disk::log_retention(crate::disk::LOG_HISTORY);
+/// newest 1 GiB (the user's call, 2026-10-18; `shards configure disk`, D186), in segments
+/// as no file system's unit is known (`disk::log_retention`): where none is written (a
+/// log's flags read, `--log-driver none`'s run head), or the home's unit could not be read.
+pub(crate) const DEFAULT_LOGS: LogRetention = crate::disk::log_retention(crate::disk::LOG_HISTORY, None);
 
 /// A daemon's settings.
 #[derive(Debug, Clone, Copy)]
@@ -1864,9 +1866,14 @@ fn settings() -> Result<Settings, String> {
     let keep = Duration::from_secs(count("SHARDS_POOL_KEEP", DEFAULT_KEEP.as_secs())?);
     let given = |name: &str| std::env::var_os(name).is_some_and(|v| !v.is_empty());
     let logs = if given("SHARDS_LOG_MAX_SIZE") || given("SHARDS_LOG_MAX_FILE") {
+        // The other's default as the home's file system's unit makes it.
+        let unit = shards_ipc::home()
+            .ok()
+            .and_then(|home| shards_vmm::platform::allocation_unit(&home).ok());
+        let default = crate::disk::log_retention(crate::disk::LOG_HISTORY, unit);
         let logs = LogRetention {
-            size: count("SHARDS_LOG_MAX_SIZE", DEFAULT_LOGS.size)?,
-            files: count("SHARDS_LOG_MAX_FILE", DEFAULT_LOGS.files)?,
+            size: count("SHARDS_LOG_MAX_SIZE", default.size)?,
+            files: count("SHARDS_LOG_MAX_FILE", default.files)?,
         };
         if logs.size == 0 {
             return Err("SHARDS_LOG_MAX_SIZE: a log keeps at least a byte".into());
@@ -4504,7 +4511,10 @@ impl<D: Disk> Daemon<D> {
                 layer_pending: layer_out.is_some(),
                 layer_over: over.as_ref().map(|(_, at)| at.clone()),
                 layer_way,
-                log_files: kept.map_or(DEFAULT_LOGS.files, |k| k.files),
+                log_kept: kept.map_or(DEFAULT_LOGS, |k| LogRetention {
+                    size: k.size,
+                    files: k.files,
+                }),
                 log_compress: kept.is_some_and(|k| k.compress),
                 visit: false,
                 egress,
@@ -5963,7 +5973,7 @@ impl<D: Disk> Daemon<D> {
             layer_pending,
             layer_over,
             layer_way,
-            log_files,
+            log_kept,
             log_compress,
             visit,
             egress,
@@ -6038,7 +6048,7 @@ impl<D: Disk> Daemon<D> {
             pool: ready.pool,
             container: lock(&self.containers).dir(id),
             segment: 0,
-            log_files,
+            log_kept,
             log_compress,
             execs_in_flight: Vec::new(),
             exec_ids: Vec::new(),
@@ -6732,7 +6742,7 @@ impl<D: Disk> Daemon<D> {
                     id: id.to_string(),
                     dir: inbox.container.clone(),
                     seq,
-                    files: inbox.log_files,
+                    kept: inbox.log_kept,
                     pack: inbox.log_compress,
                     socket: inbox.socket.clone(),
                 });
@@ -8545,7 +8555,13 @@ impl<D: Disk> Daemon<D> {
     fn log_retention(&self) -> Result<LogRetention, String> {
         match self.logs {
             Some(logs) => Ok(logs),
-            None => crate::disk::read(&self.home).map(|s| s.log_retention()),
+            None => {
+                // Its segments in its file system's unit (runs-11 `LOG_SEGMENT`).
+                let unit = shards_vmm::platform::allocation_unit(&self.home).map_err(|e| {
+                    format!("{}: its file system's allocation unit: {e}", self.home.display())
+                })?;
+                crate::disk::read(&self.home).map(|s| s.log_retention(Some(unit)))
+            }
         }
     }
 
@@ -10938,7 +10954,7 @@ mod tests {
                         layer_pending: false,
                         layer_over: None,
                         layer_way: None,
-                        log_files: DEFAULT_LOGS.files,
+                        log_kept: DEFAULT_LOGS,
                         log_compress: false,
                         visit: false,
                         egress: None,
@@ -11391,7 +11407,7 @@ mod tests {
                             layer_pending: false,
                             layer_over: None,
                             layer_way: None,
-                            log_files: DEFAULT_LOGS.files,
+                            log_kept: DEFAULT_LOGS,
                             log_compress: false,
                             visit: false,
                             egress: None,
@@ -14778,7 +14794,7 @@ mod tests {
                     layer_pending: false,
                     layer_over: None,
                     layer_way: None,
-                    log_files: DEFAULT_LOGS.files,
+                    log_kept: DEFAULT_LOGS,
                     log_compress: false,
                     visit: false,
                     egress: None,
@@ -14900,7 +14916,7 @@ mod tests {
                 layer_pending: false,
                 layer_over: None,
                 layer_way: None,
-                log_files: DEFAULT_LOGS.files,
+                log_kept: DEFAULT_LOGS,
                 log_compress: false,
                 visit: false,
                 egress: None,
@@ -14952,7 +14968,7 @@ mod tests {
                 layer_pending: false,
                 layer_over: None,
                 layer_way: None,
-                log_files: DEFAULT_LOGS.files,
+                log_kept: DEFAULT_LOGS,
                 log_compress: false,
                 visit: false,
                 egress: None,
@@ -15683,7 +15699,7 @@ mod tests {
                     layer_pending: false,
                     layer_over: None,
                     layer_way: None,
-                    log_files: DEFAULT_LOGS.files,
+                    log_kept: DEFAULT_LOGS,
                     log_compress: false,
                     visit: false,
                     egress: None,
@@ -15758,7 +15774,7 @@ mod tests {
                 layer_pending: false,
                 layer_over: None,
                 layer_way: None,
-                log_files: DEFAULT_LOGS.files,
+                log_kept: DEFAULT_LOGS,
                 log_compress: false,
                 visit: false,
                 egress: None,
@@ -16306,7 +16322,7 @@ mod tests {
                 id: "made".into(),
                 dir: dir.clone(),
                 seq: 1,
-                files: DEFAULT_LOGS.files,
+                kept: DEFAULT_LOGS,
                 pack: false,
                 socket: Arc::new(RunSocket::new(ours)),
             });
@@ -16329,6 +16345,50 @@ mod tests {
             assert!(dir.join(crate::segments::log_segment(1).0).is_file());
             let m = heard_whole(&vm);
             assert_eq!((m.kind, m.fds.len()), (kind::SEGMENT, 2));
+        });
+    }
+
+    /// Every run's log is held to its bound in bytes as it rotates, not by its count of segments
+    /// alone (runs-11 `LOG_SEGMENT`): a log continued under a retention whose segments are smaller
+    /// than those it holds (a history set smaller, or segments sized anew) lets go of its oldest
+    /// until its output is within `size × files`, each loss in `log.capped`. Red before: a run
+    /// with no members' logs was held by its count alone, which kept all three.
+    #[test]
+    fn a_runs_log_is_held_to_its_bound_whatever_its_segments() {
+        let t = Test::new("files-bound");
+        t.run(|t| {
+            t.t.daemon.start_files(t.threads);
+            let (ours, vm) = UnixStream::pair().unwrap();
+            let dir = t.home.join("containers").join("bound");
+            std::fs::create_dir_all(&dir).unwrap();
+            for seq in 1..=3 {
+                let (log, index) = crate::segments::log_segment(seq);
+                std::fs::write(dir.join(log), [b'x'; 64]).unwrap();
+                std::fs::write(dir.join(index), [0u8; 8]).unwrap();
+            }
+            t.daemon.make_soon(files::Job::Segment {
+                id: "bound".into(),
+                dir: dir.clone(),
+                seq: 4,
+                kept: LogRetention { size: 16, files: 8 },
+                pack: false,
+                socket: Arc::new(RunSocket::new(ours)),
+            });
+            let m = heard_whole(&vm);
+            assert_eq!((m.kind, m.fds.len()), (kind::SEGMENT, 2));
+            // Its loss is recorded once the segment has gone: both are waited for.
+            let capped = || managed::capped(&shards_vmm::platform::open_dir(&dir).unwrap()).unwrap();
+            t.until("the log was not held to its bound", |_| capped().segments > 0);
+            let capped = capped();
+            assert_eq!((capped.segments, capped.bytes), (1, 64));
+            let first = crate::segments::log_segment(1);
+            assert!(!dir.join(&first.0).exists() && !dir.join(&first.1).exists());
+            for seq in 2..=4 {
+                assert!(
+                    dir.join(crate::segments::log_segment(seq).1).exists(),
+                    "segment {seq}"
+                );
+            }
         });
     }
 

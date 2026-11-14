@@ -891,8 +891,14 @@ pub fn deallocate(file: &File, offset: u64, len: u64) -> io::Result<()> {
 /// of 64 KiB stays. A part of a unit given back stayed allocated and read as data again:
 /// a kept layer's second give-back zeroed the same 8 KiB its first had (CI 42046987905).
 pub fn deallocation_unit(path: &Path) -> io::Result<u64> {
-    use windows_sys::Win32::Storage::FileSystem::{GetDiskFreeSpaceW, GetVolumePathNameW};
     const SPARSE_UNIT: u64 = 64 << 10;
+    Ok(allocation_unit(path)?.max(SPARSE_UNIT))
+}
+
+/// The unit the volume holding `path` allocates a file's bytes in: its cluster, its sectors
+/// per cluster times its bytes per sector (GetDiskFreeSpaceW), one at least.
+pub fn allocation_unit(path: &Path) -> io::Result<u64> {
+    use windows_sys::Win32::Storage::FileSystem::{GetDiskFreeSpaceW, GetVolumePathNameW};
     let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
     // A volume's root is no longer than the path it holds, and its trailing separator.
     let mut root = vec![0u16; wide.len().saturating_add(1).max(261)];
@@ -906,7 +912,7 @@ pub fn deallocation_unit(path: &Path) -> io::Result<u64> {
     if unsafe { GetDiskFreeSpaceW(root.as_ptr(), &mut sectors, &mut bytes, &mut free, &mut total) } == 0 {
         return Err(io::Error::last_os_error());
     }
-    Ok((u64::from(sectors) * u64::from(bytes)).max(SPARSE_UNIT))
+    Ok(u64::from(sectors).saturating_mul(u64::from(bytes)).max(1))
 }
 
 /// Makes `file` sparse (FSCTL_SET_SPARSE), so that what it holds past what is written takes

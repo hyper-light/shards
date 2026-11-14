@@ -914,7 +914,7 @@ fn a_slow_start_is_refused_only_past_a_whole_slice_without_progress_or_hold() {
     // One kind for the three: a call site's.
     let patience = || Patience::of(&home);
     {
-        let _vm = StandIn::running(&home);
+        let _vm = StandIn::running();
         let read = judge(
             &late(start),
             Instant::now(),
@@ -949,7 +949,7 @@ fn a_slow_start_is_refused_only_past_a_whole_slice_without_progress_or_hold() {
             read.unwrap_or_else(|stalled| panic!("a start of {start:?} held by its host refused: {stalled}"));
         assert!(read.start() >= Some(start), "{:?}", read.start());
     });
-    let _vm = StandIn::under(&home);
+    let _vm = StandIn::idle();
     let (tell, heard) = mpsc::channel::<Heard>();
     match judge(&heard, Instant::now(), patience(), &seen, &home.join("no-slice")) {
         // Its patience's kind taught by the first start above, its first mark its answer (the
@@ -961,39 +961,36 @@ fn a_slow_start_is_refused_only_past_a_whole_slice_without_progress_or_hold() {
     drop(tell);
 }
 
-/// A stand-in for a VM process under this test's, ended as it drops: a program run through a
-/// link named as `common::vm_processes_under` finds VM processes (Linux names a process after
-/// the path it ran, a link's own name; its first argument stays the program's, as busybox's
-/// applets need).
-struct StandIn(std::process::Child);
+/// A stand-in for a VM process of this test's own (`common::OwnVm`), ended as it drops.
+struct StandIn {
+    child: std::process::Child,
+    _own: common::OwnVm,
+}
 
 impl StandIn {
     /// Idle: `sleep`.
-    fn under(dir: &Path) -> StandIn {
-        StandIn::of(dir, "idle", "/bin/sleep", "sleep", &["600"])
+    fn idle() -> StandIn {
+        StandIn::of("/bin/sleep", &["600"])
     }
 
     /// Running all along, as a booting guest's VM process does: `sh` in a loop of its own.
-    fn running(dir: &Path) -> StandIn {
-        StandIn::of(dir, "running", "/bin/sh", "sh", &["-c", "while :; do :; done"])
+    fn running() -> StandIn {
+        StandIn::of("/bin/sh", &["-c", "while :; do :; done"])
     }
 
-    fn of(dir: &Path, sub: &str, program: &str, arg0: &str, args: &[&str]) -> StandIn {
-        use std::os::unix::process::CommandExt as _;
-        let dir = dir.join(sub);
-        let link = dir.join("shards-vm");
-        if !link.exists() {
-            std::fs::create_dir_all(&dir).unwrap();
-            std::os::unix::fs::symlink(program, &link).unwrap();
+    fn of(program: &str, args: &[&str]) -> StandIn {
+        let child = Command::new(program).args(args).spawn().unwrap();
+        StandIn {
+            _own: common::OwnVm::started(child.id()),
+            child,
         }
-        StandIn(Command::new(&link).arg0(arg0).args(args).spawn().unwrap())
     }
 }
 
 impl Drop for StandIn {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 

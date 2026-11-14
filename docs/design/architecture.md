@@ -3027,6 +3027,20 @@ build's, is refused, saying its path, its digest and why.
   writes, renames or deletes it, and CreateProcess, which opens it to read and execute,
   still may. macOS has no fexecve(2) and its posix_spawn takes a path: there the window
   between the check and the exec stays, the start by name.
+  - *Its name (2026-11-14).* An exec takes a process's name (`comm`, what ps(1), top(1)
+    and pgrep(1) show) from its path's last part (fs/exec.c), so on Linux a helper started
+    through `/proc/PID/fd/N` was named `N`: at a932bc894 on adacachy2 the VM process's
+    `/proc/PID/comm` read `5`, its `/proc/PID/exe` `…/helpers/<digest>/shards-vm`, and
+    ps(1) and top(1) showed it so. Each helper now names itself after its file as it starts,
+    the VM process before it confines itself (`shards_ipc::name_after_executable`, in the
+    one crate both helpers link: `/proc/self/exe`'s last part, prctl(2) PR_SET_NAME, which
+    keeps its first 15 bytes, so `shards-vm`, `shards-vm-gpu` and `shards-net` whole). A
+    failure is said on stderr and the helper runs on: its name is no part of its work. Unit
+    tests (Linux): shards-ipc's
+    `name_tests::a_process_named_after_its_executable_shows_its_files_name`, and helpers.rs'
+    `a_helper_started_through_its_descriptor_is_shown_by_its_name`, which starts this
+    build's VM and network processes through `Program::path`, as launch.rs, netproc.rs and
+    `run --kernel`'s and `restore`'s exec do, and reads each one's name before it is reaped.
 - A helper `SHARDS_VM_BINARY` names, or a carrier's beside its `shards` (D237, signed by
   the carrier, its bytes not those this build carries), is its giver's to answer for and
   is started as it is.
@@ -9193,12 +9207,11 @@ configurable".
   is no cache, which a change could find stale; a change takes at the next run or build,
   whether the daemon runs or not.
 - **A log's history** is the most of the disk a run's log takes, records' framing
-  included (13 bytes a record), as written: equal segments of at most 20 MiB, two at
-  least, so that it holds at most its history and, once its oldest segment has gone, its
-  history less a segment at least (half of it below 40 MiB; for the default 1 GiB, 52
-  segments of 20,648,881 bytes, 51/52 of it). Whole 20 MiB segments enough to hold it
-  would hold up to 1,040 MiB where 1 GiB was asked, and a history in one segment would
-  keep nothing just after each rotation. A run's own `--log-opt max-size` and
+  included (13 bytes a record), as written: equal segments, two at least, so that it holds
+  at most its history and, once its oldest segment has gone, its history less two segments
+  at least (one gone, and what a whole number of segments leaves). A history in one segment
+  would keep nothing just after each rotation. The segments' size is derived (runs-11,
+  below; it was 20 MiB, Docker's `local` driver's, copied). A run's own `--log-opt max-size` and
   `max-file` still bound its log (D161), and the daemon's environment
   (`SHARDS_LOG_MAX_SIZE`, `SHARDS_LOG_MAX_FILE`), where it is set, wins over the file.
 - **The build cache's bounds.** A share is that much of the disk's bytes, exactly, 0% none,
@@ -9228,6 +9241,56 @@ configurable".
   owned staging removed, the base's transaction, both fail (the later snapshot drops
   `log-history`; another writer's `.disk.new` is published).
   [runs-fixes record](../research/measurements/runs-fixes/README.md#runs-09).
+- **A segment's size, derived (runs-11 `LOG_SEGMENT`, 2026-11-14).** ROOT's objective: a
+  reader resuming from a cursor reads at most one segment to find its place, while rotation
+  keeps a run's log cap whole; the size from the cap and the file system's allocation unit.
+  A cursor (`Pos`: its segment's number, its record's, its byte) names its segment, which a
+  reader opens by name and enters by its index (8 bytes a record) and, packed, its seek
+  table's one frame (D162); `--since` reads from the newest segment that begins no later
+  than it, that one whole (D187): either way one segment is the most a resuming reader reads
+  to find its place, so its cost grows with the size `S`. So does what a rotation takes from
+  the cap: one segment. Each segment also costs its own making and going, whatever its size:
+  a warm VM's `LOG_SEGMENT` ask, two files made, two removed, a pack, and a name every reader
+  lists (`LogFile::segments`): `H / S` of them for a history `H`. Counted in the file
+  system's own unit `U` (an allocation unit read or written each per-segment step, one per
+  unit of a segment), `H / S + S / U` is least at `S = √(H · U)` (its derivative
+  `−H / S² + 1 / U` is zero there), taken in whole units, since each file takes whole units
+  of its disk, at least one unit and at most `H / 2`, the two segments a cap needs; then
+  `H / S` segments, whole, so that they hold no more than `H` (`disk::log_retention`). `U`
+  is the home's (`platform::allocation_unit`: statvfs(3)'s `f_frsize`, "file system fragment
+  size"; Windows' sectors per cluster times bytes per sector, GetDiskFreeSpaceW), read as
+  each run starts, beside the settings; a unit that cannot be read refuses the run, typed as
+  the settings' own failures are. Its cold start, where no unit is known (a log's flags read
+  without a log written, `--log-driver none`'s run head, the record of processes when the
+  settings fail, the events' journal whose home's unit is unread): the cap's two halves, the
+  bound the cap alone sets. 1 GiB on 4 KiB units: 512 segments of 2 MiB (was 52 of
+  20,648,881 bytes); on 64 KiB clusters, 128 of 8 MiB; 64 KiB on 4 KiB, 4 of 16 KiB (was 2
+  of 32 KiB). The events' journal (D187) keeps its history so too.
+- **Every run's log held to its bound in bytes at each rotation (runs-11, ROOT's ruling).** A
+  writer's retention lets go of one segment a rotation, `seq − files` (segments.rs): a log
+  continued under segments of another size (one a daemon of 20 MiB segments began) or a
+  smaller `--log-history` kept the segments it held past its new bound, until as many
+  rotations had passed them, or for ever below `seq − files`. Now, as the daemon makes a
+  run's next segment (files.rs), the run's logs are held to their bound by D240's rule
+  (`managed/cap.rs` `hold`): a run whose members' logs are kept, all together within its one
+  cap, as before; any other, its command's log alone within `size × files` bytes of output,
+  its oldest let go first, never its newest, each loss in its `log.capped` (which `logs`
+  says), as D240's are. One rule for every run, and no migration: a home's logs from before
+  are held as any log is. Each hold weighs every segment from what the log records (its
+  index's time, its log's length, a packed one's seek table), an open and a read each: O(files)
+  a rotation, files at most `H / U` (`H / S` with `S ≥ U`); 512 for the default on 4 KiB
+  units. In steady state, segments of the log's own size within its own count, it lets go
+  of nothing. Red: `disk::tests::settings_read_back_and_come_to_their_amounts`, by mutation
+  putting back 20 MiB segments; `daemon::tests::a_runs_log_is_held_to_its_bound_whatever_its_segments`
+  by mutation holding runs without members' logs by their count alone (three segments of 64
+  bytes kept past a 128-byte bound). The cost model's weighting (a per-segment step and a
+  unit's read alike) is the model's; owed to ROOT: `logs -f` resume latency and rotation
+  cost against segment size, sizes from one allocation unit to the cap's half, n, p50, p90,
+  p99 and max per size, on APFS, ext4 or btrfs, and NTFS, by a harness under
+  `docs/research/measurements/`, which confirms the balance or gives the weights their
+  measured ratio; and
+  `cargo test -p shards --profile test-release --test containers a_logs_history_is_what_its_user_set`
+  (its segments now the derivation's) on HVF, KVM and WHP.
 - **A file that does not read**, edited by hand: a run is refused, saying the file and its
   line; a build's collection collects nothing and says so at every build (`WARNING: the
   build cache was not collected: ...`), the build itself done; `--reset` mends it.
@@ -9268,7 +9331,8 @@ happened before, where Docker's daemon, which runs on, says its last 256.
   as the listener came, then heard. A segment that ends in a line cut short, by a crash
   mid-write, is let be and the next begun past it; a line that does not read is passed by.
 - **Its history is a log's** (D186): `configure disk --events-history SIZE`, at most that
-  many bytes of the newest events, in equal segments of at most 20 MiB, two at least, the
+  many bytes of the newest events, in equal segments, two at least, their size a log's
+  (D186's runs-11 derivation, from the history and the home's allocation unit), the
   oldest removed as the newest begins; by default a log's 1 GiB, the user's call for a log
   (2026-10-18), the home's events being the home's log. The setting is read as each
   segment begins, so a change takes at the next.
@@ -11894,6 +11958,35 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
   snapshot, a whole 4 MiB round in each of three restores), 8,320 s, and the machine that
   goes on 12 MiB (1 MiB before, 8 MiB after and the rest of their round), 7,680 s, each going
   on while its bytes come.
+  - *Amended (2026-11-14): a stream's party is found on Linux, and its CPU is its progress
+    until its first byte.* At a932bc894 on adacachy2 (Linux x86_64, KVM, 32 CPUs), snapshot.rs'
+    storm tests failed `telling the guest it may finish` 10.7 ms and 15.3 ms into the
+    handshake (W* 9.0 ms and 10.1 ms: "a guest's stream made no progress"), and vsock.rs'
+    greeting 13.6 ms in (W* 12.7 ms), the guest then reading the host's close as `the host
+    said ""`; HVF passed them. Two causes. (1) A stream's party, this test's own VM processes
+    (`Members::Own`), was found by its processes' names, `shards-vm`, and since 8cdbf4a05 a
+    Linux VM process was named by the descriptor it was started through (`5`, runs-10's
+    *Its name* above): its party had no process, its look said `Gone`, and its wait,
+    which judges a gone party still, refused it a W* past its last byte, silently. A test's
+    own VM processes are now known by identity, never by name: each start of one registers
+    the ID it gave (`common::OwnVm`: `Vm`'s `run --kernel` and `restore`, warm.rs' warm VM,
+    budget.rs' stand-in), held until its owner has ended it, and the party is those IDs and
+    what descends from them by parent ID; the name lookup (`vm_processes_under`) is gone.
+    harness.rs `a_tests_own_vm_processes_are_known_by_their_ids` holds it (a stand-in named
+    as the test binary is). (2) Even found, its CPU was read as liveness from its start, so a wait
+    before any byte (`vsock_connect`'s handshake, `echo`'s, vsock.rs' greeting) had no
+    progress to show for the vsock device's and the guest kernel's work on its answer, and
+    the first answer of its kind refused a slower one: `Following` reads its party's CPU
+    as `Cpu::Progress` until its first byte and as `Cpu::Liveness` from then on, as
+    `Heard::streaming` does its guest's first line. The storm's spin past its start still
+    buys no wait. No literal (R03). A diagnostic on that host (an idle echo guest, 60
+    handshakes) answered in 50 µs to 5.5 ms, its VM process running throughout: the vsock
+    device is not at fault. Red/green: harness.rs
+    `a_streams_wait_follows_its_partys_work_until_its_first_byte` (a busy stand-in for the
+    party, a byte a second in after a 20 ms answer taught its kind) and the KVM tests.
+    `vsock_handshake` now says a read's refusal (`no answer after "…": <the wait's
+    account>`) apart from the device's close (`refused after "…"`), which it had folded
+    into one text.
 - **A direct boot's waits follow its guest and its VM process** (every host). boot.rs'
   `a_guest_grows_and_gives_back_its_memory` failed on the arm64 Windows host with no
   `SHARDS-TEST PLUGGED` a minute from the test's start, while its guest, booted in 13 s of
