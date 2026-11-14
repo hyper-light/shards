@@ -590,7 +590,7 @@ impl<D: Disk> Daemon<D> {
             inbox.devices.push((number, told));
         }
         let ask = [&number.to_be_bytes()[..], step].concat();
-        if let Err(e) = socket.send(kind::DEVICE, &ask, fds) {
+        if let Err(e) = socket.send(&self.answers.run_send, kind::DEVICE, &ask, fds) {
             lock(&inbox).devices.retain(|(n, _)| *n != number);
             return Err(Asked::Run(format!("asking its microVM: {e}")));
         }

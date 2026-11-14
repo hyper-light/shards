@@ -11907,7 +11907,19 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     `a_commands_refusal_teaches_its_kind_nothing` (one line from one call site, its record
     removed: a stand-in refusing at once, status 1, then working three times between 200 ms
     of nothing). Waits on no command (`judged`, a guest's, `Patience`) have no status and
-    still learn from each answer.
+    still learn from each answer. Which kinds those are is said where they are made
+    (`WaitKind::command`, `Taught::Served`; `WaitKind::of` for the rest, `Taught::Every`),
+    never inferred from a key: a guest's text-keyed kind has a line too (2026-11-14).
+  - *A harness test's teaching wait starts cold* (2026-11-14, judgecli). harness.rs' tests
+    that teach a kind W* by a quick stand-in's end (`a_stopped_process_is_its_hosts_hold_and_not_refused`,
+    `serving`, `a_runs_stop_grace_is_its_daemons_and_not_refused`,
+    `a_streaming_guests_cpu_is_its_liveness_and_its_stop_its_hosts_hold`,
+    `a_first_look_past_w_star_judges_nothing`) mean that end's W*, but their kinds read the
+    record an earlier run kept, which judged the teaching wait itself: on HVF, after
+    9dd326609 made each teaching wait awaited from its start, `a_stopped_…` was refused
+    10.5 ms in, its stand-in still for 3.72 ms past a kept W* of 2.10 ms. `cold_kind` and
+    `cold_heard` remove the kept record before the kind's first wait in the process, as
+    `cold_patience` does; `a_stopped_…` asserts its teaching wait is not judged.
   - *A party's I/O is not read: its CPU already shows every byte it moves* (#77, measured).
     Asked whether a party blocked on a peer outside it (Docker Hub, a test's registry
     thread) moves data a look misses, `docs/research/measurements/judge-io/io_vs_cpu.py`
@@ -20877,14 +20889,49 @@ the peer's process, as a failed send's were. A judged receive reads by the judge
 read cut there having moved nothing (`Called::Late`), and reads again. No figure is added:
 each wait is the judge's (D215's W*, learned; cold, readiness and the process's end alone).
 Red: shards_ipc's pipe `a_judged_send_stays_under_way_as_its_peer_reads` (a pair's window holds
-one whole message, so one left unread makes the judged write pend) and
-`a_judged_receive_waits_while_its_judge_says_go_on`, and the daemon's four handoff and join
-tests, now un-gated, by mutation passing no judge to the judged write (its first due cancels
-it, `WouldBlock`, as the write timeout did). On Windows `a_vm_that_reads_nothing_…` leaves one
-message unread first, for the same reason. What remains of `TAKE_TIMEOUT` on Windows is the
-run socket's (slice (c2)). Owed to ROOT: a run's handoff and a joiner's volumes on WHP under
+one whole message, so one left unread makes the judged write pend) by mutation passing no
+judge to the judged write (its first due cancels it, `WouldBlock`, as the write timeout
+did); `a_judged_receive_waits_while_its_judge_says_go_on`,
+`a_vm_slow_to_read_its_run_while_it_runs_keeps_its_handoff` and
+`a_join_share_slow_to_take_a_volume_while_it_runs_keeps_it` by mutation ending a judged read
+at its first due, as the read timeout did (a pipe pair takes a whole run at once, so the
+daemon's waits there are its reads). On Windows `a_vm_that_reads_nothing_…` leaves one message
+unread first, for the same reason. What remains of `TAKE_TIMEOUT` on Windows is the run
+socket's and the guest times' (slice (c2)'s Windows twins, which now have `send_judged` and
+`health::Judged` to use). Owed to ROOT: a run's handoff and a joiner's volumes on WHP under
 load (`cargo test -p shards --profile test-release --test daemon` on jupiter), n, p50, p90,
 p99 and max.
+
+Slice (c2), 2026-11-14: a run's socket, its guest times and its long answers, on Unix. Every
+send the daemon makes to a run's VM (`RunSocket::send`: signals, execs, attaches, segments,
+saves, moves, devices, cuts, pauses, plugs) waited for room at most `TAKE_TIMEOUT`, a socket
+write timeout whose expiry mid-message left the VM's reader desynchronized. Each is now
+`send_judged`, judged by D215 on the run's VM process (`RunSocket` keeps its ID), by one
+daemon-wide record of such sends (`Answers::run_send`: a run's own would be cold each run),
+taught by each send that went whole. Cold, room or the socket's end alone; learned, a socket
+full while the VM's process ran no CPU over a whole W* (or its counters' resolution, where
+coarser) is one nothing reads, and its send fails `Stalled`, typed, rather than every sender
+after it waiting. The cuts watcher (`cuts.rs`), the process's and no daemon's, keeps a static
+record of its own (`TOLD`). `GUEST_TIME`'s answer (`commands::guest_timed`) was waited for
+`TAKE_TIMEOUT`; it is judged likewise on the VM's process by `Answers::guest_time`, until its
+answer, its run's end (its inbox's sender dropped: "its microVM stopped") or `Stalled`.
+`reclaim::said_if_long`, a note and not a wait, said an answer past `TAKE_TIMEOUT`; it says one
+past the slowest of its kind before it (`past_slowest`: `Answers::reclaim`, `Answers::room`,
+read as the exec begins, since the exec's own answer teaches the record), and nothing cold.
+Each per-send look costs reads of the VM process's start and CPU (`Followed::of_pid`, `Watch`)
+and one more on completion; R14's measure of it is ROOT's. Windows keeps `TAKE_TIMEOUT` in
+`RunSocket` and `guest_timed` until slice (b) gives it `send_judged` and `Judged`; the constant
+is `cfg(any(windows, test))` until then. Red, macOS arm64: `a_run_socket_waits_for_room_while_its_vm_runs`
+(a VM, this process busy, reading at 10.5 s, its kind learned at 100 ms) by mutation restoring
+the 10 s write timeout and plain send; `a_run_socket_whose_vm_reads_and_runs_nothing_fails_its_send`
+(a sleep as its process) by mutation never refusing;
+`a_vm_slow_to_answer_its_guest_times_while_it_runs_is_waited_for` by mutation restoring the 10 s
+wait; `a_vm_that_runs_nothing_and_never_answers_its_guest_times_is_refused` by mutation never
+refusing; `an_answer_is_long_past_its_kinds_slowest_before_it` by mutation restoring the
+`TAKE_TIMEOUT` threshold. Owed to ROOT: each send's and `GUEST_TIME`'s latency on a loaded host
+(`cargo test -p shards --profile test-release --test daemon` through
+`docs/research/measurements/macos-sched/launchd-run.sh` on HVF, and on KVM), n, p50, p90, p99
+and max, and the judged send's per-send cost against 95a057045 (`build-ab/ab.py`).
 
 ### The `crates/shards` figures of the picked-constants audit (2026-11-09): each from its source
 
@@ -28116,11 +28163,24 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
   - *What it waits on now.* The host's exit watcher (`watch`), once the host has exited and
     before it is reaped (its pid, the group's ID, held), ends its group and follows every
     process of it to its exit: `Child::end_group`, the Unix twin of Windows' (above). Each
-    round sends the group SIGKILL, lists its processes that have not exited (Linux `/proc`
-    `stat`: group, state not `Z`/`X`; macOS `proc_listpids(PROC_PGRP_ONLY)`, then
-    `proc_pidinfo` group and not `SZOMB`), and waits on each one's exit word, its end
-    watched before it is seen still the group's so a reused pid is never waited on, until
-    a round lists none. A host that ends as it should has reaped what it started, and its
+    round lists the group's processes that have not exited (Linux `/proc` `stat`: group,
+    state not `Z`/`X`; macOS `proc_listpids(PROC_PGRP_ONLY)`, then `proc_pidinfo` group and
+    not `SZOMB`, asked with a nonzero `arg` so that XNU looks among exiting processes too),
+    watches each one's exit word, its end watched before it is seen still the group's so a
+    reused pid is never waited on, then sends the group SIGKILL and waits on each watch,
+    until a round lists none. Amended 2026-11-14 (groupend lane): XNU hides an exiting
+    process from `proc_find` from `proc_prepareexit` on (`P_REF_DEAD`, before `proc_exit`'s
+    `fdt_invalidate`, `NOTE_EXIT` and `SZOMB`; xnu-12377.1.9 kern_exit.c), and both
+    `proc_pidinfo` without `arg` and a `NOTE_EXIT` watch (`filt_procattach`) ask it. Rounds
+    that signalled first, then looked, read a process our SIGKILL had begun to end as gone,
+    and returned before it was a zombie, its files possibly still open:
+    `a_groups_end_follows_every_process_of_it_to_its_end` failed 1 in 8 and 2 in 40 whole-lib
+    runs on adas-mac-studio-3 at 5231d8279, the leader not yet ended (`has_ended`) or the
+    group's `sleep` still alive. At a failure the leader was in `proc_listpids`' group
+    listing, refused by `proc_pidinfo` and by a `NOTE_EXIT` watch (ESRCH), and its waitid(2)
+    end came 466 µs later. Watched before it is signalled, each process a round ends
+    is waited on by its exit word; one still exiting after it (between `NOTE_EXIT` and
+    `SZOMB`), or exiting before the look, is listed until it is a zombie and looked at again. A host that ends as it should has reaped what it started, and its
     group is empty; one it leaves is ended with it (before, waited on for as long as it
     held the diagnostics). Then its layers are swept, it is reaped, `exited` set, and its
     pipes' readers told (`Gone`, a byte on a pipe of the session's, never its end); each
@@ -28259,8 +28319,9 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
 - *The run's own command* is the orchestrator's, or `builtin::ATTEND`: the standby holds,
   the members start.
 - *Its end* (`RunEnd`): `Exited` with the status its own command or `ATTEND`'s holder ended
-  with; a command that never started, `Failed` in its VM's words (D249); a run its VM could
-  not serve, `Failed` in its words (D258).
+  with; a command that never started, or a run its init failed after it started, `Failed` in
+  init's words (D249, amended 2026-11-14); a run its VM could not serve, `Failed` in its words
+  (D258).
 
 **Literals.** None new: `run::MAX_PAYLOAD`, `run::TOKEN`, the permission mask `0o777`,
 `docker run`'s `128 + signal`; every wait is on a fact.
@@ -28562,7 +28623,13 @@ API's protocol: its output drained, its end, its connections.
     it: a worker that had ended left a look nothing to read (PM M585). A take that waits for
     its writer's close is judged from that close as the kernel says it (POLLHUP on a read end
     of the test's own, Linux), never from the test's drop of its end: a copy another test's
-    fork made of it held the pipe open up to 29 ms longer (PM M587).
+    fork made of it held the pipe open up to 29 ms longer (PM M587). On Linux a look does not
+    count a wait for a lock another thread holds, glibc's contended low-level lock
+    (`futex(word, FUTEX_WAIT, 2)`, as malloc's arenas wait): its holder's run is the host's,
+    as `D` is; a wait for an event (a poll, a read, std's and glibc's condition and park waits,
+    FUTEX_WAIT_BITSET, std's `Mutex` among them) still counts. Such a lock names no holder, so
+    a deadlock through one is not refused by the look: it surfaces as whatever bounds the run
+    (PM M589).
 - *Its VM process* (Hex lead's ask, 2026-11-14: "Give the managed guest's orchestrator the
   confined VM process's identity (pid and start time, as Identity names the host's), so it can
   read that process's memory as the VMM's"; on Windows `reserve_ram` commits the guest's RAM in
@@ -32736,7 +32803,58 @@ expected); as built, passed.
 and `cargo test -p shards --profile test-release --test api_image` on a KVM host.
 
 **What would falsify it.** A run whose command started ending `Failed` for its `DONE`, or one
-whose command never started ending `Exited`.
+whose command never started ending `Exited`. (Superseded by the amendment below: a started run
+whose `DONE` carries init's words ends `Failed`.)
+
+**Amended (2026-11-14): a started run whose init fails ends `Failed` in init's words.** The
+person's decision, verbatim "typed failure!". Init can fail a run after it said `STARTED`: its
+relay (init run.rs, `workload.relay`) returns a `Failure`, and init sends `SYSTEM_ERR` with its
+words and `EXIT` 125. The VM process keeps the words as `not_run` (workload.rs `relay_frames`),
+and warm.rs `finish` keeps dockerd's code for them (`start_failed`, 128 here). The run host
+read that as `Exited(128)`, which reads as the command's own exit. 5231d8279 (apiend128) fixed
+one such cause, init's capture EOF race. Typing the failure stops this hiding any other.
+- *`DONE`* carries the code the microVM keeps, then init's own words (warm.rs `done`, both
+  `finish` and `joined_finish`), no longer dockerd's text for them. Each reader renders them at
+  its own boundary:
+  - the daemon (daemon.rs `run_ended`) says them as dockerd does
+    (`start_failed(words).0`), for a command that never started, as before;
+  - the run host (`api_run::run_end`) types them.
+  The Docker CLI and Engine API answers are unchanged: the container's `ExitCode` stays 128 and
+  `docker run` still exits 125, 126 or 127 as Docker defines.
+- *`run_end`*: a `DONE` with words is `Failed`, its guest having said `STARTED` or not:
+  - not started: `"its command never started (status N): WORDS"`, as before, now with init's
+    unamended words;
+  - started: `"its init failed after its command started: WORDS"`.
+  A `DONE` of a status alone is `Exited(status)`. The branch that typed a started run's words
+  as `Exited(status)` is deleted. There is one path.
+- *API change for Hex* (shards-api `RunEnded.end`, the image channel's `ENDED`). There is no wire
+  or VERSION change: `RunEnd::Failed(String)` already exists. A run whose command started and
+  whose guest's init then failed it now ends `RunEnd::Failed("its init failed after its command
+  started: …")` where it ended `RunEnd::Exited(128)`. An orchestrator matching `Exited(128)` as
+  that failure matches `Failed` instead; an `Exited` status is now only ever a command's (or
+  `ATTEND`'s holder's) own.
+
+*Literals.* None new.
+
+*Tests* (unit, one macOS arm64 host, adas-mac-studio-3.local):
+- `api_run::tests::an_init_that_fails_a_started_run_ends_it_failed_in_inits_words`: through
+  `run_end` and `Told::end`.
+- `api_run::tests::a_command_that_never_started_ends_its_run_failed_saying_why`: unchanged
+  but for its started-with-words case, which moved to the test above.
+- `warm::tests::a_runs_done_carries_inits_own_words` (shards-vm-process): words that dockerd
+  amends are carried as init said them.
+
+*Results*: adas-mac-studio-3.local (Darwin arm64, rustc 1.99.1), `SHARDS_HELPERS=skip`.
+- `cargo test -p shards --bin shards -- api_run::` at 331cdf2a4: 55 passed, 0 failed.
+- `cargo test -p shards-vm-process -- warm::tests::a_runs_done_carries_inits_own_words`: passed.
+- `cargo clippy -p shards -p shards-api -p shards-vm-process --all-targets -- -D warnings`:
+  clean.
+- Red: with the old guard put back (`if !started && !words.is_empty()`), the new test failed,
+  `left: Exited(128)`, `right: Failed("its init failed after its command started: …")`.
+
+*Evidence owed* (ROOT, real VMs): a run whose init fails after `STARTED`, through
+`cargo test -p shards --profile test-release --test api_image` on HVF and KVM, and Hex's
+image_real once Hex vendors this.
 
 ### D250. An orchestrator's run keeps the network its image links its members to, letting nothing past that the request does not keep (built; real-VM validation owed)
 
