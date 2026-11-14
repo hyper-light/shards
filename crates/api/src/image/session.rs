@@ -1090,7 +1090,7 @@ fn channel_end(s: &State, member: u32, channel: Channel) -> Option<ChannelEnd> {
 /// Moves what the caller writes to member `member`'s stdin to its host, no more at once than
 /// the room the host gave, and its end once the caller closes its pipe; ends with the input,
 /// the run or the host, dropping its pipe's read end so that the caller's writes fail then.
-fn feed(shared: &Shared, member: u32, mut reader: io::PipeReader) {
+fn feed(shared: &Shared, member: u32, mut reader: impl Read) {
     // What the caller types into the member, a credential as often as not (D242): wiped here
     // once sent, and the buffer as it goes.
     let mut buf = zeroize::Zeroizing::new(vec![0u8; AHEAD as usize]);
@@ -1128,6 +1128,11 @@ fn feed(shared: &Shared, member: u32, mut reader: io::PipeReader) {
             return;
         }
     }
+}
+
+/// The owner's write end, and the reader driven by its member's feeder.
+fn input_pipe(_shared: &Shared, _member: u32) -> io::Result<(impl Read + Send, io::PipeWriter)> {
+    io::pipe()
 }
 
 /// Sends `typed`, bytes for member `member`'s stdin, as one `INPUT` frame in its parts, never
@@ -1817,7 +1822,7 @@ impl ImageGuest for Session {
             }
             flow.taken = true;
         }
-        let (reader, writer) = io::pipe().map_err(|e| ImageRefusal::Os {
+        let (reader, writer) = input_pipe(&self.shared, index).map_err(|e| ImageRefusal::Os {
             what: "a member's stdin pipe",
             kind: e.kind(),
         })?;
@@ -2389,6 +2394,51 @@ mod tests {
         assert_eq!(got, payload);
         feeding.join().unwrap();
         lock(&s.to_host).take();
+    }
+
+    #[test]
+    fn an_ended_members_idle_input_releases_its_feeder() {
+        struct Entered<R> {
+            reader: R,
+            entered: std::sync::mpsc::Sender<()>,
+        }
+        impl<R: Read> Read for Entered<R> {
+            fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+                self.entered.send(()).unwrap();
+                self.reader.read(out)
+            }
+        }
+        let shared = Arc::new(shared());
+        lock(&shared.state).inputs.insert(
+            1,
+            InputFlow {
+                room: 1,
+                ..InputFlow::default()
+            },
+        );
+        let (reader, held_writer) = input_pipe(&shared, 1).unwrap();
+        let (entered, entering) = std::sync::mpsc::channel();
+        let (done, finished) = std::sync::mpsc::channel();
+        let feeding = {
+            let shared = shared.clone();
+            std::thread::spawn(move || {
+                feed(&shared, 1, Entered { reader, entered });
+                done.send(()).unwrap();
+            })
+        };
+        entering.recv_timeout(Duration::from_secs(1)).unwrap();
+        let end = wire::InputEnded {
+            member: 1,
+            written: 0,
+            end: wire::StreamEnd::Aborted(32),
+        }
+        .encode();
+        take(&shared, wire::to_client::INPUT_ENDED, &end).unwrap();
+        let released = finished.recv_timeout(Duration::from_secs(1));
+        // Release and join an old blocking feeder before asserting the red result.
+        drop(held_writer);
+        feeding.join().unwrap();
+        assert_eq!(released, Ok(()), "member end retained its idle input feeder");
     }
 
     /// The variable under which the leak check runs, in a test process of its own.
