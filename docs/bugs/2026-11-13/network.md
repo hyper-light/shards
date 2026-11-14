@@ -116,6 +116,8 @@ Ranking: P0 critical; P1 high security/resource priority; P2 high correctness pr
 
 **Status (2026-11-13):** owed to ROOT: `cargo test -p shards --test api_image a_published_ingress_port_reaches_its_member -- --exact --nocapture`, extended with the IPv6-only granted/denied destination fixture from `build::agents_reach_past_the_microvm_by_ipv6_what_their_networks_grant`, fresh and restored. The existing ingress-only test does not reproduce missing IPv6 egress. Paired setup/control fix requirements are recorded in `docs/research/measurements/network-fixes-v1/README.md#network-05-07-guest-kernel-and-api-reproductions`; no VM result or blind implementation is claimed.
 
+**Status (2026-11-14):** fixed in d5153796b (red `api_run::tests::an_orchestrated_runs_agents_reach_past_the_microvm_by_ipv6_as_a_daemons_do`, 99f71406c). API-run's `past6` shares the daemon's IPv6 derivation (`crate::networks::host_ipv6`); its plan pushes `uplink6=` and `tell_net` sends `NET_ADDRESS` first. Unit red/green and mutations on macOS arm64: `docs/research/measurements/network-fixes-v1/api05-red-green.log`. Owed to ROOT: `cargo test -p shards --test api_image a_published_ingress_port_reaches_its_member -- --exact --nocapture`, extended with the IPv6-only granted/denied fixture, fresh and restored (D99).
+
 ### network-06 — P2 / high: one listener captures every port in a contested range
 
 **Location:** `crates/init/src/chooser.rs:440`, `:477`; `crates/init/src/netplan.rs:759`; `crates/init/src/links.rs:1589`. New in the review range.

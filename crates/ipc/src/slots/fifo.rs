@@ -104,7 +104,8 @@ impl Read for Within<'_> {
 /// that goes whole or not at all (POSIX write(2)), and a FIFO may say it has room while it has
 /// less (macOS's, local stream sockets, writable at their low-water mark: poll(2) said POLLOUT
 /// with 504 bytes free, and a write of 512 then waited, PM M549). A wait that fails, its
-/// reader gone, is told no end.
+/// reader gone, is told no end: past PIPE_BUF its wait ends only with a write after it that
+/// moved bytes, as its reader's end wakes the wait too (waits-04).
 pub fn write_all_waiting(to: &File, buf: &[u8], mut waits: impl FnMut(Wait)) -> io::Result<()> {
     let mut rest = buf;
     while !rest.is_empty() {
@@ -118,7 +119,7 @@ pub fn write_all_waiting(to: &File, buf: &[u8], mut waits: impl FnMut(Wait)) -> 
             (&*to).write_all(rest)?;
             rest = &[];
         } else {
-            await_room(to)?;
+            rest = rest.get(write_after_room(to, rest)?..).unwrap_or_default();
         }
         waits(Wait::Ended(began.elapsed()));
     }
@@ -143,6 +144,18 @@ fn write_now(to: &File, buf: &[u8]) -> io::Result<Option<usize>> {
         Err(e) => return Err(e),
     };
     restored.map(|()| wrote)
+}
+
+/// Writes what of `rest` the FIFO `to` takes once its reader has made room: how much, never
+/// none, waiting again where a wake found no room after all. Its reader's end wakes the wait
+/// and fails the write after it (`EPIPE`), so a wait that took nothing returns no count.
+fn write_after_room(to: &File, rest: &[u8]) -> io::Result<usize> {
+    loop {
+        await_room(to)?;
+        if let Some(n) = write_now(to, rest)?.filter(|&n| n > 0) {
+            return Ok(n);
+        }
+    }
 }
 
 /// Waits until the FIFO `to` has room for some of what is left, however long its reader
@@ -1409,5 +1422,59 @@ mod tests {
         };
         assert_eq!(asked.request, ps);
         assert!(!asked.waited, "a rest there at once waited on its client");
+    }
+
+    /// A wait on a FIFO's reader is a take only where a write after it moved bytes (D185,
+    /// waits-04): a reader that goes while a write of more than PIPE_BUF waits for room
+    /// wakes that wait too (`await_fifo_room`), and the write after it fails, so that wait
+    /// is told no end. Red with its end told as the wait woke: a take learned from a client
+    /// that took nothing. Its twin, a reader that drains as each wait begins, is a take each.
+    #[test]
+    fn a_readers_end_is_no_take() {
+        let home = home("fifo-take");
+        let path = home.join("f");
+        make_fifo(&path).unwrap();
+        let fill = |writer: &File| while write_now(writer, &[0; 1 << 16]).unwrap().is_some() {};
+        let drain = |reader: &File| {
+            let mut buf = vec![0; 1 << 16];
+            loop {
+                match (&*reader).read(&mut buf) {
+                    Ok(0) => return,
+                    Ok(_) => {}
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => return,
+                    Err(e) => panic!("{e}"),
+                }
+            }
+        };
+        let rest = vec![1u8; libc::PIPE_BUF * 4];
+        // Its reader gone as the wait begins.
+        let mut reader = Some(open_now(&path, false).unwrap());
+        let writer = blocking(open_now(&path, true).unwrap()).unwrap();
+        fill(&writer);
+        let mut waits = Vec::new();
+        let failed = write_all_waiting(&writer, &rest, |w| {
+            drop(reader.take());
+            waits.push(w);
+        })
+        .unwrap_err();
+        assert_eq!(failed.kind(), io::ErrorKind::BrokenPipe, "{failed}");
+        assert!(matches!(waits.as_slice(), [Wait::Began(_)]), "{waits:?}");
+        drop(writer);
+        // Its reader draining as each wait begins: each wait a take.
+        let reader = open_now(&path, false).unwrap();
+        let writer = blocking(open_now(&path, true).unwrap()).unwrap();
+        fill(&writer);
+        let mut waits = Vec::new();
+        write_all_waiting(&writer, &rest, |w| {
+            if matches!(w, Wait::Began(_)) {
+                drain(&reader);
+            }
+            waits.push(w);
+        })
+        .unwrap();
+        assert!(!waits.is_empty() && waits.len() % 2 == 0, "{waits:?}");
+        for pair in waits.chunks(2) {
+            assert!(matches!(pair, [Wait::Began(_), Wait::Ended(_)]), "{waits:?}");
+        }
     }
 }

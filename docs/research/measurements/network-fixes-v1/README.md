@@ -339,6 +339,17 @@ guest kernel patch, speculative broad refactor or passing VM result is introduce
 
 ### network-05
 
+**Fixed 2026-11-14 (Claude takeover lane), as the design below asks.** One
+derivation, `crate::networks::host_ipv6`, drives both `uplink6=` and
+`NET_ADDRESS` (with the bridge's IPv4), for daemon and API runs alike; the home's
+engine ID keeps its existing first-writer handling (`keep_first`), unchanged.
+API-run computes it as it shapes the run (`past6`), so a fresh boot and a restore
+take the same plan; `tell_net` sends `NET_ADDRESS` first and awaits its answer
+before the run starts; narrowed `NET_POLICY`, publication and credential order and
+`confine-eth0` are kept. Red/green and mutations m1 (`past6` none) and m2
+(`NET_ADDRESS` never sent): [api05-red-green.log](api05-red-green.log). The real
+guest route/receipt fixture below stays ROOT's.
+
 Starting command:
 `cargo test -p shards --test api_image a_published_ingress_port_reaches_its_member -- --exact --nocapture`.
 Extend its actual ImageShards/Hex launch with build.rs's

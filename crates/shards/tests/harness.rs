@@ -1205,3 +1205,35 @@ fn a_cleanup_refused_as_its_test_fails_fails_it_alone() {
     assert_eq!(out.status.code(), Some(101), "{:?}\n{said}", out.status);
     assert!(said.contains("as its test unwound"), "{said}");
 }
+
+/// Two keeps of one kind's record merge whatever their order (waits-11): each reads what was
+/// kept, merges its answer and renames it into place under the record's lock, so that no
+/// other keep's merge lands between one's read and its rename. Here a kind that learned 10 ms
+/// keeps while one that learned 100 ms tries to keep between its read and its rename: the
+/// second is held off, keeps after it, and the record kept is 100 ms. Red with no lock: the
+/// second kept 100 ms there, and the first then renamed its 10 ms over it.
+#[test]
+fn concurrent_keeps_never_shrink_a_kept_record() {
+    let home = TempDir::new("keeps");
+    let file = home.join("record");
+    let kind = |ms: u64| {
+        let kind = common::WaitKind::apart(file.clone());
+        kind.record().teach(Duration::from_millis(ms), Duration::ZERO);
+        kind
+    };
+    let (short, long) = (kind(10), kind(100));
+    let kept_long = std::cell::Cell::new(None);
+    short
+        .keep_between(true, || {
+            kept_long.set(Some(long.keep_between(false, || {}).unwrap()))
+        })
+        .unwrap();
+    assert_eq!(kept_long.get(), Some(false), "a keep landed inside another's");
+    long.keep();
+    let kept = common::WaitKind::apart(file.clone());
+    kept.keep();
+    let shards_api::Seen::Learned { slowest, .. } = kept.record().seen() else {
+        panic!("nothing kept");
+    };
+    assert_eq!(slowest, Duration::from_millis(100), "the slowest kept shrank");
+}

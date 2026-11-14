@@ -8069,15 +8069,24 @@ Decided by the user on 2026-10-14 ("so long as they apply appropriately to micro
     (reclaim.rs `give_after`); an ask made meanwhile waits behind it, its newest room and
     any give-back kept. The groups' thread asks at its passes, hears each answer as it
     comes (its condvar), and waits on none. A group found short with no round under way
-    begins one, each member asked once; it is judged once each has answered, ended, or run
-    past the slowest answer of its kind this daemon has seen with none (`Record::stalled`,
-    in memory: no figure of ours, and before its kind's first answer a member's word
-    follows its microVM's liveness alone, as its own wait does), the groups' thread waking
-    at that moment if nothing wakes it sooner; past `memory.max` with nothing given back,
-    its largest is stopped. So a member that never answers holds up no other member and no
-    other group, and its own group's stop comes once its word has run past the slowest
-    room answered (the same test: each group's largest stopped, OOM-killed). A group whose
+    begins one, each member asked once; it is judged once each has answered, ended, or
+    its own exec judge has refused its word. A word publishes that typed refusal before
+    it waits for its exec's kill acknowledgement (`Wait::GroupWord`, `WordState::Refused`),
+    so a stalled guest that never acknowledges cannot hold the verdict. The group consumes
+    that outcome, never elapsed wall time: `Record::stalled(word.since, now)` was a second
+    timer that OOM-killed a progressing or host-held member, or one still waiting behind
+    host-pressure reclaim (review waits-01). Before the kind's first answer, liveness
+    alone still governs; another member teaching the record does not bound a wait begun
+    cold. The parallel-group fixture therefore starts its stuck word learned. A refusal
+    stands for the exec its judge refused alone: each exec of a word (its room told, then
+    its give-back) begins `Waiting`, so a refused room is no verdict on the give-back that
+    follows it, which its own judge judges, nor on a round opened while that give-back runs
+    (red `daemon::tests::a_refused_room_is_not_the_next_rounds_verdict`: round 2 counted a
+    member whose give-back was under way as one that gave nothing and OOM-killed it). An answer
+    or refusal wakes the existing groups condvar. No new bound, reader or cache.
+    Past `memory.max` with nothing given back its largest is stopped. A group whose
     budget goes tells each member it told a room that it has none, its hold let go of.
+    [Red/green and owed real-VM validation](../research/measurements/waits-fixes-v1/README.md).
   - **A member's room as of the footprint it was read with** (built, macOS and Windows).
     The groups' thread read what each member's VM process held, then told each its room,
     and init held its run at what it used as the word came plus that room: a member that
@@ -8628,7 +8637,11 @@ process.
     goes whole (POSIX write(2)), as macOS's FIFOs say POLLOUT with less than that free (PM
     M549). Each such
     wait that ends is a take; what the FIFO takes at once waits on no client and teaches
-    nothing.
+    nothing. A wait for room ends only with a write after it that moved bytes: its
+    reader's end wakes `await_fifo_room` too (POLLERR/POLLHUP; select(2)'s writability),
+    and the write after it fails EPIPE, so that wait is told no end and teaches no take
+    (review waits-04, PM M576; red `slots::fifo::tests::a_readers_end_is_no_take`), as
+    the Windows twin's write finished as its reader went is none (PM M553).
   - *Its bound*: a closed daemon lets go of a client whose writer has waited on it longer
     than the slowest take seen. One that reads, however slowly, ends each wait as it reads.
   - *Its cold start*: before any take, a client holds a closed daemon until it ends (its
@@ -8711,7 +8724,16 @@ process.
   wait for ever on an unrelated process given a dead daemon's ID. A file of an older build
   (`PID` alone) is still read, by its ID alone. crates/api's reader is its crate's own
   (`pub(crate)`, Unix only, and shards_ipc does not depend on it), so shards_ipc reads
-  starts itself, the same way, and Windows' besides.
+  starts itself, the same way, and Windows' besides. A process that has exited lives no
+  more though its parent has not reaped it (review waits-08, PM M576): a zombie answers
+  kill(2) and keeps its start, so a client's wait for a slot from a daemon that a
+  supervisor left unreaped waited for ever. Unix's `alive` also reads its exit: Linux's
+  `/proc/<pid>/stat` state `Z` or `X` (proc(5)), macOS's `proc_pid_rusage`
+  `ri_proc_exit_abstime`, set as XNU's `proc_exit` runs (as crates/api's judge reads a
+  process ending); one whose state cannot be read is not known to have exited. Windows'
+  twin already asks its handle (`WaitForSingleObject`, no wait). Red
+  `tests::an_unreaped_daemon_does_not_live` (its child left a zombie by waitid's
+  `WNOWAIT`).
 
 | Literal | Was | Now | Source |
 |---|---|---|---|
@@ -10546,6 +10568,31 @@ Owed to ROOT: two running microVMs, `shards plug disk A FILE:/d`, then `shards p
 FILE:/d` (and through a hard link) refused, `FILE:/d:ro` into B refused, then after
 `shards unplug disk A /d`, `:ro` into A and B both plugged.
 
+
+**Amended 2026-11-14 (devices-10): a device step's refusal keeps its cause on the wire.**
+The VMM's plug, unplug and growth refused with text, and `DEVICED` carried a failure byte
+and that text, so nothing past the VM process could tell a full bus from a driver still
+bound or a host's VFIO failure but by its words (R04). They refuse by cause now,
+`shards_ipc::device::Refusal`, each with what it names: no bus (`NoBus`), every slot taken
+(`NoSlots { slots }`), nothing at a place (`NoDevice { devfn }`), a driver still driving it
+(`StillDriven { devfn, reason }`), a file shorter than its guest was told (`Shrink { has,
+asked }`) or not whole sectors (`Unaligned { bytes, sector }`), no microVM running
+(`Inactive`), a malformed step (`InvalidRequest`), what the device cannot do
+(`Unsupported`), the host's failure (`Host`), and, read on the asker's side, a VM that ended
+before it answered (`ConnectionEnded`) or an answer that could not be read (`InvalidReply`).
+Each says what its asker may do next (`Retry`): after a release (no slot, still driven),
+after correcting the ask, after reconciling (the step may have been done), or unknown (the
+host's). `DEVICED` after its number: `0` and the answer's text, or `1`, a cause byte, its
+numbers big-endian and its text; anything else, cut short, past a field's range or with
+text where its cause has none, reads as `InvalidReply`, never a success. The VM process and
+its daemon are one build (D36), so no older encoding is read. Callers match causes: a disk
+plug that fails after its VM took it keeps the file's claim unless the VM says it is off
+its bus (`NoDevice`); an Engine plug (D235) tells a host's failure (`Host`) from the
+microVM's; the CLI's and tests' words are made only to show one (the same words as before).
+An allocation failure of the answer ends the VM's link, which its asker reads as
+`ConnectionEnded`. Not typed by this: init's DEVICE built-in's answers, which come back as
+an exec's status and its words (a run's host already tells `DEVICE_BUSY` from the rest).
+Red/green: docs/research/measurements/device-fixes/README.md.
 ### D228. A client's paths are its own; the machine's are its owner's to grant (built)
 
 **The need.** Through a context (D180) a laptop runs microVMs on a GPU or x86_64 machine.
@@ -11124,7 +11171,13 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     back by the next run on the host (ROOT: a record learned on the host is data, not a
     seed; every runner of one CI image shares its key, so a cached target keeps CI warm).
     Each answer is taught in, merged with what another process kept, and written whole and
-    renamed into place; a keep that fails is the next answer's to make.
+    renamed into place, by a name of its own (its process's and its keep's), the read, merge
+    and rename one transaction under the record's lock (`.<record>.lock`, std's
+    `File::lock`: flock(2), LockFileEx), let go of before its file closes (M244): without
+    it two processes' keeps each read the record before the other renamed, and the last
+    to rename, the faster answer's, shrank W* (review waits-11, PM M576; red
+    `harness.rs::concurrent_keeps_never_shrink_a_kept_record`). A keep that fails is the
+    next answer's to make.
   - *Its key is its whole command line, what a run mints of its own made generic* (#77,
     ROOT's ruling (a) of 2026-11-13). Words alone left build.rs' two call sites one kind
     each: `build --push CTX`, refused, and `build --push -t localhost:PORT/team/built:1 CTX`
@@ -22685,13 +22738,25 @@ Tested:
 
 ### D99. IPv6 on a network of microVMs
 
-**API-run parity gap (network-05, 2026-11-13), owed to ROOT.** Unlike the daemon,
-API-run still supplies neither its guest's `uplink6=` nor the network process's
-`NET_ADDRESS` for IPv6 egress. Its IPv4 policy unit results do not prove this path.
-The correction must share the home's ULA derivation and paired programming, with
-NET_ADDRESS acknowledged before frames are served and the same narrowed grants
-and `confine-eth0` preserved. Fresh/restored API IPv6 receipt and default-deny
-witnesses are [owed with an exact fixture](../research/measurements/network-fixes-v1/README.md#network-05-07-guest-kernel-and-api-reproductions).
+**An orchestrator's run as a daemon's (network-05, 2026-11-14).** API-run supplied
+neither its guest's `uplink6=` nor its network process's `NET_ADDRESS`, so an image's
+agents with IPv6 and a grant past the microVM had no IPv6 there when run by an
+orchestrator. Both now share one derivation, `crate::networks::host_ipv6` (the home's
+engine ID's ULA /48, its last /64, `::2` and `::1`, moved from the daemon with
+`engine_id` and `ula_base`), and its two programs, `uplink6_entry` and
+`bridge_address`. api_run's `past6` gives it where the run is on the bridge and its
+image's agents have IPv6 and are granted anything past it (`Agentfile::egress6`), as
+the daemon's start does; its plan pushes `uplink6=` beside `confine-eth0`, and
+`tell_net` sends `NET_ADDRESS` first and waits for its answer before the published
+ports and the policy as the request narrows it. Unit red/green and mutations (macOS
+arm64): `api_run::tests::{an_orchestrated_runs_agents_reach_past_the_microvm_by_ipv6_as_a_daemons_do,
+an_orchestrated_runs_network_process_is_told_its_ipv6_before_its_policy}`
+([log](../research/measurements/network-fixes-v1/api05-red-green.log)). Owed to ROOT:
+`cargo test -p shards --test api_image a_published_ingress_port_reaches_its_member --
+--exact --nocapture` extended with build.rs's
+`agents_reach_past_the_microvm_by_ipv6_what_their_networks_grant` IPv6-only fixture,
+fresh and restored: the granted IPv6 address and port reached, an ungranted one
+refused, and the command unable to use its agents' grant.
 
 A network made with `--ipv6` (`shards network create --ipv6`, or a run's `--network` on
 one) gives each microVM an IPv6 address of its IPv6 subnet, as dockerd gives each
