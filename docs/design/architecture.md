@@ -28147,16 +28147,35 @@ ruleset, the run's seccomp filter.
   root (domains.rs `child`), so the mount namespace's root, where setns(2) leaves a joiner,
   is the member's.
 - *Confined by the same values, through the same steps.* A member's `Started` keeps its
-  `Confinement` (its IDs, the last capability, the TCP rights Landlock refuses it, its
-  volumes, the run's plug roots, the socket directories it receives on, its seccomp filter,
-  its environment and working directory as it started), and `domains::confine` is the one
-  function its first process and a command run in it call, last before execve: the bounding
-  set, its IDs and no group, no capability, `no_new_privs`, its umask, its Landlock ruleset,
-  its signals a new process's, its seccomp filter. Its failure is typed
-  (`domains::Confining`, a step of thirteen).
+  `Confinement` (its IDs, the last capability, its Landlock ruleset, its volumes, the run's
+  plug roots, the socket directories it receives on, its seccomp filter, its environment and
+  working directory as it started), and `domains::confine` is the one function its first
+  process and a command run in it call, last before execve: the bounding set, its IDs and no
+  group, no capability, `no_new_privs`, its umask, its Landlock ruleset entered, its signals a
+  new process's, its seccomp filter. Its failure is typed (`domains::Confining`, a step of
+  twelve).
+- *One Landlock ruleset, the member's own* (confine-01,
+  [docs/bugs/2026-11-13/confine.md](../bugs/2026-11-13/confine.md)). Init makes the member's
+  ruleset (`domains::ruleset`: every filesystem right handled, the TCP rights its links do not
+  grant, both scopes) as it prepares the member, and keeps it in its `Confinement`. The
+  member's first process adds the rules (`domains::rules`: reads and execution under `/`, its
+  scratch, `/dev`, its volumes, the plug roots, its sockets' directories), each path as it sees
+  it in its mounts before anything of the member's runs, and enters it; a command run in the
+  member enters that same ruleset and adds nothing. landlock(7) attaches a rule to the inode
+  its descriptor names, and `landlock_restrict_self` copies a ruleset into each new domain, so
+  every process of the member is given exactly the rules its first process found. A command's
+  rules were found again by name at each exec before: a member that renamed the directory
+  holding a nested volume's mount point (the mount goes with it; only a mount point itself
+  cannot be renamed) and left a symlink to `/proc` at its old name gave its command every
+  right beneath `/proc`, a write to its own `/proc/self/comm` among them, which the member's
+  own ruleset refused. Each child holds the ruleset at `domains::RULESET_FD`, next above its
+  launch status or error channel, close-on-exec, past the descriptors of init's it closes, so
+  its program holds none of it; init's own descriptor of it is close-on-exec, as every
+  Landlock ruleset's is. The ruleset made at start fails the member's start, typed as init's
+  start's errors are; the step `Confining::Ruleset` is gone.
 - *Its own Landlock domain.* landlock(7) gives a ruleset to the process that enters it and its
   children, and has no way to join a domain: the command's domain is a sibling of its
-  member's, its rules the same. So the scopes hold between them: it signals, and reaches
+  member's, its ruleset the member's own. So the scopes hold between them: it signals, and reaches
   abstract Unix sockets of, its own processes alone, and the member's processes its not.
   Sharing the member's own domain would need a process of the member's to start each
   command, inside its seccomp filter and its pids.max, and is not built.
@@ -28203,7 +28222,8 @@ ruleset, the run's seccomp filter.
 | `exec_failed::MEMBER` 2 | the next class after RUNTIME 0 and DAEMON 1 |
 | `Refusal` codes 1 to 6 | this wire's own, each a variant |
 | `step::JOIN` 12, `step::CONFINE` 13 | run.rs's child's steps, after MKDIR 11 |
-| `Confining` 1 to 13 | the steps of `confine`, in order |
+| `Confining` 1 to 12 | the steps of `confine` and `rules`, in order |
+| `RULESET_FD` 4 | the first descriptor above a child's stdio (0 to 2) and its status or error channel (3) |
 | statuses 1, 126, 127 | `docker exec`'s (docker/cli; moby daemon/errors.go) |
 
 **Tests.** Unit: the entry and refusals round trip and nothing cut short decodes (abi
@@ -28211,7 +28231,11 @@ ruleset, the run's seccomp filter.
 `enter::tests`); `--for` resolved and refused by type (daemon `devices::tests`), and its
 privileges and user refused (daemon `commands::tests`); its variables sent as given, for init
 to lay over its member's, and its TERM left for init to choose (`spec::tests`); the client's
-request with its member (ipc); `exec --help`'s Shards options (cmdline). Real VMs, ROOT's
+request with its member (ipc); `exec --help`'s Shards options (cmdline). On a Linux kernel
+with Landlock, as root of IDs past the test's own (`unshare --map-auto --map-root-user`):
+`domains::tests::a_command_run_in_a_member_gains_no_landlock_right_its_member_lacks`
+(confine-01's member and its command, through `rules` and `confine`, on Linux 7.3.3
+x86_64: red before, `member refused (13); command written`). Real VMs, ROOT's
 (`cargo test -p shards --profile test-release --test member_exec`):
 `a_command_run_in_a_member_is_confined_as_the_member_is` (uid, PID namespace, name, caps and
 `no_new_privs`, signals, Landlock on files and TCP, seccomp, cgroup and network, another

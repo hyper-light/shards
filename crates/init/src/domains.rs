@@ -2184,16 +2184,19 @@ pub fn start(
         };
         let root = image_root(skel_of, lower, !roots.is_empty())
             .map_err(|e| format!("{}: its root: {e}", d.label))?;
+        // The TCP rights Landlock refuses it: connecting unless it may open connections,
+        // binding unless it may be connected to.
+        let net_handled = match &d.link {
+            Some(l) => {
+                (if l.connects { 0 } else { landlock::NET_CONNECT_TCP })
+                    | (if l.accepts { 0 } else { landlock::NET_BIND_TCP })
+            }
+            None => landlock::NET_BIND_TCP | landlock::NET_CONNECT_TCP,
+        };
         let confinement = Confinement {
             id: d.id,
             last_cap,
-            net_handled: match &d.link {
-                Some(l) => {
-                    (if l.connects { 0 } else { landlock::NET_CONNECT_TCP })
-                        | (if l.accepts { 0 } else { landlock::NET_BIND_TCP })
-                }
-                None => landlock::NET_BIND_TCP | landlock::NET_CONNECT_TCP,
-            },
+            ruleset: ruleset(net_handled).map_err(|e| format!("{}: its Landlock ruleset: {e}", d.label))?,
             volumes: volume_rules,
             plug_roots: plug_roots.clone(),
             receives,
@@ -3026,9 +3029,11 @@ fn child(d: &Domain, p: &Prepared, c: &Confinement, stdout: RawFd, out: RawFd, s
             (false, Some(fd)) => fd,
             (false, None) => libc::open(c"/dev/null".as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC),
         };
-        let status = libc::fcntl(setup, libc::F_DUPFD_CLOEXEC, libc::STDERR_FILENO + 2);
+        let status = libc::fcntl(setup, libc::F_DUPFD_CLOEXEC, RULESET_FD + 1);
+        let ruleset = libc::fcntl(c.ruleset.as_raw_fd(), libc::F_DUPFD_CLOEXEC, RULESET_FD + 1);
         if input < 0
             || status < 0
+            || ruleset < 0
             || libc::dup2(input, 0) < 0
             || libc::dup2(stdout, 1) < 0
             || libc::dup2(out, 2) < 0
@@ -3038,13 +3043,10 @@ fn child(d: &Domain, p: &Prepared, c: &Confinement, stdout: RawFd, out: RawFd, s
         if libc::dup3(status, libc::STDERR_FILENO + 1, libc::O_CLOEXEC) < 0 {
             fail(2, c"retaining its launch status");
         }
-        if libc::syscall(
-            libc::SYS_close_range,
-            (libc::STDERR_FILENO + 2) as u32,
-            u32::MAX,
-            0u32,
-        ) != 0
-        {
+        if libc::dup3(ruleset, RULESET_FD, libc::O_CLOEXEC) < 0 {
+            fail(2, c"retaining its Landlock ruleset");
+        }
+        if libc::syscall(libc::SYS_close_range, (RULESET_FD + 1) as u32, u32::MAX, 0u32) != 0 {
             crate::domains::fail(
                 2,
                 libc::STDERR_FILENO + 1,
@@ -3065,7 +3067,7 @@ fn exec_child(p: &Prepared, c: &Confinement) -> ! {
         if libc::chdir(c.workdir.as_ptr()) != 0 {
             fail(out, c"entering its working directory");
         }
-        if let Err(step) = confine(c) {
+        if let Err(step) = rules(c, RULESET_FD).and_then(|()| confine(c, RULESET_FD)) {
             fail(out, step.what());
         }
         libc::execve(
@@ -3086,9 +3088,11 @@ pub struct Confinement {
     /// Its uid and gid, the n-th domain's `FIRST_ID + n`.
     pub id: u32,
     last_cap: u32,
-    /// The TCP rights Landlock refuses it: connecting unless it may open connections,
-    /// binding unless it may be connected to.
-    net_handled: u64,
+    /// Its Landlock ruleset (confine-01): made by init before its first process, which adds
+    /// its rules ([`rules`]) in its mounts before anything of its own runs; that process and
+    /// every command run in it enter this one ruleset, so a command is given only what its
+    /// member was, whatever the member has since done to the names the rules were found by.
+    pub(crate) ruleset: OwnedFd,
     /// Its volumes' mount points (D109), and whether each is read-only.
     volumes: Vec<(CString, bool)>,
     /// The run's plug roots (D235), `/Users`, beneath which Landlock grants it every right.
@@ -3126,7 +3130,6 @@ pub enum Confining {
     Ids,
     Capabilities,
     NoNewPrivs,
-    Ruleset,
     BaseRule,
     VolumeOpen,
     VolumeRule,
@@ -3138,12 +3141,11 @@ pub enum Confining {
 }
 
 impl Confining {
-    const ALL: [Confining; 13] = [
+    const ALL: [Confining; 12] = [
         Confining::BoundingSet,
         Confining::Ids,
         Confining::Capabilities,
         Confining::NoNewPrivs,
-        Confining::Ruleset,
         Confining::BaseRule,
         Confining::VolumeOpen,
         Confining::VolumeRule,
@@ -3165,7 +3167,6 @@ impl Confining {
             Confining::Ids => c"taking its own IDs",
             Confining::Capabilities => c"clearing its capabilities",
             Confining::NoNewPrivs => c"setting no_new_privs",
-            Confining::Ruleset => c"making its Landlock ruleset",
             Confining::BaseRule => c"adding a Landlock rule",
             Confining::VolumeOpen => c"opening its volume for Landlock",
             Confining::VolumeRule => c"adding its volume's Landlock rule",
@@ -3178,13 +3179,19 @@ impl Confining {
     }
 }
 
+/// Where a member's process holds its member's Landlock ruleset ([`Confinement`]'s) as it
+/// confines itself, past the descriptors of init's it closes: next above its launch status
+/// (or a command's error channel, crate::enter), CLOEXEC, so its program holds none.
+pub(crate) const RULESET_FD: RawFd = libc::STDERR_FILENO + 2;
+
 /// Confines this process as member `c` is, last before it execs: the member's own first
-/// process, in its mounts, and a command run in it ([`crate::enter`]), in its namespaces. Calls
-/// the kernel alone, on what `c` holds, for a child of `clone`; the first step that failed.
+/// process, in its mounts, and a command run in it ([`crate::enter`]), in its namespaces;
+/// both into `c`'s one Landlock ruleset, `ruleset` its descriptor here. Calls the kernel
+/// alone, on what `c` holds, for a child of `clone`; the first step that failed.
 ///
 /// # Safety
 /// In a process of one thread, which execs or exits next.
-pub(crate) unsafe fn confine(c: &Confinement) -> Result<(), Confining> {
+pub(crate) unsafe fn confine(c: &Confinement, ruleset: RawFd) -> Result<(), Confining> {
     // SAFETY: system calls on `c`'s buffers and this stack's, in a process of one thread.
     unsafe {
         // One that receives makes its sockets for others' uids to connect to (unix(7):
@@ -3211,7 +3218,9 @@ pub(crate) unsafe fn confine(c: &Confinement) -> Result<(), Confining> {
         if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
             return Err(Confining::NoNewPrivs);
         }
-        landlocked(c)?;
+        if libc::syscall(libc::SYS_landlock_restrict_self, ruleset, 0u32) != 0 {
+            return Err(Confining::Landlock);
+        }
         // Its signals a new process's, as an exec's are: none ignored, which execve would
         // keep ignored (init's SIGPIPE), and none blocked.
         if !crate::defaults::signals() {
@@ -3235,33 +3244,45 @@ pub(crate) unsafe fn confine(c: &Confinement) -> Result<(), Confining> {
     }
 }
 
-/// Puts this process under member `c`'s Landlock ruleset, a layer under its mounts': every
-/// filesystem right handled, and given back as reads and execution everywhere, writes to
-/// /dev's nodes, and everything in its scratch, its writable volumes and beneath the run's
-/// plug roots; the TCP binds and connects its links do not grant handled, and none given;
-/// signals and abstract Unix sockets scoped to its domain. Each path as this process sees
-/// it, in the member's mounts.
-///
-/// # Safety
-/// As [`confine`].
-unsafe fn landlocked(c: &Confinement) -> Result<(), Confining> {
-    // SAFETY: Landlock's system calls on structs of this stack and the paths of `c`, open(2)
-    // and close(2) of descriptors this process alone holds.
-    unsafe {
-        let attr = landlock::RulesetAttr {
-            handled_access_fs: landlock::FS_ALL,
-            handled_access_net: c.net_handled,
-            scoped: landlock::SCOPE_ABSTRACT_UNIX_SOCKET | landlock::SCOPE_SIGNAL,
-        };
-        let ruleset = libc::syscall(
+/// Member `c`'s Landlock ruleset, made by init: every filesystem right handled, the TCP
+/// binds and connects its links do not grant handled, signals and abstract Unix sockets
+/// scoped to its domain. Its rules its first process adds ([`rules`]).
+fn ruleset(net_handled: u64) -> io::Result<OwnedFd> {
+    let attr = landlock::RulesetAttr {
+        handled_access_fs: landlock::FS_ALL,
+        handled_access_net: net_handled,
+        scoped: landlock::SCOPE_ABSTRACT_UNIX_SOCKET | landlock::SCOPE_SIGNAL,
+    };
+    // SAFETY: landlock_create_ruleset(2) of a struct on this stack, of the size given.
+    let fd = unsafe {
+        libc::syscall(
             libc::SYS_landlock_create_ruleset,
             &raw const attr,
             std::mem::size_of::<landlock::RulesetAttr>(),
             0u32,
-        );
-        if ruleset < 0 {
-            return Err(Confining::Ruleset);
-        }
+        )
+    };
+    let fd = RawFd::try_from(fd).map_err(|_| io::Error::from_raw_os_error(libc::EBADF))?;
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: the kernel just made this descriptor, owned here alone.
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+/// Adds member `c`'s rules to its ruleset, `ruleset` its descriptor here, in its first
+/// process, in its mounts, before anything of the member's own runs: reads and execution
+/// everywhere, writes to /dev's nodes, and everything in its scratch, its writable volumes
+/// and beneath the run's plug roots, each path as this process sees it. Only here: a rule
+/// found by a name later would find what the member has since made of the name
+/// (confine-01).
+///
+/// # Safety
+/// As [`confine`].
+unsafe fn rules(c: &Confinement, ruleset: RawFd) -> Result<(), Confining> {
+    // SAFETY: Landlock's system calls on structs of this stack and the paths of `c`, open(2)
+    // and close(2) of descriptors this process alone holds.
+    unsafe {
         // `fd` beneath which `allowed` is given, closed; whether the rule was added.
         let rule = |fd: libc::c_int, allowed: u64| {
             let rule = landlock::PathBeneathAttr {
@@ -3281,56 +3302,46 @@ unsafe fn landlocked(c: &Confinement) -> Result<(), Confining> {
         let open =
             |at: &CStr, flags: libc::c_int| libc::open(at.as_ptr(), libc::O_PATH | libc::O_CLOEXEC | flags);
         let read = landlock::READ_FILE | landlock::READ_DIR | landlock::EXECUTE;
-        let added = (|| {
-            // A base path that is not there is skipped.
-            for (path, allowed) in [
-                (c"/", read),
-                (c"/dev", read | landlock::WRITE_FILE | landlock::IOCTL_DEV),
-                (c"/dev/shm", landlock::FS_ALL),
-                (c"/dev/mqueue", landlock::FS_ALL),
-                (c"/tmp", landlock::FS_ALL),
-            ] {
-                let fd = open(path, 0);
-                if fd >= 0 && !rule(fd, allowed) {
-                    return Err(Confining::BaseRule);
-                }
+        // A base path that is not there is skipped.
+        for (path, allowed) in [
+            (c"/", read),
+            (c"/dev", read | landlock::WRITE_FILE | landlock::IOCTL_DEV),
+            (c"/dev/shm", landlock::FS_ALL),
+            (c"/dev/mqueue", landlock::FS_ALL),
+            (c"/tmp", landlock::FS_ALL),
+        ] {
+            let fd = open(path, 0);
+            if fd >= 0 && !rule(fd, allowed) {
+                return Err(Confining::BaseRule);
             }
-            // Its volumes, written as it pleases where they are not read-only (D109).
-            for (at, ro) in &c.volumes {
-                let fd = open(at, 0);
-                if fd < 0 {
-                    return Err(Confining::VolumeOpen);
-                }
-                if !rule(fd, if *ro { read } else { landlock::FS_ALL }) {
-                    return Err(Confining::VolumeRule);
-                }
+        }
+        // Its volumes, written as it pleases where they are not read-only (D109).
+        for (at, ro) in &c.volumes {
+            let fd = open(at, 0);
+            if fd < 0 {
+                return Err(Confining::VolumeOpen);
             }
-            // The run's plug roots (D235): what is plugged into it as it runs, beneath one,
-            // written as it pleases where it is not read-only. A root grants nothing before:
-            // it lies on its root's mount, read-only. One that is no directory in its view
-            // is skipped, as the base paths above are.
-            for at in &c.plug_roots {
-                let fd = open(at, libc::O_DIRECTORY);
-                if fd >= 0 && !rule(fd, landlock::FS_ALL) {
-                    return Err(Confining::PlugRootRule);
-                }
+            if !rule(fd, if *ro { read } else { landlock::FS_ALL }) {
+                return Err(Confining::VolumeRule);
             }
-            for at in &c.receives {
-                let fd = open(at, 0);
-                if fd < 0 || !rule(fd, landlock::MAKE_SOCK | landlock::REMOVE_FILE) {
-                    return Err(Confining::SocketRule);
-                }
+        }
+        // The run's plug roots (D235): what is plugged into it as it runs, beneath one,
+        // written as it pleases where it is not read-only. A root grants nothing before:
+        // it lies on its root's mount, read-only. One that is no directory in its view
+        // is skipped, as the base paths above are.
+        for at in &c.plug_roots {
+            let fd = open(at, libc::O_DIRECTORY);
+            if fd >= 0 && !rule(fd, landlock::FS_ALL) {
+                return Err(Confining::PlugRootRule);
             }
-            Ok(())
-        })();
-        let entered = match added {
-            Ok(()) if libc::syscall(libc::SYS_landlock_restrict_self, ruleset, 0u32) != 0 => {
-                Err(Confining::Landlock)
+        }
+        for at in &c.receives {
+            let fd = open(at, 0);
+            if fd < 0 || !rule(fd, landlock::MAKE_SOCK | landlock::REMOVE_FILE) {
+                return Err(Confining::SocketRule);
             }
-            done => done,
-        };
-        libc::close(ruleset as libc::c_int);
-        entered
+        }
+        Ok(())
     }
 }
 
@@ -3893,5 +3904,155 @@ mod tests {
             "{}",
             DomainMount::Scratch
         );
+    }
+
+    /// Runs `work` in a child of this process and returns what it says; for the steps a
+    /// member's processes take, which change the process that takes them for good.
+    fn in_child(work: impl FnOnce() -> String) -> String {
+        use std::io::{Read as _, Write as _};
+        let mut fds = [0 as RawFd; 2];
+        // SAFETY: pipe2(2) into a two-element array.
+        assert_eq!(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) }, 0);
+        // SAFETY: both descriptors were just made, and are owned here alone.
+        let (r, w) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+        // SAFETY: fork(2) of a process of one thread (as_root_of_own_mounts's child); the
+        // child runs `work` and _exit(2)s.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork: {}", io::Error::last_os_error());
+        if pid == 0 {
+            drop(r);
+            let said = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work))
+                .unwrap_or_else(|_| "the child panicked".into());
+            let _ = std::fs::File::from(w).write_all(said.as_bytes());
+            // SAFETY: ends the child without running the harness's exit paths.
+            unsafe { libc::_exit(0) }
+        }
+        drop(w);
+        let mut said = String::new();
+        std::fs::File::from(r).read_to_string(&mut said).unwrap();
+        // SAFETY: waits for this process's own child.
+        unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0) };
+        said
+    }
+
+    /// A member's confinement as a test gives it: uid and gid `id`, every TCP right
+    /// refused, and a seccomp filter that allows every call (the filter is not what these
+    /// tests look at).
+    fn member_confinement(id: u32, volumes: Vec<(CString, bool)>, workdir: &str) -> Confinement {
+        let last_cap = std::fs::read_to_string("/proc/sys/kernel/cap_last_cap")
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let allow = libc::sock_filter {
+            code: (libc::BPF_RET | libc::BPF_K) as u16,
+            jt: 0,
+            jf: 0,
+            k: libc::SECCOMP_RET_ALLOW,
+        };
+        Confinement {
+            id,
+            last_cap,
+            ruleset: ruleset(landlock::NET_BIND_TCP | landlock::NET_CONNECT_TCP).unwrap(),
+            volumes,
+            plug_roots: Vec::new(),
+            receives: Vec::new(),
+            seccomp: (0, vec![allow]),
+            seccomp_len: 1,
+            env: Vec::new(),
+            workdir: CString::new(workdir).unwrap(),
+        }
+    }
+
+    fn cstring(p: &std::path::Path) -> CString {
+        CString::new(p.to_str().unwrap()).unwrap()
+    }
+
+    /// Whether this process may open its own `/proc/self/comm` to write it: the file's
+    /// mode lets its owner (proc(5)), so only Landlock refuses it. Dumpable first, as a
+    /// member's program is past its execve(2): taking its IDs made it not, and gave its
+    /// /proc files to root (proc(5), PR_SET_DUMPABLE in prctl(2)).
+    fn writes_its_comm() -> String {
+        // SAFETY: prctl(2) with constant arguments.
+        if unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 1, 0, 0, 0) } != 0 {
+            return format!("dumpable: {}", io::Error::last_os_error());
+        }
+        match std::fs::OpenOptions::new().write(true).open("/proc/self/comm") {
+            Ok(_) => "written".into(),
+            Err(e) => format!("refused ({})", e.raw_os_error().unwrap_or(0)),
+        }
+    }
+
+    /// confine-01 (docs/bugs/2026-11-13/confine.md): a command run in a member is given no
+    /// filesystem right its member lacks, however the member moved what its volumes' mount
+    /// points' names lead to. The member owns a writable volume, `data`, and another
+    /// mounted in it, at `data/parent/inner`; it moves `data/parent` aside (the mount goes
+    /// with it) and leaves `data/parent/inner` a symlink to `/proc`. Landlock refused the
+    /// member a write to its `/proc/self/comm`; a command run in it later must be refused
+    /// too. Run as root of IDs past its own (`unshare --map-auto --map-root-user`), where
+    /// uid 1000 is another's; else a SKIP.
+    #[test]
+    fn a_command_run_in_a_member_gains_no_landlock_right_its_member_lacks() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = shards_testdir::TempDir::new("ll").unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let data = dir.path().join("data");
+        let volume = dir.path().join("volume");
+        std::fs::create_dir_all(data.join("parent/inner")).unwrap();
+        std::fs::create_dir(&volume).unwrap();
+        let said = as_root_of_own_mounts(|| {
+            let inner = data.join("parent/inner");
+            // SAFETY: mount(2) of NUL-terminated paths, in this child's own namespace.
+            if unsafe {
+                libc::mount(
+                    cstring(&volume).as_ptr(),
+                    cstring(&inner).as_ptr(),
+                    std::ptr::null(),
+                    libc::MS_BIND,
+                    std::ptr::null(),
+                )
+            } != 0
+            {
+                return format!("SKIP: mounting the inner volume: {}", io::Error::last_os_error());
+            }
+            for d in [&data, &data.join("parent"), &inner] {
+                if std::os::unix::fs::chown(d, Some(1000), Some(1000)).is_err() {
+                    return "SKIP: no uid 1000 in this namespace".into();
+                }
+            }
+            let c = member_confinement(1000, vec![(cstring(&data), false), (cstring(&inner), false)], "/");
+            let member = in_child(|| {
+                // SAFETY: a process of one thread, which exits next.
+                if let Err(step) = unsafe {
+                    rules(&c, c.ruleset.as_raw_fd()).and_then(|()| confine(&c, c.ruleset.as_raw_fd()))
+                } {
+                    return format!(
+                        "SKIP: confining the member: {step:?}: {}",
+                        io::Error::last_os_error()
+                    );
+                }
+                let before = writes_its_comm();
+                let moved = std::fs::rename(data.join("parent"), data.join("moved"))
+                    .and_then(|()| std::fs::create_dir(data.join("parent")))
+                    .and_then(|()| std::os::unix::fs::symlink("/proc", &inner));
+                match moved {
+                    Ok(()) => before,
+                    Err(e) => format!("moving its volume's name: {e}"),
+                }
+            });
+            if member.starts_with("SKIP") {
+                return member;
+            }
+            let command = in_child(|| {
+                // SAFETY: a process of one thread, which exits next.
+                if let Err(step) = unsafe { confine(&c, c.ruleset.as_raw_fd()) } {
+                    return format!("confining: {step:?}: {}", io::Error::last_os_error());
+                }
+                writes_its_comm()
+            });
+            format!("member {member}; command {command}")
+        });
+        let Some(said) = said else { return };
+        assert_eq!(said, "member refused (13); command refused (13)");
     }
 }
