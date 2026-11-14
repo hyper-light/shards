@@ -941,6 +941,18 @@ mod tests {
     use crate::identity::{Fingerprint, Identity};
     use crate::managed::{Reason, RunId};
 
+    /// How long a test waits for what it awaits: a patience of its own.
+    const PATIENCE: std::time::Duration = std::time::Duration::from_secs(10);
+
+    /// A socket lane's ask, its answer waited for within the tests' patience: the lane, or why
+    /// not.
+    macro_rules! answered {
+        ($ask:expr) => {
+            $ask.and_then(|mut ask| ask.wait(PATIENCE))
+                .map(|got| got.expect("answered within the tests' patience"))
+        };
+    }
+
     /// What the run's request admits: `lanes` at once, `window` bytes in flight each way per
     /// lane; the cases derive their byte counts from them.
     fn admission(lanes: u32) -> Admission {
@@ -1041,7 +1053,7 @@ mod tests {
         let sockets = dialed.sockets.expect("socket lanes subscribed");
 
         let sent = pattern(admission(4).window);
-        let mut lane: Socket = sockets.connect("control.sock").unwrap();
+        let mut lane: Socket = answered!(sockets.connect("control.sock")).unwrap();
         lane.write_all(&sent).unwrap();
         lane.shutdown_write().unwrap();
         let mut back = Vec::new();
@@ -1072,9 +1084,12 @@ mod tests {
         let mut dialed = dial(&hex, vm.fingerprint(), at, admission(4));
         let sockets = dialed.sockets.take().unwrap();
         let errno = |e: i32| Err(Fault::Unreached(NonZeroU16::new(e as u16).unwrap()));
-        assert_eq!(sockets.connect("absent.sock").map(|_| ()), errno(libc::ENOENT));
         assert_eq!(
-            sockets.connect("gone.sock").map(|_| ()),
+            answered!(sockets.connect("absent.sock")).map(|_| ()),
+            errno(libc::ENOENT)
+        );
+        assert_eq!(
+            answered!(sockets.connect("gone.sock")).map(|_| ()),
             errno(libc::ECONNREFUSED)
         );
     }
@@ -1098,7 +1113,7 @@ mod tests {
             long.as_str(),
         ] {
             assert_eq!(
-                sockets.connect(name).map(|_| ()),
+                answered!(sockets.connect(name)).map(|_| ()),
                 Err(Fault::Refused(Reason::Protocol)),
                 "{name:?}"
             );
@@ -1124,7 +1139,7 @@ mod tests {
             let listener = listener.try_clone().unwrap();
             move || drop(listener.accept().unwrap())
         });
-        let mut lane = sockets.connect("files.sock").unwrap();
+        let mut lane = answered!(sockets.connect("files.sock")).unwrap();
         closer.join().unwrap();
         let sent = pattern(admission(4).window);
         let wrote = lane.write_all(&sent).and_then(|()| lane.flush());
@@ -1140,7 +1155,7 @@ mod tests {
             let mut got = Vec::new();
             conn.read_to_end(&mut got).map(|_| got.len())
         });
-        let mut lane = sockets.connect("files.sock").unwrap();
+        let mut lane = answered!(sockets.connect("files.sock")).unwrap();
         lane.write_all(b"partial").unwrap();
         lane.abort().unwrap();
         // The workload's read ends (EOF or ECONNRESET), whichever its socket says.
@@ -1175,7 +1190,7 @@ mod tests {
                 got
             }
         });
-        let mut lane = sockets.connect("cut.sock").unwrap();
+        let mut lane = answered!(sockets.connect("cut.sock")).unwrap();
         lane.write_all(&sent).unwrap();
         assert_eq!(
             workload.join().unwrap(),
@@ -1219,7 +1234,7 @@ mod tests {
             conn.read_to_end(&mut got).unwrap();
             got
         });
-        let mut lane = sockets.connect("half.sock").unwrap();
+        let mut lane = answered!(sockets.connect("half.sock")).unwrap();
         let mut said = Vec::new();
         assert_eq!(
             lane.read_to_end(&mut said).map_err(|e| e.kind()),
@@ -1246,18 +1261,49 @@ mod tests {
         let _host = host(dir.path().to_owned(), asks);
         let mut dialed = dial(&hex, vm.fingerprint(), at, admission(2));
         let sockets = dialed.sockets.take().unwrap();
-        let first = sockets.connect("stdio.sock").unwrap();
-        let _second = sockets.connect("stdio.sock").unwrap();
+        let first = answered!(sockets.connect("stdio.sock")).unwrap();
+        let _second = answered!(sockets.connect("stdio.sock")).unwrap();
         assert_eq!(
-            sockets.connect("stdio.sock").map(|_| ()),
+            answered!(sockets.connect("stdio.sock")).map(|_| ()),
             Err(Fault::Refused(Reason::Capacity))
         );
         let mut first = first;
         first.abort().unwrap();
         drop(first);
         // Room comes back as the endpoint lets the aborted lane go: the next connect is taken.
-        let _third = sockets.connect("stdio.sock").unwrap();
+        let _third = answered!(sockets.connect("stdio.sock")).unwrap();
         drop(holder);
+    }
+
+    /// A socket lane's ask let go before its answer leaves nothing held: the lane its host
+    /// connects after its asker has gone is cut (RESET_STREAM and STOP_SENDING), and the
+    /// workload's socket ends with it.
+    #[test]
+    fn a_socket_lane_let_go_unanswered_is_cut_as_it_connects() {
+        let dir = shards_testdir::TempDir::new("sw").unwrap();
+        let listener = UnixListener::bind(dir.path().join("late.sock")).unwrap();
+        let (vm, hex) = (Identity::generate().unwrap(), Identity::generate().unwrap());
+        let (at, asks, _revoke) = serving(&vm, hex.fingerprint(), admission(4));
+        let mut dialed = dial(&hex, vm.fingerprint(), at, admission(4));
+        let sockets = dialed.sockets.take().unwrap();
+        let ask = sockets.connect("late.sock").unwrap();
+        let connect = asks.recv_timeout(PATIENCE).unwrap();
+        drop(ask);
+        let stream = UnixStream::connect(dir.path().join(connect.name())).unwrap();
+        let (mut workload, _) = listener.accept().unwrap();
+        workload.set_read_timeout(Some(PATIENCE)).unwrap();
+        // Its lane may be gone at the endpoint already, which lets the socket go itself.
+        let _ = connect.reply(Reply::Connected(stream));
+        let mut byte = [0u8; 1];
+        let read = workload.read(&mut byte);
+        assert!(
+            matches!(&read, Ok(0))
+                || read.as_ref().is_err_and(|e| !matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                )),
+            "the workload's socket ended, not held: {read:?}"
+        );
     }
 
     #[test]
@@ -1271,7 +1317,7 @@ mod tests {
         let dialed = dial(&stranger, vm.fingerprint(), at, admission(4));
         let sockets = dialed.sockets.unwrap();
         assert!(matches!(
-            sockets.connect("control.sock").map(|_| ()),
+            answered!(sockets.connect("control.sock")).map(|_| ()),
             Err(Fault::Lost(Ended::NotEnrolled(_)))
         ));
         assert!(matches!(asks.try_recv(), Err(mpsc::TryRecvError::Empty)));
@@ -1326,7 +1372,7 @@ mod tests {
         std::thread::spawn(move || controller.run());
         let sockets = dialed.sockets.unwrap();
         assert_eq!(
-            sockets.connect("control.sock").map(|_| ()),
+            answered!(sockets.connect("control.sock")).map(|_| ()),
             Err(Fault::Refused(Reason::Scope))
         );
         drop(served);

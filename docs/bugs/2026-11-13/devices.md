@@ -143,6 +143,8 @@ Priority mapping for the user's requested notification: **P0 critical; P1 high; 
 
 **Catching test:** persist 66 linked requests with unequal root/intermediate limits and assert c65's result equals `shm_bytes(sizes(c0).2)`; ROOT's E2E should compare guest statfs with c0's maximum.
 
+**Status (2026-11-14):** fixed in 8df184aa2 (red `shm_owner_follows_every_join_to_the_vm_budget`: resolved budget 0 rather than 536870912; green 4 inspect tests plus shards clippy on macOS arm64; Codex's 0d6a24c37/4eaefdf9c cherry-picked as 6ea0a8463/ad8308bb8, 8df184aa2 keeps listings whole). D156 amended. Owed to ROOT: c0 `--memory 512m`, c1..c65 each `--network container:c(n-1)`, then `statfs /dev/shm` in c65 equals half c0's microVM maximum (`shm_bytes`).
+
 ### devices-08 — P2 / medium — Device paths retain fixed budgets without required derivation
 
 **Locations:** `crates/shards/src/daemon/devices.rs:97`, `:334`; `crates/shards/src/daemon.rs:134`; `crates/vmm/src/devices/virtio/gpu/mod.rs:53`; `crates/vmm/src/devices/virtio/iommu.rs:45`; `crates/vmm/src/devices/virtio/block.rs:186` (`THROUGH_MAX`).
@@ -194,6 +196,8 @@ Priority mapping for the user's requested notification: **P0 critical; P1 high; 
 
 **Catching test:** round-trip `NoSlots`, `StillDriven`, `ShrinkRefused` and host failure variants across the actual codec, then assert callers match variants while presentation wording can change independently.
 
+**Status (2026-11-14):** fixed in 170f6e360 (red `device_refusals_keep_identity_and_retry_across_the_wire`, Codex's 53265a0fe cherry-picked as 300b8f353: the old encoding returned retry Unknown for NoSlots, expected AfterRelease; green 2 ipc codec tests, 2 hotplug and 9 block VMM tests, 9 daemon devices tests and clippy of ipc, vmm, shards and shards-vm-process on macOS arm64, and Linux x86_64 clippy; see README). D214 amended. Owed to ROOT: `cargo test -p shards --test hotplug` on KVM, Hypervisor.framework and WHP (its assertions now match `Refusal::StillDriven`, `Shrink` and `NoDevice`), and `cargo test -p shards --test plug`.
+
 ### devices-11 — ROOT decision — Disk-file ownership across runs
 
 Added by ROOT, 2026-11-13, outside the original ten-finding review:
@@ -201,6 +205,8 @@ Added by ROOT, 2026-11-13, outside the original ten-finding review:
 > plug must refuse, typed, a disk file that another run already has plugged writable. Two kernels mounting one ext4 read-write corrupt it, which is what ext4 MMP (Documentation/filesystems/ext4/mmp.rst) exists to refuse, and their growths take different Steps holds. Read-only sharing stays allowed. Identify a file by (dev, inode) on Unix and by its file ID on Windows, never by path. Amend D214.
 
 **Status (2026-11-13):** assigned to the devices lane by ROOT; implementation pending. The original review counts above describe devices-01 through devices-10 only.
+
+**Status (2026-11-14):** fixed in 14769aead (its code tested as 84fa0a5e5, the same tree; red: the guard's mutation `e9427c934`, the claim check off, fails `a_disk_file_is_plugged_writable_into_one_run_at_a_time`: a second writable claim of the same file through a hard link was given; green 9 daemon devices tests and shards clippy, macOS arm64). D214 amended (one writer, read-only sharing, identity by (dev, inode) / volume serial and FILE_ID_INFO). Owed to ROOT: `cargo test -p shards --test plug` extended with two running microVMs, a writable plug of one file into both refused (and through a hard link), `:ro` into the second refused while the first has it writable, and both `:ro` once it is unplugged; and a Windows unit run of `os::file_id` (jupiter offline).
 
 ## Checked and found sound
 

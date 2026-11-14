@@ -75,7 +75,7 @@ impl Handle {
         _file: std::fs::File,
         _read_only: bool,
         _serial: &str,
-    ) -> Result<super::Plugged, String> {
+    ) -> Result<super::Plugged, shards_ipc::device::Refusal> {
         match self.0 {}
     }
 
@@ -83,11 +83,11 @@ impl Handle {
         &self,
         _tag: &str,
         _slot: crate::devices::virtio::fs::Share,
-    ) -> Result<super::Plugged, String> {
+    ) -> Result<super::Plugged, shards_ipc::device::Refusal> {
         match self.0 {}
     }
 
-    pub fn unplug(&self, _devfn: u8) -> Result<(), String> {
+    pub fn unplug(&self, _devfn: u8) -> Result<(), shards_ipc::device::Refusal> {
         match self.0 {}
     }
 

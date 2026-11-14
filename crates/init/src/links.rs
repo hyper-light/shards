@@ -1515,8 +1515,8 @@ const CHOSEN: &[u8] = b"chosen\0";
 /// connection tracking (D122).
 const CHOSEN_ZONE: &[u8] = b"chosen-zone\0";
 
-/// One of the chooser's choices: what comes in on eth0 to port `from` goes to `to`, at its
-/// port `at`; and, for a UDP port, the conntrack zone of this choice, which its flows, both
+/// One of the chooser's choices: what comes in on eth0 to ports `from` goes to `to`, at its
+/// ports `at`; and, for UDP's, the conntrack zone of that holder, which its flows, both
 /// ways, are tracked in.
 pub(crate) type Chosen = (
     crate::netplan::Egress,
@@ -1528,11 +1528,12 @@ pub(crate) type Chosen = (
 /// The chooser's choices, programmed again whole in one transaction: what comes in on
 /// eth0 to each port `from` goes to `to`, at its port `at`, as `pre` gives a port that is
 /// one domain's; a port of no one listening, nowhere here (the run's own command's, as a
-/// port no domain claims is). A UDP port's flows are tracked in its choice's zone, coming
-/// in and the holder's answers going out: a choice of another holder has a zone of its
-/// own, in which a flow admitted before is new, and so translated to the new holder, its
-/// entry in the old zone left to expire, as the old holder's answers past it are new
-/// flows no grant opens. Linux keeps a NAT binding for a flow's life (nf_nat_core.c; a
+/// port no domain claims is). A UDP port's flows are tracked in its holder's zone, coming
+/// in and the holder's answers going out: each holder has a zone of its own for the run
+/// (crate::chooser's `Choices`), in which a flow admitted before a change is new, and so
+/// translated to the new holder, its entry in the old holder's zone left to expire, or
+/// taken again, translated to that holder, should it hold the port again; the old
+/// holder's answers past the change are new flows no grant opens. Linux keeps a NAT binding for a flow's life (nf_nat_core.c; a
 /// UDP flow lives 30 s past its last datagram, 120 s once it streams,
 /// nf_conntrack_proto_udp.c), and a guest kernel without ctnetlink (shards' has none) has
 /// no other way to let one go.
@@ -2329,10 +2330,16 @@ fn outside(sock: &OwnedFd, eth0: u32, u: &Uplink, members: &[Member]) -> io::Res
             );
         }
         for (to, ranges) in ingress {
-            for &(from, at) in ranges
-                .iter()
-                .filter(|(from, _)| contested.iter().all(|c| c.from != *from))
-            {
+            // Each range's ports no contest is for, at the domain's own ports there.
+            let alone = ranges.iter().flat_map(|&(from, at)| {
+                crate::chooser::uncontested(from, &contested)
+                    .into_iter()
+                    .filter_map(move |(lo, hi)| {
+                        let shift = |port: u16| port.checked_sub(from.1).and_then(|d| at.1.checked_add(d));
+                        Some(((from.0, lo, hi), (at.0, shift(lo)?, shift(hi)?)))
+                    })
+            });
+            for (from, at) in alone {
                 let mut e = Vec::new();
                 meta(&mut e, nft::NFT_META_IIF);
                 compare(&mut e, nft::NFT_CMP_EQ, &eth0.to_ne_bytes());

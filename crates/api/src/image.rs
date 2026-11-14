@@ -267,6 +267,15 @@ pub struct ImageSpec {
     /// nesting grant its command reads them in `/run/shards/gpus` (D234's `gpus=`). None: no
     /// GPU.
     pub gpu_devices: Vec<crate::PhysicalGpu>,
+    /// The scope of the run's GPU report (D233), as a managed launch names its own
+    /// ([`crate::PreparedBoot::with_gpu_report`]): the run's VM process frames its renderer's
+    /// report with it, each device's physical identity and, on Windows, its current boot's LUID,
+    /// before its guest runs, and the run's host relays it; [`ImageGuest::take_gpu_report`]
+    /// takes it within the boot's patience. Nonzero, and only with
+    /// [`gpu_devices`](Self::gpu_devices): else refused as [`ImageRefusal::GpuProbe`] (`Scope`,
+    /// `Empty`). None: no report. A run that asks one boots on a run host of its own, never a
+    /// warm one ([`ImagePools`]), as a warm host's VM starts before its run names the scope.
+    pub gpu_report: Option<[u8; 16]>,
 }
 
 /// A root a run's injector trusts beside the host's own ([`ImageSpec::upstream_roots`], D242).
@@ -340,6 +349,12 @@ pub enum ImageRefusal {
     Terminal(String),
     /// A save its run's host refused (D259), by what refused it.
     Save(SaveRefusal, String),
+    /// The run's GPU report (D233), as a managed launch's is refused
+    /// ([`crate::Refusal::GpuProbe`]): not asked (`Unavailable`), taken already
+    /// (`ReportTaken`), past the boot's patience (`Pending`), its scope or selection refused
+    /// (`Scope`, `Empty`), its frame unwritten (`Unreported`) or unread (`Syntax`, `Count`),
+    /// or the selection its renderer refused (`Refused`), which a boot refused by it returns.
+    GpuProbe(crate::GpuProbeError),
 }
 
 impl std::fmt::Display for ImageRefusal {
@@ -358,6 +373,7 @@ impl std::fmt::Display for ImageRefusal {
             Self::Rate(why) => write!(f, "the run's rate: {why}"),
             Self::Terminal(why) => write!(f, "a member's terminal: {why}"),
             Self::Save(cause, why) => write!(f, "the save: {cause:?}: {why}"),
+            Self::GpuProbe(why) => write!(f, "the run's GPU report: {why}"),
         }
     }
 }
@@ -620,6 +636,15 @@ pub trait ImageGuest: Send + Sync {
     /// [`RunEnd::Failed`]) is only their last. A file that stalls holds them up; a part it
     /// refuses is lost to it alone.
     fn keep_diagnostics(&self, to: std::fs::File) -> Result<(), ImageRefusal>;
+    /// The run's GPU report (D232, D233), its VM process's own, written before its guest ran
+    /// and relayed by its host: each selected device's physical identity, Vulkan UUID and, on
+    /// Windows, its current boot's LUID, read against [`ImageSpec::gpu_report`]'s scope and
+    /// [`ImageSpec::gpu_devices`] as `ManagedGuest::take_gpu_report` reads a managed
+    /// launch's. Taken once, within the boot's patience and at most `patience` from now: as a
+    /// managed launch's, the first take spends it, whatever it comes to. Refused as
+    /// [`ImageRefusal::GpuProbe`]: `Unavailable` for a run that asked none, `ReportTaken` once
+    /// taken, `Pending` past either budget, and its frame's own refusals.
+    fn take_gpu_report(&self, patience: Duration) -> Result<crate::physical::GpuReport, ImageRefusal>;
 }
 
 /// A run stopped before its microVM started: it used nothing of a machine.
@@ -1034,6 +1059,14 @@ fn request(spec: &ImageSpec) -> Result<wire::Request, ImageRefusal> {
         what: "the GPU selection",
         why: e.to_string(),
     })?;
+    // Its report's scope (D233), refused as a managed launch's (`PreparedBoot::with_gpu_report`).
+    match spec.gpu_report {
+        Some(scope) if scope == [0; 16] => return Err(ImageRefusal::GpuProbe(crate::GpuProbeError::Scope)),
+        Some(_) if spec.gpu_devices.is_empty() => {
+            return Err(ImageRefusal::GpuProbe(crate::GpuProbeError::Empty));
+        }
+        _ => {}
+    }
     let request = wire::Request {
         image: spec.image.clone(),
         vcpus: spec.vcpus,
@@ -1050,6 +1083,7 @@ fn request(spec: &ImageSpec) -> Result<wire::Request, ImageRefusal> {
         gpu_devices: spec.gpu_devices.clone(),
         sign_ins,
         upstream_roots,
+        gpu_report: spec.gpu_report,
     };
     // Past the channel's bound it would never be read; the guest's bound is the same one.
     request.encode().map_err(|e| ImageRefusal::Spec {
@@ -1104,6 +1138,7 @@ mod tests {
             gpu_devices: Vec::new(),
             sign_ins: Vec::new(),
             upstream_roots: Vec::new(),
+            gpu_report: None,
         }
     }
 
@@ -1605,5 +1640,22 @@ mod tests {
         assert_eq!(request(&s).unwrap().gpu_devices, vec![gpu]);
         s.gpu_devices = vec![gpu, gpu];
         assert!(matches!(request(&s), Err(ImageRefusal::Spec { .. })));
+    }
+
+    /// D233 through D231: a run's GPU report's scope is refused before any run host starts as a
+    /// managed launch's is (`PreparedBoot::with_gpu_report`): zero as `Scope`, of a run naming no
+    /// GPU as `Empty`; else carried whole.
+    #[test]
+    fn a_runs_gpu_report_scope_is_refused_as_a_managed_launchs() {
+        use crate::GpuProbeError;
+        let mut s = spec();
+        s.gpu_report = Some([3; 16]);
+        assert_eq!(request(&s), Err(ImageRefusal::GpuProbe(GpuProbeError::Empty)));
+        s.gpu_devices = vec![crate::PhysicalGpu::MetalRegistry(7)];
+        assert_eq!(request(&s).unwrap().gpu_report, Some([3; 16]));
+        s.gpu_report = Some([0; 16]);
+        assert_eq!(request(&s), Err(ImageRefusal::GpuProbe(GpuProbeError::Scope)));
+        s.gpu_report = None;
+        assert_eq!(request(&s).unwrap().gpu_report, None);
     }
 }

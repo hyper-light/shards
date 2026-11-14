@@ -1120,7 +1120,9 @@ fn instead(args: &[OsString]) -> ExitCode {
         Ok(bin) => bin,
         Err(e) => return failed(&e),
     };
-    match std::process::Command::new(&bin).args(args).status() {
+    match shards_ipc::spawn_std(std::process::Command::new(&bin).args(args))
+        .and_then(|mut child| child.wait())
+    {
         Ok(status) => ExitCode::from(status.code().and_then(|c| u8::try_from(c).ok()).unwrap_or(1)),
         Err(e) => failed(&format!("{}: {e}", bin.display())),
     }
@@ -1549,6 +1551,11 @@ fn vm(args: &[OsString]) -> ExitCode {
 /// the VM hands the working set it records to (`--working-set`): no VM writes its snapshot
 /// (D30), and a process that becomes the VM leaves none behind to. The writer is reaped by
 /// the kernel, since SIGCHLD stays ignored through the exec.
+///
+/// A VM given a vsock path (`--vsock`) has its broker, `shardsd grants`, bind that path for
+/// it and dial the host ports beside it, on a socket the VM asks on (`--grants`), as on
+/// macOS: its filter refuses it every connect (D30). The broker leads a session of its own
+/// only for standalone launches, and goes as the VM closes its socket.
 #[cfg(not(any(target_os = "macos", windows)))]
 fn vm(args: &[OsString]) -> ExitCode {
     if has_vm_flag(args, "--gpu-probe") {
@@ -1572,6 +1579,11 @@ fn vm(args: &[OsString]) -> ExitCode {
         Ok(with) => with,
         Err(e) => return failed(&e),
     };
+    let args = with.as_deref().unwrap_or(args);
+    let with = match dial_broker(args) {
+        Ok(with) => with,
+        Err(e) => return failed(&e),
+    };
     if let Err(e) = shares::inherit(shared)
         .and_then(|()| said_kept(said_to))
         .and_then(|()| said_kept(final_use_to))
@@ -1585,6 +1597,45 @@ fn vm(args: &[OsString]) -> ExitCode {
         Some(with) => instead(&with),
         None => instead(args),
     }
+}
+
+/// `args` with `--grants FD` given, the VM's broker started on the socket's other end,
+/// where they give the VM a vsock path; none otherwise.
+#[cfg(target_os = "linux")]
+fn dial_broker(args: &[OsString]) -> Result<Option<Vec<OsString>>, String> {
+    use std::os::fd::{AsFd as _, IntoRawFd as _};
+    if !has_vm_flag(args, "--vsock") {
+        return Ok(None);
+    }
+    let broker = shardsd()?;
+    let (ours, theirs) =
+        std::os::unix::net::UnixStream::pair().map_err(|e| format!("the VM's grants socket: {e}"))?;
+    // SAFETY: signal(2) setting SIGCHLD's disposition, before any thread starts.
+    unsafe { libc::signal(libc::SIGCHLD, libc::SIG_IGN) };
+    let stderr = std::io::stderr();
+    shards_ipc::spawn(
+        &broker,
+        &["grants".as_ref()],
+        &[(theirs.as_fd(), 3), (stderr.as_fd(), 2)],
+        !has_vm_flag(args, "--host-managed"),
+    )
+    .map_err(|e| format!("{}: {e}", broker.display()))?;
+    drop(theirs);
+    // Kept open through the exec, for the VM.
+    let fd = ours.into_raw_fd();
+    // SAFETY: fcntl(2) clearing close-on-exec on a descriptor this process owns.
+    if unsafe { libc::fcntl(fd, libc::F_SETFD, 0) } != 0 {
+        return Err(format!(
+            "the VM's grants socket: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let mut with: Vec<OsString> = Vec::with_capacity(args.len() + 2);
+    with.extend(args.first().cloned());
+    with.push("--grants".into());
+    with.push(fd.to_string().into());
+    with.extend(args.iter().skip(1).cloned());
+    Ok(Some(with))
 }
 
 /// The snapshot directory, made absolute, whose working set a restore of `args` records:

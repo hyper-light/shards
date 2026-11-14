@@ -204,8 +204,11 @@ pub use guest_time::{GuestTimes, VcpuTime};
 pub const MILLI_PER_CPU: u64 = 1000;
 /// The period a machine's hold holds its vCPUs to their rate over (D191, D247): CFS
 /// bandwidth control's default, `cpu.max`'s 100000 µs (kernel/sched/sched.h l. 445-447,
-/// `default_bw_period_us`, Linux 1590cf03), which Docker's `--cpus` is a quota of. Its
-/// derivation from what the governor resolves is decided, waiting on a measurement (D191).
+/// `default_bw_period_us`, Linux 1590cf03), which Docker's `--cpus` is a quota of. An
+/// upstream default R03 holds insufficient: its derivation, vcpus × g over the share, runs
+/// beside it (`hold::derived_period`, g learned by `platform::granule`, each limit's said in
+/// the debug log), in force once the kicks it costs are measured on each backend and the
+/// image API's rate answer carries each rate's period (D191, "Its period"; migrate-09).
 const HOLD_PERIOD: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// The period this build's hold holds a machine's vCPUs to their rate over: what a run's
@@ -226,7 +229,7 @@ mod runtime;
 #[cfg(hv)]
 pub use runtime::{
     Handle, Running, Saved, accept_working_set, check_host, keep_working_set, max_vcpus, restore,
-    restore_from, restores_here, start, start_gpu_report, working_set_limit,
+    restore_from, restore_reported, restores_here, start, start_gpu_report, working_set_limit,
 };
 
 #[cfg(all(hv, target_arch = "aarch64"))]
@@ -258,6 +261,15 @@ pub use unsupported::{
     Handle, Running, Saved, accept_working_set, check_host, keep_working_set, max_vcpus, restore,
     restore_from, restores_here, start, working_set_limit,
 };
+
+#[cfg(not(hv))]
+pub fn restore_reported(
+    cfg: &RestoreConfig,
+    pinned: crate::snapshot::Pinned,
+    _report: Option<&mut GpuReportTo<'_>>,
+) -> Result<(Handle, Running), String> {
+    restore_from(cfg, pinned)
+}
 
 #[cfg(not(hv))]
 pub fn start_gpu_report(

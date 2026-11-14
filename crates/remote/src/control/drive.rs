@@ -18,6 +18,11 @@
 //!   output or a member's, as an exec's lane asks; its records come on a lane of their own, as
 //!   an exec's stdout does, each a typed record at its own place in the log ([`Log`]), so that a
 //!   later lane goes on from where this one got to ([`Log::cursor`]).
+//! - **Its waits** (Hex's decision 9). Each lane's ask goes at once and gives a pending
+//!   handle ([`PendingMember`], [`PendingExec`], [`PendingMcp`], [`PendingLog`],
+//!   [`PendingSocket`]) whose `wait` gives way within its caller's patience, the ask still
+//!   pending for a later wait, as a member's steer does ([`MemberSteering::steered`]). An ask
+//!   is never sent twice; one let go unanswered has its lane closed as a cut lane is.
 //! - **Who it reaches.** No lane opens before the handshake took the microVM's pinned key
 //!   ([`controller`](super::controller)), and no more open at once than the endpoint allows
 //!   (MAX_STREAMS, RFC 9000 §4.6): the rest wait for its room.
@@ -32,7 +37,7 @@ use std::mem::size_of;
 use std::net::SocketAddr;
 use std::num::NonZeroU16;
 use std::sync::mpsc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use hyper_quic::{ClientConfig, ConnectionError, StreamId};
 use shards_abi::run::managed::{Channel, InputEnd};
@@ -75,7 +80,8 @@ pub struct Subscriptions<'a> {
     pub sockets: Option<unix::Admission>,
 }
 
-/// Why a lane gives no more, typed: what callers match, never words.
+/// Why a lane gives no more, or (`Awaiting`, `Unawaited`) why a call on it was refused with
+/// the lane as it was, typed: what callers match, never words.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fault {
     /// The endpoint refused this lane alone, as step 5's endpoints refuse a subscription.
@@ -98,6 +104,12 @@ pub enum Fault {
     Unlogged(Unlogged),
     /// The connection ended ([`Ended`]): this side's own close is [`Ended::Local`].
     Lost(Ended),
+    /// A member's steer asked while the last one's answer is awaited: nothing was sent, and
+    /// the steering is as it was; [`MemberSteering::steered`] follows the last one on.
+    Awaiting,
+    /// A wait for an answer none awaits: its ask's answer was given already, or no steer was
+    /// sent since the last one's. Nothing was sent; the lane is as it was.
+    Unawaited,
 }
 
 /// What an output's lane gave.
@@ -112,6 +124,8 @@ pub enum Got {
 /// What the driver tells a lane's handle.
 #[derive(Debug)]
 enum Heard {
+    /// A lane's ask taken: its number, which its handle names to withdraw it.
+    Asked(u64),
     Record {
         at: u64,
         bytes: Vec<u8>,
@@ -174,6 +188,17 @@ enum Ask {
     /// An exec's lane let go by its handle before its end: both ways abandoned, which hangs its
     /// exec up at the endpoint, as its connection's end would (a log lane its reader dropped).
     Hangup { lane: u64 },
+    /// A lane's ask let go by its handle before it took the answer ([`Pending`]): the lane is
+    /// closed both ways, whatever its endpoint said or says.
+    Withdraw(Box<Withdrawn>),
+}
+
+/// A lane's ask let go: its number, where its handle heard it, and its channel, in which the
+/// driver, which alone tells it, finds everything it told and not yet heard.
+#[derive(Debug)]
+struct Withdrawn {
+    lane: Option<u64>,
+    heard: mpsc::Receiver<Heard>,
 }
 
 #[derive(Debug)]
@@ -407,11 +432,10 @@ pub struct Execs {
 }
 
 impl Execs {
-    /// Runs `spec` in member `member` (step 6's member exec, D243: as the member runs, its user
-    /// and setup the member's own) and waits until it has started: its stdio's handles and its
-    /// control. Why it did not start, typed: the endpoint's refusal of its lane, the host's
-    /// [`Fault::Unstarted`], or the connection's end.
-    pub fn exec(&self, member: u32, spec: Spec) -> Result<Exec, Fault> {
+    /// Asks for `spec` to run in member `member` (step 6's member exec, D243: as the member
+    /// runs, its user and setup the member's own), at once: [`PendingExec::wait`] waits for
+    /// it to have started.
+    pub fn exec(&self, member: u32, spec: Spec) -> Result<PendingExec, Fault> {
         let (stderr, stdin) = (spec.tty.is_none(), spec.stdin);
         let ask = exec::Ask {
             run: self.run,
@@ -422,37 +446,23 @@ impl Execs {
         self.ask(&ask, stderr, stdin)
     }
 
-    /// The next connection the harness in member `member` makes to its MCP bridge (D254),
-    /// waited for until it comes: what the harness sends, what it is sent, and its end. Why
-    /// there is none, typed as an exec's: the endpoint's refusal of its lane, the host's
-    /// [`Fault::Unstarted`] (`Refused` for a member whose run asked for no bridge), or the
-    /// connection's end.
-    pub fn mcp(&self, member: u32) -> Result<McpConnection, Fault> {
+    /// Asks, at once, for the next connection the harness in member `member` makes to its MCP
+    /// bridge (D254): [`PendingMcp::wait`] waits for it to come.
+    pub fn mcp(&self, member: u32) -> Result<PendingMcp, Fault> {
         let ask = exec::Ask {
             run: self.run,
             generation: self.generation,
             member,
             kind: exec::Kind::Mcp,
         };
-        let Exec {
-            stdout,
-            stdin,
-            control,
-            ..
-        } = self.ask(&ask, false, true)?;
-        let to = stdin.ok_or(Fault::Refused(Reason::Protocol))?;
-        Ok(McpConnection {
-            from: stdout,
-            to,
-            end: control,
+        Ok(PendingMcp {
+            exec: self.ask(&ask, false, true)?,
         })
     }
 
-    /// Member `member` itself, on a lane of its own: whether it runs, and then its steering
-    /// and its end, or how it ended before. Why there is none, typed: the endpoint's refusal of
-    /// its lane (`Scope` for a member it serves no stream of), its host's
-    /// [`Fault::Unstarted`], or the connection's end.
-    pub fn member(&self, member: u32) -> Result<Member, Fault> {
+    /// Asks, at once, for member `member` itself, on a lane of its own: [`PendingMember::wait`]
+    /// waits for whether it runs, and then its steering and its end, or how it ended before.
+    pub fn member(&self, member: u32) -> Result<PendingMember, Fault> {
         let ask = exec::Ask {
             run: self.run,
             generation: self.generation,
@@ -460,6 +470,7 @@ impl Execs {
             kind: exec::Kind::Member,
         };
         let frame = ask.frame().map_err(|_| Fault::Refused(Reason::Protocol))?;
+        let asks = self.asks.try_clone().map_err(|_| gone())?;
         let (tell, heard) = mpsc::channel();
         let (end, ends) = mpsc::channel();
         self.asks.hand(Ask::Member(Box::new(MemberAsked {
@@ -468,39 +479,23 @@ impl Execs {
             tell,
             end,
         })));
-        let lane = match heard.recv() {
-            Ok(Heard::Running(lane)) => lane,
-            Ok(Heard::Exit(end)) => return Ok(Member::Ended(end)),
-            Ok(Heard::Fault(fault)) => return Err(fault),
-            Ok(_) | Err(_) => return Err(gone()),
-        };
-        Ok(Member::Running(MemberControl {
-            steering: MemberSteering {
-                lane,
-                asks: self.asks.try_clone().map_err(|_| gone())?,
-                heard,
-                over: None,
-            },
-            end: MemberEnd {
-                heard: ends,
-                exit: None,
-            },
-        }))
+        Ok(PendingMember {
+            pending: Pending::new(asks, heard),
+            ends: Some(ends),
+        })
     }
 
-    /// The log the run keeps of `source`'s output (D238's log lane): its `channels`, each from
-    /// its place in `cursor` (the oldest kept where it names none), read as kept now or, with
-    /// `follow`, on as it is kept until its source ends. Waits until its host has started it;
-    /// why it reads none, typed: [`Fault::Unlogged`] (`Rotated`, naming the oldest place kept,
-    /// where a place asked is older), the endpoint's refusal of its lane, its host's
-    /// [`Fault::Unstarted`], or the connection's end.
+    /// Asks, at once, for the log the run keeps of `source`'s output (D238's log lane): its
+    /// `channels`, each from its place in `cursor` (the oldest kept where it names none), read
+    /// as kept now or, with `follow`, on as it is kept until its source ends.
+    /// [`PendingLog::wait`] waits until its host has started it.
     pub fn log(
         &self,
         source: LogSource,
         channels: LogChannels,
         cursor: LogCursor,
         follow: bool,
-    ) -> Result<Log, Fault> {
+    ) -> Result<PendingLog, Fault> {
         let asked = LogAsk {
             source,
             channels,
@@ -508,21 +503,18 @@ impl Execs {
             follow,
         };
         let ask = exec::Ask::log(self.run, self.generation, asked);
-        let Exec { stdout, control, .. } = self.ask(&ask, false, false)?;
-        Ok(Log {
-            records: stdout,
-            lane: control.lane,
-            asks: control.asks,
+        Ok(PendingLog {
+            exec: self.ask(&ask, false, false)?,
             channels,
             cursor,
-            finished: false,
         })
     }
 
-    /// Asks for `ask` on a lane of its own, and waits until it has started, its stdio's lanes
-    /// made for an exec of `stderr` and `stdin`.
-    fn ask(&self, ask: &exec::Ask, stderr: bool, stdin: bool) -> Result<Exec, Fault> {
+    /// Asks for `ask` on a lane of its own, its stdio's lanes to be made for an exec of
+    /// `stderr` and `stdin` once it has started.
+    fn ask(&self, ask: &exec::Ask, stderr: bool, stdin: bool) -> Result<PendingExec, Fault> {
         let frame = ask.frame().map_err(|_| Fault::Refused(Reason::Protocol))?;
+        let asks = self.asks.try_clone().map_err(|_| gone())?;
         let (tell, heard) = mpsc::channel();
         self.asks.hand(Ask::Exec(Box::new(Asked {
             frame,
@@ -532,10 +524,117 @@ impl Execs {
             log: matches!(ask.kind, exec::Kind::Log(_)),
             tell,
         })));
-        let started = match heard.recv() {
-            Ok(Heard::Started(started)) => started,
-            Ok(Heard::Fault(fault)) => return Err(fault),
-            Ok(_) | Err(_) => return Err(gone()),
+        Ok(PendingExec {
+            pending: Pending::new(asks, heard),
+        })
+    }
+}
+
+/// Where a lane's ask stands, as its handle holds it (R04): awaiting its endpoint's answer,
+/// the lane's number once its driver has said it; answered, the answer handed on; or over,
+/// why, told again to each later wait.
+#[derive(Debug)]
+enum Awaited {
+    Awaiting {
+        asks: Asks,
+        heard: mpsc::Receiver<Heard>,
+        lane: Option<u64>,
+    },
+    Answered,
+    Over(Fault),
+}
+
+/// A lane's ask, sent once, its answer awaited within each wait's patience. Let go unanswered,
+/// it withdraws its lane: its driver closes it, answered or not, as a cut lane is closed (D251:
+/// RESET_STREAM and STOP_SENDING), so that nothing is held for an asker gone.
+#[derive(Debug)]
+struct Pending {
+    state: Awaited,
+}
+
+/// What a lane's endpoint answered: its word, where its handle asks the driver, and the lane's
+/// channel on.
+struct Answer {
+    said: Heard,
+    asks: Asks,
+    heard: mpsc::Receiver<Heard>,
+}
+
+impl Pending {
+    fn new(asks: Asks, heard: mpsc::Receiver<Heard>) -> Pending {
+        Pending {
+            state: Awaited::Awaiting {
+                asks,
+                heard,
+                lane: None,
+            },
+        }
+    }
+
+    /// Waits at most `patience` for the answer (`Duration::MAX`, or one past what the clock
+    /// holds: until it comes or the connection ends): none yet, its ask still pending for a
+    /// later wait; the answer, once; or the lane's fault, then again. A wait after the answer
+    /// was given is [`Fault::Unawaited`].
+    fn wait(&mut self, patience: Duration) -> Result<Option<Answer>, Fault> {
+        let deadline = Instant::now().checked_add(patience);
+        loop {
+            let said = match &self.state {
+                Awaited::Awaiting { heard, .. } => match deadline {
+                    Some(deadline) => heard.recv_timeout(deadline.saturating_duration_since(Instant::now())),
+                    None => heard.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
+                },
+                Awaited::Answered => return Err(Fault::Unawaited),
+                Awaited::Over(fault) => return Err(*fault),
+            };
+            let fault = match said {
+                Err(mpsc::RecvTimeoutError::Timeout) => return Ok(None),
+                Ok(Heard::Asked(id)) => {
+                    if let Awaited::Awaiting { lane, .. } = &mut self.state {
+                        *lane = Some(id);
+                    }
+                    continue;
+                }
+                Ok(Heard::Fault(fault)) => fault,
+                Err(mpsc::RecvTimeoutError::Disconnected) => gone(),
+                Ok(said) => {
+                    return match std::mem::replace(&mut self.state, Awaited::Answered) {
+                        Awaited::Awaiting { asks, heard, .. } => Ok(Some(Answer { said, asks, heard })),
+                        _ => Err(gone()),
+                    };
+                }
+            };
+            self.state = Awaited::Over(fault);
+            return Err(fault);
+        }
+    }
+}
+
+impl Drop for Pending {
+    fn drop(&mut self) {
+        if let Awaited::Awaiting { asks, heard, lane } = std::mem::replace(&mut self.state, Awaited::Answered)
+        {
+            asks.hand(Ask::Withdraw(Box::new(Withdrawn { lane, heard })));
+        }
+    }
+}
+
+/// An exec asked for ([`Execs::exec`]), its start awaited.
+#[derive(Debug)]
+pub struct PendingExec {
+    pending: Pending,
+}
+
+impl PendingExec {
+    /// Waits at most `patience` (`Duration::MAX`: until it comes) for the exec to have
+    /// started: none yet, the ask still pending; once, its stdio's handles and its control.
+    /// Why it did not start, typed, then again: the endpoint's refusal of its lane, the host's
+    /// [`Fault::Unstarted`], or the connection's end.
+    pub fn wait(&mut self, patience: Duration) -> Result<Option<Exec>, Fault> {
+        let Some(Answer { said, asks, heard }) = self.pending.wait(patience)? else {
+            return Ok(None);
+        };
+        let Heard::Started(started) = said else {
+            return Err(gone());
         };
         let Started {
             lane,
@@ -543,17 +642,114 @@ impl Execs {
             stderr,
             stdin,
         } = *started;
-        Ok(Exec {
+        Ok(Some(Exec {
             stdout,
             stderr,
             stdin,
             control: ExecControl {
                 lane,
-                asks: self.asks.try_clone().map_err(|_| gone())?,
+                asks,
                 heard,
                 exit: None,
             },
-        })
+        }))
+    }
+}
+
+/// An MCP connection asked for ([`Execs::mcp`]), awaited.
+#[derive(Debug)]
+pub struct PendingMcp {
+    exec: PendingExec,
+}
+
+impl PendingMcp {
+    /// Waits at most `patience` (`Duration::MAX`: until it comes) for the harness's next
+    /// connection: none yet, the ask still pending; once, what the harness sends, what it is
+    /// sent, and its end. Why there is none, typed as an exec's: the endpoint's refusal of its
+    /// lane, the host's [`Fault::Unstarted`] (`Refused` for a member whose run asked for no
+    /// bridge), or the connection's end.
+    pub fn wait(&mut self, patience: Duration) -> Result<Option<McpConnection>, Fault> {
+        let Some(Exec {
+            stdout,
+            stdin,
+            control,
+            ..
+        }) = self.exec.wait(patience)?
+        else {
+            return Ok(None);
+        };
+        let to = stdin.ok_or(Fault::Refused(Reason::Protocol))?;
+        Ok(Some(McpConnection {
+            from: stdout,
+            to,
+            end: control,
+        }))
+    }
+}
+
+/// A member's own lane asked for ([`Execs::member`]), its first word awaited.
+#[derive(Debug)]
+pub struct PendingMember {
+    pending: Pending,
+    /// Where its end is told, handed to its [`MemberEnd`] with its answer.
+    ends: Option<mpsc::Receiver<Heard>>,
+}
+
+impl PendingMember {
+    /// Waits at most `patience` (`Duration::MAX`: until it comes) for its lane's first word:
+    /// none yet, the ask still pending; once, whether the member runs, and then its steering
+    /// and its end, or how it ended before. Why there is none, typed, then again: the
+    /// endpoint's refusal of its lane (`Scope` for a member it serves no stream of), its host's
+    /// [`Fault::Unstarted`], or the connection's end.
+    pub fn wait(&mut self, patience: Duration) -> Result<Option<Member>, Fault> {
+        let Some(Answer { said, asks, heard }) = self.pending.wait(patience)? else {
+            return Ok(None);
+        };
+        match said {
+            Heard::Running(lane) => Ok(Some(Member::Running(MemberControl {
+                steering: MemberSteering {
+                    lane,
+                    asks,
+                    heard,
+                    state: Steering::Ready,
+                },
+                end: MemberEnd {
+                    heard: self.ends.take().ok_or_else(gone)?,
+                    exit: None,
+                },
+            }))),
+            Heard::Exit(end) => Ok(Some(Member::Ended(end))),
+            _ => Err(gone()),
+        }
+    }
+}
+
+/// A log lane asked for ([`Execs::log`]), its start awaited.
+#[derive(Debug)]
+pub struct PendingLog {
+    exec: PendingExec,
+    channels: LogChannels,
+    cursor: LogCursor,
+}
+
+impl PendingLog {
+    /// Waits at most `patience` (`Duration::MAX`: until it comes) for its host to have started
+    /// it: none yet, the ask still pending; once, its records. Why it reads none, typed, then
+    /// again: [`Fault::Unlogged`] (`Rotated`, naming the oldest place kept, where a place asked
+    /// is older), the endpoint's refusal of its lane, its host's [`Fault::Unstarted`], or the
+    /// connection's end.
+    pub fn wait(&mut self, patience: Duration) -> Result<Option<Log>, Fault> {
+        let Some(Exec { stdout, control, .. }) = self.exec.wait(patience)? else {
+            return Ok(None);
+        };
+        Ok(Some(Log {
+            records: stdout,
+            lane: control.lane,
+            asks: control.asks,
+            channels: self.channels,
+            cursor: self.cursor,
+            finished: false,
+        }))
     }
 }
 
@@ -664,45 +860,73 @@ pub struct MemberSteering {
     lane: u64,
     asks: Asks,
     heard: mpsc::Receiver<Heard>,
-    /// Why it steers no more, once it does not.
-    over: Option<Fault>,
+    state: Steering,
+}
+
+/// Where a member's steering stands (R04): ready for a steer, one sent and its answer awaited,
+/// or over, why.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Steering {
+    Ready,
+    Awaiting,
+    Over(Fault),
 }
 
 impl MemberSteering {
     /// Signals its command with `signal`, a Linux signal's number, `1..=run::NSIG`, refused
-    /// before it is sent otherwise; and waits for its host's answer.
-    pub fn signal(&mut self, signal: u32) -> Result<(), Fault> {
+    /// before it is sent otherwise; and waits at most `patience` for its host's answer
+    /// (`Duration::MAX`: until it comes): none yet, followed on by [`steered`](Self::steered).
+    pub fn signal(&mut self, signal: u32, patience: Duration) -> Result<Option<()>, Fault> {
         if !(1..=shards_abi::run::NSIG).contains(&signal) {
             return Err(Fault::Refused(Reason::Protocol));
         }
-        self.steer(Steer::Signal(signal))
+        self.steer(Steer::Signal(signal), patience)
     }
 
-    /// Sizes its own terminal (D244), a 0 in either leaving it as it is; and waits for its
-    /// host's answer, [`Unsteered::Terminal`] for a member with none.
-    pub fn resize(&mut self, size: Size) -> Result<(), Fault> {
-        self.steer(Steer::Resize(size))
+    /// Sizes its own terminal (D244), a 0 in either leaving it as it is; and waits at most
+    /// `patience` for its host's answer, as [`signal`](Self::signal) does,
+    /// [`Unsteered::Terminal`] for a member with none.
+    pub fn resize(&mut self, size: Size, patience: Duration) -> Result<Option<()>, Fault> {
+        self.steer(Steer::Resize(size), patience)
     }
 
-    /// Sends `steer` and waits for its answer: taken, or why not. A member that has ended
-    /// takes none: [`Unsteered::Ended`], from its end on.
-    fn steer(&mut self, steer: Steer) -> Result<(), Fault> {
-        if let Some(fault) = self.over {
-            return Err(fault);
+    /// Sends `steer` once none awaits its answer ([`Fault::Awaiting`] otherwise, nothing sent),
+    /// and waits for its answer.
+    fn steer(&mut self, steer: Steer, patience: Duration) -> Result<Option<()>, Fault> {
+        match self.state {
+            Steering::Ready => {}
+            Steering::Awaiting => return Err(Fault::Awaiting),
+            Steering::Over(fault) => return Err(fault),
         }
         let frame = exec::steering(steer).map_err(|_| gone())?;
         self.asks.hand(Ask::Send {
             lane: self.lane,
             frame,
         });
-        let over = match self.heard.recv() {
-            Ok(Heard::Steered(Ok(()))) => return Ok(()),
-            Ok(Heard::Steered(Err(why))) => return Err(Fault::Unsteered(why)),
+        self.state = Steering::Awaiting;
+        self.steered(patience)
+    }
+
+    /// Waits at most `patience` (`Duration::MAX`: until it comes) for the answer to the steer
+    /// sent last: none yet; taken; or why not, typed. A member that has ended takes none:
+    /// [`Unsteered::Ended`], from its end on. [`Fault::Unawaited`] where no steer awaits one.
+    pub fn steered(&mut self, patience: Duration) -> Result<Option<()>, Fault> {
+        match self.state {
+            Steering::Awaiting => {}
+            Steering::Ready => return Err(Fault::Unawaited),
+            Steering::Over(fault) => return Err(fault),
+        }
+        let over = match self.heard.recv_timeout(patience) {
+            Err(mpsc::RecvTimeoutError::Timeout) => return Ok(None),
+            Ok(Heard::Steered(said)) => {
+                self.state = Steering::Ready;
+                return said.map(Some).map_err(Fault::Unsteered);
+            }
             Ok(Heard::Exit(_)) => Fault::Unsteered(Unsteered::Ended),
             Ok(Heard::Fault(fault)) => fault,
             Ok(_) | Err(_) => gone(),
         };
-        self.over = Some(over);
+        self.state = Steering::Over(over);
         Err(over)
     }
 }
@@ -810,12 +1034,12 @@ pub struct Sockets {
 }
 
 impl Sockets {
-    /// Opens a lane to the run's socket `name` and waits for its answer: connected, the socket's
-    /// bytes both ways; else why not, typed: a name that is no file name refused `Protocol`
-    /// before the endpoint is asked, the endpoint's refusal (`Scope`, `Stale`, `Capacity`), the
-    /// errno its host's connect failed with ([`Fault::Unreached`]), or the connection's end.
-    pub fn connect(&self, name: &str) -> Result<Socket, Fault> {
+    /// Asks, at once, for a lane to the run's socket `name`: [`PendingSocket::wait`] waits for
+    /// its answer. A name that is no file name is refused `Protocol` before the endpoint is
+    /// asked.
+    pub fn connect(&self, name: &str) -> Result<PendingSocket, Fault> {
         let frame = unix::ask_frame(self.run, self.generation, name).map_err(Fault::Refused)?;
+        let asks = self.asks.try_clone().map_err(|_| gone())?;
         let (tell, heard) = mpsc::channel();
         let (room_tx, room) = mpsc::channel();
         self.asks.hand(Ask::Socket(Box::new(SocketAsked {
@@ -824,15 +1048,44 @@ impl Sockets {
             tell,
             room: room_tx,
         })));
-        let lane = match heard.recv() {
-            Ok(Heard::Connected(lane)) => lane,
-            Ok(Heard::Fault(fault)) => return Err(fault),
-            Ok(_) | Err(_) => return Err(gone()),
+        Ok(PendingSocket {
+            pending: Pending::new(asks, heard),
+            room: Some(room),
+            window: self.window,
+        })
+    }
+}
+
+/// A socket lane asked for ([`Sockets::connect`]), its answer awaited.
+#[derive(Debug)]
+pub struct PendingSocket {
+    pending: Pending,
+    /// Its writer's room, handed to its [`SocketWriter`] with its answer.
+    room: Option<mpsc::Receiver<Result<usize, Fault>>>,
+    window: usize,
+}
+
+impl PendingSocket {
+    /// Waits at most `patience` (`Duration::MAX`: until it comes) for its answer: none yet,
+    /// the ask still pending; once, connected, the socket's bytes both ways. Else why not,
+    /// typed, then again: the endpoint's refusal (`Scope`, `Stale`, `Capacity`), the errno its
+    /// host's connect failed with ([`Fault::Unreached`]), or the connection's end.
+    pub fn wait(&mut self, patience: Duration) -> Result<Option<Socket>, Fault> {
+        let Some(Answer { said, asks, heard }) = self.pending.wait(patience)? else {
+            return Ok(None);
         };
-        Ok(Socket {
+        let Heard::Connected(lane) = said else {
+            return Err(gone());
+        };
+        // A lane whose handles cannot be made is let go, as one its asker let go is.
+        let Ok(reader) = asks.try_clone() else {
+            asks.hand(Ask::Abort { lane });
+            return Err(gone());
+        };
+        Ok(Some(Socket {
             reader: SocketReader {
                 lane,
-                asks: self.asks.try_clone().map_err(|_| gone())?,
+                asks: reader,
                 heard,
                 held: Vec::new(),
                 at: 0,
@@ -840,12 +1093,12 @@ impl Sockets {
             },
             writer: SocketWriter {
                 lane,
-                asks: self.asks.try_clone().map_err(|_| gone())?,
-                room,
+                asks,
+                room: self.room.take().ok_or_else(gone)?,
                 free: self.window,
                 state: WriteState::Open,
             },
-        })
+        }))
     }
 }
 
@@ -2502,6 +2755,24 @@ impl Drive {
         })
     }
 
+    /// Closes lane `lane` both ways, as a cut lane is closed (D251: RESET_STREAM and
+    /// STOP_SENDING), whatever it carries: its endpoint lets it go, hanging up an exec or a
+    /// member's lane it asked for, and its driver lets it go too, opened or not.
+    fn cut(&mut self, io: &mut Io<'_>, lane: u64) {
+        let Some(lane) = self
+            .lanes
+            .iter_mut()
+            .find(|l| l.id == lane && l.stage != Stage::Over)
+        else {
+            return;
+        };
+        if let (Some(conn), Stage::Open { stream, .. }) = (self.conn, lane.stage) {
+            io.reset(conn, stream);
+            io.stop(conn, stream);
+        }
+        lane.stage = Stage::Over;
+    }
+
     /// Acts on what a handle asked.
     fn ask(&mut self, io: &mut Io<'_>, ask: Ask) -> Result<(), Broken> {
         let (lane, frame) = match ask {
@@ -2532,6 +2803,7 @@ impl Drive {
                         return Ok(());
                     }
                 }
+                let _ = tell.send(Heard::Asked(id));
                 self.open(io);
                 return Ok(());
             }
@@ -2565,6 +2837,7 @@ impl Drive {
                         return Ok(());
                     }
                 }
+                let _ = tell.send(Heard::Asked(id));
                 self.open(io);
                 return Ok(());
             }
@@ -2608,6 +2881,7 @@ impl Drive {
                         return Ok(());
                     }
                 }
+                let _ = tell.send(Heard::Asked(id));
                 self.open(io);
                 return Ok(());
             }
@@ -2667,6 +2941,36 @@ impl Drive {
                         io.reset(conn, stream);
                     }
                     lane.stage = Stage::Over;
+                }
+                return Ok(());
+            }
+            Ask::Withdraw(withdrawn) => {
+                let Withdrawn { mut lane, heard } = *withdrawn;
+                // This thread alone tells it: all it told is here. An exec started has its
+                // stdio's lanes, which go with it.
+                while let Ok(said) = heard.try_recv() {
+                    match said {
+                        Heard::Asked(id) => lane = Some(id),
+                        Heard::Started(started) => {
+                            let Started {
+                                stdout,
+                                stderr,
+                                stdin,
+                                ..
+                            } = *started;
+                            self.cut(io, stdout.lane);
+                            if let Some(stderr) = stderr {
+                                self.cut(io, stderr.lane);
+                            }
+                            if let Some(stdin) = stdin {
+                                self.cut(io, stdin.lane);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if let Some(lane) = lane {
+                    self.cut(io, lane);
                 }
                 return Ok(());
             }

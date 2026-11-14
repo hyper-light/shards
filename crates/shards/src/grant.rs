@@ -17,7 +17,9 @@
 //! it, handing it the generation's memory and state files to fill and committing the
 //! generation on its word (`kind::STAGE`, `kind::COMMIT`, D196).
 //!
-//! Linux confines VMs with Landlock.
+//! Linux confines a VM's files with Landlock. A VM given a vsock path asks for that alone
+//! (`Access::Listen`), bound for it by its spawner, as on macOS, and has its spawner dial
+//! the host ports beside it (`kind::DIAL`): it dials no socket of its user's itself (D30).
 //!
 //! CoreFoundation's bookmark calls (CFURL.h: `CFURLCreateBookmarkData`,
 //! `CFURLCreateByResolvingBookmarkData`, `CFURLStartAccessingSecurityScopedResource`) are
@@ -38,10 +40,10 @@ pub const MAX_PATH: usize = 2 * 32_767;
 /// `path` as a request carries it: its bytes on Unix; on Windows its UTF-16 units,
 /// little-endian, as a Windows name need not be UTF-8.
 #[cfg_attr(
-    target_os = "macos",
+    any(target_os = "macos", target_os = "linux"),
     allow(
         dead_code,
-        reason = "the VM's, which asks; macOS's spawner answers with no path"
+        reason = "the VM's, which asks; macOS's and Linux's spawners answer with no path"
     )
 )]
 pub fn path_bytes(path: &Path) -> Vec<u8> {
@@ -62,10 +64,10 @@ pub fn path_bytes(path: &Path) -> Vec<u8> {
 
 /// The path [`path_bytes`] carried, if they are one.
 #[cfg_attr(
-    target_os = "macos",
+    any(target_os = "macos", target_os = "linux"),
     allow(
         dead_code,
-        reason = "the spawner's, which reads requests; macOS's VM reads no path"
+        reason = "the spawner's, which reads requests; macOS's and Linux's VMs read no path"
     )
 )]
 pub fn path_from(bytes: &[u8]) -> Option<PathBuf> {
@@ -88,6 +90,10 @@ pub fn path_from(bytes: &[u8]) -> Option<PathBuf> {
 
 /// How a path is granted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(
+    target_os = "linux",
+    allow(dead_code, reason = "a VM on Linux asks for its vsock path alone")
+)]
 pub enum Access {
     /// A file it reads: a descriptor opened read-only.
     Read,

@@ -1,0 +1,13 @@
+diff --git a/crates/vmm/src/platform/windows_thread.rs b/crates/vmm/src/platform/windows_thread.rs
+index 4c7694525..6956afe4c 100644
+--- a/crates/vmm/src/platform/windows_thread.rs
++++ b/crates/vmm/src/platform/windows_thread.rs
+@@ -344,7 +344,7 @@ impl Governed {
+             let pooled = credits
+                 .iter()
+                 .any(|(cpus, credit)| *cpus == w.cpus && *credit > 0);
+-            raise(w, w.credit > 0 && pooled);
++            raise(w, w.credit > 0 || pooled);
+         }
+     }
+ }

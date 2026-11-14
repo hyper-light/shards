@@ -1,0 +1,37 @@
+From /Users/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/fix-memory-carrier-5596c6ba47/change.bundle
+ * branch                HEAD       -> FETCH_HEAD
+Previous HEAD position was a738422f5 test: refused FUSE replies must release their server resources (memory-18)
+HEAD is now at abecce1a5 Correct the Linux open flag in memory-18 fixtures
+   Compiling shards-vmm v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/vmm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 10.34s
+     Running unittests src/lib.rs (/Users/adalundhe/g121-tmp/fix-memory-v1/target/debug/deps/shards_vmm-645a41c49a1f33e2)
+
+running 2 tests
+test devices::virtio::fs::server::tests::refused_creates_leave_the_held_count_unchanged ... FAILED
+test devices::virtio::fs::server::tests::refused_lookups_leave_the_held_count_unchanged ... FAILED
+
+failures:
+
+---- devices::virtio::fs::server::tests::refused_creates_leave_the_held_count_unchanged stdout ----
+
+thread 'devices::virtio::fs::server::tests::refused_creates_leave_the_held_count_unchanged' (54321204) panicked at crates/vmm/src/devices/virtio/fs/server.rs:3298:9:
+assertion `left == right` failed: a refused reply left server resources held
+  left: (9, 9, 8, 8, 0)
+ right: (1, 1, 0, 0, 0)
+
+---- devices::virtio::fs::server::tests::refused_lookups_leave_the_held_count_unchanged stdout ----
+
+thread 'devices::virtio::fs::server::tests::refused_lookups_leave_the_held_count_unchanged' (54321205) panicked at crates/vmm/src/devices/virtio/fs/server.rs:3298:9:
+assertion `left == right` failed: a refused reply left server resources held
+  left: (9, 9, 0, 0, 0)
+ right: (1, 1, 0, 0, 0)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    devices::virtio::fs::server::tests::refused_creates_leave_the_held_count_unchanged
+    devices::virtio::fs::server::tests::refused_lookups_leave_the_held_count_unchanged
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 507 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards-vmm --lib`

@@ -33,6 +33,8 @@ Priority mapping used: P0 critical, P1 high, P2 medium, P5 low; no P3/P4 finding
 
 **Unrun regression:** Prime W*; keep a group's member visibly working beyond W*, then return a positive give-back. Assert no OOM record or signal before that answer. Repeat with host hold and with `give_after` blocked behind another reclaim. Restoring wall-only `overdue` should fail these cases.
 
+**Status (2026-11-14):** fixed in 8d1356a32 (Codex lane, cherry-picked from 8168e33f5: the word's own exec judge publishes its typed refusal, `Wait::GroupWord`, and the wall-clock `overdue` is gone; red `daemon::groups::tests::a_pending_member_word_is_not_a_failed_give_back`) and e3a62e054 (a refusal stands for its own exec alone; red `daemon::tests::a_refused_room_is_not_the_next_rounds_verdict`: a member whose give-back was under way OOM-killed by the next round). Green on macOS arm64; PM M575, M576, D183. [Evidence](../../research/measurements/waits-fixes-v1/README.md). Owed to ROOT: `cargo test -p shards --profile test-release --test containers a_microvm_under_a_group_is_held_to_its_budget` on macOS and Windows.
+
 ### waits-02 — P2 / medium — The first test-party observation can refuse a process before any CPU interval was observed
 
 **Location:** `crates/shards/tests/common/mod.rs:3217`, `:3347`, `:3417`.
@@ -84,6 +86,8 @@ Priority mapping used: P0 critical, P1 high, P2 medium, P5 low; no P3/P4 finding
 **Fix direction:** Keep the take pending across readiness and emit Ended only after a write actually transfers bytes; failed writes teach nothing.
 
 **Unrun regression:** Fill FIFO; in the Began callback close its only reader. Require BrokenPipe, no Ended callback, and Seen still cold. Positive twin drains bytes and learns a take.
+
+**Status (2026-11-14):** fixed in 0ff36021e (red `slots::fifo::tests::a_readers_end_is_no_take`: its reader closed as a wait past PIPE_BUF began, it told `[Began, Ended(57.125µs)]`; now `[Began]` and BrokenPipe: a wait ends only with a write after it that moved bytes). Green on macOS arm64; PM M576, D185.
 
 ### waits-05 — P2 / medium — Buffered registry bytes still teach fake network silences
 
@@ -155,6 +159,8 @@ Priority mapping used: P0 critical, P1 high, P2 medium, P5 low; no P3/P4 finding
 
 **Unrun regression:** Keep an exited child unreaped after it writes PID/start. Require Named::lives, daemon_lives and exiting to be false. Add startup-ready-then-exit/no-slots fixture and require a terminal daemon-ended result.
 
+**Status (2026-11-14):** fixed in 4566aac05 (red `shards_ipc tests::an_unreaped_daemon_does_not_live`: a zombie child named by its ID and start lived; Unix `alive` now reads its exit, Linux `/proc/PID/stat` state Z/X, macOS `ri_proc_exit_abstime`). Green on macOS arm64; the Linux read runs on CI. PM M576, D185. Owed to ROOT: a daemon left unreaped by a supervisor on Linux, `shards run` ending "the daemon ended before it served".
+
 ### waits-09 — P2 / medium — Test parties adopt a reused daemon PID and count zombie observations as ongoing progress
 
 **Location:** `crates/shards/tests/common/mod.rs:3140`, `:3231`; `crates/api/src/progress.rs:209`.
@@ -209,6 +215,8 @@ Priority mapping used: P0 critical, P1 high, P2 medium, P5 low; no P3/P4 finding
 
 **Unrun regression:** Two processes with barriers after loading old data; let the long sample rename, then the short sample rename. Require reloaded W* to remain the long sample. Mutation without transaction exclusion should deterministically lose it.
 
+**Status (2026-11-14):** fixed in afba3c537 (red `harness.rs::concurrent_keeps_never_shrink_a_kept_record` at 21f8bee02: a keep landed inside another's, `Some(true)`; the read, merge and rename are one transaction under the record's lock, each by a temporary name of its own). Green on macOS arm64; PM M576, D209's tests' waits.
+
 ### waits-12 — P2 / medium — Chosen production timeouts, retries, windows and polls remain
 
 **Defect:** The paths below still choose runtime waits/retry behavior from fixed figures rather than online data or justified protocol bounds. They are source-confirmed R03 violations; merely mentioning a default or documenting unfinished work does not derive it.
@@ -246,6 +254,8 @@ Priority mapping used: P0 critical, P1 high, P2 medium, P5 low; no P3/P4 finding
 **Fix direction:** Use authoritative readiness/completion notifications or local online wait learning with explicit cold/run-out/cancel behavior. Retry choices should follow actual resource/authority/progress state. Derive race scheduling and throttle handling from the actual path, rather than retaining these schedules. The group is intentionally review-only; no replacement constants proposed.
 
 **Unrun regression:** Delay an otherwise live VM's take/write, supply a fourth usable warm candidate, force the first eight ephemeral choices to collide, vary a registry's declared window across 60 s, and give a nonlookup answer beyond 30 s. Require behavior governed by liveness/progress and actual path state. A focused source audit should additionally reject the literal polls/windows without a cited sufficient bound.
+
+**Status (2026-11-14):** partly fixed in 095cbe98e: `http.rs:48` RACE derived (RFC 8305 §5/§8 over the path's RFC 6298 connect estimator; red `patience::tests::a_dial_starts_its_next_address_as_its_paths_connects_retransmit` at 5b7e1748b, 300 ms whatever the path showed; PM M577, D222). Every other row is owed to ROOT, with its design and red test in D222's "The chosen waits left (review waits-12)" table: each needs a daemon, VM, guest or registry run to prove it.
 
 ## Checked and found sound
 

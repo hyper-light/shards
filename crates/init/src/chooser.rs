@@ -42,26 +42,80 @@ pub struct Contest {
 }
 
 /// The ports of `ingress` (each domain's address and its ports, the microVM's then its
-/// own) that more than one domain is given.
+/// own) that more than one domain is given: each run of ports the same domains are given,
+/// cut where any domain's range begins or ends, so that a range two domains share only in
+/// part (each clipped to its own network's grants) is contested where they share it.
 pub fn contested(ingress: &[(Ipv4Addr, Vec<Ingress>)]) -> Vec<Contest> {
-    let mut all: Vec<Contest> = Vec::new();
-    for (to, ranges) in ingress {
-        for &(from, at) in ranges {
-            match all.iter_mut().find(|c| c.from == from) {
-                Some(c) => {
-                    if !c.candidates.iter().any(|(a, _)| a == to) {
-                        c.candidates.push((*to, at));
-                    }
-                }
-                None => all.push(Contest {
-                    from,
-                    candidates: vec![(*to, at)],
-                }),
+    // Each range's first port and the one past its last, as u32, which 65535's next fits.
+    let mut cuts: Vec<(u8, u32)> = ingress
+        .iter()
+        .flat_map(|(_, ranges)| ranges.iter())
+        .flat_map(|&((proto, lo, hi), _)| [(proto, u32::from(lo)), (proto, u32::from(hi) + 1)])
+        .collect();
+    cuts.sort_unstable();
+    cuts.dedup();
+    let mut all = Vec::new();
+    for pair in cuts.windows(2) {
+        let [(proto, lo), (next, end)] = *pair else {
+            continue;
+        };
+        let (Ok(lo), Ok(hi)) = (u16::try_from(lo), u16::try_from(end.saturating_sub(1))) else {
+            continue;
+        };
+        if next != proto {
+            continue;
+        }
+        let mut candidates: Vec<(Ipv4Addr, Egress)> = Vec::new();
+        for (to, ranges) in ingress {
+            let at = ranges.iter().find_map(|&((p, from_lo, from_hi), (q, at_lo, _))| {
+                // The domain's port for `lo`: its own range's, at `lo`'s offset in the
+                // microVM's.
+                let shift = |port: u16| port.checked_sub(from_lo).and_then(|d| at_lo.checked_add(d));
+                (p == proto && from_lo <= lo && hi <= from_hi)
+                    .then(|| Some((q, shift(lo)?, shift(hi)?)))
+                    .flatten()
+            });
+            if let Some(at) = at
+                && !candidates.iter().any(|(a, _)| a == to)
+            {
+                candidates.push((*to, at));
             }
         }
+        if candidates.len() > 1 {
+            all.push(Contest {
+                from: (proto, lo, hi),
+                candidates,
+            });
+        }
     }
-    all.retain(|c| c.candidates.len() > 1);
     all
+}
+
+/// The ports of `from` no contest of `contests` is for, as runs: what goes to its one
+/// domain alone ([`crate::links`]' `pre`).
+pub fn uncontested((proto, lo, hi): Egress, contests: &[Contest]) -> Vec<(u16, u16)> {
+    let mut out = Vec::new();
+    let mut at = u32::from(lo);
+    let mut taken: Vec<(u16, u16)> = contests
+        .iter()
+        .filter(|c| c.from.0 == proto && c.from.1 <= hi && lo <= c.from.2)
+        .map(|c| (c.from.1, c.from.2))
+        .collect();
+    taken.sort_unstable();
+    for (a, b) in taken {
+        if u32::from(a) > at
+            && let (Ok(first), Ok(last)) = (u16::try_from(at), u16::try_from(u32::from(a).saturating_sub(1)))
+        {
+            out.push((first, last));
+        }
+        at = at.max(u32::from(b) + 1);
+    }
+    if at <= u32::from(hi)
+        && let Ok(first) = u16::try_from(at)
+    {
+        out.push((first, hi));
+    }
+    out
 }
 
 /// seccomp_data's offsets (linux/seccomp.h): the call's number, then its arch.
@@ -111,16 +165,33 @@ pub struct Chooser {
     sock: OwnedFd,
 }
 
+/// Why the chooser did not start.
+#[derive(Debug)]
+pub enum Refused {
+    Zones(ZonesExhausted),
+    Io(io::Error),
+}
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Zones(e) => e.fmt(f),
+            Self::Io(e) => e.fmt(f),
+        }
+    }
+}
+
 /// Starts the chooser for `contests`, before any domain does.
-pub fn start(contests: Vec<Contest>) -> io::Result<Chooser> {
-    let (ours, theirs) = hostbind::seqpacket()?;
+pub fn start(contests: Vec<Contest>) -> Result<Chooser, Refused> {
+    let choices = Choices::new(contests).map_err(Refused::Zones)?;
+    let (ours, theirs) = hostbind::seqpacket().map_err(Refused::Io)?;
     // SAFETY: fork(2) from init, which has no other thread: the child runs only this
     // module's code, on descriptors of its own.
     match unsafe { libc::fork() } {
-        -1 => Err(io::Error::last_os_error()),
+        -1 => Err(Refused::Io(io::Error::last_os_error())),
         0 => {
             crate::dnsrelay::keep_only(&[theirs.as_raw_fd()]);
-            serve(theirs, contests);
+            serve(theirs, choices);
             // SAFETY: _exit(2) of the child, which owns nothing to flush.
             unsafe { libc::_exit(0) }
         }
@@ -155,13 +226,8 @@ struct Member {
 
 struct Serve {
     ctl: OwnedFd,
-    contests: Vec<Contest>,
-    /// Each contest's holder, by its candidate's index.
-    holders: Vec<Option<usize>>,
+    choices: Choices,
     members: Vec<Member>,
-    /// Each UDP contest's conntrack zone, of its holder's choice; the last zone given.
-    zones: Vec<Option<u16>>,
-    zone: u16,
     /// What was last programmed, so that a change alone is.
     programmed: Option<Vec<crate::links::Chosen>>,
     /// The netfilter socket choices are programmed on, kept: closing one that has
@@ -172,6 +238,126 @@ struct Serve {
     stale: bool,
 }
 
+/// What the chooser holds of each contest: who holds each of its ports, and the
+/// conntrack zones its UDP flows are tracked in (links::program_chosen).
+struct Choices {
+    contests: Vec<Contest>,
+    /// Each contest's ports as they are held, the microVM's: runs of them, each its first
+    /// and last port and its holder's index, sorted and apart. A port goes to the member
+    /// listening on it (D122), so a range's ports may be several members'.
+    held: Vec<Vec<(u16, u16, usize)>>,
+    /// Each UDP contest's conntrack zone for each of its candidates, for the run (none for
+    /// TCP's). A zone is one holder's alone, so that every flow conntrack keeps in it is
+    /// translated to that holder: a flow admitted before a change is new in the next
+    /// holder's zone, and one kept from an earlier turn of the same holder goes to it
+    /// again (network-04).
+    zones: Vec<Vec<u16>>,
+}
+
+/// More UDP candidates than conntrack has zones for (a zone is a u16, and 0 every other
+/// flow's: nf_conntrack_zones.h, NF_CT_DEFAULT_ZONE_ID).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ZonesExhausted {
+    pub needed: usize,
+}
+
+impl std::fmt::Display for ZonesExhausted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} UDP candidates need a conntrack zone each, and conntrack has {}",
+            self.needed,
+            u16::MAX
+        )
+    }
+}
+
+impl std::error::Error for ZonesExhausted {}
+
+impl Choices {
+    /// Each UDP candidate's zone, 1 up: zone 0 is every other flow's.
+    fn new(contests: Vec<Contest>) -> Result<Self, ZonesExhausted> {
+        let needed: usize = contests
+            .iter()
+            .filter(|c| c.from.0 == 17)
+            .map(|c| c.candidates.len())
+            .sum();
+        let mut next = 0u16;
+        let zones = contests
+            .iter()
+            .map(|c| {
+                if c.from.0 != 17 {
+                    return Ok(Vec::new());
+                }
+                c.candidates
+                    .iter()
+                    .map(|_| {
+                        next = next.checked_add(1).ok_or(ZonesExhausted { needed })?;
+                        Ok(next)
+                    })
+                    .collect()
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(Self {
+            held: vec![Vec::new(); contests.len()],
+            zones,
+            contests,
+        })
+    }
+
+    /// Contest `c`'s ports, of what each candidate listens on (`listens`, by candidate,
+    /// the microVM's ports, sorted): each port its holder's still, where it still listens
+    /// there; else the first candidate's that does; else no one's.
+    fn choose(&mut self, c: usize, listens: &[Vec<u16>]) {
+        let (Some(contest), Some(held)) = (self.contests.get(c), self.held.get_mut(c)) else {
+            return;
+        };
+        let on = |k: usize, port: u16| listens.get(k).is_some_and(|l| l.binary_search(&port).is_ok());
+        let mut ports: Vec<u16> = listens.iter().flatten().copied().collect();
+        ports.sort_unstable();
+        ports.dedup();
+        let mut next: Vec<(u16, u16, usize)> = Vec::new();
+        for port in ports {
+            let was = held
+                .iter()
+                .find(|&&(lo, hi, _)| lo <= port && port <= hi)
+                .map(|&(_, _, k)| k);
+            let Some(k) = was
+                .filter(|&k| on(k, port))
+                .or_else(|| (0..contest.candidates.len()).find(|&k| on(k, port)))
+            else {
+                continue;
+            };
+            match next.last_mut() {
+                Some((_, hi, by)) if *by == k && hi.checked_add(1) == Some(port) => *hi = port,
+                _ => next.push((port, port, k)),
+            }
+        }
+        *held = next;
+    }
+
+    /// The choices, as the chain `chosen` programs them: each run of a contest's ports to
+    /// its holder, at the holder's own ports, in the holder's zone where they are UDP's.
+    fn chosen(&self) -> Vec<crate::links::Chosen> {
+        let mut out = Vec::new();
+        for ((contest, held), zones) in self.contests.iter().zip(&self.held).zip(&self.zones) {
+            let (proto, first, _) = contest.from;
+            for &(lo, hi, k) in held {
+                let Some(&(addr, at)) = contest.candidates.get(k) else {
+                    continue;
+                };
+                // The holder's port: its range's, at the port's offset in the microVM's.
+                let theirs = |port: u16| port.checked_sub(first).and_then(|d| at.1.checked_add(d));
+                let (Some(alo), Some(ahi)) = (theirs(lo), theirs(hi)) else {
+                    continue;
+                };
+                out.push(((proto, lo, hi), addr, (at.0, alo, ahi), zones.get(k).copied()));
+            }
+        }
+        out
+    }
+}
+
 #[derive(Clone, Copy)]
 enum Owner {
     Ctl,
@@ -179,16 +365,11 @@ enum Owner {
     Told(usize),
 }
 
-fn serve(ctl: OwnedFd, contests: Vec<Contest>) {
-    let holders = vec![None; contests.len()];
-    let zones = vec![None; contests.len()];
+fn serve(ctl: OwnedFd, choices: Choices) {
     let mut s = Serve {
         ctl,
-        contests,
-        holders,
+        choices,
         members: Vec::new(),
-        zones,
-        zone: 0,
         programmed: None,
         nft: None,
         stale: false,
@@ -393,7 +574,7 @@ impl Serve {
 
     /// Whether `port` of `proto` is one member `addr` is a candidate for, at its own port.
     fn contests_of(&self, addr: Ipv4Addr, proto: u8, port: u16) -> bool {
-        self.contests.iter().any(|c| {
+        self.choices.contests.iter().any(|c| {
             c.candidates
                 .iter()
                 .any(|&(a, (p, lo, hi))| a == addr && p == proto && lo <= port && port <= hi)
@@ -424,59 +605,36 @@ impl Serve {
         self.stale |= any;
     }
 
-    /// Each contest's holder: its holder still, where it still listens; else the first of
-    /// its candidates that does; then the chain programmed, where any changed.
+    /// Each contest's ports, as its candidates listen on them ([`Choices::choose`]); then
+    /// the chain programmed, where any changed.
     fn choose_all(&mut self) {
-        for c in 0..self.contests.len() {
-            let Some(contest) = self.contests.get(c) else {
+        for c in 0..self.choices.contests.len() {
+            let Some(contest) = self.choices.contests.get(c) else {
                 continue;
             };
-            let listens = |k: usize| {
-                contest.candidates.get(k).is_some_and(|&(addr, at)| {
+            let listens: Vec<Vec<u16>> = contest
+                .candidates
+                .iter()
+                .map(|&(addr, at)| {
                     self.members
                         .iter()
                         .find(|m| m.addr == addr)
                         .and_then(|m| m.ask.as_ref())
-                        .is_some_and(|ask| listening(ask, addr, at))
+                        .map(|ask| listened(ask, addr, at))
+                        .unwrap_or_default()
+                        .into_iter()
+                        // The member's port, as the microVM's: its offset in the range.
+                        .filter_map(|q| q.checked_sub(at.1).and_then(|d| contest.from.1.checked_add(d)))
+                        .collect()
                 })
-            };
-            let udp = contest.from.0 == 17;
-            let was = self.holders.get(c).copied().flatten();
-            let held = was.filter(|&k| listens(k));
-            let holder = held.or_else(|| (0..contest.candidates.len()).find(|&k| listens(k)));
-            if let Some(h) = self.holders.get_mut(c) {
-                *h = holder;
-            }
-            // A UDP port given another holder: a zone of its own, in which the flows the
-            // last one had are new, and go to this one (links::program_chosen).
-            if udp && holder != was {
-                let zone = holder.map(|_| self.next_zone());
-                if let Some(z) = self.zones.get_mut(c) {
-                    *z = zone;
-                }
-            }
+                .collect();
+            self.choices.choose(c, &listens);
         }
         self.program();
     }
 
-    /// A conntrack zone no choice holds: 1 up, past 65535 to 1 again, by which time a
-    /// zone's flows have long expired (120 s at most, nf_conntrack_proto_udp.c); never 0,
-    /// every other flow's.
-    fn next_zone(&mut self) -> u16 {
-        self.zone = self.zone.checked_add(1).unwrap_or(1);
-        self.zone
-    }
-
     fn program(&mut self) {
-        let chosen: Vec<crate::links::Chosen> = self
-            .contests
-            .iter()
-            .zip(self.holders.iter().zip(&self.zones))
-            .filter_map(|(c, (h, z))| {
-                let (addr, at) = c.candidates.get((*h)?)?;
-                Some((c.from, *addr, *at, *z))
-            })
-            .collect();
+        let chosen = self.choices.chosen();
         if self.programmed.as_ref() == Some(&chosen) {
             return;
         }
@@ -528,13 +686,14 @@ fn binds_service(pid: libc::pid_t) -> bool {
         .is_some_and(|caps| caps & (1 << 10) != 0)
 }
 
-/// Whether a socket of `ask`'s namespace takes what comes to `addr` at a port of `at`: a
+/// The ports of `at` at which a socket of `ask`'s namespace takes what comes to `addr`: a
 /// TCP one listening, a UDP one bound and connected to no peer; at that address, or every
-/// one (IPv4's, or IPv6's, which takes IPv4's unless it is IPV6_V6ONLY).
-fn listening(ask: &OwnedFd, addr: Ipv4Addr, (proto, lo, hi): Egress) -> bool {
+/// one (IPv4's, or IPv6's, which takes IPv4's unless it is IPV6_V6ONLY). Sorted, each once.
+fn listened(ask: &OwnedFd, addr: Ipv4Addr, (proto, lo, hi): Egress) -> Vec<u16> {
     // TCP_LISTEN's state bit; every state of UDP's.
     let states: u32 = if proto == 6 { 1 << 10 } else { u32::MAX };
     let mut buf = vec![0u8; 16 * 1024];
+    let mut found = Vec::new();
     for family in [libc::AF_INET, libc::AF_INET6] {
         // nlmsghdr (16), then inet_diag_req_v2: family, protocol, extensions, pad, states,
         // and its socket ID, zeroed (48).
@@ -548,14 +707,13 @@ fn listening(ask: &OwnedFd, addr: Ipv4Addr, (proto, lo, hi): Egress) -> bool {
         req.extend_from_slice(&[0; 48]);
         // SAFETY: send(2) of a buffer of ours, to the kernel.
         if unsafe { libc::send(ask.as_raw_fd(), req.as_ptr().cast(), req.len(), 0) } < 0 {
-            return false;
+            break;
         }
-        let mut found = false;
         'dump: loop {
             // SAFETY: recv(2) into a buffer of ours, of its length.
             let n = unsafe { libc::recv(ask.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len(), 0) };
             let Some(n) = usize::try_from(n).ok().filter(|&n| n > 0) else {
-                return found;
+                break 'dump;
             };
             let mut msgs = buf.get(..n).unwrap_or_default();
             while let Some(len) = msgs
@@ -571,57 +729,44 @@ fn listening(ask: &OwnedFd, addr: Ipv4Addr, (proto, lo, hi): Egress) -> bool {
                     .map(u16::from_ne_bytes);
                 match which {
                     Some(hostbind::NLMSG_DONE) => break 'dump,
-                    Some(hostbind::NLMSG_ERROR) => return found,
-                    _ => {
-                        if msgs.get(..len).is_some_and(|m| takes(m, family, addr, (lo, hi))) {
-                            found = true;
-                        }
-                    }
+                    Some(hostbind::NLMSG_ERROR) => break 'dump,
+                    _ => found.extend(msgs.get(..len).and_then(|m| taken(m, family, addr, (lo, hi)))),
                 }
                 msgs = msgs.get(len.next_multiple_of(4)..).unwrap_or_default();
             }
         }
-        if found {
-            return true;
-        }
     }
-    false
+    found.sort_unstable();
+    found.dedup();
+    found
 }
 
-/// Whether one sock_diag message (an nlmsghdr, then an inet_diag_msg: family, state,
-/// timer, retransmits; its sport and dport, big-endian; its source and destination, 16
-/// bytes each) names a socket of `family` at a port of `lo..=hi`, at `addr` or every
+/// The port of `lo..=hi` at which one sock_diag message (an nlmsghdr, then an
+/// inet_diag_msg: family, state, timer, retransmits; its sport and dport, big-endian; its
+/// source and destination, 16 bytes each) names a socket of `family`, at `addr` or every
 /// address, connected to no peer.
-fn takes(m: &[u8], family: libc::c_int, addr: Ipv4Addr, (lo, hi): (u16, u16)) -> bool {
+fn taken(m: &[u8], family: libc::c_int, addr: Ipv4Addr, (lo, hi): (u16, u16)) -> Option<u16> {
     let be16 = |at: usize| {
         m.get(at..at + 2)
             .and_then(|b| <[u8; 2]>::try_from(b).ok())
             .map(u16::from_be_bytes)
     };
-    let (Some(sport), Some(dport)) = (be16(20), be16(22)) else {
-        return false;
-    };
-    let Some(src) = m.get(24..40) else {
-        return false;
-    };
+    let (sport, dport) = (be16(20)?, be16(22)?);
+    let src = m.get(24..40)?;
     if sport < lo || hi < sport || dport != 0 {
-        return false;
+        return None;
     }
     let src = if family == libc::AF_INET {
-        let Some(&[a, b, c, d]) = src.first_chunk::<4>() else {
-            return false;
-        };
+        let &[a, b, c, d] = src.first_chunk::<4>()?;
         IpAddr::V4(Ipv4Addr::new(a, b, c, d))
     } else {
-        let Ok(a) = <[u8; 16]>::try_from(src) else {
-            return false;
-        };
-        IpAddr::V6(std::net::Ipv6Addr::from(a))
+        IpAddr::V6(std::net::Ipv6Addr::from(<[u8; 16]>::try_from(src).ok()?))
     };
-    match src {
+    let at = match src {
         IpAddr::V4(a) => a.is_unspecified() || a == addr,
         IpAddr::V6(a) => a.is_unspecified() || a.to_ipv4_mapped() == Some(addr),
-    }
+    };
+    at.then_some(sport)
 }
 
 #[cfg(test)]
@@ -650,6 +795,42 @@ mod tests {
         assert!(contested(&ingress[..1]).is_empty());
     }
 
+    /// Two domains' ranges that meet in part, each clipped to its own network's grants:
+    /// contested where they meet, each the rest's alone.
+    #[test]
+    fn ranges_that_meet_in_part_are_contested_where_they_meet() {
+        let (a, b) = (Ipv4Addr::new(10, 0, 0, 2), Ipv4Addr::new(10, 0, 1, 2));
+        let ingress = vec![
+            (a, vec![((6, 7000, 7002), (6, 7000, 7002))]),
+            (b, vec![((6, 7001, 7001), (6, 7001, 7001)), ((17, 7000, 7002), (17, 7000, 7002))]),
+        ];
+        let contests = contested(&ingress);
+        assert_eq!(
+            contests,
+            [Contest {
+                from: (6, 7001, 7001),
+                candidates: vec![(a, (6, 7001, 7001)), (b, (6, 7001, 7001))],
+            }]
+        );
+        assert_eq!(uncontested((6, 7000, 7002), &contests), [(7000, 7000), (7002, 7002)]);
+        assert_eq!(uncontested((6, 7001, 7001), &contests), []);
+        assert_eq!(uncontested((17, 7000, 7002), &contests), [(7000, 7002)]);
+        // At the port space's end, and a mapped port.
+        let ingress = vec![
+            (a, vec![((17, 65534, 65535), (17, 65534, 65535))]),
+            (b, vec![((17, 65535, 65535), (17, 53, 53))]),
+        ];
+        let contests = contested(&ingress);
+        assert_eq!(
+            contests,
+            [Contest {
+                from: (17, 65535, 65535),
+                candidates: vec![(a, (17, 65535, 65535)), (b, (17, 53, 53))],
+            }]
+        );
+        assert_eq!(uncontested((17, 65534, 65535), &contests), [(65534, 65534)]);
+    }
+
     /// A socket is taken for an address where sock_diag names it at that address or every
     /// one, at a port of the range, connected to no one.
     #[test]
@@ -667,24 +848,136 @@ mod tests {
             m
         };
         let v4 = libc::AF_INET;
-        assert!(takes(&msg(2, 8080, 0, &[0, 0, 0, 0]), v4, addr, (8080, 8080)));
-        assert!(takes(&msg(2, 8080, 0, &[10, 0, 0, 2]), v4, addr, (8080, 8080)));
-        assert!(!takes(&msg(2, 8080, 0, &[127, 0, 0, 1]), v4, addr, (8080, 8080)));
-        assert!(!takes(&msg(2, 8081, 0, &[0, 0, 0, 0]), v4, addr, (8080, 8080)));
-        assert!(!takes(&msg(2, 8080, 443, &[0, 0, 0, 0]), v4, addr, (8080, 8080)));
+        assert_eq!(taken(&msg(2, 8080, 0, &[0, 0, 0, 0]), v4, addr, (8080, 8081)), Some(8080));
+        assert_eq!(taken(&msg(2, 8081, 0, &[10, 0, 0, 2]), v4, addr, (8080, 8081)), Some(8081));
+        assert_eq!(taken(&msg(2, 8080, 0, &[127, 0, 0, 1]), v4, addr, (8080, 8080)), None);
+        assert_eq!(taken(&msg(2, 8081, 0, &[0, 0, 0, 0]), v4, addr, (8080, 8080)), None);
+        assert_eq!(taken(&msg(2, 8080, 443, &[0, 0, 0, 0]), v4, addr, (8080, 8080)), None);
         let mapped = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 10, 0, 0, 2];
-        assert!(takes(
-            &msg(10, 8080, 0, &[0; 16]),
-            libc::AF_INET6,
-            addr,
-            (8080, 8080)
-        ));
-        assert!(takes(
-            &msg(10, 8080, 0, &mapped),
-            libc::AF_INET6,
-            addr,
-            (8080, 8080)
-        ));
+        let v6 = libc::AF_INET6;
+        assert_eq!(taken(&msg(10, 8080, 0, &[0; 16]), v6, addr, (8080, 8080)), Some(8080));
+        assert_eq!(taken(&msg(10, 8080, 0, &mapped), v6, addr, (8080, 8080)), Some(8080));
+    }
+
+    /// network-04: a UDP port's holders handed it back and forth past the zones a u16
+    /// counts. Expect: each zone names one holder for the run, so that a flow conntrack
+    /// still keeps in a zone is translated to the holder that zone is for.
+    #[test]
+    fn a_udp_zone_names_one_holder_for_the_run() {
+        let (a, b) = (Ipv4Addr::new(10, 0, 0, 2), Ipv4Addr::new(10, 0, 1, 2));
+        let dns = (17, 5353, 5353);
+        let mut choices = Choices::new(vec![Contest {
+            from: dns,
+            candidates: vec![(a, dns), (b, dns)],
+        }])
+        .unwrap();
+        let mut held_by = std::collections::HashMap::new();
+        for round in 0..=usize::from(u16::MAX) + 1 {
+            let listens = if round % 2 == 0 {
+                [vec![5353], vec![]]
+            } else {
+                [vec![], vec![5353]]
+            };
+            choices.choose(0, &listens);
+            let chosen = choices.chosen();
+            let [(_, to, _, Some(zone))] = chosen[..] else {
+                panic!("round {round}: one zoned choice, got {chosen:?}");
+            };
+            assert_ne!(zone, 0, "the default zone is every other flow's");
+            let first = *held_by.entry(zone).or_insert(to);
+            assert_eq!(first, to, "round {round}: zone {zone} was {first}'s, given {to}");
+        }
+    }
+
+    /// More UDP candidates than zones: refused, never a zone shared or zone 0.
+    #[test]
+    fn more_udp_candidates_than_zones_are_refused() {
+        let at = |i: u32| Ipv4Addr::from(0x0a00_0000 + i);
+        let contest = |port: u16, n: u32| Contest {
+            from: (17, port, port),
+            candidates: (0..n).map(|i| (at(i), (17, port, port))).collect(),
+        };
+        let max = u32::from(u16::MAX);
+        assert!(Choices::new(vec![contest(53, max - 1), contest(54, 1)]).is_ok());
+        assert_eq!(
+            Choices::new(vec![contest(53, max), contest(54, 1)]).err(),
+            Some(ZonesExhausted {
+                needed: usize::from(u16::MAX) + 1
+            })
+        );
+        // TCP's contests take none.
+        let tcp = Contest {
+            from: (6, 80, 80),
+            candidates: vec![(at(1), (6, 80, 80)), (at(2), (6, 80, 80))],
+        };
+        assert!(Choices::new(vec![contest(53, max), tcp]).is_ok());
+    }
+
+    /// network-06: web listens on 7000 alone, api on 7001 alone, both candidates for
+    /// 7000-7001; then api's socket goes. Expect: each port to the member listening on it,
+    /// then 7001 to no one.
+    #[test]
+    fn each_port_of_a_range_goes_to_the_member_listening_on_it() {
+        let (web, api) = (Ipv4Addr::new(10, 0, 0, 2), Ipv4Addr::new(10, 0, 1, 2));
+        for proto in [6u8, 17] {
+            let range = (proto, 7000, 7001);
+            let mut choices = Choices::new(vec![Contest {
+                from: range,
+                candidates: vec![(web, range), (api, range)],
+            }])
+            .unwrap();
+            choices.choose(0, &[vec![7000], vec![7001]]);
+            let chosen = choices.chosen();
+            let to: Vec<_> = chosen.iter().map(|&(from, to, at, _)| (from, to, at)).collect();
+            assert_eq!(
+                to,
+                [
+                    ((proto, 7000, 7000), web, (proto, 7000, 7000)),
+                    ((proto, 7001, 7001), api, (proto, 7001, 7001)),
+                ],
+                "{proto}"
+            );
+            if proto == 17 {
+                assert_ne!(chosen[0].3, chosen[1].3, "two holders share a zone");
+            }
+            choices.choose(0, &[vec![7000], vec![]]);
+            let to: Vec<_> = choices.chosen().iter().map(|&(from, to, _, _)| (from, to)).collect();
+            assert_eq!(to, [((proto, 7000, 7000), web)], "{proto}");
+        }
+    }
+
+    /// A mapped port's holder is reached at its own port; adjacent ports one member listens
+    /// on are one range.
+    #[test]
+    fn a_choice_keeps_its_members_port_and_joins_adjacent_ports() {
+        let (web, api) = (Ipv4Addr::new(10, 0, 0, 2), Ipv4Addr::new(10, 0, 1, 2));
+        let mut choices = Choices::new(vec![
+            Contest {
+                from: (6, 8080, 8080),
+                candidates: vec![(web, (6, 80, 80)), (api, (6, 8080, 8080))],
+            },
+            Contest {
+                from: (6, 9000, 9003),
+                candidates: vec![(web, (6, 9000, 9003)), (api, (6, 9000, 9003))],
+            },
+        ])
+        .unwrap();
+        choices.choose(0, &[vec![8080], vec![8080]]);
+        choices.choose(1, &[vec![9000, 9001, 9003], vec![9001, 9002]]);
+        assert_eq!(
+            choices.chosen(),
+            [
+                ((6, 8080, 8080), web, (6, 80, 80), None),
+                ((6, 9000, 9001), web, (6, 9000, 9001), None),
+                ((6, 9002, 9002), api, (6, 9002, 9002), None),
+                ((6, 9003, 9003), web, (6, 9003, 9003), None),
+            ]
+        );
+        // 9001's holder keeps it while it listens, though web, declared first, listens too.
+        choices.choose(1, &[vec![9000], vec![9001]]);
+        choices.choose(1, &[vec![9000, 9001], vec![9001]]);
+        let to: Vec<_> = choices.chosen().iter().map(|&(from, to, _, _)| (from, to)).collect();
+        assert_eq!(to[1..], [((6, 9000, 9000), web), ((6, 9001, 9001), api)]);
     }
 
     /// The filter notifies of the native ABI's bind and listen alone.

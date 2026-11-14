@@ -44,6 +44,8 @@ Separately, `seal()` applies another thread-only Landlock layer at `vm_run.rs:27
 
 **Status (2026-11-13):** fixed in 4221c9488 (red `confine::tests::every_thread_of_a_confined_process_is_confined`, siblings read a file outside the paths and wrote the sealed directory under a caller-only layer; also `a_thread_that_cannot_be_asked_fails_the_layer`). TSYNC where the ABI has v8, each thread asked by signal on every ABI from v5; PM M568, D30.
 
+**Follow-up (2026-11-13):** 33f370d67 (no multiplier: a thread that blocks or ignores the asking signal fails the layer at once, typed; any other is waited for as long as it lives, its PIDFD_THREAD pidfd waking the wait) and b92a75e83 (asked by SIGSYS, which Mesa's threads leave unblocked; red: a Mesa-like thread kept writing the sealed directory). PM M568. And 6bf478ea1: a thread inside pthread_create's all-blocked window is waited for until it unblocks, ends, or runs on still blocking (deaf, failed closed); red `a_thread_inside_pthread_creates_window_is_asked_once_it_unblocks`.
+
 ### platform-02 — Linux pathname Unix sockets reach unscoped host authority
 
 **Location:** `crates/shards/src/confine.rs:606`, supporting `:107`, `:255`; `crates/shards/src/daemon.rs:2393`; `crates/shards/src/daemon/engine.rs:502`.
@@ -69,6 +71,8 @@ Its peer check allows `Ok(uid) if uid == ours` (`daemon/engine.rs:504`); the VM 
 **Catching test:** a same-UID Unix listener outside every grant must reject a confined connection. Repeat against a disposable daemon and require an unscoped Engine request to fail.
 
 **Status (2026-11-13):** fixed in d6f234c6f (red `confine::tests::a_confined_vm_dials_only_beside_its_vsock_path`, a VM given no vsock path dialed a same-user `engine.sock` listener): a seccomp layer on every kernel refuses every connect of a VM given no vsock path (every daemon VM) and every datagram socket, and Landlock v9 `RESOLVE_UNIX` scopes one given a vsock path. Remaining: before ABI v9 a VM given a vsock path (the builder, `run vm --kernel --vsock`) still dials any path; spawner dialing on Linux is owed (D30). PM M569.
+
+**Follow-up (2026-11-13):** cc85d760a closes the remaining gap: a VM process on Linux dials nothing itself on any kernel (its seccomp layer refuses every connect); its spawner binds its vsock path and dials the host ports beside it, as on macOS and Windows; `RESOLVE_UNIX` is an extra layer, granted nowhere. PM M569.
 
 ### platform-03 — Windows snapshot staging leaves the grants broker open after guest start
 
@@ -131,6 +135,8 @@ The same-user spawner meets Linux's UID/GID permission check; its hard descripto
 
 **Status (2026-11-13):** owed to ROOT: `cargo test -p shards-vmm hv::whp::tests` on jupiter after adding the specific red regression; jupiter was offline in explicit kiln runs r1/r2. No Windows code change or verification claim. [Blocker, missing regressions and commands](../../research/measurements/platform-fixes/held.md).
 
+**Status (2026-11-14):** fixed in 3fb6b0c07 (red `hv::whp::tests::the_emulator_reaches_no_memory_unmapped_or_replaced`, at d18cc5040 an unplugged sub-block was still reached and a range mapped over another reached the old memory; Windows 11 x86_64 unit run). Disjoint registry ranges cut by map and unmap, every emulator access under the lock an unmap takes. Guard mutations (exact-match unmap; map without cut) fail it. D140, PM M578. Owed to ROOT: the real-WHP guest REP MOVSB across an unplugged virtio-mem block on jupiter (no such test exists yet; D140).
+
 **Location:** `crates/vmm/src/hv/whp/mod.rs:643`, `:605`, `:755`, `:1385`.
 
 **Defect:** The x64 WHP emulator's mapping registry neither cuts partial unmaps nor replaces overlapping maps, leaving invalid host pointers reachable by guest emulation.
@@ -153,6 +159,8 @@ The original larger mapping survives. `host()` still returns that address; emula
 
 **Status (2026-11-13):** owed to ROOT: `cargo test -p shards-vmm hv::whp::tests` on jupiter after adding the specific red regression; jupiter was offline in explicit kiln runs r1/r2. No Windows code change or verification claim. [Blocker, missing regressions and commands](../../research/measurements/platform-fixes/held.md).
 
+**Status (2026-11-14):** fixed in 3fb6b0c07 (red `hv::whp::tests::the_emulator_writes_no_memory_the_guest_may_only_read`, at d18cc5040 the emulator wrote read-only memory; Windows 11 x86_64 unit run). A write reaches memory only where mapped writable, else the devices, as the guest's own write exits. Guard mutation (no permission check) fails it. D140, PM M578. Owed to ROOT: the real-WHP guest REP STOSB into read-only pmem on jupiter (D140).
+
 **Location:** `crates/vmm/src/hv/whp/mod.rs:1385`, `:1391`, `:1190`.
 
 **Defect:** The fallback emulator writes registered memory without retaining or checking the guest mapping's write permission.
@@ -173,6 +181,8 @@ The original larger mapping survives. `host()` still returns that address; emula
 
 **Status (2026-11-13):** owed to ROOT: `cargo test -p shards-ipc windows::tests` on jupiter after adding the specific red regression; jupiter was offline in explicit kiln runs r1/r2. No Windows code change or verification claim. [Blocker, missing regressions and commands](../../research/measurements/platform-fixes/held.md).
 
+**Status (2026-11-14):** fixed in 7905b3c03 (red `windows::tests::a_confined_childs_standard_handles_are_left_as_their_lender_has_them` and `a_child_of_stds_takes_no_handle_held_inheritable_for_another`, at 5260eea78 the lent stdout handle was left inheritable and a std child kept a pipe end held inheritable for another; Windows 11 x86_64, Rust 1.98.1). Copies for the child alone; `INHERITING` held by each shards spawn, `shards_ipc::spawn_std` for every production std spawn. Guard mutations fail each. D195, PM M578.
+
 **Location:** `crates/ipc/src/windows.rs:2636`, `:2611`, `:2123`; `crates/registry/src/credentials.rs:624`.
 
 **Defect:** Confined spawning permanently makes borrowed stdio handles inheritable, and temporary inheritable handles can leak into concurrent ordinary Command children.
@@ -191,6 +201,8 @@ Local Rust 1.94.1 source `std/src/sys/process/windows.rs:330–342` explicitly d
 
 **Status (2026-11-13):** owed to ROOT: `cargo test -p shards-ipc slots::named::tests` on jupiter after adding the specific red regression; jupiter was offline in explicit kiln runs r1/r2. No Windows code change or verification claim. [Blocker, missing regressions and commands](../../research/measurements/platform-fixes/held.md).
 
+**Status (2026-11-14):** fixed in 6ff8f51f4 (red `slots::named::tests::a_lists_directory_is_watched_by_its_own_name_and_a_failed_watch_is_refused`, at 10bf97ed7 a surrogate-named directory was not watched and a file's refused watch read as no list; also `a_client_of_a_home_named_in_no_unicode_waits_for_its_slot`). Watch by the OsStr's own UTF-16, other failures refused, watch before the thread. Guard mutations (lossy name; failures swallowed) fail it. D195, PM M578.
+
 **Location:** `crates/ipc/src/slots/named.rs:724–737`, supporting `:714`, `:660`.
 
 **Defect:** The busy-slot wait converts a Windows directory through lossy Unicode and treats every change-notification error as a changed list, repeatedly spawning uncancellable wait threads.
@@ -207,6 +219,8 @@ Local Rust 1.94.1 source `std/src/sys/process/windows.rs:330–342` explicitly d
 
 **Status (2026-11-13):** owed to ROOT: `cargo test -p shards-vmm platform::windows_files::tests` on jupiter after adding the specific red regression; jupiter was offline in explicit kiln runs r1/r2. No Windows code change or verification claim. [Blocker, missing regressions and commands](../../research/measurements/platform-fixes/held.md).
 
+**Status (2026-11-14):** fixed in 6057451cf and 2f88e39b6 (red `platform::windows_files::tests::a_names_versions_are_found_whatever_their_case`, at 9c1632a7f `newest_in(STATE)` missed `state.~1`; also `a_write_through_another_case_lands_as_the_next_version`, `a_taken_version_moves_the_next_past_it`; NTFS, Windows 11 x86_64). Versions matched as the directory compares names; a collision moves the next version past the one taken. Guard mutations (by case; collisions ignored) fail them. D196, PM M578. Owed to ROOT (R14): the sensitivity query's cost on a restore, `benches/restore.rs` on jupiter (D196).
+
 **Location:** `crates/vmm/src/platform/windows_files.rs:402`, `:381–395`.
 
 **Defect:** Version enumeration is case-sensitive while filesystem collision handling is case-insensitive, so collision retries can choose the same occupied name forever.
@@ -222,6 +236,8 @@ Local Rust 1.94.1 source `std/src/sys/process/windows.rs:330–342` explicitly d
 ### platform-10 — Windows priority credits do not protect the host against multiple raised threads
 
 **Status (2026-11-13):** owed to ROOT: `cargo test -p shards-vmm platform::windows_thread::tests` on jupiter after adding the specific red regression; jupiter was offline in explicit kiln runs r1/r2. No Windows code change or verification claim. [Blocker, missing regressions and commands](../../research/measurements/platform-fixes/held.md).
+
+**Status (2026-11-14):** fixed within a process in 9f95ae7db and f0cd08598 (red `platform::windows_thread::tests::raised_threads_sharing_a_cpu_take_no_more_than_half_of_it`, at 190b49d9b three raised spinners pinned to one CPU stayed raised for 3 s; also `a_pool_is_half_of_its_cpus_time`; Windows 11 x86_64). A pool per set of CPUs, half of each CPU's time, the affinity learned at each look. Guard mutation (pool ignored) fails it. Across VM processes owed to ROOT: the host-wide owner (an R02 decision) and the jupiter measurement in D191. PM M578.
 
 **Location:** `crates/vmm/src/platform/windows_thread.rs:226–231`, `:252–258`.
 
@@ -254,6 +270,8 @@ Local Rust 1.94.1 source `std/src/sys/process/windows.rs:330–342` explicitly d
 **Fix direction:** derive choices from online host/workload observations with documented conservative cold-start behavior and authority ceilings, or establish a genuine specification bound for each retained constant.
 
 **Catching test:** inject different clock/wake/capacity observations and cold-start states; require derived choices to follow those observations and preserve safety/refusal bounds. Coordinator owns real host contention validation.
+
+**Status (2026-11-14):** owed to ROOT, the design narrowed: Windows' priority governor's look (`windows_thread.rs` `PERIOD`) is D191's derivation for one thread's half-CPU credit, P = 1 × g / ½ = 2g, from the learner now built (`platform::granule`, migrate-09); it is not switched, as its credit cap (half a period) must also hold GetThreadTimes' tick-quantized charges of a thread that waits between runs (`a_thread_that_waits_between_its_runs_stays_raised`, CI windows-2025), which at 2g leaves one tick of slack where 100 ms left 3.2: ROOT owes that test's runs on windows-2025 and jupiter at 2g beside 100 ms, then the switch with the hold's. macOS's 0.5 / 1 ms time-constraint pair and the Windows pipes' 1 MiB / 64 KiB quotas stay owed with the design linked above: no derivation of either was found that this lane can test (the pair needs a guest timer deadline or measured batch cost; the quotas each caller's wire window), and no number replaced another.
 
 ### platform-12 — Delegated-cgroup cleanup polls at an arbitrary 10 ms interval
 

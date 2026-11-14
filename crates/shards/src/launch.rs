@@ -105,12 +105,17 @@ enum Kind {
     /// its run's published ports close as it ends); and on Windows the null device, for the
     /// stdio of the clients it lets go of, as its AppContainer opens no file by name (PM
     /// M351).
+    /// Its GPU report's pipe too, where its spawner asked for one (`--gpu-report`, D233).
     #[cfg(unix)]
-    Run { link: shards_ipc::Stream },
+    Run {
+        link: shards_ipc::Stream,
+        report: Option<Report>,
+    },
     #[cfg(windows)]
     Run {
         link: std::os::windows::io::OwnedHandle,
         null: std::fs::File,
+        report: Option<Report>,
     },
     /// A builder's VM: its join disk's socket (`--attach`, D134) and the pipe it tells how its
     /// console's report came out on (`--said-to`, D12). No release: a build publishes no port.
@@ -130,7 +135,7 @@ impl Kind {
     }
 
     /// The name of the thread that answers what it asks to reach.
-    #[cfg(any(target_os = "macos", windows))]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     fn answerer(&self) -> &'static str {
         match self {
             Kind::Run { .. } => "vm grants",
@@ -139,14 +144,57 @@ impl Kind {
     }
 }
 
+/// A run's VM's GPU report (D232, D233), as a managed launch's client gives its own VM process
+/// one: the scope its orchestrator named, which the VM frames its renderer's report with, and
+/// the write end of the private pipe it writes that report to, once and closed before its guest
+/// runs (vm_run.rs `write_report`). Handed to the VM alone: at [`REPORT_AT`] on Unix, by the name
+/// [`REPORT_NAME`] on Windows, as `shards run --gpu-report` takes it on each.
+#[derive(Debug)]
+pub struct Report {
+    pub scope: [u8; 16],
+    pub to: std::io::PipeWriter,
+}
+
+/// Where a run's VM is handed its GPU report's pipe on Unix: the descriptor after its release
+/// ([`crate::netproc::VM_RELEASE_FD`]), the last of a run's.
+#[cfg(unix)]
+pub const REPORT_AT: RawFd = crate::netproc::VM_RELEASE_FD + 1;
+
+/// The name a run's VM is handed its GPU report's pipe by on Windows, the one name
+/// `--gpu-report` takes there (vm_run.rs `gpu_report_arg`).
+#[cfg(windows)]
+pub const REPORT_NAME: &str = "gpu-report";
+
+/// `--gpu-report`'s words for a report handed as `at`, its scope in the hex
+/// `--gpu-report-scope` reads (`shards_abi::gpu::uuid_from_hex`).
+fn report_words(at: &str, scope: &[u8; 16]) -> [OsString; 4] {
+    let hex: String = scope.iter().map(|b| format!("{b:02x}")).collect();
+    [
+        "--gpu-report".into(),
+        at.into(),
+        "--gpu-report-scope".into(),
+        hex.into(),
+    ]
+}
+
 /// Launches a run's VM, the daemon's or an orchestrator's: it, and this process's end of its
 /// link ([`LINK`]).
 pub fn run(plan: Plan<'_>) -> Result<(Launched, shards_ipc::Stream), String> {
+    run_reported(plan, None)
+}
+
+/// [`run`], its VM given `report` to write its GPU report to, where its spawner asked for one
+/// (D233): this process's copy of the pipe's write end goes as its VM is started, so that the
+/// VM's close is the pipe's end.
+pub fn run_reported(
+    plan: Plan<'_>,
+    report: Option<Report>,
+) -> Result<(Launched, shards_ipc::Stream), String> {
     #[cfg(windows)]
     let record = plan.ends;
     let (ours, theirs) = shards_ipc::Stream::pair().map_err(|e| format!("the VM's link: {e}"))?;
     #[cfg(unix)]
-    let kind = Kind::Run { link: theirs };
+    let kind = Kind::Run { link: theirs, report };
     // Its end shared, this process's copy of it let go of, so that the VM's end is the end
     // this process reads.
     #[cfg(windows)]
@@ -154,7 +202,7 @@ pub fn run(plan: Plan<'_>) -> Result<(Launched, shards_ipc::Stream), String> {
         let link = theirs.share().map_err(|e| format!("the VM's link: {e}"))?;
         drop(theirs);
         let null = std::fs::File::open(crate::os::NULL).map_err(|e| format!("{}: {e}", crate::os::NULL))?;
-        Kind::Run { link, null }
+        Kind::Run { link, null, report }
     };
     let launched = launch(plan, kind)?;
     // What this process sends on its link goes to the VM: handles duplicated into it.
@@ -187,12 +235,13 @@ type Env = Vec<(&'static str, OsString)>;
 
 /// The VM process's binary for its command `args`, its environment, and whether it runs a
 /// GPU: the GPU's build where its command asks for one (D144), which on Unix says MoltenVK's
-/// errors alone (`MVK_CONFIG_LOG_LEVEL` 1, MoltenVK's errors-only level); else `vm`.
+/// errors alone (`MVK_CONFIG_LOG_LEVEL` 1, MoltenVK's errors-only level); else `vm`. Either
+/// is checked against this build's digest as it is about to start (`helpers::verified`).
 fn program(args: &[&OsStr], vm: &Path) -> Result<(PathBuf, Env, bool), String> {
     #[cfg_attr(windows, allow(unused_mut))]
     let mut env = crate::netproc::child_env();
     if !args.iter().any(|a| *a == "--gpu") {
-        return Ok((vm.to_path_buf(), env, false));
+        return Ok((crate::helpers::checked(vm)?, env, false));
     }
     #[cfg(unix)]
     env.push(("MVK_CONFIG_LOG_LEVEL", "1".into()));
@@ -215,8 +264,8 @@ fn after_command<'w>(args: &[&'w OsStr], words: &'w [OsString]) -> Vec<&'w OsStr
 /// before their launches were one. After its stdio (the null device, and this process's
 /// error as its output and error), a run's VM has its link at 3 ([`LINK`]), macOS's grants at
 /// 4, its network's ring at [`crate::netproc::VM_FDS`] and its release at
-/// [`crate::netproc::VM_RELEASE_FD`]; a builder's has macOS's grants at 3, its join disk's
-/// socket at 4, the ring at `VM_FDS` and its console report's pipe at 9.
+/// [`crate::netproc::VM_RELEASE_FD`]; a builder's has its grants at 3 (macOS and Linux),
+/// its join disk's socket at 4, the ring at `VM_FDS` and its console report's pipe at 9.
 #[cfg(unix)]
 fn handed<'f>(
     kind: &'f Kind,
@@ -237,7 +286,7 @@ fn handed<'f>(
     let mut fds = vec![(null, 0), (err, 1), (err, 2)];
     let mut words = Vec::new();
     match kind {
-        Kind::Run { link } => {
+        Kind::Run { link, report } => {
             let (link_at, grants_at, release_at) = (3, 4, crate::netproc::VM_RELEASE_FD);
             fds.push((link.as_fd(), link_at));
             if let Some(grants) = grants {
@@ -253,6 +302,10 @@ fn handed<'f>(
                     "--net-release".into(),
                     number(release_at),
                 ]);
+            }
+            if let Some(report) = report {
+                fds.push((report.to.as_fd(), REPORT_AT));
+                words.extend(report_words(&REPORT_AT.to_string(), &report.scope));
             }
         }
         Kind::Builder { attach, said_to } => {
@@ -312,7 +365,7 @@ fn launch_with(
             grants: answered,
     } = plan;
     let who = kind.who();
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     let answerer = kind.answerer();
     let (binary, env, _) = program(args, vm)?;
     #[cfg(target_os = "macos")]
@@ -320,7 +373,18 @@ fn launch_with(
         std::os::unix::net::UnixStream::pair().map_err(|e| format!("{who}'s grants: {e}"))?;
     #[cfg(target_os = "macos")]
     let granted = Some(granted);
-    #[cfg(not(target_os = "macos"))]
+    // On Linux a builder alone has a vsock path, which its spawner binds for it and beside
+    // which it dials for it (D30); a run's VM dials nothing.
+    #[cfg(target_os = "linux")]
+    let (grants, granted) = match kind {
+        Kind::Builder { .. } => {
+            let (grants, granted) =
+                std::os::unix::net::UnixStream::pair().map_err(|e| format!("{who}'s grants: {e}"))?;
+            (Some(grants), Some(granted))
+        }
+        Kind::Run { .. } => (None, None),
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     let granted: Option<shards_ipc::Stream> = None;
     let null = std::fs::File::open(crate::os::NULL).map_err(|e| format!("{}: {e}", crate::os::NULL))?;
     let err = std::io::stderr();
@@ -376,6 +440,16 @@ fn launch_with(
             None
         }
     };
+    #[cfg(target_os = "linux")]
+    if let Some(grants) = grants {
+        let answering = std::thread::Builder::new().name(answerer.into()).spawn(move || {
+            let _ = crate::grant_answer::serve(&grants, None);
+        });
+        if let Err(e) = answering {
+            Launched { vm, net }.end(record);
+            return Err(format!("answering {who}: {e}"));
+        }
+    }
     Ok(Launched {
         vm,
         net,
@@ -405,7 +479,7 @@ fn handed<'f>(
     let mut sockets = Vec::new();
     let mut words: Vec<OsString> = Vec::new();
     match kind {
-        Kind::Run { link, null } => {
+        Kind::Run { link, null, report } => {
             given.extend([
                 shards_ipc::Given {
                     name: LINK,
@@ -420,6 +494,13 @@ fn handed<'f>(
                 given.extend(side.given());
                 sockets.extend([side.shared(), side.release()]);
                 words.extend(["--net".into(), VmSide::arg(mac).into()]);
+            }
+            if let Some(report) = report {
+                given.push(shards_ipc::Given {
+                    name: REPORT_NAME,
+                    handle: report.to.as_handle(),
+                });
+                words.extend(report_words(REPORT_NAME, &report.scope));
             }
         }
         Kind::Builder { attach, said_to } => {
@@ -612,7 +693,7 @@ mod tests {
         let err = std::io::stderr();
         let (grants, _) = std::os::unix::net::UnixStream::pair().unwrap();
         let side = side_of_nothing();
-        let kind = Kind::Run { link };
+        let kind = Kind::Run { link, report: None };
         let stdio = [(null.as_raw_fd(), 0), (2, 1), (2, 2)];
         let ring = [
             (side.region.as_raw_fd(), 5),
@@ -663,6 +744,23 @@ mod tests {
         want.extend([(link_fd, 3), (grants.as_raw_fd(), 4)]);
         assert_eq!(numbers(&fds), want);
         assert_eq!(said, words(&["--grants", "4"]));
+
+        // Its GPU report's pipe (D233) after its release, at 9, with its scope.
+        let (_report_from, to) = std::io::pipe().unwrap();
+        let to_fd = to.as_raw_fd();
+        let reported = Kind::Run {
+            link: shards_ipc::Stream::pair().unwrap().0,
+            report: Some(Report {
+                scope: [0xab; 16],
+                to,
+            }),
+        };
+        let (fds, said) = handed(&reported, null.as_fd(), err.as_fd(), None, Some((&side, &MAC)));
+        assert_eq!(numbers(&fds).last(), Some(&(to_fd, 9)));
+        assert_eq!(
+            said[said.len() - 4..],
+            words(&["--gpu-report", "9", "--gpu-report-scope", &"ab".repeat(16)])
+        );
 
         // The link is named as it is handed.
         assert_eq!(LINK, "3");
@@ -783,7 +881,7 @@ mod tests {
                 #[cfg(target_os = "macos")]
                 grants: Grants::Answered,
             },
-            Kind::Run { link },
+            Kind::Run { link, report: None },
             |_, _| Ok((stand_in, side)),
             |_, program, argv, fds, _| {
                 let argv: Vec<OsString> = argv.iter().map(|a| a.to_os_string()).collect();
@@ -848,6 +946,7 @@ mod tests {
         let run = Kind::Run {
             link: file(),
             null: std::fs::File::open(crate::os::NULL).unwrap(),
+            report: None,
         };
         let (given, sockets, said) = handed(&run, grants(), Some((&side, &MAC)));
         assert_eq!(
@@ -864,6 +963,30 @@ mod tests {
             (vec!["ask", "answer", "daemon", "null"], vec![])
         );
         assert!(said.is_empty());
+        // Its GPU report's pipe (D233), by `--gpu-report`'s one name, after the rest.
+        let (_report_from, to) = std::io::pipe().unwrap();
+        let reported = Kind::Run {
+            link: file(),
+            null: std::fs::File::open(crate::os::NULL).unwrap(),
+            report: Some(Report {
+                scope: [0xab; 16],
+                to,
+            }),
+        };
+        let (given, sockets, said) = handed(&reported, grants(), None);
+        assert_eq!(
+            names(&given, &sockets),
+            (vec!["ask", "answer", "daemon", "null", "gpu-report"], vec![])
+        );
+        assert_eq!(
+            said,
+            words(&[
+                "--gpu-report",
+                "gpu-report",
+                "--gpu-report-scope",
+                &"ab".repeat(16)
+            ])
+        );
 
         let (_from_vm, said_to) = std::io::pipe().unwrap();
         let builder = Kind::Builder {

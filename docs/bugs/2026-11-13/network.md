@@ -76,6 +76,8 @@ Ranking: P0 critical; P1 high security/resource priority; P2 high correctness pr
 
 **Native macOS follow-up (2026-11-13):** at main6389b6e09 the test's immediate nonblocking receive can precede loopback readability, failing first-answer admission before exercising replacement. Reproduced natively on Mac3 in test-release; 68968478b makes the test wait for the actual poller token before dispatch, as production already does. Authority code is unchanged. Commands and final gates: `docs/research/measurements/network-fixes-v1/README.md#network-03-native-macos-readiness-regression`.
 
+**Status (2026-11-14):** the failing test is fixed in 68968478b (the test's own readiness wait; production unchanged). Same Mac, loaded: before it (6389b6e09) the test failed 20 of 20 alone at lib.rs:4076; at main 97f404be8 it passed 50 of 50 alone and the whole shards-net lib 10 of 10 (`cargo test -p shards-net --profile test-release --lib dns_answers_replace_the_names_previous_authority`, adas-mac-studio-3; `docs/research/measurements/network-fixes-v1/mac03-loop.log`). The test called `on_udp` straight after the resolver's `send_to`; macOS loopback had not made the datagram readable yet, so the nonblocking `recv` found nothing and the first answer was never learned. Its pass in a whole-lib run (creds lane, 9f162fcdf; one of two here) is the same race lost the other way: other tests' threads delay the test past delivery.
+
 ### network-04 — P1 / high: UDP holder changes can reuse a still-live conntrack zone and restore an old destination
 
 **Location:** `crates/init/src/chooser.rs:465`; `crates/init/src/links.rs:1561`. New chooser behavior in the review range.
@@ -93,6 +95,8 @@ Ranking: P0 critical; P1 high security/resource priority; P2 high correctness pr
 **Catching test:** retain an actual zone-1 tuple to A, force the allocator close to wrap in a disposable fixture, hand the port to B, then resend the same client tuple. Require B to receive it and A to observe nothing. Also test a non-forced full-cycle campaign under ROOT's resource limits.
 
 **Status (2026-11-13):** owed to ROOT: `cargo test -p shards --test build a_udp_flow_goes_to_its_ports_next_holder -- --exact --nocapture`, extended with a retained zone-1 tuple and forced allocator wrap. The existing one-handoff fixture does not reproduce wrap. Retirement design and owner-failure requirements: `docs/research/measurements/network-fixes-v1/README.md#network-04-conntrack-zone-retirement`. No allocator patch or passing reproduction is claimed.
+
+**Status (2026-11-14):** fixed in f2a8e2186 (red `chooser::tests::a_udp_zone_names_one_holder_for_the_run`, a5772afa8). Each UDP candidate has a zone of its own for the run, fixed as the chooser starts, so no zone is reused; more than 65,535 UDP candidates are refused at start (`ZonesExhausted`). Unit red/green and mutation on adacachy2: `docs/research/measurements/network-fixes-v1/init0406-red-green.log`. Owed to ROOT: `cargo test -p shards --test build a_udp_flow_goes_to_its_ports_next_holder -- --exact --nocapture`, extended to hand the port A, B, A, B with one client socket (D122).
 
 ### network-05 — P2 / high: Hex/API-run never programs the IPv6 uplink that daemon runs receive
 
@@ -112,6 +116,8 @@ Ranking: P0 critical; P1 high security/resource priority; P2 high correctness pr
 
 **Status (2026-11-13):** owed to ROOT: `cargo test -p shards --test api_image a_published_ingress_port_reaches_its_member -- --exact --nocapture`, extended with the IPv6-only granted/denied destination fixture from `build::agents_reach_past_the_microvm_by_ipv6_what_their_networks_grant`, fresh and restored. The existing ingress-only test does not reproduce missing IPv6 egress. Paired setup/control fix requirements are recorded in `docs/research/measurements/network-fixes-v1/README.md#network-05-07-guest-kernel-and-api-reproductions`; no VM result or blind implementation is claimed.
 
+**Status (2026-11-14):** fixed in d5153796b (red `api_run::tests::an_orchestrated_runs_agents_reach_past_the_microvm_by_ipv6_as_a_daemons_do`, 99f71406c). API-run's `past6` shares the daemon's IPv6 derivation (`crate::networks::host_ipv6`); its plan pushes `uplink6=` and `tell_net` sends `NET_ADDRESS` first. Unit red/green and mutations on macOS arm64: `docs/research/measurements/network-fixes-v1/api05-red-green.log`. Owed to ROOT: `cargo test -p shards --test api_image a_published_ingress_port_reaches_its_member -- --exact --nocapture`, extended with the IPv6-only granted/denied fixture, fresh and restored (D99).
+
 ### network-06 — P2 / high: one listener captures every port in a contested range
 
 **Location:** `crates/init/src/chooser.rs:440`, `:477`; `crates/init/src/netplan.rs:759`; `crates/init/src/links.rs:1589`. New in the review range.
@@ -129,6 +135,8 @@ Ranking: P0 critical; P1 high security/resource priority; P2 high correctness pr
 **Catching test:** publish both ports with web/api's split listeners under one exposure range; each port must return its own member's payload. Repeat with UDP and with one listener closing while the other remains.
 
 **Status (2026-11-13):** owed to ROOT: `cargo test -p shards --test build a_port_comes_in_to_the_member_listening_on_it -- --exact --nocapture`, extended to one unmapped 7000–7001 exposure range with split listeners, TCP and UDP. Existing single-port holder tests do not reproduce a split range. Per-port partition, mapped-target and nft-programming requirements are recorded in `docs/research/measurements/network-fixes-v1/README.md#network-05-07-guest-kernel-and-api-reproductions`.
+
+**Status (2026-11-14):** fixed in f2a8e2186 and 10a3bc47f (red `chooser::tests::each_port_of_a_range_goes_to_the_member_listening_on_it`, a5772afa8; partial overlaps `ranges_that_meet_in_part_are_contested_where_they_meet`, mutation m3). Each port of a contest is its listener's; ranges clipped to meet in part are contested where they meet. Unit red/green and mutations on adacachy2: `docs/research/measurements/network-fixes-v1/init0406-red-green.log`. Owed to ROOT: `cargo test -p shards --test build a_port_comes_in_to_the_member_listening_on_it -- --exact --nocapture`, extended to one unmapped 7000-7001 exposure with split listeners, TCP and UDP, one closing; and M513's contested bind/listen latency (D122).
 
 ### network-07 — P2 / high: an IPv6-only listener can win an IPv4 published port
 
@@ -182,6 +190,8 @@ Ranking: P0 critical; P1 high security/resource priority; P2 high correctness pr
 
 **Catching test:** retain A's TCP DNS session across B's departure and D's arrival; require old TCP and fresh UDP to agree that B is absent and D is present. Keep C alive to avoid conflating this with closing the entire DNS grant.
 
+**Status (2026-11-14):** fixed in 339d16ab1 (red `agentdns::tests::an_existing_tcp_session_uses_the_members_current_names`, the Codex lane's e862cfddd cherry-picked as 8c99b9816). Each TCP question is judged under the relay's live askers by the connection's link and address; a revoked asker's session closes. Red/green on merge 38bd7a9d0 (main 2e00a1043), Linux x86_64 (adacachy2), with init clippy; mutation `None => continue` fails the test. Real-guest witness (A's TCP session across B's end and D's start, C alive) owed to ROOT. Evidence: `docs/research/measurements/network-fixes-v1/README.md#network-09-a-tcp-dns-session-judged-by-its-asker-as-it-stands`; D181 amended.
+
 ### network-10 — P3 / medium: host-network bind/close cycles retain unlimited listener history
 
 **Location:** `crates/net/src/lib.rs:1705`, `:1717`, `:1369`. Predates the base and is also used by the Windows host-network work in this range.
@@ -198,6 +208,8 @@ Ranking: P0 critical; P1 high security/resource priority; P2 high correctness pr
 
 **Catching test:** perform N publish/unpublish cycles with at most one live listener and require no listeners/hosted IDs remain and slot storage is independent of N. ROOT should repeat actual guest host-network binds and verify host resource return on Unix/Windows.
 
+**Status (2026-11-14):** fixed in acd4a34a8, cf6084eab and dbb7175de (red `tests::host_network_bind_close_cycles_keep_no_listener_history`). Listener slots are reused from a free list under generation-carrying poll tokens; storage is the most ever published at once. Red/green on merge 38bd7a9d0, macOS arm64 (adas-mac-studio-3.local), with net clippy; free-list and generation mutations each fail. Owed to ROOT: a real host-network guest binding/closing one port 10,000 times with the network process's fds and RSS flat, on Linux, macOS and Windows. Evidence: `docs/research/measurements/network-fixes-v1/README.md#network-10-listener-slots-reused-under-generation-safe-tokens`; D124 amended.
+
 ### network-11 — P3 / medium: the DNS grant learner treats unrelated answer records as the granted name's addresses
 
 **Location:** `crates/dns/src/lib.rs:291`, `:302`, `:315`; consumers `crates/net/src/lib.rs:2408`, `:2865`. Parser predates the base; D192/D236 increase its use.
@@ -213,6 +225,8 @@ Ranking: P0 critical; P1 high security/resource priority; P2 high correctness pr
 **Fix direction:** validate response semantics and question correlation, class and applicable owner/CNAME chain before deriving authority; handle expiry as network-03 describes.
 
 **Catching test sketch:** `assert!(!a_records(reply_with_unrelated_ch_a()).unwrap().1.contains(&forbidden));` Also test an unrelated IN owner, NXDOMAIN with records, valid compressed names/CNAME chains, A/AAAA, and propagation into `Config::allows` over both transports.
+
+**Status (2026-11-14):** fixed in 658eec242 (red `tests::only_the_asked_names_own_records_are_its_addresses` in shards-dns and `tests::a_named_grant_learns_only_its_names_own_records` in shards-net). Only a whole NOERROR response to one IN question counts, and only records of its type and class owned by the name or its CNAME chain's end; loops, errors and truncation grant nothing. Red/green on merge 38bd7a9d0, macOS arm64, with dns/net clippy; owner, class, RCODE and loop mutations each fail. Evidence: `docs/research/measurements/network-fixes-v1/README.md#network-11-a-responses-addresses-are-its-questions-names-alone`; D192 amended.
 
 ### network-12 — P3 / medium: production network controls still use chosen constants forbidden by current R03
 
@@ -249,6 +263,8 @@ Ranking: P0 critical; P1 high security/resource priority; P2 high correctness pr
 **Fix direction:** ROOT should separate researched protocol invariants from runtime choices, derive/admit capacities from actual resources, learn timing/fairness where used with explicit cold-start uncertainty, and preserve authority independently of learning. Replace guessed fallback observations with typed failures.
 
 **Catching validation:** check source-to-D-entry derivations for each row, then exercise different queue pressure, RTT, resolver latency and cold-start conditions; show runtime controls follow the documented observations. Include an otherwise valid nine-extension packet and a collision stream exceeding ten attempts. These runs and before/after/mutation evidence are unrun here.
+
+**Status (2026-11-14):** partly fixed. Fixed: the eight-extension-header cutoff in 6fb0a6f66 (red `wire::tests::ipv6_headers_read_back_as_written` at 59d06bed7; RFC 8200 §4.1, length-bounded, hop-by-hop first alone), the 4096 page fallback in d0d8abdc5 (typed error), macOS's 16 shared-memory name tries in 685d9c214 (red `tests::shared_memory_passes_over_every_name_taken` at 26e3bce81); derived: window scale 7 from TO_HOST (RFC 7323 §2.3) and the 64 KiB peer read from MAX_FRAME in 41e40fe0a; refuted as chosen: TTL/hop limit 64 is the Assigned Numbers default (RFC 1700, RFC 1122 §3.2.1.7, RFC 4861 §6.3.2), named in 51a4b86fb. Tested on merges of main, macOS arm64, with dns/net/netring clippy; mutations fail. Owed to ROOT, each with its learned design, cold start, typed failure and exact measurement in `docs/research/measurements/network-fixes-v1/README.md#network-12-the-network-controls-derivations-row-by-row`: TCP queues, RTO/retries/IDLE, window updates, BUDGET, UDP lifetimes (RFC 4787 REQ-5, which the 30 s unreplied lifetime breaks past port 1023), BACKLOG/UDP_WAITING, poll's batch, the 1 MiB ring, the DNS WAIT, publish.rs's ten tries; chooser.rs's rows to the chooser's lane (rewritten on main at 04f590670). D46 amended.
 
 ## Checked and found sound
 

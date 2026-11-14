@@ -15,6 +15,15 @@ use std::io::{Read as _, Write as _};
 use std::num::NonZeroU64;
 use std::time::{Duration, Instant};
 
+/// A lane's ask, its answer waited for as long as it takes (`Duration::MAX`), as a caller
+/// with no bound of its own waits: what it answered, or why not.
+macro_rules! answered {
+    ($ask:expr) => {
+        $ask.and_then(|mut ask| ask.wait(std::time::Duration::MAX))
+            .map(|got| got.expect("Duration::MAX waits until the answer"))
+    };
+}
+
 use common::{
     Party, Patience, TempDir, ask, booted, cannot_run_vms, guest_init, kernel, run_shards_env, served,
 };
@@ -108,6 +117,7 @@ fn spec(home: &TempDir, image: &str) -> ImageSpec {
         gpu_devices: Vec::new(),
         sign_ins: Vec::new(),
         upstream_roots: Vec::new(),
+        gpu_report: None,
     }
 }
 
@@ -813,6 +823,77 @@ fn an_images_next_run_restores_the_template_its_first_saved() {
     assert_eq!(run(&given), StartedFrom::Booted);
 }
 
+/// D233 (Hex goal 39): a GPU run's renderer report, its VM process's own, reaches its
+/// orchestrator as a managed launch's does. Given a host GPU by its identity in D232's grammar
+/// (`SHARDS_TEST_GPU`: `pci:DOMAIN:BUS:DEVICE.FUNCTION`, `metal:HEX` or `luid:HEX`; skipped
+/// without one), the image's first run boots and saves its template and its next restores it
+/// (where this host restores), each run's report of its own scope naming exactly that GPU, on
+/// Windows with its current boot's LUID, and taken once; a GPU no host has is refused as its
+/// renderer typed it.
+#[test]
+fn a_gpu_runs_renderer_report_reaches_its_orchestrator() {
+    use shards_api::{GpuProbeError, PhysicalGpu};
+    if cannot_run_vms() {
+        return;
+    }
+    let Ok(named) = std::env::var("SHARDS_TEST_GPU") else {
+        let _ = writeln!(std::io::stderr(), "SKIP: SHARDS_TEST_GPU names no host GPU");
+        return;
+    };
+    let gpu: PhysicalGpu = named.parse().unwrap();
+    let home = common::home_with("api-gpu-home");
+    build_example(&home, "api-gpu:1");
+    let mut s = spec(&home, "api-gpu:1");
+    s.env
+        .retain(|(name, _)| name != "SHARDS_KERNEL" && name != "SHARDS_INIT");
+    s.command = Some(["/bin/sh", "-c", "exit 0"].map(String::from).to_vec());
+    s.gpu_devices = vec![gpu];
+    let mut froms = Vec::new();
+    for scope in [[3u8; 16], [4u8; 16]] {
+        s.gpu_report = Some(scope);
+        let guest = booted(&ImageShards::new(), &s).unwrap();
+        let report = guest.take_gpu_report(Duration::MAX).unwrap();
+        assert_eq!(report.scope, scope);
+        let physical: Vec<PhysicalGpu> = report.probe.devices.iter().map(|d| d.physical).collect();
+        assert_eq!(physical, [gpu], "{report:?}");
+        #[cfg(windows)]
+        assert!(report.probe.devices[0].luid.is_some(), "{report:?}");
+        assert_eq!(
+            guest.take_gpu_report(Duration::MAX),
+            Err(ImageRefusal::GpuProbe(GpuProbeError::ReportTaken))
+        );
+        froms.push(guest.started_from());
+        assert_eq!(
+            ask(&*guest, |g| g.wait_for(Duration::MAX))
+                .unwrap()
+                .map(|e| e.end),
+            Some(RunEnd::Exited(0))
+        );
+    }
+    if shards_vmm::vm::restores_here() {
+        assert_eq!(froms, [StartedFrom::Saved, StartedFrom::Restored]);
+    }
+    // An identity of this host's kind that no GPU of it has.
+    #[cfg(target_os = "macos")]
+    let absent = PhysicalGpu::MetalRegistry(u64::MAX);
+    #[cfg(windows)]
+    let absent = PhysicalGpu::Luid(u64::MAX);
+    #[cfg(not(any(target_os = "macos", windows)))]
+    let absent = PhysicalGpu::Pci {
+        domain: 0xffff,
+        bus: 0xff,
+        device: 0x1f,
+        function: 7,
+    };
+    s.gpu_devices = vec![absent];
+    s.gpu_report = Some([5; 16]);
+    let refused = ImageShards::new().boot(&s, Duration::MAX).err();
+    assert!(
+        matches!(refused, Some(ImageRefusal::GpuProbe(GpuProbeError::Refused(_)))),
+        "{refused:?}"
+    );
+}
+
 /// D253's pools: an orchestrator's pools give an image's next run a warm run host, its
 /// microVM restored and ready before the run asked. The pool's first run starts a host of its
 /// own, nothing being warm; the pool then starts one ahead, which a later run takes (`Warm`),
@@ -1381,7 +1462,7 @@ fn an_orchestrators_members_are_signaled_and_their_mcp_connections_reached_on_it
     let execs = dialed.execs.expect("exec lanes subscribed");
     // The harness's connection to its bridge, held for the controller until it asks.
     let said = on_endpoint(&*guest, "codex's MCP connection", || {
-        let McpConnection { mut from, .. } = execs.mcp(codex_at).unwrap();
+        let McpConnection { mut from, .. } = answered!(execs.mcp(codex_at)).unwrap();
         let mut said = Vec::new();
         while said.len() < shards_testguest::MCP_INITIALIZE.len() {
             match from.next_record().unwrap() {
@@ -1405,22 +1486,22 @@ fn an_orchestrators_members_are_signaled_and_their_mcp_connections_reached_on_it
             let Member::Running(MemberControl {
                 mut steering,
                 mut end,
-            }) = execs.member(at).unwrap()
+            }) = answered!(execs.member(at)).unwrap()
             else {
                 panic!("member {at} runs");
             };
-            let sent = steering.signal(signal);
+            let sent = steering.signal(signal, Duration::MAX);
             let ended = end.wait();
-            let after = steering.signal(signal);
+            let after = steering.signal(signal, Duration::MAX);
             (sent, ended, after)
         })
     };
     let (sent, ended, after) = signalled(codex_at, 15);
-    assert_eq!(sent, Ok(()));
+    assert_eq!(sent, Ok(Some(())));
     assert_eq!(ended, Ok(exec::End::Signaled(15)), "TERM, never an exit of 143");
     assert_eq!(after, Err(Fault::Unsteered(Unsteered::Ended)));
     let (sent, ended, _) = signalled(claude_at, 9);
-    assert_eq!(sent, Ok(()));
+    assert_eq!(sent, Ok(Some(())));
     assert_eq!(ended, Ok(exec::End::Signaled(9)));
     assert_eq!(
         ask(&*guest, |g| g.wait_member(&codex(), Duration::MAX)).unwrap(),
@@ -1430,7 +1511,9 @@ fn an_orchestrators_members_are_signaled_and_their_mcp_connections_reached_on_it
         ask(&*guest, |g| g.wait_member(&claude, Duration::MAX)).unwrap(),
         Some(MemberEnd::Signaled(9))
     );
-    let again = on_endpoint(&*guest, "an ended member's lane", || execs.member(codex_at));
+    let again = on_endpoint(&*guest, "an ended member's lane", || {
+        answered!(execs.member(codex_at))
+    });
     assert!(
         matches!(again, Ok(Member::Ended(exec::End::Signaled(15)))),
         "{again:?}"

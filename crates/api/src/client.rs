@@ -439,13 +439,14 @@ fn launch(
     if let Some(environment) = environment {
         environment.environment(&mut command)?;
     }
-    let child = command
-        .args(&args)
-        .stdin(Stdio::null())
-        .stdout(stdout)
-        .stderr(stderr)
-        .spawn()
-        .map_err(|e| Refusal::Boot(format!("{}: {e}", binary.display())))?;
+    let child = shards_ipc::spawn_std(
+        command
+            .args(&args)
+            .stdin(Stdio::null())
+            .stdout(stdout)
+            .stderr(stderr),
+    )
+    .map_err(|e| Refusal::Boot(format!("{}: {e}", binary.display())))?;
     // Shared: the guest, its drain and its watcher, threads that outlive this call, each hold it.
     let shared = Arc::new(Shared {
         state: Mutex::new(State {
