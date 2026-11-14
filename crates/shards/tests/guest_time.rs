@@ -74,7 +74,7 @@ fn watch(vcpus: u32, step: u64) {
     cfg.vcpus = vcpus;
     cfg.memory_mib = 512;
     cfg.cmdline = format!(
-        "console=ttyS0 panic=-1 quiet shards_test=spin shards_spin_ms={SPIN_MS} shards_idle_ms={IDLE_MS}"
+        "console=hvc0 panic=-1 quiet shards_test=spin shards_spin_ms={SPIN_MS} shards_idle_ms={IDLE_MS}"
     );
     cfg.console = Console::Discard;
     // Its whole console kept: this test reads it as it goes (D12).

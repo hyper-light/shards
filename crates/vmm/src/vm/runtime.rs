@@ -14,8 +14,8 @@ use super::machine::{self, Machine};
 use super::{AfterSnapshot, Config, ExitReason, Precopied, Precopying, RestoreConfig, Save, SnapshotPolicy};
 use crate::devices::control::Control;
 use crate::devices::power::PowerEvent;
-use crate::devices::serial::Serial;
 use crate::devices::virtio::block::Join;
+use crate::devices::virtio::console::Port as ConsolePort;
 use crate::devices::virtio::{head, pmem};
 use crate::hv;
 use crate::memory::GuestMemory;
@@ -76,7 +76,7 @@ impl<W: std::io::Write> std::io::Write for Carried<'_, W> {
 #[derive(Debug, Clone)]
 pub struct Handle {
     shared: Arc<Shared>,
-    serial: Arc<Serial>,
+    console: Arc<ConsolePort>,
     control: Arc<Control>,
     memory: Arc<GuestMemory>,
 }
@@ -825,17 +825,17 @@ impl Handle {
         self.shared.released_at_us.get().copied()
     }
 
-    /// Feeds bytes to the guest console as if typed, waiting while its UART has no room
-    /// for them (`Serial::input`).
+    /// Feeds bytes to the guest console as if typed, into the buffers its guest posted,
+    /// waiting while it has posted none (`console::Port::input`).
     pub fn console_input(&self, bytes: &[u8]) {
-        self.serial.input(bytes);
+        self.console.input(bytes);
     }
 
     /// The whole lines of the last bytes its guest wrote to its console, as many as it was
     /// told to keep ([`Config::said`]), and whether that was all it said: a kernel's panic
     /// says there why it resets its machine (`panic=-1`).
     pub fn console_said(&self) -> crate::devices::said::Said {
-        self.serial.said()
+        self.console.said()
     }
 
     /// Whether the VM is recording a working set ([`SnapshotPolicy::working_set`]).
@@ -1540,7 +1540,7 @@ fn launch(
         vm,
         memory,
         bus,
-        serial,
+        console,
         control,
         power,
         finish,
@@ -1685,7 +1685,7 @@ fn launch(
     Ok((
         Handle {
             shared,
-            serial,
+            console,
             control,
             memory: memory.clone(),
         },
