@@ -374,6 +374,136 @@ fn space(fds: usize) -> usize {
 
 /// Sends one message with `fds` attached. Blocks until all of it is written.
 pub fn send(sock: &UnixStream, kind: u8, payload: &[u8], fds: &[BorrowedFd<'_>]) -> io::Result<()> {
+    send_with(sock, kind, payload, fds, None)
+}
+
+/// When a judged wait ([`send_judged`], [`recv_judged`]) next asks its judge, and whether it
+/// goes on: asked as the wait begins and each time the time it named passes with the socket
+/// not ready; `Ok(None)` waits on the socket's readiness alone, an error ends the wait with it.
+pub type Judge<'a> = dyn FnMut() -> io::Result<Option<Instant>> + 'a;
+
+/// [`send`], judged (runs-11 `TAKE_TIMEOUT`): written as room comes, by sendmsg(2) and send(2)
+/// with `MSG_DONTWAIT`, which leave the socket's own mode and timeouts to its other users, and
+/// waiting for room in poll(2) until the time `judge` names, where it is asked again. Never a
+/// socket's send timeout, whose expiry mid-message loses how much of it went (POSIX send(2):
+/// a partial count, or `EAGAIN` once nothing more fits). An error `judge` ends it with leaves
+/// the message cut short where it was: its peer never had all of it.
+pub fn send_judged(
+    sock: &UnixStream,
+    kind: u8,
+    payload: &[u8],
+    fds: &[BorrowedFd<'_>],
+    judge: &mut Judge<'_>,
+) -> io::Result<()> {
+    send_with(sock, kind, payload, fds, Some(judge))
+}
+
+/// [`recv`], judged: the next message taken whole as it comes ([`Incoming`]), waiting for more
+/// in poll(2) until the time `judge` names, where it is asked again. `None` for the peer's
+/// end between messages.
+pub fn recv_judged(sock: &UnixStream, judge: &mut Judge<'_>) -> io::Result<Option<Message>> {
+    let mut due = judge()?;
+    let mut incoming = Incoming::default();
+    loop {
+        match incoming.take(sock)? {
+            Took::Message(m) => return Ok(Some(m)),
+            Took::Ended => return Ok(None),
+            Took::Partial => {
+                while !await_events(sock.as_fd(), libc::POLLIN, due)? {
+                    due = judge()?;
+                }
+            }
+        }
+    }
+}
+
+/// Waits in poll(2) until `fd` has one of `events`, its end or an error, or `due` passes (none:
+/// as long as that takes): whether it came. A wait a signal cut short is made again.
+fn await_events(fd: BorrowedFd<'_>, events: libc::c_short, due: Option<Instant>) -> io::Result<bool> {
+    loop {
+        let ms = match due {
+            None => -1,
+            Some(due) => {
+                let left = due.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    return Ok(false);
+                }
+                // Rounded up: a wait of 0 ms would return at once, and spin.
+                libc::c_int::try_from(left.as_micros().div_ceil(1000)).unwrap_or(libc::c_int::MAX)
+            }
+        };
+        let mut pfd = libc::pollfd {
+            fd: fd.as_raw_fd(),
+            events,
+            revents: 0,
+        };
+        // SAFETY: poll(2) on one valid pollfd.
+        match unsafe { libc::poll(&mut pfd, 1, ms) } {
+            n if n > 0 => return Ok(true),
+            0 => {}
+            _ => {
+                let e = io::Error::last_os_error();
+                if e.kind() != io::ErrorKind::Interrupted {
+                    return Err(e);
+                }
+            }
+        }
+    }
+}
+
+/// The most a judged send writes at once to `sock`. On macOS a send(2) larger than its
+/// socket's room waits for the rest, `MSG_DONTWAIT` or not: a 9,000-byte send with it to an
+/// empty socketpair (8 KiB buffers) waited on, where one of 4,000 bytes went at once
+/// (docs/research/measurements/runs-fixes/msg-dontwait.c, macOS 26 arm64, runs-11). There a
+/// socket is writable, by the definition poll(2) and select(2) follow, once its room is at
+/// least its send low-water mark (SO_SNDLOWAT, XNU's `sowriteable`; 2,048 bytes by default),
+/// and a write of no more than that waits for nothing: so a judged send writes that much at
+/// most, each time once poll(2) says there is room. Elsewhere `MSG_DONTWAIT` writes what fits
+/// and returns (Linux, unix_stream_sendmsg): no bound.
+fn send_most(sock: &UnixStream) -> io::Result<usize> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut lowat: libc::c_int = 0;
+        let mut len = libc::socklen_t::try_from(size_of::<libc::c_int>()).map_err(io::Error::other)?;
+        // SAFETY: getsockopt(2) of an int option into a local int, its length given.
+        if unsafe {
+            libc::getsockopt(
+                sock.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_SNDLOWAT,
+                (&raw mut lowat).cast(),
+                &mut len,
+            )
+        } != 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(usize::try_from(lowat).unwrap_or(1).max(1))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = sock;
+        Ok(usize::MAX)
+    }
+}
+
+/// Waits for room on `sock` to write, asking `judge` each time `due` passes without it.
+fn await_room(sock: &UnixStream, judge: &mut Judge<'_>, due: &mut Option<Instant>) -> io::Result<()> {
+    while !await_events(sock.as_fd(), libc::POLLOUT, *due)? {
+        *due = judge()?;
+    }
+    Ok(())
+}
+
+/// [`send`]'s and [`send_judged`]'s message: blocking where no `judge` is given, as `send`
+/// always has; else as `send_judged` says.
+fn send_with(
+    sock: &UnixStream,
+    kind: u8,
+    payload: &[u8],
+    fds: &[BorrowedFd<'_>],
+    mut judge: Option<&mut Judge<'_>>,
+) -> io::Result<()> {
     if payload.len() > MAX_PAYLOAD {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -389,14 +519,23 @@ pub fn send(sock: &UnixStream, kind: u8, payload: &[u8], fds: &[BorrowedFd<'_>])
     let len = u32::try_from(payload.len()).map_err(|_| io::Error::other("payload length"))?;
     let [l0, l1, l2, l3] = len.to_be_bytes();
     let mut header = [kind, l0, l1, l2, l3];
+    // A judged send's first write, on macOS no more than its socket's send low-water mark
+    // ([`send_most`]), less its descriptors' control data; else all of it.
+    let most = match judge {
+        Some(_) => send_most(sock)?,
+        None => usize::MAX,
+    };
+    let control_len = if fds.is_empty() { 0 } else { space(fds.len()) };
+    let first = most.saturating_sub(control_len).max(1);
+    let head_len = HEADER.min(first);
     let mut iov = [
         libc::iovec {
             iov_base: header.as_mut_ptr().cast(),
-            iov_len: HEADER,
+            iov_len: head_len,
         },
         libc::iovec {
             iov_base: payload.as_ptr() as *mut libc::c_void,
-            iov_len: payload.len(),
+            iov_len: payload.len().min(first.saturating_sub(head_len)),
         },
     ];
     let mut control = Control::new();
@@ -425,20 +564,77 @@ pub fn send(sock: &UnixStream, kind: u8, payload: &[u8], fds: &[BorrowedFd<'_>])
         }
     }
     let total = HEADER + payload.len();
+    let mut due = match judge.as_deref_mut() {
+        Some(judge) => judge()?,
+        None => None,
+    };
+    let flags = if judge.is_some() { libc::MSG_DONTWAIT } else { 0 };
+    #[cfg(target_os = "macos")]
+    if let Some(judge) = judge.as_deref_mut() {
+        await_room(sock, judge, &mut due)?;
+    }
     let sent = loop {
         // SAFETY: a fully initialized msghdr over live buffers.
-        let n = unsafe { libc::sendmsg(sock.as_raw_fd(), &msg, 0) };
+        let n = unsafe { libc::sendmsg(sock.as_raw_fd(), &msg, flags) };
         if let Ok(n) = usize::try_from(n) {
             break n;
         }
         let e = io::Error::last_os_error();
-        if e.kind() != io::ErrorKind::Interrupted {
-            return Err(e);
+        match (e.kind(), judge.as_deref_mut()) {
+            (io::ErrorKind::Interrupted, _) => {}
+            (io::ErrorKind::WouldBlock, Some(judge)) => await_room(sock, judge, &mut due)?,
+            _ => return Err(e),
         }
     };
     // The descriptors went with the first byte; the rest follows as plain bytes.
     if sent < total {
-        write_rest(&mut &*sock, [&header, payload], sent)?;
+        match judge {
+            None => write_rest(&mut &*sock, [&header, payload], sent)?,
+            Some(judge) => send_rest(sock, [&header, payload], sent, most, judge, &mut due)?,
+        }
+    }
+    Ok(())
+}
+
+/// [`write_rest`], judged: what follows the first `sent` bytes of `parts`, by send(2) with
+/// `MSG_DONTWAIT`, at most `most` bytes a write, waiting for room as [`send_judged`] does.
+fn send_rest(
+    sock: &UnixStream,
+    parts: [&[u8]; 2],
+    sent: usize,
+    most: usize,
+    judge: &mut Judge<'_>,
+    due: &mut Option<Instant>,
+) -> io::Result<()> {
+    let mut skip = sent;
+    for part in parts {
+        let mut rest = part.get(skip.min(part.len())..).unwrap_or_default();
+        skip = skip.saturating_sub(part.len());
+        while !rest.is_empty() {
+            #[cfg(target_os = "macos")]
+            await_room(sock, judge, due)?;
+            // SAFETY: send(2) of `rest`'s first bytes, a live buffer, at most its length.
+            let n = unsafe {
+                libc::send(
+                    sock.as_raw_fd(),
+                    rest.as_ptr().cast(),
+                    rest.len().min(most),
+                    libc::MSG_DONTWAIT,
+                )
+            };
+            match usize::try_from(n) {
+                Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+                Ok(n) => rest = rest.get(n..).unwrap_or_default(),
+                Err(_) => {
+                    let e = io::Error::last_os_error();
+                    match e.kind() {
+                        io::ErrorKind::Interrupted => {}
+                        io::ErrorKind::WouldBlock => await_room(sock, judge, due)?,
+                        _ => return Err(e),
+                    }
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -1807,6 +2003,85 @@ pub(crate) mod tests {
     use std::fs::File;
     use std::io::Read;
     use std::os::fd::AsFd;
+
+    /// A judge that asks again `every` from now, counting how often it was asked, and ends the
+    /// wait at its `refuse`th ask, where it has one.
+    fn judge_every(
+        every: std::time::Duration,
+        asked: &std::sync::atomic::AtomicUsize,
+        refuse: Option<usize>,
+    ) -> impl FnMut() -> std::io::Result<Option<std::time::Instant>> + '_ {
+        move || {
+            let n = asked.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            if refuse.is_some_and(|at| n >= at) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "judged stalled",
+                ));
+            }
+            Ok(std::time::Instant::now().checked_add(every))
+        }
+    }
+
+    /// A judged send to a peer that reads late goes on where it was as room comes, asking its
+    /// judge at each due, and its peer reads the message whole (runs-11 `TAKE_TIMEOUT`). Red
+    /// before, with a send timeout in its judge's place: a write cut short mid-message by the
+    /// timeout returned `WouldBlock` with no word of how much went, so the message was lost.
+    #[test]
+    fn a_judged_send_goes_on_where_it_was_as_its_peer_reads() {
+        let (ours, theirs) = super::UnixStream::pair().unwrap();
+        let asked = std::sync::atomic::AtomicUsize::new(0);
+        let payload: Vec<u8> = (0..super::MAX_PAYLOAD).map(|i| (i % 251) as u8).collect();
+        std::thread::scope(|s| {
+            let reader = s.spawn(|| {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                super::recv(&theirs).unwrap().unwrap()
+            });
+            let mut judge = judge_every(std::time::Duration::from_millis(10), &asked, None);
+            super::send_judged(&ours, 7, &payload, &[], &mut judge).unwrap();
+            let m = reader.join().unwrap();
+            assert_eq!((m.kind, m.payload == payload), (7, true));
+        });
+        assert!(
+            asked.load(std::sync::atomic::Ordering::Relaxed) > 2,
+            "its judge was not asked at its dues"
+        );
+        // Its judge's refusal ends it, the message cut short.
+        let (ours, _theirs) = super::UnixStream::pair().unwrap();
+        let asked = std::sync::atomic::AtomicUsize::new(0);
+        let mut judge = judge_every(std::time::Duration::from_millis(10), &asked, Some(3));
+        let e = super::send_judged(&ours, 7, &payload, &[], &mut judge).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::TimedOut, "{e}");
+    }
+
+    /// A judged receive waits for its message past its judge's dues while its judge says go on,
+    /// takes it whole as it comes in parts, and ends with its judge's refusal or its peer's end.
+    #[test]
+    fn a_judged_receive_waits_while_its_judge_says_go_on() {
+        use std::io::Write as _;
+        let (ours, mut theirs) = super::UnixStream::pair().unwrap();
+        let asked = std::sync::atomic::AtomicUsize::new(0);
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                std::thread::sleep(std::time::Duration::from_millis(60));
+                // Its header first, then its payload.
+                theirs.write_all(&[9, 0, 0, 0, 3]).unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(60));
+                theirs.write_all(b"abc").unwrap();
+            });
+            let mut judge = judge_every(std::time::Duration::from_millis(10), &asked, None);
+            let m = super::recv_judged(&ours, &mut judge).unwrap().unwrap();
+            assert_eq!((m.kind, m.payload.as_slice()), (9, &b"abc"[..]));
+        });
+        assert!(asked.load(std::sync::atomic::Ordering::Relaxed) > 2);
+        let asked = std::sync::atomic::AtomicUsize::new(0);
+        let mut judge = judge_every(std::time::Duration::from_millis(10), &asked, Some(3));
+        let e = super::recv_judged(&ours, &mut judge).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::TimedOut);
+        drop(theirs);
+        let mut judge = judge_every(std::time::Duration::from_millis(10), &asked, None);
+        assert!(super::recv_judged(&ours, &mut judge).unwrap().is_none());
+    }
 
     /// What a filesystem without F_FULLFSYNC holds is made durable with fsync instead:
     /// /dev/null refuses F_FULLFSYNC and takes fsync, as an SMB share does, where std's
