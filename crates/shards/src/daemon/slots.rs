@@ -5,7 +5,7 @@
 //! daemon, and the daemon's back to the client, without descriptors, each side's end the
 //! other's.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io;
 #[cfg(unix)]
 use std::os::fd::AsRawFd as _;
@@ -16,17 +16,10 @@ use std::time::{Duration, Instant};
 use shards_ipc::Stream as UnixStream;
 use shards_ipc::fd::{AsFd, BorrowedFd, OwnedFd};
 use shards_ipc::kind;
-use shards_ipc::slots::{self, Asked, Frame, Requested, Requests, Session, Slot, Stopper, Waited};
+use shards_ipc::slots::{self, Asked, Frame, Probe, Requested, Requests, Session, Slot, Stopper, Waited};
 
 use super::{Daemon, Threads, lock, log};
 use crate::containers::Disk;
-
-/// How long a slot a client took may go without its request before a sweep looks it over:
-/// one taken by a client whose process ended in between is removed at the second sweep
-/// that finds it so, and its place offered anew. Only such a client's slot waits so long;
-/// a live one writes as it opens its slot. A sweep is due only while a slot is taken and
-/// its request not read: an idle daemon's maker sleeps until something happens.
-const SWEEP: Duration = Duration::from_secs(60);
 
 /// What the daemon has seen of its clients, which its waits on them follow (D185's
 /// admission), never a figure picked:
@@ -100,6 +93,8 @@ pub(super) enum Event {
     Asked(u64),
     /// Slot `n`'s wait ended without a request.
     Ended(u64),
+    /// Slot `n`'s taker named itself, its wait following it from here ([`Slot::wait`]).
+    Named(u64),
     /// A client left: there may be room to offer what back-pressure held back.
     Room,
     /// The lists may have gone: a name of the home came or went, as a removal of the home's
@@ -110,12 +105,13 @@ pub(super) enum Event {
     Close,
 }
 
-/// A slot offered: whether it has streams, what ends its wait, and whether a sweep has found
-/// it taken.
+/// A slot offered: whether it has streams, what ends its wait, and whether its taker has
+/// named itself, as its wait says or its probe shows.
 struct Offered {
     streams: bool,
     stopper: Stopper,
-    taken: bool,
+    probe: Probe,
+    named: bool,
 }
 
 /// A slot the daemon offered, from its offer until its serving ends ([`Daemon::live`]):
@@ -232,8 +228,12 @@ impl<D: Disk> Daemon<D> {
     /// that no client asked for; clients past them wait on their list, in turn, a making
     /// each. As long as the daemon has room for another client (its most in hand,
     /// `max_clients`: past that, clients wait on their list for room). It wakes only for
-    /// what it hears, for a retry while out of descriptors, and for a sweep while a slot
-    /// is taken with no request read ([`SWEEP`]): never on a timer of its own.
+    /// what it hears and for a retry while a slot cannot be made: never on a timer of its
+    /// own. A slot whose taker ended before its request is let go of as its taker ends
+    /// ([`Slot::wait`]), and one whose taker ended taking it, before it named itself, at the
+    /// first event after that no client is taking a slot ([`reclaim`]); never by a sweep on
+    /// a clock (runs-11; before, a slot was let go of at the second of two sweeps 60 s
+    /// apart, picked).
     fn make_slots<'s, 'e>(
         &'s self,
         threads: &'s Threads<'s, 'e>,
@@ -254,8 +254,9 @@ impl<D: Disk> Daemon<D> {
         // more lost past its end than it had lasted), as nothing else may wake it while every
         // client waits on a list it left short.
         let mut failing: Option<(Instant, Instant)> = None;
-        // Since when a slot has been taken with no request read: what the sweep's due by.
-        let mut taken_since: Option<Instant> = None;
+        // What was heard while the lists were looked over ([`reclaim`]), heard before the
+        // next.
+        let mut pending: VecDeque<Event> = VecDeque::new();
         // Whether to look at the lists: at first, and as the listener asks ([`Event::Look`]).
         let mut look = true;
         loop {
@@ -279,7 +280,7 @@ impl<D: Disk> Daemon<D> {
             }
             for streams in [false, true] {
                 // As many as its list holds untaken: a slot taken by a client that died
-                // before its request holds no client's place until the sweep removes it.
+                // before its request holds no client's place until it is let go of.
                 while untaken(&requests, &offered, streams) < slots::OFFERED
                     && self.busy.load(Ordering::SeqCst) < self.max_clients
                     && !self.closed.load(Ordering::SeqCst)
@@ -319,41 +320,33 @@ impl<D: Disk> Daemon<D> {
                     }
                 }
             }
-            // A slot taken whose request has not come: a sweep is due SWEEP after it was first
-            // seen so; with none, nothing is.
-            let taken = [false, true].into_iter().any(|streams| {
-                let mine = offered.values().filter(|o| o.streams == streams).count();
-                untaken(&requests, &offered, streams) < mine
-            });
-            taken_since = if taken {
-                taken_since.or_else(|| Some(Instant::now()))
-            } else {
-                None
-            };
-            let due = taken_since.and_then(|since| since.checked_add(SWEEP));
-            // Starved, it waits to hear of room; failing otherwise, for its next try.
-            let wait = due
-                .into_iter()
-                .chain(failing.map(|(_, again)| again))
-                .min()
-                .map(|at| at.saturating_duration_since(Instant::now()));
-            let heard = match wait {
-                Some(wait) => super::timed(Some(wait), || heard.recv_timeout(wait)),
-                None => heard.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
+            // A slot taken whose taker has not named itself: one whose taker is taking it, or
+            // ended as it did.
+            if unnamed_taken(&requests, &offered) {
+                pending.extend(reclaim(&requests, &mut offered, heard));
+            }
+            // Failing, it waits for its next try.
+            let wait = failing.map(|(_, again)| again.saturating_duration_since(Instant::now()));
+            let heard = match pending.pop_front() {
+                Some(event) => Ok(event),
+                None => match wait {
+                    Some(wait) => super::timed(Some(wait), || heard.recv_timeout(wait)),
+                    None => heard.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
+                },
             };
             match heard {
                 Ok(Event::Asked(n) | Event::Ended(n)) => {
                     offered.remove(&n);
                     requests.remove(n);
                 }
+                Ok(Event::Named(n)) => {
+                    if let Some(o) = offered.get_mut(&n) {
+                        o.named = true;
+                    }
+                }
                 Ok(Event::Look) => look = true,
                 Ok(Event::Room) | Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Ok(Event::Close) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
-            }
-            if due.is_some_and(|due| Instant::now() >= due) {
-                sweep(&requests, &mut offered);
-                // What it marked, it removes at the next, a sweep later.
-                taken_since = None;
             }
         }
         // Closed: what is offered goes, its names and the lists with `requests`, so that a
@@ -374,9 +367,8 @@ impl<D: Disk> Daemon<D> {
     ) -> io::Result<(u64, Offered)> {
         let slot = requests.make(streams)?;
         let n = slot.number();
-        let stopper = slot.stopper();
-        let stopper = match stopper {
-            Ok(stopper) => stopper,
+        let (stopper, probe) = match slot.stopper().and_then(|stopper| Ok((stopper, slot.probe()?))) {
+            Ok(made) => made,
             Err(e) => {
                 requests.remove(n);
                 return Err(e);
@@ -403,7 +395,8 @@ impl<D: Disk> Daemon<D> {
             Offered {
                 streams,
                 stopper,
-                taken: false,
+                probe,
+                named: false,
             },
         ))
     }
@@ -421,7 +414,9 @@ impl<D: Disk> Daemon<D> {
         living: &Living<'s, D>,
     ) {
         let n = slot.number();
-        let opened = match slot.wait() {
+        let opened = match slot.wait(|| {
+            let _ = tell.send(Event::Named(n));
+        }) {
             Ok(Waited::Opened(opened)) => opened,
             Ok(Waited::Stopped | Waited::Gone) => {
                 let _ = tell.send(Event::Ended(n));
@@ -864,12 +859,57 @@ fn let_go(requests: &Requests, offered: &mut HashMap<u64, Offered>) {
     }
 }
 
-/// Looks the slots offered over, each list in turn: those no client has taken are offered
-/// again; one a client took and has not written to since the last sweep is its dead
-/// client's, removed and its wait ended through its own pipe (its maker offers another in
-/// its place).
-fn sweep(requests: &Requests, offered: &mut HashMap<u64, Offered>) {
+/// Whether more slots of a list are taken than have named takers: by the records waiting on
+/// it (FIONREAD, none read), against those offered and named.
+fn unnamed_taken(requests: &Requests, offered: &HashMap<u64, Offered>) -> bool {
+    [false, true].into_iter().any(|streams| {
+        let mine = offered.values().filter(|o| o.streams == streams);
+        let (count, named) = mine.fold((0usize, 0usize), |(c, n), o| (c + 1, n + usize::from(o.named)));
+        count.saturating_sub(untaken(requests, offered, streams)) > named
+    })
+}
+
+/// Lets go of each slot taken by a client that ended as it took it, before it named itself:
+/// looked for only while no client is taking a slot ([`Requests::quiet`]), when every slot
+/// taken has a taker named in it, its name there to read ([`Probe`]) or read by its wait,
+/// which said so first ([`Event::Named`], drained here), unless its taker ended between
+/// its record's read and its name's write. Each such slot's names go and its wait ends
+/// through its own pipe; its maker offers another in its place. What else was heard meanwhile
+/// is given back, for the maker to hear next. Where a client is taking one, nothing is done:
+/// its name, or its slot's request, is an event that brings the maker back.
+fn reclaim(
+    requests: &Requests,
+    offered: &mut HashMap<u64, Offered>,
+    heard: &mpsc::Receiver<Event>,
+) -> Vec<Event> {
+    let _quiet = match requests.quiet() {
+        Ok(Some(quiet)) => quiet,
+        Ok(None) => return Vec::new(),
+        Err(e) => {
+            log(format!("the requests' take lock: {e}"));
+            return Vec::new();
+        }
+    };
+    for o in offered.values_mut() {
+        o.named |= o.probe.named();
+    }
+    let mut later = Vec::new();
+    while let Ok(event) = heard.try_recv() {
+        match event {
+            Event::Named(n) => {
+                if let Some(o) = offered.get_mut(&n) {
+                    o.named = true;
+                }
+            }
+            Event::Asked(n) | Event::Ended(n) => {
+                offered.remove(&n);
+                requests.remove(n);
+            }
+            other => later.push(other),
+        }
+    }
     for streams in [false, true] {
+        // Read back, and offered again: no client reads a record while the lock is held.
         let untaken = match requests.untaken(streams) {
             Ok(untaken) => untaken,
             Err(e) => {
@@ -884,17 +924,22 @@ fn sweep(requests: &Requests, offered: &mut HashMap<u64, Offered>) {
                 log(format!("offering request slot {n} again: {e}"));
             }
         }
-        for (n, slot) in offered.iter_mut().filter(|(_, o)| o.streams == streams) {
-            if untaken.contains(n) {
-                slot.taken = false;
-            } else if slot.taken {
-                requests.remove(*n);
-                let _ = slot.stopper.stop();
-            } else {
-                slot.taken = true;
+        let dead: Vec<u64> = offered
+            .iter()
+            .filter(|(n, o)| o.streams == streams && !o.named && !untaken.contains(n))
+            .map(|(n, _)| *n)
+            .collect();
+        for n in dead {
+            if let Some(o) = offered.remove(&n) {
+                log(format!(
+                    "request slot {n}: its client ended as it took it, before it named itself; offered anew"
+                ));
+                requests.remove(n);
+                let _ = o.stopper.stop();
             }
         }
     }
+    later
 }
 
 /// Waits for the process whose handle `process` is to end: it is signaled then. Whatever
@@ -926,5 +971,87 @@ fn ended(pidfd: &OwnedFd) {
         if r >= 0 || io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
             return;
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use std::io::Read as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+
+    use super::*;
+
+    /// A slot taken by a client that ended as it took it, between its record's read and its
+    /// name's write, is let go of by the maker's first look while no client is taking one,
+    /// and another offered; one whose taker named itself is not, nor anything while a client
+    /// is taking (runs-11; before, the second of two sweeps 60 s apart let it go).
+    #[test]
+    fn a_slot_whose_taker_ended_taking_it_is_let_go_of_while_none_takes() {
+        let home = shards_testdir::TempDir::new("slots-reclaim").unwrap();
+        let mut requests = Requests::open(&home).unwrap();
+        let dir = home.join(slots::DIR);
+        let mut offered = HashMap::new();
+        let mut slots = Vec::new();
+        for _ in 0..2 {
+            let slot = requests.make(false).unwrap();
+            let n = slot.number();
+            requests.offer(n, false).unwrap();
+            let o = Offered {
+                streams: false,
+                stopper: slot.stopper().unwrap(),
+                probe: slot.probe().unwrap(),
+                named: false,
+            };
+            offered.insert(n, o);
+            slots.push(slot);
+        }
+        // Two clients take a slot each: the first names itself, the second ends first.
+        let free = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(dir.join("free"))
+            .unwrap();
+        let mut record = [0u8; slots::RECORD];
+        (&free).read_exact(&mut record).unwrap();
+        let named = std::str::from_utf8(&record)
+            .unwrap()
+            .trim()
+            .parse::<u64>()
+            .unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(dir.join(format!("{named}.taker")))
+            .and_then(|mut t| {
+                std::io::Write::write_all(&mut t, shards_ipc::this_process().unwrap().as_bytes())
+            })
+            .unwrap();
+        (&free).read_exact(&mut record).unwrap();
+        let dead = std::str::from_utf8(&record)
+            .unwrap()
+            .trim()
+            .parse::<u64>()
+            .unwrap();
+        assert!(unnamed_taken(&requests, &offered), "no slot taken unnamed");
+        let (_tell, heard) = mpsc::channel();
+        // A client taking a slot meanwhile: nothing is let go of.
+        let taking = std::fs::File::open(dir.join("taking")).unwrap();
+        // SAFETY: flock(2) of a descriptor this test holds.
+        let held = unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&taking), libc::LOCK_SH) };
+        assert_eq!(held, 0);
+        assert!(reclaim(&requests, &mut offered, &heard).is_empty());
+        assert_eq!(offered.len(), 2, "a slot let go of while a client took one");
+        drop(taking);
+        reclaim(&requests, &mut offered, &heard);
+        assert!(offered.contains_key(&named), "a named taker's slot let go of");
+        assert!(!offered.contains_key(&dead), "a dead taker's slot kept");
+        assert!(!dir.join(format!("{dead}.say")).exists(), "its names kept");
+        assert!(!unnamed_taken(&requests, &offered));
+        let dead = slots.into_iter().find(|s| s.number() == dead).unwrap();
+        assert!(
+            matches!(dead.wait(|| {}), Ok(Waited::Stopped)),
+            "its wait not ended"
+        );
     }
 }

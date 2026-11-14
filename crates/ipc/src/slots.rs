@@ -17,15 +17,15 @@ use crate::MAX_PAYLOAD;
 mod fifo;
 #[cfg(unix)]
 pub use fifo::{
-    Client, Opened, Reader, Requests, Sender, Session, Slot, Stopper, served, take, unoffer,
+    Client, Opened, Probe, Quiet, Reader, Requests, Sender, Session, Slot, Stopper, served, take, unoffer,
     write_all_waiting,
 };
 #[cfg(windows)]
 mod named;
 #[cfg(windows)]
 pub use named::{
-    Client, Opened, Reader, Requests, Sender, Session, Slot, Stopper, read_frame_until, served, take,
-    unoffer, write_all_waiting,
+    Client, Opened, Probe, Quiet, Reader, Requests, Sender, Session, Slot, Stopper, read_frame_until, served,
+    take, unoffer, write_all_waiting,
 };
 
 /// A wait of [`write_all_waiting`]'s on a slot's client to make room: as it begins, and as it
@@ -245,7 +245,7 @@ mod testing {
 
     /// The slot's whole request, which a client asked.
     pub(super) fn asked(slot: Slot) -> Asked {
-        let Waited::Opened(opened) = slot.wait().unwrap() else {
+        let Waited::Opened(opened) = slot.wait(|| {}).unwrap() else {
             panic!("no client opened the slot");
         };
         opened.request().unwrap().expect("no whole request")
