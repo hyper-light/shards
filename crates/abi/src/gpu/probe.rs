@@ -129,6 +129,10 @@ pub enum GpuProbeError {
     /// The VM process's report writer closed with nothing written: it ended before its
     /// renderer said anything of its selection (its own end says why).
     Unreported,
+    /// The VM process ended, as its client's watcher saw its end (D215), before its report was
+    /// taken: no complete frame had come, its writer still open elsewhere, or the report was let
+    /// go of with its pipe as the end was seen (D233).
+    Ended,
 }
 
 /// Why a VM process's renderer serves none of its selection (D232), which it says in place of
@@ -655,6 +659,7 @@ impl fmt::Display for GpuProbeError {
             Self::ReportTaken => out.write_str("VMM GPU report has already been transferred"),
             Self::Refused(why) => why.fmt(out),
             Self::Unreported => out.write_str("VMM GPU report writer closed with no report written"),
+            Self::Ended => out.write_str("VM process ended before its GPU report was taken"),
         }
     }
 }

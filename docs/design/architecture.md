@@ -8950,7 +8950,7 @@ process.
     once, and one it cannot pends until the client has taken enough (npfs above; Wine's
     `reselect_write_queue` completes a pending write once the reader's unread bytes fit its
     buffer). So an answer is written in parts no larger than its line's outbound quota
-    (GetNamedPipeInfo's out buffer size, `LINE_BUFFER`), each waiting on the client for no
+    (GetNamedPipeInfo's out buffer size, the system's, `Window::System`, platform-11), each waiting on the client for no
     more than a quota's worth of its reading: a part that finishes at once teaches nothing,
     and one that pends is a take, from its pend (`ERROR_IO_PENDING`, `pipe::write_telling`)
     to its completion (ROOT, 2026-11-13), where the pipe is connected still as it finishes
@@ -9098,6 +9098,40 @@ daemon, which has no event to wait for. `UNWATCHED` is gone (runs-11, below).
   re-offered as it ends (`cargo test -p shards --profile test-release --test daemon`); the
   client path's added cost (an flock pair, a FIFO's open and write) by
   `docs/research/measurements/build-ab/ab.py` against e0e21e89b.
+
+- *`TAKEOVER` (20 s, picked)*, after which a daemon waiting for its home's lock stepped aside
+  as if another served, is gone: it waits while the lock's holder lives (`take_lock`). A lock
+  held is a holder that lives: flock(2) and LockFileEx are let go of by the OS as their
+  holder's last descriptor closes, at its end, so the lock is the holder's life with no ID to
+  misread and no gap. Its identity is the home's `daemon.pid` (`Named`, `PID START`), which a
+  daemon writes right after it takes the lock and before it makes its slots' lists; not the
+  lock's own file, as the runs-fixes design first had it: std's `File::try_lock` on Windows is
+  LockFileEx over the whole file (offset 0, length `u64::MAX`), and a region locked so "denies
+  all other processes both read and write access" (LockFileEx's documentation), so no waiter
+  could read a name there. A `daemon.pid` that names no living process (one a crashed daemon
+  left, or none) while the lock is held is a holder between its lock and its name: followed by
+  its lock alone, and judged anew once named.
+  - Judged by D215's judge once the host has shown a start: each daemon keeps, as it makes its
+    slots' lists, how long it took from its lock (`ends::End::Start`, the home's `ends`
+    record's `start MS`, the slowest kept, as `ends.rs` keeps its other ends). A waiter looks
+    at the named holder one slice (that slowest start) after it first sees it named, and each
+    slice after while it goes on (`ends::Followed::goes_on`: any CPU, memory its host frees,
+    or its host holding it); one that has gone on with nothing for a whole slice is refused,
+    typed (`HolderStalled`: its process and the slice), the waiter's starter and so its client
+    told. Cold, a home with no start kept: the lock alone, however long. A holder ending its
+    runs (`shards_ipc::exiting`) is not judged: its runs' stop timeouts bound it, as before.
+  - No home is taken, and no wait given up, on a clock. A waiter that gives up takes nothing:
+    its client then waits on the holder itself (`ask_slot`, while `daemon.pid` lives), as
+    before.
+  Red: `a_daemon_waits_for_its_homes_lock_while_its_holder_lives` by mutation restoring the
+  20 s (it stepped aside at 20 s while its holder lived; green, it took the home as the lock
+  was let go, after 21 s); `a_starting_holder_that_goes_on_with_nothing_for_the_hosts_slowest_start_is_refused`
+  by mutation never refusing (a sleep named as the holder was waited for on). Still picked,
+  owed: the 10 ms between the waiter's looks at the lock and the lists (D222's row: a blocking
+  `File::lock` on a helper thread and a watch of `requests/`). Owed to ROOT: a start's lock to
+  lists on HVF, KVM and WHP hosts, loaded and quiet, from the `start` lines the home's `ends`
+  keeps, and two daemons started at once on each (`cargo test -p shards --profile test-release
+  --test daemon`).
 
 Held by unit tests: `a_request_cut_tells_its_client_to_ask_again` (red before: its slot ended
 unanswered), `a_requests_wait_is_learned_from_its_clients`,
@@ -13836,10 +13870,49 @@ sleeps teaching g their lateness (`granule::LATE`). On a host whose GetThreadTim
   M495's start latency (`cpu-elastic/phases.py` against `winnone.patch`, n 100 a side) at 2g
   beside 100 ms.
 - Still owed with platform-11's design (`docs/research/measurements/platform-fixes/held.md`):
-  the Windows pipes' `BUFFER` and `LINE_BUFFER` quotas, whose derivation needs each caller's
-  wire window (a message of `MAX_PAYLOAD` is 6 MiB, past either, so neither is a frame bound),
-  and macOS's 0.5 / 1 ms time-constraint pair (a guest timer's deadline or a measured batch
+  macOS's 0.5 / 1 ms time-constraint pair (a guest timer's deadline or a measured batch
   cost). No number replaced another.
+
+**The Windows pipes' quotas: each its caller's window (platform-11, 2026-11-14).** `BUFFER`
+(1 MiB, M340's throughput) and `LINE_BUFFER` (64 KiB, a Linux FIFO's) are gone, with no
+fallback: each pipe is made with its caller's window (`shards_ipc::Window`), its quota each
+way (CreateNamedPipeW's `nOutBufferSize` and `nInBufferSize`).
+- *A caller whose protocol writes frames of a bound asks for its longest*, so that a writer
+  writes one whole without waiting on its reader mid-frame (CreateNamedPipeW, Remarks: a
+  write past the quota "will block until the data is read from the pipe"):
+  - a [`Stream`] pair's, a message: its 6-byte header, `MAX_PAYLOAD` (a run's request, its
+    head and spec, `RunHead::LEN` + `run::MAX_PAYLOAD`) and a u64 for each of `MAX_FDS`
+    handles (`pipe::MESSAGE_FRAME`);
+  - a share's stream (D197, `shards_ipc::byte_pair`, through `os::share_pipe`, the daemon's,
+    an image run's, a CLI's and a remote client's shares): its length word and `fs::MAX_FRAME`
+    (`fs::STREAM_FRAME`), a control frame of the VM process's own (a share's tables) longer
+    and rarer, waiting on its reader past it;
+  - an input pair (`input_pair`), its caller's room, as before (`run::CHUNK`).
+- *A caller whose flow has no frame of its own asks for the system's* (`Window::System`): a
+  slot's line and its list (D185: on Unix a pipe, holding the kernel's default; an answer
+  past it waits on its client, as M261 decided), a slot's streams (a client's stdin, stdout,
+  stderr), a pair of bytes written in messages (`plain_pair`, a member's streams) and a
+  Docker client's pipe (`Listener`, HTTP). CreateNamedPipeW documents no default for a size
+  of zero, so its quota is the one CreatePipe's `nSize` of zero is given ("the system uses
+  the default buffer size"; anonymous pipes "are implemented using a named pipe"), read once
+  a process from an anonymous pipe made so (`pipe::system_quota`, GetNamedPipeInfo).
+- *Cold start*: none to learn; a frame is a protocol bound, and the system's quota is read
+  the first time a pipe of it is made (one CreatePipe and its two handles closed).
+- *Failure, typed*: a frame of no bytes or past a DWORD is refused (`WindowRefusal`, as
+  `io::ErrorKind::InvalidInput`); a system quota that cannot be read refuses the pipe
+  (`io::Error`, each time asked). The quota is advisory ("the system default, the system
+  minimum or maximum, or the specified size rounded up", CreateNamedPipeW): a reserve below
+  a frame is not refused, as a write past it waits on its reader rather than fails, so the
+  frame still arrives whole, only waited on; refusing would refuse every pipe on a host whose
+  maximum is lower.
+- Held: ipc `window::tests::a_pipes_quota_is_its_callers_window` (all hosts; red with a
+  frame asked for as a constant) and, on Windows, `pipe::tests::a_pipes_quota_is_its_callers_window_as_made`
+  (a Stream pair's quota holds its longest message, a 16-byte frame's does not, the system's
+  is CreatePipe's). Linted for x86_64-pc-windows-msvc; their Windows run is owed to ROOT:
+  `cargo test -p shards-ipc --lib pipe` and `cargo test -p shards-ipc --lib slots` on
+  windows-2025 (CI) and jupiter, then daemon.rs' `a_request_past_a_sockets_buffer_is_served`
+  and `a_stopping_daemon_waits_for_no_client_that_reads_nothing` (a 123 KiB answer past the
+  system's quota), and PM M340's throughput run (`docs/research/measurements/windows-pipe`, `cargo run --release` there on jupiter) at each new quota beside 1 MiB and 64 KiB.
 
 The user's plan, item 3 (2026-10-18): a run's `--cpus` as elastic as its memory (D148),
 every microVM given the host's CPUs, init bringing the run's online and `update --cpus`
@@ -20086,7 +20159,7 @@ were excluded by the review.
 | Literal (file) | Now | Design | Owed: proof |
 |---|---|---|---|
 | `TAKE_TIMEOUT` 10 s (daemon.rs: run-socket writes, link and door handoffs, the connect/take exchange) | picked | Each is a write to, or an answer from, a VM whose party is its VM process. Each waits as D215's judge waits (`health::Wait::WhileRuns`), on a record of its own kind (`Answers::take`, `::link`, `::door`): cold while its process lives, then the slowest seen, extended by progress and host holds. | a judged-write helper beside `exec_waiting`; red: a played VM whose reader is held runnable past 10 s, alive, keeps its handoff; ROOT: `cargo test -p shards --profile test-release --test daemon` on a loaded host |
-| `TAKEOVER` 20 s (daemon.rs `take_lock`) | picked | The lock's holder is the process `daemon.pid` names, written before any slot is offered. Wait while it lives (`Named::lives`, zombies now excluded, waits-08), judged by its record of a start, lock to first slot (`Answers::serve`). A holder that has written no `daemon.pid` yet is followed through its lock file's holder alone, cold. | red: a holder that lives and is slow to offer is waited for past 20 s, and one that died is not |
+| `TAKEOVER` 20 s (daemon.rs `take_lock`) | gone (runs-11, D185): waited for while the lock is held, judged once named by the home's slowest start | The lock's holder is the process `daemon.pid` names, written before any slot is offered. Wait while it lives (`Named::lives`, zombies now excluded, waits-08), judged by its record of a start, lock to first slot (`Answers::serve`). A holder that has written no `daemon.pid` yet is followed through its lock file's holder alone, cold. | red: a holder that lives and is slow to offer is waited for past 20 s, and one that died is not |
 | 10 ms poll (daemon.rs `take_lock`) | picked | Events, not looks: a blocking `File::lock` on a helper thread; a `platform::FileWatch` of the home (`requests/` lists, `daemon.stopping`); and the holder's exit (kqueue `EVFILT_PROC`/`NOTE_EXIT`, a pidfd, its process handle). | a unit test counting looks: one per event |
 | `HANDOFF_TRIES` 3 (daemon.rs `start_run`) | picked | Try each warm VM its pool held ready when the run began, then one booted for it. A VM booted for the run that also fails is a failure of the run, not of a VM: it ends typed, naming the last cause. The bound is the pool's own count. | `claim` to say whether a VM was ready or booted; red: four played warm VMs, three ending before `TAKEN`, the fourth takes the run |
 | 1 s, 10 ms polls (daemon.rs `with_its_process`) | picked | Wait on the VM process's exit event without reaping it (waitid `WNOWAIT`, kqueue, its handle), judged by D215 on a record of link-close-to-exit: cold while it lives and progresses. | red: a process that ends 1.5 s after its link closes still has its status said |
@@ -27708,6 +27781,60 @@ API's protocol: its output drained, its end, its connections.
   client process's own, its nonce and counter as its socket directories have: a scope
   names a frame, not a channel, and a pipe named for its scope refused every other report
   of that scope while its one instance lived, ERROR_PIPE_BUSY (PM M533).
+- *A report with no clock* (Hex lead's ask, Hex review C-9 and its decision 9; ROOT accepted
+  it, 2026-11-14). `with_gpu_report(scope, deadline: Instant)` took only a finite absolute
+  deadline, and `take_gpu_report` was capped by it: Hex's managed GPU creates were the last
+  wait on its boot-records file with a clock it had to choose. Now one typed shape,
+  `PreparedBoot::with_gpu_report(scope, until: Until)`, the old signature gone:
+  - `Until::At(instant)` is the old finite budget, unchanged: a take that reaches it is
+    `GpuProbe(Pending)`, an instant already past refused `Pending` at once.
+  - `Until::Released` has no clock. A take (`ManagedGuest::take_gpu_report(Duration::MAX)`)
+    waits until the report's writer closes after its frame, or until its VM process ends as
+    its native receipt says (`TerminalScope::Released`, which the guest's watcher already
+    waits on, as every managed wait follows its VM process, D215): refused
+    `GpuProbe(GpuProbeError::Ended)`, typed, a new variant, where it ended with no complete
+    frame (its writer still open elsewhere, or the frame torn), or with the receipt's own
+    refusal where the watcher's observation failed (an end not proven is not said as one). A
+    finite `patience` still caps the take, and the end answers a finite take too, where it
+    used to wait out its deadline. A take begun after the watcher let the pipe go answers
+    `Ended` too, where it said `Unavailable`. A writer closed with nothing is `Unreported`,
+    as before.
+  - `GpuReportRequest::until()` replaces `deadline()`: a native launcher that bounded its
+    own launch by the report's instant (Hex's macOS remote launch, `until.min(deadline)`)
+    takes `until().instant()`, none for `Released`.
+  - *How it waits.* The watcher, as its wait on the receipt returns, records how it ended
+    (`ReportWatch`: `Unasked`, `Watching(Ending)`, `Ended(Result)`) and tells the take,
+    before the report's cleanup, which waits for the take to let the report go. Unix: a
+    second private pipe (close-on-exec), whose one writer the watcher drops; the take polls
+    the report pipe and the end pipe's read end together (one poll(2), -1 with no deadline),
+    and on the end's POLLHUP reads the report pipe once more, so a frame its writer closed
+    before the end is still the frame. Windows: a private manual-reset event the watcher
+    sets; the pending overlapped read waits on its own event and that one together
+    (WaitForMultipleObjects, INFINITE with no deadline), checks the read once more without
+    waiting, and cancels it as the deadline path does, its cells kept until the watcher's
+    cleanup completes it. No thread, timer or poll period of ours.
+  - *Literals and cold start.* None: -1 and INFINITE are the OSes' own "no timeout", the
+    create's instant and the caller's patience the only clocks. Nothing learned, no cold
+    start. Uncertainty: on Windows a SetEvent that failed (no documented failure for an owned
+    event of full access) leaves a take with no clock unwoken; the watcher records it as the
+    guest's managed end.
+  - *Wire.* API only: the deadline never crossed a wire. The report frame, the image channel
+    (version 30) and `ImageSpec::gpu_report` are unchanged.
+  - *Tests (light)*, shards-api: `client::tests::a_report_with_no_clock_is_refused_ended_as_its_vm_process_ends`
+    (a stand-in launch asked with `Until::Released`, its report writer held by the test as
+    another process would: no answer while the receipt lives, then `Ended` once it says
+    `Released`, the take found blocked never twice past the watcher's telling) and
+    `a_report_with_no_clock_is_taken_as_it_comes` (the frame written while the take waits,
+    taken); D232's and D233's report tests kept, on `Until::At`. Red before: no `Until`
+    (the tests do not compile). Run on adas-mac-studio-3.local (macOS arm64) at 9e453fc87:
+    `cargo test -p shards-api --lib -- report` 19 passed, `cargo test -p shards-abi --lib gpu`
+    13 passed, `cargo clippy -p shards-api -p shards-abi --all-targets -- -D warnings` clean (and
+    `cargo xwin clippy` of both for x86_64-pc-windows-msvc, on adas-mac-studio.local);
+    the end pipe left out of the poll (m1, `poll(.., 1, ..)`), the no-clock test failed
+    "blocked in the kernel .. where it should have answered", its twin and the borrowed
+    no-clock tests green; restored, `-- managed` 14 passed. Owed (ROOT): the Windows reader's
+    end wait and these tests, run first on CI's Windows legs; Hex's own managed GPU create with
+    `Until::Released` on a real VM.
 - *Through an orchestrator's run* (Hex lead's ask, Hex goal 39; D231's run host). Hex publishes
   no GPU box's VM Live without its VM process's own renderer report, checked host-side; an
   image run gave none (`/run/shards/gpus` is what init was asked, not what the renderer
