@@ -6981,7 +6981,7 @@ reached more than its enrollment grants. Each was reproduced red at 9efde7252 be
   Namespaces" and CreateFileW's documentation, the only sources of the set; no number is
   chosen. Linux and macOS take each such name as the name it is there. Refusals are typed
   (`NotAName`), before any file is opened. The build's other words that name paths (`--file`,
-  `--output dest=`, `--iidfile`, a tree's) are not yet held to the copy: owed, below.
+  `--output dest=`, `--iidfile`, a tree's) are held to the copies by remote-09, below.
 - **A client is its key as its connection proved it, judged for each operation (remote-03).**
   The listener judged a connection's key once and kept the client's name: a removed client's
   held connection, or the old key of a name enrolled again under another key, ran new
@@ -7007,11 +7007,44 @@ reached more than its enrollment grants. Each was reproduced red at 9efde7252 be
   closed `REVOKED`, its `cat` hung up, the name's new key served) and
   `a_removed_clients_connection_closes_as_the_daemon_is_told` (closed at once, a client still
   enrolled served on), `context::tests::a_proved_client_is_enrolled_while_its_record_holds_its_key`.
+- **A build step names no path but its client's copies (remote-09).** remote-01 held a build
+  step's words to a build's, but not their paths: `placed` passed every value that is no
+  marker through, so `--output=type=local,dest=/any/dir` wrote this machine's files
+  (`red_remote09_a_build_steps_output_names_this_machines_path`). `synced::named_paths` now
+  enumerates every path buildx v0.37.1's build grammar takes (crates/cmdline BUILD's
+  path-typed values: the context's argument, `--file`, `--iidfile`, `--metadata-file`,
+  `--output`'s `dest`, `--cache-from` and `--cache-to`'s `src` and `dest`, `--build-context`'s
+  path and `oci-layout://` directory, `--secret`'s `src`, `--ssh`'s paths and `--policy`'s
+  `filename`; its other flags name none). An agent's, harness's or MCP server's build names its
+  directory alone. Each is judged twice:
+  - **Before any file comes** (`held_to_copies`, `Refused::NotHeld`). Each path must be its
+    copy's marker form: the context is `\0context`; the build file is a `\0dockerfile/NAME`;
+    anything written is an `\0out/NAME`; anything read beside the context is a `\0tree/KEY`
+    of 64 hex digits; a secret is one of the `\0secret/N` the step sends (N below their
+    count); an agent is an `\0agent/ID`; and a policy's file is a name within the context.
+    Each NAME and each part is one file's name by `name_alone`, so Windows' forms count.
+    `--secret type=env`, a secret of no `src`, and `--ssh` of no path read the machine's own
+    environment or agent, and are refused as `NotHeld::Machines`.
+  - **Where the build runs for a client** (`refused_for_client`, of `SHARDS_CLIENT`, in
+    `build::build` and the artifacts' `build`). Each placed path must lie beneath the client's
+    copies (`HOME/synced/CLIENT`), lexically and part by part, with no part `..`, a root or a
+    prefix. A secret's or an agent's path must be a descriptor the build was given
+    (`/dev/fd/N`).
+
+  The client's own shards sends nothing else (`context::tests::what_a_client_sends_of_a_build_is_held_to_its_copies`).
+  A path the client sent as it was given because no directory of that name was there (a
+  `--cache-from` or `--build-context` it lacks, a policy outside its context) is now refused
+  on the machine rather than by the build. No number is chosen: the markers and buildx's
+  grammar are the bounds. Tested: `synced::tests::a_clients_build_names_no_path_but_its_copies`,
+  `a_placed_build_names_nothing_outside_its_copies`, `a_build_run_for_a_client_refuses_this_machines_paths`
+  and `daemon::remote::tests::a_build_step_naming_this_machines_path_is_refused_before_its_files`.
 - **Owed (ROOT's).** The real-daemon E2E of each: tests/context.rs's removal with an Engine API
   keep-alive connection held across it and a native connection held across a removal and a
   re-enrollment of its name; a client's raw `--context` and `\0sync build` requests; a Windows
-  listener receiving `C:context`. The per-call record read's cost (R14). A build step's
-  path-naming words held to the copy (above).
+  listener receiving `C:context`; a client's crafted `\0sync build` naming
+  `--output dest=`, `--iidfile`, `--file` and `--secret src=` paths of the machine's, refused
+  with nothing written, and a context build of every path-typed flag still served. The per-call
+  record read's cost (R14).
 
 ### D181. `--use-api-socket`: a run's command reaches its own microVM's engine (slices 1 to 3 built)
 
@@ -8789,6 +8822,21 @@ x86_64 Linux (shards-api) and x86_64 Windows (cargo-xwin, shards-api and shards)
 real-VM kill and stop tests on HVF, KVM and WHP (ROOT's).
 
 ### D188. A host short of memory gets back what its microVMs hold cold of their files (built)
+
+**R03 review memory-06..10 (2026-11-13):** the pressure windows/thresholds,
+fallback cadence, DAX crossover and cached headroom coefficient remain owed to
+ROOT. Their proposed runtime observations, cold starts, typed unavailable states
+and validation commands are in
+`docs/research/measurements/memory-fixes-v1/owed-designs.md`; existing values below
+are not evidence that these policy choices satisfy R03.
+
+**Review memory-04 (2026-11-13):** the builder's giver retains the latest ROOM
+word while a prior GIVE_BACK or ROOM reply is outstanding, including the explicit
+unbudgeted word. It transmits that word as the reply is consumed and coalesces a
+value already in flight, whose acknowledgment remains consumable. Desired room
+and request/reply state have one owner; budget removal cannot disappear behind
+a late answer. Red and light-check evidence: `docs/research/measurements/memory-fixes-v1/README.md`.
+
 
 **Found.** The user's plan, item 4: memory that tracks the working set, reclaimed at the
 host's pressure, not on a timer. A run's guest keeps what its workload reads in its page
@@ -18046,6 +18094,12 @@ changes.
   where BuildKit's names its source's snapshot as its parent (D114).
 
 ### D133. A builder's memory, plugged as its build needs it (virtio-mem)
+
+**R03 review memory-11..15 (2026-11-13):** reserve slack, pause/read floors,
+retry count, growth/retention ratios and boot floor remain owed to ROOT with
+designs in `docs/research/measurements/memory-fixes-v1/owed-designs.md`.
+Each needs a justified startup rule and typed uncertainty before replacement;
+this review does not approve another chosen number.
 
 A builder may have what its host can give and its home's builds have needed, but the memory
 a guest boots with costs it its page structures as it boots: about 21 MiB and 4 ms per GiB, a

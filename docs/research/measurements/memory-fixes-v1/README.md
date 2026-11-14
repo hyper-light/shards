@@ -79,3 +79,40 @@ Landing check: main through `5d805549d` changes no tested VMM input from
 `9068a72cd` (crate, ABI, IPC, netring, apple, afunix, ntfs, Cargo.lock/Toml).
 The `8fea5f396` test result therefore covers this disjoint merge per ROOT's
 2026-11-14 landing-under-contention instruction.
+
+## memory-04
+
+Red at `e8b687a9e`, resumed-session kiln r2, same macOS arm64 host:
+`cargo test -p shards a_budget_removed_during_an_ask_is_delivered_after_its_answer --bin shards`
+failed with WouldBlock: `budget removal was lost behind the pending answer`.
+This uses real socket frames and the actual budget_written/late/Giver code.
+The test covers a pending GIVE_BACK and a pending ROOM reply.
+
+Fix `27522e6ca`, typed pending state `aef83d2c4`, acknowledgment correction
+`8951ffa2d`: keep the latest desired room (including None) while another reply is
+out, send it once that reply arrives, and coalesce a value already in flight.
+The existing late-answer regression caught deferred acknowledgment accounting
+at aef83d2c4 (9/10 passed, r4); 8951ffa2d permits the caller to consume that
+already transmitted room's acknowledgment. No production policy literal added.
+
+Only this unit-test build uses SHARDS_HELPERS=skip and /usr/bin/true as carried
+init/server fixture files to avoid nested guest builds. No tested IPC/budget
+logic is replaced. Neither a guest nor any helper is executed by these tests.
+These fixture settings provide no evidence about VM behavior.
+ROOT owes `cargo test -p shards --test build a_build_held_short_of_memory_has_its_builder_give_back`
+with a budget removed during a delayed give-back and delayed ROOM acknowledgment.
+
+Green at `5d822e8fe`, resumed r9, macOS arm64: give::tests:: 10/10, a_giver_ 2/2,
+and `cargo clippy -p shards --all-targets -- -D warnings` clean. Retained output
+is `green-memory-04.log`; the real-VM budget removal variant remains owed.
+
+Earlier merged greens `cdd29b68b` (r7) and `cb483406e` (r8) passed the same gates.
+ROOT's amended contention instruction (2026-11-14 05:10Z) allows a later input-changing
+merge to use `cargo check -p shards --tests` after this focused green; a conflict still
+requires focused tests. Resume policy read at main `a33644dbe`, role implementer,
+same policy hashes. Findings 06..15 remain [owed with designs](owed-designs.md),
+including cold starts, typed unavailable states and exact ROOT validation commands.
+
+Later input-changing merge `2389f0afb` (main `a33644dbe`): resumed r10 passed
+`cargo check -p shards --tests` on the same warm Mac target. Retained output:
+`check-memory-04.log`. No conflicts were resolved in this merge.
