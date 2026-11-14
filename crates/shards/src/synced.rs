@@ -584,6 +584,97 @@ fn read_vec(input: &mut dyn Read, n: u64) -> Result<Vec<u8>, String> {
     Ok(v)
 }
 
+/// Why a build file's name a client sent is not one file's of the directory it is written
+/// in (remote-02): as the machine's own paths read it, it names another, or something no
+/// file is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NotAName {
+    /// Empty, `.` or `..`: no file, or the directory or its parent.
+    Dots,
+    /// A separator or NUL: a path, not a name (`/` everywhere, `\` too, as Windows reads it).
+    Path,
+    /// On Windows, a colon: a drive's (`C:name`, a path of drive C's current directory, which
+    /// `Path::join` takes in place of the directory), or a file's alternate data stream
+    /// (`name:stream`).
+    Colon,
+    /// On Windows, a character no Win32 file's name holds (`< > " | ? *`, and control
+    /// characters 1-31), some of which are the `\\?\` and `\\.\` namespaces' and wildcards.
+    Reserved,
+    /// On Windows, a device's name, whatever extension follows it (`CON`, `NUL.txt`, `COM1`):
+    /// the device, not a file of the directory.
+    Device,
+    /// On Windows, a name ending in a dot or a space, which Win32 takes off: another name's.
+    Trailing,
+}
+
+impl std::fmt::Display for NotAName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            NotAName::Dots => "a build file's name is a file's, not `.` or `..`",
+            NotAName::Path => "a build file's name is a name alone, no path",
+            NotAName::Colon => "a build file's name on Windows holds no colon: a drive's or a stream's",
+            NotAName::Reserved => {
+                "a build file's name on Windows holds none of < > \" | ? * or a control character"
+            }
+            NotAName::Device => {
+                "a build file's name on Windows is no device's (CON, PRN, AUX, NUL, COM0-9, LPT0-9)"
+            }
+            NotAName::Trailing => "a build file's name on Windows ends in no dot or space",
+        })
+    }
+}
+
+/// Whether `name` is one file's name in a directory, as `windows`' paths read it or Unix's.
+/// Windows' rules are Microsoft's "Naming Files, Paths, and Namespaces" (Win32 file
+/// namespaces: reserved characters, device names, no trailing dot or space) and its path
+/// forms (drive-relative `C:name`, UNC, `\\?\`, `\\.\`), and CreateFileW's console names
+/// (`CONIN$`, `CONOUT$`).
+pub(crate) fn name_alone(name: &str, windows: bool) -> Result<(), NotAName> {
+    if name.is_empty() || name == "." || name == ".." {
+        return Err(NotAName::Dots);
+    }
+    if name.contains(['/', '\\', '\0']) {
+        return Err(NotAName::Path);
+    }
+    if !windows {
+        return Ok(());
+    }
+    if name.contains(':') {
+        return Err(NotAName::Colon);
+    }
+    if name
+        .chars()
+        .any(|c| matches!(c, '<' | '>' | '"' | '|' | '?' | '*' | '\u{1}'..='\u{1f}'))
+    {
+        return Err(NotAName::Reserved);
+    }
+    if name.ends_with(['.', ' ']) {
+        return Err(NotAName::Trailing);
+    }
+    // A device's name, with any extension: the part before the first dot, its trailing
+    // spaces aside, as Win32 reads `NUL .txt` as NUL.
+    let stem = name.split('.').next().unwrap_or(name).trim_end_matches(' ');
+    let upper = stem.to_ascii_uppercase();
+    let numbered = |prefix: &str| {
+        upper.strip_prefix(prefix).is_some_and(|n| {
+            let mut digits = n.chars();
+            matches!(
+                (digits.next(), digits.next()),
+                (Some('0'..='9' | '\u{b9}' | '\u{b2}' | '\u{b3}'), None)
+            )
+        })
+    };
+    if matches!(
+        upper.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) || numbered("COM")
+        || numbered("LPT")
+    {
+        return Err(NotAName::Device);
+    }
+    Ok(())
+}
+
 /// Reads what [`send`] wrote, on the machine: the build file's directory written whole into
 /// `dockerfile`, made afresh, then the layer applied over `context`. Names are a file's
 /// alone, no path. Returns the bytes the layer's files held.
@@ -610,9 +701,7 @@ pub(crate) fn receive(
         let len = u32::from_be_bytes(read_array(input)?);
         let name = String::from_utf8(read_vec(input, u64::from(len))?)
             .map_err(|_| "a build file's name that is not UTF-8".to_string())?;
-        if name.is_empty() || name == "." || name == ".." || name.contains(['/', '\\', '\0']) {
-            return Err(format!("{name:?}: a build file's name is a name alone"));
-        }
+        name_alone(&name, cfg!(windows)).map_err(|why| format!("{name:?}: {why}"))?;
         let mode = u32::from_be_bytes(read_array(input)?);
         let mtime = (
             i64::from_be_bytes(read_array(input)?),
@@ -847,6 +936,88 @@ pub(crate) fn receive_tree(input: &mut dyn Read, context: &Path) -> Result<i64, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// remote-02: a build file's name a client sends is one file's of the copy as this
+    /// machine's paths read it. On Windows a drive's prefix, a stream, a device's name, a
+    /// reserved character or a trailing dot or space is none, and a Linux or macOS machine
+    /// takes each as the name it is there.
+    #[test]
+    fn a_build_files_name_is_one_files_as_the_machine_reads_it() {
+        for (name, why) in [
+            ("", NotAName::Dots),
+            (".", NotAName::Dots),
+            ("..", NotAName::Dots),
+            ("a/b", NotAName::Path),
+            ("a\\b", NotAName::Path),
+            ("\\\\?\\C:\\x", NotAName::Path),
+            ("\\\\host\\share", NotAName::Path),
+            ("a\0b", NotAName::Path),
+        ] {
+            assert_eq!(name_alone(name, false), Err(why), "{name:?}");
+            assert_eq!(name_alone(name, true), Err(why), "{name:?}");
+        }
+        for (name, why) in [
+            ("C:context", NotAName::Colon),
+            ("c:identity", NotAName::Colon),
+            ("Dockerfile:stream", NotAName::Colon),
+            ("Dockerfile::$DATA", NotAName::Colon),
+            ("a?b", NotAName::Reserved),
+            ("a*", NotAName::Reserved),
+            ("a\u{1f}b", NotAName::Reserved),
+            ("Dockerfile.", NotAName::Trailing),
+            ("Dockerfile ", NotAName::Trailing),
+            ("CON", NotAName::Device),
+            ("nul.txt", NotAName::Device),
+            ("NUL .txt", NotAName::Device),
+            ("Com1", NotAName::Device),
+            ("LPT9.Dockerfile", NotAName::Device),
+            ("COM\u{b9}", NotAName::Device),
+            ("CONOUT$", NotAName::Device),
+        ] {
+            assert_eq!(name_alone(name, true), Err(why), "{name:?}");
+            assert_eq!(name_alone(name, false), Ok(()), "{name:?}");
+        }
+        for name in [
+            "Dockerfile",
+            "dockerfile",
+            "Dockerfile.dockerignore",
+            ".dockerignore",
+            "CONSOLE",
+            "COM10",
+            "LPT",
+            "nul2.txt",
+        ] {
+            assert_eq!(name_alone(name, true), Ok(()), "{name:?}");
+        }
+    }
+
+    /// remote-02 as a client's build sends it to a Windows machine: a name of a drive's
+    /// current directory (`C:NAME`) is refused, and nothing is written there.
+    #[cfg(windows)]
+    #[test]
+    fn a_drive_relative_build_file_is_refused_and_written_nowhere() {
+        let cwd = std::env::current_dir().unwrap();
+        let drive: String = cwd.to_str().unwrap().chars().take(2).collect();
+        assert!(drive.ends_with(':'), "{cwd:?}");
+        let leaf = format!("r02-escape-{}", std::process::id());
+        let name = format!("{drive}{leaf}");
+        let mut sent = Vec::new();
+        let carried = [Carried {
+            name: name.clone(),
+            mode: 0o644,
+            mtime: (0, 0),
+            bytes: b"x".to_vec(),
+        }];
+        send(&mut sent, &carried, &[], |_| Ok(())).unwrap();
+        let dir = shards_testdir::TempDir::new("r02").unwrap();
+        let (dockerfile, context) = (dir.join("dockerfile"), dir.join("context"));
+        let refused = receive(&mut &sent[..], &dockerfile, &context, 0).unwrap_err();
+        let escaped = cwd.join(&leaf);
+        let was = escaped.exists();
+        let _ = std::fs::remove_file(&escaped);
+        assert!(!was, "{name}: written at {escaped:?}, outside {dockerfile:?}");
+        assert!(refused.contains(&NotAName::Colon.to_string()), "{refused}");
+    }
 
     /// A time a Windows machine's NTFS kept, to 100 ns, is the client's time it was cut from,
     /// and no other; a copy's time to the nanosecond is its own alone.
