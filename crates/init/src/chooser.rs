@@ -42,26 +42,80 @@ pub struct Contest {
 }
 
 /// The ports of `ingress` (each domain's address and its ports, the microVM's then its
-/// own) that more than one domain is given.
+/// own) that more than one domain is given: each run of ports the same domains are given,
+/// cut where any domain's range begins or ends, so that a range two domains share only in
+/// part (each clipped to its own network's grants) is contested where they share it.
 pub fn contested(ingress: &[(Ipv4Addr, Vec<Ingress>)]) -> Vec<Contest> {
-    let mut all: Vec<Contest> = Vec::new();
-    for (to, ranges) in ingress {
-        for &(from, at) in ranges {
-            match all.iter_mut().find(|c| c.from == from) {
-                Some(c) => {
-                    if !c.candidates.iter().any(|(a, _)| a == to) {
-                        c.candidates.push((*to, at));
-                    }
-                }
-                None => all.push(Contest {
-                    from,
-                    candidates: vec![(*to, at)],
-                }),
+    // Each range's first port and the one past its last, as u32, which 65535's next fits.
+    let mut cuts: Vec<(u8, u32)> = ingress
+        .iter()
+        .flat_map(|(_, ranges)| ranges.iter())
+        .flat_map(|&((proto, lo, hi), _)| [(proto, u32::from(lo)), (proto, u32::from(hi) + 1)])
+        .collect();
+    cuts.sort_unstable();
+    cuts.dedup();
+    let mut all = Vec::new();
+    for pair in cuts.windows(2) {
+        let [(proto, lo), (next, end)] = *pair else {
+            continue;
+        };
+        let (Ok(lo), Ok(hi)) = (u16::try_from(lo), u16::try_from(end.saturating_sub(1))) else {
+            continue;
+        };
+        if next != proto {
+            continue;
+        }
+        let mut candidates: Vec<(Ipv4Addr, Egress)> = Vec::new();
+        for (to, ranges) in ingress {
+            let at = ranges.iter().find_map(|&((p, from_lo, from_hi), (q, at_lo, _))| {
+                // The domain's port for `lo`: its own range's, at `lo`'s offset in the
+                // microVM's.
+                let shift = |port: u16| port.checked_sub(from_lo).and_then(|d| at_lo.checked_add(d));
+                (p == proto && from_lo <= lo && hi <= from_hi)
+                    .then(|| Some((q, shift(lo)?, shift(hi)?)))
+                    .flatten()
+            });
+            if let Some(at) = at
+                && !candidates.iter().any(|(a, _)| a == to)
+            {
+                candidates.push((*to, at));
             }
         }
+        if candidates.len() > 1 {
+            all.push(Contest {
+                from: (proto, lo, hi),
+                candidates,
+            });
+        }
     }
-    all.retain(|c| c.candidates.len() > 1);
     all
+}
+
+/// The ports of `from` no contest of `contests` is for, as runs: what goes to its one
+/// domain alone ([`crate::links`]' `pre`).
+pub fn uncontested((proto, lo, hi): Egress, contests: &[Contest]) -> Vec<(u16, u16)> {
+    let mut out = Vec::new();
+    let mut at = u32::from(lo);
+    let mut taken: Vec<(u16, u16)> = contests
+        .iter()
+        .filter(|c| c.from.0 == proto && c.from.1 <= hi && lo <= c.from.2)
+        .map(|c| (c.from.1, c.from.2))
+        .collect();
+    taken.sort_unstable();
+    for (a, b) in taken {
+        if u32::from(a) > at
+            && let (Ok(first), Ok(last)) = (u16::try_from(at), u16::try_from(u32::from(a).saturating_sub(1)))
+        {
+            out.push((first, last));
+        }
+        at = at.max(u32::from(b) + 1);
+    }
+    if at <= u32::from(hi)
+        && let Ok(first) = u16::try_from(at)
+    {
+        out.push((first, hi));
+    }
+    out
 }
 
 /// seccomp_data's offsets (linux/seccomp.h): the call's number, then its arch.
@@ -739,6 +793,42 @@ mod tests {
             }]
         );
         assert!(contested(&ingress[..1]).is_empty());
+    }
+
+    /// Two domains' ranges that meet in part, each clipped to its own network's grants:
+    /// contested where they meet, each the rest's alone.
+    #[test]
+    fn ranges_that_meet_in_part_are_contested_where_they_meet() {
+        let (a, b) = (Ipv4Addr::new(10, 0, 0, 2), Ipv4Addr::new(10, 0, 1, 2));
+        let ingress = vec![
+            (a, vec![((6, 7000, 7002), (6, 7000, 7002))]),
+            (b, vec![((6, 7001, 7001), (6, 7001, 7001)), ((17, 7000, 7002), (17, 7000, 7002))]),
+        ];
+        let contests = contested(&ingress);
+        assert_eq!(
+            contests,
+            [Contest {
+                from: (6, 7001, 7001),
+                candidates: vec![(a, (6, 7001, 7001)), (b, (6, 7001, 7001))],
+            }]
+        );
+        assert_eq!(uncontested((6, 7000, 7002), &contests), [(7000, 7000), (7002, 7002)]);
+        assert_eq!(uncontested((6, 7001, 7001), &contests), []);
+        assert_eq!(uncontested((17, 7000, 7002), &contests), [(7000, 7002)]);
+        // At the port space's end, and a mapped port.
+        let ingress = vec![
+            (a, vec![((17, 65534, 65535), (17, 65534, 65535))]),
+            (b, vec![((17, 65535, 65535), (17, 53, 53))]),
+        ];
+        let contests = contested(&ingress);
+        assert_eq!(
+            contests,
+            [Contest {
+                from: (17, 65535, 65535),
+                candidates: vec![(a, (17, 65535, 65535)), (b, (17, 53, 53))],
+            }]
+        );
+        assert_eq!(uncontested((17, 65534, 65535), &contests), [(65534, 65534)]);
     }
 
     /// A socket is taken for an address where sock_diag names it at that address or every

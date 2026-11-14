@@ -2330,10 +2330,16 @@ fn outside(sock: &OwnedFd, eth0: u32, u: &Uplink, members: &[Member]) -> io::Res
             );
         }
         for (to, ranges) in ingress {
-            for &(from, at) in ranges
-                .iter()
-                .filter(|(from, _)| contested.iter().all(|c| c.from != *from))
-            {
+            // Each range's ports no contest is for, at the domain's own ports there.
+            let alone = ranges.iter().flat_map(|&(from, at)| {
+                crate::chooser::uncontested(from, &contested)
+                    .into_iter()
+                    .filter_map(move |(lo, hi)| {
+                        let shift = |port: u16| port.checked_sub(from.1).and_then(|d| at.1.checked_add(d));
+                        Some(((from.0, lo, hi), (at.0, shift(lo)?, shift(hi)?)))
+                    })
+            });
+            for (from, at) in alone {
                 let mut e = Vec::new();
                 meta(&mut e, nft::NFT_META_IIF);
                 compare(&mut e, nft::NFT_CMP_EQ, &eth0.to_ne_bytes());
