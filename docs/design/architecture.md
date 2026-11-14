@@ -26947,8 +26947,74 @@ exec's, and making no stream: the member's own are step 5's already.
 ended before its lane asked, or a fault, typed. Steering and end are separate handles, so that a
 caller can wait for the end on one thread and steer from another.
 `MemberSteering::signal` refuses a signal outside `1..=NSIG` before sending it; it and `resize`
-each wait for the answer, with `Fault::Unsteered` for a refusal and `Unsteered::Ended` for every
-steer once the end has come. `MemberEnd::wait` gives the member's end, `exec::End`.
+each wait for the answer within their caller's patience (below), with `Fault::Unsteered` for a
+refusal and `Unsteered::Ended` for every steer once the end has come. `MemberEnd::wait` gives
+the member's end, `exec::End`.
+
+*A lane's ask, waited for within its caller's patience* (Hex's decision 9, the Hex lead's ask
+from Hex's member-signal work, 2026-11-14). Every controller call that waited for its
+endpoint's answer (`Execs::member`, `exec`, `mcp` and `log`, `Sockets::connect`, and a member's
+`signal` and `resize`) waited on its lane's channel until the endpoint answered or the
+connection ended, with no bound and no timed form: an orchestrator that wanted its own bound
+needed a thread per ask, and one whose endpoint never answered could not let it go. Now each
+takes a `patience: Duration`, the convention of `ManagedGuest::rate(rate, patience)` and
+`host_use(patience)`, with `Duration::MAX` (or a patience past what the clock holds) waiting as
+before. A lane's ask cannot be asked twice (a second would open a second lane, or send a
+second signal), so a wait that runs out answers `Ok(None)` with the ask still pending, as
+`ImageGuest::wait_for(timeout)` and `ManagedGuest::wait_ended(timeout)` do, and a later wait
+follows the same ask on.
+- *Its shape.* An ask is sent at once and gives its pending handle: `Execs::member(member) ->
+  PendingMember`, `exec(member, spec) -> PendingExec`, `mcp(member) -> PendingMcp`,
+  `log(source, channels, cursor, follow) -> PendingLog`, `Sockets::connect(name) ->
+  PendingSocket`, each refused at once only where nothing could be sent (a frame that does not
+  encode, a socket name that is no file name: `Refused(Protocol)`). Each handle's
+  `wait(&mut self, patience) -> Result<Option<_>, Fault>` gives `Member`, `Exec`,
+  `McpConnection`, `Log` or `Socket` once; a fault, then the same fault again, as every other
+  handle of the module tells its end (`Output::next_record`, `MemberEnd::wait`); and, after its
+  answer was given, `Fault::Unawaited`. `MemberSteering::signal(signal, patience)` and
+  `resize(size, patience)` send once and answer `Result<Option<()>, Fault>`;
+  `MemberSteering::steered(patience)` follows the last one on. A steer asked while one awaits
+  its answer is refused `Fault::Awaiting` and never sent (the endpoint reads one steer at a
+  time, and the driver dropped a second one silently before); `steered` with none awaited is
+  `Unawaited`. Both refusals leave the lane as it was.
+- *Its states* (R04). A pending ask is `Awaited::{Awaiting, Answered, Over(Fault)}`, its
+  steering `Steering::{Ready, Awaiting, Over(Fault)}` (which replaces an `Option<Fault>`).
+- *An asker gone* (D251's cut). The driver tells a lane's handle its number as it takes the ask
+  (`Heard::Asked`). A pending handle let go hands the driver its channel back
+  (`Ask::Withdraw`); the driver, which alone tells that channel, finds there everything it told
+  and the handle did not hear, so no answer that crossed the drop is lost, and closes the lane
+  both ways, as a cut lane is closed (RESET_STREAM and STOP_SENDING), whatever its endpoint
+  said or says: one waiting for the endpoint's room never opens; one the endpoint has not
+  answered is let go there (its host's steering closes, which hangs an exec or a member's lane
+  up, exec.rs's reset path); one answered meanwhile is closed with what its answer made (an
+  exec's stdio lanes). The member's life is no lane's, as before: none ends it.
+- *Literals.* None: each patience is its caller's (R03). The clock's own bound decides only
+  that a patience past it waits as `Duration::MAX` does (`Instant::checked_add`, as std's
+  `recv_timeout` reads it).
+- *Callers.* No production caller in Shards or kiln waited on these (the daemon's and api-run's
+  are the endpoint's side); their tests and Hex's acceptance read the answers with
+  `Duration::MAX`, as they did, through the pending handles. The blocking forms are gone.
+- *Tested* (unit, loopback): `control::tests::a_lane_ask_is_sent_once_and_waited_for_within_each_waits_patience`
+  (sent before any wait; `Ok(None)` at a patience of none and a short one while its host holds
+  its answer; answered at a later wait, no second ask at the endpoint; a steer's answer followed
+  on with `steered`, a resize while it was awaited refused `Awaiting` and never reaching the
+  host), red on the base's blocking `Execs::member` (`a_members_ask_gives_way_within_its_patience`:
+  no answer within the test's patience); `a_lane_ask_let_go_unanswered_is_closed_as_its_lane_opens`
+  (a member's lane and an exec, each let go once its host had the ask, their host's steering
+  closed as the host answers `Running` and `Started`; the connection goes on);
+  `control::unix::tests::a_socket_lane_let_go_unanswered_is_cut_as_it_connects` (the workload's
+  socket ends). On adas-mac-studio.local (macOS arm64, implementer, policy df2acf47): red at
+  07d8f670f (no answer within the test's 10 s, FAILED); green with shards-remote's `control`
+  66 and `loopback` 33, shards-api's `control_lanes`, and the shards binary's
+  `daemon::managed::tests` and `api_run::` 71 (1 ignored), every caller moved to the pending
+  handles; clippy `-D warnings` clean for shards-remote, shards-api and shards (all targets,
+  `SHARDS_HELPERS=skip`). Mutations, each killed: the handle's withdrawal dropped (both let-go
+  tests fail), a steer sent while one awaits (the patience test), a run-out told as a fault
+  rather than `Ok(None)` (the patience test), the driver not reading the lane's number from
+  the channel handed back (both let-go tests).
+- *Owed* (ROOT): the real-VM callers moved here, compiled and linted but not run:
+  `api_image`'s member signals and MCP connection, `nesting`'s socket lanes, `managed_output`'s
+  log lanes; and the other targets' clippy, which CI's matrix runs.
 
 *A member's end, typed* (plan step 11; the Hex lead's ask 3, which makes kiln's interrupt and
 stop real signals: Hex sends INT and TERM to an image member over the orchestrator run's
@@ -29789,8 +29855,10 @@ Hex's acceptance (its INTERFACE.md and red tests, step11-a-socket-lane) is held 
     pipe ended (`shards_ipc::end`, whose reader then finds it hung up: ERROR_BROKEN_PIPE) or
     the guest's socket shut down both ways; a read's end still half-closes it.
 - *The controller* (`control::drive`). `Subscriptions::sockets` and `Dialed::sockets`;
-  `Sockets::connect(name)` answers a `Socket` or a typed `Fault`, `Fault::Unreached(errno)`
-  among them. `Socket` is `Read` and `Write`, with `shutdown_write`, `abort` and `split` (a
+  `Sockets::connect(name)` sends its ask at once and gives a `PendingSocket`, whose
+  `wait(patience)` answers `Ok(None)` while it is unanswered, then a `Socket` or a typed
+  `Fault`, `Fault::Unreached(errno)` among them (D238's *A lane's ask, waited for within its
+  caller's patience*); one let go unanswered is cut as it connects. `Socket` is `Read` and `Write`, with `shutdown_write`, `abort` and `split` (a
   reader and a writer for two threads). `Ok(0)` comes only at the socket's own FIN; a reset
   reads as `ConnectionReset`, its `Fault` its source.
 - *Its scope.* An endpoint that serves its run's member streams knows its run and
