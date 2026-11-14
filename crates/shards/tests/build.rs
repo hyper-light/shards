@@ -703,6 +703,8 @@ fn a_builders_memory_is_plugged_as_its_build_needs_it() {
             ));
         }
     }
+    eprintln!("limits of a step of a builder booted with {boot} bytes of 2560 MiB: {stepped:?}");
+    eprintln!("limits of a guest booted with all 2560 MiB: {booted:?}");
     assert!(
         wrong.is_empty(),
         "{}\n{shown}\n--- booted with all of it\n{full}",
