@@ -121,6 +121,8 @@ The same-user spawner meets Linux's UID/GID permission check; its hard descripto
 
 ### platform-05 — WHP's emulator retains pointers into partially unmapped memory
 
+**Status (2026-11-13):** owed to ROOT: `cargo test -p shards-vmm hv::whp::tests` on jupiter after adding the specific red regression; jupiter was offline in explicit kiln runs r1/r2. No Windows code change or verification claim. [Blocker, missing regressions and commands](../../research/measurements/platform-fixes/held.md).
+
 **Location:** `crates/vmm/src/hv/whp/mod.rs:643`, `:605`, `:755`, `:1385`.
 
 **Defect:** The x64 WHP emulator's mapping registry neither cuts partial unmaps nor replaces overlapping maps, leaving invalid host pointers reachable by guest emulation.
@@ -141,6 +143,8 @@ The original larger mapping survives. `host()` still returns that address; emula
 
 ### platform-06 — WHP's emulator ignores guest read-only memory permissions
 
+**Status (2026-11-13):** owed to ROOT: `cargo test -p shards-vmm hv::whp::tests` on jupiter after adding the specific red regression; jupiter was offline in explicit kiln runs r1/r2. No Windows code change or verification claim. [Blocker, missing regressions and commands](../../research/measurements/platform-fixes/held.md).
+
 **Location:** `crates/vmm/src/hv/whp/mod.rs:1385`, `:1391`, `:1190`.
 
 **Defect:** The fallback emulator writes registered memory without retaining or checking the guest mapping's write permission.
@@ -159,6 +163,8 @@ The original larger mapping survives. `host()` still returns that address; emula
 
 ### platform-07 — Windows spawns leave unrelated handles inheritable
 
+**Status (2026-11-13):** owed to ROOT: `cargo test -p shards-ipc windows::tests` on jupiter after adding the specific red regression; jupiter was offline in explicit kiln runs r1/r2. No Windows code change or verification claim. [Blocker, missing regressions and commands](../../research/measurements/platform-fixes/held.md).
+
 **Location:** `crates/ipc/src/windows.rs:2636`, `:2611`, `:2123`; `crates/registry/src/credentials.rs:624`.
 
 **Defect:** Confined spawning permanently makes borrowed stdio handles inheritable, and temporary inheritable handles can leak into concurrent ordinary Command children.
@@ -175,6 +181,8 @@ Local Rust 1.94.1 source `std/src/sys/process/windows.rs:330–342` explicitly d
 
 ### platform-08 — A valid Windows home path can trigger unbounded slot-wait threads
 
+**Status (2026-11-13):** owed to ROOT: `cargo test -p shards-ipc slots::named::tests` on jupiter after adding the specific red regression; jupiter was offline in explicit kiln runs r1/r2. No Windows code change or verification claim. [Blocker, missing regressions and commands](../../research/measurements/platform-fixes/held.md).
+
 **Location:** `crates/ipc/src/slots/named.rs:724–737`, supporting `:714`, `:660`.
 
 **Defect:** The busy-slot wait converts a Windows directory through lossy Unicode and treats every change-notification error as a changed list, repeatedly spawning uncancellable wait threads.
@@ -189,6 +197,8 @@ Local Rust 1.94.1 source `std/src/sys/process/windows.rs:330–342` explicitly d
 
 ### platform-09 — Case-insensitive Windows filenames can make versioned saves loop forever
 
+**Status (2026-11-13):** owed to ROOT: `cargo test -p shards-vmm platform::windows_files::tests` on jupiter after adding the specific red regression; jupiter was offline in explicit kiln runs r1/r2. No Windows code change or verification claim. [Blocker, missing regressions and commands](../../research/measurements/platform-fixes/held.md).
+
 **Location:** `crates/vmm/src/platform/windows_files.rs:402`, `:381–395`.
 
 **Defect:** Version enumeration is case-sensitive while filesystem collision handling is case-insensitive, so collision retries can choose the same occupied name forever.
@@ -202,6 +212,8 @@ Local Rust 1.94.1 source `std/src/sys/process/windows.rs:330–342` explicitly d
 **Catching test:** write/read through mixed-case names; precreate case-renamed snapshot pointer versions; require operations to terminate and select the latest data.
 
 ### platform-10 — Windows priority credits do not protect the host against multiple raised threads
+
+**Status (2026-11-13):** owed to ROOT: `cargo test -p shards-vmm platform::windows_thread::tests` on jupiter after adding the specific red regression; jupiter was offline in explicit kiln runs r1/r2. No Windows code change or verification claim. [Blocker, missing regressions and commands](../../research/measurements/platform-fixes/held.md).
 
 **Location:** `crates/vmm/src/platform/windows_thread.rs:226–231`, `:252–258`.
 
@@ -218,6 +230,8 @@ Local Rust 1.94.1 source `std/src/sys/process/windows.rs:330–342` explicitly d
 **Catching test:** compare a normal-priority host spinner beside one versus at least three continuously runnable prioritized actors sharing one CPU; assert host progress and priority demotion of sustained aggregate load. Observe CPU time, not only base priorities.
 
 ### platform-11 — Scheduling periods and pipe quotas remain chosen production constants
+
+**Status (2026-11-13):** owed to ROOT: [online-value and cold-start design, unresolved admission questions and required evidence](../../research/measurements/platform-fixes/held.md#platform-11-online-value-design-owed-with-cold-starts). No picked constants were substituted; this finding remains open.
 
 **Location:** `crates/vmm/src/platform/macos_thread.rs:34–35`, `:46`; `crates/vmm/src/platform/windows_thread.rs:66`; `crates/ipc/src/pipe.rs:68`, `:73`.
 

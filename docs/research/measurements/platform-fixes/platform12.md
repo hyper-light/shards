@@ -54,12 +54,24 @@ exact regression (one test), parents module (six tests), and all-target shards c
 do not change the tested Rust source. No mutation campaign was run; the red commit is
 the retained guard-free baseline. The policy script is a separate mechanical check,
 not evidence for the unrun real-cgroup/performance/matrix gates below.
+`python3 scripts/check-development-policy` passed on merged source b60a0b4c8,
+adacachy2, kiln r7 (exit 0). Its output explicitly retains evidence/coordinator review.
 Only test fixtures run; no real delegated cgroup or VM is created by this lane.
 
 ROOT owes the real delegated-cgroup integration command on Linux:
 `cargo test -p shards --test containers a_microvm_is_made_in_the_delegated_cgroup_its_cgroup_parent_names -- --nocapture`.
 Also observe actual leaf removal after its last process exits and under directory
 removal/change races; a fixture notification test does not prove the full kernel lifecycle.
+
+The first fast-forward push was rejected because another lane advanced main. Fresh main
+`53d5cea99f51798678662143162b04144f67c44a` was merged into
+`3b52a3131f81045aab2393cb0c40f3ede0a60ded`. Kiln r9 reran the exact regression (one
+passed), parents module (six passed) and shards all-target clippy (passed) on adacachy2.
+The runner lacked room for four jobs, so both cargo's actual concurrency and the resource
+request were reduced to two, keeping nice 10 and 17 GiB admission. No guard was bypassed.
+[Latest merged output](platform12-merged-latest.log). The attempted subsequent evidence
+commit initially failed signing with `Resource temporarily unavailable (os error 35)`;
+signing remains required and was not disabled.
 
 ## R01–R16 accounting
 

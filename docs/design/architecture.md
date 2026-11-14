@@ -11854,6 +11854,11 @@ M421); `platform::windows` `a_file_kept_cached_is_a_view_of_all_of_it_until_it_d
 
 ### D195. The daemon and its client on Windows: request slots of named pipes (built)
 
+**2026-11-13, platform-07/08/11 remain open:** handle inheritance, notification-error
+waiter lifecycle and chosen pipe quotas require jupiter red/green checks and an online
+capacity/admission design. [Commands and held design](../research/measurements/platform-fixes/held.md)
+retain those obligations; no Windows check or quota replacement is claimed completed.
+
 **Why.** Every feature on every host (the user, 2026-10-27; docs/audit/2026-10-27_platform-parity.md
 row 1): on Windows `shards` had no daemon, so no `run IMAGE` and none of the commands of its
 microVMs, images, volumes and networks. D185's slots are FIFOs in the home, their
@@ -12403,6 +12408,13 @@ the address its flows come from; a run's own grant on the default bridge, if one
 asked for beside a network's.
 
 ### D191. A run's microVM has every CPU of its host, its workload the CPUs its limits give it (slices 1 and 2 built, its contended start and hold mended, Windows' too)
+
+**2026-11-13, platform-10/11 remain open:** per-thread Windows credit does not prove
+aggregate host fairness, and benchmark-derived production periods are not the required
+online derivation. [Held findings and cold-start/admission design owed](../research/measurements/platform-fixes/held.md)
+record the unavailable Windows checks, normal-priority cold state, measured clock/cost
+inputs and still-unresolved cross-process budget owner. No scheduler change or new
+performance claim is made by that design record.
 
 The user's plan, item 3 (2026-10-18): a run's `--cpus` as elastic as its memory (D148),
 every microVM given the host's CPUs, init bringing the run's online and `update --cpus`

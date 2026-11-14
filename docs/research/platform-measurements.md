@@ -13390,6 +13390,11 @@ No new performance or placement-cost claim is made by those unit results.
 
 ### M317. A busy microVM's threads under XNU's real-time fail-safe, and its device workers on a busy host (D4)
 
+**2026-11-13, platform-11:** this measured policy comparison does not establish fixed
+computation/constraint literals as host-independent bounds. [Online-value/cold-start
+design and evidence still owed](measurements/platform-fixes/held.md) keep that R03
+finding open; no new scheduling or host-fairness result is claimed.
+
 - **Question.** A microVM's vCPU threads run at Mach's time-constraint policy (D4, M8, M10),
   and D4 left open what XNU does to them when a guest keeps them busy. A gate's block
   stress test once verified 104 reads where alone it verified 250,000, its device workers
