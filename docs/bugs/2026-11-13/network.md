@@ -36,6 +36,8 @@ Ranking: P0 critical; P1 high security/resource priority; P2 high correctness pr
 
 **Catching test sketch:** `let mut c = opened(); let before=c.rcv_nxt; c.on_segment(empty_fin(before.wrapping_sub(4096)), out, None); assert!(!c.guest_fin); assert!(!c.host_shut); assert_eq!(c.rcv_nxt,before);` Also exercise the two blind FIN sequence values and prove the host socket receives no EOF.
 
+**Status (2026-11-13):** fixed in 50716d9465c42d9cbabbdd8e725134ba6f80bffe (red `tcp::tests::stale_fins_do_not_end_the_host_stream`); 20 focused TCP tests and crate clippy passed on macOS arm64. Merged-source check and ROOT's real-VM coverage tracked in `docs/research/measurements/network-fixes-v1/README.md`.
+
 ### network-02 — P1 / high: the network process silently omits syscall confinement on supported arm64 Linux
 
 **Location:** `crates/net-process/src/main.rs:245`; `crates/net/src/confine.rs:209`. Present before the base; current supported arm64 Linux execution still takes it.
@@ -51,6 +53,8 @@ Ranking: P0 critical; P1 high security/resource priority; P2 high correctness pr
 **Fix direction:** share allowlist construction using architecture-specific syscall identities, install it on arm64, or return an explicit unsupported-confinement refusal until parity exists.
 
 **Catching test:** in a disposable network-process child on both Linux architectures, observe seccomp state and attempt an excluded harmless syscall; require the same typed refusal/termination outcome. Test the actual carried helper, not just a library function.
+
+**Status (2026-11-13):** startup/filter cfg fixed in 33d5f8af715ea94021b65a7c8dc793f65a2339a6; shared native-filter checks and both touched crates' clippy passed on Linux amd64. Native arm64 red/execution remains owed to ROOT: `cargo test -p shards-net confine::tests::the_filter_ends_a_process_that_makes_what_none_makes -- --exact --nocapture`. The omitted call is unambiguous, so this source fix uses the fix brief's explicit exception rather than claiming an unavailable arm64 red. Evidence: `docs/research/measurements/network-fixes-v1/README.md`.
 
 ### network-03 — P1 / high: DNS-derived authority accumulates forever in host memory
 
@@ -83,6 +87,8 @@ Ranking: P0 critical; P1 high security/resource priority; P2 high correctness pr
 **Fix direction:** reuse a zone only after proving its prior bindings are retired; handle generation-space exhaustion explicitly, with no guessed safe churn interval.
 
 **Catching test:** retain an actual zone-1 tuple to A, force the allocator close to wrap in a disposable fixture, hand the port to B, then resend the same client tuple. Require B to receive it and A to observe nothing. Also test a non-forced full-cycle campaign under ROOT's resource limits.
+
+**Status (2026-11-13):** owed to ROOT: `cargo test -p shards --test build a_udp_flow_goes_to_its_ports_next_holder -- --exact --nocapture`, extended with a retained zone-1 tuple and forced allocator wrap. The existing one-handoff fixture does not reproduce wrap. Retirement design and owner-failure requirements: `docs/research/measurements/network-fixes-v1/README.md#network-04-conntrack-zone-retirement`. No allocator patch or passing reproduction is claimed.
 
 ### network-05 — P2 / high: Hex/API-run never programs the IPv6 uplink that daemon runs receive
 

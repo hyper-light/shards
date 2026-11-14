@@ -473,6 +473,13 @@ fn child(p: &Prepared<'_>) -> ! {
         if libc::setns(p.actor, all) != 0 {
             fail(step::JOIN, 0);
         }
+        // Its member's Landlock ruleset, held above where its stdio and error channel go.
+        let ruleset_fd = crate::domains::RULESET_FD;
+        let ruleset = libc::fcntl(
+            p.confinement.ruleset.as_raw_fd(),
+            libc::F_DUPFD_CLOEXEC,
+            ruleset_fd + 1,
+        );
         libc::setsid();
         if p.tty && libc::ioctl(p.stdio[0], libc::TIOCSCTTY, 0) != 0 {
             fail(step::TTY, 0);
@@ -482,17 +489,22 @@ fn child(p: &Prepared<'_>) -> ! {
                 fail(step::EXEC, 0);
             }
         }
-        // Its error channel next above its stdio, then no other descriptor of init's.
+        // Its error channel next above its stdio, its member's Landlock ruleset next above
+        // that, then no other descriptor of init's.
         let err = libc::STDERR_FILENO + 1;
-        let high = libc::fcntl(p.err, libc::F_DUPFD_CLOEXEC, err + 1);
+        let high = libc::fcntl(p.err, libc::F_DUPFD_CLOEXEC, ruleset_fd + 1);
         if high < 0
+            || ruleset < 0
             || libc::dup3(high, err, libc::O_CLOEXEC) < 0
-            || libc::syscall(libc::SYS_close_range, (err + 1) as u32, u32::MAX, 0u32) != 0
+            || libc::dup3(ruleset, ruleset_fd, libc::O_CLOEXEC) < 0
+            || libc::syscall(libc::SYS_close_range, (ruleset_fd + 1) as u32, u32::MAX, 0u32) != 0
         {
             fail(step::EXEC, 0);
         }
         let fail = |which: u8, at: usize| crate::run::report(err, which, at);
-        if let Err(failed) = crate::domains::confine(p.confinement) {
+        // Into its member's own ruleset, as its member was (confine-01): never one made
+        // afresh from names its member may have changed since.
+        if let Err(failed) = crate::domains::confine(p.confinement, ruleset_fd) {
             fail(step::CONFINE, usize::from(failed as u8));
         }
         // As the member: where it may not go, neither may its command.

@@ -41,6 +41,8 @@ writer.write_all(&framed).and_then(|()| writer.write_all(&written))
 
 **Confidence:** High for both source paths; live TLS and actual-provider behavior unverified.
 
+**Status (2026-11-13):** fixed in b7b692113 (red `inject::tests::leaks::a_token_responses_head_never_carries_its_tokens_to_the_guest`, `an_h2_token_responses_fields_and_trailers_never_carry_its_tokens_to_the_guest`)
+
 ### creds-02 — P0 / critical — A chunked response can carry the complete credential in an unmasked extension
 
 **Location:** `crates/net/src/inject.rs:877`, `:2142`, `:1349`.
@@ -77,6 +79,8 @@ The bytes nevertheless enter `Mask.queue` and are released to `guest.writer()`. 
 
 **Confidence:** High by complete source trace; not run.
 
+**Status (2026-11-13):** fixed in b26011d07 (red `inject::tests::leaks::a_chunks_extension_never_carries_a_value_to_the_guest`)
+
 ### creds-03 — P0 / critical — Lease expiry or rotation disables masking of responses already in flight
 
 **Location:** `crates/net/src/inject.rs:1309`, `:1339`; `crates/net/src/lib.rs:1299`, `:2883`.
@@ -95,6 +99,8 @@ D242 **explicitly acknowledges post-expiry echoes as an unmasked residual** (`ar
 
 **Confidence:** High; explicitly confirmed by both code and design record, no live reproduction.
 
+**Status (2026-11-13):** fixed in 72420e789 (red `inject::tests::leaks::an_echo_after_its_lease_lapsed_is_masked_still`, `inject::tests::leaks::an_h2_echo_of_a_value_rotated_while_its_response_waits_is_masked`)
+
 ### creds-04 — P0 / critical — Compressed echoes bypass the raw-byte response mask
 
 **Location:** `crates/net/src/inject.rs:1992`, `:2141`, `:3939`.
@@ -112,6 +118,8 @@ D242 **explicitly lists compressed response/WebSocket echoes as residuals** (`ar
 **Regression sketch:** Existing echo fixtures return `gzip(JSON(T))` with Content-Encoding gzip; first assert the compressed fixture does not literally contain `T`. Collect and decompress the guest response, and assert `T` never becomes available (or the injector refuses before forwarding). Cover H1 and H2.
 
 **Confidence:** High for source behavior; no decompression/live-provider test run.
+
+**Status (2026-11-13):** fixed in c767cea93 (red `inject::tests::leaks::a_coded_echo_never_reaches_the_guest`, `a_transfer_coded_echo_never_reaches_the_guest`, `an_h2_coded_echo_never_reaches_the_guest`). Decision: refuse, not decode (D242's *Coded responses are refused*): filled requests ask `identity` and offer no WebSocket extension; a coded response to one is refused 502 (`Refusal::Unmaskable`). Residual: a tunnel's own framing after a 101 (a value split across WebSocket frames).
 
 ### creds-05 — P1 / high — Lease duration restarts at each delivery hop, authorizing use after the lessor's deadline
 

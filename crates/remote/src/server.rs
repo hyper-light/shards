@@ -93,6 +93,16 @@ pub const NOT_ENROLLED: &str = "this machine has not enrolled you: join it by an
 /// says what the refusal on a stream would have said.
 pub const UNENROLLED: u32 = 2;
 
+/// The daemon's answer to a command of a client its machine no longer enrolls under the key
+/// its connection proved (remote-03): removed since, or its name another key's now.
+pub const REVOKED_WORDS: &str = "this machine has removed you from its clients";
+
+/// The code a daemon closes a client's connection with once its machine no longer enrolls the
+/// key the connection proved under the name it was judged ([`Stopper::revalidate`]): every
+/// command of it hung up, as a lost connection's are, and its client says
+/// [`REVOKED_WORDS`].
+pub const REVOKED: u32 = 3;
+
 enum Event {
     Output {
         conn: ConnKey,
@@ -126,6 +136,12 @@ enum Event {
         client: Option<String>,
         invited: usize,
     },
+    /// The machine's clients changed ([`Stopper::revalidate`]): each enrolled peer's key is
+    /// judged again, apart from the driver ([`revalidate_apart`]).
+    Revalidate,
+    /// The machine no longer enrolls the key of `conn` as `client`: it is closed, its
+    /// commands hung up ([`Server::revoked`]).
+    Revoked { conn: ConnKey, client: String },
     /// A stranger's join, on its worker ([`join_apart`]), ended: enrolled as `name`, or not.
     Joined {
         conn: ConnKey,
@@ -441,9 +457,8 @@ impl<H: Host> Server<'_, '_, H> {
                         self.starts,
                         self.host,
                         sender,
-                        conn,
-                        id,
-                        client.to_string(),
+                        (conn, id),
+                        (client.to_string(), peer.spki.clone()),
                         request,
                     ),
                     (Ok(_), None) => Err(Error::new("the daemon's listener is not running")),
@@ -915,13 +930,7 @@ impl<H: Host> Handler for Server<'_, '_, H> {
     fn lost(&mut self, _io: &mut Io<'_>, conn: ConnKey, _why: &str, _code: Option<u64>) {
         // Its commands lose their terminal: its client closed it, or its own end did.
         if let Some(peer) = self.peers.remove(&conn) {
-            for stream in peer.streams.values() {
-                if stream.running()
-                    && let Some(hangup) = &stream.hangup
-                {
-                    hangup();
-                }
-            }
+            hang_up(&peer);
         }
     }
 
@@ -944,6 +953,8 @@ impl<H: Host> Handler for Server<'_, '_, H> {
                 name,
                 joined,
             } => return self.joined(io, conn, stream, name, joined),
+            Event::Revalidate => return self.revalidate(io),
+            Event::Revoked { conn, client } => return self.revoked(io, conn, &client),
             Event::Output { conn, stream, .. }
             | Event::OutputEnd { conn, stream, .. }
             | Event::Exited { conn, stream, .. } => (conn, stream),
@@ -964,7 +975,9 @@ impl<H: Host> Handler for Server<'_, '_, H> {
             Event::InputTaken { .. }
             | Event::Started { .. }
             | Event::Joined { .. }
-            | Event::Judged { .. } => {}
+            | Event::Judged { .. }
+            | Event::Revalidate
+            | Event::Revoked { .. } => {}
         }
         stream.exit_when_done(io, conn, id);
         self.settle(io, conn, id);
@@ -975,6 +988,53 @@ impl<H: Host> Handler for Server<'_, '_, H> {
     }
 }
 
+/// Hangs up each command `peer` runs, as a terminal that went away would.
+fn hang_up(peer: &Peer) {
+    for stream in peer.streams.values() {
+        if stream.running()
+            && let Some(hangup) = &stream.hangup
+        {
+            hangup();
+        }
+    }
+}
+
+impl<H: Host> Server<'_, '_, H> {
+    /// The machine's clients changed: every enrolled peer's key judged again on a worker of
+    /// its own, which reads the machine's files as a verdict does ([`judge_apart`]); a worker
+    /// that cannot be had, on the driver.
+    fn revalidate(&mut self, io: &mut Io<'_>) {
+        let enrolled: Vec<(ConnKey, String, Vec<u8>)> = self
+            .peers
+            .iter()
+            .filter_map(|(conn, p)| Some((*conn, p.client.clone()?, p.spki.clone())))
+            .collect();
+        let apart = self
+            .sender
+            .as_ref()
+            .is_some_and(|sender| revalidate_apart(self.starts, self.host, sender, enrolled.clone()).is_ok());
+        if !apart {
+            for (conn, client, spki) in enrolled {
+                if self.host.enrolled(&spki).as_deref() != Some(client.as_str()) {
+                    self.revoked(io, conn, &client);
+                }
+            }
+        }
+    }
+
+    /// The machine no longer enrolls `conn`'s key as `client`: its connection closed, its
+    /// commands hung up. One judged since as another client, or gone, is left as it is.
+    fn revoked(&mut self, io: &mut Io<'_>, conn: ConnKey, client: &str) {
+        if self.peers.get(&conn).and_then(|p| p.client.as_deref()) != Some(client) {
+            return;
+        }
+        if let Some(peer) = self.peers.remove(&conn) {
+            hang_up(&peer);
+        }
+        io.close(conn, REVOKED, REVOKED_WORDS);
+    }
+}
+
 /// Stops a [`serve`]: each connection closed, its peer told.
 #[derive(Debug)]
 pub struct Stopper(Sender<Event>);
@@ -982,6 +1042,13 @@ pub struct Stopper(Sender<Event>);
 impl Stopper {
     pub fn stop(&self) -> Result<(), Error> {
         self.0.send(Command::Stop)
+    }
+
+    /// Tells the listener its machine's clients changed (remote-03): each connection whose key
+    /// the machine no longer enrolls under the name it was judged is closed ([`REVOKED`]), its
+    /// commands hung up; each later command's key is judged again as it starts besides.
+    pub fn revalidate(&self) -> Result<(), Error> {
+        self.0.send(Command::Handler(Event::Revalidate))
     }
 
     /// What the daemon's driver has heard, and the window its connections have shown
@@ -1079,20 +1146,30 @@ fn join_apart<'s, 'e, H: Host>(
 /// Starts `request` for `client` on a worker of `starts` of its own, which tells the driver
 /// through `sender` once `host` has ([`Event::Started`]): a start takes as long as its host's
 /// spawn does, and the driver, which acknowledges every client's packets, waits on none. A
-/// command started once the driver has ended is hung up, as none relays it.
+/// command started once the driver has ended is hung up, as none relays it. The key `spki`
+/// its connection proved is judged again first (remote-03): one the machine no longer
+/// enrolls as `client` starts nothing, and its connection is closed ([`Event::Revoked`]).
 fn start_apart<'s, 'e, H: Host>(
     starts: &'s std::thread::Scope<'s, 'e>,
     host: &'e H,
     sender: &Sender<Event>,
-    conn: ConnKey,
-    stream: StreamId,
-    client: String,
+    (conn, stream): (ConnKey, StreamId),
+    (client, spki): (String, Vec<u8>),
     request: Request,
 ) -> Result<(), Error> {
     let sender = sender.try_clone()?;
     std::thread::Builder::new()
         .name("remote-start".into())
         .spawn_scoped(starts, move || {
+            if host.enrolled(&spki).as_deref() != Some(client.as_str()) {
+                let _ = sender.send(Command::Handler(Event::Started {
+                    conn,
+                    stream,
+                    started: Err(Error::new(REVOKED_WORDS)),
+                }));
+                let _ = sender.send(Command::Handler(Event::Revoked { conn, client }));
+                return;
+            }
             let started = host.start(&client, request);
             if let Err(
                 mpsc::TrySendError::Disconnected(Command::Handler(Event::Started {
@@ -1112,4 +1189,27 @@ fn start_apart<'s, 'e, H: Host>(
         })
         .map(|_| ())
         .map_err(|e| Error::new(format!("a thread for the command's start: {e}")))
+}
+
+/// Judges again, on a worker of `starts` of its own, whether `host` enrolls each of `peers`'
+/// keys under the name its connection was judged, as [`judge_apart`] judges a new one: each it
+/// does not is told the driver through `sender` ([`Event::Revoked`]).
+fn revalidate_apart<'s, 'e, H: Host>(
+    starts: &'s std::thread::Scope<'s, 'e>,
+    host: &'e H,
+    sender: &Sender<Event>,
+    peers: Vec<(ConnKey, String, Vec<u8>)>,
+) -> Result<(), Error> {
+    let sender = sender.try_clone()?;
+    std::thread::Builder::new()
+        .name("remote-revalidate".into())
+        .spawn_scoped(starts, move || {
+            for (conn, client, spki) in peers {
+                if host.enrolled(&spki).as_deref() != Some(client.as_str()) {
+                    let _ = sender.send(Command::Handler(Event::Revoked { conn, client }));
+                }
+            }
+        })
+        .map(|_| ())
+        .map_err(|e| Error::new(format!("a thread to judge its clients again: {e}")))
 }

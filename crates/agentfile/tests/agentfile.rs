@@ -1328,6 +1328,22 @@ fn agents_have_ipv6_where_a_joined_network_says_so() {
 
 /// A remote MCP server's host and port, as its URL says or its scheme's own (§4.4).
 #[test]
+fn mcp_absolute_name_matches_its_dns_question() {
+    let mut question = vec![0; 12];
+    question[5] = 1;
+    question.extend_from_slice(b"\x03MCP\x07example\0\0\x01\0\x01");
+    let name = shards_dns::query_name(&question).unwrap();
+    for url in ["https://MCP.example./sse", "http://MCP.example.:8080/mcp"] {
+        let (host, _) = shards_agentfile::agentfile::mcp_endpoint(url.as_bytes()).unwrap();
+        assert_eq!(
+            host,
+            name.as_bytes(),
+            "the grant must match its DNS question: {url}"
+        );
+    }
+}
+
+#[test]
 fn a_remote_mcp_servers_endpoint_is_its_urls() {
     use shards_agentfile::agentfile::mcp_endpoint;
     let e = |u: &str| mcp_endpoint(u.as_bytes()).map(|(h, p)| (String::from_utf8(h).unwrap(), p));
