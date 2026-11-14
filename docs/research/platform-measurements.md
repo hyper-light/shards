@@ -24848,6 +24848,49 @@ against 2e00a1043 (whose starts read no bytes) on one template, HVF, KVM and WHP
 - **Decision.** Clear inheritance where a duplicate is made (D215), and give `shards_api`
   callers `&dyn Stream` reads and writes and `into_socket`, so none needs a duplicate.
 
+### M583. A run host's pipes' ends say nothing of its processes': inheritors, Linux's unordered file release, and macOS's waitid taking a stop for an end (D231, D215)
+
+- **Question.** Both of an image run's stops (shards-api `Begun::started`, `Session::stop`)
+  waited for the run host's answers' and diagnostics' pipes to end, as the word that the host
+  and every process it started had gone. flaky3 saw one hang 38 min and one return early.
+  What holds or ends those pipes, and what does the kernel say instead?
+- **Method.** Base 9c35a4ff2, 2026-11-14.
+  - adas-mac-studio-3 (macOS 26 arm64): flaky3's sample21 and run logs
+    (`~/g121-tmp/flaky3/logs/api-red/`); the shards-api lib test binary with its stand-in run
+    host held stopped (SIGSTOP) 11 s from its first appearance, sampled at 120 s
+    (`/tmp/bootstop-carrier/freeze.sh`, logs `~/g121-tmp/bootstop/logs/freeze-red/`); a probe
+    of waitid(WEXITED|WNOWAIT), blocking, on a child stopped while it waits; shards-ipc's
+    `a_groups_end_follows_every_process_of_it_to_its_end` with a pipe the group alone held,
+    86 runs.
+  - adacachy2 (Linux x86_64, 32 cores): `a_stop_returns_once_its_host_and_every_process_it_started_are_gone`,
+    800 runs, 32 at once, base and fixed; the outside-holder test over the old code
+    (2e302aa28) and the fixed, 60 s watchdog.
+- **Results.**
+  - flaky3's hang: the test thread in open(2) of its FIFO inside its scope, the boot thread
+    gone: the boot had returned at the tests' 10 s bound, killing its host before it opened
+    the FIFO; three other tests in that run were refused the same way.
+  - macOS waitid(2): asked for exits alone (`WEXITED | WNOWAIT`), a blocking wait returned
+    `si_code` 5 (`CLD_STOPPED`), status 17 (SIGSTOP), for a child stopped while it waited,
+    at 0, 50 and 200 ms (3/3); `Child::ended` took that for an end (PM M442's note). With
+    the host held stopped, the exit watcher sat in wait4(2) holding `reaped` and the state
+    lock, `BootStop::stop` sat in `kill_group` waiting on `reaped`, the host never got
+    SIGKILL: a deadlock past the 120 s watchdog (exit 137).
+  - Linux: 7 of 800 base runs "the stop returned while the VM its run host started still
+    ran" (its FIFO still held as its stderr had ended), 0 of 800 fixed.
+    kernel/task_work.c: "there is no ordering guarantee on works queued here. The task_work
+    list is LIFO"; kernel/exit.c `do_exit` runs `exit_files`, then `exit_task_work`, then
+    `exit_notify` (a pidfd is readable from the last).
+  - A holder outside the host's group: the old stop hung (killed at 60 s); fixed, it
+    returned `Ok` with that process still running.
+  - macOS: after kqueue's `NOTE_EXIT` for every process of a group, a pipe only they held
+    read `EAGAIN` in 4 of 86 runs (adas-macbook-pro-2), its end there microseconds
+    later; a check by the process's ID and start (`Named::lives`) held in 30 of 30.
+    XNU's `proc_exit` closes descriptors (`fdt_invalidate`) before
+    `proc_knote(NOTE_EXIT)`; the lag's cause is not established.
+- **Decision.** D231's stops follow the host's group by the kernel's exit words
+  (`Child::end_group`), and drain the pipes without waiting for their ends; `status_of`
+  takes only an exit as an end, and `Child::wait` never waits holding what a kill takes. A
+  test checks a process's end by its ID and start, not by a pipe it held.
 
 ### M584. A zombie's CPU clock grows after its exit is told (D215; shards-api's `an_exited_process_is_read_until_it_is_reaped`)
 
@@ -24924,6 +24967,6 @@ against 2e00a1043 (whose starts read no bytes) on one template, HVF, KVM and WHP
     a frame another thread writes, which that thread's own delay under load holds back.
     `image::session::tests::a_stop_returns_once_its_host_and_every_process_it_started_are_gone`
     fails "the stop returned while the VM its run host started still ran" (2 of 60, 5 of
-    300).
+    300, at b27eeffe5, before M583's fix of the stop).
 - **Decision.** No production change: both causes were the test helper's. D233 records
   the look's rule.

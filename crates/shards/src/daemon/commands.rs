@@ -34,16 +34,25 @@ use crate::spec::{LOG_STDERR, LOG_STDOUT};
 
 /// Ownership-mode copy must not guess a different platform's user or root when its
 /// recorded image config is unavailable.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 enum CopyUserRefusal {
     ContainerGone,
-    ConfigMissing { image: String, manifest: Option<String> },
+    /// Its record names no image ID, which every record a release made names (v0.3.0 on):
+    /// its image's user is unknown, and root is not assumed for it.
+    NoImage,
+    ConfigMissing {
+        image: String,
+        manifest: Option<String>,
+    },
 }
 
 impl CopyUserRefusal {
     fn message(self, container: &str) -> String {
         match self {
             Self::ContainerGone => format!("microVM {container}: its record is no longer there"),
+            Self::NoImage => format!(
+                "microVM {container}: its record names no image, so its user is unknown; copy without -a"
+            ),
             Self::ConfigMissing { image, manifest } => format!(
                 "microVM {container}: image {image}, manifest {manifest:?}: its user config is unavailable"
             ),
@@ -934,9 +943,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             .get(id)
             .cloned()
             .ok_or(CopyUserRefusal::ContainerGone)?;
-        let Some(image) = c.image_id else {
-            return Ok(String::new());
-        };
+        let image = c.image_id.ok_or(CopyUserRefusal::NoImage)?;
         let (config, _) = self.image_facts(Some(&image), c.image_manifest.as_deref());
         let config = config.ok_or(CopyUserRefusal::ConfigMissing {
             image,
@@ -3193,6 +3200,28 @@ impl Show<'_, '_> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+
+    /// `cp -a` copies as the microVM's user, its run's or else its image's: a record that
+    /// names no image ID is refused (`NoImage`), never copied as root, which an empty user
+    /// is. Red before legacy3, which answered root for it.
+    #[test]
+    fn a_copy_as_the_user_of_a_record_with_no_image_is_refused() {
+        let t = super::super::tests::Test::new("cp-user");
+        let id = "c".repeat(64);
+        let record: crate::containers::Container = serde_json::from_value(serde_json::json!({
+            "id": id, "name": "imageless", "image": "alpine", "command": [], "created": 1,
+            "state": crate::containers::State::Exited, "started": null, "finished": null,
+            "exit_code": null, "auto_remove": false,
+        }))
+        .unwrap();
+        assert_eq!(record.image_id, None);
+        super::lock(&t.daemon.containers).adopt(record).unwrap();
+        assert_eq!(t.daemon.container_user(&id), Err(super::CopyUserRefusal::NoImage));
+        assert_eq!(
+            t.daemon.container_user(&"d".repeat(64)),
+            Err(super::CopyUserRefusal::ContainerGone)
+        );
+    }
 
     #[test]
     fn top_refuses_pid_headers_on_other_fields() {

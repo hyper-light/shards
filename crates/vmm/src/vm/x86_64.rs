@@ -1066,12 +1066,46 @@ pub fn encode_state(vm: &hv::Vm, captured: Vec<Captured>) -> Result<Vec<u8>, Str
     Ok(w.into_bytes())
 }
 
+/// Each vCPU's state, in index order: at most one for each vCPU a machine may have
+/// ([`acpi::MAX_VCPUS`], 255), as many as [`encode_state`] writes. A literal 254 here, the
+/// MADT's bound before cfe037dac raised it to 255, refused the snapshot of every
+/// 255-vCPU machine as it restored ("sequence of 255 (limit 254)": snapshot.rs' storm at its
+/// most vCPUs on adacachy2, KVM).
+fn decode_vcpus(r: &mut Reader<'_>) -> crate::snapshot::codec::Result<Vec<hv::VcpuState>> {
+    let most = usize::try_from(acpi::MAX_VCPUS).unwrap_or(usize::MAX);
+    r.seq(most, 1, hv::VcpuState::decode)
+}
+
 fn decode_state(bytes: &[u8]) -> Result<(hv::VmState, Vec<hv::VcpuState>), String> {
     let mut r = Reader::new(bytes);
     let vm = hv::VmState::decode(&mut r).map_err(|e| format!("snapshot VM state: {e}"))?;
-    let vcpus = r
-        .seq(254, 1, hv::VcpuState::decode)
-        .map_err(|e| format!("snapshot vCPU state: {e}"))?;
+    let vcpus = decode_vcpus(&mut r).map_err(|e| format!("snapshot vCPU state: {e}"))?;
     r.finish().map_err(|e| format!("snapshot state: {e}"))?;
     Ok((vm, vcpus))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A snapshot holds as many vCPU states as a machine may have vCPUs, and no more: its
+    /// count is checked against [`acpi::MAX_VCPUS`] before any state is read. Red at
+    /// cf13e49e6, where the reader's bound was 254 and the MADT's 255. Do: a count of the
+    /// most, then of one more, each with no states after it. Expect: the first refused for
+    /// its missing bytes, the second for its count.
+    #[test]
+    fn a_snapshot_holds_a_state_for_each_vcpu_a_machine_may_have() {
+        let refusal = |count: u32| {
+            let mut w = Writer::default();
+            w.u32(count);
+            let bytes = w.into_bytes();
+            decode_vcpus(&mut Reader::new(&bytes))
+                .err()
+                .map(|e| e.to_string())
+        };
+        let most = refusal(acpi::MAX_VCPUS);
+        assert!(most.as_deref().is_some_and(|e| !e.contains("limit")), "{most:?}");
+        let past = refusal(acpi::MAX_VCPUS + 1);
+        assert!(past.as_deref().is_some_and(|e| e.contains("limit")), "{past:?}");
+    }
 }
