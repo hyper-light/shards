@@ -2934,6 +2934,43 @@ mod tests {
             host.join().unwrap();
         }
 
+        /// Hex's decision 9: a member's lane asked of an endpoint that has not answered gives
+        /// way within its caller's patience, its ask still pending, so that an orchestrator
+        /// waits within its own bound and tells its run-out once, without a thread of its own.
+        #[test]
+        fn a_members_ask_gives_way_within_its_patience() {
+            let (vm, kiln) = (Identity::generate().unwrap(), Identity::generate().unwrap());
+            let (serving, members) = Serving::with_members(&vm, kiln.fingerprint());
+            let (outputs, inputs) = all(0);
+            let (dialed, _driver) = drive(
+                &kiln,
+                vm.fingerprint(),
+                serving.address,
+                Subscriptions {
+                    outputs: &outputs,
+                    inputs: &inputs,
+                    execs: Some(exec_admissions()),
+                    sockets: None,
+                },
+            );
+            let execs = dialed.execs.as_ref().unwrap();
+            let (go, held) = mpsc::channel::<()>();
+            let host = std::thread::spawn(move || {
+                let running = members.recv_timeout(PATIENCE).unwrap();
+                held.recv().unwrap();
+                running.replies.tell(exec::Reply::Running);
+                running
+            });
+            std::thread::scope(|scope| {
+                let (said, answered) = mpsc::channel();
+                scope.spawn(move || said.send(execs.member(0).map(|_| ())));
+                let gave_way = answered.recv_timeout(PATIENCE);
+                let _ = go.send(());
+                assert!(gave_way.is_ok(), "the member's ask gave way within its patience");
+            });
+            drop(host.join().unwrap());
+        }
+
         /// The production controller (`drive.rs`), dialed at `to` for `subscriptions`, its
         /// driver on a thread of its own.
         fn drive(
