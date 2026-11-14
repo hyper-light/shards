@@ -72,6 +72,8 @@ Priorities: **P0 = critical**, **P1 = high**, **P3 = medium**, **P5 = low**; no 
 
 **Regression sketch:** In a disposable child, synchronize after plugged-run enumeration, unplug a later block, then resume scanning. Require source survival and either a consistent migration or typed refusal. Repeat against `page_at` and with a guest issuing real virtio-mem requests.
 
+**Status (2026-11-13):** fixed by the memory reviewer as memory-02 in 29196c6b3, integrated here; red `live_copy_keeps_bytes_after_their_block_is_unplugged` / `live_copy_page_keeps_bytes_after_their_block_is_unplugged`, focused green in memory-fixes-v1. No duplicate implementation in this lane. [Fix evidence](../../research/measurements/migrate/fix-review-2026-11-13.md).
+
 ### migrate-04 — P1 / high — A forged snapshot header defeats the state allocation bound
 
 **Location:** `crates/vmm/src/snapshot/mod.rs:652-655`; `crates/vmm/src/platform/mod.rs:242-255`.
@@ -89,6 +91,8 @@ Priorities: **P0 = critical**, **P1 = high**, **P3 = medium**, **P5 = low**; no 
 **Fix direction:** Apply an independently admitted restore/resource allowance before whole-state allocation; validate the header against it and parse incrementally where possible. Do not replace this with another unexplained constant.
 
 **Regression sketch:** ROOT runs a constrained disposable child against a large sparse malformed state. It must refuse after its header with bounded RSS, without allocating according to the forged RAM claim. Include the import/relocation entry path.
+
+**Status (2026-11-13):** owed to ROOT: independent restore-admission design and bounded sparse-state resource-fault reproduction; see the fix evidence (proposed test is not yet implemented). [Fix evidence](../../research/measurements/migrate/fix-review-2026-11-13.md).
 
 ### migrate-05 — P1 / high — Named-volume hardlinks become independent files after a move
 
@@ -124,6 +128,8 @@ Priorities: **P0 = critical**, **P1 = high**, **P3 = medium**, **P5 = low**; no 
 
 **Regression sketch:** Clear ECX24 in baseline, apply `within`, then `for_vcpu(..., true)` and assert the bit stays clear. Follow with the two-host move and timer-progress test. D245's common-CPU contract is the expected behavior.
 
+**Status (2026-11-13):** fixed in a09a09f0c5f96d5868c601f38202f71a25d8cbc8 (red `a_cpu_baseline_keeps_deadline_timer_shaping_within_its_features`, Linux x86_64, Kiln r2; green 10 CPUID tests and clippy, r3). Mixed-host VM validation remains ROOT's. [Fix evidence](../../research/measurements/migrate/fix-review-2026-11-13.md).
+
 ### migrate-07 — P1 / high — A stronger destination's XSAVE buffer size rejects a compatible guest
 
 **Location:** `crates/vmm/src/hv/kvm/x86_64.rs:705-710`.
@@ -139,6 +145,8 @@ Priorities: **P0 = critical**, **P1 = high**, **P3 = medium**, **P5 = low**; no 
 **Fix direction:** Validate compatible guest component/layout state, construct a destination-sized zero-initialized ioctl buffer, and copy the admitted serialized components. Keep incompatible layouts a typed refusal.
 
 **Regression sketch:** Save on a non-AMX host, restore on a same-vendor AMX host with their common baseline, and verify register state and guest progress. Also test incompatible component/layout rejection.
+
+**Status (2026-11-13):** owed to ROOT: `SHARDS_MOVE_INVITE=<destination-invitation-file> cargo test -p shards --test moved a_microvm_moved_to_another_host_keeps_its_cpu_image_files_and_connections` on a retained non-AMX/AMX host pair; validate CPUID0xD component layouts before implementing padding. [Fix evidence](../../research/measurements/migrate/fix-review-2026-11-13.md).
 
 ### migrate-08 — P1 / high — Linux arm64 readiness treats baseline-masked features as unmasked
 
@@ -156,6 +164,8 @@ Priorities: **P0 = critical**, **P1 = high**, **P3 = medium**, **P5 = low**; no 
 
 **Regression sketch:** On arm64, `assert!(unmasked(&["aes".into()], &[(0xc030, 0)]).is_empty())` fails currently. Add Linux spelling cases and a real masked-feature move between suitable hosts.
 
+**Status (2026-11-13):** fixed for the mapped Linux single-register spellings in f004611b5 (red `linux_arm64_feature_names_follow_their_baseline_registers`, r7; green 3 Arm CPU tests, 10 x86 CPUID tests and shards/shards-vmm clippy, r8, Linux x86_64). Unknown and multi-register names remain conservatively checked; actual Arm VM moves are owed to ROOT. [Fix evidence](../../research/measurements/migrate/fix-review-2026-11-13.md).
+
 ### migrate-09 — P3 / medium — D191's hold still uses an explicitly unjustified fixed period
 
 **Location:** `crates/vmm/src/vm/mod.rs:205-209`; related `crates/vmm/src/platform/windows_thread.rs:66`.
@@ -171,6 +181,8 @@ Priorities: **P0 = critical**, **P1 = high**, **P3 = medium**, **P5 = low**; no 
 **Fix direction:** ROOT performs the deciding backend measurements and implements the measured derivation, including cold-start behavior; report remaining performance misses honestly.
 
 **Regression sketch:** Vary observed clock/wakeup granularity and requested rate, require the hold period/report to follow the admitted derivation, then measure real guest progress, overshoot and neighboring work. No benchmark was run here.
+
+**Status (2026-11-13):** owed to ROOT: D191 measured wake/CPU-clock/kick-cost campaign, then its existing derived-period design; no picked replacement period added. [Fix evidence](../../research/measurements/migrate/fix-review-2026-11-13.md).
 
 ### migrate-10 — P3 / medium — Migration/restore retains chosen cutoffs and budgets forbidden by the brief
 
@@ -192,6 +204,8 @@ Priorities: **P0 = critical**, **P1 = high**, **P3 = medium**, **P5 = low**; no 
 **Fix direction:** Replace selected policy/budget values with locally learned or independently justified bounds; retain format/spec constants. Record cold-start, uncertainty, overflow and adversarial behavior in the D/evidence record.
 
 **Regression sketch:** Vary link progress, restore working-set sizes, resource allowance and concurrent snapshot publication. Verify decisions follow the learned/admitted inputs rather than these fixed thresholds; require live before/after and mutation evidence from ROOT.
+
+**Status (2026-11-13):** owed to ROOT: cold-link, contention and working-set campaigns plus stopping/budget/publication designs in the fix evidence; no replacement constants added. [Fix evidence](../../research/measurements/migrate/fix-review-2026-11-13.md).
 
 ## Checked and found sound
 
