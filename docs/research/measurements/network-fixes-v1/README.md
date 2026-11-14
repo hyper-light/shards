@@ -236,3 +236,66 @@ and syscall-filter, so amended contention used warm native ARM
 `cargo check -p shards-net -p shards-net-process --tests`, Kiln r17, exit 0
 ([output](arm02-landing-check.log)). No merge conflict occurred; the focused
 passed merge remains e7822b6b7. Every follow-up commit/merge has one gpgsig.
+
+## network-03: DNS authority lifetime
+
+Red `5a3d27784` exercises a real connected UDP resolver socket and `Stack::on_udp`:
+a TTL-60 answer A permits a new TCP flow; a subsequent answer B should replace A,
+but A remains allowed. Kiln r19 on Mac3 Docker Linux aarch64 / Rust1.98.1 failed
+exactly `the replaced DNS answer still grants a new flow`, exit101.
+[Output](red03.log). Code fix `e2237fb29` changes both UDP and TCP learning;
+the subsequent import cleanup and TTL-bound test are recorded by their commits.
+
+Sources: [RFC2181 §§5.2,5.4,8](https://www.rfc-editor.org/rfc/rfc2181.html),
+[RFC1035 §§3.2.1,4.2.2](https://www.rfc-editor.org/rfc/rfc1035.html).
+The authoritative input is the resolver answer received on the existing connected
+transport. Alternatives: keeping a union is contradicted by RRset replacement;
+lookup again at connect risks connecting to an answer different from the one
+checked; SNI/HTTP assertions do not cover arbitrary granted TCP (D236 alternatives).
+Keeping one current expiring answer at this existing owner is the narrow change.
+No extra cache/index or independent manager is introduced; this state is necessary
+to hold an IP connect to a name grant, not a performance cache.
+
+Keys are normalized granted name plus A/AAAA question type. Bound: at most those
+two protocol types per distinct granted name, each parsed from one u16-length DNS
+message. Replacing an answer frees the old address vector; the earliest expiry
+joins the existing readiness deadline, and timers drop expired answers even when
+no further DNS query arrives. The grant's current name/port is checked at admission,
+so retained state cannot preserve a removed port grant; NET_POLICY clears learning.
+The monotonic deadline uses the shortest received address/CNAME TTL. A high TTL sign
+bit means zero (RFC2181§8); no TTL floor, chosen capacity or guessed timeout exists.
+Clock overflow and failed vector reservation return io::Error and admit no new
+learned authority. Cold start has none; an unanswered name grants no IP flow.
+
+TTL-zero answers retain no authority for a later IP connect. This is a deliberate
+fail-closed compatibility limitation: the current stream has no identity binding
+that separate connect to the DNS transaction. A future transaction-aware connect
+would need an explicit authority token, consumption/revocation semantics and R02
+research; silently caching zero TTL is not a substitute. Already established TCP
+flows retain their opening grant and close normally; expiry affects new flows.
+This slice does not claim to fix network-11's owner/class/CNAME/status validation.
+
+Initial green attempt r20: 2 DNS-authority tests, 1 grant-port test, 1 answer-parser
+test and 2 TCP DNS tests passed; clippy failed on the now-unused HashSet import.
+[Output](green03-first.log). Removed that import and added parser assertions for
+TTL0/1, sign-bit-zero semantics and lowest-TTL selection. The focused merged-source
+gate below is required before landing. Harness: [native-dns03.sh](native-dns03.sh).
+Same permitted runner, one cargo, incremental0/jobs4, own cold target recreated
+after network-02's cleanup; no local cargo or VM tests.
+
+R01/R04: checked clock/length/allocation, current/expired/replaced answer states,
+existing wire-policy denial on failed authority admission; production assertions
+not added. R02/R03/R05/R12: protocol-derived lifetime/space and existing state owner,
+no picked controls or new architecture. R06/R07/R13: one learning operation shared
+by both transport callers, expiry joins the existing timer. R09/R10: actual UDP
+red; deterministic expiry/history/zero-TTL and TCP/parser regression evidence above.
+R08/R14: no profile, benchmark, resource ratio or performance claim; ROOT owns those.
+R11/R15/R16: Linux arm64 GNU light checks only; CI other targets, musl and real VMs
+unverified, targets removed after landing. Signed commits and merge evidence below.
+
+ROOT owes: `cargo test -p shards --test containers a_networks_egress_is_a_grant_of_its_destinations_alone -- --exact --nocapture`
+and `cargo test -p shards --test build a_remote_mcp_server_is_a_grant_of_that_server_alone -- --exact --nocapture`.
+Extend with rotating TTL0/TTL1 UDP and TCP answers and fixed live socket count,
+witness expired/replaced IP refusal, valid current IP success, established TCP
+continuity and host memory returning after expiry. These heavy VM/resource and
+adversarial runs were not executed here.

@@ -12604,6 +12604,21 @@ destinations as this option grants a network's: one parser for both, which refus
 whose last label is all digits and `localhost`, and takes `host.docker.internal` for the
 host itself, the gateway at that port alone, its loopback there.
 
+**DNS authority lifetime (network-03, 2026-11-13).** The network process replaces the
+current answer for each granted name and A/AAAA question type, instead of accumulating
+addresses. Its next timer includes the earliest DNS expiry; expiry drops the answer's
+address storage. Each answer fits DNS-over-TCP's u16 wire length, and each distinct
+granted name admits at most the two address question types. No chosen cache limit or
+TTL floor is introduced. RFC 2181 §§5.2/5.4/8 define replacement, the shortest received
+TTL and a sign-bit TTL treated as zero. Zero TTL retains no authority for a later flow;
+supporting a zero-TTL transaction across a separate connect request would require an
+explicit transaction identity, which the present guest IP stream does not provide.
+Established TCP flows keep their opening authorization until their normal close;
+expiry/replacement affects new flows. Clock overflow/allocation failure refuses new
+learned authority through the existing policy denial, with io::Error from admission.
+Answer owner/class/CNAME validation remains network-11, a separate pending finding.
+[Unit reproduction and remaining VM checks](../research/measurements/network-fixes-v1/README.md#network-03-dns-authority-lifetime).
+
 **Next.** IPv6 destinations (the network process learns A records alone); a destination
 on a network whose members' images have agents with grants of their own, held apart by
 the address its flows come from; a run's own grant on the default bridge, if one is
@@ -26143,6 +26158,10 @@ named a host (D59 part seven); a run's command had D192's.
   lets the member out on that port (its gate, the switch, init's forward chain); the run's own
   processes (`confine_eth0`) and its engine's members (D181) reach the gateway by TCP at its
   resolver's port alone.
+- *DNS lifetime* (network-03): D192's current answer and received-TTL rules apply to
+  these destinations too. Historical answers grant no later connection; zero-TTL
+  answers retain no cross-transaction authority. Neither expiry nor replacement
+  tears down an already admitted TCP connection.
 - *Refused where it cannot be held* (`agentfile::held`, at build and as the daemon reads the
   normalized Agentfile): the network process holds the whole microVM to the union of its
   members' names on a port, and a member's init lets it out on that port to any address. So

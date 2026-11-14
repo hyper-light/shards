@@ -72,6 +72,8 @@ Ranking: P0 critical; P1 high security/resource priority; P2 high correctness pr
 
 **Catching test:** give the same granted name N distinct TTL-0/TTL-1 answers over UDP and TCP, advance a controlled clock, and require learned storage to return to the currently authorized set. Check that an expired address cannot open a new flow and unrelated names never grant authority. ROOT should measure actual host memory against a fixed live transport count.
 
+**Status (2026-11-13):** fixed in e2237fb29 (red `tests::dns_answers_replace_the_names_previous_authority` at 5a3d27784, real connected UDP learning path). Current per-name/type answers replace history and expire at their received TTL; zero-TTL answers retain no later-connect authority. Focused initial tests passed; final merged-source gate and the explicit zero-TTL compatibility limitation are recorded in `docs/research/measurements/network-fixes-v1/README.md#network-03-dns-authority-lifetime`. ROOT owes VM/resource runs; network-11 remains separate.
+
 ### network-04 — P1 / high: UDP holder changes can reuse a still-live conntrack zone and restore an old destination
 
 **Location:** `crates/init/src/chooser.rs:465`; `crates/init/src/links.rs:1561`. New chooser behavior in the review range.
