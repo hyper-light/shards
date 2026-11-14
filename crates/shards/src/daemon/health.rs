@@ -146,6 +146,14 @@ pub(super) struct Answers {
     pub metrics: Record,
     /// A starting VM's READY (`daemon::ready`).
     pub ready: Record,
+    /// A warm VM's taking of a run: the run's handoff sent, to its TAKEN (`daemon::hand_over`).
+    pub take: Record,
+    /// A microVM's join share's taking of a joiner's link: its door's `JOIN_LINK` sent
+    /// (`daemon::give_join_volumes`, Unix).
+    pub door: Record,
+    /// A join share's taking of a joiner's volume: its `JOIN_VOLUME` sent, to its `TAKEN`
+    /// (`daemon::give_join_volume`, Unix).
+    pub link: Record,
     /// A visit's VM holding its files, its STARTED after its RUN (`visit::await_holding`).
     pub held: Record,
     /// Each request for access a starting VM makes, from the answer before or its spawn
@@ -165,6 +173,9 @@ impl Default for Answers {
             room: Record::new(),
             metrics: Record::new(),
             ready: Record::new(),
+            take: Record::new(),
+            door: Record::new(),
+            link: Record::new(),
             held: Record::new(),
             #[cfg(target_os = "macos")]
             grants: Record::new(),
@@ -816,6 +827,84 @@ fn await_exit(ours: &shards_ipc::Stream, wait: Wait<'_>) -> Ended {
     Ended { status, cut }
 }
 
+/// A wait on a socket whose party is process `pid`, judged as D215 judges a wait on a VM
+/// process ([`Wait::WhileRuns`]), by the record of its kind of answer (runs-11 `TAKE_TIMEOUT`):
+/// shards_ipc's judge ([`Judged::judge`]) for its judged sends and receives. Before its kind's
+/// first answer, and once its party has gone (its socket's end then ends the wait), the
+/// socket's readiness alone; then its party looked at once each W* and the wait ended, typed
+/// ([`Stalled`]), where it ran nothing since the look before or could not be read.
+#[cfg(unix)]
+pub(super) struct Judged<'r> {
+    pid: u32,
+    record: &'r Record,
+    follow: Option<Follow<'r>>,
+    begun: bool,
+}
+
+#[cfg(unix)]
+impl<'r> Judged<'r> {
+    pub(super) fn of(pid: u32, record: &'r Record) -> Judged<'r> {
+        Judged {
+            pid,
+            record,
+            follow: None,
+            begun: false,
+        }
+    }
+
+    /// When its wait next asks, or why it ends: asked as each wait begins, and at each time it
+    /// named that passed with the socket not ready.
+    pub(super) fn judge(&mut self) -> std::io::Result<Option<Instant>> {
+        if !std::mem::replace(&mut self.begun, true) {
+            self.follow = following(self.pid, self.record).map_err(Stalled::error)?;
+            return Ok(self.follow.as_ref().and_then(Follow::due));
+        }
+        let Some(follow) = self.follow.as_mut() else {
+            return Ok(None);
+        };
+        follow.look().map_err(|why| Stalled::error(Cut::from(why)))?;
+        Ok(follow.due())
+    }
+
+    /// Its party answered: its kind learns from the answer.
+    pub(super) fn answered(&mut self) {
+        if let Some(follow) = self.follow.as_mut() {
+            follow.answered();
+        }
+    }
+}
+
+/// A judged wait's end ([`Judged`]): its party stalled, or could not be read, as [`Cut`] says.
+#[cfg(unix)]
+#[derive(Debug)]
+pub(super) struct Stalled(pub(super) Cut);
+
+#[cfg(unix)]
+impl Stalled {
+    fn error(cut: Cut) -> std::io::Error {
+        std::io::Error::new(std::io::ErrorKind::TimedOut, Stalled(cut))
+    }
+}
+
+#[cfg(unix)]
+impl std::fmt::Display for Stalled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.0 {
+            Cut::Stalled(stall) => write!(
+                f,
+                "its process ran no CPU in {:?} past the slowest answer seen ({:?}), {:?} into the wait",
+                stall.over(),
+                stall.slowest(),
+                stall.waited()
+            ),
+            other => write!(f, "{other}"),
+        }
+    }
+}
+
+#[cfg(unix)]
+impl std::error::Error for Stalled {}
+
 /// A wait on VM process `vm` judged by `record`, begun now: none where the process has gone
 /// already, whose end is the exec's; why not, where it cannot be read.
 fn following(vm: u32, record: &Record) -> Result<Option<Follow<'_>>, Cut> {
@@ -839,16 +928,23 @@ mod tests {
     }
 
     /// Waits for `wait` in an exec whose VM side `theirs` is answered by `answer`, on a
-    /// thread of its own.
+    /// thread of its own that begins only as the wait is about to: an answer timed from its
+    /// thread's start, begun first, came early of the wait on a busy host.
     fn waited(wait: Wait<'_>, answer: impl FnOnce(shards_ipc::Stream) + Send) -> Ended {
         let (ours, theirs) = shards_ipc::Stream::pair().unwrap();
+        let (go, gone) = std::sync::mpsc::channel();
         std::thread::scope(|s| {
-            s.spawn(|| answer(theirs));
+            s.spawn(move || {
+                if gone.recv().is_ok() {
+                    answer(theirs);
+                }
+            });
+            go.send(()).unwrap();
             await_exit(&ours, wait)
         })
     }
 
-    /// The exec's answer, `status`, said `after` its wait began.
+    /// The exec's answer, `status`, said `after` its wait was about to begin.
     fn answers(status: u8, after: Duration) -> impl FnOnce(shards_ipc::Stream) + Send {
         move |theirs| {
             std::thread::sleep(after);
@@ -965,15 +1061,24 @@ mod tests {
         );
         let slowest = Duration::from_secs(1);
         let record = learned(slowest);
+        let began = Instant::now();
         let ended = waited(
             Wait::WhileRuns(trickler.0.id(), &record),
             answers(7, slowest * 7 / 2),
         );
+        let wall = began.elapsed();
         assert_eq!((ended.status, ended.cut), (Some(7), None));
         let shards_api::Seen::Learned { slowest: now, .. } = record.seen() else {
             panic!("its record was lost");
         };
-        assert!(now >= slowest * 7 / 2, "its answer, slower, raised W*: {now:?}");
+        // What the wait learned is its own answer's time, from its begin, which follows its
+        // first reads of the trickler (`following`): past the slowest before, within the
+        // wait's whole; never the answer's 3.5 s exactly, which a busy host's delay between
+        // the go and that begin takes from.
+        assert!(
+            now > slowest && now <= wall,
+            "its answer, slower, raised W*: {now:?} of {wall:?}"
+        );
     }
 
     /// Past its kind's slowest answer, an exec whose microVM's process runs is waited for, and

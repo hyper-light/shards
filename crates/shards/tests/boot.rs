@@ -60,7 +60,7 @@ fn boots_to_root_mount_without_a_root_device() {
         "--memory",
         "256",
         "--cmdline",
-        "console=ttyS0 panic=-1",
+        "console=hvc0 panic=-1",
     ]);
     assert_eq!(r.status, Some(EXIT_RESET), "{r}");
     for line in machine_lines() {
@@ -87,7 +87,7 @@ fn a_reset_with_no_console_says_its_guests_panic() {
         "256",
         "--no-console",
         "--cmdline",
-        "console=ttyS0 panic=-1",
+        "console=hvc0 panic=-1",
     ]);
     assert_eq!(r.status, Some(EXIT_RESET), "{r}");
     assert!(
@@ -130,7 +130,7 @@ fn a_dax_windows_page_structures_take_none_of_its_guests_memory() {
                     "--share-window",
                     window,
                     "--cmdline",
-                    "console=ttyS0 panic=-1 shards_test=memory",
+                    "console=hvc0 panic=-1 shards_test=memory",
                 ]);
                 assert_eq!(r.status, Some(0), "{r}");
                 // `SHARDS-TEST MEMORY <MemTotal> <MemFree> <MemAvailable> <uptime> <listed>`
@@ -193,7 +193,7 @@ fn a_long_dax_window_costs_its_boot_next_to_nothing() {
                         "--share-window",
                         window,
                         "--cmdline",
-                        "console=ttyS0 panic=-1 shards_test=memory",
+                        "console=hvc0 panic=-1 shards_test=memory",
                     ],
                     &[("SHARDS_TIMING", std::ffi::OsStr::new("1"))],
                 );
@@ -233,7 +233,7 @@ fn a_pci_bus_reaches_its_function() {
         g,
         "--pci-test",
         "--cmdline",
-        "console=ttyS0 panic=-1 shards_test=pci",
+        "console=hvc0 panic=-1 shards_test=pci",
     ]);
     assert!(r.stdout.contains("SHARDS-TEST PASS"), "{r}");
     assert_eq!(r.status, Some(0), "{r}");
@@ -256,7 +256,7 @@ fn brings_up_every_vcpu() {
             "--memory",
             "512",
             "--cmdline",
-            "console=ttyS0 panic=-1",
+            "console=hvc0 panic=-1",
         ]);
         assert!(
             r.stdout.contains(&format!("smp: Brought up 1 node, {n} CPUs")),
@@ -278,7 +278,7 @@ fn two_vcpus_boot_to_their_end_in_this_process() {
     let mut cfg = Config::new(kernel().to_path_buf(), None);
     cfg.vcpus = 2;
     cfg.memory_mib = 512;
-    cfg.cmdline = "console=ttyS0 panic=-1".into();
+    cfg.cmdline = "console=hvc0 panic=-1".into();
     cfg.console = Console::Discard;
     // Its whole console kept: this test reads it as it goes (D12).
     cfg.said = usize::MAX;
@@ -317,7 +317,7 @@ fn boots_the_hosts_maximum_vcpu_count() {
         "--memory".as_ref(),
         "1024".as_ref(),
         "--cmdline".as_ref(),
-        "console=ttyS0 panic=-1".as_ref(),
+        "console=hvc0 panic=-1".as_ref(),
     ]);
     let configured = kernel_nr_cpus();
     let up = max.min(configured);
@@ -353,7 +353,7 @@ fn runs_init_as_pid_1_and_powers_off() {
         "--init",
         init,
         "--cmdline",
-        "console=ttyS0 quiet panic=-1",
+        "console=hvc0 quiet panic=-1",
     ]);
     assert_eq!(r.status, Some(0), "{r}");
     assert!(r.stdout.contains("shards-init: pid 1 running"), "{r}");
@@ -543,7 +543,7 @@ fn a_nested_guest_is_a_kvm_host() {
         "--memory",
         "512",
         "--cmdline",
-        "console=ttyS0 panic=-1 shards_test=kmsg",
+        "console=hvc0 panic=-1 shards_test=kmsg",
     ]);
     if r.stderr.contains("this Mac gives a guest no EL2") {
         eprintln!("SKIP: this Mac gives a guest no EL2");
@@ -602,7 +602,7 @@ fn a_pci_functions_interrupts_reach_the_guest() {
         "--pci-test",
         "--cmdline",
         &format!(
-            "console=ttyS0 panic=-1 vfio.enable_unsafe_noiommu_mode=1{} shards_test=pci-irq",
+            "console=hvc0 panic=-1 vfio.enable_unsafe_noiommu_mode=1{} shards_test=pci-irq",
             unsafe_interrupts()
         ),
     ]);
@@ -635,10 +635,7 @@ fn a_pci_functions_dma_goes_through_its_iommu() {
         test_guest().to_str().unwrap(),
         "--pci-test",
         "--cmdline",
-        &format!(
-            "console=ttyS0 panic=-1{} shards_test=pci-dma",
-            unsafe_interrupts()
-        ),
+        &format!("console=hvc0 panic=-1{} shards_test=pci-dma", unsafe_interrupts()),
     ]);
     assert_eq!(r.status, Some(0), "{r}");
     assert!(r.stdout.contains(DMA_THROUGH_IOMMU), "{r}");
@@ -692,7 +689,7 @@ fn a_nested_guest_runs_vms_of_its_own() {
         .file("l2", 0o644, &read(nested));
     std::fs::write(&initrd, cpio.finish()).unwrap();
     let outer = |args: &[&str], cmdline: &str| {
-        let cmdline = format!("console=ttyS0 panic=-1 shards_test=host {cmdline}");
+        let cmdline = format!("console=hvc0 panic=-1 shards_test=host {cmdline}");
         let mut all = vec![
             "--kernel",
             nested.to_str().unwrap(),
@@ -913,7 +910,7 @@ fn a_hosts_pci_function_is_assigned_where_its_hypervisor_assigns_one() {
         .map(|d| format!(" shards_pci_driver={d}"))
         .unwrap_or_default();
     let cmdline = format!(
-        "console=ttyS0 panic=-1 shards_test=pci-host shards_pci_ids={}:{}{driver}",
+        "console=hvc0 panic=-1 shards_test=pci-host shards_pci_ids={}:{}{driver}",
         id("VEN_"),
         id("DEV_")
     );
@@ -964,7 +961,7 @@ fn a_run_is_given_a_hosts_vfio_group() {
             .file("init", 0o755, &read(test_guest()));
     };
     let outer = |initrd: &std::path::Path, cmdline: &str| {
-        let cmdline = format!("console=ttyS0 panic=-1 {cmdline}");
+        let cmdline = format!("console=hvc0 panic=-1 {cmdline}");
         vm_run(&[
             "--kernel",
             nested.to_str().unwrap(),
@@ -1050,7 +1047,7 @@ fn snapshot_tests_pass_on_a_kvm_host_of_this_architecture() {
             Some(_) => " vfio_iommu_type1.allow_unsafe_interrupts=1 iommufd.allow_unsafe_interrupts=1",
             None => "",
         };
-        let cmdline = format!("console=ttyS0 panic=-1 {cmdline}{unsafe_msis}");
+        let cmdline = format!("console=hvc0 panic=-1 {cmdline}{unsafe_msis}");
         let mut args = vec![
             "--kernel",
             nested.to_str().unwrap(),
@@ -1239,7 +1236,7 @@ fn a_snapshot_keeps_memory_to_plug() {
     }
     let dir = common::TempDir::new("snap-plug");
     let snapshot = dir.join("s");
-    let cmdline = "console=ttyS0 quiet panic=-1 shards_test=snapshot-plug shards_plug_mib=512 memhp_default_state=online_movable";
+    let cmdline = "console=hvc0 quiet panic=-1 shards_test=snapshot-plug shards_plug_mib=512 memhp_default_state=online_movable";
     let booted = run_shards(
         &["run"],
         &[
@@ -1278,7 +1275,7 @@ fn a_snapshot_keeps_the_memory_its_guest_plugged() {
     }
     let dir = common::TempDir::new("plug-snap");
     let snapshot = dir.join("s");
-    let cmdline = "console=ttyS0 quiet panic=-1 shards_test=plug-snapshot shards_plug_mib=512 memhp_default_state=online_movable";
+    let cmdline = "console=hvc0 quiet panic=-1 shards_test=plug-snapshot shards_plug_mib=512 memhp_default_state=online_movable";
     let booted = run_shards(
         &["run"],
         &[
@@ -1331,7 +1328,7 @@ fn a_guest_grows_and_gives_back_its_memory() {
         .args(["run", "--kernel", kernel().to_str().unwrap()])
         .args(["--init", test_guest().to_str().unwrap()])
         .args(["--memory", "256", "--memory-max", "1280", "--cmdline"])
-        .arg("console=ttyS0 panic=-1 shards_test=hotplug shards_plug_mib=1024 memhp_default_state=online_movable")
+        .arg("console=hvc0 panic=-1 shards_test=hotplug shards_plug_mib=1024 memhp_default_state=online_movable")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -1580,7 +1577,7 @@ fn boots_at_once(cases: &[(usize, usize, &str)]) {
                 .args(["run", "--kernel"])
                 .arg(k)
                 .args(["--cpus", &vcpus.to_string(), "--memory", "512"])
-                .args(["--cmdline", &format!("console=ttyS0 earlycon panic=-1{told}")])
+                .args(["--cmdline", &format!("console=hvc0 panic=-1{told}")])
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
@@ -1761,7 +1758,7 @@ fn cold_boot_threads_cost() {
             .args(["run", "--kernel"])
             .arg(kernel())
             .args(["--cpus", &vcpus.to_string(), "--memory", "512"])
-            .args(["--cmdline", &format!("console=ttyS0 earlycon panic=0{told}")])
+            .args(["--cmdline", &format!("console=hvc0 panic=0{told}")])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -1905,7 +1902,7 @@ fn cold_boots_profiled() {
                             "512",
                             "--cmdline",
                             &format!(
-                                "console=ttyS0 panic=-1 quiet profile=4 initcall_debug log_buf_len=1M{told} shards_test=profile"
+                                "console=hvc0 panic=-1 quiet profile=4 initcall_debug log_buf_len=1M{told} shards_test=profile"
                             ),
                         ],
                     )
@@ -2010,7 +2007,7 @@ fn a_direct_boot_writes_through_a_share_and_not_through_a_read_only_one() {
             "--memory",
             "256",
             "--cmdline",
-            "console=ttyS0 quiet panic=-1 shards_test=share",
+            "console=hvc0 quiet panic=-1 shards_test=share",
             "--share",
             rw.to_str().unwrap(),
             "--share",
@@ -2060,7 +2057,7 @@ fn a_direct_boot_ended_at_its_deadline_leaves_none_of_its_processes() {
         "256",
         // The echo guest serves until it is ended: the run is still going at its deadline.
         "--cmdline",
-        "console=ttyS0 quiet shards_test=echo",
+        "console=hvc0 quiet shards_test=echo",
         "--share",
         rw.to_str().unwrap(),
     ];
@@ -2144,7 +2141,7 @@ fn shards_api_conforms_on_real_guests() {
     if cannot_run_vms() {
         return;
     }
-    let spec = |mode: &str| api_spec(&format!("console=ttyS0 quiet panic=-1 shards_test={mode}"));
+    let spec = |mode: &str| api_spec(&format!("console=hvc0 quiet panic=-1 shards_test={mode}"));
     conformance::run(&conformance::Subject {
         guests: &shards_api::Shards,
         serving: spec("echo"),
@@ -2179,7 +2176,7 @@ fn shards_api_shares_a_directory_and_a_read_only_one() {
                 read_only: true,
             },
         ],
-        ..api_spec("console=ttyS0 quiet panic=-1 shards_test=share")
+        ..api_spec("console=hvc0 quiet panic=-1 shards_test=share")
     };
     let guest = shards_api::Shards.boot(&spec).unwrap();
     assert_eq!(guest.wait_while_runs().unwrap(), shards_api::End::PowerOff);
@@ -2222,7 +2219,7 @@ fn a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket() {
             cmd.arg("--host-managed");
         }
         cmd.arg("--cmdline")
-            .arg("console=ttyS0 panic=-1 quiet shards_test=spin shards_spin_ms=600000 shards_idle_ms=0")
+            .arg("console=hvc0 panic=-1 quiet shards_test=spin shards_spin_ms=600000 shards_idle_ms=0")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -2398,7 +2395,7 @@ fn a_managed_guest_records_its_final_use_as_it_ends() {
             cmd.arg("--host-managed");
         }
         cmd.arg("--cmdline")
-            .arg("console=ttyS0 panic=-1 quiet shards_test=spin shards_spin_ms=500 shards_idle_ms=0")
+            .arg("console=hvc0 panic=-1 quiet shards_test=spin shards_spin_ms=500 shards_idle_ms=0")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -2440,7 +2437,7 @@ fn shards_api_boot_under_the_suites_load() {
         .map(|_| {
             let start = std::time::Instant::now();
             let guest = shards_api::Shards
-                .boot(&api_spec("console=ttyS0 quiet shards_test=echo"))
+                .boot(&api_spec("console=hvc0 quiet shards_test=echo"))
                 .unwrap();
             drop(guest.connect_while_runs(1234).unwrap());
             start.elapsed()
@@ -2465,7 +2462,7 @@ fn shards_api_boot_under_the_suites_load() {
                         read_only: true,
                     },
                 ],
-                ..api_spec("console=ttyS0 quiet panic=-1 shards_test=share")
+                ..api_spec("console=hvc0 quiet panic=-1 shards_test=share")
             };
             let start = std::time::Instant::now();
             let guest = shards_api::Shards.boot(&spec).unwrap();
@@ -2494,7 +2491,7 @@ fn shards_api_boot_under_the_suites_load() {
 fn answered_boot() -> Duration {
     let start = std::time::Instant::now();
     let guest = shards_api::Shards
-        .boot(&api_spec("console=ttyS0 quiet panic=-1 shards_test=echo"))
+        .boot(&api_spec("console=hvc0 quiet panic=-1 shards_test=echo"))
         .unwrap_or_else(|e| panic!("boot: {e}"));
     drop(
         guest

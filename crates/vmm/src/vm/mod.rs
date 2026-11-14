@@ -1212,7 +1212,7 @@ fn kernel_cmdline(cfg: &Config) -> std::borrow::Cow<'_, str> {
     }
 }
 
-/// Where the serial console's output goes.
+/// Where the console's output goes.
 #[cfg(hv)]
 fn console_out(console: Console) -> Result<Box<dyn std::io::Write + Send>, String> {
     Ok(match console {
@@ -1299,7 +1299,7 @@ pub struct Config {
     pub cmdline: String,
     pub vcpus: u32,
     pub memory_mib: u64,
-    /// Where guest console (UART) output goes.
+    /// Where guest console (hvc0, virtio-console) output goes.
     pub console: Console,
     /// How many of its console's last bytes it keeps to quote (`Handle::console_said`):
     /// what its spawner learned its kernel's failure reports need
@@ -2507,7 +2507,7 @@ impl Config {
             kernel,
             initrd: None,
             init,
-            cmdline: "console=ttyS0 earlycon panic=-1".into(),
+            cmdline: "console=hvc0 panic=-1".into(),
             vcpus: 1,
             memory_mib: MEMORY_MIB,
             console: Console::Stdout,
@@ -2946,7 +2946,7 @@ mod tests {
             cfg.console = console;
             kernel_cmdline(&cfg).into_owned()
         };
-        let base = "console=ttyS0 earlycon panic=-1";
+        let base = "console=hvc0 panic=-1";
         assert_eq!(told(base, Console::Discard), format!("{base} quiet"));
         assert_eq!(told(base, Console::Stdout), base);
         for own in [format!("{base} loglevel=7"), format!("{base} quiet")] {
@@ -2969,10 +2969,10 @@ mod tests {
             kernel_cmdline(&cfg).into_owned()
         };
         assert_eq!(
-            told("console=ttyS0 -- managed-network capabilities"),
-            "console=ttyS0 quiet -- managed-network capabilities"
+            told("console=hvc0 -- managed-network capabilities"),
+            "console=hvc0 quiet -- managed-network capabilities"
         );
-        assert_eq!(told("console=ttyS0 -- quiet"), "console=ttyS0 quiet -- quiet");
+        assert_eq!(told("console=hvc0 -- quiet"), "console=hvc0 quiet -- quiet");
         assert_eq!(told("loglevel=7 -- x"), "loglevel=7 -- x");
     }
 
@@ -3045,6 +3045,7 @@ mod tests {
             data: None,
             arch: Vec::new(),
             devices: Vec::new(),
+            init: None,
         };
         let hosts = |v: bool, n: bool| Hosts {
             vsock: v.then_some(&vsock),

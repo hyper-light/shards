@@ -165,7 +165,11 @@ impl Handle {
         match self.0 {}
     }
 
-    pub fn console_said(&self) -> crate::devices::serial::Said {
+    pub fn console_said(&self) -> crate::devices::said::Said {
+        match self.0 {}
+    }
+
+    pub fn panicked(&self) -> bool {
         match self.0 {}
     }
 

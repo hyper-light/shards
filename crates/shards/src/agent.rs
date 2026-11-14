@@ -216,29 +216,50 @@ fn attach_sbom(
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     // Built here, as the artifact is, whatever context the home has chosen.
     let (here, this) = crate::context::HERE;
-    let ran = shards_ipc::spawn_std(
-        std::process::Command::new(exe)
-            .env(here, this)
-            .arg("build")
-            .arg("--progress=plain")
-            .arg(format!("--sbom={sbom}"))
-            .arg("--provenance=false")
-            .arg("--output")
-            .arg(format!("type=oci,dest={},tar=false", out.display()))
-            .arg("-f")
-            .arg(&file)
-            .arg(content)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped()),
-    )
-    .and_then(std::process::Child::wait_with_output)
-    .map_err(|e| format!("scanning {}: {e}", content.display()))?;
-    if !ran.status.success() {
+    let sbom_flag = format!("--sbom={sbom}");
+    let output = format!("type=oci,dest={},tar=false", out.display());
+    let args: [&std::ffi::OsStr; 9] = [
+        "build".as_ref(),
+        "--progress=plain".as_ref(),
+        sbom_flag.as_ref(),
+        "--provenance=false".as_ref(),
+        "--output".as_ref(),
+        output.as_ref(),
+        "-f".as_ref(),
+        file.as_os_str(),
+        content.as_os_str(),
+    ];
+    let scanning = |e: io::Error| format!("scanning {}: {e}", content.display());
+    // Its words on a pipe of their own, read to their end before it is waited for; its output
+    // none. Given those alone (shards_ipc's spawn, D248).
+    let null = crate::os::null().map_err(scanning)?;
+    let (mut said, says) = io::pipe().map_err(scanning)?;
+    #[cfg(unix)]
+    let fds = {
+        use std::os::fd::AsFd as _;
+        [(null.as_fd(), 0), (null.as_fd(), 1), (says.as_fd(), 2)]
+    };
+    #[cfg(windows)]
+    let fds = {
+        use std::os::windows::io::AsHandle as _;
+        [
+            (null.as_handle(), 0),
+            (null.as_handle(), 1),
+            (says.as_handle(), 2),
+        ]
+    };
+    let child = shards_ipc::spawn_with(&exe, &args, &fds, false, &[(here, std::ffi::OsStr::new(this))])
+        .map_err(scanning)?;
+    drop(says);
+    let mut stderr = Vec::new();
+    let read = said.read_to_end(&mut stderr);
+    let status = child.wait().map_err(scanning)?;
+    read.map_err(scanning)?;
+    if status != 0 {
         return Err(format!(
             "scanning {} for an SBOM failed:\n{}",
             content.display(),
-            String::from_utf8_lossy(&ran.stderr)
+            String::from_utf8_lossy(&stderr)
         ));
     }
     let doc = scanned_document(&out)?;

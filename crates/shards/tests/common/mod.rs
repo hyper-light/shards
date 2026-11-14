@@ -1140,6 +1140,50 @@ pub fn host_memory() -> u64 {
     }
 }
 
+/// What a home learned its builders' guest needs to boot, in bytes (D133, memory-15): the
+/// `boot IDENTITY BYTES` line of its `builder-memory`, which a builder adds as it ends. One
+/// guest (one kernel, init and CPU count) per test home, so one line; None where the home
+/// has learned none, as before its first builder ended: its next builder boots cold, with
+/// all it may have.
+pub fn learned_boot(home: &Path) -> Option<u64> {
+    let said = std::fs::read_to_string(home.join("builder-memory")).ok()?;
+    let boots: Vec<u64> = said
+        .lines()
+        .filter_map(|l| l.strip_prefix("boot "))
+        .filter_map(|rest| rest.split_whitespace().nth(1)?.parse().ok())
+        .collect();
+    assert!(
+        boots.len() <= 1,
+        "more than one guest learned in one home: {said}"
+    );
+    boots.first().copied()
+}
+
+/// What `/proc/sys/vm/pluggable_kbytes` read in each step that `testguest stat`ed it, in
+/// order, in KiB (D149): the memory its builder may still plug, which its init reports
+/// where it has memory to plug and the kernel lowers as it is plugged; 0 in a builder that
+/// booted with all it may have (D133, memory-15).
+pub fn pluggable_said(stderr: &str) -> Vec<u64> {
+    let mut said = Vec::new();
+    let mut lines = stderr.lines();
+    while let Some(line) = lines.next() {
+        if !line.contains("/proc/sys/vm/pluggable_kbytes file") {
+            continue;
+        }
+        // `#N SECS = VALUE\n`, the file's text as `stat` prints it, its newline escaped.
+        let value = lines
+            .find_map(|l| l.split_once(" = ").map(|(_, v)| v.to_string()))
+            .unwrap_or_default();
+        let digits: String = value.chars().take_while(char::is_ascii_digit).collect();
+        said.push(
+            digits
+                .parse()
+                .unwrap_or_else(|_| panic!("pluggable_kbytes read {value:?}")),
+        );
+    }
+    said
+}
+
 /// This host's name, as the daemon reads it (daemon/info.rs `host_name`): gethostname(2)
 /// on Unix; on Windows its DNS host name (GetComputerNameExW,
 /// ComputerNamePhysicalDnsHostname), as Go's `os.Hostname` reads it.
@@ -2706,6 +2750,10 @@ fn run_ending(
         }
     };
     let mut wait = Wait::begin(kind, child.id(), home.as_deref(), &asked.join(" "));
+    // Its answer, its client's end, is missing as it begins: its client started just now,
+    // so an end its first check finds before any look is its party's answer, which teaches
+    // its kind, never one there before it.
+    wait.absent();
     let mut status = None;
     loop {
         if status.is_none()
@@ -5939,6 +5987,12 @@ impl<'a> Heard<'a> {
     /// What it waited for came: its kind's answer.
     pub fn answered(&mut self) {
         self.wait.answered();
+    }
+
+    /// Its caller found what it waits for missing ([`Wait::absent`]): a party's end it
+    /// started just now, which no check finds there before it.
+    pub fn absent(&mut self) {
+        self.wait.absent();
     }
 
     /// What its kind has learned on this host.

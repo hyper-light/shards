@@ -164,10 +164,11 @@ type ShareEnds = Vec<OwnedFd>;
 type StartedShares = (ShareEnds, Option<Arc<shards_ipc::Child>>, Option<OwnedFd>);
 
 /// A microVM's join share's door (D119): the daemon's connection to its process, on which
-/// each joiner's link goes; on Windows with that process's handle, which every link of the
-/// daemon's gives what it sends into (D197).
+/// each joiner's link goes; on Unix with that process's ID, by which each send on it and on
+/// its links is judged (runs-11 `TAKE_TIMEOUT`); on Windows with that process's handle, which
+/// every link of the daemon's gives what it sends into (D197).
 #[cfg(unix)]
-type JoinDoor = UnixStream;
+type JoinDoor = (UnixStream, u32);
 #[cfg(windows)]
 type JoinDoor = (UnixStream, std::os::windows::io::OwnedHandle);
 
@@ -4661,6 +4662,15 @@ impl<D: Disk> Daemon<D> {
             if ready.net.is_some() && keep.mac.is_some() {
                 ready.mac = keep.mac;
             }
+            #[cfg(unix)]
+            let handed = hand_over(
+                &ready.socket,
+                &mut health::Judged::of(ready.vm.id(), &self.answers.take),
+                payload,
+                fds,
+                ends,
+            );
+            #[cfg(windows)]
             let handed = hand_over(&ready.socket, payload, fds, ends);
             // Only now, so that starting its successor delays no run: on the refiller's
             // thread.
@@ -7877,7 +7887,7 @@ impl<D: Disk> Daemon<D> {
         use std::os::unix::ffi::OsStrExt as _;
         let failed = |e: io::Error| format!("its microVM's join share: {e}");
         let (link, theirs) = UnixStream::pair().map_err(failed)?;
-        {
+        let share = {
             let mut shares = lock(&self.join_shares);
             if !shares.contains_key(provider) {
                 // Of the provider's microVM's processes: under its parent (D183).
@@ -7885,39 +7895,43 @@ impl<D: Disk> Daemon<D> {
                 let door = self.start_join_share(threads, socket, inbox, &parent)?;
                 shares.insert(provider.to_string(), door);
             }
+            // The share's process reads its door as links come: the send waits for room while
+            // that process goes on (D215's judge, `Answers::door`; runs-11 `TAKE_TIMEOUT`).
             let sent = match shares.get(provider) {
-                Some(door) => shards_ipc::send(door, kind::JOIN_LINK, &[], &[theirs.as_fd()]),
+                Some((door, pid)) => {
+                    let mut judged = health::Judged::of(*pid, &self.answers.door);
+                    let sent =
+                        shards_ipc::send_judged(door, kind::JOIN_LINK, &[], &[theirs.as_fd()], &mut || {
+                            judged.judge()
+                        });
+                    sent.map(|()| {
+                        judged.answered();
+                        *pid
+                    })
+                }
                 None => Err(io::Error::other("it has none")),
             };
-            if let Err(e) = sent {
-                // Its process gone: the next joiner's starts another.
-                shares.remove(provider);
-                return Err(failed(e));
+            match sent {
+                Ok(pid) => pid,
+                Err(e) => {
+                    // Its process gone: the next joiner's starts another.
+                    shares.remove(provider);
+                    return Err(failed(e));
+                }
             }
-        }
-        shards_ipc::timeout_set(link.set_read_timeout(Some(TAKE_TIMEOUT))).map_err(failed)?;
-        shards_ipc::timeout_set(link.set_write_timeout(Some(TAKE_TIMEOUT))).map_err(failed)?;
-        let _waiting = Waiting::of(Some(TAKE_TIMEOUT));
+        };
         for ((dir, read_only, only), name) in volumes {
             let mut payload = name.as_bytes().to_vec();
             payload.push(0);
             payload.extend_from_slice(if *read_only { b"ro" } else { b"rw" });
             payload.push(0);
             payload.extend_from_slice(only.as_bytes());
-            shards_ipc::send(&link, kind::JOIN_VOLUME, &payload, &[dir.as_fd()]).map_err(failed)?;
-            let answer = shards_ipc::recv(&link)
-                .map_err(failed)?
-                .ok_or("its microVM's join share ended")?;
-            match answer.kind {
-                kind::TAKEN => {}
-                kind::ERR => {
-                    return Err(format!(
-                        "its microVM's join share: {}",
-                        String::from_utf8_lossy(&answer.payload)
-                    ));
-                }
-                other => return Err(format!("its microVM's join share said message kind {other}")),
-            }
+            give_join_volume(
+                &link,
+                &mut health::Judged::of(share, &self.answers.link),
+                &payload,
+                dir.as_fd(),
+            )?;
         }
         // Answered on it, the share has its end: ours may go (M24).
         drop(theirs);
@@ -8059,7 +8073,7 @@ impl<D: Disk> Daemon<D> {
     /// Starts a microVM's join share process (D119), its root an empty directory of the
     /// home's, and gives the VM `socket` reaches its connection to it, held until the VM
     /// says it has it (M24). Returns the daemon's connection to the process, on which each
-    /// joiner's link to it goes.
+    /// joiner's link to it goes, and the process's ID.
     #[cfg(unix)]
     fn start_join_share<'s, 'e>(
         &'s self,
@@ -8067,7 +8081,7 @@ impl<D: Disk> Daemon<D> {
         socket: &RunSocket,
         inbox: &Mutex<Inbox>,
         parent: &str,
-    ) -> Result<UnixStream, String> {
+    ) -> Result<JoinDoor, String> {
         use std::os::unix::fs::DirBuilderExt as _;
         let failed = |e: io::Error| format!("its microVM's join share: {e}");
         let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
@@ -8096,6 +8110,7 @@ impl<D: Disk> Daemon<D> {
             &[],
         )
         .map_err(|e| format!("starting its microVM's join share: {e}"))?;
+        let pid = child.id();
         self.follow_share(threads, child);
         let number = self.next_exec.fetch_add(1, Ordering::Relaxed);
         let held = vms.try_clone().map_err(failed)?;
@@ -8105,8 +8120,7 @@ impl<D: Disk> Daemon<D> {
             // The process ends as the other end of its connection goes, with ours.
             return Err(failed(e));
         }
-        shards_ipc::timeout_set(door.set_write_timeout(Some(TAKE_TIMEOUT))).map_err(failed)?;
-        Ok(door)
+        Ok((door, pid))
     }
 
     /// A warm VM for `prepared`: from its template's pool, or booted for it, saving the
@@ -9115,12 +9129,87 @@ enum Untaken {
     Unknown(String),
 }
 
+/// Gives a join share one volume of a joiner's on its `link`, `payload` its name, mode and
+/// path within, and waits for its `TAKEN` while the share's process goes on (D215's judge,
+/// `Answers::link`; runs-11 `TAKE_TIMEOUT`): its answer teaches the judge's record.
+#[cfg(unix)]
+fn give_join_volume(
+    link: &UnixStream,
+    judged: &mut health::Judged<'_>,
+    payload: &[u8],
+    dir: BorrowedFd<'_>,
+) -> Result<(), String> {
+    let failed = |e: io::Error| format!("its microVM's join share: {e}");
+    shards_ipc::send_judged(link, kind::JOIN_VOLUME, payload, &[dir], &mut || judged.judge())
+        .map_err(failed)?;
+    let answer = shards_ipc::recv_judged(link, &mut || judged.judge())
+        .map_err(failed)?
+        .ok_or("its microVM's join share ended")?;
+    judged.answered();
+    match answer.kind {
+        kind::TAKEN => Ok(()),
+        kind::ERR => Err(format!(
+            "its microVM's join share: {}",
+            String::from_utf8_lossy(&answer.payload)
+        )),
+        other => Err(format!("its microVM's join share said message kind {other}")),
+    }
+}
+
 /// Sends a run to a warm VM and waits for it to say it has taken it. This process keeps
 /// its copies of the client's descriptors until then: macOS flushes a socket in flight
 /// that no process holds (shards_ipc). A warm VM says TAKEN before it touches the client's
 /// stdio or starts anything (warm.rs, receive), and if it cannot, it does neither: one
 /// that ends without a word never started the run. On Windows each of its shares' streams
 /// (`ends`, D197) follows the request, as a share process hands them to it on Unix.
+#[cfg(unix)]
+fn hand_over(
+    vm: &UnixStream,
+    judged: &mut health::Judged<'_>,
+    payload: &[u8],
+    fds: &[BorrowedFd<'_>],
+    ends: &[BorrowedFd<'_>],
+) -> Result<(), Untaken> {
+    // A live VM reads its run as it comes: the send waits for room while the VM's process goes
+    // on (D215's judge, `Answers::take`; runs-11 `TAKE_TIMEOUT`), and a request it cut short
+    // is no request: the VM never had all of it. A VM that has closed its end is found at once.
+    let surely = |e: io::Error| Untaken::Surely(e.to_string());
+    shards_ipc::send_judged(vm, kind::RUN, payload, fds, &mut || judged.judge()).map_err(surely)?;
+    // MAX_FDS a message at most; the VM takes the run only once it has them all.
+    for batch in ends.chunks(shards_ipc::MAX_FDS) {
+        shards_ipc::send_judged(vm, kind::SHARE_ENDS, &[], batch, &mut || judged.judge()).map_err(surely)?;
+    }
+    taken(vm, judged)
+}
+
+/// Waits for a warm VM sent a run to say it has taken it, while its process goes on
+/// ([`hand_over`]'s judge): its TAKEN teaches the judge's record.
+#[cfg(unix)]
+fn taken(vm: &UnixStream, judged: &mut health::Judged<'_>) -> Result<(), Untaken> {
+    match shards_ipc::recv_judged(vm, &mut || judged.judge()) {
+        Ok(Some(m)) if m.kind == kind::TAKEN => {
+            judged.answered();
+            Ok(())
+        }
+        Ok(Some(m)) => Err(Untaken::Unknown(format!(
+            "it said message kind {} instead of TAKEN",
+            m.kind
+        ))),
+        Ok(None) => Err(Untaken::Surely("it ended first".into())),
+        // Its end closed with the run still unread in it: Linux resets the peer of a
+        // stream socket released with data in its queue, and only then
+        // (net/unix/af_unix.c, unix_release_sock), and a TAKEN it had sent would be read
+        // before the reset. A pool's VM a stopped slice ended, before the pool saw it end.
+        Err(e) if e.kind() == io::ErrorKind::ConnectionReset => {
+            Err(Untaken::Surely(format!("it ended with the run unread: {e}")))
+        }
+        Err(e) => Err(Untaken::Unknown(e.to_string())),
+    }
+}
+
+/// [`hand_over`] on Windows: its judged twin is runs-11 `TAKE_TIMEOUT`'s slice (b), owed; until
+/// then its writes and its wait for TAKEN are bounded by `TAKE_TIMEOUT`.
+#[cfg(windows)]
 fn hand_over(
     vm: &UnixStream,
     payload: &[u8],
@@ -9142,7 +9231,8 @@ fn hand_over(
     taken(vm)
 }
 
-/// Waits for a warm VM sent a run to say it has taken it.
+/// [`taken`] on Windows, as [`hand_over`] there.
+#[cfg(windows)]
 fn taken(vm: &UnixStream) -> Result<(), Untaken> {
     // A VM that has closed its end needs no bound: the read finds the end at once
     // (`shards_ipc::timeout_set`).
@@ -9712,6 +9802,34 @@ mod tests {
     use shards_api::{Found, Judge, Record, Seen, Stall};
     use shards_vmm::platform::{IDLE_VM_CPU, progressed};
 
+    /// A run handed over as `hand_over` hands it, its VM's party this process and its kind
+    /// cold: waited for on its socket's readiness alone.
+    fn handed_over(
+        vm: &UnixStream,
+        payload: &[u8],
+        fds: &[BorrowedFd<'_>],
+        ends: &[BorrowedFd<'_>],
+    ) -> Result<(), Untaken> {
+        #[cfg(unix)]
+        return hand_over(
+            vm,
+            &mut health::Judged::of(std::process::id(), &Record::new()),
+            payload,
+            fds,
+            ends,
+        );
+        #[cfg(windows)]
+        hand_over(vm, payload, fds, ends)
+    }
+
+    /// [`taken`] as [`handed_over`] waits.
+    fn taken_cold(vm: &UnixStream) -> Result<(), Untaken> {
+        #[cfg(unix)]
+        return taken(vm, &mut health::Judged::of(std::process::id(), &Record::new()));
+        #[cfg(windows)]
+        taken(vm)
+    }
+
     /// Cold boots wait their turn while the vCPUs under way and theirs would pass the most
     /// (PM M357): two of 4 within 8 go at once, and a third waits until one of them has
     /// ended; one past the most goes alone, and the next waits for it; and those waiting as
@@ -10214,7 +10332,7 @@ mod tests {
                     shards_ipc::send(&vm, kind::TAKEN, &[], &[]).unwrap();
                     run.fds
                 });
-                hand_over(
+                handed_over(
                     &daemon,
                     b"run",
                     &[shards_ipc::handed(&conn).unwrap().as_fd()],
@@ -10237,7 +10355,7 @@ mod tests {
         let (daemon, vm) = UnixStream::pair().unwrap();
         let (_client, conn) = UnixStream::pair().unwrap();
         let warm = std::thread::spawn(move || drop(shards_ipc::recv(&vm)));
-        let e = hand_over(
+        let e = handed_over(
             &daemon,
             b"run",
             &[shards_ipc::handed(&conn).unwrap().as_fd()],
@@ -10259,7 +10377,7 @@ mod tests {
             shards_ipc::send(&vm, kind::STARTED, &[], &[]).unwrap();
             vm
         });
-        let e = hand_over(
+        let e = handed_over(
             &daemon,
             b"run",
             &[shards_ipc::handed(&conn).unwrap().as_fd()],
@@ -10271,7 +10389,7 @@ mod tests {
         // So does a VM whose socket is gone before the request is whole.
         let (daemon, vm) = UnixStream::pair().unwrap();
         drop(vm);
-        let e = hand_over(
+        let e = handed_over(
             &daemon,
             b"run",
             &[shards_ipc::handed(&conn).unwrap().as_fd()],
@@ -12820,17 +12938,20 @@ mod tests {
     fn a_vm_gone_before_the_wait_surely_never_took_the_run() {
         let (daemon_end, vm) = UnixStream::pair().unwrap();
         drop(vm);
-        assert_eq!(taken(&daemon_end), Err(Untaken::Surely("it ended first".into())));
+        assert_eq!(
+            taken_cold(&daemon_end),
+            Err(Untaken::Surely("it ended first".into()))
+        );
 
         let (daemon_end, vm) = UnixStream::pair().unwrap();
         say(&vm, kind::TAKEN, &[]);
         drop(vm);
-        assert_eq!(taken(&daemon_end), Ok(()));
+        assert_eq!(taken_cold(&daemon_end), Ok(()));
 
         let (daemon_end, vm) = UnixStream::pair().unwrap();
         say(&vm, kind::STARTED, &[]);
         drop(vm);
-        assert!(matches!(taken(&daemon_end), Err(Untaken::Unknown(_))));
+        assert!(matches!(taken_cold(&daemon_end), Err(Untaken::Unknown(_))));
     }
 
     /// A share's window by default follows its host (D189, PM M308): none on a virtual
@@ -12893,7 +13014,7 @@ mod tests {
         let (daemon_end, vm) = UnixStream::pair().unwrap();
         shards_ipc::send(&daemon_end, kind::RUN, b"run", &[]).unwrap();
         drop(vm);
-        let e = taken(&daemon_end).unwrap_err();
+        let e = taken_cold(&daemon_end).unwrap_err();
         assert!(matches!(e, Untaken::Surely(_)), "{e:?}");
     }
 
@@ -14651,23 +14772,133 @@ mod tests {
         });
     }
 
-    /// A warm VM that has stopped reading fails a run's handoff, surely untaken, once a
-    /// write waits TAKE_TIMEOUT for room, where the send waited for ever: the run then
-    /// tries another VM. (A write cut short by the timeout returns what it wrote; the next
-    /// waits again: two timeouts in all.)
+    /// A warm VM that has stopped reading, its process running nothing, fails a run's handoff,
+    /// surely untaken, once it has run nothing for a slice of its kind's slowest take (D215's
+    /// judge, runs-11 `TAKE_TIMEOUT`), never sooner: the run then tries another VM. Its write
+    /// cut short goes no further: the VM never had all of it.
+    #[cfg(unix)]
     #[test]
-    fn a_vm_that_reads_nothing_fails_its_handoff() {
+    fn a_vm_that_reads_nothing_and_runs_nothing_fails_its_handoff() {
         let (daemon, vm) = UnixStream::pair().unwrap();
+        let record = Record::new();
+        let slowest = Duration::from_millis(100);
+        record.teach(slowest, slowest / 1000);
+        let idle = sleeper(600);
         let (done, finished) = mpsc::channel();
         let t0 = Instant::now();
-        std::thread::spawn(move || {
-            let payload = vec![0u8; shards_ipc::MAX_PAYLOAD];
-            let _ = done.send(hand_over(&daemon, &payload, &[], &[]));
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                let payload = vec![0u8; shards_ipc::MAX_PAYLOAD];
+                let mut judged = health::Judged::of(idle.id(), &record);
+                let _ = done.send(hand_over(&daemon, &mut judged, &payload, &[], &[]));
+            });
+            let handed = finished.recv_timeout(Duration::from_secs(10));
+            // Closed, so that a wait that did not stop ends (a peer's shutdown alone gives macOS
+            // no room to write, msg-dontwait.c).
+            drop(vm);
+            let handed = handed.expect("a VM that ran nothing was waited for on");
+            assert!(matches!(handed, Err(Untaken::Surely(_))), "{handed:?}");
+            assert!(t0.elapsed() >= slowest, "{:?}", t0.elapsed());
         });
-        let handed = finished.recv_timeout(TAKE_TIMEOUT * 3).unwrap();
-        assert!(matches!(handed, Err(Untaken::Surely(_))));
-        assert!(t0.elapsed() >= TAKE_TIMEOUT, "{:?}", t0.elapsed());
-        drop(vm);
+        let _ = idle.kill(shards_ipc::signal::SIGKILL);
+        let _ = idle.wait();
+    }
+
+    /// A warm VM slow to read its run, its process going on, keeps its handoff however long it
+    /// takes (runs-11 `TAKE_TIMEOUT`): red before, its write waited 10 s for room (`TAKE_TIMEOUT`,
+    /// picked) and the run went elsewhere, surely untaken, from a VM that would have taken it.
+    /// Its kind's record learned at 100 ms, the VM (this process, a thread of it busy) reads at
+    /// 10.5 s.
+    #[cfg(unix)]
+    #[test]
+    fn a_vm_slow_to_read_its_run_while_it_runs_keeps_its_handoff() {
+        let (daemon, vm) = UnixStream::pair().unwrap();
+        let record = Record::new();
+        let slowest = Duration::from_millis(100);
+        record.teach(slowest, slowest / 1000);
+        let busy = AtomicBool::new(true);
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                while busy.load(Ordering::Relaxed) {
+                    std::hint::black_box(Instant::now());
+                }
+            });
+            s.spawn(|| {
+                std::thread::sleep(Duration::from_millis(10_500));
+                let run = shards_ipc::recv(&vm).unwrap().unwrap();
+                assert_eq!(run.kind, kind::RUN);
+                shards_ipc::send(&vm, kind::TAKEN, &[], &[]).unwrap();
+            });
+            let payload = vec![0u8; shards_ipc::MAX_PAYLOAD];
+            let mut judged = health::Judged::of(std::process::id(), &record);
+            let handed = hand_over(&daemon, &mut judged, &payload, &[], &[]);
+            busy.store(false, Ordering::Relaxed);
+            // Closed, so that a VM left reading a request cut short ends.
+            drop(daemon);
+            assert_eq!(handed, Ok(()));
+        });
+    }
+
+    /// A join share slow to take a joiner's volume, its process going on, keeps it however
+    /// long it takes (runs-11 `TAKE_TIMEOUT`): red before, its answer was waited for 10 s
+    /// (`TAKE_TIMEOUT`, picked) and the joiner failed to start. Its kind's record learned at
+    /// 100 ms, the share (this process, a thread of it busy) answers at 10.5 s.
+    #[cfg(unix)]
+    #[test]
+    fn a_join_share_slow_to_take_a_volume_while_it_runs_keeps_it() {
+        let (daemon, share) = UnixStream::pair().unwrap();
+        let record = Record::new();
+        let slowest = Duration::from_millis(100);
+        record.teach(slowest, slowest / 1000);
+        let dir = File::open(".").unwrap();
+        let busy = AtomicBool::new(true);
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                while busy.load(Ordering::Relaxed) {
+                    std::hint::black_box(Instant::now());
+                }
+            });
+            s.spawn(|| {
+                let volume = shards_ipc::recv(&share).unwrap().unwrap();
+                assert_eq!(volume.kind, kind::JOIN_VOLUME);
+                std::thread::sleep(Duration::from_millis(10_500));
+                shards_ipc::send(&share, kind::TAKEN, &[], &[]).unwrap();
+            });
+            let mut judged = health::Judged::of(std::process::id(), &record);
+            let given = give_join_volume(&daemon, &mut judged, b"v\0rw\0", dir.as_fd());
+            busy.store(false, Ordering::Relaxed);
+            assert_eq!(given, Ok(()));
+        });
+    }
+
+    /// A join share whose process runs nothing fails a joiner's volume, typed, once it has run
+    /// nothing for a slice of its kind's slowest answer (D215's judge, runs-11
+    /// `TAKE_TIMEOUT`), never sooner.
+    #[cfg(unix)]
+    #[test]
+    fn a_join_share_that_runs_nothing_fails_the_volume() {
+        let (daemon, share) = UnixStream::pair().unwrap();
+        let record = Record::new();
+        let slowest = Duration::from_millis(100);
+        record.teach(slowest, slowest / 1000);
+        let dir = File::open(".").unwrap();
+        let idle = sleeper(600);
+        let (done, finished) = mpsc::channel();
+        let t0 = Instant::now();
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                let mut judged = health::Judged::of(idle.id(), &record);
+                let _ = done.send(give_join_volume(&daemon, &mut judged, b"v\0rw\0", dir.as_fd()));
+            });
+            let given = finished.recv_timeout(Duration::from_secs(10));
+            drop(share);
+            let given = given.expect("a share that ran nothing was waited for on");
+            let why = given.expect_err("a share that ran nothing took its volume");
+            assert!(why.contains("ran no CPU"), "{why}");
+            assert!(t0.elapsed() >= slowest, "{:?}", t0.elapsed());
+        });
+        let _ = idle.kill(shards_ipc::signal::SIGKILL);
+        let _ = idle.wait();
     }
 
     /// A microVM being removed, not running, is listed so until it is gone, as dockerd
@@ -17286,12 +17517,21 @@ mod tests {
                 "image_id": format!("sha256:{}", "b".repeat(64)),
                 "arch": std::env::consts::ARCH,
                 "format": shards_vmm::snapshot::FORMAT,
+                "saved_by": shards_vmm::snapshot::SAVED_BY,
+                "init": shards_abi::IDENTITY,
                 "hypervisor": theirs,
                 "snapshot": "s1",
                 "home": "/h",
                 "files": [],
                 "volumes": [],
                 "binds": [],
+                "cpu": [],
+                "guest": false,
+                "baseline": [],
+                "cpu_identity": [],
+                "published": [],
+                "network": "",
+                "key": null,
             });
             let (status, out, err) = t.ask(&[shards_ipc::MOVE_STEP, "ready", &plan.to_string()]);
             assert_eq!(status, 1, "{out}{err}");
@@ -17323,12 +17563,20 @@ mod tests {
                     "image_id": format!("sha256:{}", "b".repeat(64)),
                     "arch": std::env::consts::ARCH,
                     "format": shards_vmm::snapshot::FORMAT,
+                    "saved_by": shards_vmm::snapshot::SAVED_BY,
+                    "init": shards_abi::IDENTITY,
                     "hypervisor": shards_vmm::hv::BACKEND,
                     "snapshot": "s1",
                     "home": "/h",
                     "files": [],
                     "volumes": [],
                     "binds": [],
+                    "cpu": [],
+                    "guest": false,
+                    "baseline": [],
+                    "cpu_identity": [],
+                    "network": "",
+                    "key": null,
                     "published": [{
                         "port": 80,
                         "proto": "tcp",
@@ -17446,12 +17694,21 @@ mod tests {
                     "image_id": format!("sha256:{}", "b".repeat(64)),
                     "arch": std::env::consts::ARCH,
                     "format": shards_vmm::snapshot::FORMAT,
+                    "saved_by": shards_vmm::snapshot::SAVED_BY,
+                    "init": shards_abi::IDENTITY,
                     "hypervisor": shards_vmm::hv::BACKEND,
                     "snapshot": snapshot,
                     "home": "/h",
                     "files": [],
                     "volumes": volumes,
                     "binds": [],
+                    "cpu": [],
+                    "guest": false,
+                    "baseline": [],
+                    "cpu_identity": [],
+                    "published": [],
+                    "network": "",
+                    "key": null,
                 }))
                 .unwrap()
             };

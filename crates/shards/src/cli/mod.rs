@@ -310,7 +310,7 @@ fn dispatch(args: Vec<OsString>) -> ExitCode {
         ["restore", target, ..] if names_a_microvm(target) => {
             request::restore("shards restore vm", args.get(1..).unwrap_or_default())
         }
-        ["restore", ..] => match migrated(&args) {
+        ["restore", ..] => match resumable(&args) {
             Ok(()) => vm(&args),
             Err(e) => failed(&e),
         },
@@ -1132,10 +1132,21 @@ fn instead(args: &[OsString]) -> ExitCode {
         Ok(program) => program,
         Err(e) => return failed(&e),
     };
-    match shards_ipc::spawn_std(std::process::Command::new(program.path()).args(args))
-        .and_then(|mut child| child.wait())
-    {
-        Ok(status) => ExitCode::from(status.code().and_then(|c| u8::try_from(c).ok()).unwrap_or(1)),
+    // This process's standard handles alone, those it has (shards_ipc's spawn, D248); in a job
+    // nested under this process's, from which it breaks away from none, as std's child stayed.
+    use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
+    let (stdin, stdout, stderr) = (std::io::stdin(), std::io::stdout(), std::io::stderr());
+    let fds: Vec<_> = [
+        (stdin.as_handle(), 0),
+        (stdout.as_handle(), 1),
+        (stderr.as_handle(), 2),
+    ]
+    .into_iter()
+    .filter(|(handle, _)| !handle.as_raw_handle().is_null())
+    .collect();
+    let args: Vec<&std::ffi::OsStr> = args.iter().map(OsString::as_os_str).collect();
+    match shards_ipc::spawn_grouped(&program.path(), &args, &fds, &[]).and_then(|child| child.wait()) {
+        Ok(status) => ExitCode::from(u8::try_from(status).unwrap_or(1)),
         Err(e) => failed(&format!("{}: {e}", bin.display())),
     }
 }
@@ -2236,12 +2247,12 @@ fn served_pipe(flag: &str, value: usize) -> Result<std::os::windows::io::Borrowe
     Ok(unsafe { std::os::windows::io::BorrowedHandle::borrow_raw(raw) })
 }
 
-/// `shards restore DIR`'s snapshot, a user's, in this build's format before its VM process
-/// reads it: one of an older format rewritten in it once, and said (D176). None for a
-/// restore its daemon starts (`--warm`, `--resume`): a template's, keyed by the format
-/// (D25), or a saved run's, which the daemon has seen to.
-fn migrated(args: &[OsString]) -> Result<(), String> {
-    use shards_vmm::snapshot::{self, Migrated};
+/// Whether `shards restore DIR`'s snapshot, a user's, resumes in this build, asked before
+/// its VM process reads it: refused where its guest's init is another build's (D176). None
+/// for a restore its daemon starts (`--warm`, `--resume`): a template's, keyed by the
+/// format (D25), or a saved run's, which the daemon has asked.
+fn resumable(args: &[OsString]) -> Result<(), String> {
+    use shards_vmm::snapshot;
     let by_daemon = args
         .iter()
         .take_while(|a| *a != "--")
@@ -2252,18 +2263,7 @@ fn migrated(args: &[OsString]) -> Result<(), String> {
     if by_daemon || !snapshot::exists(dir) {
         return Ok(());
     }
-    match snapshot::migrate(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
-        Migrated::Current => {}
-        Migrated::Rewritten { from } => {
-            let _ = writeln!(
-                std::io::stderr(),
-                "shards: {}: its snapshot of format {from} rewritten in format {}, once",
-                dir.display(),
-                snapshot::FORMAT
-            );
-        }
-    }
-    Ok(())
+    snapshot::resumable(dir).map_err(|e| format!("{}: {e}", dir.display()))
 }
 
 fn failed(message: &str) -> ExitCode {

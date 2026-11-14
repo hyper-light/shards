@@ -387,24 +387,6 @@ fn max_resume() -> u64 {
     serde_json::to_vec(&longest).map_or(u64::MAX, |v| u64::try_from(v.len()).unwrap_or(u64::MAX))
 }
 
-/// The snapshot in `dir`, a user's (D176), in this build's format: one of an older format
-/// rewritten in it once, and said in the daemon's log; refused where none can be.
-pub(super) fn migrated(
-    dir: &Path,
-    unusable: &dyn Fn(&dyn std::fmt::Display) -> String,
-) -> Result<(), String> {
-    use shards_vmm::snapshot::Migrated;
-    match shards_vmm::snapshot::migrate(dir).map_err(|e| unusable(&e))? {
-        Migrated::Current => {}
-        Migrated::Rewritten { from } => super::log(format!(
-            "{}: its snapshot of format {from} rewritten in format {}, once",
-            dir.display(),
-            shards_vmm::snapshot::FORMAT
-        )),
-    }
-    Ok(())
-}
-
 /// The newest snapshot in `snapshots`, a microVM's: the one whose generation was written
 /// last, which its name says (`g-` and the time in nanoseconds, in hex).
 fn newest(snapshots: &Path) -> Option<String> {
@@ -434,7 +416,9 @@ impl<D: Disk> Daemon<D> {
         let generation = shards_vmm::snapshot::generation(&dir)
             .map_err(|_| format!("{given} has no snapshot named {name}"))?;
         let unusable = |e: &dyn std::fmt::Display| format!("{given}'s snapshot {name}: {e}");
-        migrated(&dir, &unusable)?;
+        // Its guest's init, frozen in its memory, speaks this build's contract, or it is
+        // refused before anything restores it (D176).
+        shards_vmm::snapshot::resumable(&dir).map_err(|e| unusable(&e))?;
         let record = shards_vmm::platform::read_input(&generation.join(RESUME), max_resume())
             .map_err(|e| unusable(&e))?
             .ok_or_else(|| unusable(&"it was saved by no run"))?;

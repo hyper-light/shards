@@ -5,8 +5,9 @@ pub mod control;
 pub mod i8042;
 pub mod pci;
 pub mod power;
+pub mod pvpanic;
 pub mod rtc;
-pub mod serial;
+pub mod said;
 pub mod virtio;
 pub mod vmgenid;
 

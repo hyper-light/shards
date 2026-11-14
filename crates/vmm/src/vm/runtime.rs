@@ -14,8 +14,8 @@ use super::machine::{self, Machine};
 use super::{AfterSnapshot, Config, ExitReason, Precopied, Precopying, RestoreConfig, Save, SnapshotPolicy};
 use crate::devices::control::Control;
 use crate::devices::power::PowerEvent;
-use crate::devices::serial::Serial;
 use crate::devices::virtio::block::Join;
+use crate::devices::virtio::console::Port as ConsolePort;
 use crate::devices::virtio::{head, pmem};
 use crate::hv;
 use crate::memory::GuestMemory;
@@ -76,7 +76,7 @@ impl<W: std::io::Write> std::io::Write for Carried<'_, W> {
 #[derive(Debug, Clone)]
 pub struct Handle {
     shared: Arc<Shared>,
-    serial: Arc<Serial>,
+    console: Arc<ConsolePort>,
     control: Arc<Control>,
     memory: Arc<GuestMemory>,
 }
@@ -679,6 +679,7 @@ impl Handle {
             config: &parts.config,
             join: parts.join,
             swap: self.control.swap().map(|w| &**w),
+            init: self.control.guest_abi(),
         };
         if !sh.snapshot.wait_parked(&|| sh.exiting()) {
             return Err("the microVM has stopped".into());
@@ -824,17 +825,22 @@ impl Handle {
         self.shared.released_at_us.get().copied()
     }
 
-    /// Feeds bytes to the guest console as if typed, waiting while its UART has no room
-    /// for them (`Serial::input`).
+    /// Feeds bytes to the guest console as if typed, into the buffers its guest posted,
+    /// waiting while it has posted none (`console::Port::input`).
     pub fn console_input(&self, bytes: &[u8]) {
-        self.serial.input(bytes);
+        self.console.input(bytes);
     }
 
     /// The whole lines of the last bytes its guest wrote to its console, as many as it was
     /// told to keep ([`Config::said`]), and whether that was all it said: a kernel's panic
     /// says there why it resets its machine (`panic=-1`).
-    pub fn console_said(&self) -> crate::devices::serial::Said {
-        self.serial.said()
+    pub fn console_said(&self) -> crate::devices::said::Said {
+        self.console.said()
+    }
+
+    /// Whether its guest's kernel said it panicked (pvpanic): what a reset alone does not say.
+    pub fn panicked(&self) -> bool {
+        self.console.panicked()
     }
 
     /// Whether the VM is recording a working set ([`SnapshotPolicy::working_set`]).
@@ -1539,7 +1545,7 @@ fn launch(
         vm,
         memory,
         bus,
-        serial,
+        console,
         control,
         power,
         finish,
@@ -1684,7 +1690,7 @@ fn launch(
     Ok((
         Handle {
             shared,
-            serial,
+            console,
             control,
             memory: memory.clone(),
         },
@@ -1805,6 +1811,7 @@ impl Coordinator {
             config: &self.config,
             join: self.join,
             swap: self.control.swap().map(|w| &**w),
+            init: self.control.guest_abi(),
         }
     }
 
@@ -1945,6 +1952,8 @@ struct Cut<'a> {
     join: Option<&'static Join>,
     /// Its swap window (D159), where it has one.
     swap: Option<&'a pmem::SwapWindow>,
+    /// The contract its guest's init announced, which its snapshot records (D176).
+    init: Option<u64>,
 }
 
 impl Cut<'_> {
@@ -1989,6 +1998,7 @@ impl Cut<'_> {
             data: None,
             arch,
             devices: w.into_bytes(),
+            init: self.init,
         }))
     }
 
@@ -2100,6 +2110,7 @@ mod tests {
             data: None,
             arch: Vec::new(),
             devices: Vec::new(),
+            init: None,
         };
         assert_eq!(pmem::ALIGN, 2 << 20);
         assert_eq!(guest_pages(&snap), ((16 + 4 + 4) << 20) / machine::PAGE);

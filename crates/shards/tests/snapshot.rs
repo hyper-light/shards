@@ -44,7 +44,7 @@ fn boot_and_snapshot(s: &Scratch, then: &str) -> Run {
 /// Boots the snapshot guest in the working directory `dir`, with `disk` as its disk.
 #[track_caller]
 fn boot_and_snapshot_in(dir: &Path, disk: &str, s: &Scratch, then: &str) -> Run {
-    let cmdline = format!("console=ttyS0 quiet panic=-1 shards_test=snapshot shards_vda_bytes={RO_BYTES}");
+    let cmdline = format!("console=hvc0 quiet panic=-1 shards_test=snapshot shards_vda_bytes={RO_BYTES}");
     let snapshot = s.snapshot().display().to_string();
     run_shards_in(
         dir,
@@ -414,7 +414,7 @@ mod storm {
             sock.as_os_str().to_owned(),
             "--cmdline".into(),
             format!(
-                "console=ttyS0 quiet panic=-1 shards_test=storm shards_vda_bytes={RO_BYTES} shards_vdb_bytes={RW_BYTES} shards_storm_ms={}",
+                "console=hvc0 quiet panic=-1 shards_test=storm shards_vda_bytes={RO_BYTES} shards_vdb_bytes={RW_BYTES} shards_storm_ms={}",
                 std::env::var("SHARDS_STORM_MS").unwrap_or_else(|_| "0".into()),
             )
             .into(),
