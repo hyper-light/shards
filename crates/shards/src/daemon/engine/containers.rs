@@ -296,20 +296,25 @@ impl<D: Disk> Daemon<D> {
             Err(e) => return refused(&e, 400),
         };
         let sized = call.flag("size");
-        let summaries: Vec<Value> = listing
+        let summaries = match listing
             .containers
             .iter()
             .map(|c| self.summary(c, sized))
-            .collect();
+            .collect::<Result<Vec<Value>, _>>()
+        {
+            Ok(values) => values,
+            Err(e) => return refused(&e, 500),
+        };
         Answer::json(200, &Value::Array(summaries))
     }
 
     /// Container `c` as a list sums it up (moby container.Summary): its ports while it
     /// runs, its networks and mounts as inspect gives them.
-    pub(super) fn summary(&self, c: &Container, sized: bool) -> Value {
-        let doc: Value =
-            serde_json::from_str(&crate::daemon::inspect_doc::json(&self.container_value(c, sized)))
-                .unwrap_or_default();
+    pub(super) fn summary(&self, c: &Container, sized: bool) -> Result<Value, String> {
+        let doc: Value = serde_json::from_str(&crate::daemon::inspect_doc::json(
+            &self.container_value(c, sized).map_err(|e| e.to_string())?,
+        ))
+        .unwrap_or_default();
         let at = |path: &str| doc.pointer(path).cloned().unwrap_or(Value::Null);
         let paused = lock(&self.paused).contains(&c.id);
         let removing = lock(&self.removing).contains(&c.id);
@@ -362,7 +367,7 @@ impl<D: Disk> Daemon<D> {
                 o.insert("SizeRootFs".into(), at("/SizeRootFs"));
             }
         }
-        summary
+        Ok(summary)
     }
 
     /// `GET /containers/{id}/json`: its InspectResponse, as `inspect` gives it.
@@ -374,11 +379,11 @@ impl<D: Disk> Daemon<D> {
                 .cloned()
                 .ok_or_else(|| format!("No such container: {given}"))
         });
-        match found {
-            Ok(c) => Answer::document(
-                200,
-                crate::daemon::inspect_doc::json(&self.container_value(&c, call.flag("size"))),
-            ),
+        match found.and_then(|c| {
+            self.container_value(&c, call.flag("size"))
+                .map_err(|e| e.to_string())
+        }) {
+            Ok(document) => Answer::document(200, crate::daemon::inspect_doc::json(&document)),
             Err(e) => refused(&e, 500),
         }
     }

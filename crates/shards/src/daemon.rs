@@ -3790,7 +3790,7 @@ impl<D: Disk> Daemon<D> {
             .and_then(|opened| {
                 let cdi = prepared.cdi.as_ref().ok().and_then(Option::as_ref);
                 prepared.spec.setup =
-                    crate::setup::setup(&run, &opened.mounts, cdi, Some(self.microvm_shm(&id, &run)))?;
+                    crate::setup::setup(&run, &opened.mounts, cdi, Some(self.microvm_shm(&id, &run).map_err(|e| e.to_string())?))?;
                 // An emulated command is never PID 1 of its namespace, but under shards'
                 // reaper, as `--init` runs one (D179, PM M251): the emulator ends a program
                 // that dies of a signal by sending itself that signal, which a namespace's
