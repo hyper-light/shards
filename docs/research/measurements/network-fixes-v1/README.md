@@ -434,3 +434,19 @@ claim. R15/R16: one permitted Mac, no local cargo/delegation/VM runs; owned targ
 cleanup after landing. ROOT inbox rejected urgent status with429backpressure,
 so delivery is not claimed. r28 was not dispatched before Kiln server timeout;
 read-only r29 found old6389 source and no own cargo, so it is no test verdict.
+
+Native merged gate, r30: exact merge18e5e2aa85ae583ccbc9cbcbe75ecbc1b9e91eb2
+(main02d3fe33b), Darwin25.2.0 arm64 / Rust1.98.1. Restoring historical-answer
+retention with the corrected readiness test fails at its intended final assertion
+`the replaced DNS answer still grants a new flow` (test-release, exit101).
+The harness requires that message/status and restores the source before continuing.
+It therefore rejects an unrelated first-answer or compile failure as mutation proof.
+The restored source passes 2 DNS authority tests and 1 grant-port test in
+test-release, then shards-net all-targets clippy, overall exit0.
+[Raw mutation/green output](mac03-mutation-green.log),
+[exact owned-clone harness](native-mac03-guard.sh).
+There is no diff in net/lib.rs or dns/lib.rs between6389 and the fix branch's91cba
+main base; the correction changes only test synchronization in those files.
+Thus the native failure was the test's missing readiness transition; no production
+DNS change is needed. An optimized Linux/native-macOS equivalence claim is not made:
+the earlier Linux pass used the test profile. No additional broad suite ran.
