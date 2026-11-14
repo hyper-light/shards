@@ -4035,8 +4035,11 @@ mod tests {
         path
     }
 
-    /// A stand-in run host that says `frames` (each a kind and its payload) as it starts, then
-    /// reads its channel to its end, or, `exits`, reads its request's first byte and exits.
+    /// A stand-in run host that says `frames` (each a kind and its payload) once its request
+    /// has begun to come (its first byte read), as a run host answers its request; then reads
+    /// its channel to its end, or, `exits`, exits. One that said them as it started told a
+    /// GPU report before the session had asked for one, a broken channel ("a GPU report its
+    /// run asked none of"), in 3 of 40 runs beside the crate's other tests (Linux).
     #[cfg(unix)]
     fn saying(dir: &Path, frames: &[(u8, Vec<u8>)], exits: bool) -> PathBuf {
         let octal: String = frames
@@ -4044,12 +4047,11 @@ mod tests {
             .flat_map(|(kind, payload)| wire::frame(*kind, payload).unwrap())
             .map(|b| format!("\\{b:03o}"))
             .collect();
-        let after = if exits {
-            "head -c 1 >/dev/null\nexit 0"
-        } else {
-            "exec cat >/dev/null"
-        };
-        stand_in(dir, &format!("#!/bin/sh\nprintf '{octal}'\n{after}\n"))
+        let after = if exits { "exit 0" } else { "exec cat >/dev/null" };
+        stand_in(
+            dir,
+            &format!("#!/bin/sh\nhead -c 1 >/dev/null\nprintf '{octal}'\n{after}\n"),
+        )
     }
 
     /// A run of `host` naming one GPU, its report scoped `[3; 16]` (D233).
