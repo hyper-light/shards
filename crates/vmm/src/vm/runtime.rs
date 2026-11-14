@@ -1045,10 +1045,19 @@ impl Shared {
     }
 
     fn finish_scan<T>(&self, outcome: Scanned<T>) -> Result<T, String> {
-        self.hold.resume();
         match outcome {
-            Scanned::Mapped(value) => Ok(value),
-            Scanned::Failed(e) | Scanned::Lost(e) => Err(e),
+            Scanned::Mapped(value) => {
+                self.hold.resume();
+                Ok(value)
+            }
+            Scanned::Failed(e) => {
+                self.hold.resume();
+                Err(e)
+            }
+            Scanned::Lost(e) => {
+                self.stop(ExitReason::Error(e.clone()));
+                Err(e)
+            }
         }
     }
 
