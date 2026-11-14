@@ -153,3 +153,78 @@ Green at `3b8ec2938` (main `e2744a6fb` included), resumed r17, same Mac:
 `cargo test -p shards-vmm devices::virtio::head::tests:: --lib` passed 9, with
 1 measurement test ignored; VMM all-target clippy passed. `green-memory-16.log`
 retains output. ROOT still owes real head snapshot/restore and cost measurements.
+
+Memory-16 landed `bfd2cca4c`. Intermediate merges `0685425ef`, `27099a3de`,
+and `0c1141320` changed only API/CLI/net/documentation, disjoint from VMM inputs.
+The final merge included main `5d901fa71` (VFIO change) and passed
+`cargo check -p shards-vmm --tests`, resumed r18. `check-memory-16.log` retains
+that final result. All merges were automatic and signed.
+
+## memory-17
+
+Red `c61cc6b1d`, resumed r20, adacachy2, Linux 7.3.3-1-cachyos x86_64,
+rustc 1.98.1, native GNU target, cold lane-owned target, nice -n 10, one compiler:
+`cargo test -p shards-init a_give_back_room_` passed the signed extremes but
+failed the impossible-length test: the answerer waited for the payload of a
+21-byte ROOM rather than ending at the header. `red-memory-17.log` retains it.
+The parent closes its socket before asserting, so even the red joins the waiter.
+
+Fix `5826a9bcf` derives the maximum request payload from the existing encoder
+(`crates/shards/src/build/builder.rs`, Giver::tell/tell_first): empty GIVE_BACK;
+ROOM is empty or i64::to_string. i64::MIN has the longest representation: one
+minus sign plus floor(log10(unsigned_abs(MIN))) + 1 digits. This is exact from
+cold start; no local observation, estimator or reserve is needed. The unsigned
+magnitude is nonzero, so ilog10 cannot meet zero's precondition failure, and the
+sum fits every supported usize. The existing overlong-frame end path remains.
+Noncanonical padded numbers beyond the canonical encoder's maximum are refused;
+the two actual producers never send them. No installed/wire binary is added.
+
+R01/R03/R04: the derived arithmetic is type-bounded and introduces no new state
+or refusal representation; requests beyond it use the existing end transition.
+R02/R05/R06/R07/R12/R13: the authoritative source is this protocol's actual host
+encoder; no cache, polling or platform adapter added. Payload allocation stays
+bounded before read. R09/R10: the header-only socket regression fails the exact
+old read path and joins cleanly. R08/R11/R14/R15: no performance or real-VM claim;
+Linux arm64/musl and the other host/guest combinations remain CI/ROOT's.
+R16: cold target is exclusively this lane's and will be removed after landing.
+
+ROOT owes `cargo test -p shards --test build a_build_held_short_of_memory_has_its_builder_give_back`
+for the actual host-to-guest ROOM exchange. Policy checker is also owed:
+`python3 scripts/check-development-policy` (the implementer brief permits only
+focused cargo tests/clippy, plus the amended cargo-check gate).
+
+Green at `29e8e3cbe` (main `bfd2cca4c` included), resumed r21, same Linux host:
+`cargo test -p shards-init plug::tests::` passed 28/28 (the substring filter also
+selects five hotplug tests); init all-target clippy passed. `green-memory-17.log`
+retains the output. Both runs used the single lane-owned cold-start target.
+
+## Remaining coordinator work and cleanup
+
+All six implemented fixes (02/03/04/05/16/17) have unit red/green and touched-crate
+clippy evidence. Findings 06..15 remain owed designs; no production replacement
+is claimed. Memory-01 belongs to the Claude P0 lane and was not changed here.
+No new outside-area findings were sought. ROOT owns the policy checker, matrix,
+real-VM integration/fault/pressure, profiling and benchmarking gates. In addition
+to the commands above and in owed-designs.md, run
+`cargo test -p shards --test saved a_saved_microvm_writes_on_through_its_volume`
+with repeated/distinct head patterns and the APFS map-back failure/stop variants.
+These were not run by this implementer. No 4–5x or resource-improvement ratio is claimed.
+
+After memory-16 landed, resumed r19 removed only
+`~/g121-tmp/fix-memory-v1/target` on the Mac and verified it absent. The source
+checkout and all committed evidence remain. No daemons or VMs were started.
+
+Later merges: `7b1d79ac3` was disjoint from init inputs; `8a63a5d2b` brought
+main `4ce420fd2` with a DNS dependency change and passed the Linux compile check
+(resumed r22, `check-memory-17.log`). Merge `bae738bd3` brought main `33d28bf88`;
+its only conflict was between appended PM records (memory-17 and M572). Both
+were retained. Per the conflict rule, resumed r23 reran all 28 selected tests and
+init all-target clippy on that merge: both green. The output is
+`green-memory-17-merged.log`. No production conflict was resolved.
+
+Memory-17 landed `dc23bc71f`; its last merge (main `5f42c9452`) is disjoint from
+init and dependencies, checked by the empty path diff recorded in [final handoff](final.md).
+Linux cleanup r24 completed with exit 0 and absence checked; `cleanup.log` retains
+it and the Mac cleanup. Both owned targets are gone; source/evidence remain.
+The final ROOT notification was rejected with 429 backpressure (pending 4,
+authority 3); this report does not claim delivery.

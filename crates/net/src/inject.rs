@@ -1781,6 +1781,9 @@ struct Ended {
     /// bytes may yet decode to (`tcp::TO_GUEST` a turn).
     decoding: Option<Box<Decoder>>,
     decode_left: usize,
+    /// A sign-in's token host's informational responses but 100, held until its final response
+    /// is judged (creds-10).
+    interims: Zeroizing<Vec<u8>>,
     /// Why the host's TLS failed, before anything of it reached the guest.
     failed: Option<String>,
     /// Whose sign-in's token host this is, where it is one (D242, step 8): no value is filled
@@ -1815,6 +1818,7 @@ impl Ended {
             mask: Mask::default(),
             decoding: None,
             decode_left: crate::tcp::TO_GUEST,
+            interims: Zeroizing::new(Vec::new()),
             failed,
             sign_in,
             refused: None,
@@ -2509,7 +2513,13 @@ impl Ended {
         else {
             return;
         };
-        let read = capture_tokens(&[&head], &body, self.sign_in, run.waiter.into(), run);
+        let read = capture_tokens(
+            &[&self.interims, &head],
+            &body,
+            self.sign_in,
+            run.waiter.into(),
+            run,
+        );
         let went = read.and_then(|tokens| match tokens {
             None => self.pass_whole(&head, &body),
             Some(tokens) => {
@@ -2527,7 +2537,8 @@ impl Ended {
         let framed = signin::frame(head, body.len()).map_err(Refusal::SignIn)?;
         let mut writer = self.guest.writer();
         writer
-            .write_all(&framed)
+            .write_all(&self.interims)
+            .and_then(|()| writer.write_all(&framed))
             .and_then(|()| writer.write_all(body))
             .map_err(|e| Refusal::Upstream(e.to_string()))?;
         self.answered = true;
@@ -2556,7 +2567,8 @@ impl Ended {
         let framed = signin::frame(&head, written.len()).map_err(Refusal::SignIn)?;
         let mut writer = self.guest.writer();
         writer
-            .write_all(&framed)
+            .write_all(&self.interims)
+            .and_then(|()| writer.write_all(&framed))
             .and_then(|()| writer.write_all(&written))
             .map_err(|e| Refusal::Upstream(e.to_string()))?;
         self.answered = true;
@@ -2619,6 +2631,24 @@ impl Ended {
         let edits: Vec<(Range<usize>, &[u8])> = cut.iter().map(|(r, v)| (r.clone(), v.as_slice())).collect();
         let passed = rewrite(&head, &edits);
         self.decoding = coding.map(|c| Box::new(Decoder::new(c)));
+        // A sign-in's token host's informational response (creds-10, RFC 9110 §15.2) goes before
+        // its final one names its tokens: a 100 goes at once as its status alone, which carries
+        // nothing; any other waits, read with the final response for its tokens and sent before it.
+        if self.sign_in.is_some() && interim {
+            if status == 100 {
+                self.guest
+                    .writer()
+                    .write_all(b"HTTP/1.1 100 Continue\r\n\r\n")
+                    .map_err(|_| Broken("its bytes could not be queued"))?;
+                self.answered = true;
+            } else if self.interims.len().saturating_add(passed.len()) > crate::tcp::TO_GUEST {
+                return Err(Broken("informational responses past what the connection holds"));
+            } else {
+                signin::append(&mut self.interims, &passed);
+            }
+            self.response = Response::Head(Vec::new());
+            return Ok(());
+        }
         // A sign-in's token host's final response with a body is read whole before any of it
         // goes, so that its tokens are taken outside (D242, step 8).
         if self.sign_in.is_some() && !tunnel && !interim && framing != Framing::Length(0) {
@@ -2633,11 +2663,20 @@ impl Ended {
             };
             return Ok(());
         }
-        let Ended { mask, guest, .. } = self;
+        let Ended {
+            mask,
+            guest,
+            interims,
+            ..
+        } = self;
         let mut out = |b: &[u8]| guest.writer().write_all(b);
-        mask.push(&passed, true, &mut out)
+        // A token host's final response that is not read whole names no token: what waited
+        // before it goes first.
+        out(interims.as_slice())
+            .and_then(|()| mask.push(&passed, true, &mut out))
             .and_then(|()| mask.end_message(&mut out))
             .map_err(|_| Broken("its bytes could not be queued"))?;
+        interims.clear();
         self.answered = true;
         self.response = if tunnel {
             Response::Tunnel
@@ -2703,6 +2742,7 @@ impl Ended {
         self.owed = None;
         self.mask.clear();
         self.decoding = None;
+        self.interims.clear();
         if matches!(self.request, Request::Sent) {
             self.request = Request::Head;
         }
@@ -2834,6 +2874,9 @@ struct Stream {
     /// whose decoding has not all reached the guest, given back to the host's window once it has.
     decoding: Option<Box<Decoder>>,
     coded: usize,
+    /// A sign-in's token host's informational responses but 100, held until its final response
+    /// is judged (creds-10).
+    interims: Vec<Vec<hpack::Field>>,
     /// Its response, where it is a token host's read whole.
     token: Option<TokenResponse>,
 }
@@ -2855,6 +2898,7 @@ impl Stream {
             mask: Mask::default(),
             decoding: None,
             coded: 0,
+            interims: Vec::new(),
             token: None,
         }
     }
@@ -3745,6 +3789,7 @@ impl H2 {
         s.down_data = body.to_vec();
         s.down_last = Some(Last::End);
         s.token = None;
+        s.interims.clear();
     }
 
     /// A token host's stream (D242, step 8) moved as far as its sign-in's asks let it: a POST read
@@ -3857,7 +3902,11 @@ impl H2 {
             return;
         };
         let read = {
-            let mut places: Vec<&[u8]> = fields.iter().flat_map(|f| [&f.name[..], &f.value[..]]).collect();
+            let mut places: Vec<&[u8]> = fields
+                .iter()
+                .chain(s.interims.iter().flatten())
+                .flat_map(|f| [&f.name[..], &f.value[..]])
+                .collect();
             if let Some(Last::Trailers(trailers)) = &s.down_last {
                 places.extend(trailers.iter().flat_map(|f| [&f.name[..], &f.value[..]]));
             }
@@ -3917,6 +3966,18 @@ impl H2 {
         ));
         if s.guest.sending() {
             let mut block = Vec::new();
+            for held in std::mem::take(&mut s.interims) {
+                block.clear();
+                self.guest_hop.encoder.encode(&held, &mut block);
+                http2::headers(
+                    gid,
+                    &block,
+                    false,
+                    self.guest_hop.peer.max_frame_size,
+                    &mut self.to_guest,
+                );
+            }
+            block.clear();
             self.guest_hop.encoder.encode(&fields, &mut block);
             http2::headers(
                 gid,
@@ -4251,6 +4312,27 @@ impl H2 {
         if !informational {
             s.down = Down::Body;
         }
+        // A sign-in's token host's informational response (creds-10, RFC 9110 §15.2): a 100 goes
+        // at once as its status alone; any other waits, read with the final response for its
+        // tokens and sent before it.
+        if self.sign_in.is_some() && informational {
+            let continuing = fields
+                .iter()
+                .any(|f| f.name == b":status" && &f.value[..] == b"100");
+            if !continuing {
+                let held = s.interims.iter().flatten().map(|f| f.value.len()).sum::<usize>();
+                if held > crate::tcp::TO_GUEST {
+                    self.answer(
+                        gid,
+                        Refusal::Upstream("informational responses past what the connection holds".into()),
+                    );
+                } else {
+                    s.interims.push(fields);
+                }
+                return Ok(());
+            }
+            fields.retain(|f| f.name == b":status");
+        }
         if !informational && s.mask.masks() && !block.end_stream {
             let read: Vec<(&[u8], &[u8])> = fields.iter().map(|f| (&f.name[..], &f.value[..])).collect();
             match maskable(&read) {
@@ -4286,7 +4368,21 @@ impl H2 {
         if !s.guest.sending() {
             return Ok(());
         }
+        // A token host's final response that is not read whole names no token: what waited
+        // before it goes first.
         let mut out = Vec::new();
+        for held in std::mem::take(&mut s.interims) {
+            out.clear();
+            self.guest_hop.encoder.encode(&held, &mut out);
+            http2::headers(
+                gid,
+                &out,
+                false,
+                self.guest_hop.peer.max_frame_size,
+                &mut self.to_guest,
+            );
+        }
+        out.clear();
         self.guest_hop.encoder.encode(&fields, &mut out);
         http2::headers(
             gid,

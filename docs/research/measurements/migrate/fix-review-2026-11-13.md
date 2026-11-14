@@ -173,3 +173,157 @@ Command: `cargo test -p shards a_volumes_hardlinks_keep_shared_contents_after_mo
 This is a real file/archive unit failure, not a VM test. The test will be committed into
 that slice once the P0 extractor seam lands; no production extractor change is included
 in this CPU landing. ROOT accepted migrate04/07/09/10 as owed with the designs above.
+
+## CPU landing and held hardlink slice
+
+`git ls-remote origin refs/heads/main` confirmed CPU06/08 landed at
+`24402e230fd1930fed6afdca2c870660ba16c51e`. This tip excludes the unlanded P0
+`21c66fd3e`; no P0 code was published by this lane. It merges remote main
+`b6c76d45c` after check `dcbfa8b19`.
+
+An exact-SHA readback found the carrier runner still at the prior checked tree,
+so a single post-landing check explicitly fetched/checks-out `24402e230`, asserted
+HEAD equality and ran `cargo check -p shards-vmm -p shards --tests`. It passed on
+adacachy2 Linux x86_64 (resumed Kiln r2). The complete command output remains in
+`~/g121-tmp/fix-migrate-v1/landed-24402-check.log` on that runner. Earlier r2 IDs in
+this document belong to the original turn and are distinguished by source SHA.
+Only the lane's target directory was removed afterward; source and evidence remain.
+
+The migrate05 regression from original r11 is now a committed source test, not an
+untracked patch. It remains intentionally red: importer alias loss is unfixed.
+No production Placer/Writer change is included. ROOT's corrected instruction holds
+that implementation until the P0 owner's extractor fix is actually on remote main.
+This local held slice must not land by itself; its test becomes green with05's fix.
+
+## migrate05: preserve regular-file aliases through Beneath
+
+POLICY_READ on resume: implementer, branch `p/fix-migrate-v1`, revision `73af9fb62`,
+rules SHA-256 `df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3`.
+Owned paths: migration stream Writer/parser/Placer and share guest-file helpers;
+adopt/import belongs to the migrate11 P0 lane and is untouched.
+
+ROOT verified migrate01's `b282ba757` on remote main. This branch merged remote
+`f7a3edfbc` at `a6a4dbc6b`, then adapted only the red fixture's constructor at
+`73af9fb62`. Its red ran on adacachy2 Linux x86_64: the same alias test failed with
+`b` reading `before` after writing `after` through `a` (one test, exit 101).
+Log: `~/g121-tmp/fix-migrate-v1/hardlink-red-beneath.log`; prior committed red is
+`5bf16ecff`. The symptom survives the landed confinement fix.
+
+Decision: stream version 3 adds tag 6, `Hardlink { rel, target }`, naming an already
+created regular file. Readers retain version 2 compatibility; older readers reject
+version 3 before extraction. Both names use the existing PATH_MAX-derived wire
+bound and the plan's volume-data authority. No new runtime tuning value is added:
+3/6 are assigned format/version tags, four path fields are the volume grammar,
+and link-count greater than one means the host reports another inode name.
+
+Primary source: POSIX.1-2024
+<https://pubs.opengroup.org/onlinepubs/9799919799/functions/linkat.html> specifies
+shared file identity and `linkat` flags 0's no-follow behavior. Established local
+implementations are the virtio-fs LINK handlers and existing shared `link_at`
+Unix/NT adapters (`crates/ntfs/src/lib.rs`); reuse them through `Beneath` rather
+than add a host-specific extractor. Independent file copies lose identity, as the
+red demonstrates. A numeric inode wire registry adds a second lifetime/lookup
+protocol; an earlier in-root path already supplies the required reference.
+
+The writer identifies the opened source with the server's device/file-id and link
+count. It retains only multiply-linked volume files for the lifetime of one stream;
+map and saved-name growth are fallible, keyed by authoritative host identity. This
+is required alias state, not a performance cache. Cold start is empty, and any
+export error discards it. It assumes the existing move contract's quiesced source;
+concurrent external host edits remain outside this scoped unit proof.
+
+Import checks both names against the plan and volume-data scope, then traverses
+both parents using held Beneath directories. Missing/forward sources, non-regular
+sources (including symlinks), linked parents and existing destinations refuse via
+typed IO error kinds, rendered at the existing string presentation boundary. It
+creates an alias without resetting metadata or replaying bytes, so the first
+file's sparse contents and inode metadata remain shared. No new wait or polling
+is introduced, and no second extractor is added. The P0 Beneath traversal and
+adopt/import lines remain intact.
+
+R01/R03/R04/R05/R06/R07/R12/R13: checked new wire-name conversion, fallible alias
+state growth, explicit Hardlink entry/refusal and one shared filesystem seam.
+Existing broader parser allocations are not claimed repaired by this slice.
+R02/R09/R10: source/alternatives and exact live red above; green results follow.
+R08/R14: no speed/allocation/fault ratio claimed; coordinator measurements owed.
+R11: Linux x86_64 unit coverage only; Windows/macOS and real guest alias behavior
+remain unverified. R15: scoped light tests only, signed commits and fresh remote
+main merge before landing. R16: task-owned target only, removed after landing;
+logs and source retained. Remaining checks and exact green revisions follow.
+
+### Green module and integrated migrate03 checks
+
+Source merge `7720df8391bd9da2e3e5d4511cf243a2db4db7ae` includes fix `fd33ec11a`
+and verified remote main `fde2f60fd`. adacachy2 Linux x86_64, one cargo at a time,
+`CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=4`, nice10, task-owned target;
+`SHARDS_HELPERS=skip SHARDS_INIT_BINARY=/bin/true SHARDS_SERVER_BINARY=/bin/true`
+avoid building embedded helper binaries for these pure unit tests.
+
+- `cargo test -p shards daemon::moves::tests --bin shards`: **15 passed**, including
+  the alias red, unchanged migrate01 confinement guards, forward/missing hardlink
+  sources, forbidden backing/metadata scope and oversized hardlink names.
+  Log `~/g121-tmp/fix-migrate-v1/hardlink-green-moves.log`.
+- `cargo test -p shards-vmm devices::virtio::fs::server::guest::tests --lib`:
+  **4 passed**, including alias identity and non-following source/destination paths.
+  Log `~/g121-tmp/fix-migrate-v1/hardlink-green-guest.log`.
+- `cargo test -p shards-vmm live_copy_ --lib`: **5 passed**. This validates the
+  integrated memory reviewer's migrate03 fix (`29196c6b3`) without a duplicate fix:
+  pages survive unplug, mapping loss refuses resume, intact mappings recover after
+  scan errors, and the live-copy guard excludes save/teardown. These are pure tests,
+  not live guest unplug or migration. Log `~/g121-tmp/fix-migrate-v1/livecopy-03-integrated.log`.
+
+`cargo clippy -p shards-vmm -p shards --all-targets -- -D warnings` passed on that
+same merge (exit 0, 1m26s). `scripts/check-development-policy` passed too. Runner
+Linux 7.3.3-1-cachyos x86_64, glibc 2.44, rustc 1.98.1 (48a229cea).
+Raw red/green/clippy/policy logs are retained beside this record:
+`hardlink-red-beneath.log`, `hardlink-green-moves.log`, `hardlink-green-guest.log`,
+`livecopy-03-integrated.log`, `hardlink-clippy.log`, `hardlink-policy.log`.
+Main advanced to remotely verified `c6dd465259`; it merged without conflicts at
+`26db8d3581e206c0739b1a9ae51e534d48899a69`. Its changes touched tested crates,
+so ROOT's amended contention rule required the warm
+`cargo check -p shards-vmm -p shards --tests`: passed on that exact merge (43.31s,
+exit 0). Log `~/g121-tmp/fix-migrate-v1/hardlink-main-check-26db8d358.log`.
+Focused tests/clippy remain those of `7720df839`; this later merge received the
+specified compile check, not another full focused run. Landing receipt and
+task-owned target cleanup follow.
+No additional mutation campaign ran; the committed pre-fix unit revision is the
+reproducible feature-removal control, as the fix brief prescribes.
+
+Owed to ROOT: `SHARDS_MOVE_INVITE=<destination-invitation> cargo test -p shards
+--test moved a_volumes_guest_owners_move_with_it` on the supported host pairs,
+extended to check guest hardlink aliases/open handles; the existing test alone
+does not exercise hardlinks. Also run a real live move with a guest concurrently
+issuing virtio-mem unplug and verify either consistent completion or typed refusal,
+with source survival and no stale destination pages. No such VM test or resource
+measurement was run by this implementer.
+
+### Final migrate05 landing receipt
+
+Code and its original committed red `5bf16ecff` landed together at
+`5f42c94527d747959d2d732587cb566b860a0137`, confirmed with
+`git ls-remote origin refs/heads/main`. Fix `fd33ec11a` remains the implementation
+SHA. Two ordinary fast-forward refusals were resolved by merging verified remote
+main; no force push, signing bypass or borrowed shared origin/main ref was used.
+
+After the check at `26db8d358`, main `33d28bf884` touched tested dependencies.
+Merge `b4f7d341062b21f4202e04143d1c343f7addfd75` passed the same warm
+`cargo check -p shards-vmm -p shards --tests` (46.03s, exit 0), with log
+`~/g121-tmp/fix-migrate-v1/hardlink-main-check-b4f7d3410.log`. Main then advanced
+only documentation (`6389b6e096`); its conflict-free merge `5f42c9452` was pushed
+immediately under ROOT's disjoint-input rule. Full focused tests/clippy are those
+of `7720df839`, compile checks are those of `26db8d358` and `b4f7d3410`, and final
+`5f42c9452` adds no tested input beyond that last checked tree.
+
+Migrate03 is fixed by memory-02 (`29196c6b3`) and integrated/green here; 06/08
+previously landed at `24402e230`. Migrate04/07/09/10 remain owed with the accepted
+designs above, with no unmeasured implementation or comparative claim. No new
+outside-area finding was opened. The migrate11 P0 adopt/import work remains its
+owner's; this lane changed none of those functions. ROOT's Kiln mailbox rejected
+the final checkpoint with HTTP429 backpressure; the authorized local peer channel
+is the fallback, without a queue retry loop.
+
+Cleanup completed on adacachy2 (exit 0): only
+`~/g121-tmp/fix-migrate-v1/target` was removed and its absence checked. Source,
+red/green/compile logs and `hardlink-cleanup.log` remain. No build, test, VM or
+daemon job is left running by this lane. This final receipt is documentation-only;
+it changes none of the tested code or build inputs.

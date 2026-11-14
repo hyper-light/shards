@@ -1,0 +1,6 @@
+From /Users/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/fix-memory-carrier-5596c6ba47/change.bundle
+ * branch                HEAD       -> FETCH_HEAD
+Previous HEAD position was 3b8ec2938 Record head comparison derivation and preceding landing checks
+HEAD is now at bfd2cca4c Merge concurrent main for the tested head fast-forward
+    Checking shards-vmm v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/vmm)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.72s
