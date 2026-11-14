@@ -13163,6 +13163,27 @@ retain those obligations; no Windows check or quota replacement is claimed compl
   thread at most and leaves one only where the daemon named its lists anew. No literal.
 - **11** stays open (held.md).
 
+**2026-11-14, every random byte from ProcessPrng, not BCryptGenRandom** (Hex's ask; its
+`hex_exe_imports_only_what_nanoserver_carries` failed on bcrypt.dll, which Windows Nano
+Server does not carry). Pipe and slot names (`random_hex`), the VMM's `fill_random` and the
+network process's `entropy` all take `shards_ipc::fill_random`, which calls ProcessPrng,
+bcryptprimitives.dll's per-process generator (windows-sys 0.61.2's
+`Win32_Security_Cryptography`, now shards-ipc's feature alone). It is the source Rust's std
+fills its own randomness from (rust-lang/rust 1.98.1, library/std/src/sys/random/windows.rs,
+bound raw-dylib in sys/pal/windows/c.rs) and AWS-LC seeds from on desktop Windows
+(crypto/rand_extra/windows.c); Microsoft documents it as always returning TRUE
+(https://learn.microsoft.com/en-us/windows/win32/seccng/processprng). The names stay the
+system CSPRNG's, never time or a hasher's seed, so no squatter can guess one and make it
+first. A FALSE is `RandomFailed`, typed, and no name is made. Every BCryptGenRandom call is
+gone, no fallback kept. No literal.
+Shown on Windows 11 x86_64 (the adacachy guest, MSVC 14.44, Rust 1.98.1, 2026-11-14): at
+main 8d1c89a05 the shards-ipc and shards-vmm unit-test binaries import
+`bcrypt.dll!BCryptGenRandom` (`dumpbin /imports`); at b1c7235ec neither imports bcrypt.dll, only
+`bcryptprimitives.dll!ProcessPrng`; `random_names_are_distinct_hex_of_their_length` (4,096
+16-byte names, all distinct lowercase hex) and the VMM's `random_bytes_differ_between_calls`
+pass, and clippy -D warnings of shards-ipc, -net and -vmm is clean. `shards.exe`'s own
+imports are not yet checked (ROOT's).
+
 **Why.** Every feature on every host (the user, 2026-10-27; docs/audit/2026-10-27_platform-parity.md
 row 1): on Windows `shards` had no daemon, so no `run IMAGE` and none of the commands of its
 microVMs, images, volumes and networks. D185's slots are FIFOs in the home, their
