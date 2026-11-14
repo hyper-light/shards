@@ -995,6 +995,7 @@ fn an_agentfiles_image_restores_its_template_too() {
 /// The guest `kernel()` and `guest_init()` recorded in `home`, as users run, so that runs
 /// save and restore templates.
 #[cfg(unix)]
+#[track_caller]
 fn record_guest(env: &[(&str, &std::ffi::OsStr)]) {
     let args = [
         "use".as_ref(),

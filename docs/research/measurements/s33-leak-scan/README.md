@@ -253,6 +253,22 @@ The walk stopping, and the stride, first survived a single plant in the middle o
 `runs_image` now plants a value across each of the walk's first `RUN` steps, each at its own
 offset to its step.
 
+## Holes not read (PM M561)
+
+A save's `memory`, `swap` and `layer` are sparse files, and the run's shape sizes its hot-plug
+room and swap window to the host's memory. On CI's x86_64 runners (16 GiB) the harness's own
+check spent 28.6 minutes in the scan's two passes, reading holes byte for byte.
+- **What it reads.** Only each file's data, as lseek(2)'s SEEK_DATA and SEEK_HOLE give it.
+  Each range is widened into the holes beside it by the most zeros a finding can take: the
+  zero bytes a window or a short secret starts or ends with (one, for a UTF-16LE window of
+  ASCII). Holes are whole blocks, so two widened ranges never meet.
+- **When it reads holes.** Where a window or short secret is all zeros, so a finding could
+  lie in a hole, and where the system cannot say where holes are (Windows).
+- **Its summary** says the bytes it read beside the files' length: `(N bytes, M read)`.
+- **Tests:** `scan_test.py` 11 passed (two new), `credentials_test.py` 15 passed, on
+  adas-macbook-pro-2 (Python 3.9.6). The new tests were red on the old scan. Guard removals:
+  3 of 3 failed. A 512 MiB hole took one pass 153.8 s on the old scan and 0.68 s on the new.
+
 ## Owed
 
 - **Run 1, the harness's own check,** on KVM x86_64, HVF arm64, WHP x86_64 and KVM arm64

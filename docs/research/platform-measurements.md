@@ -23757,6 +23757,123 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   R10 red on main's code on both hosts, green after; R11 Unix and Windows written, macOS and
   Linux run; R15, R16 implementer, its runner targets removed after landing.
 
+### M560. CI's musl test job: its build and its tests as steps of their own, each limit derived (M420, M547)
+
+- **Question.** In CI run 43513425954 (main 70eba153d) the x86_64-unknown-linux-musl test job
+  (job 132194139799) spent 46.3 of its Alpine step's 60 minutes building the tests, and the
+  limit cut the tests in tests/containers.rs. That limit (M235's) was never derived as M420
+  derived the native jobs' (M547). What does each part of the step take, and what limits
+  does M420's rule (a third above the slowest measured) give them?
+- **Method.** `docs/research/measurements/ci-musl-limits/fetch.py` (2026-11-14): the CI
+  workflow's newest 1000 runs created since 2026-11-08 (728 completed that ran over 30
+  minutes, 2026-11-09 21:45 to 11-13 21:57 UTC), each one's musl and x86_64 gnu jobs' step
+  times, and 612 test jobs' logs: x86_64 musl's all, aarch64 musl's and x86_64 gnu's from
+  11-12 06:00. `phases.py` splits each musl test log's Alpine step at cargo's `Finished
+  test-release` line into the tests' build (setup included) and the tests (the `guest`
+  builds the tests start included), and, as M420 did, puts each run the limit cut at its cut
+  binary's start plus the most the runs that ran through took from that binary on. Output in
+  `results.txt`.
+- **Found** (minutes; n, p50, p90, p99, max).
+  - x86_64 musl's step ran through in 7 of 413 (p50 50.4, max 57.3), and 355 of its 404 logs
+    end at the limit. Of those, 353 had been in their last test binary for 5.1 (p50) to 36.5:
+    many were hangs (11-12's run of 64 in tests/api_image.rs, 17 to 36 minutes in it), and
+    the rest were runs still going.
+  - The tests' build: 404, 32.5, 37.2, 39.6, 46.3 (43513425954's). By day the p50 was 34.8
+    (11-09, 6 jobs), 32.3, 32.1, 32.7, 31.1 (11-13): the build has not grown since 11-10, and
+    46.3 is a slow runner's, 1.5 times its day's p50. aarch64's (no KVM) was 107, 25.1, 26.5,
+    28.5, 29.1, at p50 25.1 on 11-12 and 25.0 on 11-13. Setup before cargo's first line:
+    x86_64 0.5 at p50, 4.5 at most.
+  - The tests, in their own container (each run's setup and tests): x86_64 357 runs, 30.3,
+    32.4, 34.7, 42.9 (42723613885, 4cd00dcdb, cut in tests/oracle.rs at 38.5); the four that
+    ran through every binary (11-13) 25.4 to 27.7. aarch64 10, 14.6 at p50, 15.0 at most.
+    x86_64 gnu's same tests (KVM, ubuntu-24.04), the 9 that ran through: 31.0 at p50, 34.7 at
+    most, and its build 18.6 and 20.0.
+  - The test jobs' other steps, where gdb's install went through: x86_64 413, 1.5, 2.4, 4.3,
+    5.8 (42748601186); aarch64 0.2 at most. gdb's install failed at 25.4 in the 11-11
+    14:16-16:19 mirror outage, ending those jobs before their Alpine step.
+  - The release jobs' step: x86_64 372, 31.3, 37.3, 40.4, 43.8 (43474661701); aarch64 at most
+    38.3. A third above 43.8 is 58.4, under its 60.
+  - No job of ci.yml keeps a cargo build cache (the GPU renderer's alone), so the musl job
+    lacks none the others have.
+- **Decided.** The test job builds the tests (`MUSL_CI=test-build`, `cargo test --no-run`)
+  and runs them (`MUSL_CI=test`) in two steps, two containers (`scripts/ci/alpine`), the
+  second finding the first's target/ in the checkout and its user's home (cargo's registry,
+  zig's cache) in `$RUNNER_TEMP/alpine-home`, mounted as that home in both; no build input
+  differs between them (build.rs watches sources and named variables alone). Each limit is
+  a third above its slowest, rounded up: the build step 62 (46.3), the tests' step 58 (42.9),
+  the job 128 (62 + 58 + a third above 5.8). aarch64's test job shares them, as the native
+  jobs share M420's. The release jobs keep 60 and 70. Python 3 is added where tests run
+  (`test`, `release`, `all`), as 413713885 set, and not to the build-only parts.
+- **Owed.** Proven only by the next CI runs: the tests' step must show no `Compiling` line
+  of the workspace's (the build found fresh), and both steps must run within their limits.
+  The hangs are not this entry's: tests/api_image.rs on 11-12 (17 to 36 minutes) and the
+  binaries cut minutes after their last result belong to their own steps' owners; a tests
+  step of its own now cuts a hang at 58 minutes of tests rather than at what the build left.
+- **Rules** (policy df2acf47, role implementer): R02, R03 CI's own records, every limit M420's
+  rule over them, the slowest runs cited; R09, R10 the overrun is 43513425954's log and the
+  harness is committed; red and green are the next CI runs, unrun here; R11 both musl
+  architectures measured and limited; R15 implementer, no CI or VM run started; R16 the
+  fetched logs (0.3 GB) are removed after landing.
+
+### M561. tests/api_image.rs on CI's x86_64 runners: which test hung, which is slow, and the leak scan reading a save's holes
+
+- **Question.** M560 found most of the x86_64 musl job's cuts were hangs, 64 of them on 11-12
+  in tests/api_image.rs. Which api_image tests hung or ran long there, on gnu and musl, and
+  why?
+- **Method.** M560's `fetch.py` (2026-11-14, LOGS_SINCE 2026-11-08): 726 runs, 1221 logs of
+  the musl and x86_64 gnu test jobs whose tests step ran over 20 minutes.
+  `docs/research/measurements/ci-musl-limits/api_image.py` reads each x86_64 log's
+  `Running tests/api_image.rs` section. A test's start is its libtest "running for over 60
+  seconds" line less 60 s, and its end is its `... ok|FAILED` line. A test warned of and never
+  ended before the binary ended or was cut was still running there. Output in `api_image.txt`,
+  with each run's cut set against whether its commit holds 86f3c87b2.
+- **Found** (minutes; n, p50, p90, max).
+  - 179 logs reached api_image (gnu 85, musl 94), and 124 were cut in it. In 122 of those,
+    the test still running was `a_share_at_a_granted_volume_reaches_the_harness` (gnu 59,
+    musl 63): stuck 34.4 at p50, 41.0 at p90, 42.9 at most. In the other 2,
+    `a_project_is_plugged_into_the_running_harness` ran beside it. 113 of the 122 ended on
+    11-12 and 9 on 11-13.
+  - All 124 cut runs were of commits without 86f3c87b2 (D231: the run host lets go of its
+    share process's door before waiting for it; its message names this test hung 56 minutes
+    in CI run 43230466376). All 51 runs of commits holding it ran api_image through: the
+    share test passed 44 times, failed 5 times and was quick twice; the binary took 1.2 at
+    p50, 29.8 at most. #77's judged waits (fe06f5ab6 to faf666c87) came after; none of those
+    51 runs needed them.
+  - The 29.8: `a_saved_runs_memory_holds_what_its_harness_was_given_and_the_scan_finds_it`,
+    28.6 both times it passed (x86_64 gnu, jobs 132131023223 and 132136301145). The hang
+    watcher's `ps` at 40 s into its run host (20:27:51; printed 20:58:35 by the later step,
+    the "leftover run host 3 minutes after" of the earlier triage) shows the save done,
+    the VM idle, and `python3 -I .../scan.py` 39 s old in state R, a child of the test
+    binary. The 28 minutes are the scan's two passes. Its two musl runs failed at once:
+    there was no python3 in Alpine, fixed since by scripts/musl-ci.
+  - Why the scan was slow: a save's `memory`, `swap` and `layer` are sparse files
+    (`snapshot::prepare`), and the run's shape gives it hot-plug room and a swap window as
+    large as the host's memory (`run::Shape::give`; a GitHub x86_64 runner has 16 GiB).
+    scan.py read every byte of every file, holes too. Its UTF-16LE run pattern admits two
+    zero bytes (its windows lie at either parity), so every hole was one long run whose
+    anchors were looked up throughout.
+  - Measured on this Mac (adas-macbook-pro-2, M-series, Python 3.12, loaded host), one pass
+    of the old scan: a 512 MiB all-hole file took 153.8 s wall (41.9 s user) and 512 MiB of
+    random bytes took 227.9 s (50.7 s user). The new scan read 0 bytes of either all-hole
+    file: 512 MiB in 0.68 s (0.05 s user), 16 GiB in 0.18 s (0.04 s user). The old scan on
+    16 GiB was not run here.
+- **Decided.** scan.py reads only each file's data (lseek(2) SEEK_DATA and SEEK_HOLE), each
+  range widened by the zeros a finding can take: the most zero bytes a secret's window or
+  short secret starts or ends with. It reads holes whole where a window or short secret is
+  all zeros, or where the system cannot say where holes are (Windows). Its summary says how
+  many bytes it read. Its findings are those of a whole read, which `scan_test.py` checks
+  against `leaks` over the whole files.
+- **Rules** (policy df2acf47, role implementer): R03 the widening is derived from the
+  secrets' own windows, no number chosen; R09 the slowness is the two CI logs' ps and times,
+  and the old scan's timing here; R10 two red tests (the old scan read 64 MiB of holes and
+  said nothing of it), green after, and 3 of 3 guard removals failing (no widening, the
+  whole file always, holes never read for a NUL secret); two more removals survived and
+  their code was taken out (a parity byte, a merge of ranges that cannot meet). APFS on
+  macOS 26.4 allocated holes shorter than 16 MiB as the tests wrote them, so the tests
+  plant one data range per 64 MiB file. R11 the Linux behaviour (ext4 on CI) and Windows'
+  whole read are unrun here. R15: no VM or CI run started; the api_image E2E rerun is
+  ROOT's. R16: the fetched logs (1.9 GB) are removed after landing.
+
 ### M562. A sleeper in a kiln run wakes about six times a second: its cgroup's freezer, not its start (D215)
 
 - **Question.** shards-api's `a_sleeper_is_still_whatever_its_cgroups_others_wait_for` failed

@@ -42,6 +42,7 @@ fn boot_and_snapshot(s: &Scratch, then: &str) -> Run {
 }
 
 /// Boots the snapshot guest in the working directory `dir`, with `disk` as its disk.
+#[track_caller]
 fn boot_and_snapshot_in(dir: &Path, disk: &str, s: &Scratch, then: &str) -> Run {
     let cmdline = format!("console=ttyS0 quiet panic=-1 shards_test=snapshot shards_vda_bytes={RO_BYTES}");
     let snapshot = s.snapshot().display().to_string();
@@ -69,11 +70,13 @@ fn boot_and_snapshot_in(dir: &Path, disk: &str, s: &Scratch, then: &str) -> Run 
     )
 }
 
+#[track_caller]
 fn restore(dir: &Path) -> Run {
     run_shards(&["restore"], &[dir.to_str().unwrap()])
 }
 
 /// [`restore`], logging at `info`, which says what the restore dropped once set up.
+#[track_caller]
 fn restore_logged(dir: &Path) -> Run {
     let info = std::ffi::OsStr::new("info");
     common::run_shards_env(&["restore"], &[dir.to_str().unwrap()], &[("SHARDS_LOG", info)])
@@ -466,6 +469,7 @@ mod storm {
     /// Lets a storm that has done its checks (`storm checked`) give its verdict once the host
     /// has stopped streaming through it, so every round ends with the guest alive. Returns
     /// the rounds.
+    #[track_caller]
     fn storm_done(
         vm: &mut Vm,
         sock: &Path,

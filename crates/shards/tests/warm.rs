@@ -276,6 +276,7 @@ impl Warm {
         }
     }
 
+    #[track_caller]
     fn ready(&mut self) {
         match told(&self.daemon, self.child.id(), "its READY") {
             Ok(Some(m)) => assert_eq!(m.kind, kind::READY),
@@ -363,6 +364,7 @@ impl Warm {
     }
 
     /// [`Warm::run`], with the spec's `setup` entries (shards_abi::run::Spec).
+    #[track_caller]
     fn run_with(&self, argv: &[&str], interactive: bool, setup: Vec<Vec<u8>>) -> Client {
         let spec = Spec {
             argv: argv.iter().map(|a| a.as_bytes().to_vec()).collect(),
@@ -430,6 +432,7 @@ impl Warm {
     /// The warm VM tells the daemon that its command started, if it did, and its
     /// `status`, with what kept it from starting if it did not (`not_run`), then ends,
     /// leaving the daemon's socket.
+    #[track_caller]
     fn ends(mut self, status: u8, not_run: Option<&str>) {
         let started = not_run.is_none();
         // While a VM process of this test's goes on ([`Patience`]).
@@ -494,6 +497,7 @@ impl Warm {
 }
 
 impl Client {
+    #[track_caller]
     fn exit(&self) -> u8 {
         let m = told(&self.conn, self.vm, "its exit status")
             .unwrap()

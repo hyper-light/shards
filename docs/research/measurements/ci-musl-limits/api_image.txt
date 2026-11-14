@@ -1,0 +1,25 @@
+== tests/api_image.rs in x86_64 Linux jobs' logs: 179 (Counter({'musl': 94, 'gnu': 85}))
+== still running at the binary's end (cut or not): test, runs (gnu/musl, cut), minutes stuck
+  a_share_at_a_granted_volume_reaches_the_harness: 122 (gnu 59, musl 63, cut 122) n=122 p50=34.4 p90=41.0 max=42.9
+  a_project_is_plugged_into_the_running_harness: 2 (gnu 1, musl 1, cut 2) n=2 p50=20.7 p90=40.4 max=40.4
+== runs whose binary was cut, by the tests still running there
+  120: a_share_at_a_granted_volume_reaches_the_harness
+  2: (none past 60 s)
+  2: a_project_is_plugged_into_the_running_harness, a_share_at_a_granted_volume_reaches_the_harness
+== tests past 60 s that ended: test, minutes, outcomes
+  a_saved_runs_memory_holds_what_its_harness_was_given_and_the_scan_finds_it: n=2 p50=28.6 p90=28.7 max=28.7 {'ok': 2}
+  staged_credentials_reach_the_harness_and_its_output_and_end_come_back: n=114 p50=1.3 p90=1.8 max=2.1 {'FAILED': 96, 'ok': 18}
+  stats_read_the_run_and_a_member: n=111 p50=1.3 p90=1.8 max=3.7 {'FAILED': 93, 'ok': 18}
+  a_published_ingress_port_reaches_its_member: n=128 p50=1.3 p90=1.8 max=2.1 {'FAILED': 92, 'ok': 36}
+  a_share_at_a_granted_volume_reaches_the_harness: n=27 p50=1.2 p90=1.8 max=2.1 {'ok': 24, 'FAILED': 3}
+  a_harness_reads_its_orchestrators_stdin_exactly_and_its_close_is_its_end: n=14 p50=1.2 p90=1.9 max=1.9 {'FAILED': 8, 'ok': 6}
+  a_members_arguments_follow_its_images_command_in_order: n=6 p50=1.2 p90=1.9 max=1.9 {'ok': 5, 'FAILED': 1}
+  a_project_is_plugged_into_the_running_harness: n=16 p50=1.2 p90=1.9 max=1.9 {'ok': 16}
+  a_run_keeping_nothing_the_image_grants_boots_and_its_harness_runs: n=4 p50=1.2 p90=1.9 max=1.9 {'ok': 3, 'FAILED': 1}
+== by day, cut runs and their stuck tests
+  11-12: {'a_share_at_a_granted_volume_reaches_the_harness': 113}
+  11-13: {'a_share_at_a_granted_volume_reaches_the_harness': 9, 'a_project_is_plugged_into_the_running_harness': 2}
+== per run, its api_image binary cut or not, by whether the run's commit holds 86f3c87b2 (the run host lets go of its share process before waiting for it)
+  51 cut=0 with 86f3c87b2
+   4 cut=0 without it
+ 124 cut=1 without it

@@ -55,7 +55,9 @@ fn a_daemons_whole_lines_are_its_words() {
 /// doing what `SHARDS_STAND_IN` says: `exit`, at once; `busy MS`, its CPU busy for MS
 /// milliseconds, then its end; `answer PORT MS`, connected to loopback's PORT, busy for MS
 /// milliseconds, then its answer written there and its end; `idle`, nothing at all until
-/// its stdin closes.
+/// its stdin closes; `pulse N MS`, N rounds of a moment's CPU then MS milliseconds of none,
+/// saying nothing, as a party that works between waits on a peer outside it; `falls MS`, a
+/// give-back ([`falls`]).
 #[test]
 #[ignore = "a process of its own for the harness's stand-ins, which run it"]
 fn stand_in() {
@@ -78,17 +80,171 @@ fn stand_in() {
         let mut to = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
         busy(ms);
         to.write_all(ANSWER).unwrap();
+    } else if let Some((rounds, ms)) = asked
+        .strip_prefix("pulse ")
+        .and_then(|a| a.split_once(' '))
+        .and_then(|(n, ms)| Some((n.parse::<u32>().ok()?, ms.parse().ok()?)))
+    {
+        for _ in 0..rounds {
+            busy(1);
+            std::thread::sleep(Duration::from_millis(ms));
+        }
     } else if asked == "idle" {
         let _ = std::io::stdin().read(&mut [0u8; 1]);
+    } else if let Some(ms) = asked.strip_prefix("falls ").and_then(|ms| ms.parse().ok()) {
+        falls(ms, busy);
     }
 }
 
-/// [`stand_in`], doing `what`.
+/// The memory a give-back stand-in frees, in regions of this many bytes, this many.
+const REGION: usize = 32 << 20;
+const REGIONS: usize = 4;
+
+/// A stand-in guest's give-back: [`REGIONS`] regions of [`REGION`] bytes mapped and touched,
+/// "mapped" said on stdout; once stdin gives a byte, each unmapped in turn, `ms` of busy CPU
+/// apart, the first after twice that (its free, then its guest's wait before it reports, as
+/// D151's reports come); then nothing until stdin closes.
+fn falls(ms: u64, busy: impl Fn(u64)) {
+    use std::io::Read as _;
+    let regions: Vec<Region> = (0..REGIONS).map(|_| Region::touched()).collect();
+    let mut out = std::io::stdout();
+    out.write_all(b"mapped\n").unwrap();
+    out.flush().unwrap();
+    let mut stdin = std::io::stdin();
+    let _ = stdin.read(&mut [0u8; 1]);
+    busy(ms);
+    for region in regions {
+        busy(ms);
+        drop(region);
+    }
+    let _ = stdin.read(&mut [0u8; 1]);
+}
+
+/// [`REGION`] bytes of memory of the process's own, mapped and given back to its host
+/// directly, not through an allocator that may keep them.
+struct Region(*mut u8);
+
+impl Region {
+    fn touched() -> Region {
+        #[cfg(unix)]
+        // SAFETY: an anonymous private mapping of REGION bytes, which nothing else maps.
+        let at = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                REGION,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANON,
+                -1,
+                0,
+            )
+        };
+        #[cfg(unix)]
+        assert_ne!(at, libc::MAP_FAILED, "{}", std::io::Error::last_os_error());
+        #[cfg(windows)]
+        // SAFETY: REGION bytes reserved and committed, readable and writable, at an address
+        // Windows chooses.
+        let at = unsafe {
+            use windows_sys::Win32::System::Memory::{MEM_COMMIT, MEM_RESERVE, PAGE_READWRITE, VirtualAlloc};
+            VirtualAlloc(std::ptr::null(), REGION, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE)
+        };
+        assert!(!at.is_null(), "{}", std::io::Error::last_os_error());
+        let at = at.cast::<u8>();
+        for page in (0..REGION).step_by(4096) {
+            // SAFETY: within the REGION bytes just mapped, writable.
+            unsafe { at.add(page).write_volatile(1) };
+        }
+        Region(at)
+    }
+}
+
+impl Drop for Region {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        // SAFETY: the mapping `touched` made, unmapped once, as its Region drops.
+        unsafe {
+            libc::munmap(self.0.cast(), REGION);
+        }
+        #[cfg(windows)]
+        // SAFETY: the allocation `touched` made, released whole once, as its Region drops.
+        unsafe {
+            windows_sys::Win32::System::Memory::VirtualFree(
+                self.0.cast(),
+                0,
+                windows_sys::Win32::System::Memory::MEM_RELEASE,
+            );
+        }
+    }
+}
+
+/// [`stand_in`], doing `what`: `what`'s first word its first argument, a filter that names
+/// no test, so that it is its command's word ([`common::command_words`]) as a subcommand is.
 fn stand_in_doing(what: &str) -> std::process::Command {
+    stand_in_with(what, &[])
+}
+
+/// [`stand_in_doing`], `more` after its options' end (`--`): filters that name no test, so
+/// that its command line carries what a test's command carries (a path, a port).
+fn stand_in_with(what: &str, more: &[&str]) -> std::process::Command {
     let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
-    cmd.args(["stand_in", "--exact", "--ignored", "--test-threads=1"])
+    let word = what.split_whitespace().next().unwrap_or("exit");
+    cmd.args([word, "stand_in", "--exact", "--ignored", "--test-threads=1", "--"])
+        .args(more)
         .env("SHARDS_STAND_IN", what);
     cmd
+}
+
+/// A command's words, which key its wait's kind beside its call site, are its program and
+/// its subcommand, never an image, a name, a path or a flag (#77). Do: take the words of
+/// commands as tests run them. Expect: each its subcommand's words alone.
+#[test]
+fn a_commands_words_are_its_subcommands() {
+    let words = |program: &str, args: &[&str]| {
+        let mut cmd = std::process::Command::new(program);
+        cmd.args(args);
+        common::command_words(&cmd)
+    };
+    let shards = if cfg!(windows) {
+        "C:\\t\\shards.exe"
+    } else {
+        "/t/shards"
+    };
+    for (args, said) in [
+        ("run --rm alpine echo", "shards run"),
+        ("run alpine echo hi", "shards run"),
+        ("push localhost:5000/x", "shards push"),
+        ("build -t x .", "shards build"),
+        ("stop daemon", "shards stop daemon"),
+        ("stop web", "shards stop"),
+        ("run vm --kernel k", "shards run vm"),
+        ("image ls", "shards image ls"),
+        ("compose up -d", "shards compose up"),
+        ("buildx build .", "shards buildx build"),
+        ("--version", "shards"),
+        ("rm -f t-1234", "shards rm"),
+        ("inspect t-1234", "shards inspect"),
+    ] {
+        let args: Vec<&str> = args.split_whitespace().collect();
+        assert_eq!(words(shards, &args), said, "{args:?}");
+    }
+    assert_eq!(words("git", &["clone", "https://x/y"]), "git clone");
+    assert_eq!(words("sh", &["-c", "true"]), "sh");
+}
+
+/// One call site's waits on different commands are judged apart: a quick command's answer
+/// never bounds a slow one's (#77, the CI triage at d24ef4cfd: build.rs' `policy_eval_answers`
+/// and `builds_push_what_they_build` ran many commands from one closure, and a W* of
+/// 13.4 ms and 3.49 ms, learned from quick refused commands, judged a real build and a push,
+/// whose parties wait on peers outside them between their work). Do: from one call site run
+/// a stand-in that exits at once, which teaches its kind W*; then one that works a moment
+/// three times, each followed by 200 ms of nothing, a wait on a peer. Expect: the second
+/// waited on to its end, status 0, its quiet past the first's W* no stall of its own kind's.
+#[test]
+fn one_call_sites_commands_are_judged_apart() {
+    for what in ["exit", "pulse 3 200"] {
+        let asked = ["stand-in".to_string(), what.to_string()];
+        let run = common::run_command(stand_in_doing(what), &asked);
+        assert_eq!(run.status, Some(0), "{run}");
+    }
 }
 
 /// A command is waited on while it works: its caller gives its wait no bound, as a wait
@@ -173,12 +329,14 @@ fn a_patient_wait_goes_on_while_its_party_works() {
     let home = TempDir::new("patient");
     let busy = Duration::from_secs(1);
     for round in 0..2 {
+        // Begun before its spawn: the stand-in's busy clock starts as it runs, which can
+        // be before spawn returns here (CI run 43530570785: "it ended 998.689681ms in").
+        let began = Instant::now();
         let mut daemon = stand_in_doing(&format!("busy {}", busy.as_millis()))
             .stdout(std::process::Stdio::null())
             .spawn()
             .unwrap();
         std::fs::write(home.join("daemon.pid"), format!("{}\n", daemon.id())).unwrap();
-        let began = Instant::now();
         let mut patience = Patience::of(&home);
         while daemon.try_wait().unwrap().is_none() {
             if !patience.holds() {
@@ -216,11 +374,13 @@ fn a_patient_wait_goes_on_while_its_party_works() {
 fn a_guest_wait_goes_on_while_its_party_works() {
     let busy = Duration::from_secs(1);
     for round in 0..2 {
+        // Begun before its spawn: the stand-in's busy clock starts as it runs, which can
+        // be before spawn returns here (CI run 43530570785: "it ended 998.689681ms in").
+        let began = Instant::now();
         let mut party = stand_in_doing(&format!("busy {}", busy.as_millis()))
             .stdout(std::process::Stdio::null())
             .spawn()
             .unwrap();
-        let began = Instant::now();
         let mut heard = common::Heard::running(party.id());
         while party.try_wait().unwrap().is_none() {
             if let Err(refused) = heard.look(true) {
@@ -324,11 +484,13 @@ fn a_streaming_guests_cpu_is_its_liveness_and_its_stop_its_hosts_hold() {
 fn a_judged_call_goes_on_while_its_party_works() {
     let busy = Duration::from_secs(1);
     for round in 0..2 {
+        // Begun before its spawn: the stand-in's busy clock starts as it runs, which can
+        // be before spawn returns here (CI run 43530570785: "it ended 998.689681ms in").
+        let began = Instant::now();
         let mut party = stand_in_doing(&format!("busy {}", busy.as_millis()))
             .stdout(std::process::Stdio::null())
             .spawn()
             .unwrap();
-        let began = Instant::now();
         let ended = judged_end(&mut party);
         assert!(
             ended.is_ok(),
@@ -366,7 +528,7 @@ const ANSWER: &[u8] = b"answered";
 fn a_judged_read_goes_on_while_its_party_works() {
     let busy = Duration::from_secs(1);
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
-    let port = listener.local_addr().unwrap().port();
+    let port = crate::common::minted_port(listener.local_addr().unwrap().port());
     for round in 0..2 {
         let mut party = stand_in_doing(&format!("answer {port} {}", busy.as_millis()))
             .stdout(std::process::Stdio::null())
@@ -418,11 +580,13 @@ fn judged_read(
 fn a_retry_goes_on_while_what_this_test_started_works() {
     let busy = Duration::from_secs(1);
     for round in 0..2 {
+        // Begun before its spawn: the stand-in's busy clock starts as it runs, which can
+        // be before spawn returns here (CI run 43530570785: "it ended 998.689681ms in").
+        let began = Instant::now();
         let mut anchor = stand_in_doing(&format!("busy {}", busy.as_millis()))
             .stdout(std::process::Stdio::null())
             .spawn()
             .unwrap();
-        let began = Instant::now();
         let mut patience = Patience::started();
         while anchor.try_wait().unwrap().is_none() {
             if !patience.holds() {
@@ -443,6 +607,52 @@ fn a_retry_goes_on_while_what_this_test_started_works() {
             patience.seen()
         );
         patience.done();
+    }
+}
+
+/// A give-back is followed while its process's own memory falls, its CPU no progress, to its
+/// end, and its kind learns how long it took (ROOT's ruling, D209 Part 4: containers.rs'
+/// `what_a_microvm_holds_cold_is_given_back_at_its_hosts_word` waited for two samples 500 ms
+/// apart within 4 MiB). Do: a stand-in that frees four regions one at a time, 200 ms of busy
+/// CPU apart, the first 400 ms in, followed from before it frees; twice from one call site.
+/// Expect: each round's end held what was left once all four went, and the second round's
+/// kind learned a give-back that long.
+#[test]
+fn a_give_back_is_followed_while_its_memory_falls() {
+    let ms = 200;
+    for round in 0..2 {
+        let mut stand_in = stand_in_doing(&format!("falls {ms}"))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut lines = std::io::BufRead::lines(std::io::BufReader::new(stand_in.stdout.take().unwrap()));
+        // Its line follows libtest's "test stand_in ... ", which ends with no newline.
+        assert!(
+            lines.any(|l| l.unwrap().ends_with("mapped")),
+            "the stand-in mapped nothing"
+        );
+        let peak = shards_vmm::platform::process_usage(stand_in.id())
+            .unwrap()
+            .footprint;
+        let falling = common::Falling::begin(stand_in.id());
+        assert!(
+            round == 0
+                || matches!(falling.seen(), shards_api::Seen::Learned { slowest, .. }
+                    if slowest >= Duration::from_millis(ms * (REGIONS as u64 + 1))),
+            "its kind learned no whole give-back: {:?}",
+            falling.seen()
+        );
+        stand_in.stdin.as_mut().unwrap().write_all(b"g").unwrap();
+        let ended = falling.settled();
+        let _ = stand_in.kill();
+        let _ = stand_in.wait();
+        // Midway between three regions given back and four: all four went before its end.
+        let region = REGION as u64;
+        assert!(
+            peak.saturating_sub(ended) >= 3 * region + region / 2,
+            "round {round}: {peak} bytes held mapped, {ended} at its give-back's end"
+        );
     }
 }
 
@@ -525,5 +735,103 @@ fn a_wait_is_refused_though_its_own_polls_keep_its_daemon_busy() {
         began.elapsed(),
         patience.account(),
         std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default()
+    );
+}
+
+/// A command's wait is keyed by its call site and its whole command line, what a run mints
+/// of its own made generic (ROOT's ruling (a), 2026-11-13, #77): one call site's quick
+/// refused command is kept apart from its real one, as build.rs' `builds_push_what_they_build`
+/// runs `build --push CTX`, refused for want of a tag, and then `build --push -t
+/// localhost:PORT/team/built:1 CTX`, which `shards build` and `buildx policy` words alone
+/// never told apart; and a run's own directories and ports key no new record each run.
+/// Do: from one call site, run a stand-in carrying the refused command's line and then the
+/// real one's, each with a context directory and a registry port of its own; then both
+/// again, with new ones. Expect: two records of the call site's on this host, the second
+/// round's keyed as the first's.
+#[test]
+fn a_call_sites_commands_are_keyed_by_their_whole_line() {
+    #[track_caller]
+    fn run_at(cmd: std::process::Command) -> &'static std::panic::Location<'static> {
+        let run = common::run_command(cmd, &["stand-in".to_string()]);
+        assert_eq!(run.status, Some(0), "{run}");
+        std::panic::Location::caller()
+    }
+    let mut site = None;
+    for _ in 0..2 {
+        let ctx = TempDir::new("build-push-ctx");
+        let (port, _) = common::writable_registry();
+        let ctx = ctx.to_str().unwrap();
+        let name = format!("localhost:{port}/team/built:1");
+        for line in [
+            vec!["build", "--push", ctx],
+            vec!["build", "--push", "-t", &name, ctx],
+        ] {
+            site = Some(run_at(stand_in_with("exit", &line)));
+        }
+    }
+    let site = site.unwrap();
+    let prefix: String = format!("{}-{}-{}-", site.file(), site.line(), site.column())
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let records: Vec<String> = std::fs::read_dir(common::workspace().join("target/judge-records"))
+        .unwrap()
+        .flatten()
+        .flat_map(|host| std::fs::read_dir(host.path()).into_iter().flatten().flatten())
+        .filter_map(|record| record.file_name().into_string().ok())
+        .filter(|name| name.starts_with(&prefix))
+        .collect();
+    assert_eq!(records.len(), 2, "{records:#?}");
+}
+
+/// The two call sites the CI triage at d24ef4cfd found judged by a quick refused command's
+/// W* (#77) now key that command apart from their real one, and key each alike run after
+/// run. Do: make build.rs' `builds_push_what_they_build` lines (its context a `TempDir`, its
+/// registry `writable_registry`'s) twice over, and `policy_eval_answers`' refused and
+/// resolved lines. Expect: the refused and the real line apart; the second round's lines
+/// the first's.
+#[test]
+fn the_triaged_call_sites_key_their_refused_command_apart() {
+    let shards = |args: &[&str]| {
+        let mut cmd = std::process::Command::new("/t/shards");
+        cmd.args(args);
+        common::keyed_line(&cmd)
+    };
+    let mut rounds = Vec::new();
+    for _ in 0..2 {
+        let ctx = TempDir::new("build-push-ctx");
+        let (port, _) = common::writable_registry();
+        let ctx = ctx.to_str().unwrap();
+        let name = format!("localhost:{port}/team/built:1");
+        let refused = shards(&["build", "--push", ctx]);
+        let built = shards(&["build", "--push", "-t", &name, ctx]);
+        assert_ne!(refused, built);
+        rounds.push((refused, built));
+    }
+    assert_eq!(rounds[0], rounds[1], "a run's own directory or port in its key");
+    let eval = |source: &str, platform: &str| {
+        shards(&[
+            "buildx",
+            "policy",
+            "eval",
+            "--print",
+            "--platform",
+            platform,
+            source,
+        ])
+    };
+    assert_ne!(
+        eval("docker-image://alpine:3.20", "bogus/x/y/z"),
+        eval("docker-image://alpine:3.20", "linux/arm64")
+    );
+    assert_ne!(
+        shards(&["buildx", "policy", "eval", "--print", "./nope"]),
+        shards(&["buildx", "policy", "eval", "docker-image://alpine:3.20"])
     );
 }

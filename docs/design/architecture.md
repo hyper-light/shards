@@ -10600,6 +10600,64 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     seed; every runner of one CI image shares its key, so a cached target keeps CI warm).
     Each answer is taught in, merged with what another process kept, and written whole and
     renamed into place; a keep that fails is the next answer's to make.
+  - *Its key is its whole command line, what a run mints of its own made generic* (#77,
+    ROOT's ruling (a) of 2026-11-13). Words alone left build.rs' two call sites one kind
+    each: `build --push CTX`, refused, and `build --push -t localhost:PORT/team/built:1 CTX`
+    both `shards build`; every `buildx policy eval` `shards buildx policy`. So a command's
+    kind is `WaitKind::of(site, words, keyed_line(cmd))`, kept as
+    `<call site>-<words>-<the line's SHA-256, its first 16 hex digits>`. The line is its
+    program's file stem and every argument, each value the run minted said as the
+    placeholder its minting helper registered (`common::minted`), longest first: a
+    `TempDir` (its path and its canonical path) as `{dir NAME}`, the directory every one of
+    the run's is under as `{testdir}`, each port a helper was handed (`fixed_port`, the
+    registries, fake S3, Azure Blob and GitHub Actions, `serve_file`, and the tests' own
+    listeners through `minted_port`) as `{port}`, and the process's ID, which the slices,
+    builders and pipes the tests name are made of, as `{pid}`; a number is replaced only
+    where no digit is beside it. A helper that mints a new kind of value registers its own
+    placeholder; a value no helper registers stays as it is, its kind cold each run. Held by
+    harness.rs' `a_call_sites_commands_are_keyed_by_their_whole_line` (red at 802f21ba4: one
+    record for the refused and the real line; two after, and still two after two rounds
+    with new directories and ports) and `the_triaged_call_sites_key_their_refused_command_apart`.
+  - *Its words name its command in its key and its account* (#77, the CI
+    triage at d24ef4cfd: build.rs' `policy_eval_answers` closure and
+    `builds_push_what_they_build` ran many commands from one call site, and a W* of 13.4 ms
+    and 3.49 ms, learned from quick refused commands, judged a real build and a push).
+    `run_command`'s and `client_output`'s kind is `WaitKind::of(site, command_words(cmd))`,
+    kept as `<call site>-<words>`. The words are the program's file stem, then its
+    subcommand's: each a plain word (ASCII lowercase letters and `-`, no flag) up to the
+    first that is not; its first argument; its second only where shards-cmdline's catalog
+    names no command of the first that takes arguments itself (`run`, `push`, `build`, whose
+    next word is an image, a name or a path), or shards' grammar reads the two as ACTION
+    THING (`grammar::form`: `run vm`, `stop daemon`). So `shards run --rm alpine` is `shards
+    run`, `docker push localhost:5000/x` is `docker push`, `docker compose up -d` is `docker
+    compose up`, and no run's own name, path, tag or digest is ever a word: each run of a
+    call site keys the same kinds. A wait on no command (`Patience`, `judged`, a guest's)
+    keeps its call site's key alone (`WaitKind::at`), its kept record read as before; a
+    command's key with no record is a cold start. The helpers that wrapped a wait without
+    `#[track_caller]` (64 of them across the tests: containers.rs' `shards_in`, `home_with`,
+    `hub`, the terminals' `exit`, the managed tests' `command`s, `quit`) carry it now; a wait
+    made inside a closure, a `Drop` or a `Read` impl keeps that body's site, its commands
+    told apart by their words. Held by harness.rs'
+    `one_call_sites_commands_are_judged_apart` (a stand-in that exits, then one that works a
+    moment three times between 200 ms of nothing, from one call site: red at f9bdaeda5,
+    refused in its first quiet window) and `a_commands_words_are_its_subcommands`.
+  - *A party's I/O is not read: its CPU already shows every byte it moves* (#77, measured).
+    Asked whether a party blocked on a peer outside it (Docker Hub, a test's registry
+    thread) moves data a look misses, `docs/research/measurements/judge-io/io_vs_cpu.py`
+    sampled a child each ~1 ms for 3 s, reading a TCP socket fed 64 KiB each 50 ms, or
+    writing 1 MiB to a file each 50 ms (with and without fsync): its I/O counters never grew
+    over a sample its CPU did not (macOS 26 arm64, proc_pid_rusage RUSAGE_INFO_V4: 0 of
+    454, 462 and 449 samples; Linux 7.3 x86_64, `/proc/<pid>/io`: 0 of 1842 and 2674, and 1
+    of 2670, a sample in which the probe's `schedstat` run time, which lags for a running
+    task, missed what `clock_gettime`'s CPU clock that `Watch` reads counts). The counters
+    grow in system calls the process's own threads make, which its CPU clock counts at
+    nanosecond grain. Network bytes are not in them at all on macOS (`ri_diskio_*` count
+    disk I/O alone: 0 bytes grown over the socket run), nor on Linux for the `recv`/`send`
+    family that Rust's std sockets call (`rchar`/`wchar` count read/write-family VFS calls:
+    0 grown over the socket run). Windows' `GetProcessIoCounters` is not measured. A party
+    that waits on its peer moves no bytes while it waits, so its I/O cannot tell it from a
+    stalled one either; what keeps a slow pull or push judged is its own kind's W*, learned
+    from whole pulls and pushes (the key above), not a quick command's.
   - *Cold* (no answer of its kind on this host), it follows its client's liveness alone:
     it waits while the client lives. *Learned*, it is looked at each W* past its start
     (`shards_api::Judge`, shared) and fails only at a look that finds its party made no
@@ -10988,12 +11046,44 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     marks it waiting at its list), and a collection due under the store's lease found not yet
     collected as the lease ends (nothing marks the collector waiting on it); the waiters
     test's `wait` client has no word of its own, ordered only by its start before the
-    follower's. Left for a decision of ROOT's, as no event marks it: containers.rs'
-    `what_a_microvm_holds_cold_is_given_back_at_its_hosts_word` waits for its microVM idle "once it holds what it booted
-    with and has stopped giving back", two samples 500 ms apart within 4 MiB; the update
-    stress's `STALLED` (5 s) is a copy of init's plug.rs constant. `stats`' frozen microVM
-    under 5 % is a reading of `stats`, not a wait, and stays. ROOT owes the real-VM runs of
-    warm.rs, budget.rs, daemon.rs and containers.rs.
+    follower's. `stats`' frozen microVM under 5 % is a reading of `stats`, not a wait, and
+    stays. ROOT owes the real-VM runs of warm.rs, budget.rs, daemon.rs and containers.rs.
+  - *The last two, ROOT's rulings (part B, 2026-11-13).* Part A left them as no event marks
+    them.
+    - containers.rs' `what_a_microvm_holds_cold_is_given_back_at_its_hosts_word` waited for
+      its microVM idle "once it holds what it booted with and has stopped giving back": two
+      samples 500 ms apart within 4 MiB, under what it booted with and 128 MiB. A give-back is
+      progress while the VM process's own resident memory (`Usage::footprint`) falls, as the
+      daemon's judge of an end counts it (daemon/ends.rs `goes_on`). So it waits with
+      `common::Falling`, a judged `Wait` whose progress is a fall alone, its CPU its liveness
+      only (an idle guest's ticks give nothing back), begun before the alloc-free's exec. Its
+      kind, the call site, learns W*, the slowest whole give-back seen on the host: from the
+      wait's start to its last fall, kept with the other kinds' records. A gap between falls
+      is no answer of its own: the guest reports in passes a fixed delay apart
+      (mm/page_reporting.c `PAGE_REPORTING_DELAY`, D151), so the slowest gap seen is about
+      the next gap, and a window of one would end a give-back midway.
+      - *Learned.* Its judge's refusal, a whole W* with no fall and its host not holding the
+        VM process, is the give-back's end. W* spans every gap of a give-back as long as the
+        slowest.
+      - *Cold* (none seen on the host). The give-back so far is the slowest seen: it ends
+        once no fall has come for as long as from the wait's start to its last fall, counted
+        from the last look that found its host holding the VM process. Before its first fall
+        it waits on it for as long as the VM process lives. Begun before the free, its first
+        fall spans the free and the guest's whole delay before it reports, which each later
+        pass only waits again: longer than the gap after it.
+      - *Then.* Its resident memory then is the idle the test measures from. A VM process gone
+        as it gives back fails the test. Nothing teaches W* where no fall came.
+      - No 500 ms, 4 MiB or 128 MiB is left. tests/harness.rs
+        `a_give_back_is_followed_while_its_memory_falls` holds it to a stand-in that unmaps
+        four 32 MiB regions 200 ms of busy CPU apart, the first 400 ms in. Twice from one call
+        site, each round ends with all four gone (midway between three and four regions
+        below its peak), and the second begins with its kind learned of a give-back at
+        least 1 s long.
+    - The update stress's `STALLED` (5 s) was a copy of init's plug.rs constant, which init
+      no longer has: its grower follows a rule learned in its guest (D137's *Asked again on
+      what its guest has seen*). The guest's own slowest is not the test's to know, so each
+      round reads the guest's log for its grower's "asking again", not only rounds slower
+      than 5 s, and the summary's "over 5 s" count goes.
 - **Part 3, the rest (part B)** (#77, W6's last test constants, 2026-11-13; ROOT's ruling on
   claims that a thing does not happen within a time: a judged wait cannot refuse them, as idle
   CPU is progress, so each is an order or a causal claim against a later event that shows, or,
@@ -17314,11 +17404,12 @@ cause of that build's stall left no evidence, so what the next one leaves is fix
   changing, the build waited those out, or for ever. Now:
   - the device tells its driver again when asked again, a configuration interrupt with
     the configuration and its generation unchanged, so the driver tries again at once;
-  - where nothing comes for `STALLED`, the grower asks again, saying what it asked for,
-    what came, and the kernel's last words of its driver (/dev/kmsg); where nothing comes
-    for as long again, it lifts the build's `memory.high`: the build runs on what the
-    builder has, as one booted with that much would, and is ended by the kernel where it
-    needs more (exit code 137, as one past all its memory is), never held;
+  - where nothing comes past the slowest a block has taken in its guest (below), the grower
+    asks again, saying what it asked for, what came, and the kernel's last words of its
+    driver (/dev/kmsg); where nothing comes past it again, it lifts the build's
+    `memory.high`: the build runs on what the builder has, as one booted with that much
+    would, and is ended by the kernel where it needs more (exit code 137, as one past all
+    its memory is), never held;
   - what the grower says is said in the output of the step that runs as it says it,
     through a pipe init relays as that step's stderr;
   - and where the kernel ends a process of the build for want of memory (any of its OOM
@@ -17345,6 +17436,40 @@ cause of that build's stall left no evidence, so what the next one leaves is fix
     the kernel's report, read until it says what it ended (`oom_said`); the
     grower says no kill. Mutation-checked: the runner saying none fails the test every
     time.
+  - **Asked again on what its guest has seen (D209 Part 4, 2026-11-13).** The 5 s was
+    `STALLED`, a thousand times the 5-7 ms 1 GiB took (PM M193): a number of ours, which
+    R03 forbids. Now:
+    - The grower keeps W* in memory for its guest's life (init plug.rs `Coming`): the
+      slowest a block took to come online, from the ask or the block before it, of the blocks
+      that came. A block no time long teaches nothing.
+    - *Learned.* It asks again once nothing came past W*, then gives up once nothing came
+      past it again, as D215's judge refuses a party with no progress past the slowest
+      answer seen. Only the grower's own time counts: each 1 ms pause between its looks at
+      MemTotal counts at most its 1 ms (a look's pace, no wait). A pause its guest's
+      scheduler or its host held longer is their hold, not the driver's stall, as D215
+      counts its judge's own lateness. Its typed outcome is `Came::Stalled` as before.
+    - *Cold* (a guest's first plug, none seen yet). The grower waits on the driver for as
+      long as it takes, as D215's cold wait follows its party. It is never asked again nor
+      given up. The driver tries again on its own timer, 50 s doubling to 300 s
+      (`virtio_mem_run_wq`).
+    - `oom_said` waits on the line itself, with no clock. The kernel counts the kill, sends
+      its SIGKILL and then says "Killed process" on the killer's own path, with no return
+      between (Linux 7.2 mm/oom_kill.c `__oom_kill_process`: `memcg_memory_event_mm`,
+      `do_send_sig_info`, `pr_err`), so a kill counted is said. A guest whose log cannot be
+      read at all (no /dev/kmsg, syslog(2) refused) gets nothing at once.
+    - *The gaps.* A guest's first plug that never comes holds its build at `memory.high` until
+      the driver's own retries bring memory, or its client ends it: no record carries from
+      one guest to the next. A "Killed process" line overwritten in the kernel's ring between
+      its write and the read holds `oom_said` until a later report's line comes. That takes
+      more than the ring of other words in that moment; the OOM report itself comes before
+      the line (`dump_header`).
+    - Tested in crates/init (Linux):
+      - `a_guests_first_memory_is_waited_for_however_long_it_takes`: red at f0375b00a,
+        `STALLED`'s rule giving up a first plug that comes 20 s in;
+      - `a_grower_held_from_looking_is_not_stalled`;
+      - `memory_that_comes_slowly_is_waited_for`, which now also checks the 4 s it teaches;
+      - `memory_that_stops_coming_is_asked_for_again` and
+        `memory_that_never_comes_is_given_up`, both on a learned 2 s.
 - **A killed build left its builder running.** A builder's VM ended as its build dropped
   it, or as its guest powered off on its connection closing: a killed `shards build image` drops
   nothing, and a guest held at its memory hears nothing. The VM now ends as its `--attach`

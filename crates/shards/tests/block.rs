@@ -36,6 +36,7 @@ impl Drop for Disks {
     }
 }
 
+#[track_caller]
 fn run_test(disks: &Disks, test: &str, extra: &str) -> common::Run {
     let ro_bytes = std::fs::metadata(&disks.ro).unwrap().len();
     let rw_bytes = std::fs::metadata(&disks.rw).unwrap().len();

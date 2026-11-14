@@ -33,6 +33,7 @@ fn shards_in(home: &Path, args: &[&str]) -> Run {
 /// `shards` in `home`, `more` in its environment besides: the daemon a first command starts
 /// keeps them (`SHARDS_LOG=debug` has its VM processes say each ring they attach and let go,
 /// in its log; `SHARDS_PRESSURE` names the pipe its host's word comes through).
+#[track_caller]
 fn shards_with(home: &Path, args: &[&str], more: &[(&str, &OsStr)]) -> Run {
     let (kernel, init) = (kernel(), guest_init());
     let mut env: Vec<(&str, &OsStr)> = vec![
@@ -113,6 +114,7 @@ fn joiner(home: &Path, image: &str, name: &str, cmd: &str) {
 
 /// `prov`'s engine answering, and a joiner of it, `emitter`, that wrote `bytes` of the
 /// pattern to its log and ended.
+#[track_caller]
 fn emitter(home: &Path, image: &str, bytes: u64) {
     answering(home);
     joiner(home, image, "emitter", &format!(r#""bulk-emit","{bytes}""#));
@@ -518,6 +520,7 @@ fn vcpus() -> Vec<usize> {
 /// looks, and the wait, looking for it attached still, waited on for a state already gone
 /// (CI run 43435318858, x86_64-unknown-linux-gnu). What asks for the slot is its caller's to
 /// hold to its own word.
+#[track_caller]
 fn held_open(home: &Path, image: &str) -> std::thread::JoinHandle<Run> {
     answering(home);
     joiner(home, image, "idle", r#""sleep""#);

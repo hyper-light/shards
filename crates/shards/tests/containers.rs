@@ -21,8 +21,8 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use common::{
-    Patience, Run, TempDir, Told, Wait, WaitKind, bridge, cannot_run_vms, fixed_port, guest_init, kernel,
-    noise, registry, run_shards_env, served, served_counting, sha256_digest, test_index,
+    Falling, Patience, Run, TempDir, Told, Wait, WaitKind, bridge, cannot_run_vms, fixed_port, guest_init,
+    kernel, noise, registry, run_shards_env, served, served_counting, sha256_digest, test_index,
 };
 #[cfg(unix)]
 use common::{shards, shards_vm};
@@ -31,6 +31,7 @@ use common::{shards, shards_vm};
 /// it goes on (`common::run_command`): a large `-m` whose guest plugs and touches gigabytes
 /// on a slow, contended CI runner progresses for minutes (`run_limits_a_microvms_resources`
 /// took 199 s under 32 busy loops where it took 30 idle).
+#[track_caller]
 fn shards_in(home: &Path, args: &[&str]) -> Run {
     let (kernel, init) = (kernel(), guest_init());
     let env: [(&str, &OsStr); 3] = [
@@ -94,6 +95,7 @@ fn oom_said(home: &Path) -> String {
 }
 
 /// A run left going: its client, with the command's first line read.
+#[track_caller]
 fn start(home: &Path, image: &str, options: &[&str], command: &[&str]) -> Child {
     // In the home, and shown where the run ends unready ([`ended`]).
     static RUNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -3993,31 +3995,16 @@ fn what_a_microvm_holds_cold_is_given_back_at_its_hosts_word() {
     let said = || std::fs::read_to_string(&log).unwrap_or_default();
     // Its microVM grown first, as the group's test grows its own: a run's grower plugs for
     // what its runs touch, not for what they read (D148), and jupiter's guest kept 107 MiB of
-    // four reads (PM M391). What it touched and freed given back (D151) before it is idle.
-    let booted = held();
+    // four reads (PM M391). What it touched and freed given back (D151) before it is idle:
+    // idle once its give-back has ended (`Falling`, D209 Part 4), followed from before the
+    // free. A second read of a file its guest's kernel finds the first's still holding makes
+    // its pages active, which a give-back takes none of (`reclaim_cold`, `inactive_file`),
+    // and an idle measured as it went on giving back had the file read twice and gave back
+    // nothing of it on Fedora, once in 6.
+    let falling = Falling::begin(pid);
     let grown = shards(&["exec", "prov", "/bin/testguest", "alloc-free", "1024", "0"]);
     assert_eq!(grown.status, Some(0), "{grown}");
-    // Idle once it holds what it booted with, near enough, and has stopped giving back: a
-    // second read of a file its guest's kernel finds the first's still holding makes its
-    // pages active, which a give-back takes none of (`reclaim_cold`, `inactive_file`), and
-    // an idle measured as it went on giving back had the file read twice and gave back
-    // nothing of it on Fedora, once in 6.
-    let mut patience = Patience::of(&home);
-    let mut last = held();
-    loop {
-        std::thread::sleep(Duration::from_millis(500));
-        let now = held();
-        if now < booted + (128 << 20) && now.abs_diff(last) < 4 << 20 {
-            patience.done();
-            break;
-        }
-        assert!(
-            patience.holds(),
-            "{booted} bytes held booted, {now} after touching and freeing a GiB"
-        );
-        last = now;
-    }
-    let idle = held();
+    let idle = falling.settled();
     // Its guest holds what its joiner read, read once.
     let read = shards(&["exec", "reader", "/bin/testguest", "read", "/big"]);
     assert!(read.stdout.starts_with("read /big 536870912 "), "{read}");
@@ -5166,7 +5153,7 @@ fn a_networks_egress_is_a_grant_of_its_destinations_alone() {
     let address = *host.ip();
     let serve = |hello: &'static str| {
         let listener = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
+        let port = crate::common::minted_port(listener.local_addr().unwrap().port());
         std::thread::spawn(move || {
             for c in listener.incoming().flatten() {
                 let mut c = c;
@@ -5182,7 +5169,10 @@ fn a_networks_egress_is_a_grant_of_its_destinations_alone() {
     // Bound to the address it is asked at, so its answers come from it on a host of several
     // addresses (adacachy's .77 and .90 on one link), as a resolver's must (RFC 5452 §9.1).
     let resolver = std::net::UdpSocket::bind((address, 0)).unwrap();
-    let resolver_at = format!("{address}:{}", resolver.local_addr().unwrap().port());
+    let resolver_at = format!(
+        "{address}:{}",
+        crate::common::minted_port(resolver.local_addr().unwrap().port())
+    );
     std::thread::spawn(move || {
         let mut q = [0u8; 512];
         while let Ok((n, from)) = resolver.recv_from(&mut q) {
@@ -8029,6 +8019,7 @@ fn a_command_that_cannot_start_says_why() {
 }
 
 /// `shards ARGS` in `home`, where no run is meant to boot.
+#[track_caller]
 fn without_vms(home: &Path, args: &[&str]) -> Run {
     run_shards_env(&[], args, &[("SHARDS_HOME", home.as_os_str())])
 }
@@ -8245,6 +8236,7 @@ struct Going {
 }
 
 impl Going {
+    #[track_caller]
     fn finish(mut self) -> Run {
         let start = Instant::now();
         let status = exit(&mut self.child, &self.home);
@@ -8808,7 +8800,7 @@ fn a_run_is_on_the_default_bridge() {
     };
     let server = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
     server.set_nonblocking(true).unwrap();
-    let port = server.local_addr().unwrap().port();
+    let port = crate::common::minted_port(server.local_addr().unwrap().port());
     let to = format!("{}:{port}", host.ip());
     let ran = run_in(&home, &image, &["--rm", "-u", "root"], &["tcp", &to]);
     assert_eq!(ran.status, Some(1), "{ran}");
@@ -8882,7 +8874,11 @@ fn a_run_on_network_none_reaches_nothing() {
         eprintln!("SKIP: this host has no route to give a guest an address of it");
         return;
     };
-    let to = format!("{}:{}", host.ip(), server.local_addr().unwrap().port());
+    let to = format!(
+        "{}:{}",
+        host.ip(),
+        crate::common::minted_port(server.local_addr().unwrap().port())
+    );
     let ran = run_in(
         &home,
         &image,
@@ -8916,6 +8912,7 @@ fn serving(home: &Path, image: &str, command: &[&str]) -> (Child, u16) {
 
 /// `shards ARGS` left going, its stderr in the home: its client, and the port its server
 /// says it is ready on (`ready PORT`).
+#[track_caller]
 fn ready_on(home: &Path, args: &[String]) -> (Child, u16) {
     let said = home.join(format!(
         "serving-{}.stderr",
@@ -9143,7 +9140,7 @@ fn a_run_on_the_hosts_network_is_on_the_hosts_network() {
     // A port the host holds is the host's (EADDRINUSE, Linux's 98); one the guest closed
     // and binds again at once, its own, each of 50 times.
     let held = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
-    let port = held.local_addr().unwrap().port();
+    let port = crate::common::minted_port(held.local_addr().unwrap().port());
     let ran = run_in(&home, &image, &host, &["listen", &format!("0.0.0.0:{port}"), "1"]);
     assert_eq!(ran.status, Some(1), "{ran}");
     assert!(
@@ -10367,7 +10364,7 @@ fn published_ports_reach_the_guest() {
     );
     // Taken by another program: its bind's words.
     let held = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
-    let h = held.local_addr().unwrap().port();
+    let h = crate::common::minted_port(held.local_addr().unwrap().port());
     let refused = run_in(
         &home,
         &image,
@@ -11891,7 +11888,7 @@ fn stalling_registry() -> (
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
+    let port = crate::common::minted_port(listener.local_addr().unwrap().port());
     let (begun, ended) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
     let (b, e) = (begun.clone(), ended.clone());
     std::thread::spawn(move || {
@@ -12000,7 +11997,7 @@ fn pacing_registry(per: usize, layer: usize) -> (u16, std::sync::Arc<std::sync::
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
+    let port = crate::common::minted_port(listener.local_addr().unwrap().port());
     let (now, began) = (Arc::new(AtomicUsize::new(0)), Arc::new(Mutex::new(Vec::new())));
     let held = began.clone();
     std::thread::spawn(move || {
@@ -13227,18 +13224,16 @@ fn update_moves_a_microvms_memory_both_ways() {
 ///
 /// And the grow-after-unplug tail (PM M466): a raise that comes while the guest's driver
 /// still unplugs what the lowering before it gave back waits for the unplug, and where
-/// nothing came for 5 s its grower asked a second time and said so in its kernel's log
-/// (init plug.rs `come`, `STALLED`), which a privileged run's exec reads. Each round whose
-/// allocation took longer than that has its guest's words read; the rounds where its
-/// grower asked again are printed with what its driver said, and fail the test: a driver
-/// that gives way to a changed request (resources/kernel/patches/0014) has none.
+/// nothing came past the slowest a block had taken in that guest, its grower asked a second
+/// time and said so in its kernel's log (init plug.rs `come`, `Coming`; D209 Part 4), which
+/// a privileged run's exec reads. That slowest is the guest's own, so each round has its
+/// guest's words read; the rounds where its grower asked again are printed with what its
+/// driver said, and fail the test: a driver that gives way to a changed request
+/// (resources/kernel/patches/0014) has none.
 #[test]
 #[ignore = "a stress: SHARDS_STRESS_N=… cargo test --test containers -- --ignored update_under_pressure --nocapture"]
 fn update_under_pressure_stress() {
     use std::sync::atomic::{AtomicBool, Ordering};
-    // init plug.rs `STALLED`: how long the grower waits on memory that does not come
-    // before it asks again. An allocation shorter than it holds no second ask.
-    const STALLED: Duration = Duration::from_secs(5);
     if cannot_run_vms() {
         return;
     }
@@ -13325,20 +13320,18 @@ fn update_under_pressure_stress() {
         if !ok {
             killed.push(round);
         }
-        if held_more.elapsed > STALLED {
-            let log = shards(&["exec", "vm", "grows", "/bin/testguest", "fs", "kmsg:asking again"]);
-            assert_eq!(log.status, Some(0), "round {round}: {log}");
-            let new: Vec<String> = log
-                .stdout
-                .lines()
-                .filter(|l| !l.starts_with("kmsg "))
-                .filter(|l| asked_again.insert(l.to_string()))
-                .map(str::to_string)
-                .collect();
-            if !new.is_empty() {
-                println!("round {round}: its grower asked again: {}", new.join("\n  "));
-                stalled.push(round);
-            }
+        let log = shards(&["exec", "vm", "grows", "/bin/testguest", "fs", "kmsg:asking again"]);
+        assert_eq!(log.status, Some(0), "round {round}: {log}");
+        let new: Vec<String> = log
+            .stdout
+            .lines()
+            .filter(|l| !l.starts_with("kmsg "))
+            .filter(|l| asked_again.insert(l.to_string()))
+            .map(str::to_string)
+            .collect();
+        if !new.is_empty() {
+            println!("round {round}: its grower asked again: {}", new.join("\n  "));
+            stalled.push(round);
         }
         let lowered = shards(&["update", "vm", "-m", "256m", "--memory-swap", "256m", "grows"]);
         assert_eq!(lowered.status, Some(0), "{lowered}");
@@ -13346,17 +13339,13 @@ fn update_under_pressure_stress() {
     took.sort_by(f64::total_cmp);
     let at = |q: f64| took[((took.len() as f64 - 1.0) * q).round() as usize];
     println!(
-        "allocations: n {}, p50 {:.0}, p90 {:.0}, p99 {:.0}, max {:.0} ms; not held {} {killed:?}; over {} s {}; asked again {} {stalled:?}",
+        "allocations: n {}, p50 {:.0}, p90 {:.0}, p99 {:.0}, max {:.0} ms; not held {} {killed:?}; asked again {} {stalled:?}",
         took.len(),
         at(0.5),
         at(0.9),
         at(0.99),
         at(1.0),
         killed.len(),
-        STALLED.as_secs(),
-        took.iter()
-            .filter(|&&ms| ms > STALLED.as_secs_f64() * 1e3)
-            .count(),
         stalled.len()
     );
     assert_eq!(shards(&["stop", "vm", "-t", "1", "grows"]).status, Some(0));
@@ -17751,7 +17740,7 @@ fn a_runs_log_is_sent_to_syslog_as_its_options_say() {
         .unwrap(),
     );
     let tls = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = tls.local_addr().unwrap().port();
+    let port = crate::common::minted_port(tls.local_addr().unwrap().port());
     let at = home.to_path_buf();
     let reading = std::thread::spawn(move || {
         let Some(conn) = accept_within(&tls, &at) else {
@@ -18775,7 +18764,7 @@ fn a_runs_log_is_sent_to_splunk_as_its_options_say() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!(
         "splunk-url=http://127.0.0.1:{}",
-        listener.local_addr().unwrap().port()
+        crate::common::minted_port(listener.local_addr().unwrap().port())
     );
     let (seen, requests) = std::sync::mpsc::channel();
     hec(listener, seen);
@@ -19048,7 +19037,7 @@ fn a_runs_log_is_sent_to_cloudwatch_logs_as_its_options_say() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let endpoint = format!(
         "awslogs-endpoint=http://127.0.0.1:{}",
-        listener.local_addr().unwrap().port()
+        crate::common::minted_port(listener.local_addr().unwrap().port())
     );
     let (seen, requests) = std::sync::mpsc::channel();
     cloudwatch(listener, seen);
@@ -19761,7 +19750,10 @@ fn a_runs_log_is_sent_to_cloud_logging_as_its_options_say() {
         return;
     };
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let at = format!("127.0.0.1:{}", listener.local_addr().unwrap().port());
+    let at = format!(
+        "127.0.0.1:{}",
+        crate::common::minted_port(listener.local_addr().unwrap().port())
+    );
     let endpoint = format!("gcp-endpoint=http://{at}");
     let (seen, requests) = std::sync::mpsc::channel();
     google(listener, seen);

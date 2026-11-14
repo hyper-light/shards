@@ -41,6 +41,7 @@ fn host_env(home: &TempDir) -> Vec<(OsString, OsString)> {
 /// Builds `agentfile` (its `{image}` the test image) in a context holding a harness
 /// archive whose `codex` is the test guest started with `options`, and an agent of files
 /// alone; tagged `tag` in `home`.
+#[track_caller]
 fn build(home: &TempDir, tag: &str, options: &[&str], agentfile: &str) {
     let (image, _) = served();
     let env = [
@@ -665,6 +666,7 @@ fn a_run_keeping_nothing_the_image_grants_boots_and_its_harness_runs() {
 /// Agentfile and harness.json as the repository holds them, FROM its pinned alpine, which
 /// the tests' own registry serves (`common::hub_bases`), and the test guest as its `codex`,
 /// as OpenAI's binaries are no part of the repository (its .gitignore).
+#[track_caller]
 fn build_example(home: &TempDir, tag: &str) {
     let example = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/examples/harness-codex");
     let ctx = TempDir::new("api-example-ctx");
@@ -1662,7 +1664,7 @@ fn tls_host(names: &[&str]) -> TlsHost {
     config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     let config = std::sync::Arc::new(config);
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
+    let port = crate::common::minted_port(listener.local_addr().unwrap().port());
     let (tx, asked) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         for sock in listener.incoming().flatten() {
@@ -2009,6 +2011,9 @@ impl Lessor for TestLessor {
 /// `host.docker.internal`, for server name `sni`: its harness reaches that destination alone,
 /// and `auth.openai.com:443` where `sign_in`, so that Codex's token host is one its egress
 /// reaches (D236); the guest's flows to it still go to the test's host, as it dials them.
+/// Its trust bundle, at the first of the paths D242 lays the run's CA over, holds no root of
+/// its own: a granted member is refused where its image has none (init's trust.rs), and with
+/// none of the image's, the run's CA laid over it is the one root the harness's client trusts.
 fn build_asking(home: &TempDir, tag: &str, port: u16, sni: &str, sign_in: bool) {
     let host = format!("host.docker.internal:{port}");
     let (token, ports) = if sign_in {
@@ -2021,7 +2026,8 @@ fn build_asking(home: &TempDir, tag: &str, port: u16, sni: &str, sign_in: bool) 
         tag,
         &["tls-ask", &host, sni],
         &format!(
-            "NETWORK --egress={host}{token} provider FOR codex\n\
+            "COPY <<EOF /etc/ssl/certs/ca-certificates.crt\nno roots of the image's own\nEOF\n\
+             NETWORK --egress={host}{token} provider FOR codex\n\
              EXPOSE --harnesses=codex {ports} AS egress FOR provider\nCONNECT codex WITH codex ON provider\n"
         ),
     );
@@ -2062,12 +2068,14 @@ fn granted() -> Vec<CredentialGrant> {
 }
 
 /// The harness's answers, one line for each of its requests, read to its end.
+#[track_caller]
 fn answers(guest: &dyn ImageGuest) -> Vec<String> {
     let out = String::from_utf8(read_all(guest, Channel::Stdout)).unwrap();
     out.lines().map(str::to_string).collect()
 }
 
 /// The run stopped, and every lease its lessor gave released by its end (D242).
+#[track_caller]
 fn stop_releasing(guest: &dyn ImageGuest, lessor: &TestLessor) {
     guest.stop().unwrap();
     assert_eq!(

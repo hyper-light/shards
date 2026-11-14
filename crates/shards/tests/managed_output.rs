@@ -120,6 +120,7 @@ impl Fixture {
 
     /// `shards ARGS` in its home, waited on as long as it goes on (`common::run_command`):
     /// `_within`, its callers' share of their case's time, bounds it no more.
+    #[track_caller]
     fn command(&self, args: &[&str], _within: Duration) -> common::Run {
         common::run_shards_env(
             &[],
@@ -318,6 +319,7 @@ impl Fixture {
         );
     }
 
+    #[track_caller]
     fn consume(&mut self, member: u32, label: &str, channel: Channel) {
         let observer = self.observe(member, channel, None, false, Bound::Judged);
         let expected = payload(label, channel);
