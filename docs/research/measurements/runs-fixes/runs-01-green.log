@@ -1,0 +1,72 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.89s
+     Running unittests src/lib.rs (/Users/adalundhe/g121-tmp/fix-runs-v1/target/debug/deps/shards_vmm-645a41c49a1f33e2)
+
+running 1 test
+test devices::virtio::fs::server::tests::owner_metadata_failures_refuse_creation_and_lookup ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 488 filtered out; finished in 0.00s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running unittests src/lib.rs (/Users/adalundhe/g121-tmp/fix-runs-v1/target/debug/deps/shards_vmm-645a41c49a1f33e2)
+
+running 49 tests
+test devices::virtio::fs::server::tests::a_budget_is_reckoned_from_the_hosts_limits ... ok
+test devices::virtio::fs::server::tests::a_device_is_never_opened_to_be_looked_at ... ok
+test devices::virtio::fs::server::tests::a_device_node_is_its_makers ... ok
+test devices::virtio::fs::server::tests::a_directory_is_held_while_the_guest_knows_it ... ok
+test devices::virtio::fs::server::tests::a_file_bound_alone_is_all_of_its_directory_that_shows ... ok
+test devices::virtio::fs::server::tests::a_directory_is_renamed_whatever_is_open_beneath_it ... ok
+test devices::virtio::fs::server::tests::a_join_shares_volume_of_one_name_shows_it_alone ... ok
+test devices::virtio::fs::server::tests::a_join_share_serves_each_volume_alone ... ok
+test devices::virtio::fs::server::tests::a_directory_let_go_is_found_by_its_path_or_is_stale ... ok
+test devices::virtio::fs::server::tests::a_mode_change_follows_no_symlink ... ok
+test devices::virtio::fs::server::tests::a_name_found_by_another_case_is_trusted_for_no_time ... ok
+test devices::virtio::fs::server::tests::a_join_shares_volumes_each_have_their_owner ... ok
+test devices::virtio::fs::server::tests::a_notice_changes_nothing_on_the_host ... ok
+test devices::virtio::fs::server::tests::a_guests_files_show_it_the_same_copied_as_they_move ... ok
+test devices::virtio::fs::server::tests::a_file_unlinked_unpinned_is_not_found_again_by_its_number ... ok
+test devices::virtio::fs::server::tests::a_session_that_ends_leaves_nothing_held ... ok
+test devices::virtio::fs::server::tests::a_symlink_reads_back_its_target ... ok
+test devices::virtio::fs::server::tests::an_attribute_of_no_value_is_kept ... ok
+test devices::virtio::fs::server::tests::a_file_made_read_only_is_filled_through_its_handle ... ok
+test devices::virtio::fs::server::tests::a_saved_share_is_served_again_by_a_restored_server ... ok
+test devices::virtio::fs::server::tests::a_file_unlinked_by_one_name_is_served_by_another ... ok
+test devices::virtio::fs::server::tests::dax_smallest_is_what_its_measurement_found ... ok
+test devices::virtio::fs::server::tests::a_file_renamed_over_while_open_goes_on_serving ... ok
+test devices::virtio::fs::server::tests::dax_is_offered_for_files_a_window_maps ... ok
+test devices::virtio::fs::server::tests::an_exchange_swaps_two_names ... ok
+test devices::virtio::fs::server::tests::fallocate_grows_and_lseek_finds_data ... ok
+test devices::virtio::fs::server::tests::files_are_made_written_read_and_owned_as_a_guest_sees_them ... ok
+test devices::virtio::fs::server::tests::ownership_records_read_and_write_back ... ok
+test devices::virtio::fs::server::tests::a_read_only_file_found_by_create_is_opened_again_as_needed ... ok
+test devices::virtio::fs::server::tests::owner_metadata_failures_refuse_creation_and_lookup ... ok
+test devices::virtio::fs::server::tests::node_ids_are_not_guessed_from_one_another ... ok
+test devices::virtio::fs::server::tests::special_files_are_never_opened ... ok
+test devices::virtio::fs::server::tests::the_guest_sees_its_own_attributes_and_not_the_hosts_security_ones ... ok
+test devices::virtio::fs::server::tests::statfs_answers_for_the_shares_volume ... ok
+test devices::virtio::fs::server::tests::a_file_whose_mode_is_taken_away_goes_on_serving_its_handles ... ok
+test devices::virtio::fs::server::tests::times_set_are_the_files ... ok
+test devices::virtio::fs::server::tests::a_file_replaced_on_the_host_while_open_is_stale_once_let_go ... ok
+test devices::virtio::fs::server::tests::the_hosts_files_are_the_owner_init_names ... ok
+test devices::virtio::fs::server::tests::an_appending_handle_writes_at_its_files_end_as_the_host_has_it ... ok
+test devices::virtio::fs::server::tests::a_removal_that_fails_leaves_open_nodes_as_they_were ... ok
+test devices::virtio::fs::server::tests::reads_are_answered_into_the_buffer_their_asker_keeps ... ok
+test devices::virtio::fs::server::tests::an_unlinked_file_held_open_goes_on_serving ... ok
+test devices::virtio::fs::server::tests::what_the_host_cannot_hold_is_kept_beside_it ... ok
+test devices::virtio::fs::server::tests::pins_past_the_budget_leave_their_handles_stale ... ok
+test devices::virtio::fs::server::tests::a_directory_is_read_whole_a_page_at_a_time ... ok
+test devices::virtio::fs::server::tests::a_listing_goes_on_where_it_was_after_its_stream_is_let_go ... ok
+test devices::virtio::fs::server::tests::handles_past_the_budget_each_serve_their_file ... ok
+test devices::virtio::fs::server::tests::a_listing_comes_a_read_at_a_time ... ok
+test devices::virtio::fs::server::tests::a_guest_reads_ten_thousand_files_it_holds_open ... ok
+
+test result: ok. 49 passed; 0 failed; 0 ignored; 0 measured; 440 filtered out; finished in 2.47s
+
+   Compiling shards-abi v0.1.0 (/Users/adalundhe/g121-tmp/fix-runs-v1/source/crates/abi)
+   Compiling shards-vmm v0.1.0 (/Users/adalundhe/g121-tmp/fix-runs-v1/source/crates/vmm)
+    Checking libc v0.2.189
+    Checking shards-apple v0.1.0 (/Users/adalundhe/g121-tmp/fix-runs-v1/source/crates/apple)
+    Checking shards-netring v0.1.0 (/Users/adalundhe/g121-tmp/fix-runs-v1/source/crates/netring)
+    Checking shards-testdir v0.1.0 (/Users/adalundhe/g121-tmp/fix-runs-v1/source/crates/testdir)
+    Checking shards-ipc v0.1.0 (/Users/adalundhe/g121-tmp/fix-runs-v1/source/crates/ipc)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.17s
