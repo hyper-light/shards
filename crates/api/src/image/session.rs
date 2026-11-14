@@ -1090,7 +1090,7 @@ fn channel_end(s: &State, member: u32, channel: Channel) -> Option<ChannelEnd> {
 /// Moves what the caller writes to member `member`'s stdin to its host, no more at once than
 /// the room the host gave, and its end once the caller closes its pipe; ends with the input,
 /// the run or the host, dropping its pipe's read end so that the caller's writes fail then.
-fn feed(shared: &Shared, member: u32, mut reader: impl Read) {
+fn feed(shared: &Shared, member: u32, mut reader: impl io::Read) {
     // What the caller types into the member, a credential as often as not (D242): wiped here
     // once sent, and the buffer as it goes.
     let mut buf = zeroize::Zeroizing::new(vec![0u8; AHEAD as usize]);
@@ -1131,7 +1131,7 @@ fn feed(shared: &Shared, member: u32, mut reader: impl Read) {
 }
 
 /// The owner's write end, and the reader driven by its member's feeder.
-fn input_pipe(_shared: &Shared, _member: u32) -> io::Result<(impl Read + Send, io::PipeWriter)> {
+fn input_pipe(_shared: &Shared, _member: u32) -> io::Result<(impl io::Read + Send, io::PipeWriter)> {
     io::pipe()
 }
 
@@ -2402,7 +2402,7 @@ mod tests {
             reader: R,
             entered: std::sync::mpsc::Sender<()>,
         }
-        impl<R: Read> Read for Entered<R> {
+        impl<R: io::Read> io::Read for Entered<R> {
             fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
                 self.entered.send(()).unwrap();
                 self.reader.read(out)
