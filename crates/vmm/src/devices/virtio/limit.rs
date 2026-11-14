@@ -45,6 +45,8 @@ struct State {
     requests: Measure,
     /// How many of its devices are paused ([`Limiter::pause`]).
     pauses: u64,
+    #[cfg(test)]
+    waiters: usize,
 }
 
 /// One of its limits: bytes, or requests.
@@ -90,6 +92,8 @@ impl Limiter {
                 bytes: Measure::NONE,
                 requests: Measure::NONE,
                 pauses: 0,
+                #[cfg(test)]
+                waiters: 0,
             }),
             paused: Condvar::new(),
         }
@@ -124,11 +128,20 @@ impl Limiter {
             if left.is_zero() {
                 break;
             }
+            #[cfg(test)]
+            {
+                s.waiters += 1;
+                self.paused.notify_all();
+            }
             s = self
                 .paused
                 .wait_timeout(s, left)
                 .unwrap_or_else(PoisonError::into_inner)
                 .0;
+            #[cfg(test)]
+            {
+                s.waiters -= 1;
+            }
         }
         // Its overrun, which the next request each measure it charged charges is late by.
         let over = Instant::now().saturating_duration_since(deadline);
@@ -137,6 +150,14 @@ impl Limiter {
         }
         if by_requests.is_some() {
             s.requests.late = over;
+        }
+    }
+
+    #[cfg(test)]
+    pub fn wait_for_waiter(&self) {
+        let mut s = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        while s.waiters == 0 {
+            s = self.paused.wait(s).unwrap_or_else(PoisonError::into_inner);
         }
     }
 

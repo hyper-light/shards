@@ -1201,6 +1201,87 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    #[test]
+    fn reset_cancels_only_its_own_limiter_wait() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        static LIMIT: Limiter = Limiter::new();
+        LIMIT.set(1, 0);
+        LIMIT.take(3600);
+        let dir = shards_testdir::TempDir::new("reset-limit").unwrap();
+        std::fs::write(dir.join("disk"), [0; 512]).unwrap();
+        let mut block = Block::open(&dir.join("disk"), false, "reset")
+            .unwrap()
+            .with_limit(Some(&LIMIT));
+        let base = 0x8000_0000;
+        let page = platform::page_size().unwrap();
+        let memory = Arc::new(GuestMemory::anonymous(&[(base, 4 * page)]).unwrap());
+        let cfg = QueueConfig {
+            size: 8,
+            desc: base,
+            avail: base + page as u64,
+            used: base + 2 * page as u64,
+            ready: true,
+        };
+        let irq = Arc::new(DeviceInterrupt::new(Arc::new(Line)));
+        // One valid read request: header, sector, status, in separate descriptors.
+        let data = base + 3 * page as u64;
+        let a = memory.access().unwrap();
+        a.write(data, &[0u8; 16]).unwrap();
+        for (i, (addr, len, flags, next)) in [
+            (data, 16u32, 1u16, 1u16),
+            (data + 16, 512, 3, 2),
+            (data + 528, 1, 2, 0),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let at = base + i as u64 * 16;
+            a.write_obj(at, addr).unwrap();
+            a.write_obj(at + 8, len).unwrap();
+            a.write_obj(at + 12, flags).unwrap();
+            a.write_obj(at + 14, next).unwrap();
+        }
+        a.write_obj(cfg.avail + 4, 0u16).unwrap();
+        a.write_obj(cfg.avail + 2, 1u16).unwrap();
+        drop(a);
+        block
+            .activate(Activation {
+                memory: memory.clone(),
+                queues: vec![Queue::new(cfg, 8, &memory, feature::VERSION_1).unwrap()],
+                interrupt: irq,
+                features: feature::VERSION_1,
+                restored: false,
+            })
+            .unwrap();
+        LIMIT.wait_for_waiter();
+        let (send, receive) = mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            block.reset();
+            send.send(()).unwrap();
+        });
+        let completed = receive.recv_timeout(Duration::from_secs(1)).is_ok();
+        if !completed {
+            LIMIT.pause();
+        }
+        thread.join().unwrap();
+        if !completed {
+            LIMIT.resume();
+        }
+        assert!(completed, "reset joined a worker still waiting on I/O debt");
+        // An unrelated device still owes its debt: reset must not pause the shared limiter.
+        let (send, receive) = mpsc::channel();
+        let other = std::thread::spawn(move || {
+            LIMIT.take(1);
+            send.send(()).unwrap();
+        });
+        LIMIT.wait_for_waiter();
+        assert!(receive.try_recv().is_err());
+        LIMIT.pause();
+        other.join().unwrap();
+        LIMIT.resume();
+    }
+
     /// A join disk (D119): of no capacity until an image is given a range; each range from
     /// a 1 MiB boundary, read as its file reads, the gaps as zeros, one let go as an I/O
     /// error; the driver told each time the capacity grows, while it has the device.
