@@ -60,26 +60,52 @@ pub const CACHE_MAX: Amount = Amount::Percent(80);
 pub const CACHE_FREE: Amount = Amount::Percent(20);
 pub const LOG_HISTORY: u64 = 1 << 30;
 
-/// The most bytes a log's segment holds, its rotation's unit.
-pub const LOG_SEGMENT: u64 = 20 << 20;
-
-/// How a log of `history` bytes keeps its run's newest output: in equal segments of at
-/// most [`LOG_SEGMENT`] bytes, two at least, so that it holds at most its history and, as
-/// its oldest segment goes, at least its history less a segment: half of it below 40 MiB,
-/// 51/52 of the default 1 GiB.
+/// How a log of `history` bytes keeps its run's newest output (runs-11 `LOG_SEGMENT`): in
+/// `files` equal segments of `size` bytes, the oldest going as a new one begins, so that it
+/// holds at most its history, and at least its history less two segments (one gone at a
+/// rotation, and what a whole number of them leaves of it).
+///
+/// A segment's size trades two costs. Each segment costs its making and its rotation (a
+/// warm VM's `LOG_SEGMENT` ask, two files made and two removed, its pack) and a name each
+/// reader lists (`LogFile::segments`): `history / size` of them. A reader resuming from a
+/// cursor (`Pos`, its segment's number and its record's) finds its place within that one
+/// segment, by its index and, packed, its seek table's frame (packed.rs), and the cap loses
+/// a segment of what it keeps at each rotation: `size` bytes. Counted in the file system's
+/// own unit `unit`, an allocation unit read or written per segment against one per unit
+/// of a segment, their sum `history / size + size / unit` is least at
+/// `size = √(history · unit)`; whole units, since each file takes whole units of the disk.
+/// Two segments at least, as one segment would leave nothing at its rotation. A history
+/// smaller than two units, and a home whose unit could not be read (`None`, a cold start),
+/// keep two halves: the bound the cap alone sets. 1 GiB on 4 KiB units: 512 segments of
+/// 2 MiB.
 // The daemon's (Unix's alone as yet).
 #[cfg_attr(not(unix), allow(dead_code))]
-pub const fn log_retention(history: u64) -> crate::spec::LogRetention {
-    let files = match history.div_ceil(LOG_SEGMENT) {
-        0 | 1 if history >= 2 => 2,
-        0 | 1 => 1,
-        n => n,
+pub const fn log_retention(history: u64, unit: Option<u64>) -> crate::spec::LogRetention {
+    if history < 2 {
+        return crate::spec::LogRetention {
+            size: history,
+            files: 1,
+        };
+    }
+    let half = history / 2;
+    let size = match unit {
+        Some(unit) if unit > 0 && unit <= half => {
+            let balanced = (history as u128 * unit as u128).isqrt();
+            // √ of a u128 fits a u64; the bounds keep it within [unit, half].
+            let balanced = if balanced > half as u128 {
+                half
+            } else {
+                balanced as u64
+            };
+            let whole = balanced / unit * unit;
+            if whole < unit { unit } else { whole }
+        }
+        _ => half,
     };
-    let size = match history.checked_div(files) {
-        Some(size) => size,
-        None => 0,
-    };
-    crate::spec::LogRetention { size, files }
+    crate::spec::LogRetention {
+        size,
+        files: history / size,
+    }
 }
 
 const NAMES: [&str; 5] = [
@@ -227,17 +253,18 @@ impl Settings {
         out
     }
 
-    /// How a log keeps its run's newest output ([`log_retention`]).
+    /// How a log keeps its run's newest output ([`log_retention`]), on a file system that
+    /// allocates in `unit`s.
     #[cfg_attr(not(unix), allow(dead_code))]
-    pub fn log_retention(&self) -> crate::spec::LogRetention {
-        log_retention(self.log_history.unwrap_or(LOG_HISTORY))
+    pub fn log_retention(&self, unit: Option<u64>) -> crate::spec::LogRetention {
+        log_retention(self.log_history.unwrap_or(LOG_HISTORY), unit)
     }
 
     /// How the home's journal keeps its newest events: as a log keeps its run's output
     /// ([`log_retention`]), the home's own log, by the same default (D187).
     #[cfg_attr(not(unix), allow(dead_code))]
-    pub fn events_retention(&self) -> crate::spec::LogRetention {
-        log_retention(self.events_history.unwrap_or(LOG_HISTORY))
+    pub fn events_retention(&self, unit: Option<u64>) -> crate::spec::LogRetention {
+        log_retention(self.events_history.unwrap_or(LOG_HISTORY), unit)
     }
 }
 
@@ -390,7 +417,9 @@ mod tests {
     }
 
     /// A setting reads back as written, one not set is its default, and a log's history
-    /// becomes equal segments of at most 20 MiB, two at least, that hold no more than it.
+    /// becomes equal segments of √(history · unit) in whole units, two at least, that hold
+    /// no more than it (runs-11 `LOG_SEGMENT`). Red before: 20 MiB segments whatever the
+    /// unit, 52 of 1 GiB.
     #[test]
     fn settings_read_back_and_come_to_their_amounts() {
         let home = shards_testdir::TempDir::new("disk-settings").unwrap();
@@ -402,30 +431,51 @@ mod tests {
         write(&home, &s).unwrap();
         let back = read(&home).unwrap();
         assert_eq!(back, s);
-        let kept = back.log_retention();
-        assert_eq!((kept.size, kept.files), (32 << 10, 2));
-        let default = Settings::default().log_retention();
-        assert_eq!((default.size, default.files), ((1 << 30) / 52, 52));
-        assert!(default.size <= 20 << 20 && default.size * default.files <= 1 << 30);
-        assert!(default.size * (default.files - 1) >= (1 << 30) / 52 * 51);
-        for (history, size, files) in [(0, 0, 1), (1, 1, 1), (3, 1, 2), (100 << 20, 20 << 20, 5)] {
+        let kept = back.log_retention(Some(4 << 10));
+        assert_eq!((kept.size, kept.files), (16 << 10, 4));
+        let default = Settings::default().log_retention(Some(4 << 10));
+        assert_eq!((default.size, default.files), (2 << 20, 512));
+        // 64 KiB units (an NTFS cluster's most common large size): √(2^30 · 2^16) = 8 MiB.
+        let default = Settings::default().log_retention(Some(64 << 10));
+        assert_eq!((default.size, default.files), (8 << 20, 128));
+        for (history, unit, size, files) in [
+            (0, Some(4096), 0, 1),
+            (1, Some(4096), 1, 1),
+            (3, Some(4096), 1, 3),
+            // Less than two units: two halves.
+            (6 << 10, Some(4096), 3 << 10, 2),
+            // √(100 MiB · 4 KiB) = 640 KiB.
+            (100 << 20, Some(4096), 640 << 10, 160),
+            // Not a whole number of segments: what is left over is not kept.
+            ((100 << 20) + 1, Some(4096), 640 << 10, 160),
+            // A unit not read: two halves, the cap's own bound.
+            (1 << 30, None, 1 << 29, 2),
+        ] {
             let s = Settings {
                 log_history: Some(history),
                 ..Settings::default()
             };
-            let kept = s.log_retention();
-            assert_eq!((kept.size, kept.files), (size, files), "{history}");
+            let kept = s.log_retention(unit);
+            assert_eq!((kept.size, kept.files), (size, files), "{history} {unit:?}");
+            assert!(kept.size * kept.files <= history);
+            if let Some(unit) = unit.filter(|&u| history >= 2 * u) {
+                assert_eq!(kept.size % unit, 0, "{history}");
+                assert!(kept.files >= 2);
+            }
         }
         assert!(s.set("build-cache-free", "101%").is_err());
         assert!(s.set("log-history", "0").is_err());
         // The home's events: kept as a log keeps a run's output, by its default.
         assert_eq!(
-            Settings::default().events_retention(),
-            Settings::default().log_retention()
+            Settings::default().events_retention(Some(4096)),
+            Settings::default().log_retention(Some(4096))
         );
         s.set("events-history", "64k").unwrap();
         assert_eq!(s.events_history, Some(64 << 10));
-        assert_eq!(s.events_retention(), log_retention(64 << 10));
+        assert_eq!(
+            s.events_retention(Some(4096)),
+            log_retention(64 << 10, Some(4096))
+        );
         assert!(s.set("events-history", "0").is_err());
         assert!(s.set("cache", "1g").is_err());
     }

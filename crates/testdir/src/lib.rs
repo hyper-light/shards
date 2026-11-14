@@ -264,6 +264,54 @@ fn sweep(parent: &Path) {
 #[cfg(not(unix))]
 fn sweep(_: &Path) {}
 
+/// The program `text` at `path`, run by its owner alone or by anyone (0755), written by a
+/// process of its own on Unix. A file a test process writes itself is held open to write by
+/// every child another of its test threads forks before that child execs (fork(2) keeps an
+/// O_CLOEXEC descriptor until the exec), and an exec of the file meanwhile, by this process or
+/// any other, fails ETXTBSY (execve(2)); rename(2) does not help, the open being the inode's.
+/// Every program a test runs is written so ([`program_copy`] for a copy), none by a
+/// descriptor of the test process. Windows' exec has no such refusal: written in place there.
+pub fn program(path: &Path, text: &str) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write as _;
+        let mut writer = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(r#"cat > "$0" && chmod 755 "$0""#)
+            .arg(path)
+            .stdin(std::process::Stdio::piped())
+            .spawn()?;
+        let wrote = writer
+            .stdin
+            .take()
+            .ok_or_else(|| io::Error::other("the writer's stdin"))
+            .and_then(|mut stdin| stdin.write_all(text.as_bytes()));
+        let status = writer.wait()?;
+        wrote?;
+        if !status.success() {
+            return Err(io::Error::other(format!("{} not written: {status}", path.display())));
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    std::fs::write(path, text)
+}
+
+/// The program at `from`, copied to `to` as [`program`] writes one: by cp(1) on Unix, so that
+/// no descriptor of the test process ever writes it.
+pub fn program_copy(from: &Path, to: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        let copied = std::process::Command::new("cp").arg(from).arg(to).status()?;
+        if !copied.success() {
+            return Err(io::Error::other(format!("{} not copied: {copied}", from.display())));
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    std::fs::copy(from, to).map(drop)
+}
+
 /// The tests' helper program (`src/bin/shards-testhelper.rs`, which says its commands), for
 /// what a test runs where a Unix host would run a shell's tools: built for this host as a
 /// test process first asks for it, by cargo (the rustup proxy on PATH, without the dyld
@@ -338,22 +386,7 @@ fn build_and_copy(workspace: &Path, target: &Path, name: &str) -> Result<(TempDi
 fn copy_helper(built: &Path, name: &str) -> Result<(TempDir, PathBuf), String> {
     let dir = TempDir::new("testhelper").map_err(|e| e.to_string())?;
     let program = dir.join(name);
-    // Written by a process of its own on Unix: a file this one held open to write, a child
-    // another test's thread forked meanwhile would hold until it execs, and an exec of it
-    // would fail with ETXTBSY until then (Linux).
-    #[cfg(unix)]
-    {
-        let copied = std::process::Command::new("cp")
-            .arg(built)
-            .arg(&program)
-            .status()
-            .map_err(|e| format!("cp: {e}"))?;
-        if !copied.success() {
-            return Err(format!("{} not copied: {copied}", built.display()));
-        }
-    }
-    #[cfg(not(unix))]
-    std::fs::copy(built, &program).map_err(|e| format!("{}: {e}", built.display()))?;
+    program_copy(built, &program).map_err(|e| format!("{}: {e}", built.display()))?;
     Ok((dir, program))
 }
 

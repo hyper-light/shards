@@ -1425,32 +1425,40 @@ fn following<'r>(vm: &shards_ipc::Child, record: &'r Record) -> Option<Follow<'r
 }
 
 /// What a builder's guest said its build needed of memory (`NEEDED`, D133): the bytes, the
-/// processes ended for want of it, and, where its init says it (memory-15), what it needed
-/// as its build was held (`start`) and MemTotal as it booted (`total`), its guest's boot
-/// learned from them (`build::boot_need`).
+/// processes ended for want of it, what it needed as its build was held (`start`) and MemTotal
+/// as it booted (`total`), its guest's boot learned from the last two (`build::boot_need`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Said {
     pub need: u64,
     pub killed: u64,
-    pub start: Option<(u64, u64)>,
+    pub start: u64,
+    pub total: u64,
 }
 
-/// [`Said`] of a `NEEDED` frame's words: `NEED KILLED`, or `NEED KILLED START TOTAL`, as an
-/// init before memory-15 says it, or since.
-pub(super) fn said_needed(said: &str) -> Result<Said, String> {
+/// Why a builder's guest's `NEEDED` answer says nothing: its words, which are not
+/// `NEED KILLED START TOTAL`, four decimal u64s. The init `shards` carries is of its own build
+/// (D36) and says all four, so no other form is read (D133, memory-15): one its guest could
+/// not say (its start not noted, its cgroup unread) is its words as they came.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Unsaid(pub String);
+
+impl std::fmt::Display for Unsaid {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "the builder cannot say what its build needed: {}", self.0)
+    }
+}
+
+/// [`Said`] of a `NEEDED` frame's words, `NEED KILLED START TOTAL`; anything else [`Unsaid`].
+pub(super) fn said_needed(said: &str) -> Result<Said, Unsaid> {
     let words: Result<Vec<u64>, _> = said.split_whitespace().map(str::parse::<u64>).collect();
     match words.as_deref() {
-        Ok(&[need, killed]) => Ok(Said {
-            need,
-            killed,
-            start: None,
-        }),
         Ok(&[need, killed, start, total]) => Ok(Said {
             need,
             killed,
-            start: Some((start, total)),
+            start,
+            total,
         }),
-        _ => Err(format!("the builder cannot say what its build needed: {said}")),
+        _ => Err(Unsaid(said.to_owned())),
     }
 }
 
@@ -1490,7 +1498,9 @@ fn ask_needed(conn: &UnixStream, vm: &shards_ipc::Child, record: &Record) -> Res
     if let Some(follow) = follow.as_mut() {
         follow.answered();
     }
-    said_needed(&String::from_utf8_lossy(&buf)).map(Some)
+    said_needed(&String::from_utf8_lossy(&buf))
+        .map(Some)
+        .map_err(|e| e.to_string())
 }
 
 /// How a builder's VM ended, its guest told to power off.
@@ -1583,10 +1593,8 @@ impl Drop for Builder {
         if let Some((path, identity, booted)) = &self.needs
             && let Ok(Some(said)) = ask_needed(&self.conn, &self.vm, &NEEDED)
         {
-            let boot = said
-                .start
-                .map(|(start, total)| (identity.as_str(), super::boot_need(*booted, total, start)));
-            let _ = super::record_need(path, said.need, said.killed > 0, boot);
+            let boot = super::boot_need(*booted, said.total, said.start);
+            let _ = super::record_need(path, said.need, said.killed > 0, (identity.as_str(), boot));
         }
         // The guest powers off as its connection closes: its VM followed to its end.
         super::end(&self.conn);
@@ -1686,7 +1694,7 @@ mod tests {
             assert_eq!(read_frame_from(&guest, &mut buf).unwrap(), kind::NEEDS);
             std::thread::sleep(Duration::from_secs(6));
             frame_to(&guest, run::kind::STDOUT, b"a step's last words").unwrap();
-            frame_to(&guest, kind::NEEDED, b"1048576 0").unwrap();
+            frame_to(&guest, kind::NEEDED, b"1048576 0 268435456 536870912").unwrap();
             guest
         });
         let cold = Record::new();
@@ -1695,7 +1703,8 @@ mod tests {
             Ok(Some(Said {
                 need: 1 << 20,
                 killed: 0,
-                start: None
+                start: 256 << 20,
+                total: 512 << 20,
             }))
         );
         let _guest = answering.join().unwrap();
@@ -1709,6 +1718,31 @@ mod tests {
         assert!(took >= slowest && took < slowest * 4, "{took:?}");
         kill(&vm);
         let _ = vm.wait();
+    }
+
+    /// A builder's `NEEDED` is its four words alone (D133, memory-15): the two an init before
+    /// memory-15 said are refused, as are any others, never read as a need with no boot.
+    #[test]
+    fn a_builders_needed_is_four_words_or_refused() {
+        assert_eq!(
+            said_needed("1048576 1 268435456 536870912"),
+            Ok(Said {
+                need: 1 << 20,
+                killed: 1,
+                start: 256 << 20,
+                total: 512 << 20,
+            })
+        );
+        for words in [
+            "1048576 0",
+            "1048576 0 268435456",
+            "1 2 3 4 5",
+            "",
+            "a b c d",
+            "-1 0 0 0",
+        ] {
+            assert_eq!(said_needed(words), Err(Unsaid(words.to_owned())), "{words:?}");
+        }
     }
 
     /// A builder that does not boot leaves nothing running: what its launch started is ended,
