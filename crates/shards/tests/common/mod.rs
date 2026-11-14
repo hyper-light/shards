@@ -3070,12 +3070,20 @@ impl WaitKind {
             .truncate(false)
             .write(true)
             .open(dir.join(locked))?;
-        let _ = wait;
+        if wait {
+            lock.lock()?;
+        } else {
+            match lock.try_lock() {
+                Ok(()) => {}
+                Err(std::fs::TryLockError::WouldBlock) => return Ok(false),
+                Err(std::fs::TryLockError::Error(e)) => return Err(e),
+            }
+        }
         let kept = self.merged_into_place(dir, name, between);
         // Let go of before its file closes: a lock is its open file's, and a program another
         // thread starts meanwhile would hold it until its exec (M244).
-        drop(lock);
-        kept.map(|()| true)
+        let unlocked = lock.unlock();
+        kept.and(unlocked).map(|()| true)
     }
 
     /// What another process kept taught in, `between` called, and the merge written whole and
