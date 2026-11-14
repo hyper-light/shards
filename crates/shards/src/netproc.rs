@@ -56,11 +56,11 @@ impl Control {
     }
 
     pub fn set_read_timeout(&self, timeout: Option<std::time::Duration>) -> std::io::Result<()> {
-        self.socket.set_read_timeout(timeout)
+        shards_ipc::timeout_set(self.socket.set_read_timeout(timeout))
     }
 
     pub fn set_write_timeout(&self, timeout: Option<std::time::Duration>) -> std::io::Result<()> {
-        self.socket.set_write_timeout(timeout)
+        shards_ipc::timeout_set(self.socket.set_write_timeout(timeout))
     }
 }
 

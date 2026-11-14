@@ -2610,9 +2610,58 @@ impl Latch {
     }
 }
 
+/// `set`, what setting a socket's read or write timeout (SO_RCVTIMEO, SO_SNDTIMEO) did, as
+/// every caller is to take it: macOS refuses any option with EINVAL on a socket ended both ways
+/// (SS_CANTRCVMORE and SS_CANTSENDMORE, XNU bsd/kern/uipc_socket.c `sosetoptlock`), as a Unix
+/// stream is once its peer closes and a TCP connection once it is reset or closed both ways.
+/// Such a socket needs no bound: a read returns what is buffered, then its end, and a write fails,
+/// at once (PM M579: a peer that wrote six bytes and closed; the refusal, then all six read). So
+/// the refusal is no timeout needed, and the caller goes on to read the answer its peer sent.
+/// std's own refusal of a zero timeout, which carries no OS error, stays an error. Linux and
+/// Windows take the option on an ended socket, so this is theirs unchanged.
+pub fn timeout_set(set: std::io::Result<()>) -> std::io::Result<()> {
+    match set {
+        #[cfg(target_os = "macos")]
+        Err(e) if e.raw_os_error() == Some(libc::EINVAL) => Ok(()),
+        set => set,
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
+    /// A timeout set after its peer wrote its answer and closed (PM M579): macOS refuses the
+    /// option itself (EINVAL), which `timeout_set` takes for none needed, and the answer is
+    /// read whole, then its end, at once. Red where the refusal is the caller's error: a fully
+    /// answered request failed.
+    #[cfg(unix)]
+    #[test]
+    fn a_timeout_set_after_its_peer_answered_and_closed_reads_the_answer() {
+        use std::io::{Read as _, Write as _};
+        let (mut peer, ours) = std::os::unix::net::UnixStream::pair().unwrap();
+        peer.write_all(b"answer").unwrap();
+        drop(peer);
+        let raw = ours.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            raw.as_ref().map_err(std::io::Error::raw_os_error),
+            Err(Some(libc::EINVAL))
+        );
+        super::timeout_set(raw).unwrap();
+        super::timeout_set(ours.set_write_timeout(Some(std::time::Duration::from_secs(5)))).unwrap();
+        let began = std::time::Instant::now();
+        let mut answer = Vec::new();
+        (&ours).read_to_end(&mut answer).unwrap();
+        assert_eq!(answer, b"answer");
+        assert!(
+            began.elapsed() < std::time::Duration::from_secs(5),
+            "{:?}",
+            began.elapsed()
+        );
+        // std's own refusal, of a zero timeout, is no OS's: still an error.
+        assert!(super::timeout_set(ours.set_read_timeout(Some(std::time::Duration::ZERO))).is_err());
+    }
+
     /// A layer's file's name says its maker's pid; a name no process makes there (a kept
     /// layer's, one half a name) says none.
     #[test]

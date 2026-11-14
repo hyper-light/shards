@@ -48,7 +48,7 @@ fn close_gracefully(sock: &UnixStream) {
     let mut dropped = [0u8; 4096];
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
-        if left.is_zero() || sock.set_read_timeout(Some(left)).is_err() {
+        if left.is_zero() || shards_ipc::timeout_set(sock.set_read_timeout(Some(left))).is_err() {
             return;
         }
         if !matches!(crate::build::reading(sock).read(&mut dropped), Ok(n) if n > 0) {
@@ -1271,7 +1271,7 @@ impl<'p> Session<'p> {
         reader.get_mut().conn.send_close_notify();
         let _ = reader.get_mut().flush();
         let _ = sock.shutdown(std::net::Shutdown::Write);
-        if sock.set_read_timeout(Some(self.proxy.head_time)).is_ok() {
+        if shards_ipc::timeout_set(sock.set_read_timeout(Some(self.proxy.head_time))).is_ok() {
             let mut sink = [0u8; 4096];
             while matches!(crate::build::reading(sock).read(&mut sink), Ok(n) if n > 0) {}
         }
@@ -1387,7 +1387,7 @@ impl Read for Timed<'_> {
             }
             None => None,
         };
-        self.sock.set_read_timeout(left)?;
+        shards_ipc::timeout_set(self.sock.set_read_timeout(left))?;
         crate::build::reading(self.sock).read(buf)
     }
 }

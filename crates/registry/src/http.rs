@@ -1131,8 +1131,8 @@ impl Client {
                     .not_tls()
                     .timed_out()
                 })?;
-            io.tcp().set_read_timeout(Some(left))?;
-            io.tcp().set_write_timeout(Some(left))?;
+            shards_ipc::timeout_set(io.tcp().set_read_timeout(Some(left)))?;
+            shards_ipc::timeout_set(io.tcp().set_write_timeout(Some(left)))?;
             tls.complete_io(&mut Hearing {
                 io: &mut io,
                 heard: &mut heard,
@@ -1232,8 +1232,8 @@ fn tunnel(
         head.push_str("\r\n");
     }
     head.push_str("\r\n");
-    hop.tcp().set_write_timeout(patience)?;
-    hop.tcp().set_read_timeout(patience)?;
+    shards_ipc::timeout_set(hop.tcp().set_write_timeout(patience))?;
+    shards_ipc::timeout_set(hop.tcp().set_read_timeout(patience))?;
     hop.write_all(head.as_bytes())
         .and_then(|()| hop.flush())
         .map_err(|e| proxying(&e))?;
@@ -2564,18 +2564,13 @@ struct Conn {
 }
 
 impl Conn {
-    /// Bounds each read and write by `d`. macOS refuses any option on a socket shut down
-    /// both ways, as one the server has reset is, with EINVAL (xnu-11417.101.15
-    /// bsd/kern/uipc_socket.c, sosetoptlock): its reads return what is buffered, then its
-    /// end, and its writes fail, at once, so it needs no bound, and the exchange goes on
-    /// to find out what the server sent.
+    /// Bounds each read and write by `d`; a connection the server has reset or closed both
+    /// ways needs no bound, and the exchange goes on to find out what the server sent
+    /// (`shards_ipc::timeout_set`).
     fn set_timeout(&self, d: Option<Duration>) -> io::Result<()> {
         let tcp = self.io.get_ref().tcp();
         for set in [TcpStream::set_read_timeout, TcpStream::set_write_timeout] {
-            match set(tcp, d) {
-                Err(e) if e.kind() == io::ErrorKind::InvalidInput && e.raw_os_error().is_some() => {}
-                result => result?,
-            }
+            shards_ipc::timeout_set(set(tcp, d))?;
         }
         Ok(())
     }
