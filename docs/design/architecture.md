@@ -9809,6 +9809,34 @@ share made ahead), and a disk's capacity was fixed when its file was opened.
   grow its disk, and init grows its ext4 online once the kernel reads the new size
   (EXT4_IOC_RESIZE_FS, as resize2fs grows a mounted one). What a run has plugged in is the
   daemon's to know while it runs, and goes with its microVM.
+- **A microVM's device steps one at a time, so a disk only ever grows** (devices-01,
+  docs/bugs/2026-11-13/devices.md). Each client's command is served on a thread of its
+  own, and `grow` read its file's length, refused less, then set it, apart: two growths
+  of one 64 MiB disk, to 128 and 256 MiB, could both read 64 MiB, the larger set 256 MiB
+  and have its guest's ext4 grown and written past 128 MiB, and the smaller then set
+  128 MiB, cutting those sectors from under the mounted file system; the VM's own refusal
+  of a file that shrank came after the bytes were gone. Now every device step of a
+  running microVM (`plug`, `unplug`, `grow`, a function's included) holds it
+  (`devices::Steps`, a set of the microVMs one is under way in and a condition variable
+  its end wakes the waiting with: no polling, no deadline) from its first read of what
+  is plugged to its guest's last answer, as each step's reading depends on the last's
+  answers (a slot's `devfn` taken back by an unplug and given to the next plug among
+  them). So a disk's file is read and set by one growth at a time, only ever longer,
+  ending at the largest asked; the VM is asked `GROW`, which takes its file's length as
+  its capacity, only once the file has the length asked; and a size less than its file
+  has, in whole 512-byte sectors (virtio 1.3 §5.2.4's unit), is refused typed
+  (`NotGrown::Smaller`, asked and had), changing nothing, its VM and guest not asked.
+  Steps of different microVMs do not wait for each other. No literal is added: the hold
+  has no bound or timeout, its waits end as the step under way ends, and a step that
+  fails or panics lets it go as it drops. Not covered: one file plugged writable into two
+  microVMs at once, whose growths their two holds do not order (two kernels mounting
+  one ext4 writable corrupt it before any growth does: ext4 is no cluster file system,
+  and its multiple mount protection exists to refuse that mount, Linux
+  Documentation/filesystems/ext4/mmp.rst); plug does not refuse that yet. Verified by
+  `growths_of_one_disk_never_shorten_its_file` (the smaller growth paused between its
+  read and its set, the larger asked meanwhile, its guest's write past 128 MiB kept) and
+  `a_disk_grown_smaller_is_refused_and_keeps_its_bytes`, red with the hold removed (the
+  file left at 128 MiB) and with the refusal removed (the file shortened, the VM asked).
 - **Every run's microVM has four slots, and its template keeps them** (`SHARDS_PCI_SLOTS`,
   0 for none). Snapshot format 28 records a machine's slots (`MachineConfig::pci_slots`);
   an empty bus saves as nothing and a restore makes it again; a machine with a device
@@ -26818,6 +26846,18 @@ and no exec, attach or terminal (the plan's steps 5, 6 and 7).
   `output_taken_before_the_runs_end_reaches_its_owner_whole`,
   `output_said_after_the_runs_end_reaches_its_owner_before_its_end`). No literal is added: both
   ends are the protocol's own events.
+  The run host (`api_run.rs` `records`) ends cut every channel its orchestrator gave room to or
+  was told of that has no end once its VM's capture is over, at its end or at a frame cut short:
+  what it held past the orchestrator's room goes first, as a record's own end sends it (a
+  record's bytes past the room it was granted for: from a guest that keeps its credit, at most
+  the 3 bytes by which `grant`'s least, an errno's record, passes a room of less), then `OUTPUT_END`
+  `Aborted(104)`, ECONNRESET's Linux number (include/uapi/asm-generic/errno.h), a guest's errno
+  as init's own aborts are, the stream it came on having ended under it. So nothing the host took
+  of the guest is lost, and the owner's pipe ends with the capture, not with the host's exit
+  after its cleanup; D240's guest-abort allowance stands, the abort said. Before, those bytes and
+  the channel's end were dropped (control-01's follow-up; red
+  `bytes_held_past_the_room_reach_the_orchestrator_as_the_capture_is_cut`). The typed end
+  reaches the session (`Flow::ended`); `ImageGuest` gives its caller the pipe's EOF alone.
 - *Every member's log, within the run's one cap* (goal 58's step 7, slice 3; ROOT's ruling and the
   person's decision, 2026-11-13). The log is the run's: every member's output is kept, owned or not.
   - *Kept whoever reads it.* A drained member's records are kept as the daemon takes them (above);
@@ -27534,6 +27574,20 @@ docs/research/s33-veil-creds/STEP3.md).
   and in the body, and its HTTP/2 stream whose value rotates while its response waits, red before
   (the value reached the guest), green after; the mask given no value (`filled_in` not filling it)
   fails both.
+- *A chunk's size line goes as its size alone (creds-02, amended 2026-11-13).* The mask passes a
+  chunked body's framing over, so that an echo split across chunks is found; but the framing's
+  bytes still reached the guest, and a chunk's extensions (`chunk-ext`, RFC 9112 §7.1.1: tokens or
+  quoted strings) are any bytes a host chooses, so a host's echo of the value in one went to the
+  guest whole. Each response chunk's size line now goes as `chunk-size CRLF` alone, in its fewest
+  hex digits (`Mask::size`); the request side's lines go as they came. RFC 9112 §7 lets a recipient
+  along the chain decode a transfer coding and apply its own, and §7.1.1 has a recipient ignore an
+  extension it does not know: no shards guest relies on one. A size whose digits hold a value
+  filled in (a value of at most 16 hex digits) breaks the message, as a same-length mask of it would
+  change its framing. Masking the framing as data was refused: it would end a match at each chunk's
+  line, losing the cross-chunk match. Trailers stay fields the mask reads as data. Tests:
+  `inject::tests::leaks`' chunked echo with the value in a token and in a quoted-string extension,
+  red before (the value reached the guest), green after, and the size line read whole a byte at a
+  time; the line forwarded as it came, and the size check removed, each fail them.
 - *Audit (f26).* `shards-net: credential <reference> filled in toward <host> at <s>.<ns> (Unix
   time)`, on the network process's stderr (its run host's diagnostics); never the value or the
   placeholder.

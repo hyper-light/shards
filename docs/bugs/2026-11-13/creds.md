@@ -77,6 +77,8 @@ The bytes nevertheless enter `Mask.queue` and are released to `guest.writer()`. 
 
 **Confidence:** High by complete source trace; not run.
 
+**Status (2026-11-13):** fixed in b26011d07 (red `inject::tests::leaks::a_chunks_extension_never_carries_a_value_to_the_guest`)
+
 ### creds-03 — P0 / critical — Lease expiry or rotation disables masking of responses already in flight
 
 **Location:** `crates/net/src/inject.rs:1309`, `:1339`; `crates/net/src/lib.rs:1299`, `:2883`.
