@@ -90,6 +90,9 @@ clippy pass. Live emulated guest/copy agreement remains owed to ROOT.
 The runs-01 follow-up caught and corrected this lane's native nondevice-owner
 regression: uid 0 instead of 1000 before, correct after, with 50 server tests
 and VMM all-target clippy passing. Its exact red/green logs are retained.
+Runs-07's concurrent end-record red lost its helper maximum; after stable-lock
+reread/merge and atomic unique staging, the regression and all 5 end tests pass,
+with shards all-target clippy. Two-process/VM crash publication remains owed.
 
 ### M2. Object lifecycle (`lifecycle`, n=200, µs)
 
@@ -24481,3 +24484,19 @@ payload whose ROOM header was longer than either producer can encode.
   `Notice`, `ErrorKind::Gone`; R09, R10 red on main, green after, four mutations killed;
   R11 Unix and Windows written, macOS run; R15, R16 implementer, its runner target removed
   after landing.
+
+### M573. A WHP DAX range mapped to be written after one to be read was made zeros as its file grew (memory-01, D189, D197)
+
+Windows 10.0.26200 x86_64 (the Windows 11 guest on adacachy), 2026-11-14: at 4697f1e7b a
+3 MiB file mapped to be read through a handle to read alone, then elsewhere to be written
+through one to write, grew; the window, keeping the first handle, made no PAGE_READWRITE
+section of it (CreateFileMappingW asks GENERIC_READ and GENERIC_WRITE) and placed writable
+zeros over the written range: it read 0 where the file holds 0x5a. A range no section to write
+can be made for was made zeros as it was followed after a cut, its vCPU let run. At 7f0cb8ce9
+the node keeps the handle given to write, the section is made before anything is freed, and a
+mapping that cannot be followed is left as it was or let go of, refused (`fs::Unfollowed`),
+the reply that would tell the guest its size refused: `window::tests` 12 of 12, both mutants
+(the first handle kept; let go of where it should be left) failing them. Unit-level functional
+evidence on real NTFS views, no real VM; a view refused after its section was made is
+unit-unreachable, and the WHP DAX tests are owed.
+[Commands, logs, mutants and owed runs](measurements/windows-p0/README.md).
