@@ -297,6 +297,37 @@ mod tests {
     use crate::log_writer::Writer;
     use crate::spec::{LOG_STDOUT, LogRetention};
 
+    #[test]
+    fn a_caps_loss_record_is_bounded_by_its_totals_not_its_history() {
+        let dir = shards_testdir::TempDir::new("cap-total").unwrap();
+        for seq in 0..128 {
+            record(
+                &dir,
+                &Segment {
+                    seq,
+                    bytes: 7,
+                    changed: SystemTime::UNIX_EPOCH,
+                },
+            )
+            .unwrap();
+        }
+        let held = platform::open_dir(&dir).unwrap();
+        assert_eq!(
+            capped(&held).unwrap(),
+            Capped {
+                segments: 128,
+                bytes: 128 * 7
+            }
+        );
+        // "sum ", two decimal u64 values, a space and a newline.
+        let most = "sum ".len() + 2 * (u64::MAX.ilog10() as usize + 1) + 2;
+        let file = platform::open_newest_in(&held, CAPPED).unwrap();
+        assert!(
+            file.metadata().unwrap().len() <= most as u64,
+            "lifetime eviction history remained on disk"
+        );
+    }
+
     /// A writer of the log in `dir`, segments of `size` bytes, as many as `files`.
     fn writer(dir: &Path, size: u64, files: u64) -> Writer {
         std::fs::create_dir_all(dir).unwrap();
