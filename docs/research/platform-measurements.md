@@ -24346,3 +24346,11 @@ and policy check passed on macOS arm64. The tests cover chunked/length refresh
 and revoke bodies, partial arrival, retries and a forwarded code exchange. The
 100 response is RFC 9110 §10.1.1's protocol response, no chosen timer or allowance.
 Commands, red/green excerpts, exact source revisions and unrun work are linked above.
+
+### Review memory-16: duplicate head kinds past a selected cap (D190)
+
+On adas-mac-studio.local, macOS arm64, red 5ede7aecb (resumed r16) saved an equal
+block twice after 65 distinct kinds: Some(65) instead of Some(64). d794c1dd5
+removes the 64-kind comparison cutoff; the input's block count bounds the search.
+The sparse-file/index regression checks actual retained identity and length.
+[Commands, results and unmeasured quadratic comparison cost](measurements/memory-fixes-v1/README.md).

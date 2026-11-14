@@ -116,3 +116,35 @@ including cold starts, typed unavailable states and exact ROOT validation comman
 Later input-changing merge `2389f0afb` (main `a33644dbe`): resumed r10 passed
 `cargo check -p shards --tests` on the same warm Mac target. Retained output:
 `check-memory-04.log`. No conflicts were resolved in this merge.
+
+Memory-04 landed `e2744a6fb`. Later input-changing merges `2eaa81b9c`,
+`3626722b6`, `e4997bad6`, and `e2744a6fb` each passed the same compile check
+(resumed r11/r13/r14/r15); output is `check-memory-04-contention.log`.
+The intervening `a6d0eb29b` changed only net-process and documentation, disjoint
+from these inputs under SHARDS_HELPERS=skip; no check was run there. All merges
+were automatic, signed, and never forced. ROOT notification was refused by its
+full inbox (429 backpressure, pending 4, authority 3); delivery is not claimed.
+
+## memory-16
+
+Red `5ede7aecb`, resumed r16, same macOS arm64 host/toolchain:
+`cargo test -p shards-vmm a_heads_duplicate_after_the_sixty_fourth_kind_is_kept_once --lib`
+failed with indices Some(65) and Some(64). The real sparse head has 65 distinct
+nonzero blocks followed by a duplicate of the last; `red-memory-16.log` retains it.
+Fix `d794c1dd5` removes HEAD_KINDS and its iterator cutoff. Each nonzero block is
+compared with every retained kind, as the existing save contract requires.
+
+The bound is the actual input block count, with an empty retained set at cold
+start. Existing I/O errors and checked index conversions remain unchanged.
+A content-hash index could reduce comparisons, but requires broader design and
+cost evidence; this slice removes the unjustified bound at the existing seam.
+Worst-case comparisons are quadratic; ROOT owes their CPU/fault/retention
+measurement on representative and all-distinct heads. No speed claim is made.
+
+R01/R03/R04: no production arithmetic, state, refusal, allocation or literal is
+added; existing error paths remain. R02/R05/R06/R07/R12/R13: reuse the current
+algorithm and scoped retained-block vector, whose authority is this paused head
+and lifetime this save; no new cache/poller/platform implementation. R09/R10:
+the unit regression above is the retained red. R08/R11/R14/R15: performance,
+other supported targets and real VMs remain ROOT's. R16: the existing single
+remote compiler/owned target is reused, with no local build/test.

@@ -258,6 +258,8 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 
 ### memory-16 — P4 / low — Head deduplication stops considering new kinds after 64
 
+**Status (2026-11-13):** fixed in d794c1dd5 (red `a_heads_duplicate_after_the_sixty_fourth_kind_is_kept_once` at 5ede7aecb). Focused results and remaining performance validation: `docs/research/measurements/memory-fixes-v1/README.md`.
+
 **Location:** `crates/vmm/src/devices/virtio/head.rs:696`, used at `:749`.
 
 **Defect:** An unexplained comparison cap causes equal head blocks beyond the first 64 kinds to be stored separately.

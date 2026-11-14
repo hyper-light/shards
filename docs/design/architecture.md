@@ -12851,6 +12851,15 @@ the user told).
 
 ### D190. A run's writable layer on its host's disk: ext4 with DAX over pmem (slices 1 to 8 built)
 
+**Review memory-16 (2026-11-13):** saving a head compares a nonzero block with
+every distinct block already retained. The bound is the input's block count;
+there is no selected limit on how many kinds can share. Cold saves start with
+no retained kinds, and existing file errors propagate. This preserves the
+documented “each kept block once” contract after the sixty-fourth kind too.
+Worst-case comparisons are quadratic in input blocks; their cost is unmeasured
+and owed to ROOT. Red/green and scope:
+`docs/research/measurements/memory-fixes-v1/README.md`.
+
 A run's writable layer, the upper directory of its root's overlay, was a tmpfs in its
 microVM's memory (D16, D156): what it wrote was memory, held to its memory limit, and gone
 with its microVM unless packed as it stopped (D37). A test suite's build there ran its 8
