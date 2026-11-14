@@ -1536,7 +1536,7 @@ mod tests {
     /// Judged over a window in which the sleeper was asleep at either end and ran nothing
     /// between, as its looks show, and looked at again over another: a sleeper is woken by a
     /// cgroup freezer's cycles, which a kiln run's cgroup goes through about six times a
-    /// second, each a few µs of its CPU (PM M560), so no window is a sleeper's by its clock.
+    /// second, each a few µs of its CPU (PM M562), so no window is a sleeper's by its clock.
     /// Each window is the spinners' start and the shared pressure's growth; they end past it.
     #[cfg(target_os = "linux")]
     #[test]

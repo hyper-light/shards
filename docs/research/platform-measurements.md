@@ -23756,3 +23756,89 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   waits for none); R04 `Upward` and `Downward`, `Said::HungUp` and `Said::Shut` typed; R09,
   R10 red on main's code on both hosts, green after; R11 Unix and Windows written, macOS and
   Linux run; R15, R16 implementer, its runner targets removed after landing.
+
+### M562. A sleeper in a kiln run wakes about six times a second: its cgroup's freezer, not its start (D215)
+
+- **Question.** shards-api's `a_sleeper_is_still_whatever_its_cgroups_others_wait_for` failed
+  on adacachy2 inside a kiln run (the Hex lead: 34/40 at 37ddeb080, 17/20 at 097ec0047), its
+  `sleep 60` running CPU between two looks after /proc showed it `S`, and passed in a systemd
+  unit of its own; a judge-held agent saw a fresh `/bin/sleep` take slices for 1.2 s. What
+  does a sleeping process run after its first `S`, and is any stand-in idle by construction?
+- **Method.** `docs/research/measurements/sleeper-premise/probe.py`
+  (`probe.py sleep|pipe SECONDS LOAD RUNS`): a child, `sleep 60` or `cat` blocked reading a
+  pipe nobody writes, its `/proc/<pid>/{stat,wchan,syscall,schedstat}` read in a tight loop,
+  each change after its first `S` printed; beside LOAD Python spinners in its cgroup, or
+  none. Then, over 3 s each, `schedstat` of a `sleep` in the kiln run's cgroup beside one
+  started by `systemd-run --user --scope` (a scope of its own under `app.slice`), and of an
+  asleep `sleep`, a SIGSTOPped one and a pipe-blocked `cat` side by side. On adacachy2
+  (Linux 7.3.3-1-cachyos, x86_64, GNU coreutils 9.12), through kiln run at nice 10, in
+  `…/kiln-agent-01a1b969.service/kiln/kiln-agents-1270/run-<id>`.
+- **Found.**
+  - About every 166 ms the sleeper's wchan reads `do_freezer_trap`, then it runs, then sleeps
+    again in its syscall: `clock_nanosleep` (230) before the first, `restart_syscall` (219)
+    after, which a cgroup v2 freeze's trap leaves it in. Each cycle is one or two slices and a
+    few µs of its own CPU, for as long as it lives, not only after its start.
+  - Over 2 s beside 40 spinners: `sleep` ran 118.1, 91.5 and 97.9 µs more after its first `S`,
+    slices 2 to 26 or 27; the pipe-blocked `cat` 105.5, 92.4 and 87.1 µs, slices 2 or 3 to
+    26 or 27, its wchan `pipe_wait_readable` and `do_freezer_trap` by turns. With no load:
+    `sleep` 46.4 µs, slices 2 to 16.
+  - Over 3 s: the `sleep` in the kiln run's cgroup took 18 slices and 46.6 µs, the one in its
+    own scope none and 0 ns. Side by side in the kiln cgroup: asleep 18 slices, 54.2 µs; a
+    pipe's reader 19, 96.1 µs; stopped (`T`) 0 slices, 0 ns.
+  - `cgroup.events` of the run's cgroup and its two parents never read `frozen 1` in 3 s of
+    polling: each freeze is undone before every task has trapped.
+- **Cause.** The cgroup v2 freezer cycling an ancestor of kiln's run cgroups (kiln's headroom
+  pacer freezes runs there, ROOT's brief of 2026-11-13; the writer itself was not observed).
+  A freeze sets `JOBCTL_TRAP_FREEZE` and `signal_wake_up`s each task, and a thaw
+  `wake_up_process`es it (kernel/cgroup/freezer.c `cgroup_freeze_task`): interruptible and
+  uninterruptible sleepers alike, so no stand-in waiting on a timer, a pipe or pause(2) runs
+  nothing in a window longer than the cycle. A stopped task (`__TASK_STOPPED`) matches
+  neither wake. Not `sleep`'s start: the wakes keep its period for the process's life.
+- **Decision.** The tests, not the judge, which counts the CPU a process really ran (ROOT,
+  2026-11-13). A test whose window is its own judges a window in which a look at its end
+  shows the sleeper ran nothing, and looks again over another where it ran (shards-api
+  `progress::tests::a_sleeper_is_still_whatever_its_cgroups_others_wait_for`, its spinners
+  waiting on each other throughout so that a window is the shared pressure's growth alone;
+  shards `daemon::ends::tests::an_end_goes_on_at_any_rate_and_not_asleep_or_stopped`, a
+  second `Watch` bracketing the window, its stop waited for by waitid(2), not 100 ms). A test
+  whose window is production's W* gives it a stand-in that stops itself, `kill -STOP $$`,
+  waited for to its stop (`daemon::parents::tests::a_leaf_is_waited_for_while_its_processes_go_on_with_their_end`,
+  `netproc::reap_tests::a_helper_is_waited_on_while_it_goes_on_with_its_end`,
+  `netproc::ask_tests::an_ask_of_a_network_process_that_runs_nothing_is_refused_past_w_star`).
+  Their fixed sleeps (a second, 200 ms, 100 ms) for a start's CPU are gone.
+- **Checked** on adacachy2 in a kiln run's cgroup beside 8 nice-19 spinners, test-release, a
+  cold target of its own: red at d24ef4cfd, green after:
+
+  | test | d24ef4cfd | after |
+  |---|---|---|
+  | progress `a_sleeper_is_still…` | 19/40 (progress.rs:1568, "the sleeper ran": 213.6 to 222.1 µs); 26/60 | 60/60 |
+  | ends `an_end_goes_on_at_any_rate…` | 0/20 (ends.rs:317, asleep judged going on) | 20/20 |
+  | netproc reap | 0/3 (took past 4 slices) | 10/10 |
+  | netproc ask | 0/3 (no refusal in 100 s) | 10/10 |
+  | parents leaf | 0/2 (no refusal in 100 s) | 5/5 |
+
+  The progress rows of 60 ran interleaved, base and after by turns: after's wall per run
+  p50 376 ms, p90 1.18 s, p99 and max 2.57 s (base's 125 ms, 296 ms, 1.58 s), its retries.
+  Two shapes before it failed there: spinners running throughout made a window the shared
+  cgroup's pressure growth, which took 0.4 to 15 s, so each held freezer cycles and a clean
+  one came after 16 to 23 tries (to 85 s); spinners started and ended inside each window
+  passed 39/40, one finding no clean window in 100 s; and a baseline look taken after the
+  window's first hold read a start that ran between them as held (1/60). The
+  `progress::` filter 11/11 and the shards filters `daemon::ends:: daemon::parents::
+  netproc::reap_tests netproc::ask_tests` 12/12; clippy `-D warnings` of shards-api and shards
+  on x86_64-unknown-linux-gnu (adacachy2) and aarch64-apple-darwin (adas-mac-studio.local,
+  macOS 26.2): clean. No changed line compiles for Windows (each test is `cfg(unix)` or Linux's).
+- **Found beside.** Under such cycling with a period below a kind's W*, a VM process that
+  runs nothing of its own still runs a few µs each cycle, so D215's judge reads it as having
+  progressed and never refuses it stalled while its cgroup is cycled; `Hold::stopped` sees a
+  frozen cgroup only at a look's instant. ROOT's to rule on.
+- **Owed.** daemon.rs's tests that judge `sleeper()` as running nothing past a W* of 200 ms
+  (`a_starting_vm_is_waited_for_while_it_goes_on_with_its_start`, the give-back at
+  "Its VM process, a sleep, ran nothing", the "still" hold, `a_network_process_is_ended_once_it_goes_on_no_more_and_the_ports_freed`,
+  `metrics_whose_microvm_runs_nothing_are_ended`) rest on the same premise; there the daemon
+  ends the stand-in itself, each end's signal to be read before it is stopped. Unrun here.
+- **Rules** (policy df2acf47, role implementer): R01 test code only; R03 no literal added,
+  every window an event's (pressure grown, a trickler's run, a stop); R09 reproduced live in a
+  kiln cgroup before any change; R10 red at d24ef4cfd and green after, on adacachy2; R11
+  Linux and macOS compiled and linted, Linux run; R15, R16 implementer, its runner trees
+  removed after.

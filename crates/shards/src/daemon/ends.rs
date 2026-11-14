@@ -312,7 +312,7 @@ mod tests {
         // Asleep over a window, until the trickler has gone on once more, in which a second
         // watch of it finds it ran nothing; looked at again over another where it ran: its
         // start's own CPU, or a cgroup freezer's cycles, which wake a sleeper (a kiln run's,
-        // about six a second, PM M560), so no window is a sleeper's by its clock.
+        // about six a second, PM M562), so no window is a sleeper's by its clock.
         let pid = asleep.0.id();
         let mut sleeping = loop {
             let followed = shards_api::Followed::of_pid(pid).unwrap().unwrap();

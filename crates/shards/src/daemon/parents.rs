@@ -520,7 +520,7 @@ mod tests {
         let record = shards_api::Record::new();
         record.teach(slowest, Duration::from_millis(1));
         // Stopped, waited for to its stop: an asleep one is woken by a cgroup freezer's
-        // cycles, a kiln run's about six a second (PM M560), which no stopped one is
+        // cycles, a kiln run's about six a second (PM M562), which no stopped one is
         // (kernel/cgroup/freezer.c wakes interruptible and uninterruptible sleepers alone).
         let mut asleep = child("kill -STOP $$");
         // SAFETY: a siginfo_t, plain data, for waitid(2) to fill.

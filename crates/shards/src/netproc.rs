@@ -1057,7 +1057,7 @@ mod reap_tests {
         assert!(ms >= 1000, "{ms} ms kept");
         // Stopped, as one that runs nothing whatever its host does: ended at its first look,
         // its end none of its own. Not asleep: a cgroup freezer's cycles wake a sleeper, a
-        // kiln run's about six a second (PM M560), and no stopped one.
+        // kiln run's about six a second (PM M562), and no stopped one.
         let home = shards_testdir::TempDir::new("reap-asleep").unwrap();
         let ends = Ends::kept_in(&home);
         let asleep = sh("kill -STOP $$", &home);
@@ -1142,7 +1142,7 @@ mod ask_tests {
         let slowest = Duration::from_millis(200);
         record.teach(slowest, Duration::from_millis(1));
         // Stopped, waited for to its stop, its start's own CPU behind it: a cgroup freezer's
-        // cycles wake a sleeper, a kiln run's about six a second (PM M560), and no stopped one.
+        // cycles wake a sleeper, a kiln run's about six a second (PM M562), and no stopped one.
         let asleep = stand("kill -STOP $$");
         let (net, theirs) = link(asleep.0.id());
         super::reap_tests::until_stopped(asleep.0.id());
