@@ -1652,7 +1652,7 @@ mod tests {
         }
         fn pause(&mut self) {
             self.clock += PAUSE;
-            if let Some((at, held)) = self.held.filter(|&(at, _)| self.clock >= at) {
+            if let Some((_, held)) = self.held.filter(|&(at, _)| self.clock >= at) {
                 self.clock += held;
                 self.held = None;
             }
