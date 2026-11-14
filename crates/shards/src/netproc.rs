@@ -1018,6 +1018,18 @@ mod reap_tests {
         shards_ipc::spawn_in(Path::new("/bin/sh"), &args, &[], false, &[]).unwrap()
     }
 
+    /// Waits until process `pid` is seen stopped, as D215's readers see it: a stop that
+    /// lasts, a wait for that fact. Not waitid(2): a spawner of this process's may have made it.
+    pub(super) fn until_stopped(pid: u32) {
+        let watched = || {
+            let followed = shards_api::Followed::of_pid(pid).unwrap().unwrap();
+            shards_api::Watch::of(followed).unwrap().unwrap()
+        };
+        while !watched().stopped() {
+            std::thread::yield_now();
+        }
+    }
+
     /// A network or share process whose VM has gone is waited on past its slice while it
     /// goes on with its end, and its end, its own, is kept as this host's; one that does
     /// nothing for a slice is ended at its first look, and that end, the reaper's, is kept
@@ -1043,11 +1055,13 @@ mod reap_tests {
         assert!(took >= slice * 5, "ended while it went on: {took:?}");
         let ms = kept(&home).expect("its own end was not kept");
         assert!(ms >= 1000, "{ms} ms kept");
-        // Asleep, as one waiting on what never comes: ended at its first look, its end
-        // none of its own.
+        // Stopped, as one that runs nothing whatever its host does: ended at its first look,
+        // its end none of its own. Not asleep: a cgroup freezer's cycles wake a sleeper, a
+        // kiln run's about six a second (PM M562), and no stopped one.
         let home = shards_testdir::TempDir::new("reap-asleep").unwrap();
         let ends = Ends::kept_in(&home);
-        let asleep = sh("exec /bin/sleep 60", &home);
+        let asleep = sh("kill -STOP $$", &home);
+        until_stopped(asleep.id());
         let began = Instant::now();
         reap_by(&asleep, &ends, Some(slice));
         let took = began.elapsed();
@@ -1127,10 +1141,11 @@ mod ask_tests {
         let record = shards_api::Record::new();
         let slowest = Duration::from_millis(200);
         record.teach(slowest, Duration::from_millis(1));
-        let asleep = stand("exec /bin/sleep 60");
+        // Stopped, waited for to its stop, its start's own CPU behind it: a cgroup freezer's
+        // cycles wake a sleeper, a kiln run's about six a second (PM M562), and no stopped one.
+        let asleep = stand("kill -STOP $$");
         let (net, theirs) = link(asleep.0.id());
-        // Its first look a moment after its start's own CPU.
-        std::thread::sleep(Duration::from_millis(200));
+        super::reap_tests::until_stopped(asleep.0.id());
         let began = Instant::now();
         let refused = ask(&net, &record, shards_ipc::kind::NET_NAMES, b"none", &[]).unwrap_err();
         assert!(began.elapsed() >= slowest, "{:?}", began.elapsed());

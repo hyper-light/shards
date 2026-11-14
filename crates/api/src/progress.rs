@@ -1532,40 +1532,43 @@ mod tests {
     /// other in the cgroup this test shares with the sleeper, which ran nothing meanwhile. Red
     /// while a shared cgroup's pressure counted as the sleeper's (main's CI at 5af644eab:
     /// ends.rs's `/bin/sleep 60` judged going on).
+    ///
+    /// Judged over a window in which the sleeper was asleep at either end and ran nothing
+    /// between, as its looks show, and looked at again over another: a sleeper is woken by a
+    /// cgroup freezer's cycles, which a kiln run's cgroup goes through about six times a
+    /// second, each a few µs of its CPU (PM M562), so no window is a sleeper's by its clock.
+    /// Each window is the spinners' start and the shared pressure's growth; they end past it.
     #[cfg(target_os = "linux")]
     #[test]
     fn a_sleeper_is_still_whatever_its_cgroups_others_wait_for() {
         let mut sleeper = std::process::Command::new("sleep").arg("60").spawn().unwrap();
         let mut followed = Followed::of_pid(sleeper.id()).unwrap().unwrap();
-        // Asleep in its nanosleep (`S`), its start's own CPU and page-ins (`D`) behind it.
-        while !std::fs::read_to_string(format!("/proc/{}/stat", sleeper.id()))
-            .unwrap()
-            .rsplit_once(')')
-            .is_some_and(|(_, fields)| fields.trim_start().starts_with('S'))
-        {
-            std::thread::yield_now();
-        }
-        let before = followed.hold();
-        let ran = followed.look().unwrap().unwrap();
-        let shared = shared_cpu_pressure(sleeper.id());
         let cpu = first_cpu();
-        let mut spinners = [spinner_on(cpu), spinner_on(cpu)];
-        // Waited for, where the kernel keeps it: the spinners' wait for their CPU shown in the
-        // pressure the sleeper's cgroup shares.
-        if let Some(from) = shared {
-            while shared_cpu_pressure(sleeper.id()).is_none_or(|now| now <= from) {
-                std::thread::yield_now();
+        let (before, now, shared) = loop {
+            let ran = followed.look().unwrap().unwrap();
+            let before = followed.hold();
+            let shared = shared_cpu_pressure(sleeper.id());
+            let mut spinners = [spinner_on(cpu), spinner_on(cpu)];
+            // Waited for, where the kernel keeps it: the spinners' wait for their CPU shown in
+            // the pressure the sleeper's cgroup shares.
+            if let Some(from) = shared {
+                while shared_cpu_pressure(sleeper.id()).is_none_or(|now| now <= from) {
+                    std::thread::yield_now();
+                }
             }
-        }
-        let now = followed.hold();
-        let look = followed.look().unwrap().unwrap();
-        for spinner in &mut spinners {
-            drop(spinner.stdin.take());
-            spinner.wait().unwrap();
-        }
+            let now = followed.hold();
+            let asleep =
+                !followed.look().unwrap().unwrap().ran_since(&ran) && !before.runnable && !now.runnable;
+            for spinner in &mut spinners {
+                drop(spinner.stdin.take());
+                spinner.wait().unwrap();
+            }
+            if asleep {
+                break (before, now, shared);
+            }
+        };
         sleeper.kill().unwrap();
         sleeper.wait().unwrap();
-        assert!(!look.ran_since(&ran), "the sleeper ran: {ran:?} {look:?}");
         assert_eq!(
             found(false, false, &before, &now),
             Found::Still,

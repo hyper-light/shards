@@ -1,4 +1,4 @@
-# control_cut.py DIR: PM M562's tally. DIR holds runs.tsv (run id, sha, created, conclusion),
+# control_cut.py DIR: PM M563's tally. DIR holds runs.tsv (run id, sha, created, conclusion),
 # jobs.tsv (run id, job id, name, conclusion) and logs/JOB.log, CI's x86_64 Linux test jobs
 # that failed, fetched with:
 #   gh api --paginate 'repos/hyper-light/shards/actions/workflows/ci.yml/runs?per_page=100&created=>=SINCE' \

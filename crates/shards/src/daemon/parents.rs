@@ -519,8 +519,22 @@ mod tests {
         let slowest = Duration::from_millis(200);
         let record = shards_api::Record::new();
         record.teach(slowest, Duration::from_millis(1));
-        let mut asleep = child("exec /bin/sleep 60");
-        std::thread::sleep(slowest);
+        // Stopped, waited for to its stop: an asleep one is woken by a cgroup freezer's
+        // cycles, a kiln run's about six a second (PM M562), which no stopped one is
+        // (kernel/cgroup/freezer.c wakes interruptible and uninterruptible sleepers alone).
+        let mut asleep = child("kill -STOP $$");
+        // SAFETY: a siginfo_t, plain data, for waitid(2) to fill.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        // SAFETY: waitid(2) of this test's own child, to its stop; WNOWAIT leaves it so.
+        let waited = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                asleep.id(),
+                &raw mut info,
+                libc::WSTOPPED | libc::WNOWAIT,
+            )
+        };
+        assert_eq!(waited, 0);
         std::fs::write(&events, "populated 1\nfrozen 0\n").unwrap();
         std::fs::write(&procs, format!("{}\n", asleep.id())).unwrap();
         let began = Instant::now();
