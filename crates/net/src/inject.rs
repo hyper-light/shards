@@ -735,6 +735,9 @@ enum Unmaskable {
     /// A WebSocket extension taken (RFC 6455 §9.1), permessage-deflate's compression among them
     /// (RFC 7692).
     Extended,
+    /// A tunnel this side does not read (creds-11): a 101 to any protocol but WebSocket's, or a
+    /// CONNECT's 2xx, whose own framing or coding a value could pass through unseen.
+    Protocol,
 }
 
 impl fmt::Display for Unmaskable {
@@ -742,6 +745,7 @@ impl fmt::Display for Unmaskable {
         f.write_str(match self {
             Unmaskable::Coded => "coded",
             Unmaskable::Extended => "a WebSocket with an extension",
+            Unmaskable::Protocol => "a tunnel of a protocol this side does not read",
         })
     }
 }
@@ -891,8 +895,9 @@ enum Response {
     Head(Vec<u8>),
     /// Its body coming to the guest as it comes, as framed.
     Body(Framing),
-    /// Upgraded or tunnelled: the host's bytes go to the guest as they come.
-    Tunnel,
+    /// Upgraded or tunnelled: the host's bytes go to the guest as they come, or as a WebSocket's
+    /// frames read them (creds-11).
+    Tunnel(Tunnel),
     /// A sign-in's token host's response, its body read whole as it comes (D242, step 8), none of
     /// it to the guest before: its tokens taken outside, or it passed on as it came.
     Whole {
@@ -1464,6 +1469,115 @@ fn held_toward<'c>(
         })
 }
 
+/// A tunnel after a 101 or a CONNECT's 2xx (R04): its host's bytes as they come, where no value is
+/// masked; a WebSocket's frames read, where one is (creds-11).
+enum Tunnel {
+    Raw,
+    WebSocket(Frames),
+}
+
+/// Where a WebSocket's frames from its host stand (RFC 6455 §5.2), read so that the mask seeks a
+/// value in its messages' payloads across their frames, as the guest reassembles them (§5.4), each
+/// frame's head passed over as framing. A control frame (§5.5: its payload at most 125 octets, never
+/// fragmented) is read whole and each value in it masked where it lies, as its payload is no part
+/// of the message it may interrupt.
+#[derive(Default)]
+struct Frames {
+    /// A frame's head as it comes, or a control frame whole.
+    head: Zeroizing<Vec<u8>>,
+    /// The octets of the data frame under way's payload still to come.
+    left: u64,
+}
+
+/// A WebSocket frame's head as its host sent it, once whole (RFC 6455 §5.2): its length, its
+/// payload's, and whether it is a control frame; none while it has not come. Broken: a reserved
+/// bit set (no extension was taken, §5.2), a reserved opcode, a masked frame (§5.1: a server's
+/// never is), a length past 2^63 (§5.2), a control frame fragmented or past 125 octets (§5.5).
+fn ws_head(head: &[u8]) -> Result<Option<(usize, u64, bool)>, Broken> {
+    let (Some(&b0), Some(&b1)) = (head.first(), head.get(1)) else {
+        return Ok(None);
+    };
+    if b0 & 0x70 != 0 {
+        return Err(Broken("a WebSocket frame with an extension's bits"));
+    }
+    let opcode = b0 & 0x0f;
+    let control = opcode & 0x08 != 0;
+    if !matches!(opcode, 0x0..=0x2 | 0x8..=0xa) {
+        return Err(Broken("a WebSocket frame of a reserved opcode"));
+    }
+    if b1 & 0x80 != 0 {
+        return Err(Broken("a masked WebSocket frame from its server"));
+    }
+    let ext = match b1 & 0x7f {
+        126 => 2,
+        127 => 8,
+        _ => 0,
+    };
+    let Some(bytes) = head.get(2..2 + ext) else {
+        return Ok(None);
+    };
+    let len = match ext {
+        0 => u64::from(b1 & 0x7f),
+        _ => bytes.iter().fold(0u64, |n, &b| n << 8 | u64::from(b)),
+    };
+    if len >> 63 != 0 {
+        return Err(Broken("a WebSocket frame's length past 2^63"));
+    }
+    if control && (b0 & 0x80 == 0 || len > 125) {
+        return Err(Broken("a WebSocket control frame fragmented or past 125 octets"));
+    }
+    Ok(Some((2 + ext, len, control)))
+}
+
+impl Frames {
+    /// The host's `bytes`, its frames' heads and control frames as framing, its data frames'
+    /// payloads as data, on their way through `mask` to `out`.
+    fn read(
+        &mut self,
+        mut bytes: &[u8],
+        mask: &mut Mask,
+        out: &mut dyn FnMut(&[u8]) -> io::Result<()>,
+    ) -> Result<(), Broken> {
+        let queued = |_: io::Error| Broken("its bytes could not be queued");
+        while !bytes.is_empty() {
+            if self.left > 0 {
+                let n = bytes.len().min(usize::try_from(self.left).unwrap_or(usize::MAX));
+                let (data, rest) = bytes.split_at(n);
+                mask.push(data, true, out).map_err(queued)?;
+                self.left = self.left.saturating_sub(n as u64);
+                bytes = rest;
+                continue;
+            }
+            let Some((first, rest)) = bytes.split_first() else {
+                break;
+            };
+            signin::append(&mut self.head, &[*first]);
+            bytes = rest;
+            let Some((len, payload, control)) = ws_head(&self.head)? else {
+                continue;
+            };
+            if mask.holds(self.head.get(..len).unwrap_or_default()) {
+                return Err(Broken("a WebSocket frame's head that is a value filled in"));
+            }
+            if control {
+                // Whole before it goes: its payload is its own, never a part of a message's.
+                let whole = len.saturating_add(usize::try_from(payload).unwrap_or(usize::MAX));
+                if self.head.len() < whole {
+                    continue;
+                }
+                if let Some(p) = self.head.get_mut(len..) {
+                    mask.cover(p);
+                }
+            } else {
+                self.left = payload;
+            }
+            mask.push(&self.head, false, out).map_err(queued)?;
+            self.head.clear();
+        }
+        Ok(())
+    }
+}
+
 /// A chunk's size line that holds a value filled in (`Mask::size`).
 #[derive(Debug)]
 struct Holds;
@@ -1599,6 +1713,26 @@ impl Mask {
             return Err(io::Error::other(Holds));
         }
         self.push(line, false, out)
+    }
+
+    /// Each value filled in where it lies whole in `bytes`, masked there as `push` masks one.
+    fn cover(&self, bytes: &mut [u8]) {
+        for f in &self.filled {
+            let n = f.value.len();
+            let mut i = 0usize;
+            while let Some(end) = i.checked_add(n).filter(|&end| end <= bytes.len() && n > 0) {
+                match bytes.get_mut(i..end) {
+                    Some(w) if *w == *f.value => {
+                        for (k, b) in w.iter_mut().enumerate() {
+                            let at = k.checked_rem(f.placeholder.len()).unwrap_or(0);
+                            *b = f.placeholder.get(at).copied().unwrap_or(b'*');
+                        }
+                        i = end;
+                    }
+                    _ => i += 1,
+                }
+            }
+        }
     }
 
     /// Whether a value filled in lies in `bytes`.
@@ -1781,6 +1915,9 @@ struct Ended {
     /// bytes may yet decode to (`tcp::TO_GUEST` a turn).
     decoding: Option<Box<Decoder>>,
     decode_left: usize,
+    /// A sign-in's token host's informational responses but 100, held until its final response
+    /// is judged (creds-10).
+    interims: Zeroizing<Vec<u8>>,
     /// Why the host's TLS failed, before anything of it reached the guest.
     failed: Option<String>,
     /// Whose sign-in's token host this is, where it is one (D242, step 8): no value is filled
@@ -1815,6 +1952,7 @@ impl Ended {
             mask: Mask::default(),
             decoding: None,
             decode_left: crate::tcp::TO_GUEST,
+            interims: Zeroizing::new(Vec::new()),
             failed,
             sign_in,
             refused: None,
@@ -1969,7 +2107,10 @@ impl Ended {
             self.response = Response::Head(Vec::new());
             self.exchange_ended();
         }
-        if matches!(self.response, Response::Body(Framing::Close) | Response::Tunnel) {
+        if matches!(
+            self.response,
+            Response::Body(Framing::Close) | Response::Tunnel(_)
+        ) {
             let Ended { mask, guest, .. } = self;
             if mask.end_message(&mut |b| guest.writer().write_all(b)).is_err() {
                 return Said::Reset;
@@ -2063,7 +2204,7 @@ impl Ended {
                 pending.drain(..taken.min(pending.len()));
                 self.request = if !ended {
                     Request::Body(framing)
-                } else if matches!(self.response, Response::Tunnel) {
+                } else if matches!(self.response, Response::Tunnel(_)) {
                     Request::Tunnel
                 } else if self.owed.is_some() {
                     Request::Sent
@@ -2468,10 +2609,13 @@ impl Ended {
                         self.exchange_ended();
                     }
                 }
-                Response::Tunnel => {
+                Response::Tunnel(tunnel) => {
                     let Ended { mask, guest, .. } = self;
-                    mask.push(bytes, true, &mut |b| guest.writer().write_all(b))
-                        .map_err(queued)?;
+                    let mut out = |b: &[u8]| guest.writer().write_all(b);
+                    match tunnel {
+                        Tunnel::Raw => mask.push(bytes, true, &mut out).map_err(queued)?,
+                        Tunnel::WebSocket(frames) => frames.read(bytes, mask, &mut out)?,
+                    }
                     return Ok(());
                 }
                 Response::Whole { body, framing, .. } => {
@@ -2509,7 +2653,13 @@ impl Ended {
         else {
             return;
         };
-        let read = capture_tokens(&[&head], &body, self.sign_in, run.waiter.into(), run);
+        let read = capture_tokens(
+            &[&self.interims, &head],
+            &body,
+            self.sign_in,
+            run.waiter.into(),
+            run,
+        );
         let went = read.and_then(|tokens| match tokens {
             None => self.pass_whole(&head, &body),
             Some(tokens) => {
@@ -2527,7 +2677,8 @@ impl Ended {
         let framed = signin::frame(head, body.len()).map_err(Refusal::SignIn)?;
         let mut writer = self.guest.writer();
         writer
-            .write_all(&framed)
+            .write_all(&self.interims)
+            .and_then(|()| writer.write_all(&framed))
             .and_then(|()| writer.write_all(body))
             .map_err(|e| Refusal::Upstream(e.to_string()))?;
         self.answered = true;
@@ -2556,7 +2707,8 @@ impl Ended {
         let framed = signin::frame(&head, written.len()).map_err(Refusal::SignIn)?;
         let mut writer = self.guest.writer();
         writer
-            .write_all(&framed)
+            .write_all(&self.interims)
+            .and_then(|()| writer.write_all(&framed))
             .and_then(|()| writer.write_all(&written))
             .map_err(|e| Refusal::Upstream(e.to_string()))?;
         self.answered = true;
@@ -2607,6 +2759,15 @@ impl Ended {
                     return Ok(());
                 }
             }
+            // A tunnel's bytes are masked as its frames read them: a WebSocket's alone (creds-11).
+            let websocket = status == 101
+                && values(&head, &fields, "upgrade")
+                    .flat_map(list)
+                    .any(|p| p.eq_ignore_ascii_case(b"websocket"));
+            if tunnel && !websocket {
+                self.refused = Some(Refusal::Unmaskable(Unmaskable::Protocol));
+                return Ok(());
+            }
             if coding.is_some() && owed.http10 {
                 self.refused = Some(Refusal::Unmaskable(Unmaskable::Coded));
                 return Ok(());
@@ -2619,6 +2780,24 @@ impl Ended {
         let edits: Vec<(Range<usize>, &[u8])> = cut.iter().map(|(r, v)| (r.clone(), v.as_slice())).collect();
         let passed = rewrite(&head, &edits);
         self.decoding = coding.map(|c| Box::new(Decoder::new(c)));
+        // A sign-in's token host's informational response (creds-10, RFC 9110 §15.2) goes before
+        // its final one names its tokens: a 100 goes at once as its status alone, which carries
+        // nothing; any other waits, read with the final response for its tokens and sent before it.
+        if self.sign_in.is_some() && interim {
+            if status == 100 {
+                self.guest
+                    .writer()
+                    .write_all(b"HTTP/1.1 100 Continue\r\n\r\n")
+                    .map_err(|_| Broken("its bytes could not be queued"))?;
+                self.answered = true;
+            } else if self.interims.len().saturating_add(passed.len()) > crate::tcp::TO_GUEST {
+                return Err(Broken("informational responses past what the connection holds"));
+            } else {
+                signin::append(&mut self.interims, &passed);
+            }
+            self.response = Response::Head(Vec::new());
+            return Ok(());
+        }
         // A sign-in's token host's final response with a body is read whole before any of it
         // goes, so that its tokens are taken outside (D242, step 8).
         if self.sign_in.is_some() && !tunnel && !interim && framing != Framing::Length(0) {
@@ -2633,14 +2812,25 @@ impl Ended {
             };
             return Ok(());
         }
-        let Ended { mask, guest, .. } = self;
+        let Ended {
+            mask,
+            guest,
+            interims,
+            ..
+        } = self;
         let mut out = |b: &[u8]| guest.writer().write_all(b);
-        mask.push(&passed, true, &mut out)
+        // A token host's final response that is not read whole names no token: what waited
+        // before it goes first.
+        out(interims.as_slice())
+            .and_then(|()| mask.push(&passed, true, &mut out))
             .and_then(|()| mask.end_message(&mut out))
             .map_err(|_| Broken("its bytes could not be queued"))?;
+        interims.clear();
         self.answered = true;
-        self.response = if tunnel {
-            Response::Tunnel
+        self.response = if tunnel && self.mask.masks() {
+            Response::Tunnel(Tunnel::WebSocket(Frames::default()))
+        } else if tunnel {
+            Response::Tunnel(Tunnel::Raw)
         } else if interim {
             Response::Head(Vec::new())
         } else if framing == Framing::Length(0) {
@@ -2703,6 +2893,7 @@ impl Ended {
         self.owed = None;
         self.mask.clear();
         self.decoding = None;
+        self.interims.clear();
         if matches!(self.request, Request::Sent) {
             self.request = Request::Head;
         }
@@ -2834,6 +3025,9 @@ struct Stream {
     /// whose decoding has not all reached the guest, given back to the host's window once it has.
     decoding: Option<Box<Decoder>>,
     coded: usize,
+    /// A sign-in's token host's informational responses but 100, held until its final response
+    /// is judged (creds-10).
+    interims: Vec<Vec<hpack::Field>>,
     /// Its response, where it is a token host's read whole.
     token: Option<TokenResponse>,
 }
@@ -2855,6 +3049,7 @@ impl Stream {
             mask: Mask::default(),
             decoding: None,
             coded: 0,
+            interims: Vec::new(),
             token: None,
         }
     }
@@ -3745,6 +3940,7 @@ impl H2 {
         s.down_data = body.to_vec();
         s.down_last = Some(Last::End);
         s.token = None;
+        s.interims.clear();
     }
 
     /// A token host's stream (D242, step 8) moved as far as its sign-in's asks let it: a POST read
@@ -3857,7 +4053,11 @@ impl H2 {
             return;
         };
         let read = {
-            let mut places: Vec<&[u8]> = fields.iter().flat_map(|f| [&f.name[..], &f.value[..]]).collect();
+            let mut places: Vec<&[u8]> = fields
+                .iter()
+                .chain(s.interims.iter().flatten())
+                .flat_map(|f| [&f.name[..], &f.value[..]])
+                .collect();
             if let Some(Last::Trailers(trailers)) = &s.down_last {
                 places.extend(trailers.iter().flat_map(|f| [&f.name[..], &f.value[..]]));
             }
@@ -3917,6 +4117,18 @@ impl H2 {
         ));
         if s.guest.sending() {
             let mut block = Vec::new();
+            for held in std::mem::take(&mut s.interims) {
+                block.clear();
+                self.guest_hop.encoder.encode(&held, &mut block);
+                http2::headers(
+                    gid,
+                    &block,
+                    false,
+                    self.guest_hop.peer.max_frame_size,
+                    &mut self.to_guest,
+                );
+            }
+            block.clear();
             self.guest_hop.encoder.encode(&fields, &mut block);
             http2::headers(
                 gid,
@@ -4251,6 +4463,27 @@ impl H2 {
         if !informational {
             s.down = Down::Body;
         }
+        // A sign-in's token host's informational response (creds-10, RFC 9110 §15.2): a 100 goes
+        // at once as its status alone; any other waits, read with the final response for its
+        // tokens and sent before it.
+        if self.sign_in.is_some() && informational {
+            let continuing = fields
+                .iter()
+                .any(|f| f.name == b":status" && &f.value[..] == b"100");
+            if !continuing {
+                let held = s.interims.iter().flatten().map(|f| f.value.len()).sum::<usize>();
+                if held > crate::tcp::TO_GUEST {
+                    self.answer(
+                        gid,
+                        Refusal::Upstream("informational responses past what the connection holds".into()),
+                    );
+                } else {
+                    s.interims.push(fields);
+                }
+                return Ok(());
+            }
+            fields.retain(|f| f.name == b":status");
+        }
         if !informational && s.mask.masks() && !block.end_stream {
             let read: Vec<(&[u8], &[u8])> = fields.iter().map(|f| (&f.name[..], &f.value[..])).collect();
             match maskable(&read) {
@@ -4286,7 +4519,21 @@ impl H2 {
         if !s.guest.sending() {
             return Ok(());
         }
+        // A token host's final response that is not read whole names no token: what waited
+        // before it goes first.
         let mut out = Vec::new();
+        for held in std::mem::take(&mut s.interims) {
+            out.clear();
+            self.guest_hop.encoder.encode(&held, &mut out);
+            http2::headers(
+                gid,
+                &out,
+                false,
+                self.guest_hop.peer.max_frame_size,
+                &mut self.to_guest,
+            );
+        }
+        out.clear();
         self.guest_hop.encoder.encode(&fields, &mut out);
         http2::headers(
             gid,

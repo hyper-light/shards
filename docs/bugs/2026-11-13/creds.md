@@ -226,6 +226,8 @@ Found by the creds P0 lane (implementer, ROOT's lane for creds-01 to 04) while f
 
 **Fix direction:** Hold a token host's 1xx responses until its final response is judged and read them with it against the access, refresh and ID tokens (RFC 9110 §15.2), or strip them to what carries nothing.
 
+**Status (2026-11-13):** fixed in 39b12df9a (red `inject::tests::leaks::a_token_hosts_informational_responses_never_carry_its_tokens_to_the_guest`, `an_h2_token_hosts_informational_response_never_carries_its_tokens_to_the_guest`). Chosen: hold a 1xx but 100 and read it with the final response; a 100 goes as its status alone (RFC 9110 §15.2, §15.2.1).
+
 ### creds-11 — P0 / critical — A tunnel after a 101 is masked as raw bytes
 
 **Location:** `crates/net/src/inject.rs` (`Response::Tunnel`).
@@ -233,6 +235,8 @@ Found by the creds P0 lane (implementer, ROOT's lane for creds-01 to 04) while f
 **Defect:** After a 101 the host's bytes are masked as one raw stream, so a value split across WebSocket frames (RFC 6455 §5.4 fragmentation, or a frame header between its parts), or carried by any other protocol after the upgrade, reaches the guest.
 
 **Fix direction:** Parse a granted host's WebSocket frames and mask their payloads across frame boundaries, extensions already refused; refuse, typed, an upgrade to a protocol this side does not parse.
+
+**Status (2026-11-13):** fixed in 742b5508b (red `inject::tests::leaks::a_websockets_echo_split_across_its_frames_is_masked`, `a_websocket_frame_its_reader_does_not_take_breaks_the_tunnel`, `a_filled_upgrade_to_a_protocol_this_side_does_not_read_is_refused`). Residual: a value split across two messages, or a message and a control frame (a part of a value, D242).
 
 ### creds-12 — P3 / medium — A decoded response's own chunk-size lines are not checked
 

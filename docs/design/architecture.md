@@ -2219,26 +2219,32 @@ audit's "Security and test coverage").
     to decide), on every thread (TSYNC, Linux 3.17), every kernel's: a socket is a stream
     or a sequenced-packet one, as every socket a VM process makes is, since a datagram
     socket can send to any socket file it names [net/unix/af_unix.c,
-    `unix_dgram_sendmsg`]; and a VM given no vsock path, as every VM a daemon runs is
-    (`--warm` takes none), fails every connect(2) with EACCES, as Landlock refuses one: its
-    user's sockets, its daemon's Engine API among them, cannot be dialed (review
+    `unix_dgram_sendmsg`]; and every connect(2) fails with EACCES, as Landlock refuses one:
+    its user's sockets, its daemon's Engine API among them, cannot be dialed (review
     platform-02, [PM M569]). The filter allows seccomp(2)'s `SET_MODE_FILTER` for the
     layer: unprivileged, under no_new_privs, a filter only takes syscalls away.
+  - A VM process dials nothing itself, on Linux as on macOS and Windows: a daemon's VMs
+    are given no vsock path (`--warm` takes none), their host ports served in their
+    process; one given one (`shards build`'s builder, `run vm --kernel --vsock`, `restore vm
+    --vsock`) asks its spawner on its grants socket (`--grants FD`; `grant_ask::listen_at`)
+    for a socket bound at that path, which Landlock lets it make nowhere, and has its
+    spawner dial the host ports beside it (`kind::DIAL`, a port, never a path;
+    `platform::set_dialer`). The spawner keeps each descriptor it sends until the VM's next
+    word (`TAKEN`), as on macOS, where XNU's collector flushes one in flight (M24). Its spawners on Linux:
+    the CLI's broker, `shardsd grants`, started by `run vm` and `restore vm` where a vsock
+    path is given (cli `dial_broker`), and the builder's launch, on a thread of its own
+    (launch.rs); the broker grants a VM on Linux nothing else, its files being Landlock's,
+    and nothing after its vsock path (grant_answer.rs `answer`).
 - **Linux: Landlock, failing closed** (`confine.rs`, `landlock`), applied just before the
   VM starts (rootless-security.md R3; [Documentation/userspace-api/landlock.rst]).
   - Every filesystem right Landlock's ABI v5 knows is handled, TCP bind and connect are
     refused, and on ABI v6 signals and abstract Unix sockets outside the process are too,
-    and on v9 connections to socket files (`RESOLVE_UNIX`) but beneath the directory of a
-    vsock path it was given, where the vsock muxer dials a guest's host ports
-    (`<path>_<port>`) [PM M569].
-  - Before v9 a VM given a vsock path (`shards build`'s builder, `run vm --kernel
-    --vsock`) can still dial any socket file its user can: no primitive of older kernels
-    scopes a connect by its path within the process. The closed way for those is its
-    spawner dialing for it, as on macOS and Windows (`platform::set_dialer`); owed.
+    and on v9 every connection to a socket file (`RESOLVE_UNIX`, granted nowhere), an
+    extra layer beside the filter's refusal [PM M569].
     Allowed: its kernel, initrd, init, pmem and disks, a restore's snapshot and the files it
-    records, the snapshot directory it saves, sockets made
-    only beside a vsock path it was given (`--vsock`), `/dev/null`, its own `/proc` entry, and `/dev/kvm` and the
-    huge page settings where the host has them. No directory may take a file from another
+    records, the snapshot directory it saves, the removal of the socket its spawner bound
+    at a vsock path it was given (`--vsock`), `/dev/null`, its own `/proc` entry, and
+    `/dev/kvm` and the huge page settings where the host has them. No directory may take a file from another
     (`REFER`). Rules hold inodes: a template keeps its rule when the daemon renames it.
   - Every layer reaches every thread (review platform-01, [PM M568]). A layer restricts
     the thread that makes it and the threads it starts after
@@ -2247,9 +2253,10 @@ audit's "Security and test coverage").
     a thread compromised among them reaches through a sibling what the layer took away.
     Where the ABI has `LANDLOCK_RESTRICT_SELF_TSYNC` (v8), one call gives every thread the
     caller's new domain atomically. On every ABI from v5, the primitive every kernel it
-    runs on has, each thread is asked in turn: a real-time signal (`SIGRTMIN + 1`, past
-    the vCPUs' kick), whose handler makes the restriction in the thread it interrupts and
-    answers on an eventfd, as glibc's setxid broadcast makes setuid(2) every thread's,
+    runs on has, each thread is asked in turn: SIGSYS, sent by tgkill(2), whose handler
+    (the filter's own, `seccomp::name_refusals`, which runs `seccomp::on_sent`'s hook for
+    a SIGSYS of `si_code` SI_TKILL from its own process, and reports a trap's, SYS_SECCOMP)
+    makes the restriction in the thread it interrupts and answers on an eventfd, as glibc's setxid broadcast makes setuid(2) every thread's,
     until a listing of `/proc/self/task` names no thread not settled. A thread is settled
     by its answer, or by being gone or exiting (`PF_EXITING`: it runs no more user code,
     and drops a signal sent to it alone). A thread started after its creator answered is
@@ -2263,6 +2270,14 @@ audit's "Security and test coverage").
       seal's failure hands its run to another VM (daemon.rs, `hand_over`). glibc's
       pthread_create blocks every signal for a moment, which a look may meet; that run
       fails closed too.
+    - SIGSYS, because every thread of a filtered process takes it (blocked, a trap ends
+      the process unreported) and Mesa's threads, which block every other signal for
+      their lives, leave it and SIGSEGV unblocked (src/util/u_thread.c, `u_thread_create`,
+      at mirror/mesa 8c427aae9): a GPU's VM process has those threads by its seal, from
+      its renderer's start (its held Vulkan instance, D201), before any snapshot. Asked by a
+      real-time signal, such a thread could not answer, and a GPU template's seal failed on
+      every kernel before v8 [PM M568]. Ordering the seal before the renderer's threads
+      cannot be: a template's guest runs with its GPU before it is saved.
     - Any other thread is waited for as long as it lives, with no timeout and no
       constant: its answer (an eventfd its handler writes) or its end (its thread pidfd,
       pidfd_open(2) `PIDFD_THREAD`, Linux 6.9, older than the v5 a VM needs, which polls
@@ -2928,6 +2943,45 @@ rather than a container on the build host's kernel.
   (PM M82).
 
 ### One binary (D36)
+
+**GPU publication (runs-08).** Each lazy GPU writer creates its own staging
+file with create_new, using PID, clock nanoseconds and a process sequence as
+identity discriminators (platform write_in's scheme). A collision or sequence
+wrap refuses creation; it never unlinks another writer's file. Zero/one are
+sequence initialization/increment, not selected operational limits. It writes,
+syncs and closes the writable handle before renaming that same file into place:
+Linux can reject a writable executable with ETXTBSY
+([execve(2)](https://man7.org/linux/man-pages/man2/execve.2.html)). Ordinary errors
+remove only the owned staging path. The two-writer regression formerly observed
+empty final bytes; both writers now publish complete closed files. Real carried
+executables, signatures, GPU and crash-debris checks remain owed in the
+[runs record](../research/measurements/runs-fixes/README.md).
+
+**Helper integrity before each start (runs-10).** A helper's directory is named by the
+helpers' digests, but `complete` and the GPU writer took a helper of the right length
+as this build's whatever its bytes: one byte changed (by hand, by a program of the
+user's, on the disk) was started as it was, in every later process. Now each time a
+process is about to start a helper (`helpers::vm`, `net`, `vm_gpu`, and `checked` for
+the path the daemon keeps, from `launch::program`), its bytes are read whole and their
+SHA-256 compared with the digest build.rs embedded beside them; where they differ, or
+the file is gone, the carried bytes are written again whole (staging of the writer's
+own, synced, closed, renamed over it: the bytes build.rs signed on macOS), and a helper
+that cannot be written again (Windows refuses to replace one a running VM process
+holds) is refused, saying its path, its digest and why. A helper `SHARDS_VM_BINARY`
+names, or a carrier's beside its `shards` (D237, signed by the carrier, its bytes not
+those this build carries), is its giver's to answer for and is started as it is.
+`complete` stays the check that a directory was placed whole. No literal: the digest is
+SHA-256 of the carried bytes, the read through std's buffer at std's size. **Cost owed
+(ROOT):** each VM start now reads shards-vm (2.98 MB in this Mac's cache) and each
+networked one shards-net (4.33 MB) through SHA-256; its latency is unmeasured:
+`docs/research/measurements/build-ab/ab.py` between this build and its parent on one
+template, and a cold `shards run --kernel` launch, on HVF, KVM and WHP. A start between
+the check and the exec can still find bytes changed in that window; only an exec of the
+checked descriptor (fexecve, which macOS lacks) would close it. Unit tests (helpers.rs):
+`a_helper_whose_bytes_changed_is_written_again_before_it_starts` (one byte flipped, its
+length kept: written again) and `a_changed_helper_that_cannot_be_written_again_is_refused`;
+with the digest check put back to the length check, the first fails (the flipped bytes
+are returned). [runs-fixes record](../research/measurements/runs-fixes/README.md#runs-10).
 
 shards is one file to install and run, `shards`: every command, the daemon included,
 one CLI.
@@ -4315,6 +4369,18 @@ A slow client holds the command's output back: what a command writes is never ke
 without bound.
 
 ### Networks of microVMs (D46)
+
+**Relay progress correction (network-08, 2026-11-13).** A persistent TCP client's
+lifetime no longer owns 127.0.0.11's UDP/accept loop. Each TCP worker owns its
+client and upstream sockets; observed descriptor capacity admits it, counting
+three possible sockets through every return/spawn failure. Both guest resolvers
+share one in-flight DNS-ID owner, bounded by the complete 16-bit ID space and
+current per-asker share. Responses/expiry release ownership; allocation/clock/full
+refusals admit no untracked query. Waits use readiness or the earliest deadline,
+including agentdns's former periodic expiry probe. The inherited five-second
+timing and worker memory-envelope validation remain owed under network-12/R14.
+Four functional unit tests and init clippy pass on Linux arm64 GNU; real guest,
+fault and resource coverage remain ROOT's. [Evidence and exact remaining runs](../research/measurements/network-fixes-v1/README.md#network-08-independent-dns-relay-clients).
 
 `shards network` makes networks of microVMs as `docker network` makes them of
 containers, with Docker's inputs and words: create, ls, inspect, rm, prune, connect and
@@ -6951,6 +7017,17 @@ stranger refused once its verdict is let go, red with each on the driver; and th
 backpressure as before: 8 MiB crossing whole, a command that reads no stdin holding up no
 other).
 
+**Build-file times (remote-04, 2026-11-13).** The separately framed Dockerfile's
+seconds and fractional nanoseconds are untrusted. `synced::receive` validates the
+fraction (no whole second, utimensat(2)'s `tv_nsec`) and uses `SystemTime::checked_add`
+for the receiving host's representable range before creating the file. It retains
+`ReceiveError::Timestamp` and `FileTimeError::{Nanoseconds,Unrepresentable}` until
+the step renders its failure on stderr; no caller parses an error string. Valid
+pre-epoch input keeps the receiver's prior normalization to the epoch. No runtime
+timeout, floor or chosen range is introduced. A network timestamp of i64::MAX
+seconds/u32::MAX nanoseconds previously panicked in `SystemTime` addition on the
+daemon's context-step thread. [Red/green and owed release-listener proof](../research/measurements/remote-fixes-v1/README.md).
+
 #### A client's authority, judged of what runs and of whom its key is now (remote-01 to 03, 2026-11-13)
 
 The adversarial review of D180 (docs/bugs/2026-11-13/remote.md) found three ways a client
@@ -8101,6 +8178,16 @@ holds its output open); the answer waited for under the hosts' lock; a wait neve
 
 ### D185. The client and its daemon meet through files in the home (built)
 
+**Control-08 follow-up (2026-11-13), owed to ROOT.** The inherited `UNWATCHED`
+250 ms fallback in log lanes remains picked and violates R03; it is not validated by
+its reuse. Proposed design: notify the authoritative writer's append, rotation and
+terminal transitions over a shared per-run notification source, subscribing before
+checking the current segment to avoid a lost wakeup. Member append already crosses
+the host keeper; command append in the VM needs a compatible host notification. Cold
+start must establish that source or return typed watch-unavailable, rather than choose
+a first polling period. Cancellation and source end must wake the same wait. No new
+protocol or timing behavior is implemented here; [required fault scenario and proof](../research/measurements/control-fixes-v1/README.md).
+
 **Why.** shards is filesystem based (the user, repeatedly; 2026-10-18: `daemon.sock` was an
 error). Its own interfaces are files in the home; a socket stays only where an outside
 client's protocol demands one: the Engine API's `engine.sock` (D170), a context's
@@ -8610,6 +8697,23 @@ configurable".
   set, nothing goes since D212, where dockerd's 2 GB reserve held before). A changed cache
   setting is the next build's collection's, grown or not: `configure disk` removes the
   home's `buildcache-gc` (D212).
+- **Concurrent commands (runs-09, 2026-11-14).** Two `configure disk` commands had shared
+  one staging name, `.disk.new`, and read, changed and written the file unlocked: a command
+  whose read was older wrote over another's update, and one's rename could publish the
+  other's staging file as it truncated it, then write into the published file and fail.
+  A command now rereads, changes and writes the file holding the home's `disk.lock` alone
+  (flock(2), LockFileEx: the image store's `Locked`, let go before it closes, PM M244): a
+  lock of its own, as the settings' file is replaced by each write. It writes through
+  `platform::write_in`, a staging file of the writer's own (`O_EXCL`), synced, renamed
+  over the file; on Windows that lands a version beside it (PM M345), and readers open
+  the newest (`open_newest_in`). Readers take no lock: each finds a whole file, the old or
+  the new. No literal: the lock and staging names are names. Unit tests (disk.rs):
+  `concurrent_settings_updates_keep_each_others_fields` (an update waits for another
+  command's held lock, then keeps both fields) and
+  `settings_publication_leaves_another_writers_staging_file_alone`; with the lock and the
+  owned staging removed, the base's transaction, both fail (the later snapshot drops
+  `log-history`; another writer's `.disk.new` is published).
+  [runs-fixes record](../research/measurements/runs-fixes/README.md#runs-09).
 - **A file that does not read**, edited by hand: a run is refused, saying the file and its
   line; a build's collection collects nothing and says so at every build (`WARNING: the
   build cache was not collected: ...`), the build itself done; `--reset` mends it.
@@ -8714,6 +8818,18 @@ policy collected at the next build, which grew nothing. Measured: PM M426's harn
 `build::gc::tests::a_collections_cost_by_records`.
 
 ### D217. A kill waits as long as its microVM goes on ending, by what its host has shown; a freeze, to its end (built)
+
+**Concurrent record writers** (runs-07). A daemon and each API host hold the
+stable `ends.lock` exclusively across reread, maximum merge and publication. The
+existing store `Locked` wrapper unlocks before closing (M244); locking the replaced
+record's inode would not serialize the next reader. Publication uses the existing
+platform `write_in`: a uniquely owned temporary file, synced and renamed whole.
+A failed write retains this process's learned maximum, and its next observation
+can persist that retained maximum even when it is faster. The focused race test
+holds the stable lock while another writer learns a helper end, publishes its own
+teardown snapshot and releases the lock: both maxima must survive. Existing cold
+liveness behavior and the record's millisecond format are unchanged; no new wait,
+cache, runtime number or platform adapter. See the [runs fix evidence](../research/measurements/runs-fixes/README.md).
 
 **Found.** The audit of what was taken from Docker (docs/audit/2026-10-16_docker-framing.md):
 a microVM whose command outlived its SIGKILL had its VM killed 10 s later and its end given
@@ -9661,6 +9777,11 @@ stores.
   44.4, 1 MiB close together 74 against 855. Held by
   `a_file_mapped_in_many_ranges_is_looked_at_once` (mutation-checked: 8 looks for 8
   ranges).
+- **A file its window cannot follow is a reply refused** (memory-01, PM M573; D197's slice
+  4 on Windows). Where `reconcile` cannot make a file's ranges what it is (its size unread,
+  its grown pages not mapped), it refuses, typed (`fs::Unfollowed`), and the reply that
+  would tell the guest the file's size is refused it (EIO): its guest never hears a size
+  whose bytes its window does not hold, and the file is followed again at its next request.
 - **Each window's page structures in its head, not its guest's memory** (PM M300). Linux
   describes a window's pages as it probes the device, with page structures (64 bytes for
   each 4 KiB page) it took from guest RAM: a 64th of the window (M269), from a guest that,
@@ -11883,6 +12004,33 @@ took, decided (PM M412):
   guest reads the file's bytes, and zeros past its end, as on Unix.
 - **Followed as the Unix window follows a file**: before the guest hears a size,
   `reconcile` makes each range what the file is then, a grown file's new bytes the guest's.
+- **Never zeros in place of a file's bytes** (memory-01, PM M573). A section to write is made
+  only of a handle "created with the GENERIC_READ and GENERIC_WRITE access rights", one to
+  read of one with GENERIC_READ (Microsoft's CreateFileMappingW, PAGE_READWRITE and
+  PAGE_READONLY), and a share's server opens a mapping to be read alone to read
+  (`SHARED_NEEDS_WRITE`). The window kept a node's first handle: a file mapped to be read
+  and then, elsewhere in the window, to be written grew, no section to write could be made
+  of the handle kept, and `reconcile`, having freed the written range's views, placed
+  writable zeros over its file's bytes, the guest's stores reaching no file. So:
+  - a node keeps the handle given for a mapping to be written over one given to read
+    alone, as the Unix window's node keeps a descriptor opened to write (window.rs
+    `Table::insert`);
+  - a mapping's new section is made before anything of it is let go of, and where none can
+    be made, or its file's size cannot be read, it is left as it was;
+  - where a view cannot be placed once its old ones are freed ("BaseAddress and ViewSize
+    must exactly match those of the placeholder", Microsoft's MapViewOfFile3, so a view
+    replaces only a freed placeholder), its ranges stay placeholders (`Held::LetGo`), as a
+    range let go of for a cut is, a vCPU that reaches one waiting until it is made again or
+    unmapped;
+  - each is refused, typed (`fs::Unfollowed`: its size, its section, a view), and the reply
+    that would tell the guest the file's size is refused it (EIO): the guest never hears a
+    size whose bytes its window does not hold. The request itself was the server's, done:
+    a refused LOOKUP's or CREATE's node and handle stay the server's until the guest's
+    unmount, as for any reply its guest did not take.
+  Held by `a_range_mapped_to_be_written_after_one_to_be_read_stays_its_files` and
+  `a_range_no_view_of_its_file_can_be_made_for_is_refused_never_zeros` (red before,
+  mutation-checked); a view refused after its section was made is unit-unreachable, and
+  unverified.
 - **No cut under a mapping.** NTFS refuses to cut a file short while any section of it is
   held, a view or a handle (ERROR_USER_MAPPED_FILE, M412). So the window keeps views alone,
   each section's handle closed once its views are placed. A guest's own cut (a SETATTR of
@@ -12678,6 +12826,10 @@ Established TCP flows keep their opening authorization until their normal close;
 expiry/replacement affects new flows. Clock overflow/allocation failure refuses new
 learned authority through the existing policy denial, with io::Error from admission.
 Answer owner/class/CNAME validation remains network-11, a separate pending finding.
+Native macOS test correction68968478b waits on UDP readiness before invoking the
+receive handler, as the real dispatcher does; send completion alone was no delivery
+witness. It changes no production authority rule. Native red and merged gates are
+in the same evidence record.
 [Unit reproduction and remaining VM checks](../research/measurements/network-fixes-v1/README.md#network-03-dns-authority-lifetime).
 
 **Next.** IPv6 destinations (the network process learns A records alone); a destination
@@ -14084,6 +14236,35 @@ other's but what the move sends, and what the other takes by content:
   (`server::guest`, every target). Not an
   archive of go-archive's (crates/archive), whose oracle is untouched: the move's stream is
   its own format (version 3; readers also take version 2).
+- **Nor does any name it gives** (migrate-11, 2026-11-13). Beside its stream's entries, a
+  move gives names the machine moved to makes paths of its home of: its plan's ID
+  (`containers/ID`), its snapshot's (`containers/ID/snapshots/S`, which a live move's rounds
+  are laid under and `snapshot::relocate` rewrites), its volumes' (`volumes/V`, renamed into
+  place), and the volume names its record's mounts carry, each of which becomes the host
+  directory its guest is shared (`volumes/V/_data`); and the machine it ran on joins the
+  snapshot `done` names to its directory before `snapshot::remove`. None was checked, and
+  `Path::join` takes `..` as it is and an absolute name as the whole path: a record mounting
+  `/etc` would have had its guest shared `/etc/_data`, an ID of `../x` its directory
+  outside `containers/`. Each is now one name of its kind (`Named::takes`), every rule from
+  its own source: an ID as `containers::new_id` makes one, `2 × MICROVM_ID_BYTES` (32,
+  moby's `stringid`) bytes in lowercase hex; a snapshot's one file's name by
+  `synced::name_alone`'s Windows rules (Microsoft's "Naming Files, Paths, and Namespaces"),
+  the stricter, on every host, so that what one host takes every host takes; a volume's the
+  local driver's (`Store::valid`, moby's validateName) and one file's name too, as the
+  driver's rule takes a trailing dot and Windows' device names. Each refuses a separator,
+  `.`, `..`, a root and a drive's colon, so none is more than one component; none is a
+  chosen number (R03). A name that is not is refused typed (`Refused::NotAName`: the
+  microVM, the field, the value), which the mover matches as it matches `ready`'s: `ready`
+  checks the plan before anything else, `import` right after it reads the plan and before
+  any entry is placed, `adopt` takes every name it joins through the same check
+  (`one_name`), and `done` its snapshot before it resolves the microVM. `server::guest::Beneath`
+  is not the seam for these: it places under a held root but renames nothing, and `adopt`'s
+  steps are renames and reads by path, each now of one checked component. Held by
+  `daemon::moves::tests::a_moves_names_are_each_one_name_of_their_kind` (each rule's
+  takes and refusals) and `daemon::tests::a_moves_names_that_are_no_one_name_are_refused_typed_and_reach_nothing`
+  (`ready`, `import` with a stream cut past its plan, `import` of a whole record whose mount
+  names `../../x`, and `done`: each refused typed, the home's tree unchanged and no staging
+  left), with a mutation of each check red (docs/bugs/2026-11-13/migrate.md, migrate-11).
 - **Its CPU.** A restore on another CPU than its snapshot's is no longer refused where that
   CPU has every feature its guest found: the guest is told the CPU it found, each of its
   vCPUs given its snapshot's ID registers (HVF, KVM on arm64) or CPUID (KVM on x86_64),
@@ -26860,6 +27041,11 @@ member's are, so one stdio protocol carries both. The pieces:
 - *Its connection*: an exec belongs to the connection that asked for it. That connection gone,
   or the lane stopped, hangs the exec up: its steering is dropped, its streams are let go.
 
+*Exec framing correction (control-07).* Both writer and parser admit MemberExec up to
+`exec::ASK_MOST`, the ABI spec payload plus its scope, rather than an ordinary frame's
+4 MiB cap. Other tags retain their existing bound; an overlarge exec header is refused
+before waiting for its bytes. Framed storage reserves fallibly. [Red/green record](../research/measurements/control-fixes-v1/README.md).
+
 *The controller's execs* (`control::Execs`, `Exec`, `ExecControl`). A controller dialed with
 `Subscriptions::execs` asks for one with `Execs::exec(member, spec)`, and its lane opens with the
 ask. Once the endpoint says `Started`, the controller opens the exec's stdio lanes, from their
@@ -27499,6 +27685,14 @@ and no exec, attach or terminal (the plan's steps 5, 6 and 7).
   (AES-256-GCM, D239; the owner's key pinned), one record in flight, resumed a record behind and
   never ahead; an owner's lost connection takes nothing from the member. Design, literals and
   tests: D180's "A member's stdin, a stream its owner writes";
+  An orchestrator's session owns a cancellation handle for each taken input
+  (`session.rs`, control-04): member input end, run end, host answer end and session drop
+  end the actual reader, including one idle in a read. Its public writer stays a
+  `PipeWriter`; Unix uses the existing byte Stream pair, Windows an overlapped Stream
+  reader with a synchronous byte-pipe writer. Its Windows quota is the admitted ABI
+  `run::CHUNK`, not an upstream default. A post-read lifecycle check sends no newly read
+  bytes after a known end; a failed feeder spawn releases its cancellation handle.
+  [Red/green and Windows execution owed](../research/measurements/control-fixes-v1/README.md).
   record: [member-stdin-v1](../research/measurements/member-stdin-v1/README.md). Its
   connections are admitted as an exec's are (D16, "An exec's connection").
 - *stdout and stderr, captured whole* (P3). Each channel apart, its bytes as the member wrote
@@ -27580,7 +27774,10 @@ and no exec, attach or terminal (the plan's steps 5, 6 and 7).
     (`daemon/files.rs`, once the VM has its next segment): the command's newest grows unseen between
     its rotations, by a segment at most, which is the bound's one segment.
   - *Each owner's loss.* Each segment the cap lets go is its owner's record, `log.capped` beside its
-    log: a line of the segment and its output's bytes. `logs` says, on stderr, before what is kept,
+    log: cumulative segment and byte counts, durably replaced by the existing platform
+    atomic-write seam. A legacy segment/bytes history is streamed through fixed format-derived
+    buffers and replaced on the next loss; no log-open allocation follows lifetime history.
+    Windows readers select the newest version. `logs` says, on stderr, before what is kept,
     how much of each log's older output went to the run's one log cap; a log lane says it as
     `Rotated { oldest }` (D238). A segment its own retention let go meanwhile is no loss of the cap's.
   - *Compressed as the run's.* A member's segments rotated as they fill are compressed on the
@@ -27591,8 +27788,13 @@ and no exec, attach or terminal (the plan's steps 5, 6 and 7).
     left. A hold that fails (its disk) is said in the daemon's log, and holds again once a bound's
     worth more is kept; its logs keep their output meanwhile.
   - *Literals.* None chosen: the bound is the person's configured cap or the run's own log options;
-    `log.capped` is a name no segment takes (`logs::segment_of`); each record's line is the segment's
-    number and its bytes.
+    `log.capped` is a name no segment takes (`logs::segment_of`); its summary is `sum `,
+    two decimal u64 counters, their separator and newline. Its maximum serialized size is
+    therefore 46 bytes; counters use checked addition and malformed/overflowing old records
+    return InvalidData. The keeper serializes updates, disk remains authoritative, no cache
+    or timer is introduced. The daemon's private home retains the metadata's owner
+    boundary. Control-05 red/green and remaining Windows/version/profile checks:
+    [record](../research/measurements/control-fixes-v1/README.md).
   - *Tested* (light, on macOS arm64), red first, each with its behaviour absent (record:
     [agent-control-v1](../research/measurements/agent-control-v1/README.md)):
     - `daemon::managed::drain::tests::a_members_log_is_kept_and_counted_in_its_runs_cap`
@@ -28358,9 +28560,23 @@ docs/research/s33-veil-creds/STEP3.md).
   coding field; br and gzip twice refused 502; `decode::tests`: each coding whole and a byte at a
   time, truncated, past its budget, and a zstd window of 16 MiB refused. Mutations: the H1 decoder
   bypassed (the coded bytes chunked as they came), the H2 decoder bypassed, and each of the three
-  budget checks removed, each fail their tests. Still residual: a tunnel's own framing (a value
-  split across WebSocket frames, or a protocol other than WebSocket after a 101), which the mask
-  reads as bytes. A decoded body's own buffers (its decoder's output, gzip's sink, zstd's pending
+  budget checks removed, each fail their tests. A tunnel is read by its frames (creds-11, amended
+  2026-11-13): after a 101 whose response masks a value, the host's bytes are a WebSocket's (RFC
+  6455 §5.2), read by `Frames`: a data frame's payload is data, which the mask seeks a value in
+  across frames and continuations as the guest reassembles them (§5.4), each frame's head framing
+  passed over, as a chunked body's; a control frame (§5.5: never fragmented, at most 125 octets) is
+  read whole and each value in its payload masked where it lies, as its payload is no part of the
+  message it may interrupt; a head holding a value, a reserved bit (no extension was taken), a
+  reserved opcode, a masked frame (§5.1), a length past 2^63 or a control frame fragmented or past
+  125 octets breaks the tunnel. A 101 to any other protocol, or a CONNECT's 2xx, is refused 502
+  (`Unmaskable::Protocol`): its own framing or coding is none this side reads. A tunnel with no
+  value to mask passes as it came. Tests: `inject::tests::leaks`' text message echoing the value
+  across three fragments with a ping between and a close whose reason is the value, a frame with a
+  reserved bit and a masked one, and a filled upgrade to `tls/1.3`, red against 91cba0180 (the
+  value reached the guest; the tunnel went on; the 101 passed), green after; the frames read raw,
+  the control frame's cover removed, the reserved-bit and masked-frame checks removed, and the
+  protocol refusal removed, each fail them. Still residual: a value split across two messages, or
+  across a message and a control frame, a part of a value in each. A decoded body's own buffers (its decoder's output, gzip's sink, zstd's pending
   octets, the coded run of a turn, the run the mask lets go) grow through `signin::append`, each
   buffer let go of wiped as it drops (creds-13, amended 2026-11-13); red before (a block let go of
   while a body decoded held its plaintext, seen by the test binary's allocator, `decode::watch`),
@@ -28542,6 +28758,23 @@ pin, read on Linux and never run), as data and pure functions the injector drive
   CLI's refresh (JSON and form) and revocation found, and a refresh of another or a near placeholder passed; the
   minting endpoint read widely; no token or placeholder in `Debug`; a 100 000-deep array read. clippy `-D warnings`
   clean. Each of 14 guards removed in turn fails its test (`scripts/step8-reds.py`).
+- *A token host's informational responses wait for its final one (creds-10, amended 2026-11-13).* A 1xx
+  response went to the guest at once, before the final response's body named its tokens, so a 103
+  (or any 1xx) that repeated a token issued in that final response passed unread. RFC 9110 §15.2 has a
+  proxy forward each 1xx unless it asked for it, and lets a user agent ignore an unexpected one; it sets
+  no deadline, only that they precede the final response. So on a sign-in's token host a 1xx but 100 is
+  held (HTTP/1.1's head in `Ended::interims`, HTTP/2's fields on its stream, together at most `TO_GUEST`
+  octets, past which the message breaks or the stream is refused 502), read with the final response's
+  head and trailers for its tokens (`signin::unechoed`'s places), and sent before it as it came; one
+  that holds a token refuses the response 502, nothing captured. A final response that is not read
+  whole names no token and goes after them at once. A 100 Continue goes at once as its status alone
+  (§15.2.1 gives it no fields; a client may be waiting on it before it sends its body), so that it
+  carries nothing and waits for nothing. Not chosen: holding a 100 too, which stalls a client that
+  waits for it until its own timer. Tests: `inject::tests::leaks`' HTTP/1.1 103 repeating the access
+  token (refused), a benign 103 (sent before the token response) and a 100 with a field repeating it
+  (sent bare), and an HTTP/2 103 repeating the refresh token (refused), red before (a real token
+  reached the guest), green after; HTTP/1.1's and HTTP/2's holds removed, and each's reading of the
+  held responses removed, each fail them.
 - *A token in a token response's head or trailers is refused (creds-01, amended 2026-11-13).* A capture wrote the
   placeholders into the body's token places alone and passed the head (HTTP/1.1's, through `signin::frame`) and an
   HTTP/2 stream's fields and trailers (through `give`) as they came, so a host repeating a token there (a field, a

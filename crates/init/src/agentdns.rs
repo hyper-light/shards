@@ -23,6 +23,8 @@ use std::os::fd::{AsRawFd, OwnedFd};
 use std::sync::{OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
+use crate::dnsrelay::Flight;
+
 /// Init's end of the relay's control link, by which askers come and go as the members a
 /// microVM's engine makes join and leave (D181): each message an asker to keep (`A`, its
 /// link's index, whether it may ask any name, how many addresses it has and each,
@@ -373,68 +375,9 @@ fn answer_to(sock: &UdpSocket, answer: &[u8], to: &Arrival) -> io::Result<()> {
     Ok(())
 }
 
-/// The questions in flight, each under an ID of the relay's own, and how many each asker's
-/// link holds: each may hold an equal share of the IDs (`u16::MAX` over the askers), so
-/// that one asking without end takes no other's.
-struct Flight<T> {
-    pending: HashMap<u16, (u32, T, Instant)>,
-    held: HashMap<u32, usize>,
-    share: usize,
-}
-
-impl<T> Flight<T> {
-    fn new(askers: usize) -> Self {
-        Flight {
-            pending: HashMap::new(),
-            held: HashMap::new(),
-            share: usize::from(u16::MAX) / askers.max(1),
-        }
-    }
-
-    /// Whether a question from `link` may go: it holds less than its share.
-    fn admits(&self, link: u32) -> bool {
-        self.held.get(&link).copied().unwrap_or(0) < self.share
-    }
-
-    fn insert(&mut self, id: u16, link: u32, what: T, at: Instant) {
-        if let Some((old, _, _)) = self.pending.insert(id, (link, what, at)) {
-            self.release(old);
-        }
-        *self.held.entry(link).or_insert(0) += 1;
-    }
-
-    fn remove(&mut self, id: u16) -> Option<T> {
-        let (link, what, _) = self.pending.remove(&id)?;
-        self.release(link);
-        Some(what)
-    }
-
-    /// Lets go what has waited `WAIT`.
-    fn expire(&mut self, now: Instant) {
-        let gone: Vec<u32> = self
-            .pending
-            .values()
-            .filter(|(_, _, at)| now.duration_since(*at) >= WAIT)
-            .map(|(link, _, _)| *link)
-            .collect();
-        self.pending
-            .retain(|_, (_, _, at)| now.duration_since(*at) < WAIT);
-        for link in gone {
-            self.release(link);
-        }
-    }
-
-    fn release(&mut self, link: u32) {
-        if let Some(n) = self.held.get_mut(&link) {
-            *n = n.saturating_sub(1);
-        }
-    }
-}
-
 /// The descriptors each TCP asker may hold: an equal share of those the process may open
-/// (RLIMIT_NOFILE) beyond those it has open, two to a connection (the asker's and the
-/// upstream one).
-fn tcp_share(askers: usize) -> usize {
+/// (RLIMIT_NOFILE) beyond those it has open, divided by the sockets a connection owns.
+pub(crate) fn tcp_share(askers: usize, sockets: usize) -> usize {
     // SAFETY: an all-zero rlimit, filled by getrlimit(2).
     let mut lim: libc::rlimit = unsafe { std::mem::zeroed() };
     // SAFETY: getrlimit(2) into the struct just made.
@@ -443,8 +386,13 @@ fn tcp_share(askers: usize) -> usize {
     } else {
         0
     };
-    let open = std::fs::read_dir("/proc/self/fd").map_or(0, Iterator::count);
-    soft.saturating_sub(open) / 2 / askers.max(1)
+    let Ok(open) = std::fs::read_dir("/proc/self/fd") else {
+        return 0;
+    };
+    soft.saturating_sub(open.count())
+        .checked_div(sockets)
+        .unwrap_or(0)
+        / askers.max(1)
 }
 
 /// The TCP questions: each connection on a thread of its own, its asker known by its
@@ -463,7 +411,7 @@ fn serve_tcp(listener: &TcpListener, to: SocketAddr, askers: &RwLock<Vec<Asker>>
                 let a = askers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
                 (
                     a.iter().find(|a| a.addrs.contains(from.ip())).cloned(),
-                    tcp_share(a.len()),
+                    tcp_share(a.len(), 2),
                 )
             };
             let Some(asker) = asker else { continue };
@@ -566,9 +514,8 @@ fn relay(listen: &UdpSocket, upstream: &UdpSocket, askers: &RwLock<Vec<Asker>>, 
                 revents: 0,
             },
         ];
-        // SAFETY: poll(2) of three pollfds of ours; a second at most, so that what waits is
-        // let go in time.
-        if unsafe { libc::poll(set.as_mut_ptr(), 3, 1000) } < 0
+        // SAFETY: poll(2) of three pollfds of ours, until a question expires or I/O arrives.
+        if unsafe { libc::poll(set.as_mut_ptr(), 3, flight.wait_ms(Instant::now())) } < 0
             && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted
         {
             return;
@@ -592,7 +539,7 @@ fn relay(listen: &UdpSocket, upstream: &UdpSocket, askers: &RwLock<Vec<Asker>>, 
                 Ok(0) => said = false,
                 Ok(n) => {
                     if apply(m.get(..n).unwrap_or_default(), askers) {
-                        flight.share = usize::from(u16::MAX) / count().max(1);
+                        flight.resize(count());
                     }
                 }
                 Err(_) => {}
@@ -629,16 +576,17 @@ fn relay(listen: &UdpSocket, upstream: &UdpSocket, askers: &RwLock<Vec<Asker>>, 
                 continue;
             };
             // An ID of the relay's own, not one in flight.
-            while flight.pending.contains_key(&next) {
-                next = next.wrapping_add(1);
-            }
+            let Some(id) = flight.vacant_id(next) else {
+                continue;
+            };
+            next = id;
             let mut ours = q.to_vec();
             if let Some(id) = ours.get_mut(..2) {
                 id.copy_from_slice(&next.to_be_bytes());
             }
-            if upstream.send(&ours).is_ok() {
-                let link = from.link;
-                flight.insert(next, link, (from, [i0, i1]), now);
+            let link = from.link;
+            if flight.insert(next, link, (from, [i0, i1]), now).is_ok() && upstream.send(&ours).is_err() {
+                flight.remove(next);
             }
             next = next.wrapping_add(1);
         }
@@ -668,20 +616,19 @@ mod tests {
     fn no_asker_takes_anothers_share_of_the_ids() {
         let now = Instant::now();
         let mut f: Flight<()> = Flight::new(2);
-        assert_eq!(f.share, 32767);
-        for id in 0..32767u16 {
+        for id in 0..32768u16 {
             assert!(f.admits(7));
-            f.insert(id, 7, (), now);
+            f.insert(id, 7, (), now).unwrap();
         }
         assert!(!f.admits(7));
         assert!(f.admits(9));
-        f.insert(40000, 9, (), now);
+        f.insert(40000, 9, (), now).unwrap();
         assert!(f.remove(0).is_some());
         assert!(f.admits(7));
-        f.insert(0, 7, (), now);
+        f.insert(0, 7, (), now).unwrap();
         f.expire(now + WAIT);
-        assert!(f.admits(7) && f.pending.is_empty());
-        assert_eq!(f.held.values().sum::<usize>(), 0);
+        assert!(f.admits(7) && f.admits(9));
+        assert_eq!(f.wait_ms(now + WAIT), -1);
     }
 
     #[test]

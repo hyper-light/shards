@@ -61,6 +61,16 @@ struct InputFlow {
     room: u64,
     taken: bool,
     ended: Option<(u64, wire::StreamEnd)>,
+    /// The feeder's cancellation handle; no read is allowed to outlive its input.
+    reader: Option<shards_ipc::Stream>,
+}
+
+impl InputFlow {
+    fn close(&mut self) {
+        if let Some(reader) = self.reader.take() {
+            shards_ipc::end(&reader);
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -153,6 +163,11 @@ struct Asked<T> {
 }
 
 impl State {
+    fn close_inputs(&mut self) {
+        for input in self.inputs.values_mut() {
+            input.close();
+        }
+    }
     /// A session's state before its host has answered, for a request staging `members`:
     /// those whose stdin it asks for named, for their flows to be made with its start.
     fn asking(members: &[wire::MemberStage]) -> State {
@@ -1097,7 +1112,7 @@ fn channel_end(s: &State, member: u32, channel: Channel) -> Option<ChannelEnd> {
 /// Moves what the caller writes to member `member`'s stdin to its host, no more at once than
 /// the room the host gave, and its end once the caller closes its pipe; ends with the input,
 /// the run or the host, dropping its pipe's read end so that the caller's writes fail then.
-fn feed(shared: &Shared, member: u32, mut reader: io::PipeReader) {
+fn feed(shared: &Shared, member: u32, mut reader: impl io::Read) {
     // What the caller types into the member, a credential as often as not (D242): wiped here
     // once sent, and the buffer as it goes.
     let mut buf = zeroize::Zeroizing::new(vec![0u8; AHEAD as usize]);
@@ -1120,6 +1135,17 @@ fn feed(shared: &Shared, member: u32, mut reader: io::PipeReader) {
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(_) => return,
         };
+        // An end may have woken the read, or raced its bytes. Neither sends a new word
+        // after that input's known end.
+        {
+            let state = lock(&shared.state);
+            if state.end.is_some()
+                || state.answered
+                || state.inputs.get(&member).is_none_or(|f| f.ended.is_some())
+            {
+                return;
+            }
+        }
         if n == 0 {
             let end = wire::InputEnd {
                 member,
@@ -1135,6 +1161,28 @@ fn feed(shared: &Shared, member: u32, mut reader: io::PipeReader) {
             return;
         }
     }
+}
+
+/// The owner's write end, and the reader driven by its member's feeder.
+fn input_pipe(shared: &Shared, member: u32) -> io::Result<(impl io::Read + Send + use<>, io::PipeWriter)> {
+    struct Reader(shards_ipc::Stream);
+    impl io::Read for Reader {
+        fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+            shards_ipc::read(&self.0, out)
+        }
+    }
+    let (reader, writer) = shards_ipc::input_pair(shards_abi::run::CHUNK as u32)?;
+    let cancel = reader.try_clone()?;
+    let mut state = lock(&shared.state);
+    if state.end.is_some() || state.answered {
+        return Err(io::ErrorKind::BrokenPipe.into());
+    }
+    let flow = state.inputs.get_mut(&member).ok_or(io::ErrorKind::InvalidInput)?;
+    if flow.ended.is_some() {
+        return Err(io::ErrorKind::BrokenPipe.into());
+    }
+    flow.reader = Some(cancel);
+    Ok((Reader(reader), writer))
 }
 
 /// Sends `typed`, bytes for member `member`'s stdin, as one `INPUT` frame in its parts, never
@@ -1198,6 +1246,7 @@ fn read_answers(shared: &Arc<Shared>, mut from_host: io::PipeReader) {
         ));
     }
     state.answered = true;
+    state.close_inputs();
     shared.changed.notify_all();
 }
 
@@ -1330,12 +1379,14 @@ fn take(shared: &Shared, kind: u8, payload: &[u8]) -> Result<bool, String> {
             if flow.ended.replace((e.written, e.end)).is_some() {
                 return Err("a stdin ended twice".into());
             }
+            flow.close();
         }
         k::ENDED => {
             let end = wire::RunEnded::decode(payload).map_err(bad)?;
             if state.end.replace(end).is_some() {
                 return Err("the run ended twice".into());
             }
+            state.close_inputs();
             ended = true;
         }
         other => return Err(format!("unknown answer kind {other}")),
@@ -1824,7 +1875,7 @@ impl ImageGuest for Session {
             }
             flow.taken = true;
         }
-        let (reader, writer) = io::pipe().map_err(|e| ImageRefusal::Os {
+        let (reader, writer) = input_pipe(&self.shared, index).map_err(|e| ImageRefusal::Os {
             what: "a member's stdin pipe",
             kind: e.kind(),
         })?;
@@ -1832,9 +1883,15 @@ impl ImageGuest for Session {
         std::thread::Builder::new()
             .name("shards-api-input".into())
             .spawn(move || feed(&shared, index, reader))
-            .map_err(|e| ImageRefusal::Os {
-                what: "a member's stdin feed",
-                kind: e.kind(),
+            .map_err(|e| {
+                if let Some(flow) = lock(&self.shared.state).inputs.get_mut(&index) {
+                    flow.close();
+                    flow.taken = false;
+                }
+                ImageRefusal::Os {
+                    what: "a member's stdin feed",
+                    kind: e.kind(),
+                }
             })?;
         Ok(writer)
     }
@@ -2007,6 +2064,7 @@ impl ImageGuest for Session {
         self.shared.wait(Duration::MAX, |s| s.end_seen().map(|_| ()));
         lock(&self.shared.to_host).take();
         lock(&self.shared.state).stopped();
+        lock(&self.shared.state).close_inputs();
         self.shared.changed.notify_all();
         Ok(())
     }
@@ -2027,6 +2085,7 @@ impl ImageGuest for Session {
 /// closed, its cue to finish and exit, which the watcher then reaps.
 impl Drop for Session {
     fn drop(&mut self) {
+        lock(&self.shared.state).close_inputs();
         let running = {
             let state = lock(&self.shared.state);
             state.end.is_none() && !state.gone()
@@ -2361,7 +2420,7 @@ mod tests {
             said_to: Mutex::new(None),
         });
         lock(&s.state).inputs.insert(1, InputFlow::default());
-        let (reader, mut writer) = io::pipe().unwrap();
+        let (reader, mut writer) = input_pipe(&s, 1).unwrap();
         let feeding = {
             let s = s.clone();
             std::thread::spawn(move || feed(&s, 1, reader))
@@ -2396,6 +2455,60 @@ mod tests {
         assert_eq!(got, payload);
         feeding.join().unwrap();
         lock(&s.to_host).take();
+    }
+
+    #[test]
+    fn an_ended_members_idle_input_releases_its_feeder() {
+        struct Entered<R> {
+            reader: R,
+            entered: std::sync::mpsc::Sender<()>,
+        }
+        impl<R: io::Read> io::Read for Entered<R> {
+            fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+                self.entered.send(()).unwrap();
+                self.reader.read(out)
+            }
+        }
+        let shared = Arc::new(shared());
+        lock(&shared.state).inputs.insert(
+            1,
+            InputFlow {
+                room: 1,
+                ..InputFlow::default()
+            },
+        );
+        let (reader, mut held_writer) = input_pipe(&shared, 1).unwrap();
+        let (entered, entering) = std::sync::mpsc::channel();
+        let (done, finished) = std::sync::mpsc::channel();
+        let feeding = {
+            let shared = shared.clone();
+            std::thread::spawn(move || {
+                feed(&shared, 1, Entered { reader, entered });
+                done.send(()).unwrap();
+            })
+        };
+        entering.recv_timeout(Duration::from_secs(1)).unwrap();
+        let end = wire::InputEnded {
+            member: 1,
+            written: 0,
+            end: wire::StreamEnd::Aborted(32),
+        }
+        .encode();
+        take(&shared, wire::to_client::INPUT_ENDED, &end).unwrap();
+        let released = finished.recv_timeout(Duration::from_secs(1));
+        // Observe the thread's actual exit before checking that all its descriptors
+        // have closed. A broken old feeder is released first so the red test also joins.
+        if released.is_err() {
+            drop(held_writer);
+            feeding.join().unwrap();
+            assert_eq!(released, Ok(()), "member end retained its idle input feeder");
+            return;
+        }
+        feeding.join().unwrap();
+        assert!(
+            held_writer.write_all(b"x").is_err(),
+            "an ended input still took bytes"
+        );
     }
 
     /// The variable under which the leak check runs, in a test process of its own.

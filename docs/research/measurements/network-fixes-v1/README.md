@@ -389,3 +389,144 @@ state/resource/compatibility requirements above are designs, not compliance resu
 D99/D122 and finding statuses retain these gaps. No platform or performance result
 is inferred from this documentation. Network-03 target cleanup r24 exited0; all
 owned ARM test containers are --rm, and no run remains active.
+
+## network-03: native macOS readiness regression
+
+ROOT reported two failures on macOS arm64 at main6389b6e09, first-address admission
+at lib.rs4076, before the replacement assertion. Urgent follow-up takes priority;
+network08 is held unlanded on p/fix-network-v1 at74ea2d725, and its green run r26
+failed GitHub DNS before any cargo. This fix is isolated on
+p/fix-network-03-macos-v1, based91cba0180. Full policy/brief readback was repeated;
+policy hashes above unchanged, implementer role, owned net test and these records.
+The amended brief now stops self-landing after two lost ff-push races.
+
+Native red: Mac3 (adas-mac-studio-3.local), Darwin arm64, Rust1.98.1, own cold
+~/g121-tmp/network-dns03-macos-v1/target, incremental0/jobs4. At exact main
+6389b6e09671c7a89288fbb2224b1648b5e4dd16, Kiln r27:
+`cargo test -p shards-net --profile test-release --lib dns_answers_replace_the_names_previous_authority`
+failed first-answer admission, exit101 ([raw output](mac03-red.log)). This is
+not the historical replacement red: no first answer had yet been processed.
+Earlier Linux arm64 GNU runs passed this test in the test profile; they did not
+establish macOS behavior or an optimized-profile platform comparison.
+
+Hypotheses: an immediate nonblocking receive can precede loopback delivery;
+otherwise parser/admission or registration would still fail after readiness. The
+production dispatcher already waits for the UDP token to be readable before
+calling on_udp. The test called on_udp immediately after send_to, which is no
+readiness witness. [POSIX sendto](https://pubs.opengroup.org/onlinepubs/9699919799/functions/sendto.html)
+does not promise message delivery from successful output. No XNU implementation
+mechanism is assumed from the failure alone.
+
+Fix68968478b waits on the actual stack poller, dispatching only its readable UDP
+token, for each answer, with the existing test's five-second failure bound. There
+is no sleep or platform cfg, and both new-flow admission and stale-address denial
+assertions remain. Production code and DNS authority semantics are unchanged.
+No public interface, cache, production constant, state machine or architecture
+is added. Native green, mutation and merged-source outcomes follow below.
+
+R01/R04/R06/R07/R13: test-only assertions and the same readiness transition as the
+real dispatcher; bounded failure if the token never arrives. R02/R03/R05/R12:
+existing cross-platform poller and POSIX socket contract, no production policy
+choice or copied platform workaround. R09/R10: exact native red and retained
+revision/commands, pending green below. R11: native macOS check required explicitly
+by ROOT; no skipped platform reported passed. R08/R14: no performance/resource
+claim. R15/R16: one permitted Mac, no local cargo/delegation/VM runs; owned target
+cleanup after landing. ROOT inbox rejected urgent status with429backpressure,
+so delivery is not claimed. r28 was not dispatched before Kiln server timeout;
+read-only r29 found old6389 source and no own cargo, so it is no test verdict.
+
+Native merged gate, r30: exact merge18e5e2aa85ae583ccbc9cbcbe75ecbc1b9e91eb2
+(main02d3fe33b), Darwin25.2.0 arm64 / Rust1.98.1. Restoring historical-answer
+retention with the corrected readiness test fails at its intended final assertion
+`the replaced DNS answer still grants a new flow` (test-release, exit101).
+The harness requires that message/status and restores the source before continuing.
+It therefore rejects an unrelated first-answer or compile failure as mutation proof.
+The restored source passes 2 DNS authority tests and 1 grant-port test in
+test-release, then shards-net all-targets clippy, overall exit0.
+[Raw mutation/green output](mac03-mutation-green.log),
+[exact owned-clone harness](native-mac03-guard.sh).
+There is no diff in net/lib.rs or dns/lib.rs between6389 and the fix branch's91cba
+main base; the correction changes only test synchronization in those files.
+Thus the native failure was the test's missing readiness transition; no production
+DNS change is needed. An optimized Linux/native-macOS equivalence claim is not made:
+the earlier Linux pass used the test profile. No additional broad suite ran.
+
+Urgent macOS correction landed main6df152edcdf3c731d0db450e09f0a916687fc38c
+(code68968478b). Tests/clippy ran on merge18e5e2aa8; final6df merge brings only
+disjoint daemon/migration inputs from main6a52ef516, so pushed immediately under
+the contention rule. Native target cleanup r31 exited0. ROOT notification was
+rejected by Kiln429backpressure; acceptance is not claimed. Network08 resumed
+only after that landing, on p/fix-network-v1, preserving its unlanded work.
+
+## network-08: independent DNS relay clients
+
+Red7aa3c4a34, Kiln r25, Mac3 Docker native Linux6.12.65-linuxkit aarch64 /
+Rust1.98.1: `cargo test -p shards-init dnsrelay::tests::an_open_tcp_client_and_a_lost_udp_query_leave_other_clients_progress`
+failed after an open TCP client blocked the second client's UDP query
+([raw output](red08.log)). Ordinary loopback sockets, no guest namespace/VM/daemon.
+The first TCP query was answered before the other client started, so the baseline
+failure is connection ownership, not an unready test listener.
+
+Code74ea2d725 moves TCP connections off the UDP/accept loop into independently
+owned workers. Shared Flight state, extracted from agentdns, rewrites UDP IDs and
+restores their original IDs/peers on receipt; outstanding queries expire at their
+actual deadline. Both resolvers use this state owner and its descriptor-budget
+observation; no parallel copy of the UDP tracking implementation is introduced.
+The agent resolver's one-second expiry probe is removed: both wait for readiness
+or their earliest pending deadline, with poll's millisecond ceiling.
+
+Sources: [RFC7766 §§6.2.1–6.2.4](https://www.rfc-editor.org/rfc/rfc7766.html)
+for persistent/concurrent connections and overload close; RFC1035's 16-bit ID
+and two-byte message-length fields. Alternative: a second independent UDP tracker
+would duplicate agentdns's ownership; a new fully asynchronous TCP framer/connector
+would replace an existing working per-connection path. Sharing tracking and the
+existing worker style fixes the observed cross-client ownership with a smaller
+protocol change. No comparative performance claim is made for that choice.
+
+Bounds/state: complete 16-bit ID space, equal shares by current asker count,
+no reuse of an outstanding ID, checked reservation/deadline/count, typed
+WouldBlock/AlreadyExists/io errors on admission. Vacancy search is finite even
+when all IDs are held. Answer/expiry releases each link count; zero-count keys go.
+Per-worker socket budget is three: client, a current UDP query, and an already
+retained TCP fallback. RLIMIT_NOFILE minus observed open descriptors determines
+capacity once fixed sockets exist, with no chosen concurrency constant. A private
+permit counts the worker until return or failed spawn; exhaustion closes that
+accepted connection, and allocation failure forwards no untracked UDP question.
+Agent TCP's two-socket budget uses the same observation; failed observation now
+admits zero, rather than pretending no descriptors are open.
+
+The existing five-second WAIT is retained, not justified as protocol law; it is
+network12's owed timing design. FD-derived admission does not establish a memory
+cost bound for all threads; ROOT still owes actual stack/heap/parent/kernel cost
+and resource-envelope validation. The old per-connection blocking framer retains
+its per-I/O timeout behavior, but cannot monopolize UDP or other workers. VM/process
+end terminates all workers; a failed poll returns to the relay child's _exit.
+No complete exhaustion, fairness, slow-read or cleanup campaign is claimed.
+
+First green dispatch r26 failed GitHub DNS before cargo, then work was held for
+the urgent native-macOS correction. Merged6df main into4b7e93f10e9e0dd5ae7b6803004a232ccc1995a4;
+Kiln r32 on the same Linux arm64 GNU runner ran 2 dnsrelay tests and 2 agentdns
+tests (4 passed), then `cargo clippy -p shards-init --all-targets -- -D warnings`,
+exit0 ([raw output](green08-merged.log)). Progress test includes open TCP, a
+partial next prefix, a deliberately lost UDP query, and independent UDP/TCP
+answers before the first connection closes. Full-ID-space test admits all65,536,
+refuses another, releases/reuses an ID, then expires all questions. Existing
+per-asker fairness and DNS refusal-format tests pass. Own one-cargo target,
+incremental0/jobs4; [exact green runner harness](native-dns08.sh).
+
+R01/R04: fallible admission, finite IDs, RAII worker permit and explicit answer/
+expiry/refusal transitions. R02/R03/R05/R12: cited protocol bounds, observed FD
+capacity, one shared owner; no new chosen limit or periodic expiry probe. The
+inherited WAIT and unmeasured thread memory envelope remain explicit R03/R14 work.
+R06/R07/R13: existing TCP framer and connection lifecycle reused, no new public
+wire protocol. R09/R10: actual socket red/green and source/log harness retained;
+no separate guard mutation campaign run. R08/R14: no benchmark/profile/resource
+ratio or low-memory guarantee. R11/R15/R16: Linux arm64 GNU light checks only;
+amd64/musl, real guest boots and failures are ROOT/CI's. Cleanup after landing below.
+
+ROOT owes `cargo test -p shards --test containers network -- --nocapture`, with
+this fixture added at actual127.0.0.11: retain/drip one TCP client while other UDP
+and TCP clients resolve a live peer, withhold one upstream UDP reply, and verify
+progress before that connection closes. Add failed spawn, FD/memory pressure,
+relay death and guest end witnesses under ROOT's campaign bounds. Existing serial
+DNS latency M247 is not such evidence. No such VM/cost campaign ran here.

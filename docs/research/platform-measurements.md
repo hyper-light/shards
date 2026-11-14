@@ -90,6 +90,14 @@ clippy pass. Live emulated guest/copy agreement remains owed to ROOT.
 The runs-01 follow-up caught and corrected this lane's native nondevice-owner
 regression: uid 0 instead of 1000 before, correct after, with 50 server tests
 and VMM all-target clippy passing. Its exact red/green logs are retained.
+Runs-07's concurrent end-record red lost its helper maximum; after stable-lock
+reread/merge and atomic unique staging, the regression and all 5 end tests pass,
+with shards all-target clippy. Two-process/VM crash publication remains owed.
+
+Runs-08's forced two-writer red published empty helper bytes; the publication
+regression, helper module check and shards all-target clippy pass after correction.
+Two carried-helper cases return early under skip; actual carried executables,
+signatures, crash and GPU runs remain owed in the linked record.
 
 ### M2. Object lifecycle (`lifecycle`, n=200, µs)
 
@@ -7706,6 +7714,13 @@ retired HashSet import. The cleanup, TTL tests and final merged gate are tracked
 in [the evidence record](measurements/network-fixes-v1/README.md#network-03-dns-authority-lifetime).
 No host-memory/performance or real-VM result is claimed.
 
+**network-03 native macOS test follow-up.** At6389b6e09, Mac3 Darwin arm64 /
+Rust1.98.1 test-release fails first-answer admission because the test dispatched
+its nonblocking receive without a readiness witness. 68968478b waits for the
+actual UDP poller token before each dispatch; production already does so. This
+is a test synchronization change, with native red and subsequent outcomes in
+[the scoped evidence](measurements/network-fixes-v1/README.md#network-03-native-macos-readiness-regression).
+
 ### M211. The limits a build's `RUN` step starts with
 
 - **Question.** A container's process starts with Docker's limits (`defaults::limits`,
@@ -9302,6 +9317,14 @@ Correctness follow-up devices-04 (2026-11-14): focused reset red/green and limit
     while its median is shorter. Why the quiet median is the slower, unmeasured: a likely
     cause is the host's cores waking from idle for each paced ask, which busy cores do
     not, and it was not isolated here.
+
+**network-08 concurrency follow-up (2026-11-13).** M247's serial local UDP timings
+do not establish concurrent-client progress. On Mac3 Docker Linux aarch64 /
+Rust1.98.1, 7aa3c4a34's socket red fails when a held TCP session blocks another
+UDP client. With 74ea2d725, merged at4b7e93f10, two relay and two agentdns tests
+plus init clippy pass, including partial TCP input and a withheld UDP answer.
+No new latency, memory, fault or VM campaign is claimed.
+[Commands, logs, design and owed runs](measurements/network-fixes-v1/README.md#network-08-independent-dns-relay-clients).
 
 ### M248. A process placed in a slice of the user's service manager: what it costs, and where its memory is charged (D183)
 
@@ -23872,6 +23895,13 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   [commands and R01–R16 account](measurements/control-fixes-v1/README.md). Real-VM
   aborted-lane resource counts remain ROOT's.
 
+- **Control-03 follow-up (2026-11-13).** The MCP stdio bridge's downward BrokenPipe
+  joined a thread blocked on open idle stdin (red dee36cb5f: Timeout). Its stdio is now
+  owned descriptor loop as landed by inithex-03 (f7d83f73a), whose fix arrived on main
+  before this lane landed; that production implementation was preserved at merge.
+  This lane's candidate at 0a15e5da9 had passed 6 MCP/5 engine/6 lane tests and clippy
+  on adacachy2, but was superseded before landing. The merged guard adds the symmetric
+  input-failure case to inithex-03's tests; [commands, source and remaining VM proof](measurements/control-fixes-v1/README.md).
 - **Control-01 follow-up (2026-11-13).** An orchestrator's session ended a member channel's
   pipe at its first credit refused by the run's end, records already taken left queued, and
   at the run's end itself, while its host may still send output after it. Red at d7b62bd7d
@@ -24148,6 +24178,16 @@ This is correctness evidence, not a VM/performance measurement. Full commands,
 ownership change and ROOT's remaining gates: `measurements/memory-fixes-v1/README.md`.
 
 
+### Remote-04. A network build timestamp panics before set_modified (2026-11-13)
+
+Functional evidence on macOS arm64, Rust 1.98.1: the real synced receiver at
+`c3ad61ab1` panicked on i64::MAX seconds/u32::MAX nanoseconds (`SystemTime` overflow,
+1 failure). Typed fraction/host-range validation before file creation at
+`063a5d339` passed all 9 synced tests and shards all-target clippy. The writer now
+accepts a checked SystemTime. No chosen maximum or platform stub was added.
+[Commands, source revisions, policy, logs and owed Windows/release-listener checks](measurements/remote-fixes-v1/README.md#remote-04-build-file-timestamp-validation).
+No performance or live-VM result is claimed.
+
 ### Remote-05. Private request arguments in the daemon log (2026-11-13)
 
 This is correctness evidence, not a performance measurement. An enrolled fixture's
@@ -24179,6 +24219,15 @@ clippy pass (r8). These are functional unit results, not a real DNS-provider or
 real-VM result. RFC1034 §3.1 supplies the terminal-root-dot normalization rule;
 no chosen runtime value, wait or cache is added.
 [Commands, red output, green excerpts and owed variant](measurements/inithex-fixes/README.md).
+
+### Control-07: ABI exec-frame admission correction (2026-11-13)
+
+On adas-mac-studio.local (Darwin25.2 arm64), a valid 4,587,877-byte member-exec frame
+failed the ordinary 4 MiB bound, red at 6db1979d6. At 431571292 the ABI spec bound plus
+scope applies at encoding and parsing for that tag alone: 10 control-exec tests and 2
+frame tests passed; shards-remote clippy clean. No large-argv VM run or performance
+measurement is claimed. [Commands and policy account](measurements/control-fixes-v1/README.md).
+
 
 ### Review memory-03/05: live-copy mapping ownership and terminal map-back loss
 
@@ -24308,6 +24357,22 @@ the 240 s bound killed it (exit 124); the pidfd dropped from the wait,
 ended unanswered (`left: Err(Timeout)`); the thread-pidfd rule dropped, the asked pass
 trapped under that filter (exit 159).
 
+Amended again 2026-11-13 (ROOT: a GPU run must not fail on ABI < 8 because Mesa's threads
+block signals). Mesa's `u_thread_create` blocks every signal but SIGSYS and SIGSEGV in
+the threads it starts (src/util/u_thread.c lines 53 to 61, mirror/mesa 8c427aae9), and
+the GPU's VM process holds a Vulkan instance from its renderer's start (D201), so such
+threads exist by its seal. The asking signal is SIGSYS now, through the filter's own
+handler (`seccomp::on_sent` for a SIGSYS of SI_TKILL from the process itself; a trap's
+report unchanged). `every_thread_of_a_confined_process_is_confined` starts a thread
+blocking every signal but those two between the first layer and the seal, under the
+filter of an ABI-5 host: with the pass asking by SIGRTMIN + 1 (the code at cc85d760a,
+the test alone new), the seal left it writing the sealed directory (`sealed siblings
+write snap: refused,refused,refused,refused,ok`): red. Asked by SIGSYS, it is refused
+with the others and still writes its kept directory: green. confine:: 11 of 11, the
+filter's tests and clippy for both crates clean on adacachy2. Owed to ROOT: a GPU
+template's save and its run on a kernel of ABI 5 to 7 (no host here has one), and
+tests/gpu.rs on the GPU hosts.
+
 ### M569. A confined VM process dialed its user's sockets, its daemon's Engine API among them (D30)
 
 Linux x86_64, adacachy2 (7.3.3-1-cachyos, Landlock ABI 11), 2026-11-13, policy df2acf47,
@@ -24333,6 +24398,25 @@ skips every filter for a syscall each allows whatever its arguments
 them, runs both. Owed to ROOT: VM runs on KVM (a daemon's
 warm VMs, `shards build`'s builder with its vsock ports, the GPU's VM process), x86_64
 and arm64 through L1.
+
+Amended 2026-11-13 (ROOT's decision on the gap before ABI v9): a VM process on Linux dials
+nothing itself, as on macOS and Windows. Its seccomp layer refuses every connect(2), on
+every kernel, and Landlock's v9 `RESOLVE_UNIX` is handled and granted nowhere, an extra
+layer. A VM given a vsock path asks its spawner, over `--grants`, for a socket bound there
+and for each host port it dials beside it (`kind::DIAL`, a port). The CLI's broker
+(`shardsd grants`) answers `run vm` and `restore vm` given `--vsock`, and a thread of the
+builder's launch answers the builder. On adacachy2, `a_confined_vm_dials_only_beside_its_vsock_path`
+now has a VM given a vsock path dial a same-user `engine.sock` listener outside its grants,
+and its own vsock directory's `v_5`: both refused (`refused 13`) under the seccomp layer
+alone (a kernel before v9), under Landlock's v9 rules alone, and under both. Before this
+change the seccomp-alone case dialed both (`dial outside: ok`): red. Mutants, each red:
+the layer's connect refusal dropped (`dial outside: ok`), and `RESOLVE_UNIX` dropped (the
+Landlock-alone cases dialed). `grant_answer::linux_tests` (shards), 2 of 2: the broker binds
+the vsock path, dials `v_5` beside it and refuses `v_6`, and refuses a file grant, and any
+grant after the vsock path. confine:: 11 of 11; clippy for shards, shards-vm-process and
+shards-syscall-filter clean on that host and on adas-mac-studio.local (macOS arm64). Owed
+to ROOT: tests/vsock.rs, boot.rs's managed rate test, snapshot.rs's vsock restores and
+tests/build.rs, on KVM x86_64 and arm64 through L1.
 
 ### M570. A Windows VM that stages its snapshots and has no vsock path was granted files after its guest started (platform-03, D30, D141, D196)
 
@@ -24380,6 +24464,22 @@ and policy check passed on macOS arm64. The tests cover chunked/length refresh
 and revoke bodies, partial arrival, retries and a forwarded code exchange. The
 100 response is RFC 9110 §10.1.1's protocol response, no chosen timer or allowance.
 Commands, red/green excerpts, exact source revisions and unrun work are linked above.
+
+### Control-04/05: idle member input and lifetime cap metadata (2026-11-13, D240)
+
+adas-mac-studio.local, Darwin 25.2 arm64, implementer/control, policy df2acf47.
+Control-04: actual idle input reader held its feeder past INPUT_ENDED, red a39889e30
+Err(Timeout), fixed by owning and ending its IPC reader (151642d8c). At 76ace2f18 all
+32 session tests pass, including reader return with its writer retained, then write
+refusal. Control-05: actual cap-loss metadata grew with lifetime evictions, red
+738e3212d tested at ea6614b8b; fixed 76ace2f18 uses a durable cumulative record,
+at most 46 serialized bytes derived from two u64 decimal widths and syntax, legacy
+history streamed with fixed format-derived buffers. All 5 cap tests and clippy for
+shards/API/IPC pass. No VM or helper ran (inert embed inputs for filesystem-only unit
+checks). Windows physical old-version reclamation, fd/heap profiles and real-VM
+lifecycle propagation are owed, not passed. Control-06 needs a real stalled attached
+client red; control-08 remains owed with notification design, no substituted timer.
+[Commands, raw logs, designs and R01–R16 gaps](measurements/control-fixes-v1/README.md).
 
 ### Review memory-16: duplicate head kinds past a selected cap (D190)
 
@@ -24463,3 +24563,19 @@ payload whose ROOM header was longer than either producer can encode.
   `Notice`, `ErrorKind::Gone`; R09, R10 red on main, green after, four mutations killed;
   R11 Unix and Windows written, macOS run; R15, R16 implementer, its runner target removed
   after landing.
+
+### M573. A WHP DAX range mapped to be written after one to be read was made zeros as its file grew (memory-01, D189, D197)
+
+Windows 10.0.26200 x86_64 (the Windows 11 guest on adacachy), 2026-11-14: at 4697f1e7b a
+3 MiB file mapped to be read through a handle to read alone, then elsewhere to be written
+through one to write, grew; the window, keeping the first handle, made no PAGE_READWRITE
+section of it (CreateFileMappingW asks GENERIC_READ and GENERIC_WRITE) and placed writable
+zeros over the written range: it read 0 where the file holds 0x5a. A range no section to write
+can be made for was made zeros as it was followed after a cut, its vCPU let run. At 7f0cb8ce9
+the node keeps the handle given to write, the section is made before anything is freed, and a
+mapping that cannot be followed is left as it was or let go of, refused (`fs::Unfollowed`),
+the reply that would tell the guest its size refused: `window::tests` 12 of 12, both mutants
+(the first handle kept; let go of where it should be left) failing them. Unit-level functional
+evidence on real NTFS views, no real VM; a view refused after its section was made is
+unit-unreachable, and the WHP DAX tests are owed.
+[Commands, logs, mutants and owed runs](measurements/windows-p0/README.md).

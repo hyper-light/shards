@@ -1,0 +1,22 @@
+== 287dc470 platform-03, memory-01 red: a staging VM with no vsock path is granted more after its guest starts; a WHP DAX range written after one read is made zeros as its file grows 2026-11-14T03:16:36.3450364Z 10.0.26200.0
+
+== cargo test -p shards-vmm --lib -- devices::virtio::fs::window::tests exit 101
+test devices::virtio::fs::window::tests::a_range_mapped_to_be_written_after_one_to_be_read_stays_its_files ... FAILED
+test devices::virtio::fs::window::tests::a_fault_in_a_mapped_range_runs_again_once ... ok
+test devices::virtio::fs::window::tests::a_range_no_view_of_its_file_can_be_made_for_is_refused_never_zeros ... FAILED
+test devices::virtio::fs::window::tests::a_window_unmaps_its_standing_ranges_as_it_goes ... ok
+test devices::virtio::fs::window::tests::the_held_record_says_a_range_mapped_to_be_written_held ... ok
+test devices::virtio::fs::window::tests::zeros_stand_in_where_the_server_cannot_answer ... ok
+test devices::virtio::fs::window::tests::an_unmapped_range_takes_a_view_again_and_one_met_in_part_goes_whole ... ok
+test devices::virtio::fs::window::tests::whp_takes_each_standing_range_over_any_view ... ok
+test devices::virtio::fs::window::tests::what_no_view_can_be_is_refused_and_leaves_the_range_as_it_was ... ok
+test devices::virtio::fs::window::tests::a_range_is_its_sections_bytes_each_way_and_stage_2_is_told_once ... ok
+test devices::virtio::fs::window::tests::a_window_of_64_gib_is_made_and_let_go ... ok
+test devices::virtio::fs::window::tests::a_files_ranges_are_its_bytes_then_zeros_and_follow_it ... ok
+thread 'devices::virtio::fs::window::tests::a_range_mapped_to_be_written_after_one_to_be_read_stays_its_files' (14080) panicked at crates\vmm\src\devices\virtio\fs\window_whp.rs:1248:9:
+assertion `left == right` failed: its file's bytes, not zeros
+  left: 0
+ right: 90
+thread 'devices::virtio::fs::window::tests::a_range_no_view_of_its_file_can_be_made_for_is_refused_never_zeros' (3680) panicked at crates\vmm\src\devices\virtio\fs\window_whp.rs:1280:13:
+test result: FAILED. 10 passed; 2 failed; 0 ignored; 0 measured; 440 filtered out; finished in 0.25s
+error: test failed, to rerun pass `-p shards-vmm --lib`

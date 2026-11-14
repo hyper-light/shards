@@ -221,3 +221,10 @@ its only conflict was between appended PM records (memory-17 and M572). Both
 were retained. Per the conflict rule, resumed r23 reran all 28 selected tests and
 init all-target clippy on that merge: both green. The output is
 `green-memory-17-merged.log`. No production conflict was resolved.
+
+Memory-17 landed `dc23bc71f`; its last merge (main `5f42c9452`) is disjoint from
+init and dependencies, checked by the empty path diff recorded in [final handoff](final.md).
+Linux cleanup r24 completed with exit 0 and absence checked; `cleanup.log` retains
+it and the Mac cleanup. Both owned targets are gone; source/evidence remain.
+The final ROOT notification was rejected with 429 backpressure (pending 4,
+authority 3); this report does not claim delivery.

@@ -140,6 +140,8 @@ let (config, manifest) = self.image_facts(c.image_id.as_deref());
 
 **Confidence:** high in lost/non-atomic record; resulting premature escalation unrun. **Fix direction:** stable interprocess lock covering reread/merge/publication, plus uniquely owned staging files; explicitly unlock before closing (M244). **Test:** barrier two real writers after stale reads, order their publications, and require every maximum to survive; force the truncation/rename interleaving while readers verify complete records.
 
+**Status (2026-11-13):** fixed in 45ae96862a934b8dabee70b5405cd8e0444f1f13 (red `concurrent_end_writers_keep_each_others_maxima`, r38; green regression +5 end tests and shards all-target clippy r39). Logs `docs/research/measurements/runs-fixes/runs07-{red,green}.log`. Stable-lock reread/merge and unique atomic staging preserve both writers' maxima. Two-process/VM crash publication remains owed to ROOT as the fix record specifies.
+
 ### runs-08 — P2 / medium — Concurrent first GPU launches can publish an incomplete helper
 
 **At head:** `crates/shards/src/helpers.rs:102–107`. **Inherited at base; still present.**
@@ -151,6 +153,8 @@ let (config, manifest) = self.image_facts(c.image_id.as_deref());
 **Evidence:** `vm_gpu` is called by launch (`launch.rs:199`); extraction is outside `dir()`'s OnceLock. Its comment at `helpers.rs:101` promises synced whole publication, as D36 requires. The PID-only temporary name provides no thread exclusion.
 
 **Confidence:** high in the interleaving; loader outcome unrun. **Fix direction:** serialize GPU extraction or use unique writer staging and verified atomic publication. **Test:** barrier two callers around create/write/rename to force this schedule; require every returned helper to be complete and both callers to avoid extraction-induced failure.
+
+**Status (2026-11-13):** fixed in d720debff92c7a3eda0022799bf1085a641b9cfa (red `concurrent_gpu_writers_publish_their_own_complete_files`, r42; green regression +4 helper cases reported and shards all-target clippy r44). Two carried-helper cases return early under skip. Writer-owned staging and close-before-publish prevent the forced empty-file race; logs in `docs/research/measurements/runs-fixes/runs08-{red,green}.log`. Real carried/GPU/crash checks remain owed to ROOT.
 
 ### runs-09 — P2 / medium — Concurrent disk-setting commands can publish partial settings
 
@@ -164,6 +168,8 @@ let (config, manifest) = self.image_facts(c.image_id.as_deref());
 
 **Confidence:** high in the filesystem schedule; unrun. **Fix direction:** serialize the full read/modify/write and use uniquely owned staging files. **Test:** two actual CLI processes with barriers at truncation/publication, continuous readers, and assertions for whole versions, independent updates and failed-writer noninterference.
 
+**Status (2026-11-14):** fixed in 2c148377c (red `concurrent_settings_updates_keep_each_others_fields` and `settings_publication_leaves_another_writers_staging_file_alone`, by mutation restoring the base's unlocked transaction and shared `.disk.new`, kiln r1785; green r1765 with shards all-target clippy, on merge 22d03c1a, macOS arm64). Salvaged from the Codex lane's uncommitted edit; reads take the newest version for Windows' write_in. Logs `docs/research/measurements/runs-fixes/runs09-{red,green}.log`; D186 amended. Two real CLI processes racing with a reader, per OS, owed to ROOT.
+
 ### runs-10 — P2 / medium — Reused helper bytes are accepted by length without checking their digest
 
 **At head:** `crates/shards/src/helpers.rs:186–190`; GPU `:97–99`. **Inherited at base; still present.**
@@ -175,6 +181,8 @@ let (config, manifest) = self.image_facts(c.image_id.as_deref());
 **Evidence:** D36 records embedded digests and whole-helper reuse; the user specifically requested digest verification before exec. The digests name the cache directory (`helpers.rs:158–163`) but do not validate its current content. Directory naming and atomic initial publication do not prove later bytes.
 
 **Confidence:** high in incorrect acceptance; actual loader behavior unrun. This is integrity/recovery, with no unsupported cross-user escalation claim. **Fix direction:** validate reusable bytes against their expected digests, repair/refuse mismatches, and define integrity through execution. **Test:** extract, flip one byte preserving length, request the helper in another process and require exact repair or typed integrity refusal; include GPU.
+
+**Status (2026-11-14):** fixed in 0122d69cc (red `a_helper_whose_bytes_changed_is_written_again_before_it_starts` and `a_changed_helper_that_cannot_be_written_again_is_refused`, by mutation restoring the length check, kiln r1785; green r1765 with launch tests and shards all-target clippy, on merge 22d03c1a, macOS arm64). Every helper start (VM, network, GPU; the daemon's kept path through `helpers::checked`) checks SHA-256 against build.rs's digest and rewrites or refuses. Logs `docs/research/measurements/runs-fixes/runs10-{red,green}.log`; D36 amended. Owed to ROOT: `env -u SHARDS_HELPERS -u SHARDS_HELPERS_DIR cargo test -p shards --bin shards helpers::tests`, a real run after flipping a cached helper's byte, Windows refusal with a running VM, and the per-start hashing cost (`docs/research/measurements/build-ab/ab.py`).
 
 ### runs-11 — P2 / medium — Runs still use explicitly arbitrary deadlines, retries and sizes
 
@@ -211,3 +219,9 @@ R01–R16 evidence disposition: R01/R04/R05/R06/R07/R13 were inspected only in t
 ## Delivery status
 
 Attempted explicit delivery to ROOT / main Shards kiln agent `01a148884a4770fdaf0111f3f792a248`, verified listed as Shards at the g121 worktree. Full-report steer and shorter queued-summary delivery, each retried with its original immutable key/content, were rejected with HTTP 429: `{"code":"backpressure","pending":3,"authority":2}`. No acceptance receipt was returned. The report is retained here; do not infer model receipt from these attempts.
+
+Main landing update (2026-11-13): ROOT confirms runs-05, runs-06 and the runs-01
+native-owner follow-up landed through signed c6dd46525 (merge of fc1bb4797).
+
+Main landing update (2026-11-13): ROOT confirms runs-07 landed through signed
+02d3fe33b (merge of a68fc0ce4), own-file drift documentation only.

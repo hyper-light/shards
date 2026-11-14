@@ -4071,11 +4071,36 @@ mod tests {
         };
         let first = [203, 0, 113, 7];
         let next = [203, 0, 113, 8];
+        // send_to completing does not promise the destination socket is readable.
+        // Dispatch only after readiness, as serve does on every host (macOS loopback
+        // can deliver after send_to returns).
+        let receive = |stack: &mut Stack<'_>| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let named = token::of(token::UDP, 0, 0);
+            let mut events = Vec::new();
+            loop {
+                stack
+                    .poller
+                    .wait(
+                        &mut events,
+                        Some(deadline.saturating_duration_since(Instant::now())),
+                    )
+                    .unwrap();
+                if events.iter().any(|event| event.token == named && event.read) {
+                    stack.on_udp(0);
+                    return;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "the resolver answer never became readable"
+                );
+            }
+        };
         resolver.send_to(&answer(first), from).unwrap();
-        stack.on_udp(0);
+        receive(&mut stack);
         assert!(stack.cfg.allows(IpAddr::from(first), Proto::Tcp, 443));
         resolver.send_to(&answer(next), from).unwrap();
-        stack.on_udp(0);
+        receive(&mut stack);
         assert!(stack.cfg.allows(IpAddr::from(next), Proto::Tcp, 443));
         assert!(
             !stack.cfg.allows(IpAddr::from(first), Proto::Tcp, 443),

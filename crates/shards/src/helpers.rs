@@ -35,7 +35,84 @@ pub fn vm() -> Result<PathBuf, String> {
     if let Some(given) = given() {
         return given;
     }
-    Ok(dir()?.join(format!("shards-vm{}", std::env::consts::EXE_SUFFIX)))
+    ours("shards-vm", carried::SHARDS_VM, carried::SHARDS_VM_SHA256)
+}
+
+/// The VM process at `vm`, which [`vm`] gave, checked again as it is about to start
+/// (launch.rs): this build's own checked against its digest and written again where it
+/// differs ([`verified`]); any other (`SHARDS_VM_BINARY`'s, a carrier's beside it, D237)
+/// as it is, its bytes its giver's to answer for.
+pub fn checked(vm: &Path) -> Result<PathBuf, String> {
+    match DIR.get() {
+        Some(Ok((dir, _))) if !carried::BESIDE && given().is_none() && vm == dir.join(exe("shards-vm")) => {
+            verified(
+                dir,
+                &exe("shards-vm"),
+                carried::SHARDS_VM,
+                carried::SHARDS_VM_SHA256,
+            )
+        }
+        _ => Ok(vm.to_path_buf()),
+    }
+}
+
+/// `name`, a helper's, as this platform names its program.
+fn exe(name: &str) -> String {
+    format!("{name}{}", std::env::consts::EXE_SUFFIX)
+}
+
+/// The helper `name` of this build's directory, its bytes `bytes`, whose SHA-256 is `sha`:
+/// checked against it ([`verified`]); or, for a carried `shards` (D237), the one beside it.
+fn ours(name: &str, bytes: &[u8], sha: &str) -> Result<PathBuf, String> {
+    let dir = dir()?;
+    if carried::BESIDE {
+        return Ok(dir.join(exe(name)));
+    }
+    verified(&dir, &exe(name), bytes, sha)
+}
+
+/// `name` in `dir`, checked as a process is about to start it: its bytes' SHA-256 is `sha`,
+/// this build's digest of `bytes` (D36), or it is written again whole from them
+/// ([`publish`]), as it is where it is not there. Its length says nothing of its bytes, and
+/// they can change after they were written whole (by hand, by a program of this user's, on
+/// the disk), so each start reads them all (runs-10). A helper Windows will not let be
+/// replaced, as one a running VM process holds, is refused with why.
+fn verified(dir: &Path, name: &str, bytes: &[u8], sha: &str) -> Result<PathBuf, String> {
+    let path = dir.join(name);
+    match digest(&path) {
+        Ok(found) if found == sha => return Ok(path),
+        Ok(_) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(at(&path, e)),
+    }
+    publish(dir, name, bytes).map_err(|e| {
+        format!(
+            "{}: not this build's bytes (SHA-256 {sha}), and not written again: {e}",
+            path.display()
+        )
+    })
+}
+
+/// The SHA-256 of `path`'s bytes, in lowercase hex as build.rs writes the carried digests.
+fn digest(path: &Path) -> io::Result<String> {
+    use sha2::Digest as _;
+    use std::io::BufRead as _;
+    // Read through std's own buffer, its size std's choice.
+    let mut file = io::BufReader::new(fs::File::open(path)?);
+    let mut hasher = sha2::Sha256::new();
+    loop {
+        let n = match file.fill_buf() {
+            Ok([]) => break,
+            Ok(buf) => {
+                hasher.update(buf);
+                buf.len()
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        file.consume(n);
+    }
+    Ok(hasher.finalize().iter().map(|b| format!("{b:02x}")).collect())
 }
 
 /// The VM process `SHARDS_VM_BINARY` names, an absolute path, if it names one.
@@ -53,7 +130,7 @@ fn given() -> Option<Result<PathBuf, String>> {
 
 /// The network process's binary, written out if this build's is not yet (D31, D142).
 pub fn net() -> Result<PathBuf, String> {
-    Ok(dir()?.join(format!("shards-net{}", std::env::consts::EXE_SUFFIX)))
+    ours("shards-net", carried::SHARDS_NET, carried::SHARDS_NET_SHA256)
 }
 
 /// The GPU's VM process's binary (D144), written out the first time a GPU VM needs it,
@@ -92,20 +169,82 @@ pub fn vm_gpu() -> Result<PathBuf, String> {
         }
     }
     let dir = dir()?;
-    let name = format!("shards-vm-gpu{}", std::env::consts::EXE_SUFFIX);
-    let path = dir.join(&name);
-    let len = carried::SHARDS_VM_GPU.len() as u64;
-    if fs::metadata(&path).is_ok_and(|m| m.len() == len) {
-        return Ok(path);
-    }
-    // Written beside it, synced, then moved into place whole, as the others are.
-    let temp = dir.join(format!(".{name}.{}", std::process::id()));
-    let _ = fs::remove_file(&temp);
+    verified(
+        &dir,
+        &exe("shards-vm-gpu"),
+        carried::SHARDS_VM_GPU,
+        carried::SHARDS_VM_GPU_SHA256,
+    )
+}
+
+/// Writes `bytes` to `name` in `dir` whole: to a staging file of this writer's own, synced
+/// and closed, then renamed over `name`, so that a process starting it finds the old file or
+/// the new, never a part, and no other writer's staging is touched.
+fn publish(dir: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
+    let path = dir.join(name);
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    // As write_in's staging names: identity fields discriminate writers; create_new
+    // proves ownership. Even counter wrap or a collision never unlinks another file.
+    let temp = dir.join(format!(
+        ".{name}.{}.{nanos:x}.{:x}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
     let mut file = executable(&temp).map_err(|e| at(&temp, e))?;
-    file.write_all(carried::SHARDS_VM_GPU).map_err(|e| at(&temp, e))?;
-    file.sync_all().map_err(|e| at(&temp, e))?;
-    fs::rename(&temp, &path).map_err(|e| at(&path, e))?;
+    #[cfg(test)]
+    pause_gpu(GpuStage::Created);
+    let written = file
+        .write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(|e| at(&temp, e));
+    // A published executable has no writable handle left (exec can otherwise fail
+    // ETXTBSY). Another caller may start it as soon as rename makes it visible.
+    drop(file);
+    let placed = written.and_then(|()| {
+        #[cfg(test)]
+        pause_gpu(GpuStage::Publish);
+        fs::rename(&temp, &path).map_err(|e| at(&path, e))
+    });
+    if placed.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    placed?;
     Ok(path)
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GpuStage {
+    Created,
+    Publish,
+}
+
+#[cfg(test)]
+type GpuPause = (
+    GpuStage,
+    std::sync::mpsc::Sender<()>,
+    std::sync::mpsc::Receiver<()>,
+);
+
+#[cfg(test)]
+std::thread_local! {
+    static GPU_PAUSE: std::cell::RefCell<Option<GpuPause>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+fn pause_gpu(stage: GpuStage) {
+    GPU_PAUSE.with(|pause| {
+        if pause.borrow().as_ref().is_some_and(|p| p.0 == stage) {
+            let (_, ready, resume) = pause.borrow_mut().take().unwrap();
+            ready.send(()).unwrap();
+            resume.recv().unwrap();
+        }
+    });
 }
 
 /// What this build carries: each helper's name, bytes and SHA-256.
@@ -136,12 +275,14 @@ fn beside(exe: &Path) -> Result<PathBuf, String> {
     Ok(dir.to_path_buf())
 }
 
+/// This process's [`dir`], found or written out the first time it is needed.
+static DIR: OnceLock<Result<(PathBuf, Option<Locked>), String>> = OnceLock::new();
+
 /// This build's helpers' directory: written out by the first process that needs it, and
 /// held by each that uses it for as long as it lives ([`hold`]); or, for a `shards` built to
 /// be carried (`SHARDS_HELPERS=beside`), the directory it was started from, where the program
 /// carrying it wrote them out ([`beside`]).
 fn dir() -> Result<PathBuf, String> {
-    static DIR: OnceLock<Result<(PathBuf, Option<Locked>), String>> = OnceLock::new();
     DIR.get_or_init(|| {
         if carried::BESIDE {
             let exe = std::env::current_exe().map_err(|e| format!("this shards' own path: {e}"))?;
@@ -183,6 +324,7 @@ fn dir() -> Result<PathBuf, String> {
 
 /// Whether `dir` holds every helper at the size it was written: what the first process
 /// of a build wrote, all of it, since a directory appears only once its files are synced.
+/// Whether their bytes are still this build's is checked as each is started ([`verified`]).
 fn complete(dir: &Path) -> bool {
     carried().iter().all(|(name, bytes, _)| {
         fs::metadata(dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX)))
@@ -427,6 +569,89 @@ pub(crate) fn cache() -> Result<PathBuf, String> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn concurrent_gpu_writers_publish_their_own_complete_files() {
+        use std::sync::mpsc::channel;
+        use std::time::Duration;
+        let dir = shards_testdir::TempDir::new("gpupub").unwrap();
+        let dir = dir.path();
+        let bytes = b"the complete helper bytes";
+        let bound = Duration::from_secs(10);
+        let (a_ready, a_seen) = channel();
+        let (a_resume, a_wait) = channel();
+        let (a_done, a_result) = channel();
+        let (b_ready, b_seen) = channel();
+        let (b_resume, b_wait) = channel();
+        let (b_done, b_result) = channel();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                GPU_PAUSE.with(|p| *p.borrow_mut() = Some((GpuStage::Publish, a_ready, a_wait)));
+                a_done.send(publish(dir, "gpu", bytes)).unwrap();
+            });
+            a_seen.recv_timeout(bound).unwrap();
+            scope.spawn(|| {
+                GPU_PAUSE.with(|p| *p.borrow_mut() = Some((GpuStage::Created, b_ready, b_wait)));
+                b_done.send(publish(dir, "gpu", bytes)).unwrap();
+            });
+            let created = b_seen.recv_timeout(bound);
+            a_resume.send(()).unwrap();
+            let first = a_result.recv_timeout(bound);
+            let observed = first.as_ref().ok().and_then(|r| r.as_ref().ok()).map(fs::read);
+            // Release every paused actor before asserting, including the red's failures.
+            let _ = b_resume.send(());
+            let second = b_result.recv_timeout(bound);
+            assert!(
+                created.is_ok(),
+                "the second writer never created its staging file"
+            );
+            assert_eq!(observed.unwrap().unwrap(), bytes);
+            assert!(first.unwrap().is_ok());
+            assert!(second.unwrap().is_ok());
+        });
+    }
+
+    /// The SHA-256 build.rs gives `bytes`.
+    fn sha(bytes: &[u8]) -> String {
+        use sha2::Digest as _;
+        sha2::Sha256::digest(bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    }
+
+    /// A helper whose bytes changed after they were written, its length kept, is not
+    /// started as it is: it is written again whole from this build's (runs-10).
+    #[test]
+    fn a_helper_whose_bytes_changed_is_written_again_before_it_starts() {
+        let dir = shards_testdir::TempDir::new("helper-sha").unwrap();
+        let bytes = b"this build's helper";
+        let path = dir.join("helper");
+        assert_eq!(verified(&dir, "helper", bytes, &sha(bytes)).unwrap(), path);
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        let mut flipped = bytes.to_vec();
+        flipped[0] ^= 1;
+        fs::write(&path, &flipped).unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().len(), bytes.len() as u64);
+        assert_eq!(verified(&dir, "helper", bytes, &sha(bytes)).unwrap(), path);
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+    }
+
+    /// One that cannot be written again is refused, saying so, never started as it is.
+    #[cfg(unix)]
+    #[test]
+    fn a_changed_helper_that_cannot_be_written_again_is_refused() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = shards_testdir::TempDir::new("helper-ro").unwrap();
+        let bytes = b"this build's helper";
+        fs::write(dir.join("helper"), b"this build's helpeR").unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o500)).unwrap();
+        let refused = verified(&dir, "helper", bytes, &sha(bytes));
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        let refused = refused.unwrap_err();
+        assert!(refused.contains("not this build's bytes"), "{refused}");
+        assert_eq!(fs::read(dir.join("helper")).unwrap(), b"this build's helpeR");
+    }
 
     fn names(root: &Path) -> Vec<String> {
         let mut names: Vec<_> = fs::read_dir(root)
