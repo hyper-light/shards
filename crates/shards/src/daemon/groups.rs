@@ -608,17 +608,15 @@ impl<D: Disk> Daemon<D> {
 
     /// The next resource-accounting pass. Word outcomes wake the thread independently;
     /// no second timer judges a member behind its authoritative exec judge.
-    fn next_look(
-        &self,
-        members: &HashMap<String, Vec<Member>>,
-        passed: Option<Instant>,
-    ) -> Option<Instant> {
+    fn next_look(&self, members: &HashMap<String, Vec<Member>>, passed: Option<Instant>) -> Option<Instant> {
         if members.is_empty() {
             return None;
         }
-        Some(passed
-            .and_then(|p| p.checked_add(shards_vmm::platform::PRESSURE_WINDOW))
-            .unwrap_or_else(Instant::now))
+        Some(
+            passed
+                .and_then(|p| p.checked_add(shards_vmm::platform::PRESSURE_WINDOW))
+                .unwrap_or_else(Instant::now),
+        )
     }
 
     /// A pass over group `name` and its microVMs `members` (D183, slice 3): its files read
@@ -988,26 +986,50 @@ mod tests {
         let slowest = std::time::Duration::from_millis(1);
         t.daemon.answers.room.teach(slowest, slowest);
         let pid = std::process::id();
-        lock(&t.daemon.groups.words).insert(pid, Word {
-            state: WordState::Waiting,
-            next: None,
-        });
+        lock(&t.daemon.groups.words).insert(
+            pid,
+            Word {
+                state: WordState::Waiting,
+                next: None,
+            },
+        );
         let mut hold = Hold {
-            round: Some(Round { id: 1, of: [(pid, Given::Asked)].into() }),
+            round: Some(Round {
+                id: 1,
+                of: [(pid, Given::Asked)].into(),
+            }),
             ..Hold::default()
         };
         std::thread::sleep(slowest * 2);
         t.daemon.judge_round("pending", &[], &mut hold);
-        assert!(hold.round.is_some(), "a pending word was treated as a completed failed pass");
-        hold.answered(Answered { pid, round: 1, gave: Some(Gave { freed: 1, unplugging: 0 }) });
+        assert!(
+            hold.round.is_some(),
+            "a pending word was treated as a completed failed pass"
+        );
+        hold.answered(Answered {
+            pid,
+            round: 1,
+            gave: Some(Gave {
+                freed: 1,
+                unplugging: 0,
+            }),
+        });
         t.daemon.judge_round("pending", &[], &mut hold);
         assert!(hold.round.is_none(), "a completed give-back was not judged");
-        hold.round = Some(Round { id: 2, of: [(pid, Given::Asked)].into() });
+        hold.round = Some(Round {
+            id: 2,
+            of: [(pid, Given::Asked)].into(),
+        });
         let now = Instant::now();
-        let cut = super::super::health::Cut::Stalled(t.daemon.answers.room.stalled(now - slowest * 2, now).unwrap());
+        let cut = super::super::health::Cut::Stalled(
+            t.daemon.answers.room.stalled(now - slowest * 2, now).unwrap(),
+        );
         t.daemon.refuse_word(pid, &cut);
         t.daemon.judge_round("pending", &[], &mut hold);
-        assert!(hold.round.is_none(), "an authoritative refusal did not finish the round");
+        assert!(
+            hold.round.is_none(),
+            "an authoritative refusal did not finish the round"
+        );
     }
 
     #[test]

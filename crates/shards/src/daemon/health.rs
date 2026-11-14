@@ -739,7 +739,9 @@ fn await_exit(ours: &shards_ipc::Stream, wait: Wait<'_>) -> Ended {
         // Its answer there as its wait begins was waited for not at all: read as it is, it
         // teaches its kind nothing (D222's wait of nothing), as a slot's rest is learned only
         // where it was waited for (D185's `Asked::waited`).
-        Wait::WhileRuns(..) | Wait::GroupWord(..) if super::readable_within(ours, Some(Duration::ZERO)) => (None, None),
+        Wait::WhileRuns(..) | Wait::GroupWord(..) if super::readable_within(ours, Some(Duration::ZERO)) => {
+            (None, None)
+        }
         Wait::WhileRuns(vm, record) | Wait::GroupWord(vm, record, _) => match following(vm, record) {
             Ok(follow) => (follow, None),
             Err(cut) => (None, Some(cut)),
@@ -875,7 +877,10 @@ mod tests {
         let ended = waited(Wait::GroupWord(idle.0.id(), &record, &report), |theirs| {
             let kill = shards_ipc::recv(&theirs).unwrap().unwrap();
             assert_eq!(kill.kind, shards_ipc::kind::SIGNAL);
-            assert!(refused.load(Ordering::SeqCst), "the group still waits for its own verdict");
+            assert!(
+                refused.load(Ordering::SeqCst),
+                "the group still waits for its own verdict"
+            );
             shards_ipc::send(&theirs, shards_ipc::kind::EXIT, &[137], &[]).unwrap();
         });
         assert!(matches!(ended.cut, Some(Cut::Stalled(_))));

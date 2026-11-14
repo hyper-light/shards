@@ -7949,15 +7949,19 @@ Decided by the user on 2026-10-14 ("so long as they apply appropriately to micro
     (reclaim.rs `give_after`); an ask made meanwhile waits behind it, its newest room and
     any give-back kept. The groups' thread asks at its passes, hears each answer as it
     comes (its condvar), and waits on none. A group found short with no round under way
-    begins one, each member asked once; it is judged once each has answered, ended, or run
-    past the slowest answer of its kind this daemon has seen with none (`Record::stalled`,
-    in memory: no figure of ours, and before its kind's first answer a member's word
-    follows its microVM's liveness alone, as its own wait does), the groups' thread waking
-    at that moment if nothing wakes it sooner; past `memory.max` with nothing given back,
-    its largest is stopped. So a member that never answers holds up no other member and no
-    other group, and its own group's stop comes once its word has run past the slowest
-    room answered (the same test: each group's largest stopped, OOM-killed). A group whose
+    begins one, each member asked once; it is judged once each has answered, ended, or
+    its own exec judge has refused its word. A word publishes that typed refusal before
+    it waits for its exec's kill acknowledgement (`Wait::GroupWord`, `WordState::Refused`),
+    so a stalled guest that never acknowledges cannot hold the verdict. The group consumes
+    that outcome, never elapsed wall time: `Record::stalled(word.since, now)` was a second
+    timer that OOM-killed a progressing or host-held member, or one still waiting behind
+    host-pressure reclaim (review waits-01). Before the kind's first answer, liveness
+    alone still governs; another member teaching the record does not bound a wait begun
+    cold. The parallel-group fixture therefore starts its stuck word learned. An answer
+    or refusal wakes the existing groups condvar. No new bound, reader or cache.
+    Past `memory.max` with nothing given back its largest is stopped. A group whose
     budget goes tells each member it told a room that it has none, its hold let go of.
+    [Red/green and owed real-VM validation](../research/measurements/waits-fixes-v1/README.md).
   - **A member's room as of the footprint it was read with** (built, macOS and Windows).
     The groups' thread read what each member's VM process held, then told each its room,
     and init held its run at what it used as the word came plus that room: a member that

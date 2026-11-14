@@ -33,6 +33,8 @@ Priority mapping used: P0 critical, P1 high, P2 medium, P5 low; no P3/P4 finding
 
 **Unrun regression:** Prime W*; keep a group's member visibly working beyond W*, then return a positive give-back. Assert no OOM record or signal before that answer. Repeat with host hold and with `give_after` blocked behind another reclaim. Restoring wall-only `overdue` should fail these cases.
 
+**Status (2026-11-13):** fixed in 8168e33f567bd9d6d9d37a3f56e290a36f6f8238 (red `daemon::groups::tests::a_pending_member_word_is_not_a_failed_give_back`, Kiln r5; green groups and clippy r6, macOS arm64). [Evidence](../../research/measurements/waits-fixes-v1/README.md). Real-VM validation remains owed to ROOT.
+
 ### waits-02 — P2 / medium — The first test-party observation can refuse a process before any CPU interval was observed
 
 **Location:** `crates/shards/tests/common/mod.rs:3217`, `:3347`, `:3417`.

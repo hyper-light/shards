@@ -13393,7 +13393,10 @@ mod tests {
         t.run(|t| {
             // A cold word deliberately has no stall bound. This fixture tests a word
             // whose own exec judge can refuse it, not an outside clock ending a cold wait.
-            t.daemon.answers.room.teach(Duration::from_millis(20), Duration::ZERO);
+            t.daemon
+                .answers
+                .room
+                .teach(Duration::from_millis(20), Duration::ZERO);
             let mib = |n: u64| n << 20;
             for (group, max) in [("one", mib(1000)), ("two", mib(200))] {
                 let dir = groups::made(&t.daemon.home, group).unwrap();

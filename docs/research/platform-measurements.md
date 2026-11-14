@@ -24544,3 +24544,16 @@ the reply that would tell the guest its size refused: `window::tests` 12 of 12, 
 evidence on real NTFS views, no real VM; a view refused after its section was made is
 unit-unreachable, and the WHP DAX tests are owed.
 [Commands, logs, mutants and owed runs](measurements/windows-p0/README.md).
+
+### M574. A group member's own exec judge owns its refusal (review waits-01)
+
+At `bb799b90d`, the focused real groups-verdict unit test
+`a_pending_member_word_is_not_a_failed_give_back` failed: a pending word past W*
+was treated as a completed failed pass (Kiln r5, adas-mac-studio.local, macOS arm64).
+At `8168e33f5`, the groups tests (7) and parallel-member test (1) passed and
+`cargo clippy -p shards --all-targets -- -D warnings` passed (r6, same host).
+`Wait::GroupWord` now publishes its own typed refusal before its kill-ack wait;
+the group consumes that outcome instead of running a second wall-clock timer.
+Cold waits remain unbounded by another word's later answer.
+[Commands, logs, policy accounting and owed real-VM checks](measurements/waits-fixes-v1/README.md).
+This is scoped unit red/green evidence, not a real-VM or performance result.
