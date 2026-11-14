@@ -672,11 +672,21 @@ fn a_builders_memory_is_plugged_as_its_build_needs_it() {
         "what it could still plug, before its steps and after: {said:?} KiB, booted with {boot} bytes: {shown}"
     );
 
+    // Booted with all of it as the builder boots, on every CPU the host has (the builder's
+    // `builder_cpus`): each CPU's per-CPU areas are taken from memblock before the kernel
+    // sizes its threads (mm/percpu.c `pcpu_embed_first_chunk`, init/main.c `fork_init` after
+    // `mm_core_init`), so a guest of one CPU had more threads than the step of a builder of
+    // 32 (PM M591).
+    let cpus = std::thread::available_parallelism()
+        .map_or(1, std::num::NonZero::get)
+        .to_string();
     let full = common::vm_run(&[
         "--kernel",
         kernel().to_str().unwrap(),
         "--init",
         common::test_guest().to_str().unwrap(),
+        "--cpus",
+        &cpus,
         "--memory",
         "2560",
         "--cmdline",
@@ -10316,9 +10326,10 @@ fn agents_run_in_their_domains() {
         .collect();
     for want in [
         "confined uid=200000 gid=200000 groups=0",
-        // PID 2 of its PID namespace, whose PID 1 is init's sealed reaper, the two alone
-        // in its /proc (D59, "owned native domain lifetime": its actor is PID 2).
-        "confined pid=2 procs=2",
+        // PID 2 of its PID namespace, whose PID 1 is init's sealed reaper (D59, "owned
+        // native domain lifetime": its actor is PID 2), and its starter, which it forked
+        // just before its program ran (D243, confine-10), the three alone in its /proc.
+        "confined pid=2 procs=3",
         "confined hostname=agent-main",
         "confined caps eff=0000000000000000 prm=0000000000000000 inh=0000000000000000 bnd=0000000000000000 amb=0000000000000000 nnp=1",
         // Another domain, and /sys, hidden; its own /dev.
@@ -10388,6 +10399,8 @@ fn agents_run_in_their_domains() {
         .collect();
     for want in [
         "confined uid=200002 gid=200002 groups=0",
+        // No starter: its seccomp filter refused the fork (D243, crate::starter's `fork`).
+        "confined pid=2 procs=2",
         "confined call fork: errno 1",
         "confined call thread: ok",
         // Every other way to start a process (§9.10): vfork, a clone that is no thread,
