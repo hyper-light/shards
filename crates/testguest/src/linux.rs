@@ -1532,7 +1532,8 @@ fn console_cost() -> Result<(), String> {
         if let Some(end) = line.last_mut() {
             *end = b'\n';
         }
-        out.write_all(&line).map_err(|e| format!("writing to the console: {e}"))?;
+        out.write_all(&line)
+            .map_err(|e| format!("writing to the console: {e}"))?;
     }
     out.flush().map_err(|e| format!("flushing the console: {e}"))?;
     // SAFETY: waits on our own stdout's descriptor.

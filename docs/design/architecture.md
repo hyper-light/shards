@@ -10531,9 +10531,8 @@ stores.
   before. A snapshot keeps the heads as it keeps a writable layer's (D190): each alike 2
   MiB block once, beside its memory (`window-heads`, format 25), mapped back after a
   template's save and privately by each restore. A microVM saved in format 24, as shards
-  0.6.0 saves, is rewritten once in the current format as it is first restored where it
-  has no windows, and refused where it has (D176, *A user's snapshot of an older
-  format*). A window took a 64th of its length of its
+  0.6.0 saves, is refused as it is resumed, its init another build's (D176, *A saved
+  microVM resumes only in a shards whose init its guest speaks*). A window took a 64th of its length of its
   guest's free memory, 64.1 MiB for 4 GiB on Fedora, and 72.0 on the Mac with its linear
   map's page tables; with its head, none on Fedora (-0.2 to 0.1 MiB at every length, n 12)
   and those page tables alone on the Mac (8.3 MiB). Fedora's 4 GiB boot reached PID 1 20 ms
@@ -16274,48 +16273,46 @@ chip and OS (Hypervisor.framework) are a pair to run it on; a pair of KVM x86_64
 whose CPU has every feature of the first's, as /proc/cpuinfo names them, or a tailnet for
 CI's runners.
 
-**A user's snapshot of an older format is rewritten once** (legacy4, 2026-11-14). A
-microVM saved by shards 0.6.0 (format 24) or 0.7.0 (28), or by a build between (25 to 27;
-0.3.0 to 0.5.0 wrote 10), is a user's data that outlives the binary that wrote it: a saved
-run's `snapshots/NAME` (`save vm`, and a stopped one's move), or a directory `shards
-restore DIR` is given (`run --kernel --snapshot-dir`). Its state was read in its own
-format at every restore (`VERSION_WITHOUT_WINDOWS`, 24 to 29, `decode`'s branches each
-time). Now a restore reads the current format alone (`snapshot::decode`, "snapshot format
-N; this shards reads 29, and rewrites a snapshot of it in its own as it first restores
-it"), and the older formats' reader (`decode_body`'s branches) is `snapshot::migrate`'s
-alone: called before anything reads such a snapshot, by the daemon as it resumes one
-(`resumable`) and as it plans its move (`plan`, whose `format` says the current one), and
-by `shards restore DIR` before its VM process starts (not for `--warm` or `--resume`,
-the daemon's). It reads the state whole, writes it in the current format with the same
-generation, backing files and their identities (as taken at the save: a restore still
-checks each file against them), `.state.migrated` beside it, synced, renamed over `state`
-and the generation synced, with the snapshot's writers' lock held, so that a reader finds
-the old state or the new and two first restores rewrite it once; a second finds it
-current (`Migrated::Current`) and writes nothing. The daemon logs a rewrite, the CLI says
-it on stderr. What it fills in is what the old reader gave each restore: 27's runs of
-data none (a restore maps the RAM from the memory file whole), 28's PCI slots none, 29's
-GPU selection none; the memory, swap, layer and window heads files are not touched, as
-their layout did not change. Refused typed and left as it was (`MigrateRefused`): a format
-it has no reader of (`Format`: 10, whose machines and devices were laid out otherwise
-and which no build since 0.6.0 reads, or past the current one); format 24 to 27 of a
-machine with DAX windows (`WindowsLaidOutOtherwise`: before each window had its head
-beside it its guest's page structures were in its memory, D189, which the old reader
-refused too); a body that is not its format's (`Malformed`); and a write that fails
-(`Unwritten`, the old state kept). A console receiver past its mode's depth in the
-devices' state (D12; builds before 66652aafb kept up to 4096 bytes) is not a format's and
-is refused at the restore, after the rewrite, as before. A template is not a user's: it is
-keyed by the format (D25, `run::template`'s key), so this build never looks one of an
-older format up, and one that does not restore is removed and made again; `migrate` is
-never called for one. The encoder writes the current format alone (`encode_as`'s
-`version` is gone); the tests' `encode_older` lays the older formats out as their builds
-did. Red/green: `a_restore_refuses_a_state_of_an_older_format` (each of 24 to 28 read by
-every restore before), `an_older_formats_snapshot_is_migrated_once_then_restores` (each
-of 24 to 28 on disk: refused, rewritten once, restored as saved, a second migration
-writing nothing; no migration existed before), and
-`a_snapshot_no_migration_rewrites_is_refused_typed_and_left` (10, 23, 30, 27 with
-windows, a cut body, no snapshot; 28 with windows rewritten). Owed to ROOT: a real
-0.7.0-format snapshot restored on a VM host, once and again (the command is in legacy4's
-report).
+**A saved microVM resumes only in a shards whose init its guest speaks** (olderinit,
+2026-11-14; replaces legacy4's one-time rewrite of an older format, the same day). A user's
+snapshot (`save vm`, a stopped one's move, or a directory `shards restore DIR` is given)
+holds its guest's memory as it was saved, and with it the shards-init that was running
+then, which speaks the contract of the shards that saved it (`shards_abi::IDENTITY`, a
+hash of crates/abi's sources, D28). shards-init and the daemon ship as one binary (D36),
+and an older init's messages are none this build parses (the no-legacy rule): the
+person's decision, "refuse it clearly". A save records who saved it, after its state's
+head (format 30): the shards version (`snapshot::SAVED_BY`, crates/shards/Cargo.toml's,
+which vmm's build.rs passes as `SHARDS_VERSION`, as the VM process that saves is a
+package of its own) and the contract its init announced on the control page
+(`Snapshot::init`, from `Control::guest_abi` as the cut is taken; 0 where none). Every
+resume asks `snapshot::resumable(dir)` before anything restores the snapshot or its guest
+runs: the daemon's `resumable` (`restore vm`, `start --checkpoint`), a move's `plan` (the
+saved and live moves' first step on the machine moved from), and `shards restore DIR`
+before its VM process starts (not for `--warm` or `--resume`, the daemon's). It reads the
+state's head and saver alone and writes nothing. Refused typed (`ResumeRefused`):
+`OlderInit { saved_by, init_abi, ours }`, a saver whose init announced another contract or
+none ("this microVM was saved by shards 0.7.0, whose shards-init (contract …) cannot
+continue in this shards (contract …): start it again from its image; its volumes are
+kept, its memory's state is not"); `Unrecorded { format }`, a state of a format before 30,
+whose saver is unrecorded and whose init's contract is in its device state, which is laid
+out without lengths (`MmioBus::save`) and so cannot be read before a machine is built of
+it (its message names shards 0.6.0 for 24 and 0.7.0 for 28, as their tags' sources write
+them); `Newer { format }`; and `Unreadable`. The order: the check comes first, and replaces
+legacy4's rewrite, as every state the rewrite took (24 to 29) is one whose init this build
+cannot confirm before it runs, and every released one's (0.6.0's, 0.7.0's) is another's
+(crates/abi changed 124 times after v0.7.0): a rewritten snapshot would only be refused
+later, at its init's first message (vm_run's check after the guest dials again), so
+`snapshot::migrate`, `Migrated`, `MigrateRefused`, `.state.migrated` and the older formats'
+reader (`decode_body`'s branches, the tests' `encode_older`) are deleted. A restore reads
+format 30 alone. Its volumes and image are not the snapshot's: `rm vm` and a fresh `run`
+keep them. The CLI user sees the refusal on stderr and exit status 1, as `docker start`'s
+failed start (the daemon's `refuse`, and `failed` for `shards restore DIR`). Red/green:
+`a_resume_refuses_a_saved_init_of_another_contract_naming_its_saver` (this build's init
+resumes; another's and none refused naming `SAVED_BY`; 28 refused naming 0.7.0; past 30
+refused; a cut saver unreadable) and `resumable_refuses_another_init_and_leaves_the_snapshot`
+(on disk: resumed, refused typed, the state left byte for byte, no snapshot unreadable);
+red before this, where no state recorded a saver. Owed to ROOT: v0.7.0's release binary's
+`save vm m`, then this build's `restore vm m` printing the refusal and exiting 1.
 
 ### D175. Sockets read in poll(2) on macOS, and streams ended one way at a time
 
