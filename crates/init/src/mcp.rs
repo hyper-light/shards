@@ -328,6 +328,11 @@ fn copy_both(mut input: std::fs::File, output: std::fs::File, mut socket: UnixSt
         if fds.iter().any(|fd| fd.revents & libc::POLLNVAL != 0) {
             return Err(io::Error::from_raw_os_error(libc::EBADF));
         }
+        if fds.last().is_some_and(|fd| fd.revents & libc::POLLERR != 0) {
+            return Err(socket
+                .take_error()?
+                .unwrap_or_else(|| io::ErrorKind::ConnectionAborted.into()));
+        }
         if fds.last().is_some_and(|fd| fd.revents & libc::POLLHUP != 0) {
             if !up.pending.is_empty() {
                 return Err(io::ErrorKind::BrokenPipe.into());
