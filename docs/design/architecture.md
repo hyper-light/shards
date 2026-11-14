@@ -48,7 +48,7 @@ performance and resource usage.
 | D1 | On macOS, drive Hypervisor.framework natively. No nested KVM (EL2 stays off by default). | Nested exits cost 27–37× more even with NV2 [VIO §2.2]; native HVF exit ≈ 0.7–0.8 µs [PM M4] |
 | D2 | Starts are served by **snapshot restore into a pre-spawned, pre-initialized VMM process**, never by spawning or cold-booting on the request path. | `posix_spawn` → `main` 3.7 ms p50; framework load +1.5 ms; first `hv_vm_create` 0.55 ms [PM M11, M11b]; one VM per process [GT §1.1]; on a shared host, a per-request process's launch, restore and teardown carry the tail, and thread QoS does not shorten it [PM M22] |
 | D3 | Use the in-kernel GIC (`hv_gic`). Snapshot it as HVF's own serialization of the device (`hv_gic_state`), not as its registers (revised 2026-09-29, D14). Open: its 1.2 ms restore, paid ahead of requests by warm VMs. | WFI blocks in-kernel with zero userspace exits [PM M7]; registers lose interrupts on their way to a vCPU, and every restore of a guest with a disk request in flight stalled [PM M45]; the blob restores in 1.2 ms against 20 µs for registers [PM M14] |
-| D4 | vCPU and device worker threads run with Mach time-constraint policy while they wait between runs (the QoS user-interactive they ask first goes as the policy is set). A governor looks at each once a scheduler tick (125 ms); one that has run a tick since it was last seen waiting is looked at every millisecond for a tick more, and goes to timeshare, as any program's thread, only if no look finds it waiting; it is real-time again once seen waiting. XNU's fail-safe depresses a thread at that policy that runs a second without blocking to priority 0 until its host is quiet. | Timer lateness 258 µs → 8.7 µs at 1 ms; idle IRQ p99 315 → 11 µs [PM M8, M10]; a run's 4 busy loops 0.97–3.25 CPUs → 3.99–4.00; 3 runs of 18 loops, host waits of up to 6.4 s → 14 ms; block reads verified with every CPU busy 144k → 241k at p50; a start unchanged [PM M317]; beside full gates, in an agent's clamped session or as a user's program, 152,606 block reads verified in 3 s at least, 90 of 90 runs [PM M327] |
+| D4 | vCPU and device worker threads run with Mach time-constraint policy while they wait between runs, its pair each thread's own (its learned batch, its constraint twice it; platform-11, D191's macOS paragraph) (the QoS user-interactive they ask first goes as the policy is set). A governor looks at each once a scheduler tick (125 ms); one that has run a tick since it was last seen waiting is looked at as finely as its host wakes (the cold pair's constraint) for a tick more, and goes to timeshare, as any program's thread, only if no look finds it waiting; it is real-time again once seen waiting. XNU's fail-safe depresses a thread at that policy that runs a second without blocking to priority 0 until its host is quiet. | Timer lateness 258 µs → 8.7 µs at 1 ms; idle IRQ p99 315 → 11 µs [PM M8, M10]; a run's 4 busy loops 0.97–3.25 CPUs → 3.99–4.00; 3 runs of 18 loops, host waits of up to 6.4 s → 14 ms; block reads verified with every CPU busy 144k → 241k at p50; a start unchanged [PM M317]; beside full gates, in an agent's clamped session or as a user's program, 152,606 block reads verified in 3 s at least, 90 of 90 runs [PM M327] |
 | D5 | Create vCPUs strictly sequentially in index order, both at boot and on restore. | Redistributor frames and processor numbers follow creation order [PM M13] |
 | D6 | Guest RAM uses the 16 KiB IPA granule (default); the guest's own page size stays 4 KiB. | First-touch cost per byte is 4× lower than with a 4 KiB granule [PM M5] |
 | D7 | Snapshot memory is file-backed `MAP_PRIVATE`, mapped lazily. On HVF the working set can be prefetched from helper vCPUs, not from host reads; on KVM the VMM maps it ahead (`KVM_PRE_FAULT_MEMORY`) [PM M33]. Map it in the warm process before the request: in-process faults on file-backed memory have no tail beyond 111 µs in 6.3 M, but fresh processes mapping a just-unmapped file stalled ~1 s in ~1% of boots [PM M15, M16]. | Cheapest first-touch backing, 1.07 µs per 16 KiB page; host pre-read doesn't help; 4 vCPUs fault 2.2× faster [PM M5, M6] |
@@ -13912,9 +13912,47 @@ sleeps teaching g their lateness (`granule::LATE`). On a host whose GetThreadTim
   `raised_threads_sharing_a_cpu_take_no_more_than_half_of_it` at the derived period, then PM
   M495's start latency (`cpu-elastic/phases.py` against `winnone.patch`, n 100 a side) at 2g
   beside 100 ms.
-- Still owed with platform-11's design (`docs/research/measurements/platform-fixes/held.md`):
-  macOS's 0.5 / 1 ms time-constraint pair (a guest timer's deadline or a measured batch
-  cost). No number replaced another.
+
+**macOS's time-constraint pair: each thread's own (platform-11, 2026-11-14).** M10's fixed
+pair (`COMPUTATION_NS` 0.5 ms, `CONSTRAINT_NS` 1 ms, and the suspect look at the latter) is
+gone, with no fallback (`platform::macos_thread`).
+- *Computation: the thread's batch, learned.* The governor already reads each watched
+  thread's CPU and run state at every look; the CPU a thread ran between two looks that each
+  found it waiting, while it was real-time, bounds every run between its waits in that span
+  from above. Its batch is the most such span seen (`learned`), so that no run of it is
+  preempted by another real-time thread for its computation's sake; a thread's pair is set
+  again when its batch moves it. A vCPU's own waits are in-kernel (HVF's WFI, M8): no user-space
+  point sees each, and timing each `hv_vcpu_run` would read a clock at every exit, so the
+  governor's looks are where the batch is measured. Held to XNU's bounds, 50 µs to 50 ms
+  (osfmk/kern/sched_rt.c `sched_realtime_timebase_init`: `min_rt_quantum`, "smallest rt
+  computation (50 us)"; `max_rt_quantum`, "maximum rt computation (50 ms)").
+- *Constraint: D191's period for one thread at half a CPU of its computation*
+  (`granule::period(1, HALF_CPU, computation)`, twice it; `HALF_CPU` the fair-share bound, as
+  Windows' governor's). A guest timer's deadline would be the better constraint where known,
+  but no thread's is: HVF arms the guest's virtual timer in the kernel, and one vCPU thread
+  serves every timer its guest sets.
+- *The suspect's look*: as finely as the host wakes, the cold pair's constraint (twice the
+  measured wake, held to XNU's least), where M10's 1 ms was: a look must land in one of a
+  suspect's waits where it waits at all. Its own constraint, twice a batch of up to 50 ms,
+  looked too seldom: `a_thread_that_waits_between_its_runs_stays_real_time` (4 ms run, 1 ms
+  waited) went to timeshare at it on adas-mac-studio.local, and stays real-time at the cold
+  one.
+- *Cold start*: before a batch is seen, the computation is the host's measured wake
+  (`granule::measure`, the lateness of one shortest wait, once a process), held to XNU's
+  least: a thread asks for no more than its host's own wake grain until it is seen to need
+  more. The governor's own pair is the cold one.
+- *Typed failure* (`Unconstrained`): no wake measured, a constraint past D191's
+  (`Outgrown`), or a pair the timebase cannot say in a u32 of its ticks leaves the thread at
+  its policy, why said; a thread not made real-time is not watched, as before.
+- *The demotion rule is M317's, unchanged*: a look each scheduler tick, a suspect after a
+  tick run past its last wait, timeshare after a tick of looks finding it running, the
+  fail-safe at a second's run (`3 * TICK < FAIL_SAFE`).
+- Held: vmm `macos_thread::tests::a_threads_pair_is_its_batchs` (red with the pair held at
+  0.5 / 1 ms whatever its batch) and `a_batch_is_the_most_run_between_two_waits`, beside
+  M317's three governor tests. Owed to ROOT: M8's and M10's timer-lateness and idle-IRQ runs
+  and M317's busy-loop and block-read runs at the learned pair beside 0.5 / 1 ms, through
+  `docs/research/measurements/macos-sched/launchd-run.sh` (a user's QoS, not the agent's
+  clamp), n and p50/p90/p99/max as M10 reports them.
 
 **The Windows pipes' quotas: each its caller's window (platform-11, 2026-11-14).** `BUFFER`
 (1 MiB, M340's throughput) and `LINE_BUFFER` (64 KiB, a Linux FIFO's) are gone, with no
