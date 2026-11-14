@@ -4544,6 +4544,32 @@ mod tests {
         assert_eq!(life.until, t0 + Duration::from_secs(3) + UDP_STREAM);
     }
 
+    /// RFC 4787 (BCP 127) REQ-5: a UDP mapping MUST NOT end in under two minutes of quiet
+    /// but where its destination port is a well-known one's own application's (REQ-5a).
+    /// Do: open a flow to port 5000 and let it be quiet 119 s, then past 120 s. Expect: held
+    /// at 119 s, gone past 120 s, its socket closed.
+    #[test]
+    fn a_udp_mapping_outlives_two_minutes_of_quiet_but_none_past() {
+        let region = Region::map(shards_netring::memory().unwrap()).unwrap();
+        let (_, pr) = shards_netring::doorbell().unwrap();
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let cfg = Config::on_bridge(Policy::AllowAll, [2, 0, 0, 0, 0, 1], &bridge);
+        let mut stack = stack(cfg, region.producer(1, pr));
+        let to = (IpAddr::from([127, 0, 0, 1]), 5000);
+        let key = (40_000, to.0, to.1);
+        let t0 = Instant::now();
+        stack.flow(key, to, b"one datagram");
+        assert!(stack.udp.contains_key(&key));
+        stack.timers(t0 + Duration::from_secs(119));
+        assert!(
+            stack.udp.contains_key(&key),
+            "a mapping to port 5000 ended inside two minutes of quiet"
+        );
+        stack.timers(Instant::now() + Duration::from_secs(121));
+        assert!(!stack.udp.contains_key(&key), "a mapping outlived its lifetime");
+        assert!(stack.udp_ids.is_empty());
+    }
+
     /// A UDP flow's gateway port is one no other flow has, in turn, and none once all are.
     #[test]
     fn udp_flows_take_free_gateway_ports_in_turn() {
