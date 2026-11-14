@@ -1,40 +1,62 @@
 //! The host's memory pressure, as its kernel says it (docs/design/architecture.md D188): what
-//! a daemon has its microVMs give back what they hold cold at.
+//! a daemon has its microVMs give back what they hold cold at. Each word is followed by an
+//! act of its listener's (a pass of give-backs), whose cost it tells back ([`acted`]): what
+//! a pressure is, and how often one that goes on is said again, follow that cost, learned
+//! where it runs (R03), never a figure of ours.
 //!
 //! - Linux: PSI triggers (Documentation/accounting/psi.rst) on the host's memory and on this
-//!   process's own cgroup's, where it may arm one: some task stalled on memory 140 ms in
-//!   2 s, Android's lmkd's lowest level (70 ms in 1 s, lmkd.cpp `psi_thresholds`) over the
-//!   shortest window an unprivileged process may watch (Linux 6.4, d82caa273565). A kernel
-//!   that arms none (before 6.4, unprivileged) has the host's ten-second average read every
-//!   ten seconds instead.
-//! - macOS: libdispatch's memory pressure source (dispatch/source.h), said again every two
-//!   seconds while the system's pressure stays raised, as a trigger is while its stall goes
-//!   on.
+//!   process's own cgroup's, where it may arm one, over the least window the kernel lets an
+//!   unprivileged writer watch, 2 s (`psi_trigger_create`: a multiple of 2 s, which the
+//!   kernel checks in its own averaging work, `PSI_FREQ`, with no real-time thread of its
+//!   own; Linux 6.4, d82caa273565). A window's stall is pressure once it is as long as the
+//!   act it brings ([`stall_of`]). A kernel that arms none (before 6.4, unprivileged) has
+//!   the same trigger kept here: `some total`, which the kernel brings up to date at each
+//!   read (`psi_show`), read each window from a first read at once.
+//! - macOS: libdispatch's memory pressure source (dispatch/source.h), said again while the
+//!   system's pressure stays raised on D215's pace ([`repeat_after`]).
 //! - Windows: the system's low memory notification (CreateMemoryResourceNotification,
 //!   `LowMemoryResourceNotification`), signalled while its available physical memory is low,
-//!   said again every two seconds while it stays so, as macOS's is.
+//!   said again while it stays so on the same pace.
+//!
+//! [`acted`]: MemoryPressure::acted
 
 use std::io;
 use std::time::Duration;
 
-/// The stall that is pressure, and the window it is measured over.
+/// The window a trigger watches (above): the least an unprivileged writer may arm, as
+/// shards runs as its user; a pressure that goes on is heard once each.
 #[cfg(target_os = "linux")]
-const STALL_US: u64 = 140_000;
-const WINDOW_US: u64 = shards_abi::PRESSURE_WINDOW_US;
+const WINDOW_US: u64 = 2_000_000;
 
-/// The window the host's memory pressure is measured over (D188), as long as a pressure
-/// that goes on waits between triggers: as often as a microVM held short of its budget is
-/// told its room again, which nothing else says while it is held (its budget not met).
-pub const PRESSURE_WINDOW: Duration = Duration::from_micros(WINDOW_US);
-/// Where no trigger is armed: the share of the last ten seconds stalled that is pressure,
-/// the same 7%, and how often it is read.
+/// The stall within a trigger's window that is pressure, in µs (Linux): as long as the act
+/// it brings took last, `acted` (rent or buy: act once what waiting has lost is what acting
+/// costs, which costs at most twice what the best choice in hindsight would; Karlin,
+/// Manasse, Rudolph and Sleator, "Competitive snoopy caching", Algorithmica 3, 1988). Both
+/// are time: the time some task stalled on memory, and the time the host's give-backs took.
+/// Before any act (the cold start), the kernel's least, a microsecond (`psi_trigger_create`:
+/// a threshold of more than none): the first stall is heard, and its act teaches the next.
+/// Never past the window, which is the most a threshold may be.
 #[cfg(target_os = "linux")]
-const AVERAGE_PERCENT: f64 = 7.0;
-#[cfg(target_os = "linux")]
-const AVERAGE_EVERY: Duration = Duration::from_secs(10);
-/// How often raised pressure is said again: a trigger's window.
-#[cfg(any(target_os = "macos", windows))]
-const REPEAT: Duration = Duration::from_secs(2);
+fn stall_of(acted: Option<Duration>) -> u64 {
+    acted.map_or(1, |d| {
+        u64::try_from(d.as_micros())
+            .unwrap_or(u64::MAX)
+            .clamp(1, WINDOW_US)
+    })
+}
+
+/// When a pressure raised since `raised` ago is said again (macOS, Windows): D215's pace
+/// (`shards_abi::pace`), `sqrt(2 c w)` of the cost `c` of acting on a word and the time `w`
+/// it has been raised so far, which stands for the time it has still to go on. Saying it
+/// each `p`, a pressure has `w / p` more acts, `c w / p` of their time, and what its
+/// microVMs come to hold cold within a pause is given back `p / 2` late on average: the
+/// least of their sum. `c` is the act its listener last told ([`MemoryPressure::acted`]), or
+/// before any, the watcher's own look at the system's word, what a word costs where no act
+/// follows it.
+#[cfg(any(target_os = "macos", windows, test))]
+fn repeat_after(acted: Option<Duration>, look: Duration, raised: Duration) -> Duration {
+    shards_abi::pace::pause(acted.unwrap_or(look), raised, Duration::MAX)
+}
 
 /// The host's memory pressure, watched: [`wait`](Self::wait) returns each time it is short
 /// of memory.
@@ -48,6 +70,10 @@ pub struct MemoryPressure {
     /// wakes [`wait`](Self::wait) to take them (an eventfd).
     armed: std::sync::mpsc::Receiver<(String, std::fs::File)>,
     wake: std::fs::File,
+    /// The stall a window is pressure at, in µs ([`stall_of`]), each trigger armed at it.
+    stall_us: u64,
+    /// With no trigger armed: the host's `some total` as last read, in µs.
+    sampled: Option<u64>,
 }
 
 /// What has a [`MemoryPressure`] watch more cgroups, from any thread.
@@ -73,18 +99,20 @@ impl MemoryPressure {
             .and_then(|c| c.lines().find_map(|l| l.strip_prefix("0::")).map(str::to_string))
             .filter(|path| path != "/")
             .map(|path| format!("/sys/fs/cgroup{path}/memory.pressure"));
+        let stall_us = stall_of(None);
         let mut triggers = Vec::new();
         let mut refused = None;
         for path in std::iter::once(Self::HOST.to_string()).chain(own) {
-            match arm(&path) {
+            match arm(&path, stall_us) {
                 Ok(file) => triggers.push((path, file)),
                 Err(e) if path == Self::HOST => refused = Some(e),
                 Err(_) => {}
             }
         }
-        if triggers.is_empty() {
-            // Its averages, where the kernel has PSI and arms no trigger of this user's.
-            average().map_err(|e| {
+        // Where the kernel has PSI and arms no trigger of this user's: its stall so far,
+        // read at once, from which the first window's is counted.
+        let sampled = if triggers.is_empty() {
+            Some(stalled().map_err(|e| {
                 io::Error::new(
                     e.kind(),
                     format!(
@@ -93,8 +121,10 @@ impl MemoryPressure {
                         refused.map_or_else(|| "none tried".to_string(), |r| r.to_string())
                     ),
                 )
-            })?;
-        }
+            })?)
+        } else {
+            None
+        };
         // SAFETY: eventfd(2) with flags; its descriptor is owned by the file made of it.
         let raw = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
         if raw < 0 {
@@ -112,6 +142,8 @@ impl MemoryPressure {
                 triggers,
                 armed,
                 wake,
+                stall_us,
+                sampled,
             },
             watches,
         ))
@@ -119,33 +151,69 @@ impl MemoryPressure {
 
     /// What it watches, for its daemon's log.
     pub fn describe(&self) -> String {
+        let at = if self.stall_us == stall_of(None) {
+            "any stall, until a give-back has taught what one costs".to_string()
+        } else {
+            format!("{} µs, as long as a give-back took last", self.stall_us)
+        };
         if self.triggers.is_empty() {
             return format!(
-                "{}'s ten-second average, read every {} s, {AVERAGE_PERCENT}% or more of it stalled",
+                "{}'s stall, read each {} s as a trigger of this user's would watch it: {at}",
                 Self::HOST,
-                AVERAGE_EVERY.as_secs()
+                WINDOW_US / 1_000_000
             );
         }
         let watched: Vec<&str> = self.triggers.iter().map(|(w, _)| w.as_str()).collect();
         format!(
-            "{}: some task stalled on memory {} ms in {} s",
+            "{}: some task stalled on memory in {} s, {at}",
             watched.join(" and "),
-            STALL_US / 1000,
             WINDOW_US / 1_000_000
         )
     }
 
+    /// The most a pressure that goes on waits between words: a trigger's window, as the
+    /// kernel says one at most once a window and again the next while its stall goes on.
+    pub fn repeat(&self) -> Option<Duration> {
+        Some(Duration::from_micros(WINDOW_US))
+    }
+
+    /// Its listener's act on the last word took `took` (a pass of give-backs, from its ask
+    /// to its answer): the stall that is pressure from now on ([`stall_of`]), each trigger
+    /// armed at it again. One that cannot be armed again stays armed as it was. An act of
+    /// no time teaches nothing.
+    pub fn acted(&mut self, took: Duration) {
+        if took.is_zero() {
+            return;
+        }
+        let stall_us = stall_of(Some(took));
+        if stall_us == self.stall_us {
+            return;
+        }
+        self.stall_us = stall_us;
+        for (path, file) in &mut self.triggers {
+            if let Ok(again) = arm(path, stall_us) {
+                *file = again;
+            }
+        }
+    }
+
     /// Waits until the host, or a cgroup watched, is short of memory. A trigger whose
-    /// cgroup has gone (POLLERR) is let go of; with none armed, the host's average is read
-    /// instead.
+    /// cgroup has gone (POLLERR) is let go of; with none armed, the host's stall is read
+    /// each window instead.
     pub fn wait(&mut self) -> io::Result<()> {
         use std::io::Read as _;
         use std::os::fd::AsRawFd as _;
         loop {
             self.take_armed();
             if self.triggers.is_empty() {
-                std::thread::sleep(AVERAGE_EVERY);
-                if average()? >= AVERAGE_PERCENT {
+                let before = match self.sampled {
+                    Some(before) => before,
+                    None => stalled()?,
+                };
+                std::thread::sleep(Duration::from_micros(WINDOW_US));
+                let now = stalled()?;
+                self.sampled = Some(now);
+                if now.saturating_sub(before) >= self.stall_us {
                     return Ok(());
                 }
                 continue;
@@ -185,12 +253,19 @@ impl MemoryPressure {
         }
     }
 
-    /// Takes the triggers armed since on cgroups its watches were given, each once.
+    /// Takes the triggers armed since on cgroups its watches were given, each once, armed
+    /// again at the stall that is pressure now where it was armed at another.
     fn take_armed(&mut self) {
         while let Ok((path, file)) = self.armed.try_recv() {
-            if !self.triggers.iter().any(|(watched, _)| *watched == path) {
-                self.triggers.push((path, file));
+            if self.triggers.iter().any(|(watched, _)| *watched == path) {
+                continue;
             }
+            let file = if self.stall_us == stall_of(None) {
+                file
+            } else {
+                arm(&path, self.stall_us).unwrap_or(file)
+            };
+            self.triggers.push((path, file));
         }
     }
 }
@@ -203,7 +278,7 @@ impl PressureWatches {
     pub fn watch(&self, dir: &std::path::Path) -> io::Result<()> {
         use std::io::Write as _;
         let path = dir.join("memory.pressure").display().to_string();
-        let file = arm(&path)?;
+        let file = arm(&path, stall_of(None))?;
         self.armed
             .send((path, file))
             .map_err(|_| io::Error::other("the memory pressure watcher has ended"))?;
@@ -211,9 +286,10 @@ impl PressureWatches {
     }
 }
 
-/// A trigger on `path`, a PSI file: its file, readable (POLLPRI) as the stall passes.
+/// A trigger on `path`, a PSI file, at a stall of `stall_us` a window: its file, readable
+/// (POLLPRI) as the stall passes.
 #[cfg(target_os = "linux")]
-fn arm(path: &str) -> io::Result<std::fs::File> {
+fn arm(path: &str, stall_us: u64) -> io::Result<std::fs::File> {
     use std::io::Write as _;
     use std::os::unix::fs::OpenOptionsExt as _;
     let mut file = std::fs::OpenOptions::new()
@@ -222,20 +298,25 @@ fn arm(path: &str) -> io::Result<std::fs::File> {
         .custom_flags(libc::O_NONBLOCK)
         .open(path)?;
     // With its NUL, as psi.rst's example writes it.
-    file.write_all(format!("some {STALL_US} {WINDOW_US}\0").as_bytes())?;
+    file.write_all(format!("some {stall_us} {WINDOW_US}\0").as_bytes())?;
     Ok(file)
 }
 
-/// The share of the last ten seconds some task was stalled on memory, in percent
-/// (`/proc/pressure/memory`'s `some avg10`).
+/// How long some task has been stalled on memory since the host booted, in µs
+/// (`/proc/pressure/memory`'s `some total`, brought up to date as it is read).
 #[cfg(target_os = "linux")]
-fn average() -> io::Result<f64> {
-    let text = std::fs::read_to_string(MemoryPressure::HOST)?;
+fn stalled() -> io::Result<u64> {
+    total_of(&std::fs::read_to_string(MemoryPressure::HOST)?)
+}
+
+/// The `some total` of a PSI file's `text`.
+#[cfg(any(target_os = "linux", test))]
+fn total_of(text: &str) -> io::Result<u64> {
     text.lines()
         .find_map(|l| l.strip_prefix("some "))
-        .and_then(|l| l.split_whitespace().find_map(|kv| kv.strip_prefix("avg10=")))
+        .and_then(|l| l.split_whitespace().find_map(|kv| kv.strip_prefix("total=")))
         .and_then(|v| v.parse().ok())
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "no `some avg10`"))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "no `some total`"))
 }
 
 /// The host's memory pressure, watched: [`wait`](Self::wait) returns each time it is short
@@ -247,8 +328,12 @@ pub struct MemoryPressure {
     _source: dispatch::Source,
     /// What the source's handler writes each level it hears to.
     levels: io::PipeReader,
-    /// Whether the last level heard is raised (warning or critical).
-    raised: bool,
+    /// Since when the last level heard is raised (warning or critical); none while normal.
+    raised: Option<std::time::Instant>,
+    /// What its listener's last act took ([`acted`](Self::acted)), and what its own last
+    /// look at a word took, for the pace it says a raised pressure again at.
+    acted: Option<Duration>,
+    look: Duration,
 }
 
 /// What has a [`MemoryPressure`] watch more: on macOS, nothing, as it has no cgroups; the
@@ -273,30 +358,44 @@ impl MemoryPressure {
             MemoryPressure {
                 _source: source,
                 levels,
-                raised: false,
+                raised: None,
+                acted: None,
+                look: Duration::ZERO,
             },
             PressureWatches,
         ))
     }
 
     pub fn describe(&self) -> String {
-        format!(
-            "the system's memory pressure (libdispatch), said again every {} s while raised",
-            REPEAT.as_secs()
-        )
+        "the system's memory pressure (libdispatch), said again while raised on D215's pace of what acting on it costs"
+            .to_string()
     }
 
-    /// Waits until the system's memory pressure is raised, or [`REPEAT`] after the last
-    /// time it said so while it still is.
+    /// The most a pressure that goes on waits between words now: its pace ([`repeat_after`])
+    /// while raised, none while it is not.
+    pub fn repeat(&self) -> Option<Duration> {
+        self.raised
+            .map(|since| repeat_after(self.acted, self.look, since.elapsed()))
+    }
+
+    /// Its listener's act on the last word took `took`: the cost its pace weighs. An act
+    /// of no time teaches nothing.
+    pub fn acted(&mut self, took: Duration) {
+        if !took.is_zero() {
+            self.acted = Some(took);
+        }
+    }
+
+    /// Waits until the system's memory pressure is raised, or its pace after the last time
+    /// it said so while it still is.
     pub fn wait(&mut self) -> io::Result<()> {
         use std::io::Read as _;
         use std::os::fd::AsRawFd as _;
         loop {
-            let timeout = if self.raised {
-                i32::try_from(REPEAT.as_millis()).unwrap_or(i32::MAX)
-            } else {
-                -1
-            };
+            // poll(2) counts in milliseconds: a pace rounded up to them, never short of it.
+            let timeout = self.repeat().map_or(-1, |p| {
+                i32::try_from(p.as_nanos().div_ceil(1_000_000)).unwrap_or(i32::MAX)
+            });
             let mut polled = libc::pollfd {
                 fd: self.levels.as_raw_fd(),
                 events: libc::POLLIN,
@@ -304,6 +403,7 @@ impl MemoryPressure {
             };
             // SAFETY: poll(2) on one pollfd of a pipe this holds open.
             let n = unsafe { libc::poll(&mut polled, 1, timeout) };
+            let looked = std::time::Instant::now();
             if n < 0 {
                 let e = io::Error::last_os_error();
                 if e.kind() == io::ErrorKind::Interrupted {
@@ -312,7 +412,8 @@ impl MemoryPressure {
                 return Err(e);
             }
             if n == 0 {
-                // Still raised, as it was REPEAT ago.
+                // Still raised, as it was a pace ago.
+                self.look = looked.elapsed();
                 return Ok(());
             }
             let mut heard = [0u8; 16];
@@ -323,9 +424,15 @@ impl MemoryPressure {
             let Some(&last) = heard.get(..got).and_then(<[u8]>::last) else {
                 continue;
             };
+            let raised = last & (dispatch::WARN | dispatch::CRITICAL) != 0;
             let was = self.raised;
-            self.raised = last & (dispatch::WARN | dispatch::CRITICAL) != 0;
-            if self.raised && !was {
+            self.raised = match (raised, was) {
+                (false, _) => None,
+                (true, Some(since)) => Some(since),
+                (true, None) => Some(looked),
+            };
+            self.look = looked.elapsed();
+            if raised && was.is_none() {
                 return Ok(());
             }
         }
@@ -339,8 +446,12 @@ impl MemoryPressure {
 pub struct MemoryPressure {
     /// Signalled while the system's available memory is low.
     low: std::os::windows::io::OwnedHandle,
-    /// Whether it was low when last looked at.
-    raised: bool,
+    /// Since when it was low when last looked at; none while it was not.
+    raised: Option<std::time::Instant>,
+    /// What its listener's last act took ([`acted`](Self::acted)), and what its own last
+    /// look took, for the pace it says a lasting low again at.
+    acted: Option<Duration>,
+    look: Duration,
 }
 
 /// What has a [`MemoryPressure`] watch more: on Windows, nothing, as on macOS: the system's
@@ -372,33 +483,51 @@ impl MemoryPressure {
             MemoryPressure {
                 // SAFETY: a handle just opened, which nothing else owns.
                 low: unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(raw) },
-                raised: false,
+                raised: None,
+                acted: None,
+                look: Duration::ZERO,
             },
             PressureWatches,
         ))
     }
 
     pub fn describe(&self) -> String {
-        format!(
-            "the system's low memory notification (CreateMemoryResourceNotification), said again every {} s while it lasts",
-            REPEAT.as_secs()
-        )
+        "the system's low memory notification (CreateMemoryResourceNotification), said again while it lasts on D215's pace of what acting on it costs"
+            .to_string()
     }
 
-    /// Waits until the system's memory is low, or [`REPEAT`] after the last time it said so
+    /// The most a lasting low waits between words now: its pace ([`repeat_after`]) while
+    /// low, none while it is not.
+    pub fn repeat(&self) -> Option<Duration> {
+        self.raised
+            .map(|since| repeat_after(self.acted, self.look, since.elapsed()))
+    }
+
+    /// Its listener's act on the last word took `took`: the cost its pace weighs. An act
+    /// of no time teaches nothing.
+    pub fn acted(&mut self, took: Duration) {
+        if !took.is_zero() {
+            self.acted = Some(took);
+        }
+    }
+
+    /// Waits until the system's memory is low, or its pace after the last time it said so
     /// while it still is.
     pub fn wait(&mut self) -> io::Result<()> {
         use windows_sys::Win32::System::Threading::INFINITE;
-        if self.raised {
-            std::thread::sleep(REPEAT);
-            if self.signalled(0)? {
-                // Still low, as it was REPEAT ago.
+        if let Some(pace) = self.repeat() {
+            std::thread::sleep(pace);
+            let looked = std::time::Instant::now();
+            let low = self.signalled(0)?;
+            self.look = looked.elapsed();
+            if low {
+                // Still low, as it was a pace ago.
                 return Ok(());
             }
-            self.raised = false;
+            self.raised = None;
         }
         if self.signalled(INFINITE)? {
-            self.raised = true;
+            self.raised = Some(std::time::Instant::now());
         }
         Ok(())
     }
@@ -552,7 +681,7 @@ mod tests {
     use super::*;
 
     /// The host's memory pressure can be watched where shards' daemon runs: on Linux, a
-    /// trigger armed on the host's memory (a kernel of 6.4 or later), or its averages read;
+    /// trigger armed on the host's memory (a kernel of 6.4 or later), or its stall read;
     /// on macOS, a source made and dropped; on Windows, the system's notification of low
     /// memory opened, unsignalled on a host with a gigabyte available.
     #[test]
@@ -585,10 +714,55 @@ mod tests {
         }
     }
 
-    /// On Windows each low-memory signal is a word, one that lasts said again every
-    /// [`REPEAT`], and none while memory is not low: an event stands in for the system's
-    /// notification, a waitable object signalled while its memory is low
-    /// (CreateMemoryResourceNotification).
+    /// A window's stall is pressure once it is as long as the act it brings took (rent or
+    /// buy): before any act, the kernel's least threshold, a microsecond; an act of 40 ms,
+    /// 40,000 µs; one past the window, the window, the most a threshold may be.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_windows_stall_is_pressure_once_it_costs_what_acting_does() {
+        assert_eq!(stall_of(None), 1);
+        assert_eq!(stall_of(Some(Duration::from_millis(40))), 40_000);
+        assert_eq!(stall_of(Some(Duration::from_nanos(1))), 1);
+        assert_eq!(stall_of(Some(Duration::from_secs(60))), WINDOW_US);
+        assert_eq!(stall_of(Some(Duration::MAX)), WINDOW_US);
+    }
+
+    /// Where no trigger is armed, the stall is read from `some total`, never an average.
+    #[test]
+    fn a_psi_files_stall_so_far_is_its_some_total() {
+        let text = "some avg10=7.50 avg60=1.00 avg300=0.10 total=1234567\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=99\n";
+        assert_eq!(total_of(text).unwrap(), 1_234_567);
+        assert!(total_of("full avg10=0.00 total=5\n").is_err());
+        assert!(total_of("some avg10=7.50\n").is_err());
+    }
+
+    /// A lasting pressure is said again on D215's pace of what acting on it costs and how
+    /// long it has been raised: a 50 ms act, a second raised, 316 ms on; four seconds
+    /// raised, 632 ms; before any act, the watcher's own look's cost stands for it; none
+    /// raised yet, at once.
+    #[test]
+    fn a_lasting_pressure_is_said_again_as_its_act_weighs_against_how_long_it_lasted() {
+        let ms = Duration::from_millis;
+        let us = Duration::from_micros;
+        assert_eq!(
+            repeat_after(Some(ms(50)), us(3), ms(1000)),
+            Duration::from_nanos(316_227_766)
+        );
+        assert_eq!(
+            repeat_after(Some(ms(50)), us(3), ms(4000)),
+            Duration::from_nanos(632_455_532)
+        );
+        assert_eq!(
+            repeat_after(None, us(3), ms(1000)),
+            Duration::from_nanos(2_449_489)
+        );
+        assert_eq!(repeat_after(Some(ms(50)), us(3), Duration::ZERO), Duration::ZERO);
+    }
+
+    /// On Windows each low-memory signal is a word, one that lasts said again on its pace,
+    /// each pause no shorter than the pace at the word before, and none while memory is not
+    /// low: an event stands in for the system's notification, a waitable object signalled
+    /// while its memory is low (CreateMemoryResourceNotification).
     #[cfg(windows)]
     #[test]
     #[allow(clippy::unwrap_used)]
@@ -612,15 +786,19 @@ mod tests {
             };
             assert_ne!(done, 0);
         };
+        let act = Duration::from_millis(20);
         let mut pressure = MemoryPressure {
             low: event.try_clone().unwrap(),
-            raised: false,
+            raised: None,
+            acted: None,
+            look: Duration::ZERO,
         };
         let (said, words) = std::sync::mpsc::channel();
         std::thread::scope(|s| {
             s.spawn(move || {
-                for _ in 0..3 {
+                for _ in 0..5 {
                     pressure.wait().unwrap();
+                    pressure.acted(act);
                     said.send(Instant::now()).unwrap();
                 }
             });
@@ -630,15 +808,20 @@ mod tests {
             );
             low(true);
             let first = words.recv_timeout(Duration::from_secs(5)).unwrap();
-            let again = words.recv_timeout(REPEAT * 3).unwrap();
-            assert!(
-                again.duration_since(first) >= REPEAT,
-                "said again {:?} on",
-                again.duration_since(first)
-            );
+            let mut last = first;
+            for _ in 0..3 {
+                let again = words.recv_timeout(Duration::from_secs(5)).unwrap();
+                let pace = repeat_after(Some(act), Duration::ZERO, last.duration_since(first));
+                assert!(
+                    again.duration_since(last) >= pace,
+                    "said again {:?} on, its pace {pace:?}",
+                    again.duration_since(last)
+                );
+                last = again;
+            }
             low(false);
             assert!(
-                words.recv_timeout(REPEAT * 2).is_err(),
+                words.recv_timeout(Duration::from_secs(2)).is_err(),
                 "a word with memory not low"
             );
             low(true);

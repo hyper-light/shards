@@ -3547,6 +3547,29 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
     directory the node was: one renamed or replaced on the host since, or reached through
     a symlink even to itself, is stale (ESTALE), which has Linux's VFS look it up again
     (`retry_estale`).
+  - *Walked through where it may only be searched* (memory-19, 2026-11-14). A kernel's walk
+    asks only search permission of each directory on the way (path_resolution(7)), so a bind
+    mount reaches `a/b/c/file` through `b` of mode 0111. The share process, the host files'
+    owner, cannot read such a `b` (open(2) O_RDONLY: EACCES), which refused its LOOKUP and
+    everything beneath it. A directory its host refuses the server to read is held to be
+    searched alone (server.rs `Held::Search`, `search_beneath`): Linux's O_PATH, which asks
+    no permission of the directory itself, and macOS's O_SEARCH, its search permission
+    (open(2) of each); names are looked up through it, and the host's own permissions still
+    decide each (a 0000 directory's names are refused EACCES by the host's walk). Nothing
+    more of it is had: its listing reopens it to read (`DirStream::open`, EACCES); its
+    record, which xattr(7) gives only to who may read the file, is unread, and the guest is
+    told the owner of the host's unrecorded files, as the guest's own modes always leave the
+    server its directories (`host_perm`), so only its host makes one so; its attributes are
+    neither read nor set (EACCES), nor its mode, times or owner changed (SETATTR, EACCES: on
+    macOS a chmod through the O_SEARCH descriptor was made, the guard's mutant). A hold is a
+    search alone only while its host refuses the reading: `dir_fd` reopens it to read each
+    time it serves, and keeps that once it can. On Linux it is walked through unwatched, as
+    inotify(7) refuses a watch to who may not read it (D235). Windows: NTFS modes refuse the
+    server nothing (`MODES_REFUSE_OPENS`), so `search_beneath` refuses, as before. macOS's
+    0000 directory stays refused at its LOOKUP (O_SEARCH asks search permission); Linux's is
+    looked up, as its stat is. Held by `an_exec_only_directory_is_walked_through_and_never_listed`
+    (red before on macOS arm64; mutants of the fallback, the attribute and SETATTR refusals,
+    the unrecorded owner and Linux's unwatched walk each red).
   - *A cache, never a limit the guest meets.* Directories' and the guest's open files'
     descriptors sit in an LRU, let go between requests and never during one, and opened
     again along their paths as they are next used: a handle keeps its node, its open flags
@@ -7243,26 +7266,36 @@ always did, so that no invitation's name or state is told to a stranger. Green
 taken for unknown, both killed; macOS arm64); the E2E's asks (`tests/context.rs`: no `--valid`
 refused, one past its lifetime refused) are ROOT's to run.
 
-*Frame bounds (remote-08), owed.* `frame::MAX_FRAME` (4 MiB) is not derived, and it stays in force
-until each bound that replaces it is. A bound per tag, as first proposed, cannot be one: the tags are
-shared by lanes whose payloads differ. `StdinEnd` carries nothing on a command stream and
-`OFFSET + ERRNO` bytes on a managed input lane (`managed/input.rs`); `Exit` carries a four-byte
-status on a command stream and on an exec lane, `OFFSET + ERRNO` on a managed input lane; `Refused`
-carries UTF-8 words on a command stream and a four-byte code on an exec lane (`control/exec.rs`);
-`Stdout` carries a pipe's read on a command stream and an offset-headed record up to
-`managed::RECORD_MOST` on a managed output lane. An `Exec` request's words go to an exec, bounded by
-the host's `sysconf(_SC_ARG_MAX)` (POSIX; on Linux a quarter of RLIMIT_STACK, execve(2)), but a step's
-go to the daemon itself (a move's plan up to `daemon::moves::MAX_PLAN`, which borrows `MAX_FRAME`),
-so ARG_MAX bounds only the first. The derivation is therefore one per lane: each lane's reader hands
-`frame::peek` its own grammar's bound for each tag it takes (none for a tag it does not), and
-`MAX_FRAME` goes once every lane has one. For the command stream: a client's stdin chunk and a
-command's output are reads of `server::READ_MOST` (the pipe buffers cited there); a join `JOIN_MAX`;
-a microVM's ID `MADE_MOST`; resizes, signals, controls and exits their fixed sizes; a request's words
-the larger of the exec's ARG_MAX and its steps' own bounds, which each step must first have
-(`MAX_PLAN`'s is a move plan's own contract, unmade); refusal words a bound the server holds its
-words to, unmade. The exec, socket and MCP lanes already check their payloads after admission
-(`TOLD_MOST`, `ASK_MOST`, `LOG_ASK`), which become their peeks' bounds. Owed: an R02 decision on
-the step and refusal bounds, then the per-lane peeks (an implementer's slice).
+*Frame bounds (remote-08), decided by ROOT and built, 2026-11-14.* `frame::MAX_FRAME`, a 4 MiB bound
+of every frame that no grammar derived, is gone. A bound per tag cannot be one, the tags being shared
+by lanes whose payloads differ (`StdinEnd` carries nothing on a command stream and `OFFSET + ERRNO`
+on a managed input lane; `Exit` four bytes on a command stream and an exec lane and `OFFSET + ERRNO`
+on a managed input lane; `Refused` words on a command stream and a four-byte code on an exec lane;
+`Stdout` a pipe's read on a command stream and an offset-headed record on a managed output lane), so
+the bound is the lane's. `frame::peek` reads a frame's kind and its length as the wire says them;
+each lane's reader holds the frame to what it takes of its kind (`frame::Takes`, `frame::Most`,
+`frame::admit`, `frame::take`), judged from the header before a byte of the payload is waited for,
+and refused typed (`frame::Unframed`: no kind, a kind the lane takes none of, past its bound, a host
+that says nothing of its memory). Each bound is its grammar's where one is: a command stream's
+client (`server::client_takes`) sends a join of `invite::JOIN_MAX`, stdin in a client's reads
+(`server::READ_MOST`, the pipe buffers cited there), its control stream's number (8 bytes), a size
+and a signal (4 bytes each); its daemon (`client::daemon_takes`) sends output in its pipe's reads
+(`READ_MOST`), an exit status (4 bytes) and the microVM it made (`MADE_MOST`). Where the grammar
+gives none, a request's words (an exec's, held again by the machine's own ARG_MAX, past which its
+execve refuses them with E2BIG, or a step's, a move's plan or a build's) and a refusal's or a cut's
+words, the bound is what the reading host can hold now (`shards_ipc::holdable_known`: its available
+memory, else its memory), the rule a snapshot's state is read by (D176, migrate-04); `host_memory`
+moved from the VMM's platform to `shards-ipc` for both. A move's plan read from its stream
+(`daemon::moves::plan_most`) is held to the same, which it carried there as the `ready` step's
+request. `managed::RECORD_MOST` is the largest record a managed lane carries, a log lane's output
+record of one part of the guest's capture: `run::MAX_PAYLOAD`, the run protocol's part, plus
+`control::exec::LOG_OUTPUT_HEAD`. The control lanes already held every frame to its exact length or
+its lane's credit before taking it (`control::lane`, `exec::steer`, `exec::told`, `unix::read_answer`,
+`managed::input`, `input::said`, the driver's output records), and do. Tests:
+`frame::tests::a_lane_takes_its_own_kinds_to_its_own_bounds`, and loopback's
+`a_clients_stdin_past_a_read_is_refused_from_its_header` (a chunk of `READ_MOST + 1` refused from its
+header; with `Stdin` admitted up to the host's memory, as under the old bound, the daemon waits for
+its bytes and the test is refused by its judged wait).
 
 #### A client's authority, judged of what runs and of whom its key is now (remote-01 to 03, 2026-11-13)
 
@@ -9307,12 +9340,57 @@ real-VM kill and stop tests on HVF, KVM and WHP (ROOT's).
 
 ### D188. A host short of memory gets back what its microVMs hold cold of their files (built)
 
-**R03 review memory-06..10 (2026-11-13):** the pressure windows/thresholds,
-fallback cadence, DAX crossover and cached headroom coefficient remain owed to
-ROOT. Their proposed runtime observations, cold starts, typed unavailable states
-and validation commands are in
-`docs/research/measurements/memory-fixes-v1/owed-designs.md`; existing values below
-are not evidence that these policy choices satisfy R03.
+**R03 review memory-06..08, 10 (2026-11-14, implemented; PM M581):** no fixed time
+or level is left in how the host hears its pressure and paces what follows it:
+- *What a pressure is* (memory-07): a PSI trigger's window's stall is pressure once
+  it is as long as the act it brings took last, the daemon's (or a build's) latest
+  give-back from its ask to its answer (`platform::pressure::stall_of`): rent or buy,
+  act once waiting has lost what acting costs, at most twice the best choice in
+  hindsight (Karlin, Manasse, Rudolph and Sleator, "Competitive snoopy caching",
+  Algorithmica 3, 1988). Cold start: no act yet, the kernel's least threshold, 1 µs
+  (`psi_trigger_create`: more than none, at most the window); the first stall is
+  heard and its act teaches the next. Its triggers are armed again as it changes;
+  one that cannot be stays as it was. Replaced lmkd's 140 ms in 2 s (an upstream
+  default, which R03 refuses).
+- *The window* (memory-06): 2 s on Linux is the kernel's bound, the least an
+  unprivileged writer may arm (`psi_trigger_create`: a multiple of 2 s, checked in
+  the averaging work with no real-time thread of its own; Linux 6.4, d82caa273565;
+  read in 7.2-rc4's kernel/sched/psi.c), shards running as its user; it is kept in
+  the Linux adapter alone (`WINDOW_US`). `shards_abi::PRESSURE_WINDOW_US` and
+  `platform::PRESSURE_WINDOW` are gone: nothing else paces itself by it.
+- *A kernel that arms no trigger* (memory-08): the same trigger kept by the daemon,
+  `some total` (the kernel's stall so far, brought up to date as it is read,
+  `psi_show`) read at once as the watch starts and then each window, a window's
+  growth past the learned stall a word. It was avg10 read each 10 s, at 7%. A file
+  that cannot be read ends the watch with its error, never zero pressure.
+- *macOS and Windows* (memory-06): a raised pressure is said again on D215's pace
+  (`shards_abi::pace`, `sqrt(2 c w)`), `c` the last act's cost and `w` how long it
+  has been raised; before any act, the watcher's own look's cost. It was 2 s.
+- *What follows a word* (memory-06): a microVM held short of its budget is told its
+  room again `sqrt(2 c w)` after its last word, `c` what telling it took, `w` how
+  long it had been short (`budget::Held::told_again`); a group's pass, `c` the last
+  pass's time and `w` how long its groups had gone unchanged (members, budget read,
+  short or not: `groups::Paced`); a build's look for late answers and its budget's
+  room, `c` its last look and `w` how long it had one out or was held
+  (`give::watch_words`). A build's patience for its builders' answers is the slowest
+  they have given (W*, `give::Unsaid::patience`), none waited for and none judged
+  before the first; it was a pressure window. The log's pacing (`pressure::Saying`)
+  follows its source's repeat (`Pressure::repeat`), a told pipe's each line a
+  pressure of its own.
+- *A guest's recent growth* (memory-06, PM M466): memory is cold only if it stayed
+  plugged through a whole period of the run's peak, from one give-back to the next,
+  unused; a give-back that finds more plugged than as its period began keeps all
+  (init `came_within`, `begin_period`). It was a mark within 2 s.
+- *A share's budget room* (memory-10): looked at on D215's pace (below).
+- Owed to ROOT (R09/R14, real hosts): the budget E2E
+  `cargo test -p shards --test budget` on a Linux host with cgroup v2 delegation;
+  `cargo test -p shards moves_live --test moved`; `update_under_pressure_stress`
+  (tests/containers.rs, ignored) for PM M466's rounds under the period rule; the
+  PSI threshold's word count and give-backs on a loaded Linux host against lmkd's
+  140 ms; macOS's and Windows' repeat counts under a raised pressure
+  (`SHARDS_PRESSURE` cannot raise the system's: Windows'
+  `each_low_memory_signal_is_a_word_and_one_that_lasts_is_said_again` and a
+  memory-pressure tool's run on a Mac). The DAX crossover (memory-09) stays owed below.
 
 **Review memory-04 (2026-11-13):** the builder's giver retains the latest ROOM
 word while a prior GIVE_BACK or ROOM reply is outstanding, including the explicit
@@ -9331,21 +9409,21 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
 
 **Decided.**
 - **The daemon watches the host's memory pressure** (`platform::MemoryPressure`). On
-  Linux, PSI triggers (Documentation/accounting/psi.rst): some task stalled on memory 140
-  ms in 2 s, Android's lmkd's lowest level (70 ms in 1 s, lmkd.cpp `psi_thresholds`) over
-  the shortest window an unprivileged process may watch (Linux 6.4, d82caa273565); on
+  Linux, PSI triggers (Documentation/accounting/psi.rst): some task stalled on memory as
+  long as its last give-back took, over the shortest window an unprivileged process may
+  watch (Linux 6.4, d82caa273565; memory-07 above, which replaced lmkd's 140 ms); on
   the host's memory, on the daemon's own cgroup, where its microVMs are made, and on each
   scope it makes microVMs in under a user's slice (D183), which may hold them to a budget:
   a cgroup's stall counts in the host's figure against every CPU busy elsewhere, so a
   budget is reached before the host says so. A kernel that arms none of its user's has
-  the host's ten-second average read every ten seconds. On macOS, libdispatch's memory
-  pressure source, said again every 2 s while the pressure stays raised, as a trigger is
-  while its stall goes on. On Windows, the system's low memory notification
+  the same trigger kept from its `some total`, read each window (memory-08). On macOS,
+  libdispatch's memory pressure source, said again on D215's pace while the pressure
+  stays raised (memory-06). On Windows, the system's low memory notification
   (CreateMemoryResourceNotification, `LowMemoryResourceNotification`), signalled while
   its available memory is low (by default 32 MB of each 4 GB, 64 MB at most: its
-  documentation), said again every 2 s while it stays so, as macOS's is. On macOS and
+  documentation), said again on the same pace while it stays so. On macOS and
   Windows a group shards keeps holds microVMs to a budget (D183's slice 3), whose files
-  the daemon reads each pressure window. Where `SHARDS_PRESSURE` names a FIFO (on Windows,
+  the daemon reads on its passes' pace (memory-06). Where `SHARDS_PRESSURE` names a FIFO (on Windows,
   a named pipe), each line written to it is the host's word in place of its kernel's, as
   `SHARDS_BUILD_PRESSURE` tells a build: a test's, as no unprivileged process may raise
   macOS's or Windows' pressure.
@@ -9600,8 +9678,20 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   cgroups, each `memory.high` and `memory.max` short of `max` from its own up, less room
   past it than its own reads need: what its host's kernel charges ahead on each CPU, the
   read in flight and two read-ahead windows, as init's least room has them
-  (`fs::headroom`, 2.25 MiB on 4 CPUs, looked at again a hundred looks' time after the
-  last). Within that room it keeps its copy, for the run's next reader. Held so short, a
+  (`fs::headroom`, 2.25 MiB on 4 CPUs). It looks at the budgets again on D215's pace
+  (`shards_abi::pace`, `sqrt(2 c w)`; memory-10, R03): `c` its last look's own cost on this
+  host, `w` how long its verdicts had been right as that look was made, a look's room on
+  the same side of a read's need as what it had left of the look before. A look that
+  finds a verdict wrong (a budget set or lowered, room taken or freed by another process,
+  its guest among them) restarts `w`, so looks come close together while the room moves
+  across what reads need and spread out while it stays clear: a 10 µs look right for 10 s
+  is next due 14.1 ms on, right for an hour 0.27 s on. It was a look's hundredfold time
+  (`LOOKS_APART`), a chosen share of the share's time. Cold start: no look yet, it looks
+  at once; a file that cannot be read is no bound, as before. Owed to ROOT (R14): the
+  share's look count and CPU over PM M318's held reads, against the hundredfold rule's,
+  `cargo test -p shards --test budget a_microvm_held_to_a_budget_reads_through_fuse_at_the_pace_of_reads_held_to_none`
+  on a Linux host with cgroup v2 delegation. Within that room it keeps its copy, for the
+  run's next reader. Held so short, a
   lone microVM's reads took 0.81 times their time with none at p50 with the copy dropped,
   1.9 with the tree's, and 1.01 with it kept until its budgets had no room left, its slice
   then within half a mebibyte of its budget; under a budget with room, a run's later reads
@@ -18705,6 +18795,40 @@ cause of that build's stall left no evidence, so what the next one leaves is fix
       - `memory_that_comes_slowly_is_waited_for`, which now also checks the 4 s it teaches;
       - `memory_that_stops_coming_is_asked_for_again` and
         `memory_that_never_comes_is_given_up`, both on a learned 2 s.
+  - **No count of tries, no millisecond (R03 review memory-12, memory-13; 2026-11-14,
+    PM M581).** The grower gave up after exactly one ask again, a boolean, and paced its
+    looks at a chosen 1 ms. Now (init plug.rs `come`, `pace`):
+    - *Its looks* at MemTotal follow D215's pace (`shards_abi::pace`, shared): `sqrt(2 c
+      w)` of a look's own cost and the wait since the ask or the block before, the first
+      at once; a pause held past its pace counts as one pace of the grower's own time. 10
+      µs looks 4 s into a wait pause 8.9 ms. `oom_said`'s reread is paced the same way.
+    - *Past W* with none come* it asks again, each such window, with no count: the driver
+      answers `-ETXTBSY`, `-EBUSY` and `-ENOMEM` with its retry timer and is still trying
+      (drivers/virtio/virtio_mem.c `virtio_mem_run_wq`, read in 7.2-rc4), so a delayed
+      driver stays pending. At the first such window the build's hold is lifted, so it runs
+      on what it has while it waits past any block its guest has seen (D137's never held
+      at a hold nothing raises); a block that comes holds it again as it grows.
+    - *It ends typed* (R04, `Came`): `All`; `Broken`, the kernel's own "marking device
+      broken", which the driver says as it stops for good (its `default:` case), looked
+      for at each window and, before W* is known, at each look; `Refused`, an ask its
+      control page refused; `Superseded`, its device's request lowered below the ask by
+      another (its host, a give-back); `Unread`, MemTotal unreadable. Each but
+      `Superseded` lifts the hold and says what came.
+    - *A builder's reply reader* (memory-12): past its deadline it looks at what has
+      come at once (`platform::wait_readable` with a timeout of none, poll(2) and WSAPoll
+      alike), never a 1 ms read timeout of its own; before it, it waits for what comes by
+      then.
+    - Tested in crates/init (Linux): `memory_that_comes_after_a_third_ask_is_waited_for`,
+      `a_driver_that_stopped_for_good_is_given_up` (and before W* is known),
+      `a_refused_ask_and_a_lowered_request_end_the_wait`,
+      `the_growers_looks_follow_their_cost_against_the_wait`, and the cases above on the
+      fake's paced clock; in shards, `a_giver_past_its_deadline_looks_at_once`.
+      Mutation-checked: a give-up at the second window (the third-ask case fails), a 1 ms
+      pace, a 1 ms read floor (200 looks past a deadline took over 100 ms).
+    - Owed to ROOT: `cargo test -p shards --test build a_builders_memory_is_plugged_as_fast_as_its_jobs_take_it`
+      and `a_build_held_short_of_memory_has_its_builder_give_back`, real builders on HVF
+      and KVM, and a delayed-driver fault (the VMM's device answering BUSY for three
+      windows) for the third-window case live.
 - **A killed build left its builder running.** A builder's VM ended as its build dropped
   it, or as its guest powered off on its connection closing: a killed `shards build image` drops
   nothing, and a guest held at its memory hears nothing. The VM now ends as its `--attach`
@@ -19622,7 +19746,7 @@ progress; D222's estimators).
 | `KEEP` (shards-api demand.rs tests) | 600 s | kept, a test's input | past the test's longest step |
 | `BODY_MOST` (daemon/engine.rs) | 8 MiB | `build::holdable()` | moby v28.5.1 api/server/httputils ReadJSON (unbounded) |
 | `MAX_PATH` (daemon/moves.rs) | 4096 | cited | Linux 6.18 include/uapi/linux/limits.h l. 13 |
-| `MAX_PLAN` (daemon/moves.rs) | 16 MiB | `shards_remote::frame::MAX_FRAME` | the `ready` step's request frame (cli/moves.rs) |
+| `MAX_PLAN` (daemon/moves.rs), now `plan_most` | 16 MiB | what the host can hold now (`shards_ipc::holdable_known`, remote-08) | the `ready` step's request frame (cli/moves.rs), held to the same (D180 *Frame bounds*) |
 | `MAX_XATTRS` (daemon/moves.rs) | 65536 | `XATTR_LIST_MAX / 6` = 10922 | limits.h l. 17; xattr.h l. 33 (`os2.`); listxattr(2) |
 | `MAX_XATTR` (daemon/moves.rs) | 64 KiB | cited | limits.h l. 16 (and the name's 255, l. 15) |
 | `EMPTIED` (daemon/parents.rs) | 10 s | D215's judge on its record (`EMPTIED`, learned): cold, while the leaf's processes live; past W*, a look each W* (ROOT's (3) slice 4) | the leaf's processes' CPU (`shards_api::Watch`); it was `platform::IDLE_VM_CPU`, `progressed` (PM M357) |
@@ -27256,6 +27380,10 @@ virtio 1.3 §5.11's `VIRTIO_FS_F_NOTIFICATION` unused), and what a FUSE server n
     Confine-08: a native watch admission error refuses the directory's LOOKUP with
     its native errno before any guest reference is published or counted. A later
     lookup retries admission; no failed directory is silently retained as watched.
+    Memory-19: EACCES alone admits it unwatched, a directory the share process may not
+    read (inotify(7): the caller needs read permission), which it may only walk through
+    (D38, *Walked through where it may only be searched*); no unprivileged program on its
+    host is told of its changes, and its guest sees them as its entries expire (1 s).
   - *macOS:* one FSEvents stream of its shares' roots (shards-apple `fsevents`, CoreServices
     bound when first used), file events, the changes the process itself makes for the guest
     left out (`IgnoreSelf`), told at once (latency 0, `NoDefer`).
@@ -27843,7 +27971,7 @@ has taken the pinned key, as many at once as the endpoint's stream limit allows;
   announced (the run's metadata `capacity`) is where its records start, not their bound: the
   endpoint grows a stream's record as the daemon's learner asks (`managed::Producer::admit`,
   QUIC's window as it was), so a lane reads a record up to the managed wire's own bound, one
-  frame's (`managed::RECORD_MOST`, `frame::MAX_FRAME` less the record's offset), its buffer
+  frame's (`managed::RECORD_MOST`, `run::MAX_PAYLOAD` plus a log record's head, remote-08), its buffer
   reserved at the admitted record and grown, fallibly, to what comes; one past that bound
   breaks the protocol. A lane that held the first admission as its bound closed the connection
   `Protocol` once an owned output's record grew (ROOT's KVM run of `log_lanes`, 2026-11-13;

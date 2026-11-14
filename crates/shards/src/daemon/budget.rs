@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex, PoisonError};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use super::health::Wait;
 use super::{Daemon, RunState, Threads, lock, log};
@@ -402,6 +402,11 @@ struct Held {
     /// Whether its last word said its room was short, nothing told it since: it holds
     /// at what it uses, and the host's passes take what it holds cold.
     short: bool,
+    /// Since when its words have said it short, and when its last word was told and what
+    /// telling it took, from the look at its room to its init's answer: what it is told
+    /// again on ([`Held::told_again`]).
+    short_since: Option<Instant>,
+    told_at: Option<(Instant, Duration)>,
     /// The budget it was last told its room under, its cgroup's and its bytes: one set
     /// anew is said, whether it leaves room or not.
     under: Option<(PathBuf, u64)>,
@@ -422,6 +427,20 @@ struct Held {
 }
 
 impl Held {
+    /// When a microVM held short is told its room again (D188): D215's pace
+    /// (`shards_abi::pace`), `sqrt(2 c w)` after its last word, `c` what telling it took and
+    /// `w` how long it had been held short as it was told, which stands for how long it is
+    /// still to be: a guest held within the least room a run goes on in asks for nothing its
+    /// host can hear, so room its budget comes to have again is looked for, as a look's cost
+    /// weighs against hearing it late (R03; it was a pressure window). None where it is not
+    /// short, or was never told.
+    fn told_again(&self) -> Option<Instant> {
+        let since = self.short_since.filter(|_| self.short)?;
+        let (at, took) = self.told_at?;
+        let pace = shards_abi::pace::pause(took, at.saturating_duration_since(since), Duration::MAX);
+        Some(at.checked_add(pace).unwrap_or(at))
+    }
+
     /// VM process `pid`, its run begun in cgroup `dir`, followed from now: what it holds
     /// resident of files read at once, before a budget set later takes any of it back.
     /// Read only once a budget was told, a budget set a mebibyte short of a lone microVM
@@ -432,6 +451,8 @@ impl Held {
             dir,
             told: None,
             short: false,
+            short_since: None,
+            told_at: None,
             under: None,
             telling: false,
             again: false,
@@ -547,27 +568,27 @@ impl<D: Disk> Daemon<D> {
     /// a budget set or changed, or met, a microVM held to it gone.
     fn watch_budgets<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>) {
         loop {
-            // While a microVM is held short of its budget, its room is told it again each
-            // window: a guest held within the least room a run goes on in asks for nothing
-            // its host can hear, and a budget it is held under is not met.
-            let short: Vec<u32> = lock(&self.budgets.held)
+            // While a microVM is held short of its budget, its room is told it again on its
+            // pace (`Held::told_again`): a guest held within the least room a run goes on in
+            // asks for nothing its host can hear, and a budget it is held under is not met.
+            let again: Vec<(u32, Instant)> = lock(&self.budgets.held)
                 .iter()
-                .filter(|(_, h)| h.short)
-                .map(|(&pid, _)| pid)
+                .filter_map(|(&pid, h)| h.told_again().map(|at| (pid, at)))
                 .collect();
+            let next = again.iter().map(|&(_, at)| at).min();
             let woke = {
                 let mut woke = lock(&WOKE);
                 while woke.fired.is_empty() && woke.ran.is_empty() && woke.left.is_empty() {
-                    if short.is_empty() {
+                    let Some(next) = next else {
                         woke = WAKE.wait(woke).unwrap_or_else(PoisonError::into_inner);
-                    } else {
-                        let window = shards_vmm::platform::PRESSURE_WINDOW;
-                        let (w, waited) = super::timed(Some(window), || WAKE.wait_timeout(woke, window))
-                            .unwrap_or_else(PoisonError::into_inner);
-                        woke = w;
-                        if waited.timed_out() {
-                            break;
-                        }
+                        continue;
+                    };
+                    let left = next.saturating_duration_since(Instant::now());
+                    let (w, waited) = super::timed(Some(left), || WAKE.wait_timeout(woke, left))
+                        .unwrap_or_else(PoisonError::into_inner);
+                    woke = w;
+                    if waited.timed_out() || left.is_zero() {
+                        break;
                     }
                 }
                 std::mem::take(&mut *woke)
@@ -575,7 +596,12 @@ impl<D: Disk> Daemon<D> {
             if self.closed.load(Ordering::SeqCst) {
                 return;
             }
-            let mut tell: HashSet<u32> = short.into_iter().collect();
+            let now = Instant::now();
+            let mut tell: HashSet<u32> = again
+                .into_iter()
+                .filter(|&(_, at)| at <= now)
+                .map(|(pid, _)| pid)
+                .collect();
             for pid in woke.ran {
                 if let Some(dir) = cgroup_of(pid) {
                     self.watch_chain(&dir);
@@ -782,6 +808,7 @@ impl<D: Disk> Daemon<D> {
     /// it was ended, left its microVM within a budget nothing said (PM M391). Nothing where
     /// it has no budget and was told of none.
     fn tell_room_now(&self, pid: u32) {
+        let began = Instant::now();
         let Some(dir) = lock(&self.budgets.held).get(&pid).map(|h| h.dir.clone()) else {
             return;
         };
@@ -886,6 +913,12 @@ impl<D: Disk> Daemon<D> {
         if let Some(h) = lock(&self.budgets.held).get_mut(&pid) {
             h.told = told;
             h.short = short;
+            h.short_since = if short {
+                h.short_since.or(Some(began))
+            } else {
+                None
+            };
+            h.told_at = Some((Instant::now(), began.elapsed()));
             h.under = under;
         }
         // Said as it is first held, as its budget is set anew, as it falls short and as it
@@ -1010,6 +1043,35 @@ mod tests {
     use super::*;
 
     const MIB: u64 = 1 << 20;
+
+    /// A microVM held short is told its room again D215's `sqrt(2 c w)` after its last word,
+    /// `c` what telling it took and `w` how long it had been held short then: told in 20 ms
+    /// after 10 s short, 632 ms on (a pressure window would have been 2 s whatever the
+    /// tell cost); one not short, or never told, is told again only as its budget moves.
+    #[test]
+    fn a_microvm_held_short_is_told_again_as_telling_it_weighs_against_how_long_it_was_short() {
+        let t0 = Instant::now();
+        let mut h = Held {
+            dir: PathBuf::from("/sys/fs/cgroup/a"),
+            told: Some(-1),
+            short: true,
+            short_since: Some(t0),
+            told_at: None,
+            under: None,
+            telling: false,
+            again: false,
+            most: 0,
+            pressed: super::super::reclaim::Gave::default(),
+        };
+        assert_eq!(h.told_again(), None, "never told");
+        let at = t0 + Duration::from_secs(10);
+        h.told_at = Some((at, Duration::from_millis(20)));
+        assert_eq!(h.told_again(), Some(at + Duration::from_nanos(632_455_532)));
+        h.short_since = Some(at);
+        assert_eq!(h.told_again(), Some(at), "just fallen short: told again at once");
+        h.short = false;
+        assert_eq!(h.told_again(), None, "not short");
+    }
 
     /// A cgroup of a fake hierarchy: its budget's two files and what it holds.
     fn cgroup(dir: &Path, high: Option<u64>, max: Option<u64>, current: u64, stat: &str) {
@@ -1325,6 +1387,8 @@ mod tests {
                 dir: PathBuf::from("/sys/fs/cgroup/a.slice"),
                 told: None,
                 short: false,
+                short_since: None,
+                told_at: None,
                 under: None,
                 telling: false,
                 again: false,

@@ -1074,6 +1074,9 @@ impl Switch {
                 crate::setup::write_sysctl(&format!("net.ipv4.conf.{scope}.rp_filter"), "1")
                     .map_err(io::Error::other)?;
             }
+            // What the domain opens is tracked here (gate_policy): its UDP flows kept as
+            // the host's network process keeps them, not this new namespace's 30 s.
+            crate::setup::keep_udp_flows().map_err(io::Error::other)?;
             Ok((ns, route, nftables))
         })?;
         let create = NLM_F_REQUEST | NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL;

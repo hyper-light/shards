@@ -603,14 +603,7 @@ impl Serve {
         let mut any = false;
         loop {
             // SAFETY: recv(2) of no bytes into no buffer.
-            let n = unsafe {
-                libc::recv(
-                    fd,
-                    std::ptr::null_mut(),
-                    0,
-                    libc::MSG_DONTWAIT | libc::MSG_TRUNC,
-                )
-            };
+            let n = unsafe { libc::recv(fd, std::ptr::null_mut(), 0, libc::MSG_DONTWAIT | libc::MSG_TRUNC) };
             if n <= 0 {
                 break;
             }
@@ -789,10 +782,64 @@ fn whole(sock: &OwnedFd, buf: &mut Vec<u8>) -> Option<usize> {
     usize::try_from(n).ok().filter(|&n| n > 0)
 }
 
+/// sock_diag's attribute for an IPv6 socket's IPV6_V6ONLY (include/uapi/linux/inet_diag.h).
+const INET_DIAG_SKV6ONLY: u16 = 11;
+/// Where a sock_diag message's attributes begin: its nlmsghdr (16) and inet_diag_msg (72),
+/// each a multiple of NLMSG_ALIGNTO already.
+const DIAG_ATTRS_AT: usize = 16 + 72;
+/// nlattr's type bits, without NLA_F_NESTED and NLA_F_NET_BYTEORDER (linux/netlink.h).
+const NLA_TYPE_MASK: u16 = 0x3fff;
+
+/// What sock_diag says of an IPv6 socket's IPV6_V6ONLY.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum V6Only {
+    /// Dual-stack: at `[::]` it takes IPv4's too, as `::ffff:a.b.c.d` (ipv6(7)).
+    Unset,
+    /// IPv6's alone, whatever its address.
+    Set,
+    /// Not said, or not as a bool: a kernel before Linux 4.2 (commit 8220ea232431, which
+    /// says it of every listening or unconnected socket), or a message malformed. Never
+    /// guessed either way: such a socket is not taken for IPv4.
+    Unsaid,
+}
+
+/// INET_DIAG_SKV6ONLY of one sock_diag message: its attributes walked by their own
+/// lengths, each checked against the message's (inet_diag_msg_attrs_fill puts it for an
+/// AF_INET6 socket in TCP_LISTEN or TCP_CLOSE, as an unconnected UDP socket is).
+fn v6only(m: &[u8]) -> V6Only {
+    let mut at = DIAG_ATTRS_AT;
+    while let Some(&[a, b, c, d]) = m.get(at..).and_then(|r| r.first_chunk::<4>()) {
+        let len = usize::from(u16::from_ne_bytes([a, b]));
+        let kind = u16::from_ne_bytes([c, d]) & NLA_TYPE_MASK;
+        let value = match (at.checked_add(4), at.checked_add(len)) {
+            (Some(start), Some(end)) if len >= 4 => m.get(start..end),
+            _ => None,
+        };
+        let Some(value) = value else {
+            return V6Only::Unsaid;
+        };
+        if kind == INET_DIAG_SKV6ONLY {
+            return match value {
+                [0] => V6Only::Unset,
+                [1] => V6Only::Set,
+                _ => V6Only::Unsaid,
+            };
+        }
+        let Some(next) = at.checked_add(len.next_multiple_of(4)) else {
+            return V6Only::Unsaid;
+        };
+        at = next;
+    }
+    V6Only::Unsaid
+}
+
 /// The port of `lo..=hi` at which one sock_diag message (an nlmsghdr, then an
 /// inet_diag_msg: family, state, timer, retransmits; its sport and dport, big-endian; its
-/// source and destination, 16 bytes each) names a socket of `family`, at `addr` or every
-/// address, connected to no peer.
+/// source and destination, 16 bytes each) names a socket of `family` that takes IPv4's at
+/// `addr`, connected to no peer: IPv4's at `addr` or every address; IPv6's at `addr` mapped,
+/// which an IPV6_V6ONLY socket cannot bind (inet6_bind's EINVAL) nor become once bound
+/// (IPV6_V6ONLY's EINVAL), or at `[::]` where sock_diag says it is not IPV6_V6ONLY
+/// (network-07: a published port comes in by IPv4 alone, `pre` and `chosen`'s DNAT).
 fn taken(m: &[u8], family: libc::c_int, addr: Ipv4Addr, (lo, hi): (u16, u16)) -> Option<u16> {
     let be16 = |at: usize| {
         m.get(at..at + 2)
@@ -812,7 +859,9 @@ fn taken(m: &[u8], family: libc::c_int, addr: Ipv4Addr, (lo, hi): (u16, u16)) ->
     };
     let at = match src {
         IpAddr::V4(a) => a.is_unspecified() || a == addr,
-        IpAddr::V6(a) => a.is_unspecified() || a.to_ipv4_mapped() == Some(addr),
+        IpAddr::V6(a) => {
+            a.to_ipv4_mapped() == Some(addr) || (a.is_unspecified() && v6only(m) == V6Only::Unset)
+        }
     };
     at.then_some(sport)
 }
@@ -850,7 +899,13 @@ mod tests {
         let (a, b) = (Ipv4Addr::new(10, 0, 0, 2), Ipv4Addr::new(10, 0, 1, 2));
         let ingress = vec![
             (a, vec![((6, 7000, 7002), (6, 7000, 7002))]),
-            (b, vec![((6, 7001, 7001), (6, 7001, 7001)), ((17, 7000, 7002), (17, 7000, 7002))]),
+            (
+                b,
+                vec![
+                    ((6, 7001, 7001), (6, 7001, 7001)),
+                    ((17, 7000, 7002), (17, 7000, 7002)),
+                ],
+            ),
         ];
         let contests = contested(&ingress);
         assert_eq!(
@@ -860,7 +915,10 @@ mod tests {
                 candidates: vec![(a, (6, 7001, 7001)), (b, (6, 7001, 7001))],
             }]
         );
-        assert_eq!(uncontested((6, 7000, 7002), &contests), [(7000, 7000), (7002, 7002)]);
+        assert_eq!(
+            uncontested((6, 7000, 7002), &contests),
+            [(7000, 7000), (7002, 7002)]
+        );
         assert_eq!(uncontested((6, 7001, 7001), &contests), []);
         assert_eq!(uncontested((17, 7000, 7002), &contests), [(7000, 7002)]);
         // At the port space's end, and a mapped port.
@@ -896,15 +954,146 @@ mod tests {
             m
         };
         let v4 = libc::AF_INET;
-        assert_eq!(taken(&msg(2, 8080, 0, &[0, 0, 0, 0]), v4, addr, (8080, 8081)), Some(8080));
-        assert_eq!(taken(&msg(2, 8081, 0, &[10, 0, 0, 2]), v4, addr, (8080, 8081)), Some(8081));
-        assert_eq!(taken(&msg(2, 8080, 0, &[127, 0, 0, 1]), v4, addr, (8080, 8080)), None);
-        assert_eq!(taken(&msg(2, 8081, 0, &[0, 0, 0, 0]), v4, addr, (8080, 8080)), None);
-        assert_eq!(taken(&msg(2, 8080, 443, &[0, 0, 0, 0]), v4, addr, (8080, 8080)), None);
+        assert_eq!(
+            taken(&msg(2, 8080, 0, &[0, 0, 0, 0]), v4, addr, (8080, 8081)),
+            Some(8080)
+        );
+        assert_eq!(
+            taken(&msg(2, 8081, 0, &[10, 0, 0, 2]), v4, addr, (8080, 8081)),
+            Some(8081)
+        );
+        assert_eq!(
+            taken(&msg(2, 8080, 0, &[127, 0, 0, 1]), v4, addr, (8080, 8080)),
+            None
+        );
+        assert_eq!(
+            taken(&msg(2, 8081, 0, &[0, 0, 0, 0]), v4, addr, (8080, 8080)),
+            None
+        );
+        assert_eq!(
+            taken(&msg(2, 8080, 443, &[0, 0, 0, 0]), v4, addr, (8080, 8080)),
+            None
+        );
         let mapped = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 10, 0, 0, 2];
         let v6 = libc::AF_INET6;
-        assert_eq!(taken(&msg(10, 8080, 0, &[0; 16]), v6, addr, (8080, 8080)), Some(8080));
-        assert_eq!(taken(&msg(10, 8080, 0, &mapped), v6, addr, (8080, 8080)), Some(8080));
+        let mut dual = msg(10, 8080, 0, &[0; 16]);
+        dual.extend_from_slice(&[0; 32]);
+        dual.extend_from_slice(&v6only_attr(0));
+        assert_eq!(taken(&dual, v6, addr, (8080, 8080)), Some(8080));
+        assert_eq!(
+            taken(&msg(10, 8080, 0, &mapped), v6, addr, (8080, 8080)),
+            Some(8080)
+        );
+    }
+
+    /// sock_diag's INET_DIAG_SKV6ONLY, as inet_diag_msg_attrs_fill puts it: a u8, its
+    /// netlink attribute padded to 4.
+    fn v6only_attr(set: u8) -> Vec<u8> {
+        let mut a = 5u16.to_ne_bytes().to_vec();
+        a.extend_from_slice(&INET_DIAG_SKV6ONLY.to_ne_bytes());
+        a.extend_from_slice(&[set, 0, 0, 0]);
+        a
+    }
+
+    /// network-07: web listens on `[::]:7000` with IPV6_V6ONLY, api on `0.0.0.0:7000`, both
+    /// candidates for published (IPv4) 7000. Expect: web's socket takes nothing of IPv4's,
+    /// so api's is chosen; a dual-stack one, or one the kernel says nothing of (before Linux
+    /// 4.2), or says malformed, is taken only where the kernel says it is not IPv6-only.
+    #[test]
+    fn an_ipv6_only_socket_takes_no_ipv4() {
+        let addr = Ipv4Addr::new(10, 0, 0, 2);
+        let wild6 = |tail: &[u8]| {
+            let mut m = vec![0u8; 16];
+            m.extend_from_slice(&[10, 10, 0, 0]);
+            m.extend_from_slice(&7000u16.to_be_bytes());
+            m.extend_from_slice(&[0; 2 + 16 + 16 + 4 + 8 + 20]);
+            assert_eq!(m.len(), 88);
+            // INET_DIAG_SHUTDOWN first, as the kernel puts it.
+            m.extend_from_slice(&[5, 0, 8, 0, 0, 0, 0, 0]);
+            m.extend_from_slice(tail);
+            m
+        };
+        let v6 = libc::AF_INET6;
+        assert_eq!(taken(&wild6(&v6only_attr(1)), v6, addr, (7000, 7000)), None);
+        assert_eq!(taken(&wild6(&v6only_attr(0)), v6, addr, (7000, 7000)), Some(7000));
+        assert_eq!(taken(&wild6(&[]), v6, addr, (7000, 7000)), None, "unsaid");
+        assert_eq!(
+            taken(&wild6(&v6only_attr(2)), v6, addr, (7000, 7000)),
+            None,
+            "no bool"
+        );
+        // An attribute running past its message.
+        let mut cut = wild6(&v6only_attr(0));
+        cut.truncate(cut.len() - 4);
+        assert_eq!(taken(&cut, v6, addr, (7000, 7000)), None, "cut");
+        let mut long = wild6(&[]);
+        long.extend_from_slice(&[0xff, 0, 11, 0, 0]);
+        assert_eq!(taken(&long, v6, addr, (7000, 7000)), None, "past its end");
+        // Chosen: api, the IPv4 listener, though web is declared first.
+        let mut choices = Choices::new(vec![Contest {
+            from: (6, 7000, 7000),
+            candidates: vec![
+                (addr, (6, 7000, 7000)),
+                (Ipv4Addr::new(10, 0, 1, 2), (6, 7000, 7000)),
+            ],
+        }])
+        .unwrap();
+        let web: Vec<u16> = taken(&wild6(&v6only_attr(1)), v6, addr, (7000, 7000))
+            .into_iter()
+            .collect();
+        choices.choose(0, &[web, vec![7000]]);
+        let to: Vec<_> = choices.chosen().iter().map(|&(_, to, _, _)| to).collect();
+        assert_eq!(to, [Ipv4Addr::new(10, 0, 1, 2)]);
+    }
+
+    /// network-07, on this host's kernel: `[::]` sockets, one IPV6_V6ONLY and one dual-stack,
+    /// TCP listening and UDP bound, each on a port of its own; sock_diag asked who takes
+    /// IPv4. Expect: the dual-stack ones, never the IPv6-only ones.
+    #[test]
+    fn sock_diag_names_the_ipv6_only_sockets_takers_of_no_ipv4() {
+        let sock = |kind: libc::c_int, v6only: libc::c_int| -> (OwnedFd, u16) {
+            use std::os::fd::FromRawFd as _;
+            // SAFETY: socket(2), setsockopt(2), bind(2), listen(2) and getsockname(2) of a
+            // socket of this test's, on buffers of their sizes.
+            unsafe {
+                let fd = libc::socket(libc::AF_INET6, kind | libc::SOCK_CLOEXEC, 0);
+                assert!(fd >= 0, "{}", io::Error::last_os_error());
+                let fd = OwnedFd::from_raw_fd(fd);
+                let len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+                let on = (&raw const v6only).cast();
+                assert_eq!(
+                    libc::setsockopt(fd.as_raw_fd(), libc::IPPROTO_IPV6, libc::IPV6_V6ONLY, on, len),
+                    0
+                );
+                let mut sa: libc::sockaddr_in6 = std::mem::zeroed();
+                sa.sin6_family = libc::AF_INET6 as libc::sa_family_t;
+                let salen = std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t;
+                assert_eq!(libc::bind(fd.as_raw_fd(), (&raw const sa).cast(), salen), 0);
+                if kind == libc::SOCK_STREAM {
+                    assert_eq!(libc::listen(fd.as_raw_fd(), 1), 0);
+                }
+                let mut got = salen;
+                assert_eq!(
+                    libc::getsockname(fd.as_raw_fd(), (&raw mut sa).cast(), &raw mut got),
+                    0
+                );
+                (fd, u16::from_be(sa.sin6_port))
+            }
+        };
+        let ask = hostbind::diag_socket().unwrap();
+        for (kind, proto) in [(libc::SOCK_STREAM, 6u8), (libc::SOCK_DGRAM, 17)] {
+            let (_only, only) = sock(kind, 1);
+            let (_dual, dual) = sock(kind, 0);
+            let found = listened(&ask, Ipv4Addr::new(10, 0, 0, 2), (proto, 1, u16::MAX));
+            assert!(
+                found.binary_search(&dual).is_ok(),
+                "{proto}: dual-stack {dual} not found"
+            );
+            assert!(
+                found.binary_search(&only).is_err(),
+                "{proto}: IPv6-only {only} taken for IPv4"
+            );
+        }
     }
 
     /// network-04: a UDP port's holders handed it back and forth past the zones a u16
@@ -989,7 +1178,11 @@ mod tests {
                 assert_ne!(chosen[0].3, chosen[1].3, "two holders share a zone");
             }
             choices.choose(0, &[vec![7000], vec![]]);
-            let to: Vec<_> = choices.chosen().iter().map(|&(from, to, _, _)| (from, to)).collect();
+            let to: Vec<_> = choices
+                .chosen()
+                .iter()
+                .map(|&(from, to, _, _)| (from, to))
+                .collect();
             assert_eq!(to, [((proto, 7000, 7000), web)], "{proto}");
         }
     }
@@ -1024,7 +1217,11 @@ mod tests {
         // 9001's holder keeps it while it listens, though web, declared first, listens too.
         choices.choose(1, &[vec![9000], vec![9001]]);
         choices.choose(1, &[vec![9000, 9001], vec![9001]]);
-        let to: Vec<_> = choices.chosen().iter().map(|&(from, to, _, _)| (from, to)).collect();
+        let to: Vec<_> = choices
+            .chosen()
+            .iter()
+            .map(|&(from, to, _, _)| (from, to))
+            .collect();
         assert_eq!(to[1..], [((6, 9000, 9000), web), ((6, 9001, 9001), api)]);
     }
 
@@ -1056,8 +1253,16 @@ mod tests {
         ports.sort_unstable();
         let ask = hostbind::diag_socket().unwrap();
         let found = listened(&ask, Ipv4Addr::LOCALHOST, (6, 1, u16::MAX));
-        let missing: Vec<u16> = ports.iter().copied().filter(|p| found.binary_search(p).is_err()).collect();
-        assert!(missing.is_empty(), "{} of 512 not found: {missing:?}", missing.len());
+        let missing: Vec<u16> = ports
+            .iter()
+            .copied()
+            .filter(|p| found.binary_search(p).is_err())
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "{} of 512 not found: {missing:?}",
+            missing.len()
+        );
     }
 
     /// The filter notifies of the native ABI's bind and listen alone.

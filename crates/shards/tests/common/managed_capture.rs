@@ -217,7 +217,7 @@ impl Handler for Client {
             }
             self.inbound.extend_from_slice(&bytes);
             loop {
-                let (tag, bytes) = match frame::take(&mut self.inbound) {
+                let (tag, bytes) = match frame::take(&mut self.inbound, |_| Some(frame::Most::Holdable)) {
                     Ok(Some(record)) => record,
                     Ok(None) => break,
                     Err(error) => {

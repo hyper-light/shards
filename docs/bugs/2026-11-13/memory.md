@@ -132,6 +132,8 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 
 **Status (2026-11-13):** owed to ROOT: `cargo test -p shards moves_live --test moved` and the corresponding pressure/cold-start variants. Unchanged pending a locally derived design; see finding 06 in `docs/research/measurements/memory-fixes-v1/owed-designs.md`.
 
+**Status (2026-11-14):** fixed in 2275e3829 (red, as each guard mutated back to its window: `pressure::saying::a_pressure_is_said_as_it_doubles`, `daemon::budget::tests::a_microvm_held_short_is_told_again_as_telling_it_weighs_against_how_long_it_was_short`, `daemon::groups::tests::the_groups_passes_follow_their_cost_against_how_long_groups_stayed_as_they_are`, `build::give::tests::a_cold_pass_judges_no_ask_and_its_first_answer_teaches_its_patience`, `platform::pressure::tests::a_lasting_pressure_is_said_again_as_its_act_weighs_against_how_long_it_lasted`, init `plug::tests::memory_that_came_within_a_peaks_period_is_kept`). The 2 s stays only as Linux's unprivileged trigger bound; D188, PM M581. Owed to ROOT: `cargo test -p shards moves_live --test moved`, `update_under_pressure_stress` (tests/containers.rs, ignored) for PM M466's rounds, macOS/Windows repeat counts under a raised system pressure.
+
 ### memory-07 — P3 / medium — PSI's stall threshold and fallback percentage are inherited constants
 
 **Location:** `crates/vmm/src/platform/pressure.rs:22` and `:32`.
@@ -145,6 +147,8 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 **Fix/test direction:** Derive the trigger level using the host's observed pressure and reclamation outcomes within authority; retain typed unavailable-data/cold-start states. Feed multiple pressure/reclaim histories and assert the chosen trigger is derived, not always this pair of values.
 
 **Status (2026-11-13):** owed to ROOT: `cargo test -p shards --test budget` and the corresponding pressure/cold-start variants. Unchanged pending a locally derived design; see finding 07 in `docs/research/measurements/memory-fixes-v1/owed-designs.md`.
+
+**Status (2026-11-14):** fixed in 2275e3829 (red `platform::pressure::tests::a_windows_stall_is_pressure_once_it_costs_what_acting_does` with lmkd's 140 ms put back): the stall is the last give-back's cost (rent or buy), cold the kernel's least threshold; D188, PM M581. Owed to ROOT: `cargo test -p shards --test budget` on a loaded Linux host with cgroup v2 delegation, the trigger's word count and give-backs against lmkd's 140 ms.
 
 ### memory-08 — P3 / medium — PSI fallback polls at a chosen ten-second interval
 
@@ -160,6 +164,8 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 
 **Status (2026-11-13):** owed to ROOT: `cargo test -p shards --test budget` and the corresponding pressure/cold-start variants. Unchanged pending a locally derived design; see finding 08 in `docs/research/measurements/memory-fixes-v1/owed-designs.md`.
 
+**Status (2026-11-14):** fixed in 2275e3829 (red `platform::pressure::tests::a_psi_files_stall_so_far_is_its_some_total` with avg10 put back): no trigger, the same trigger kept from `some total` read at once and each window; D188, PM M581. Owed to ROOT: the fallback on a kernel before 6.4 (or a refused trigger) with short pressure pulses.
+
 ### memory-09 — P3 / medium — DAX's minimum file size is a portable fixed benchmark result
 
 **Location:** `crates/vmm/src/devices/virtio/fs/server.rs:105`, applied at `:1266`.
@@ -173,6 +179,8 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 **Fix/test direction:** Learn or derive the crossover on the deployment host, accounting for cold read, warm reread, overwrite, memory and core scheduling. Verify the selection responds to measured cost curves and has a documented cold-start state, rather than asserting a global 1 MiB threshold.
 
 **Status (2026-11-13):** owed to ROOT: `cargo test -p shards --test budget` and the corresponding pressure/cold-start variants. Unchanged pending a locally derived design; see finding 09 in `docs/research/measurements/memory-fixes-v1/owed-designs.md`.
+
+**Status (2026-11-14):** owed to ROOT: design: the share learns the crossover where it runs. Its own READ handling time per byte and per request (served by the server) is set against SETUPMAPPING's handling time plus the guest's fault cost per mapped page, by file-size class, and the least size whose DAX cost falls under FUSE's becomes the cutoff. The uncertainty is held as the classes' spread. Cold start: FUSE, which works everywhere, with a typed `Calibrating` state that maps a share of eligible inodes to sample DAX. A calibration that fails or is unsupported stays FUSE with its reason. Existing inodes keep `fuse_dax_dontcache`'s lifecycle, and no measurement changes write permission. The guest fault cost cannot be seen by the VMM, so the measurement owed is D189's file-size/working-tree harness (PM M338's) on HVF, KVM x86_64 and WHP, plus KVM arm64 through the L1 path: per class, cold read, warm reread and overwrite, and resident memory, n ≥ 20 per class with p50/p90/p99/max, against the learner's chosen cutoff. Also `cargo test -p shards --test containers` (the DAX_SMALLEST tests) once the learner lands.
 
 ### memory-10 — P3 / medium — FUSE budget refresh uses an arbitrary 100x coefficient
 
@@ -188,6 +196,8 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 
 **Status (2026-11-13):** owed to ROOT: `cargo test -p shards --test budget` and the corresponding pressure/cold-start variants. Unchanged pending a locally derived design; see finding 10 in `docs/research/measurements/memory-fixes-v1/owed-designs.md`.
 
+**Status (2026-11-14):** fixed in 2275e3829 (red `devices::virtio::fs::headroom::tests::a_look_is_due_as_its_cost_weighs_against_how_long_its_verdicts_held` with the hundredfold rule put back): D215's pace of the look's cost and how long its verdicts held; D188, PM M581. Owed to ROOT: `cargo test -p shards --test budget a_microvm_held_to_a_budget_reads_through_fuse_at_the_pace_of_reads_held_to_none` and the share's look count and CPU against the hundredfold rule's (R14).
+
 ### memory-11 — P3 / medium — Builder memory reserve still includes a fixed 64 MiB slack
 
 **Location:** `crates/init/src/plug.rs:36`, consumed at `:1053`.
@@ -201,6 +211,8 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 **Fix/test direction:** Derive slack from observed uncharged kernel/overshoot cost with cold-start uncertainty, while preserving real pinned-kernel invariants. Exercise distinct CPU counts and cold growth workloads, observing reserve adequacy and cost rather than asserting 64 MiB.
 
 **Status (2026-11-13):** owed to ROOT: `cargo test -p shards --test build a_builders_memory_is_plugged_as_fast_as_its_jobs_take_it` and the corresponding pressure/cold-start variants. Unchanged pending a locally derived design; see finding 11 in `docs/research/measurements/memory-fixes-v1/owed-designs.md`.
+
+**Status (2026-11-14):** owed to ROOT: design (derived, not landed): SLACK becomes two terms. (a) The kernel's own bound on how far a cgroup charges past `memory.high` before its synchronous reclaim: per online CPU, two charges of max(MEMCG_CHARGE_BATCH = 64 pages, the largest folio a charge takes, `hpage_pmd_size` where THP is on). The source is mm/memcontrol.c `try_charge_memcg` (`memcg_nr_pages_over_high > MEMCG_CHARGE_BATCH`) and include/linux/pagemap.h `MAX_PAGECACHE_ORDER`, read in 7.2-rc4. (b) The kernel's uncharged growth beside the build, learned by the grower at each `memory.events` wake as the largest rise of `MemTotal − MemFree − memory.current` between wakes, less the memmap of blocks plugged between them. Cold start: (a) alone plus the kernel's uncharged use at the hold (its use so far standing for what it adds). Failure: unread files keep the last reserve, never zero. Measurement owed: `cargo test -p shards --test build a_builders_memory_is_plugged_as_fast_as_its_jobs_take_it` and PM M392's 8-compiler build on 32 vCPUs, with the guest's `memory.peak − memory.high` overshoot and the uncharged rise logged at each wake, on HVF and KVM at 4, 16 and 32 vCPUs. The reserve's terms must cover each observed maximum.
 
 ### memory-12 — P3 / medium — One-millisecond pacing and read-timeout floors remain chosen constants
 
@@ -216,6 +228,8 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 
 **Status (2026-11-13):** owed to ROOT: `cargo test -p shards-init plug::tests::` and the corresponding pressure/cold-start variants. Unchanged pending a locally derived design; see finding 12 in `docs/research/measurements/memory-fixes-v1/owed-designs.md`.
 
+**Status (2026-11-14):** fixed in 2275e3829 (red `build::builder::tests::a_giver_past_its_deadline_looks_at_once` with the 1 ms floor put back, 200 looks over 100 ms; red `plug::tests::the_growers_looks_follow_their_cost_against_the_wait` with a 1 ms pace): grower and oom_said on D215's pace, the reply reader looks at once past its deadline; D137, PM M581. Owed to ROOT: `cargo test -p shards --test build a_builders_memory_is_plugged_as_fast_as_its_jobs_take_it` on HVF and KVM.
+
 ### memory-13 — P3 / medium — Hotplug still gives up after exactly one retry
 
 **Location:** `crates/init/src/plug.rs:1327–1346`.
@@ -229,6 +243,8 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 **Fix/test direction:** Judge actual driver/VM progress and typed inability, with explicit cold-start/held states, rather than a fixed attempt budget. Extend the existing fake Grows cases with a third-window successful completion and a genuine terminal failure so the two are distinguished by evidence.
 
 **Status (2026-11-13):** owed to ROOT: `cargo test -p shards-init plug::tests::` and the corresponding pressure/cold-start variants. Unchanged pending a locally derived design; see finding 13 in `docs/research/measurements/memory-fixes-v1/owed-designs.md`.
+
+**Status (2026-11-14):** fixed in 2275e3829 (red `plug::tests::memory_that_comes_after_a_third_ask_is_waited_for` with a give-up at the second window put back): asked again each window past W*, no count; ended typed by the driver's own "marking device broken" (`a_driver_that_stopped_for_good_is_given_up`), a refused ask, a lowered request or MemTotal unread; D137, PM M581. Owed to ROOT: a delayed-driver fault live (the device answering BUSY three windows) on a real builder.
 
 ### memory-14 — P3 / medium — Growth and unplug retention use a fixed 2x working-memory multiplier
 
@@ -244,6 +260,8 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 
 **Status (2026-11-13):** owed to ROOT: `cargo test -p shards --test build a_build_held_short_of_memory_has_its_builder_give_back` and the corresponding pressure/cold-start variants. Unchanged pending a locally derived design; see finding 14 in `docs/research/measurements/memory-fixes-v1/owed-designs.md`.
 
+**Status (2026-11-14):** owed to ROOT: design (derived, not landed): both the grower's ask and a give-back's keep rest on the run's own use (`memory.current`), not on MemTotal for one and use for the other. Each holds the least whole blocks whose hold (`needed_for`) keeps twice the use. The factor is the delta-t median estimator (Gott, Nature 363, 1993: what a run has grown so far stands for what it grows more), the estimator D215's `w` already uses. That makes it an estimator, not a tuning knob, and its cold start is the same. A factor learned from realized peaks is biased low, because the hold caps what a run can show (censored), so it is not learned naively. Peak protection and ALIGN rounding are kept. Measurement owed, to validate the median: realized episode ratios (final peak over use at the first ask of a growth episode) on real builds and runs, `cargo test -p shards --test build a_build_held_short_of_memory_has_its_builder_give_back` and `a_builders_memory_is_plugged_as_its_build_needs_it` on HVF and KVM. Ask counts and stall per build, before and after, n ≥ 20, with p50/p90/p99/max.
+
 ### memory-15 — P3 / medium — Builders always boot with a chosen 512 MiB floor
 
 **Location:** `crates/shards/src/build/builder.rs:51`, used at `:727`; fallback/floor `crates/shards/src/build/mod.rs:819–826`.
@@ -257,6 +275,8 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 **Fix/test direction:** Derive the boot requirement from the pinned guest's actual startup resource need and observed cold starts, account for uncertainty, and keep unavailable-data state explicit. Exercise startup on different supported architectures/CPU counts and verify the selected amount has evidence beyond the literal.
 
 **Status (2026-11-13):** owed to ROOT: `cargo test -p shards --test build a_builders_memory_is_plugged_as_its_build_needs_it` and the corresponding pressure/cold-start variants. Unchanged pending a locally derived design; see finding 15 in `docs/research/measurements/memory-fixes-v1/owed-designs.md`.
+
+**Status (2026-11-14):** owed to ROOT: design (not landed): the builder's boot memory is learned per home and per kernel/init identity. As its grower starts, init records the guest's startup need (MemTotal − MemFree at its first hold, less the memmap of its boot memory, a 64th) beside `builder-memory`'s NEEDED. The next boot takes the least whole blocks holding that need plus the reserve (memory-11) and the first growth's working room. Cold start, with no record for this identity: boot with the ceiling, all it may have, which always boots; it costs one cold boot's page structures (a 64th of the ceiling, PM M82/M193). Never a guessed floor. Host memory unreadable is a typed refusal unless a record exists. Measurement owed: cold-home and warm-home builder boot time and VM-process footprint on HVF, KVM x86_64, KVM arm64 (L1) and WHP, at 4 and 32 vCPUs, n ≥ 20 each with p50/p90/p99/max, for the ceiling cold start and the learned boot. Also `cargo test -p shards --test build a_builders_memory_is_plugged_as_its_build_needs_it` across cold homes.
 
 ### memory-16 — P4 / low — Head deduplication stops considering new kinds after 64
 
@@ -299,6 +319,20 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 **Red test:** `refused_lookups_leave_the_held_count_unchanged` and `refused_creates_leave_the_held_count_unchanged` at abecce1a5 run real framed requests through Slot and Server, then invoke the device's extracted EIO replacement. Compare held nodes, lookup references, handles, cached descriptors and pins before and after a loop. The replacement is the production path; the unit test does not cause an actual Windows/Unix mapping failure.
 
 **Fix direction:** Retire exactly the acquisitions in an unpublished successful reply through the existing FUSE FORGET/RELEASE operations. Preserve references and handles from earlier accepted replies, and preserve the filesystem effects of completed mutations. Amend D197's until-unmount limitation.
+
+### memory-19 — P2 / high — An exec-only host directory cannot be walked through
+
+**Author:** ROOT, assigned 2026-11-14 (parity with Docker's bind mounts).
+
+**Status (2026-11-14):** fixed in e1618c17f (the walk) and c96f0b4d7 (Linux: walked through unwatched) (red `an_exec_only_directory_is_walked_through_and_never_listed` at ba3e0fc31, macOS arm64: the walk `a/b/c/file` refused `Err(-13)`). Green on ROOT's merge 5a4979bf8 with main fe645ca13: fs:: 90/90 on macOS arm64 (adas-mac-studio-3) and 93/93 on Linux x86_64 (adacachy2), shards-vmm clippy clean on both; mutants red on both (no search fallback: the walk refused EACCES again; no SETATTR refusal), and on Linux the watch that refuses EACCES. Landed by ROOT from the stopped lane's commits. Owed to ROOT (real VMs): a `-v` share holding `a/b/c/file` with `a/b` mode 0111 on the host, read in the guest as the run's user (`cat /share/a/b/c/file` prints it; `ls /share/a/b` refused, Permission denied; `chmod 755 /share/a/b` refused), on Hypervisor.framework, KVM and WHP.
+
+**Location:** `crates/vmm/src/devices/virtio/fs/server.rs`, `dir_fd` (each directory opened to be read) and `node_owner`'s path through it; `server_unix.rs` `open_beneath`; `docs/design/architecture.md` D38.
+
+**Defect:** A LOOKUP of a host directory the share process may search but not read (mode 0111, exec-only) is refused EACCES: `node_owner` reaches the directory's descriptor through `dir_fd`, which opens it `O_RDONLY | O_DIRECTORY`, which its mode refuses its owner. Every name beneath it is refused with it. The guest cannot walk through an exec-only host directory to a file it may open, which a Docker bind mount allows: the kernel asks only search permission of a directory a walk passes through (path_resolution(7)).
+
+**Fix direction (ROOT):** LOOKUP of an exec-only directory succeeds for traversal, as the kernel's own permission model would, without granting a listing (READDIR still refused) and without widening anything else.
+
+**Red test:** a share with `a/b(0111)/c/file`: the file opened and read through `a/b/c/file`, and listing `a/b` refused.
 
 ## Checked and found sound
 

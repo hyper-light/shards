@@ -5054,9 +5054,9 @@ mod tests {
         let server = identity::Identity::generate().unwrap();
         let owner = identity::Identity::generate().unwrap();
         let capacity = record_capacity(&["agent".into()], &[0]).unwrap();
-        // The most one endpoint record holds, as its data frame carries it (its offset, then
-        // the record, within one frame): checked against an endpoint of its own.
-        let most = shards_remote::frame::MAX_FRAME - size_of::<u64>();
+        // The most one endpoint record holds (its RECORD_MOST): checked against an endpoint of
+        // its own.
+        let most = shards_remote::managed::RECORD_MOST;
         {
             let (_, _endpoint, producer, _control) =
                 bound(&server, owner.fingerprint(), Channel::Stdout, capacity);
