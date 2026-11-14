@@ -2711,14 +2711,49 @@ mod tests {
     /// A daemon of a build from before slots (D185) that serves a home, its `daemon.sock`
     /// listening, is refused typed, never asked; a home with none, or with a socket no
     /// process listens at any more, has none. Red before: the client sent it its request.
+    ///
+    /// The daemon is a process of its own, as one is: this test binary run again, listening
+    /// until it is killed. A listener of this process's would be held, after it let go of it,
+    /// by a child another test forks until that child's exec closes it (CLOEXEC), and would
+    /// still take a connection: 13 of 20 runs of the whole lib on Linux (adacachy2, 6e093346c).
     #[cfg(unix)]
     #[test]
     fn a_pre_slots_daemon_is_refused_never_asked() {
+        use std::io::{BufRead as _, Read as _, Write as _};
+        const DAEMON: &str = "SHARDS_PRE_SLOTS_DAEMON";
+        if let Some(sock) = std::env::var_os(DAEMON) {
+            let _listening = std::os::unix::net::UnixListener::bind(sock).unwrap();
+            let mut out = std::io::stdout();
+            writeln!(out, "listening").unwrap();
+            out.flush().unwrap();
+            let _ = std::io::stdin().read_to_end(&mut Vec::new());
+            return;
+        }
         let home = shards_testdir::TempDir::new("pre-slots").unwrap();
         assert_eq!(super::no_pre_slots_daemon(&home), Ok(()));
-        let listening = std::os::unix::net::UnixListener::bind(home.join("daemon.sock")).unwrap();
+        let mut daemon = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::a_pre_slots_daemon_is_refused_never_asked",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(DAEMON, home.join("daemon.sock"))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let said = std::io::BufReader::new(daemon.stdout.take().unwrap())
+            .lines()
+            .map_while(Result::ok)
+            // libtest, run with one thread, starts the line with the test's name.
+            .any(|line| line.ends_with("listening"));
+        assert!(said, "the stand-in daemon ended before it listened");
         assert_eq!(super::no_pre_slots_daemon(&home), Err(super::PreSlotsDaemon));
-        drop(listening);
+        // Reaped, its descriptors are closed: none other ever held its listener.
+        daemon.kill().unwrap();
+        daemon.wait().unwrap();
         assert!(home.join("daemon.sock").exists());
         assert_eq!(super::no_pre_slots_daemon(&home), Ok(()));
     }
