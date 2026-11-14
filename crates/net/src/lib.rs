@@ -11,6 +11,7 @@ pub mod bridge;
 pub mod ca;
 #[cfg(target_os = "linux")]
 pub mod confine;
+mod decode;
 #[cfg(windows)]
 mod dial;
 /// The answers its resolver gives a network's members (D46): shards-dns, shared with the
