@@ -51,6 +51,8 @@ Priority mapping for the user's requested notification: **P0 critical; P1 high; 
 
 **Catching test sketch:** `attach(1, endpoint, 0); map(1, 0, u64::MAX, 0, READ|WRITE|MMIO); translate(endpoint, 0, 4, true)`. Assert a typed refusal or bounded correct result. Run the old path only in a resource-bounded child with a completion watchdog; do not allow the infinite allocation into the shared test process.
 
+**Status (2026-11-13):** fixed in 2d17282b6765a51ccc70572a30a0ce552ebcc3a0 (red `full_span_mapping_translates_an_msi_without_overflow`, Kiln r4; green IOMMU tests 11/11 and VMM clippy, r6, macOS arm64). Evidence: `docs/research/measurements/device-fixes/README.md`. Real-VM MSI validation owed to ROOT.
+
 ### devices-03 — P1 / high — IOMMU response descriptors control an infallible host allocation
 
 **Location:** `crates/vmm/src/devices/virtio/iommu.rs:813` and `:827`.

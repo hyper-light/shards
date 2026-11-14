@@ -94,6 +94,8 @@ ROOT's live twin should let a resolve/dial a controlled provider, attempt b's di
 
 ### inithex-03 — P1 / high — failed MCP bridge waits forever for open harness stdin
 
+**Status (2026-11-13):** fixed in f7d83f73a (red `bridge_peer_end_releases_open_stdin`, `bridge_output_failure_releases_open_stdin`; Linux x86_64 r2/r4; [evidence](../../research/measurements/inithex-fixes/README.md)).
+
 **Location at head:** `crates/init/src/mcp.rs:201–205` (join at 203); entry at 182.
 
 **Defect:** The bridge joins its blocking stdin-copy thread before closing stdout or returning a socket/output error, so a harness waiting for a response cannot observe the connection's end.
