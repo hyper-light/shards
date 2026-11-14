@@ -261,3 +261,10 @@ regression and root-owned /dev/null), and `cargo clippy -j 4 -p shards-vmm
 --all-targets -- -D warnings` passes (3.04s). Same macOS arm64 runner/target;
 no VM. Logs: runs01-followup-red.log and runs01-followup-green.log. R01-R16
 and live guest/other-platform limits above remain explicit.
+
+Further clean Shards merged compile gates before rejected pushes: 6f20a3f0
+(r32, 10.64s) and af947732 (r33, 13.67s), `cargo check -j 4 -p shards --tests`.
+The runner attempted its ff-push immediately after these gates, using its
+existing GitHub SSH authorization; both were rejected because main had moved.
+No force. These are compile successes, not main landings. The native-owner
+follow-up's fixing commit is 8b2505f42; its source gate was af947732 plus patch.

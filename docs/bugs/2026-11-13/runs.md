@@ -43,6 +43,8 @@ A later uid-1000 run sees the same bind. `node_owner` uses `.ok().flatten() ... 
 
 **Status (2026-11-13):** fixed in 978d29f03d6084ec91d6d3010bd15b4e62c1302b (red `owner_metadata_failures_refuse_creation_and_lookup`, kiln r4); green regression +49 server tests and shards-vmm all-target clippy on macOS arm64 (r7). Evidence: `docs/research/measurements/runs-fixes/README.md`; real-VM fault/permissions validation owed to ROOT.
 
+**Status (2026-11-13), follow-up:** fixed in 8b2505f423ac560dc2e853e6f6b394bfbe356429 (red `unrecorded_nondevice_nodes_keep_the_runs_user`, r34; green same test +50 server tests and VMM clippy r35). This corrects a regression introduced by 978d29f03: unrecorded native nondevices use the run user, while devices retain root. Guest-created native kinds without owner-xattr support retain their existing persistence exception; it is not claimed fixed by the ordinary-file metadata work.
+
 ### runs-02 — P1 / high — A renamed daemon home can make its daemon mutate another home's state
 
 **At head:** `crates/shards/src/daemon.rs:2477`; effects at `:2267`, `:2287–2292`; request path retention at `crates/ipc/src/slots/fifo.rs:275`.
