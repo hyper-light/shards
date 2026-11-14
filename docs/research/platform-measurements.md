@@ -17758,6 +17758,9 @@ revision before comparing a changed API/implementation.
 
 ### M430. Devices plugged into a running microVM: what each step costs, and what a bus of slots costs a boot (D214)
 
+- **Correctness follow-up, 2026-11-13 (devices-02, D154).** A full-span IOMMU mapping overflow was reproduced by a focused unit test (red 1 failed; green 11 IOMMU tests passed, VMM clippy clean) on adas-mac-studio-3.local, macOS arm64. See `measurements/device-fixes/README.md` for revisions and Kiln runs. These unit results do not revalidate M430's timings or hardware MSI behavior.
+
+
 - **Question.** What does a disk plugged into a running microVM cost, from the host's call to
   its guest's first read of it, and its unplug, from the guest's remove to the host's? And
   what does a PCI bus of empty slots, which a machine must have to be plugged into, cost its
@@ -23757,6 +23760,14 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   R10 red on main's code on both hosts, green after; R11 Unix and Windows written, macOS and
   Linux run; R15, R16 implementer, its runner targets removed after landing.
 
+- **Control-02 follow-up (2026-11-13).** A full AF_UNIX listen backlog retained init's
+  blocking-connect worker after its controller reset the lane. The focused regression was
+  red at bcc79fccd (Timeout, released by accept for cleanup), green at 3c28b68a7
+  (EAGAIN, worker joined) on adacachy2 Linux 7.3.3 x86_64; all six lane tests and
+  shards-init clippy clean. D251 now refuses full backlogs without a retry or deadline;
+  [commands and R01–R16 account](measurements/control-fixes-v1/README.md). Real-VM
+  aborted-lane resource counts remain ROOT's.
+
 ### M560. CI's musl test job: its build and its tests as steps of their own, each limit derived (M420, M547)
 
 - **Question.** In CI run 43513425954 (main 70eba153d) the x86_64-unknown-linux-musl test job
@@ -24012,3 +24023,12 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   clippy -D warnings for shards-vm-process on macOS, x86_64-unknown-linux-gnu,
   aarch64-unknown-linux-musl (zig) and x86_64-pc-windows-msvc (xwin). R11, R15: no VM run here;
   the api_image and managed_output KVM loop is ROOT's. R16: the fetched logs (116 MB) removed.
+
+### M564. MCP bridge termination with the harness stdin writer retained (D254)
+
+Linux x86_64, adacachy2, 2026-11-13: real-pipe unit regressions at e74696f22
+failed peer-end and stdout-error completion while stdin remained open; the old
+copy test passed (1 pass, 2 failures). At f7d83f73a all 7 MCP tests and shards-init
+all-target clippy passed. Normal socket half-close still delivers later stdin.
+This is functional evidence, not a performance measurement or real-VM result.
+[Commands, output excerpts, policy and owed coverage](measurements/inithex-fixes/README.md).

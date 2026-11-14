@@ -15851,6 +15851,14 @@ Docker on Linux does, which refuses several of them for want of a VM.
 
 ### D154. KVM on arm64, and a host's PCI function passed through (VFIO)
 
+**Review devices-02 (2026-11-13).** An IOMMU MAP has an inclusive end
+(virtio 1.3 §5.13.6.6), including `u64::MAX`. Translation bounds the
+remaining inclusive span by the nonempty request before adding the final
+byte, so a full-space MMIO mapping cannot overflow to a zero-length part.
+No timeout, cache, allocation limit or platform-specific path is added.
+Red/green evidence: `docs/research/measurements/device-fixes/README.md`.
+
+
 D13 planned KVM on arm64 Linux hosts, and none ran a VM: the KVM backend was x86_64's.
 D153's test path for VFIO is a guest given the test function, passing it to a guest of
 its own, on an arm64 Mac (D132): shards' VM process inside that guest is an arm64 Linux
@@ -28878,7 +28886,11 @@ Hex's acceptance (its INTERFACE.md and red tests, step11-a-socket-lane) is held 
   before connecting anything comes back as `SOCKET_REFUSED` (53: id, errno), as `EXEC_FAILED`
   does.
 - *shards-init's leg* (`crates/init/src/lanes.rs`). Each ask runs on a thread of its own, so a
-  connect waiting on a full backlog holds that lane alone. The thread resolves the path inside
+  connect is nonblocking: a full Unix listen backlog returns Linux's EAGAIN, carried as
+  `Unreached`, instead of retaining a worker after its controller abandons the ask
+  (control-02, [red/green record](../research/measurements/control-fixes-v1/README.md)).
+  connect(2)'s AF_UNIX rule supplies this refusal; no retry or deadline is chosen.
+  The thread resolves the path inside
   the command's root (`/proc/PID/root` opened `O_PATH`, then openat2 `RESOLVE_IN_ROOT |
   RESOLVE_NO_MAGICLINKS`, `crate::inroot`), so no link the command planted leads elsewhere. It
   connects through the descriptor (`/proc/self/fd/N`), so the path is not resolved again and
@@ -29280,6 +29292,12 @@ one form all nine take, and no other.
    preamble naming the member; the VM process hands each to its run host unprompted
    (`LANE_ACCEPTED`). Nothing of it is an address: the member's network grants and its
    default deny are untouched.
+   The stdio bridge owns stdin, stdout and the socket in one nonblocking poll loop
+   (inithex-03). Its explicit halves read, drain and close: a normal socket half-close
+   closes stdout once drained while stdin remains usable; a peer gone or I/O failure
+   ends without joining a blocked stdin thread. PIPE_BUF bounds each pipe write;
+   readiness events are its only wait, no runtime deadline or polling interval.
+   [Red/green pipe tests and alternatives](../research/measurements/inithex-fixes/README.md).
 2. *On the link: one lane per connection, an exec's in all but its start.* The controller asks
    with a lane whose first frame is `Mcp`, the run, its generation and the member, as an exec's
    ask names them. The endpoint numbers it and hands its host the ask with two streams, step

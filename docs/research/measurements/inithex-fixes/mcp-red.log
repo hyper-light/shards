@@ -1,0 +1,10 @@
+Source e74696f22; kiln r2; adacachy2 Linux x86_64.
+CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=$HOME/g121-tmp/fix-inithex-v1/target nice -n 10 cargo test -p shards-init bridge_ -j 4
+running 3 tests
+test mcp::tests::the_bridge_copies_both_ways_each_ending_as_its_source_ends ... ok
+test mcp::tests::bridge_output_failure_releases_open_stdin ... FAILED
+test mcp::tests::bridge_peer_end_releases_open_stdin ... FAILED
+stdout failure waited for still-open harness stdin
+the bridge waited for still-open harness stdin
+test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 272 filtered out; finished in 1.00s
+exit_code 101
