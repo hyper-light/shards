@@ -4331,7 +4331,9 @@ the first.
 
 | Literal | Was | Now | Source |
 |---|---|---|---|
-| `PERIOD` (`HOLD_PERIOD`, vm/mod.rs) | 100 ms | 100 ms, an upstream default; its derivation decided and owed ("Its period", below) | kernel/sched/sched.h l. 445-447 (`default_bw_period_us`), Linux 1590cf03 |
+| `PERIOD` (`HOLD_PERIOD`, vm/mod.rs) | 100 ms | none: each limit's period derived as it is set, vcpus × g over its share (`granule::period`; "Its period, in force", below) | the machine's vCPUs; g learned where it runs (`platform::granule`) |
+| `SOONEST` (vm/hold.rs) is `granule::LEAST_WAIT` | 1 ms | 1 ms, cited, g cold | as `SOONEST` |
+| the group's look with no quota (vm/hold.rs `govern_group`) | `PERIOD`, 100 ms | the group's own `cpu.max` period, which `max` keeps (`group::Budget::period`) | the group's `cpu.max` (kernel/sched/core.c `cpu_period_quota_parse`: `max 100000` where unset) |
 | `BUSY` (vm/hold.rs) | 10 ms | none: `(allowed - used) / vcpus`; a group's, the lesser of that and `room_lasts` | the vCPUs' own count; the group's charged rate (`GroupCpu::charge`) |
 | `SOONEST` (vm/hold.rs) | 1 ms | 1 ms, cited | kernel/sched/core.c l. 10054 (`min_bw_quota_period_us`); kernel/sched/fair.c l. 7179 (`min_cfs_rq_runtime`); Documentation/scheduler/sched-bwc.rst l. 94-95, 179-186 |
 | the machine's busy mark (vm/hold.rs `govern`) | `used * 2 >= share` | `busy_next(before, used, share)`: `used + (used - before) >= share` | the machine's own last two periods |
@@ -4401,6 +4403,51 @@ default, which R03 holds insufficient alone.
     `cargo test -p shards --test boot a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket` (or the
     run D191's measurement drives) at the rates above, reading each limit's "derived … from g"
     line beside the kicks a second and guest progress; then the switch, with `RATED`'s period.
+- *Its period, in force* (2026-11-14, migrate-09: ROOT's brief, "finish wiring the hold's
+  period to the learned value, so no fixed period is left in production"; the kick-cost
+  measurement stays owed, below). `HOLD_PERIOD` and `vm::hold_period` are gone.
+  - *The derivation, shared* (`platform::granule::period`): vcpus × g × `MILLI_PER_CPU` over
+    the rate, in u128, refused typed (`granule::Outgrown`) where it outgrows a u64 of ns,
+    never saturated. Windows' priority governor holds one thread's half a CPU by the same
+    function (platform-11).
+  - *When*: as each limit is set (`Hold::set`), from g as the process knows it then
+    (`granule::g`, `step().g(LEAST_WAIT)`); the governor holds that limit's periods over it
+    (`State::period`) until the next limit. g learned later (a wait's lateness) moves the next
+    limit's period, never one already answered, so a period said is the one held.
+  - *Cold start*: the first limit measures the thread clock's step on the setting thread
+    (two of its steps at most: µs where clocks count ns, 31.25 ms on Windows, PM M294); no
+    wait has been counted, so g is `LEAST_WAIT` (1 ms) or the clock's step where coarser. A
+    clock that cannot be read is typed `Unclocked` and g its wake's (the debug line says so).
+    A g learned low only shortens the period: the share is then held on average across
+    periods, as the debt carries, never over more than it gives.
+  - *Let be* (no rate, or every vCPU's whole CPU): the period is g, the formula at a share of
+    every vCPU, the finest the governor resolves, which `RATED`'s period must still say (it is
+    never none, `shards_abi::rate`).
+  - *Refused*: a period past a u64 of ns refuses the limit, the hold as it was
+    (`Running::hold_rate`'s error, `REFUSED` on the wire).
+  - *Told*: the direct path's `RATED <milli> <period>` carries each limit's period (D255);
+    the image channel moves the period from `Started` to each `RATED` answer (version 31,
+    `wire::Rated`), the VM telling the daemon its answer as the managed machine's line
+    (`shards_abi::rate::answer`, read back by api_run's `rated_of`). `ImageGuest::rate_period()`
+    is the last answer's, none before one (Hex's learner reads it there; its re-vendor owed).
+  - *The group's look*: a group with no quota looks again each period of its own `cpu.max`,
+    which `max` keeps and the daemon now writes with it (`group::Budget`, `groups::CpuMax`);
+    a budget never written refuses `hold_group`, typed, never a picked look.
+  - Held (red/green): vmm `hold::tests::a_limit_is_held_over_the_period_derived_from_g` and
+    `the_governor_holds_over_the_limits_period` (red with the period in force at 100 ms: the
+    hold returned no period, and a thread at half a CPU held 50 ms past its 10 ms period's
+    share), `granule::tests::a_derived_period_resolves_its_share`, `group::tests`'s
+    `a_budget_written_is_read_through_another_mapping`, api `wire::tests::a_rates_period_reads_back_as_its_vm_said_it`,
+    `session::tests::a_rates_answer_is_kept_for_its_awaited_ask_alone`, shards
+    `api_run::tests::a_rates_answer_reads_as_it_was_asked`, `vm_run::tests::a_rates_answer_is_its_hold_and_its_period`,
+    `daemon::groups::tests::cpu_budgets_read_as_the_kernel_reads_them` and
+    `a_cpu_budget_of_every_cpu_holds_nothing`.
+  - *Owed to ROOT*: the kick-cost runs above, now of the period in force:
+    `SHARDS_LOG=debug cargo test -p shards --profile test-release --test boot a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket -- --nocapture`
+    and `cargo test -p shards --profile test-release --test api_image the_orchestrators_rate_holds_its_run_to_it`
+    on HVF, KVM x86-64 and arm64 (L1), WHP x86-64 and arm64, reading each "held … over …
+    from g" line beside the kicks a second and guest progress (`docs/research/measurements/macos-sched/launchd-run.sh`
+    on macOS); the hold's E2E (`--cpus`) on each; Hex's re-vendor to channel version 31.
 
 ### D38's and D197's virtio-fs frames: FUSE's own structures
 
@@ -13654,6 +13701,44 @@ four 1-vCPU microVMs of a daemon held to one CPU (started under an affinity mask
 `start /affinity 1`, whose microVMs get its mask's CPUs, D191) with a busy guest each, beside a normal-priority host spinner on that CPU, and 2x the host's CPUs of busy
 vCPUs across unheld microVMs; the host spinner's CPU time over 60 s, each vCPU's priority
 changes, n=20 a side, before and after, through `cpu-elastic/phases.py`.
+
+**The priority governor's period and credit (platform-11, 2026-11-14).** `PERIOD` (100 ms,
+the hold's old period) is gone: each look's period is D191's for one thread held to half a
+CPU, `granule::period(1, 500 milli-CPU, g)` = 2g, derived as each look begins from g as the
+process knows it (`granule::g`; one function with the hold's, migrate-09), the governor's
+sleeps teaching g their lateness (`granule::LATE`). On a host whose GetThreadTimes counts
+15.625 ms ticks (PM M294), 31.25 ms.
+- *Its credit, a thread's and a pool's per CPU: a whole period, where it was half.* One look
+  can charge a thread the whole period of its one CPU (every tick of the look landing on its
+  runs), a physical bound: the credit holds it, so no single look's ticks put a thread that
+  keeps to its half back to normal. At half a 2g period, one tick of slack, a thread running
+  1 ms of every 6 charged both ticks of a look went back to normal (the risk platform-11's
+  2026-11-14 Status named). A raised thread so takes half a CPU over a long stretch and two
+  periods more at most (4g, 62.5 ms at ticks), where it took a period and a half of 100 ms
+  (150 ms).
+- *Cold start*: the governor measures its thread clock's step as it starts, before it is
+  raised (`granule::measure_clock`: two of its steps of its own CPU time, 31.25 ms at ticks);
+  until then g is `LEAST_WAIT` and the period 2 ms, a thread's credit as small: a raised thread
+  may go back to normal for the moment before the clock is known, less authority, never more.
+- *Failure, typed*: a period that outgrows a u64 of ns (`granule::Outgrown`) raises no thread
+  (`raise_current` errs, the thread at its priority) and, at a look, puts every watched thread
+  back to normal and lets go of them; a clock that cannot be read leaves g its wake's
+  (`Unclocked`), and a thread whose time is unread is refused as before.
+- Held (light, Windows): `platform::windows_thread::tests::the_look_is_d191s_period_for_half_a_cpu`,
+  `a_look_charged_its_whole_period_keeps_a_thread_raised` (red at half a period's credit:
+  none left after one look's two ticks), `credit_carries_a_thread_that_waits_across_its_clocks_steps`
+  and `a_pool_is_half_of_its_cpus_time` at 2g. Linted for x86_64-pc-windows-msvc; their run on
+  Windows is owed to ROOT: `cargo test -p shards-vmm --lib windows_thread` on windows-2025
+  (CI) and jupiter, with `a_thread_that_waits_between_its_runs_stays_raised`,
+  `a_thread_run_long_goes_back_to_normal_and_is_raised_again_as_it_waits` and
+  `raised_threads_sharing_a_cpu_take_no_more_than_half_of_it` at the derived period, then PM
+  M495's start latency (`cpu-elastic/phases.py` against `winnone.patch`, n 100 a side) at 2g
+  beside 100 ms.
+- Still owed with platform-11's design (`docs/research/measurements/platform-fixes/held.md`):
+  the Windows pipes' `BUFFER` and `LINE_BUFFER` quotas, whose derivation needs each caller's
+  wire window (a message of `MAX_PAYLOAD` is 6 MiB, past either, so neither is a frame bound),
+  and macOS's 0.5 / 1 ms time-constraint pair (a guest timer's deadline or a measured batch
+  cost). No number replaced another.
 
 The user's plan, item 3 (2026-10-18): a run's `--cpus` as elastic as its memory (D148),
 every microVM given the host's CPUs, init bringing the run's online and `update --cpus`
@@ -31237,7 +31322,9 @@ move it: Hex had no rate for a Shards image VM but stopping its process.
   the link closes.
 - *One ask.* The client's room and rate are one numbered ask (`session::Asked`), each held while
   it is awaited, and no longer.
-- *Its period* (2026-11-13, channel version 17, the Hex lead's ask for plan step 14).
+- *Its period* (2026-11-13, channel version 17, the Hex lead's ask for plan step 14; moved to
+  each `RATED` answer in version 31, 2026-11-14, as D191 derives a period for each rate: D191's
+  hold, "Its period, in force").
   `ImageGuest::rate_period()` is the period the run's VM's governor holds a rate over. Hex's
   learner derives its window from it (Hex `learned-charge.md` C1) and copies no 100 ms of its
   own.
@@ -32391,7 +32478,8 @@ alone (D215).
   follows a `RATE` line, whose client waits for its answer.
 - `ANSWER_MOST`: the run protocol's payload bound (`run::MAX_PAYLOAD`), as an image run's
   `RATED` carries its VM's words (D247).
-- The period is D191's (`hold_period`).
+- The period is D191's, derived for each rate as it is held (`granule::period`; D191's hold,
+  "Its period, in force").
 
 **Cold start** (R03). Nothing here is learned. The rate is the orchestrator's, told as it
 moves; until one is told, the vCPUs run as booted, the envelope their ceiling. The client knows
