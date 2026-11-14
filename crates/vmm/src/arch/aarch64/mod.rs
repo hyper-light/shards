@@ -27,8 +27,9 @@ pub mod layout {
     /// The most vCPUs a machine has: as many redistributors as the memory map has room for
     /// from `GIC_REDIST` (123).
     pub const MAX_VCPUS: u32 = ((GIC_REDIST_MAX_END - GIC_REDIST) / GIC_REDIST_SIZE) as u32;
-    /// 16550 UART (4 KiB).
-    pub const UART: u64 = 0x0900_0000;
+    /// The pvpanic device's register (devices/pvpanic.rs, 4 KiB): the first device page
+    /// past the GIC's redistributors.
+    pub const PVPANIC: u64 = GIC_REDIST_MAX_END;
     /// PL031 RTC (4 KiB).
     pub const RTC: u64 = 0x0901_0000;
     /// The shards control page ([`shards_abi::control`]).
@@ -58,7 +59,6 @@ pub mod layout {
     pub const KERNEL_BASE: u64 = DRAM_BASE + SYSTEM_MEM_SIZE;
 
     /// SPI numbers (INTID = 32 + SPI), as written in devicetree interrupt specifiers.
-    pub const SPI_UART: u32 = 1;
     pub const SPI_RTC: u32 = 2;
     pub const SPI_VMGENID: u32 = 3;
     pub const SPI_VIRTIO_MMIO: u32 = 16;

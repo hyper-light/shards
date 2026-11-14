@@ -242,7 +242,7 @@ fn a_guest_mounts_our_erofs_images_with_dax_and_finds_every_entry() {
         "--pmem".as_ref(),
         image.as_os_str(),
         "--cmdline".as_ref(),
-        "console=ttyS0 quiet shards_test=erofs".as_ref(),
+        "console=hvc0 quiet shards_test=erofs".as_ref(),
     ]);
     assert!(r.stdout.contains("SHARDS-TEST PASS"), "{r}");
     assert!(r.stdout.contains(&format!("checked {entries} entries")), "{r}");

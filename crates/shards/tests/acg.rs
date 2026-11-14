@@ -21,7 +21,7 @@ fn two_vcpus_boot_to_their_end_under_acg() {
     let mut cfg = Config::new(kernel().to_path_buf(), None);
     cfg.vcpus = 2;
     cfg.memory_mib = 512;
-    cfg.cmdline = "console=ttyS0 panic=-1".into();
+    cfg.cmdline = "console=hvc0 panic=-1".into();
     cfg.console = Console::Discard;
     // Its whole console kept: this test reads it as it goes (D12).
     cfg.said = usize::MAX;
