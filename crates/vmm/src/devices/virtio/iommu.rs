@@ -798,6 +798,11 @@ fn answer_request(state: &mut Translation, req: &[u8]) -> (u8, Vec<u8>) {
 /// then writes its device-writable part, PROBE's properties at its start and the tail,
 /// the status and three reserved bytes, at its end. Returns the bytes written: all of
 /// that part.
+#[cfg(test)]
+std::thread_local! {
+    static REFUSE_REPLY_SCRATCH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 fn answer(chain: &Chain, mem: &Access<'_>, state: &Mutex<Translation>) -> u32 {
     let mut req = [0u8; READABLE_MAX];
     let mut len = 0usize;
@@ -832,7 +837,15 @@ fn answer(chain: &Chain, mem: &Access<'_>, state: &Mutex<Translation>) -> u32 {
         return 0;
     }
     let mut out = Vec::new();
-    if out.try_reserve_exact(chunk).is_err() {
+    #[cfg(test)]
+    let reserve = if REFUSE_REPLY_SCRATCH.get() {
+        usize::MAX
+    } else {
+        chunk
+    };
+    #[cfg(not(test))]
+    let reserve = chunk;
+    if out.try_reserve_exact(reserve).is_err() {
         return 0;
     }
     out.resize(chunk, 0u8);
@@ -1183,6 +1196,13 @@ mod tests {
         let (_, props) = answer_request(&mut state.lock().unwrap(), &req);
         a.write(next, &vec![0xff; page + 3]).unwrap();
         assert_eq!(answer(&chain, &a, &state), total as u32);
+        REFUSE_REPLY_SCRATCH.set(true);
+        let without_scratch = answer(&chain, &a, &state);
+        REFUSE_REPLY_SCRATCH.set(false);
+        assert_eq!(
+            without_scratch, total as u32,
+            "a reply still completes when scratch is unavailable"
+        );
         let mut response = vec![0u8; total];
         a.read(first, &mut response[..1]).unwrap();
         a.read(next, &mut response[1..]).unwrap();
