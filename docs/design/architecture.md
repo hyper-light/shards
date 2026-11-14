@@ -30176,6 +30176,64 @@ after `vcpu` 3.87 s (boot.rs, its process-holds-guest assertion): both whole 10 
 - *Owed* (ROOT): the real-VM test on KVM, HVF and WHP, `cargo test --profile test-release -p
   shards --test boot a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket`.
 
+**Amended (final use): a run's end carries what its microVM used in all.** The Hex lead's ask
+for kiln's charging: `stats` and `host_use` answer only while a run runs, so a command VM
+whose command exited before kiln deleted it went uncharged (Hex answered `NotRunning`).
+- *When it is read.* In the VM process, in `Running::wait_then`'s `free`: every vCPU thread
+  joined, so past its guest's last instruction, and before the machine's memory and devices
+  drop, which they do as `wait_then` returns. Its vCPUs' times first, then the process's own
+  `platform::process_usage`, as `use_answer` reads a use (D241's order): the process's CPU
+  holds its vCPUs', so `vmm_ns` is never less than none. A later read would see the memory
+  gone; an earlier one, a guest still running.
+- *Each vCPU by its index* (`GuestClocks::whole`, `Handle::whole_guest_times`). A vCPU that
+  leaves reads its clock a last time as before, and now also keeps it under its index
+  (`Clocks::left`, summed over the index's vCPUs, the last leave's `Unread` beside it), so
+  that once all have left the reading is each one's, `departed_ns` 0, its total a sample's.
+  `left` holds one entry an index the machine has had: as many as its vCPUs.
+- *Told* (`shards_ipc` kind `FINAL_USE` = 106, VM → owner): the use's answer as
+  `shards_abi::rate::used` writes it, D260's one form, sent on a handle of the link the VM
+  process keeps for it (`warm::Link::try_clone`), as the process ends. The link closes as the
+  process exits (its relay's handle holds it until then), so its owner reads it before the
+  close. The daemon passes over the kind (its `_` arm); api-run keeps it (`Told::used`).
+- *On the image channel* (VERSION 28): `ENDED` carries `wire::RunEnded { end: RunEnd,
+  final_use: FinalUse }`; `FinalUse::Read(Microvm)`, each part its reading or its words, or
+  `FinalUse::Unread(Unused)`: `NotStarted` (stopped or refused before its microVM started),
+  `Killed` (its VM killed for its orchestrator's asks, `STOP` or their failure, before it told
+  it), `Untold` (its VM, its link or its run host ended without it), `Broken(UseBroken)` (an
+  answer none of the protocol's). Never a zero.
+- *shards-api.* `ImageGuest::wait_for` answers `Option<RunEnded>`; `ImageRefusal::Ended`
+  carries `RunEnded`, so every ask of a run that has ended, `stats` among them, is refused
+  with its final use. `stop` keeps an end seen before it, its final use with it; one that saw
+  none is `Stopped` with `Unused::Killed`. A caller that charges a run whose command has
+  ended awaits its end (`wait_for`) before it stops it: the end comes as the VM's process
+  exits, its final use told, and a stop before that kills it first.
+- *Every end, every backend.* `Exited` and a VM's own `Failed` (`UNSERVED`, a command never
+  started) carry it whenever the machine came down in its process; a VM that crashed tells
+  none (`Untold`); `Stopped` is `Killed`. A run's own command killed by a signal ends
+  `Exited(128 + N)` (init's status byte; `RunEnd` has no `Signaled`, only a member's end
+  does). The read is the backend's own clocks already behind `GUEST_TIME` (KVM's thread stat
+  and CPU clock, #77's amendment; HVF's `hv_vcpu_get_exec_time`; WHP's run-time counter), read
+  on the vCPU's thread as it leaves: no path of a platform's own.
+- *Literals.* 106, the next free `shards_ipc` kind; 28, the next channel version; the
+  `FinalUse`/`Unused`/`UseBroken` wire tags 0 to 4. No other number.
+- *Cold start.* Nothing learned. A machine that never started reads `guest-unread the
+  microVM has not started` beside its process's use.
+- *Managed microVMs* (`ManagedGuest::host_use`): not in this slice. A managed microVM's
+  process is no warm VM, has no link to its owner, and ends its vsock socket with it: its
+  final use needs a path of its own (owed, below).
+- *Tested* (light, macOS arm64): vmm `a_machines_whole_guest_time_keeps_each_vcpu_by_its_index`;
+  shards `a_final_use_reads_its_whole_guest_then_its_process` (vm_run),
+  `a_final_use_reaches_its_owner_on_its_link_as_said` (warm),
+  `a_runs_final_use_is_as_its_vm_told_it_or_typed_by_why_not` (api_run); shards-api
+  `a_runs_end_reads_back_with_its_final_use` (wire) and
+  `a_runs_final_use_comes_with_its_end_and_answers_every_ask_after` (session), with the
+  existing end and lease tests over `RunEnded`.
+- *Owed* (ROOT): the real-VM tests on KVM, HVF and WHP, `cargo test --profile test-release -p
+  shards --test api_image -- an_images_own_command_ends_its_run_with_its_status
+  stop_ends_the_run_at_once` (a command's `exit 3` ends `Exited(3)` with every vCPU's guest
+  time by index, none departed, its process's CPU holding them, and `stats` after it refused
+  with that end; a stop's end `Killed`); the managed microVM's final use; Hex's adoption.
+
 ## 4. Start path (≤ 5 ms budget)
 
 The target: a user's `shards run IMAGE COMMAND` to its command executing in its microVM

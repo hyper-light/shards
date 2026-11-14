@@ -38,6 +38,10 @@ mod clocks {
     struct Clocks {
         vcpus: BTreeMap<u32, Clock>,
         departed: u64,
+        /// What those gone ran, by index, summed over each index's vCPUs, the last one's
+        /// leaving read beside it: `departed` is their total. One entry an index the machine
+        /// has had, so as many as its vCPUs.
+        left: BTreeMap<u32, VcpuTime>,
         /// Joins so far, which tell a vCPU from a later one of its index.
         joins: u64,
     }
@@ -76,7 +80,7 @@ mod clocks {
                 last: 0,
             };
             if let Some(stale) = clocks.vcpus.insert(index, clock) {
-                clocks.departed = clocks.departed.saturating_add(stale.last);
+                clocks.gone(index, stale.last, None);
             }
             Joined {
                 clocks: self,
@@ -110,9 +114,46 @@ mod clocks {
                 return;
             }
             if let Some(mut clock) = clocks.vcpus.remove(&index) {
-                let (ns, _) = clock.sample();
-                clocks.departed = clocks.departed.saturating_add(ns);
+                let (ns, unread) = clock.sample();
+                clocks.gone(index, ns, unread);
             }
+        }
+
+        /// Every vCPU's guest time by its index, those gone at what they read as they left,
+        /// summed with any of the index's since, and none departed apart from them: what a
+        /// machine ran of its guest in all once its vCPUs have stopped (D260's final use).
+        /// Its total is a sample's ([`sample`](Self::sample)).
+        pub(in crate::vm) fn whole(&self) -> GuestTimes {
+            let mut clocks = lock(&self.0);
+            let mut vcpus = clocks.left.clone();
+            for (&index, clock) in &mut clocks.vcpus {
+                let (guest_ns, unread) = clock.sample();
+                let v = vcpus.entry(index).or_insert(VcpuTime {
+                    index,
+                    guest_ns: 0,
+                    unread: None,
+                });
+                v.guest_ns = v.guest_ns.saturating_add(guest_ns);
+                v.unread = unread;
+            }
+            GuestTimes {
+                vcpus: vcpus.into_values().collect(),
+                departed_ns: 0,
+            }
+        }
+    }
+
+    impl Clocks {
+        /// vCPU `index` gone, having read `ns`, its last reading refused as `unread` says.
+        fn gone(&mut self, index: u32, ns: u64, unread: Option<Unread>) {
+            self.departed = self.departed.saturating_add(ns);
+            let v = self.left.entry(index).or_insert(VcpuTime {
+                index,
+                guest_ns: 0,
+                unread: None,
+            });
+            v.guest_ns = v.guest_ns.saturating_add(ns);
+            v.unread = unread;
         }
     }
 
@@ -205,6 +246,33 @@ mod tests {
         assert!(t.vcpus.is_empty());
         assert_eq!((t.departed_ns, t.total_ns()), (42, 42));
         assert_eq!(GuestClocks::default().sample(), GuestTimes::default());
+    }
+
+    /// Once its vCPUs have gone, a machine's whole guest time is each one's by its index, an
+    /// index's vCPUs summed and its last one's unread kept, with the total a sample says.
+    #[test]
+    fn a_machines_whole_guest_time_keeps_each_vcpu_by_its_index() {
+        let clocks = GuestClocks::default();
+        let at: Vec<_> = [10u64, 20, 30].map(|ns| Arc::new(AtomicU64::new(ns))).into();
+        let zero = clocks.join(0, clock(&at[0]));
+        let one = clocks.join(1, clock(&at[1]));
+        drop(one);
+        // Index 1 again, a later vCPU of it: its time adds to the first's.
+        let one = clocks.join(1, clock(&at[2]));
+        let t = clocks.whole();
+        assert_eq!((times(&t), t.departed_ns, t.total_ns()), (vec![(0, 10), (1, 50)], 0, 60));
+        assert_eq!(t.total_ns(), clocks.sample().total_ns());
+        drop(zero);
+        let refused: Read = Box::new(|| Err(Unread::HvfExecTime(-1)));
+        drop(one);
+        let two = clocks.join(2, refused);
+        drop(two);
+        let t = clocks.whole();
+        assert_eq!((times(&t), t.departed_ns), (vec![(0, 10), (1, 50), (2, 0)], 0));
+        assert_eq!(t.vcpus[2].unread, Some(Unread::HvfExecTime(-1)));
+        assert_eq!(t.total_ns(), clocks.sample().total_ns());
+        assert!(clocks.sample().vcpus.is_empty());
+        assert_eq!(GuestClocks::default().whole(), GuestTimes::default());
     }
 
     /// A clock that reads less than it did before is not believed: the vCPU's time, and its

@@ -66,8 +66,10 @@ pub use shards_abi::run::nesting::Ready;
 /// ([`Request::upstream_roots`], D242), so that a side that knows none never runs an injector
 /// that trusts fewer roots than its orchestrator named; 27, a member's end typed
 /// ([`MemberEnded::end`]: exited, or killed by a signal), so that no side reads a signal as an
-/// exit of 128 plus it.
-pub const VERSION: u8 = 27;
+/// exit of 128 plus it; 28, the run's final use with its end ([`RunEnded::final_use`], D260):
+/// what its microVM used in all, read once its machine was down, or why none was, so that a
+/// side that tells none is never read as having used nothing.
+pub const VERSION: u8 = 28;
 
 /// What the orchestrator's side sends.
 pub mod to_host {
@@ -129,7 +131,7 @@ pub mod to_client {
     pub const MEMBER_ENDED: u8 = 20;
     /// [`StatsAnswer`](super::StatsAnswer).
     pub const STATS: u8 = 21;
-    /// [`RunEnd`](super::RunEnd), last: the run has ended.
+    /// [`RunEnded`](super::RunEnded), last: the run has ended, and what it used in all.
     pub const ENDED: u8 = 22;
     /// [`Ready`](super::Ready): the run's own command moved its readiness under the nesting
     /// grant (D234), as its init said it ([`ready`](super::ready) reads it).
@@ -1008,6 +1010,109 @@ pub enum RunEnd {
     Failed(String),
 }
 
+/// A run's end and what its microVM used in all (D260's final use): the run host's `ENDED`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunEnded {
+    pub end: RunEnd,
+    pub final_use: FinalUse,
+}
+
+/// What a run's microVM used of its host in all (D260's final use): read by its VM process once
+/// its machine was down, every vCPU stopped after its guest's last instruction, and before that
+/// process let go of the machine's memory; or why it was not. A part of it not read is its
+/// words ([`Microvm`]), never a zero.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FinalUse {
+    /// Each vCPU's guest time in all, by its index, those gone among them (so
+    /// [`GuestTimes::departed_ns`] 0), then its VM process's own use, read after it.
+    Read(Microvm),
+    /// None read, and why.
+    Unread(Unused),
+}
+
+/// Why a run's end carries no final use of its microVM (R04).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unused {
+    /// The run's microVM never started: it was stopped or refused before it did.
+    NotStarted,
+    /// Its VM was killed before its machine was down (`STOP`, or its orchestrator's asks
+    /// ending it): what it used went with it. A run's end awaited before its stop carries it.
+    Killed,
+    /// Its VM ended without telling it: it failed, its link to its run host broke, or its run
+    /// host ended without its run's end or broke its channel.
+    Untold,
+    /// What its VM told of it is none of the protocol's.
+    Broken(UseBroken),
+}
+
+/// Why a VM's use is none of its protocol's (D260).
+pub use shards_abi::rate::UseBroken;
+
+impl RunEnded {
+    /// `end`, its microVM's final use not read for `why`.
+    pub fn unused(end: RunEnd, why: Unused) -> RunEnded {
+        RunEnded {
+            end,
+            final_use: FinalUse::Unread(why),
+        }
+    }
+
+    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
+        let mut w = Writer(self.end.encode()?);
+        match &self.final_use {
+            FinalUse::Read(microvm) => {
+                w.u8(0);
+                w.microvm(Some(microvm))?;
+            }
+            FinalUse::Unread(why) => {
+                w.u8(1);
+                match why {
+                    Unused::NotStarted => w.u8(0),
+                    Unused::Killed => w.u8(1),
+                    Unused::Untold => w.u8(2),
+                    Unused::Broken(broken) => {
+                        w.u8(3);
+                        w.u8(match broken {
+                            UseBroken::Long => 0,
+                            UseBroken::Text => 1,
+                            UseBroken::Word => 2,
+                            UseBroken::Guest => 3,
+                            UseBroken::Host => 4,
+                        });
+                    }
+                }
+            }
+        }
+        w.done()
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<RunEnded, WireError> {
+        let mut r = Reader(payload);
+        let end = r.run_end()?;
+        let tag = |what, tag| WireError::Tag { what, tag };
+        let final_use = match r.u8()? {
+            0 => FinalUse::Read(r.microvm()?.ok_or(tag("a microVM's final use", 0))?),
+            1 => FinalUse::Unread(match r.u8()? {
+                0 => Unused::NotStarted,
+                1 => Unused::Killed,
+                2 => Unused::Untold,
+                3 => Unused::Broken(match r.u8()? {
+                    0 => UseBroken::Long,
+                    1 => UseBroken::Text,
+                    2 => UseBroken::Word,
+                    3 => UseBroken::Guest,
+                    4 => UseBroken::Host,
+                    t => return Err(tag("a broken use", t)),
+                }),
+                t => return Err(tag("why no final use", t)),
+            }),
+            t => return Err(tag("a run's final use", t)),
+        };
+        r.end()?;
+        Ok(RunEnded { end, final_use })
+    }
+}
+
 /// A frame's header for `kind` and a payload of `len` bytes, refused past the bound.
 pub fn header(kind: u8, len: usize) -> Result<[u8; run::HEADER], WireError> {
     let len = u32::try_from(len).map_err(|_| WireError::TooLong)?;
@@ -1297,6 +1402,19 @@ impl<'a> Reader<'a> {
             1 => Ok(StreamEnd::Aborted(self.i32()?)),
             tag => Err(WireError::Tag { what, tag }),
         }
+    }
+    fn run_end(&mut self) -> Result<RunEnd, WireError> {
+        Ok(match self.u8()? {
+            0 => RunEnd::Exited(self.u32()?),
+            1 => RunEnd::Stopped,
+            2 => RunEnd::Failed(self.text()?),
+            tag => {
+                return Err(WireError::Tag {
+                    what: "a run's end",
+                    tag,
+                });
+            }
+        })
     }
     fn microvm(&mut self) -> Result<Option<Microvm>, WireError> {
         match self.u8()? {
@@ -2907,17 +3025,7 @@ impl RunEnd {
 
     pub fn decode(payload: &[u8]) -> Result<RunEnd, WireError> {
         let mut r = Reader(payload);
-        let end = match r.u8()? {
-            0 => RunEnd::Exited(r.u32()?),
-            1 => RunEnd::Stopped,
-            2 => RunEnd::Failed(r.text()?),
-            tag => {
-                return Err(WireError::Tag {
-                    what: "a run's end",
-                    tag,
-                });
-            }
-        };
+        let end = r.run_end()?;
         r.end()?;
         Ok(end)
     }
@@ -4296,6 +4404,73 @@ mod tests {
     /// why, the largest numbers a u64 holds. vCPUs out of index order, a part's unknown tag, a count
     /// past what the bytes left could hold, cut short or padded: refused, never read as a
     /// cost.
+    /// A run's end reads back with its final use (D260), each end's with every final use and
+    /// each reason for none, and a tag no version has, or bytes past it, refused.
+    #[test]
+    fn a_runs_end_reads_back_with_its_final_use() {
+        let read = FinalUse::Read(Microvm {
+            host: Ok(HostUse {
+                cpu_ns: 90,
+                resident_bytes: 4096,
+                footprint_bytes: 8192,
+            }),
+            guest: Ok(GuestTimes {
+                vcpus: vec![
+                    VcpuTime {
+                        index: 0,
+                        guest_ns: 50,
+                        unread: None,
+                    },
+                    VcpuTime {
+                        index: 1,
+                        guest_ns: 30,
+                        unread: Some(shards_abi::guest_time::Unread::Gone),
+                    },
+                ],
+                departed_ns: 0,
+            }),
+        });
+        let words = FinalUse::Read(Microvm {
+            host: Err("its VM process: denied".into()),
+            guest: Err("the microVM has not started".into()),
+        });
+        let mut uses = vec![read, words];
+        uses.extend(
+            [Unused::NotStarted, Unused::Killed, Unused::Untold]
+                .into_iter()
+                .chain(
+                    [
+                        UseBroken::Long,
+                        UseBroken::Text,
+                        UseBroken::Word,
+                        UseBroken::Guest,
+                        UseBroken::Host,
+                    ]
+                    .map(Unused::Broken),
+                )
+                .map(FinalUse::Unread),
+        );
+        for end in [RunEnd::Exited(3), RunEnd::Stopped, RunEnd::Failed("x".into())] {
+            for final_use in &uses {
+                let ended = RunEnded {
+                    end: end.clone(),
+                    final_use: final_use.clone(),
+                };
+                let bytes = ended.encode().unwrap();
+                assert_eq!(RunEnded::decode(&bytes), Ok(ended));
+                assert_eq!(RunEnded::decode(&[&bytes[..], &[0]].concat()), Err(WireError::Trailing));
+                assert_eq!(RunEnded::decode(&bytes[..bytes.len() - 1]), Err(WireError::Short));
+            }
+        }
+        // An end alone, as a host of version 27 said it, is short of its final use.
+        assert_eq!(RunEnded::decode(&RunEnd::Stopped.encode().unwrap()), Err(WireError::Short));
+        let tagged = |tail: &[u8]| RunEnded::decode(&[&[1u8][..], tail].concat());
+        assert!(matches!(tagged(&[2]), Err(WireError::Tag { tag: 2, .. })));
+        assert!(matches!(tagged(&[1, 4]), Err(WireError::Tag { tag: 4, .. })));
+        assert!(matches!(tagged(&[1, 3, 5]), Err(WireError::Tag { tag: 5, .. })));
+        assert!(matches!(tagged(&[0, 0]), Err(WireError::Tag { tag: 0, .. })), "no cost read");
+    }
+
     #[test]
     fn a_runs_microvm_reads_back_as_its_host_said_it() {
         let times = GuestTimes {

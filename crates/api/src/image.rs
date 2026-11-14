@@ -31,10 +31,10 @@ mod session;
 pub mod wire;
 
 pub use wire::{
-    Bound, Captured, Channel, Cli, ControlAsk, ControlAt, CredentialGrant, Fill, GuestTimes, HostUse, Keep,
-    LeaseRefusal, MemberInfo, MemberKind, MemberReach, Microvm, Narrowing, PlugRefusal, Proto, Publish,
-    Ready, Receiving, RunEnd, SaveRefusal, Secret, SignInGrant, SignInRefusal, SignInTokens, SocketGrant,
-    StartedFrom, Stats, StatsScope, VcpuTime, decide,
+    Bound, Captured, Channel, Cli, ControlAsk, ControlAt, CredentialGrant, Fill, FinalUse, GuestTimes, HostUse,
+    Keep, LeaseRefusal, MemberInfo, MemberKind, MemberReach, Microvm, Narrowing, PlugRefusal, Proto, Publish,
+    Ready, Receiving, RunEnd, RunEnded, SaveRefusal, Secret, SignInGrant, SignInRefusal, SignInTokens,
+    SocketGrant, StartedFrom, Stats, StatsScope, Unused, UseBroken, VcpuTime, decide,
 };
 
 /// A credential's lease, as a run's [`Lessor`] gives it (D242): what its release names it
@@ -306,8 +306,9 @@ pub enum ImageRefusal {
     Boot(String),
     /// What this does not do yet, by name.
     Unsupported { what: &'static str, why: String },
-    /// The run has ended.
-    Ended(RunEnd),
+    /// The run has ended, and what its microVM used in all (D260's final use): every ask of a
+    /// run that has ended, [`ImageGuest::stats`]'s among them, is refused with it.
+    Ended(RunEnded),
     /// The run host broke the channel's contract, or ended without its run's end.
     Host(String),
     /// What this process could not do: start the run host, a pipe, a thread.
@@ -335,7 +336,7 @@ impl std::fmt::Display for ImageRefusal {
             Self::Image(why) => write!(f, "the image: {why}"),
             Self::Widening(why) => write!(f, "past the image's grants: {why}"),
             Self::Boot(why) => write!(f, "the run did not start: {why}"),
-            Self::Ended(end) => write!(f, "the run has ended: {end:?}"),
+            Self::Ended(ended) => write!(f, "the run has ended: {:?}", ended.end),
             Self::Host(why) => write!(f, "the run's host: {why}"),
             Self::Os { what, kind } => write!(f, "{what}: {kind:?}"),
             Self::Plug(cause, why) => write!(f, "the plug: {cause:?}: {why}"),
@@ -359,8 +360,9 @@ pub trait Images: Send + Sync {
     fn boot(&self, spec: &ImageSpec, patience: Duration) -> Result<Box<dyn ImageGuest>, ImageRefusal>;
     /// [`boot`](Self::boot), ended by `stop` (D231's stop of a boot under way): a
     /// [`BootStop::stop`] from any thread while it boots kills the run's host and every
-    /// process it started, and the boot returns [`ImageRefusal::Ended`]`(`[`RunEnd::Stopped`]`)`
-    /// once they are gone; a stop that came before is the same, booting nothing. A stop that
+    /// process it started, and the boot returns [`ImageRefusal::Ended`] ([`RunEnd::Stopped`],
+    /// its final use [`Unused::NotStarted`]) once they are gone; a stop that came before is the
+    /// same, booting nothing. A stop that
     /// comes after the boot has returned is no longer the boot's: the guest's own
     /// [`stop`](ImageGuest::stop) ends its run.
     ///
@@ -373,12 +375,15 @@ pub trait Images: Send + Sync {
         stop: &BootStop,
     ) -> Result<Box<dyn ImageGuest>, ImageRefusal> {
         if stop.is_stopped() {
-            return Err(ImageRefusal::Ended(RunEnd::Stopped));
+            return Err(ImageRefusal::Ended(not_started()));
         }
         let guest = self.boot(spec, patience)?;
         if stop.is_stopped() {
             let _ = guest.stop();
-            return Err(ImageRefusal::Ended(RunEnd::Stopped));
+            let ended = guest.wait_for(Duration::ZERO).ok().flatten();
+            return Err(ImageRefusal::Ended(
+                ended.unwrap_or_else(|| RunEnded::unused(RunEnd::Stopped, Unused::Killed)),
+            ));
         }
         Ok(guest)
     }
@@ -483,6 +488,8 @@ pub trait ImageGuest: Send + Sync {
     /// waiting at most `patience` (`Duration::MAX`: until it answers or the run ends). The
     /// run's carries what its microVM costs its host beside it ([`Stats::microvm`], D241):
     /// its VM process's CPU time and memory, and each vCPU's guest time, read before them.
+    /// Once the run has ended, refused [`ImageRefusal::Ended`], which carries what its microVM
+    /// used in all ([`RunEnded::final_use`], D260).
     fn stats(&self, scope: StatsScope, patience: Duration) -> Result<Stats, ImageRefusal>;
     /// The room the orchestrator's budget leaves the run (D188, D241), told its init as a
     /// daemon's budget tells a run of its own: the bytes the run may use past what it uses
@@ -577,14 +584,22 @@ pub trait ImageGuest: Send + Sync {
     /// reaps what it started and exits on its own.
     fn stop(&self) -> Result<(), ImageRefusal>;
     /// Its end, once it has come, waiting at most `timeout` (`Duration::MAX`: until it
-    /// comes).
-    fn wait_for(&self, timeout: Duration) -> Result<Option<RunEnd>, ImageRefusal>;
+    /// comes), and what its microVM used in all ([`RunEnded::final_use`], D260): read by its
+    /// VM once its machine was down, which its end awaits; or why not ([`Unused`]): a run
+    /// [`stop`](Self::stop)ped before its machine was down carries [`Unused::Killed`], so a
+    /// caller that charges a run whose command has ended awaits its end before it stops it.
+    fn wait_for(&self, timeout: Duration) -> Result<Option<RunEnded>, ImageRefusal>;
     /// The run host's diagnostics, its VM's among them, written whole to `to` from now on, as
     /// the host writes them, in place of any file named before, after the last of them kept
     /// until now: what a refusal or a failed end quotes ([`ImageRefusal::Boot`],
     /// [`RunEnd::Failed`]) is only their last. A file that stalls holds them up; a part it
     /// refuses is lost to it alone.
     fn keep_diagnostics(&self, to: std::fs::File) -> Result<(), ImageRefusal>;
+}
+
+/// A run stopped before its microVM started: it used nothing of a machine.
+fn not_started() -> RunEnded {
+    RunEnded::unused(RunEnd::Stopped, Unused::NotStarted)
 }
 
 /// The images the `shards` binary boots.
@@ -613,7 +628,7 @@ impl Images for ImageShards {
         stop: &BootStop,
     ) -> Result<Box<dyn ImageGuest>, ImageRefusal> {
         if stop.is_stopped() {
-            return Err(ImageRefusal::Ended(RunEnd::Stopped));
+            return Err(ImageRefusal::Ended(not_started()));
         }
         crate::backend().map_err(no_backend)?;
         let request = request(spec)?;
@@ -661,7 +676,7 @@ impl Images for ImagePools {
         stop: &BootStop,
     ) -> Result<Box<dyn ImageGuest>, ImageRefusal> {
         if stop.is_stopped() {
-            return Err(ImageRefusal::Ended(RunEnd::Stopped));
+            return Err(ImageRefusal::Ended(not_started()));
         }
         crate::backend().map_err(no_backend)?;
         let request = request(spec)?;

@@ -42,6 +42,11 @@ impl Link {
         Link { daemon }
     }
 
+    /// Another handle of the same link, which keeps it open as long as it lives.
+    pub fn try_clone(&self) -> io::Result<Link> {
+        Ok(Link::new(self.daemon.try_clone()?))
+    }
+
     /// The daemon's socket at `fd`, which must be an open Unix socket other than stdio.
     #[cfg(unix)]
     pub fn from_fd(fd: RawFd) -> Result<Link, String> {
@@ -2207,6 +2212,15 @@ pub fn tell_kept() {
     }
 }
 
+/// Tells its owner what the machine used in all (`FINAL_USE`, D260's final use): `used`, a
+/// use's answer as `shards_abi::rate::used` writes it. Its owner reads it until the link
+/// closes, which it does as this process ends.
+pub fn final_use(link: &Link, used: &str) {
+    if let Err(e) = to_daemon(&link.daemon, kind::FINAL_USE, used.as_bytes(), &[]) {
+        let _ = writeln!(io::stderr(), "shards: telling its final use: {e}");
+    }
+}
+
 /// Stops using the client's stdio: this process's standard descriptors become `null`.
 /// Should that fail, they stay the client's until this process exits.
 fn let_go(null: &File) {
@@ -2863,5 +2877,22 @@ mod tests {
             drop((lanes_held().remove(&accepted.number), m.fds));
             closed(relay);
         }
+    }
+
+    /// A VM's final use (D260) goes to its owner on a handle of its link of its own, as said,
+    /// the link open until that handle goes too.
+    #[cfg(unix)]
+    #[test]
+    fn a_final_use_reaches_its_owner_on_its_link_as_said() {
+        let (vm, owner) = UnixStream::pair().unwrap();
+        let link = Link::new(vm);
+        let held = link.try_clone().unwrap();
+        drop(link);
+        let used = shards_abi::rate::used(Err("the microVM has not started"), Err("its VM process: x"));
+        final_use(&held, &used);
+        drop(held);
+        let m = shards_ipc::recv(&owner).unwrap().unwrap();
+        assert_eq!((m.kind, m.payload.as_slice()), (kind::FINAL_USE, used.as_bytes()));
+        assert!(shards_ipc::recv(&owner).unwrap().is_none(), "closed with its last handle");
     }
 }

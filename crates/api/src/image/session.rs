@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use super::wire::{self, Channel, LeaseRefusal, MemberInfo, Ready, RunEnd, Stats, StatsScope};
+use super::wire::{self, Channel, LeaseRefusal, MemberInfo, Ready, RunEnd, RunEnded, Stats, StatsScope, Unused};
 use super::{ImageGuest, ImageRefusal, ImageSpec, Leased, Lessor, MemberEnd, MemberName, RunLessor};
 
 /// The most of a member channel's bytes the client lets its host send ahead of what the
@@ -95,7 +95,7 @@ struct State {
     /// The run's own command's readiness under the nesting grant (D234), as its init last
     /// said it: init owns it, and moves it by D234's table.
     ready: Option<Ready>,
-    end: Option<RunEnd>,
+    end: Option<RunEnded>,
     /// The host's process has exited and is reaped.
     exited: bool,
     /// Its answers have all been read: its stdout has ended.
@@ -170,21 +170,27 @@ impl State {
     /// The run's end, once it has come: its host's word, or its host gone without one, said
     /// in its last diagnostics; kept as first seen, so that every later look, a stop's among
     /// them, sees the same.
-    fn end_seen(&mut self) -> Option<RunEnd> {
+    fn end_seen(&mut self) -> Option<RunEnded> {
         if self.end.is_none() && self.gone() {
-            self.end = Some(RunEnd::Failed(format!(
-                "the run host exited without its run's end{}",
-                quoted(&self.said)
-            )));
+            self.end = Some(RunEnded::unused(
+                RunEnd::Failed(format!(
+                    "the run host exited without its run's end{}",
+                    quoted(&self.said)
+                )),
+                Unused::Untold,
+            ));
         }
         self.end.clone()
     }
 
     /// The run's end once its stop has been waited for ([`Session::stop`]): the end seen, or
-    /// `Stopped` where none has come.
-    fn stopped(&mut self) -> RunEnd {
-        self.end_seen()
-            .unwrap_or_else(|| self.end.insert(RunEnd::Stopped).clone())
+    /// `Stopped` where none has come, its VM killed with nothing of its use told.
+    fn stopped(&mut self) -> RunEnded {
+        self.end_seen().unwrap_or_else(|| {
+            self.end
+                .insert(RunEnded::unused(RunEnd::Stopped, Unused::Killed))
+                .clone()
+        })
     }
 }
 
@@ -786,7 +792,10 @@ impl Begun {
             // watcher, its answers ended, and its diagnostics, which the VM, network and share
             // processes it started hold as their stderr, closed by every one of them.
             shared.wait(Duration::MAX, |s| (s.gone() && s.said_all).then_some(()));
-            return Err((ImageRefusal::Ended(RunEnd::Stopped), false));
+            return Err((
+                ImageRefusal::Ended(RunEnded::unused(RunEnd::Stopped, Unused::NotStarted)),
+                false,
+            ));
         }
         let started = match outcome {
             Some(Ok(started)) => started,
@@ -1157,7 +1166,10 @@ fn read_answers(shared: &Arc<Shared>, mut from_host: io::PipeReader) {
     if let Some(why) = failed {
         state
             .end
-            .get_or_insert(RunEnd::Failed(format!("the run host broke its channel: {why}")));
+            .get_or_insert(RunEnded::unused(
+                RunEnd::Failed(format!("the run host broke its channel: {why}")),
+                Unused::Untold,
+            ));
     }
     state.answered = true;
     shared.changed.notify_all();
@@ -1294,7 +1306,7 @@ fn take(shared: &Shared, kind: u8, payload: &[u8]) -> Result<bool, String> {
             }
         }
         k::ENDED => {
-            let end = wire::RunEnd::decode(payload).map_err(bad)?;
+            let end = wire::RunEnded::decode(payload).map_err(bad)?;
             if state.end.replace(end).is_some() {
                 return Err("the run ended twice".into());
             }
@@ -1666,7 +1678,10 @@ fn watch(shared: &Shared, host: &shards_ipc::Child, layers: Option<&Path>) {
     if let Err(e) = awaited {
         state
             .end
-            .get_or_insert(RunEnd::Failed(format!("waiting for the run host: {e}")));
+            .get_or_insert(RunEnded::unused(
+                RunEnd::Failed(format!("waiting for the run host: {e}")),
+                Unused::Untold,
+            ));
     }
     state.exited = true;
     shared.changed.notify_all();
@@ -1956,7 +1971,7 @@ impl ImageGuest for Session {
         Ok(())
     }
 
-    fn wait_for(&self, timeout: Duration) -> Result<Option<RunEnd>, ImageRefusal> {
+    fn wait_for(&self, timeout: Duration) -> Result<Option<RunEnded>, ImageRefusal> {
         Ok(self.shared.wait(timeout, State::end_seen))
     }
 
@@ -1989,6 +2004,45 @@ mod tests {
 
     /// A session's shared state with no host behind it: its answers taken as its reader
     /// takes them.
+    /// `end`, as a host said it with no final use told.
+    fn untold(end: RunEnd) -> RunEnded {
+        RunEnded::unused(end, Unused::Untold)
+    }
+
+    /// A run's end carries its microVM's final use as its host said it (D260): every look at
+    /// the end sees it, each ask of the run after it is refused with it, and a stop after
+    /// keeps it, never `Stopped` with nothing.
+    #[test]
+    fn a_runs_final_use_comes_with_its_end_and_answers_every_ask_after() {
+        let s = shared();
+        let ended = RunEnded {
+            end: RunEnd::Exited(0),
+            final_use: wire::FinalUse::Read(wire::Microvm {
+                host: Ok(wire::HostUse {
+                    cpu_ns: 900,
+                    resident_bytes: 1 << 20,
+                    footprint_bytes: 2 << 20,
+                }),
+                guest: Ok(wire::GuestTimes {
+                    vcpus: vec![wire::VcpuTime {
+                        index: 0,
+                        guest_ns: 700,
+                        unread: None,
+                    }],
+                    departed_ns: 0,
+                }),
+            }),
+        };
+        assert_eq!(take(&s, wire::to_client::ENDED, &ended.encode().unwrap()), Ok(true));
+        assert_eq!(lock(&s.state).end_seen(), Some(ended.clone()));
+        assert_eq!(s.room(None, BOUND), Err(ImageRefusal::Ended(ended.clone())));
+        assert_eq!(s.rate(None, BOUND), Err(ImageRefusal::Ended(ended.clone())));
+        assert_eq!(lock(&s.state).stopped(), ended);
+        // An end of version 27, with no final use after it, breaks the channel.
+        let s = shared();
+        assert!(take(&s, wire::to_client::ENDED, &RunEnd::Exited(0).encode().unwrap()).is_err());
+    }
+
     fn shared() -> Shared {
         Shared {
             state: Mutex::new(State::default()),
@@ -2068,7 +2122,7 @@ mod tests {
     #[test]
     fn a_run_ended_before_its_first_credit_still_has_its_outputs() {
         let shared = Arc::new(shared());
-        lock(&shared.state).end = Some(RunEnd::Exited(3));
+        lock(&shared.state).end = Some(untold(RunEnd::Exited(3)));
         let member = |index, runs| MemberInfo {
             index,
             kind: wire::MemberKind::Harness,
@@ -2083,7 +2137,7 @@ mod tests {
             reader.read_to_end(&mut rest).unwrap();
             assert!(rest.is_empty(), "{key:?}");
         }
-        assert_eq!(lock(&shared.state).end_seen(), Some(RunEnd::Exited(3)));
+        assert_eq!(lock(&shared.state).end_seen(), Some(untold(RunEnd::Exited(3))));
     }
 
     /// Do see a run's host gone without its run's end, as `wait_for` sees it, then stop the
@@ -2102,20 +2156,23 @@ mod tests {
                 .collect(),
             ..State::default()
         };
-        let seen = RunEnd::Failed(
+        let seen = untold(RunEnd::Failed(
             "the run host exited without its run's end: shards api-run: its VM's link: reset".into(),
-        );
+        ));
         assert_eq!(state.end_seen(), Some(seen.clone()));
         assert_eq!(state.stopped(), seen);
         assert_eq!(state.end_seen(), Some(seen));
         let mut said = State {
-            end: Some(RunEnd::Exited(3)),
+            end: Some(untold(RunEnd::Exited(3))),
             exited: true,
             answered: true,
             ..State::default()
         };
-        assert_eq!(said.stopped(), RunEnd::Exited(3));
-        assert_eq!(said.end_seen(), Some(RunEnd::Exited(3)));
+        assert_eq!(said.stopped(), untold(RunEnd::Exited(3)));
+        assert_eq!(said.end_seen(), Some(untold(RunEnd::Exited(3))));
+        // A stop that saw no end: its VM killed, its use gone with it.
+        let mut stopped = State::default();
+        assert_eq!(stopped.stopped(), RunEnded::unused(RunEnd::Stopped, Unused::Killed));
     }
 
     /// A member's stdin has its flow as the run's start is taken, under the lock that answer
@@ -2525,10 +2582,10 @@ mod tests {
             })
         );
         assert!(lock(&s.state).resizes.is_empty());
-        lock(&s.state).end = Some(RunEnd::Stopped);
+        lock(&s.state).end = Some(untold(RunEnd::Stopped));
         assert_eq!(
             s.resize(1, 40, 120, BOUND),
-            Err(ImageRefusal::Ended(RunEnd::Stopped))
+            Err(ImageRefusal::Ended(untold(RunEnd::Stopped)))
         );
         assert!(lock(&s.state).resizes.is_empty());
     }
@@ -2560,10 +2617,10 @@ mod tests {
             })
         );
         assert!(lock(&s.state).saves.is_empty());
-        lock(&s.state).end = Some(RunEnd::Stopped);
+        lock(&s.state).end = Some(untold(RunEnd::Stopped));
         assert_eq!(
             s.save("/home/u/.local/share/shards/saves/s1", BOUND),
-            Err(ImageRefusal::Ended(RunEnd::Stopped))
+            Err(ImageRefusal::Ended(untold(RunEnd::Stopped)))
         );
         assert!(lock(&s.state).saves.is_empty());
     }
@@ -2616,8 +2673,8 @@ mod tests {
             })
         );
         assert!(lock(&s.state).rooms.is_empty());
-        lock(&s.state).end = Some(RunEnd::Stopped);
-        assert_eq!(s.room(None, BOUND), Err(ImageRefusal::Ended(RunEnd::Stopped)));
+        lock(&s.state).end = Some(untold(RunEnd::Stopped));
+        assert_eq!(s.room(None, BOUND), Err(ImageRefusal::Ended(untold(RunEnd::Stopped))));
         assert!(lock(&s.state).rooms.is_empty());
     }
 
@@ -2657,8 +2714,8 @@ mod tests {
             })
         );
         assert!(lock(&s.state).rates.is_empty());
-        lock(&s.state).end = Some(RunEnd::Stopped);
-        assert_eq!(s.rate(None, BOUND), Err(ImageRefusal::Ended(RunEnd::Stopped)));
+        lock(&s.state).end = Some(untold(RunEnd::Stopped));
+        assert_eq!(s.rate(None, BOUND), Err(ImageRefusal::Ended(untold(RunEnd::Stopped))));
         assert!(lock(&s.state).rates.is_empty());
     }
 
@@ -2712,11 +2769,11 @@ mod tests {
             );
         }
         assert_eq!(lock(&s.state).ready, Some(Ready::Late(9)));
-        let ended = RunEnd::Exited(0).encode().unwrap();
+        let ended = untold(RunEnd::Exited(0)).encode().unwrap();
         assert_eq!(take(&s, wire::to_client::ENDED, &ended), Ok(true));
         assert_eq!(
             wait(Some(Ready::Late(9)), BOUND),
-            Err(ImageRefusal::Ended(RunEnd::Exited(0)))
+            Err(ImageRefusal::Ended(untold(RunEnd::Exited(0))))
         );
         assert_eq!(wait(None, Duration::ZERO), Ok(Some(Ready::Late(9))));
         assert!(matches!(
@@ -2889,7 +2946,7 @@ mod tests {
                     says(
                         &mut h.host,
                         wire::to_client::ENDED,
-                        &RunEnd::Exited(0).encode().unwrap(),
+                        &untold(RunEnd::Exited(0)).encode().unwrap(),
                     );
                 }
                 "stopped" => {
@@ -2904,7 +2961,7 @@ mod tests {
                     says(
                         &mut h.host,
                         wire::to_client::ENDED,
-                        &RunEnd::Stopped.encode().unwrap(),
+                        &untold(RunEnd::Stopped).encode().unwrap(),
                     );
                 }
                 _ => assert!(lock(&orchestrator.ledger).released.is_empty()),
@@ -2994,7 +3051,7 @@ mod tests {
             drop(h.host);
             h.reader.join().unwrap();
             assert!(
-                matches!(lock(&h.shared.state).end, Some(RunEnd::Failed(_))),
+                matches!(lock(&h.shared.state).end, Some(RunEnded { end: RunEnd::Failed(_), .. })),
                 "{lessor} {twice}"
             );
             let l = lock(&orchestrator.ledger);
@@ -3175,7 +3232,7 @@ mod tests {
         says(
             &mut h.host,
             wire::to_client::ENDED,
-            &RunEnd::Exited(0).encode().unwrap(),
+            &untold(RunEnd::Exited(0)).encode().unwrap(),
         );
         drop(h.host);
         h.reader.join().unwrap();
@@ -3325,7 +3382,7 @@ mod tests {
             }
             assert_eq!(
                 booted,
-                Err(ImageRefusal::Ended(RunEnd::Stopped)),
+                Err(ImageRefusal::Ended(RunEnded::unused(RunEnd::Stopped, Unused::NotStarted))),
                 "after {took:?}"
             );
             assert!(took < BOOT_BOUND, "the stop took {took:?}");
@@ -3384,7 +3441,7 @@ mod tests {
         let took = asked.elapsed();
         assert_eq!(
             stopped,
-            Err(ImageRefusal::Ended(RunEnd::Stopped)),
+            Err(ImageRefusal::Ended(RunEnded::unused(RunEnd::Stopped, Unused::NotStarted))),
             "after {took:?}"
         );
         assert!(took < BOOT_BOUND, "the stop took {took:?}");
@@ -3599,7 +3656,7 @@ mod tests {
             let (host_gone, vm_gone) = (host.ended(), vm.ended());
             assert_eq!(
                 booted,
-                Err(ImageRefusal::Ended(RunEnd::Stopped)),
+                Err(ImageRefusal::Ended(RunEnded::unused(RunEnd::Stopped, Unused::NotStarted))),
                 "after {took:?}"
             );
             assert!(took < BOOT_BOUND, "the stop took {took:?}");
