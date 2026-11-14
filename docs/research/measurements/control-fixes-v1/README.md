@@ -148,7 +148,7 @@ failed with `member end retained its idle input feeder`, Err(Timeout). The test
 announces entry into the actual reader, retains its writer, tells INPUT_ENDED,
 then releases and joins the reader before asserting the failure. Earlier r4/r5
 (missing Read import) and r6 (Rust 2024 opaque lifetime capture) were test-setup
-compile failures, not valid red evidence. [Actual red](logs/r7.log).
+compile failures, not valid red evidence. [Retained red notification excerpt](logs/r7.log).
 
 Fix 9f2ce624afdc62d4f197480c864adae478b67fb3, completed by
 151642d8c16229969aa3826efc75aec29a432760: InputFlow owns a clone of the actual
@@ -184,7 +184,7 @@ Red 738e3212d3ef67b4f4b4237df82ab1aa9d9a81e6, tested in ea6614b8b by r8:
 `cargo test -j 4 -p shards a_caps_loss_record_is_bounded_by_its_totals_not_its_history --bin shards`
 failed `lifetime eviction history remained on disk`. This drives the actual record
 function for 128 losses and checks exact totals and serialized metadata size.
-[Red](logs/r8.log). It is filesystem evidence, not an allocation profile.
+[Retained red notification excerpt](logs/r8.log). It is filesystem evidence, not an allocation profile.
 
 Fix 76ace2f1842bd9c056d745532be8b5622269d18c writes `sum segments bytes` with
 checked u64 totals, using existing platform::write_in durable whole replacement

@@ -1,1 +1,16 @@
-{"error":"no run r7 (it ended and was collected, or never was)"}
+Retained kiln completion-notification excerpt, new-turn r7 (not a full runner log).
+Command: bash check.sh test shards-api an_ended_members_idle_input_releases_its_feeder
+Runner: cec37f60f22c5a60d27f08f4d2e5daa8 (adas-mac-studio.local, macOS arm64)
+Source: a39889e300b07e27efa71b4afec546c42c619ff8
+Exit: 101
+
+running 1 test
+test image::session::tests::an_ended_members_idle_input_releases_its_feeder ... FAILED
+
+thread 'image::session::tests::an_ended_members_idle_input_releases_its_feeder' (54218902) panicked at crates/api/src/image/session.rs:2441:9:
+assertion `left == right` failed: member end retained its idle input feeder
+  left: Err(Timeout)
+ right: Ok(())
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 195 filtered out; finished in 1.01s
+error: test failed, to rerun pass `-p shards-api --lib`
