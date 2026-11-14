@@ -11058,9 +11058,14 @@ mod tests {
     }
 
     fn ask<D: Disk>(daemon: &Daemon<D>, args: &[&str]) -> (u8, String, String) {
+        ask_as(daemon, args, &asker())
+    }
+
+    /// [`ask`], by `asker`: one that sends descriptors of its own.
+    fn ask_as<D: Disk>(daemon: &Daemon<D>, args: &[&str], asker: &commands::Asker) -> (u8, String, String) {
         let (ours, theirs) = UnixStream::pair().unwrap();
         let argv: Vec<String> = args.iter().map(|a| (*a).to_string()).collect();
-        let status = daemon.command(&argv, &asker(), &commands::Reply(&ours));
+        let status = daemon.command(&argv, asker, &commands::Reply(&ours));
         drop(ours);
         let (mut out, mut err) = (Vec::new(), Vec::new());
         // A listing's rows, laid out as the client lays them out.
@@ -16858,6 +16863,148 @@ mod tests {
             assert_eq!(err, format!("shards: {refused}\n"));
             let (status, _, err) = t.ask(&[shards_ipc::MOVE_STEP, "key", "web", &new]);
             assert_eq!(status, 0, "a lease under its own key: {err}");
+        });
+    }
+
+    /// Every path under `root`, relative to it, but those under `skip`.
+    fn tree_of(root: &Path, skip: &Path) -> std::collections::BTreeSet<PathBuf> {
+        let mut all = std::collections::BTreeSet::new();
+        let mut dirs = vec![root.to_path_buf()];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.starts_with(skip) {
+                    continue;
+                }
+                if std::fs::symlink_metadata(&path).unwrap().is_dir() {
+                    dirs.push(path.clone());
+                }
+                all.insert(path.strip_prefix(root).unwrap().to_path_buf());
+            }
+        }
+        all
+    }
+
+    /// The names a move gives that the machine moved to makes paths of its home of (its
+    /// ID, its snapshot's, its volumes', the volumes its record mounts) are each refused
+    /// typed where they are not one name of their kind (migrate-11), as its `ready` step
+    /// reads its plan, as its `import` step reads its stream's, before anything of the
+    /// stream is put anywhere, and as `adopt` reads its record; and nothing is made or
+    /// renamed in the home. Until this, `import` joined each to the home's paths as given:
+    /// an ID of `../x` made `containers/../x` of it, and a mounted volume's name its guest's
+    /// share of a host directory outside the home's volumes.
+    #[test]
+    fn a_moves_names_that_are_no_one_name_are_refused_typed_and_reach_nothing() {
+        let t = Test::new("move-names");
+        t.run(|t| {
+            let src = t.create("src");
+            let plan = |id: &str, snapshot: &str, volumes: &[&str]| -> moves::Plan {
+                serde_json::from_value(serde_json::json!({
+                    "id": id,
+                    "name": "web",
+                    "image": "127.0.0.1:9/absent",
+                    "image_id": format!("sha256:{}", "b".repeat(64)),
+                    "arch": std::env::consts::ARCH,
+                    "format": shards_vmm::snapshot::FORMAT,
+                    "hypervisor": shards_vmm::hv::BACKEND,
+                    "snapshot": snapshot,
+                    "home": "/h",
+                    "files": [],
+                    "volumes": volumes,
+                    "binds": [],
+                }))
+                .unwrap()
+            };
+            let refused_as = |(status, out, err): (u8, String, String), field: moves::Named, value: &str| {
+                assert_eq!(status, 1, "{out}{err}");
+                let refused: moves::Refused = serde_json::from_str(out.trim())
+                    .unwrap_or_else(|e| panic!("not refused typed ({e}): {out}{err}"));
+                assert_eq!(
+                    refused,
+                    moves::Refused::NotAName {
+                        name: "web".into(),
+                        field,
+                        value: value.into(),
+                    }
+                );
+                assert_eq!(err, format!("shards: {refused}\n"));
+            };
+            let ours = crate::containers::new_id().unwrap();
+            let ready = |p: &moves::Plan| {
+                t.ask(&[shards_ipc::MOVE_STEP, "ready", &serde_json::to_string(p).unwrap()])
+            };
+            refused_as(ready(&plan("../x", "s1", &[])), moves::Named::Id, "../x");
+            refused_as(ready(&plan(&ours, "../s1", &[])), moves::Named::Snapshot, "../s1");
+            refused_as(ready(&plan(&ours, "s1", &["../../x"])), moves::Named::Volume, "../../x");
+
+            // A move's stream: its plan, then the microVM directory `whole` names, if any,
+            // written from a directory of the test's own; imported as the mover's client
+            // sends it.
+            let streams = shards_testdir::TempDir::new("mv-names").unwrap();
+            let n = std::cell::Cell::new(0);
+            let import = |p: &moves::Plan, whole: Option<&Path>| {
+                let mut bytes = Vec::new();
+                let mut w = moves::Writer::new(&mut bytes, p).unwrap();
+                if let Some(dir) = whole {
+                    w.tree(dir, &format!("containers/{}", p.id), &|_| false).unwrap();
+                    w.finish().unwrap();
+                } else {
+                    drop(w);
+                }
+                n.set(n.get() + 1);
+                let at = streams.join(format!("s{}", n.get()));
+                std::fs::write(&at, &bytes).unwrap();
+                let asker = commands::Asker {
+                    files: vec![OwnedFd::from(File::open(&at).unwrap())],
+                    ..asker()
+                };
+                ask_as(&t.daemon, &[shards_ipc::MOVE_STEP, "import"], &asker)
+            };
+            let private = t.home.join(PRIVATE);
+            let before = tree_of(&t.home, &private);
+            let unchanged = || {
+                assert_eq!(tree_of(&t.home, &private), before, "the home changed");
+                assert!(!t.home.join("x").exists() && !t.home.parent().unwrap().join("x").exists());
+                if private.exists() {
+                    assert_eq!(std::fs::read_dir(&private).unwrap().count(), 0, "a move's staging stayed");
+                }
+            };
+            // Its plan's names, before its entries are read: each stream ends past its plan,
+            // where an import that read on would fail instead.
+            refused_as(import(&plan("../x", "s1", &[]), None), moves::Named::Id, "../x");
+            unchanged();
+            refused_as(import(&plan(&ours, "../../x", &[]), None), moves::Named::Snapshot, "../../x");
+            unchanged();
+            refused_as(import(&plan(&ours, "s1", &["../../x"]), None), moves::Named::Volume, "../../x");
+            unchanged();
+
+            // A volume its record mounts, which its guest is shared a host directory of:
+            // its record's, which `adopt` reads from the stream whole.
+            let mut record = t.record(&src).unwrap();
+            record.id.clone_from(&ours);
+            record.name = "web".into();
+            record.mounts = vec![crate::volumes::MountPoint {
+                kind: "volume".into(),
+                name: "../../x".into(),
+                destination: "/data".into(),
+                rw: true,
+                ..Default::default()
+            }];
+            let sent = streams.join("c");
+            std::fs::create_dir(&sent).unwrap();
+            std::fs::write(sent.join("config.json"), serde_json::to_vec(&record).unwrap()).unwrap();
+            refused_as(
+                import(&plan(&ours, "s1", &[]), Some(&sent)),
+                moves::Named::Volume,
+                "../../x",
+            );
+            unchanged();
+            assert!(t.record(&ours).is_none());
+
+            // The machine it ran on, told it moved or came back: its snapshot's name is
+            // joined to its directory there.
+            let (status, out, err) = t.ask(&[shards_ipc::MOVE_STEP, "done", "web", "../x", "back"]);
+            refused_as((status, out, err), moves::Named::Snapshot, "../x");
         });
     }
 }
