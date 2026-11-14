@@ -67,3 +67,10 @@ cancels a blocked stream write is made by this unit evidence.
 Before memory-05's fix, r14 passed pmem's 10 tests and the new lifecycle-guard test;
 its final lost-mapping regression failed as expected. Focused combined green is
 recorded below, after the latest main merge.
+
+Combined green: `8fea5f396`, resumed-session kiln r1, same Mac/Rust:
+`cargo test -p shards-vmm memory::tests:: --lib` 25/25;
+`cargo test -p shards-vmm devices::virtio::pmem::tests:: --lib` 10/10;
+`cargo test -p shards-vmm vm::runtime:: --lib` 6/6;
+`cargo clippy -p shards-vmm --all-targets -- -D warnings` clean.
+The end of that run is retained in `green-live-ownership.log`.
