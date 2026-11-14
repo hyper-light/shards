@@ -6609,6 +6609,84 @@ mod tests {
         assert!(matches!(held_apart(None, &named), Err(No(Cause::Image, _))));
     }
 
+    /// A member granted a port to any address is held to the names kept on that port too
+    /// (D246, inithex-02): its init lets it out there to any address and the network process
+    /// admits a kept name's addresses for any member, so it reaches the name whatever its
+    /// entry says. Do: derive the run host's Agentfile from one whose agent a reaches a
+    /// provider by name, and a and b are both granted its port to any address; ask that
+    /// port's grant dropped, the provider kept, and a alone let it. Expect: refused as a
+    /// widening naming b; a run that lets both reach it passes.
+    #[test]
+    fn a_member_granted_a_names_port_is_held_to_that_name() {
+        use crate::agentfile::{Agentfile, NamedReach};
+        use shards_agentfile::{agentfile as af, instructions, lint::Linter, parser};
+        let text = "FROM alpine\nAGENT a FROM ./a\nAGENT b FROM ./b\n\
+            NETWORK --egress=api.example:443 named\nEXPOSE 443 AS egress FOR named\n\
+            CONNECT a WITH a ON named\n\
+            NETWORK --egress=443 wide\nEXPOSE 443 AS egress FOR wide\n\
+            CONNECT a WITH a ON wide\nCONNECT b WITH b ON wide\n";
+        let parsed = parser::parse_as(text.as_bytes(), parser::Dialect::Agentfile).unwrap();
+        let stages = instructions::parse(&parsed, &Linter::default()).unwrap().stages;
+        let directives: Vec<af::Directive> = stages
+            .last()
+            .unwrap()
+            .commands
+            .iter()
+            .filter_map(|c| match &c.kind {
+                instructions::Kind::Agentfile(d) => Some(d.clone()),
+                _ => None,
+            })
+            .collect();
+        let directives = af::resolve_targets(&directives).unwrap();
+        af::held(&directives).unwrap();
+        // As the run host reads it (`agentfile::agentfile`).
+        let agentfile = Agentfile {
+            grants: af::grants(&directives),
+            named: af::named_reach(&directives)
+                .into_iter()
+                .map(|(kind, name, reaches)| NamedReach {
+                    kind,
+                    name: String::from_utf8(name).unwrap(),
+                    reaches: reaches
+                        .iter()
+                        .map(|(h, p)| format!("{}:{p}", String::from_utf8_lossy(h)))
+                        .collect(),
+                })
+                .collect(),
+            ..Agentfile::default()
+        };
+        let reach = |name: &str, destinations: &[&str]| wire::MemberReach {
+            kind: wire::MemberKind::Agent,
+            name: name.into(),
+            destinations: destinations.iter().map(|d| (*d).to_string()).collect(),
+        };
+        let held = |members| wire::Narrowing {
+            egress: wire::Keep::Only(Vec::new()),
+            mcp: wire::Keep::Only(Vec::new()),
+            destinations: wire::Keep::Only(vec!["api.example:443".into()]),
+            dns: false,
+            members: Some(members),
+        };
+        let provider = &["api.example:443"][..];
+        match held_apart(
+            Some(&agentfile),
+            &held(vec![reach("a", provider), reach("b", &[])]),
+        ) {
+            Err(No(Cause::Widening, why)) => assert_eq!(
+                why,
+                "agent b: of the names kept it would reach api.example:443, where the request lets it reach nothing (D246)"
+            ),
+            other => panic!("{:?}", other.map_err(|No(c, w)| (c, w))),
+        }
+        assert!(
+            held_apart(
+                Some(&agentfile),
+                &held(vec![reach("a", provider), reach("b", provider)])
+            )
+            .is_ok()
+        );
+    }
+
     /// The run's request is one a warm VM takes: its log keeps something by the VM's own
     /// check (warm.rs `head`), though it writes none, and its head says whether it
     /// publishes ports.

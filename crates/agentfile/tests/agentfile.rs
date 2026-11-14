@@ -1672,6 +1672,46 @@ fn each_member_reaches_its_own_names() {
     assert_eq!(by_member(said(&read)), by_member(said(&directives)));
 }
 
+/// A member's port grant to any address reaches every name the image grants on that port
+/// (D246, inithex-02): its init lets it out there to any address, and the network process
+/// admits a kept name's addresses for any member that asks them. Do: read an Agentfile whose
+/// agent a reaches a provider by name on one network, and a and b are both granted its port
+/// to any address on another, beside an agent c granted another port alone. Expect: a and b
+/// each reach the provider, c nothing; and the Agentfile still builds, as every member
+/// granted the port reaches it alike.
+#[test]
+fn a_port_grant_reaches_every_name_the_image_grants_on_it() {
+    use shards_agentfile::agentfile as af;
+    let text = "FROM alpine\nAGENT a FROM ./a\nAGENT b FROM ./b\nAGENT c FROM ./c\n\
+        NETWORK --egress=api.example:443 named\nEXPOSE 443 AS egress FOR named\n\
+        CONNECT a WITH a ON named\n\
+        NETWORK --egress=443 wide\nEXPOSE 443 AS egress FOR wide\n\
+        CONNECT a WITH a ON wide\nCONNECT b WITH b ON wide\n\
+        NETWORK --egress=8443 other\nEXPOSE 8443 AS egress FOR other\nCONNECT c WITH c ON other\n";
+    let directives = af::resolve_targets(&stage_directives(text)).unwrap();
+    af::connections(&directives).unwrap();
+    af::held(&directives).unwrap();
+    let reach: Vec<(String, Vec<String>)> = af::named_reach(&directives)
+        .into_iter()
+        .map(|(_, name, named)| {
+            let named = named
+                .iter()
+                .map(|(host, port)| format!("{}:{port}", String::from_utf8_lossy(host)))
+                .collect();
+            (String::from_utf8(name).unwrap(), named)
+        })
+        .collect();
+    let owned = |list: &[&str]| list.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+    assert_eq!(
+        reach,
+        [
+            ("a".to_string(), owned(&["api.example:443"])),
+            ("b".to_string(), owned(&["api.example:443"])),
+            ("c".to_string(), owned(&[])),
+        ]
+    );
+}
+
 /// What no destination of a network's is, refused by name and why: one let in rather than
 /// reached, of a network carrying no TCP, an all-digit or patterned host, an IPv6 address,
 /// UDP, and the member's own loopback; a port, a range and a Unix socket read as before.

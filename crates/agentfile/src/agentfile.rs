@@ -2246,14 +2246,46 @@ fn tcp_reach(directives: &[Directive]) -> Vec<TcpReach<'_>> {
 
 /// What each member the Agentfile declares reaches past the microVM by name (D236, §4.4):
 /// its networks' destinations and its remote MCP servers', each a host and a TCP port, as
-/// its init lets it out to them; in the order the Agentfile declares its members, one that
-/// reaches none with none. Where [`held`] holds, a member reaches exactly those of them its
+/// its init lets it out to them, and every other name the image grants (any member's) on a
+/// port its networks open it to any address, as its init lets it out there to any address
+/// and the network process admits that name's addresses for whichever member asked it
+/// (D246, inithex-02); in the order the Agentfile declares its members, one that reaches
+/// none with none. Where [`held`] holds, a member reaches exactly those of them its
 /// microVM's network process keeps, so a run host can hold each member to a reach an
 /// orchestrator names (D246).
 pub fn named_reach(directives: &[Directive]) -> Vec<(TargetKind, Vec<u8>, Vec<Destination>)> {
-    tcp_reach(directives)
+    let members = tcp_reach(directives);
+    let mut granted: Vec<Destination> = Vec::new();
+    let mcp = directives.iter().filter_map(|d| match d {
+        Directive::Mcp(m) => mcp_endpoint(&m.source),
+        _ => None,
+    });
+    for name in joined(directives)
         .into_iter()
-        .map(|r| (r.member.0, r.member.1.to_vec(), r.named))
+        .flat_map(|net| destinations_on(directives, net, None))
+        .chain(mcp)
+    {
+        if !granted.contains(&name) {
+            granted.push(name);
+        }
+    }
+    members
+        .into_iter()
+        .map(
+            |TcpReach {
+                 member,
+                 wide,
+                 mut named,
+             }| {
+                for name in &granted {
+                    let opened = wide.iter().any(|&(lo, hi)| lo <= name.1 && name.1 <= hi);
+                    if opened && !named.contains(name) {
+                        named.push(name.clone());
+                    }
+                }
+                (member.0, member.1.to_vec(), named)
+            },
+        )
         .collect()
 }
 
